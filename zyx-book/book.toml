@@ -1,9 +1,7 @@
 [book]
-authors = ["“zk4x”"]
+authors = ["zk4x"]
 language = "en"
-multilingual = false
 src = "src"
 
 [build]
 build-dir = "../docs"
-

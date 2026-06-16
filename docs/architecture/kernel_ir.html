@@ -3,7 +3,7 @@
     <head>
         <!-- Book generated using mdBook -->
         <meta charset="UTF-8">
-        <title>Introduction</title>
+        <title>The Kernel IR</title>
 
 
         <!-- Custom HTML head -->
@@ -12,33 +12,33 @@
         <meta name="viewport" content="width=device-width, initial-scale=1">
         <meta name="theme-color" content="#ffffff">
 
-        <link rel="icon" href="favicon-de23e50b.svg">
-        <link rel="shortcut icon" href="favicon-8114d1fc.png">
-        <link rel="stylesheet" href="css/variables-8adf115d.css">
-        <link rel="stylesheet" href="css/general-0392ca55.css">
-        <link rel="stylesheet" href="css/chrome-fc474251.css">
-        <link rel="stylesheet" href="css/print-9e4910d8.css" media="print">
+        <link rel="icon" href="../favicon-de23e50b.svg">
+        <link rel="shortcut icon" href="../favicon-8114d1fc.png">
+        <link rel="stylesheet" href="../css/variables-8adf115d.css">
+        <link rel="stylesheet" href="../css/general-0392ca55.css">
+        <link rel="stylesheet" href="../css/chrome-fc474251.css">
+        <link rel="stylesheet" href="../css/print-9e4910d8.css" media="print">
 
         <!-- Fonts -->
-        <link rel="stylesheet" href="fonts/fonts-9644e21d.css">
+        <link rel="stylesheet" href="../fonts/fonts-9644e21d.css">
 
         <!-- Highlight.js Stylesheets -->
-        <link rel="stylesheet" id="mdbook-highlight-css" href="highlight-493f70e1.css">
-        <link rel="stylesheet" id="mdbook-tomorrow-night-css" href="tomorrow-night-4c0ae647.css">
-        <link rel="stylesheet" id="mdbook-ayu-highlight-css" href="ayu-highlight-3fdfc3ac.css">
+        <link rel="stylesheet" id="mdbook-highlight-css" href="../highlight-493f70e1.css">
+        <link rel="stylesheet" id="mdbook-tomorrow-night-css" href="../tomorrow-night-4c0ae647.css">
+        <link rel="stylesheet" id="mdbook-ayu-highlight-css" href="../ayu-highlight-3fdfc3ac.css">
 
         <!-- Custom theme stylesheets -->
 
 
         <!-- Provide site root and default themes to javascript -->
         <script>
-            const path_to_root = "";
+            const path_to_root = "../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-929adda2.js";
+            window.path_to_searchindex_js = "../searchindex-929adda2.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="toc-e7c93a4e.js"></script>
+        <script src="../toc-e7c93a4e.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -105,7 +105,7 @@
             <!-- populated by js -->
             <mdbook-sidebar-scrollbox class="sidebar-scrollbox"></mdbook-sidebar-scrollbox>
             <noscript>
-                <iframe class="sidebar-iframe-outer" src="toc.html"></iframe>
+                <iframe class="sidebar-iframe-outer" src="../toc.html"></iframe>
             </noscript>
             <div id="mdbook-sidebar-resize-handle" class="sidebar-resize-handle">
                 <div class="sidebar-resize-indicator"></div>
@@ -140,7 +140,7 @@
                     <h1 class="menu-title"></h1>
 
                     <div class="right-buttons">
-                        <a href="print.html" title="Print this book" aria-label="Print this book">
+                        <a href="../print.html" title="Print this book" aria-label="Print this book">
                             <span class=fa-svg id="print-button"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M128 0C92.7 0 64 28.7 64 64v96h64V64H354.7L384 93.3V160h64V93.3c0-17-6.7-33.3-18.7-45.3L400 18.7C388 6.7 371.7 0 354.7 0H128zM384 352v32 64H128V384 368 352H384zm64 32h32c17.7 0 32-14.3 32-32V256c0-35.3-28.7-64-64-64H64c-35.3 0-64 28.7-64 64v96c0 17.7 14.3 32 32 32H64v64c0 35.3 28.7 64 64 64H384c35.3 0 64-28.7 64-64V384zm-16-88c-13.3 0-24-10.7-24-24s10.7-24 24-24s24 10.7 24 24s-10.7 24-24 24z"/></svg></span>
                         </a>
 
@@ -174,51 +174,87 @@
 
                 <div id="mdbook-content" class="content">
                     <main>
-                        <h1 id="introduction"><a class="header" href="#introduction">Introduction</a></h1>
-<p>This book documents the internals of zyx — a machine learning library and compiler.</p>
-<p>Unlike traditional ML frameworks that separate the eager execution graph from the autograd graph, zyx uses a <strong>single unified graph</strong> for everything. This design eliminates duplication, enables seamless kernel fusion, and keeps the implementation lean — tensors are only 4 bytes and the graph uses ~10 node types.</p>
-<h2 id="who-this-is-for"><a class="header" href="#who-this-is-for">Who This is For</a></h2>
-<p>This book is for developers who want to understand how zyx works under the hood: the architecture decisions, the optimization passes, the backend system, and how pieces fit together.</p>
-<h2 id="the-architecture-at-a-glance"><a class="header" href="#the-architecture-at-a-glance">The Architecture at a Glance</a></h2>
-<pre><code class="language-text">User Code (Tensor API)
-       │
-       ▼
-   Tensor Graph ─── Autograd (reverse-mode on same graph)
-       │
-       ▼
-   Kernelizer (greedy fusion of graph nodes)
-       │
-       ▼
-   Kernel IR (linked-list of ops)
-       │
-       ▼
-   Optimization Passes (always-on + autotune)
-       │
-       ▼
-   Backend Codegen (C, CUDA, OpenCL, Vulkan, WGPU, HIP)
-</code></pre>
-<p>Every tensor operation builds a graph node. When you call <code>.realize()</code> or <code>.item()</code>, the graph is traversed bottom-up, compatible nodes are fused into kernels, the kernels are optimized, and finally compiled to native code for the target device.</p>
-<h2 id="why-this-design"><a class="header" href="#why-this-design">Why This Design</a></h2>
-<p>Most deep learning libraries use two separate graphs:</p>
+                        <h1 id="the-kernel-ir"><a class="header" href="#the-kernel-ir">The Kernel IR</a></h1>
+<p>The kernel IR is the intermediate representation used for all computation kernels. It is a doubly-linked list of 32-byte <code>OpNode</code>s stored in an arena (the <code>Slab</code> allocator).</p>
+<h2 id="data-structure"><a class="header" href="#data-structure">Data Structure</a></h2>
+<pre><code class="language-rust ignore">pub struct Kernel {
+    pub ops: Slab&lt;OpId, OpNode&gt;,
+    pub head: OpId,
+    pub tail: OpId,
+    // ...
+}
+
+pub struct OpNode {
+    pub prev: OpId,  // u32
+    pub next: OpId,  // u32
+    pub op: Op,      // 24 bytes (enum + payload)
+}</code></pre>
+<p>The <code>Slab&lt;OpId, OpNode&gt;</code> is a <code>Vec&lt;OpNode&gt;</code> with a free-list. <code>OpId</code> is a <code>u32</code> index — random access is O(1).</p>
+<h2 id="unfolding"><a class="header" href="#unfolding">Unfolding</a></h2>
+<p>Before any optimization passes run, the kernel IR is <strong>unfolded</strong> — <code>LoadView</code>, <code>StoreView</code>, and <code>Move</code> ops are converted to direct index arithmetic (<code>Load</code>, <code>Store</code> with computed indices). After unfolding, the IR is purely linear with no heap-allocating ops. All ops are fixed-size and live in the arena.</p>
+<p>The IR is in SSA form, except for <code>Loop</code>, <code>If</code>, and <code>Define</code> ops (which can carry mutable state).</p>
+<h2 id="op-variants"><a class="header" href="#op-variants">Op Variants</a></h2>
+<h3 id="arithmetic"><a class="header" href="#arithmetic">Arithmetic</a></h3>
+<pre><code class="language-rust ignore">Op::Cast { x: OpId, dtype: DType }
+Op::Unary { x: OpId, uop: UOp }
+Op::Binary { x: OpId, y: OpId, bop: BOp }
+Op::Mad { x: OpId, y: OpId, z: OpId }</code></pre>
+<h3 id="memory"><a class="header" href="#memory">Memory</a></h3>
+<pre><code class="language-rust ignore">Op::Define { dtype, scope, ro, len }
+Op::Load { src, index, layout }
+Op::Store { dst, x, index, layout }
+Op::Const(Constant)</code></pre>
+<h3 id="control-flow"><a class="header" href="#control-flow">Control Flow</a></h3>
+<pre><code class="language-rust ignore">Op::Loop { len: Dim }
+Op::EndLoop
+Op::If { condition: OpId }
+Op::EndIf
+Op::Barrier { scope }</code></pre>
+<h3 id="indexing"><a class="header" href="#indexing">Indexing</a></h3>
+<pre><code class="language-rust ignore">Op::Index { len, scope, axis }</code></pre>
+<h3 id="hardware-accelerators"><a class="header" href="#hardware-accelerators">Hardware Accelerators</a></h3>
+<pre><code class="language-rust ignore">Op::Wmma { dims, layout, dtype, a, b, c }</code></pre>
+<h3 id="vectorization"><a class="header" href="#vectorization">Vectorization</a></h3>
+<pre><code class="language-rust ignore">Op::Vectorize { ops: Vec&lt;OpId&gt; }
+Op::Devectorize { vec: OpId, idx }</code></pre>
+<h3 id="view-before-unfolding"><a class="header" href="#view-before-unfolding">View (before unfolding)</a></h3>
+<pre><code class="language-rust ignore">Op::Move { x: OpId, mop: Box&lt;MoveOp&gt; }
+Op::Reduce { x: OpId, rop, n_axes }</code></pre>
+<h2 id="memory-layouts-and-scopes"><a class="header" href="#memory-layouts-and-scopes">Memory Layouts and Scopes</a></h2>
+<pre><code class="language-rust ignore">pub enum MemLayout {
+    Scalar,
+    Vector(u8),
+    Tile { x, y, stride },
+}
+
+pub enum Scope {
+    Global,
+    Local,
+    Register,
+}</code></pre>
+<h2 id="backend-codegen"><a class="header" href="#backend-codegen">Backend Codegen</a></h2>
+<p>Because the IR is designed for it, backend codegen is trivial:</p>
 <ol>
-<li>A compute graph for eager execution</li>
-<li>An autograd graph for backpropagation</li>
+<li><strong>deSSA</strong> — resolve SSA references to physical registers/memory</li>
+<li><strong>Linear pass</strong> — walk the op linked list once, emitting instructions</li>
 </ol>
-<p>Zyx uses <strong>one graph</strong> for both. This means:</p>
-<ul>
-<li>The autograd system doesn’t need its own graph infrastructure — it reuses the same nodes</li>
-<li>Kernel fusion works across operation boundaries without special handling</li>
-<li>The implementation is debuggable (one graph to inspect, not two)</li>
-<li>Memory overhead is minimal: each graph node is ~16 bytes</li>
-</ul>
-<p>The trade-off is that evaluation is lazy — you must call <code>realize()</code> to trigger computation. But this laziness enables optimizations that eager execution cannot: kernel fusion, dead code elimination, and cross-operation constant folding.</p>
+<p>No further optimizations, no complex lowering.</p>
+<h2 id="debugging"><a class="header" href="#debugging">Debugging</a></h2>
+<p>Set <code>ZYX_DEBUG=8</code> to print the kernel IR:</p>
+<pre><code class="language-text">r18: i32 = def global, len=4
+r44: u32 = gidx0    // 0..=0
+r19: i32 = r18[r1]  // 0..=3 load
+</code></pre>
 
                     </main>
 
                     <nav class="nav-wrapper" aria-label="Page navigation">
                         <!-- Mobile navigation buttons -->
+                            <a rel="prev" href="../architecture/kernelizer.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                                <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M41.4 233.4c-12.5 12.5-12.5 32.8 0 45.3l160 160c12.5 12.5 32.8 12.5 45.3 0s12.5-32.8 0-45.3L109.3 256 246.6 118.6c12.5-12.5 12.5-32.8 0-45.3s-32.8-12.5-45.3 0l-160 160z"/></svg></span>
+                            </a>
 
-                            <a rel="next prefetch" href="architecture/overview.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                            <a rel="next prefetch" href="../architecture/optimizations.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
                                 <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M278.6 233.4c12.5 12.5 12.5 32.8 0 45.3l-160 160c-12.5 12.5-32.8 12.5-45.3 0s-12.5-32.8 0-45.3L210.7 256 73.4 118.6c-12.5-12.5-12.5-32.8 0-45.3s32.8-12.5 45.3 0l160 160z"/></svg></span>
                             </a>
 
@@ -228,8 +264,11 @@
             </div>
 
             <nav class="nav-wide-wrapper" aria-label="Page navigation">
+                    <a rel="prev" href="../architecture/kernelizer.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                        <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M41.4 233.4c-12.5 12.5-12.5 32.8 0 45.3l160 160c12.5 12.5 32.8 12.5 45.3 0s12.5-32.8 0-45.3L109.3 256 246.6 118.6c12.5-12.5 12.5-32.8 0-45.3s-32.8-12.5-45.3 0l-160 160z"/></svg></span>
+                    </a>
 
-                    <a rel="next prefetch" href="architecture/overview.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                    <a rel="next prefetch" href="../architecture/optimizations.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
                         <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M278.6 233.4c12.5 12.5 12.5 32.8 0 45.3l-160 160c-12.5 12.5-32.8 12.5-45.3 0s-12.5-32.8 0-45.3L210.7 256 73.4 118.6c-12.5-12.5-12.5-32.8 0-45.3s32.8-12.5 45.3 0l160 160z"/></svg></span>
                     </a>
             </nav>
@@ -249,13 +288,13 @@
         </script>
 
 
-        <script src="elasticlunr-ef4e11c1.min.js"></script>
-        <script src="mark-09e88c2c.min.js"></script>
-        <script src="searcher-09f2665d.js"></script>
+        <script src="../elasticlunr-ef4e11c1.min.js"></script>
+        <script src="../mark-09e88c2c.min.js"></script>
+        <script src="../searcher-09f2665d.js"></script>
 
-        <script src="clipboard-1626706a.min.js"></script>
-        <script src="highlight-abc7f01d.js"></script>
-        <script src="book-c22b7243.js"></script>
+        <script src="../clipboard-1626706a.min.js"></script>
+        <script src="../highlight-abc7f01d.js"></script>
+        <script src="../book-c22b7243.js"></script>
 
         <!-- Custom JS scripts -->
 

@@ -1,0 +1,10 @@
+[package]
+name = "zyx-book"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+zyx = { path = "../zyx" }
+zyx-nn = { path = "../zyx-nn" }
+zyx-optim = { path = "../zyx-optim" }
+zyx-derive = { path = "../zyx-derive" }

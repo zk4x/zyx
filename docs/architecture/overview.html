@@ -3,7 +3,7 @@
     <head>
         <!-- Book generated using mdBook -->
         <meta charset="UTF-8">
-        <title>Introduction</title>
+        <title>Architecture Overview</title>
 
 
         <!-- Custom HTML head -->
@@ -12,33 +12,33 @@
         <meta name="viewport" content="width=device-width, initial-scale=1">
         <meta name="theme-color" content="#ffffff">
 
-        <link rel="icon" href="favicon-de23e50b.svg">
-        <link rel="shortcut icon" href="favicon-8114d1fc.png">
-        <link rel="stylesheet" href="css/variables-8adf115d.css">
-        <link rel="stylesheet" href="css/general-0392ca55.css">
-        <link rel="stylesheet" href="css/chrome-fc474251.css">
-        <link rel="stylesheet" href="css/print-9e4910d8.css" media="print">
+        <link rel="icon" href="../favicon-de23e50b.svg">
+        <link rel="shortcut icon" href="../favicon-8114d1fc.png">
+        <link rel="stylesheet" href="../css/variables-8adf115d.css">
+        <link rel="stylesheet" href="../css/general-0392ca55.css">
+        <link rel="stylesheet" href="../css/chrome-fc474251.css">
+        <link rel="stylesheet" href="../css/print-9e4910d8.css" media="print">
 
         <!-- Fonts -->
-        <link rel="stylesheet" href="fonts/fonts-9644e21d.css">
+        <link rel="stylesheet" href="../fonts/fonts-9644e21d.css">
 
         <!-- Highlight.js Stylesheets -->
-        <link rel="stylesheet" id="mdbook-highlight-css" href="highlight-493f70e1.css">
-        <link rel="stylesheet" id="mdbook-tomorrow-night-css" href="tomorrow-night-4c0ae647.css">
-        <link rel="stylesheet" id="mdbook-ayu-highlight-css" href="ayu-highlight-3fdfc3ac.css">
+        <link rel="stylesheet" id="mdbook-highlight-css" href="../highlight-493f70e1.css">
+        <link rel="stylesheet" id="mdbook-tomorrow-night-css" href="../tomorrow-night-4c0ae647.css">
+        <link rel="stylesheet" id="mdbook-ayu-highlight-css" href="../ayu-highlight-3fdfc3ac.css">
 
         <!-- Custom theme stylesheets -->
 
 
         <!-- Provide site root and default themes to javascript -->
         <script>
-            const path_to_root = "";
+            const path_to_root = "../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-929adda2.js";
+            window.path_to_searchindex_js = "../searchindex-929adda2.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="toc-e7c93a4e.js"></script>
+        <script src="../toc-e7c93a4e.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -105,7 +105,7 @@
             <!-- populated by js -->
             <mdbook-sidebar-scrollbox class="sidebar-scrollbox"></mdbook-sidebar-scrollbox>
             <noscript>
-                <iframe class="sidebar-iframe-outer" src="toc.html"></iframe>
+                <iframe class="sidebar-iframe-outer" src="../toc.html"></iframe>
             </noscript>
             <div id="mdbook-sidebar-resize-handle" class="sidebar-resize-handle">
                 <div class="sidebar-resize-indicator"></div>
@@ -140,7 +140,7 @@
                     <h1 class="menu-title"></h1>
 
                     <div class="right-buttons">
-                        <a href="print.html" title="Print this book" aria-label="Print this book">
+                        <a href="../print.html" title="Print this book" aria-label="Print this book">
                             <span class=fa-svg id="print-button"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M128 0C92.7 0 64 28.7 64 64v96h64V64H354.7L384 93.3V160h64V93.3c0-17-6.7-33.3-18.7-45.3L400 18.7C388 6.7 371.7 0 354.7 0H128zM384 352v32 64H128V384 368 352H384zm64 32h32c17.7 0 32-14.3 32-32V256c0-35.3-28.7-64-64-64H64c-35.3 0-64 28.7-64 64v96c0 17.7 14.3 32 32 32H64v64c0 35.3 28.7 64 64 64H384c35.3 0 64-28.7 64-64V384zm-16-88c-13.3 0-24-10.7-24-24s10.7-24 24-24s24 10.7 24 24s-10.7 24-24 24z"/></svg></span>
                         </a>
 
@@ -174,51 +174,118 @@
 
                 <div id="mdbook-content" class="content">
                     <main>
-                        <h1 id="introduction"><a class="header" href="#introduction">Introduction</a></h1>
-<p>This book documents the internals of zyx — a machine learning library and compiler.</p>
-<p>Unlike traditional ML frameworks that separate the eager execution graph from the autograd graph, zyx uses a <strong>single unified graph</strong> for everything. This design eliminates duplication, enables seamless kernel fusion, and keeps the implementation lean — tensors are only 4 bytes and the graph uses ~10 node types.</p>
-<h2 id="who-this-is-for"><a class="header" href="#who-this-is-for">Who This is For</a></h2>
-<p>This book is for developers who want to understand how zyx works under the hood: the architecture decisions, the optimization passes, the backend system, and how pieces fit together.</p>
-<h2 id="the-architecture-at-a-glance"><a class="header" href="#the-architecture-at-a-glance">The Architecture at a Glance</a></h2>
-<pre><code class="language-text">User Code (Tensor API)
-       │
-       ▼
-   Tensor Graph ─── Autograd (reverse-mode on same graph)
-       │
-       ▼
-   Kernelizer (greedy fusion of graph nodes)
-       │
-       ▼
-   Kernel IR (linked-list of ops)
-       │
-       ▼
-   Optimization Passes (always-on + autotune)
-       │
-       ▼
-   Backend Codegen (C, CUDA, OpenCL, Vulkan, WGPU, HIP)
+                        <h1 id="architecture-overview"><a class="header" href="#architecture-overview">Architecture Overview</a></h1>
+<p>The zyx pipeline transforms high-level tensor operations into device-specific machine code.</p>
+<pre><code class="language-text">Tensor API ──► Graph ──► Kernelizer ──► Kernel IR ──► Opt Passes ──► Backend Codegen
+                                                                         │
+                                            Autotune (clone + evaluate)  └── deSSA + linear pass
 </code></pre>
-<p>Every tensor operation builds a graph node. When you call <code>.realize()</code> or <code>.item()</code>, the graph is traversed bottom-up, compatible nodes are fused into kernels, the kernels are optimized, and finally compiled to native code for the target device.</p>
-<h2 id="why-this-design"><a class="header" href="#why-this-design">Why This Design</a></h2>
-<p>Most deep learning libraries use two separate graphs:</p>
+<h2 id="pipeline-stages"><a class="header" href="#pipeline-stages">Pipeline Stages</a></h2>
+<h3 id="1-tensor-api"><a class="header" href="#1-tensor-api">1. Tensor API</a></h3>
+<p>The user creates tensors and applies operations:</p>
+<pre class="playground"><code class="language-rust"><span class="boring">extern crate zyx;
+</span><span class="boring">use zyx::{DType, Tensor, ZyxError};
+</span><span class="boring">fn main() -&gt; Result&lt;(), ZyxError&gt; {
+</span>let x = Tensor::randn([1024, 1024], DType::F32)?;
+let y = x.relu();
+let z = y * 2.0;
+<span class="boring">Ok(())
+</span><span class="boring">}</span></code></pre>
+<p>These calls do not compute anything. Each operation appends a node to the graph and returns a lightweight <code>Tensor</code> handle.</p>
+<h3 id="2-the-graph"><a class="header" href="#2-the-graph">2. The Graph</a></h3>
+<p>The graph opset was taken from tinygrad, with changes to make it even smaller. This is the minimal set of operations that can express ALL linear algebra operations and ALL PyTorch ops — by stacking these nodes:</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Variant</th><th>Meaning</th></tr>
+</thead>
+<tbody>
+<tr><td><code>Const</code></td><td>A constant value baked into kernels</td></tr>
+<tr><td><code>Leaf</code></td><td>A tensor stored on device</td></tr>
+<tr><td><code>Expand</code></td><td>Broadcast a dimension</td></tr>
+<tr><td><code>Permute</code></td><td>Transpose axes</td></tr>
+<tr><td><code>Reshape</code></td><td>Change shape without changing data</td></tr>
+<tr><td><code>Pad</code></td><td>Pad with zeros</td></tr>
+<tr><td><code>Reduce</code></td><td>Sum, max, etc.</td></tr>
+<tr><td><code>Cast</code></td><td>Change dtype</td></tr>
+<tr><td><code>Unary</code></td><td>Element-wise: relu, exp, sin, etc.</td></tr>
+<tr><td><code>Binary</code></td><td>Element-wise: add, mul, matmul, etc.</td></tr>
+</tbody>
+</table>
+</div>
+<p>Each node is ~16 bytes, plus a 4-byte reference count and slab metadata overhead. Still small enough that 10,000 nodes cost ~200 KB.</p>
+<p>The graph is stored in a <code>Slab</code> — a dense array with free-list tracking. <code>TensorId</code> is a <code>u32</code> index into this slab, making tensor handles 4 bytes.</p>
+<h3 id="3-the-kernelizer"><a class="header" href="#3-the-kernelizer">3. The Kernelizer</a></h3>
+<p>When <code>realize()</code> is called, the kernelizer traverses the graph bottom-up and fuses compatible nodes into kernels. The kernelizer uses heuristics to decide where kernel boundaries go — it’s not a simple rule. A reduce node used by multiple downstream nodes does not necessarily force a split. If two downstream nodes are both expand ops, that may force fusion. Element-wise chains will almost always fuse into one kernel.</p>
+<p>View operations (reshape, expand, permute, pad) are unfolded into index arithmetic in the kernel, becoming “free” — they don’t create separate operations.</p>
+<h3 id="4-the-kernel-ir"><a class="header" href="#4-the-kernel-ir">4. The Kernel IR</a></h3>
+<p>After unfolding, the DAG is converted into a <strong>linear structure</strong> — a doubly-linked list of ops stored in an arena (the <code>Slab&lt;OpId, OpNode&gt;</code>). No heap allocation after unfolding. Each <code>OpNode</code> is <strong>32 bytes</strong> fixed size.</p>
+<p>OpId is a <code>u32</code> index into the slab — random access is O(1). The IR is SSA, except for loops and <code>Define</code> ops (which can be mutable).</p>
+<p>The design goal of the small opset: optimizations are easy to write. If you understand the IR, you can add a new pass in an afternoon.</p>
+<h3 id="5-optimization-passes"><a class="header" href="#5-optimization-passes">5. Optimization Passes</a></h3>
+<p>Optimization passes work on the linear IR. Kernels are cloned and each variant is evaluated separately — no egraphs. The cost function evaluates <strong>thousands of variants per second</strong>.</p>
+<p>Optimization passes emit IR that is deliberately simple to lower to backend instructions. A backend just does deSSA + a single linear pass over the IR. No complex backend-specific lowering.</p>
+<p>The autotune system explores the search space by:</p>
 <ol>
-<li>A compute graph for eager execution</li>
-<li>An autograd graph for backpropagation</li>
+<li>Starting with the initial kernel</li>
+<li>Applying one optimization variant</li>
+<li>Hashing the kernel to detect duplicates</li>
+<li>Evaluating with the cost function (or launching and timing)</li>
+<li>Repeating by combining optimization sequences</li>
+<li>Selecting the best variant</li>
 </ol>
-<p>Zyx uses <strong>one graph</strong> for both. This means:</p>
+<p>There is no fixed number of optimization passes zyx aims to have. The design goal was a small opset in the graph and IR so that passes are easy to write. More passes will be added over time.</p>
+<h3 id="6-backend-codegen"><a class="header" href="#6-backend-codegen">6. Backend Codegen</a></h3>
+<p>Each backend converts the stabilized kernel IR into target code. Since the IR is designed for this, codegen is a straight line: deSSA, then one pass over the ops emitting instructions. No further optimizations, no complex lowering.</p>
+<p>Backends are dispatch via enums (no <code>dyn Backend</code> — that would require downcasting, which is ugly in Rust):</p>
+<pre><code class="language-rust ignore">pub enum Device {
+    C(CDevice),
+    CUDA(CUDADevice),
+    OpenCL(OpenCLDevice),
+    Vulkan(VulkanDevice),
+    WGPU(WGPUDevice),
+    HIP(HIPDevice),
+    Dummy(DummyDevice),
+    // Tenstorrent, etc.
+}</code></pre>
+<p>All backends are compiled into the library and selected at runtime.</p>
+<h3 id="7-runtime-and-scheduler-current"><a class="header" href="#7-runtime-and-scheduler-current">7. Runtime and Scheduler (Current)</a></h3>
+<p>The scheduler picks a device based on free memory and compute capacity. It handles cross-device data transfers and tracks async execution via events.</p>
+<p><strong>Note</strong>: A new scheduler is under development in <code>search.rs</code> and <code>search2.rs</code>. It will use an e-graph-like budget-guided exhaustive fusion enumeration, including costs for memory movement. The current <code>schedule.rs</code> will be replaced with something much more powerful.</p>
+<h2 id="debugging-the-pipeline"><a class="header" href="#debugging-the-pipeline">Debugging the Pipeline</a></h2>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th><code>ZYX_DEBUG</code></th><th>Output</th></tr>
+</thead>
+<tbody>
+<tr><td>1</td><td>Backend selection and hardware info</td></tr>
+<tr><td>2</td><td>Performance info during realize</td></tr>
+<tr><td>4</td><td>Kernels generated by the kernelizer</td></tr>
+<tr><td>8</td><td>Kernel IR (before GPU execution)</td></tr>
+<tr><td>16</td><td>Generated backend code (PTX, OpenCL C, etc.)</td></tr>
+<tr><td>32</td><td>Autotune exploration</td></tr>
+</tbody>
+</table>
+</div>
+<h2 id="key-design-decisions"><a class="header" href="#key-design-decisions">Key Design Decisions</a></h2>
 <ul>
-<li>The autograd system doesn’t need its own graph infrastructure — it reuses the same nodes</li>
-<li>Kernel fusion works across operation boundaries without special handling</li>
-<li>The implementation is debuggable (one graph to inspect, not two)</li>
-<li>Memory overhead is minimal: each graph node is ~16 bytes</li>
+<li><strong>One graph for everything</strong> — autograd and computation share the same graph. No need to specify which tensors require gradients.</li>
+<li><strong>No heap IR ops</strong> — after unfolding, all ops live in the arena. Cache-efficient, no allocation during optimization.</li>
+<li><strong>Linear IR</strong> — linked list of fixed-size nodes. Optimizations traverse front-to-back or back-to-back.</li>
+<li><strong>Backend codegen is trivial</strong> — the hard work is in the IR-level optimization passes.</li>
+<li><strong>Explicit GradientTape</strong> — prevents graph node deletion instead of building a separate graph.</li>
 </ul>
-<p>The trade-off is that evaluation is lazy — you must call <code>realize()</code> to trigger computation. But this laziness enables optimizations that eager execution cannot: kernel fusion, dead code elimination, and cross-operation constant folding.</p>
 
                     </main>
 
                     <nav class="nav-wrapper" aria-label="Page navigation">
                         <!-- Mobile navigation buttons -->
+                            <a rel="prev" href="../introduction.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                                <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M41.4 233.4c-12.5 12.5-12.5 32.8 0 45.3l160 160c12.5 12.5 32.8 12.5 45.3 0s12.5-32.8 0-45.3L109.3 256 246.6 118.6c12.5-12.5 12.5-32.8 0-45.3s-32.8-12.5-45.3 0l-160 160z"/></svg></span>
+                            </a>
 
-                            <a rel="next prefetch" href="architecture/overview.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                            <a rel="next prefetch" href="../architecture/tensor.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
                                 <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M278.6 233.4c12.5 12.5 12.5 32.8 0 45.3l-160 160c-12.5 12.5-32.8 12.5-45.3 0s-12.5-32.8 0-45.3L210.7 256 73.4 118.6c-12.5-12.5-12.5-32.8 0-45.3s32.8-12.5 45.3 0l160 160z"/></svg></span>
                             </a>
 
@@ -228,8 +295,11 @@
             </div>
 
             <nav class="nav-wide-wrapper" aria-label="Page navigation">
+                    <a rel="prev" href="../introduction.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                        <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M41.4 233.4c-12.5 12.5-12.5 32.8 0 45.3l160 160c12.5 12.5 32.8 12.5 45.3 0s12.5-32.8 0-45.3L109.3 256 246.6 118.6c12.5-12.5 12.5-32.8 0-45.3s-32.8-12.5-45.3 0l-160 160z"/></svg></span>
+                    </a>
 
-                    <a rel="next prefetch" href="architecture/overview.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                    <a rel="next prefetch" href="../architecture/tensor.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
                         <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M278.6 233.4c12.5 12.5 12.5 32.8 0 45.3l-160 160c-12.5 12.5-32.8 12.5-45.3 0s-12.5-32.8 0-45.3L210.7 256 73.4 118.6c-12.5-12.5-12.5-32.8 0-45.3s32.8-12.5 45.3 0l160 160z"/></svg></span>
                     </a>
             </nav>
@@ -249,13 +319,13 @@
         </script>
 
 
-        <script src="elasticlunr-ef4e11c1.min.js"></script>
-        <script src="mark-09e88c2c.min.js"></script>
-        <script src="searcher-09f2665d.js"></script>
+        <script src="../elasticlunr-ef4e11c1.min.js"></script>
+        <script src="../mark-09e88c2c.min.js"></script>
+        <script src="../searcher-09f2665d.js"></script>
 
-        <script src="clipboard-1626706a.min.js"></script>
-        <script src="highlight-abc7f01d.js"></script>
-        <script src="book-c22b7243.js"></script>
+        <script src="../clipboard-1626706a.min.js"></script>
+        <script src="../highlight-abc7f01d.js"></script>
+        <script src="../book-c22b7243.js"></script>
 
         <!-- Custom JS scripts -->
 

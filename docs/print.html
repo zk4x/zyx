@@ -13,21 +13,20 @@
         <meta name="viewport" content="width=device-width, initial-scale=1">
         <meta name="theme-color" content="#ffffff">
 
-        <link rel="icon" href="favicon.svg">
-        <link rel="shortcut icon" href="favicon.png">
-        <link rel="stylesheet" href="css/variables.css">
-        <link rel="stylesheet" href="css/general.css">
-        <link rel="stylesheet" href="css/chrome.css">
-        <link rel="stylesheet" href="css/print.css" media="print">
+        <link rel="icon" href="favicon-de23e50b.svg">
+        <link rel="shortcut icon" href="favicon-8114d1fc.png">
+        <link rel="stylesheet" href="css/variables-8adf115d.css">
+        <link rel="stylesheet" href="css/general-0392ca55.css">
+        <link rel="stylesheet" href="css/chrome-fc474251.css">
+        <link rel="stylesheet" href="css/print-9e4910d8.css" media="print">
 
         <!-- Fonts -->
-        <link rel="stylesheet" href="FontAwesome/css/font-awesome.css">
-        <link rel="stylesheet" href="fonts/fonts.css">
+        <link rel="stylesheet" href="fonts/fonts-9644e21d.css">
 
         <!-- Highlight.js Stylesheets -->
-        <link rel="stylesheet" id="highlight-css" href="highlight.css">
-        <link rel="stylesheet" id="tomorrow-night-css" href="tomorrow-night.css">
-        <link rel="stylesheet" id="ayu-highlight-css" href="ayu-highlight.css">
+        <link rel="stylesheet" id="mdbook-highlight-css" href="highlight-493f70e1.css">
+        <link rel="stylesheet" id="mdbook-tomorrow-night-css" href="tomorrow-night-4c0ae647.css">
+        <link rel="stylesheet" id="mdbook-ayu-highlight-css" href="ayu-highlight-3fdfc3ac.css">
 
         <!-- Custom theme stylesheets -->
 
@@ -37,10 +36,10 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex.js";
+            window.path_to_searchindex_js = "searchindex-929adda2.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="toc.js"></script>
+        <script src="toc-e7c93a4e.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -54,7 +53,7 @@
             </div>
         </div>
     </div>
-    <div id="body-container">
+    <div id="mdbook-body-container">
         <!-- Work around some values being stored in localStorage wrapped in quotes -->
         <script>
             try {
@@ -83,12 +82,12 @@
             html.classList.add("js");
         </script>
 
-        <input type="checkbox" id="sidebar-toggle-anchor" class="hidden">
+        <input type="checkbox" id="mdbook-sidebar-toggle-anchor" class="hidden">
 
         <!-- Hide / unhide sidebar before it is displayed -->
         <script>
             let sidebar = null;
-            const sidebar_toggle = document.getElementById("sidebar-toggle-anchor");
+            const sidebar_toggle = document.getElementById("mdbook-sidebar-toggle-anchor");
             if (document.body.clientWidth >= 1080) {
                 try { sidebar = localStorage.getItem('mdbook-sidebar'); } catch(e) { }
                 sidebar = sidebar || 'visible';
@@ -103,39 +102,39 @@
             }
         </script>
 
-        <nav id="sidebar" class="sidebar" aria-label="Table of contents">
+        <nav id="mdbook-sidebar" class="sidebar" aria-label="Table of contents">
             <!-- populated by js -->
             <mdbook-sidebar-scrollbox class="sidebar-scrollbox"></mdbook-sidebar-scrollbox>
             <noscript>
                 <iframe class="sidebar-iframe-outer" src="toc.html"></iframe>
             </noscript>
-            <div id="sidebar-resize-handle" class="sidebar-resize-handle">
+            <div id="mdbook-sidebar-resize-handle" class="sidebar-resize-handle">
                 <div class="sidebar-resize-indicator"></div>
             </div>
         </nav>
 
-        <div id="page-wrapper" class="page-wrapper">
+        <div id="mdbook-page-wrapper" class="page-wrapper">
 
             <div class="page">
-                <div id="menu-bar-hover-placeholder"></div>
-                <div id="menu-bar" class="menu-bar sticky">
+                <div id="mdbook-menu-bar-hover-placeholder"></div>
+                <div id="mdbook-menu-bar" class="menu-bar sticky">
                     <div class="left-buttons">
-                        <label id="sidebar-toggle" class="icon-button" for="sidebar-toggle-anchor" title="Toggle Table of Contents" aria-label="Toggle Table of Contents" aria-controls="sidebar">
-                            <i class="fa fa-bars"></i>
+                        <label id="mdbook-sidebar-toggle" class="icon-button" for="mdbook-sidebar-toggle-anchor" title="Toggle Table of Contents" aria-label="Toggle Table of Contents" aria-controls="mdbook-sidebar">
+                            <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M0 96C0 78.3 14.3 64 32 64H416c17.7 0 32 14.3 32 32s-14.3 32-32 32H32C14.3 128 0 113.7 0 96zM0 256c0-17.7 14.3-32 32-32H416c17.7 0 32 14.3 32 32s-14.3 32-32 32H32c-17.7 0-32-14.3-32-32zM448 416c0 17.7-14.3 32-32 32H32c-17.7 0-32-14.3-32-32s14.3-32 32-32H416c17.7 0 32 14.3 32 32z"/></svg></span>
                         </label>
-                        <button id="theme-toggle" class="icon-button" type="button" title="Change theme" aria-label="Change theme" aria-haspopup="true" aria-expanded="false" aria-controls="theme-list">
-                            <i class="fa fa-paint-brush"></i>
+                        <button id="mdbook-theme-toggle" class="icon-button" type="button" title="Change theme" aria-label="Change theme" aria-haspopup="true" aria-expanded="false" aria-controls="mdbook-theme-list">
+                            <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 576 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M371.3 367.1c27.3-3.9 51.9-19.4 67.2-42.9L600.2 74.1c12.6-19.5 9.4-45.3-7.6-61.2S549.7-4.4 531.1 9.6L294.4 187.2c-24 18-38.2 46.1-38.4 76.1L371.3 367.1zm-19.6 25.4l-116-104.4C175.9 290.3 128 339.6 128 400c0 3.9 .2 7.8 .6 11.6c1.8 17.5-10.2 36.4-27.8 36.4H96c-17.7 0-32 14.3-32 32s14.3 32 32 32H240c61.9 0 112-50.1 112-112c0-2.5-.1-5-.2-7.5z"/></svg></span>
                         </button>
-                        <ul id="theme-list" class="theme-popup" aria-label="Themes" role="menu">
-                            <li role="none"><button role="menuitem" class="theme" id="default_theme">Auto</button></li>
-                            <li role="none"><button role="menuitem" class="theme" id="light">Light</button></li>
-                            <li role="none"><button role="menuitem" class="theme" id="rust">Rust</button></li>
-                            <li role="none"><button role="menuitem" class="theme" id="coal">Coal</button></li>
-                            <li role="none"><button role="menuitem" class="theme" id="navy">Navy</button></li>
-                            <li role="none"><button role="menuitem" class="theme" id="ayu">Ayu</button></li>
+                        <ul id="mdbook-theme-list" class="theme-popup" aria-label="Themes" role="menu">
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-default_theme">Auto</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-light">Light</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-rust">Rust</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-coal">Coal</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-navy">Navy</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-ayu">Ayu</button></li>
                         </ul>
-                        <button id="search-toggle" class="icon-button" type="button" title="Search (`/`)" aria-label="Toggle Searchbar" aria-expanded="false" aria-keyshortcuts="/ s" aria-controls="searchbar">
-                            <i class="fa fa-search"></i>
+                        <button id="mdbook-search-toggle" class="icon-button" type="button" title="Search (`/`)" aria-label="Toggle Searchbar" aria-expanded="false" aria-keyshortcuts="/ s" aria-controls="mdbook-searchbar">
+                            <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M416 208c0 45.9-14.9 88.3-40 122.7L502.6 457.4c12.5 12.5 12.5 32.8 0 45.3s-32.8 12.5-45.3 0L330.7 376c-34.4 25.2-76.8 40-122.7 40C93.1 416 0 322.9 0 208S93.1 0 208 0S416 93.1 416 208zM208 352c79.5 0 144-64.5 144-144s-64.5-144-144-144S64 128.5 64 208s64.5 144 144 144z"/></svg></span>
                         </button>
                     </div>
 
@@ -143,1356 +142,793 @@
 
                     <div class="right-buttons">
                         <a href="print.html" title="Print this book" aria-label="Print this book">
-                            <i id="print-button" class="fa fa-print"></i>
+                            <span class=fa-svg id="print-button"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M128 0C92.7 0 64 28.7 64 64v96h64V64H354.7L384 93.3V160h64V93.3c0-17-6.7-33.3-18.7-45.3L400 18.7C388 6.7 371.7 0 354.7 0H128zM384 352v32 64H128V384 368 352H384zm64 32h32c17.7 0 32-14.3 32-32V256c0-35.3-28.7-64-64-64H64c-35.3 0-64 28.7-64 64v96c0 17.7 14.3 32 32 32H64v64c0 35.3 28.7 64 64 64H384c35.3 0 64-28.7 64-64V384zm-16-88c-13.3 0-24-10.7-24-24s10.7-24 24-24s24 10.7 24 24s-10.7 24-24 24z"/></svg></span>
                         </a>
 
                     </div>
                 </div>
 
-                <div id="search-wrapper" class="hidden">
-                    <form id="searchbar-outer" class="searchbar-outer">
+                <div id="mdbook-search-wrapper" class="hidden">
+                    <form id="mdbook-searchbar-outer" class="searchbar-outer">
                         <div class="search-wrapper">
-                            <input type="search" id="searchbar" name="searchbar" placeholder="Search this book ..." aria-controls="searchresults-outer" aria-describedby="searchresults-header">
+                            <input type="search" id="mdbook-searchbar" name="searchbar" placeholder="Search this book ..." aria-controls="mdbook-searchresults-outer" aria-describedby="searchresults-header">
                             <div class="spinner-wrapper">
-                                <i class="fa fa-spinner fa-spin"></i>
+                                <span class=fa-svg id="fa-spin"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M304 48c0-26.5-21.5-48-48-48s-48 21.5-48 48s21.5 48 48 48s48-21.5 48-48zm0 416c0-26.5-21.5-48-48-48s-48 21.5-48 48s21.5 48 48 48s48-21.5 48-48zM48 304c26.5 0 48-21.5 48-48s-21.5-48-48-48s-48 21.5-48 48s21.5 48 48 48zm464-48c0-26.5-21.5-48-48-48s-48 21.5-48 48s21.5 48 48 48s48-21.5 48-48zM142.9 437c18.7-18.7 18.7-49.1 0-67.9s-49.1-18.7-67.9 0s-18.7 49.1 0 67.9s49.1 18.7 67.9 0zm0-294.2c18.7-18.7 18.7-49.1 0-67.9S93.7 56.2 75 75s-18.7 49.1 0 67.9s49.1 18.7 67.9 0zM369.1 437c18.7 18.7 49.1 18.7 67.9 0s18.7-49.1 0-67.9s-49.1-18.7-67.9 0s-18.7 49.1 0 67.9z"/></svg></span>
                             </div>
                         </div>
                     </form>
-                    <div id="searchresults-outer" class="searchresults-outer hidden">
-                        <div id="searchresults-header" class="searchresults-header"></div>
-                        <ul id="searchresults">
+                    <div id="mdbook-searchresults-outer" class="searchresults-outer hidden">
+                        <div id="mdbook-searchresults-header" class="searchresults-header"></div>
+                        <ul id="mdbook-searchresults">
                         </ul>
                     </div>
                 </div>
 
                 <!-- Apply ARIA attributes after the sidebar and the sidebar toggle button are added to the DOM -->
                 <script>
-                    document.getElementById('sidebar-toggle').setAttribute('aria-expanded', sidebar === 'visible');
-                    document.getElementById('sidebar').setAttribute('aria-hidden', sidebar !== 'visible');
-                    Array.from(document.querySelectorAll('#sidebar a')).forEach(function(link) {
+                    document.getElementById('mdbook-sidebar-toggle').setAttribute('aria-expanded', sidebar === 'visible');
+                    document.getElementById('mdbook-sidebar').setAttribute('aria-hidden', sidebar !== 'visible');
+                    Array.from(document.querySelectorAll('#mdbook-sidebar a')).forEach(function(link) {
                         link.setAttribute('tabIndex', sidebar === 'visible' ? 0 : -1);
                     });
                 </script>
 
-                <div id="content" class="content">
+                <div id="mdbook-content" class="content">
                     <main>
                         <h1 id="introduction"><a class="header" href="#introduction">Introduction</a></h1>
-<p>This book is an introductory to machine learning with zyx library.</p>
-<p>It is meant to serve as a tutorial and provide examples of working with zyx. For documentation, please see:</p>
+<p>This book documents the internals of zyx — a machine learning library and compiler.</p>
+<p>Unlike traditional ML frameworks that separate the eager execution graph from the autograd graph, zyx uses a <strong>single unified graph</strong> for everything. This design eliminates duplication, enables seamless kernel fusion, and keeps the implementation lean — tensors are only 4 bytes and the graph uses ~10 node types.</p>
+<h2 id="who-this-is-for"><a class="header" href="#who-this-is-for">Who This is For</a></h2>
+<p>This book is for developers who want to understand how zyx works under the hood: the architecture decisions, the optimization passes, the backend system, and how pieces fit together.</p>
+<h2 id="the-architecture-at-a-glance"><a class="header" href="#the-architecture-at-a-glance">The Architecture at a Glance</a></h2>
+<pre><code class="language-text">User Code (Tensor API)
+       │
+       ▼
+   Tensor Graph ─── Autograd (reverse-mode on same graph)
+       │
+       ▼
+   Kernelizer (greedy fusion of graph nodes)
+       │
+       ▼
+   Kernel IR (linked-list of ops)
+       │
+       ▼
+   Optimization Passes (always-on + autotune)
+       │
+       ▼
+   Backend Codegen (C, CUDA, OpenCL, Vulkan, WGPU, HIP)
+</code></pre>
+<p>Every tensor operation builds a graph node. When you call <code>.realize()</code> or <code>.item()</code>, the graph is traversed bottom-up, compatible nodes are fused into kernels, the kernels are optimized, and finally compiled to native code for the target device.</p>
+<h2 id="why-this-design"><a class="header" href="#why-this-design">Why This Design</a></h2>
+<p>Most deep learning libraries use two separate graphs:</p>
+<ol>
+<li>A compute graph for eager execution</li>
+<li>An autograd graph for backpropagation</li>
+</ol>
+<p>Zyx uses <strong>one graph</strong> for both. This means:</p>
 <ul>
-<li><a href="https://docs.rs/zyx/latest/zyx">zyx</a></li>
-<li><a href="https://docs.rs/zyx-optim/latest/zyx-optim">optimizers</a></li>
-<li><a href="https://docs.rs/zyx-nn/latest/zyx-nn">neural network modules</a></li>
+<li>The autograd system doesn’t need its own graph infrastructure — it reuses the same nodes</li>
+<li>Kernel fusion works across operation boundaries without special handling</li>
+<li>The implementation is debuggable (one graph to inspect, not two)</li>
+<li>Memory overhead is minimal: each graph node is ~16 bytes</li>
 </ul>
-<p>If you are already familiar with machine learning and want the quickest possible tutorial, please see <a href="https://www.github.com/zk4x/zyx">README</a>.</p>
-<div style="break-before: page; page-break-before: always;"></div><h1 id="why-zyx"><a class="header" href="#why-zyx">Why zyx?</a></h1>
-<div style="break-before: page; page-break-before: always;"></div><h1 id="first-tensors"><a class="header" href="#first-tensors">First Tensors</a></h1>
-<div style="break-before: page; page-break-before: always;"></div><h1 id="tensor-operations"><a class="header" href="#tensor-operations">Tensor Operations</a></h1>
-<div style="break-before: page; page-break-before: always;"></div><h1 id="execution-model"><a class="header" href="#execution-model">Execution Model</a></h1>
-<p>PyTorch executes most of the ops immediatelly. This straightforward, but it means that in order to be able to backpropagate, it needs to know which tensors must be stored in memory. Zyx uses lazy execution. It does not evaluate anything until user explicitly requests the data. This would not work for training/inference loops, so zyx uses caching mechanism that detects repetition of parts of graph and once any part of graph is repeated more than once, the whole graph get evaluated in order to remove no longer needed nodes (node is internal representation of unrealized tensor, takes only few bytes).</p>
-<p>This is cool by itself, because it means that zyx is as dynamic as pytorch while allowing for optimizations only possible in static graphs, but it also allows zyx to be more dynamic than PyTorch, because there is no longer need to specify which tensors require gradient, as you can see in <a href="getting-started/autograd.html">autograd</a> chapter.</p>
-<div style="break-before: page; page-break-before: always;"></div><h1 id="library-vs-framework-the-zyx-philosophy"><a class="header" href="#library-vs-framework-the-zyx-philosophy">Library vs. Framework: The Zyx Philosophy</a></h1>
-<h2 id="core-philosophy"><a class="header" href="#core-philosophy">Core Philosophy</a></h2>
-<p>Zyx is designed as a <strong>library</strong>, not a framework. This distinction is critical for developers who value flexibility and control over their machine learning workflows. While frameworks impose rigid structures and design patterns, libraries like Zyx adapt to your needs, enabling seamless integration into any project architecture.</p>
-<p>This philosophy manifests in several key ways:</p>
+<p>The trade-off is that evaluation is lazy — you must call <code>realize()</code> to trigger computation. But this laziness enables optimizations that eager execution cannot: kernel fusion, dead code elimination, and cross-operation constant folding.</p>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="architecture-overview"><a class="header" href="#architecture-overview">Architecture Overview</a></h1>
+<p>The zyx pipeline transforms high-level tensor operations into device-specific machine code.</p>
+<pre><code class="language-text">Tensor API ──► Graph ──► Kernelizer ──► Kernel IR ──► Opt Passes ──► Backend Codegen
+                                                                         │
+                                            Autotune (clone + evaluate)  └── deSSA + linear pass
+</code></pre>
+<h2 id="pipeline-stages"><a class="header" href="#pipeline-stages">Pipeline Stages</a></h2>
+<h3 id="1-tensor-api"><a class="header" href="#1-tensor-api">1. Tensor API</a></h3>
+<p>The user creates tensors and applies operations:</p>
+<pre class="playground"><code class="language-rust"><span class="boring">extern crate zyx;
+</span><span class="boring">use zyx::{DType, Tensor, ZyxError};
+</span><span class="boring">fn main() -&gt; Result&lt;(), ZyxError&gt; {
+</span>let x = Tensor::randn([1024, 1024], DType::F32)?;
+let y = x.relu();
+let z = y * 2.0;
+<span class="boring">Ok(())
+</span><span class="boring">}</span></code></pre>
+<p>These calls do not compute anything. Each operation appends a node to the graph and returns a lightweight <code>Tensor</code> handle.</p>
+<h3 id="2-the-graph"><a class="header" href="#2-the-graph">2. The Graph</a></h3>
+<p>The graph opset was taken from tinygrad, with changes to make it even smaller. This is the minimal set of operations that can express ALL linear algebra operations and ALL PyTorch ops — by stacking these nodes:</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Variant</th><th>Meaning</th></tr>
+</thead>
+<tbody>
+<tr><td><code>Const</code></td><td>A constant value baked into kernels</td></tr>
+<tr><td><code>Leaf</code></td><td>A tensor stored on device</td></tr>
+<tr><td><code>Expand</code></td><td>Broadcast a dimension</td></tr>
+<tr><td><code>Permute</code></td><td>Transpose axes</td></tr>
+<tr><td><code>Reshape</code></td><td>Change shape without changing data</td></tr>
+<tr><td><code>Pad</code></td><td>Pad with zeros</td></tr>
+<tr><td><code>Reduce</code></td><td>Sum, max, etc.</td></tr>
+<tr><td><code>Cast</code></td><td>Change dtype</td></tr>
+<tr><td><code>Unary</code></td><td>Element-wise: relu, exp, sin, etc.</td></tr>
+<tr><td><code>Binary</code></td><td>Element-wise: add, mul, matmul, etc.</td></tr>
+</tbody>
+</table>
+</div>
+<p>Each node is ~16 bytes, plus a 4-byte reference count and slab metadata overhead. Still small enough that 10,000 nodes cost ~200 KB.</p>
+<p>The graph is stored in a <code>Slab</code> — a dense array with free-list tracking. <code>TensorId</code> is a <code>u32</code> index into this slab, making tensor handles 4 bytes.</p>
+<h3 id="3-the-kernelizer"><a class="header" href="#3-the-kernelizer">3. The Kernelizer</a></h3>
+<p>When <code>realize()</code> is called, the kernelizer traverses the graph bottom-up and fuses compatible nodes into kernels. The kernelizer uses heuristics to decide where kernel boundaries go — it’s not a simple rule. A reduce node used by multiple downstream nodes does not necessarily force a split. If two downstream nodes are both expand ops, that may force fusion. Element-wise chains will almost always fuse into one kernel.</p>
+<p>View operations (reshape, expand, permute, pad) are unfolded into index arithmetic in the kernel, becoming “free” — they don’t create separate operations.</p>
+<h3 id="4-the-kernel-ir"><a class="header" href="#4-the-kernel-ir">4. The Kernel IR</a></h3>
+<p>After unfolding, the DAG is converted into a <strong>linear structure</strong> — a doubly-linked list of ops stored in an arena (the <code>Slab&lt;OpId, OpNode&gt;</code>). No heap allocation after unfolding. Each <code>OpNode</code> is <strong>32 bytes</strong> fixed size.</p>
+<p>OpId is a <code>u32</code> index into the slab — random access is O(1). The IR is SSA, except for loops and <code>Define</code> ops (which can be mutable).</p>
+<p>The design goal of the small opset: optimizations are easy to write. If you understand the IR, you can add a new pass in an afternoon.</p>
+<h3 id="5-optimization-passes"><a class="header" href="#5-optimization-passes">5. Optimization Passes</a></h3>
+<p>Optimization passes work on the linear IR. Kernels are cloned and each variant is evaluated separately — no egraphs. The cost function evaluates <strong>thousands of variants per second</strong>.</p>
+<p>Optimization passes emit IR that is deliberately simple to lower to backend instructions. A backend just does deSSA + a single linear pass over the IR. No complex backend-specific lowering.</p>
+<p>The autotune system explores the search space by:</p>
+<ol>
+<li>Starting with the initial kernel</li>
+<li>Applying one optimization variant</li>
+<li>Hashing the kernel to detect duplicates</li>
+<li>Evaluating with the cost function (or launching and timing)</li>
+<li>Repeating by combining optimization sequences</li>
+<li>Selecting the best variant</li>
+</ol>
+<p>There is no fixed number of optimization passes zyx aims to have. The design goal was a small opset in the graph and IR so that passes are easy to write. More passes will be added over time.</p>
+<h3 id="6-backend-codegen"><a class="header" href="#6-backend-codegen">6. Backend Codegen</a></h3>
+<p>Each backend converts the stabilized kernel IR into target code. Since the IR is designed for this, codegen is a straight line: deSSA, then one pass over the ops emitting instructions. No further optimizations, no complex lowering.</p>
+<p>Backends are dispatch via enums (no <code>dyn Backend</code> — that would require downcasting, which is ugly in Rust):</p>
+<pre><code class="language-rust ignore">pub enum Device {
+    C(CDevice),
+    CUDA(CUDADevice),
+    OpenCL(OpenCLDevice),
+    Vulkan(VulkanDevice),
+    WGPU(WGPUDevice),
+    HIP(HIPDevice),
+    Dummy(DummyDevice),
+    // Tenstorrent, etc.
+}</code></pre>
+<p>All backends are compiled into the library and selected at runtime.</p>
+<h3 id="7-runtime-and-scheduler-current"><a class="header" href="#7-runtime-and-scheduler-current">7. Runtime and Scheduler (Current)</a></h3>
+<p>The scheduler picks a device based on free memory and compute capacity. It handles cross-device data transfers and tracks async execution via events.</p>
+<p><strong>Note</strong>: A new scheduler is under development in <code>search.rs</code> and <code>search2.rs</code>. It will use an e-graph-like budget-guided exhaustive fusion enumeration, including costs for memory movement. The current <code>schedule.rs</code> will be replaced with something much more powerful.</p>
+<h2 id="debugging-the-pipeline"><a class="header" href="#debugging-the-pipeline">Debugging the Pipeline</a></h2>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th><code>ZYX_DEBUG</code></th><th>Output</th></tr>
+</thead>
+<tbody>
+<tr><td>1</td><td>Backend selection and hardware info</td></tr>
+<tr><td>2</td><td>Performance info during realize</td></tr>
+<tr><td>4</td><td>Kernels generated by the kernelizer</td></tr>
+<tr><td>8</td><td>Kernel IR (before GPU execution)</td></tr>
+<tr><td>16</td><td>Generated backend code (PTX, OpenCL C, etc.)</td></tr>
+<tr><td>32</td><td>Autotune exploration</td></tr>
+</tbody>
+</table>
+</div>
+<h2 id="key-design-decisions"><a class="header" href="#key-design-decisions">Key Design Decisions</a></h2>
 <ul>
-<li><strong>No scaffolding requirements</strong>: Zyx doesn't force you to follow specific project templates or directory structures</li>
-<li><strong>No global state</strong>: Unlike frameworks that maintain persistent runtime state, Zyx operations are localized to individual tensors</li>
-<li><strong>No enforced abstractions</strong>: You're free to build your own abstractions without fighting framework conventions</li>
+<li><strong>One graph for everything</strong> — autograd and computation share the same graph. No need to specify which tensors require gradients.</li>
+<li><strong>No heap IR ops</strong> — after unfolding, all ops live in the arena. Cache-efficient, no allocation during optimization.</li>
+<li><strong>Linear IR</strong> — linked list of fixed-size nodes. Optimizations traverse front-to-back or back-to-back.</li>
+<li><strong>Backend codegen is trivial</strong> — the hard work is in the IR-level optimization passes.</li>
+<li><strong>Explicit GradientTape</strong> — prevents graph node deletion instead of building a separate graph.</li>
 </ul>
-<h2 id="technical-advantages"><a class="header" href="#technical-advantages">Technical Advantages</a></h2>
-<h3 id="1-zero-design-enforcement"><a class="header" href="#1-zero-design-enforcement">1. Zero Design Enforcement</a></h3>
-<p>Zyx avoids dictating how you structure your code. This means:</p>
-<ul>
-<li><strong>No mandatory base classes</strong>: You're not required to implement predefined interfaces.</li>
-<li><strong>No opinionated training loops</strong>: Unlike many ML frameworks that provide a single <code>fit()</code> or <code>train()</code> method, Zyx allows you to build custom training loops tailored to your application's requirements.</li>
-<li><strong>No static graph requirements</strong>: Zyx's tape-based autograd system (see <a href="getting-started/autograd.html">autograd documentation</a>) records gradients only when needed, without requiring upfront graph definitions.</li>
-</ul>
-<h3 id="2-minimal-compilation-footprint"><a class="header" href="#2-minimal-compilation-footprint">2. Minimal Compilation Footprint</a></h3>
-<p>Zyx is engineered to be <strong>tiny when compiled</strong>, making it ideal for users who want to keep their disk free. It's just a few MB.</p>
-<p>This lightweight nature stems from:</p>
-<ul>
-<li><strong>No code generation</strong>: Zyx avoids macros that expand into large codebases</li>
-<li><strong>No feature flags bloat</strong>: Most functionality and hardware works without enabling any features</li>
-<li><strong>No unnecessary abstractions</strong>: Extensive ops support, without traits or generics</li>
-</ul>
-<p>The benefits are tangible:</p>
-<ul>
-<li><strong>Embedded systems</strong>: Deploy ML capabilities in resource-constrained environments</li>
-<li><strong>Edge computing</strong>: Run inference on devices with limited storage capacity</li>
-<li><strong>Fast iteration</strong>: Quick recompilation during development cycles</li>
-<li><strong>No generic/lifetime headaches</strong>: Spend time writing your code, not refactoring to fit into the framework</li>
-</ul>
-<h3 id="3-dependency-management"><a class="header" href="#3-dependency-management">3. Dependency Management</a></h3>
-<p>Zyx maintains a <strong>minimal dependency profile</strong>:</p>
-<ul>
-<li><strong>Core dependencies</strong>: Only essential libraries like <code>nanoserde</code> for config parsing and <code>libloading</code> for dynamic backend loading.</li>
-<li><strong>Optional features</strong>: Big dependencies (e.g., WGPU backend) are available as features that can be enabled when needed.</li>
-<li><strong>No dependency bloat</strong>: Zyx avoids unnecessary dependencies that could increase binary size or complexity.</li>
-</ul>
-<p>This approach offers several advantages:</p>
-<ul>
-<li><strong>Reduced security surface</strong>: Fewer dependencies mean fewer potential vulnerabilities</li>
-<li><strong>Simpler builds</strong>: Minimal dependency chain reduces compilation issues</li>
-<li><strong>Smaller binaries</strong>: No transitive dependencies bloating your final executable</li>
-</ul>
-<h3 id="4-tensor-design-without-generics"><a class="header" href="#4-tensor-design-without-generics">4. Tensor Design Without Generics</a></h3>
-<p>Zyx's tensor implementation avoids pervasive generics, which offers several benefits:</p>
-<ul>
-<li><strong>No type parameter propagation</strong>: Unlike systems that require generic parameters throughout the codebase, Zyx's tensors have fixed types.</li>
-<li><strong>Simpler API</strong>: Developers don't need to manage complex generic type signatures across operations.</li>
-<li><strong>Easier integration</strong>: Tensors can be used in more contexts without requiring generic type alignment.</li>
-</ul>
-<p>This design choice has practical implications:</p>
-<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
-</span><span class="boring">fn main() {
-</span>// Zyx tensor operation
-impl CustomModel {
-    fn forward(&amp;self, x: &amp;Tensor) -&gt; Tensor {
-        let x = self.layer1.forward(x).unwrap().relu();
-        self.layer2.forward(&amp;x).unwrap()
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="the-tensor"><a class="header" href="#the-tensor">The Tensor</a></h1>
+<p>The <code>Tensor</code> is the primary user-facing type in zyx. It is designed to be a lightweight handle — only <strong>4 bytes</strong>.</p>
+<pre><code class="language-rust ignore">pub struct Tensor {
+    pub(super) id: TensorId,  // u32 index into the graph slab
+}</code></pre>
+<h2 id="design-choices"><a class="header" href="#design-choices">Design Choices</a></h2>
+<h3 id="why-4-bytes"><a class="header" href="#why-4-bytes">Why 4 Bytes?</a></h3>
+<p>Most ML frameworks have heavyweight tensor objects. PyTorch’s <code>Tensor</code> is a <code>TensorImpl*</code> with shape, stride, dtype, device, storage, and autograd metadata — easily 100+ bytes. In zyx, all metadata lives in the <strong>graph</strong>, not the tensor handle. The tensor is just an index.</p>
+<h3 id="reference-counting"><a class="header" href="#reference-counting">Reference Counting</a></h3>
+<p>Tensors are reference-counted via the global <code>RT</code> (a <code>Mutex&lt;Runtime&gt;</code>):</p>
+<pre><code class="language-rust ignore">impl Clone for Tensor {
+    fn clone(&amp;self) -&gt; Self {
+        RT.lock().retain(self.id);
+        Tensor { id: self.id }
     }
+}</code></pre>
+<p>If we used <code>Arc</code> instead, we would still need <code>Mutex</code> for the <code>Runtime</code> — <code>Tensor(id, Arc&lt;Mutex&lt;Runtime&gt;&gt;)</code>. The current approach avoids the <code>Arc</code> overhead and keeps <code>Tensor</code> at 4 bytes. Since every tensor operation already locks the runtime to append a graph node, there’s no additional lock contention from reference counting.</p>
+<h3 id="lazy-evaluation"><a class="header" href="#lazy-evaluation">Lazy Evaluation</a></h3>
+<p>Tensor operations don’t compute anything. They build graph nodes:</p>
+<pre class="playground"><code class="language-rust"><span class="boring">extern crate zyx;
+</span><span class="boring">use zyx::{DType, Tensor, ZyxError};
+</span><span class="boring">fn main() -&gt; Result&lt;(), ZyxError&gt; {
+</span>let x = Tensor::randn([1024, 1024], DType::F32)?;
+let y = x.relu();
+let z = y.tanh();
+
+// This triggers the whole pipeline:
+Tensor::realize(vec![&amp;z])?;
+<span class="boring">Ok(())
+</span><span class="boring">}</span></code></pre>
+<p>The key insight: since operations just append to the graph, repeated graph patterns are automatically recognized and optimized. A training loop that builds the same graph structure every iteration gets the benefit of caching without explicit compilation steps.</p>
+<h3 id="construction-methods"><a class="header" href="#construction-methods">Construction Methods</a></h3>
+<p>Tensors can be created from:</p>
+<pre class="playground"><code class="language-rust"><span class="boring">extern crate zyx;
+</span><span class="boring">use zyx::{DType, Tensor, ZyxError};
+</span><span class="boring">fn main() -&gt; Result&lt;(), ZyxError&gt; {
+</span>let t = Tensor::from([1.0f32, 2.0, 3.0]);
+let t = Tensor::randn([1024, 1024], DType::F32)?;
+let t = Tensor::uniform([1024, 1024], -1.0f32..1.0)?;
+let ones = Tensor::ones([3, 3], DType::F32);
+let zeros = Tensor::zeros([3, 3], DType::F32);
+<span class="boring">Ok(())
+</span><span class="boring">}</span></code></pre>
+<p>This also works from files on disk (lazy loading).</p>
+<h3 id="the-immutability-rule"><a class="header" href="#the-immutability-rule">The Immutability Rule</a></h3>
+<p>Tensors are <strong>immutable</strong> — there is no in-place mutation:</p>
+<pre class="playground"><code class="language-rust"><span class="boring">extern crate zyx;
+</span><span class="boring">use zyx::{DType, Tensor, ZyxError};
+</span><span class="boring">fn main() -&gt; Result&lt;(), ZyxError&gt; {
+</span>let x = Tensor::randn([3, 3], DType::F32)?;
+let x_plus_one = &amp;x + 1.0;  // new tensor, no mutation
+<span class="boring">Ok(())
+</span><span class="boring">}</span></code></pre>
+<p>This makes autograd simpler (no mutation to track) and eliminates backpropagation errors from in-place modifications.</p>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="the-graph"><a class="header" href="#the-graph">The Graph</a></h1>
+<p>The graph is the heart of zyx. Every operation a user performs builds a node in this graph. The graph is shared between computation and autograd — there is only one.</p>
+<h2 id="data-structure"><a class="header" href="#data-structure">Data Structure</a></h2>
+<p>The graph is stored in the <code>Runtime</code>:</p>
+<pre><code class="language-rust ignore">pub struct Runtime {
+    pub graph: Graph,
+    // ...
 }
 
-// Hypothetical generic-based approach
-impl&lt;T: DType, B: Backend&gt; CustomModel&lt;T, B&gt; {
-    fn forward&lt;S: Shape&gt;(&amp;self, x: &amp;Tensor&lt;S, T, B&gt;) -&gt; Tensor&lt;S, T, B&gt; {
-        let x = self.layer1.forward(x).unwrap().relu();
-        self.layer2.forward(&amp;x).unwrap()
-    }
+pub struct Graph {
+    pub nodes: Slab&lt;TensorId, (u32, Node)&gt;,
+    pub gradient_tape: Option&lt;Set&lt;TensorId&gt;&gt;,
+    pub shapes: Map&lt;TensorId, Box&lt;[Dim]&gt;&gt;,
+    // ...
+}</code></pre>
+<h3 id="slab-allocator"><a class="header" href="#slab-allocator">Slab Allocator</a></h3>
+<p>The <code>Slab&lt;TensorId, (u32, Node)&gt;</code> is a dense array with free-list tracking. Insertion is O(1) amortized, and iteration is cache-friendly. Each node is a <code>(reference_count, Node)</code> pair stored inline.</p>
+<p>A <code>TensorId</code> is just a <code>u32</code> index into this slab. This is why <code>Tensor</code> is 4 bytes — it’s an index, not a pointer.</p>
+<h3 id="node-types"><a class="header" href="#node-types">Node Types</a></h3>
+<p>The graph opset was derived from tinygrad, with changes to make it even smaller. By stacking these types, zyx can express ALL linear algebra operations and ALL PyTorch ops:</p>
+<pre><code class="language-rust ignore">pub enum Node {
+    Const { value: Constant },
+    Leaf { dtype: DType },
+    Expand { x: TensorId },
+    Permute { x: TensorId },
+    Reshape { x: TensorId },
+    Pad { x: TensorId },
+    Reduce { x: TensorId, rop: BOp },
+    Cast { x: TensorId, dtype: DType },
+    Unary { x: TensorId, uop: UOp },
+    Binary { x: TensorId, y: TensorId, bop: BOp },
+    ToDevice { x: TensorId, device: DeviceId },
+    Custom(Box&lt;CustomKernel&gt;),
+}</code></pre>
+<h2 id="lifecycle-with-gradienttape"><a class="header" href="#lifecycle-with-gradienttape">Lifecycle with GradientTape</a></h2>
+<p>Without a gradient tape, realized graph nodes are immediately released:</p>
+<pre><code class="language-text">realize(x) → compute x → replace x's node with Leaf → release x's inputs
+</code></pre>
+<p>With a gradient tape alive, realized nodes that the tape references are preserved:</p>
+<pre><code class="language-text">realize(x) with tape → compute x → if tape.contains(x), keep node → else replace with Leaf
+</code></pre>
+<p>This is how autograd works on the same graph: the gradient tape prevents node deletion, so when you later call <code>tape.gradient()</code>, it can traverse the graph backward.</p>
+<h2 id="graph-size"><a class="header" href="#graph-size">Graph Size</a></h2>
+<p>The graph is designed to stay small. With ~16 bytes per node + 4 bytes reference count, a training iteration with 10,000 operations costs ~200 KB. When the tape is dropped at the end of each iteration, the graph shrinks back to baseline.</p>
+<h2 id="debugging-the-graph"><a class="header" href="#debugging-the-graph">Debugging the Graph</a></h2>
+<p>Inspect the graph at runtime:</p>
+<pre><code class="language-rust ignore">let dot = Tensor::plot_dot_graph(&amp;[&amp;output]);</code></pre>
+<p>Or with environment variables:</p>
+<pre><code class="language-bash">ZYX_DEBUG=8 cargo run  # prints kernel IR during compilation
+</code></pre>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="the-kernelizer"><a class="header" href="#the-kernelizer">The Kernelizer</a></h1>
+<p>The kernelizer (<code>kernelize.rs</code>) is the bridge between the high-level tensor graph and the low-level kernel IR. It traverses the computation graph and fuses compatible nodes into kernels.</p>
+<h2 id="when-the-kernelizer-runs"><a class="header" href="#when-the-kernelizer-runs">When the Kernelizer Runs</a></h2>
+<p>The kernelizer is invoked during <code>realize()</code>:</p>
+<pre><code class="language-rust ignore">pub fn realize(x: &amp;[&amp;Tensor]) -&gt; Result&lt;(), ZyxError&gt; {
+    // 1. Lock the runtime
+    // 2. Identify which tensors need evaluation
+    // 3. Topological sort based on reference counts
+    // 4. Call kernelizer to build kernels
+    // 5. Optimize and compile each kernel
+    // 6. Execute on device
+    // 7. Release unused nodes
+}</code></pre>
+<h2 id="the-fusion-rule"><a class="header" href="#the-fusion-rule">The Fusion Rule</a></h2>
+<p>The kernelizer’s core logic is surprisingly simple:</p>
+<blockquote>
+<p><strong>A kernel boundary is created when a Reduce node is used by more than one other kernel.</strong></p>
+</blockquote>
+<p>This means:</p>
+<ul>
+<li>A chain of element-wise ops (unary, binary) always fuses into one kernel</li>
+<li>View ops (reshape, expand, permute, pad) are always free — they become index arithmetic</li>
+<li>A reduce that feeds multiple downstream ops creates a boundary because each consumer needs the reduced result</li>
+<li>A reduce that feeds only one consumer stays fused</li>
+</ul>
+<p>Additional heuristics add boundaries when a kernel would be “too unwieldy”:</p>
+<ul>
+<li>Kernels with too many parameters get split</li>
+<li>Very large traversal depth triggers a split</li>
+</ul>
+<h2 id="how-fusion-works"><a class="header" href="#how-fusion-works">How Fusion Works</a></h2>
+<p>The kernelizer performs a bottom-up traversal of the graph:</p>
+<pre><code class="language-text">Input tensors (already realized)
+        │
+        ▼
+    Node A  ──┐
+              ├──► Kernel 1 (fused A + B)
+    Node B  ──┘
+        │
+        ▼
+    Node C (Reduce) ──► Kernel 2 (reduce only)
+        │
+        ├──► Node D ──┐
+        │             ├──► Kernel 3 (fused D + E)
+        └──► Node E ──┘
+</code></pre>
+<p>Node C is a reduce used by both Node D and Node E, so it gets its own kernel. Nodes A and B are element-wise ops feeding each other, so they fuse into one kernel.</p>
+<h2 id="the-kernelizer-struct"><a class="header" href="#the-kernelizer-struct">The Kernelizer Struct</a></h2>
+<pre><code class="language-rust ignore">struct Kernelizer&lt;'a&gt; {
+    must_keep_nodes: Set&lt;TensorId&gt;,
+    pending_stores: Set&lt;TensorId&gt;,
+    realized_nodes: Set&lt;TensorId&gt;,
+    kernels: Slab&lt;KMKernelId, Kernel&gt;,
+    visited: Map&lt;TensorId, (KMKernelId, OpId)&gt;,
+    rcs: Map&lt;TensorId, u32&gt;,
+    graph: &amp;'a Graph,
+    // ...
+}</code></pre>
+<p>The <code>visited</code> map tracks which graph nodes have been converted to kernel ops. When a graph node is already in <code>visited</code>, the kernelizer uses the existing kernel result instead of recomputing — this is how shared subgraphs are handled.</p>
+<h2 id="building-kernel-ops"><a class="header" href="#building-kernel-ops">Building Kernel Ops</a></h2>
+<p>Each graph node type maps to kernel IR operations:</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Graph Node</th><th>Kernel IR</th></tr>
+</thead>
+<tbody>
+<tr><td><code>Const</code></td><td><code>Op::Const</code></td></tr>
+<tr><td><code>Leaf</code></td><td><code>Op::Define</code> (global memory)</td></tr>
+<tr><td><code>Unary</code></td><td><code>Op::Unary</code></td></tr>
+<tr><td><code>Binary</code></td><td><code>Op::Binary</code> or <code>Op::Mad</code></td></tr>
+<tr><td><code>Reduce</code></td><td><code>Op::Reduce</code></td></tr>
+<tr><td><code>Reshape</code></td><td><code>Op::Move</code> (view unfolding)</td></tr>
+<tr><td><code>Expand</code></td><td><code>Op::Move</code> (view unfolding)</td></tr>
+<tr><td><code>Permute</code></td><td><code>Op::Move</code> (view unfolding)</td></tr>
+<tr><td><code>Pad</code></td><td><code>Op::Move</code> (view unfolding)</td></tr>
+</tbody>
+</table>
+</div>
+<p>View operations (reshape, expand, permute, pad) are unfolded into index arithmetic rather than becoming separate ops. This is how they become “free” — the index computation is inlined into the load/store operations.</p>
+<h2 id="kernel-caching"><a class="header" href="#kernel-caching">Kernel Caching</a></h2>
+<pre><code class="language-rust ignore">pub struct KernelCache {
+    pub cache: Map&lt;KernelId, Kernel&gt;,
+}</code></pre>
+<p>After a kernel is built and optimized, its hash is computed. If the same kernel was compiled before, the cached compiled program is reused. The cache persists across realize() calls, so repeated graph patterns (like training loop iterations) hit the cache on the second iteration.</p>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="the-kernel-ir"><a class="header" href="#the-kernel-ir">The Kernel IR</a></h1>
+<p>The kernel IR is the intermediate representation used for all computation kernels. It is a doubly-linked list of 32-byte <code>OpNode</code>s stored in an arena (the <code>Slab</code> allocator).</p>
+<h2 id="data-structure-1"><a class="header" href="#data-structure-1">Data Structure</a></h2>
+<pre><code class="language-rust ignore">pub struct Kernel {
+    pub ops: Slab&lt;OpId, OpNode&gt;,
+    pub head: OpId,
+    pub tail: OpId,
+    // ...
 }
-<span class="boring">}</span></code></pre></pre>
-<h2 id="practical-usage-scenarios"><a class="header" href="#practical-usage-scenarios">Practical Usage Scenarios</a></h2>
-<h3 id="general-linear-algebra-library"><a class="header" href="#general-linear-algebra-library">General Linear Algebra Library</a></h3>
-<p>Zyx's design allows it to function as a general-purpose linear algebra library:</p>
-<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
-</span><span class="boring">fn main() {
-</span>use zyx::{Tensor, DType};
 
-// Basic tensor operations
-let a = Tensor::from([1.0, 2.0, 3.0]);
-let b = Tensor::from([4.0, 5.0, 6.0]);
-let c = a + b;  // Element-wise addition
-let d = c * 2.0;  // Scalar multiplication
-<span class="boring">}</span></code></pre></pre>
-<p>This example demonstrates how Zyx can be used for standard tensor operations without any framework-specific boilerplate.</p>
-<h3 id="custom-training-loop-integration"><a class="header" href="#custom-training-loop-integration">Custom Training Loop Integration</a></h3>
-<p>The library approach makes custom modules and training the default:</p>
-<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
-</span><span class="boring">fn main() {
-</span>use zyx::{Tensor, DType, GradientTape};
-use zyx_nn::{Linear, Module};
-use zyx_optim::SGD;
+pub struct OpNode {
+    pub prev: OpId,  // u32
+    pub next: OpId,  // u32
+    pub op: Op,      // 24 bytes (enum + payload)
+}</code></pre>
+<p>The <code>Slab&lt;OpId, OpNode&gt;</code> is a <code>Vec&lt;OpNode&gt;</code> with a free-list. <code>OpId</code> is a <code>u32</code> index — random access is O(1).</p>
+<h2 id="unfolding"><a class="header" href="#unfolding">Unfolding</a></h2>
+<p>Before any optimization passes run, the kernel IR is <strong>unfolded</strong> — <code>LoadView</code>, <code>StoreView</code>, and <code>Move</code> ops are converted to direct index arithmetic (<code>Load</code>, <code>Store</code> with computed indices). After unfolding, the IR is purely linear with no heap-allocating ops. All ops are fixed-size and live in the arena.</p>
+<p>The IR is in SSA form, except for <code>Loop</code>, <code>If</code>, and <code>Define</code> ops (which can carry mutable state).</p>
+<h2 id="op-variants"><a class="header" href="#op-variants">Op Variants</a></h2>
+<h3 id="arithmetic"><a class="header" href="#arithmetic">Arithmetic</a></h3>
+<pre><code class="language-rust ignore">Op::Cast { x: OpId, dtype: DType }
+Op::Unary { x: OpId, uop: UOp }
+Op::Binary { x: OpId, y: OpId, bop: BOp }
+Op::Mad { x: OpId, y: OpId, z: OpId }</code></pre>
+<h3 id="memory"><a class="header" href="#memory">Memory</a></h3>
+<pre><code class="language-rust ignore">Op::Define { dtype, scope, ro, len }
+Op::Load { src, index, layout }
+Op::Store { dst, x, index, layout }
+Op::Const(Constant)</code></pre>
+<h3 id="control-flow"><a class="header" href="#control-flow">Control Flow</a></h3>
+<pre><code class="language-rust ignore">Op::Loop { len: Dim }
+Op::EndLoop
+Op::If { condition: OpId }
+Op::EndIf
+Op::Barrier { scope }</code></pre>
+<h3 id="indexing"><a class="header" href="#indexing">Indexing</a></h3>
+<pre><code class="language-rust ignore">Op::Index { len, scope, axis }</code></pre>
+<h3 id="hardware-accelerators"><a class="header" href="#hardware-accelerators">Hardware Accelerators</a></h3>
+<pre><code class="language-rust ignore">Op::Wmma { dims, layout, dtype, a, b, c }</code></pre>
+<h3 id="vectorization"><a class="header" href="#vectorization">Vectorization</a></h3>
+<pre><code class="language-rust ignore">Op::Vectorize { ops: Vec&lt;OpId&gt; }
+Op::Devectorize { vec: OpId, idx }</code></pre>
+<h3 id="view-before-unfolding"><a class="header" href="#view-before-unfolding">View (before unfolding)</a></h3>
+<pre><code class="language-rust ignore">Op::Move { x: OpId, mop: Box&lt;MoveOp&gt; }
+Op::Reduce { x: OpId, rop, n_axes }</code></pre>
+<h2 id="memory-layouts-and-scopes"><a class="header" href="#memory-layouts-and-scopes">Memory Layouts and Scopes</a></h2>
+<pre><code class="language-rust ignore">pub enum MemLayout {
+    Scalar,
+    Vector(u8),
+    Tile { x, y, stride },
+}
+
+pub enum Scope {
+    Global,
+    Local,
+    Register,
+}</code></pre>
+<h2 id="backend-codegen"><a class="header" href="#backend-codegen">Backend Codegen</a></h2>
+<p>Because the IR is designed for it, backend codegen is trivial:</p>
+<ol>
+<li><strong>deSSA</strong> — resolve SSA references to physical registers/memory</li>
+<li><strong>Linear pass</strong> — walk the op linked list once, emitting instructions</li>
+</ol>
+<p>No further optimizations, no complex lowering.</p>
+<h2 id="debugging"><a class="header" href="#debugging">Debugging</a></h2>
+<p>Set <code>ZYX_DEBUG=8</code> to print the kernel IR:</p>
+<pre><code class="language-text">r18: i32 = def global, len=4
+r44: u32 = gidx0    // 0..=0
+r19: i32 = r18[r1]  // 0..=3 load
+</code></pre>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="optimization-passes"><a class="header" href="#optimization-passes">Optimization Passes</a></h1>
+<p>Optimization passes operate on the linear kernel IR. They are divided into <strong>always-on passes</strong> (run before every compilation) and <strong>autotuned passes</strong> (searched at runtime for the best variant).</p>
+<p>The design goal of the small opset is that new passes are easy to write. There is no fixed number zyx aims to have — passes will be added over time as performance opportunities are identified.</p>
+<h2 id="always-on-optimizations"><a class="header" href="#always-on-optimizations">Always-On Optimizations</a></h2>
+<p>These run in a fixed pipeline before every kernel compilation:</p>
+<pre><code class="language-rust ignore">pub fn run_always_on_optimizations(&amp;mut self) {
+    self.constant_folding();
+    self.move_constants_to_beginning();
+    self.loop_invariant_code_motion();
+    self.common_subexpression_elimination();
+    self.fold_accs();
+    self.delete_empty_loops();
+    self.dead_code_elimination();
+}</code></pre>
+<h3 id="constant-folding"><a class="header" href="#constant-folding">Constant Folding</a></h3>
+<p>Evaluates expressions where all inputs are constants. For example, <code>2 + 3</code> becomes <code>5</code> and <code>sin(0.0)</code> becomes <code>0.0</code>.</p>
+<h3 id="motion-of-constants-to-beginning"><a class="header" href="#motion-of-constants-to-beginning">Motion of Constants to Beginning</a></h3>
+<p>Moves all constant definitions to the start of the kernel. This creates better fusion opportunities and simplifies register allocation.</p>
+<h3 id="loop-invariant-code-motion-licm"><a class="header" href="#loop-invariant-code-motion-licm">Loop-Invariant Code Motion (LICM)</a></h3>
+<p>Hoists operations that produce the same value on every iteration to before the loop.</p>
+<h3 id="common-subexpression-elimination-cse"><a class="header" href="#common-subexpression-elimination-cse">Common Subexpression Elimination (CSE)</a></h3>
+<p>Reuses results of identical subexpressions by detecting them through hashing.</p>
+<h3 id="accumulator-folding"><a class="header" href="#accumulator-folding">Accumulator Folding</a></h3>
+<p>Simplifies accumulator update patterns for more efficient reduction code generation.</p>
+<h3 id="delete-empty-loops"><a class="header" href="#delete-empty-loops">Delete Empty Loops</a></h3>
+<p>Removes loops with zero iterations.</p>
+<h3 id="dead-code-elimination"><a class="header" href="#dead-code-elimination">Dead Code Elimination</a></h3>
+<p>Removes ops whose results are never used. This is always the final pass — it ensures backends never receive unreferenced ops.</p>
+<h2 id="autotuned-passes"><a class="header" href="#autotuned-passes">Autotuned Passes</a></h2>
+<p>The autotune system clones the kernel, applies optimization variants, and evaluates each separately. No egraphs — just clone, transform, hash, evaluate. The cost function can evaluate <strong>thousands of variants per second</strong>.</p>
+<pre><code class="language-rust ignore">const AVAILABLE_OPTIMIZATIONS: [OptConfigFn; 7] = [
+    Kernel::opt_reassociate_commutative,
+    Kernel::opt_split_global_to_local,
+    Kernel::opt_upcast,
+    Kernel::opt_register_tiling,
+    Kernel::opt_tiled_reduce,
+    Kernel::opt_split_loop,
+    Kernel::opt_licm,
+];</code></pre>
+<h3 id="reassociation"><a class="header" href="#reassociation">Reassociation</a></h3>
+<p>Reorders commutative operations to create more fusion opportunities.</p>
+<h3 id="split-global-to-local"><a class="header" href="#split-global-to-local">Split Global to Local</a></h3>
+<p>Adjusts block and thread dimensions for better memory access patterns. For example, a kernel with <code>block_dim = 1024, thread_dim = 1</code> becomes <code>block_dim = 32, thread_dim = 32</code>. This enables coalesced memory access on GPU.</p>
+<h3 id="upcast-vectorization"><a class="header" href="#upcast-vectorization">Upcast Vectorization</a></h3>
+<p>Expands scalar operations to vector operations (e.g., 4-wide SIMD on CPU, wider on GPU).</p>
+<h3 id="register-tiling"><a class="header" href="#register-tiling">Register Tiling</a></h3>
+<p>Tiles operations to keep intermediate values in registers instead of spilling to global memory.</p>
+<h3 id="tiled-reduction"><a class="header" href="#tiled-reduction">Tiled Reduction</a></h3>
+<p>Implements multi-stage reduction: threads reduce into registers, workgroups reduce into local memory, then global atomics.</p>
+<h3 id="loop-splitting"><a class="header" href="#loop-splitting">Loop Splitting</a></h3>
+<p>Splits large loops into chunks for better register pressure and instruction-level parallelism.</p>
+<h3 id="loop-invariant-code-motion"><a class="header" href="#loop-invariant-code-motion">Loop-Invariant Code Motion</a></h3>
+<p>The LICM pass also participates in autotuning as a tunable variant (when to hoist vs. when to keep inside the loop).</p>
+<h2 id="how-autotuning-searches"><a class="header" href="#how-autotuning-searches">How Autotuning Searches</a></h2>
+<ol>
+<li>Start with the initial kernel and run always-on optimizations</li>
+<li>Apply ONE optimization variant and run always-on optimizations</li>
+<li>Hash the kernel — skip if already visited</li>
+<li>Evaluate with cost function (or launch and time)</li>
+<li>Repeat by combining with existing optimization sequences</li>
+<li>Select the best variant based on actual timing or cost estimate</li>
+</ol>
+<h2 id="correctness-guarantee"><a class="header" href="#correctness-guarantee">Correctness Guarantee</a></h2>
+<blockquote>
+<p>No optimization is needed for tests to pass. All tests must pass no matter which sequence of optimizations (including empty) is applied.</p>
+</blockquote>
+<p>If an optimization breaks a test, the optimization is buggy — not the sequence ordering. The verify pass (<code>verify.rs</code>) checks internal IR consistency in debug mode.</p>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="backend-system"><a class="header" href="#backend-system">Backend System</a></h1>
+<p>Zyx supports multiple hardware backends through an enum dispatch system. All backends are compiled into the library and selected at runtime.</p>
+<h2 id="enum-dispatch"><a class="header" href="#enum-dispatch">Enum Dispatch</a></h2>
+<p>Backends use enums instead of trait objects (<code>dyn Backend</code>). Trait objects would require downcasting to access backend-specific functionality, which is ugly in Rust.</p>
+<pre><code class="language-rust ignore">pub enum Device {
+    C(CDevice),
+    CUDA(CUDADevice),
+    OpenCL(OpenCLDevice),
+    Vulkan(VulkanDevice),
+    WGPU(WGPUDevice),
+    HIP(HIPDevice),
+    Dummy(DummyDevice),
+}
+
+pub enum MemoryPool {
+    Host(HostMemoryPool),
+    Disk(DiskMemoryPool),
+    C(CMemoryPool),
+    CUDA(CUDAMemoryPool),
+    OpenCL(OpenCLMemoryPool),
+    Vulkan(VulkanMemoryPool),
+    WGPU(WGPUMemoryPool),
+    HIP(HIPMemoryPool),
+    Dummy(DummyMemoryPool),
+}</code></pre>
+<p>Each method matches on the variant and delegates:</p>
+<pre><code class="language-rust ignore">impl Device {
+    pub fn compile(&amp;self, kernel: &amp;Kernel, debug: DebugMask) -&gt; Result&lt;ProgramId, ZyxError&gt; {
+        match self {
+            Device::C(dev) =&gt; dev.compile(kernel, debug),
+            Device::CUDA(dev) =&gt; dev.compile(kernel, debug),
+            // ...
+        }
+    }
+}</code></pre>
+<h2 id="backend-codegen-is-trivial"><a class="header" href="#backend-codegen-is-trivial">Backend Codegen is Trivial</a></h2>
+<p>The optimization passes do the hard work. Backend codegen is:</p>
+<ol>
+<li><strong>deSSA</strong> — resolve SSA references to physical registers or memory locations</li>
+<li><strong>Linear pass</strong> — walk the op linked list once, emitting target instructions</li>
+</ol>
+<p>No further optimizations, no complex backend-specific lowering. The IR emits directly to the target language.</p>
+<h2 id="initialization"><a class="header" href="#initialization">Initialization</a></h2>
+<p>Backends are initialized at startup via <code>initialize_backends()</code>:</p>
+<pre><code class="language-rust ignore">pub fn initialize_backends(config, memory_pools, devices, debug) {
+    host::initialize_pool(memory_pools, debug);
+    disk::initialize_pool(memory_pools, debug);
+    dummy::initialize_device(&amp;config.dummy, ...);
+    c::initialize_device(&amp;config.c, ...);
+    cuda::initialize_device(&amp;config.cuda, ...);
+    opencl::initialize_device(&amp;config.opencl, ...);
+    hip::initialize_device(&amp;config.hip, ...);
+    vulkan::initialize_device(&amp;config.vulkan, ...);
+    wgpu::initialize_device(&amp;config.wgpu, ...);
+    #[cfg(feature = "tenstorrent")]
+    tenstorrent::initialize_device(&amp;config.tenstorrent, ...);
+}</code></pre>
+<p>Each backend tries to initialize. Failure (missing driver, no hardware) causes it to be skipped silently. If all backends fail, the program exits with an error.</p>
+<h2 id="current-backends"><a class="header" href="#current-backends">Current Backends</a></h2>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Backend</th><th>Source</th><th>Target</th><th>Runtime</th></tr>
+</thead>
+<tbody>
+<tr><td>C</td><td><code>c.rs</code></td><td>C99 (compiled to .so)</td><td>Clang/GCC</td></tr>
+<tr><td>CUDA</td><td><code>cuda.rs</code></td><td>PTX</td><td>CUDA driver via <code>libloading</code></td></tr>
+<tr><td>HIP</td><td><code>hip.rs</code></td><td>HIP</td><td>ROCm via <code>libloading</code></td></tr>
+<tr><td>OpenCL</td><td><code>opencl.rs</code></td><td>OpenCL C</td><td>OpenCL runtime via <code>libloading</code></td></tr>
+<tr><td>Vulkan</td><td><code>vulkan.rs</code></td><td>SPIR-V</td><td>Vulkan via <code>ash</code> crate</td></tr>
+<tr><td>WGPU</td><td><code>wgpu.rs</code></td><td>WGSL</td><td>WGPU (feature: <code>wgpu</code>)</td></tr>
+<tr><td>Dummy</td><td><code>dummy.rs</code></td><td>—</td><td>No hardware needed (fake device)</td></tr>
+</tbody>
+</table>
+</div>
+<p>All backends except WGPU and Tenstorrent are compiled in by default. WGPU requires <code>--features wgpu</code>. Tenstorrent requires <code>--features tenstorrent</code>.</p>
+<h2 id="device-configuration-in-config-file"><a class="header" href="#device-configuration-in-config-file">Device Configuration in Config File</a></h2>
+<p>Each backend can be enabled/disabled and configured:</p>
+<pre><code class="language-json">{
+    "c": { "enabled": true },
+    "cuda": { "device_ids": [0] },
+    "opencl": { "platform_ids": [] },
+    "dummy": { "enabled": false }
+}
+</code></pre>
+<p>If a section is missing or the config file doesn’t exist, defaults are used (most backends enabled).</p>
+<h2 id="device-selection"><a class="header" href="#device-selection">Device Selection</a></h2>
+<p>The scheduler picks a device at realize time:</p>
+<ol>
+<li>If <code>DeviceId::AUTO</code>, sort devices by free compute capacity (descending)</li>
+<li>If a specific device is requested, try it first</li>
+<li>Pick the first device with enough free memory for all required tensors</li>
+<li>If no device has enough memory, return an allocation error</li>
+</ol>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="autograd"><a class="header" href="#autograd">Autograd</a></h1>
+<p>Zyx implements automatic differentiation through an explicit <code>GradientTape</code>. Unlike other frameworks, there is no separate autograd graph — it uses the <strong>same graph</strong> as computation.</p>
+<h2 id="the-key-insight"><a class="header" href="#the-key-insight">The Key Insight</a></h2>
+<p>In most frameworks, autograd requires a separate graph because the eager execution engine discards intermediate results. Zyx’s lazy graph keeps all nodes alive until <code>realize()</code> is called, and the gradient tape simply prevents their deletion.</p>
+<h2 id="gradienttape-api"><a class="header" href="#gradienttape-api">GradientTape API</a></h2>
+<pre class="playground"><code class="language-rust"><span class="boring">extern crate zyx;
+</span><span class="boring">use zyx::{DType, GradientTape, Tensor, ZyxError};
+</span><span class="boring">fn main() -&gt; Result&lt;(), ZyxError&gt; {
+</span>let tape = GradientTape::new();
+let x = Tensor::randn([2, 3], DType::F32)?;
+let y = Tensor::randn([2, 3], DType::F32)?;
+let z = x.relu() * y.tanh();
+
+let grads = tape.gradient(&amp;z, vec![&amp;x, &amp;y]);
+// grads[0] = gradient of z w.r.t. x
+// grads[1] = gradient of z w.r.t. y
+<span class="boring">Ok(())
+</span><span class="boring">}</span></code></pre>
+<p>The <code>gradient()</code> method consumes the tape; use <code>gradient_persistent()</code> to keep it alive for higher-order derivatives.</p>
+<h2 id="no-requires_grad"><a class="header" href="#no-requires_grad">No “requires_grad”</a></h2>
+<p>There’s no <code>requires_grad</code> flag on tensors. The tape records the entire graph; when you call <code>gradient()</code>, you specify which tensors you want gradients for:</p>
+<pre class="playground"><code class="language-rust"><span class="boring">extern crate zyx;
+</span><span class="boring">use zyx::{DType, GradientTape, Tensor, ZyxError};
+</span><span class="boring">fn main() -&gt; Result&lt;(), ZyxError&gt; {
+</span>let tape = GradientTape::new();
+let x = Tensor::randn([2, 3], DType::F32)?;
+let y = Tensor::randn([2, 3], DType::F32)?;
+let z = y.exp();
+
+let grads = tape.gradient(&amp;z, vec![&amp;x]);  // None — z doesn't depend on x
+<span class="boring">Ok(())
+</span><span class="boring">}</span></code></pre>
+<p>This is more flexible — you don’t need to decide at tensor creation time which tensors will be differentiated.</p>
+<h2 id="higher-order-derivatives"><a class="header" href="#higher-order-derivatives">Higher-Order Derivatives</a></h2>
+<p>Using <code>gradient_persistent()</code>, the tape stays alive and you can compute higher-order derivatives:</p>
+<pre><code class="language-rust ignore">// Higher-order derivatives example: currently blocked by
+// an autograd subtraction overflow bug (autograd.rs:94).</code></pre>
+<h2 id="memory-efficiency"><a class="header" href="#memory-efficiency">Memory Efficiency</a></h2>
+<p>Since the graph is lazy, intermediate tensors needed for backpropagation are <strong>not held in memory</strong> until <code>realize()</code> is called for the gradient computation. The gradient tape stores only <code>TensorId</code> values — not the actual data. When the tape is dropped, all tape-preserved nodes are released.</p>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="module-system"><a class="header" href="#module-system">Module System</a></h1>
+<p>The module system provides a way to group tensors (parameters) into neural network layers. It’s defined by the <code>Module</code> trait and powered by <code>#[derive(Module)]</code>.</p>
+<h2 id="the-module-trait"><a class="header" href="#the-module-trait">The Module Trait</a></h2>
+<pre><code class="language-rust ignore">pub trait Module {
+    fn iter(&amp;self) -&gt; impl Iterator&lt;Item = &amp;Tensor&gt;;
+    fn iter_mut(&amp;mut self) -&gt; impl Iterator&lt;Item = &amp;mut Tensor&gt;;
+    fn iter_tensors(&amp;self) -&gt; impl Iterator&lt;Item = (String, &amp;Tensor)&gt;;
+    fn iter_tensors_mut(&amp;mut self) -&gt; impl Iterator&lt;Item = (String, &amp;mut Tensor)&gt;;
+    fn realize(&amp;self) -&gt; Result&lt;(), ZyxError&gt;;
+    fn save(&amp;self, path: impl AsRef&lt;Path&gt;) -&gt; Result&lt;(), ZyxError&gt;;
+    fn set_params(&amp;mut self, params: &amp;mut HashMap&lt;String, Tensor&gt;);
+}</code></pre>
+<h2 id="derivemodule"><a class="header" href="#derivemodule">#[derive(Module)]</a></h2>
+<p>The <code>#[derive(Module)]</code> macro (from <code>zyx-derive</code>) generates the trait implementation, collecting all tensor fields recursively. This works with nested modules:</p>
+<pre><code class="language-rust ignore">#[derive(Module)]
+struct Linear {
+    weight: Tensor,
+    bias: Tensor,
+}
 
 #[derive(Module)]
-struct CustomModel {
+struct MLP {
     layer1: Linear,
     layer2: Linear,
-    learning_rate: f32,
+    layer3: Linear,
+}</code></pre>
+<h2 id="using-modules"><a class="header" href="#using-modules">Using Modules</a></h2>
+<pre><code class="language-rust ignore">#[derive(Module)]
+struct SimpleNet {
+    linear1: Linear,
+    linear2: Linear,
 }
 
-impl CustomModel {
-    fn forward(&amp;self, x: &amp;Tensor) -&gt; Tensor {
-        let x = self.layer1.forward(x).unwrap().relu();
-        self.layer2.forward(&amp;x).unwrap()
-    }
-}
-
-fn train_step(model: &amp;mut CustomModel, optimizer: &amp;mut SGD, inputs: &amp;Tensor, targets: &amp;Tensor) -&gt; f32 {
+fn train_step(model: &amp;mut SimpleNet, optim: &amp;mut SGD, x: &amp;Tensor, target: &amp;Tensor) -&gt; f32 {
     let tape = GradientTape::new();
-    let outputs = model.forward(inputs);
-    let loss = outputs.mse_loss(targets).unwrap();
-    
-    let gradients = tape.gradient(&amp;loss, model);
-    optimizer.update(model, gradients);
-    
+    let output = model.forward(x);
+    let loss = output.mse_loss(target)?;
+    let grads = tape.gradient(&amp;loss, &amp;model);
+    optim.update(model, grads);
+    Tensor::realize_all()?;
     loss.item()
+}</code></pre>
+<p>The <code>tape.gradient(&amp;loss, &amp;model)</code> call passes the model itself as the sources. The autograd system iterates over <code>model.iter()</code> to get all parameters.</p>
+<h2 id="serialization"><a class="header" href="#serialization">Serialization</a></h2>
+<p>Modules can save and load parameters in safetensors format:</p>
+<pre><code class="language-rust ignore">model.save("model.safetensors")?;
+let params = Tensor::load_safetensors("model.safetensors")?;
+model.set_params(&amp;mut params);</code></pre>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="runtime-and-scheduler"><a class="header" href="#runtime-and-scheduler">Runtime and Scheduler</a></h1>
+<p>The runtime (<code>runtime.rs</code>) is the global state of zyx — the graph, devices, buffers, and kernel cache all live here.</p>
+<h2 id="the-runtime"><a class="header" href="#the-runtime">The Runtime</a></h2>
+<pre><code class="language-rust ignore">pub(crate) struct Runtime {
+    pub graph: Graph,
+    pub devices: Slab&lt;DeviceId, Device&gt;,
+    pub pools: Slab&lt;PoolId, MemoryPool&gt;,
+    pub buffer_map: Map&lt;TensorId, BufferId&gt;,
+    pub events: Map&lt;BTreeSet&lt;BufferId&gt;, Event&gt;,
+    pub kernel_cache: KernelCache,
+    pub rng: Rng,
+    pub autotune_config: AutotuneConfig,
+    pub debug: DebugMask,
+    pub training: bool,
+}</code></pre>
+<p>The runtime is stored in a global <code>Mutex&lt;Runtime&gt;</code>:</p>
+<pre><code class="language-rust ignore">static RT: Mutex&lt;Runtime&gt; = Mutex::new(Runtime::new());</code></pre>
+<p>Every tensor operation locks this mutex, appends a graph node (microseconds), and releases. The lock is never held during computation — only during graph manipulation.</p>
+<h2 id="memory-pools"><a class="header" href="#memory-pools">Memory Pools</a></h2>
+<p>Each backend provides a <code>MemoryPool</code> for allocating device buffers:</p>
+<pre><code class="language-rust ignore">pub enum MemoryPool {
+    Host(HostMemoryPool),
+    Disk(DiskMemoryPool),
+    C(CMemoryPool),
+    CUDA(CUDAMemoryPool),
+    // ...
+}</code></pre>
+<h2 id="the-scheduler-current"><a class="header" href="#the-scheduler-current">The Scheduler (Current)</a></h2>
+<p>The current scheduler (<code>schedule.rs</code>) selects a device for kernel execution by calculating required memory, sorting devices by free compute capacity, and picking the first with enough free memory. It handles cross-device transfers via events.</p>
+<h2 id="new-scheduler-in-development"><a class="header" href="#new-scheduler-in-development">New Scheduler (In Development)</a></h2>
+<p>A new scheduling approach is under development in <code>search.rs</code> and <code>search2.rs</code>. It will use an e-graph-like budget-guided exhaustive fusion enumeration, including costs for memory movement operations — replacing the current simple heuristics with exploration of all fusion configurations within a cost budget.</p>
+<h2 id="async-execution"><a class="header" href="#async-execution">Async Execution</a></h2>
+<p>Events track kernel completion:</p>
+<pre><code class="language-rust ignore">events: Map&lt;BTreeSet&lt;BufferId&gt;, Event&gt;</code></pre>
+<h2 id="lazy-device-io"><a class="header" href="#lazy-device-io">Lazy Device I/O</a></h2>
+<p>Tensors can reference data on disk without loading it:</p>
+<pre><code class="language-rust ignore">let t = Tensor::from_safetensors("model.safetensors", "layer.weight")?;</code></pre>
+<p>The disk pool keeps file offset information. Data is loaded lazily when the tensor needs to be realized on a compute device.</p>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="configuration"><a class="header" href="#configuration">Configuration</a></h1>
+<p>Zyx is configured through a JSON file, environment variables, and API calls.</p>
+<h2 id="config-file"><a class="header" href="#config-file">Config File</a></h2>
+<p>The runtime reads <code>$XDG_CONFIG_HOME/zyx/config.json</code> (or <code>~/.config/zyx/config.json</code> by default):</p>
+<pre><code class="language-json">{
+    "c": { "enabled": true },
+    "cuda": { "device_ids": [0] },
+    "opencl": { "platform_ids": [0] },
+    "autotune": {
+        "enabled": true,
+        "max_configs": 100,
+        "timeout_ms": 5000
+    }
 }
-<span class="boring">}</span></code></pre></pre>
-<p>This demonstrates how Zyx components can be integrated into a custom training workflow without framework constraints.</p>
-<h3 id="memory-efficient-deployment"><a class="header" href="#memory-efficient-deployment">Memory-Efficient Deployment</a></h3>
-<p>Zyx's minimal footprint makes it suitable for deployment scenarios:</p>
-<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
-</span><span class="boring">fn main() {
-</span>// In a deployment context
-use zyx::{Tensor, DType};
-
-fn process_input(input: &amp;[f32]) -&gt; Vec&lt;f32&gt; {
-    let tensor = Tensor::from_slice(input, [1, input.len()]);
-    let processed = tensor.sigmoid();  // Example activation
-    processed.try_into().unwrap()
-}
-<span class="boring">}</span></code></pre></pre>
-<p>This example shows how Zyx can be used in deployment without carrying framework-specific runtime overhead.</p>
-<h2 id="comparative-analysis"><a class="header" href="#comparative-analysis">Comparative Analysis</a></h2>
-<div class="table-wrapper"><table><thead><tr><th>Feature</th><th>Traditional Frameworks</th><th>Zyx Library</th></tr></thead><tbody>
-<tr><td>Graph definition</td><td>Static upfront</td><td>Dynamic, on-demand</td></tr>
-<tr><td>Training loop</td><td>Predefined <code>fit()</code> method</td><td>Custom implementation</td></tr>
-<tr><td>Memory usage</td><td>High (stores intermediates)</td><td>Optimized (tape-based)</td></tr>
-<tr><td>Compilation size</td><td>Large binaries</td><td>Minimal footprint</td></tr>
-<tr><td>Dependency chain</td><td>Complex</td><td>Minimal, focused</td></tr>
-<tr><td>Generic type usage</td><td>Pervasive</td><td>Avoided</td></tr>
-<tr><td>Debugging flexibility</td><td>Limited</td><td>Full control</td></tr>
-<tr><td>Hardware utilization</td><td>Framework-bound</td><td>User-controlled</td></tr>
-</tbody></table>
+</code></pre>
+<h3 id="backend-control"><a class="header" href="#backend-control">Backend Control</a></h3>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Config</th><th>Effect</th></tr>
+</thead>
+<tbody>
+<tr><td><code>"c": { "enabled": true }</code></td><td>Enable CPU backend (off by default)</td></tr>
+<tr><td><code>"cuda": { "device_ids": [] }</code></td><td>Disable all CUDA devices</td></tr>
+<tr><td><code>"opencl": { "platform_ids": [] }</code></td><td>Disable all OpenCL</td></tr>
+<tr><td><code>"dummy": { "enabled": true }</code></td><td>Enable dummy backend</td></tr>
+</tbody>
+</table>
 </div>
-<h2 id="technical-implementation-details"><a class="header" href="#technical-implementation-details">Technical Implementation Details</a></h2>
-<h3 id="lazy-execution-model"><a class="header" href="#lazy-execution-model">Lazy Execution Model</a></h3>
-<p>Zyx's lazy execution model contributes to its lightweight nature:</p>
-<ul>
-<li>Tensors aren't realized until explicitly requested</li>
-<li>Computation graphs are built only when needed</li>
-<li>Memory allocation is optimized through deferred execution</li>
-</ul>
-<p>This approach enables efficient memory usage while maintaining flexibility:</p>
-<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
-</span><span class="boring">fn main() {
-</span>let tape = GradientTape::new();
-let x = Tensor::randn([1024, 1024], DType::F32);
-let y = x.relu();  // Not computed yet
-let z = y * 2.0;    // Still just building the graph
-
-// Computation happens here
-Tensor::realize([&amp;z]).unwrap();
-<span class="boring">}</span></code></pre></pre>
-<h3 id="backend-agnosticism"><a class="header" href="#backend-agnosticism">Backend Agnosticism</a></h3>
-<p>Zyx supports multiple backends without framework-level constraints:</p>
-<ul>
-<li>CUDA (PTX)</li>
-<li>OpenCL</li>
-<li>WGPU (WGSL)</li>
-</ul>
-<p>This allows users to choose hardware acceleration without being tied to framework-specific configuration. Developers don't need to be concerned where models will be deployed. Hardware is abstracted away as much as possible. But we are aware of leaky abstractions. Zyx works similarly to standard language compilers - code written in Rust can be deployed to many hardware targets, but knowledge of hardware quirks is still necessary when optimizing performance.</p>
-<h3 id="error-handling-philosophy"><a class="header" href="#error-handling-philosophy">Error Handling Philosophy</a></h3>
-<p>Zyx's error handling aligns with its library approach:</p>
-<ul>
-<li>Returns <code>Result</code> types for recoverable errors</li>
-<li>Uses <code>panic!</code> only for unrecoverable hardware issues or internal bugs</li>
-<li>Allows integration with both simple and complex error handling systems</li>
-</ul>
-<p>This approach provides flexibility:</p>
-<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
-</span><span class="boring">fn main() {
-</span>// Simple error handling
-let tape = GradientTape::new();
-let x = Tensor::randn([1024, 1024], DType::F32);
-let y = x.relu();  // No Result type needed for non-fallible operations
-
-// Complex error handling
-fn safe_operation() -&gt; Result&lt;(), ZyxError&gt; {
-    let tape = GradientTape::new();
-    let x = Tensor::randn([1024, 1024], DType::F32)?; // Result will be returned on allocation failure
-    let y = x.relu();
-    let z = tape.gradient(&amp;y, &amp;[&amp;x]);
-    Ok(())
-}
-<span class="boring">}</span></code></pre></pre>
-<h2 id="why-this-matters"><a class="header" href="#why-this-matters">Why This Matters</a></h2>
-<h3 id="for-researchers"><a class="header" href="#for-researchers">For Researchers</a></h3>
-<p>The library model enables:</p>
-<ul>
-<li><strong>Rapid experimentation</strong>: Modify code without framework constraints</li>
-<li><strong>Custom optimization strategies</strong>: Implement domain-specific optimizations</li>
-<li><strong>Fine-grained control</strong>: Debug and inspect every computation step</li>
-</ul>
-<h3 id="for-engineers"><a class="header" href="#for-engineers">For Engineers</a></h3>
-<p>When integrating ML into existing systems:</p>
-<ul>
-<li><strong>No architecture changes</strong>: Zyx adapts to your codebase, not vice versa</li>
-<li><strong>Minimal binary impact</strong>: Add ML capabilities without bloating your executable</li>
-<li><strong>Simplified dependency management</strong>: Avoid complex framework dependency trees</li>
-</ul>
-<h3 id="for-deployments"><a class="header" href="#for-deployments">For Deployments</a></h3>
-<p>Zyx's design shines in production:</p>
-<ul>
-<li><strong>Small footprint</strong>: Ideal for edge devices with limited storage</li>
-<li><strong>Flexible execution</strong>: Choose hardware acceleration based on deployment environment</li>
-<li><strong>Simple error handling</strong>: Integrate with your existing error management system</li>
-</ul>
-<h2 id="conclusion"><a class="header" href="#conclusion">Conclusion</a></h2>
-<p>Zyx's library-first design avoids framework-level constraints while offering:</p>
-<ol>
-<li><strong>Flexibility</strong> in code organization</li>
-<li><strong>Minimal compilation footprint</strong> for efficient deployment</li>
-<li><strong>Simplified tensor operations</strong> without generic type propagation</li>
-<li><strong>Custom workflow support</strong> for both research and production environments</li>
-<li><strong>Backend agnosticism</strong> with hardware flexibility</li>
-</ol>
-<p>This approach makes Zyx suitable for:</p>
-<ul>
-<li>Researchers needing custom training dynamics</li>
-<li>Engineers integrating ML or linear algebra routines into existing systems</li>
-<li>Developers working in resource-constrained environments</li>
-</ul>
-<p>The library model enables Zyx to be both powerful and lightweight, providing the best of both worlds for modern machine learning and linear algebra needs.</p>
-<div style="break-before: page; page-break-before: always;"></div><h1 id="mathematical-foundations"><a class="header" href="#mathematical-foundations">Mathematical Foundations</a></h1>
-<p>This chapter provides the essential mathematical background needed for understanding machine learning with Zyx. We'll cover the key mathematical concepts that form the foundation of neural networks and deep learning.</p>
-<h2 id="overview"><a class="header" href="#overview">Overview</a></h2>
-<p>Machine learning is fundamentally applied mathematics. To understand how neural networks work and how to effectively use Zyx, you need a solid grasp of:</p>
-<ul>
-<li>Linear algebra: The language of neural networks</li>
-<li>Calculus: The mathematics of optimization</li>
-<li>Probability and statistics: The mathematics of uncertainty</li>
-<li>Optimization theory: The mathematics of learning</li>
-</ul>
-<h2 id="linear-algebra-review"><a class="header" href="#linear-algebra-review">Linear Algebra Review</a></h2>
-<p>Linear algebra is the mathematical foundation of machine learning. Neural networks are essentially complex functions composed of linear transformations and nonlinear activations.</p>
-<h3 id="vectors-and-matrices"><a class="header" href="#vectors-and-matrices">Vectors and Matrices</a></h3>
-<p>Vectors are one-dimensional arrays of numbers, while matrices are two-dimensional arrays. In Zyx, these are represented as tensors.</p>
-<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
-</span><span class="boring">fn main() {
-</span>use zyx::{Tensor, DType};
-
-// Vector (1D tensor)
-let vector = Tensor::from([1.0, 2.0, 3.0]);
-assert_eq!(vector.shape(), [3]);
-
-// Matrix (2D tensor)
-let matrix = Tensor::from([[1.0, 2.0], [3.0, 4.0]]);
-assert_eq!(matrix.shape(), [2, 2]);
-<span class="boring">}</span></code></pre></pre>
-<h3 id="key-operations"><a class="header" href="#key-operations">Key Operations</a></h3>
-<h4 id="matrix-multiplication"><a class="header" href="#matrix-multiplication">Matrix Multiplication</a></h4>
-<p>Matrix multiplication is the fundamental operation in neural networks. In Zyx, this is done using the <code>dot</code> method.</p>
-<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
-</span><span class="boring">fn main() {
-</span>let a = Tensor::from([[1.0, 2.0], [3.0, 4.0]]);
-let b = Tensor::from([[5.0, 6.0], [7.0, 8.0]]);
-
-// Matrix multiplication
-let c = a.dot(&amp;b);
-// Result: [[19.0, 22.0], [43.0, 50.0]]
-<span class="boring">}</span></code></pre></pre>
-<h4 id="transposition"><a class="header" href="#transposition">Transposition</a></h4>
-<p>Transposing a matrix swaps its rows and columns.</p>
-<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
-</span><span class="boring">fn main() {
-</span>let matrix = Tensor::from([[1.0, 2.0], [3.0, 4.0]]);
-let transposed = matrix.t();
-// Result: [[1.0, 3.0], [2.0, 4.0]]
-<span class="boring">}</span></code></pre></pre>
-<h4 id="element-wise-operations"><a class="header" href="#element-wise-operations">Element-wise Operations</a></h4>
-<p>Element-wise operations apply the same operation to each element independently.</p>
-<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
-</span><span class="boring">fn main() {
-</span>let a = Tensor::from([1.0, 2.0, 3.0]);
-let b = Tensor::from([4.0, 5.0, 6.0]);
-
-// Element-wise addition
-let c = &amp;a + &amp;b;  // [5.0, 7.0, 9.0]
-
-// Element-wise multiplication
-let d = &amp;a * &amp;b;  // [4.0, 10.0, 18.0]
-<span class="boring">}</span></code></pre></pre>
-<h3 id="tensor-properties"><a class="header" href="#tensor-properties">Tensor Properties</a></h3>
-<h4 id="rank-and-shape"><a class="header" href="#rank-and-shape">Rank and Shape</a></h4>
-<p>The rank of a tensor is the number of dimensions, and the shape describes the size of each dimension.</p>
-<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
-</span><span class="boring">fn main() {
-</span>let tensor = Tensor::randn([2, 3, 4], DType::F32);
-
-assert_eq!(tensor.rank(), 3);  // 3D tensor
-assert_eq!(tensor.shape(), [2, 3, 4]);  // 2x3x4 tensor
-<span class="boring">}</span></code></pre></pre>
-<h4 id="broadcasting"><a class="header" href="#broadcasting">Broadcasting</a></h4>
-<p>Broadcasting allows operations between tensors of different shapes by automatically expanding dimensions.</p>
-<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
-</span><span class="boring">fn main() {
-</span>let matrix = Tensor::randn([3, 3], DType::F32);
-let vector = Tensor::from([1.0, 2.0, 3.0]);
-
-// Vector will be broadcasted to match matrix shape
-let result = matrix + &amp;vector;
-<span class="boring">}</span></code></pre></pre>
-<h2 id="calculus-for-machine-learning"><a class="header" href="#calculus-for-machine-learning">Calculus for Machine Learning</a></h2>
-<p>Calculus provides the tools for optimization and understanding how neural networks learn.</p>
-<h3 id="derivatives-and-gradients"><a class="header" href="#derivatives-and-gradients">Derivatives and Gradients</a></h3>
-<p>The derivative measures how a function changes as its input changes. In neural networks, we use gradients (multidimensional derivatives) to update parameters.</p>
-<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
-</span><span class="boring">fn main() {
-</span>use zyx::{Tensor, GradientTape};
-
-// Forward pass
-let tape = GradientTape::new();
-let x = Tensor::from([2.0, 3.0]);
-let y = x.pow(2);  // y = x^2
-
-// Backward pass to compute gradients
-let grads = tape.gradient(&amp;y, &amp;[&amp;x]);
-// dy/dx = 2*x = [4.0, 6.0]
-<span class="boring">}</span></code></pre></pre>
-<h3 id="chain-rule"><a class="header" href="#chain-rule">Chain Rule</a></h3>
-<p>The chain rule allows us to compute gradients through composed functions, which is essential for backpropagation.</p>
-<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
-</span><span class="boring">fn main() {
-</span>// f(g(x)) where f(y) = y^2 and g(x) = x + 1
-let tape = GradientTape::new();
-let x = Tensor::from([2.0]);
-let g = x + 1.0;  // g(x) = x + 1
-let f = g.pow(2);  // f(g) = g^2
-
-// df/dx = df/dg * dg/dx = 2g * 1 = 2(x + 1)
-let grads = tape.gradient(&amp;f, &amp;[&amp;x]);
-// Result: [6.0] (since 2*(2 + 1) = 6)
-<span class="boring">}</span></code></pre></pre>
-<h3 id="partial-derivatives"><a class="header" href="#partial-derivatives">Partial Derivatives</a></h3>
-<p>Partial derivatives measure how a function changes with respect to one variable while holding others constant.</p>
-<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
-</span><span class="boring">fn main() {
-</span>// f(x, y) = x^2 + y^2
-let tape = GradientTape::new();
-let x = Tensor::from([2.0]);
-let y = Tensor::from([3.0]);
-let f = x.pow(2) + y.pow(2);
-
-// df/dx = 2x = 4.0
-// df/dy = 2y = 6.0
-let grads = tape.gradient(&amp;f, &amp;[&amp;x, &amp;y]);
-<span class="boring">}</span></code></pre></pre>
-<h2 id="probability-and-statistics"><a class="header" href="#probability-and-statistics">Probability and Statistics</a></h2>
-<p>Probability and statistics provide the framework for understanding uncertainty and making predictions.</p>
-<h3 id="probability-distributions"><a class="header" href="#probability-distributions">Probability Distributions</a></h3>
-<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
-</span><span class="boring">fn main() {
-</span>// Normal distribution
-let normal = Tensor::randn([1000], DType::F32);
-
-// Uniform distribution
-let uniform = Tensor::rand([1000], DType::F32);
-<span class="boring">}</span></code></pre></pre>
-<h3 id="statistical-measures"><a class="header" href="#statistical-measures">Statistical Measures</a></h3>
-<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
-</span><span class="boring">fn main() {
-</span>// Mean
-let mean = normal.mean();
-
-// Variance and standard deviation
-let variance = normal.var();
-let std_dev = normal.std();
-
-// Percentiles
-let p50 = normal.quantile(0.5);  // Median
-let p95 = normal.quantile(0.95);
-<span class="boring">}</span></code></pre></pre>
-<h3 id="cross-entropy"><a class="header" href="#cross-entropy">Cross-Entropy</a></h3>
-<p>Cross-entropy is commonly used as a loss function for classification tasks.</p>
-<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
-</span><span class="boring">fn main() {
-</span>// Softmax and cross-entropy
-let logits = Tensor::randn([10], DType::F32);  // 10 classes
-let targets = Tensor::from([0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]);  # One-hot
-
-// Softmax probabilities
-let probs = logits.softmax();
-
-// Cross-entropy loss
-let loss = -(&amp;targets * probs.ln()).sum();
-<span class="boring">}</span></code></pre></pre>
-<h2 id="optimization-theory"><a class="header" href="#optimization-theory">Optimization Theory</a></h2>
-<p>Optimization theory provides the mathematical foundation for training neural networks.</p>
-<h3 id="gradient-descent"><a class="header" href="#gradient-descent">Gradient Descent</a></h3>
-<p>Gradient descent is the fundamental optimization algorithm used in neural networks.</p>
-<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
-</span><span class="boring">fn main() {
-</span>// Simple gradient descent implementation
-fn gradient_descent(
-    params: &amp;mut Tensor,
-    gradients: &amp;Tensor,
-    learning_rate: f32
-) {
-    // Update parameters: params = params - learning_rate * gradients
-    *params = params - &amp;gradients * learning_rate;
-}
-<span class="boring">}</span></code></pre></pre>
-<h3 id="learning-rate-scheduling"><a class="header" href="#learning-rate-scheduling">Learning Rate Scheduling</a></h3>
-<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
-</span><span class="boring">fn main() {
-</span>// Exponential decay learning rate
-fn exponential_decay(epoch: i32, initial_lr: f32, decay_rate: f32) -&gt; f32 {
-    initial_lr * decay_rate.powi(epoch)
-}
-
-// Step decay learning rate
-fn step_decay(epoch: i32, initial_lr: f32, step_size: i32, decay_rate: f32) -&gt; f32 {
-    initial_lr * decay_rate.powi(epoch / step_size)
-}
-<span class="boring">}</span></code></pre></pre>
-<h3 id="momentum"><a class="header" href="#momentum">Momentum</a></h3>
-<p>Momentum helps accelerate gradient descent in relevant directions and dampens oscillations.</p>
-<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
-</span><span class="boring">fn main() {
-</span>// Momentum-based parameter update
-struct Momentum {
-    velocity: Tensor,
-    momentum: f32,
-}
-
-impl Momentum {
-    fn new(shape: &amp;[usize], momentum: f32) -&gt; Self {
-        Self {
-            velocity: Tensor::zeros(shape, DType::F32),
-            momentum,
-        }
-    }
-
-    fn update(&amp;mut self, params: &amp;mut Tensor, gradients: &amp;Tensor, learning_rate: f32) {
-        // Update velocity: v = momentum * v + learning_rate * gradients
-        self.velocity = &amp;self.velocity * self.momentum + gradients * learning_rate;
-        
-        // Update parameters: params = params - velocity
-        *params = params - &amp;self.velocity;
-    }
-}
-<span class="boring">}</span></code></pre></pre>
-<h3 id="adaptive-learning-rates"><a class="header" href="#adaptive-learning-rates">Adaptive Learning Rates</a></h3>
-<p>Adaptive optimizers like Adam adjust learning rates for each parameter individually.</p>
-<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
-</span><span class="boring">fn main() {
-</span>// Simplified Adam optimizer
-struct Adam {
-    m: Tensor,  // First moment (momentum)
-    v: Tensor,  // Second moment (RMSProp)
-    t: i32,     // Time step
-    beta1: f32,
-    beta2: f32,
-    eps: f32,
-}
-
-impl Adam {
-    fn new(shape: &amp;[usize]) -&gt; Self {
-        Self {
-            m: Tensor::zeros(shape, DType::F32),
-            v: Tensor::zeros(shape, DType::F32),
-            t: 0,
-            beta1: 0.9,
-            beta2: 0.999,
-            eps: 1e-8,
-        }
-    }
-
-    fn update(&amp;mut self, params: &amp;mut Tensor, gradients: &amp;Tensor, learning_rate: f32) {
-        self.t += 1;
-        
-        // Update biased first moment estimate
-        self.m = &amp;self.m * self.beta1 + gradients * (1.0 - self.beta1);
-        
-        // Update biased second raw moment estimate
-        self.v = &amp;self.v * self.beta2 + gradients.pow(2) * (1.0 - self.beta2);
-        
-        // Compute bias-corrected first moment estimate
-        let m_hat = &amp;self.m / (1.0 - self.beta1.powi(self.t));
-        
-        // Compute bias-corrected second raw moment estimate
-        let v_hat = &amp;self.v / (1.0 - self.beta2.powi(self.t));
-        
-        // Update parameters
-        let update = m_hat / (&amp;v_hat.sqrt() + self.eps);
-        *params = params - &amp;update * learning_rate;
-    }
-}
-<span class="boring">}</span></code></pre></pre>
-<h2 id="mathematical-concepts-in-zyx"><a class="header" href="#mathematical-concepts-in-zyx">Mathematical Concepts in Zyx</a></h2>
-<h3 id="vectorization"><a class="header" href="#vectorization">Vectorization</a></h3>
-<p>Zyx automatically handles vectorization of operations, allowing you to work with batches of data efficiently.</p>
-<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
-</span><span class="boring">fn main() {
-</span>// Batch processing
-let batch = Tensor::randn([32, 784], DType::F32);  // 32 samples, 784 features each
-let weights = Tensor::randn([784, 10], DType::F32);  // 784 input features, 10 output classes
-
-// Process entire batch at once
-let logits = batch.dot(&amp;weights);  // [32, 10]
-<span class="boring">}</span></code></pre></pre>
-<h3 id="automatic-differentiation"><a class="header" href="#automatic-differentiation">Automatic Differentiation</a></h3>
-<p>Zyx's automatic differentiation system handles the complex mathematics of backpropagation automatically.</p>
-<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
-</span><span class="boring">fn main() {
-</span>// Complex computation graph
-let tape = GradientTape::new();
-let x = Tensor::randn([100, 100], DType::F32);
-let y = x.relu().mm(&amp;x.t()).softmax();
-let loss = y.sum();
-
-// Automatic gradient computation
-let gradients = tape.gradient(&amp;loss, &amp;[&amp;x]);
-<span class="boring">}</span></code></pre></pre>
-<h2 id="practical-examples"><a class="header" href="#practical-examples">Practical Examples</a></h2>
-<h3 id="linear-regression"><a class="header" href="#linear-regression">Linear Regression</a></h3>
-<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
-</span><span class="boring">fn main() {
-</span>// Linear regression: y = Wx + b
-fn linear_regression(x: &amp;Tensor, w: &amp;Tensor, b: &amp;Tensor) -&gt; Tensor {
-    x.dot(w) + b
-}
-
-// Mean squared loss
-fn mse_loss(predictions: &amp;Tensor, targets: &amp;Tensor) -&gt; Tensor {
-    (predictions - targets).pow(2).mean()
-}
-
-// Training loop
-fn train_linear_regression() {
-    let x_train = Tensor::randn([100, 10], DType::F32);
-    let y_train = Tensor::randn([100, 1], DType::F32);
-    
-    let mut w = Tensor::randn([10, 1], DType::F32);
-    let mut b = Tensor::zeros([1], DType::F32);
-    
-    let learning_rate = 0.01;
-    let epochs = 1000;
-    
-    for epoch in 0..epochs {
-        let tape = GradientTape::new();
-        let predictions = linear_regression(&amp;x_train, &amp;w, &amp;b);
-        let loss = mse_loss(&amp;predictions, &amp;y_train);
-        
-        let gradients = tape.gradient(&amp;loss, [&amp;w, &amp;b]);
-        
-        // Update parameters
-        w = w - &amp;gradients[0] * learning_rate;
-        b = b - &amp;gradients[1] * learning_rate;
-        
-        if epoch % 100 == 0 {
-            println!("Epoch {}: Loss = {}", epoch, loss.item());
-        }
-    }
-}
-<span class="boring">}</span></code></pre></pre>
-<h3 id="logistic-regression"><a class="header" href="#logistic-regression">Logistic Regression</a></h3>
-<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
-</span><span class="boring">fn main() {
-</span>// Logistic regression with sigmoid activation
-fn logistic_regression(x: &amp;Tensor, w: &amp;Tensor, b: &amp;Tensor) -&gt; Tensor {
-    let logits = x.dot(w) + b;
-    logits.sigmoid()
-}
-
-// Binary cross-entropy loss
-fn binary_cross_entropy(predictions: &amp;Tensor, targets: &amp;Tensor) -&gt; Tensor {
-    -(&amp;targets * predictions.ln() + &amp;(1.0 - targets) * (1.0 - predictions).ln()).mean()
-}
-
-// Training loop
-fn train_logistic_regression() {
-    let x_train = Tensor::randn([1000, 20], DType::F32);
-    let y_train = Tensor::randn([1000, 1], DType::F32);  # Binary labels
-    
-    let mut w = Tensor::randn([20, 1], DType::F32);
-    let mut b = Tensor::zeros([1], DType::F32);
-    
-    let learning_rate = 0.1;
-    let epochs = 100;
-    
-    for epoch in 0..epochs {
-        let tape = GradientTape::new();
-        let predictions = logistic_regression(&amp;x_train, &amp;w, &amp;b);
-        let loss = binary_cross_entropy(&amp;predictions, &amp;y_train);
-        
-        let gradients = tape.gradient(&amp;loss, [&amp;w, &amp;b]);
-        
-        // Update parameters
-        w = w - &amp;gradients[0] * learning_rate;
-        b = b - &amp;gradients[1] * learning_rate;
-        
-        if epoch % 10 == 0 {
-            let accuracy = (&amp;predictions &gt; 0.5).eq(&amp;y_train).mean();
-            println!("Epoch {}: Loss = {:.4}, Accuracy = {:.4}", 
-                    epoch, loss.item(), accuracy.item());
-        }
-    }
-}
-<span class="boring">}</span></code></pre></pre>
-<h2 id="summary"><a class="header" href="#summary">Summary</a></h2>
-<p>The mathematical foundations covered in this chapter are essential for understanding and working with machine learning in Zyx:</p>
-<ul>
-<li><strong>Linear algebra</strong> provides the language for representing and manipulating data</li>
-<li><strong>Calculus</strong> gives us the tools for optimization and learning</li>
-<li><strong>Probability and statistics</strong> help us handle uncertainty and measure performance</li>
-<li><strong>Optimization theory</strong> provides the algorithms for training neural networks</li>
-</ul>
-<p>With this mathematical foundation, you're ready to dive deeper into neural networks and start building sophisticated machine learning models with Zyx.</p>
-<div style="break-before: page; page-break-before: always;"></div><h1 id="linear-algebra-review-1"><a class="header" href="#linear-algebra-review-1">Linear Algebra Review</a></h1>
-<div style="break-before: page; page-break-before: always;"></div><h1 id="calculus-for-machine-learning-1"><a class="header" href="#calculus-for-machine-learning-1">Calculus for Machine Learning</a></h1>
-<div style="break-before: page; page-break-before: always;"></div><h1 id="probability-and-statistics-1"><a class="header" href="#probability-and-statistics-1">Probability and Statistics</a></h1>
-<div style="break-before: page; page-break-before: always;"></div><h1 id="optimization-theory-1"><a class="header" href="#optimization-theory-1">Optimization Theory</a></h1>
-<div style="break-before: page; page-break-before: always;"></div><h1 id="core-zyx-features"><a class="header" href="#core-zyx-features">Core Zyx Features</a></h1>
-<div style="break-before: page; page-break-before: always;"></div><h1 id="automatic-differentiation-1"><a class="header" href="#automatic-differentiation-1">Automatic Differentiation</a></h1>
-<h2 id="core-concepts"><a class="header" href="#core-concepts">Core Concepts</a></h2>
-<p>Zyx implements automatic differentiation through an explicit gradient tape system. Any differentiable mathematical operation can be automatically tracked and differentiated, including functions like ReLU that have points of non-differentiability in traditional calculus.</p>
-<h2 id="example-workflow"><a class="header" href="#example-workflow">Example Workflow</a></h2>
-<h3 id="forward-pass-with-gradient-tape"><a class="header" href="#forward-pass-with-gradient-tape">Forward Pass with Gradient Tape</a></h3>
-<p>Create a gradient tape and perform tensor operations:</p>
-<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
-</span><span class="boring">fn main() {
-</span>use zyx::{Tensor, GradientTape, DType};
-
-let tape = GradientTape::new();
-let x = Tensor::randn([1024, 1024], DType::F32);
-let y = Tensor::from([2, 3, 1]);
-let z = (x + y.pad([(1000, 21)], 8)) * x;
-<span class="boring">}</span></code></pre></pre>
-<h3 id="backward-pass-via-gradient-tape"><a class="header" href="#backward-pass-via-gradient-tape">Backward Pass via Gradient Tape</a></h3>
-<p>Compute gradients using the tape:</p>
-<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
-</span><span class="boring">fn main() {
-</span>let grads = tape.gradient(&amp;z, &amp;[&amp;x, &amp;y]);
-<span class="boring">}</span></code></pre></pre>
-<h3 id="gradient-handling"><a class="header" href="#gradient-handling">Gradient Handling</a></h3>
-<p>The <code>gradient</code> method returns <code>Vec&lt;Option&lt;Tensor&gt;&gt;</code> where <code>None</code> indicates no computational path:</p>
-<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
-</span><span class="boring">fn main() {
-</span>let tape = GradientTape::new();
-let x = Tensor::randn([2, 3], DType::F32);
-let y = Tensor::randn([2, 3], DType::F32);
-let z = y.exp();
-let grads = tape.gradient(&amp;z, &amp;[&amp;x]);
-assert_eq!(grads, vec![None]);  // No gradient for x since z doesn't depend on it
-<span class="boring">}</span></code></pre></pre>
-<h2 id="performance-advantages"><a class="header" href="#performance-advantages">Performance Advantages</a></h2>
-<h3 id="tape-based-computation"><a class="header" href="#tape-based-computation">Tape-Based Computation</a></h3>
-<p>Zyx's autograd system:</p>
-<ul>
-<li>Uses an explicit <code>GradientTape</code> to record operations</li>
-<li>Only computes gradients when explicitly requested</li>
-<li>Optimizes memory usage through lazy evaluation</li>
-<li>Supports higher-order derivatives with persistent gradient tapes</li>
-</ul>
-<p>This architecture enables efficient differentiation while maintaining flexibility for complex computational graphs.</p>
-<div style="break-before: page; page-break-before: always;"></div><h1 id="optimizers"><a class="header" href="#optimizers">Optimizers</a></h1>
-<div style="break-before: page; page-break-before: always;"></div><h1 id="creating-modules"><a class="header" href="#creating-modules">Creating Modules</a></h1>
-<div style="break-before: page; page-break-before: always;"></div><h1 id="disk-io"><a class="header" href="#disk-io">Disk IO</a></h1>
-<div style="break-before: page; page-break-before: always;"></div><h1 id="debugging"><a class="header" href="#debugging">Debugging</a></h1>
-<div style="break-before: page; page-break-before: always;"></div><h1 id="runtime"><a class="header" href="#runtime">Runtime</a></h1>
-<div style="break-before: page; page-break-before: always;"></div><h1 id="neural-network-fundamentals"><a class="header" href="#neural-network-fundamentals">Neural Network Fundamentals</a></h1>
-<div style="break-before: page; page-break-before: always;"></div><h1 id="perceptrons-and-basic-networks"><a class="header" href="#perceptrons-and-basic-networks">Perceptrons and Basic Networks</a></h1>
-<div style="break-before: page; page-break-before: always;"></div><h1 id="activation-functions"><a class="header" href="#activation-functions">Activation Functions</a></h1>
-<div style="break-before: page; page-break-before: always;"></div><h1 id="loss-functions"><a class="header" href="#loss-functions">Loss Functions</a></h1>
-<div style="break-before: page; page-break-before: always;"></div><h1 id="backpropagation-algorithm"><a class="header" href="#backpropagation-algorithm">Backpropagation Algorithm</a></h1>
-<div style="break-before: page; page-break-before: always;"></div><h1 id="network-architecture-design"><a class="header" href="#network-architecture-design">Network Architecture Design</a></h1>
-<div style="break-before: page; page-break-before: always;"></div><h1 id="practical-ml-workflows"><a class="header" href="#practical-ml-workflows">Practical ML Workflows</a></h1>
-<p>Machine learning projects follow structured workflows that ensure reproducibility, efficiency, and reliable results. This chapter covers the essential workflows for building, training, and deploying machine learning models using Zyx.</p>
-<h2 id="the-ml-project-lifecycle"><a class="header" href="#the-ml-project-lifecycle">The ML Project Lifecycle</a></h2>
-<p>A typical machine learning project follows these key stages:</p>
-<ol>
-<li><strong>Data Collection and Preparation</strong>: Gathering and cleaning data</li>
-<li><strong>Exploratory Data Analysis</strong>: Understanding data patterns and characteristics</li>
-<li><strong>Feature Engineering</strong>: Creating meaningful input representations</li>
-<li><strong>Model Selection and Training</strong>: Choosing appropriate algorithms and training</li>
-<li><strong>Evaluation and Validation</strong>: Assessing model performance</li>
-<li><strong>Deployment and Monitoring</strong>: Putting models into production</li>
-</ol>
-<h2 id="key-workflow-principles"><a class="header" href="#key-workflow-principles">Key Workflow Principles</a></h2>
-<h3 id="reproducibility"><a class="header" href="#reproducibility">Reproducibility</a></h3>
-<p>Ensure your experiments can be reproduced by setting random seeds and documenting all steps. Reproducibility is crucial for debugging and validating results.</p>
-<h3 id="version-control"><a class="header" href="#version-control">Version Control</a></h3>
-<p>Track your experiments and data using version control systems. This allows you to revert to previous states and compare different approaches systematically.</p>
-<h3 id="experiment-tracking"><a class="header" href="#experiment-tracking">Experiment Tracking</a></h3>
-<p>Monitor your training progress by tracking loss and metrics over time. This helps identify when to stop training and when to adjust hyperparameters.</p>
-<h2 id="workflow-tools-in-zyx"><a class="header" href="#workflow-tools-in-zyx">Workflow Tools in Zyx</a></h2>
-<p>Zyx provides tools to streamline your ML workflows. The most important aspect is ensuring reproducibility through proper random seed management.</p>
-<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
-</span><span class="boring">fn main() {
-</span>use zyx::{Tensor, DType};
-
-// Set random seeds for reproducibility
-fn setup_reproducible_environment() {
-    // Set global random seed for reproducible results
-    Tensor::manual_seed(42);
-    
-    // Now all random operations will produce the same results
-    let random_data = Tensor::randn([100, 10], DType::F32);
-    // This will always produce the same tensor when run with seed 42
-}
-<span class="boring">}</span></code></pre></pre>
-<p>This simple seed setting ensures that all random operations in your ML pipeline produce consistent results, making your experiments reproducible and debuggable.</p>
-<h2 id="best-practices"><a class="header" href="#best-practices">Best Practices</a></h2>
-<h3 id="data-management"><a class="header" href="#data-management">Data Management</a></h3>
-<p>Split data into training, validation, and test sets. Use data augmentation for training data and handle missing values appropriately.</p>
-<h3 id="model-training"><a class="header" href="#model-training">Model Training</a></h3>
-<p>Monitor both training and validation loss to detect overfitting. Use early stopping and save checkpoints during training.</p>
-<h3 id="experimentation"><a class="header" href="#experimentation">Experimentation</a></h3>
-<p>Keep detailed records of experiments, use consistent evaluation metrics, and compare baselines before complex models.</p>
-<h2 id="summary-1"><a class="header" href="#summary-1">Summary</a></h2>
-<p>Effective ML workflows are crucial for successful machine learning projects. By following structured approaches and using Zyx's tools like manual seed setting, you can build reproducible, efficient, and reliable machine learning systems.</p>
-<div style="break-before: page; page-break-before: always;"></div><h1 id="data-preprocessing"><a class="header" href="#data-preprocessing">Data Preprocessing</a></h1>
-<p>Data preprocessing is a critical step in machine learning that transforms raw data into a clean, usable format for model training. Proper preprocessing can significantly impact model performance and is often the most time-consuming part of the ML pipeline.</p>
-<h2 id="why-data-preprocessing-matters"><a class="header" href="#why-data-preprocessing-matters">Why Data Preprocessing Matters</a></h2>
-<p>Raw data is rarely ready for machine learning models. It often contains:</p>
-<ul>
-<li>Missing values</li>
-<li>Outliers and anomalies</li>
-<li>Inconsistent scales and distributions</li>
-<li>Categorical variables that need encoding</li>
-<li>Noise and irrelevant features</li>
-</ul>
-<p>Effective preprocessing addresses these issues, ensuring that models can learn meaningful patterns from the data.</p>
-<h2 id="common-preprocessing-techniques"><a class="header" href="#common-preprocessing-techniques">Common Preprocessing Techniques</a></h2>
-<h3 id="normalization-and-standardization"><a class="header" href="#normalization-and-standardization">Normalization and Standardization</a></h3>
-<p>Normalization scales features to a range [0, 1], while standardization transforms data to have zero mean and unit variance.</p>
-<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
-</span><span class="boring">fn main() {
-</span>use zyx::{Tensor, DType};
-
-// Normalize data to [0, 1] range
-fn normalize_data(data: &amp;Tensor) -&gt; Tensor {
-    let min = data.min();
-    let max = data.max();
-    (data - min) / (max - min)
-}
-
-// Standardize data (zero mean, unit variance)
-fn standardize_data(data: &amp;Tensor) -&gt; Tensor {
-    let mean = data.mean();
-    let std = data.std();
-    (data - mean) / std
-}
-<span class="boring">}</span></code></pre></pre>
-<h3 id="handling-missing-values"><a class="header" href="#handling-missing-values">Handling Missing Values</a></h3>
-<p>Missing values can be handled through imputation or removal. Common strategies include:</p>
-<ul>
-<li>Mean/median/mode imputation</li>
-<li>Forward/backward filling</li>
-<li>Predictive imputation</li>
-</ul>
-<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
-</span><span class="boring">fn main() {
-</span>// Fill missing values with mean
-fn fill_missing_with_mean(data: &amp;Tensor) -&gt; Tensor {
-    let mean = data.mean();
-    // Create mask for missing values (assuming NaN represents missing)
-    let mask = data.is_nan();
-    data * !mask.clone() + mean * mask
-}
-<span class="boring">}</span></code></pre></pre>
-<h3 id="categorical-encoding"><a class="header" href="#categorical-encoding">Categorical Encoding</a></h3>
-<p>Categorical variables need to be converted to numerical format. Common approaches include:</p>
-<ul>
-<li>One-hot encoding</li>
-<li>Label encoding</li>
-<li>Target encoding</li>
-</ul>
-<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
-</span><span class="boring">fn main() {
-</span>// One-hot encode categorical data
-fn one_hot_encode(data: &amp;Tensor, num_classes: i32) -&gt; Tensor {
-    let shape = [data.shape()[0], num_classes as usize];
-    let mut encoded = Tensor::zeros(shape, DType::F32);
-    
-    for i in 0..data.shape()[0] {
-        let class = data[[i]].item::&lt;i32&gt;().unwrap() as usize;
-        encoded[[i, class]] = 1.0;
-    }
-    encoded
-}
-<span class="boring">}</span></code></pre></pre>
-<h3 id="feature-scaling"><a class="header" href="#feature-scaling">Feature Scaling</a></h3>
-<p>Different features may have different scales, which can bias models. Feature scaling ensures all features contribute equally.</p>
-<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
-</span><span class="boring">fn main() {
-</span>// Min-max scaling to specific range
-fn min_max_scale(data: &amp;Tensor, new_min: f32, new_max: f32) -&gt; Tensor {
-    let current_min = data.min();
-    let current_max = data.max();
-    new_min + (data - current_min) * (new_max - new_min) / (current_max - current_min)
-}
-<span class="boring">}</span></code></pre></pre>
-<h2 id="data-quality-assessment"><a class="header" href="#data-quality-assessment">Data Quality Assessment</a></h2>
-<p>Before preprocessing, assess data quality by examining:</p>
-<ul>
-<li>Distribution of each feature</li>
-<li>Presence of outliers</li>
-<li>Missing value patterns</li>
-<li>Correlation between features</li>
-</ul>
-<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
-</span><span class="boring">fn main() {
-</span>// Basic data quality assessment
-fn assess_data_quality(data: &amp;Tensor) {
-    println!("Data shape: {:?}", data.shape());
-    println!("Missing values: {}", data.is_nan().sum().item::&lt;i32&gt;());
-    println!("Mean: {:.4}", data.mean().item());
-    println!("Std: {:.4}", data.std().item());
-    println!("Min: {:.4}", data.min().item());
-    println!("Max: {:.4}", data.max().item());
-}
-<span class="boring">}</span></code></pre></pre>
-<h2 id="advanced-preprocessing-techniques"><a class="header" href="#advanced-preprocessing-techniques">Advanced Preprocessing Techniques</a></h2>
-<h3 id="feature-engineering"><a class="header" href="#feature-engineering">Feature Engineering</a></h3>
-<p>Create new features that may be more predictive than the original ones:</p>
-<ul>
-<li>Polynomial features</li>
-<li>Interaction terms</li>
-<li>Domain-specific transformations</li>
-</ul>
-<h3 id="dimensionality-reduction"><a class="header" href="#dimensionality-reduction">Dimensionality Reduction</a></h3>
-<p>Reduce the number of features while preserving important information:</p>
-<ul>
-<li>Principal Component Analysis (PCA)</li>
-<li>t-SNE</li>
-<li>Autoencoders</li>
-</ul>
-<h3 id="data-augmentation"><a class="header" href="#data-augmentation">Data Augmentation</a></h3>
-<p>artificially expand training data by creating modified versions of existing samples.</p>
-<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
-</span><span class="boring">fn main() {
-</span>// Simple data augmentation for images
-fn augment_image(image: &amp;Tensor) -&gt; Tensor {
-    // Random horizontal flip
-    let flipped = image.flip(1);
-    
-    // Random rotation (simplified example)
-    // In practice, you'd use more sophisticated rotation
-    flipped
-}
-<span class="boring">}</span></code></pre></pre>
-<h2 id="best-practices-1"><a class="header" href="#best-practices-1">Best Practices</a></h2>
-<ol>
-<li><strong>Fit on training data only</strong>: Preprocessing parameters should be learned from training data and applied to validation/test data</li>
-<li><strong>Handle data leakage</strong>: Ensure information from validation/test sets doesn't leak into training</li>
-<li><strong>Document preprocessing</strong>: Keep track of all preprocessing steps for reproducibility</li>
-<li><strong>Validate preprocessing</strong>: Check that preprocessing doesn't introduce artifacts or distort data</li>
-</ol>
-<h2 id="summary-2"><a class="header" href="#summary-2">Summary</a></h2>
-<p>Data preprocessing is essential for building effective machine learning models. By properly normalizing, cleaning, and transforming your data, you create the foundation for successful model training and deployment.</p>
-<div style="break-before: page; page-break-before: always;"></div><h1 id="trainvalidationtest-splits"><a class="header" href="#trainvalidationtest-splits">Train/Validation/Test Splits</a></h1>
-<p>Proper data splitting is crucial for building robust machine learning models. The way you split your data determines how well your model will generalize to unseen data and helps prevent overfitting.</p>
-<h2 id="why-data-splitting-matters"><a class="header" href="#why-data-splitting-matters">Why Data Splitting Matters</a></h2>
-<p>Data splitting allows you to:</p>
-<ul>
-<li><strong>Train models</strong> on a portion of your data</li>
-<li><strong>Validate</strong> model performance during development</li>
-<li><strong>Test</strong> final model performance on unseen data</li>
-</ul>
-<p>Without proper splitting, you risk overfitting to your training data and getting an overly optimistic view of your model's performance.</p>
-<h2 id="common-splitting-strategies"><a class="header" href="#common-splitting-strategies">Common Splitting Strategies</a></h2>
-<h3 id="simple-random-split"><a class="header" href="#simple-random-split">Simple Random Split</a></h3>
-<p>The most basic approach where data is randomly divided into sets.</p>
-<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
-</span><span class="boring">fn main() {
-</span>use zyx::{Tensor, DType};
-
-// Simple random split
-fn random_split(data: &amp;Tensor, labels: &amp;Tensor, train_ratio: f32) -&gt; (Tensor, Tensor, Tensor, Tensor) {
-    let n_samples = data.shape()[0];
-    let n_train = (n_samples as f32 * train_ratio) as usize;
-    
-    // Shuffle indices
-    let mut indices: Vec&lt;usize&gt; = (0..n_samples).collect();
-    indices.shuffle(&amp;mut rand::thread_rng());
-    
-    // Split indices
-    let train_indices = &amp;indices[..n_train];
-    let test_indices = &amp;indices[n_train..];
-    
-    // Create masks
-    let mut train_mask = Tensor::zeros([n_samples], DType::F32);
-    let mut test_mask = Tensor::zeros([n_samples], DType::F32);
-    
-    for &amp;idx in train_indices {
-        train_mask[[idx]] = 1.0;
-    }
-    for &amp;idx in test_indices {
-        test_mask[[idx]] = 1.0;
-    }
-    
-    // Apply masks
-    let train_data = data * &amp;train_mask.unsqueeze(1);
-    let train_labels = labels * &amp;train_mask.unsqueeze(1);
-    let test_data = data * &amp;test_mask.unsqueeze(1);
-    let test_labels = labels * &amp;test_mask.unsqueeze(1);
-    
-    (train_data, train_labels, test_data, test_labels)
-}
-<span class="boring">}</span></code></pre></pre>
-<h3 id="stratified-split"><a class="header" href="#stratified-split">Stratified Split</a></h3>
-<p>For classification tasks, stratified splitting ensures class distribution is preserved in each split.</p>
-<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
-</span><span class="boring">fn main() {
-</span>// Stratified split for classification
-fn stratified_split(
-    data: &amp;Tensor, 
-    labels: &amp;Tensor, 
-    train_ratio: f32
-) -&gt; (Tensor, Tensor, Tensor, Tensor) {
-    let n_samples = data.shape()[0];
-    let n_classes = labels.max().item::&lt;i32&gt;() + 1;
-    
-    let mut class_indices: Vec&lt;Vec&lt;usize&gt;&gt; = (0..n_classes).map(|_| Vec::new()).collect();
-    
-    // Group indices by class
-    for i in 0..n_samples {
-        let class = labels[[i]].item::&lt;i32&gt;().unwrap() as usize;
-        class_indices[class].push(i);
-    }
-    
-    // Split each class
-    let mut train_indices = Vec::new();
-    let mut test_indices = Vec::new();
-    
-    for class_indices in &amp;class_indices {
-        let n_class = class_indices.len();
-        let n_train = (n_class as f32 * train_ratio) as usize;
-        
-        let train_part = &amp;class_indices[..n_train];
-        let test_part = &amp;class_indices[n_train..];
-        
-        train_indices.extend_from_slice(train_part);
-        test_indices.extend_from_slice(test_part);
-    }
-    
-    // Create final splits
-    let train_data = select_rows(data, &amp;train_indices);
-    let train_labels = select_rows(labels, &amp;train_indices);
-    let test_data = select_rows(data, &amp;test_indices);
-    let test_labels = select_rows(labels, &amp;test_indices);
-    
-    (train_data, train_labels, test_data, test_labels)
-}
-
-// Helper function to select rows by indices
-fn select_rows(data: &amp;Tensor, indices: &amp;[usize]) -&gt; Tensor {
-    let mut result = Tensor::zeros([indices.len(), data.shape()[1]], data.dtype());
-    for (i, &amp;idx) in indices.iter().enumerate() {
-        result.slice(i..=i, 0..=data.shape()[1] - 1).copy_(data.slice(idx..=idx, 0..=data.shape()[1] - 1));
-    }
-    result
-}
-<span class="boring">}</span></code></pre></pre>
-<h3 id="time-series-split"><a class="header" href="#time-series-split">Time Series Split</a></h3>
-<p>For time-dependent data, use temporal splits to prevent data leakage.</p>
-<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
-</span><span class="boring">fn main() {
-</span>// Time series split
-fn time_series_split(data: &amp;Tensor, labels: &amp;Tensor, train_ratio: f32) -&gt; (Tensor, Tensor, Tensor, Tensor) {
-    let n_samples = data.shape()[0];
-    let split_point = (n_samples as f32 * train_ratio) as usize;
-    
-    let train_data = data.slice(0..=split_point - 1, 0..=data.shape()[1] - 1);
-    let train_labels = labels.slice(0..=split_point - 1, 0..=labels.shape()[1] - 1);
-    let test_data = data.slice(split_point..=n_samples - 1, 0..=data.shape()[1] - 1);
-    let test_labels = labels.slice(split_point..=n_samples - 1, 0..=labels.shape()[1] - 1);
-    
-    (train_data, train_labels, test_data, test_labels)
-}
-<span class="boring">}</span></code></pre></pre>
-<h2 id="cross-validation"><a class="header" href="#cross-validation">Cross-Validation</a></h2>
-<p>Cross-validation provides more robust performance estimates by using multiple train/test splits.</p>
-<h3 id="k-fold-cross-validation"><a class="header" href="#k-fold-cross-validation">K-Fold Cross-Validation</a></h3>
-<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
-</span><span class="boring">fn main() {
-</span>// K-fold cross validation
-fn k_fold_cross_validation(
-    data: &amp;Tensor,
-    labels: &amp;Tensor,
-    k: i32,
-    model_factory: fn() -&gt; Box&lt;dyn Module&gt;,
-    epochs: i32
-) -&gt; f32 {
-    let n_samples = data.shape()[0];
-    let fold_size = n_samples / k as usize;
-    let mut scores = Vec::new();
-    
-    for fold in 0..k {
-        let start = fold as usize * fold_size;
-        let end = if fold == k - 1 { n_samples } else { start + fold_size };
-        
-        // Create validation fold
-        let val_data = data.slice(start..=end - 1, 0..=data.shape()[1] - 1);
-        let val_labels = labels.slice(start..=end - 1, 0..=labels.shape()[1] - 1);
-        
-        // Create training folds (all other folds)
-        let mut train_data = Tensor::zeros([n_samples - fold_size, data.shape()[1]], data.dtype());
-        let mut train_labels = Tensor::zeros([n_samples - fold_size, labels.shape()[1]], labels.dtype());
-        let mut train_idx = 0;
-        
-        for other_fold in 0..k {
-            if other_fold == fold { continue; }
-            
-            let other_start = other_fold as usize * fold_size;
-            let other_end = if other_fold == k - 1 { n_samples } else { other_start + fold_size };
-            
-            let other_data = data.slice(other_start..=other_end - 1, 0..=data.shape()[1] - 1);
-            let other_labels = labels.slice(other_start..=other_end - 1, 0..=labels.shape()[1] - 1);
-            
-            train_data.slice(train_idx..=train_idx + other_data.shape()[0] - 1, 0..=data.shape()[1] - 1).copy_(&amp;other_data);
-            train_labels.slice(train_idx..=train_idx + other_labels.shape()[0] - 1, 0..=labels.shape()[1] - 1).copy_(&amp;other_labels);
-            train_idx += other_data.shape()[0];
-        }
-        
-        // Train and evaluate model
-        let mut model = model_factory();
-        train_model(&amp;mut model, &amp;train_data, &amp;train_labels, epochs);
-        let score = evaluate_model(&amp;model, &amp;val_data, &amp;val_labels);
-        scores.push(score);
-    }
-    
-    // Return average score
-    scores.iter().sum::&lt;f32&gt;() / scores.len() as f32
-}
-<span class="boring">}</span></code></pre></pre>
-<h2 id="split-ratios"><a class="header" href="#split-ratios">Split Ratios</a></h2>
-<p>Common split ratios include:</p>
-<ul>
-<li><strong>70/15/15</strong>: Training/Validation/Test</li>
-<li><strong>80/10/10</strong>: Training/Validation/Test</li>
-<li><strong>60/20/20</strong>: Training/Validation/Test</li>
-<li><strong>80/20</strong>: Training/Test (when validation isn't needed)</li>
-</ul>
-<p>The choice depends on:</p>
-<ul>
-<li>Dataset size (larger datasets can afford smaller validation/test sets)</li>
-<li>Model complexity (complex models need more training data)</li>
-<li>Task requirements (critical applications may need larger test sets)</li>
-</ul>
-<h2 id="best-practices-2"><a class="header" href="#best-practices-2">Best Practices</a></h2>
-<ol>
-<li><strong>Always split before preprocessing</strong>: Fit preprocessing parameters on training data only</li>
-<li><strong>Use stratified splits</strong> for classification tasks</li>
-<li><strong>Shuffle data</strong> before splitting (except for time series)</li>
-<li><strong>Document your splits</strong> for reproducibility</li>
-<li><strong>Use consistent splits</strong> across experiments</li>
-</ol>
-<h2 id="summary-3"><a class="header" href="#summary-3">Summary</a></h2>
-<p>Proper data splitting is essential for building reliable machine learning models. By choosing the right splitting strategy and ratios, you ensure your model generalizes well to unseen data and provides accurate performance estimates.</p>
-<div style="break-before: page; page-break-before: always;"></div><h1 id="cross-validation-techniques"><a class="header" href="#cross-validation-techniques">Cross-Validation Techniques</a></h1>
-<p>Cross-validation is a robust technique for estimating model performance and selecting the best model. It provides more reliable performance estimates than a single train/test split by using multiple different splits of the data.</p>
-<h2 id="why-cross-validation-matters"><a class="header" href="#why-cross-validation-matters">Why Cross-Validation Matters</a></h2>
-<p>Single train/test splits can be misleading due to:</p>
-<ul>
-<li>Random variation in the split</li>
-<li>Unrepresentative splits</li>
-<li>Overfitting to the specific test set</li>
-</ul>
-<p>Cross-validation addresses these issues by:</p>
-<ul>
-<li>Using multiple different train/test splits</li>
-<li>Averaging performance across all splits</li>
-<li>Providing more stable performance estimates</li>
-</ul>
-<h2 id="k-fold-cross-validation-1"><a class="header" href="#k-fold-cross-validation-1">K-Fold Cross-Validation</a></h2>
-<p>The most common cross-validation method, where data is divided into K equal parts. Each fold serves as the test set once, while the remaining K-1 folds form the training set.</p>
-<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
-</span><span class="boring">fn main() {
-</span>use zyx::{Tensor, DType};
-
-// Simple K-fold cross-validation
-fn k_fold_cross_validation(data: &amp;Tensor, k: i32) -&gt; f32 {
-    let n_samples = data.shape()[0];
-    let fold_size = n_samples / k as usize;
-    let mut scores = Vec::new();
-    
-    for fold in 0..k {
-        let start = fold as usize * fold_size;
-        let end = if fold == k - 1 { n_samples } else { start + fold_size };
-        
-        // Create validation fold
-        let val_data = data.slice(start..=end - 1, 0..=data.shape()[1] - 1);
-        
-        // Train on remaining folds and evaluate
-        let score = train_and_evaluate(val_data);
-        scores.push(score);
-    }
-    
-    // Return average score
-    scores.iter().sum::&lt;f32&gt;() / scores.len() as f32
-}
-<span class="boring">}</span></code></pre></pre>
-<h2 id="common-cross-validation-methods"><a class="header" href="#common-cross-validation-methods">Common Cross-Validation Methods</a></h2>
-<h3 id="stratified-k-fold"><a class="header" href="#stratified-k-fold">Stratified K-Fold</a></h3>
-<p>For classification tasks, stratified K-fold ensures each fold has the same class distribution as the original dataset. This prevents situations where some folds might lack certain classes.</p>
-<h3 id="leave-one-out-cross-validation-loocv"><a class="header" href="#leave-one-out-cross-validation-loocv">Leave-One-Out Cross-Validation (LOOCV)</a></h3>
-<p>A special case where each sample is used once as test data. Provides unbiased estimates but is computationally expensive.</p>
-<h3 id="time-series-cross-validation"><a class="header" href="#time-series-cross-validation">Time Series Cross-Validation</a></h3>
-<p>For time-dependent data, uses specialized splits that respect temporal order to prevent data leakage.</p>
-<h2 id="choosing-the-right-method"><a class="header" href="#choosing-the-right-method">Choosing the Right Method</a></h2>
-<ul>
-<li><strong>K-Fold (K=5 or 10)</strong>: Good balance for most problems</li>
-<li><strong>Stratified K-Fold</strong>: Best for classification</li>
-<li><strong>LOOCV</strong>: Small datasets where you need unbiased estimates</li>
-<li><strong>Time Series CV</strong>: Temporal data where order matters</li>
-</ul>
-<h2 id="best-practices-3"><a class="header" href="#best-practices-3">Best Practices</a></h2>
-<ol>
-<li><strong>Use stratified K-fold</strong> for classification tasks</li>
-<li><strong>Consider computational cost</strong> - LOOCV is unbiased but expensive</li>
-<li><strong>Use time series CV</strong> for temporal data</li>
-<li><strong>Document your CV strategy</strong> for reproducibility</li>
-</ol>
-<h2 id="summary-4"><a class="header" href="#summary-4">Summary</a></h2>
-<p>Cross-validation provides robust performance estimates and helps select the best model. By choosing the appropriate method for your data type and problem, you can build more reliable and generalizable machine learning models.</p>
-<div style="break-before: page; page-break-before: always;"></div><h1 id="hyperparameter-tuning"><a class="header" href="#hyperparameter-tuning">Hyperparameter Tuning</a></h1>
-<p>Hyperparameter tuning is the process of finding the optimal settings for your model's hyperparameters - the parameters that are learned during training. Proper tuning can significantly improve model performance and is essential for building effective machine learning systems.</p>
-<h2 id="what-are-hyperparameters"><a class="header" href="#what-are-hyperparameters">What Are Hyperparameters?</a></h2>
-<p>Hyperparameters are settings that control the learning process and model architecture. Unlike model parameters (weights), they are not learned from the data. Common hyperparameters include:</p>
-<ul>
-<li>Learning rate</li>
-<li>Number of layers and neurons</li>
-<li>Batch size</li>
-<li>Number of epochs</li>
-<li>Regularization strength</li>
-<li>Dropout rate</li>
-</ul>
-<h2 id="why-hyperparameter-tuning-matters"><a class="header" href="#why-hyperparameter-tuning-matters">Why Hyperparameter Tuning Matters</a></h2>
-<p>Proper hyperparameter tuning can:</p>
-<ul>
-<li>Improve model performance by 10-50%</li>
-<li>Prevent overfitting and underfitting</li>
-<li>Speed up convergence</li>
-<li>Make models more robust</li>
-</ul>
-<h2 id="common-tuning-strategies"><a class="header" href="#common-tuning-strategies">Common Tuning Strategies</a></h2>
-<h3 id="grid-search"><a class="header" href="#grid-search">Grid Search</a></h3>
-<p>Grid search exhaustively tries all possible combinations of hyperparameters.</p>
-<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
-</span><span class="boring">fn main() {
-</span>use zyx::{Tensor, DType};
-
-// Simple grid search for hyperparameter tuning
-fn grid_search(
-    param_grid: &amp;[(f32, f32, f32)],  // (start, end, step) for each parameter
-    model_factory: fn(f32) -&gt; Box&lt;dyn Module&gt;,
-    data: &amp;Tensor,
-    labels: &amp;Tensor
-) -&gt; (f32, f32) {
-    let mut best_score = f32::NEG_INFINITY;
-    let mut best_params = (0.0, 0.0);
-    
-    for lr in (0.0..1.0).step_by(10) {
-        for reg in (0.0..0.1).step_by(5) {
-            // Create model with current hyperparameters
-            let model = model_factory(lr);
-            
-            // Train and evaluate
-            let score = train_and_evaluate(&amp;model, data, labels);
-            
-            // Update best parameters if needed
-            if score &gt; best_score {
-                best_score = score;
-                best_params = (lr, reg);
-            }
-        }
-    }
-    
-    best_params
-}
-<span class="boring">}</span></code></pre></pre>
-<h3 id="random-search"><a class="header" href="#random-search">Random Search</a></h3>
-<p>Random search samples random combinations of hyperparameters, often more efficient than grid search.</p>
-<h3 id="bayesian-optimization"><a class="header" href="#bayesian-optimization">Bayesian Optimization</a></h3>
-<p>Uses probabilistic models to find optimal hyperparameters more efficiently.</p>
-<h2 id="best-practices-for-hyperparameter-tuning"><a class="header" href="#best-practices-for-hyperparameter-tuning">Best Practices for Hyperparameter Tuning</a></h2>
-<ol>
-<li><strong>Use a validation set</strong>: Never tune hyperparameters on the test set</li>
-<li><strong>Start with reasonable defaults</strong>: Use known good starting points</li>
-<li><strong>Tune one parameter at a time</strong>: Isolate the effect of each parameter</li>
-<li><strong>Use logarithmic scales</strong>: Many hyperparameters work better on log scales</li>
-<li><strong>Document everything</strong>: Keep track of all experiments</li>
-</ol>
-<h2 id="hyperparameter-ranges"><a class="header" href="#hyperparameter-ranges">Hyperparameter Ranges</a></h2>
-<p>Common ranges to start with:</p>
-<ul>
-<li><strong>Learning rate</strong>: 0.0001 to 0.1 (logarithmic scale)</li>
-<li><strong>Batch size</strong>: 16 to 256 (powers of 2)</li>
-<li><strong>Number of layers</strong>: 1 to 10</li>
-<li><strong>Regularization</strong>: 0.0001 to 0.1 (logarithmic scale)</li>
-</ul>
-<h2 id="automated-tuning-tools"><a class="header" href="#automated-tuning-tools">Automated Tuning Tools</a></h2>
-<p>Consider using automated tuning tools like:</p>
-<ul>
-<li>Optuna</li>
-<li>Hyperopt</li>
-<li>Ray Tune</li>
-<li>Scikit-learn's GridSearchCV</li>
-</ul>
-<h2 id="summary-5"><a class="header" href="#summary-5">Summary</a></h2>
-<p>Hyperparameter tuning is crucial for building high-performance machine learning models. By systematically exploring different hyperparameter combinations and following best practices, you can find optimal settings that maximize your model's performance.</p>
-<div style="break-before: page; page-break-before: always;"></div><h1 id="model-evaluation-metrics"><a class="header" href="#model-evaluation-metrics">Model Evaluation Metrics</a></h1>
-<div style="break-before: page; page-break-before: always;"></div><h1 id="computer-vision-with-zyx"><a class="header" href="#computer-vision-with-zyx">Computer Vision with Zyx</a></h1>
-<div style="break-before: page; page-break-before: always;"></div><h1 id="convolutional-neural-networks"><a class="header" href="#convolutional-neural-networks">Convolutional Neural Networks</a></h1>
-<div style="break-before: page; page-break-before: always;"></div><h1 id="image-classification"><a class="header" href="#image-classification">Image Classification</a></h1>
-<div style="break-before: page; page-break-before: always;"></div><h1 id="object-detection-basics"><a class="header" href="#object-detection-basics">Object Detection Basics</a></h1>
-<div style="break-before: page; page-break-before: always;"></div><h1 id="image-segmentation"><a class="header" href="#image-segmentation">Image Segmentation</a></h1>
-<div style="break-before: page; page-break-before: always;"></div><h1 id="transfer-learning-for-cv"><a class="header" href="#transfer-learning-for-cv">Transfer Learning for CV</a></h1>
-<div style="break-before: page; page-break-before: always;"></div><h1 id="natural-language-processing"><a class="header" href="#natural-language-processing">Natural Language Processing</a></h1>
-<div style="break-before: page; page-break-before: always;"></div><h1 id="recurrent-neural-networks"><a class="header" href="#recurrent-neural-networks">Recurrent Neural Networks</a></h1>
-<div style="break-before: page; page-break-before: always;"></div><h1 id="lstms-and-grus"><a class="header" href="#lstms-and-grus">LSTMs and GRUs</a></h1>
-<div style="break-before: page; page-break-before: always;"></div><h1 id="attention-mechanisms"><a class="header" href="#attention-mechanisms">Attention Mechanisms</a></h1>
-<div style="break-before: page; page-break-before: always;"></div><h1 id="transformer-architecture"><a class="header" href="#transformer-architecture">Transformer Architecture</a></h1>
-<div style="break-before: page; page-break-before: always;"></div><h1 id="text-classification-and-generation"><a class="header" href="#text-classification-and-generation">Text Classification and Generation</a></h1>
-<div style="break-before: page; page-break-before: always;"></div><h1 id="advanced-architectures"><a class="header" href="#advanced-architectures">Advanced Architectures</a></h1>
-<div style="break-before: page; page-break-before: always;"></div><h1 id="generative-adversarial-networks"><a class="header" href="#generative-adversarial-networks">Generative Adversarial Networks</a></h1>
-<div style="break-before: page; page-break-before: always;"></div><h1 id="variational-autoencoders"><a class="header" href="#variational-autoencoders">Variational Autoencoders</a></h1>
-<div style="break-before: page; page-break-before: always;"></div><h1 id="reinforcement-learning-basics"><a class="header" href="#reinforcement-learning-basics">Reinforcement Learning Basics</a></h1>
-<div style="break-before: page; page-break-before: always;"></div><h1 id="graph-neural-networks"><a class="header" href="#graph-neural-networks">Graph Neural Networks</a></h1>
-<div style="break-before: page; page-break-before: always;"></div><h1 id="multi-modal-learning"><a class="header" href="#multi-modal-learning">Multi-modal Learning</a></h1>
-<div style="break-before: page; page-break-before: always;"></div><h1 id="self-supervised-learning"><a class="header" href="#self-supervised-learning">Self-supervised Learning</a></h1>
-<div style="break-before: page; page-break-before: always;"></div><h1 id="production-deployment"><a class="header" href="#production-deployment">Production Deployment</a></h1>
-<div style="break-before: page; page-break-before: always;"></div><h1 id="model-optimization-and-quantization"><a class="header" href="#model-optimization-and-quantization">Model Optimization and Quantization</a></h1>
-<div style="break-before: page; page-break-before: always;"></div><h1 id="onnx-export-and-import"><a class="header" href="#onnx-export-and-import">ONNX Export and Import</a></h1>
-<div style="break-before: page; page-break-before: always;"></div><h1 id="serving-models-with-rest-apis"><a class="header" href="#serving-models-with-rest-apis">Serving Models with REST APIs</a></h1>
-<div style="break-before: page; page-break-before: always;"></div><h1 id="edge-deployment-strategies"><a class="header" href="#edge-deployment-strategies">Edge Deployment Strategies</a></h1>
-<div style="break-before: page; page-break-before: always;"></div><h1 id="performance-monitoring"><a class="header" href="#performance-monitoring">Performance Monitoring</a></h1>
-<div style="break-before: page; page-break-before: always;"></div><h1 id="best-practices-and-patterns"><a class="header" href="#best-practices-and-patterns">Best Practices and Patterns</a></h1>
-<div style="break-before: page; page-break-before: always;"></div><h1 id="code-organization-and-structure"><a class="header" href="#code-organization-and-structure">Code Organization and Structure</a></h1>
-<div style="break-before: page; page-break-before: always;"></div><h1 id="testing-ml-models"><a class="header" href="#testing-ml-models">Testing ML Models</a></h1>
-<div style="break-before: page; page-break-before: always;"></div><h1 id="debugging-techniques"><a class="header" href="#debugging-techniques">Debugging Techniques</a></h1>
-<p>Zyx removes a number of PyTorch errors. Zyx tensors are immutable, so there is no:</p>
-<ul>
-<li>RuntimeError: one of the variables needed for gradient computation has been modified by an inplace operation: ... , which is output 0 of TBackward, is at version 2; expected version 1 instead. Hint: the backtrace further above shows the operation that failed to compute its gradient. The variable in question was changed in there or anywhere later. Good luck!</li>
-</ul>
-<p>Zyx technically allows mutability of tensors using set method, setting values of tensor A to tensor B, but tensors are just pointers, so this means merely that tensor B will now point to values previously pointed to be tensor A and tensor A will not exist anymore.</p>
-<p>Another error that cannot occur:</p>
-<ul>
-<li>RuntimeError: Trying to backward through the graph a second time, but the saved intermediate results have already been freed. Specify retain_graph=True when calling backward the first time.</li>
-</ul>
-<p>Zyx does not store intermediate tensors, so they cannot be freed :)</p>
-<h1 id="visualization"><a class="header" href="#visualization">Visualization</a></h1>
-<p>One aspect of debugging which is often overlooked is visual representation of graph. Programmers often like reading code more than looking at visualizatinos, but in particular if you are using complex modules defined somewhere outside of your code, it may be beneficial to be able to look at any part of the graph visually.</p>
-<p>Zyx asks you to give it any number of tensors and then plots all relations between them into picture. Let x, y and z be tensors.</p>
-<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
-</span><span class="boring">fn main() {
-</span>let dot_graph = Tensor::plot_graph([&amp;x, &amp;y, &amp;z]);
-fs::write("graph.dot", dot_graph).unwrap();
-<span class="boring">}</span></code></pre></pre>
-<p>If you want to see just forward part of graph, you can do for example this:</p>
-<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
-</span><span class="boring">fn main() {
-</span>let dot_graph = Tensor::plot_graph(model.into_iter().chain([&amp;x, &amp;loss]));
-<span class="boring">}</span></code></pre></pre>
-<p>Where model is your model, x is your input and loss is your loss/error.</p>
-<p>If you want to only look at the backward part of graph, that is also simple:</p>
-<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
-</span><span class="boring">fn main() {
-</span>let dot_graph = Tensor::plot_graph(grads.chain([&amp;loss]));
-<span class="boring">}</span></code></pre></pre>
-<p>Zyx will order nodes automatically, so there is no difference in the order in which tensors are stored in the iterator.</p>
-<div style="break-before: page; page-break-before: always;"></div><h1 id="performance-optimization"><a class="header" href="#performance-optimization">Performance Optimization</a></h1>
-<div style="break-before: page; page-break-before: always;"></div><h1 id="documentation-practices"><a class="header" href="#documentation-practices">Documentation Practices</a></h1>
-<div style="break-before: page; page-break-before: always;"></div><h1 id="comparison-with-other-frameworks"><a class="header" href="#comparison-with-other-frameworks">Comparison with Other Frameworks</a></h1>
-<div style="break-before: page; page-break-before: always;"></div><h1 id="zyx-vs-pytorch"><a class="header" href="#zyx-vs-pytorch">Zyx vs PyTorch</a></h1>
-<div style="break-before: page; page-break-before: always;"></div><h1 id="zyx-vs-tensorflow"><a class="header" href="#zyx-vs-tensorflow">Zyx vs TensorFlow</a></h1>
-<div style="break-before: page; page-break-before: always;"></div><h1 id="zyx-vs-jax"><a class="header" href="#zyx-vs-jax">Zyx vs JAX</a></h1>
-<div style="break-before: page; page-break-before: always;"></div><h1 id="when-to-choose-zyx"><a class="header" href="#when-to-choose-zyx">When to Choose Zyx</a></h1>
-<div style="break-before: page; page-break-before: always;"></div><h1 id="migration-guides"><a class="header" href="#migration-guides">Migration Guides</a></h1>
-<div style="break-before: page; page-break-before: always;"></div><h1 id="technical-deep-dives"><a class="header" href="#technical-deep-dives">Technical Deep Dives</a></h1>
-<div style="break-before: page; page-break-before: always;"></div><h1 id="backend-deep-dive"><a class="header" href="#backend-deep-dive">Backend Deep Dive</a></h1>
-<div style="break-before: page; page-break-before: always;"></div><h1 id="cpu-backend-optimization"><a class="header" href="#cpu-backend-optimization">CPU Backend Optimization</a></h1>
-<div style="break-before: page; page-break-before: always;"></div><h1 id="cuda-backend-development"><a class="header" href="#cuda-backend-development">CUDA Backend Development</a></h1>
-<div style="break-before: page; page-break-before: always;"></div><h1 id="opencl-backend-usage"><a class="header" href="#opencl-backend-usage">OpenCL Backend Usage</a></h1>
-<div style="break-before: page; page-break-before: always;"></div><h1 id="webgpu-integration"><a class="header" href="#webgpu-integration">WebGPU Integration</a></h1>
-<div style="break-before: page; page-break-before: always;"></div><h1 id="custom-kernel-development"><a class="header" href="#custom-kernel-development">Custom Kernel Development</a></h1>
-<div style="break-before: page; page-break-before: always;"></div><h1 id="performance-and-optimization"><a class="header" href="#performance-and-optimization">Performance and Optimization</a></h1>
-<div style="break-before: page; page-break-before: always;"></div><h1 id="profiling-and-benchmarking"><a class="header" href="#profiling-and-benchmarking">Profiling and Benchmarking</a></h1>
-<div style="break-before: page; page-break-before: always;"></div><h1 id="memory-optimization-techniques"><a class="header" href="#memory-optimization-techniques">Memory Optimization Techniques</a></h1>
-<div style="break-before: page; page-break-before: always;"></div><h1 id="computational-graph-optimization"><a class="header" href="#computational-graph-optimization">Computational Graph Optimization</a></h1>
-<div style="break-before: page; page-break-before: always;"></div><h1 id="parallel-processing-strategies"><a class="header" href="#parallel-processing-strategies">Parallel Processing Strategies</a></h1>
-<div style="break-before: page; page-break-before: always;"></div><h1 id="hardware-specific-optimizations"><a class="header" href="#hardware-specific-optimizations">Hardware-specific Optimizations</a></h1>
-<div style="break-before: page; page-break-before: always;"></div><h1 id="advanced-error-handling"><a class="header" href="#advanced-error-handling">Advanced Error Handling</a></h1>
-<div style="break-before: page; page-break-before: always;"></div><h1 id="debugging-complex-computational-graphs"><a class="header" href="#debugging-complex-computational-graphs">Debugging Complex Computational Graphs</a></h1>
-<div style="break-before: page; page-break-before: always;"></div><h1 id="memory-leak-detection"><a class="header" href="#memory-leak-detection">Memory Leak Detection</a></h1>
-<div style="break-before: page; page-break-before: always;"></div><h1 id="numerical-stability-issues"><a class="header" href="#numerical-stability-issues">Numerical Stability Issues</a></h1>
-<div style="break-before: page; page-break-before: always;"></div><h1 id="hardware-specific-error-handling"><a class="header" href="#hardware-specific-error-handling">Hardware-specific Error Handling</a></h1>
-<div style="break-before: page; page-break-before: always;"></div><h1 id="recovery-strategies"><a class="header" href="#recovery-strategies">Recovery Strategies</a></h1>
+<h2 id="environment-variables"><a class="header" href="#environment-variables">Environment Variables</a></h2>
+<h3 id="debug-flags"><a class="header" href="#debug-flags">Debug Flags</a></h3>
+<p>Set <code>ZYX_DEBUG</code> as a bitmask:</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Value</th><th>Output</th></tr>
+</thead>
+<tbody>
+<tr><td>1</td><td>Backend selection and hardware info</td></tr>
+<tr><td>2</td><td>Performance info during realize</td></tr>
+<tr><td>4</td><td>Kernels generated by the kernelizer</td></tr>
+<tr><td>8</td><td>Kernel IR (before GPU execution)</td></tr>
+<tr><td>16</td><td>Generated backend code</td></tr>
+<tr><td>32</td><td>Autotune exploration</td></tr>
+</tbody>
+</table>
+</div>
+<pre><code class="language-bash">ZYX_DEBUG=8 cargo run     # print kernel IR
+ZYX_DEBUG=16 cargo run    # print generated code
+</code></pre>
+<h3 id="colorless-output"><a class="header" href="#colorless-output">Colorless Output</a></h3>
+<pre><code class="language-bash">AGENT=1 ZYX_DEBUG=8 cargo test
+</code></pre>
+<h2 id="api-configuration"><a class="header" href="#api-configuration">API Configuration</a></h2>
+<pre><code class="language-rust ignore">Tensor::manual_seed(42);  // deterministic RNG
+Tensor::train();          // enable training mode
+Tensor::eval();           // disable training mode</code></pre>
 
                     </main>
 
@@ -1511,22 +947,11 @@ fs::write("graph.dot", dot_graph).unwrap();
 
         </div>
 
-        <!-- Livereload script (if served using the cli tool) -->
-        <script>
-            const wsProtocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
-            const wsAddress = wsProtocol + "//" + location.host + "/" + "__livereload";
-            const socket = new WebSocket(wsAddress);
-            socket.onmessage = function (event) {
-                if (event.data === "reload") {
-                    socket.close();
-                    location.reload();
-                }
-            };
-
-            window.onbeforeunload = function() {
-                socket.close();
-            }
-        </script>
+        <template id=fa-eye><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 576 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M288 32c-80.8 0-145.5 36.8-192.6 80.6C48.6 156 17.3 208 2.5 243.7c-3.3 7.9-3.3 16.7 0 24.6C17.3 304 48.6 356 95.4 399.4C142.5 443.2 207.2 480 288 480s145.5-36.8 192.6-80.6c46.8-43.5 78.1-95.4 93-131.1c3.3-7.9 3.3-16.7 0-24.6c-14.9-35.7-46.2-87.7-93-131.1C433.5 68.8 368.8 32 288 32zM432 256c0 79.5-64.5 144-144 144s-144-64.5-144-144s64.5-144 144-144s144 64.5 144 144zM288 192c0 35.3-28.7 64-64 64c-11.5 0-22.3-3-31.6-8.4c-.2 2.8-.4 5.5-.4 8.4c0 53 43 96 96 96s96-43 96-96s-43-96-96-96c-2.8 0-5.6 .1-8.4 .4c5.3 9.3 8.4 20.1 8.4 31.6z"/></svg></span></template>
+        <template id=fa-eye-slash><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M38.8 5.1C28.4-3.1 13.3-1.2 5.1 9.2S-1.2 34.7 9.2 42.9l592 464c10.4 8.2 25.5 6.3 33.7-4.1s6.3-25.5-4.1-33.7L525.6 386.7c39.6-40.6 66.4-86.1 79.9-118.4c3.3-7.9 3.3-16.7 0-24.6c-14.9-35.7-46.2-87.7-93-131.1C465.5 68.8 400.8 32 320 32c-68.2 0-125 26.3-169.3 60.8L38.8 5.1zM223.1 149.5C248.6 126.2 282.7 112 320 112c79.5 0 144 64.5 144 144c0 24.9-6.3 48.3-17.4 68.7L408 294.5c5.2-11.8 8-24.8 8-38.5c0-53-43-96-96-96c-2.8 0-5.6 .1-8.4 .4c5.3 9.3 8.4 20.1 8.4 31.6c0 10.2-2.4 19.8-6.6 28.3l-90.3-70.8zm223.1 298L373 389.9c-16.4 6.5-34.3 10.1-53 10.1c-79.5 0-144-64.5-144-144c0-6.9 .5-13.6 1.4-20.2L83.1 161.5C60.3 191.2 44 220.8 34.5 243.7c-3.3 7.9-3.3 16.7 0 24.6c14.9 35.7 46.2 87.7 93 131.1C174.5 443.2 239.2 480 320 480c47.8 0 89.9-12.9 126.2-32.5z"/></svg></span></template>
+        <template id=fa-copy><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M502.6 70.63l-61.25-61.25C435.4 3.371 427.2 0 418.7 0H255.1c-35.35 0-64 28.66-64 64l.0195 256C192 355.4 220.7 384 256 384h192c35.2 0 64-28.8 64-64V93.25C512 84.77 508.6 76.63 502.6 70.63zM464 320c0 8.836-7.164 16-16 16H255.1c-8.838 0-16-7.164-16-16L239.1 64.13c0-8.836 7.164-16 16-16h128L384 96c0 17.67 14.33 32 32 32h47.1V320zM272 448c0 8.836-7.164 16-16 16H63.1c-8.838 0-16-7.164-16-16L47.98 192.1c0-8.836 7.164-16 16-16H160V128H63.99c-35.35 0-64 28.65-64 64l.0098 256C.002 483.3 28.66 512 64 512h192c35.2 0 64-28.8 64-64v-32h-47.1L272 448z"/></svg></span></template>
+        <template id=fa-play><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 384 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M73 39c-14.8-9.1-33.4-9.4-48.5-.9S0 62.6 0 80V432c0 17.4 9.4 33.4 24.5 41.9s33.7 8.1 48.5-.9L361 297c14.3-8.7 23-24.2 23-41s-8.7-32.2-23-41L73 39z"/></svg></span></template>
+        <template id=fa-clock-rotate-left><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M75 75L41 41C25.9 25.9 0 36.6 0 57.9V168c0 13.3 10.7 24 24 24H134.1c21.4 0 32.1-25.9 17-41l-30.8-30.8C155 85.5 203 64 256 64c106 0 192 86 192 192s-86 192-192 192c-40.8 0-78.6-12.7-109.7-34.4c-14.5-10.1-34.4-6.6-44.6 7.9s-6.6 34.4 7.9 44.6C151.2 495 201.7 512 256 512c141.4 0 256-114.6 256-256S397.4 0 256 0C185.3 0 121.3 28.7 75 75zm181 53c-13.3 0-24 10.7-24 24V256c0 6.4 2.5 12.5 7 17l72 72c9.4 9.4 24.6 9.4 33.9 0s9.4-24.6 0-33.9l-65-65V152c0-13.3-10.7-24-24-24z"/></svg></span></template>
 
 
 
@@ -1535,13 +960,13 @@ fs::write("graph.dot", dot_graph).unwrap();
         </script>
 
 
-        <script src="elasticlunr.min.js"></script>
-        <script src="mark.min.js"></script>
-        <script src="searcher.js"></script>
+        <script src="elasticlunr-ef4e11c1.min.js"></script>
+        <script src="mark-09e88c2c.min.js"></script>
+        <script src="searcher-09f2665d.js"></script>
 
-        <script src="clipboard.min.js"></script>
-        <script src="highlight.js"></script>
-        <script src="book.js"></script>
+        <script src="clipboard-1626706a.min.js"></script>
+        <script src="highlight-abc7f01d.js"></script>
+        <script src="book-c22b7243.js"></script>
 
         <!-- Custom JS scripts -->
 

@@ -3,7 +3,7 @@
     <head>
         <!-- Book generated using mdBook -->
         <meta charset="UTF-8">
-        <title>Introduction</title>
+        <title>The Kernelizer</title>
 
 
         <!-- Custom HTML head -->
@@ -12,33 +12,33 @@
         <meta name="viewport" content="width=device-width, initial-scale=1">
         <meta name="theme-color" content="#ffffff">
 
-        <link rel="icon" href="favicon-de23e50b.svg">
-        <link rel="shortcut icon" href="favicon-8114d1fc.png">
-        <link rel="stylesheet" href="css/variables-8adf115d.css">
-        <link rel="stylesheet" href="css/general-0392ca55.css">
-        <link rel="stylesheet" href="css/chrome-fc474251.css">
-        <link rel="stylesheet" href="css/print-9e4910d8.css" media="print">
+        <link rel="icon" href="../favicon-de23e50b.svg">
+        <link rel="shortcut icon" href="../favicon-8114d1fc.png">
+        <link rel="stylesheet" href="../css/variables-8adf115d.css">
+        <link rel="stylesheet" href="../css/general-0392ca55.css">
+        <link rel="stylesheet" href="../css/chrome-fc474251.css">
+        <link rel="stylesheet" href="../css/print-9e4910d8.css" media="print">
 
         <!-- Fonts -->
-        <link rel="stylesheet" href="fonts/fonts-9644e21d.css">
+        <link rel="stylesheet" href="../fonts/fonts-9644e21d.css">
 
         <!-- Highlight.js Stylesheets -->
-        <link rel="stylesheet" id="mdbook-highlight-css" href="highlight-493f70e1.css">
-        <link rel="stylesheet" id="mdbook-tomorrow-night-css" href="tomorrow-night-4c0ae647.css">
-        <link rel="stylesheet" id="mdbook-ayu-highlight-css" href="ayu-highlight-3fdfc3ac.css">
+        <link rel="stylesheet" id="mdbook-highlight-css" href="../highlight-493f70e1.css">
+        <link rel="stylesheet" id="mdbook-tomorrow-night-css" href="../tomorrow-night-4c0ae647.css">
+        <link rel="stylesheet" id="mdbook-ayu-highlight-css" href="../ayu-highlight-3fdfc3ac.css">
 
         <!-- Custom theme stylesheets -->
 
 
         <!-- Provide site root and default themes to javascript -->
         <script>
-            const path_to_root = "";
+            const path_to_root = "../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-929adda2.js";
+            window.path_to_searchindex_js = "../searchindex-929adda2.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="toc-e7c93a4e.js"></script>
+        <script src="../toc-e7c93a4e.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -105,7 +105,7 @@
             <!-- populated by js -->
             <mdbook-sidebar-scrollbox class="sidebar-scrollbox"></mdbook-sidebar-scrollbox>
             <noscript>
-                <iframe class="sidebar-iframe-outer" src="toc.html"></iframe>
+                <iframe class="sidebar-iframe-outer" src="../toc.html"></iframe>
             </noscript>
             <div id="mdbook-sidebar-resize-handle" class="sidebar-resize-handle">
                 <div class="sidebar-resize-indicator"></div>
@@ -140,7 +140,7 @@
                     <h1 class="menu-title"></h1>
 
                     <div class="right-buttons">
-                        <a href="print.html" title="Print this book" aria-label="Print this book">
+                        <a href="../print.html" title="Print this book" aria-label="Print this book">
                             <span class=fa-svg id="print-button"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M128 0C92.7 0 64 28.7 64 64v96h64V64H354.7L384 93.3V160h64V93.3c0-17-6.7-33.3-18.7-45.3L400 18.7C388 6.7 371.7 0 354.7 0H128zM384 352v32 64H128V384 368 352H384zm64 32h32c17.7 0 32-14.3 32-32V256c0-35.3-28.7-64-64-64H64c-35.3 0-64 28.7-64 64v96c0 17.7 14.3 32 32 32H64v64c0 35.3 28.7 64 64 64H384c35.3 0 64-28.7 64-64V384zm-16-88c-13.3 0-24-10.7-24-24s10.7-24 24-24s24 10.7 24 24s-10.7 24-24 24z"/></svg></span>
                         </a>
 
@@ -174,51 +174,101 @@
 
                 <div id="mdbook-content" class="content">
                     <main>
-                        <h1 id="introduction"><a class="header" href="#introduction">Introduction</a></h1>
-<p>This book documents the internals of zyx — a machine learning library and compiler.</p>
-<p>Unlike traditional ML frameworks that separate the eager execution graph from the autograd graph, zyx uses a <strong>single unified graph</strong> for everything. This design eliminates duplication, enables seamless kernel fusion, and keeps the implementation lean — tensors are only 4 bytes and the graph uses ~10 node types.</p>
-<h2 id="who-this-is-for"><a class="header" href="#who-this-is-for">Who This is For</a></h2>
-<p>This book is for developers who want to understand how zyx works under the hood: the architecture decisions, the optimization passes, the backend system, and how pieces fit together.</p>
-<h2 id="the-architecture-at-a-glance"><a class="header" href="#the-architecture-at-a-glance">The Architecture at a Glance</a></h2>
-<pre><code class="language-text">User Code (Tensor API)
-       │
-       ▼
-   Tensor Graph ─── Autograd (reverse-mode on same graph)
-       │
-       ▼
-   Kernelizer (greedy fusion of graph nodes)
-       │
-       ▼
-   Kernel IR (linked-list of ops)
-       │
-       ▼
-   Optimization Passes (always-on + autotune)
-       │
-       ▼
-   Backend Codegen (C, CUDA, OpenCL, Vulkan, WGPU, HIP)
-</code></pre>
-<p>Every tensor operation builds a graph node. When you call <code>.realize()</code> or <code>.item()</code>, the graph is traversed bottom-up, compatible nodes are fused into kernels, the kernels are optimized, and finally compiled to native code for the target device.</p>
-<h2 id="why-this-design"><a class="header" href="#why-this-design">Why This Design</a></h2>
-<p>Most deep learning libraries use two separate graphs:</p>
-<ol>
-<li>A compute graph for eager execution</li>
-<li>An autograd graph for backpropagation</li>
-</ol>
-<p>Zyx uses <strong>one graph</strong> for both. This means:</p>
+                        <h1 id="the-kernelizer"><a class="header" href="#the-kernelizer">The Kernelizer</a></h1>
+<p>The kernelizer (<code>kernelize.rs</code>) is the bridge between the high-level tensor graph and the low-level kernel IR. It traverses the computation graph and fuses compatible nodes into kernels.</p>
+<h2 id="when-the-kernelizer-runs"><a class="header" href="#when-the-kernelizer-runs">When the Kernelizer Runs</a></h2>
+<p>The kernelizer is invoked during <code>realize()</code>:</p>
+<pre><code class="language-rust ignore">pub fn realize(x: &amp;[&amp;Tensor]) -&gt; Result&lt;(), ZyxError&gt; {
+    // 1. Lock the runtime
+    // 2. Identify which tensors need evaluation
+    // 3. Topological sort based on reference counts
+    // 4. Call kernelizer to build kernels
+    // 5. Optimize and compile each kernel
+    // 6. Execute on device
+    // 7. Release unused nodes
+}</code></pre>
+<h2 id="the-fusion-rule"><a class="header" href="#the-fusion-rule">The Fusion Rule</a></h2>
+<p>The kernelizer’s core logic is surprisingly simple:</p>
+<blockquote>
+<p><strong>A kernel boundary is created when a Reduce node is used by more than one other kernel.</strong></p>
+</blockquote>
+<p>This means:</p>
 <ul>
-<li>The autograd system doesn’t need its own graph infrastructure — it reuses the same nodes</li>
-<li>Kernel fusion works across operation boundaries without special handling</li>
-<li>The implementation is debuggable (one graph to inspect, not two)</li>
-<li>Memory overhead is minimal: each graph node is ~16 bytes</li>
+<li>A chain of element-wise ops (unary, binary) always fuses into one kernel</li>
+<li>View ops (reshape, expand, permute, pad) are always free — they become index arithmetic</li>
+<li>A reduce that feeds multiple downstream ops creates a boundary because each consumer needs the reduced result</li>
+<li>A reduce that feeds only one consumer stays fused</li>
 </ul>
-<p>The trade-off is that evaluation is lazy — you must call <code>realize()</code> to trigger computation. But this laziness enables optimizations that eager execution cannot: kernel fusion, dead code elimination, and cross-operation constant folding.</p>
+<p>Additional heuristics add boundaries when a kernel would be “too unwieldy”:</p>
+<ul>
+<li>Kernels with too many parameters get split</li>
+<li>Very large traversal depth triggers a split</li>
+</ul>
+<h2 id="how-fusion-works"><a class="header" href="#how-fusion-works">How Fusion Works</a></h2>
+<p>The kernelizer performs a bottom-up traversal of the graph:</p>
+<pre><code class="language-text">Input tensors (already realized)
+        │
+        ▼
+    Node A  ──┐
+              ├──► Kernel 1 (fused A + B)
+    Node B  ──┘
+        │
+        ▼
+    Node C (Reduce) ──► Kernel 2 (reduce only)
+        │
+        ├──► Node D ──┐
+        │             ├──► Kernel 3 (fused D + E)
+        └──► Node E ──┘
+</code></pre>
+<p>Node C is a reduce used by both Node D and Node E, so it gets its own kernel. Nodes A and B are element-wise ops feeding each other, so they fuse into one kernel.</p>
+<h2 id="the-kernelizer-struct"><a class="header" href="#the-kernelizer-struct">The Kernelizer Struct</a></h2>
+<pre><code class="language-rust ignore">struct Kernelizer&lt;'a&gt; {
+    must_keep_nodes: Set&lt;TensorId&gt;,
+    pending_stores: Set&lt;TensorId&gt;,
+    realized_nodes: Set&lt;TensorId&gt;,
+    kernels: Slab&lt;KMKernelId, Kernel&gt;,
+    visited: Map&lt;TensorId, (KMKernelId, OpId)&gt;,
+    rcs: Map&lt;TensorId, u32&gt;,
+    graph: &amp;'a Graph,
+    // ...
+}</code></pre>
+<p>The <code>visited</code> map tracks which graph nodes have been converted to kernel ops. When a graph node is already in <code>visited</code>, the kernelizer uses the existing kernel result instead of recomputing — this is how shared subgraphs are handled.</p>
+<h2 id="building-kernel-ops"><a class="header" href="#building-kernel-ops">Building Kernel Ops</a></h2>
+<p>Each graph node type maps to kernel IR operations:</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Graph Node</th><th>Kernel IR</th></tr>
+</thead>
+<tbody>
+<tr><td><code>Const</code></td><td><code>Op::Const</code></td></tr>
+<tr><td><code>Leaf</code></td><td><code>Op::Define</code> (global memory)</td></tr>
+<tr><td><code>Unary</code></td><td><code>Op::Unary</code></td></tr>
+<tr><td><code>Binary</code></td><td><code>Op::Binary</code> or <code>Op::Mad</code></td></tr>
+<tr><td><code>Reduce</code></td><td><code>Op::Reduce</code></td></tr>
+<tr><td><code>Reshape</code></td><td><code>Op::Move</code> (view unfolding)</td></tr>
+<tr><td><code>Expand</code></td><td><code>Op::Move</code> (view unfolding)</td></tr>
+<tr><td><code>Permute</code></td><td><code>Op::Move</code> (view unfolding)</td></tr>
+<tr><td><code>Pad</code></td><td><code>Op::Move</code> (view unfolding)</td></tr>
+</tbody>
+</table>
+</div>
+<p>View operations (reshape, expand, permute, pad) are unfolded into index arithmetic rather than becoming separate ops. This is how they become “free” — the index computation is inlined into the load/store operations.</p>
+<h2 id="kernel-caching"><a class="header" href="#kernel-caching">Kernel Caching</a></h2>
+<pre><code class="language-rust ignore">pub struct KernelCache {
+    pub cache: Map&lt;KernelId, Kernel&gt;,
+}</code></pre>
+<p>After a kernel is built and optimized, its hash is computed. If the same kernel was compiled before, the cached compiled program is reused. The cache persists across realize() calls, so repeated graph patterns (like training loop iterations) hit the cache on the second iteration.</p>
 
                     </main>
 
                     <nav class="nav-wrapper" aria-label="Page navigation">
                         <!-- Mobile navigation buttons -->
+                            <a rel="prev" href="../architecture/graph.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                                <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M41.4 233.4c-12.5 12.5-12.5 32.8 0 45.3l160 160c12.5 12.5 32.8 12.5 45.3 0s12.5-32.8 0-45.3L109.3 256 246.6 118.6c12.5-12.5 12.5-32.8 0-45.3s-32.8-12.5-45.3 0l-160 160z"/></svg></span>
+                            </a>
 
-                            <a rel="next prefetch" href="architecture/overview.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                            <a rel="next prefetch" href="../architecture/kernel_ir.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
                                 <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M278.6 233.4c12.5 12.5 12.5 32.8 0 45.3l-160 160c-12.5 12.5-32.8 12.5-45.3 0s-12.5-32.8 0-45.3L210.7 256 73.4 118.6c-12.5-12.5-12.5-32.8 0-45.3s32.8-12.5 45.3 0l160 160z"/></svg></span>
                             </a>
 
@@ -228,8 +278,11 @@
             </div>
 
             <nav class="nav-wide-wrapper" aria-label="Page navigation">
+                    <a rel="prev" href="../architecture/graph.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                        <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M41.4 233.4c-12.5 12.5-12.5 32.8 0 45.3l160 160c12.5 12.5 32.8 12.5 45.3 0s12.5-32.8 0-45.3L109.3 256 246.6 118.6c12.5-12.5 12.5-32.8 0-45.3s-32.8-12.5-45.3 0l-160 160z"/></svg></span>
+                    </a>
 
-                    <a rel="next prefetch" href="architecture/overview.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                    <a rel="next prefetch" href="../architecture/kernel_ir.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
                         <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M278.6 233.4c12.5 12.5 12.5 32.8 0 45.3l-160 160c-12.5 12.5-32.8 12.5-45.3 0s-12.5-32.8 0-45.3L210.7 256 73.4 118.6c-12.5-12.5-12.5-32.8 0-45.3s32.8-12.5 45.3 0l160 160z"/></svg></span>
                     </a>
             </nav>
@@ -249,13 +302,13 @@
         </script>
 
 
-        <script src="elasticlunr-ef4e11c1.min.js"></script>
-        <script src="mark-09e88c2c.min.js"></script>
-        <script src="searcher-09f2665d.js"></script>
+        <script src="../elasticlunr-ef4e11c1.min.js"></script>
+        <script src="../mark-09e88c2c.min.js"></script>
+        <script src="../searcher-09f2665d.js"></script>
 
-        <script src="clipboard-1626706a.min.js"></script>
-        <script src="highlight-abc7f01d.js"></script>
-        <script src="book-c22b7243.js"></script>
+        <script src="../clipboard-1626706a.min.js"></script>
+        <script src="../highlight-abc7f01d.js"></script>
+        <script src="../book-c22b7243.js"></script>
 
         <!-- Custom JS scripts -->
 
