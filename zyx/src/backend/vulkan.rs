@@ -607,7 +607,13 @@ pub(super) fn initialize_device(
             max_global_work_dims: vec![Dim::from(max_wg_count[0]); max_wg_count.len()],
             max_local_threads: Dim::from(max_wg_invocations),
             max_local_work_dims: vec![Dim::from(max_wg_size[0]); max_wg_size.len()],
-            ..Default::default()
+            preferred_vector_size: 4,
+            local_mem_size: todo!(),
+            max_register_bytes: 1024,
+            tensor_cores: false,
+            warp_size: 32,
+            supported_dtypes: todo!(),
+            has_native_exp2: true,
         };
 
         let vk_dev = VulkanDevice {
