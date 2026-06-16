@@ -9,6 +9,19 @@
 //! Each buffer can be produced by the original operation, a fused kernel,
 //! or a copy from another pool. Saturation adds fused variants without
 //! replacing existing ones.
+//!
+//! ## Saturation Approach
+//!
+//! Saturation enumerates all possible fusions using a `Map<Set<TensorId>, FusedKernel>`
+//! — a vector mapping groups of tensor IDs to their fused kernel. Each entry says
+//! "these N tensor IDs are fused together." This is sufficient to enumerate all
+//! possible fusion options: every fusion is a partition of the graph's tensor IDs,
+//! and the e-graph just needs to try different partitions and evaluate their costs.
+//!
+//! Open question: some fused kernels may require inserting new ops into the graph
+//! (e.g. a Reshape or Permute) to align dimensions for the fused kernel's interface.
+//! It's not yet clear how to represent the costs and placement of these inserted
+//! ops in the e-graph framework.
 
 use crate::DType;
 use crate::Map;
