@@ -23,12 +23,8 @@
 - [Architecture](#architecture)
 - [Why zyx is Different](#why-zyx-is-different)
 - [Backends](#backends)
-- [Documentation](#documentation)
 - [Status & License](#status--license)
-- [Contributing](#contributing)
 - [For Devs](#for-devs)
-- [Configuration](#configuration)
-- [Debug Options](#debug-options)
 
 ## Features
 
@@ -285,13 +281,6 @@ Tensor operations build a lazy computation graph. During realization, the graph 
 - [x] **WGPU** - Modern web and native GPU support via wgpu (WGSL), feature: `wgpu`
 - [x] **Vulkan** - Cross-platform GPU acceleration via Vulkan (SPIR-V)
 
-Please see [CONFIG.md](zyx/CONFIG.md) for detailed information on hardware configuration.
-
-## Documentation
-
-- **📚 Book**: [https://zk4x.github.io/zyx/](https://zk4x.github.io/zyx/) - Comprehensive guide
-- **📖 API Reference**: [https://docs.rs/zyx](https://docs.rs/zyx) - Complete API documentation
-
 ## Status & License
 
 - **Status**: Stable API with active performance optimization
@@ -299,38 +288,15 @@ Please see [CONFIG.md](zyx/CONFIG.md) for detailed information on hardware confi
 - **Rust Version**: Requires latest stable Rust
 - **Platforms**: Linux (primary), macOS, Windows (experimental)
 
-## Contributing
-
-Contributions are welcome! Please read the [CONTRIBUTING.md](CONTRIBUTING.md), [STYLE.md](STYLE.md), and [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) for guidelines.
-
-### How to Help
-
-- 🐛 **Find bugs**: correctness is our top priority
-- 📝 **Write tests**: integration tests are always appreciated
-- 📚 **Improve documentation**: typo fixes and better docs
-- ⚡ **Add optimizations**: significant performance improvements (>10%)
-- 🔌 **Add backends**: CUDA, ROCm, Metal, Vulkan support
-- 🎯 **Implement features**: new tensor operations, layers
-
-### Quick Links
-
-- [Examples](zyx-examples/) - MNIST, RNN implementations
-- [Issues](https://github.com/zk4x/zyx/issues) - Bug reports and feature requests
-
 ## For Devs
 
+- [Architecture Book](https://zk4x.github.io/zyx/) - How zyx works under the hood
 - [Contributing](CONTRIBUTING.md) - How to contribute, code style, and PR workflow
 - [Configuration](zyx/CONFIG.md) - Hardware device selection, autotune settings, backend config
 - [Environment Variables](zyx/ENV_VARS.md) - Debug flags and runtime options
-- [Architecture Book](https://zk4x.github.io/zyx/) - How zyx works under the hood
-
-## Configuration
-
-See [CONFIG.md](zyx/CONFIG.md) for details on hardware device selection, autotune settings, and backend configuration.
-
-## Debug Options
-
-See [ENV_VARS.md](zyx/ENV_VARS.md) for all available debug options and environment variables.
+- [API Reference](https://docs.rs/zyx) - Complete API documentation
+- [Examples](zyx-examples/) - MNIST, RNN implementations
+- [Issues](https://github.com/zk4x/zyx/issues) - Bug reports and feature requests
 
 ---
 
