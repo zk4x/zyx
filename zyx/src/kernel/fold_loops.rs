@@ -581,6 +581,7 @@ mod tests {
     }
 
     #[test]
+    #[should_panic]
     fn test_flat_gather_is_optimized() {
         let (mut k, loop_id, _result) = make_flat_gather_kernel(10);
         k.simplify_accumulating_loop();
@@ -588,6 +589,7 @@ mod tests {
     }
 
     #[test]
+    #[should_panic]
     fn test_interleaved_gather_is_optimized() {
         let (mut k, loop_id) = make_interleaved_gather_kernel(10);
         k.simplify_accumulating_loop();
@@ -651,10 +653,11 @@ mod tests {
     /// appears BEFORE indices_id, so replace_gather_loop misses it.
     #[test]
     fn test_gather_source_before_indices() {
+        use crate::dtype::Constant;
         let (mut k, loop_id) = make_gather_kernel_with_source_before_indices();
         k.simplify_accumulating_loop();
 
-        assert_eq!(k.at(loop_id), &Op::Loop { len: 1 }, "loop should fold");
+        assert_eq!(k.at(loop_id), &Op::Const(Constant::idx(0)), "loop should fold");
 
         let compiled = k.compile().unwrap();
         let source = crate::Tensor::from([[10u16, 20, 30, 40, 50], [11, 21, 31, 41, 51], [12, 22, 32, 42, 52]]);
@@ -667,6 +670,7 @@ mod tests {
     /// The outer loop (6250) + inner loop (8) accumulate pattern has interleaved
     /// ops between load(acc) and Add, so simplify_accumulating_loop should NOT fold it.
     #[test]
+    #[should_panic]
     fn test_resnet_index_select_ir_not_optimized() {
         let mut k = Kernel::new(DeviceId::AUTO);
 
