@@ -23,7 +23,7 @@ The `Slab<OpId, OpNode>` is a `Vec<OpNode>` with a free-list. `OpId` is a `u32` 
 
 ## Unfolding
 
-Before any optimization passes run, the kernel IR is **unfolded** — `LoadView`, `StoreView`, and `Move` ops are converted to direct index arithmetic (`Load`, `Store` with computed indices). After unfolding, the IR is purely linear with no heap-allocating ops. All ops are fixed-size and live in the arena.
+Before any optimization passes run, the kernel IR is **unfolded** — `LoadView`, `StoreView`, and `Move` ops are converted to direct index arithmetic (`Load`, `Store` with computed indices). After unfolding, all ops are fixed-size inline entries in the arena — no `Box`, no vtables, no per-op indirection.
 
 The IR is in SSA form, except for `Loop`, `If`, and `Define` ops (which can carry mutable state).
 

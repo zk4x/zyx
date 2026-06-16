@@ -18,43 +18,34 @@ pub fn realize(x: &[&Tensor]) -> Result<(), ZyxError> {
 }
 ```
 
-## The Fusion Rule
+## Fusion Logic
 
-The kernelizer's core logic is surprisingly simple:
+The kernelizer processes graph nodes **bottom-up** in topological order. Each graph node type adds ops to the kernel its input lives in — fusion is the default, splitting happens only when needed.
 
-> **A kernel boundary is created when a Reduce node is used by more than one other kernel.**
+### Per-Node Type Behavior
 
-This means:
-- A chain of element-wise ops (unary, binary) always fuses into one kernel
-- View ops (reshape, expand, permute, pad) are always free — they become index arithmetic
-- A reduce that feeds multiple downstream ops creates a boundary because each consumer needs the reduced result
-- A reduce that feeds only one consumer stays fused
+| Graph Node | Kernel Decision |
+|------------|-----------------|
+| `Unary`, `Cast` | Always fuse — add op to the input's kernel |
+| `Expand`, `Permute`, `Reshape`, `Pad` | Add `Move` op to the input's kernel (free after unfolding) |
+| `Binary` | Merge both input kernels into one |
+| `Reduce` | Add reduce op to the input's kernel |
+| `Const` | Create a new kernel with a constant |
 
-Additional heuristics add boundaries when a kernel would be "too unwieldy":
-- Kernels with too many parameters get split
-- Very large traversal depth triggers a split
+### When Splitting Happens
 
-## How Fusion Works
+The key splitting decision is in `duplicate_or_store()`. When a kernel has multiple outputs (a tensor used by >1 downstream), the kernelizer chooses:
 
-The kernelizer performs a bottom-up traversal of the graph:
+1. **If preceded by a reduce** (expensive to recompute) → store the intermediate result to global memory, create a new load kernel for the next consumer
+2. **If NOT preceded by a reduce** (cheap to recompute) → duplicate the kernel so each consumer gets its own copy
 
-```text
-Input tensors (already realized)
-        │
-        ▼
-    Node A  ──┐
-              ├──► Kernel 1 (fused A + B)
-    Node B  ──┘
-        │
-        ▼
-    Node C (Reduce) ──► Kernel 2 (reduce only)
-        │
-        ├──► Node D ──┐
-        │             ├──► Kernel 3 (fused D + E)
-        └──► Node E ──┘
-```
+This is a cost heuristic, not a simple rule: is recomputing cheaper than a global memory store+load?
 
-Node C is a reduce used by both Node D and Node E, so it gets its own kernel. Nodes A and B are element-wise ops feeding each other, so they fuse into one kernel.
+Stores also trigger automatically when a graph node is requested as the final output (`to_eval`), creating a natural boundary there.
+
+### Practical Outcome
+
+Each kernel tends to center around one reduce loop, with all fused element-wise ops grouped before and after it. A chain of element-wise ops always fuses into one kernel. Reduce-heavy graphs may end up with each reduce in its own kernel separated by store/load boundaries.
 
 ## The Kernelizer Struct
 

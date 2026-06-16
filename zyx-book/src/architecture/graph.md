@@ -72,7 +72,7 @@ The graph is designed to stay small. With ~16 bytes per node + 4 bytes reference
 Inspect the graph at runtime:
 
 ```rust,ignore
-let dot = Tensor::plot_dot_graph(&[&output]);
+Tensor::plot_graph(&[&output], "graph")?;
 ```
 
 Or with environment variables:

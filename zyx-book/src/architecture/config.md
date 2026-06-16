@@ -57,7 +57,7 @@ AGENT=1 ZYX_DEBUG=8 cargo test
 ## API Configuration
 
 ```rust,ignore
-Tensor::manual_seed(42);  // deterministic RNG
-Tensor::train();          // enable training mode
-Tensor::eval();           // disable training mode
+Tensor::manual_seed(42);            // deterministic RNG
+Tensor::set_training(true);         // enable training mode
+Tensor::set_training(false);        // disable training mode
 ```

@@ -80,11 +80,11 @@ Each backend tries to initialize. Failure (missing driver, no hardware) causes i
 | Backend | Source | Target | Runtime |
 |---------|--------|--------|---------|
 | C | `c.rs` | C99 (compiled to .so) | Clang/GCC |
-| CUDA | `cuda.rs` | PTX | CUDA driver via `libloading` |
+| CUDA | `cuda.rs` | CUDA C (compiled to SASS) | CUDA driver via `libloading` |
 | HIP | `hip.rs` | HIP | ROCm via `libloading` |
 | OpenCL | `opencl.rs` | OpenCL C | OpenCL runtime via `libloading` |
 | Vulkan | `vulkan.rs` | SPIR-V | Vulkan via `ash` crate |
-| WGPU | `wgpu.rs` | WGSL | WGPU (feature: `wgpu`) |
+| WGPU | `wgpu.rs` | SPIR-V | WGPU (feature: `wgpu`) |
 | Dummy | `dummy.rs` | — | No hardware needed (fake device) |
 
 All backends except WGPU and Tenstorrent are compiled in by default. WGPU requires `--features wgpu`. Tenstorrent requires `--features tenstorrent`.

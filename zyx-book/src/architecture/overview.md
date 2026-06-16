@@ -42,7 +42,7 @@ The graph opset was taken from tinygrad, with changes to make it even smaller. T
 | `Reduce` | Sum, max, etc. |
 | `Cast` | Change dtype |
 | `Unary` | Element-wise: relu, exp, sin, etc. |
-| `Binary` | Element-wise: add, mul, matmul, etc. |
+| `Binary` | Element-wise: add, mul, etc. |
 
 Each node is ~16 bytes, plus a 4-byte reference count and slab metadata overhead. Still small enough that 10,000 nodes cost ~200 KB.
 
@@ -56,7 +56,7 @@ View operations (reshape, expand, permute, pad) are unfolded into index arithmet
 
 ### 4. The Kernel IR
 
-After unfolding, the DAG is converted into a **linear structure** — a doubly-linked list of ops stored in an arena (the `Slab<OpId, OpNode>`). No heap allocation after unfolding. Each `OpNode` is **32 bytes** fixed size.
+After unfolding, the DAG is converted into a **linear structure** — a doubly-linked list of ops stored in an arena (the `Slab<OpId, OpNode>`). Each `OpNode` is **32 bytes** stored inline in the arena — no `Box`, no vtables, no indirection.
 
 OpId is a `u32` index into the slab — random access is O(1). The IR is SSA, except for loops and `Define` ops (which can be mutable).
 
@@ -119,7 +119,7 @@ The scheduler picks a device based on free memory and compute capacity. It handl
 ## Key Design Decisions
 
 - **One graph for everything** — autograd and computation share the same graph. No need to specify which tensors require gradients.
-- **No heap IR ops** — after unfolding, all ops live in the arena. Cache-efficient, no allocation during optimization.
+- **Inline ops** — all ops live in the arena as flat 32-byte entries. No `Box`, no vtables, no indirection. Passes allocate their own working data (hash maps, vecs) as needed.
 - **Linear IR** — linked list of fixed-size nodes. Optimizations traverse front-to-back or back-to-back.
 - **Backend codegen is trivial** — the hard work is in the IR-level optimization passes.
 - **Explicit GradientTape** — prevents graph node deletion instead of building a separate graph.

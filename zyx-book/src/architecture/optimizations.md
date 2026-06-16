@@ -53,14 +53,13 @@ Removes ops whose results are never used. This is always the final pass — it e
 The autotune system clones the kernel, applies optimization variants, and evaluates each separately. No egraphs — just clone, transform, hash, evaluate. The cost function can evaluate **thousands of variants per second**.
 
 ```rust,ignore
-const AVAILABLE_OPTIMIZATIONS: [OptConfigFn; 7] = [
+const AVAILABLE_OPTIMIZATIONS: [OptConfigFn; 6] = [
     Kernel::opt_reassociate_commutative,
     Kernel::opt_split_global_to_local,
     Kernel::opt_upcast,
-    Kernel::opt_register_tiling,
+    Kernel::opt_register_blocking,
     Kernel::opt_tiled_reduce,
     Kernel::opt_split_loop,
-    Kernel::opt_licm,
 ];
 ```
 
@@ -76,9 +75,9 @@ Adjusts block and thread dimensions for better memory access patterns. For examp
 
 Expands scalar operations to vector operations (e.g., 4-wide SIMD on CPU, wider on GPU).
 
-### Register Tiling
+### Register Blocking
 
-Tiles operations to keep intermediate values in registers instead of spilling to global memory.
+Unrolls tree reductions and coarsens global threads so each thread processes multiple elements, increasing computational intensity and register reuse.
 
 ### Tiled Reduction
 
@@ -88,9 +87,6 @@ Implements multi-stage reduction: threads reduce into registers, workgroups redu
 
 Splits large loops into chunks for better register pressure and instruction-level parallelism.
 
-### Loop-Invariant Code Motion
-
-The LICM pass also participates in autotuning as a tunable variant (when to hoist vs. when to keep inside the loop).
 
 ## How Autotuning Searches
 
