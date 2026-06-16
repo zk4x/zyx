@@ -782,6 +782,7 @@ impl Kernel {
     pub fn compile(mut self) -> Result<CompiledKernel, crate::ZyxError> {
         self.unfold_movement_ops();
         self.sort_global_defines();
+        self.dead_code_elimination();
         self.verify();
 
         let device_id = self.device_id;

@@ -633,73 +633,46 @@ mod tests {
     fn make_gather_kernel_with_source_before_indices() -> (Kernel, OpId) {
         let mut k = Kernel::new(DeviceId::AUTO);
 
-        // Constants
-        let zi = k.const_idx(0u32);
-        let zz = k.const_val(0u16);
-        let c0_i32 = k.const_val(0i32);
-        let c5_i32 = k.const_val(5i32);
-        let base = k.const_idx(0u32); // r125 = row * 5 (simplified to 0 for test)
-
-        // Output tensor globals (simplified — just use ones for layout)
-        let _indices_tensor = k.define(DType::U16, Scope::Global, false, 9);
-        let _source_tensor = k.define(DType::U16, Scope::Global, false, 15);
-
-        // Accumulator
-        let acc = k.define(DType::U16, Scope::Register, false, 1);
-        k.store(acc, zz, zi, MemLayout::Scalar);
+        let r95 = k.define(DType::U16, Scope::Global, true, 9);
+        let r114 = k.define(DType::U16, Scope::Global, true, 15);
+        let r122 = k.define(DType::U16, Scope::Global, false, 9);
+        let r7 = k.const_val(0u32);
+        let r22 = k.const_val(0u16);
+        let r74 = k.const_val(3u32);
+        let r26 = k.const_val(0i32);
+        let r31 = k.const_val(5i32);
+        let r110 = k.const_val(5u32);
+        let r37 = k.gidx(0, 3);
+        let r5 = k.gidx(1, 3);
+        let r1 = k.define(DType::U16, Scope::Register, false, 1);
+        k.store(r1, r22, r7, MemLayout::Scalar);
+        let r123 = k.binary(r37, r74, BOp::Mul);
+        let r92 = k.binary(r123, r5, BOp::Add);
+        let r71 = k.binary(r37, r110, BOp::Mul);
 
         let loop_id = k.loop_(5);
 
-        // r20: i32 = i32(r3) — cast loop_id to i32 (for Eq)
-        let loop_i32 = k.cast(loop_id, DType::I32);
-
-        // r96: u16 = load(indices_tensor, pos) — load index value
-        let indices_load = k.load(_indices_tensor, zi, MemLayout::Scalar);
-
-        // r111: u32 = base + r3 — source index computation (references loop_id!)
-        // This comes BEFORE indices_id (r35), so replace_gather_loop misses it!
-        let source_idx = k.binary(base, loop_id, BOp::Add);
-
-        // r115: u16 = load(source_tensor, r111) — load source value
-        let source_load = k.load(_source_tensor, source_idx, MemLayout::Scalar);
-
-        // r18: u16 = load(acc, 0) — load accumulator (found by identify_accumulate_pattern)
-        let load_acc = k.load(acc, zi, MemLayout::Scalar);
-
-        // r24: i32 = i32(r96) — cast indices to i32
-        let idx_i32 = k.cast(indices_load, DType::I32);
-
-        // r29: i32 = r24 < 0 (negative index handling)
-        let neg_check = k.binary(idx_i32, c0_i32, BOp::Cmplt);
-
-        // r30: i32 = i32(r29)
-        let neg_flag = k.cast(neg_check, DType::I32);
-
-        // r34: i32 = r30 * 5
-        let neg_adjust = k.binary(neg_flag, c5_i32, BOp::Mul);
-
-        // r35: i32 = r24 + r34 — adjusted indices (this is indices_id!)
-        let indices_adj = k.binary(idx_i32, neg_adjust, BOp::Add);
-
-        // r38: i32 = r35 == r20
-        let eq = k.binary(indices_adj, loop_i32, BOp::Eq);
-
-        // r39: u16 = u16(r38)
-        let mask = k.cast(eq, DType::U16);
-
-        // r45: u16 = r39 * r115
-        let mul = k.binary(mask, source_load, BOp::Mul);
-
-        // r42: u16 = r45 + r18
-        let add = k.binary(mul, load_acc, BOp::Add);
-
-        // store(acc, r42, 0)
-        k.store(acc, add, zi, MemLayout::Scalar);
+        let r20 = k.cast(loop_id, DType::I32);
+        let r96 = k.load(r95, r92, MemLayout::Scalar);
+        let r111 = k.binary(r71, loop_id, BOp::Add);
+        let r115 = k.load(r114, r111, MemLayout::Scalar);
+        let r18 = k.load(r1, r7, MemLayout::Scalar);
+        let r24 = k.cast(r96, DType::I32);
+        let r29 = k.binary(r24, r26, BOp::Cmplt);
+        let r30 = k.cast(r29, DType::I32);
+        let r118 = k.binary(r30, r31, BOp::Mul);
+        let r35 = k.binary(r24, r118, BOp::Add);
+        let r38 = k.binary(r35, r20, BOp::Eq);
+        let r39 = k.cast(r38, DType::U16);
+        let r97 = k.binary(r39, r115, BOp::Mul);
+        let r42 = k.binary(r97, r18, BOp::Add);
+        k.store(r1, r42, r7, MemLayout::Scalar);
 
         k.end_loop();
 
-        // r46: u16 = load(acc, 0) — result after loop
-        let _result = k.load(acc, zi, MemLayout::Scalar);
+        let r46 = k.load(r1, r7, MemLayout::Scalar);
+        let r121 = k.binary(r5, r123, BOp::Add);
+        k.store(r122, r46, r121, MemLayout::Scalar);
 
         (k, loop_id)
     }
@@ -711,8 +684,13 @@ mod tests {
         let (mut k, loop_id) = make_gather_kernel_with_source_before_indices();
         k.simplify_accumulating_loop();
 
-        // Loop should have been folded
         assert_eq!(k.at(loop_id), &Op::Loop { len: 1 }, "loop should fold");
+
+        let compiled = k.compile().unwrap();
+        let source = crate::Tensor::from([[10u16, 20, 30, 40, 50], [11, 21, 31, 41, 51], [12, 22, 32, 42, 52]]);
+        let indices = crate::Tensor::from([[0u16, 2, 4], [1, 3, 0], [4, 1, 2]]);
+        let result = compiled.forward(&[&indices, &source], [3, 3]);
+        assert_eq!(result, [[10u16, 30, 50], [21, 41, 11], [52, 22, 32]]);
     }
 
     /// Reproduce the exact IR from resnet index_select kernel (ZYX_DEBUG=8 output).

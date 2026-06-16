@@ -25,6 +25,10 @@ This document is your single source of truth. If it doesn't contain the answer, 
 
 **Do NOT "fix" things you weren't asked to fix.** If you notice something wrong (missing catch_unwind, formatting issues, whatever), shut up. Do not mention it. Do not fix it. The user knows. If they want it fixed, they'll ask.
 
+**Never delete or modify comments/code without asking first.** If you're editing around comments, preserve them exactly. Accidental deletion is not an excuse — re-read your edit before applying.
+
+**If you abort a build mid-compilation, linker errors follow.** Always run `cargo clean -p zyx && cargo build -p zyx` before the next test run whenever an interrupt happened.
+
 **When the user says "commit current state", commit the EXACT current state.** Do not modify anything first. Not even if it looks like a debugging artifact. Not even if it looks obviously wrong. Commit exactly what's on disk.
 
 **Never edit a file without explicit instruction from the user.** "Restore the original handler" is explicit. "Investigate the crash" is NOT explicit. If you're unsure whether the user wants a file edited, you don't edit it.
