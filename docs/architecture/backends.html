@@ -35,7 +35,7 @@
             const path_to_root = "../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-929adda2.js";
+            window.path_to_searchindex_js = "../searchindex-feb5aeb4.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../toc-e7c93a4e.js"></script>
@@ -240,11 +240,11 @@ pub enum MemoryPool {
 </thead>
 <tbody>
 <tr><td>C</td><td><code>c.rs</code></td><td>C99 (compiled to .so)</td><td>Clang/GCC</td></tr>
-<tr><td>CUDA</td><td><code>cuda.rs</code></td><td>PTX</td><td>CUDA driver via <code>libloading</code></td></tr>
+<tr><td>CUDA</td><td><code>cuda.rs</code></td><td>CUDA C (compiled to SASS)</td><td>CUDA driver via <code>libloading</code></td></tr>
 <tr><td>HIP</td><td><code>hip.rs</code></td><td>HIP</td><td>ROCm via <code>libloading</code></td></tr>
 <tr><td>OpenCL</td><td><code>opencl.rs</code></td><td>OpenCL C</td><td>OpenCL runtime via <code>libloading</code></td></tr>
 <tr><td>Vulkan</td><td><code>vulkan.rs</code></td><td>SPIR-V</td><td>Vulkan via <code>ash</code> crate</td></tr>
-<tr><td>WGPU</td><td><code>wgpu.rs</code></td><td>WGSL</td><td>WGPU (feature: <code>wgpu</code>)</td></tr>
+<tr><td>WGPU</td><td><code>wgpu.rs</code></td><td>SPIR-V</td><td>WGPU (feature: <code>wgpu</code>)</td></tr>
 <tr><td>Dummy</td><td><code>dummy.rs</code></td><td>—</td><td>No hardware needed (fake device)</td></tr>
 </tbody>
 </table>

@@ -35,7 +35,7 @@
             const path_to_root = "../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-929adda2.js";
+            window.path_to_searchindex_js = "../searchindex-feb5aeb4.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../toc-e7c93a4e.js"></script>
@@ -209,7 +209,7 @@ let z = y * 2.0;
 <tr><td><code>Reduce</code></td><td>Sum, max, etc.</td></tr>
 <tr><td><code>Cast</code></td><td>Change dtype</td></tr>
 <tr><td><code>Unary</code></td><td>Element-wise: relu, exp, sin, etc.</td></tr>
-<tr><td><code>Binary</code></td><td>Element-wise: add, mul, matmul, etc.</td></tr>
+<tr><td><code>Binary</code></td><td>Element-wise: add, mul, etc.</td></tr>
 </tbody>
 </table>
 </div>
@@ -219,7 +219,7 @@ let z = y * 2.0;
 <p>When <code>realize()</code> is called, the kernelizer traverses the graph bottom-up and fuses compatible nodes into kernels. The kernelizer uses heuristics to decide where kernel boundaries go — it’s not a simple rule. A reduce node used by multiple downstream nodes does not necessarily force a split. If two downstream nodes are both expand ops, that may force fusion. Element-wise chains will almost always fuse into one kernel.</p>
 <p>View operations (reshape, expand, permute, pad) are unfolded into index arithmetic in the kernel, becoming “free” — they don’t create separate operations.</p>
 <h3 id="4-the-kernel-ir"><a class="header" href="#4-the-kernel-ir">4. The Kernel IR</a></h3>
-<p>After unfolding, the DAG is converted into a <strong>linear structure</strong> — a doubly-linked list of ops stored in an arena (the <code>Slab&lt;OpId, OpNode&gt;</code>). No heap allocation after unfolding. Each <code>OpNode</code> is <strong>32 bytes</strong> fixed size.</p>
+<p>After unfolding, the DAG is converted into a <strong>linear structure</strong> — a doubly-linked list of ops stored in an arena (the <code>Slab&lt;OpId, OpNode&gt;</code>). Each <code>OpNode</code> is <strong>32 bytes</strong> stored inline in the arena — no <code>Box</code>, no vtables, no indirection.</p>
 <p>OpId is a <code>u32</code> index into the slab — random access is O(1). The IR is SSA, except for loops and <code>Define</code> ops (which can be mutable).</p>
 <p>The design goal of the small opset: optimizations are easy to write. If you understand the IR, you can add a new pass in an afternoon.</p>
 <h3 id="5-optimization-passes"><a class="header" href="#5-optimization-passes">5. Optimization Passes</a></h3>
@@ -271,7 +271,7 @@ let z = y * 2.0;
 <h2 id="key-design-decisions"><a class="header" href="#key-design-decisions">Key Design Decisions</a></h2>
 <ul>
 <li><strong>One graph for everything</strong> — autograd and computation share the same graph. No need to specify which tensors require gradients.</li>
-<li><strong>No heap IR ops</strong> — after unfolding, all ops live in the arena. Cache-efficient, no allocation during optimization.</li>
+<li><strong>Inline ops</strong> — all ops live in the arena as flat 32-byte entries. No <code>Box</code>, no vtables, no indirection. Passes allocate their own working data (hash maps, vecs) as needed.</li>
 <li><strong>Linear IR</strong> — linked list of fixed-size nodes. Optimizations traverse front-to-back or back-to-back.</li>
 <li><strong>Backend codegen is trivial</strong> — the hard work is in the IR-level optimization passes.</li>
 <li><strong>Explicit GradientTape</strong> — prevents graph node deletion instead of building a separate graph.</li>

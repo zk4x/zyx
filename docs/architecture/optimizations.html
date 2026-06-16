@@ -35,7 +35,7 @@
             const path_to_root = "../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-929adda2.js";
+            window.path_to_searchindex_js = "../searchindex-feb5aeb4.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../toc-e7c93a4e.js"></script>
@@ -204,14 +204,13 @@
 <p>Removes ops whose results are never used. This is always the final pass — it ensures backends never receive unreferenced ops.</p>
 <h2 id="autotuned-passes"><a class="header" href="#autotuned-passes">Autotuned Passes</a></h2>
 <p>The autotune system clones the kernel, applies optimization variants, and evaluates each separately. No egraphs — just clone, transform, hash, evaluate. The cost function can evaluate <strong>thousands of variants per second</strong>.</p>
-<pre><code class="language-rust ignore">const AVAILABLE_OPTIMIZATIONS: [OptConfigFn; 7] = [
+<pre><code class="language-rust ignore">const AVAILABLE_OPTIMIZATIONS: [OptConfigFn; 6] = [
     Kernel::opt_reassociate_commutative,
     Kernel::opt_split_global_to_local,
     Kernel::opt_upcast,
-    Kernel::opt_register_tiling,
+    Kernel::opt_register_blocking,
     Kernel::opt_tiled_reduce,
     Kernel::opt_split_loop,
-    Kernel::opt_licm,
 ];</code></pre>
 <h3 id="reassociation"><a class="header" href="#reassociation">Reassociation</a></h3>
 <p>Reorders commutative operations to create more fusion opportunities.</p>
@@ -219,14 +218,12 @@
 <p>Adjusts block and thread dimensions for better memory access patterns. For example, a kernel with <code>block_dim = 1024, thread_dim = 1</code> becomes <code>block_dim = 32, thread_dim = 32</code>. This enables coalesced memory access on GPU.</p>
 <h3 id="upcast-vectorization"><a class="header" href="#upcast-vectorization">Upcast Vectorization</a></h3>
 <p>Expands scalar operations to vector operations (e.g., 4-wide SIMD on CPU, wider on GPU).</p>
-<h3 id="register-tiling"><a class="header" href="#register-tiling">Register Tiling</a></h3>
-<p>Tiles operations to keep intermediate values in registers instead of spilling to global memory.</p>
+<h3 id="register-blocking"><a class="header" href="#register-blocking">Register Blocking</a></h3>
+<p>Unrolls tree reductions and coarsens global threads so each thread processes multiple elements, increasing computational intensity and register reuse.</p>
 <h3 id="tiled-reduction"><a class="header" href="#tiled-reduction">Tiled Reduction</a></h3>
 <p>Implements multi-stage reduction: threads reduce into registers, workgroups reduce into local memory, then global atomics.</p>
 <h3 id="loop-splitting"><a class="header" href="#loop-splitting">Loop Splitting</a></h3>
 <p>Splits large loops into chunks for better register pressure and instruction-level parallelism.</p>
-<h3 id="loop-invariant-code-motion"><a class="header" href="#loop-invariant-code-motion">Loop-Invariant Code Motion</a></h3>
-<p>The LICM pass also participates in autotuning as a tunable variant (when to hoist vs. when to keep inside the loop).</p>
 <h2 id="how-autotuning-searches"><a class="header" href="#how-autotuning-searches">How Autotuning Searches</a></h2>
 <ol>
 <li>Start with the initial kernel and run always-on optimizations</li>

@@ -35,7 +35,7 @@
             const path_to_root = "../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-929adda2.js";
+            window.path_to_searchindex_js = "../searchindex-feb5aeb4.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../toc-e7c93a4e.js"></script>
@@ -220,7 +220,7 @@ pub struct Graph {
 <p>The graph is designed to stay small. With ~16 bytes per node + 4 bytes reference count, a training iteration with 10,000 operations costs ~200 KB. When the tape is dropped at the end of each iteration, the graph shrinks back to baseline.</p>
 <h2 id="debugging-the-graph"><a class="header" href="#debugging-the-graph">Debugging the Graph</a></h2>
 <p>Inspect the graph at runtime:</p>
-<pre><code class="language-rust ignore">let dot = Tensor::plot_dot_graph(&amp;[&amp;output]);</code></pre>
+<pre><code class="language-rust ignore">Tensor::plot_graph(&amp;[&amp;output], "graph")?;</code></pre>
 <p>Or with environment variables:</p>
 <pre><code class="language-bash">ZYX_DEBUG=8 cargo run  # prints kernel IR during compilation
 </code></pre>

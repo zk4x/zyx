@@ -35,7 +35,7 @@
             const path_to_root = "../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-929adda2.js";
+            window.path_to_searchindex_js = "../searchindex-feb5aeb4.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../toc-e7c93a4e.js"></script>
@@ -228,9 +228,9 @@ ZYX_DEBUG=16 cargo run    # print generated code
 <pre><code class="language-bash">AGENT=1 ZYX_DEBUG=8 cargo test
 </code></pre>
 <h2 id="api-configuration"><a class="header" href="#api-configuration">API Configuration</a></h2>
-<pre><code class="language-rust ignore">Tensor::manual_seed(42);  // deterministic RNG
-Tensor::train();          // enable training mode
-Tensor::eval();           // disable training mode</code></pre>
+<pre><code class="language-rust ignore">Tensor::manual_seed(42);            // deterministic RNG
+Tensor::set_training(true);         // enable training mode
+Tensor::set_training(false);        // disable training mode</code></pre>
 
                     </main>
 

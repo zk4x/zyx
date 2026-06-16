@@ -35,7 +35,7 @@
             const path_to_root = "../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-929adda2.js";
+            window.path_to_searchindex_js = "../searchindex-feb5aeb4.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../toc-e7c93a4e.js"></script>
@@ -187,40 +187,33 @@
     // 6. Execute on device
     // 7. Release unused nodes
 }</code></pre>
-<h2 id="the-fusion-rule"><a class="header" href="#the-fusion-rule">The Fusion Rule</a></h2>
-<p>The kernelizer’s core logic is surprisingly simple:</p>
-<blockquote>
-<p><strong>A kernel boundary is created when a Reduce node is used by more than one other kernel.</strong></p>
-</blockquote>
-<p>This means:</p>
-<ul>
-<li>A chain of element-wise ops (unary, binary) always fuses into one kernel</li>
-<li>View ops (reshape, expand, permute, pad) are always free — they become index arithmetic</li>
-<li>A reduce that feeds multiple downstream ops creates a boundary because each consumer needs the reduced result</li>
-<li>A reduce that feeds only one consumer stays fused</li>
-</ul>
-<p>Additional heuristics add boundaries when a kernel would be “too unwieldy”:</p>
-<ul>
-<li>Kernels with too many parameters get split</li>
-<li>Very large traversal depth triggers a split</li>
-</ul>
-<h2 id="how-fusion-works"><a class="header" href="#how-fusion-works">How Fusion Works</a></h2>
-<p>The kernelizer performs a bottom-up traversal of the graph:</p>
-<pre><code class="language-text">Input tensors (already realized)
-        │
-        ▼
-    Node A  ──┐
-              ├──► Kernel 1 (fused A + B)
-    Node B  ──┘
-        │
-        ▼
-    Node C (Reduce) ──► Kernel 2 (reduce only)
-        │
-        ├──► Node D ──┐
-        │             ├──► Kernel 3 (fused D + E)
-        └──► Node E ──┘
-</code></pre>
-<p>Node C is a reduce used by both Node D and Node E, so it gets its own kernel. Nodes A and B are element-wise ops feeding each other, so they fuse into one kernel.</p>
+<h2 id="fusion-logic"><a class="header" href="#fusion-logic">Fusion Logic</a></h2>
+<p>The kernelizer processes graph nodes <strong>bottom-up</strong> in topological order. Each graph node type adds ops to the kernel its input lives in — fusion is the default, splitting happens only when needed.</p>
+<h3 id="per-node-type-behavior"><a class="header" href="#per-node-type-behavior">Per-Node Type Behavior</a></h3>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Graph Node</th><th>Kernel Decision</th></tr>
+</thead>
+<tbody>
+<tr><td><code>Unary</code>, <code>Cast</code></td><td>Always fuse — add op to the input’s kernel</td></tr>
+<tr><td><code>Expand</code>, <code>Permute</code>, <code>Reshape</code>, <code>Pad</code></td><td>Add <code>Move</code> op to the input’s kernel (free after unfolding)</td></tr>
+<tr><td><code>Binary</code></td><td>Merge both input kernels into one</td></tr>
+<tr><td><code>Reduce</code></td><td>Add reduce op to the input’s kernel</td></tr>
+<tr><td><code>Const</code></td><td>Create a new kernel with a constant</td></tr>
+</tbody>
+</table>
+</div>
+<h3 id="when-splitting-happens"><a class="header" href="#when-splitting-happens">When Splitting Happens</a></h3>
+<p>The key splitting decision is in <code>duplicate_or_store()</code>. When a kernel has multiple outputs (a tensor used by &gt;1 downstream), the kernelizer chooses:</p>
+<ol>
+<li><strong>If preceded by a reduce</strong> (expensive to recompute) → store the intermediate result to global memory, create a new load kernel for the next consumer</li>
+<li><strong>If NOT preceded by a reduce</strong> (cheap to recompute) → duplicate the kernel so each consumer gets its own copy</li>
+</ol>
+<p>This is a cost heuristic, not a simple rule: is recomputing cheaper than a global memory store+load?</p>
+<p>Stores also trigger automatically when a graph node is requested as the final output (<code>to_eval</code>), creating a natural boundary there.</p>
+<h3 id="practical-outcome"><a class="header" href="#practical-outcome">Practical Outcome</a></h3>
+<p>Each kernel tends to center around one reduce loop, with all fused element-wise ops grouped before and after it. A chain of element-wise ops always fuses into one kernel. Reduce-heavy graphs may end up with each reduce in its own kernel separated by store/load boundaries.</p>
 <h2 id="the-kernelizer-struct"><a class="header" href="#the-kernelizer-struct">The Kernelizer Struct</a></h2>
 <pre><code class="language-rust ignore">struct Kernelizer&lt;'a&gt; {
     must_keep_nodes: Set&lt;TensorId&gt;,

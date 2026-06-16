@@ -36,7 +36,7 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-929adda2.js";
+            window.path_to_searchindex_js = "searchindex-feb5aeb4.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-e7c93a4e.js"></script>
@@ -249,7 +249,7 @@ let z = y * 2.0;
 <tr><td><code>Reduce</code></td><td>Sum, max, etc.</td></tr>
 <tr><td><code>Cast</code></td><td>Change dtype</td></tr>
 <tr><td><code>Unary</code></td><td>Element-wise: relu, exp, sin, etc.</td></tr>
-<tr><td><code>Binary</code></td><td>Element-wise: add, mul, matmul, etc.</td></tr>
+<tr><td><code>Binary</code></td><td>Element-wise: add, mul, etc.</td></tr>
 </tbody>
 </table>
 </div>
@@ -259,7 +259,7 @@ let z = y * 2.0;
 <p>When <code>realize()</code> is called, the kernelizer traverses the graph bottom-up and fuses compatible nodes into kernels. The kernelizer uses heuristics to decide where kernel boundaries go — it’s not a simple rule. A reduce node used by multiple downstream nodes does not necessarily force a split. If two downstream nodes are both expand ops, that may force fusion. Element-wise chains will almost always fuse into one kernel.</p>
 <p>View operations (reshape, expand, permute, pad) are unfolded into index arithmetic in the kernel, becoming “free” — they don’t create separate operations.</p>
 <h3 id="4-the-kernel-ir"><a class="header" href="#4-the-kernel-ir">4. The Kernel IR</a></h3>
-<p>After unfolding, the DAG is converted into a <strong>linear structure</strong> — a doubly-linked list of ops stored in an arena (the <code>Slab&lt;OpId, OpNode&gt;</code>). No heap allocation after unfolding. Each <code>OpNode</code> is <strong>32 bytes</strong> fixed size.</p>
+<p>After unfolding, the DAG is converted into a <strong>linear structure</strong> — a doubly-linked list of ops stored in an arena (the <code>Slab&lt;OpId, OpNode&gt;</code>). Each <code>OpNode</code> is <strong>32 bytes</strong> stored inline in the arena — no <code>Box</code>, no vtables, no indirection.</p>
 <p>OpId is a <code>u32</code> index into the slab — random access is O(1). The IR is SSA, except for loops and <code>Define</code> ops (which can be mutable).</p>
 <p>The design goal of the small opset: optimizations are easy to write. If you understand the IR, you can add a new pass in an afternoon.</p>
 <h3 id="5-optimization-passes"><a class="header" href="#5-optimization-passes">5. Optimization Passes</a></h3>
@@ -311,7 +311,7 @@ let z = y * 2.0;
 <h2 id="key-design-decisions"><a class="header" href="#key-design-decisions">Key Design Decisions</a></h2>
 <ul>
 <li><strong>One graph for everything</strong> — autograd and computation share the same graph. No need to specify which tensors require gradients.</li>
-<li><strong>No heap IR ops</strong> — after unfolding, all ops live in the arena. Cache-efficient, no allocation during optimization.</li>
+<li><strong>Inline ops</strong> — all ops live in the arena as flat 32-byte entries. No <code>Box</code>, no vtables, no indirection. Passes allocate their own working data (hash maps, vecs) as needed.</li>
 <li><strong>Linear IR</strong> — linked list of fixed-size nodes. Optimizations traverse front-to-back or back-to-back.</li>
 <li><strong>Backend codegen is trivial</strong> — the hard work is in the IR-level optimization passes.</li>
 <li><strong>Explicit GradientTape</strong> — prevents graph node deletion instead of building a separate graph.</li>
@@ -418,7 +418,7 @@ pub struct Graph {
 <p>The graph is designed to stay small. With ~16 bytes per node + 4 bytes reference count, a training iteration with 10,000 operations costs ~200 KB. When the tape is dropped at the end of each iteration, the graph shrinks back to baseline.</p>
 <h2 id="debugging-the-graph"><a class="header" href="#debugging-the-graph">Debugging the Graph</a></h2>
 <p>Inspect the graph at runtime:</p>
-<pre><code class="language-rust ignore">let dot = Tensor::plot_dot_graph(&amp;[&amp;output]);</code></pre>
+<pre><code class="language-rust ignore">Tensor::plot_graph(&amp;[&amp;output], "graph")?;</code></pre>
 <p>Or with environment variables:</p>
 <pre><code class="language-bash">ZYX_DEBUG=8 cargo run  # prints kernel IR during compilation
 </code></pre>
@@ -436,40 +436,33 @@ pub struct Graph {
     // 6. Execute on device
     // 7. Release unused nodes
 }</code></pre>
-<h2 id="the-fusion-rule"><a class="header" href="#the-fusion-rule">The Fusion Rule</a></h2>
-<p>The kernelizer’s core logic is surprisingly simple:</p>
-<blockquote>
-<p><strong>A kernel boundary is created when a Reduce node is used by more than one other kernel.</strong></p>
-</blockquote>
-<p>This means:</p>
-<ul>
-<li>A chain of element-wise ops (unary, binary) always fuses into one kernel</li>
-<li>View ops (reshape, expand, permute, pad) are always free — they become index arithmetic</li>
-<li>A reduce that feeds multiple downstream ops creates a boundary because each consumer needs the reduced result</li>
-<li>A reduce that feeds only one consumer stays fused</li>
-</ul>
-<p>Additional heuristics add boundaries when a kernel would be “too unwieldy”:</p>
-<ul>
-<li>Kernels with too many parameters get split</li>
-<li>Very large traversal depth triggers a split</li>
-</ul>
-<h2 id="how-fusion-works"><a class="header" href="#how-fusion-works">How Fusion Works</a></h2>
-<p>The kernelizer performs a bottom-up traversal of the graph:</p>
-<pre><code class="language-text">Input tensors (already realized)
-        │
-        ▼
-    Node A  ──┐
-              ├──► Kernel 1 (fused A + B)
-    Node B  ──┘
-        │
-        ▼
-    Node C (Reduce) ──► Kernel 2 (reduce only)
-        │
-        ├──► Node D ──┐
-        │             ├──► Kernel 3 (fused D + E)
-        └──► Node E ──┘
-</code></pre>
-<p>Node C is a reduce used by both Node D and Node E, so it gets its own kernel. Nodes A and B are element-wise ops feeding each other, so they fuse into one kernel.</p>
+<h2 id="fusion-logic"><a class="header" href="#fusion-logic">Fusion Logic</a></h2>
+<p>The kernelizer processes graph nodes <strong>bottom-up</strong> in topological order. Each graph node type adds ops to the kernel its input lives in — fusion is the default, splitting happens only when needed.</p>
+<h3 id="per-node-type-behavior"><a class="header" href="#per-node-type-behavior">Per-Node Type Behavior</a></h3>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Graph Node</th><th>Kernel Decision</th></tr>
+</thead>
+<tbody>
+<tr><td><code>Unary</code>, <code>Cast</code></td><td>Always fuse — add op to the input’s kernel</td></tr>
+<tr><td><code>Expand</code>, <code>Permute</code>, <code>Reshape</code>, <code>Pad</code></td><td>Add <code>Move</code> op to the input’s kernel (free after unfolding)</td></tr>
+<tr><td><code>Binary</code></td><td>Merge both input kernels into one</td></tr>
+<tr><td><code>Reduce</code></td><td>Add reduce op to the input’s kernel</td></tr>
+<tr><td><code>Const</code></td><td>Create a new kernel with a constant</td></tr>
+</tbody>
+</table>
+</div>
+<h3 id="when-splitting-happens"><a class="header" href="#when-splitting-happens">When Splitting Happens</a></h3>
+<p>The key splitting decision is in <code>duplicate_or_store()</code>. When a kernel has multiple outputs (a tensor used by &gt;1 downstream), the kernelizer chooses:</p>
+<ol>
+<li><strong>If preceded by a reduce</strong> (expensive to recompute) → store the intermediate result to global memory, create a new load kernel for the next consumer</li>
+<li><strong>If NOT preceded by a reduce</strong> (cheap to recompute) → duplicate the kernel so each consumer gets its own copy</li>
+</ol>
+<p>This is a cost heuristic, not a simple rule: is recomputing cheaper than a global memory store+load?</p>
+<p>Stores also trigger automatically when a graph node is requested as the final output (<code>to_eval</code>), creating a natural boundary there.</p>
+<h3 id="practical-outcome"><a class="header" href="#practical-outcome">Practical Outcome</a></h3>
+<p>Each kernel tends to center around one reduce loop, with all fused element-wise ops grouped before and after it. A chain of element-wise ops always fuses into one kernel. Reduce-heavy graphs may end up with each reduce in its own kernel separated by store/load boundaries.</p>
 <h2 id="the-kernelizer-struct"><a class="header" href="#the-kernelizer-struct">The Kernelizer Struct</a></h2>
 <pre><code class="language-rust ignore">struct Kernelizer&lt;'a&gt; {
     must_keep_nodes: Set&lt;TensorId&gt;,
@@ -526,7 +519,7 @@ pub struct OpNode {
 }</code></pre>
 <p>The <code>Slab&lt;OpId, OpNode&gt;</code> is a <code>Vec&lt;OpNode&gt;</code> with a free-list. <code>OpId</code> is a <code>u32</code> index — random access is O(1).</p>
 <h2 id="unfolding"><a class="header" href="#unfolding">Unfolding</a></h2>
-<p>Before any optimization passes run, the kernel IR is <strong>unfolded</strong> — <code>LoadView</code>, <code>StoreView</code>, and <code>Move</code> ops are converted to direct index arithmetic (<code>Load</code>, <code>Store</code> with computed indices). After unfolding, the IR is purely linear with no heap-allocating ops. All ops are fixed-size and live in the arena.</p>
+<p>Before any optimization passes run, the kernel IR is <strong>unfolded</strong> — <code>LoadView</code>, <code>StoreView</code>, and <code>Move</code> ops are converted to direct index arithmetic (<code>Load</code>, <code>Store</code> with computed indices). After unfolding, all ops are fixed-size inline entries in the arena — no <code>Box</code>, no vtables, no per-op indirection.</p>
 <p>The IR is in SSA form, except for <code>Loop</code>, <code>If</code>, and <code>Define</code> ops (which can carry mutable state).</p>
 <h2 id="op-variants"><a class="header" href="#op-variants">Op Variants</a></h2>
 <h3 id="arithmetic"><a class="header" href="#arithmetic">Arithmetic</a></h3>
@@ -611,14 +604,13 @@ r19: i32 = r18[r1]  // 0..=3 load
 <p>Removes ops whose results are never used. This is always the final pass — it ensures backends never receive unreferenced ops.</p>
 <h2 id="autotuned-passes"><a class="header" href="#autotuned-passes">Autotuned Passes</a></h2>
 <p>The autotune system clones the kernel, applies optimization variants, and evaluates each separately. No egraphs — just clone, transform, hash, evaluate. The cost function can evaluate <strong>thousands of variants per second</strong>.</p>
-<pre><code class="language-rust ignore">const AVAILABLE_OPTIMIZATIONS: [OptConfigFn; 7] = [
+<pre><code class="language-rust ignore">const AVAILABLE_OPTIMIZATIONS: [OptConfigFn; 6] = [
     Kernel::opt_reassociate_commutative,
     Kernel::opt_split_global_to_local,
     Kernel::opt_upcast,
-    Kernel::opt_register_tiling,
+    Kernel::opt_register_blocking,
     Kernel::opt_tiled_reduce,
     Kernel::opt_split_loop,
-    Kernel::opt_licm,
 ];</code></pre>
 <h3 id="reassociation"><a class="header" href="#reassociation">Reassociation</a></h3>
 <p>Reorders commutative operations to create more fusion opportunities.</p>
@@ -626,14 +618,12 @@ r19: i32 = r18[r1]  // 0..=3 load
 <p>Adjusts block and thread dimensions for better memory access patterns. For example, a kernel with <code>block_dim = 1024, thread_dim = 1</code> becomes <code>block_dim = 32, thread_dim = 32</code>. This enables coalesced memory access on GPU.</p>
 <h3 id="upcast-vectorization"><a class="header" href="#upcast-vectorization">Upcast Vectorization</a></h3>
 <p>Expands scalar operations to vector operations (e.g., 4-wide SIMD on CPU, wider on GPU).</p>
-<h3 id="register-tiling"><a class="header" href="#register-tiling">Register Tiling</a></h3>
-<p>Tiles operations to keep intermediate values in registers instead of spilling to global memory.</p>
+<h3 id="register-blocking"><a class="header" href="#register-blocking">Register Blocking</a></h3>
+<p>Unrolls tree reductions and coarsens global threads so each thread processes multiple elements, increasing computational intensity and register reuse.</p>
 <h3 id="tiled-reduction"><a class="header" href="#tiled-reduction">Tiled Reduction</a></h3>
 <p>Implements multi-stage reduction: threads reduce into registers, workgroups reduce into local memory, then global atomics.</p>
 <h3 id="loop-splitting"><a class="header" href="#loop-splitting">Loop Splitting</a></h3>
 <p>Splits large loops into chunks for better register pressure and instruction-level parallelism.</p>
-<h3 id="loop-invariant-code-motion"><a class="header" href="#loop-invariant-code-motion">Loop-Invariant Code Motion</a></h3>
-<p>The LICM pass also participates in autotuning as a tunable variant (when to hoist vs. when to keep inside the loop).</p>
 <h2 id="how-autotuning-searches"><a class="header" href="#how-autotuning-searches">How Autotuning Searches</a></h2>
 <ol>
 <li>Start with the initial kernel and run always-on optimizations</li>
@@ -715,11 +705,11 @@ pub enum MemoryPool {
 </thead>
 <tbody>
 <tr><td>C</td><td><code>c.rs</code></td><td>C99 (compiled to .so)</td><td>Clang/GCC</td></tr>
-<tr><td>CUDA</td><td><code>cuda.rs</code></td><td>PTX</td><td>CUDA driver via <code>libloading</code></td></tr>
+<tr><td>CUDA</td><td><code>cuda.rs</code></td><td>CUDA C (compiled to SASS)</td><td>CUDA driver via <code>libloading</code></td></tr>
 <tr><td>HIP</td><td><code>hip.rs</code></td><td>HIP</td><td>ROCm via <code>libloading</code></td></tr>
 <tr><td>OpenCL</td><td><code>opencl.rs</code></td><td>OpenCL C</td><td>OpenCL runtime via <code>libloading</code></td></tr>
 <tr><td>Vulkan</td><td><code>vulkan.rs</code></td><td>SPIR-V</td><td>Vulkan via <code>ash</code> crate</td></tr>
-<tr><td>WGPU</td><td><code>wgpu.rs</code></td><td>WGSL</td><td>WGPU (feature: <code>wgpu</code>)</td></tr>
+<tr><td>WGPU</td><td><code>wgpu.rs</code></td><td>SPIR-V</td><td>WGPU (feature: <code>wgpu</code>)</td></tr>
 <tr><td>Dummy</td><td><code>dummy.rs</code></td><td>—</td><td>No hardware needed (fake device)</td></tr>
 </tbody>
 </table>
@@ -926,9 +916,9 @@ ZYX_DEBUG=16 cargo run    # print generated code
 <pre><code class="language-bash">AGENT=1 ZYX_DEBUG=8 cargo test
 </code></pre>
 <h2 id="api-configuration"><a class="header" href="#api-configuration">API Configuration</a></h2>
-<pre><code class="language-rust ignore">Tensor::manual_seed(42);  // deterministic RNG
-Tensor::train();          // enable training mode
-Tensor::eval();           // disable training mode</code></pre>
+<pre><code class="language-rust ignore">Tensor::manual_seed(42);            // deterministic RNG
+Tensor::set_training(true);         // enable training mode
+Tensor::set_training(false);        // disable training mode</code></pre>
 
                     </main>
 

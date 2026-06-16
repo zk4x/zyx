@@ -35,7 +35,7 @@
             const path_to_root = "../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-929adda2.js";
+            window.path_to_searchindex_js = "../searchindex-feb5aeb4.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../toc-e7c93a4e.js"></script>
@@ -191,7 +191,7 @@ pub struct OpNode {
 }</code></pre>
 <p>The <code>Slab&lt;OpId, OpNode&gt;</code> is a <code>Vec&lt;OpNode&gt;</code> with a free-list. <code>OpId</code> is a <code>u32</code> index — random access is O(1).</p>
 <h2 id="unfolding"><a class="header" href="#unfolding">Unfolding</a></h2>
-<p>Before any optimization passes run, the kernel IR is <strong>unfolded</strong> — <code>LoadView</code>, <code>StoreView</code>, and <code>Move</code> ops are converted to direct index arithmetic (<code>Load</code>, <code>Store</code> with computed indices). After unfolding, the IR is purely linear with no heap-allocating ops. All ops are fixed-size and live in the arena.</p>
+<p>Before any optimization passes run, the kernel IR is <strong>unfolded</strong> — <code>LoadView</code>, <code>StoreView</code>, and <code>Move</code> ops are converted to direct index arithmetic (<code>Load</code>, <code>Store</code> with computed indices). After unfolding, all ops are fixed-size inline entries in the arena — no <code>Box</code>, no vtables, no per-op indirection.</p>
 <p>The IR is in SSA form, except for <code>Loop</code>, <code>If</code>, and <code>Define</code> ops (which can carry mutable state).</p>
 <h2 id="op-variants"><a class="header" href="#op-variants">Op Variants</a></h2>
 <h3 id="arithmetic"><a class="header" href="#arithmetic">Arithmetic</a></h3>
