@@ -252,31 +252,14 @@ impl Kernel {
 
         //println!("Applying loop removal with loop_id={loop_id}, indices_id={indices_id}, source_id={source_id}");
 
-        // Convert indices to IDX_T — this is the corrected index value
+        self.ops[loop_id].op = Op::Const(Constant::idx(0));
+
+        //let Op::Loop { len: loop_len } = self.ops[loop_id].op else { return false };
+
+        // Convert indices to IDX_T
         let loop_replace = self.insert_after(indices_id, Op::Cast { x: indices_id, dtype: IDX_T });
 
-        // If source is a tensor load, move it after loop_replace and fix its index to use loop_replace.
-        // The original source index computes Add(base, loop_id), which loads source[base+0] when
-        // loop runs with len=1. We need source[base + indices_adj] instead.
-        if let Op::Load { index: old_idx, .. } = self.ops[source_id].op {
-            let base_id = match self.ops[old_idx].op {
-                Op::Binary { x, y, bop: BOp::Add } if y == loop_id || x == loop_id => {
-                    if y == loop_id {
-                        x
-                    } else {
-                        y
-                    }
-                }
-                _ => return false,
-            };
-            self.move_op_after(source_id, loop_replace);
-            let new_idx = self.insert_before(source_id, Op::Binary { x: base_id, y: loop_replace, bop: BOp::Add });
-            if let Some(idx_param) = self.ops[source_id].op.parameters_mut().nth(1) {
-                *idx_param = new_idx;
-            }
-        }
-
-        // Replace loop_id with loop_replace in all ops after loop_replace up to endloop
+        // Replace loop index
         let endloop_id = self.prev_op(after_loop_load_id);
         let mut op_id = self.next_op(loop_replace);
         while op_id != endloop_id {
@@ -287,22 +270,9 @@ impl Kernel {
             }
             op_id = self.next_op(op_id);
         }
-
-        // Make the mask always true: change Eq(_, loop_i32(loop_id)) to Eq(loop_replace, loop_replace).
-        // This ensures the accumulator gets the corrected source value regardless of index value.
-        let mask_operand = if x == source_id { y } else { x };
-        let eq_id = self.peel_casts(mask_operand);
-        match &mut self.ops[eq_id].op {
-            Op::Binary { x, y, bop: BOp::Eq } => {
-                *x = loop_replace;
-                *y = loop_replace;
-            }
-            _ => return false,
-        }
-
-        // Set loop to run once — with corrected source index and always-true mask,
-        // the body computes source[base + indices_adj] in a single iteration.
-        self.ops[loop_id].op = Op::Loop { len: 1 };
+        self.remove_op(endloop_id);
+        // Replace accumulator load
+        self.remap(after_loop_load_id, source_id);
         //self.debug();
         self.verify();
         true
