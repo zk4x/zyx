@@ -608,11 +608,12 @@ pub(super) fn initialize_device(
             max_local_threads: Dim::from(max_wg_invocations),
             max_local_work_dims: vec![Dim::from(max_wg_size[0]); max_wg_size.len()],
             preferred_vector_size: 4,
-            local_mem_size: todo!(),
+            local_mem_size: Dim::from(props.limits.max_compute_shared_memory_size),
             max_register_bytes: 1024,
             tensor_cores: false,
             warp_size: 32,
-            supported_dtypes: todo!(),
+            // TODO: query individual format support via vkGetPhysicalDeviceFormatProperties
+            supported_dtypes: u32::MAX,
             has_native_exp2: true,
         };
 
