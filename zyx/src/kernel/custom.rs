@@ -17,7 +17,7 @@
 //! to their native instruction set and cache them for repeated use.
 
 use crate::IntoShape;
-use crate::backend::ProgramId;
+use crate::backend::{DeviceInfo, ProgramId};
 use crate::kernel_cache::KernelId;
 use crate::tensor::TensorId;
 
@@ -52,6 +52,11 @@ pub struct CompiledKernel {
 }
 
 impl CompiledKernel {
+    /// Returns the DeviceInfo for the device this kernel was compiled on.
+    pub fn device_info(&self) -> DeviceInfo {
+        crate::RT.lock().devices[self.program.device].info().clone()
+    }
+
     /// Execute the compiled kernel with new input tensors.
     pub fn forward(&self, inputs: &[&crate::tensor::Tensor], shape: impl IntoShape) -> crate::tensor::Tensor {
         let ids: Vec<_> = inputs.iter().map(|t| t.id).collect();

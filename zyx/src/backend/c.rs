@@ -221,7 +221,14 @@ impl CDevice {
                         *rcs.entry(x).or_insert(0) += 1;
                     }
                 }
-                &Op::Devectorize { .. } | Op::Wmma { .. } => todo!(),
+                &Op::Wmma { .. } => {
+                    todo!("C needs higher level of abstraction than WMMA, as WMMA requires cross-thread sharing")
+                }
+                &Op::Devectorize { vec, .. } => {
+                    let dtype = dtypes[&vec];
+                    dtypes.insert(op_id, (dtype.0, MemLayout::Scalar));
+                    *rcs.entry(vec).or_insert(0) += 1;
+                }
                 &Op::Mad { x, y, z } => {
                     dtypes.insert(op_id, dtypes[&x]);
                     *rcs.entry(x).or_insert(0) += 1;
@@ -471,9 +478,21 @@ impl CDevice {
                     vars.pop();
                     let reg = new_reg(op_id, &mut reg_map, &mut registers, dtype, rcs[&op_id], loop_id);
                     let dtype = dtypes[&op_id];
-                    _ = writeln!(source, "{indent}r{reg} = ({}{})({vars});", dtype.0.c_type(), dtype.1);
+                    let vlen = match dtype.1 {
+                        MemLayout::Vector(n) => n,
+                        _ => unreachable!(),
+                    };
+                    _ = writeln!(source, "{indent}r{reg} = ({}{}){{{}}};", dtype.0.c_type(), vlen, vars);
                 }
-                &Op::Devectorize { .. } | Op::Wmma { .. } => todo!(),
+                &Op::Wmma { .. } => {
+                    todo!("C needs higher level of abstraction than WMMA, as WMMA requires cross-thread sharing")
+                }
+                &Op::Devectorize { vec, idx } => {
+                    let dtype = dtypes[&op_id];
+                    let vec = get_var(vec, &constants, &indices, &reg_map, &mut registers, loop_id);
+                    let reg = new_reg(op_id, &mut reg_map, &mut registers, dtype, rcs[&op_id], loop_id);
+                    _ = writeln!(source, "{indent}r{reg} = {vec}.s{idx};");
+                }
                 &Op::Binary { x, y, bop } => {
                     let dtype = dtypes[&op_id];
                     let x = get_var(x, &constants, &indices, &reg_map, &mut registers, loop_id);
@@ -651,8 +670,18 @@ static inline unsigned short f32tobf16(float v) {
         };
         // Add #include for math functions and optional OpenMP header
         let omp_include = if gws[0] > 1 { "#include <omp.h>\n" } else { "" };
+        let mut vec_types = String::new();
+        for (dt, _, _) in &registers {
+            if let MemLayout::Vector(len) = dt.1 {
+                let base = dt.0.c_type();
+                let name = format!("{base}{len}");
+                if !vec_types.contains(&format!("\ntypedef {base} {name}")) {
+                    _ = writeln!(vec_types, "typedef {base} {name} __attribute__((ext_vector_type({len})));");
+                }
+            }
+        }
         let full_source =
-            format!("#include <math.h>\n#include <stdint.h>\n#include <string.h>\n{omp_include}{f16_helpers}{source}");
+            format!("#include <math.h>\n#include <stdint.h>\n#include <string.h>\n{omp_include}{vec_types}{f16_helpers}{source}");
         std::fs::write(&c_path, &full_source).map_err(|e| BackendError {
             status: ErrorStatus::KernelCompilation,
             context: format!("Failed to write C source: {e}").into(),

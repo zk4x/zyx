@@ -102,6 +102,11 @@ fn wmma_matmul() -> Result<(), ZyxError> {
     // Compile & run
     let compiled = kernel.compile()?;
 
+    if !compiled.device_info().tensor_cores {
+        eprintln!("skipping WMMA test: device has no tensor cores");
+        return Ok(());
+    }
+
     let a = Tensor::rand([m, k], DType::F16)?;
     let b = Tensor::rand([k, n], DType::F16)?;
     let a_host: Vec<f32> = a.clone().cast(DType::F32).try_into()?;
