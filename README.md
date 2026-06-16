@@ -26,6 +26,7 @@
 - [Documentation](#documentation)
 - [Status & License](#status--license)
 - [Contributing](#contributing)
+- [For Devs](#for-devs)
 - [Configuration](#configuration)
 - [Debug Options](#debug-options)
 
@@ -315,6 +316,13 @@ Contributions are welcome! Please read the [CONTRIBUTING.md](CONTRIBUTING.md), [
 
 - [Examples](zyx-examples/) - MNIST, RNN implementations
 - [Issues](https://github.com/zk4x/zyx/issues) - Bug reports and feature requests
+
+## For Devs
+
+- [Contributing](CONTRIBUTING.md) - How to contribute, code style, and PR workflow
+- [Configuration](zyx/CONFIG.md) - Hardware device selection, autotune settings, backend config
+- [Environment Variables](zyx/ENV_VARS.md) - Debug flags and runtime options
+- [Architecture Book](https://zk4x.github.io/zyx/) - How zyx works under the hood
 
 ## Configuration
 
