@@ -697,7 +697,6 @@ mod tests {
     /// The outer loop (6250) + inner loop (8) accumulate pattern has interleaved
     /// ops between load(acc) and Add, so simplify_accumulating_loop should NOT fold it.
     #[test]
-    #[should_panic = "outer loop should be zeroed"]
     fn test_resnet_index_select_ir_not_optimized() {
         let mut k = Kernel::new(DeviceId::AUTO);
 
