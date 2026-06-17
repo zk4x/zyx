@@ -411,6 +411,15 @@ fn compute_dtypes(kernel: &Kernel) -> Map<OpId, DType> {
             Op::If { condition } => {
                 dt.insert(op_id, dt[condition]);
             }
+            Op::Wmma { dtype: crate::kernel::MMADType::f16_f16_f16_f32, .. } => {
+                dt.insert(op_id, DType::F32);
+            }
+            Op::Vectorize { ops } => {
+                dt.insert(op_id, dt[&ops[0]]);
+            }
+            Op::Devectorize { vec, .. } => {
+                dt.insert(op_id, dt[vec]);
+            }
             _ => {}
         }
         op_id = kernel.next_op(op_id);
