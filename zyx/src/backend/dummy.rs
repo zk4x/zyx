@@ -1,8 +1,9 @@
 // Copyright (C) 2025 zk4x
 // SPDX-License-Identifier: LGPL-3.0-only
 
-use super::{Device, DeviceId, DeviceInfo, DeviceProgramId, Event, MemoryPool, PoolBufferId, PoolId, opencl::OpenCLEvent};
+use super::{Device, DeviceId, DeviceInfo, DeviceProgramId, Event, MemoryPool, OpCapability, PoolBufferId, PoolId, opencl::OpenCLEvent};
 use crate::{
+    DType,
     error::{BackendError, ErrorStatus},
     kernel::Kernel,
     shape::Dim,
@@ -57,7 +58,7 @@ pub(super) fn initialize_device(
             max_register_bytes: 128,
             tensor_cores: true,
             warp_size: 32,
-            supported_dtypes: u32::MAX,
+            supported_dtype_ops: [OpCapability::all(); DType::N_DTYPES],
             has_native_exp2: true,
         },
         memory_pool_id: PoolId::from(usize::from(memory_pools.len()) - 1),

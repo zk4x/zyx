@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: LGPL-3.0-only
 
 //! Runtime handles tensor graph and connects tensors to device buffers.
-use crate::backend::{AutotuneConfig, BufferId, Config, Device, DeviceId, Event, MemoryPool, PoolId};
+use crate::backend::{AutotuneConfig, BufferId, Config, Device, DeviceId, Event, MemoryPool, OpCapability, PoolId};
 use crate::dtype::{Constant, DType};
 use crate::error::ZyxError;
 use crate::graph::compiled::{CachedGraph, CompiledGraph};
@@ -108,12 +108,16 @@ impl Runtime {
         self.buffer_map.contains_key(&x)
     }
 
-    /// Returns true if any device supports the given dtype.
-    pub fn supports_dtype(&mut self, dtype: DType) -> bool {
+    /// Returns operation capabilities for a dtype across all devices.
+    pub fn supports_dtype(&mut self, dtype: DType) -> OpCapability {
         if self.initialize_devices().is_err() {
-            return false;
+            return OpCapability::none();
         }
-        self.devices.iter().any(|(_, d)| d.info().supports_dtype(dtype))
+        let mut caps = OpCapability::none();
+        for (_id, dev) in self.devices.iter() {
+            caps.0 |= dev.info().supports_dtype(dtype).0;
+        }
+        caps
     }
 
     pub fn debug_graph(&self) {

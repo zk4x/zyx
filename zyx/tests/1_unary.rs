@@ -660,3 +660,94 @@ fn bf16_log2() -> Result<(), ZyxError> {
     }
     Ok(())
 }
+
+#[test]
+fn f64_sin() -> Result<(), ZyxError> {
+    if !Tensor::supports(DType::F64).sin() {
+        return Ok(());
+    }
+    let data: [f64; 5] = [0.0, 0.5, 1.0, -1.0, 3.14159];
+    let z: Vec<f64> = Tensor::from(data).sin().try_into()?;
+    for (x, y) in data.iter().zip(z) {
+        assert!(x.sin().is_equal(y));
+    }
+    Ok(())
+}
+
+#[test]
+fn f64_cos() -> Result<(), ZyxError> {
+    if !Tensor::supports(DType::F64).cos() {
+        return Ok(());
+    }
+    let data: [f64; 5] = [0.0, 0.5, 1.0, -1.0, 3.14159];
+    let z: Vec<f64> = Tensor::from(data).cos().try_into()?;
+    for (x, y) in data.iter().zip(z) {
+        assert!(x.cos().is_equal(y));
+    }
+    Ok(())
+}
+
+#[test]
+fn f64_sqrt() -> Result<(), ZyxError> {
+    if !Tensor::supports(DType::F64).sqrt() {
+        return Ok(());
+    }
+    let data: [f64; 4] = [0.0, 1.0, 4.0, 9.0];
+    let z: Vec<f64> = Tensor::from(data).sqrt().try_into()?;
+    for (x, y) in data.iter().zip(z) {
+        assert!(x.sqrt().is_equal(y));
+    }
+    Ok(())
+}
+
+#[test]
+fn f64_exp() -> Result<(), ZyxError> {
+    if !Tensor::supports(DType::F64).exp() {
+        return Ok(());
+    }
+    let data: [f64; 5] = [-2.0, -1.0, 0.0, 1.0, 2.0];
+    let z: Vec<f64> = Tensor::from(data).exp().try_into()?;
+    for (x, y) in data.iter().zip(z) {
+        assert!(x.exp().is_equal(y));
+    }
+    Ok(())
+}
+
+#[test]
+fn f64_exp2() -> Result<(), ZyxError> {
+    if !Tensor::supports(DType::F64).exp2() {
+        return Ok(());
+    }
+    let data: [f64; 5] = [-2.0, -1.0, 0.0, 1.0, 2.0];
+    let z: Vec<f64> = Tensor::from(data).exp2().try_into()?;
+    for (x, y) in data.iter().zip(z) {
+        assert!(x.exp2().is_equal(y));
+    }
+    Ok(())
+}
+
+#[test]
+fn f64_ln() -> Result<(), ZyxError> {
+    if !Tensor::supports(DType::F64).ln() {
+        return Ok(());
+    }
+    let data: [f64; 4] = [0.5, 1.0, 2.0, 4.0];
+    let z: Vec<f64> = Tensor::from(data).ln().try_into()?;
+    for (x, y) in data.iter().zip(z) {
+        assert!(x.ln().is_equal(y));
+    }
+    Ok(())
+}
+
+#[test]
+fn f64_log2() -> Result<(), ZyxError> {
+    if !Tensor::supports(DType::F64).log2() {
+        return Ok(());
+    }
+    let data: [f64; 4] = [0.5, 1.0, 2.0, 4.0];
+    let z: Vec<f64> = Tensor::from(data).log2().try_into()?;
+    for (x, y) in data.iter().zip(z) {
+        assert!(x.log2().is_equal(y));
+    }
+    Ok(())
+}

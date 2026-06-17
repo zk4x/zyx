@@ -328,8 +328,9 @@
 //! `dma_alloc_coherent` without an IOMMU draws from system memory, not
 //! from device GDDR6.
 
-use super::{Device, DeviceId, DeviceInfo, DeviceProgramId, Event, Kernel, MemoryPool, PoolBufferId, PoolId};
+use super::{Device, DeviceId, DeviceInfo, DeviceProgramId, Event, Kernel, MemoryPool, OpCapability, PoolBufferId, PoolId};
 use crate::{
+    DType,
     error::{BackendError, ErrorStatus},
     kernel::{Op, UOp},
     shape::Dim,
@@ -632,7 +633,7 @@ pub(super) fn initialize_device(
             max_register_bytes: 128,
             tensor_cores: true,
             warp_size: 1,               // Tensix has no SIMT warps
-            supported_dtypes: u32::MAX, // all dtypes supported
+            supported_dtype_ops: [OpCapability::all(); DType::N_DTYPES],
             has_native_exp2: false,
         },
         memory_pool_id: pool_id,

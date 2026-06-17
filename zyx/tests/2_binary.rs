@@ -1,7 +1,7 @@
 // Copyright (C) 2025 zk4x
 // SPDX-License-Identifier: LGPL-3.0-only
 
-use zyx::{Scalar, Tensor, ZyxError};
+use zyx::{DType, Scalar, Tensor, ZyxError};
 
 #[test]
 fn add() -> Result<(), ZyxError> {
@@ -33,7 +33,6 @@ fn sub() -> Result<(), ZyxError> {
     let x = Tensor::from(datax);
     let y = Tensor::from(datay);
     let z = x - y;
-    //println!("{z}");
     let dataz: Vec<f32> = z.try_into()?;
     for ((x, y), z) in datax.iter().zip(datay).zip(dataz) {
         assert_eq!(x - y, z);
@@ -78,9 +77,7 @@ fn pow() -> Result<(), ZyxError> {
     let z = x.pow(y)?;
     let dataz: Vec<f32> = z.try_into()?;
     for ((x, y), z) in datax.iter().zip(datay).zip(dataz) {
-        //assert!((x.pow(y) - z).abs() < 0.00001);
         let x = x.pow(y);
-        //println!("{x}, {z}");
         assert!(x.is_equal(z));
     }
     Ok(())
@@ -106,11 +103,22 @@ fn cmplt() -> Result<(), ZyxError> {
     let datay: [f32; 10] = [2.772, -8.327, 1.945, 9.286, 3.989, 8.105, -5.307, 2.865, 3.106, 3.111];
     let x = Tensor::from(datax);
     let y = Tensor::from(datay);
-    // We cast here since not all backends support bool dtype buffers.
     let z = x.cmplt(y)?.cast(zyx::DType::U32);
     let dataz: Vec<u32> = z.try_into()?;
     for ((x, y), z) in datax.iter().zip(datay).zip(dataz) {
         assert_eq!(x.cmplt(y) as u32, z);
     }
+    Ok(())
+}
+
+#[test]
+fn pow_neg_f64() -> Result<(), ZyxError> {
+    if !Tensor::supports(DType::F64).pow() {
+        return Ok(());
+    }
+    let x = Tensor::from([-1.5f64, 2.0, 0.5]);
+    let y = Tensor::from([2.0f64, 2.0, 0.5]);
+    let z = x.pow(y)?;
+    println!("{z}");
     Ok(())
 }

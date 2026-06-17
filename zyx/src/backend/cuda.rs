@@ -60,7 +60,7 @@ macro_rules! send_or_continue {
     };
 }
 
-use super::{Device, DeviceId, DeviceInfo, DeviceProgramId, Event, MemoryPool, PoolBufferId, PoolId};
+use super::{Device, DeviceId, DeviceInfo, DeviceProgramId, Event, MemoryPool, OpCapability, PoolBufferId, PoolId};
 
 /// CUDA configuration
 #[allow(clippy::question_mark)]
@@ -623,15 +623,6 @@ pub(super) fn initialize_device(
         let pool = MemoryPool::CUDA(CUDAMemoryPool { tx: tx.clone(), free_bytes: free_bytes_atomic });
         memory_pools.push(pool);
 
-        let mut supported_dtypes = u32::MAX;
-        // F16 (half) requires CC 5.3+ for cuda_fp16.h
-        if major < 5 || (major == 5 && minor < 3) {
-            supported_dtypes &= !(1 << DType::F16 as u32);
-        }
-        // BF16 requires CC 7.5+ for cuda_bf16.h
-        if major < 7 || (major == 7 && minor < 5) {
-            supported_dtypes &= !(1 << DType::BF16 as u32);
-        }
         let mut dev = CUDADevice {
             tx,
             device,
@@ -645,7 +636,7 @@ pub(super) fn initialize_device(
                 preferred_vector_size: 16,
                 tensor_cores: major >= 7,
                 warp_size: 32,
-                supported_dtypes,
+                supported_dtype_ops: [OpCapability::all(); DType::N_DTYPES],
                 has_native_exp2: true,
             },
             memory_pool_id: PoolId::from(usize::from(memory_pools.len()) - 1),
@@ -682,7 +673,7 @@ pub(super) fn initialize_device(
             preferred_vector_size: 16,
             tensor_cores: major >= 7,
             warp_size: 32,
-            supported_dtypes,
+            supported_dtype_ops: [OpCapability::all(); DType::N_DTYPES],
             has_native_exp2: true,
         };
         devices.push(Device::CUDA(dev));

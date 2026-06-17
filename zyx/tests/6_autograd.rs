@@ -144,7 +144,7 @@ fn grad_pow_2() -> Result<(), ZyxError> {
 #[cfg(not(feature = "wgpu"))]
 #[test]
 fn grad_pow_3() -> Result<(), ZyxError> {
-    if !Tensor::supports(DType::F64) {
+    if !Tensor::supports(DType::F64).pow() {
         return Ok(());
     }
     // Use non-round numbers to expose log2 -> ln approximation errors

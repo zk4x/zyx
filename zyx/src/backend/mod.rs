@@ -359,6 +359,63 @@ pub struct Config {
     pub wgpu: wgpu::WGPUConfig,
 }
 
+/// Per-dtype capability bitmask — one bit per unary/binary operation.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, SerBin, DeBin)]
+pub struct OpCapability(pub u32);
+
+macro_rules! op_cap {
+    ($name:ident, $bit:expr) => {
+        pub const $name: u32 = 1 << $bit;
+    };
+    ($name:ident, $bit:expr, $method:ident) => {
+        pub const $name: u32 = 1 << $bit;
+        pub fn $method(&self) -> bool { self.0 & Self::$name != 0 }
+    };
+}
+
+impl std::ops::Not for OpCapability {
+    type Output = bool;
+    fn not(self) -> bool { self.0 == 0 }
+}
+
+impl OpCapability {
+    op_cap!(NEG, 0, neg);
+    op_cap!(BITNOT, 1, bitnot);
+    op_cap!(EXP, 2, exp);
+    op_cap!(EXP2, 3, exp2);
+    op_cap!(LN, 4, ln);
+    op_cap!(LOG2, 5, log2);
+    op_cap!(RECIPROCAL, 6, reciprocal);
+    op_cap!(SQRT, 7, sqrt);
+    op_cap!(SIN, 8, sin);
+    op_cap!(COS, 9, cos);
+    op_cap!(FLOOR, 10, floor);
+    op_cap!(TRUNC, 11, trunc);
+    op_cap!(ABS, 12, abs);
+    op_cap!(ADD, 13, add);
+    op_cap!(SUB, 14, sub);
+    op_cap!(MUL, 15, mul);
+    op_cap!(DIV, 16, div);
+    op_cap!(POW, 17, pow);
+    op_cap!(MOD, 18, r#mod);
+    op_cap!(CMPLT, 19, cmplt);
+    op_cap!(CMPGT, 20, cmpgt);
+    op_cap!(MAX, 21, max);
+    op_cap!(OR, 22, or);
+    op_cap!(AND, 23, and);
+    op_cap!(BITXOR, 24, bitxor);
+    op_cap!(BITOR, 25, bitor);
+    op_cap!(BITAND, 26, bitand);
+    op_cap!(BITSHIFTLEFT, 27, bitshiftleft);
+    op_cap!(BITSHIFTRIGHT, 28, bitshiftright);
+    op_cap!(NOTEQ, 29, noteq);
+    op_cap!(EQ, 30, eq);
+
+    pub const fn all() -> Self { Self(u32::MAX) }
+    pub const fn none() -> Self { Self(0) }
+    pub fn exists(&self) -> bool { self.0 != 0 }
+}
+
 /// Hardware information needed for applying optimizations
 #[derive(Debug, Default, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, SerBin, DeBin)]
 pub struct DeviceInfo {
@@ -380,17 +437,16 @@ pub struct DeviceInfo {
     pub tensor_cores: bool,
     /// Warp size
     pub warp_size: u16,
-    /// Bitmask of supported `DTypes` (bit index = `DType` as u16)
-    pub supported_dtypes: u32,
+    /// Per-dtype operation capabilities
+    pub supported_dtype_ops: [OpCapability; DType::N_DTYPES],
     /// Whether the device has a native exp2 instruction
     pub has_native_exp2: bool,
 }
 
 impl DeviceInfo {
-    /// Check if a dtype is supported by this device
-    pub const fn supports_dtype(&self, dtype: DType) -> bool {
-        let bit = 1u32 << (dtype as u32);
-        (self.supported_dtypes & bit) != 0
+    /// Returns operation capabilities for a dtype (none() if dtype is unsupported)
+    pub const fn supports_dtype(&self, dtype: DType) -> OpCapability {
+        self.supported_dtype_ops[dtype as usize]
     }
 }
 

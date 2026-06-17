@@ -12,13 +12,14 @@ use ash::vk;
 use nanoserde::DeJson;
 
 use crate::{
+    DType,
     error::{BackendError, ErrorStatus},
     kernel::Kernel,
     shape::Dim,
     slab::Slab,
 };
 
-use super::{DeviceInfo, DeviceProgramId, Event, MemoryPool, PoolBufferId, PoolId};
+use super::{DeviceInfo, DeviceProgramId, Event, MemoryPool, OpCapability, PoolBufferId, PoolId};
 
 // Mapped pointer wrapper — Send+Sync so the slab compiles inside Runtime.
 #[derive(Clone, Copy)]
@@ -613,7 +614,15 @@ pub(super) fn initialize_device(
             tensor_cores: false,
             warp_size: 32,
             // TODO: query individual format support via vkGetPhysicalDeviceFormatProperties
-            supported_dtypes: u32::MAX,
+            supported_dtype_ops: {
+                let mut all = [OpCapability::all(); DType::N_DTYPES];
+                // Vulkan/SPIR-V f64 transcendentals crash or produce garbage
+                all[DType::F64 as usize].0 &=
+                    !(OpCapability::EXP | OpCapability::EXP2 | OpCapability::LN
+                    | OpCapability::LOG2 | OpCapability::SIN | OpCapability::COS
+                    | OpCapability::POW);
+                all
+            },
             has_native_exp2: true,
         };
 

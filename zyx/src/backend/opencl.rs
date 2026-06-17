@@ -13,7 +13,7 @@ const VEC_COMPONENTS: [&str; 16] = [
     "x", "y", "z", "w", "s0", "s1", "s2", "s3", "s4", "s5", "s6", "s7", "s8", "s9", "sa", "sb",
 ];
 
-use super::{Device, DeviceId, DeviceInfo, DeviceProgramId, Event, MemoryPool, PoolBufferId, PoolId};
+use super::{Device, DeviceId, DeviceInfo, DeviceProgramId, Event, MemoryPool, OpCapability, PoolBufferId, PoolId};
 use crate::{
     DType, Map,
     dtype::Constant,
@@ -1362,22 +1362,7 @@ fn query_device_info(
                 1
             }
         },
-        supported_dtypes: {
-            let mut mask = 0u32;
-            let extensions = get_device_data(device, clGetDeviceInfo, CL_DEVICE_EXTENSIONS)
-                .ok()
-                .map(|d| String::from_utf8_lossy(&d).into_owned())
-                .unwrap_or_default();
-
-            if extensions.contains("cl_khr_fp64") {
-                mask |= 1u32 << (DType::F64 as u32);
-            }
-            if extensions.contains("cl_khr_fp16") {
-                mask |= 1u32 << (DType::F16 as u32);
-            }
-
-            mask
-        },
+        supported_dtype_ops: [OpCapability::all(); DType::N_DTYPES],
     };
     Ok(())
 }
@@ -1517,7 +1502,7 @@ const CL_DEVICE_MAX_WORK_ITEM_DIMENSIONS: cl_uint = 0x1003; // 4099
 //const CL_DEVICE_MAX_PRIVATE_MEMORY_SIZE: cl_uint = 0x1160; // 4448
 const CL_DEVICE_MAX_WORK_ITEM_SIZES: cl_uint = 0x1005; // 4101
 const CL_DEVICE_PREFERRED_VECTOR_WIDTH_FLOAT: cl_uint = 0x100A; // 4106
-const CL_DEVICE_EXTENSIONS: cl_uint = 0x1029; // 4137
+
 const CL_DEVICE_TYPE: cl_uint = 0x1000;
 const CL_DEVICE_TYPE_GPU: cl_bitfield = 1 << 2;
 const CL_DEVICE_TYPE_ALL: cl_bitfield = 0xFFFF_FFFF;

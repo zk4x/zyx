@@ -9,7 +9,7 @@
 #![allow(non_camel_case_types)]
 #![allow(unused)]
 
-use super::{Device, DeviceInfo, MemoryPool};
+use super::{Device, DeviceInfo, MemoryPool, OpCapability};
 use crate::DType;
 use crate::backend::{DeviceId, DeviceProgramId, Event, PoolBufferId, PoolId};
 use crate::dtype::Constant;
@@ -266,10 +266,6 @@ pub(super) fn initialize_device(
             }
             streams.push(HIPStream { stream, load: 0 });
         }
-        let mut supported_dtypes = u32::MAX;
-        if major < 7 {
-            supported_dtypes &= !(1 << DType::F64 as u32);
-        }
         let mut dev = HIPDevice {
             device,
             dev_info: DeviceInfo {
@@ -282,7 +278,7 @@ pub(super) fn initialize_device(
                 preferred_vector_size: 16,
                 tensor_cores: major >= 7,
                 warp_size: 64,
-                supported_dtypes,
+                supported_dtype_ops: [OpCapability::all(); DType::N_DTYPES],
                 has_native_exp2: true,
             },
             streams,
@@ -327,7 +323,7 @@ pub(super) fn initialize_device(
                 .unwrap()
                 .try_into()
                 .unwrap(),
-            supported_dtypes,
+            supported_dtype_ops: [OpCapability::all(); DType::N_DTYPES],
             has_native_exp2: true,
         };
         devices.push(Device::HIP(dev));

@@ -9,7 +9,7 @@
 #![allow(clippy::needless_pass_by_ref_mut)]
 #![allow(clippy::unused_self)]
 
-use super::{Device, DeviceId, DeviceInfo, DeviceProgramId, Event, MemoryPool, PoolBufferId, PoolId, host::HostMemoryPool};
+use super::{Device, DeviceId, DeviceInfo, DeviceProgramId, Event, MemoryPool, OpCapability, PoolBufferId, PoolId, host::HostMemoryPool};
 use crate::{
     DType, Map, Set,
     dtype::Constant,
@@ -83,23 +83,7 @@ pub(super) fn initialize_device(
             max_register_bytes: 1000,
             tensor_cores: false,
             warp_size: 1,
-            supported_dtypes: {
-                let mut mask = 0u32;
-                mask |= 1u32 << (DType::F32 as u32);
-                mask |= 1u32 << (DType::F64 as u32);
-                mask |= 1u32 << (DType::U8 as u32);
-                mask |= 1u32 << (DType::U16 as u32);
-                mask |= 1u32 << (DType::U32 as u32);
-                mask |= 1u32 << (DType::U64 as u32);
-                mask |= 1u32 << (DType::I8 as u32);
-                mask |= 1u32 << (DType::I16 as u32);
-                mask |= 1u32 << (DType::I32 as u32);
-                mask |= 1u32 << (DType::I64 as u32);
-                mask |= 1u32 << (DType::Bool as u32);
-                mask |= 1u32 << (DType::F16 as u32);
-                mask |= 1u32 << (DType::BF16 as u32);
-                mask
-            },
+            supported_dtype_ops: [OpCapability::all(); DType::N_DTYPES],
             has_native_exp2: false,
         },
         memory_pool_id: pool_id,

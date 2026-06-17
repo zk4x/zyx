@@ -38,7 +38,7 @@ macro_rules! send_or_continue {
     };
 }
 
-use super::{Device, DeviceId, DeviceInfo, DeviceProgramId, Event, MemoryPool, PoolBufferId, PoolId};
+use super::{Device, DeviceId, DeviceInfo, DeviceProgramId, Event, MemoryPool, OpCapability, PoolBufferId, PoolId};
 
 /// CUDA configuration
 #[derive(Debug, Default, DeJson)]
@@ -564,7 +564,7 @@ pub(super) fn initialize_device(
                 preferred_vector_size: 16,
                 tensor_cores: major >= 7,
                 warp_size: 32,
-                supported_dtypes: u32::MAX,
+                supported_dtype_ops: [OpCapability::all(); DType::N_DTYPES],
                 has_native_exp2: true,
             },
             memory_pool_id: PoolId::from(usize::from(memory_pools.len()) - 1),
@@ -596,7 +596,7 @@ pub(super) fn initialize_device(
             preferred_vector_size: 16,
             tensor_cores: major >= 7,
             warp_size: 32,
-            supported_dtypes: u32::MAX,
+            supported_dtype_ops: [OpCapability::all(); DType::N_DTYPES],
             has_native_exp2: true,
         };
         devices.push(Device::CUDA(dev));

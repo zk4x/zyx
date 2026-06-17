@@ -46,6 +46,10 @@ pub enum DType {
     Bool,
 }
 
+impl DType {
+    pub const N_DTYPES: usize = 13;
+}
+
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, SerBin, DeBin)]
 pub enum Constant {
     BF16([u8; 2]), // le bytes

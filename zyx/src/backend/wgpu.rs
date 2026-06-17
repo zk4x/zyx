@@ -1,7 +1,7 @@
 // Copyright (C) 2025 zk4x
 // SPDX-License-Identifier: LGPL-3.0-only
 
-use super::{BackendError, Device, DeviceId, DeviceInfo, ErrorStatus, Event, MemoryPool, PoolId, spirv};
+use super::{BackendError, Device, DeviceId, DeviceInfo, ErrorStatus, Event, MemoryPool, OpCapability, PoolId, spirv};
 use crate::{
     DType,
     backend::{DeviceProgramId, PoolBufferId},
@@ -135,19 +135,6 @@ pub(super) fn initialize_device(
     memory_pools.push(pool);
     let limits = device.limits();
     let features = wgpu_adapter.features();
-    let mut supported_dtypes = 0;
-    if features.contains(wgpu::Features::SHADER_F64) {
-        supported_dtypes |= 1 << (DType::F64 as u32);
-    }
-    if features.contains(wgpu::Features::SHADER_F16) {
-        supported_dtypes |= 1 << (DType::F16 as u32);
-    }
-    if features.contains(wgpu::Features::SHADER_INT64) {
-        supported_dtypes |= 1 << (DType::I64 as u32);
-    }
-    if debug_dev {
-        println!("[WGPU] supported dtypes: {supported_dtypes:?}");
-    }
     devices.push(Device::WGPU(WGPUDevice {
         device,
         adapter: wgpu_adapter,
@@ -165,7 +152,7 @@ pub(super) fn initialize_device(
             max_register_bytes: 512,
             tensor_cores: false,
             warp_size: 32,
-            supported_dtypes,
+            supported_dtype_ops: [OpCapability::all(); DType::N_DTYPES],
             has_native_exp2: true,
         },
         memory_pool_id: PoolId::from(usize::from(memory_pools.len()) - 1),
