@@ -47,7 +47,7 @@ pub enum DType {
 }
 
 impl DType {
-    pub const N_DTYPES: usize = 13;
+    pub(crate) const N_DTYPES: usize = 13;
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, SerBin, DeBin)]

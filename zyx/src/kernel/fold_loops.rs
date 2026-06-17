@@ -261,7 +261,7 @@ impl Kernel {
         let after_loop = self.next_op(loop_id);
         let after_indices = self.next_op(indices_id);
         let mut op_id = loop_id;
-        while op_id != after_indices {
+        while op_id != after_indices && op_id != after_loop_load_id {
             let next = self.next_op(op_id);
             if parents.contains(&op_id) {
                 self.move_op_before(op_id, after_loop);
