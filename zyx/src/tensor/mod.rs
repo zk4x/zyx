@@ -1776,6 +1776,90 @@ impl Tensor {
         Ok(result)
     }
 
+    /// Scatter
+    ///
+    /// Scatters values from `src` into `self` along `axis` according to `indices`.
+    ///
+    /// For each position in `indices`, the value from `src` at the same position
+    /// is added to `self` at the output position `indices[i, j, ...]` along `axis`.
+    /// Multiple indices mapping to the same output position are summed.
+    ///
+    /// Negative indices are wrapped (e.g., -1 → last element).
+    ///
+    /// # Errors
+    ///
+    /// Returns error if the shapes are incompatible.
+    pub fn scatter(
+        &self,
+        axis: Axis,
+        indices: impl Into<Tensor>,
+        src: impl Into<Tensor>,
+    ) -> Result<Tensor, ZyxError> {
+        let indices = indices.into();
+        let src = src.into();
+        let shape = self.shape();
+        let index_shape = indices.shape();
+        let dim = into_axis(axis, shape.len())?;
+        let dim_size = shape[dim];
+
+        if shape.len() != index_shape.len() {
+            return Err(ZyxError::shape_error(
+                format!(
+                    "self.rank({}) != indices.rank({})",
+                    shape.len(),
+                    index_shape.len()
+                )
+                .into(),
+            ));
+        }
+
+        if index_shape != src.shape() {
+            return Err(ZyxError::shape_error(
+                format!(
+                    "indices shape {:?} != src shape {:?}",
+                    index_shape,
+                    src.shape()
+                )
+                .into(),
+            ));
+        }
+
+        for (d, (&s, &i)) in shape.iter().zip(index_shape.iter()).enumerate() {
+            if d != dim && s < i {
+                return Err(ZyxError::shape_error(
+                    format!(
+                        "Shape mismatch at dimension {d}: self.shape[{d}] = {s} < indices.shape[{d}] = {i}"
+                    )
+                    .into(),
+                ));
+            }
+        }
+
+        let is_negative = indices.cmplt(0)?;
+        let indices = indices + is_negative.mul(dim_size as i32);
+
+        let one_hot = indices.unsqueeze(-1)?.one_hot_along_dim(dim_size, -1)?;
+
+        let contrib = one_hot.mul(&src.unsqueeze(-1)?);
+
+        let contrib = contrib.transpose(-1, dim as i32)?;
+
+        let rank = self.rank() as usize;
+        let mut padding = Vec::new();
+        for d in (0..=rank).rev() {
+            if d == dim || d == rank {
+                padding.push((0i64, 0i64));
+            } else {
+                padding.push((0i64, (shape[d] - index_shape[d]) as i64));
+            }
+        }
+        let contrib = contrib.rpad_zeros(padding)?;
+
+        let result = contrib.sum_dtype([-1], self.dtype())? + self;
+
+        Ok(result)
+    }
+
     /// Index select
     ///
     /// # Errors

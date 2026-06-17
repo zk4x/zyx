@@ -310,16 +310,16 @@ fn gather_indices_larger_than_axis() -> Result<(), ZyxError> {
     Ok(())
 }
 
-/*#[cfg(not(feature = "wgpu"))]
+#[cfg(not(feature = "wgpu"))]
 #[test]
 fn scatter_basic() -> Result<(), ZyxError> {
     let x = Tensor::zeros([3, 3], zyx::DType::I32);
     let src = Tensor::from([[1, 2, 3], [4, 5, 6]]);
-    let indices = Tensor::from([[0, 1, 2], [0, 1, 2]]);
+    let indices = Tensor::from([[0u8, 1, 2], [0, 1, 2]]);
     let result = x.scatter(0, &indices, &src)?;
-    assert_eq!(result.shape(), [3, 3]);
+    assert_eq!(result, [[5, 0, 0], [0, 7, 0], [0, 0, 9]]);
     Ok(())
-}*/
+}
 
 #[cfg(not(feature = "wgpu"))]
 #[test]
