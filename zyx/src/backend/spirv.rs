@@ -665,6 +665,7 @@ pub fn compile(kernel: &Kernel, debug_asm: bool) -> Result<(Vec<u32>, Vec<Dim>, 
                             type_entries.push((OpTypePointer, ptr, vec![SC_WORKGROUP, arr]));
                             let var = asm.id();
                             var_entries.push((ptr, var, SC_WORKGROUP, false));
+                            global_var_ids.push(var);
                             spv_variables.insert(op_id, var);
                             push_ptr_type(&mut asm, &mut ptr_cache, &mut type_entries, SC_WORKGROUP, st);
                         }
