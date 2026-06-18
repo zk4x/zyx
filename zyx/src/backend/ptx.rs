@@ -1431,7 +1431,7 @@ impl Compiler {
                     }
                 }
                 Op::Unary { x, uop } => {
-                    let dtype = dtypes[&x];
+                    let dtype = dtypes[&x].0;
                     let x = self.get_var(*x);
                     let reg = self.new_var(op_id, dtype, rcs[&op_id]);
                     _ = writeln!(
@@ -1443,7 +1443,7 @@ impl Compiler {
                     );
                 }
                 Op::Binary { x, y, bop } => {
-                    let dtype = dtypes[&op_id];
+                    let dtype = dtypes[&op_id].0;
                     let xr = self.get_var(*x);
                     let yr = self.get_var(*y);
                     let reg = self.new_var(op_id, dtype, rcs[&op_id]);
@@ -1452,7 +1452,7 @@ impl Compiler {
                         "{}{}.{} %r{reg}, %r{xr}, %r{yr};",
                         self.indent,
                         self.bop_to_ptx(*bop, dtype),
-                        dtypes[x].ptx(),
+                        dtypes[x].0.ptx(),
                     );
                 }
                 &Op::Loop { dim, scope } => {

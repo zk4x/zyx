@@ -9,7 +9,7 @@ use crate::shape::Dim;
 use crate::{
     DType, Map,
     dtype::Constant,
-    kernel::{BOp, IDX_T, Kernel, Op, OpId, Scope, UOp},
+    kernel::{BOp, IDX_T, Kernel, MemLayout, Op, OpId, Scope, UOp},
 };
 use std::hash::BuildHasherDefault;
 
@@ -637,7 +637,7 @@ pub fn compile(kernel: &Kernel, debug_asm: bool) -> Result<(Vec<u32>, Vec<Dim>, 
                     };
                 }
                 &Op::Cast { x, dtype } => {
-                    let src = dtypes[&x];
+                    let src = dtypes[&x].0;
                     let dst = dtype;
                     if src == DType::Bool && dst.is_float() {
                         let u32_type = push_dtype(&mut asm, &mut type_cache, &mut type_entries, DType::U32);
@@ -683,7 +683,7 @@ pub fn compile(kernel: &Kernel, debug_asm: bool) -> Result<(Vec<u32>, Vec<Dim>, 
             // Pre-allocate constants for Recip, Abs, and Loop
             match kernel.at(op_id) {
                 &Op::Unary { uop, x } if uop == UOp::Reciprocal => {
-                    let dt = dtypes[&x];
+                    let dt = dtypes[&x].0;
                     let one_c = float_one(dt);
                     if !const_pool.contains_key(&one_c) {
                         let tid = type_cache[&dt];
@@ -693,8 +693,8 @@ pub fn compile(kernel: &Kernel, debug_asm: bool) -> Result<(Vec<u32>, Vec<Dim>, 
                         const_pool.insert(one_c, cid);
                     }
                 }
-                &Op::Unary { uop, x } if uop == UOp::Abs && dtypes[&x].is_int() && !dtypes[&x].is_uint() => {
-                    let dt = dtypes[&x];
+                &Op::Unary { uop, x } if uop == UOp::Abs && dtypes[&x].0.is_int() && !dtypes[&x].0.is_uint() => {
+                    let dt = dtypes[&x].0;
                     let tid = type_cache[&dt];
                     let zero = dt.zero_constant();
                     if !const_pool.contains_key(&zero) {
@@ -748,7 +748,7 @@ pub fn compile(kernel: &Kernel, debug_asm: bool) -> Result<(Vec<u32>, Vec<Dim>, 
 
     // Pre-populate all dtypes (kernel dtypes + internal ones like Bool for loop conditions)
     push_dtype(&mut asm, &mut type_cache, &mut type_entries, DType::Bool);
-    for &dt in dtypes.values() {
+    for &(dt, _) in dtypes.values() {
         push_dtype(&mut asm, &mut type_cache, &mut type_entries, dt);
     }
     // Pre-populate pointer types needed during body processing
@@ -923,7 +923,7 @@ pub fn compile(kernel: &Kernel, debug_asm: bool) -> Result<(Vec<u32>, Vec<Dim>, 
                 }
 
                 &Op::Load { src, index, layout: _ } => {
-                    let result_type = emit_type(&mut asm, &mut type_cache, dtypes[&op_id]);
+                    let result_type = emit_type(&mut asm, &mut type_cache, dtypes[&op_id].0);
                     let index_id = spv_values[&index];
 
                     let (base_ptr, element_ptr_type, is_storage_buffer, is_bool_src) =
@@ -964,7 +964,7 @@ pub fn compile(kernel: &Kernel, debug_asm: bool) -> Result<(Vec<u32>, Vec<Dim>, 
                 }
 
                 &Op::Store { dst, x, index, layout: _ } => {
-                    let val_type = emit_type(&mut asm, &mut type_cache, dtypes[&x]);
+                    let val_type = emit_type(&mut asm, &mut type_cache, dtypes[&x].0);
                     let val_id = spv_values[&x];
                     let index_id = spv_values[&index];
 
@@ -1011,7 +1011,7 @@ pub fn compile(kernel: &Kernel, debug_asm: bool) -> Result<(Vec<u32>, Vec<Dim>, 
                 }
 
                 &Op::Cast { x, dtype } => {
-                    let src_type = dtypes[&x];
+                    let src_type = dtypes[&x].0;
                     let src_id = spv_values[&x];
                     let dst_type = dtype;
                     let result_type = emit_type(&mut asm, &mut type_cache, dst_type);
@@ -1044,7 +1044,7 @@ pub fn compile(kernel: &Kernel, debug_asm: bool) -> Result<(Vec<u32>, Vec<Dim>, 
 
                 &Op::Unary { x, uop } => {
                     let src_id = spv_values[&x];
-                    let dt = dtypes[&x];
+                    let dt = dtypes[&x].0;
                     let result_type = emit_type(&mut asm, &mut type_cache, dt);
                     let rid = asm.id();
 
@@ -1114,8 +1114,8 @@ pub fn compile(kernel: &Kernel, debug_asm: bool) -> Result<(Vec<u32>, Vec<Dim>, 
                 &Op::Binary { x, y, bop } => {
                     let x_id = spv_values[&x];
                     let y_id = spv_values[&y];
-                    let dt = dtypes[&x];
-                    let result_type = emit_type(&mut asm, &mut type_cache, dtypes[&op_id]);
+                    let dt = dtypes[&x].0;
+                    let result_type = emit_type(&mut asm, &mut type_cache, dtypes[&op_id].0);
                     let rid = asm.id();
 
                     let (float_op, int_op, _): (Option<OpCode>, Option<OpCode>, Option<OpCode>) = match bop {
@@ -1206,7 +1206,7 @@ pub fn compile(kernel: &Kernel, debug_asm: bool) -> Result<(Vec<u32>, Vec<Dim>, 
                     let x_id = spv_values[&x];
                     let y_id = spv_values[&y];
                     let z_id = spv_values[&z];
-                    let dt = dtypes[&x];
+                    let dt = dtypes[&x].0;
                     let result_type = emit_type(&mut asm, &mut type_cache, dt);
                     let rid = asm.id();
 
