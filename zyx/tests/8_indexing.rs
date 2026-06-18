@@ -323,6 +323,136 @@ fn scatter_basic() -> Result<(), ZyxError> {
 
 #[cfg(not(feature = "wgpu"))]
 #[test]
+fn scatter_axis_1() -> Result<(), ZyxError> {
+    let x = Tensor::zeros([3, 4], zyx::DType::I32);
+    let src = Tensor::from([[1, 2], [3, 4], [5, 6]]);
+    let indices = Tensor::from([[0u8, 3], [1, 2], [2, 1]]);
+    let result = x.scatter(1, &indices, &src)?;
+    assert_eq!(result, [[1, 0, 0, 2], [0, 3, 4, 0], [0, 6, 5, 0]]);
+    Ok(())
+}
+
+#[cfg(not(feature = "wgpu"))]
+#[test]
+fn scatter_duplicate_indices() -> Result<(), ZyxError> {
+    let x = Tensor::zeros([5], zyx::DType::I32);
+    let src = Tensor::from([1, 2, 3, 4, 5, 6]);
+    let indices = Tensor::from([0u8, 0, 1, 1, 2, 4]);
+    let result = x.scatter(0, &indices, &src)?;
+    assert_eq!(result, [3, 7, 5, 0, 6]);
+    Ok(())
+}
+
+#[cfg(not(feature = "wgpu"))]
+#[test]
+fn scatter_1d() -> Result<(), ZyxError> {
+    let x = Tensor::zeros([10], zyx::DType::I32);
+    let src = Tensor::from([100, 200, 300]);
+    let indices = Tensor::from([0u8, 5, 9]);
+    let result = x.scatter(0, &indices, &src)?;
+    assert_eq!(result, [100, 0, 0, 0, 0, 200, 0, 0, 0, 300]);
+    Ok(())
+}
+
+#[cfg(not(feature = "wgpu"))]
+#[test]
+fn scatter_nonzero_self() -> Result<(), ZyxError> {
+    let x = Tensor::from([[10, 10, 10], [10, 10, 10]]);
+    let src = Tensor::from([[1, 2, 3]]);
+    let indices = Tensor::from([[0u8, 1, 2]]);
+    let result = x.scatter(1, &indices, &src)?;
+    assert_eq!(result, [[11, 12, 13], [10, 10, 10]]);
+    Ok(())
+}
+
+#[cfg(not(feature = "wgpu"))]
+#[test]
+fn scatter_negative_indices() -> Result<(), ZyxError> {
+    let x = Tensor::zeros([3, 3], zyx::DType::I32);
+    let src = Tensor::from([[1, 2], [3, 4]]);
+    let indices = Tensor::from([[-1, -2], [0, 1]]);
+    let result = x.scatter(1, &indices, &src)?;
+    assert_eq!(result, [[0, 2, 1], [3, 4, 0], [0, 0, 0]]);
+    Ok(())
+}
+
+#[cfg(not(feature = "wgpu"))]
+#[test]
+fn scatter_3d() -> Result<(), ZyxError> {
+    let x = Tensor::zeros([2, 3, 4], zyx::DType::I32);
+    let src = Tensor::from([[[1, 2]], [[3, 4]]]);
+    let indices = Tensor::from([[[0u8, 3]], [[1, 2]]]);
+    let result = x.scatter(2, &indices, &src)?;
+    assert_eq!(
+        result,
+        [[[1, 0, 0, 2], [0, 0, 0, 0], [0, 0, 0, 0]], [[0, 3, 4, 0], [0, 0, 0, 0], [0, 0, 0, 0]]]
+    );
+    Ok(())
+}
+
+#[cfg(not(feature = "wgpu"))]
+#[test]
+fn scatter_large_1d() -> Result<(), ZyxError> {
+    let n = 10000;
+    let x = Tensor::zeros([n], zyx::DType::I32);
+    let indices = Tensor::from([0u16, 1, 5000, 9999, 0, 9999]);
+    let src = Tensor::from([10, 20, 30, 40, 100, 200]);
+    let result = x.scatter(0, &indices, &src)?;
+    let result_vec: Vec<i32> = result.try_into()?;
+    assert_eq!(result_vec[0], 110);
+    assert_eq!(result_vec[1], 20);
+    assert_eq!(result_vec[5000], 30);
+    assert_eq!(result_vec[9999], 240);
+    Ok(())
+}
+
+#[cfg(not(feature = "wgpu"))]
+#[test]
+fn scatter_partial_overlap() -> Result<(), ZyxError> {
+    let x = Tensor::zeros([3, 3], zyx::DType::I32);
+    let src = Tensor::from([[1, 2, 3]]);
+    let indices = Tensor::from([[0u8, 1, 2]]);
+    let result = x.scatter(0, &indices, &src)?;
+    assert_eq!(result, [[1, 0, 0], [0, 2, 0], [0, 0, 3]]);
+    Ok(())
+}
+
+#[test]
+fn scatter_error_rank_mismatch() -> Result<(), ZyxError> {
+    let x = Tensor::zeros([3, 3], zyx::DType::I32);
+    let indices = Tensor::from([0, 1]);
+    let src = Tensor::from([1, 2]);
+    let result = x.scatter(0, &indices, &src);
+    assert!(result.is_err());
+    Ok(())
+}
+
+#[test]
+fn scatter_error_shape_mismatch() -> Result<(), ZyxError> {
+    let x = Tensor::zeros([3, 3], zyx::DType::I32);
+    let indices = Tensor::from([[0, 1], [2, 0]]);
+    let src = Tensor::from([[1, 2, 3]]);
+    let result = x.scatter(0, &indices, &src);
+    assert!(result.is_err());
+    Ok(())
+}
+
+#[cfg(not(feature = "wgpu"))]
+#[test]
+fn scatter_f32() -> Result<(), ZyxError> {
+    let x = Tensor::zeros([3], zyx::DType::F32);
+    let src = Tensor::from([1.5f32, 2.5]);
+    let indices = Tensor::from([0u8, 2]);
+    let result = x.scatter(0, &indices, &src)?;
+    let result_vec: Vec<f32> = result.try_into()?;
+    assert!((result_vec[0] - 1.5).abs() < 1e-5);
+    assert!((result_vec[2] - 2.5).abs() < 1e-5);
+    assert!((result_vec[1] - 0.0).abs() < 1e-5);
+    Ok(())
+}
+
+#[cfg(not(feature = "wgpu"))]
+#[test]
 fn gather_4d_tensor() -> Result<(), ZyxError> {
     let x = Tensor::from([[[[1, 2], [3, 4]], [[5, 6], [7, 8]]]]);
     let indices = Tensor::from([[[[0], [1]]]]);
