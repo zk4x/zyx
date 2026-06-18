@@ -38,13 +38,13 @@ impl Kernel {
         while !op_id.is_null() {
             let next = self.next_op(op_id);
             match *self.at(op_id) {
-                Op::Move { .. } | Op::ConstView { .. } | Op::LoadView { .. } | Op::StoreView { .. } | Op::Reduce { .. } => todo!(),
+                Op::Move { .. } | Op::ConstView { .. } | Op::LoadView { .. } | Op::StoreView { .. } | Op::Reduce { .. } => unreachable!("these ops should be unfolded before constant folding"),
                 Op::Wmma { .. }
                 | Op::Barrier { .. }
                 | Op::If { .. }
                 | Op::EndIf => {}
-                | Op::Vectorize { .. } // TODO
-                | Op::Devectorize { .. } // TODO
+                | Op::Vectorize { .. }
+                | Op::Devectorize { .. }
                 | Op::Const(_)
                 | Op::Define { .. }
                 | Op::Load { .. }
@@ -156,8 +156,14 @@ impl Kernel {
                     },
                     (x_op, y_op) if x_op == y_op => {
                         match bop {
-                            BOp::Div => todo!(), // should be constant 1
-                            BOp::Sub => todo!(), // should be constant 0
+                            BOp::Div => {
+                                let dtype = self.dtype(x);
+                                self.ops[op_id].op = Op::Const(dtype.one_constant());
+                            }
+                            BOp::Sub => {
+                                let dtype = self.dtype(x);
+                                self.ops[op_id].op = Op::Const(dtype.zero_constant());
+                            }
                             _ => {}
                         }
                     }

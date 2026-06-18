@@ -969,6 +969,34 @@ impl Kernel {
         }
     }
 
+    /// Resolve the dtype of an operation's result.
+    pub(crate) fn dtype(&self, op_id: OpId) -> DType {
+        match &self.ops[op_id].op {
+            Op::Const(c) => c.dtype(),
+            Op::Define { dtype, .. } => *dtype,
+            Op::Cast { dtype, .. } => *dtype,
+            Op::Index { .. } => IDX_T,
+            Op::Load { src, .. } => self.dtype(*src),
+            Op::Unary { x, .. } => self.dtype(*x),
+            Op::Binary { x, .. } => self.dtype(*x),
+            Op::Mad { x, .. } => self.dtype(*x),
+            Op::Wmma { dtype, .. } => match dtype {
+                MMADType::f16_f16_f16_f32 => DType::F32,
+            },
+            Op::Vectorize { ops } => self.dtype(ops[0]),
+            Op::Devectorize { vec, .. } => self.dtype(*vec),
+            Op::Store { x, .. } => self.dtype(*x),
+            Op::StoreView { src, .. } => self.dtype(*src),
+            Op::ConstView(b) => b.0.dtype(),
+            Op::LoadView(b) => b.0,
+            Op::Move { x, .. } => self.dtype(*x),
+            Op::Reduce { x, .. } => self.dtype(*x),
+            Op::Barrier { .. } | Op::If { .. } | Op::EndIf | Op::EndLoop | Op::Loop { .. } => {
+                panic!("operation has no dtype")
+            }
+        }
+    }
+
     /// Compile the kernel. Consumes `self`.
     ///
     /// Runs [`Kernel::unfold_movement_ops`] and [`Kernel::verify`] before compilation.
