@@ -319,7 +319,7 @@ impl Runtime {
                 Node::Unary { x, uop } => {
                     #[allow(clippy::match_same_arms)]
                     match uop {
-                        UOp::BitNot => todo!(),
+                        UOp::BitNot => {}
                         UOp::Exp => {
                             // grad_x = grad * exp(x)
                             let exp_x = self.unary(x, UOp::Exp);
@@ -478,8 +478,6 @@ impl Runtime {
                         insert_or_add_grad(self, &mut grads, x, grad);
                     }
                     BOp::Max => {
-                        // TODO make this shorter
-
                         // Compute x_grad = (1 - (x < z_broadcasted)) * grad
                         let x_shape: Vec<Dim> = self.shape(x).into();
                         let mut z_shape: Vec<Dim> = self.shape(nid).into();
@@ -531,7 +529,40 @@ impl Runtime {
 
                         insert_or_add_grad(self, &mut grads, x, grad_x);
                     }
-                    BOp::Mul => todo!(),
+                    BOp::Mul => {
+                        let x_shape: Vec<Dim> = self.shape(x).into();
+                        let mut z_shape: Vec<Dim> = self.shape(nid).into();
+                        let axes: Vec<usize> = self.graph.axes(nid).into();
+
+                        for &axis in &axes {
+                            z_shape.insert(axis as usize, 1);
+                        }
+                        if axes.len() == x_shape.len() {
+                            z_shape.remove(0);
+                        }
+
+                        let z_reshaped = self.reshape(nid, z_shape);
+                        let z_broadcasted = self.expand(z_reshaped, x_shape.clone()).unwrap();
+                        self.release(z_reshaped);
+                        let div = self.binary(z_broadcasted, x, BOp::Div);
+                        self.release(z_broadcasted);
+
+                        let mut grad_shape: Vec<Dim> = self.shape(grad).into();
+                        for &axis in &axes {
+                            grad_shape.insert(axis as usize, 1);
+                        }
+                        if axes.len() == x_shape.len() {
+                            grad_shape.remove(0);
+                        }
+                        let grad_reshaped = self.reshape(grad, grad_shape);
+                        let grad_expanded = self.expand(grad_reshaped, x_shape).unwrap();
+                        self.release(grad_reshaped);
+                        let grad_x = self.binary(grad_expanded, div, BOp::Mul);
+                        self.release(grad_expanded);
+                        self.release(div);
+
+                        insert_or_add_grad(self, &mut grads, x, grad_x);
+                    }
                     _ => unreachable!(),
                 },
             }
