@@ -649,13 +649,16 @@ pub(crate) struct OptSeq {
 
 impl SerBin for OptSeq {
     fn ser_bin(&self, output: &mut Vec<u8>) {
-        todo!()
+        self.opts.ser_bin(output);
+        self.cost.ser_bin(output);
     }
 }
 
 impl DeBin for OptSeq {
     fn de_bin(offset: &mut usize, bytes: &[u8]) -> Result<Self, nanoserde::DeBinErr> {
-        todo!()
+        let opts = Vec::<(usize, usize)>::de_bin(offset, bytes)?;
+        let cost = Cost::de_bin(offset, bytes)?;
+        Ok(Self { opts, cost })
     }
 }
 

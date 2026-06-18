@@ -34,14 +34,15 @@ pub(crate) struct Cost {
 }
 
 impl SerBin for Cost {
-    fn ser_bin(&self, _output: &mut Vec<u8>) {
-        todo!()
+    fn ser_bin(&self, output: &mut Vec<u8>) {
+        self.cost.ser_bin(output);
     }
 }
 
 impl DeBin for Cost {
-    fn de_bin(_offset: &mut usize, _bytes: &[u8]) -> Result<Self, nanoserde::DeBinErr> {
-        todo!()
+    fn de_bin(offset: &mut usize, bytes: &[u8]) -> Result<Self, nanoserde::DeBinErr> {
+        let cost = u64::de_bin(offset, bytes)?;
+        Ok(Self { cost })
     }
 }
 
