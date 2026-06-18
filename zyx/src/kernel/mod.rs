@@ -368,14 +368,19 @@ pub(crate) struct OpNode {
 }
 
 impl SerBin for OpNode {
-    fn ser_bin(&self, _output: &mut Vec<u8>) {
-        todo!()
+    fn ser_bin(&self, output: &mut Vec<u8>) {
+        self.prev.ser_bin(output);
+        self.next.ser_bin(output);
+        self.op.ser_bin(output);
     }
 }
 
 impl DeBin for OpNode {
-    fn de_bin(_offset: &mut usize, _bytes: &[u8]) -> Result<Self, nanoserde::DeBinErr> {
-        todo!()
+    fn de_bin(offset: &mut usize, bytes: &[u8]) -> Result<Self, nanoserde::DeBinErr> {
+        let prev = OpId::de_bin(offset, bytes)?;
+        let next = OpId::de_bin(offset, bytes)?;
+        let op = Op::de_bin(offset, bytes)?;
+        Ok(OpNode { prev, next, op })
     }
 }
 
@@ -526,14 +531,236 @@ pub(crate) enum Op {
 }
 
 impl SerBin for Op {
-    fn ser_bin(&self, _output: &mut Vec<u8>) {
-        todo!()
+    fn ser_bin(&self, output: &mut Vec<u8>) {
+        match self {
+            Op::Cast { x, dtype } => {
+                output.push(0);
+                x.ser_bin(output);
+                dtype.ser_bin(output);
+            }
+            Op::Unary { x, uop } => {
+                output.push(1);
+                x.ser_bin(output);
+                uop.ser_bin(output);
+            }
+            Op::Binary { x, y, bop } => {
+                output.push(2);
+                x.ser_bin(output);
+                y.ser_bin(output);
+                bop.ser_bin(output);
+            }
+            Op::Const(c) => {
+                output.push(3);
+                c.ser_bin(output);
+            }
+            Op::Define { dtype, scope, ro, len } => {
+                output.push(4);
+                dtype.ser_bin(output);
+                scope.ser_bin(output);
+                output.push(u8::from(*ro));
+                len.ser_bin(output);
+            }
+            Op::Store { dst, x, index, layout } => {
+                output.push(5);
+                dst.ser_bin(output);
+                x.ser_bin(output);
+                index.ser_bin(output);
+                layout.ser_bin(output);
+            }
+            Op::Load { src, index, layout } => {
+                output.push(6);
+                src.ser_bin(output);
+                index.ser_bin(output);
+                layout.ser_bin(output);
+            }
+            Op::Index { len, scope, axis } => {
+                output.push(7);
+                len.ser_bin(output);
+                scope.ser_bin(output);
+                axis.ser_bin(output);
+            }
+            Op::Loop { len } => {
+                output.push(8);
+                len.ser_bin(output);
+            }
+            Op::EndLoop => output.push(9),
+            Op::Mad { x, y, z } => {
+                output.push(10);
+                x.ser_bin(output);
+                y.ser_bin(output);
+                z.ser_bin(output);
+            }
+            Op::Wmma { dims, layout, dtype, a, b, c } => {
+                output.push(11);
+                dims.ser_bin(output);
+                layout.ser_bin(output);
+                dtype.ser_bin(output);
+                a.ser_bin(output);
+                b.ser_bin(output);
+                c.ser_bin(output);
+            }
+            Op::Vectorize { ops } => {
+                output.push(12);
+                ops.ser_bin(output);
+            }
+            Op::Devectorize { vec, idx } => {
+                output.push(13);
+                vec.ser_bin(output);
+                idx.ser_bin(output);
+            }
+            Op::Barrier { scope } => {
+                output.push(14);
+                scope.ser_bin(output);
+            }
+            Op::If { condition } => {
+                output.push(15);
+                condition.ser_bin(output);
+            }
+            Op::EndIf => output.push(16),
+            Op::ConstView(t) => {
+                output.push(17);
+                t.ser_bin(output);
+            }
+            Op::LoadView(t) => {
+                output.push(18);
+                t.ser_bin(output);
+            }
+            Op::StoreView { src, dtype } => {
+                output.push(19);
+                src.ser_bin(output);
+                dtype.ser_bin(output);
+            }
+            Op::Move { x, mop } => {
+                output.push(20);
+                x.ser_bin(output);
+                mop.ser_bin(output);
+            }
+            Op::Reduce { x, rop, n_axes } => {
+                output.push(21);
+                x.ser_bin(output);
+                rop.ser_bin(output);
+                n_axes.ser_bin(output);
+            }
+        }
     }
 }
 
 impl DeBin for Op {
-    fn de_bin(_offset: &mut usize, _bytes: &[u8]) -> Result<Self, nanoserde::DeBinErr> {
-        todo!()
+    fn de_bin(offset: &mut usize, bytes: &[u8]) -> Result<Self, nanoserde::DeBinErr> {
+        let tag = bytes[*offset];
+        *offset += 1;
+        match tag {
+            0 => {
+                let x = OpId::de_bin(offset, bytes)?;
+                let dtype = DType::de_bin(offset, bytes)?;
+                Ok(Op::Cast { x, dtype })
+            }
+            1 => {
+                let x = OpId::de_bin(offset, bytes)?;
+                let uop = UOp::de_bin(offset, bytes)?;
+                Ok(Op::Unary { x, uop })
+            }
+            2 => {
+                let x = OpId::de_bin(offset, bytes)?;
+                let y = OpId::de_bin(offset, bytes)?;
+                let bop = BOp::de_bin(offset, bytes)?;
+                Ok(Op::Binary { x, y, bop })
+            }
+            3 => {
+                let c = Constant::de_bin(offset, bytes)?;
+                Ok(Op::Const(c))
+            }
+            4 => {
+                let dtype = DType::de_bin(offset, bytes)?;
+                let scope = Scope::de_bin(offset, bytes)?;
+                let ro = bytes[*offset] != 0;
+                *offset += 1;
+                let len = Dim::de_bin(offset, bytes)?;
+                Ok(Op::Define { dtype, scope, ro, len })
+            }
+            5 => {
+                let dst = OpId::de_bin(offset, bytes)?;
+                let x = OpId::de_bin(offset, bytes)?;
+                let index = OpId::de_bin(offset, bytes)?;
+                let layout = MemLayout::de_bin(offset, bytes)?;
+                Ok(Op::Store { dst, x, index, layout })
+            }
+            6 => {
+                let src = OpId::de_bin(offset, bytes)?;
+                let index = OpId::de_bin(offset, bytes)?;
+                let layout = MemLayout::de_bin(offset, bytes)?;
+                Ok(Op::Load { src, index, layout })
+            }
+            7 => {
+                let len = Dim::de_bin(offset, bytes)?;
+                let scope = Scope::de_bin(offset, bytes)?;
+                let axis = u32::de_bin(offset, bytes)?;
+                Ok(Op::Index { len, scope, axis })
+            }
+            8 => {
+                let len = Dim::de_bin(offset, bytes)?;
+                Ok(Op::Loop { len })
+            }
+            9 => Ok(Op::EndLoop),
+            10 => {
+                let x = OpId::de_bin(offset, bytes)?;
+                let y = OpId::de_bin(offset, bytes)?;
+                let z = OpId::de_bin(offset, bytes)?;
+                Ok(Op::Mad { x, y, z })
+            }
+            11 => {
+                let dims = MMADims::de_bin(offset, bytes)?;
+                let layout = MMALayout::de_bin(offset, bytes)?;
+                let dtype = MMADType::de_bin(offset, bytes)?;
+                let a = OpId::de_bin(offset, bytes)?;
+                let b = OpId::de_bin(offset, bytes)?;
+                let c = OpId::de_bin(offset, bytes)?;
+                Ok(Op::Wmma { dims, layout, dtype, a, b, c })
+            }
+            12 => {
+                let ops = Vec::<OpId>::de_bin(offset, bytes)?;
+                Ok(Op::Vectorize { ops })
+            }
+            13 => {
+                let vec = OpId::de_bin(offset, bytes)?;
+                let idx = usize::de_bin(offset, bytes)?;
+                Ok(Op::Devectorize { vec, idx })
+            }
+            14 => {
+                let scope = Scope::de_bin(offset, bytes)?;
+                Ok(Op::Barrier { scope })
+            }
+            15 => {
+                let condition = OpId::de_bin(offset, bytes)?;
+                Ok(Op::If { condition })
+            }
+            16 => Ok(Op::EndIf),
+            17 => {
+                let t = Box::<(Constant, View)>::de_bin(offset, bytes)?;
+                Ok(Op::ConstView(t))
+            }
+            18 => {
+                let t = Box::<(DType, View)>::de_bin(offset, bytes)?;
+                Ok(Op::LoadView(t))
+            }
+            19 => {
+                let src = OpId::de_bin(offset, bytes)?;
+                let dtype = DType::de_bin(offset, bytes)?;
+                Ok(Op::StoreView { src, dtype })
+            }
+            20 => {
+                let x = OpId::de_bin(offset, bytes)?;
+                let mop = Box::<MoveOp>::de_bin(offset, bytes)?;
+                Ok(Op::Move { x, mop })
+            }
+            21 => {
+                let x = OpId::de_bin(offset, bytes)?;
+                let rop = BOp::de_bin(offset, bytes)?;
+                let n_axes = UAxis::de_bin(offset, bytes)?;
+                Ok(Op::Reduce { x, rop, n_axes })
+            }
+            _ => Err(nanoserde::DeBinErr::new(*offset - 1, 1, bytes.len())),
+        }
     }
 }
 
@@ -1774,7 +2001,9 @@ impl SerBin for UOp {
 
 impl DeBin for UOp {
     fn de_bin(offset: &mut usize, bytes: &[u8]) -> Result<Self, nanoserde::DeBinErr> {
-        match bytes[*offset] {
+        let tag = bytes[*offset];
+        *offset += 1;
+        match tag {
             0 => Ok(UOp::Neg),
             1 => Ok(UOp::BitNot),
             2 => Ok(UOp::Exp),
@@ -1788,7 +2017,7 @@ impl DeBin for UOp {
             10 => Ok(UOp::Floor),
             11 => Ok(UOp::Trunc),
             12 => Ok(UOp::Abs),
-            _ => Err(nanoserde::DeBinErr::new(*offset, 1, bytes.len())),
+            _ => Err(nanoserde::DeBinErr::new(*offset - 1, 1, bytes.len())),
         }
     }
 }
@@ -1820,7 +2049,9 @@ impl SerBin for BOp {
 
 impl DeBin for BOp {
     fn de_bin(offset: &mut usize, bytes: &[u8]) -> Result<Self, nanoserde::DeBinErr> {
-        match bytes[*offset] {
+        let tag = bytes[*offset];
+        *offset += 1;
+        match tag {
             0 => Ok(BOp::Add),
             1 => Ok(BOp::Sub),
             2 => Ok(BOp::Mul),
@@ -1839,19 +2070,60 @@ impl DeBin for BOp {
             15 => Ok(BOp::BitShiftRight),
             16 => Ok(BOp::NotEq),
             17 => Ok(BOp::Eq),
-            _ => Err(nanoserde::DeBinErr::new(*offset, 1, bytes.len())),
+            _ => Err(nanoserde::DeBinErr::new(*offset - 1, 1, bytes.len())),
         }
     }
 }
 
 impl SerBin for MoveOp {
-    fn ser_bin(&self, _output: &mut Vec<u8>) {
-        todo!()
+    fn ser_bin(&self, output: &mut Vec<u8>) {
+        match self {
+            MoveOp::Reshape { shape } => {
+                output.push(0);
+                shape.ser_bin(output);
+            }
+            MoveOp::Expand { shape } => {
+                output.push(1);
+                shape.ser_bin(output);
+            }
+            MoveOp::Permute { axes, shape } => {
+                output.push(2);
+                axes.ser_bin(output);
+                shape.ser_bin(output);
+            }
+            MoveOp::Pad { padding, shape } => {
+                output.push(3);
+                padding.ser_bin(output);
+                shape.ser_bin(output);
+            }
+        }
     }
 }
 
 impl DeBin for MoveOp {
-    fn de_bin(_offset: &mut usize, _bytes: &[u8]) -> Result<Self, nanoserde::DeBinErr> {
-        todo!()
+    fn de_bin(offset: &mut usize, bytes: &[u8]) -> Result<Self, nanoserde::DeBinErr> {
+        let tag = bytes[*offset];
+        *offset += 1;
+        match tag {
+            0 => {
+                let shape = Vec::<Dim>::de_bin(offset, bytes)?;
+                Ok(MoveOp::Reshape { shape })
+            }
+            1 => {
+                let shape = Vec::<Dim>::de_bin(offset, bytes)?;
+                Ok(MoveOp::Expand { shape })
+            }
+            2 => {
+                let axes = Vec::<UAxis>::de_bin(offset, bytes)?;
+                let shape = Vec::<Dim>::de_bin(offset, bytes)?;
+                Ok(MoveOp::Permute { axes, shape })
+            }
+            3 => {
+                let padding = Vec::<(i64, i64)>::de_bin(offset, bytes)?;
+                let shape = Vec::<Dim>::de_bin(offset, bytes)?;
+                Ok(MoveOp::Pad { padding, shape })
+            }
+            _ => Err(nanoserde::DeBinErr::new(*offset - 1, 1, bytes.len())),
+        }
     }
 }
