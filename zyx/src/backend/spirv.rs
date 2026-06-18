@@ -701,17 +701,35 @@ pub fn compile(kernel: &Kernel, debug_asm: bool) -> Result<(Vec<u32>, Vec<Dim>, 
                         const_entries.push((u32_type, one_cid, vec![1u32]));
                         const_entries.push((u32_type, zero_cid, vec![0u32]));
                         cast_u32_consts.insert(op_id, (one_cid, zero_cid));
-                    } else if src == DType::Bool && (dst == DType::U32 || dst == DType::I32) {
+                    } else if src == DType::Bool && (dst == DType::U32 || dst == DType::I32
+                        || dst == DType::U64 || dst == DType::I64
+                        || dst == DType::U16 || dst == DType::I16
+                        || dst == DType::U8 || dst == DType::I8) {
                         let int_type = push_dtype(&mut asm, &mut type_cache, &mut type_entries, dst);
                         let one_cid = asm.id();
                         let zero_cid = asm.id();
-                        const_entries.push((int_type, one_cid, vec![1u32]));
-                        const_entries.push((int_type, zero_cid, vec![0u32]));
+                        let one_words = match dst.bit_size() {
+                            64 => vec![1u32, 0u32],
+                            _ => vec![1u32],
+                        };
+                        let zero_words = match dst.bit_size() {
+                            64 => vec![0u32, 0u32],
+                            _ => vec![0u32],
+                        };
+                        const_entries.push((int_type, one_cid, one_words));
+                        const_entries.push((int_type, zero_cid, zero_words));
                         cast_u32_consts.insert(op_id, (one_cid, zero_cid));
-                    } else if (src == DType::U32 || src == DType::I32) && dst == DType::Bool {
+                    } else if (src == DType::U32 || src == DType::I32
+                        || src == DType::U64 || src == DType::I64
+                        || src == DType::U16 || src == DType::I16
+                        || src == DType::U8 || src == DType::I8) && dst == DType::Bool {
                         let src_type = push_dtype(&mut asm, &mut type_cache, &mut type_entries, src);
                         let zero_cid = asm.id();
-                        const_entries.push((src_type, zero_cid, vec![0u32]));
+                        let zero_words = match src.bit_size() {
+                            64 => vec![0u32, 0u32],
+                            _ => vec![0u32],
+                        };
+                        const_entries.push((src_type, zero_cid, zero_words));
                         cast_u32_consts.insert(op_id, (zero_cid, 0));
                     }
                 }
@@ -1060,10 +1078,16 @@ pub fn compile(kernel: &Kernel, debug_asm: bool) -> Result<(Vec<u32>, Vec<Dim>, 
                         let int_tmp = asm.id();
                         asm.emit_typed(OpSelect, u32_type, int_tmp, &[src_id, u32_one, u32_zero]);
                         asm.emit_typed(OpConvertUToF, result_type, rid, &[int_tmp]);
-                    } else if src_type == DType::Bool && (dst_type == DType::U32 || dst_type == DType::I32) {
+                    } else if src_type == DType::Bool && (dst_type == DType::U32 || dst_type == DType::I32
+                        || dst_type == DType::U64 || dst_type == DType::I64
+                        || dst_type == DType::U16 || dst_type == DType::I16
+                        || dst_type == DType::U8 || dst_type == DType::I8) {
                         let (one_cid, zero_cid) = cast_u32_consts[&op_id];
                         asm.emit_typed(OpSelect, result_type, rid, &[src_id, one_cid, zero_cid]);
-                    } else if dst_type == DType::Bool && (src_type == DType::U32 || src_type == DType::I32) {
+                    } else if dst_type == DType::Bool && (src_type == DType::U32 || src_type == DType::I32
+                        || src_type == DType::U64 || src_type == DType::I64
+                        || src_type == DType::U16 || src_type == DType::I16
+                        || src_type == DType::U8 || src_type == DType::I8) {
                         let (zero_cid, _) = cast_u32_consts[&op_id];
                         asm.emit_typed(OpINotEqual, result_type, rid, &[src_id, zero_cid]);
                     } else {
@@ -1436,6 +1460,10 @@ fn cast_op(src: DType, dst: DType) -> OpCode {
         (I32, F32) | (I64, F32) | (I32, F64) | (I64, F64) | (I32, F16) | (I64, F16) => OpConvertSToF,
         (U32, F32) | (U64, F32) | (U32, F64) | (U64, F64) | (U32, F16) | (U64, F16) => OpConvertUToF,
         (Bool, I32) | (Bool, U32) | (I32, Bool) | (U32, Bool) => OpBitcast,
+        _ if src == DType::Bool || dst == DType::Bool => {
+            // Bool conversions should be handled via OpSelect/OpINotEqual upstream
+            unreachable!("Bool cast not handled upstream: {src:?} -> {dst:?}")
+        }
         _ => {
             // Fallback: if same bit width, use bitcast
             if bit_size(src) == bit_size(dst) {
