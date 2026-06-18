@@ -141,23 +141,23 @@ impl DType {
     pub(super) fn init_for_rop(self, rop: BOp) -> Constant {
         match rop {
             BOp::Add => self.zero_constant(),
-            BOp::Sub => todo!(),
+            BOp::Sub => unreachable!("Sub is not associative, cannot be a reduction"),
             BOp::Mul => self.one_constant(),
-            BOp::Div => todo!(),
-            BOp::Pow => todo!(),
-            BOp::Mod => todo!(),
-            BOp::Cmplt => todo!(),
-            BOp::Cmpgt => todo!(),
+            BOp::Div => unreachable!("Div is not associative, cannot be a reduction"),
+            BOp::Pow => unreachable!("Pow is not associative, cannot be a reduction"),
+            BOp::Mod => unreachable!("Mod is not associative, cannot be a reduction"),
+            BOp::Cmplt => unreachable!("comparison, cannot be a reduction"),
+            BOp::Cmpgt => unreachable!("comparison, cannot be a reduction"),
             BOp::Max => self.min_constant(),
-            BOp::Or => todo!(),
-            BOp::And => todo!(),
-            BOp::BitXor => todo!(),
-            BOp::BitOr => todo!(),
-            BOp::BitAnd => todo!(),
-            BOp::BitShiftLeft => todo!(),
-            BOp::BitShiftRight => todo!(),
-            BOp::NotEq => todo!(),
-            BOp::Eq => todo!(),
+            BOp::Or => self.zero_constant(),
+            BOp::And => self.one_constant(),
+            BOp::BitXor => self.zero_constant(),
+            BOp::BitOr => self.zero_constant(),
+            BOp::BitAnd => self.zero_constant().unary(UOp::BitNot),
+            BOp::BitShiftLeft => unreachable!("shift, cannot be a reduction"),
+            BOp::BitShiftRight => unreachable!("shift, cannot be a reduction"),
+            BOp::NotEq => unreachable!("comparison, cannot be a reduction"),
+            BOp::Eq => unreachable!("comparison, cannot be a reduction"),
         }
     }
 
@@ -519,12 +519,26 @@ impl Constant {
 
     pub(super) fn unary(self, uop: UOp) -> Constant {
         use crate::Float;
+        if uop == UOp::BitNot {
+            return match self {
+                Constant::U8(x) => Constant::U8(!x),
+                Constant::U16(x) => Constant::U16(!x),
+                Constant::U32(x) => Constant::U32(!x),
+                Constant::U64(x) => Constant::U64((!u64::from_le_bytes(x)).to_le_bytes()),
+                Constant::I8(x) => Constant::I8(!x),
+                Constant::I16(x) => Constant::I16(!x),
+                Constant::I32(x) => Constant::I32(!x),
+                Constant::I64(x) => Constant::I64((!i64::from_le_bytes(x)).to_le_bytes()),
+                Constant::Bool(x) => Constant::Bool(!x),
+                _ => unreachable!("BitNot is not supported for float types"),
+            };
+        }
         fn unary_func<T: Scalar>(x: T, uop: UOp) -> T {
             match uop {
                 UOp::Reciprocal | UOp::Sqrt | UOp::Sin | UOp::Cos | UOp::Floor | UOp::Trunc | UOp::Abs | UOp::Exp => {
                     unreachable!()
                 }
-                UOp::BitNot => todo!(),
+                UOp::BitNot => unreachable!(),
                 UOp::Neg => x.neg(),
                 UOp::Exp2 => x.exp2(),
                 UOp::Log2 => x.log2(),
@@ -533,7 +547,7 @@ impl Constant {
         }
         fn unary_func_float<T: Float>(x: T, uop: UOp) -> T {
             match uop {
-                UOp::BitNot => todo!(),
+                UOp::BitNot => unreachable!(),
                 UOp::Neg => x.neg(),
                 UOp::Reciprocal => x.reciprocal(),
                 UOp::Sqrt => x.sqrt(),
