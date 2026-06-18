@@ -60,7 +60,6 @@ impl DiskMemoryPool {
     }
 
     pub fn buffer_from_path(&mut self, bytes: Dim, path: &Path, offset_bytes: u64) -> PoolBufferId {
-        // TODO perhaps add verification that the file exists and it contains enough bytes at given offset
         self.buffers.push(DiskBuffer { bytes, path: path.into(), offset_bytes })
     }
 

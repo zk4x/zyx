@@ -144,11 +144,6 @@ impl Kernel {
         c.as_dim()
     }
 
-    #[allow(unused)]
-    fn get_add_sub_chain(&self, op_id: OpId) -> Vec<OpId> {
-        todo!()
-    }
-
     fn simplify_div(&mut self, op_id: OpId, x: OpId, divisor: Dim, dtype: DType, bounds: &Map<OpId, (Dim, Dim)>) {
         if let Some((a, c, _)) = mul_add(self, x) {
             if c == divisor {

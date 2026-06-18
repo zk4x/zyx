@@ -43,7 +43,7 @@
   - [x] axes reshape
 - [ ] tensor
   - [x] gather
-  - [ ] scatter
+  - [x] scatter
   - [ ] solve
   - [ ] inverse of matrix
   - [ ] pinverse
