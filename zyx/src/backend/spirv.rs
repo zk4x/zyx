@@ -367,63 +367,8 @@ fn emit_type(asm: &mut Asm, cache: &mut Map<DType, u32>, dt: DType) -> u32 {
 
 // ---------- Compute dtypes for all ops ----------
 
-fn compute_dtypes(kernel: &Kernel) -> Map<OpId, DType> {
-    let mut dt: Map<OpId, DType> = Map::with_capacity_and_hasher(100, BuildHasherDefault::new());
-    let mut op_id = kernel.head;
-    while !op_id.is_null() {
-        match kernel.at(op_id) {
-            Op::Const(x) => {
-                dt.insert(op_id, x.dtype());
-            }
-            &Op::Define { dtype, .. } => {
-                dt.insert(op_id, dtype);
-            }
-            &Op::Load { src, .. } => {
-                let d = dt[&src];
-                dt.insert(op_id, d);
-            }
-            &Op::Store { x, .. } => {
-                let d = dt[&x];
-                dt.insert(op_id, d);
-            }
-            &Op::Cast { x, dtype } => {
-                dt.insert(op_id, dtype);
-                let _ = x;
-            }
-            &Op::Unary { x, .. } => {
-                let d = dt[&x];
-                dt.insert(op_id, d);
-            }
-            &Op::Binary { x, y, bop } => {
-                if matches!(bop, BOp::Cmpgt | BOp::Cmplt | BOp::NotEq | BOp::Eq | BOp::And | BOp::Or) {
-                    dt.insert(op_id, DType::Bool);
-                } else {
-                    dt.insert(op_id, dt[&x]);
-                }
-                let _ = y;
-            }
-            &Op::Mad { x, .. } => {
-                dt.insert(op_id, dt[&x]);
-            }
-            &Op::Index { .. } | &Op::Loop { .. } => {
-                dt.insert(op_id, IDX_T);
-            }
-            Op::If { condition } => {
-                dt.insert(op_id, dt[condition]);
-            }
-            Op::Wmma { dtype: crate::kernel::MMADType::f16_f16_f16_f32, .. } => {
-                dt.insert(op_id, DType::F32);
-            }
-            Op::Vectorize { ops } => {
-                dt.insert(op_id, dt[&ops[0]]);
-            }
-            Op::Devectorize { vec, .. } => {
-                dt.insert(op_id, dt[vec]);
-            }
-            _ => {}
-        }
-        op_id = kernel.next_op(op_id);
-    }
+fn compute_dtypes(kernel: &Kernel) -> Map<OpId, (DType, MemLayout)> {
+    let (dt, _) = kernel.compute_dtypes_and_rcs();
     dt
 }
 

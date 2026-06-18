@@ -1084,65 +1084,6 @@ impl CUDAStatus {
     }
 }
 
-fn get_dtypes(kernel: &Kernel) -> (Map<OpId, u32>, Map<OpId, DType>) {
-    let mut rcs: Map<OpId, u32> = Map::with_capacity_and_hasher(kernel.ops.len().into(), BuildHasherDefault::new());
-    let mut dtypes: Map<OpId, DType> = Map::with_capacity_and_hasher(100, BuildHasherDefault::new());
-
-    // first we will calculate those reference counts.
-    let mut loop_ids = Vec::new();
-    for &op_id in &kernel.order {
-        match &kernel.ops[op_id] {
-            Op::ConstView { .. } | Op::StoreView { .. } | Op::LoadView { .. } => unreachable!(),
-            Op::Const(x) => {
-                dtypes.insert(op_id, x.dtype());
-            }
-            &Op::Define { dtype, .. } => {
-                dtypes.insert(op_id, dtype);
-            }
-            &Op::Load { src, index } => {
-                dtypes.insert(op_id, dtypes[&src]);
-                rcs.entry(index).and_modify(|rc| *rc += 1).or_insert(1);
-            }
-            &Op::Store { dst, x: src, index } => {
-                dtypes.insert(op_id, dtypes[&src]);
-                rcs.entry(dst).and_modify(|rc| *rc += 1).or_insert(1);
-                rcs.entry(src).and_modify(|rc| *rc += 1).or_insert(1);
-                rcs.entry(index).and_modify(|rc| *rc += 1).or_insert(1);
-            }
-            &Op::Cast { x, dtype } => {
-                dtypes.insert(op_id, dtype);
-                rcs.entry(x).and_modify(|rc| *rc += 1).or_insert(1);
-            }
-            &Op::Unary { x, .. } => {
-                dtypes.insert(op_id, dtypes[&x]);
-                rcs.entry(x).and_modify(|rc| *rc += 1).or_insert(1);
-            }
-            &Op::Binary { x, y, bop } => {
-                if matches!(bop, BOp::Cmpgt | BOp::Cmplt | BOp::NotEq | BOp::And | BOp::Or | BOp::Eq) {
-                    dtypes.insert(op_id, DType::Bool);
-                } else {
-                    dtypes.insert(op_id, dtypes[&x]);
-                }
-                rcs.entry(x).and_modify(|rc| *rc += 1).or_insert(1);
-                rcs.entry(y).and_modify(|rc| *rc += 1).or_insert(1);
-            }
-            Op::Loop { .. } => {
-                dtypes.insert(op_id, IDX_T);
-                loop_ids.push(op_id);
-            }
-            Op::EndLoop => {
-                let x = loop_ids.pop().unwrap();
-                rcs.entry(x).and_modify(|rc| *rc += 1).or_insert(1);
-            }
-            &Op::Reduce { x, .. } => {
-                dtypes.insert(op_id, dtypes[&x]);
-                rcs.entry(x).and_modify(|rc| *rc += 1).or_insert(1);
-            }
-        }
-    }
-    (rcs, dtypes)
-}
-
 struct Compiler {
     var_map: Map<OpId, u16>,
     loops: Vec<(Dim, u16, u16)>,
@@ -1320,7 +1261,7 @@ impl Compiler {
 
         // Kernel body
         let mut n_global_loops = 0;
-        let (rcs, dtypes) = get_dtypes(&kernel);
+        let (dtypes, rcs) = kernel.compute_dtypes_and_rcs();
         let mut loop_id = 0;
         for &op_id in &kernel.order {
             //println!("{op_id} x {}: {op:?}", rcs.get(&op_id).unwrap_or(&100));
@@ -1354,7 +1295,7 @@ impl Compiler {
                     );
                 }
                 Op::Load { src, index } => {
-                    let dtype = dtypes[&src];
+                    let dtype = dtypes[&src].0;
                     match self.get_scope(*src) {
                         Scope::Global => {
                             let byte_shift = (dtype.bit_size() / 8).ilog2();
@@ -1392,10 +1333,9 @@ impl Compiler {
                     }
                 }
                 Op::Store { dst, x, index } => {
-                    let dtype = dtypes[x];
+                    let dtype = dtypes[x].0;
                     let byte_shift = (dtype.bit_size() / 8).ilog2();
                     let offset = self.new_reg(DType::U64, 1);
-                    //println!("{}\n{:?}", self.body, self.registers);
                     match self.get_scope(*dst) {
                         Scope::Global => {
                             if dtype == DType::Bool {
@@ -1448,7 +1388,7 @@ impl Compiler {
                     self.release_reg(offset);
                 }
                 &Op::Cast { x, dtype } => {
-                    let xdtype = dtypes[&x];
+                    let xdtype = dtypes[&x].0;
                     let x = self.get_var(x);
                     let reg = self.new_var(op_id, dtype, rcs[&op_id]);
                     match (dtype, xdtype) {

@@ -916,76 +916,7 @@ impl OpenCLDevice {
         global_args.pop();
         global_args.push('\n');
 
-        let mut rcs: Map<OpId, u32> = Map::with_capacity_and_hasher(kernel.ops.len().into(), BuildHasherDefault::new());
-        let mut dtypes: Map<OpId, (DType, MemLayout)> = Map::with_capacity_and_hasher(100, BuildHasherDefault::new());
-
-        // first we will calculate those reference counts.
-        let mut op_id = kernel.head;
-        while !op_id.is_null() {
-            let op = kernel.at(op_id);
-            match op {
-                Op::ConstView { .. } | Op::StoreView { .. } | Op::LoadView { .. } | Op::Reduce { .. } | Op::Move { .. } => {
-                    unreachable!()
-                }
-                Op::Const(x) => {
-                    dtypes.insert(op_id, (x.dtype(), MemLayout::Scalar));
-                }
-                &Op::Define { dtype, .. } => {
-                    dtypes.insert(op_id, (dtype, MemLayout::Scalar));
-                }
-                &Op::Load { src, index, layout } => {
-                    dtypes.insert(op_id, (dtypes[&src].0, layout));
-                    *rcs.entry(index).or_insert(0) += 1;
-                }
-                &Op::Store { dst, x: src, index, layout } => {
-                    debug_assert_eq!(dtypes[&src].1, layout);
-                    dtypes.insert(op_id, dtypes[&src]);
-                    *rcs.entry(dst).or_insert(0) += 1;
-                    *rcs.entry(src).or_insert(0) += 1;
-                    *rcs.entry(index).or_insert(0) += 1;
-                }
-                &Op::Cast { x, dtype } => {
-                    dtypes.insert(op_id, (dtype, dtypes[&x].1));
-                    *rcs.entry(x).or_insert(0) += 1;
-                }
-                &Op::Unary { x, .. } => {
-                    dtypes.insert(op_id, dtypes[&x]);
-                    *rcs.entry(x).or_insert(0) += 1;
-                }
-                &Op::Binary { x, y, bop } => {
-                    let dtype = if bop.returns_bool() {
-                        (DType::Bool, dtypes[&x].1)
-                    } else {
-                        dtypes[&x]
-                    };
-                    dtypes.insert(op_id, dtype);
-                    *rcs.entry(x).or_insert(0) += 1;
-                    *rcs.entry(y).or_insert(0) += 1;
-                }
-                Op::Vectorize { ops } => {
-                    let dtype = dtypes[&ops[0]];
-                    dtypes.insert(op_id, (dtype.0, MemLayout::Vector(ops.len().try_into().unwrap())));
-                    for &x in ops {
-                        *rcs.entry(x).or_insert(0) += 1;
-                    }
-                }
-                &Op::Devectorize { .. } | Op::Wmma { .. } => todo!(),
-                &Op::Mad { x, y, z } => {
-                    dtypes.insert(op_id, dtypes[&x]);
-                    *rcs.entry(x).or_insert(0) += 1;
-                    *rcs.entry(y).or_insert(0) += 1;
-                    *rcs.entry(z).or_insert(0) += 1;
-                }
-                Op::Index { .. } | Op::Loop { .. } => {
-                    dtypes.insert(op_id, (DType::U32, MemLayout::Scalar));
-                }
-                &Op::If { condition } => {
-                    *rcs.entry(condition).or_insert(0) += 1;
-                }
-                Op::Barrier { .. } | Op::EndIf | Op::EndLoop => {}
-            }
-            op_id = kernel.next_op(op_id);
-        }
+        let (dtypes, rcs) = kernel.compute_dtypes_and_rcs();
 
         let mut reg_map: Map<OpId, usize> = Map::with_capacity_and_hasher(kernel.ops.len().into(), BuildHasherDefault::new());
         let mut registers: Vec<((DType, MemLayout), u32, u8)> = Vec::new();

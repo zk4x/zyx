@@ -101,7 +101,7 @@ use crate::{
     tensor::TensorId,
 };
 use nanoserde::{DeBin, SerBin};
-use std::{fmt::Display, hash::Hash};
+use std::{fmt::Display, hash::BuildHasherDefault, hash::Hash};
 
 pub use custom::CompiledKernel;
 pub(crate) use custom::CustomKernel;
@@ -969,7 +969,111 @@ impl Kernel {
         }
     }
 
-    /// Resolve the dtype of an operation's result.
+    /// Compute dtypes and reference counts for all operations.
+    pub(crate) fn compute_dtypes_and_rcs(
+        &self,
+    ) -> (Map<OpId, (DType, MemLayout)>, Map<OpId, u32>) {
+        let mut rcs: Map<OpId, u32> = Map::with_capacity_and_hasher(
+            self.ops.len().into(),
+            BuildHasherDefault::new(),
+        );
+        let mut dtypes: Map<OpId, (DType, MemLayout)> =
+            Map::with_capacity_and_hasher(100, BuildHasherDefault::new());
+
+        let mut op_id = self.head;
+        while !op_id.is_null() {
+            match &self.ops[op_id].op {
+                Op::ConstView { .. }
+                | Op::StoreView { .. }
+                | Op::LoadView { .. }
+                | Op::Move { .. }
+                | Op::Reduce { .. } => unreachable!(),
+                Op::Const(x) => {
+                    dtypes.insert(op_id, (x.dtype(), MemLayout::Scalar));
+                }
+                &Op::Define { dtype, .. } => {
+                    dtypes.insert(op_id, (dtype, MemLayout::Scalar));
+                }
+                &Op::Load { src, index, layout } => {
+                    dtypes.insert(op_id, (dtypes[&src].0, layout));
+                    *rcs.entry(index).or_insert(0) += 1;
+                }
+                &Op::Store { dst, x, index, layout } => {
+                    debug_assert_eq!(dtypes[&x].1, layout);
+                    dtypes.insert(op_id, dtypes[&x]);
+                    *rcs.entry(dst).or_insert(0) += 1;
+                    *rcs.entry(x).or_insert(0) += 1;
+                    *rcs.entry(index).or_insert(0) += 1;
+                }
+                &Op::Cast { x, dtype } => {
+                    dtypes.insert(op_id, (dtype, dtypes[&x].1));
+                    *rcs.entry(x).or_insert(0) += 1;
+                }
+                &Op::Unary { x, .. } => {
+                    dtypes.insert(op_id, dtypes[&x]);
+                    *rcs.entry(x).or_insert(0) += 1;
+                }
+                &Op::Binary { x, y, bop } => {
+                    let dtype = if bop.returns_bool() {
+                        (DType::Bool, dtypes[&x].1)
+                    } else {
+                        dtypes[&x]
+                    };
+                    dtypes.insert(op_id, dtype);
+                    *rcs.entry(x).or_insert(0) += 1;
+                    *rcs.entry(y).or_insert(0) += 1;
+                }
+                Op::Vectorize { ops } => {
+                    let dtype = dtypes[&ops[0]];
+                    dtypes.insert(
+                        op_id,
+                        (dtype.0, MemLayout::Vector(ops.len().try_into().unwrap())),
+                    );
+                    for &x in ops {
+                        *rcs.entry(x).or_insert(0) += 1;
+                    }
+                }
+                Op::Devectorize { vec, idx: _ } => {
+                    let dtype = dtypes[vec];
+                    dtypes.insert(op_id, (dtype.0, MemLayout::Scalar));
+                    *rcs.entry(*vec).or_insert(0) += 1;
+                }
+                Op::Wmma {
+                    dims: _,
+                    layout: _,
+                    dtype,
+                    a,
+                    b,
+                    c,
+                } => {
+                    let out_dtype = match dtype {
+                        MMADType::f16_f16_f16_f32 => DType::F32,
+                    };
+                    dtypes.insert(op_id, (out_dtype, MemLayout::Vector(4)));
+                    *rcs.entry(*a).or_insert(0) += 1;
+                    *rcs.entry(*b).or_insert(0) += 1;
+                    *rcs.entry(*c).or_insert(0) += 1;
+                }
+                &Op::Mad { x, y, z } => {
+                    dtypes.insert(op_id, dtypes[&x]);
+                    *rcs.entry(x).or_insert(0) += 1;
+                    *rcs.entry(y).or_insert(0) += 1;
+                    *rcs.entry(z).or_insert(0) += 1;
+                }
+                Op::Index { .. } | Op::Loop { .. } => {
+                    dtypes.insert(op_id, (IDX_T, MemLayout::Scalar));
+                }
+                &Op::If { condition } => {
+                    *rcs.entry(condition).or_insert(0) += 1;
+                }
+                Op::Barrier { .. } | Op::EndIf | Op::EndLoop => {}
+            }
+            op_id = self.next_op(op_id);
+        }
+        (dtypes, rcs)
+    }
+
+    /// Resolve the dtype of an operation's result by walking the IR.
     pub(crate) fn dtype(&self, op_id: OpId) -> DType {
         match &self.ops[op_id].op {
             Op::Const(c) => c.dtype(),

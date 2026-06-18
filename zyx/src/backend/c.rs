@@ -153,81 +153,8 @@ impl CDevice {
             op_id = kernel.next_op(op_id);
         }
 
-        // --- Phase 2: RC and dtype analysis (same as OpenCL) ---
-        let mut rcs: Map<OpId, u32> = Map::with_capacity_and_hasher(kernel.ops.len().into(), BuildHasherDefault::new());
-        let mut dtypes: Map<OpId, (DType, MemLayout)> = Map::with_capacity_and_hasher(100, BuildHasherDefault::new());
-
-        let mut op_id = kernel.head;
-        while !op_id.is_null() {
-            let op = kernel.at(op_id);
-            match op {
-                Op::ConstView { .. } | Op::StoreView { .. } | Op::LoadView { .. } | Op::Reduce { .. } | Op::Move { .. } => {
-                    unreachable!()
-                }
-                Op::Const(x) => {
-                    dtypes.insert(op_id, (x.dtype(), MemLayout::Scalar));
-                }
-                &Op::Define { dtype, .. } => {
-                    dtypes.insert(op_id, (dtype, MemLayout::Scalar));
-                }
-                &Op::Load { src, index, layout } => {
-                    dtypes.insert(op_id, (dtypes[&src].0, layout));
-                    *rcs.entry(index).or_insert(0) += 1;
-                }
-                &Op::Store { dst, x: src, index, .. } => {
-                    dtypes.insert(op_id, dtypes[&src]);
-                    *rcs.entry(dst).or_insert(0) += 1;
-                    *rcs.entry(src).or_insert(0) += 1;
-                    *rcs.entry(index).or_insert(0) += 1;
-                }
-                &Op::Cast { x, dtype } => {
-                    dtypes.insert(op_id, (dtype, dtypes[&x].1));
-                    *rcs.entry(x).or_insert(0) += 1;
-                }
-                &Op::Unary { x, .. } => {
-                    dtypes.insert(op_id, dtypes[&x]);
-                    *rcs.entry(x).or_insert(0) += 1;
-                }
-                &Op::Binary { x, y, bop } => {
-                    let dtype = if bop.returns_bool() {
-                        (DType::Bool, dtypes[&x].1)
-                    } else {
-                        dtypes[&x]
-                    };
-                    dtypes.insert(op_id, dtype);
-                    *rcs.entry(x).or_insert(0) += 1;
-                    *rcs.entry(y).or_insert(0) += 1;
-                }
-                Op::Vectorize { ops } => {
-                    let dtype = dtypes[&ops[0]];
-                    dtypes.insert(op_id, (dtype.0, MemLayout::Vector(ops.len().try_into().unwrap())));
-                    for &x in ops {
-                        *rcs.entry(x).or_insert(0) += 1;
-                    }
-                }
-                &Op::Wmma { .. } => {
-                    todo!("C needs higher level of abstraction than WMMA, as WMMA requires cross-thread sharing")
-                }
-                &Op::Devectorize { vec, .. } => {
-                    let dtype = dtypes[&vec];
-                    dtypes.insert(op_id, (dtype.0, MemLayout::Scalar));
-                    *rcs.entry(vec).or_insert(0) += 1;
-                }
-                &Op::Mad { x, y, z } => {
-                    dtypes.insert(op_id, dtypes[&x]);
-                    *rcs.entry(x).or_insert(0) += 1;
-                    *rcs.entry(y).or_insert(0) += 1;
-                    *rcs.entry(z).or_insert(0) += 1;
-                }
-                Op::Index { .. } | Op::Loop { .. } | Op::Barrier { .. } | Op::EndIf | Op::EndLoop => {
-                    dtypes.insert(op_id, (DType::U32, MemLayout::Scalar));
-                }
-                &Op::If { condition } => {
-                    *rcs.entry(condition).or_insert(0) += 1;
-                }
-            }
-            op_id = kernel.next_op(op_id);
-        }
+        // --- Phase 2: RC and dtype analysis ---
+        let (dtypes, rcs) = kernel.compute_dtypes_and_rcs();
 
         // --- Phase 3: Codegen ---
         let mut reg_map: Map<OpId, usize> = Map::with_capacity_and_hasher(kernel.ops.len().into(), BuildHasherDefault::new());
