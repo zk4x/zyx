@@ -686,10 +686,7 @@ static inline unsigned short f32tobf16(float v) {
         // Get buffer pointers
         let mut ptrs: Vec<*mut u8> = Vec::with_capacity(args.len());
         for &arg in args {
-            let ptr = memory_pool.buffer_ptr(arg).ok_or_else(|| BackendError {
-                status: ErrorStatus::MemoryCopyH2P,
-                context: "Invalid buffer id in kernel launch".into(),
-            })?;
+            let ptr = memory_pool.buffer_ptr_mut(arg);
             ptrs.push(ptr);
         }
 
