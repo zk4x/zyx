@@ -25,6 +25,7 @@
 - [ ] runtime
   - [x] fix event handling
   - [x] node deallocation after realization
+  - [ ] clean up completed transfer events to free host staging buffers early
   - [ ] static graphs - unfortunately necessary for very high performance networks to achieve hundreds of millions of tensor ops/second
 - [x] autograd
   - [x] fix t6 test
