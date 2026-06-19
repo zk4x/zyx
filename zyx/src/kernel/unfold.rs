@@ -550,4 +550,16 @@ impl Kernel {
         }
         false
     }
+
+    pub(crate) fn has_computation_before(&self, x: OpId) -> bool {
+        let mut params = vec![x];
+        while let Some(param) = params.pop() {
+            match &self.ops[param].op {
+                Op::Binary { .. } | Op::Unary { .. } | Op::Reduce { .. } => return true,
+                Op::LoadView(_) | Op::Const(_) => {}
+                _ => params.extend(self.ops[param].op.parameters()),
+            }
+        }
+        false
+    }
 }

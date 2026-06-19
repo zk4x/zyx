@@ -296,7 +296,12 @@ impl<'a> Kernelizer<'a> {
         // we have to either copy it (if it is small), or store x (if kid is big)
 
         let (mut kid, mut op_id) = self.visited[&x];
-        if self.kernels[kid].contains_stores() | self.kernels[kid].is_preceded_by_reduce(op_id) {
+        let reduced_product: u64 = axes.iter().map(|&a| shape[a]).product();
+        let output_product: u64 = self.graph.shape(nid).iter().copied().product();
+        if self.kernels[kid].contains_stores()
+            | self.kernels[kid].is_preceded_by_reduce(op_id)
+            | (reduced_product > output_product && self.kernels[kid].has_computation_before(op_id))
+        {
             self.add_store(x)?;
             (kid, op_id) = self.create_load_kernel(x);
             if self.kernels[kid].outputs.len() > 1 {
