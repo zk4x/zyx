@@ -58,7 +58,6 @@ struct Kernelizer<'a> {
     pools: &'a mut Slab<PoolId, MemoryPool>,
     events: &'a mut Map<BTreeSet<BufferId>, Event>,
     buffer_map: &'a mut Map<TensorId, BufferId>,
-    temp_data: &'a mut Map<BufferId, Box<[u8]>>,
     devices: &'a mut Slab<DeviceId, Device>,
     cache: &'a mut KernelCache,
     autotune_config: &'a AutotuneConfig,
@@ -75,7 +74,6 @@ impl<'a> Kernelizer<'a> {
         pools: &'a mut Slab<PoolId, MemoryPool>,
         events: &'a mut Map<BTreeSet<BufferId>, Event>,
         buffer_map: &'a mut Map<TensorId, BufferId>,
-        temp_data: &'a mut Map<BufferId, Box<[u8]>>,
         devices: &'a mut Slab<DeviceId, Device>,
         cache: &'a mut KernelCache,
         search_config: &'a AutotuneConfig,
@@ -95,7 +93,6 @@ impl<'a> Kernelizer<'a> {
             pools,
             events,
             buffer_map,
-            temp_data,
             devices,
             cache,
             autotune_config: search_config,
@@ -557,7 +554,7 @@ impl<'a> Kernelizer<'a> {
                     to_remove.insert(tid);
                 }
             }
-            deallocate_tensors(&to_remove, self.pools, self.events, self.buffer_map, self.temp_data);
+            deallocate_tensors(&to_remove, self.pools, self.events, self.buffer_map);
         }
         //println!("ADDED STORE for {x} x {xrc_rem}");
         Ok(())
@@ -705,7 +702,6 @@ impl Runtime {
             &mut self.pools,
             &mut self.events,
             &mut self.buffer_map,
-            &mut self.temp_data,
             &mut self.devices,
             &mut self.kernel_cache,
             &self.autotune_config,
@@ -829,13 +825,7 @@ impl Runtime {
                         to_remove.insert(tid);
                     }
                 }
-                deallocate_tensors(
-                    &to_remove,
-                    kernelizer.pools,
-                    kernelizer.events,
-                    kernelizer.buffer_map,
-                    kernelizer.temp_data,
-                );
+                deallocate_tensors(&to_remove, kernelizer.pools, kernelizer.events, kernelizer.buffer_map);
             }
         }
 

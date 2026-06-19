@@ -53,8 +53,7 @@ pub(crate) struct Runtime {
     pub autotune_config: AutotuneConfig,
     /// Debug mask
     pub debug: DebugMask,
-    /// Temporary storage - TODO remove in favor of host.rs
-    pub temp_data: Map<BufferId, Box<[u8]>>,
+
     /// Cache for constants
     constants: [Constant; NUM_CONSTANTS],
     /// Current number of constants
@@ -96,7 +95,6 @@ impl Runtime {
             training: false,
             autotune_config: AutotuneConfig::new(),
             debug: DebugMask(0),
-            temp_data: Map::with_hasher(BuildHasherDefault::new()),
             constants: [Constant::I32(0); NUM_CONSTANTS],
             constants_len: 0,
             implicit_casts: true,
@@ -132,13 +130,7 @@ impl Runtime {
 
     pub(super) fn release(&mut self, x: TensorId) {
         let to_remove = self.graph.release(&[x]);
-        deallocate_tensors(
-            &to_remove,
-            &mut self.pools,
-            &mut self.events,
-            &mut self.buffer_map,
-            &mut self.temp_data,
-        );
+        deallocate_tensors(&to_remove, &mut self.pools, &mut self.events, &mut self.buffer_map);
         if self.graph.is_empty() && self.buffer_map.is_empty() {
             self.deinitialize();
         }
@@ -357,14 +349,42 @@ impl Runtime {
                 memory_pool_id = mpid;
             }
         }
+
+        // Staging buffer in host pool
+        let host_pool_id = PoolId::from(0);
+        let host_data = data.read();
+        let host_buf_id = {
+            let MemoryPool::Host(pool) = &mut self.pools[host_pool_id] else {
+                unreachable!()
+            };
+            pool.insert(host_data)
+        };
+        let host_global_id = BufferId { pool: host_pool_id, buffer: host_buf_id };
+
+        if memory_pool_id == host_pool_id {
+            // Device is host — use the staging buffer directly
+            let id = self.graph.push_wshape(Node::Leaf { dtype }, shape);
+            self.buffer_map.insert(id, host_global_id);
+            return Ok(id);
+        }
+
+        // Get raw pointer to host staging (no borrow on self.pools)
+        let host_ptr = {
+            let MemoryPool::Host(pool) = &self.pools[host_pool_id] else {
+                unreachable!()
+            };
+            pool.buffer_ptr(host_buf_id)
+        };
+        let host_src = unsafe { std::slice::from_raw_parts(host_ptr, bytes as usize) };
+
+        // Copy to device pool
         let (buffer_id, event) = self.pools[memory_pool_id].allocate(alloc_bytes)?;
         let global_id = BufferId { pool: memory_pool_id, buffer: buffer_id };
-        self.temp_data.insert(global_id, data.read());
+        let event = self.pools[memory_pool_id].host_to_pool(host_src, buffer_id, vec![event])?;
 
-        let event = self.pools[memory_pool_id].host_to_pool(&self.temp_data[&global_id], buffer_id, vec![event])?;
         let id = self.graph.push_wshape(Node::Leaf { dtype }, shape);
         self.buffer_map.insert(id, global_id);
-        self.events.insert(BTreeSet::from([global_id]), event);
+        self.events.insert(BTreeSet::from([host_global_id, global_id]), event);
         Ok(id)
     }
 
@@ -669,13 +689,7 @@ impl Runtime {
             }
         }
         let to_remove = self.graph.release(&to_release);
-        deallocate_tensors(
-            &to_remove,
-            &mut self.pools,
-            &mut self.events,
-            &mut self.buffer_map,
-            &mut self.temp_data,
-        );
+        deallocate_tensors(&to_remove, &mut self.pools, &mut self.events, &mut self.buffer_map);
 
         #[cfg(debug_assertions)]
         {
@@ -775,13 +789,7 @@ impl Runtime {
             }
         }
         let to_remove = self.graph.release(&to_release);
-        deallocate_tensors(
-            &to_remove,
-            &mut self.pools,
-            &mut self.events,
-            &mut self.buffer_map,
-            &mut self.temp_data,
-        );
+        deallocate_tensors(&to_remove, &mut self.pools, &mut self.events, &mut self.buffer_map);
 
         #[cfg(debug_assertions)]
         {
@@ -798,7 +806,6 @@ pub fn deallocate_tensors(
     pools: &mut Slab<PoolId, MemoryPool>,
     events: &mut Map<BTreeSet<BufferId>, Event>,
     buffer_map: &mut Map<TensorId, BufferId>,
-    temp_data: &mut Map<BufferId, Box<[u8]>>,
 ) {
     for tensor_id in to_remove {
         if let Some(buffer_id) = buffer_map.remove(tensor_id) {
@@ -809,7 +816,6 @@ pub fn deallocate_tensors(
                     event_wait.push(event);
                 }
                 pools[buffer_id.pool].deallocate(buffer_id.buffer, event_wait);
-                temp_data.remove(&buffer_id);
             }
         }
     }

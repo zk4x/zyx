@@ -53,6 +53,11 @@ impl HostMemoryPool {
         Ok((id, Event::Host(HostEvent)))
     }
 
+    pub fn insert(&mut self, buf: Box<[u8]>) -> PoolBufferId {
+        self.free_bytes -= buf.len() as Dim;
+        self.buffers.push(buf)
+    }
+
     #[allow(clippy::needless_pass_by_value)]
     pub fn deallocate(&mut self, buffer_id: PoolBufferId, event_wait_list: Vec<Event>) {
         let _ = event_wait_list;
