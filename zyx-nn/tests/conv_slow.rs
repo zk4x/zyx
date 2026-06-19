@@ -14,7 +14,8 @@ fn conv_bn_mean() -> Result<(), ZyxError> {
     let start = Instant::now();
     Tensor::realize([&batch_mean])?;
     let elapsed = start.elapsed();
-    eprintln!("conv_bn_mean: {}.{:03}s",
+    eprintln!(
+        "conv_bn_mean: {}.{:03}s",
         elapsed.as_secs(),
         elapsed.subsec_millis(),
     );
