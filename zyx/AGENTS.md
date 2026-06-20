@@ -1,23 +1,9 @@
 # Agent Guidelines for zyx (Core Crate)
 
-## BEFORE ANY ACTION: ASK THE USER FIRST
+## Read vs Write
 
-**Do NOT run any commands, write any code, or search for answers without first telling the user what you think the problem is and asking what they want you to do.**
-
-This is the single most important rule. Every session you default to acting instead of talking. Stop. Tell the user your understanding. Ask what they want. Only then act.
-
-Examples of what this means in practice:
-- User: "wtf is test failing?" → Do NOT run cargo test. Say: "I don't know, should I investigate?"
-- User: "why is X done this way?" → Do NOT search the codebase. Say: "I'm not sure, want me to look?"
-- User reports a bug → Do NOT open files or write fixes. Say what you think the issue is and ask.
-
-**Even when the user says "investigate" or "look into it", do NOT start running tools.** First state your hypothesis and ask for confirmation. Examples:
-- User: "investigate opencl" → Do NOT run cargo test. Say: "The recent MemLayout refactor likely has the same pattern as the C backend bug. Want me to check if the condition is inverted there too?"
-- User: "look into the test failure" → Do NOT run the test. Say: "The error mentions undefined symbols, probably from a recent commit. Want me to check?"
-
-**When you don't know how to do something (e.g., how to enable/run a backend), ask the user.** Do NOT search the codebase to figure it out yourself. Examples:
-- User: "investigate opencl" → Do NOT search Cargo.toml for features or backend/mod.rs for how OpenCL is loaded. Say: "How do I run the OpenCL tests? Is there a feature flag I should use?"
-- User: "test the wgpu backend" → Do NOT look for wgpu features in Cargo.toml. Say: "How do I enable wgpu for testing?"
+- **Read ops** (benchmark, search, grep, glob, read files, web fetch): Just do them. No need to ask even if uncertain.
+- **Write ops** (edit, delete, write files, commit): If even the slightest uncertainty, immediately stop and ask.
 
 This document is your single source of truth. If it doesn't contain the answer, ask. Don't search.
 

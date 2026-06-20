@@ -15,6 +15,7 @@
 
 use crate::{
     DType, Map,
+    dtype::Constant,
     kernel::{BOp, Kernel, Op, OpId},
     shape::Dim,
 };
@@ -64,8 +65,247 @@ impl Kernel {
             op_id = next;
         }
 
+        self.simplify_demux_roundtrip(&bounds);
         self.dead_code_elimination();
         self.verify();
+    }
+
+    /// Try to recognize an expression as `root << K + constant` where the
+    /// expression extracts disjoint bit slices of `root` via div/mod/shr,
+    /// shifts each to a new position via mul/shl, and sums them (a round-trip
+    /// after merge_nested_loops + constant folding).
+    fn simplify_demux_roundtrip(&mut self, bounds: &Map<OpId, (Dim, Dim)>) {
+        /// A slice of a variable extracted via div/mod/shr then shifted back.
+        #[derive(Clone)]
+        struct Slice {
+            root: OpId,
+            lo: u64,
+            width: u64,
+            shift: u64,
+        }
+
+        /// Returns (slices derived from a loop root, constant expression not derived from root).
+        fn collect_slices_inner(k: &mut Kernel, op_id: OpId) -> (Vec<Slice>, Option<OpId>) {
+            match k.at(op_id) {
+                &Op::Binary { x, y, bop: BOp::Add } => {
+                    let (mut ls, lc) = collect_slices_inner(k, x);
+                    let (rs, rc) = collect_slices_inner(k, y);
+                    // Try to merge slices; if roots differ, non-root side becomes constant
+                    let slices = if !ls.is_empty() && !rs.is_empty() && ls[0].root != rs[0].root {
+                        // One side's root is not the loop — treat as constant
+                        if matches!(k.at(ls[0].root), Op::Loop { .. }) {
+                            // ls is from the loop, rs is not
+                            return (ls, Some(rs[0].root));
+                        } else {
+                            let const_term = ls[0].root;
+                            return (rs, Some(const_term));
+                        }
+                    } else {
+                        if ls.is_empty() {
+                            ls = rs;
+                        } else if !rs.is_empty() {
+                            ls.extend(rs);
+                        }
+                        ls
+                    };
+                    // Merge constant terms
+                    let constant = match (lc, rc) {
+                        (Some(a), Some(b)) => Some(k.insert_before(op_id, Op::Binary { x: a, y: b, bop: BOp::Add })),
+                        (Some(a), None) => Some(a),
+                        (None, Some(b)) => Some(b),
+                        (None, None) => None,
+                    };
+                    (slices, constant)
+                }
+                &Op::Binary { x, y, bop: BOp::BitShiftLeft } if is_const(k, y) => {
+                    let c = match const_u64(k, y) {
+                        Some(c) => c,
+                        None => return (vec![], None),
+                    };
+                    let (mut slices, constant) = collect_slices_inner(k, x);
+                    for s in &mut slices {
+                        s.shift += c;
+                    }
+                    (slices, constant)
+                }
+                &Op::Binary { x, y, bop: BOp::Mul } if is_const(k, y) => {
+                    let c = match const_u64(k, y) {
+                        Some(c) => c,
+                        None => return (vec![], None),
+                    };
+                    if !c.is_power_of_two() {
+                        return (vec![], None);
+                    }
+                    let kk = c.ilog2() as u64;
+                    let (mut slices, constant) = collect_slices_inner(k, x);
+                    for s in &mut slices {
+                        s.shift += kk;
+                    }
+                    (slices, constant)
+                }
+                &Op::Binary { x, y, bop: BOp::Div } if is_const(k, y) => {
+                    let c = match const_u64(k, y) {
+                        Some(c) => c,
+                        None => return (vec![], None),
+                    };
+                    if !c.is_power_of_two() {
+                        return (vec![], None);
+                    }
+                    let kk = c.ilog2() as u64;
+                    let (mut slices, constant) = collect_slices_inner(k, x);
+                    for s in &mut slices {
+                        s.lo += kk;
+                    }
+                    (slices, constant)
+                }
+                &Op::Binary { x, y, bop: BOp::BitShiftRight } if is_const(k, y) => {
+                    let c = match const_u64(k, y) {
+                        Some(c) => c,
+                        None => return (vec![], None),
+                    };
+                    let (mut slices, constant) = collect_slices_inner(k, x);
+                    for s in &mut slices {
+                        s.lo += c;
+                    }
+                    (slices, constant)
+                }
+                &Op::Binary { x, y, bop: BOp::Mod } if is_const(k, y) => {
+                    let c = match const_u64(k, y) {
+                        Some(c) => c,
+                        None => return (vec![], None),
+                    };
+                    if !c.is_power_of_two() {
+                        return (vec![], None);
+                    }
+                    let width = c.ilog2() as u64;
+                    let (mut slices, constant) = collect_slices_inner(k, x);
+                    for s in &mut slices {
+                        s.width = s.width.min(width);
+                    }
+                    (slices, constant)
+                }
+                _ => {
+                    if matches!(k.at(op_id), Op::Loop { .. }) {
+                        (vec![Slice { root: op_id, lo: 0, width: u64::MAX, shift: 0 }], None)
+                    } else {
+                        // Not a loop root — treat entire expression as constant
+                        (vec![], Some(op_id))
+                    }
+                }
+            }
+        }
+
+        fn const_u64(k: &Kernel, op_id: OpId) -> Option<u64> {
+            match k.at(op_id) {
+                Op::Const(c) => c.as_dim(),
+                _ => None,
+            }
+        }
+        fn is_const(k: &Kernel, op_id: OpId) -> bool {
+            matches!(k.at(op_id), Op::Const(_))
+        }
+
+        let mut op_id = self.head;
+        while !op_id.is_null() {
+            let next = self.next_op(op_id);
+            let (x, y) = match self.at(op_id) {
+                &Op::Binary { x, y, bop: BOp::Add } => (x, y),
+                _ => {
+                    op_id = next;
+                    continue;
+                }
+            };
+
+            // Skip if either operand is a constant
+            if is_const(self, x) || is_const(self, y) {
+                op_id = next;
+                continue;
+            }
+
+            let ((x_slices, x_const), (y_slices, y_const)) = (collect_slices_inner(self, x), collect_slices_inner(self, y));
+
+            let mut slices;
+            let constant_term;
+            match (x_slices.is_empty(), y_slices.is_empty()) {
+                (true, true) => {
+                    op_id = next;
+                    continue;
+                }
+                (false, true) => {
+                    slices = x_slices;
+                    constant_term = y_const.unwrap_or(y);
+                }
+                (true, false) => {
+                    slices = y_slices;
+                    constant_term = x_const.unwrap_or(x);
+                }
+                (false, false) => {
+                    if x_slices[0].root == y_slices[0].root {
+                        slices = x_slices;
+                        slices.extend(y_slices);
+                        constant_term = x_const.or(y_const).unwrap_or(OpId::NULL);
+                    } else {
+                        op_id = next;
+                        continue;
+                    }
+                }
+            }
+
+            let root = slices[0].root;
+            if slices.iter().any(|s| s.root != root) {
+                op_id = next;
+                continue;
+            }
+
+            let k_val = slices[0].shift.wrapping_sub(slices[0].lo);
+            if slices.iter().any(|s| s.shift.wrapping_sub(s.lo) != k_val) {
+                op_id = next;
+                continue;
+            }
+
+            let root_width = bounds
+                .get(&root)
+                .map_or(64, |&(_, max)| if max == 0 { 1 } else { (max.ilog2() + 1) as u64 });
+
+            // Sort by lo, fill in MAX widths from bounds, verify partition
+            slices.sort_by_key(|s| s.lo);
+            let mut cursor = 0u64;
+            let mut ok = true;
+            for s in &slices {
+                if s.lo != cursor {
+                    ok = false;
+                    break;
+                }
+                let w = if s.width == u64::MAX {
+                    root_width.saturating_sub(s.lo)
+                } else {
+                    s.width
+                };
+                cursor = cursor.saturating_add(w);
+            }
+            if !ok || cursor < root_width {
+                op_id = next;
+                continue;
+            }
+
+            // Only simplify true demux/roundtrip patterns (multiple slices).
+            // A single slice is just an identity or shift — no roundtrip to collapse.
+            if slices.len() < 2 {
+                op_id = next;
+                continue;
+            }
+
+            // Replace with root << k_val + constant
+            let shift_const = self.insert_before(op_id, Op::Const(Constant::idx(k_val)));
+            let shl = self.insert_before(op_id, Op::Binary { x: root, y: shift_const, bop: BOp::BitShiftLeft });
+            if !constant_term.is_null() {
+                self.ops[op_id].op = Op::Binary { x: shl, y: constant_term, bop: BOp::Add };
+            } else {
+                self.remap(op_id, shl);
+            }
+
+            op_id = next;
+        }
     }
 
     fn simplify_shl_shr_roundtrips(&mut self) {
