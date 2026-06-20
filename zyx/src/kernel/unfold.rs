@@ -551,7 +551,7 @@ impl Kernel {
         false
     }
 
-    pub(crate) fn has_computation_before(&self, x: OpId) -> bool {
+    pub(crate) fn is_preceded_by_compute(&self, x: OpId) -> bool {
         let mut params = vec![x];
         while let Some(param) = params.pop() {
             match &self.ops[param].op {

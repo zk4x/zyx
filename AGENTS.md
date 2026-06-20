@@ -405,3 +405,4 @@ Every optimization must produce correct IR that calculates the same result as th
 - Use `Vec` over `Box<[]>` for flexibility
 - Use `Mutex` over `RefCell` for potential multithreading
 - Profile before optimizing
+- **Build profile does NOT affect GPU kernel performance**: CUDA kernels are compiled by NVRTC at runtime, identically in debug and release builds. The Rust build profile only affects host-side code. Don't assume release mode will make kernels faster.
