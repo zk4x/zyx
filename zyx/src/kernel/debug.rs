@@ -205,10 +205,20 @@ impl Kernel {
                     };
                     let x = id_map.get(&x).copied().unwrap_or(OpId::NULL);
                     let y = id_map.get(&y).copied().unwrap_or(OpId::NULL);
-                    if let Some((lb, ub)) = bounds.get(&op_id) {
-                        println!("{indent}r{out_id}{grey}: {dtype}{reset} = {op1}r{x}{op2}r{y}{op3}    // {lb}..={ub}");
+                    let x = if let Op::Const(c) = self.ops[x].op {
+                        format!("{c}")
                     } else {
-                        println!("{indent}r{out_id}{grey}: {dtype}{reset} = {op1}r{x}{op2}r{y}{op3}");
+                        format!("r{x}")
+                    };
+                    let y = if let Op::Const(c) = self.ops[y].op {
+                        format!("{c}")
+                    } else {
+                        format!("r{y}")
+                    };
+                    if let Some((lb, ub)) = bounds.get(&op_id) {
+                        println!("{indent}r{out_id}{grey}: {dtype}{reset} = {op1}{x}{op2}{y}{op3}    // {lb}..={ub}");
+                    } else {
+                        println!("{indent}r{out_id}{grey}: {dtype}{reset} = {op1}{x}{op2}{y}{op3}");
                     }
                 }
                 Op::Mad { x, y, z } => {
