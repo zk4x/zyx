@@ -322,12 +322,12 @@ impl Default for AutotuneConfig {
 impl AutotuneConfig {
     pub const fn new() -> AutotuneConfig {
         AutotuneConfig {
-            save_to_disk: true,
-            n_added_per_step: 10,
+            save_to_disk: false,
+            n_added_per_step: 2000,
             n_launches: 1,
-            n_removed_per_step: 5,
-            n_seeds: 100,
-            n_total_opts: 1000,
+            n_removed_per_step: 0,
+            n_seeds: 2000,
+            n_total_opts: 10000,
         }
     }
 }

@@ -3,7 +3,8 @@
 ## Read vs Write
 
 - **Read ops** (benchmark, search, grep, glob, read files, web fetch): Just do them. No need to ask even if uncertain.
-- **Write ops** (edit, delete, write files, commit): If even the slightest uncertainty, immediately stop and ask.
+- **Write ops** (edit, delete, write files): If even the slightest uncertainty, immediately stop and ask.
+- **Commit**: Always ask before commit. No matter how certain.
 
 This document is your single source of truth. If it doesn't contain the answer, ask. Don't search.
 
