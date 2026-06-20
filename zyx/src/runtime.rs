@@ -355,9 +355,7 @@ impl Runtime {
         let host_pool_id = PoolId::from(0);
         let host_data = data.read();
         let host_buf_id = {
-            let MemoryPool::Host(pool) = &mut self.pools[host_pool_id] else {
-                unreachable!()
-            };
+            let MemoryPool::Host(pool) = &mut self.pools[host_pool_id] else { unreachable!() };
             pool.insert(host_data)
         };
         let host_global_id = BufferId { pool: host_pool_id, buffer: host_buf_id };
@@ -371,9 +369,7 @@ impl Runtime {
 
         // Get raw pointer to host staging (no borrow on self.pools)
         let host_ptr = {
-            let MemoryPool::Host(pool) = &self.pools[host_pool_id] else {
-                unreachable!()
-            };
+            let MemoryPool::Host(pool) = &self.pools[host_pool_id] else { unreachable!() };
             pool.buffer_ptr(host_buf_id)
         };
         let host_src = unsafe { std::slice::from_raw_parts(host_ptr, bytes as usize) };

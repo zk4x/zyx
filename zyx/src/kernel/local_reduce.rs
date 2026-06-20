@@ -56,13 +56,13 @@ impl Kernel {
             dev_info.max_local_threads / used_threads
         };
 
-        let candidates = vec![1024, 512]; //, 256, 128, 64, 32, 16, 8];
-        let tree_branch_candidates = vec![2, 4];
+        let candidates = vec![1024, 512, 256, 128, 64, 32, 16, 8];
+        let tree_branch_candidates = vec![2, 4, 8, 16];
         let mut factors = Vec::new();
         let mut op_id = self.head;
         while !op_id.is_null() {
             if let Op::Loop { len } = self.ops[op_id].op {
-                if len >= 256 {
+                if len >= 16 {
                     for &factor in &candidates {
                         if len.is_multiple_of(factor) && len / factor >= 4 && remaining_threads >= factor {
                             for &tree_branch in &tree_branch_candidates {

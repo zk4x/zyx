@@ -164,3 +164,13 @@ fn sum_big_4d() -> Result<(), ZyxError> {
     Tensor::realize([&z])?;
     Ok(())
 }
+
+#[test]
+fn sum_split_threshold() -> Result<(), ZyxError> {
+    // Full reduction with > SPLIT_THRESHOLD elements (65536)
+    // Shape [131072] — full reduction to scalar
+    let x = Tensor::full([131072], 1i32);
+    let z = x.sum_all();
+    assert_eq!(z, 131072i32);
+    Ok(())
+}

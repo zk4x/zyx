@@ -549,8 +549,9 @@ impl Kernel {
             //println!("launch (cost: {}, n_opts: {}):", opt_seq.cost.cost, opt_seq.opts.len());
             for &(opt_id, opt_cfg) in &opt_seq.opts {
                 let (opt, _) = AVAILABLE_OPTIMIZATIONS[opt_id](&kernel, device.info());
-                //print!("  ");
-                //opt.debug(opt_cfg);
+                if debug.autotune() {
+                    opt.debug(opt_cfg);
+                }
                 opt.apply(&mut kernel, opt_cfg);
             }
             let (gws, lws) = kernel.work_sizes();

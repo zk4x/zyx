@@ -156,6 +156,12 @@ impl DebugMask {
     pub const fn compile(&self) -> bool {
         (self.0 >> 7) % 2 == 1
     }
+
+    /// Is autotune optimization logging enabled?
+    #[must_use]
+    pub const fn autotune(&self) -> bool {
+        (self.0 >> 8) % 2 == 1
+    }
 }
 
 const BOLD: &str = "\x1b[1m";

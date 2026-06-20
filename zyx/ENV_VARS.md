@@ -10,6 +10,7 @@ Set `ZYX_DEBUG` environment variable to enable debugging. It is a bitmask with t
 | 32    | kmd  | Print kernel launch and memory movement operations |
 | 64    | memory | Print memory allocation and deallocation |
 | 128   | compile | Print kernel compilation |
+| 256   | autotune | Print autotune optimization exploration |
 
 Combine flags by summing values (e.g., `ZYX_DEBUG=24` enables ir + asm).
 

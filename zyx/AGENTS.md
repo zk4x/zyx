@@ -22,6 +22,12 @@ This document is your single source of truth. If it doesn't contain the answer, 
 
 If you catch yourself typing a tool call before replying to the user, stop. Reply first.
 
+**Always save ZYX_DEBUG output to /tmp.** Never run the same test twice because output was lost. Pipe the full output to `/tmp/debug_*.txt` on the first run:
+```bash
+AGENT=1 ZYX_DEBUG=4 cargo test my_test -- --nocapture > /tmp/debug_4.txt 2>&1
+AGENT=1 ZYX_DEBUG=8 cargo test my_test -- --nocapture > /tmp/debug_8.txt 2>&1
+```
+
 ---
 
 Quick reference for coding agents working in the core `zyx` crate - the tensor library.
