@@ -1,7 +1,7 @@
 // Copyright (C) 2025 zk4x
 // SPDX-License-Identifier: LGPL-3.0-only
 
-use zyx::{Tensor, ZyxError};
+use zyx::{DType, Tensor, ZyxError};
 
 #[test]
 fn sum_1() -> Result<(), ZyxError> {
@@ -154,5 +154,13 @@ fn sum_reduce_last_dim_3d() -> Result<(), ZyxError> {
     if x0 != expected {
         panic!("test failure");
     }
+    Ok(())
+}
+
+#[test]
+fn sum_big_4d() -> Result<(), ZyxError> {
+    let x = Tensor::rand([128, 16, 32, 32], DType::F32)?;
+    let z = x.sum_all();
+    Tensor::realize([&z])?;
     Ok(())
 }

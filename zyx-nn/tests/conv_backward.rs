@@ -39,3 +39,19 @@ fn conv_bn_backward_1() -> Result<(), ZyxError> {
     Tensor::realize_all()?;
     Ok(())
 }
+
+#[test]
+fn conv_weight_backward() -> Result<(), ZyxError> {
+    // Conv weight backward kernel only: no BN, no pool, no linear.
+    // This isolates the im2col + expand + mul + reduce pattern.
+    let conv = Conv2d::new(3, 16, 3, 1, 1, 1, 1, false, DType::F32)?;
+    let x = Tensor::rand([128, 3, 32, 32], DType::F32)?;
+
+    let tape = GradientTape::new();
+    let h = conv.forward(&x)?;
+    let loss = h.sum_all();
+
+    let _grads = tape.gradient(&loss, [&conv.weight].into_iter());
+    Tensor::realize_all()?;
+    Ok(())
+}
