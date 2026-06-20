@@ -25,6 +25,7 @@ use std::{vec, vec::Vec};
 // Maximum number of constants to cache. Too high number will cause lot of specialized kernels to be generated,
 // which is unnecessary.
 const NUM_CONSTANTS: usize = 32;
+const SPLIT_THRESHOLD: Dim = 1 << 16; // 65536 — split full reductions into two kernels
 
 /// This is the whole global state of zyx
 pub(crate) struct Runtime {
@@ -545,6 +546,14 @@ impl Runtime {
             axes = (0..sh.len() as UAxis).collect();
         }
         let shape = reduce(sh, &axes);
+        if axes.len() == sh.len() && sh.iter().product::<Dim>() > SPLIT_THRESHOLD {
+            let total = sh.iter().product::<Dim>();
+            let n_partials: Dim = 32;
+            let chunk = total / n_partials;
+            let inter = self.graph.push_wshape(Node::Reshape { x }, vec![n_partials, chunk]);
+            let partial = self.reduce(inter, vec![1], rop);
+            return self.reduce(partial, vec![0], rop);
+        }
         let id = self.graph.push_wshape(Node::Reduce { x, rop }, shape);
         self.graph.push_axes(id, axes);
         id

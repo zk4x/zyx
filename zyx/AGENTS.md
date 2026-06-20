@@ -4,7 +4,7 @@
 
 - **Read ops** (benchmark, search, grep, glob, read files, web fetch): Just do them. No need to ask even if uncertain.
 - **Write ops** (edit, delete, write files): If even the slightest uncertainty, immediately stop and ask.
-- **Commit**: Never commit without asking first. When the user says "commit", ask for confirmation including which files and the commit message.
+- **Commit**: Never commit without asking first. When the user says "commit", ask for confirmation including which files. The agent writes the commit message.
 
 This document is your single source of truth. If it doesn't contain the answer, ask. Don't search.
 
