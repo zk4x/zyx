@@ -14,6 +14,7 @@
 
 use std::collections::BTreeMap;
 
+use super::autotune::Optimization;
 use crate::{
     dtype::Constant,
     kernel::{BOp, Kernel, Op, OpId, Scope},
@@ -132,5 +133,59 @@ impl Kernel {
         }
 
         self.verify();
+    }
+
+    /// Returns the Optimization for merging nested loops and the number of nested loop groups.
+    /// Each group is a chain of nested loops that can be merged into one loop.
+    pub(crate) fn opt_merge_nested_loops(&self) -> (Optimization, usize) {
+        let groups = self.find_nested_loop_groups();
+        let n = groups.len();
+        (Optimization::MergeNestedLoops { groups }, n)
+    }
+
+    /// Find all groups of nested loops in the kernel.
+    /// Each group is a chain of consecutive nested loops (outermost first).
+    fn find_nested_loop_groups(&self) -> Vec<Vec<OpId>> {
+        let mut groups: Vec<Vec<OpId>> = Vec::new();
+        let mut current_group: Vec<OpId> = Vec::new();
+        let mut depth: u32 = 0;
+        let mut in_group = false;
+
+        let mut op_id = self.head;
+        while !op_id.is_null() {
+            match self.ops[op_id].op {
+                Op::Loop { .. } => {
+                    if depth == 0 {
+                        // Start a new group
+                        if in_group {
+                            groups.push(std::mem::take(&mut current_group));
+                        }
+                        in_group = true;
+                    }
+                    current_group.push(op_id);
+                    depth += 1;
+                }
+                Op::EndLoop => {
+                    depth -= 1;
+                    if depth == 0 {
+                        // End of this group
+                        if !current_group.is_empty() {
+                            groups.push(std::mem::take(&mut current_group));
+                        }
+                        in_group = false;
+                    }
+                }
+                _ => {}
+            }
+            op_id = self.next_op(op_id);
+        }
+
+        // Flush any remaining group
+        if !current_group.is_empty() {
+            groups.push(current_group);
+        }
+
+        groups.retain(|g| g.len() >= 2);
+        groups
     }
 }

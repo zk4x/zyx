@@ -52,9 +52,12 @@ use std::hash::{Hash, Hasher};
 use std::sync::{Arc, Mutex, mpsc};
 use std::thread;
 
+/// A config function scans the kernel at a stable state and returns an
+/// Optimization with OpIds embedded. No other optimizations run between
+/// config time and apply time, so OpIds remain valid through apply.
 type OptConfigFn = fn(&Kernel, &DeviceInfo) -> (Optimization, usize);
 
-const AVAILABLE_OPTIMIZATIONS: [OptConfigFn; 8] = [
+const AVAILABLE_OPTIMIZATIONS: [OptConfigFn; 9] = [
     |k, _| Kernel::opt_reassociate_commutative(k),
     Kernel::opt_split_global_to_local,
     |k, _| Kernel::opt_thread_coarse(k),
@@ -63,6 +66,7 @@ const AVAILABLE_OPTIMIZATIONS: [OptConfigFn; 8] = [
     |k, _| Kernel::opt_split_loop(k),
     |k, _| Kernel::opt_pad_index(k),
     Kernel::opt_vectorize_loads,
+    |k, _| Kernel::opt_merge_nested_loops(k),
 ];
 
 #[derive(Debug)]
@@ -113,6 +117,12 @@ pub(crate) enum Optimization {
     VectorizeLoads {
         /// Supported vector lengths for this device.
         supported_lens: Vec<u8>,
+    },
+    /// Merge nested loops into a single loop (enables tiled_reduce).
+    MergeNestedLoops {
+        /// Each entry is a nested loop chain (outermost first).
+        /// Config index selects which chain to merge.
+        groups: Vec<Vec<OpId>>,
     },
 }
 
@@ -203,6 +213,11 @@ impl Optimization {
             Optimization::VectorizeLoads { .. } => {
                 println!("VectorizeLoads");
             }
+            Optimization::MergeNestedLoops { groups } => {
+                if let Some(ids) = groups.get(config) {
+                    println!("MergeNestedLoops group {} ({} loops)", config, ids.len());
+                }
+            }
         }
     }
 
@@ -271,6 +286,11 @@ impl Optimization {
             Optimization::VectorizeLoads { supported_lens } => {
                 kernel.vectorize_loads(supported_lens);
             }
+            Optimization::MergeNestedLoops { groups } => {
+                if let Some(loop_ids) = groups.get(config) {
+                    kernel.merge_nested_loops(loop_ids);
+                }
+            }
         }
     }
 }
@@ -334,38 +354,10 @@ impl Kernel {
         kernel.run_always_on_optimizations();
         kernel.run_always_on_optimizations();
 
-        // Merge nested reduce loops so tiled_reduce can parallelize them
-        let loop_ids: Vec<OpId> = {
-            let mut ids = Vec::new();
-            // Find first Loop in kernel body (skip defs/consts/indices)
-            let mut oid = kernel.head;
-            loop {
-                if oid.is_null() { break; }
-                if matches!(kernel.ops[oid].op, Op::Loop { .. }) { ids.push(oid); break; }
-                oid = kernel.next_op(oid);
-            }
-            // Collect remaining Loops nested inside the first
-            if let Some(&outer) = ids.first() {
-                let mut oid = kernel.next_op(outer);
-                let mut depth: u32 = 1;
-                while !oid.is_null() && depth > 0 {
-                    match kernel.ops[oid].op {
-                        Op::Loop { .. } => { ids.push(oid); depth += 1; }
-                        Op::EndLoop => depth -= 1,
-                        _ => {}
-                    }
-                    oid = kernel.next_op(oid);
-                }
-            }
-            ids
-        };
-        if loop_ids.len() >= 2 {
-            kernel.merge_nested_loops(&loop_ids);
-            let dev_info = device.info();
-            let (opt, n) = kernel.opt_tiled_reduce(dev_info);
-            if n > 0 {
-                opt.apply(&mut kernel, 0);
-            }
+        // Merge nested loops via the optimization system
+        let (merge_opt, n_merge) = kernel.opt_merge_nested_loops();
+        if n_merge > 0 {
+            merge_opt.apply(&mut kernel, 0);
         }
 
         kernel.run_always_on_optimizations();
