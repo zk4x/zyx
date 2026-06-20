@@ -62,7 +62,7 @@ const AVAILABLE_OPTIMIZATIONS: [OptConfigFn; 9] = [
     Kernel::opt_split_global_to_local,
     |k, _| Kernel::opt_thread_coarse(k),
     |k, _| Kernel::opt_register_blocking(k),
-    Kernel::opt_tiled_reduce,
+    Kernel::opt_local_reduce,
     |k, _| Kernel::opt_split_loop(k),
     |k, _| Kernel::opt_pad_index(k),
     Kernel::opt_vectorize_loads,
@@ -265,7 +265,7 @@ impl Optimization {
             }
             Optimization::TiledReduce { factors } => {
                 let (op_id, factor, tree_branch) = factors[config];
-                kernel.tiled_reduce(op_id, factor, tree_branch);
+                kernel.local_reduce(op_id, factor, tree_branch);
             }
             Optimization::SplitLoop { factors } => {
                 let (op_id, factor) = factors[config];

@@ -21,7 +21,7 @@ use crate::{
 };
 
 impl Kernel {
-    pub(crate) fn opt_tiled_reduce(&self, dev_info: &DeviceInfo) -> (Optimization, usize) {
+    pub(crate) fn opt_local_reduce(&self, dev_info: &DeviceInfo) -> (Optimization, usize) {
         #[cfg(feature = "time")]
         let _timer = crate::Timer::new("opt_tiled_reduce");
         // Let's not tile reduce kernel with barriers for now
@@ -56,7 +56,7 @@ impl Kernel {
             dev_info.max_local_threads / used_threads
         };
 
-        let candidates = vec![32, 16, 8, 64, 128];
+        let candidates = vec![1024, 512]; //, 256, 128, 64, 32, 16, 8];
         let tree_branch_candidates = vec![2, 4];
         let mut factors = Vec::new();
         let mut op_id = self.head;
@@ -89,7 +89,7 @@ impl Kernel {
     /// * `loop_start` - The loop operation to parallelize
     /// * `factor` - The factor for splitting the loop
     /// * `tree_branch` - The tree reduction branching factor
-    pub(crate) fn tiled_reduce(&mut self, loop_start: OpId, factor: u64, tree_branch: u64) {
+    pub(crate) fn local_reduce(&mut self, loop_start: OpId, factor: u64, tree_branch: u64) {
         #[cfg(feature = "time")]
         let _timer = crate::Timer::new("tiled_reduce");
         let loop_len = if let Op::Loop { len } = self.at(loop_start) {
