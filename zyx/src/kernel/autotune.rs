@@ -334,12 +334,39 @@ impl Kernel {
         kernel.run_always_on_optimizations();
         kernel.run_always_on_optimizations();
 
-        /*let (opt, _) = kernel.opt_pad_index();
-        opt.apply(&mut kernel, 0);
-        kernel.run_always_on_optimizations();*/
-
-        let (opt, _) = kernel.opt_thread_coarse();
-        opt.apply(&mut kernel, 0);
+        // Merge nested reduce loops so tiled_reduce can parallelize them
+        let loop_ids: Vec<OpId> = {
+            let mut ids = Vec::new();
+            // Find first Loop in kernel body (skip defs/consts/indices)
+            let mut oid = kernel.head;
+            loop {
+                if oid.is_null() { break; }
+                if matches!(kernel.ops[oid].op, Op::Loop { .. }) { ids.push(oid); break; }
+                oid = kernel.next_op(oid);
+            }
+            // Collect remaining Loops nested inside the first
+            if let Some(&outer) = ids.first() {
+                let mut oid = kernel.next_op(outer);
+                let mut depth: u32 = 1;
+                while !oid.is_null() && depth > 0 {
+                    match kernel.ops[oid].op {
+                        Op::Loop { .. } => { ids.push(oid); depth += 1; }
+                        Op::EndLoop => depth -= 1,
+                        _ => {}
+                    }
+                    oid = kernel.next_op(oid);
+                }
+            }
+            ids
+        };
+        if loop_ids.len() >= 2 {
+            kernel.merge_nested_loops(&loop_ids);
+            let dev_info = device.info();
+            let (opt, n) = kernel.opt_tiled_reduce(dev_info);
+            if n > 0 {
+                opt.apply(&mut kernel, 0);
+            }
+        }
 
         kernel.run_always_on_optimizations();
         kernel.run_always_on_optimizations();
@@ -401,7 +428,7 @@ impl Kernel {
         write_bytes: u64,
         debug: DebugMask,
     ) -> Result<(DeviceProgramId, OptSeq), BackendError> {
-        if false {
+        if true {
             return self.apply_selected_optimizations(buffers, device, memory_pool, config, flop, read_bytes, write_bytes, debug);
         }
 
