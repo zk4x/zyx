@@ -1317,7 +1317,6 @@ dependencies = [
 name = "zyx"
 version = "0.15.6"
 dependencies = [
- "ash",
  "libc",
  "libloading 0.9.0",
  "matrixmultiply",

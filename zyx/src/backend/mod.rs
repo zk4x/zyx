@@ -369,13 +369,17 @@ macro_rules! op_cap {
     };
     ($name:ident, $bit:expr, $method:ident) => {
         pub const $name: u32 = 1 << $bit;
-        pub fn $method(&self) -> bool { self.0 & Self::$name != 0 }
+        pub fn $method(&self) -> bool {
+            self.0 & Self::$name != 0
+        }
     };
 }
 
 impl std::ops::Not for OpCapability {
     type Output = bool;
-    fn not(self) -> bool { self.0 == 0 }
+    fn not(self) -> bool {
+        self.0 == 0
+    }
 }
 
 impl OpCapability {
@@ -411,9 +415,15 @@ impl OpCapability {
     op_cap!(NOTEQ, 29, noteq);
     op_cap!(EQ, 30, eq);
 
-    pub const fn all() -> Self { Self(u32::MAX) }
-    pub const fn none() -> Self { Self(0) }
-    pub fn exists(&self) -> bool { self.0 != 0 }
+    pub const fn all() -> Self {
+        Self(u32::MAX)
+    }
+    pub const fn none() -> Self {
+        Self(0)
+    }
+    pub fn exists(&self) -> bool {
+        self.0 != 0
+    }
 }
 
 /// Hardware information needed for applying optimizations

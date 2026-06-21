@@ -1,14 +1,20 @@
 // Copyright (C) 2025 zk4x
 // SPDX-License-Identifier: LGPL-3.0-only
 
-//! Vulkan backend using ash.
+//! Vulkan backend using raw libloading FFI (no ash) with worker-thread dispatch.
 
-use std::cell::Cell;
-use std::ffi::CStr;
-use std::ffi::CString;
-use std::sync::Arc;
+#![allow(non_camel_case_types)]
+#![allow(non_snake_case)]
+#![allow(dead_code)]
 
-use ash::vk;
+use std::ffi::{CStr, CString};
+use std::sync::{
+    Arc,
+    atomic::{AtomicU64, Ordering},
+    mpsc::{Receiver, Sender, channel},
+};
+
+use libloading::Library;
 use nanoserde::DeJson;
 
 use crate::{
@@ -21,13 +27,311 @@ use crate::{
 
 use super::{DeviceInfo, DeviceProgramId, Event, MemoryPool, OpCapability, PoolBufferId, PoolId};
 
-// Mapped pointer wrapper — Send+Sync so the slab compiles inside Runtime.
-#[derive(Clone, Copy)]
-struct Mapped(*mut u8);
-unsafe impl Send for Mapped {}
-unsafe impl Sync for Mapped {}
+// ── Vulkan FFI types ─────────────────────────────────────────────────────────
 
-// ── Config ─────────────────────────────────────────────────────────────────
+type VkInstance = *mut std::ffi::c_void;
+type VkPhysicalDevice = *mut std::ffi::c_void;
+type VkDevice = *mut std::ffi::c_void;
+type VkQueue = *mut std::ffi::c_void;
+type VkCommandPool = *mut std::ffi::c_void;
+type VkDescriptorPool = *mut std::ffi::c_void;
+type VkBuffer = *mut std::ffi::c_void;
+type VkDeviceMemory = *mut std::ffi::c_void;
+type VkFence = *mut std::ffi::c_void;
+type VkCommandBuffer = *mut std::ffi::c_void;
+type VkDescriptorSet = *mut std::ffi::c_void;
+type VkPipeline = *mut std::ffi::c_void;
+type VkPipelineLayout = *mut std::ffi::c_void;
+type VkDescriptorSetLayout = *mut std::ffi::c_void;
+type VkShaderModule = *mut std::ffi::c_void;
+type VkPipelineCache = *mut std::ffi::c_void;
+type VkSampler = *mut std::ffi::c_void;
+type VkResult = i32;
+
+const VK_SUCCESS: VkResult = 0;
+const VK_WHOLE_SIZE: u64 = !0;
+const VK_API_VERSION_1_2: u32 = (1 << 22) | (2 << 12) | 0;
+const VK_NULL_HANDLE: VkPipelineCache = std::ptr::null_mut();
+
+const VK_STRUCTURE_TYPE_APPLICATION_INFO: u32 = 0;
+const VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO: u32 = 1;
+const VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO: u32 = 2;
+const VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO: u32 = 3;
+const VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO: u32 = 5;
+const VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO: u32 = 11;
+const VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO: u32 = 16;
+const VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO: u32 = 19;
+const VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO: u32 = 22;
+const VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO: u32 = 23;
+const VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO: u32 = 24;
+const VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO: u32 = 29;
+const VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO: u32 = 30;
+const VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET: u32 = 33;
+const VK_STRUCTURE_TYPE_SUBMIT_INFO: u32 = 34;
+const VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO: u32 = 36;
+const VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO: u32 = 37;
+const VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO: u32 = 38;
+const VK_STRUCTURE_TYPE_FENCE_CREATE_INFO: u32 = 82;
+
+const VK_BUFFER_USAGE_STORAGE_BUFFER_BIT: u32 = 0x0080;
+const VK_BUFFER_USAGE_TRANSFER_DST_BIT: u32 = 0x0002;
+const VK_BUFFER_USAGE_TRANSFER_SRC_BIT: u32 = 0x0001;
+const VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT: u32 = 0x0001;
+const VK_MEMORY_PROPERTY_HOST_COHERENT_BIT: u32 = 0x0004;
+const VK_SHARING_MODE_EXCLUSIVE: u32 = 0;
+const VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT: u32 = 0x0001;
+const VK_COMMAND_BUFFER_LEVEL_PRIMARY: u32 = 0;
+const VK_PIPELINE_BIND_POINT_COMPUTE: u32 = 1;
+const VK_SHADER_STAGE_COMPUTE_BIT: u32 = 0x0020;
+const VK_QUEUE_COMPUTE_BIT: u32 = 0x0004;
+const VK_DESCRIPTOR_TYPE_STORAGE_BUFFER: u32 = 2;
+const VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT: u32 = 0x0008;
+const VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT: u32 = 0x0004;
+
+#[repr(C)]
+struct VkApplicationInfo {
+    sType: u32,
+    pNext: *const std::ffi::c_void,
+    pApplicationName: *const i8,
+    applicationVersion: u32,
+    pEngineName: *const i8,
+    engineVersion: u32,
+    apiVersion: u32,
+}
+#[repr(C)]
+struct VkInstanceCreateInfo {
+    sType: u32,
+    pNext: *const std::ffi::c_void,
+    flags: u32,
+    pApplicationInfo: *const VkApplicationInfo,
+    enabledLayerCount: u32,
+    ppEnabledLayerNames: *const *const i8,
+    enabledExtensionCount: u32,
+    ppEnabledExtensionNames: *const *const i8,
+}
+#[repr(C)]
+struct VkDeviceQueueCreateInfo {
+    sType: u32,
+    pNext: *const std::ffi::c_void,
+    flags: u32,
+    queueFamilyIndex: u32,
+    queueCount: u32,
+    pQueuePriorities: *const f32,
+}
+#[repr(C)]
+struct VkDeviceCreateInfo {
+    sType: u32,
+    pNext: *const std::ffi::c_void,
+    flags: u32,
+    queueCreateInfoCount: u32,
+    pQueueCreateInfos: *const VkDeviceQueueCreateInfo,
+    enabledLayerCount: u32,
+    ppEnabledLayerNames: *const *const i8,
+    enabledExtensionCount: u32,
+    ppEnabledExtensionNames: *const *const i8,
+    pEnabledFeatures: *const std::ffi::c_void,
+}
+#[repr(C)]
+struct VkShaderModuleCreateInfo {
+    sType: u32,
+    pNext: *const std::ffi::c_void,
+    flags: u32,
+    codeSize: usize,
+    pCode: *const u32,
+}
+#[repr(C)]
+struct VkBufferCreateInfo {
+    sType: u32,
+    pNext: *const std::ffi::c_void,
+    flags: u32,
+    size: u64,
+    usage: u32,
+    sharingMode: u32,
+    queueFamilyIndexCount: u32,
+    pQueueFamilyIndices: *const u32,
+}
+#[repr(C)]
+struct VkMemoryAllocateInfo {
+    sType: u32,
+    pNext: *const std::ffi::c_void,
+    allocationSize: u64,
+    memoryTypeIndex: u32,
+}
+#[repr(C)]
+struct VkMemoryRequirements {
+    size: u64,
+    alignment: u64,
+    memoryTypeBits: u32,
+}
+#[repr(C)]
+struct VkDescriptorSetLayoutBinding {
+    binding: u32,
+    descriptorType: u32,
+    descriptorCount: u32,
+    stageFlags: u32,
+    pImmutableSamplers: *const VkSampler,
+}
+#[repr(C)]
+struct VkDescriptorSetLayoutCreateInfo {
+    sType: u32,
+    pNext: *const std::ffi::c_void,
+    flags: u32,
+    bindingCount: u32,
+    pBindings: *const VkDescriptorSetLayoutBinding,
+}
+#[repr(C)]
+struct VkPipelineLayoutCreateInfo {
+    sType: u32,
+    pNext: *const std::ffi::c_void,
+    flags: u32,
+    setLayoutCount: u32,
+    pSetLayouts: *const VkDescriptorSetLayout,
+    pushConstantRangeCount: u32,
+    pPushConstantRanges: *const std::ffi::c_void,
+}
+#[repr(C)]
+struct VkPipelineShaderStageCreateInfo {
+    sType: u32,
+    pNext: *const std::ffi::c_void,
+    flags: u32,
+    stage: u32,
+    module: VkShaderModule,
+    pName: *const i8,
+    pSpecializationInfo: *const std::ffi::c_void,
+}
+#[repr(C)]
+struct VkComputePipelineCreateInfo {
+    sType: u32,
+    pNext: *const std::ffi::c_void,
+    flags: u32,
+    stage: VkPipelineShaderStageCreateInfo,
+    layout: VkPipelineLayout,
+    basePipelineHandle: VkPipeline,
+    basePipelineIndex: i32,
+}
+#[repr(C)]
+struct VkDescriptorSetAllocateInfo {
+    sType: u32,
+    pNext: *const std::ffi::c_void,
+    descriptorPool: VkDescriptorPool,
+    descriptorSetCount: u32,
+    pSetLayouts: *const VkDescriptorSetLayout,
+}
+#[repr(C)]
+struct VkDescriptorBufferInfo {
+    buffer: VkBuffer,
+    offset: u64,
+    range: u64,
+}
+#[repr(C)]
+struct VkWriteDescriptorSet {
+    sType: u32,
+    pNext: *const std::ffi::c_void,
+    dstSet: VkDescriptorSet,
+    dstBinding: u32,
+    dstArrayElement: u32,
+    descriptorCount: u32,
+    descriptorType: u32,
+    pImageInfo: *const std::ffi::c_void,
+    pBufferInfo: *const VkDescriptorBufferInfo,
+    pTexelBufferView: *const std::ffi::c_void,
+}
+#[repr(C)]
+struct VkCommandBufferAllocateInfo {
+    sType: u32,
+    pNext: *const std::ffi::c_void,
+    commandPool: VkCommandPool,
+    level: u32,
+    commandBufferCount: u32,
+}
+#[repr(C)]
+struct VkCommandBufferBeginInfo {
+    sType: u32,
+    pNext: *const std::ffi::c_void,
+    flags: u32,
+    pInheritanceInfo: *const std::ffi::c_void,
+}
+#[repr(C)]
+struct VkSubmitInfo {
+    sType: u32,
+    pNext: *const std::ffi::c_void,
+    waitSemaphoreCount: u32,
+    pWaitSemaphores: *const std::ffi::c_void,
+    pWaitDstStageMask: *const u32,
+    commandBufferCount: u32,
+    pCommandBuffers: *const VkCommandBuffer,
+    signalSemaphoreCount: u32,
+    pSignalSemaphores: *const std::ffi::c_void,
+}
+#[repr(C)]
+struct VkFenceCreateInfo {
+    sType: u32,
+    pNext: *const std::ffi::c_void,
+    flags: u32,
+}
+#[repr(C)]
+struct VkCommandPoolCreateInfo {
+    sType: u32,
+    pNext: *const std::ffi::c_void,
+    flags: u32,
+    queueFamilyIndex: u32,
+}
+#[repr(C)]
+struct VkDescriptorPoolSize {
+    ty: u32,
+    descriptorCount: u32,
+}
+#[repr(C)]
+struct VkDescriptorPoolCreateInfo {
+    sType: u32,
+    pNext: *const std::ffi::c_void,
+    flags: u32,
+    maxSets: u32,
+    poolSizeCount: u32,
+    pPoolSizes: *const VkDescriptorPoolSize,
+}
+#[repr(C)]
+struct VkPhysicalDeviceProperties {
+    api_version: u32,
+    driver_version: u32,
+    vendor_id: u32,
+    device_id: u32,
+    device_type: u32,
+    device_name: [u8; 256],
+    pipeline_cache_uuid: [u8; 16],
+    _pad0: [u8; 216],
+    max_compute_shared_memory_size: u32,
+    max_compute_work_group_count: [u32; 3],
+    max_compute_work_group_invocations: u32,
+    max_compute_work_group_size: [u32; 3],
+}
+#[repr(C)]
+#[derive(Clone)]
+struct VkQueueFamilyProperties {
+    queueFlags: u32,
+    queueCount: u32,
+    timestampValidBits: u32,
+    minImageTransferGranularity: [u32; 3],
+}
+#[repr(C)]
+struct VkPhysicalDeviceMemoryProperties {
+    memoryTypeCount: u32,
+    memoryTypes: [VkMemoryType; 32],
+    memoryHeapCount: u32,
+    memoryHeaps: [VkMemoryHeap; 16],
+}
+#[repr(C)]
+struct VkMemoryHeap {
+    size: u64,
+    flags: u32,
+}
+#[repr(C)]
+struct VkMemoryType {
+    propertyFlags: u32,
+    heapIndex: u32,
+}
+
+// ── Config ───────────────────────────────────────────────────────────────────
 
 #[derive(DeJson, Debug, Default)]
 #[nserde(default)]
@@ -35,192 +339,127 @@ pub struct VulkanConfig {
     device_ids: Option<Vec<i32>>,
 }
 
-// ── Core: Arc'd Vulkan state ───────────────────────────────────────────────
+// ── Worker-thread command enum ───────────────────────────────────────────────
 
-struct Core {
-    _entry: ash::Entry,
-    instance: ash::Instance,
-    device: ash::Device,
-    gpu: vk::PhysicalDevice,
-    queue: vk::Queue,
-    cmd_pool: vk::CommandPool,
-    desc_pool: vk::DescriptorPool,
+enum VulkanCommand {
+    Allocate {
+        bytes: Dim,
+        reply: Sender<Result<(PoolBufferId, Event), BackendError>>,
+    },
+    Deallocate {
+        buffer_id: PoolBufferId,
+        event_wait_list: Vec<Event>,
+    },
+    HostToPool {
+        src: *const u8,
+        bytes: usize,
+        dst: PoolBufferId,
+        event_wait_list: Vec<Event>,
+        reply: Sender<Result<Event, BackendError>>,
+    },
+    PoolToHost {
+        src: PoolBufferId,
+        dst: *mut u8,
+        bytes: usize,
+        event_wait_list: Vec<Event>,
+        reply: Sender<Result<(), BackendError>>,
+    },
+    Compile {
+        kernel: Box<Kernel>,
+        debug_asm: bool,
+        reply: Sender<Result<DeviceProgramId, BackendError>>,
+    },
+    Launch {
+        program_id: DeviceProgramId,
+        args: Vec<PoolBufferId>,
+        event_wait_list: Vec<Event>,
+        reply: Sender<Result<Event, BackendError>>,
+    },
+    SyncEvents {
+        events: Vec<Event>,
+        reply: Sender<Result<(), BackendError>>,
+    },
+    ReleaseProgram(DeviceProgramId),
+    ReleaseEvents(Vec<Event>),
 }
 
-impl Drop for Core {
-    fn drop(&mut self) {
-        unsafe {
-            self.device.destroy_descriptor_pool(self.desc_pool, None);
-            self.device.destroy_command_pool(self.cmd_pool, None);
-            self.device.destroy_device(None);
-            self.instance.destroy_instance(None);
-        }
-    }
-}
+unsafe impl Send for VulkanCommand {}
 
-fn find_mem_type(
-    inst: &ash::Instance,
-    gpu: vk::PhysicalDevice,
-    type_filter: u32,
-    required: vk::MemoryPropertyFlags,
-) -> Option<u32> {
-    let mem = unsafe { inst.get_physical_device_memory_properties(gpu) };
-    (0..mem.memory_type_count)
-        .find(|&i| (type_filter & (1 << i)) != 0 && mem.memory_types[i as usize].property_flags & required == required)
-}
-
-// ── Memory Pool ─────────────────────────────────────────────────────────────
+// ── Memory Pool ──────────────────────────────────────────────────────────────
 
 pub struct VulkanMemoryPool {
-    free_bytes: usize,
-    core: Arc<Core>,
-    // (buffer, memory, mapped_ptr, requested_bytes)
-    buffers: Slab<PoolBufferId, (vk::Buffer, vk::DeviceMemory, Mapped, usize)>,
+    tx: Sender<VulkanCommand>,
+    free_bytes: Arc<AtomicU64>,
 }
+
+unsafe impl Send for VulkanMemoryPool {}
 
 impl std::fmt::Debug for VulkanMemoryPool {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("VulkanMemoryPool")
             .field("free_bytes", &self.free_bytes)
-            .field("n_buffers", &self.buffers.len())
             .finish()
-    }
-}
-
-impl Drop for VulkanMemoryPool {
-    fn drop(&mut self) {
-        let dev = &self.core.device;
-        for &(buf, mem, Mapped(ptr), _) in self.buffers.values() {
-            if !ptr.is_null() {
-                unsafe { dev.unmap_memory(mem) };
-            }
-            unsafe {
-                dev.destroy_buffer(buf, None);
-                dev.free_memory(mem, None);
-            }
-        }
     }
 }
 
 impl VulkanMemoryPool {
     pub(super) fn free_bytes(&self) -> Dim {
-        self.free_bytes as Dim
+        self.free_bytes.load(Ordering::SeqCst)
     }
-
     pub(super) const fn deinitialize(&mut self) {}
-
     pub(super) fn allocate(&mut self, bytes: Dim) -> Result<(PoolBufferId, Event), BackendError> {
-        let size = bytes.next_multiple_of(4) as u64;
-        let (buf, mem, ptr) = self.create_buffer(size)?;
-        let id = self.buffers.push((buf, mem, Mapped(ptr), bytes as usize));
-        Ok((PoolBufferId::from(id), Event::Vulkan(VulkanEvent::none())))
+        let (reply, rx) = channel();
+        self.tx.send(VulkanCommand::Allocate { bytes, reply }).unwrap();
+        rx.recv().unwrap()
     }
-
-    fn create_buffer(&self, size: u64) -> Result<(vk::Buffer, vk::DeviceMemory, *mut u8), BackendError> {
-        let dev = &self.core.device;
-        let usage =
-            vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::TRANSFER_DST | vk::BufferUsageFlags::TRANSFER_SRC;
-        let ci = vk::BufferCreateInfo::default()
-            .size(size)
-            .usage(usage)
-            .sharing_mode(vk::SharingMode::EXCLUSIVE);
-        let buf = unsafe { dev.create_buffer(&ci, None) }
-            .map_err(|e| BackendError { status: ErrorStatus::MemoryAllocation, context: format!("create buffer: {e}").into() })?;
-        let req = unsafe { dev.get_buffer_memory_requirements(buf) };
-        let mem_type = find_mem_type(
-            &self.core.instance,
-            self.core.gpu,
-            req.memory_type_bits,
-            vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
-        )
-        .ok_or_else(|| BackendError { status: ErrorStatus::MemoryAllocation, context: "no suitable memory type".into() })?;
-        let alloc = vk::MemoryAllocateInfo::default()
-            .allocation_size(req.size)
-            .memory_type_index(mem_type);
-        let mem = unsafe { dev.allocate_memory(&alloc, None) }
-            .map_err(|e| BackendError { status: ErrorStatus::MemoryAllocation, context: format!("alloc memory: {e}").into() })?;
-        unsafe { dev.bind_buffer_memory(buf, mem, 0) }
-            .map_err(|e| BackendError { status: ErrorStatus::MemoryAllocation, context: format!("bind memory: {e}").into() })?;
-        let ptr = unsafe { dev.map_memory(mem, 0, size, vk::MemoryMapFlags::empty()) }
-            .map_err(|e| BackendError { status: ErrorStatus::MemoryAllocation, context: format!("map memory: {e}").into() })?;
-        Ok((buf, mem, ptr.cast::<u8>()))
-    }
-
     pub(super) fn deallocate(&mut self, buffer_id: PoolBufferId, event_wait_list: Vec<Event>) {
-        for event in &event_wait_list {
-            if let Event::Vulkan(ev) = event {
-                ev.wait();
-            }
-        }
-        let (buf, mem, Mapped(ptr), _) = unsafe { self.buffers.remove_and_return(buffer_id) };
-        let dev = &self.core.device;
-        if !ptr.is_null() {
-            unsafe { dev.unmap_memory(mem) };
-        }
-        unsafe {
-            dev.destroy_buffer(buf, None);
-            dev.free_memory(mem, None);
-        }
+        self.tx
+            .send(VulkanCommand::Deallocate { buffer_id, event_wait_list })
+            .unwrap();
     }
-
     pub(super) fn host_to_pool(
         &mut self,
         src: &[u8],
         dst: PoolBufferId,
         event_wait_list: Vec<Event>,
     ) -> Result<Event, BackendError> {
-        for event in &event_wait_list {
-            if let Event::Vulkan(ev) = event {
-                ev.wait();
-            }
-        }
-        let &(_, _, Mapped(ptr), _) = &self.buffers[dst];
-        unsafe {
-            std::ptr::copy_nonoverlapping(src.as_ptr(), ptr, src.len());
-        }
-        Ok(Event::Vulkan(VulkanEvent::none()))
+        let (reply, rx) = channel();
+        self.tx
+            .send(VulkanCommand::HostToPool { src: src.as_ptr(), bytes: src.len(), dst, event_wait_list, reply })
+            .unwrap();
+        rx.recv().unwrap()
     }
-
     pub(super) fn pool_to_host(
         &mut self,
         src: PoolBufferId,
         dst: &mut [u8],
         event_wait_list: Vec<Event>,
     ) -> Result<(), BackendError> {
-        for event in &event_wait_list {
-            if let Event::Vulkan(ev) = event {
-                ev.wait();
-            }
-        }
-        let &(_, _, Mapped(ptr), _) = &self.buffers[src];
-        unsafe {
-            std::ptr::copy_nonoverlapping(ptr, dst.as_mut_ptr(), dst.len());
-        }
-        Ok(())
+        let (reply, rx) = channel();
+        self.tx
+            .send(VulkanCommand::PoolToHost { src, dst: dst.as_mut_ptr(), bytes: dst.len(), event_wait_list, reply })
+            .unwrap();
+        rx.recv().unwrap()
     }
-
     pub(super) fn sync_events(&mut self, events: Vec<Event>) -> Result<(), BackendError> {
-        for event in &events {
-            if let Event::Vulkan(ev) = event {
-                ev.wait();
-            }
-        }
-        Ok(())
+        let (reply, rx) = channel();
+        self.tx.send(VulkanCommand::SyncEvents { events, reply }).unwrap();
+        rx.recv().unwrap()
     }
-
-    pub(super) fn release_events(&mut self, _events: Vec<Event>) {}
+    pub(super) fn release_events(&mut self, events: Vec<Event>) {
+        self.tx.send(VulkanCommand::ReleaseEvents(events)).unwrap();
+    }
 }
 
-// ── Event ───────────────────────────────────────────────────────────────────
+// ── Event ────────────────────────────────────────────────────────────────────
 
-/// Wraps raw handles with take-once semantics.
-/// `wait()` waits on the fence and frees everything. Subsequent calls are no-ops.
 pub struct VulkanEvent {
-    core: Option<Arc<Core>>,
-    fence: Cell<Option<vk::Fence>>,
-    cmd: Cell<Option<vk::CommandBuffer>>,
-    desc_set: Cell<Option<vk::DescriptorSet>>,
+    fence: VkFence,
+    cmd: VkCommandBuffer,
+    desc_set: VkDescriptorSet,
 }
+
+unsafe impl Send for VulkanEvent {}
 
 impl std::fmt::Debug for VulkanEvent {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -228,48 +467,21 @@ impl std::fmt::Debug for VulkanEvent {
     }
 }
 
-impl VulkanEvent {
-    fn none() -> Self {
-        Self { core: None, fence: Cell::new(None), cmd: Cell::new(None), desc_set: Cell::new(None) }
-    }
+// ── Program ──────────────────────────────────────────────────────────────────
 
-    fn create(core: Arc<Core>, fence: vk::Fence, cmd: vk::CommandBuffer, desc_set: vk::DescriptorSet) -> Self {
-        Self { core: Some(core), fence: Cell::new(Some(fence)), cmd: Cell::new(Some(cmd)), desc_set: Cell::new(Some(desc_set)) }
-    }
-
-    fn wait(&self) {
-        let Some(ref core) = self.core else { return };
-        if let Some(fence) = self.fence.take() {
-            unsafe {
-                let _ = core.device.wait_for_fences(&[fence], true, std::u64::MAX);
-                core.device.destroy_fence(fence, None);
-            }
-        }
-        if let (Some(cmd), Some(desc_set)) = (self.cmd.take(), self.desc_set.take()) {
-            unsafe {
-                let _ = core.device.free_command_buffers(core.cmd_pool, &[cmd]);
-                let _ = core.device.free_descriptor_sets(core.desc_pool, &[desc_set]);
-            }
-        }
-    }
-}
-
-// ── Program ─────────────────────────────────────────────────────────────────
-
-pub(super) struct VulkanProgram {
+struct VulkanProgram {
     gws: Vec<Dim>,
-    pipeline: vk::Pipeline,
-    pipeline_layout: vk::PipelineLayout,
-    desc_layout: vk::DescriptorSetLayout,
+    pipeline: VkPipeline,
+    pipeline_layout: VkPipelineLayout,
+    desc_layout: VkDescriptorSetLayout,
 }
 
-// ── Device ──────────────────────────────────────────────────────────────────
+// ── Device ───────────────────────────────────────────────────────────────────
 
 pub struct VulkanDevice {
+    tx: Sender<VulkanCommand>,
     dev_info: DeviceInfo,
     memory_pool_id: PoolId,
-    core: Arc<Core>,
-    programs: Slab<DeviceProgramId, VulkanProgram>,
 }
 
 impl std::fmt::Debug for VulkanDevice {
@@ -277,213 +489,61 @@ impl std::fmt::Debug for VulkanDevice {
         f.debug_struct("VulkanDevice")
             .field("dev_info", &self.dev_info)
             .field("memory_pool_id", &self.memory_pool_id)
-            .field("n_programs", &self.programs.len())
             .finish()
     }
 }
 
 impl VulkanDevice {
     pub(super) const fn deinitialize(&mut self) {}
-
     pub(super) const fn info(&self) -> &DeviceInfo {
         &self.dev_info
     }
-
     pub(super) const fn memory_pool_id(&self) -> PoolId {
         self.memory_pool_id
     }
-
     pub(super) const fn free_compute(&self) -> u128 {
         1_000_000_000_000
     }
-
     pub(super) fn release(&mut self, program_id: DeviceProgramId) {
-        let prog = unsafe { self.programs.remove_and_return(program_id) };
-        let dev = &self.core.device;
-        unsafe {
-            dev.destroy_pipeline(prog.pipeline, None);
-            dev.destroy_pipeline_layout(prog.pipeline_layout, None);
-            dev.destroy_descriptor_set_layout(prog.desc_layout, None);
-        }
+        self.tx.send(VulkanCommand::ReleaseProgram(program_id)).unwrap();
     }
-
     pub(super) fn compile(&mut self, kernel: &Kernel, debug_asm: bool) -> Result<DeviceProgramId, BackendError> {
-        let (spirv, gws, lws) = crate::backend::spirv::compile(kernel, debug_asm)
-            .map_err(|e| BackendError { status: ErrorStatus::KernelCompilation, context: format!("SPIR-V: {e}").into() })?;
-        let dev = &self.core.device;
-
-        let shader_ci = vk::ShaderModuleCreateInfo::default().code(&spirv);
-        let shader = unsafe { dev.create_shader_module(&shader_ci, None) }
-            .map_err(|e| BackendError { status: ErrorStatus::KernelCompilation, context: format!("shader: {e}").into() })?;
-
-        // Count kernel args for descriptor bindings
-        let n_args = {
-            let mut n = 0usize;
-            let mut op = kernel.head;
-            while !op.is_null() {
-                if let crate::kernel::Op::Define { ro: _, scope, .. } = kernel.at(op) {
-                    if *scope == crate::kernel::Scope::Global {
-                        n += 1;
-                    }
-                }
-                op = kernel.next_op(op);
-            }
-            n
-        };
-
-        let bindings: Vec<vk::DescriptorSetLayoutBinding> = (0..n_args as u32)
-            .map(|i| {
-                vk::DescriptorSetLayoutBinding::default()
-                    .binding(i)
-                    .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
-                    .descriptor_count(1)
-                    .stage_flags(vk::ShaderStageFlags::COMPUTE)
-            })
-            .collect();
-        let layout_ci = vk::DescriptorSetLayoutCreateInfo::default().bindings(&bindings);
-        let desc_layout = unsafe { dev.create_descriptor_set_layout(&layout_ci, None) }
-            .map_err(|e| BackendError { status: ErrorStatus::KernelCompilation, context: format!("ds layout: {e}").into() })?;
-
-        let desc_layouts = [desc_layout];
-        let pl_ci = vk::PipelineLayoutCreateInfo::default().set_layouts(&desc_layouts);
-        let pipeline_layout = unsafe { dev.create_pipeline_layout(&pl_ci, None) }.map_err(|e| BackendError {
-            status: ErrorStatus::KernelCompilation,
-            context: format!("pipeline layout: {e}").into(),
-        })?;
-
-        // Entry point name must match spirv.rs format: "k_{gws}__{lws}"
-        let ep_name = format!(
-            "k_{}__{}",
-            gws.iter().map(|v| v.to_string()).collect::<Vec<_>>().join("_"),
-            lws.iter().map(|v| v.to_string()).collect::<Vec<_>>().join("_"),
-        );
-        let entry_name = CString::new(ep_name).unwrap();
-        let stage = vk::PipelineShaderStageCreateInfo::default()
-            .stage(vk::ShaderStageFlags::COMPUTE)
-            .module(shader)
-            .name(&entry_name);
-        let cp_ci = vk::ComputePipelineCreateInfo::default().stage(stage).layout(pipeline_layout);
-        let pipeline = unsafe {
-            dev.create_compute_pipelines(vk::PipelineCache::null(), &[cp_ci], None)
-                .map_err(|(_, e)| BackendError {
-                    status: ErrorStatus::KernelCompilation,
-                    context: format!("pipeline: {e}").into(),
-                })?
-                .remove(0)
-        };
-
-        unsafe { dev.destroy_shader_module(shader, None) };
-
-        let id = self
-            .programs
-            .push(VulkanProgram { gws, pipeline, pipeline_layout, desc_layout });
-        Ok(id)
+        let (reply, rx) = channel();
+        self.tx
+            .send(VulkanCommand::Compile { kernel: Box::new(kernel.clone()), debug_asm, reply })
+            .unwrap();
+        rx.recv().unwrap()
     }
-
     pub(super) fn launch(
         &mut self,
         program_id: DeviceProgramId,
-        memory_pool: &mut VulkanMemoryPool,
+        _memory_pool: &mut VulkanMemoryPool,
         args: &[PoolBufferId],
         event_wait_list: Vec<Event>,
     ) -> Result<Event, BackendError> {
-        // Wait for all input dependencies before submitting this kernel
-        for event in &event_wait_list {
-            if let Event::Vulkan(ev) = event {
-                ev.wait();
-            }
-        }
-        let prog = &self.programs[program_id];
-        let dev = &self.core.device;
-
-        // Allocate descriptor set
-        let ds_layouts = [prog.desc_layout];
-        let ds_alloc = vk::DescriptorSetAllocateInfo::default()
-            .descriptor_pool(self.core.desc_pool)
-            .set_layouts(&ds_layouts);
-        let desc_sets = unsafe { dev.allocate_descriptor_sets(&ds_alloc) }
-            .map_err(|e| BackendError { status: ErrorStatus::KernelLaunch, context: format!("alloc ds: {e}").into() })?;
-        let desc_set = desc_sets[0];
-
-        // Write descriptor set — one SSBO per argument
-        let mut buf_infos: Vec<vk::DescriptorBufferInfo> = Vec::with_capacity(args.len());
-        for &arg_id in args {
-            let &(buf, _, _, _) = &memory_pool.buffers[arg_id];
-            buf_infos.push(
-                vk::DescriptorBufferInfo::default()
-                    .buffer(buf)
-                    .offset(0)
-                    .range(vk::WHOLE_SIZE),
-            );
-        }
-        let writes: Vec<vk::WriteDescriptorSet> = args
-            .iter()
-            .enumerate()
-            .map(|(i, _)| {
-                vk::WriteDescriptorSet::default()
-                    .dst_set(desc_set)
-                    .dst_binding(i as u32)
-                    .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
-                    .buffer_info(std::slice::from_ref(&buf_infos[i]))
-            })
-            .collect();
-        unsafe { dev.update_descriptor_sets(&writes, &[]) };
-
-        // Allocate + begin command buffer
-        let cmd_alloc = vk::CommandBufferAllocateInfo::default()
-            .command_pool(self.core.cmd_pool)
-            .level(vk::CommandBufferLevel::PRIMARY)
-            .command_buffer_count(1);
-        let cmd_bufs = unsafe { dev.allocate_command_buffers(&cmd_alloc) }
-            .map_err(|e| BackendError { status: ErrorStatus::KernelLaunch, context: format!("alloc cmd: {e}").into() })?;
-        let cmd = cmd_bufs[0];
-
-        let begin = vk::CommandBufferBeginInfo::default().flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT);
-        unsafe { dev.begin_command_buffer(cmd, &begin) }
-            .map_err(|e| BackendError { status: ErrorStatus::KernelLaunch, context: format!("begin cmd: {e}").into() })?;
-
-        let gx = prog.gws.first().copied().unwrap_or(1) as u32;
-        let gy = prog.gws.get(1).copied().unwrap_or(1) as u32;
-        let gz = prog.gws.get(2).copied().unwrap_or(1) as u32;
-
-        if gx == 0 || gy == 0 || gz == 0 {
-            return Err(BackendError {
-                status: ErrorStatus::KernelLaunch,
-                context: format!("dispatch dims zero: ({gx},{gy},{gz})").into(),
-            });
-        }
-        let dyn_offsets: [u32; 0] = [];
-        unsafe {
-            dev.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::COMPUTE, prog.pipeline);
-            dev.cmd_bind_descriptor_sets(
-                cmd,
-                vk::PipelineBindPoint::COMPUTE,
-                prog.pipeline_layout,
-                0,
-                &[desc_set],
-                &dyn_offsets,
-            );
-            dev.cmd_dispatch(cmd, gx, gy, gz);
-        }
-
-        unsafe { dev.end_command_buffer(cmd) }
-            .map_err(|e| BackendError { status: ErrorStatus::KernelLaunch, context: format!("end cmd: {e}").into() })?;
-
-        // Fence for GPU sync
-        let fence = unsafe { dev.create_fence(&vk::FenceCreateInfo::default(), None) }
-            .map_err(|e| BackendError { status: ErrorStatus::KernelLaunch, context: format!("fence: {e}").into() })?;
-
-        // Submit
-        let cmd_bufs = [cmd];
-        let submit = vk::SubmitInfo::default().command_buffers(&cmd_bufs);
-        unsafe { dev.queue_submit(self.core.queue, &[submit], fence) }
-            .map_err(|e| BackendError { status: ErrorStatus::KernelLaunch, context: format!("submit: {e}").into() })?;
-
-        Ok(Event::Vulkan(VulkanEvent::create(self.core.clone(), fence, cmd, desc_set)))
+        let (reply, rx) = channel();
+        self.tx
+            .send(VulkanCommand::Launch { program_id, args: args.to_vec(), event_wait_list, reply })
+            .unwrap();
+        rx.recv().unwrap()
     }
 }
 
-// ── Initialization ──────────────────────────────────────────────────────────
+// ── Helper ───────────────────────────────────────────────────────────────────
+
+fn find_mem_type(
+    gpu: VkPhysicalDevice,
+    type_filter: u32,
+    required: u32,
+    vkGetPhysicalDeviceMemoryProperties: unsafe extern "system" fn(VkPhysicalDevice, *mut VkPhysicalDeviceMemoryProperties),
+) -> Option<u32> {
+    let mut mem: VkPhysicalDeviceMemoryProperties = unsafe { std::mem::zeroed() };
+    unsafe { vkGetPhysicalDeviceMemoryProperties(gpu, &mut mem) };
+    (0..mem.memoryTypeCount)
+        .find(|&i| (type_filter & (1 << i)) != 0 && mem.memoryTypes[i as usize].propertyFlags & required == required)
+}
+
+// ── Initialization ───────────────────────────────────────────────────────────
 
 #[allow(clippy::unnecessary_wraps)]
 pub(super) fn initialize_device(
@@ -492,6 +552,7 @@ pub(super) fn initialize_device(
     devices: &mut Slab<super::DeviceId, super::Device>,
     debug_dev: bool,
 ) -> Result<(), BackendError> {
+    eprintln!("VK_ENTER");
     if let Some(ids) = &config.device_ids
         && ids.is_empty()
     {
@@ -501,47 +562,133 @@ pub(super) fn initialize_device(
         return Ok(());
     }
 
-    // ── Load Vulkan ──
-    let entry = unsafe { ash::Entry::load() }.map_err(|e| {
-        eprintln!("[vulkan] load error: {e}");
-        BackendError { status: ErrorStatus::Initialization, context: format!("[vulkan] load: {e}").into() }
-    })?;
+    eprintln!("VK_BEFORE_LIB");
+    let vulkan_paths = [
+        "/lib64/libvulkan.so",
+        "/lib64/libvulkan.so.1",
+        "/lib/libvulkan.so",
+        "/lib/libvulkan.so.1",
+        "/usr/lib64/libvulkan.so",
+        "/usr/lib64/libvulkan.so.1",
+        "/usr/lib/libvulkan.so",
+        "/usr/lib/libvulkan.so.1",
+        "/lib/x86_64-linux-gnu/libvulkan.so",
+        "/lib/x86_64-linux-gnu/libvulkan.so.1",
+        "/lib64/x86_64-linux-gnu/libvulkan.so",
+        "/lib64/x86_64-linux-gnu/libvulkan.so.1",
+    ];
+    eprintln!("VK_BEFORE_FINDMAP");
+    let lib = vulkan_paths
+        .into_iter()
+        .find_map(|path| unsafe { Library::new(path) }.ok())
+        .ok_or_else(|| BackendError { status: ErrorStatus::DyLibNotFound, context: "[vulkan] libvulkan.so not found.".into() })?;
+    eprintln!("VK_LIB_OK");
+
+    let vkGetInstanceProcAddr: unsafe extern "system" fn(VkInstance, *const i8) -> *mut std::ffi::c_void =
+        *unsafe { lib.get(b"vkGetInstanceProcAddr\0") }?;
+    eprintln!("VK_GET_INST_PROC_OK");
+    let vkCreateInstance: unsafe extern "system" fn(
+        *const VkInstanceCreateInfo,
+        *const std::ffi::c_void,
+        *mut VkInstance,
+    ) -> VkResult = *unsafe { lib.get(b"vkCreateInstance\0") }?;
 
     let app_name = CString::new("zyx").unwrap();
     let engine_name = CString::new("zyx").unwrap();
-    let app = vk::ApplicationInfo::default()
-        .application_name(&app_name)
-        .application_version(0)
-        .engine_name(&engine_name)
-        .engine_version(0)
-        .api_version(vk::API_VERSION_1_2);
+    let app = VkApplicationInfo {
+        sType: VK_STRUCTURE_TYPE_APPLICATION_INFO,
+        pNext: std::ptr::null(),
+        pApplicationName: app_name.as_ptr(),
+        applicationVersion: 0,
+        pEngineName: engine_name.as_ptr(),
+        engineVersion: 0,
+        apiVersion: VK_API_VERSION_1_2,
+    };
+    let ici = VkInstanceCreateInfo {
+        sType: VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO,
+        pNext: std::ptr::null(),
+        flags: 0,
+        pApplicationInfo: &app,
+        enabledLayerCount: 0,
+        ppEnabledLayerNames: std::ptr::null(),
+        enabledExtensionCount: 0,
+        ppEnabledExtensionNames: std::ptr::null(),
+    };
+    eprintln!("VK_BEFORE_CREATE_INSTANCE");
+    let mut instance = std::ptr::null_mut();
+    let res = unsafe { vkCreateInstance(&ici, std::ptr::null(), &mut instance) };
+    eprintln!("VK_AFTER_CREATE_INSTANCE={res}");
+    if res != VK_SUCCESS {
+        return Err(BackendError { status: ErrorStatus::Initialization, context: format!("[vulkan] instance: {res}").into() });
+    }
 
-    let ext_ptrs: Vec<*const i8> = vec![];
-    let layer_ptrs: Vec<*const i8> = vec![];
+    // Instance-level function pointers (loaded once)
+    macro_rules! get_inst_proc {
+        ($name:literal) => {
+            unsafe {
+                std::mem::transmute::<*mut std::ffi::c_void, _>(vkGetInstanceProcAddr(
+                    instance,
+                    concat!($name, "\0").as_ptr() as *const i8,
+                ))
+            }
+        };
+    }
+    let vkDestroyInstance: unsafe extern "system" fn(VkInstance, *const std::ffi::c_void) = get_inst_proc!("vkDestroyInstance");
+    let vkEnumeratePhysicalDevices: unsafe extern "system" fn(VkInstance, *mut u32, *mut VkPhysicalDevice) -> VkResult =
+        get_inst_proc!("vkEnumeratePhysicalDevices");
+    let vkGetPhysicalDeviceProperties: unsafe extern "system" fn(VkPhysicalDevice, *mut VkPhysicalDeviceProperties) =
+        get_inst_proc!("vkGetPhysicalDeviceProperties");
+    let vkGetPhysicalDeviceQueueFamilyProperties: unsafe extern "system" fn(
+        VkPhysicalDevice,
+        *mut u32,
+        *mut VkQueueFamilyProperties,
+    ) = get_inst_proc!("vkGetPhysicalDeviceQueueFamilyProperties");
+    let vkGetPhysicalDeviceMemoryProperties: unsafe extern "system" fn(VkPhysicalDevice, *mut VkPhysicalDeviceMemoryProperties) =
+        get_inst_proc!("vkGetPhysicalDeviceMemoryProperties");
+    let vkCreateDevice: unsafe extern "system" fn(
+        VkPhysicalDevice,
+        *const VkDeviceCreateInfo,
+        *const std::ffi::c_void,
+        *mut VkDevice,
+    ) -> VkResult = get_inst_proc!("vkCreateDevice");
+    let vkGetDeviceProcAddr: unsafe extern "system" fn(VkDevice, *const i8) -> *mut std::ffi::c_void =
+        get_inst_proc!("vkGetDeviceProcAddr");
 
-    let ici = vk::InstanceCreateInfo::default()
-        .application_info(&app)
-        .enabled_layer_names(&layer_ptrs)
-        .enabled_extension_names(&ext_ptrs);
+    // Wrap library in Arc so the worker thread can hold a reference (OpenCL pattern)
+    eprintln!("VK_BEFORE_ARC");
+    let library = Arc::new(lib);
+    eprintln!("VK_AFTER_ARC");
 
-    let instance = unsafe { entry.create_instance(&ici, None) }.map_err(|e| {
-        eprintln!("[vulkan] instance error: {e}");
-        BackendError { status: ErrorStatus::Initialization, context: format!("[vulkan] instance: {e}").into() }
-    })?;
+    let mut gpu_count: u32 = 0;
+    eprintln!("VK_BEFORE_ENUM1");
+    let _ = unsafe { vkEnumeratePhysicalDevices(instance, &mut gpu_count, std::ptr::null_mut()) };
+    eprintln!("VK_AFTER_ENUM1 count={gpu_count}");
+    let mut gpus: Vec<VkPhysicalDevice> = vec![std::ptr::null_mut(); gpu_count as usize];
+    eprintln!("VK_BEFORE_ENUM2");
+    let _ = unsafe { vkEnumeratePhysicalDevices(instance, &mut gpu_count, gpus.as_mut_ptr()) };
+    eprintln!("VK_AFTER_ENUM2");
 
-    let gpus = unsafe { instance.enumerate_physical_devices() }
-        .map_err(|e| BackendError { status: ErrorStatus::Initialization, context: format!("[vulkan] enumerate: {e}").into() })?;
-
-    // ── Find first suitable GPU, build Core ──
     for gpu in gpus {
-        let props = unsafe { instance.get_physical_device_properties(gpu) };
+        eprintln!("VK_LOOP_GPU={:p}", gpu);
+        let mut props: VkPhysicalDeviceProperties = unsafe { std::mem::zeroed() };
+        unsafe { vkGetPhysicalDeviceProperties(gpu, &mut props) };
         let name = {
-            let cstr = unsafe { CStr::from_ptr(props.device_name.as_ptr()) };
+            let cstr = unsafe { CStr::from_ptr(props.device_name.as_ptr() as *const i8) };
             cstr.to_string_lossy().into_owned()
         };
 
-        let qfps = unsafe { instance.get_physical_device_queue_family_properties(gpu) };
-        let qfi = match qfps.iter().position(|q| q.queue_flags.contains(vk::QueueFlags::COMPUTE)) {
+        if name.contains("llvmpipe") {
+            if debug_dev {
+                println!("[vulkan] skipping sw rasterizer: {name}");
+            }
+            continue;
+        }
+
+        let mut qfp_count: u32 = 0;
+        unsafe { vkGetPhysicalDeviceQueueFamilyProperties(gpu, &mut qfp_count, std::ptr::null_mut()) };
+        let mut qfps: Vec<VkQueueFamilyProperties> = vec![unsafe { std::mem::zeroed() }; qfp_count as usize];
+        unsafe { vkGetPhysicalDeviceQueueFamilyProperties(gpu, &mut qfp_count, qfps.as_mut_ptr()) };
+        let qfi = match qfps.iter().position(|q| q.queueFlags & VK_QUEUE_COMPUTE_BIT != 0) {
             Some(i) => i,
             None => {
                 if debug_dev {
@@ -555,87 +702,796 @@ pub(super) fn initialize_device(
             println!("[vulkan] {name}");
         }
 
-        let max_wg_count = props.limits.max_compute_work_group_count;
-        let max_wg_invocations = props.limits.max_compute_work_group_invocations;
-        let max_wg_size = props.limits.max_compute_work_group_size;
+        let max_wg_count = props.max_compute_work_group_count;
+        let max_wg_invocations = props.max_compute_work_group_invocations;
+        let max_wg_size = props.max_compute_work_group_size;
 
-        // Device + queue
         let priority = [1.0f32];
-        let qci = vk::DeviceQueueCreateInfo::default()
-            .queue_family_index(qfi as u32)
-            .queue_priorities(&priority);
+        let qci = VkDeviceQueueCreateInfo {
+            sType: VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO,
+            pNext: std::ptr::null(),
+            flags: 0,
+            queueFamilyIndex: qfi as u32,
+            queueCount: 1,
+            pQueuePriorities: priority.as_ptr(),
+        };
+        let dci = VkDeviceCreateInfo {
+            sType: VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO,
+            pNext: std::ptr::null(),
+            flags: 0,
+            queueCreateInfoCount: 1,
+            pQueueCreateInfos: &qci,
+            enabledLayerCount: 0,
+            ppEnabledLayerNames: std::ptr::null(),
+            enabledExtensionCount: 0,
+            ppEnabledExtensionNames: std::ptr::null(),
+            pEnabledFeatures: std::ptr::null(),
+        };
+        let mut device = std::ptr::null_mut();
+        let res = unsafe { vkCreateDevice(gpu, &dci, std::ptr::null(), &mut device) };
+        if res != VK_SUCCESS {
+            return Err(BackendError { status: ErrorStatus::Initialization, context: format!("[vulkan] device: {res}").into() });
+        }
 
-        let dev_features = vk::PhysicalDeviceFeatures::default();
-        let dev_ext_ptrs: Vec<*const i8> = vec![];
+        let vkGetDeviceQueue: unsafe extern "system" fn(VkDevice, u32, u32, *mut VkQueue) = unsafe {
+            std::mem::transmute::<*mut std::ffi::c_void, _>(vkGetDeviceProcAddr(
+                device,
+                concat!("vkGetDeviceQueue", "\0").as_ptr() as *const i8,
+            ))
+        };
+        let mut queue = std::ptr::null_mut();
+        unsafe { vkGetDeviceQueue(device, qfi as u32, 0, &mut queue) };
 
-        let qcis = [qci];
-        let dci = vk::DeviceCreateInfo::default()
-            .queue_create_infos(&qcis)
-            .enabled_features(&dev_features)
-            .enabled_extension_names(&dev_ext_ptrs);
+        // Device-level function pointers (loaded per-device)
+        macro_rules! ld {
+            ($name:literal) => {
+                unsafe {
+                    std::mem::transmute::<*mut std::ffi::c_void, _>(vkGetDeviceProcAddr(
+                        device,
+                        concat!($name, "\0").as_ptr() as *const i8,
+                    ))
+                }
+            };
+        }
+        let vkDestroyDevice: unsafe extern "system" fn(VkDevice, *const std::ffi::c_void) = ld!("vkDestroyDevice");
+        let vkDestroyBuffer: unsafe extern "system" fn(VkDevice, VkBuffer, *const std::ffi::c_void) = ld!("vkDestroyBuffer");
+        let vkDestroyCommandPool: unsafe extern "system" fn(VkDevice, VkCommandPool, *const std::ffi::c_void) =
+            ld!("vkDestroyCommandPool");
+        let vkDestroyDescriptorPool: unsafe extern "system" fn(VkDevice, VkDescriptorPool, *const std::ffi::c_void) =
+            ld!("vkDestroyDescriptorPool");
+        let vkDestroyShaderModule: unsafe extern "system" fn(VkDevice, VkShaderModule, *const std::ffi::c_void) =
+            ld!("vkDestroyShaderModule");
+        let vkDestroyPipeline: unsafe extern "system" fn(VkDevice, VkPipeline, *const std::ffi::c_void) =
+            ld!("vkDestroyPipeline");
+        let vkDestroyPipelineLayout: unsafe extern "system" fn(VkDevice, VkPipelineLayout, *const std::ffi::c_void) =
+            ld!("vkDestroyPipelineLayout");
+        let vkDestroyDescriptorSetLayout: unsafe extern "system" fn(VkDevice, VkDescriptorSetLayout, *const std::ffi::c_void) =
+            ld!("vkDestroyDescriptorSetLayout");
+        let vkDestroyFence: unsafe extern "system" fn(VkDevice, VkFence, *const std::ffi::c_void) = ld!("vkDestroyFence");
+        let vkCreateBuffer: unsafe extern "system" fn(
+            VkDevice,
+            *const VkBufferCreateInfo,
+            *const std::ffi::c_void,
+            *mut VkBuffer,
+        ) -> VkResult = ld!("vkCreateBuffer");
+        let vkCreateCommandPoolFn: unsafe extern "system" fn(
+            VkDevice,
+            *const VkCommandPoolCreateInfo,
+            *const std::ffi::c_void,
+            *mut VkCommandPool,
+        ) -> VkResult = ld!("vkCreateCommandPool");
+        let vkCreateDescriptorPoolFn: unsafe extern "system" fn(
+            VkDevice,
+            *const VkDescriptorPoolCreateInfo,
+            *const std::ffi::c_void,
+            *mut VkDescriptorPool,
+        ) -> VkResult = ld!("vkCreateDescriptorPool");
+        let vkCreateFence: unsafe extern "system" fn(
+            VkDevice,
+            *const VkFenceCreateInfo,
+            *const std::ffi::c_void,
+            *mut VkFence,
+        ) -> VkResult = ld!("vkCreateFence");
+        let vkCreateShaderModule: unsafe extern "system" fn(
+            VkDevice,
+            *const VkShaderModuleCreateInfo,
+            *const std::ffi::c_void,
+            *mut VkShaderModule,
+        ) -> VkResult = ld!("vkCreateShaderModule");
+        let vkCreateDescriptorSetLayout: unsafe extern "system" fn(
+            VkDevice,
+            *const VkDescriptorSetLayoutCreateInfo,
+            *const std::ffi::c_void,
+            *mut VkDescriptorSetLayout,
+        ) -> VkResult = ld!("vkCreateDescriptorSetLayout");
+        let vkCreatePipelineLayout: unsafe extern "system" fn(
+            VkDevice,
+            *const VkPipelineLayoutCreateInfo,
+            *const std::ffi::c_void,
+            *mut VkPipelineLayout,
+        ) -> VkResult = ld!("vkCreatePipelineLayout");
+        let vkCreateComputePipelines: unsafe extern "system" fn(
+            VkDevice,
+            VkPipelineCache,
+            u32,
+            *const VkComputePipelineCreateInfo,
+            *const std::ffi::c_void,
+            *mut VkPipeline,
+        ) -> VkResult = ld!("vkCreateComputePipelines");
+        let vkAllocateMemory: unsafe extern "system" fn(
+            VkDevice,
+            *const VkMemoryAllocateInfo,
+            *const std::ffi::c_void,
+            *mut VkDeviceMemory,
+        ) -> VkResult = ld!("vkAllocateMemory");
+        let vkFreeMemory: unsafe extern "system" fn(VkDevice, VkDeviceMemory, *const std::ffi::c_void) = ld!("vkFreeMemory");
+        let vkBindBufferMemory: unsafe extern "system" fn(VkDevice, VkBuffer, VkDeviceMemory, u64) -> VkResult =
+            ld!("vkBindBufferMemory");
+        let vkMapMemory: unsafe extern "system" fn(
+            VkDevice,
+            VkDeviceMemory,
+            u64,
+            u64,
+            u32,
+            *mut *mut std::ffi::c_void,
+        ) -> VkResult = ld!("vkMapMemory");
+        let vkUnmapMemory: unsafe extern "system" fn(VkDevice, VkDeviceMemory) = ld!("vkUnmapMemory");
+        let vkGetBufferMemoryRequirements: unsafe extern "system" fn(VkDevice, VkBuffer, *mut VkMemoryRequirements) =
+            ld!("vkGetBufferMemoryRequirements");
+        let vkWaitForFences: unsafe extern "system" fn(VkDevice, u32, *const VkFence, u32, u64) -> VkResult =
+            ld!("vkWaitForFences");
+        let vkAllocateDescriptorSets: unsafe extern "system" fn(
+            VkDevice,
+            *const VkDescriptorSetAllocateInfo,
+            *mut VkDescriptorSet,
+        ) -> VkResult = ld!("vkAllocateDescriptorSets");
+        let vkFreeDescriptorSets: unsafe extern "system" fn(VkDevice, VkDescriptorPool, u32, *const VkDescriptorSet) -> VkResult =
+            ld!("vkFreeDescriptorSets");
+        let vkUpdateDescriptorSets: unsafe extern "system" fn(
+            VkDevice,
+            u32,
+            *const VkWriteDescriptorSet,
+            u32,
+            *const std::ffi::c_void,
+        ) = ld!("vkUpdateDescriptorSets");
+        let vkAllocateCommandBuffers: unsafe extern "system" fn(
+            VkDevice,
+            *const VkCommandBufferAllocateInfo,
+            *mut VkCommandBuffer,
+        ) -> VkResult = ld!("vkAllocateCommandBuffers");
+        let vkFreeCommandBuffers: unsafe extern "system" fn(VkDevice, VkCommandPool, u32, *const VkCommandBuffer) =
+            ld!("vkFreeCommandBuffers");
+        let vkBeginCommandBuffer: unsafe extern "system" fn(VkCommandBuffer, *const VkCommandBufferBeginInfo) -> VkResult =
+            ld!("vkBeginCommandBuffer");
+        let vkEndCommandBuffer: unsafe extern "system" fn(VkCommandBuffer) -> VkResult = ld!("vkEndCommandBuffer");
+        let vkCmdBindPipeline: unsafe extern "system" fn(VkCommandBuffer, u32, VkPipeline) = ld!("vkCmdBindPipeline");
+        let vkCmdBindDescriptorSets: unsafe extern "system" fn(
+            VkCommandBuffer,
+            u32,
+            VkPipelineLayout,
+            u32,
+            u32,
+            *const VkDescriptorSet,
+            u32,
+            *const u32,
+        ) = ld!("vkCmdBindDescriptorSets");
+        let vkCmdDispatch: unsafe extern "system" fn(VkCommandBuffer, u32, u32, u32) = ld!("vkCmdDispatch");
+        let vkQueueSubmit: unsafe extern "system" fn(VkQueue, u32, *const VkSubmitInfo, VkFence) -> VkResult =
+            ld!("vkQueueSubmit");
 
-        let device = unsafe { instance.create_device(gpu, &dci, None) }
-            .map_err(|e| BackendError { status: ErrorStatus::Initialization, context: format!("[vulkan] device: {e}").into() })?;
+        // Cast raw handles through usize for Send capture
+        let instance_raw = instance as usize;
+        let device_raw = device as usize;
+        let gpu_raw = gpu as usize;
+        let queue_raw = queue as usize;
 
-        let queue = unsafe { device.get_device_queue(qfi as u32, 0) };
+        let total_bytes = 1024 * 1024 * 1024; // 1 GB
+        let free_bytes_atomic = Arc::new(AtomicU64::new(total_bytes as u64));
+        let (tx, rx): (Sender<VulkanCommand>, Receiver<VulkanCommand>) = channel();
 
-        // Command pool
-        let cp_ci = vk::CommandPoolCreateInfo::default()
-            .flags(vk::CommandPoolCreateFlags::RESET_COMMAND_BUFFER)
-            .queue_family_index(qfi as u32);
-        let cmd_pool = unsafe { device.create_command_pool(&cp_ci, None) }.map_err(|e| BackendError {
-            status: ErrorStatus::Initialization,
-            context: format!("[vulkan] cmd pool: {e}").into(),
-        })?;
+        // Clone library Arc for worker thread (OpenCL pattern)
+        let worker_library = Arc::clone(&library);
 
-        // Descriptor pool
-        let pool_sizes = [vk::DescriptorPoolSize { ty: vk::DescriptorType::STORAGE_BUFFER, descriptor_count: 1024 }];
-        let dp_ci = vk::DescriptorPoolCreateInfo::default()
-            .flags(vk::DescriptorPoolCreateFlags::FREE_DESCRIPTOR_SET)
-            .max_sets(1024)
-            .pool_sizes(&pool_sizes);
-        let desc_pool = unsafe { device.create_descriptor_pool(&dp_ci, None) }.map_err(|e| BackendError {
-            status: ErrorStatus::Initialization,
-            context: format!("[vulkan] desc pool: {e}").into(),
-        })?;
+        eprintln!("VK_BEFORE_SPAWN");
+        std::thread::spawn({
+            let free_bytes_atomic = Arc::clone(&free_bytes_atomic);
+            eprintln!("VK_SPAWN_INNER");
+            move || {
+                let _worker_library = worker_library; // keep libvulkan.so alive
+                let instance = instance_raw as VkInstance;
+                let device = device_raw as VkDevice;
+                let gpu = gpu_raw as VkPhysicalDevice;
+                let queue = queue_raw as VkQueue;
 
-        let core = Arc::new(Core { _entry: entry, instance, device, gpu, queue, cmd_pool, desc_pool });
+                let cp_ci = VkCommandPoolCreateInfo {
+                    sType: VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
+                    pNext: std::ptr::null(),
+                    flags: VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT,
+                    queueFamilyIndex: qfi as u32,
+                };
+                let mut cmd_pool = std::ptr::null_mut();
+                let res = unsafe { vkCreateCommandPoolFn(device, &cp_ci, std::ptr::null(), &mut cmd_pool) };
+                if res != VK_SUCCESS {
+                    if debug_dev {
+                        println!("[vulkan] cmd pool: {res}");
+                    }
+                    return;
+                }
 
-        let mem_pool = VulkanMemoryPool { free_bytes: 1024 * 1024 * 1024, core: core.clone(), buffers: Slab::new() };
+                let pool_sizes = [VkDescriptorPoolSize { ty: VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, descriptorCount: 1024 }];
+                let dp_ci = VkDescriptorPoolCreateInfo {
+                    sType: VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
+                    pNext: std::ptr::null(),
+                    flags: VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT,
+                    maxSets: 1024,
+                    poolSizeCount: 1,
+                    pPoolSizes: pool_sizes.as_ptr(),
+                };
+                let mut desc_pool = std::ptr::null_mut();
+                let res = unsafe { vkCreateDescriptorPoolFn(device, &dp_ci, std::ptr::null(), &mut desc_pool) };
+                if res != VK_SUCCESS {
+                    if debug_dev {
+                        println!("[vulkan] desc pool: {res}");
+                    }
+                    return;
+                }
 
-        let dev_info = DeviceInfo {
-            compute: 1_000_000_000_000,
-            max_global_work_dims: vec![Dim::from(max_wg_count[0]); max_wg_count.len()],
-            max_local_threads: Dim::from(max_wg_invocations),
-            max_local_work_dims: vec![Dim::from(max_wg_size[0]); max_wg_size.len()],
-            preferred_vector_size: 4,
-            local_mem_size: Dim::from(props.limits.max_compute_shared_memory_size),
-            max_register_bytes: 1024,
-            tensor_cores: false,
-            warp_size: 32,
-            // TODO: query individual format support via vkGetPhysicalDeviceFormatProperties
-            supported_dtype_ops: {
-                let mut all = [OpCapability::all(); DType::N_DTYPES];
-                // Vulkan/SPIR-V f64 transcendentals crash or produce garbage
-                all[DType::F64 as usize].0 &=
-                    !(OpCapability::EXP | OpCapability::EXP2 | OpCapability::LN
-                    | OpCapability::LOG2 | OpCapability::SIN | OpCapability::COS
-                    | OpCapability::POW);
-                all
+                let mut buffers: Slab<PoolBufferId, (VkBuffer, VkDeviceMemory, *mut u8, usize)> = Slab::new();
+                let mut programs: Slab<DeviceProgramId, VulkanProgram> = Slab::new();
+
+                macro_rules! send_or_continue {
+                    ($expr:expr, $tx:expr) => {
+                        match $expr {
+                            Ok(v) => v,
+                            Err(e) => {
+                                let _ = $tx.send(Err(e));
+                                continue;
+                            }
+                        }
+                    };
+                }
+
+                let create_buffer = |size: u64| -> Result<(VkBuffer, VkDeviceMemory, *mut u8), BackendError> {
+                    let usage =
+                        VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
+                    let ci = VkBufferCreateInfo {
+                        sType: VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+                        pNext: std::ptr::null(),
+                        flags: 0,
+                        size,
+                        usage,
+                        sharingMode: VK_SHARING_MODE_EXCLUSIVE,
+                        queueFamilyIndexCount: 0,
+                        pQueueFamilyIndices: std::ptr::null(),
+                    };
+                    let mut buf = std::ptr::null_mut();
+                    let res = unsafe { vkCreateBuffer(device, &ci, std::ptr::null(), &mut buf) };
+                    if res != VK_SUCCESS {
+                        return Err(BackendError {
+                            status: ErrorStatus::MemoryAllocation,
+                            context: format!("vkCreateBuffer: {res}").into(),
+                        });
+                    }
+                    let mut req: VkMemoryRequirements = unsafe { std::mem::zeroed() };
+                    unsafe { vkGetBufferMemoryRequirements(device, buf, &mut req) };
+                    let mem_type = find_mem_type(
+                        gpu,
+                        req.memoryTypeBits,
+                        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+                        vkGetPhysicalDeviceMemoryProperties,
+                    )
+                    .ok_or_else(|| BackendError {
+                        status: ErrorStatus::MemoryAllocation,
+                        context: "no suitable memory type".into(),
+                    })?;
+                    let alloc = VkMemoryAllocateInfo {
+                        sType: VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+                        pNext: std::ptr::null(),
+                        allocationSize: req.size,
+                        memoryTypeIndex: mem_type,
+                    };
+                    let mut mem = std::ptr::null_mut();
+                    let res = unsafe { vkAllocateMemory(device, &alloc, std::ptr::null(), &mut mem) };
+                    if res != VK_SUCCESS {
+                        return Err(BackendError {
+                            status: ErrorStatus::MemoryAllocation,
+                            context: format!("vkAllocateMemory: {res}").into(),
+                        });
+                    }
+                    let res = unsafe { vkBindBufferMemory(device, buf, mem, 0) };
+                    if res != VK_SUCCESS {
+                        return Err(BackendError {
+                            status: ErrorStatus::MemoryAllocation,
+                            context: format!("vkBindBufferMemory: {res}").into(),
+                        });
+                    }
+                    let mut ptr = std::ptr::null_mut();
+                    let res = unsafe { vkMapMemory(device, mem, 0, size, 0, &mut ptr) };
+                    if res != VK_SUCCESS {
+                        return Err(BackendError {
+                            status: ErrorStatus::MemoryAllocation,
+                            context: format!("vkMapMemory: {res}").into(),
+                        });
+                    }
+                    Ok((buf, mem, ptr.cast::<u8>()))
+                };
+
+                while let Ok(cmd) = rx.recv() {
+                    match cmd {
+                        VulkanCommand::Allocate { bytes, reply } => {
+                            let size = bytes.next_multiple_of(4) as u64;
+                            let (buf, mem, ptr) = send_or_continue!(create_buffer(size), reply);
+                            let id = buffers.push((buf, mem, ptr, bytes as usize));
+                            free_bytes_atomic.fetch_sub(size, Ordering::SeqCst);
+                            let _ = reply.send(Ok((
+                                PoolBufferId::from(id),
+                                Event::Vulkan(VulkanEvent {
+                                    fence: std::ptr::null_mut(),
+                                    cmd: std::ptr::null_mut(),
+                                    desc_set: std::ptr::null_mut(),
+                                }),
+                            )));
+                        }
+                        VulkanCommand::Deallocate { buffer_id, mut event_wait_list } => {
+                            while let Some(Event::Vulkan(ev)) = event_wait_list.pop() {
+                                if !ev.fence.is_null() {
+                                    unsafe {
+                                        let _ = vkWaitForFences(device, 1, &ev.fence, 1, u64::MAX);
+                                        vkDestroyFence(device, ev.fence, std::ptr::null());
+                                    }
+                                }
+                                if !ev.cmd.is_null() {
+                                    unsafe {
+                                        vkFreeCommandBuffers(device, cmd_pool, 1, &ev.cmd);
+                                    }
+                                }
+                                if !ev.desc_set.is_null() {
+                                    unsafe {
+                                        vkFreeDescriptorSets(device, desc_pool, 1, &ev.desc_set);
+                                    }
+                                }
+                            }
+                            let (buf, mem, ptr, size) = unsafe { buffers.remove_and_return(buffer_id) };
+                            if !ptr.is_null() {
+                                unsafe { vkUnmapMemory(device, mem) };
+                            }
+                            unsafe {
+                                vkDestroyBuffer(device, buf, std::ptr::null());
+                                vkFreeMemory(device, mem, std::ptr::null());
+                            }
+                            free_bytes_atomic.fetch_add(size as u64, Ordering::SeqCst);
+                        }
+                        VulkanCommand::HostToPool { src, bytes, dst, mut event_wait_list, reply } => {
+                            while let Some(Event::Vulkan(ev)) = event_wait_list.pop() {
+                                if !ev.fence.is_null() {
+                                    unsafe {
+                                        let _ = vkWaitForFences(device, 1, &ev.fence, 1, u64::MAX);
+                                        vkDestroyFence(device, ev.fence, std::ptr::null());
+                                    }
+                                }
+                            }
+                            let &(_, _, ptr, _) = &buffers[dst];
+                            unsafe { std::ptr::copy_nonoverlapping(src, ptr, bytes) };
+                            let _ = reply.send(Ok(Event::Vulkan(VulkanEvent {
+                                fence: std::ptr::null_mut(),
+                                cmd: std::ptr::null_mut(),
+                                desc_set: std::ptr::null_mut(),
+                            })));
+                        }
+                        VulkanCommand::PoolToHost { src, dst, bytes, mut event_wait_list, reply } => {
+                            while let Some(Event::Vulkan(ev)) = event_wait_list.pop() {
+                                if !ev.fence.is_null() {
+                                    unsafe {
+                                        let _ = vkWaitForFences(device, 1, &ev.fence, 1, u64::MAX);
+                                        vkDestroyFence(device, ev.fence, std::ptr::null());
+                                    }
+                                }
+                            }
+                            let &(_, _, ptr, _) = &buffers[src];
+                            unsafe { std::ptr::copy_nonoverlapping(ptr, dst, bytes) };
+                            let _ = reply.send(Ok(()));
+                        }
+                        VulkanCommand::Compile { kernel, debug_asm, reply } => {
+                            let (spirv, gws, lws) = send_or_continue!(
+                                crate::backend::spirv::compile(&kernel, debug_asm).map_err(|e| BackendError {
+                                    status: ErrorStatus::KernelCompilation,
+                                    context: format!("SPIR-V: {e}").into()
+                                }),
+                                reply
+                            );
+
+                            let shader_ci = VkShaderModuleCreateInfo {
+                                sType: VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
+                                pNext: std::ptr::null(),
+                                flags: 0,
+                                codeSize: spirv.len() * 4,
+                                pCode: spirv.as_ptr(),
+                            };
+                            let mut shader = std::ptr::null_mut();
+                            {
+                                let res = unsafe { vkCreateShaderModule(device, &shader_ci, std::ptr::null(), &mut shader) };
+                                if res != VK_SUCCESS {
+                                    let _ = reply.send(Err(BackendError {
+                                        status: ErrorStatus::KernelCompilation,
+                                        context: format!("vkCreateShaderModule: {res}").into(),
+                                    }));
+                                    continue;
+                                }
+                            }
+
+                            let n_args = {
+                                let mut n = 0usize;
+                                let mut op = kernel.head;
+                                while !op.is_null() {
+                                    if let crate::kernel::Op::Define { ro: _, scope, .. } = kernel.at(op) {
+                                        if *scope == crate::kernel::Scope::Global {
+                                            n += 1;
+                                        }
+                                    }
+                                    op = kernel.next_op(op);
+                                }
+                                n
+                            };
+
+                            let bindings: Vec<VkDescriptorSetLayoutBinding> = (0..n_args as u32)
+                                .map(|i| VkDescriptorSetLayoutBinding {
+                                    binding: i,
+                                    descriptorType: VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                                    descriptorCount: 1,
+                                    stageFlags: VK_SHADER_STAGE_COMPUTE_BIT,
+                                    pImmutableSamplers: std::ptr::null(),
+                                })
+                                .collect();
+                            let layout_ci = VkDescriptorSetLayoutCreateInfo {
+                                sType: VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
+                                pNext: std::ptr::null(),
+                                flags: 0,
+                                bindingCount: bindings.len() as u32,
+                                pBindings: bindings.as_ptr(),
+                            };
+                            let mut desc_layout = std::ptr::null_mut();
+                            {
+                                let res = unsafe {
+                                    vkCreateDescriptorSetLayout(device, &layout_ci, std::ptr::null(), &mut desc_layout)
+                                };
+                                if res != VK_SUCCESS {
+                                    let _ = reply.send(Err(BackendError {
+                                        status: ErrorStatus::KernelCompilation,
+                                        context: format!("vkCreateDescriptorSetLayout: {res}").into(),
+                                    }));
+                                    continue;
+                                }
+                            }
+
+                            let pl_ci = VkPipelineLayoutCreateInfo {
+                                sType: VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
+                                pNext: std::ptr::null(),
+                                flags: 0,
+                                setLayoutCount: 1,
+                                pSetLayouts: &desc_layout,
+                                pushConstantRangeCount: 0,
+                                pPushConstantRanges: std::ptr::null(),
+                            };
+                            let mut pipeline_layout = std::ptr::null_mut();
+                            {
+                                let res =
+                                    unsafe { vkCreatePipelineLayout(device, &pl_ci, std::ptr::null(), &mut pipeline_layout) };
+                                if res != VK_SUCCESS {
+                                    let _ = reply.send(Err(BackendError {
+                                        status: ErrorStatus::KernelCompilation,
+                                        context: format!("vkCreatePipelineLayout: {res}").into(),
+                                    }));
+                                    continue;
+                                }
+                            }
+
+                            let ep_name = format!(
+                                "k_{}__{}",
+                                gws.iter().map(|v| v.to_string()).collect::<Vec<_>>().join("_"),
+                                lws.iter().map(|v| v.to_string()).collect::<Vec<_>>().join("_"),
+                            );
+                            let entry_name = CString::new(ep_name).unwrap();
+                            let stage = VkPipelineShaderStageCreateInfo {
+                                sType: VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
+                                pNext: std::ptr::null(),
+                                flags: 0,
+                                stage: VK_SHADER_STAGE_COMPUTE_BIT,
+                                module: shader,
+                                pName: entry_name.as_ptr(),
+                                pSpecializationInfo: std::ptr::null(),
+                            };
+                            let cp_ci = VkComputePipelineCreateInfo {
+                                sType: VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO,
+                                pNext: std::ptr::null(),
+                                flags: 0,
+                                stage,
+                                layout: pipeline_layout,
+                                basePipelineHandle: std::ptr::null_mut(),
+                                basePipelineIndex: -1,
+                            };
+                            let mut pipeline = std::ptr::null_mut();
+                            {
+                                let res = unsafe {
+                                    vkCreateComputePipelines(device, VK_NULL_HANDLE, 1, &cp_ci, std::ptr::null(), &mut pipeline)
+                                };
+                                if res != VK_SUCCESS {
+                                    let _ = reply.send(Err(BackendError {
+                                        status: ErrorStatus::KernelCompilation,
+                                        context: format!("vkCreateComputePipelines: {res}").into(),
+                                    }));
+                                    continue;
+                                }
+                            }
+
+                            unsafe { vkDestroyShaderModule(device, shader, std::ptr::null()) };
+
+                            let id = programs.push(VulkanProgram { gws, pipeline, pipeline_layout, desc_layout });
+                            let _ = reply.send(Ok(id));
+                        }
+                        VulkanCommand::Launch { program_id, args, mut event_wait_list, reply } => {
+                            while let Some(Event::Vulkan(ev)) = event_wait_list.pop() {
+                                if !ev.fence.is_null() {
+                                    unsafe {
+                                        let _ = vkWaitForFences(device, 1, &ev.fence, 1, u64::MAX);
+                                        vkDestroyFence(device, ev.fence, std::ptr::null());
+                                    }
+                                }
+                            }
+
+                            let prog = &programs[program_id];
+
+                            let ds_layouts = [prog.desc_layout];
+                            let ds_alloc = VkDescriptorSetAllocateInfo {
+                                sType: VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
+                                pNext: std::ptr::null(),
+                                descriptorPool: desc_pool,
+                                descriptorSetCount: 1,
+                                pSetLayouts: ds_layouts.as_ptr(),
+                            };
+                            let mut desc_set = std::ptr::null_mut();
+                            let res = unsafe { vkAllocateDescriptorSets(device, &ds_alloc, &mut desc_set) };
+                            if res != VK_SUCCESS {
+                                let _ = reply.send(Err(BackendError {
+                                    status: ErrorStatus::KernelLaunch,
+                                    context: format!("vkAllocateDescriptorSets: {res}").into(),
+                                }));
+                                continue;
+                            }
+                            println!("Launch 2");
+
+                            let n = args.len();
+                            let mut buf_infos: Vec<VkDescriptorBufferInfo> = Vec::with_capacity(n);
+                            for &arg_id in &args {
+                                let &(buf, _, _, _) = &buffers[arg_id];
+                                buf_infos.push(VkDescriptorBufferInfo { buffer: buf, offset: 0, range: VK_WHOLE_SIZE });
+                            }
+                            let mut writes: Vec<VkWriteDescriptorSet> = Vec::with_capacity(n);
+                            for i in 0..n {
+                                writes.push(VkWriteDescriptorSet {
+                                    sType: VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+                                    pNext: std::ptr::null(),
+                                    dstSet: desc_set,
+                                    dstBinding: i as u32,
+                                    dstArrayElement: 0,
+                                    descriptorCount: 1,
+                                    descriptorType: VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                                    pImageInfo: std::ptr::null(),
+                                    pBufferInfo: &buf_infos[i],
+                                    pTexelBufferView: std::ptr::null(),
+                                });
+                            }
+                            println!("Launch 3");
+                            unsafe { vkUpdateDescriptorSets(device, writes.len() as u32, writes.as_ptr(), 0, std::ptr::null()) };
+                            println!("Launch 4");
+
+                            let cmd_alloc = VkCommandBufferAllocateInfo {
+                                sType: VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
+                                pNext: std::ptr::null(),
+                                commandPool: cmd_pool,
+                                level: VK_COMMAND_BUFFER_LEVEL_PRIMARY,
+                                commandBufferCount: 1,
+                            };
+                            let mut cmd = std::ptr::null_mut();
+                            let res = unsafe { vkAllocateCommandBuffers(device, &cmd_alloc, &mut cmd) };
+                            if res != VK_SUCCESS {
+                                let _ = reply.send(Err(BackendError {
+                                    status: ErrorStatus::KernelLaunch,
+                                    context: format!("vkAllocateCommandBuffers: {res}").into(),
+                                }));
+                                continue;
+                            }
+
+                            let begin = VkCommandBufferBeginInfo {
+                                sType: VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+                                pNext: std::ptr::null(),
+                                flags: VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
+                                pInheritanceInfo: std::ptr::null(),
+                            };
+                            let res = unsafe { vkBeginCommandBuffer(cmd, &begin) };
+                            if res != VK_SUCCESS {
+                                let _ = reply.send(Err(BackendError {
+                                    status: ErrorStatus::KernelLaunch,
+                                    context: format!("vkBeginCommandBuffer: {res}").into(),
+                                }));
+                                continue;
+                            }
+
+                            let gx = prog.gws.first().copied().unwrap_or(1) as u32;
+                            let gy = prog.gws.get(1).copied().unwrap_or(1) as u32;
+                            let gz = prog.gws.get(2).copied().unwrap_or(1) as u32;
+
+                            if gx == 0 || gy == 0 || gz == 0 {
+                                let _ = reply.send(Err(BackendError {
+                                    status: ErrorStatus::KernelLaunch,
+                                    context: format!("dispatch dims zero: ({gx},{gy},{gz})").into(),
+                                }));
+                                continue;
+                            }
+
+                            unsafe {
+                                vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, prog.pipeline);
+                                vkCmdBindDescriptorSets(
+                                    cmd,
+                                    VK_PIPELINE_BIND_POINT_COMPUTE,
+                                    prog.pipeline_layout,
+                                    0,
+                                    1,
+                                    &desc_set,
+                                    0,
+                                    std::ptr::null(),
+                                );
+                                vkCmdDispatch(cmd, gx, gy, gz);
+                            }
+
+                            let res = unsafe { vkEndCommandBuffer(cmd) };
+                            if res != VK_SUCCESS {
+                                let _ = reply.send(Err(BackendError {
+                                    status: ErrorStatus::KernelLaunch,
+                                    context: format!("vkEndCommandBuffer: {res}").into(),
+                                }));
+                                continue;
+                            }
+
+                            let fence_ci = VkFenceCreateInfo {
+                                sType: VK_STRUCTURE_TYPE_FENCE_CREATE_INFO,
+                                pNext: std::ptr::null(),
+                                flags: 0,
+                            };
+                            let mut fence = std::ptr::null_mut();
+                            let res = unsafe { vkCreateFence(device, &fence_ci, std::ptr::null(), &mut fence) };
+                            if res != VK_SUCCESS {
+                                let _ = reply.send(Err(BackendError {
+                                    status: ErrorStatus::KernelLaunch,
+                                    context: format!("vkCreateFence: {res}").into(),
+                                }));
+                                continue;
+                            }
+
+                            let submit = VkSubmitInfo {
+                                sType: VK_STRUCTURE_TYPE_SUBMIT_INFO,
+                                pNext: std::ptr::null(),
+                                waitSemaphoreCount: 0,
+                                pWaitSemaphores: std::ptr::null(),
+                                pWaitDstStageMask: std::ptr::null(),
+                                commandBufferCount: 1,
+                                pCommandBuffers: &cmd,
+                                signalSemaphoreCount: 0,
+                                pSignalSemaphores: std::ptr::null(),
+                            };
+                            let res = unsafe { vkQueueSubmit(queue, 1, &submit, fence) };
+                            if res != VK_SUCCESS {
+                                let _ = reply.send(Err(BackendError {
+                                    status: ErrorStatus::KernelLaunch,
+                                    context: format!("vkQueueSubmit: {res}").into(),
+                                }));
+                                continue;
+                            }
+
+                            let _ = reply.send(Ok(Event::Vulkan(VulkanEvent { fence, cmd, desc_set })));
+                        }
+                        VulkanCommand::SyncEvents { mut events, reply } => {
+                            for event in &mut events {
+                                if let Event::Vulkan(ev) = event {
+                                    if !ev.fence.is_null() {
+                                        unsafe {
+                                            let _ = vkWaitForFences(device, 1, &ev.fence, 1, u64::MAX);
+                                            vkDestroyFence(device, ev.fence, std::ptr::null());
+                                        }
+                                        ev.fence = std::ptr::null_mut();
+                                    }
+                                    if !ev.cmd.is_null() {
+                                        unsafe { vkFreeCommandBuffers(device, cmd_pool, 1, &ev.cmd) };
+                                        ev.cmd = std::ptr::null_mut();
+                                    }
+                                    if !ev.desc_set.is_null() {
+                                        unsafe { vkFreeDescriptorSets(device, desc_pool, 1, &ev.desc_set) };
+                                        ev.desc_set = std::ptr::null_mut();
+                                    }
+                                }
+                            }
+                            let _ = reply.send(Ok(()));
+                        }
+                        VulkanCommand::ReleaseProgram(program_id) => {
+                            if programs.contains_key(program_id) {
+                                let prog = unsafe { programs.remove_and_return(program_id) };
+                                unsafe {
+                                    vkDestroyPipeline(device, prog.pipeline, std::ptr::null());
+                                    vkDestroyPipelineLayout(device, prog.pipeline_layout, std::ptr::null());
+                                    vkDestroyDescriptorSetLayout(device, prog.desc_layout, std::ptr::null());
+                                }
+                            }
+                        }
+                        VulkanCommand::ReleaseEvents(events) => {
+                            for event in events {
+                                if let Event::Vulkan(ev) = event {
+                                    if !ev.fence.is_null() {
+                                        unsafe { vkDestroyFence(device, ev.fence, std::ptr::null()) };
+                                    }
+                                    if !ev.cmd.is_null() {
+                                        unsafe { vkFreeCommandBuffers(device, cmd_pool, 1, &ev.cmd) };
+                                    }
+                                    if !ev.desc_set.is_null() {
+                                        unsafe { vkFreeDescriptorSets(device, desc_pool, 1, &ev.desc_set) };
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // Cleanup all resources
+                for id in buffers.ids().collect::<Vec<_>>() {
+                    let (buf, mem, ptr, _) = unsafe { buffers.remove_and_return(id) };
+                    if !ptr.is_null() {
+                        unsafe { vkUnmapMemory(device, mem) };
+                    }
+                    unsafe {
+                        vkDestroyBuffer(device, buf, std::ptr::null());
+                        vkFreeMemory(device, mem, std::ptr::null());
+                    }
+                }
+                for id in programs.ids().collect::<Vec<_>>() {
+                    let prog = unsafe { programs.remove_and_return(id) };
+                    unsafe {
+                        vkDestroyPipeline(device, prog.pipeline, std::ptr::null());
+                        vkDestroyPipelineLayout(device, prog.pipeline_layout, std::ptr::null());
+                        vkDestroyDescriptorSetLayout(device, prog.desc_layout, std::ptr::null());
+                    }
+                }
+
+                unsafe {
+                    vkDestroyDescriptorPool(device, desc_pool, std::ptr::null());
+                    vkDestroyCommandPool(device, cmd_pool, std::ptr::null());
+                    vkDestroyDevice(device, std::ptr::null());
+                    vkDestroyInstance(instance, std::ptr::null());
+                }
+            }
+        });
+
+        let mem_pool = VulkanMemoryPool { tx: tx.clone(), free_bytes: Arc::clone(&free_bytes_atomic) };
+        memory_pools.push(MemoryPool::Vulkan(mem_pool));
+        let dev = VulkanDevice {
+            tx,
+            dev_info: DeviceInfo {
+                compute: 1_000_000_000_000,
+                max_global_work_dims: vec![Dim::from(max_wg_count[0]); max_wg_count.len()],
+                max_local_threads: Dim::from(max_wg_invocations),
+                max_local_work_dims: vec![Dim::from(max_wg_size[0]); max_wg_size.len()],
+                preferred_vector_size: 4,
+                local_mem_size: Dim::from(props.max_compute_shared_memory_size),
+                max_register_bytes: 1024,
+                tensor_cores: false,
+                warp_size: 32,
+                supported_dtype_ops: [OpCapability::all(); DType::N_DTYPES],
+                has_native_exp2: false,
             },
-            has_native_exp2: true,
+            memory_pool_id: PoolId::from(usize::from(memory_pools.len()) - 1),
         };
 
-        let vk_dev = VulkanDevice {
-            dev_info,
-            memory_pool_id: memory_pools.push(MemoryPool::Vulkan(mem_pool)),
-            core,
-            programs: Slab::new(),
-        };
-
-        devices.push(super::Device::Vulkan(vk_dev));
-        return Ok(());
+        devices.push(super::Device::Vulkan(dev));
+        eprintln!("VK_LOOP_END");
     }
 
+    eprintln!("VK_OK");
     Ok(())
 }

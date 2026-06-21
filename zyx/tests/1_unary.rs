@@ -1,7 +1,7 @@
 // Copyright (C) 2025 zk4x
 // SPDX-License-Identifier: LGPL-3.0-only
 
-use zyx::{DType, Float, Scalar, Tensor, ZyxError};
+use zyx::{DType, Scalar, Tensor, ZyxError};
 
 #[test]
 fn relu_1() -> Result<(), ZyxError> {
@@ -593,7 +593,11 @@ fn f16_sin() -> Result<(), ZyxError> {
     println!("{zdata:?}");
     for (i, y) in zdata.iter().enumerate() {
         let expected = data[i].sin();
-        assert!((y - expected).abs() < 0.001, "{y} != {expected} (diff {})", (y - expected).abs());
+        assert!(
+            (y - expected).abs() < 0.001,
+            "{y} != {expected} (diff {})",
+            (y - expected).abs()
+        );
     }
     Ok(())
 }

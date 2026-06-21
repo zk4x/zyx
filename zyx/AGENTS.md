@@ -18,9 +18,17 @@ This document is your single source of truth. If it doesn't contain the answer, 
 
 **When the user says "commit current state", commit the EXACT current state.** Do not modify anything first. Not even if it looks like a debugging artifact. Not even if it looks obviously wrong. Commit exactly what's on disk.
 
+**DO NOT add debug eprintln!/println! statements.** The user will tell you where to add them if needed. If you need to understand a crash, use `ZYX_DEBUG` flags or ask the user. Adding random debug prints wastes time.
+
+**When the user gives you a working reference implementation (CUDA, OpenCL), copy it EXACTLY.** Do not invent your own variations. Do not add "improvements" or extra patterns. Implement it line-for-line, then test. If it doesn't work, the bug is in your translation, not in the pattern.
+
+**Never deviate from the user's instructions.** When told "do it like X", do it exactly like X. When told to not use a pattern (e.g., Box::leak), remove it entirely. When told to use Arc, use Arc. Follow instructions literally.
+
 **Never edit a file without explicit instruction from the user.** "Restore the original handler" is explicit. "Investigate the crash" is NOT explicit. If you're unsure whether the user wants a file edited, you don't edit it.
 
 If you catch yourself typing a tool call before replying to the user, stop. Reply first.
+
+**When the user asks you a direct question, answer immediately and stop. Do NOT do anything else until you've answered. Do NOT use tools. Do NOT search. Do NOT explain. Just answer promptly in 1-3 sentences, then stop.**
 
 **Always save ZYX_DEBUG output to /tmp.** Never run the same test twice because output was lost. Pipe the full output to `/tmp/debug_*.txt` on the first run:
 ```bash

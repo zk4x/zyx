@@ -970,24 +970,16 @@ impl Kernel {
     }
 
     /// Compute dtypes and reference counts for all operations.
-    pub(crate) fn compute_dtypes_and_rcs(
-        &self,
-    ) -> (Map<OpId, (DType, MemLayout)>, Map<OpId, u32>) {
-        let mut rcs: Map<OpId, u32> = Map::with_capacity_and_hasher(
-            self.ops.len().into(),
-            BuildHasherDefault::new(),
-        );
-        let mut dtypes: Map<OpId, (DType, MemLayout)> =
-            Map::with_capacity_and_hasher(100, BuildHasherDefault::new());
+    pub(crate) fn compute_dtypes_and_rcs(&self) -> (Map<OpId, (DType, MemLayout)>, Map<OpId, u32>) {
+        let mut rcs: Map<OpId, u32> = Map::with_capacity_and_hasher(self.ops.len().into(), BuildHasherDefault::new());
+        let mut dtypes: Map<OpId, (DType, MemLayout)> = Map::with_capacity_and_hasher(100, BuildHasherDefault::new());
 
         let mut op_id = self.head;
         while !op_id.is_null() {
             match &self.ops[op_id].op {
-                Op::ConstView { .. }
-                | Op::StoreView { .. }
-                | Op::LoadView { .. }
-                | Op::Move { .. }
-                | Op::Reduce { .. } => unreachable!(),
+                Op::ConstView { .. } | Op::StoreView { .. } | Op::LoadView { .. } | Op::Move { .. } | Op::Reduce { .. } => {
+                    unreachable!()
+                }
                 Op::Const(x) => {
                     dtypes.insert(op_id, (x.dtype(), MemLayout::Scalar));
                 }
@@ -1025,10 +1017,7 @@ impl Kernel {
                 }
                 Op::Vectorize { ops } => {
                     let dtype = dtypes[&ops[0]];
-                    dtypes.insert(
-                        op_id,
-                        (dtype.0, MemLayout::Vector(ops.len().try_into().unwrap())),
-                    );
+                    dtypes.insert(op_id, (dtype.0, MemLayout::Vector(ops.len().try_into().unwrap())));
                     for &x in ops {
                         *rcs.entry(x).or_insert(0) += 1;
                     }
@@ -1038,14 +1027,7 @@ impl Kernel {
                     dtypes.insert(op_id, (dtype.0, MemLayout::Scalar));
                     *rcs.entry(*vec).or_insert(0) += 1;
                 }
-                Op::Wmma {
-                    dims: _,
-                    layout: _,
-                    dtype,
-                    a,
-                    b,
-                    c,
-                } => {
+                Op::Wmma { dims: _, layout: _, dtype, a, b, c } => {
                     let out_dtype = match dtype {
                         MMADType::f16_f16_f16_f32 => DType::F32,
                     };
