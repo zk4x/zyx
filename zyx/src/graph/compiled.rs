@@ -10,6 +10,7 @@ use crate::{
     graph::{Node, search::EGraph},
     runtime::Runtime,
     shape::{Dim, UAxis},
+    slab::{Slab, SlabId},
     tensor::TensorId,
 };
 use std::collections::BTreeMap;
@@ -51,44 +52,68 @@ pub enum CompiledNode {
     },
 }
 
+#[derive(Debug, Copy, Clone, Hash, Ord, PartialEq, PartialOrd, Eq)]
+pub struct NodeId(pub u32);
+
+impl SlabId for NodeId {
+    const ZERO: Self = Self(0);
+    const NULL: Self = Self(u32::MAX);
+
+    fn inc(&mut self) {
+        self.0 += 1;
+    }
+}
+
+impl From<usize> for NodeId {
+    fn from(value: usize) -> Self {
+        Self(value as u32)
+    }
+}
+
+impl From<NodeId> for usize {
+    fn from(val: NodeId) -> Self {
+        val.0 as usize
+    }
+}
+
 /// Compact representation of a graph, used as cache key.
 #[derive(Debug, PartialEq, Eq, Hash, Clone)]
 pub struct CachedGraph {
-    pub nodes: Vec<Node>,
-    pub shapes: BTreeMap<usize, Box<[Dim]>>,
-    pub paddings: BTreeMap<usize, Box<[(i64, i64)]>>,
-    pub axes: BTreeMap<usize, Box<[UAxis]>>,
+    pub nodes: Slab<NodeId, Node>,
+    pub shapes: BTreeMap<NodeId, Box<[Dim]>>,
+    pub paddings: BTreeMap<NodeId, Box<[(i64, i64)]>>,
+    pub axes: BTreeMap<NodeId, Box<[UAxis]>>,
 }
 
 impl CachedGraph {
-    pub(super) fn shape(&self, mut tensor_id: usize) -> &[Dim] {
+    pub(super) fn shape(&self, mut node_id: NodeId) -> &[Dim] {
         for _ in 0..1_000_000 {
-            if let Some(shape) = self.shapes.get(&tensor_id) {
+            if let Some(shape) = self.shapes.get(&node_id) {
                 //println!("Found shape {shape:?} for tensor {tensor_id}");
                 return shape;
-            } else if let Node::Const { .. } = self.nodes[tensor_id] {
+            } else if let Node::Const { .. } = self.nodes[node_id] {
                 return &[1];
             }
             //println!("Getting params of id: {tensor_id}, {:?}", self.nodes[tensor_id].1);
-            tensor_id = self.nodes[tensor_id].param1().into();
+            node_id = NodeId(self.nodes[node_id].param1().0);
         }
-        panic!("Shape of {tensor_id:?} could not be found. This is internal bug.")
+        panic!("Shape of {node_id:?} could not be found. This is internal bug.")
     }
 
-    pub(super) fn dtype(&self, mut tensor_id: usize) -> DType {
+    pub(super) fn dtype(&self, mut node_id: NodeId) -> DType {
         for _ in 0..100_000 {
-            match self.nodes[tensor_id] {
+            match self.nodes[node_id] {
                 Node::Const { value } => return value.dtype(),
                 Node::Leaf { dtype } | Node::Cast { dtype, .. } => return dtype,
                 Node::Binary { bop, .. } if bop.returns_bool() => {
                     return DType::Bool;
                 }
                 _ => {
-                    tensor_id = self.nodes[tensor_id].parameters().into_iter().next().unwrap().into();
+                    node_id = NodeId(self.nodes[node_id].parameters().into_iter().next().unwrap().0);
                 }
             }
         }
-        panic!("DType of {tensor_id:?} could not be found. This is internal bug.")
+        panic!("DType of {node_id:?} could not be found. This is internal bug.")
     }
 }
 
@@ -118,14 +143,15 @@ impl Runtime {
         _to_eval: &Set<TensorId>,
     ) -> Result<(), ZyxError> {
         let mut compacted = CachedGraph {
-            nodes: Vec::with_capacity(order.len()),
+            nodes: Slab::with_capacity(order.len()),
             shapes: BTreeMap::new(),
             paddings: BTreeMap::new(),
             axes: BTreeMap::new(),
         };
-        let mut id_map: Map<TensorId, usize> = Map::with_capacity_and_hasher(order.len(), BuildHasherDefault::new());
+        let mut id_map: Map<TensorId, NodeId> = Map::with_capacity_and_hasher(order.len(), BuildHasherDefault::new());
 
-        for (new_id, &nid) in order.iter().enumerate() {
+        for (id, &nid) in order.iter().enumerate() {
+            let new_id = NodeId::from(id);
             let node = &self.graph[nid];
             let reindexed = if realized_nodes.contains(&nid) {
                 Node::Leaf { dtype: self.graph.dtype(nid) }
@@ -133,16 +159,16 @@ impl Runtime {
                 match node {
                     Node::Const { value } => Node::Const { value: *value },
                     Node::Leaf { dtype } => Node::Leaf { dtype: *dtype },
-                    Node::Expand { x } => Node::Expand { x: id_map[x].into() },
-                    Node::Permute { x } => Node::Permute { x: id_map[x].into() },
-                    Node::Reshape { x } => Node::Reshape { x: id_map[x].into() },
-                    Node::Pad { x } => Node::Pad { x: id_map[x].into() },
-                    Node::Reduce { x, rop } => Node::Reduce { x: id_map[x].into(), rop: *rop },
-                    Node::Cast { x, dtype } => Node::Cast { x: id_map[x].into(), dtype: *dtype },
-                    Node::Unary { x, uop } => Node::Unary { x: id_map[x].into(), uop: *uop },
-                    Node::Binary { x, y, bop } => Node::Binary { x: id_map[x].into(), y: id_map[y].into(), bop: *bop },
+                    Node::Expand { x } => Node::Expand { x: TensorId(id_map[x].0) },
+                    Node::Permute { x } => Node::Permute { x: TensorId(id_map[x].0) },
+                    Node::Reshape { x } => Node::Reshape { x: TensorId(id_map[x].0) },
+                    Node::Pad { x } => Node::Pad { x: TensorId(id_map[x].0) },
+                    Node::Reduce { x, rop } => Node::Reduce { x: TensorId(id_map[x].0), rop: *rop },
+                    Node::Cast { x, dtype } => Node::Cast { x: TensorId(id_map[x].0), dtype: *dtype },
+                    Node::Unary { x, uop } => Node::Unary { x: TensorId(id_map[x].0), uop: *uop },
+                    Node::Binary { x, y, bop } => Node::Binary { x: TensorId(id_map[x].0), y: TensorId(id_map[y].0), bop: *bop },
                     Node::Custom { .. } => todo!(),
-                    Node::ToDevice { x, device } => Node::ToDevice { x: id_map[x].into(), device: *device },
+                    Node::ToDevice { x, device } => Node::ToDevice { x: TensorId(id_map[x].0), device: *device },
                 }
             };
             compacted.nodes.push(reindexed);

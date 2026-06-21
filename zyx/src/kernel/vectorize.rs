@@ -45,17 +45,17 @@ impl Kernel {
                             .or_insert_with(|| vec![LoadInfo { id: op_id, index }]);
                     }
                 }
-                Op::EndLoop => self.fun_name(&mut loads, supported_lens),
+                Op::EndLoop => self.verify_and_apply_vectorization(&mut loads, supported_lens),
                 _ => {}
             }
 
             op_id = self.next_op(op_id);
         }
 
-        self.fun_name(&mut loads, supported_lens);
+        self.verify_and_apply_vectorization(&mut loads, supported_lens);
     }
 
-    fn fun_name(&mut self, loads: &mut Vec<Map<OpId, Vec<LoadInfo>>>, supported_lens: &[u8]) {
+    fn verify_and_apply_vectorization(&mut self, loads: &mut Vec<Map<OpId, Vec<LoadInfo>>>, supported_lens: &[u8]) {
         if let Some(loads) = loads.pop() {
             for (src, mut loads) in loads {
                 if !supported_lens.contains(&(loads.len() as u8)) {

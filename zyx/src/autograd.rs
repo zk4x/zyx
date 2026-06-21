@@ -153,7 +153,8 @@ impl Runtime {
             };
             match self.graph[nid] {
                 Node::Custom(_) => todo!(),
-                Node::Const { .. } | Node::Leaf { .. } | Node::ToDevice { .. } => {}
+                Node::Const { .. } | Node::Leaf { .. } => {}
+                Node::ToDevice { .. } => todo!(), // TODO perhaps pass to previous device?
                 Node::Binary { x, y, bop } => match bop {
                     BOp::Add => {
                         if req_grad.contains(&x) {
