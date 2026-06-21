@@ -30,18 +30,19 @@ maintenance = { status = "experimental" }
 
 [dependencies]
 # Good, well written minimal dependencies
-# libc is used by tenstorrent backend for mmap/munmap
-libc = { version = "0.2", default-features = false, optional = true }
 # libloading is used to access cuda, opencl and hsa runtimes
 libloading = { version = "0.9.0", default-features = false, features = ["std"] } # ISC
 # nanoserde is used to read backend config
 nanoserde = { version = "0.2.1", default-features = false, features = ["std", "binary", "json"] }
 
+# not sure about this one yet
+ash = "0.38"
+
 # To be removed
 # Support for f16 and bf16 dtypes, stick to version 1.8.3, which does not have absurd number of dependencies
 half = { version = "1.8.3", default-features = false, features = ["std"] } # MIT or Apache 2.0
-# Since I am lazy
-paste = "1.0.15" # MIT or Apache 2.0
+# libc is used by tenstorrent backend for mmap/munmap
+libc = { version = "0.2", default-features = false, optional = true }
 
 # Lot of dependencies from wgpu, probably just don't use that
 wgpu = { version = "29.0.1", default-features = false, features = ["vulkan", "metal", "dx12", "spirv", "gles"], optional = true } # MIT or Apache 2.0
@@ -49,8 +50,6 @@ pollster = { version = "0.4.0", default-features = false, optional = true } # MI
 
 # Pyo3 is used only for python bindings
 pyo3 = { version = "0.29.0", optional = true, features = ["extension-module", "generate-import-lib"] } # MIT or Apache 2.0
-
-ash = "0.38"
 
 [dev-dependencies]
 matrixmultiply = "0.3"
