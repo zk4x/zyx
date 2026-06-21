@@ -13,6 +13,7 @@ use super::{Device, DeviceId, DeviceInfo, DeviceProgramId, Event, MemoryPool, Op
 use crate::{
     DType, Map, Set,
     dtype::Constant,
+    scalar::{bf16, f16},
     error::{BackendError, ErrorStatus},
     kernel::{BOp, Kernel, MemLayout, Op, OpId, Scope, UOp},
     shape::Dim,
@@ -784,8 +785,8 @@ impl Constant {
             Self::I32(x) => format!("{x}"),
             Self::I64(x) => format!("{}l", i64::from_le_bytes(x)),
             Self::Bool(x) => format!("{x}"),
-            Self::F16(x) => format!("{:.16}f", half::f16::from_le_bytes(x).to_f32()),
-            Self::BF16(x) => format!("{:.16}f", half::bf16::from_le_bytes(x).to_f32()),
+            Self::F16(x) => format!("{:.16}f", f16::from_le_bytes(x).to_f32()),
+            Self::BF16(x) => format!("{:.16}f", bf16::from_le_bytes(x).to_f32()),
         }
     }
 }

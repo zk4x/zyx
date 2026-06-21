@@ -17,7 +17,7 @@ use crate::shape::{Dim, IntoShape, UAxis, into_axes, into_axis};
 use crate::slab::SlabId;
 use crate::{DebugMask, RT};
 use core::cmp::Ordering;
-use half::{bf16, f16};
+use crate::scalar::{bf16, f16};
 use std::fmt::{Debug, Display};
 use std::iter::{once, repeat_n};
 use std::ops::{Bound, Mul, Neg, Not, Range, RangeBounds};

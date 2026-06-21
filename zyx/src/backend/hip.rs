@@ -11,6 +11,7 @@
 
 use super::{Device, DeviceInfo, MemoryPool, OpCapability};
 use crate::DType;
+use crate::scalar::{bf16, f16};
 use crate::backend::{DeviceId, DeviceProgramId, Event, PoolBufferId, PoolId};
 use crate::dtype::Constant;
 use crate::error::{BackendError, ErrorStatus};
@@ -774,8 +775,8 @@ enum HIPdevice_attribute {
 impl Constant {
     fn hip(self) -> String {
         match self {
-            Self::BF16(x) => format!("{}f", half::bf16::from_le_bytes(x)),
-            Self::F16(x) => format!("{}f", half::f16::from_le_bytes(x)),
+            Self::BF16(x) => format!("{}f", bf16::from_le_bytes(x)),
+            Self::F16(x) => format!("{}f", f16::from_le_bytes(x)),
             Self::F32(x) => format!("{}f", f32::from_le_bytes(x)),
             Self::F64(x) => format!("{}", f64::from_le_bytes(x)),
             Self::U8(x) => format!("{x}"),

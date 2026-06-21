@@ -4,7 +4,115 @@
 //! Trait describing required operations on scalar values
 
 use crate::dtype::DType;
-use half::{bf16, f16};
+use core::ops::{Add, Div, Mul, Neg, Rem, Sub};
+use std::fmt;
+
+#[allow(non_camel_case_types)]
+/// bfloat16 (1 sign, 8 exponent, 7 mantissa)
+#[derive(Clone, Copy, PartialEq, PartialOrd, Debug)]
+pub struct bf16(pub u16);
+
+#[allow(non_camel_case_types)]
+/// IEEE half-precision float (1 sign, 5 exponent, 10 mantissa)
+#[derive(Clone, Copy, PartialEq, PartialOrd, Debug)]
+pub struct f16(pub u16);
+
+impl bf16 {
+    pub const ZERO: Self = Self(0);
+    pub const ONE: Self = Self(0x3f80);
+    pub const MIN: Self = Self(0xff7f);
+    pub const MAX: Self = Self(0x7f7f);
+    pub const MIN_POSITIVE: Self = Self(0x0080);
+
+    pub fn to_f32(self) -> f32 { f32::from_bits((self.0 as u32) << 16) }
+    pub fn to_f64(self) -> f64 { self.to_f32() as f64 }
+    pub fn from_f32(x: f32) -> Self { Self((x.to_bits() >> 16) as u16) }
+    pub fn from_f64(x: f64) -> Self { Self::from_f32(x as f32) }
+    pub const fn to_le_bytes(self) -> [u8; 2] { self.0.to_le_bytes() }
+    pub fn from_le_bytes(bytes: [u8; 2]) -> Self { Self(u16::from_le_bytes(bytes)) }
+    pub fn to_bits(self) -> u16 { self.0 }
+    pub fn is_nan(self) -> bool { self.0 & 0x7fff > 0x7f80 }
+    pub fn is_infinite(self) -> bool { self.0 & 0x7fff == 0x7f80 }
+    pub fn abs(self) -> Self { Self(self.0 & 0x7fff) }
+    pub fn max(self, other: Self) -> Self { if self.to_f32() >= other.to_f32() { self } else { other } }
+}
+
+impl fmt::Display for bf16 {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result { write!(f, "{}", self.to_f32()) }
+}
+
+impl From<bf16> for f32 { fn from(x: bf16) -> Self { x.to_f32() } }
+impl From<bf16> for f64 { fn from(x: bf16) -> Self { x.to_f64() } }
+
+impl Neg for bf16 { type Output = Self; fn neg(self) -> Self { Self(self.0 ^ 0x8000) } }
+impl Add for bf16 { type Output = Self; fn add(self, rhs: Self) -> Self { Self::from_f32(self.to_f32() + rhs.to_f32()) } }
+impl Sub for bf16 { type Output = Self; fn sub(self, rhs: Self) -> Self { Self::from_f32(self.to_f32() - rhs.to_f32()) } }
+impl Mul for bf16 { type Output = Self; fn mul(self, rhs: Self) -> Self { Self::from_f32(self.to_f32() * rhs.to_f32()) } }
+impl Div for bf16 { type Output = Self; fn div(self, rhs: Self) -> Self { Self::from_f32(self.to_f32() / rhs.to_f32()) } }
+impl Rem for bf16 { type Output = Self; fn rem(self, rhs: Self) -> Self { Self::from_f32(self.to_f32() % rhs.to_f32()) } }
+
+impl f16 {
+    pub const ZERO: Self = Self(0x0000);
+    pub const ONE: Self = Self(0x3c00);
+    pub const MIN: Self = Self(0xfbff);
+    pub const MAX: Self = Self(0x7bff);
+    pub const EPSILON: Self = Self(0x1400);
+
+    pub fn to_f32(self) -> f32 {
+        let bits = self.0;
+        let sign = if (bits >> 15) != 0 { -1.0f32 } else { 1.0f32 };
+        let exp = (bits >> 10) & 0x1f;
+        let mant = (bits & 0x3ff) as f32;
+        if exp == 0 {
+            if mant == 0.0 { return 0.0_f32.copysign(sign); }
+            return sign * 2.0f32.powi(-14) * mant / 1024.0;
+        }
+        if exp == 31 {
+            if mant == 0.0 { return if sign > 0.0 { f32::INFINITY } else { f32::NEG_INFINITY }; }
+            return f32::NAN;
+        }
+        sign * 2.0f32.powi(exp as i32 - 15) * (1.0 + mant / 1024.0)
+    }
+    pub fn to_f64(self) -> f64 { self.to_f32() as f64 }
+    pub fn from_f32(x: f32) -> Self {
+        if x.is_nan() { return Self(0x7e00); }
+        if x.is_infinite() { return if x.is_sign_positive() { Self(0x7c00) } else { Self(0xfc00) }; }
+        let sign = if x.is_sign_negative() { 0x8000u16 } else { 0x0000 };
+        let x = x.abs();
+        if x == 0.0 { return Self(sign); }
+        if x < 2.0f32.powi(-24) { return Self(sign); }
+        let exp = (x.log2().floor() as i32).clamp(-14, 15);
+        if exp == -14 {
+            return Self(sign | ((x / 2.0f32.powi(-24) + 0.5) as u16 & 0x3ff));
+        }
+        let mant = x / 2.0f32.powi(exp);
+        Self(sign | (((exp + 15) as u16) << 10) | ((mant - 1.0) * 1024.0 + 0.5) as u16 & 0x3ff)
+    }
+    pub fn from_f64(x: f64) -> Self { Self::from_f32(x as f32) }
+    pub const fn to_le_bytes(self) -> [u8; 2] { self.0.to_le_bytes() }
+    pub fn from_le_bytes(bytes: [u8; 2]) -> Self { Self(u16::from_le_bytes(bytes)) }
+    pub fn to_bits(self) -> u16 { self.0 }
+    pub fn from_bits(bits: u16) -> Self { Self(bits) }
+    pub fn is_nan(self) -> bool { self.0 & 0x7c00 == 0x7c00 && self.0 & 0x03ff != 0 }
+    pub fn is_infinite(self) -> bool { self.0 & 0x7fff == 0x7c00 }
+    pub fn abs(self) -> Self { Self(self.0 & 0x7fff) }
+    pub fn max(self, other: Self) -> Self { if self.to_f32() >= other.to_f32() { self } else { other } }
+    pub fn min(self, other: Self) -> Self { if self.to_f32() <= other.to_f32() { self } else { other } }
+}
+
+impl fmt::Display for f16 {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result { write!(f, "{}", self.to_f32()) }
+}
+
+impl From<f16> for f32 { fn from(x: f16) -> Self { x.to_f32() } }
+impl From<f16> for f64 { fn from(x: f16) -> Self { x.to_f64() } }
+
+impl Neg for f16 { type Output = Self; fn neg(self) -> Self { Self(self.0 ^ 0x8000) } }
+impl Add for f16 { type Output = Self; fn add(self, rhs: Self) -> Self { Self::from_f32(self.to_f32() + rhs.to_f32()) } }
+impl Sub for f16 { type Output = Self; fn sub(self, rhs: Self) -> Self { Self::from_f32(self.to_f32() - rhs.to_f32()) } }
+impl Mul for f16 { type Output = Self; fn mul(self, rhs: Self) -> Self { Self::from_f32(self.to_f32() * rhs.to_f32()) } }
+impl Div for f16 { type Output = Self; fn div(self, rhs: Self) -> Self { Self::from_f32(self.to_f32() / rhs.to_f32()) } }
+impl Rem for f16 { type Output = Self; fn rem(self, rhs: Self) -> Self { Self::from_f32(self.to_f32() % rhs.to_f32()) } }
 
 /// Scalar trait is implemented for all [dtypes](DType)
 pub trait Scalar: Copy + Clone + Sized + core::fmt::Debug + 'static + PartialEq + Send + Sync + PartialOrd {

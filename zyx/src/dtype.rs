@@ -10,7 +10,7 @@ use crate::{
     kernel::{BOp, IDX_T, UOp},
     shape::Dim,
 };
-use half::{bf16, f16};
+use crate::scalar::{bf16, f16};
 use nanoserde::{DeBin, SerBin};
 use std::fmt::{Debug, Display};
 
@@ -501,8 +501,8 @@ impl Constant {
 
     pub(super) fn cast(self, dtype: DType) -> Constant {
         match self {
-            Constant::BF16(x) => half::bf16::from_le_bytes(x).cast_dtype(dtype),
-            Constant::F16(x) => half::f16::from_le_bytes(x).cast_dtype(dtype),
+            Constant::BF16(x) => bf16::from_le_bytes(x).cast_dtype(dtype),
+            Constant::F16(x) => f16::from_le_bytes(x).cast_dtype(dtype),
             Constant::F32(x) => f32::from_le_bytes(x).cast_dtype(dtype),
             Constant::F64(x) => f64::from_le_bytes(x).cast_dtype(dtype),
             Constant::U8(x) => x.cast_dtype(dtype),
@@ -563,8 +563,8 @@ impl Constant {
             }
         }
         match self {
-            Constant::BF16(x) => Constant::BF16(unary_func_float(half::bf16::from_le_bytes(x), uop).to_le_bytes()),
-            Constant::F16(x) => Constant::F16(unary_func_float(half::f16::from_le_bytes(x), uop).to_le_bytes()),
+            Constant::BF16(x) => Constant::BF16(unary_func_float(bf16::from_le_bytes(x), uop).to_le_bytes()),
+            Constant::F16(x) => Constant::F16(unary_func_float(f16::from_le_bytes(x), uop).to_le_bytes()),
             Constant::F32(x) => Constant::F32(unary_func_float(f32::from_le_bytes(x), uop).to_le_bytes()),
             Constant::F64(x) => Constant::F64(unary_func_float(f64::from_le_bytes(x), uop).to_le_bytes()),
             Constant::U8(x) => Constant::U8(unary_func(x, uop)),
@@ -664,8 +664,8 @@ impl Constant {
 trait CastDType: Scalar {
     fn cast_dtype(self, dtype: DType) -> Constant {
         match dtype {
-            DType::BF16 => Constant::BF16(self.cast::<half::bf16>().to_le_bytes()),
-            DType::F16 => Constant::F16(self.cast::<half::f16>().to_le_bytes()),
+            DType::BF16 => Constant::BF16(self.cast::<bf16>().to_le_bytes()),
+            DType::F16 => Constant::F16(self.cast::<f16>().to_le_bytes()),
             DType::F32 => Constant::F32(self.cast::<f32>().to_le_bytes()),
             DType::F64 => Constant::F64(self.cast::<f64>().to_le_bytes()),
             DType::U8 => Constant::U8(self.cast()),

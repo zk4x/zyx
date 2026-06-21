@@ -17,6 +17,7 @@ use super::{Device, DeviceId, DeviceInfo, DeviceProgramId, Event, MemoryPool, Op
 use crate::{
     DType, Map,
     dtype::Constant,
+    scalar::{bf16, f16},
     error::{BackendError, ErrorStatus},
     kernel::{BOp, Kernel, MemLayout, Op, OpId, Scope, UOp},
     shape::Dim,
@@ -1401,8 +1402,8 @@ impl DType {
 impl Constant {
     fn ocl(self) -> String {
         match self {
-            Self::BF16(x) => format!("{:.16}f", half::bf16::from_le_bytes(x)),
-            Self::F16(x) => format!("(half){:.16}", half::f16::from_le_bytes(x)),
+            Self::BF16(x) => format!("{:.16}f", bf16::from_le_bytes(x)),
+            Self::F16(x) => format!("(half){:.16}", f16::from_le_bytes(x)),
             Self::F32(x) => format!("{:.16}f", f32::from_le_bytes(x)),
             Self::F64(x) => format!("(double){:.16}", f64::from_le_bytes(x)),
             Self::U8(x) => format!("{x}"),

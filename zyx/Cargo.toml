@@ -38,9 +38,6 @@ nanoserde = { version = "0.2.1", default-features = false, features = ["std", "b
 # not sure about this one yet
 ash = "0.38"
 
-# To be removed
-# Support for f16 and bf16 dtypes, stick to version 1.8.3, which does not have absurd number of dependencies
-half = { version = "1.8.3", default-features = false, features = ["std"] } # MIT or Apache 2.0
 # libc is used by tenstorrent backend for mmap/munmap
 libc = { version = "0.2", default-features = false, optional = true }
 

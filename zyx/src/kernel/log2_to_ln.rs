@@ -11,7 +11,7 @@ use crate::{
     dtype::Constant,
     kernel::{BOp, Kernel, Op, UOp},
 };
-use half::{bf16, f16};
+use crate::scalar::{bf16, f16};
 
 const LN_2: f64 = std::f64::consts::LN_2;
 

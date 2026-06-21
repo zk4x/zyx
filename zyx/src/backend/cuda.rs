@@ -42,6 +42,7 @@ use nanoserde::DeJson;
 use crate::{
     DType, Map,
     dtype::Constant,
+    scalar::{bf16, f16},
     error::{BackendError, ErrorStatus},
     kernel::{BOp, Kernel, MMADType, MMADims, MemLayout, Op, OpId, Scope, UOp},
     shape::Dim,
@@ -1038,12 +1039,12 @@ impl Constant {
         }
         match self {
             &Self::BF16(x) => {
-                let val: f32 = half::bf16::from_le_bytes(x).into();
+                let val: f32 = bf16::from_le_bytes(x).into();
                 format!("__float2bfloat16({}f)", format_precise(val, 9))
             }
             &Self::F16(x) => {
-                //format!("__float2half({:.6})", half::f16::from_le_bytes(x)
-                let bits: u16 = half::f16::from_le_bytes(x).to_bits();
+                //format!("__float2half({:.6})", f16::from_le_bytes(x)
+                let bits: u16 = f16::from_le_bytes(x).to_bits();
                 format!("(half)0x{:04X}", bits)
             }
             &Self::F32(x) => format!("{}f", format_precise(f32::from_le_bytes(x), 9)),

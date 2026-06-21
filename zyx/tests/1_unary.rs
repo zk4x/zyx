@@ -592,10 +592,8 @@ fn f16_sin() -> Result<(), ZyxError> {
     let zdata: Vec<f32> = x.sin().cast(DType::F32).try_into()?;
     println!("{zdata:?}");
     for (i, y) in zdata.iter().enumerate() {
-        let input_f16 = half::f16::from_f32(data[i]);
-        let expected = input_f16.sin();
-        let result = half::f16::from_f32(*y);
-        assert!(expected.is_equal(result), "{expected} != {result}");
+        let expected = data[i].sin();
+        assert!((y - expected).abs() < 0.001, "{y} != {expected} (diff {})", (y - expected).abs());
     }
     Ok(())
 }

@@ -19,6 +19,7 @@ use nanoserde::DeJson;
 use crate::{
     DType, Map,
     dtype::Constant,
+    scalar::{bf16, f16},
     error::{BackendError, ErrorStatus},
     graph::{BOp, UOp},
     kernel::{IDX_T, Kernel, Op, OpId, Scope},
@@ -962,8 +963,8 @@ impl Constant {
             if s.contains(".") { s.to_string() } else { format!("{s}.0") }
         }
         match self {
-            &Self::BF16(x) => format!("{}f", half::bf16::from_le_bytes(x)),
-            &Self::F16(x) => format!("__float2half({:.6})", half::f16::from_le_bytes(x)),
+            &Self::BF16(x) => format!("{}f", bf16::from_le_bytes(x)),
+            &Self::F16(x) => format!("__float2half({:.6})", f16::from_le_bytes(x)),
             &Self::F32(x) => format!("{}", format_precise(f32::from_le_bytes(x), 9)),
             &Self::F64(x) => format!("{}", format_precise(f64::from_le_bytes(x), 18)),
             Self::U8(x) => format!("{x}"),

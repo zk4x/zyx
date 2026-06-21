@@ -267,12 +267,6 @@ dependencies = [
 
 [[package]]
 name = "half"
-version = "1.8.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1b43ede17f21864e81be2fa654110bf1e793774238d86ef8555c37e6519c0403"
-
-[[package]]
-name = "half"
 version = "2.7.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6ea2d84b969582b4b1864a92dc5d27cd2b77b622a8d79306834f1be5ba20d84b"
@@ -462,7 +456,7 @@ dependencies = [
  "cfg-if",
  "cfg_aliases",
  "codespan-reporting",
- "half 2.7.1",
+ "half",
  "hashbrown 0.16.1",
  "hexf-parse",
  "indexmap",
@@ -1324,7 +1318,6 @@ name = "zyx"
 version = "0.15.6"
 dependencies = [
  "ash",
- "half 1.8.3",
  "libc",
  "libloading 0.9.0",
  "matrixmultiply",

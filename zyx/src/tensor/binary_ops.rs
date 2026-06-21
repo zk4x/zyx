@@ -3,7 +3,7 @@
 
 use super::Tensor;
 use crate::{RT, kernel::BOp};
-use half::{bf16, f16};
+use crate::scalar::{bf16, f16};
 use std::ops::{Add, BitAnd, BitOr, BitXor, Div, Mul, Sub};
 
 impl<IT: Into<Tensor>> Add<IT> for Tensor {
