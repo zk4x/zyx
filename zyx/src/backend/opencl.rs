@@ -964,7 +964,7 @@ impl OpenCLDevice {
                         match layout {
                             MemLayout::Scalar => _ = writeln!(source, "{indent}r{reg} = p{src}[{idx}];"),
                             MemLayout::Vector(len) => {
-                                _ = writeln!(source, "{indent}r{reg} = vload{len}(0, p{src} + {idx});");
+                                _ = writeln!(source, "{indent}r{reg} = *((__global {}{len}*)(p{src} + {idx}));", dtype.0.ocl());
                             }
                             MemLayout::Tile { .. } => todo!(),
                         }
@@ -976,7 +976,8 @@ impl OpenCLDevice {
                     match layout {
                         MemLayout::Scalar => _ = writeln!(source, "{indent}p{dst}[{idx}] = {x};"),
                         MemLayout::Vector(len) => {
-                            _ = writeln!(source, "{indent}vstore{len}({x}, 0, p{dst} + {idx});");
+                            let ocl_type = dtypes[&op_id].0.ocl();
+                            _ = writeln!(source, "{indent}*((__global {ocl_type}{len}*)(p{dst} + {idx})) = {x};");
                         }
                         MemLayout::Tile { .. } => todo!(),
                     }
@@ -1038,9 +1039,14 @@ impl OpenCLDevice {
                     let dtype = dtypes[&op_id];
                     let vec = get_var(vec, &constants, &indices, &reg_map, &mut registers, loop_id);
                     let reg = new_reg(op_id, &mut reg_map, &mut registers, dtype, rcs[&op_id], loop_id);
-                    _ = writeln!(source, "{indent}r{reg} = r{vec}.{};", VEC_COMPONENTS[idx]);
+                    _ = writeln!(source, "{indent}r{reg} = {vec}.{};", VEC_COMPONENTS[idx]);
                 }
-                Op::Wmma { .. } => todo!(),
+                Op::Wmma { .. } => {
+                    return Err(BackendError {
+                        status: ErrorStatus::KernelCompilation,
+                        context: "OpenCL: WMMA not supported".into(),
+                    });
+                }
                 &Op::Binary { x, y, bop } => {
                     let dtype = dtypes[&op_id];
                     let x = get_var(x, &constants, &indices, &reg_map, &mut registers, loop_id);
@@ -1297,6 +1303,26 @@ fn query_device_info(
         },
         supported_dtype_ops: [OpCapability::all(); DType::N_DTYPES],
     };
+    if let Ok(extensions) = get_device_data(device, clGetDeviceInfo, CL_DEVICE_EXTENSIONS) {
+        let has_fp16 = extensions
+            .split(|&b| b == b' ')
+            .any(|token| token == b"cl_khr_fp16");
+        if !has_fp16 {
+            dev_info.supported_dtype_ops[DType::F16 as usize] = OpCapability::none();
+        }
+        let has_bf16 = extensions
+            .split(|&b| b == b' ')
+            .any(|token| token == b"cl_intel_bfloat16_conversions");
+        if !has_bf16 {
+            dev_info.supported_dtype_ops[DType::BF16 as usize] = OpCapability::none();
+        }
+        let has_tensor = extensions
+            .split(|&b| b == b' ')
+            .any(|token| token == b"cl_intel_subgroup_matrix_multiply_accumulate");
+        if has_tensor {
+            dev_info.tensor_cores = true;
+        }
+    }
     Ok(())
 }
 
@@ -1435,6 +1461,7 @@ const CL_DEVICE_MAX_WORK_ITEM_DIMENSIONS: cl_uint = 0x1003; // 4099
 //const CL_DEVICE_MAX_PRIVATE_MEMORY_SIZE: cl_uint = 0x1160; // 4448
 const CL_DEVICE_MAX_WORK_ITEM_SIZES: cl_uint = 0x1005; // 4101
 const CL_DEVICE_PREFERRED_VECTOR_WIDTH_FLOAT: cl_uint = 0x100A; // 4106
+const CL_DEVICE_EXTENSIONS: cl_uint = 0x1030; // 4144
 
 const CL_DEVICE_TYPE: cl_uint = 0x1000;
 const CL_DEVICE_TYPE_GPU: cl_bitfield = 1 << 2;
