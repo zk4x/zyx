@@ -477,3 +477,21 @@ fn cos1() -> Result<(), ZyxError> {
     }
     Ok(())
 }
+
+#[test]
+fn add() -> Result<(), ZyxError> {
+    let datax: [f32; 16] = [
+        -3.285, 0.001, 1.780, 5.675, -8.521, -0.456, 1.215, -3.474, -4.128, -7.657, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0,
+    ];
+    let datay: [f32; 16] = [
+        2.772, -8.327, 1.945, 9.286, 3.989, 8.105, -5.307, 2.865, 3.106, 3.111, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0,
+    ];
+    let x = Tensor::from(datax);
+    let y = Tensor::from(datay);
+    let z = x + y;
+    let dataz: Vec<f32> = z.try_into()?;
+    for ((x, y), z) in datax.iter().zip(datay).zip(dataz) {
+        assert_eq!(x + y, z);
+    }
+    Ok(())
+}
