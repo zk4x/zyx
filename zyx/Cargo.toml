@@ -93,7 +93,6 @@ strip = false
 debug-assertions = true
 overflow-checks = true
 lto = false
-panic = 'unwind'
 incremental = true
 codegen-units = 16
 
