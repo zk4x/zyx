@@ -123,6 +123,7 @@ pub(super) fn initialize_device(
             warp_size: 1,
             supported_dtype_ops: [OpCapability::all(); DType::N_DTYPES],
             has_native_exp2: false,
+            has_vector_ops: true,
         },
         memory_pool_id: pool_id,
         programs: Slab::new(),

@@ -1471,6 +1471,7 @@ pub(super) fn initialize_device(
                     all
                 },
                 has_native_exp2: false,
+                has_vector_ops: true,
             },
             memory_pool_id: PoolId::from(usize::from(memory_pools.len()) - 1),
         };

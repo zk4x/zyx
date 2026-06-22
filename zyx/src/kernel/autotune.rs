@@ -30,7 +30,7 @@
 //! - `TiledReduce`: Apply tiled reduction parallelism
 //! - `SplitLoop`: Split large loops into smaller iterations
 //! - `PadIndex`: Pad indices to hardware-friendly sizes
-//! - `VectorizeLoads`: Combine scalar loads into vectorized loads
+//! - `Vectorize`: Combine scalar loads, stores and ops into vectorized ops
 //!
 
 #![allow(unused)]
@@ -65,7 +65,7 @@ const AVAILABLE_OPTIMIZATIONS: [OptConfigFn; 9] = [
     Kernel::opt_local_reduce,
     |k, _| Kernel::opt_split_loop(k),
     |k, _| Kernel::opt_pad_index(k),
-    Kernel::opt_vectorize_loads_stores,
+    Kernel::opt_vectorize,
     |k, _| Kernel::opt_merge_nested_loops(k),
 ];
 
@@ -114,9 +114,10 @@ pub(crate) enum Optimization {
         factors: Vec<(OpId, Dim)>,
     },
     /// Combine scalar loads into vectorized loads for better memory bandwidth.
-    VectorizeLoadsStores {
+    Vectorize {
         /// Supported vector lengths for this device.
         supported_lens: Vec<u8>,
+        vectorize_ops: bool,
     },
     /// Merge nested loops into a single loop (enables tiled_reduce).
     MergeNestedLoops {
@@ -210,8 +211,8 @@ impl Optimization {
                 let (op_id, _) = factors[config];
                 println!("pad index {op_id} by 32, cfg_opt={config}");
             }
-            Optimization::VectorizeLoadsStores { .. } => {
-                println!("VectorizeLoadsStores");
+            Optimization::Vectorize { .. } => {
+                println!("Vectorize");
             }
             Optimization::MergeNestedLoops { groups } => {
                 if let Some(ids) = groups.get(config) {
@@ -283,9 +284,12 @@ impl Optimization {
                     kernel.pad_index(gidx_id, current_len, pad_len, crate::dtype::Constant::idx(0));
                 }
             }
-            Optimization::VectorizeLoadsStores { supported_lens } => {
+            Optimization::Vectorize { supported_lens, vectorize_ops } => {
                 kernel.vectorize_loads(supported_lens);
                 kernel.vectorize_stores(supported_lens);
+                if *vectorize_ops {
+                    kernel.vectorize_ops_backward(supported_lens);
+                }
             }
             Optimization::MergeNestedLoops { groups } => {
                 if let Some(loop_ids) = groups.get(config) {
@@ -361,7 +365,9 @@ impl Kernel {
 
         kernel.vectorize_loads(&[4]);
         kernel.vectorize_stores(&[4]);
-        kernel.vectorize_ops_backward(&[4]);
+        if device.info().has_vector_ops {
+            kernel.vectorize_ops_backward(&[4]);
+        }
 
         kernel.run_always_on_optimizations();
         kernel.run_always_on_optimizations();

@@ -451,6 +451,8 @@ pub struct DeviceInfo {
     pub supported_dtype_ops: [OpCapability; DType::N_DTYPES],
     /// Whether the device has a native exp2 instruction
     pub has_native_exp2: bool,
+    /// Whether the device supports vector compute operations
+    pub has_vector_ops: bool,
 }
 
 impl DeviceInfo {

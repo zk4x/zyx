@@ -1292,6 +1292,7 @@ fn query_device_info(
         .expect("What a memory size..."),
         max_register_bytes: 256,
         has_native_exp2: true,
+        has_vector_ops: true,
         tensor_cores: false,
         warp_size: {
             if let Ok(device_type_data) = get_device_data(device, clGetDeviceInfo, CL_DEVICE_TYPE) {
