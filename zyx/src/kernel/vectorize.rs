@@ -114,11 +114,6 @@ impl Kernel {
         }
     }
 
-    #[allow(unused)]
-    pub(crate) fn vectorize_ops(&mut self, supported_lens: &[u8]) {
-        todo!()
-    }
-
     /// Vectorize stores.
     ///
     /// Combines multiple scalar stores into a single vectorized store for better performance.
@@ -207,6 +202,90 @@ impl Kernel {
                     }
                 }
             }
+        }
+    }
+
+    /// Walk backward, find Vectorize[X0..Xn] where all Xi are the same compute op.
+    /// Replace Vectorize with compute_op(vectorize[inputs_of_Xi]),
+    /// replace the first Xi with that vectorize of inputs, and keep walking.
+    pub fn vectorize_ops_backward(&mut self, supported_lens: &[u8]) {
+        let mut op_id = self.tail;
+        while !op_id.is_null() {
+            let ops = match &self.ops[op_id].op {
+                Op::Vectorize { ops } => ops.clone(),
+                _ => {
+                    op_id = self.prev_op(op_id);
+                    continue;
+                }
+            };
+
+            let n = ops.len();
+            if n < 2 || !supported_lens.contains(&(n as u8)) {
+                op_id = self.prev_op(op_id);
+                continue;
+            }
+
+            match &self.ops[ops[0]].op {
+                Op::Unary { uop, .. } => {
+                    let uop = *uop;
+                    let mut sources = Vec::with_capacity(n);
+                    for &sub in &ops {
+                        match &self.ops[sub].op {
+                            Op::Unary { x, uop: u } if *u == uop => sources.push(*x),
+                            _ => {
+                                sources.clear();
+                                break;
+                            }
+                        }
+                    }
+                    if !sources.is_empty() {
+                        self.ops[ops[0]].op = Op::Vectorize { ops: sources };
+                        self.ops[op_id].op = Op::Unary { x: ops[0], uop };
+                    }
+                }
+                Op::Cast { dtype, .. } => {
+                    let dtype = *dtype;
+                    let mut sources = Vec::with_capacity(n);
+                    for &sub in &ops {
+                        match &self.ops[sub].op {
+                            Op::Cast { x, dtype: d } if *d == dtype => sources.push(*x),
+                            _ => {
+                                sources.clear();
+                                break;
+                            }
+                        }
+                    }
+                    if !sources.is_empty() {
+                        self.ops[ops[0]].op = Op::Vectorize { ops: sources };
+                        self.ops[op_id].op = Op::Cast { x: ops[0], dtype };
+                    }
+                }
+                Op::Binary { bop, .. } => {
+                    let bop = *bop;
+                    let mut xs = Vec::with_capacity(n);
+                    let mut ys = Vec::with_capacity(n);
+                    for &sub in &ops {
+                        match &self.ops[sub].op {
+                            Op::Binary { x, y, bop: b } if *b == bop => {
+                                xs.push(*x);
+                                ys.push(*y);
+                            }
+                            _ => {
+                                xs.clear();
+                                break;
+                            }
+                        }
+                    }
+                    if !xs.is_empty() {
+                        let vy = self.insert_before(ops[0], Op::Vectorize { ops: ys });
+                        self.ops[ops[0]].op = Op::Vectorize { ops: xs };
+                        self.ops[op_id].op = Op::Binary { x: ops[0], y: vy, bop };
+                    }
+                }
+                _ => {}
+            }
+
+            op_id = self.prev_op(op_id);
         }
     }
 }

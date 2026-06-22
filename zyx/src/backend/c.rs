@@ -403,28 +403,55 @@ impl CDevice {
                     let vlen = dtypes[&x].1;
                     let x = get_var(x, &constants, &indices, &reg_map, &mut registers, loop_id);
                     let reg = new_reg(op_id, &mut reg_map, &mut registers, (dtype, vlen), rcs[&op_id], loop_id);
-                    _ = writeln!(source, "{indent}r{reg} = ({}){x};", dtype.c_type());
+                    match vlen {
+                        MemLayout::Vector(n) => {
+                            for i in 0..n {
+                                _ = writeln!(source, "{indent}r{reg}.s{i} = ({}){x}.s{i};", dtype.c_type());
+                            }
+                        }
+                        _ => _ = writeln!(source, "{indent}r{reg} = ({}){x};", dtype.c_type()),
+                    }
                 }
                 &Op::Unary { x, uop } => {
                     let dtype = dtypes[&x];
                     let x = get_var(x, &constants, &indices, &reg_map, &mut registers, loop_id);
                     let reg = new_reg(op_id, &mut reg_map, &mut registers, dtype, rcs[&op_id], loop_id);
-                    match uop {
-                        UOp::BitNot => _ = writeln!(source, "{indent}r{reg} = ~{x};"),
-                        UOp::Neg => _ = writeln!(source, "{indent}r{reg} = -{x};"),
-                        UOp::Exp => _ = writeln!(source, "{indent}r{reg} = exp({x});"),
-                        UOp::Exp2 => _ = writeln!(source, "{indent}r{reg} = exp2({x});"),
-                        UOp::Ln => _ = writeln!(source, "{indent}r{reg} = log({x});"),
-                        UOp::Log2 => _ = writeln!(source, "{indent}r{reg} = log2({x});"),
-                        UOp::Reciprocal => {
-                            _ = writeln!(source, "{indent}r{reg} = {}/{x};", dtype.0.one_constant().c_code());
+                    match dtype.1 {
+                        MemLayout::Vector(n) => {
+                            for i in 0..n {
+                                let lane = format!("{x}.s{i}");
+                                match uop {
+                                    UOp::BitNot => _ = writeln!(source, "{indent}r{reg}.s{i} = ~{lane};"),
+                                    UOp::Neg => _ = writeln!(source, "{indent}r{reg}.s{i} = -{lane};"),
+                                    UOp::Exp => _ = writeln!(source, "{indent}r{reg}.s{i} = exp({lane});"),
+                                    UOp::Exp2 => _ = writeln!(source, "{indent}r{reg}.s{i} = exp2({lane});"),
+                                    UOp::Ln => _ = writeln!(source, "{indent}r{reg}.s{i} = log({lane});"),
+                                    UOp::Log2 => _ = writeln!(source, "{indent}r{reg}.s{i} = log2({lane});"),
+                                    UOp::Reciprocal => _ = writeln!(source, "{indent}r{reg}.s{i} = {}/{lane};", dtype.0.one_constant().c_code()),
+                                    UOp::Sqrt => _ = writeln!(source, "{indent}r{reg}.s{i} = sqrt({lane});"),
+                                    UOp::Sin => _ = writeln!(source, "{indent}r{reg}.s{i} = sin({lane});"),
+                                    UOp::Cos => _ = writeln!(source, "{indent}r{reg}.s{i} = cos({lane});"),
+                                    UOp::Floor => _ = writeln!(source, "{indent}r{reg}.s{i} = floor({lane});"),
+                                    UOp::Trunc => _ = writeln!(source, "{indent}r{reg}.s{i} = trunc({lane});"),
+                                    UOp::Abs => _ = writeln!(source, "{indent}r{reg}.s{i} = fabs({lane});"),
+                                }
+                            }
                         }
-                        UOp::Sqrt => _ = writeln!(source, "{indent}r{reg} = sqrt({x});"),
-                        UOp::Sin => _ = writeln!(source, "{indent}r{reg} = sin({x});"),
-                        UOp::Cos => _ = writeln!(source, "{indent}r{reg} = cos({x});"),
-                        UOp::Floor => _ = writeln!(source, "{indent}r{reg} = floor({x});"),
-                        UOp::Trunc => _ = writeln!(source, "{indent}r{reg} = trunc({x});"),
-                        UOp::Abs => _ = writeln!(source, "{indent}r{reg} = fabs({x});"),
+                        _ => match uop {
+                            UOp::BitNot => _ = writeln!(source, "{indent}r{reg} = ~{x};"),
+                            UOp::Neg => _ = writeln!(source, "{indent}r{reg} = -{x};"),
+                            UOp::Exp => _ = writeln!(source, "{indent}r{reg} = exp({x});"),
+                            UOp::Exp2 => _ = writeln!(source, "{indent}r{reg} = exp2({x});"),
+                            UOp::Ln => _ = writeln!(source, "{indent}r{reg} = log({x});"),
+                            UOp::Log2 => _ = writeln!(source, "{indent}r{reg} = log2({x});"),
+                            UOp::Reciprocal => _ = writeln!(source, "{indent}r{reg} = {}/{x};", dtype.0.one_constant().c_code()),
+                            UOp::Sqrt => _ = writeln!(source, "{indent}r{reg} = sqrt({x});"),
+                            UOp::Sin => _ = writeln!(source, "{indent}r{reg} = sin({x});"),
+                            UOp::Cos => _ = writeln!(source, "{indent}r{reg} = cos({x});"),
+                            UOp::Floor => _ = writeln!(source, "{indent}r{reg} = floor({x});"),
+                            UOp::Trunc => _ = writeln!(source, "{indent}r{reg} = trunc({x});"),
+                            UOp::Abs => _ = writeln!(source, "{indent}r{reg} = fabs({x});"),
+                        },
                     }
                 }
                 Op::Vectorize { ops } => {
@@ -461,26 +488,16 @@ impl CDevice {
                     let x = get_var(x, &constants, &indices, &reg_map, &mut registers, loop_id);
                     let y = get_var(y, &constants, &indices, &reg_map, &mut registers, loop_id);
                     let reg = new_reg(op_id, &mut reg_map, &mut registers, dtype, rcs[&op_id], loop_id);
-                    _ = match bop {
-                        BOp::Add => writeln!(source, "{indent}r{reg} = {x} + {y};"),
-                        BOp::Sub => writeln!(source, "{indent}r{reg} = {x} - {y};"),
-                        BOp::Mul => writeln!(source, "{indent}r{reg} = {x} * {y};"),
-                        BOp::Div => writeln!(source, "{indent}r{reg} = {x} / {y};"),
-                        BOp::Pow => writeln!(source, "{indent}r{reg} = pow({x}, {y});"),
-                        BOp::Mod => writeln!(source, "{indent}r{reg} = (int){x} % (int){y};"),
-                        BOp::Cmplt => writeln!(source, "{indent}r{reg} = {x} < {y};"),
-                        BOp::Cmpgt => writeln!(source, "{indent}r{reg} = {x} > {y};"),
-                        BOp::Max => writeln!(source, "{indent}r{reg} = fmax({x}, {y});"),
-                        BOp::Or => writeln!(source, "{indent}r{reg} = {x} || {y};"),
-                        BOp::And => writeln!(source, "{indent}r{reg} = {x} && {y};"),
-                        BOp::BitXor => writeln!(source, "{indent}r{reg} = {x} ^ {y};"),
-                        BOp::BitOr => writeln!(source, "{indent}r{reg} = {x} | {y};"),
-                        BOp::BitAnd => writeln!(source, "{indent}r{reg} = {x} & {y};"),
-                        BOp::BitShiftLeft => writeln!(source, "{indent}r{reg} = {x} << {y};"),
-                        BOp::BitShiftRight => writeln!(source, "{indent}r{reg} = {x} >> {y};"),
-                        BOp::NotEq => writeln!(source, "{indent}r{reg} = {x} != {y};"),
-                        BOp::Eq => writeln!(source, "{indent}r{reg} = {x} == {y};"),
-                    };
+                    match dtype.1 {
+                        MemLayout::Vector(n) => {
+                            for i in 0..n {
+                                let xl = format!("{x}.s{i}");
+                                let yl = format!("{y}.s{i}");
+                                emit_binary_op(&mut source, &indent, reg, i as usize, &xl, &yl, bop);
+                            }
+                        }
+                        _ => emit_binary_op(&mut source, &indent, reg, usize::MAX, &x, &y, bop),
+                    }
                 }
                 &Op::Mad { x, y, z } => {
                     let dtype = dtypes[&op_id];
@@ -803,7 +820,41 @@ fn get_var(
     }
 }
 
-// --- C type codegen helpers ---
+fn emit_binary_op(
+    source: &mut String,
+    indent: &str,
+    reg: usize,
+    lane: usize,
+    x: &str,
+    y: &str,
+    bop: BOp,
+) {
+    let dst = if lane == usize::MAX {
+        format!("r{reg}")
+    } else {
+        format!("r{reg}.s{lane}")
+    };
+    _ = match bop {
+        BOp::Add => writeln!(source, "{indent}{dst} = {x} + {y};"),
+        BOp::Sub => writeln!(source, "{indent}{dst} = {x} - {y};"),
+        BOp::Mul => writeln!(source, "{indent}{dst} = {x} * {y};"),
+        BOp::Div => writeln!(source, "{indent}{dst} = {x} / {y};"),
+        BOp::Pow => writeln!(source, "{indent}{dst} = pow({x}, {y});"),
+        BOp::Mod => writeln!(source, "{indent}{dst} = (int){x} % (int){y};"),
+        BOp::Cmplt => writeln!(source, "{indent}{dst} = {x} < {y};"),
+        BOp::Cmpgt => writeln!(source, "{indent}{dst} = {x} > {y};"),
+        BOp::Max => writeln!(source, "{indent}{dst} = fmax({x}, {y});"),
+        BOp::Or => writeln!(source, "{indent}{dst} = {x} || {y};"),
+        BOp::And => writeln!(source, "{indent}{dst} = {x} && {y};"),
+        BOp::BitXor => writeln!(source, "{indent}{dst} = {x} ^ {y};"),
+        BOp::BitOr => writeln!(source, "{indent}{dst} = {x} | {y};"),
+        BOp::BitAnd => writeln!(source, "{indent}{dst} = {x} & {y};"),
+        BOp::BitShiftLeft => writeln!(source, "{indent}{dst} = {x} << {y};"),
+        BOp::BitShiftRight => writeln!(source, "{indent}{dst} = {x} >> {y};"),
+        BOp::NotEq => writeln!(source, "{indent}{dst} = {x} != {y};"),
+        BOp::Eq => writeln!(source, "{indent}{dst} = {x} == {y};"),
+    };
+}
 
 impl DType {
     const fn c_type(self) -> &'static str {

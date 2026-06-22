@@ -360,6 +360,7 @@ impl Kernel {
 
         kernel.vectorize_loads(&[4]);
         kernel.vectorize_stores(&[4]);
+        //kernel.vectorize_ops_backward(&[4]);
 
         kernel.run_always_on_optimizations();
         kernel.run_always_on_optimizations();
