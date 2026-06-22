@@ -348,7 +348,7 @@ impl CDevice {
                                     }
                                 }
                                 _ if self.has_vector_exts => {
-                                    _ = writeln!(source, "{indent}r{reg} = *(({}{len}*)(p{src} + {idx}));", dtype.0.c_type());
+                                    _ = writeln!(source, "{indent}r{reg} = *(({}*)(p{src} + {idx}));", dtype.0.vec_type_name(len));
                                 }
                                 _ => {
                                     for i in 0..len {
@@ -469,7 +469,7 @@ impl CDevice {
                         MemLayout::Vector(n) => n,
                         _ => unreachable!(),
                     };
-                    _ = writeln!(source, "{indent}r{reg} = ({}{}){{{}}};", dtype.0.c_type(), vlen, vars);
+                    _ = writeln!(source, "{indent}r{reg} = ({}){{{}}};", dtype.0.vec_type_name(vlen), vars);
                 }
                 &Op::Wmma { .. } => {
                     return Err(BackendError {
@@ -551,11 +551,10 @@ impl CDevice {
             let prefix = "  ";
             _ = write!(
                 reg_str,
-                "{prefix}{}{} r0",
-                dt.0.c_type(),
+                "{prefix}{} r0",
                 match dt.1 {
-                    MemLayout::Scalar => "".into(),
-                    MemLayout::Vector(len) => len.to_string(),
+                    MemLayout::Scalar => dt.0.c_type().into(),
+                    MemLayout::Vector(len) => dt.0.vec_type_name(len),
                     MemLayout::Tile { .. } => unreachable!(),
                 }
             );
@@ -566,11 +565,10 @@ impl CDevice {
                 } else {
                     _ = write!(
                         reg_str,
-                        ";\n{prefix}{}{} r{i}",
-                        dt.0.c_type(),
+                        ";\n{prefix}{} r{i}",
                         match dt.1 {
-                            MemLayout::Scalar => "".into(),
-                            MemLayout::Vector(len) => len.to_string(),
+                            MemLayout::Scalar => dt.0.c_type().into(),
+                            MemLayout::Vector(len) => dt.0.vec_type_name(len),
                             MemLayout::Tile { .. } => unreachable!(),
                         }
                     );
@@ -653,10 +651,9 @@ static inline unsigned short f32tobf16(float v) {
         let mut vec_types = String::new();
         for (dt, _, _) in &registers {
             if let MemLayout::Vector(len) = dt.1 {
-                let base = dt.0.c_type();
-                let name = format!("{base}{len}");
-                if !vec_types.contains(&format!("\ntypedef {base} {name}")) {
-                    _ = writeln!(vec_types, "typedef {base} {name} __attribute__((ext_vector_type({len})));");
+                let name = dt.0.vec_type_name(len);
+                if !vec_types.contains(&format!("\ntypedef {} {name}", dt.0.c_type())) {
+                    _ = writeln!(vec_types, "typedef {} {name} __attribute__((ext_vector_type({len})));", dt.0.c_type());
                 }
             }
         }
@@ -868,8 +865,12 @@ impl DType {
             Self::I16 => "short",
             Self::I32 => "int",
             Self::I64 => "long",
-            Self::F32 | Self::F16 | Self::BF16 => "float", // fallback to float
+            Self::F32 | Self::F16 | Self::BF16 => "float",
         }
+    }
+
+    fn vec_type_name(self, len: u16) -> String {
+        format!("{}{}", self.c_type(), len).replace(' ', "_")
     }
 }
 

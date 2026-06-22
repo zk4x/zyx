@@ -12,6 +12,8 @@ This document is your single source of truth. If it doesn't contain the answer, 
 
 **Do NOT "fix" things you weren't asked to fix.** If you notice something wrong (missing catch_unwind, formatting issues, whatever), shut up. Do not mention it. Do not fix it. The user knows. If they want it fixed, they'll ask.
 
+**ALWAYS report bugs you introduce.** If your change breaks tests, causes crashes, or introduces any regression, tell the user immediately with the exact error and your analysis. Do not silently fix it, do not move on, do not wait to be asked. Stop and explain the problem.
+
 **Never delete or modify comments/code without asking first.** If you're editing around comments, preserve them exactly. Accidental deletion is not an excuse — re-read your edit before applying.
 
 **If you abort a build mid-compilation, linker errors follow.** Always run `cargo clean -p zyx && cargo build -p zyx` before the next test run whenever an interrupt happened.

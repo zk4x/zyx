@@ -238,7 +238,7 @@ impl Kernel {
                             }
                         }
                     }
-                    if !sources.is_empty() {
+                    if !sources.is_empty() && !sources.iter().any(|s| ops.contains(s)) {
                         self.ops[ops[0]].op = Op::Vectorize { ops: sources };
                         self.ops[op_id].op = Op::Unary { x: ops[0], uop };
                     }
@@ -255,7 +255,7 @@ impl Kernel {
                             }
                         }
                     }
-                    if !sources.is_empty() {
+                    if !sources.is_empty() && !sources.iter().any(|s| ops.contains(s)) {
                         self.ops[ops[0]].op = Op::Vectorize { ops: sources };
                         self.ops[op_id].op = Op::Cast { x: ops[0], dtype };
                     }
@@ -276,7 +276,10 @@ impl Kernel {
                             }
                         }
                     }
-                    if !xs.is_empty() {
+                    if !xs.is_empty()
+                        && !xs.iter().any(|x| ops.contains(x))
+                        && !ys.iter().any(|y| ops.contains(y))
+                    {
                         let vy = self.insert_before(ops[0], Op::Vectorize { ops: ys });
                         self.ops[ops[0]].op = Op::Vectorize { ops: xs };
                         self.ops[op_id].op = Op::Binary { x: ops[0], y: vy, bop };
