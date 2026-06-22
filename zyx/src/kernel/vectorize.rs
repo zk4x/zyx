@@ -23,8 +23,8 @@ struct StoreInfo {
 }
 
 impl Kernel {
-    pub(crate) fn opt_vectorize_loads(&self, _dev_info: &DeviceInfo) -> (Optimization, usize) {
-        (Optimization::VectorizeLoads { supported_lens: vec![2, 4] }, 1)
+    pub(crate) fn opt_vectorize_loads_stores(&self, _dev_info: &DeviceInfo) -> (Optimization, usize) {
+        (Optimization::VectorizeLoadsStores { supported_lens: vec![2, 4] }, 1)
     }
 
     /// Vectorize loads.
@@ -276,10 +276,7 @@ impl Kernel {
                             }
                         }
                     }
-                    if !xs.is_empty()
-                        && !xs.iter().any(|x| ops.contains(x))
-                        && !ys.iter().any(|y| ops.contains(y))
-                    {
+                    if !xs.is_empty() && !xs.iter().any(|x| ops.contains(x)) && !ys.iter().any(|y| ops.contains(y)) {
                         let vy = self.insert_before(ops[0], Op::Vectorize { ops: ys });
                         self.ops[ops[0]].op = Op::Vectorize { ops: xs };
                         self.ops[op_id].op = Op::Binary { x: ops[0], y: vy, bop };
@@ -295,7 +292,10 @@ impl Kernel {
 
 #[cfg(test)]
 mod tests {
-    use crate::{DType, kernel::{BOp, DeviceId, Kernel, MemLayout, Op, Scope, UOp}};
+    use crate::{
+        DType,
+        kernel::{BOp, DeviceId, Kernel, MemLayout, Op, Scope, UOp},
+    };
 
     #[test]
     fn vectorize_ops_and_constfold_clears_vectorize_devectorize() {
