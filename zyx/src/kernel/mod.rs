@@ -398,13 +398,13 @@ pub enum MemLayout {
     /// Scalar layout: one element per memory location
     Scalar,
     /// Vector layout: vector of size `x`
-    Vector(u8),
+    Vector(u16),
     /// Tile layout: tile of `x` × `y` elements with stride
     Tile {
         /// Width of the tile
-        x: u8,
+        x: u16,
         /// Height of the tile
-        y: u8,
+        y: u16,
         /// Stride between tiles
         stride: u32,
     },

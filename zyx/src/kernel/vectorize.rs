@@ -103,7 +103,7 @@ impl Kernel {
                 if base_index.is_some() {
                     let vload = self.insert_before(
                         loads[0].id,
-                        Op::Load { src, index: loads[0].index, layout: MemLayout::Vector(vec_len as u8) },
+                        Op::Load { src, index: loads[0].index, layout: MemLayout::Vector(vec_len as u16) },
                     );
                     self.ops[loads[0].id].op = Op::Devectorize { vec: vload, idx: 0 };
                     for (load, &off) in loads[1..].iter().zip(&offset_order) {
@@ -115,7 +115,7 @@ impl Kernel {
     }
 
     #[allow(unused)]
-    pub(crate) fn vectorize_ops(&mut self) {
+    pub(crate) fn vectorize_ops(&mut self, supported_lens: &[u8]) {
         todo!()
     }
 
@@ -199,16 +199,9 @@ impl Kernel {
                         vec_values[off as usize] = store.x;
                     }
 
-                    let vstore = self.insert_before(
-                        stores[0].id,
-                        Op::Vectorize { ops: vec_values },
-                    );
-                    self.ops[stores[0].id].op = Op::Store {
-                        dst,
-                        x: vstore,
-                        index: stores[0].index,
-                        layout: MemLayout::Vector(vec_len as u8),
-                    };
+                    let vstore = self.insert_before(stores[0].id, Op::Vectorize { ops: vec_values });
+                    self.ops[stores[0].id].op =
+                        Op::Store { dst, x: vstore, index: stores[0].index, layout: MemLayout::Vector(vec_len as u16) };
                     for store in &stores[1..] {
                         self.remove_op(store.id);
                     }
