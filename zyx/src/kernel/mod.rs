@@ -1864,37 +1864,37 @@ impl Kernel {
     pub(crate) fn get_strides(&self, index: OpId) -> Map<OpId, (Dim, Dim)> {
         //println!("Get index {index}");
 
-        let mut params = vec![index];
+        let mut params = vec![(index, 1u64)];
         let mut indices = Map::default();
 
-        while let Some(param) = params.pop() {
+        while let Some((param, scale)) = params.pop() {
             match self.ops[param].op {
                 Op::Binary { x, y, bop } => {
                     if bop == BOp::Add {
                         if let Op::Loop { len, .. } = self.ops[x].op {
                             indices.insert(x, (len, 1));
-                            params.push(y);
+                            params.push((y, scale));
                         } else if let Op::Index { len, .. } = self.ops[x].op {
                             indices.insert(x, (len, 1));
-                            params.push(y);
+                            params.push((y, scale));
                         } else if let Op::Loop { len, .. } = self.ops[y].op {
                             indices.insert(y, (len, 1));
-                            params.push(x);
+                            params.push((x, scale));
                         } else if let Op::Index { len, .. } = self.ops[y].op {
                             indices.insert(y, (len, 1));
-                            params.push(x);
+                            params.push((x, scale));
                         } else {
-                            params.push(x);
-                            params.push(y);
+                            params.push((x, scale));
+                            params.push((y, scale));
                         }
                     }
                     if bop == BOp::Mul {
                         match (&self.ops[x].op, &self.ops[y].op) {
                             (Op::Loop { len, .. }, Op::Const(c)) | (Op::Index { len, .. }, Op::Const(c)) => {
-                                indices.insert(x, (*len, c.as_dim().unwrap()));
+                                indices.insert(x, (*len, c.as_dim().unwrap() * scale));
                             }
                             (Op::Const(c), Op::Loop { len, .. }) | (Op::Const(c), Op::Index { len, .. }) => {
-                                indices.insert(y, (*len, c.as_dim().unwrap()));
+                                indices.insert(y, (*len, c.as_dim().unwrap() * scale));
                             }
                             _ => {} //op => println!("op={op:?}"),
                         }
@@ -1902,14 +1902,15 @@ impl Kernel {
                     if bop == BOp::BitShiftLeft {
                         match (&self.ops[x].op, &self.ops[y].op) {
                             (Op::Loop { len, .. }, Op::Const(c)) | (Op::Index { len, .. }, Op::Const(c)) => {
-                                indices.insert(x, (*len, 1u64 << c.as_dim().unwrap()));
+                                indices.insert(x, (*len, (1u64 << c.as_dim().unwrap()) * scale));
                             }
                             (Op::Const(c), Op::Loop { len, .. }) | (Op::Const(c), Op::Index { len, .. }) => {
-                                indices.insert(y, (*len, 1u64 << c.as_dim().unwrap()));
+                                indices.insert(y, (*len, (1u64 << c.as_dim().unwrap()) * scale));
                             }
                             _ => {
-                                params.push(x);
-                                params.push(y);
+                                if let Op::Const(c) = self.ops[y].op {
+                                    params.push((x, scale * (1u64 << c.as_dim().unwrap())));
+                                }
                             }
                         }
                     }
@@ -1921,7 +1922,7 @@ impl Kernel {
                     } {
                         indices.insert(z, (len, 1));
                     } else {
-                        params.push(z);
+                        params.push((z, scale));
                     }
                     match (&self.ops[x].op, &self.ops[y].op) {
                         (Op::Loop { len: dim, .. }, Op::Const(c))
@@ -1933,13 +1934,13 @@ impl Kernel {
                             } else {
                                 y
                             };
-                            indices.insert(target, (*dim, c.as_dim().unwrap()));
+                            indices.insert(target, (*dim, c.as_dim().unwrap() * scale));
                         }
                         _ => {}
                     }
                 }
                 Op::Const(c) => {
-                    indices.insert(OpId::NULL, (0, c.as_dim().unwrap()));
+                    indices.insert(OpId::NULL, (0, c.as_dim().unwrap() * scale));
                 }
                 _ => {}
             }

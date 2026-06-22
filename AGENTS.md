@@ -392,6 +392,8 @@ Every optimization must produce correct IR that calculates the same result as th
 - **Never commit changes unless the user explicitly asks for it** - Always ask before committing
 - **When in doubt, ask me immediately** - Don't try to figure things out on your own if uncertain. Just ask.
 - **Ask before hunting for specs/values** - If I might have a spec, a mapping, or any information that could save time, ask me first. I always have it, so don't dig through source code or run experiments to derive it.
+- **Stay on task** — Don't run investigations the user didn't ask for. No git archaeology, no random test runs, no looking up history. Only do exactly what the user tells you.
+- **Don't run the full test suite unless asked.** Running it to "make sure nothing broke" after a change is going off track. If the user wants it run, they'll say so.
 - **Never touch `~/.config/zyx/config.json`** — never read, write, create, modify, or delete it. If a test needs a specific backend, ask the user to configure it. Do not even look at this file.
 - Inheritance (use composition/enums)
 - `Rc<RefCell<T>>` unless absolutely necessary

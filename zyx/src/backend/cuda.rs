@@ -1330,12 +1330,14 @@ impl CUDADevice {
                 &Op::Store { dst, x: src, index, layout } => {
                     let idx = get_var(index, &constants, &indices, &reg_map, &mut registers, loop_id);
                     let x = get_var(src, &constants, &indices, &reg_map, &mut registers, loop_id);
+                    let dtype = dtypes[&src].0.cu();
                     match layout {
                         MemLayout::Scalar => _ = writeln!(source, "{indent}p{dst}[{idx}] = {x};"),
                         MemLayout::Vector(len) => {
-                            for i in 0..len {
-                                _ = writeln!(source, "{indent}p{dst}[{idx} + {i}] = {x}.{};", VEC_COMPONENTS[i as usize]);
-                            }
+                            _ = writeln!(
+                                source,
+                                "{indent}*reinterpret_cast<{dtype}{len}*>(&p{dst}[{idx}]) = {x};",
+                            );
                         }
                         MemLayout::Tile { x, y, stride } => todo!(),
                     }

@@ -15,6 +15,13 @@ struct LoadInfo {
     index: OpId,
 }
 
+#[derive(Debug)]
+struct StoreInfo {
+    id: OpId,
+    index: OpId,
+    x: OpId,
+}
+
 impl Kernel {
     pub(crate) fn opt_vectorize_loads(&self, _dev_info: &DeviceInfo) -> (Optimization, usize) {
         (Optimization::VectorizeLoads { supported_lens: vec![2, 4] }, 1)
@@ -112,8 +119,101 @@ impl Kernel {
         todo!()
     }
 
-    #[allow(unused)]
-    pub(crate) fn vectorize_stores(&mut self) {
-        todo!()
+    /// Vectorize stores.
+    ///
+    /// Combines multiple scalar stores into a single vectorized store for better performance.
+    /// `supported_lens` is the list of vector element counts the target device supports.
+    pub fn vectorize_stores(&mut self, supported_lens: &[u8]) {
+        let mut op_id = self.head;
+        let mut stores: Vec<Map<OpId, Vec<StoreInfo>>> = Vec::new();
+        stores.push(Map::default());
+        while !op_id.is_null() {
+            match self.ops[op_id].op {
+                Op::Loop { .. } => {
+                    stores.push(Map::default());
+                }
+                Op::Store { dst, x, index, layout } => {
+                    if layout == MemLayout::Scalar {
+                        stores
+                            .last_mut()
+                            .unwrap()
+                            .entry(dst)
+                            .and_modify(|e| e.push(StoreInfo { id: op_id, index, x }))
+                            .or_insert_with(|| vec![StoreInfo { id: op_id, index, x }]);
+                    }
+                }
+                Op::EndLoop => self.verify_and_apply_store_vectorization(&mut stores, supported_lens),
+                _ => {}
+            }
+
+            op_id = self.next_op(op_id);
+        }
+
+        self.verify_and_apply_store_vectorization(&mut stores, supported_lens);
+    }
+
+    fn verify_and_apply_store_vectorization(&mut self, stores: &mut Vec<Map<OpId, Vec<StoreInfo>>>, supported_lens: &[u8]) {
+        if let Some(stores) = stores.pop() {
+            for (dst, mut stores) in stores {
+                if !supported_lens.contains(&(stores.len() as u8)) {
+                    continue;
+                }
+
+                stores.sort_unstable_by_key(|x| self.get_strides(x.index).len());
+
+                let mut base_index = None;
+                let mut offset_order: Vec<Dim> = Vec::new();
+                let vec_len = stores.len() as Dim;
+                for (base_idx, (_, vl)) in self.get_strides(stores[0].index) {
+                    if vl != vec_len {
+                        continue;
+                    }
+                    let mut offsets: Set<Dim> = (0..vec_len).collect();
+                    offset_order.clear();
+
+                    if stores[1..].iter().all(|x| {
+                        let strides = self.get_strides(x.index);
+                        strides.iter().any(|(&idx, (_, st))| idx == base_idx && *st == vec_len)
+                            && strides.iter().any(|(&idx, (_, st))| {
+                                let found = idx.is_null() && offsets.remove(st);
+                                if found {
+                                    offset_order.push(*st);
+                                }
+                                found
+                            })
+                    }) {
+                        if offsets.remove(&0) {
+                            base_index = Some(base_idx);
+                            break;
+                        }
+                    }
+                }
+
+                // Now that we know offsets are contiguous, replace scalar stores with a single vectorized store
+                if base_index.is_some() {
+                    // Build vector values at correct offset positions
+                    let mut vec_values = Vec::with_capacity(vec_len as usize);
+                    vec_values.resize(vec_len as usize, OpId::NULL);
+                    vec_values[0] = stores[0].x;
+                    for (store, &off) in stores[1..].iter().zip(&offset_order) {
+                        vec_values[off as usize] = store.x;
+                    }
+
+                    let vstore = self.insert_before(
+                        stores[0].id,
+                        Op::Vectorize { ops: vec_values },
+                    );
+                    self.ops[stores[0].id].op = Op::Store {
+                        dst,
+                        x: vstore,
+                        index: stores[0].index,
+                        layout: MemLayout::Vector(vec_len as u8),
+                    };
+                    for store in &stores[1..] {
+                        self.remove_op(store.id);
+                    }
+                }
+            }
+        }
     }
 }
