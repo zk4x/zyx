@@ -289,6 +289,7 @@ impl Optimization {
                 kernel.vectorize_stores(supported_lens);
                 if *vectorize_ops {
                     kernel.vectorize_ops_backward(supported_lens);
+                    kernel.vectorize_ops_forward(supported_lens);
                 }
             }
             Optimization::MergeNestedLoops { groups } => {
@@ -365,9 +366,8 @@ impl Kernel {
 
         kernel.vectorize_loads(&[4]);
         kernel.vectorize_stores(&[4]);
-        if device.info().has_vector_ops {
-            kernel.vectorize_ops_backward(&[4]);
-        }
+        //kernel.vectorize_ops_backward(&[4]);
+        kernel.vectorize_ops_forward(&[2, 4]);
 
         kernel.run_always_on_optimizations();
         kernel.run_always_on_optimizations();
@@ -429,7 +429,7 @@ impl Kernel {
         write_bytes: u64,
         debug: DebugMask,
     ) -> Result<(DeviceProgramId, OptSeq), BackendError> {
-        if false {
+        if true {
             return self.apply_selected_optimizations(buffers, device, memory_pool, config, flop, read_bytes, write_bytes, debug);
         }
 
