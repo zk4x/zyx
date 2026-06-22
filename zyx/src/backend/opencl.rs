@@ -964,9 +964,7 @@ impl OpenCLDevice {
                         match layout {
                             MemLayout::Scalar => _ = writeln!(source, "{indent}r{reg} = p{src}[{idx}];"),
                             MemLayout::Vector(len) => {
-                                for i in 0..len {
-                                    _ = writeln!(source, "{indent}r{reg}.{} = p{src}[{idx} + {i}];", VEC_COMPONENTS[i as usize]);
-                                }
+                                _ = writeln!(source, "{indent}r{reg} = vload{len}(0, p{src} + {idx});");
                             }
                             MemLayout::Tile { .. } => todo!(),
                         }
@@ -978,9 +976,7 @@ impl OpenCLDevice {
                     match layout {
                         MemLayout::Scalar => _ = writeln!(source, "{indent}p{dst}[{idx}] = {x};"),
                         MemLayout::Vector(len) => {
-                            for i in 0..len {
-                                _ = writeln!(source, "{indent}p{dst}[{idx} + {i}] = {x}.{};", VEC_COMPONENTS[i as usize]);
-                            }
+                            _ = writeln!(source, "{indent}vstore{len}({x}, 0, p{dst} + {idx});");
                         }
                         MemLayout::Tile { .. } => todo!(),
                     }
@@ -1038,7 +1034,12 @@ impl OpenCLDevice {
                     };
                     _ = writeln!(source, "{indent}r{reg} = ({}{})({vars});", dtype.0.ocl(), vlen);
                 }
-                &Op::Devectorize { .. } => todo!(),
+                &Op::Devectorize { vec, idx } => {
+                    let dtype = dtypes[&op_id];
+                    let vec = get_var(vec, &constants, &indices, &reg_map, &mut registers, loop_id);
+                    let reg = new_reg(op_id, &mut reg_map, &mut registers, dtype, rcs[&op_id], loop_id);
+                    _ = writeln!(source, "{indent}r{reg} = r{vec}.{};", VEC_COMPONENTS[idx]);
+                }
                 Op::Wmma { .. } => todo!(),
                 &Op::Binary { x, y, bop } => {
                     let dtype = dtypes[&op_id];
