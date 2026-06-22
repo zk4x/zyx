@@ -9,13 +9,15 @@
 #![allow(clippy::needless_pass_by_ref_mut)]
 #![allow(clippy::unused_self)]
 
-use super::{Device, DeviceId, DeviceInfo, DeviceProgramId, Event, MemoryPool, OpCapability, PoolBufferId, PoolId, host::HostMemoryPool};
+use super::{
+    Device, DeviceId, DeviceInfo, DeviceProgramId, Event, MemoryPool, OpCapability, PoolBufferId, PoolId, host::HostMemoryPool,
+};
 use crate::{
     DType, Map, Set,
     dtype::Constant,
-    scalar::{bf16, f16},
     error::{BackendError, ErrorStatus},
     kernel::{BOp, Kernel, MemLayout, Op, OpId, Scope, UOp},
+    scalar::{bf16, f16},
     shape::Dim,
     slab::Slab,
 };
@@ -81,9 +83,7 @@ pub(super) fn initialize_device(
         .copied()
         .unwrap_or("cc");
     let has_vector_exts = Command::new(compiler)
-        .args([
-            "-O2", "-x", "c", "-", "-o", "/dev/null",
-        ])
+        .args(["-O2", "-x", "c", "-", "-o", "/dev/null"])
         .arg("-Werror")
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::null())
@@ -349,7 +349,11 @@ impl CDevice {
                                     }
                                 }
                                 _ if self.has_vector_exts => {
-                                    _ = writeln!(source, "{indent}r{reg} = *(({}*)(p{src} + {idx}));", dtype.0.vec_type_name(len));
+                                    _ = writeln!(
+                                        source,
+                                        "{indent}r{reg} = *(({}*)(p{src} + {idx}));",
+                                        dtype.0.vec_type_name(len)
+                                    );
                                 }
                                 _ => {
                                     for i in 0..len {
@@ -428,7 +432,9 @@ impl CDevice {
                                     UOp::Exp2 => _ = writeln!(source, "{indent}r{reg}.s{i} = exp2({lane});"),
                                     UOp::Ln => _ = writeln!(source, "{indent}r{reg}.s{i} = log({lane});"),
                                     UOp::Log2 => _ = writeln!(source, "{indent}r{reg}.s{i} = log2({lane});"),
-                                    UOp::Reciprocal => _ = writeln!(source, "{indent}r{reg}.s{i} = {}/{lane};", dtype.0.one_constant().c_code()),
+                                    UOp::Reciprocal => {
+                                        _ = writeln!(source, "{indent}r{reg}.s{i} = {}/{lane};", dtype.0.one_constant().c_code())
+                                    }
                                     UOp::Sqrt => _ = writeln!(source, "{indent}r{reg}.s{i} = sqrt({lane});"),
                                     UOp::Sin => _ = writeln!(source, "{indent}r{reg}.s{i} = sin({lane});"),
                                     UOp::Cos => _ = writeln!(source, "{indent}r{reg}.s{i} = cos({lane});"),
@@ -654,7 +660,11 @@ static inline unsigned short f32tobf16(float v) {
             if let MemLayout::Vector(len) = dt.1 {
                 let name = dt.0.vec_type_name(len);
                 if !vec_types.contains(&format!("\ntypedef {} {name}", dt.0.c_type())) {
-                    _ = writeln!(vec_types, "typedef {} {name} __attribute__((ext_vector_type({len})));", dt.0.c_type());
+                    _ = writeln!(
+                        vec_types,
+                        "typedef {} {name} __attribute__((ext_vector_type({len})));",
+                        dt.0.c_type()
+                    );
                 }
             }
         }
@@ -818,15 +828,7 @@ fn get_var(
     }
 }
 
-fn emit_binary_op(
-    source: &mut String,
-    indent: &str,
-    reg: usize,
-    lane: usize,
-    x: &str,
-    y: &str,
-    bop: BOp,
-) {
+fn emit_binary_op(source: &mut String, indent: &str, reg: usize, lane: usize, x: &str, y: &str, bop: BOp) {
     let dst = if lane == usize::MAX {
         format!("r{reg}")
     } else {
