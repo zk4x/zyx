@@ -366,7 +366,7 @@ impl Kernel {
 
         kernel.vectorize_loads(&[4]);
         kernel.vectorize_stores(&[4]);
-        //kernel.vectorize_ops_backward(&[4]);
+        kernel.vectorize_ops_backward(&[4]);
         kernel.vectorize_ops_forward(&[2, 4]);
 
         kernel.run_always_on_optimizations();
@@ -429,7 +429,7 @@ impl Kernel {
         write_bytes: u64,
         debug: DebugMask,
     ) -> Result<(DeviceProgramId, OptSeq), BackendError> {
-        if true {
+        if false {
             return self.apply_selected_optimizations(buffers, device, memory_pool, config, flop, read_bytes, write_bytes, debug);
         }
 

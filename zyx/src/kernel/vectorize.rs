@@ -373,6 +373,9 @@ impl Kernel {
                 continue;
             }
 
+            // Collect sources for each sub-op, then insert new vector ops
+            // and remap consumers. Guard: no sub-op is also a source
+            // (would create use-before-declaration in the IR).
             match &self.ops[ops[0]].op {
                 Op::Unary { uop, .. } => {
                     let uop = *uop;
@@ -387,8 +390,9 @@ impl Kernel {
                         }
                     }
                     if !sources.is_empty() && !sources.iter().any(|s| ops.contains(s)) {
-                        self.ops[ops[0]].op = Op::Vectorize { ops: sources };
-                        self.ops[op_id].op = Op::Unary { x: ops[0], uop };
+                        let v_src = self.insert_before(ops[0], Op::Vectorize { ops: sources });
+                        let v_op = self.insert_before(ops[0], Op::Unary { x: v_src, uop });
+                        self.remap(op_id, v_op);
                     }
                 }
                 Op::Cast { dtype, .. } => {
@@ -404,8 +408,9 @@ impl Kernel {
                         }
                     }
                     if !sources.is_empty() && !sources.iter().any(|s| ops.contains(s)) {
-                        self.ops[ops[0]].op = Op::Vectorize { ops: sources };
-                        self.ops[op_id].op = Op::Cast { x: ops[0], dtype };
+                        let v_src = self.insert_before(ops[0], Op::Vectorize { ops: sources });
+                        let v_op = self.insert_before(ops[0], Op::Cast { x: v_src, dtype });
+                        self.remap(op_id, v_op);
                     }
                 }
                 Op::Binary { bop, .. } => {
@@ -425,9 +430,10 @@ impl Kernel {
                         }
                     }
                     if !xs.is_empty() && !xs.iter().any(|x| ops.contains(x)) && !ys.iter().any(|y| ops.contains(y)) {
-                        let vy = self.insert_before(ops[0], Op::Vectorize { ops: ys });
-                        self.ops[ops[0]].op = Op::Vectorize { ops: xs };
-                        self.ops[op_id].op = Op::Binary { x: ops[0], y: vy, bop };
+                        let v_xs = self.insert_before(ops[0], Op::Vectorize { ops: xs });
+                        let v_ys = self.insert_before(ops[0], Op::Vectorize { ops: ys });
+                        let v_op = self.insert_before(ops[0], Op::Binary { x: v_xs, y: v_ys, bop });
+                        self.remap(op_id, v_op);
                     }
                 }
                 _ => {}
