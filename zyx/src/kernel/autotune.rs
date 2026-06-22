@@ -288,8 +288,8 @@ impl Optimization {
                 kernel.vectorize_loads(supported_lens);
                 kernel.vectorize_stores(supported_lens);
                 if *vectorize_ops {
-                    kernel.vectorize_ops_backward(supported_lens);
                     kernel.vectorize_ops_forward(supported_lens);
+                    //kernel.vectorize_ops_backward(supported_lens);
                 }
             }
             Optimization::MergeNestedLoops { groups } => {

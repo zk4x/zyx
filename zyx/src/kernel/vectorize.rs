@@ -209,6 +209,18 @@ impl Kernel {
         }
     }
 
+    /// Check whether `target` appears after `pos` in the IR op chain.
+    fn op_is_before(&self, target: OpId, pos: OpId) -> bool {
+        let mut cur = self.head;
+        while !cur.is_null() && cur != pos {
+            if cur == target {
+                return true;
+            }
+            cur = self.next_op(cur);
+        }
+        false
+    }
+
     /// Walk forward, find `unary(devec(v,i))` / `cast(devec(v,i))` patterns
     /// where multiple lanes of the same source `v` share identical scalar ops.
     /// Insert `Vectorize` of the devec operands + vector op + `Devectorize` of results.
@@ -281,74 +293,101 @@ impl Kernel {
                 op_id = self.next_op(op_id);
             }
 
-            // Find the largest group that fits a supported length
-            let best = groups
-                .iter_mut()
-                .filter(|(_, _, entries)| entries.len() >= 2)
-                .max_by_key(|(_, _, entries)| entries.len());
+            // Try groups in descending size order
+            let mut indices: Vec<usize> = (0..groups.len())
+                .filter(|&i| groups[i].2.len() >= 2)
+                .collect();
+            indices.sort_by(|&a, &b| groups[b].2.len().cmp(&groups[a].2.len()));
 
-            let Some((_source, op_type, entries)) = best else {
-                break;
-            };
+            let mut applied = false;
+            for &idx in &indices {
+                let (_source, op_type, entries) = &groups[idx];
+                let n = entries.len();
 
-            // Pick largest supported length <= entries.len()
-            let Some(vec_len) = supported.iter().copied().find(|&l| (l as usize) <= entries.len()) else {
-                break;
-            };
-            let vec_len = vec_len as usize;
+                // Pick largest supported length <= n
+                let Some(vec_len) = supported.iter().copied().find(|&l| (l as usize) <= n) else {
+                    continue;
+                };
+                let vec_len = vec_len as usize;
 
-            // Take the first vec_len entries
-            let selected: Vec<(OpId, usize)> = entries.iter().take(vec_len).copied().collect();
+                // Take the first vec_len entries
+                let selected: Vec<(OpId, usize)> = entries.iter().take(vec_len).copied().collect();
 
-            let first = selected[0].0;
-            let vec_op_id = match op_type {
-                OpType::Unary(uop) => {
-                    let devec_ops: Vec<OpId> = selected
-                        .iter()
-                        .map(|&(c, _)| match &self.ops[c].op {
-                            Op::Unary { x, .. } => *x,
-                            _ => unreachable!(),
-                        })
-                        .collect();
-                    let vd = self.insert_before(first, Op::Vectorize { ops: devec_ops });
-                    self.insert_before(first, Op::Unary { x: vd, uop: *uop })
-                }
-                OpType::Cast(dtype) => {
-                    let devec_ops: Vec<OpId> = selected
-                        .iter()
-                        .map(|&(c, _)| match &self.ops[c].op {
-                            Op::Cast { x, .. } => *x,
-                            _ => unreachable!(),
-                        })
-                        .collect();
-                    let vd = self.insert_before(first, Op::Vectorize { ops: devec_ops });
-                    self.insert_before(first, Op::Cast { x: vd, dtype: *dtype })
-                }
-                OpType::Binary(bop, devec_pos) => {
-                    let n = selected.len();
-                    let mut devec_ops = Vec::with_capacity(n);
-                    let mut other_ops = Vec::with_capacity(n);
+                let first = selected[0].0;
+
+                // For Binary: guard against other_ops defined after `first`
+                // (would create use-before-declaration).
+                if let OpType::Binary(_, devec_pos) = op_type {
+                    let mut other_ops = Vec::with_capacity(vec_len);
                     for &(consumer, _) in &selected {
                         let (x, y) = match &self.ops[consumer].op {
                             Op::Binary { x, y, .. } => (*x, *y),
                             _ => unreachable!(),
                         };
-                        if *devec_pos == 0 {
-                            devec_ops.push(x);
-                            other_ops.push(y);
-                        } else {
-                            devec_ops.push(y);
-                            other_ops.push(x);
-                        }
+                        let o = if *devec_pos == 0 { y } else { x };
+                        other_ops.push(o);
                     }
-                    let vd = self.insert_before(first, Op::Vectorize { ops: devec_ops });
-                    let vo = self.insert_before(first, Op::Vectorize { ops: other_ops });
-                    let (vx, vy) = if *devec_pos == 0 { (vd, vo) } else { (vo, vd) };
-                    self.insert_before(first, Op::Binary { x: vx, y: vy, bop: *bop })
+                    if other_ops.iter().any(|&o| !self.op_is_before(o, first)) {
+                        continue;
+                    }
                 }
-            };
-            for (i, &(consumer, _)) in selected.iter().enumerate() {
-                self.ops[consumer].op = Op::Devectorize { vec: vec_op_id, idx: i };
+
+                // Apply vectorization
+                let vec_op_id = match op_type {
+                    OpType::Unary(uop) => {
+                        let devec_ops: Vec<OpId> = selected
+                            .iter()
+                            .map(|&(c, _)| match &self.ops[c].op {
+                                Op::Unary { x, .. } => *x,
+                                _ => unreachable!(),
+                            })
+                            .collect();
+                        let vd = self.insert_before(first, Op::Vectorize { ops: devec_ops });
+                        self.insert_before(first, Op::Unary { x: vd, uop: *uop })
+                    }
+                    OpType::Cast(dtype) => {
+                        let devec_ops: Vec<OpId> = selected
+                            .iter()
+                            .map(|&(c, _)| match &self.ops[c].op {
+                                Op::Cast { x, .. } => *x,
+                                _ => unreachable!(),
+                            })
+                            .collect();
+                        let vd = self.insert_before(first, Op::Vectorize { ops: devec_ops });
+                        self.insert_before(first, Op::Cast { x: vd, dtype: *dtype })
+                    }
+                    OpType::Binary(bop, devec_pos) => {
+                        let n = selected.len();
+                        let mut devec_ops = Vec::with_capacity(n);
+                        let mut other_ops = Vec::with_capacity(n);
+                        for &(consumer, _) in &selected {
+                            let (x, y) = match &self.ops[consumer].op {
+                                Op::Binary { x, y, .. } => (*x, *y),
+                                _ => unreachable!(),
+                            };
+                            if *devec_pos == 0 {
+                                devec_ops.push(x);
+                                other_ops.push(y);
+                            } else {
+                                devec_ops.push(y);
+                                other_ops.push(x);
+                            }
+                        }
+                        let vd = self.insert_before(first, Op::Vectorize { ops: devec_ops });
+                        let vo = self.insert_before(first, Op::Vectorize { ops: other_ops });
+                        let (vx, vy) = if *devec_pos == 0 { (vd, vo) } else { (vo, vd) };
+                        self.insert_before(first, Op::Binary { x: vx, y: vy, bop: *bop })
+                    }
+                };
+                for (i, &(consumer, _)) in selected.iter().enumerate() {
+                    self.ops[consumer].op = Op::Devectorize { vec: vec_op_id, idx: i };
+                }
+                applied = true;
+                break;
+            }
+
+            if !applied {
+                break;
             }
         }
     }
