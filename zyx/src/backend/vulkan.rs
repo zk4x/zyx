@@ -552,7 +552,6 @@ pub(super) fn initialize_device(
     devices: &mut Slab<super::DeviceId, super::Device>,
     debug_dev: bool,
 ) -> Result<(), BackendError> {
-    eprintln!("VK_ENTER");
     if let Some(ids) = &config.device_ids
         && ids.is_empty()
     {
@@ -562,7 +561,6 @@ pub(super) fn initialize_device(
         return Ok(());
     }
 
-    eprintln!("VK_BEFORE_LIB");
     let vulkan_paths = [
         "/lib64/libvulkan.so",
         "/lib64/libvulkan.so.1",
@@ -577,16 +575,12 @@ pub(super) fn initialize_device(
         "/lib64/x86_64-linux-gnu/libvulkan.so",
         "/lib64/x86_64-linux-gnu/libvulkan.so.1",
     ];
-    eprintln!("VK_BEFORE_FINDMAP");
     let lib = vulkan_paths
         .into_iter()
         .find_map(|path| unsafe { Library::new(path) }.ok())
         .ok_or_else(|| BackendError { status: ErrorStatus::DyLibNotFound, context: "[vulkan] libvulkan.so not found.".into() })?;
-    eprintln!("VK_LIB_OK");
-
     let vkGetInstanceProcAddr: unsafe extern "system" fn(VkInstance, *const i8) -> *mut std::ffi::c_void =
         *unsafe { lib.get(b"vkGetInstanceProcAddr\0") }?;
-    eprintln!("VK_GET_INST_PROC_OK");
     let vkCreateInstance: unsafe extern "system" fn(
         *const VkInstanceCreateInfo,
         *const std::ffi::c_void,
@@ -614,10 +608,8 @@ pub(super) fn initialize_device(
         enabledExtensionCount: 0,
         ppEnabledExtensionNames: std::ptr::null(),
     };
-    eprintln!("VK_BEFORE_CREATE_INSTANCE");
     let mut instance = std::ptr::null_mut();
     let res = unsafe { vkCreateInstance(&ici, std::ptr::null(), &mut instance) };
-    eprintln!("VK_AFTER_CREATE_INSTANCE={res}");
     if res != VK_SUCCESS {
         return Err(BackendError { status: ErrorStatus::Initialization, context: format!("[vulkan] instance: {res}").into() });
     }
@@ -655,21 +647,14 @@ pub(super) fn initialize_device(
         get_inst_proc!("vkGetDeviceProcAddr");
 
     // Wrap library in Arc so the worker thread can hold a reference (OpenCL pattern)
-    eprintln!("VK_BEFORE_ARC");
     let library = Arc::new(lib);
-    eprintln!("VK_AFTER_ARC");
 
     let mut gpu_count: u32 = 0;
-    eprintln!("VK_BEFORE_ENUM1");
     let _ = unsafe { vkEnumeratePhysicalDevices(instance, &mut gpu_count, std::ptr::null_mut()) };
-    eprintln!("VK_AFTER_ENUM1 count={gpu_count}");
     let mut gpus: Vec<VkPhysicalDevice> = vec![std::ptr::null_mut(); gpu_count as usize];
-    eprintln!("VK_BEFORE_ENUM2");
     let _ = unsafe { vkEnumeratePhysicalDevices(instance, &mut gpu_count, gpus.as_mut_ptr()) };
-    eprintln!("VK_AFTER_ENUM2");
 
     for gpu in gpus {
-        eprintln!("VK_LOOP_GPU={:p}", gpu);
         let mut props: VkPhysicalDeviceProperties = unsafe { std::mem::zeroed() };
         unsafe { vkGetPhysicalDeviceProperties(gpu, &mut props) };
         let name = {
@@ -892,10 +877,8 @@ pub(super) fn initialize_device(
         // Clone library Arc for worker thread (OpenCL pattern)
         let worker_library = Arc::clone(&library);
 
-        eprintln!("VK_BEFORE_SPAWN");
         std::thread::spawn({
             let free_bytes_atomic = Arc::clone(&free_bytes_atomic);
-            eprintln!("VK_SPAWN_INNER");
             move || {
                 let _worker_library = worker_library; // keep libvulkan.so alive
                 let instance = instance_raw as VkInstance;
@@ -1257,8 +1240,6 @@ pub(super) fn initialize_device(
                                 }));
                                 continue;
                             }
-                            eprintln!("Launch 2");
-
                             let n = args.len();
                             let mut buf_infos: Vec<VkDescriptorBufferInfo> = Vec::with_capacity(n);
                             for &arg_id in &args {
@@ -1280,9 +1261,7 @@ pub(super) fn initialize_device(
                                     pTexelBufferView: std::ptr::null(),
                                 });
                             }
-                            eprintln!("Launch 3");
                             unsafe { vkUpdateDescriptorSets(device, writes.len() as u32, writes.as_ptr(), 0, std::ptr::null()) };
-                            eprintln!("Launch 4");
 
                             let cmd_alloc = VkCommandBufferAllocateInfo {
                                 sType: VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
@@ -1482,16 +1461,22 @@ pub(super) fn initialize_device(
                 max_register_bytes: 1024,
                 tensor_cores: false,
                 warp_size: 32,
-                supported_dtype_ops: [OpCapability::all(); DType::N_DTYPES],
+                supported_dtype_ops: {
+                    let mut all = [OpCapability::all(); DType::N_DTYPES];
+                    // Vulkan/SPIR-V f64 transcendentals crash or produce garbage
+                    all[DType::F64 as usize].0 &=
+                        !(OpCapability::EXP | OpCapability::EXP2 | OpCapability::LN
+                        | OpCapability::LOG2 | OpCapability::SIN | OpCapability::COS
+                        | OpCapability::POW);
+                    all
+                },
                 has_native_exp2: false,
             },
             memory_pool_id: PoolId::from(usize::from(memory_pools.len()) - 1),
         };
 
         devices.push(super::Device::Vulkan(dev));
-        eprintln!("VK_LOOP_END");
     }
 
-    eprintln!("VK_OK");
     Ok(())
 }
