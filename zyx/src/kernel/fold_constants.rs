@@ -38,19 +38,28 @@ impl Kernel {
         while !op_id.is_null() {
             let next = self.next_op(op_id);
             match *self.at(op_id) {
-                Op::Move { .. } | Op::ConstView { .. } | Op::LoadView { .. } | Op::StoreView { .. } | Op::Reduce { .. } => unreachable!("these ops should be unfolded before constant folding"),
-                Op::Wmma { .. }
-                | Op::Barrier { .. }
-                | Op::If { .. }
-                | Op::EndIf => {}
-                | Op::Vectorize { .. }
-                | Op::Devectorize { .. }
+                Op::Move { .. } | Op::ConstView { .. } | Op::LoadView { .. } | Op::StoreView { .. } | Op::Reduce { .. } => {
+                    unreachable!("these ops should be unfolded before constant folding")
+                }
+                Op::Wmma { .. } | Op::Barrier { .. } | Op::If { .. } | Op::EndIf => {}
+                Op::Devectorize { .. }
                 | Op::Const(_)
                 | Op::Define { .. }
                 | Op::Load { .. }
                 | Op::Index { .. }
                 | Op::Loop { .. }
                 | Op::EndLoop => {}
+                Op::Vectorize { ref ops } => {
+                    // vectorize[devec(v,0), devec(v,1), ..., devec(v,n-1)] → v
+                    if let Op::Devectorize { vec, idx: 0 } = self.at(ops[0]) {
+                        let vec = *vec;
+                        if ops[1..].iter().enumerate().all(
+                            |(i, &sub)| matches!(self.at(sub), Op::Devectorize { vec: v, idx } if *v == vec && *idx == i + 1),
+                        ) {
+                            self.remap(op_id, vec);
+                        }
+                    }
+                }
                 Op::Store { dst, x, .. } => {
                     // If we store something that we just loaded, the store is pointless
                     if let Op::Load { src, .. } = *self.at(x) {
@@ -154,50 +163,46 @@ impl Kernel {
                         BOp::BitShiftRight if cy.is_zero() => self.remap(op_id, x),
                         _ => {}
                     },
-                    (x_op, y_op) if x_op == y_op => {
-                        match bop {
-                            BOp::Div => {
-                                let dtype = self.dtype(x);
-                                self.ops[op_id].op = Op::Const(dtype.one_constant());
-                            }
-                            BOp::Sub => {
-                                let dtype = self.dtype(x);
-                                self.ops[op_id].op = Op::Const(dtype.zero_constant());
-                            }
-                            _ => {}
+                    (x_op, y_op) if x_op == y_op => match bop {
+                        BOp::Div => {
+                            let dtype = self.dtype(x);
+                            self.ops[op_id].op = Op::Const(dtype.one_constant());
                         }
+                        BOp::Sub => {
+                            let dtype = self.dtype(x);
+                            self.ops[op_id].op = Op::Const(dtype.zero_constant());
+                        }
+                        _ => {}
+                    },
+                    _ => {}
+                },
+                Op::Mad { x, y, z } => match (self.at(x).clone(), self.at(y).clone(), self.at(z).clone()) {
+                    (Op::Const(cx), Op::Const(cy), Op::Const(cz)) => {
+                        let mul = Constant::binary(cx, cy, BOp::Mul);
+                        self.ops[op_id].op = Op::Const(Constant::binary(mul, cz, BOp::Add));
+                    }
+                    (Op::Const(cx), Op::Const(cy), _) => {
+                        let mul = Constant::binary(cx, cy, BOp::Mul);
+                        let x = self.insert_before(op_id, Op::Const(mul));
+                        self.ops[op_id].op = Op::Binary { x, y: z, bop: BOp::Add };
+                    }
+                    (Op::Const(cx), _, _) if cx.is_zero() => {
+                        self.remap(op_id, z);
+                    }
+                    (Op::Const(cx), _, _) if cx.is_one() => {
+                        self.ops[op_id].op = Op::Binary { x: y, y: z, bop: BOp::Add };
+                    }
+                    (_, Op::Const(cy), _) if cy.is_zero() => {
+                        self.remap(op_id, z);
+                    }
+                    (_, Op::Const(cy), _) if cy.is_one() => {
+                        self.ops[op_id].op = Op::Binary { x, y: z, bop: BOp::Add };
+                    }
+                    (_, _, Op::Const(cz)) if cz.is_zero() => {
+                        self.ops[op_id].op = Op::Binary { x, y, bop: BOp::Mul };
                     }
                     _ => {}
                 },
-                Op::Mad { x, y, z } => {
-                    match (self.at(x).clone(), self.at(y).clone(), self.at(z).clone()) {
-                        (Op::Const(cx), Op::Const(cy), Op::Const(cz)) => {
-                            let mul = Constant::binary(cx, cy, BOp::Mul);
-                            self.ops[op_id].op = Op::Const(Constant::binary(mul, cz, BOp::Add));
-                        }
-                        (Op::Const(cx), Op::Const(cy), _) => {
-                            let mul = Constant::binary(cx, cy, BOp::Mul);
-                            let x = self.insert_before(op_id, Op::Const(mul));
-                            self.ops[op_id].op = Op::Binary { x, y: z, bop: BOp::Add };
-                        }
-                        (Op::Const(cx), _, _) if cx.is_zero() => {
-                            self.remap(op_id, z);
-                        }
-                        (Op::Const(cx), _, _) if cx.is_one() => {
-                            self.ops[op_id].op = Op::Binary { x: y, y: z, bop: BOp::Add };
-                        }
-                        (_, Op::Const(cy), _) if cy.is_zero() => {
-                            self.remap(op_id, z);
-                        }
-                        (_, Op::Const(cy), _) if cy.is_one() => {
-                            self.ops[op_id].op = Op::Binary { x, y: z, bop: BOp::Add };
-                        }
-                        (_, _, Op::Const(cz)) if cz.is_zero() => {
-                            self.ops[op_id].op = Op::Binary { x, y, bop: BOp::Mul };
-                        }
-                        _ => {}
-                    }
-                }
             }
             op_id = next;
         }
