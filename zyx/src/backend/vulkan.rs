@@ -57,21 +57,21 @@ const VK_STRUCTURE_TYPE_APPLICATION_INFO: u32 = 0;
 const VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO: u32 = 1;
 const VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO: u32 = 2;
 const VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO: u32 = 3;
-const VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO: u32 = 5;
-const VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO: u32 = 11;
-const VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO: u32 = 16;
-const VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO: u32 = 19;
-const VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO: u32 = 22;
-const VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO: u32 = 23;
-const VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO: u32 = 24;
-const VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO: u32 = 29;
-const VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO: u32 = 30;
-const VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET: u32 = 33;
-const VK_STRUCTURE_TYPE_SUBMIT_INFO: u32 = 34;
-const VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO: u32 = 36;
-const VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO: u32 = 37;
-const VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO: u32 = 38;
-const VK_STRUCTURE_TYPE_FENCE_CREATE_INFO: u32 = 82;
+const VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO: u32 = 16;
+const VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO: u32 = 12;
+const VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO: u32 = 5;
+const VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO: u32 = 18;
+const VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO: u32 = 30;
+const VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO: u32 = 29;
+const VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO: u32 = 32;
+const VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO: u32 = 33;
+const VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO: u32 = 34;
+const VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET: u32 = 35;
+const VK_STRUCTURE_TYPE_SUBMIT_INFO: u32 = 4;
+const VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO: u32 = 39;
+const VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO: u32 = 40;
+const VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO: u32 = 42;
+const VK_STRUCTURE_TYPE_FENCE_CREATE_INFO: u32 = 8;
 
 const VK_BUFFER_USAGE_STORAGE_BUFFER_BIT: u32 = 0x0080;
 const VK_BUFFER_USAGE_TRANSFER_DST_BIT: u32 = 0x0002;
@@ -84,8 +84,8 @@ const VK_COMMAND_BUFFER_LEVEL_PRIMARY: u32 = 0;
 const VK_PIPELINE_BIND_POINT_COMPUTE: u32 = 1;
 const VK_SHADER_STAGE_COMPUTE_BIT: u32 = 0x0020;
 const VK_QUEUE_COMPUTE_BIT: u32 = 0x0004;
-const VK_DESCRIPTOR_TYPE_STORAGE_BUFFER: u32 = 2;
-const VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT: u32 = 0x0008;
+const VK_DESCRIPTOR_TYPE_STORAGE_BUFFER: u32 = 7;
+const VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT: u32 = 1;
 const VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT: u32 = 0x0004;
 
 #[repr(C)]
@@ -1257,7 +1257,7 @@ pub(super) fn initialize_device(
                                 }));
                                 continue;
                             }
-                            println!("Launch 2");
+                            eprintln!("Launch 2");
 
                             let n = args.len();
                             let mut buf_infos: Vec<VkDescriptorBufferInfo> = Vec::with_capacity(n);
@@ -1280,9 +1280,9 @@ pub(super) fn initialize_device(
                                     pTexelBufferView: std::ptr::null(),
                                 });
                             }
-                            println!("Launch 3");
+                            eprintln!("Launch 3");
                             unsafe { vkUpdateDescriptorSets(device, writes.len() as u32, writes.as_ptr(), 0, std::ptr::null()) };
-                            println!("Launch 4");
+                            eprintln!("Launch 4");
 
                             let cmd_alloc = VkCommandBufferAllocateInfo {
                                 sType: VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,

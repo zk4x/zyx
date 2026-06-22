@@ -670,6 +670,7 @@ fn f64_sin() -> Result<(), ZyxError> {
     }
     let data: [f64; 5] = [0.0, 0.5, 1.0, -1.0, 3.14159];
     let z: Vec<f64> = Tensor::from(data).sin().try_into()?;
+    println!("{z:?}");
     for (x, y) in data.iter().zip(z) {
         assert!(x.sin().is_equal(y));
     }
