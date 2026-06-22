@@ -47,6 +47,7 @@ pub struct CDevice {
     device_info: DeviceInfo,
     memory_pool_id: PoolId,
     programs: Slab<DeviceProgramId, CProgram>,
+    has_vector_exts: bool,
 }
 
 pub(super) fn initialize_device(
@@ -73,6 +74,42 @@ pub(super) fn initialize_device(
     if debug_dev {
         println!("[C] device total memory: {} MB", 10_485_760u64);
     }
+    let compilers = ["clang-11", "clang", "gcc", "cc"];
+    let compiler = compilers
+        .iter()
+        .find(|c| Command::new(c).arg("--version").output().is_ok())
+        .copied()
+        .unwrap_or("cc");
+    let has_vector_exts = Command::new(compiler)
+        .args([
+            "-O2", "-x", "c", "-", "-o", "/dev/null",
+        ])
+        .arg("-Werror")
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .and_then(|mut child| {
+            use std::io::Write;
+            child
+                .stdin
+                .take()
+                .unwrap()
+                .write_all(
+                    b"typedef float float4 __attribute__((ext_vector_type(4)));\n\
+                      int main() {\n\
+                        float data[4] = {1,2,3,4};\n\
+                        float4* p = (float4*)data;\n\
+                        float4 v = *p;\n\
+                        p[0] = v;\n\
+                        return 0;\n\
+                      }",
+                )
+                .ok();
+            child.wait()
+        })
+        .map(|s| s.success())
+        .unwrap_or(false);
     devices.push(Device::C(CDevice {
         device_info: DeviceInfo {
             compute: 10 * 1024 * 1024 * 1024 * 1024,
@@ -89,7 +126,11 @@ pub(super) fn initialize_device(
         },
         memory_pool_id: pool_id,
         programs: Slab::new(),
+        has_vector_exts,
     }));
+    if debug_dev {
+        println!("[C] vector extensions: {has_vector_exts}");
+    }
     Ok(())
 }
 
@@ -306,6 +347,9 @@ impl CDevice {
                                         _ = writeln!(source, "{indent}r{reg}.s{i} = bf16tof32(p{src}[{idx} + {i}]);");
                                     }
                                 }
+                                _ if self.has_vector_exts => {
+                                    _ = writeln!(source, "{indent}r{reg} = *(({}{len}*)(p{src} + {idx}));", dtype.0.c_type());
+                                }
                                 _ => {
                                     for i in 0..len {
                                         _ = writeln!(source, "{indent}r{reg}.s{i} = p{src}[{idx} + {i}];");
@@ -341,6 +385,10 @@ impl CDevice {
                                 for i in 0..len {
                                     _ = writeln!(source, "{indent}p{dst}[{idx} + {i}] = f32tobf16({x}.s{i});");
                                 }
+                            }
+                            _ if self.has_vector_exts => {
+                                let ocl_type = dtypes[&dst].0.c_type();
+                                _ = writeln!(source, "{indent}*(({ocl_type}{len}*)(p{dst} + {idx})) = {x};");
                             }
                             _ => {
                                 for i in 0..len {
@@ -397,7 +445,10 @@ impl CDevice {
                     _ = writeln!(source, "{indent}r{reg} = ({}{}){{{}}};", dtype.0.c_type(), vlen, vars);
                 }
                 &Op::Wmma { .. } => {
-                    todo!("C needs higher level of abstraction than WMMA, as WMMA requires cross-thread sharing")
+                    return Err(BackendError {
+                        status: ErrorStatus::KernelCompilation,
+                        context: "C: WMMA not supported (requires cross-thread sharing)".into(),
+                    });
                 }
                 &Op::Devectorize { vec, idx } => {
                     let dtype = dtypes[&op_id];
