@@ -86,6 +86,17 @@ incremental = true       # Incremental compilation.
 codegen-units = 16       # Parallelize LLVM codegen for faster debug builds.
 #rpath = false           # Sets the rpath linking option.
 
+[profile.test]
+opt-level = 1
+debug = false
+strip = false
+debug-assertions = true
+overflow-checks = true
+lto = false
+panic = 'unwind'
+incremental = true
+codegen-units = 16
+
 [profile.release]
 opt-level = 3            # Also "z" is quite fine
 strip = true

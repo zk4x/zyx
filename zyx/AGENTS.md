@@ -54,6 +54,8 @@ cargo clippy -p zyx --all-features -- -D warnings
 cargo fmt
 
 # Test (always prefix with AGENT=1 to prevent interactive prompts)
+# The test profile uses opt-level=1 for faster execution.
+# Use this profile when running many autotune explorations or the full suite.
 AGENT=1 cargo test -p zyx
 AGENT=1 cargo test -p zyx relu_1          # single test
 AGENT=1 cargo test -p zyx --test 1_unary  # test file
