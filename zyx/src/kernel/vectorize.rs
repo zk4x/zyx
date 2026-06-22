@@ -5,7 +5,7 @@ use super::autotune::Optimization;
 use crate::{
     DType, Map, Set,
     backend::DeviceInfo,
-    kernel::{Kernel, MemLayout, Op, OpId, UOp},
+    kernel::{BOp, Kernel, MemLayout, Op, OpId, UOp},
     shape::Dim,
 };
 
@@ -220,6 +220,7 @@ impl Kernel {
         enum OpType {
             Unary(UOp),
             Cast(DType),
+            Binary(BOp, u8), // (op, devec_operand_index)
         }
 
         let mut groups: Vec<(OpId, OpType, Vec<(OpId, usize)>)> = Vec::new();
@@ -245,6 +246,16 @@ impl Kernel {
                             _ => None,
                         }
                     }
+                    Op::Binary { bop, x, y } => {
+                        let (bop, x, y) = (*bop, *x, *y);
+                        if let Op::Devectorize { vec, idx } = &self.ops[x].op {
+                            Some((*vec, OpType::Binary(bop, 0), op_id, *idx))
+                        } else if let Op::Devectorize { vec, idx } = &self.ops[y].op {
+                            Some((*vec, OpType::Binary(bop, 1), op_id, *idx))
+                        } else {
+                            None
+                        }
+                    }
                     _ => None,
                 };
 
@@ -258,6 +269,7 @@ impl Kernel {
                         && match (t, &op_type) {
                             (OpType::Unary(a), OpType::Unary(b)) => a == b,
                             (OpType::Cast(a), OpType::Cast(b)) => a == b,
+                            (OpType::Binary(a, ap), OpType::Binary(b, bp)) => a == b && ap == bp,
                             _ => false,
                         }
                 }) {
@@ -288,20 +300,52 @@ impl Kernel {
             // Take the first vec_len entries
             let selected: Vec<(OpId, usize)> = entries.iter().take(vec_len).copied().collect();
 
-            // Collect devec operands for the Vectorize
-            let devec_ops: Vec<OpId> = selected
-                .iter()
-                .map(|&(c, _)| match &self.ops[c].op {
-                    Op::Unary { x, .. } | Op::Cast { x, .. } => *x,
-                    _ => unreachable!(),
-                })
-                .collect();
-
             let first = selected[0].0;
-            let vec_id = self.insert_before(first, Op::Vectorize { ops: devec_ops });
             let vec_op_id = match op_type {
-                OpType::Unary(uop) => self.insert_before(first, Op::Unary { x: vec_id, uop: *uop }),
-                OpType::Cast(dtype) => self.insert_before(first, Op::Cast { x: vec_id, dtype: *dtype }),
+                OpType::Unary(uop) => {
+                    let devec_ops: Vec<OpId> = selected
+                        .iter()
+                        .map(|&(c, _)| match &self.ops[c].op {
+                            Op::Unary { x, .. } => *x,
+                            _ => unreachable!(),
+                        })
+                        .collect();
+                    let vd = self.insert_before(first, Op::Vectorize { ops: devec_ops });
+                    self.insert_before(first, Op::Unary { x: vd, uop: *uop })
+                }
+                OpType::Cast(dtype) => {
+                    let devec_ops: Vec<OpId> = selected
+                        .iter()
+                        .map(|&(c, _)| match &self.ops[c].op {
+                            Op::Cast { x, .. } => *x,
+                            _ => unreachable!(),
+                        })
+                        .collect();
+                    let vd = self.insert_before(first, Op::Vectorize { ops: devec_ops });
+                    self.insert_before(first, Op::Cast { x: vd, dtype: *dtype })
+                }
+                OpType::Binary(bop, devec_pos) => {
+                    let n = selected.len();
+                    let mut devec_ops = Vec::with_capacity(n);
+                    let mut other_ops = Vec::with_capacity(n);
+                    for &(consumer, _) in &selected {
+                        let (x, y) = match &self.ops[consumer].op {
+                            Op::Binary { x, y, .. } => (*x, *y),
+                            _ => unreachable!(),
+                        };
+                        if *devec_pos == 0 {
+                            devec_ops.push(x);
+                            other_ops.push(y);
+                        } else {
+                            devec_ops.push(y);
+                            other_ops.push(x);
+                        }
+                    }
+                    let vd = self.insert_before(first, Op::Vectorize { ops: devec_ops });
+                    let vo = self.insert_before(first, Op::Vectorize { ops: other_ops });
+                    let (vx, vy) = if *devec_pos == 0 { (vd, vo) } else { (vo, vd) };
+                    self.insert_before(first, Op::Binary { x: vx, y: vy, bop: *bop })
+                }
             };
             for (i, &(consumer, _)) in selected.iter().enumerate() {
                 self.ops[consumer].op = Op::Devectorize { vec: vec_op_id, idx: i };
@@ -547,6 +591,70 @@ mod tests {
         }
         assert_eq!(v_count, 2, "Two Vectorize ops expected");
         assert_eq!(vop_count, 2, "Two vector Unary ops expected");
+    }
+
+    #[test]
+    fn vectorize_ops_forward_binary() {
+        let mut k = Kernel::new(DeviceId::AUTO);
+        let src = k.define(DType::F32, Scope::Global, true, 16);
+        let dst = k.define(DType::F32, Scope::Global, false, 16);
+        let g0 = k.gidx(0, 4);
+        let two = k.const_idx(2u32);
+        let offset = k.binary(g0, two, BOp::BitShiftLeft);
+        let vec_load = k.load(src, offset, MemLayout::Vector(2));
+        let [s0, s1] = k.devectorize::<2>(vec_load);
+        let c = k.const_val(1.0f32);
+        let r0 = k.binary(s0, c, BOp::Add);
+        let r1 = k.binary(s1, c, BOp::Add);
+        let four = k.const_idx(4u32);
+        let idx1 = k.binary(g0, four, BOp::Add);
+        k.store(dst, r0, g0, MemLayout::Scalar);
+        k.store(dst, r1, idx1, MemLayout::Scalar);
+
+        k.vectorize_ops_forward(&[2]);
+
+        assert!(matches!(k.ops[s0].op, Op::Devectorize { .. }));
+        assert!(matches!(k.ops[s1].op, Op::Devectorize { .. }));
+        assert!(matches!(k.ops[r0].op, Op::Devectorize { .. }));
+        assert!(matches!(k.ops[r1].op, Op::Devectorize { .. }));
+
+        // Find the vector Binary op
+        let mut found_vec_bin = false;
+        let mut op_id = k.head;
+        while !op_id.is_null() {
+            if let Op::Binary { bop: BOp::Add, x, y } = &k.ops[op_id].op {
+                if matches!(k.ops[*x].op, Op::Vectorize { .. }) && matches!(k.ops[*y].op, Op::Vectorize { .. }) {
+                    found_vec_bin = true;
+                }
+            }
+            op_id = k.next_op(op_id);
+        }
+        assert!(found_vec_bin, "Vector Binary(Add) op not found");
+    }
+
+    #[test]
+    fn vectorize_ops_forward_binary_y_pos() {
+        // devec in Y position: c + devec(v, i)
+        let mut k = Kernel::new(DeviceId::AUTO);
+        let src = k.define(DType::F32, Scope::Global, true, 16);
+        let dst = k.define(DType::F32, Scope::Global, false, 16);
+        let g0 = k.gidx(0, 4);
+        let two = k.const_idx(2u32);
+        let offset = k.binary(g0, two, BOp::BitShiftLeft);
+        let vec_load = k.load(src, offset, MemLayout::Vector(2));
+        let [s0, s1] = k.devectorize::<2>(vec_load);
+        let c = k.const_val(1.0f32);
+        let r0 = k.binary(c, s0, BOp::Add); // devec in Y
+        let r1 = k.binary(c, s1, BOp::Add); // devec in Y
+        let four = k.const_idx(4u32);
+        let idx1 = k.binary(g0, four, BOp::Add);
+        k.store(dst, r0, g0, MemLayout::Scalar);
+        k.store(dst, r1, idx1, MemLayout::Scalar);
+
+        k.vectorize_ops_forward(&[2]);
+
+        assert!(matches!(k.ops[r0].op, Op::Devectorize { .. }));
+        assert!(matches!(k.ops[r1].op, Op::Devectorize { .. }));
     }
 
     #[test]
