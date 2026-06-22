@@ -276,9 +276,9 @@ impl Kernel {
                     dtypes.insert(op_id, dtype);
                     let ops: Vec<OpId> = ops.iter().map(|x| id_map.get(x).copied().unwrap_or(OpId::NULL)).collect();
                     if let Some((lb, ub)) = bounds.get(&op_id) {
-                        println!("{indent}r{out_id}{grey}: {dtype}{reset} = {orange}vectorize{reset}{ops:?}    // {lb}..={ub}");
+                        println!("{indent}r{out_id}{grey}: {dtype}{reset} = {orange}vec{reset}{ops:?}    // {lb}..={ub}");
                     } else {
-                        println!("{indent}r{out_id}{grey}: {dtype}{reset} = {orange}vectorize{reset}{ops:?}");
+                        println!("{indent}r{out_id}{grey}: {dtype}{reset} = {orange}vec{reset}{ops:?}");
                     }
                 }
                 Op::Devectorize { vec, idx } => {
@@ -286,11 +286,9 @@ impl Kernel {
                     dtypes.insert(op_id, dtype);
                     let vec = id_map.get(&vec).copied().unwrap_or(OpId::NULL);
                     if let Some((l, u)) = bounds.get(&op_id) {
-                        println!(
-                            "{indent}r{out_id}{grey}: {dtype}{reset} = {orange}devectorize{reset} r{vec}[{idx}]    // {l}..={u}",
-                        );
+                        println!("{indent}r{out_id}{grey}: {dtype}{reset} = r{vec}{orange}.s{idx}{reset}    // {l}..={u}",);
                     } else {
-                        println!("{indent}r{out_id}{grey}: {dtype}{reset} = {orange}DEVECTORIZE{reset} r{vec}[{idx}]");
+                        println!("{indent}r{out_id}{grey}: {dtype}{reset} = r{vec}{orange}.s{idx}{reset}");
                     }
                 }
                 Op::Move { x, ref mop } => {

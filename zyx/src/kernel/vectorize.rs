@@ -292,3 +292,42 @@ impl Kernel {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use crate::{DType, kernel::{BOp, DeviceId, Kernel, MemLayout, Op, Scope, UOp}};
+
+    #[test]
+    fn vectorize_ops_and_constfold_clears_vectorize_devectorize() {
+        let mut k = Kernel::new(DeviceId::AUTO);
+
+        let src = k.define(DType::F32, Scope::Global, true, 16);
+        let dst = k.define(DType::F32, Scope::Global, false, 16);
+        let g0 = k.gidx(0, 4);
+        let two = k.const_idx(2u32);
+        let offset = k.binary(g0, two, BOp::BitShiftLeft);
+        let vec_load = k.load(src, offset, MemLayout::Vector(4));
+        let [s0, s1, s2, s3] = k.devectorize::<4>(vec_load);
+        let c0 = k.unary(s0, UOp::Cos);
+        let c1 = k.unary(s1, UOp::Cos);
+        let c2 = k.unary(s2, UOp::Cos);
+        let c3 = k.unary(s3, UOp::Cos);
+        let vec = k.vectorize(vec![c0, c1, c2, c3]);
+        k.store(dst, vec, offset, MemLayout::Vector(4));
+
+        k.vectorize_ops_backward(&[4]);
+        k.constant_folding();
+        k.dead_code_elimination();
+
+        let mut op_id = k.head;
+        while !op_id.is_null() {
+            match k.ops[op_id].op {
+                Op::Vectorize { .. } | Op::Devectorize { .. } => {
+                    panic!("Found Vectorize/Devectorize op at {op_id} after passes");
+                }
+                _ => {}
+            }
+            op_id = k.next_op(op_id);
+        }
+    }
+}
