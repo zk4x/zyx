@@ -137,9 +137,9 @@ pub(super) fn initialize_device(
     let wgpu_features = wgpu_adapter.features();
     let supported_dtype_ops = {
         let mut ops = [OpCapability::all(); DType::N_DTYPES];
-        if !wgpu_features.contains(wgpu::Features::SHADER_F64) {
-            ops[DType::F64 as usize] = OpCapability::none();
-        }
+        // Vulkan driver produces incorrect f64 results on some AMD GPUs (RADV).
+        // Users who need reliable f64 should use the Vulkan backend directly.
+        ops[DType::F64 as usize] = OpCapability::none();
         if !wgpu_features.contains(wgpu::Features::SHADER_INT64) {
             ops[DType::I64 as usize] = OpCapability::none();
             ops[DType::U64 as usize] = OpCapability::none();
