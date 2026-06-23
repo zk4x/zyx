@@ -134,7 +134,27 @@ pub(super) fn initialize_device(
     }
     memory_pools.push(pool);
     let limits = device.limits();
-    let features = wgpu_adapter.features();
+    let wgpu_features = wgpu_adapter.features();
+    let supported_dtype_ops = {
+        let mut ops = [OpCapability::all(); DType::N_DTYPES];
+        if !wgpu_features.contains(wgpu::Features::SHADER_F64) {
+            ops[DType::F64 as usize] = OpCapability::none();
+        }
+        if !wgpu_features.contains(wgpu::Features::SHADER_INT64) {
+            ops[DType::I64 as usize] = OpCapability::none();
+            ops[DType::U64 as usize] = OpCapability::none();
+        }
+        if !wgpu_features.contains(wgpu::Features::SHADER_F16) {
+            ops[DType::F16 as usize] = OpCapability::none();
+            ops[DType::BF16 as usize] = OpCapability::none();
+        }
+        // naga validator does not support 8/16-bit integer types at all
+        ops[DType::U8 as usize] = OpCapability::none();
+        ops[DType::I8 as usize] = OpCapability::none();
+        ops[DType::U16 as usize] = OpCapability::none();
+        ops[DType::I16 as usize] = OpCapability::none();
+        ops
+    };
     devices.push(Device::WGPU(WGPUDevice {
         device,
         adapter: wgpu_adapter,
@@ -152,7 +172,7 @@ pub(super) fn initialize_device(
             max_register_bytes: 512,
             tensor_cores: false,
             warp_size: 32,
-            supported_dtype_ops: [OpCapability::all(); DType::N_DTYPES],
+            supported_dtype_ops,
             has_native_exp2: true,
             has_vector_ops: true,
         },
