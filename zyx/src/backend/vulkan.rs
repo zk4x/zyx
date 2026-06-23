@@ -562,6 +562,10 @@ pub(super) fn initialize_device(
     }
 
     let vulkan_paths = [
+        "/usr/lib/libvulkan_radeon.so",
+        "/usr/lib64/libvulkan_radeon.so",
+        "/lib64/libvulkan_radeon.so",
+        "/lib/libvulkan_radeon.so",
         "/lib64/libvulkan.so",
         "/lib64/libvulkan.so.1",
         "/lib/libvulkan.so",
@@ -575,17 +579,43 @@ pub(super) fn initialize_device(
         "/lib64/x86_64-linux-gnu/libvulkan.so",
         "/lib64/x86_64-linux-gnu/libvulkan.so.1",
     ];
-    let lib = vulkan_paths
-        .into_iter()
-        .find_map(|path| unsafe { Library::new(path) }.ok())
-        .ok_or_else(|| BackendError { status: ErrorStatus::DyLibNotFound, context: "[vulkan] libvulkan.so not found.".into() })?;
-    let vkGetInstanceProcAddr: unsafe extern "system" fn(VkInstance, *const i8) -> *mut std::ffi::c_void =
-        *unsafe { lib.get(b"vkGetInstanceProcAddr\0") }?;
+    let mut lib_path = None;
+    for path in vulkan_paths {
+        if let Ok(l) = unsafe { Library::new(path) } {
+            lib_path = Some((l, path.contains("radeon")));
+            break;
+        }
+    }
+    let (lib, is_icd) = lib_path.ok_or_else(|| BackendError {
+        status: ErrorStatus::DyLibNotFound,
+        context: "[vulkan] libvulkan.so not found.".into(),
+    })?;
+
+    let vkGetInstanceProcAddr: unsafe extern "system" fn(VkInstance, *const i8) -> *mut std::ffi::c_void;
     let vkCreateInstance: unsafe extern "system" fn(
         *const VkInstanceCreateInfo,
         *const std::ffi::c_void,
         *mut VkInstance,
-    ) -> VkResult = *unsafe { lib.get(b"vkCreateInstance\0") }?;
+    ) -> VkResult;
+
+    if is_icd {
+        let negotiate: unsafe extern "system" fn(*mut u32) =
+            *unsafe { lib.get(b"vk_icdNegotiateLoaderICDInterfaceVersion\0") }?;
+        let mut version = 0u32;
+        unsafe { negotiate(&mut version) };
+
+        let icd_get_proc_addr: unsafe extern "system" fn(VkInstance, *const i8) -> *mut std::ffi::c_void =
+            *unsafe { lib.get(b"vk_icdGetInstanceProcAddr\0") }?;
+        vkGetInstanceProcAddr = unsafe { std::mem::transmute(icd_get_proc_addr) };
+        vkCreateInstance = unsafe {
+            std::mem::transmute(
+                icd_get_proc_addr(std::ptr::null_mut(), c"vkCreateInstance".as_ptr() as *const i8),
+            )
+        };
+    } else {
+        vkGetInstanceProcAddr = *unsafe { lib.get(b"vkGetInstanceProcAddr\0") }?;
+        vkCreateInstance = *unsafe { lib.get(b"vkCreateInstance\0") }?;
+    }
 
     let app_name = CString::new("zyx").unwrap();
     let engine_name = CString::new("zyx").unwrap();
