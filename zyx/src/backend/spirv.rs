@@ -569,15 +569,11 @@ pub fn compile(kernel: &Kernel, debug_asm: bool) -> Result<(Vec<u32>, Vec<Dim>, 
     const_entries.push((u32_id, const_u32_0, vec![0]));
     const_pool.insert(Constant::U32(0), const_u32_0);
 
-    // Pre-populate all vector types and their pointer types needed by dtypes
+    // Pre-populate all vector types needed by dtypes, so they're emitted before function body
     for (_op_id, (dt, layout)) in dtypes.iter() {
         if let MemLayout::Vector(len) = layout {
             let scalar_id = push_dtype(&mut asm, &mut type_cache, &mut type_entries, *dt);
-            let vec_id = push_vec_type(&mut asm, &mut vec_type_cache, &mut type_entries, scalar_id, *len);
-            // Pre-create pointer types for this vector type (all storage classes)
-            for sc in [SC_FUNCTION, SC_STORAGE_BUFFER, SC_WORKGROUP, SC_INPUT] {
-                push_ptr_type(&mut asm, &mut ptr_cache, &mut type_entries, sc, vec_id);
-            }
+            push_vec_type(&mut asm, &mut vec_type_cache, &mut type_entries, scalar_id, *len);
         }
     }
     let const_u32_1 = asm.id();
