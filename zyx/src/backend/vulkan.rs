@@ -72,6 +72,8 @@ const VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO: u32 = 39;
 const VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO: u32 = 40;
 const VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO: u32 = 42;
 const VK_STRUCTURE_TYPE_FENCE_CREATE_INFO: u32 = 8;
+const VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2: u32 = 1000059000;
+const VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_FLOAT16_INT8_FEATURES: u32 = 1000082000;
 
 const VK_BUFFER_USAGE_STORAGE_BUFFER_BIT: u32 = 0x0080;
 const VK_BUFFER_USAGE_TRANSFER_DST_BIT: u32 = 0x0002;
@@ -299,11 +301,14 @@ struct VkPhysicalDeviceProperties {
     device_type: u32,
     device_name: [u8; 256],
     pipeline_cache_uuid: [u8; 16],
-    _pad0: [u8; 216],
+    _pad_to_limits: [u8; 8],
+    _limits_prefix: [u8; 216],
     max_compute_shared_memory_size: u32,
     max_compute_work_group_count: [u32; 3],
     max_compute_work_group_invocations: u32,
     max_compute_work_group_size: [u32; 3],
+    _limits_suffix: [u8; 256],
+    _sparse: [u8; 20],
 }
 #[repr(C)]
 #[derive(Clone)]
@@ -329,6 +334,19 @@ struct VkMemoryHeap {
 struct VkMemoryType {
     propertyFlags: u32,
     heapIndex: u32,
+}
+#[repr(C)]
+struct VkPhysicalDeviceFeatures2 {
+    sType: u32,
+    pNext: *mut std::ffi::c_void,
+    features: [u32; 55],
+}
+#[repr(C)]
+struct VkPhysicalDeviceShaderFloat16Int8Features {
+    sType: u32,
+    pNext: *mut std::ffi::c_void,
+    shaderFloat16: u32,
+    shaderInt8: u32,
 }
 
 // ── Config ───────────────────────────────────────────────────────────────────
@@ -645,6 +663,8 @@ pub(super) fn initialize_device(
     ) = get_inst_proc!("vkGetPhysicalDeviceQueueFamilyProperties");
     let vkGetPhysicalDeviceMemoryProperties: unsafe extern "system" fn(VkPhysicalDevice, *mut VkPhysicalDeviceMemoryProperties) =
         get_inst_proc!("vkGetPhysicalDeviceMemoryProperties");
+    let vkGetPhysicalDeviceFeatures2: unsafe extern "system" fn(VkPhysicalDevice, *mut VkPhysicalDeviceFeatures2) =
+        get_inst_proc!("vkGetPhysicalDeviceFeatures2");
     let vkCreateDevice: unsafe extern "system" fn(
         VkPhysicalDevice,
         *const VkDeviceCreateInfo,
@@ -711,6 +731,24 @@ pub(super) fn initialize_device(
         if debug_dev {
             println!("[vulkan] {name}");
         }
+
+        let has_shader_float16 = if vkGetPhysicalDeviceFeatures2 as usize != 0 {
+            let mut float16_features = VkPhysicalDeviceShaderFloat16Int8Features {
+                sType: VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_FLOAT16_INT8_FEATURES,
+                pNext: std::ptr::null_mut(),
+                shaderFloat16: 0,
+                shaderInt8: 0,
+            };
+            let mut features2 = VkPhysicalDeviceFeatures2 {
+                sType: VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2,
+                pNext: &mut float16_features as *mut VkPhysicalDeviceShaderFloat16Int8Features as *mut std::ffi::c_void,
+                features: [0u32; 55],
+            };
+            unsafe { vkGetPhysicalDeviceFeatures2(gpu, &mut features2) };
+            float16_features.shaderFloat16 != 0
+        } else {
+            false
+        };
 
         let max_wg_count = props.max_compute_work_group_count;
         let max_wg_invocations = props.max_compute_work_group_invocations;
@@ -1496,6 +1534,10 @@ pub(super) fn initialize_device(
                         !(OpCapability::EXP | OpCapability::EXP2 | OpCapability::LN
                         | OpCapability::LOG2 | OpCapability::SIN | OpCapability::COS
                         | OpCapability::POW);
+                    if !has_shader_float16 {
+                        all[DType::F16 as usize] = OpCapability::none();
+                        all[DType::BF16 as usize] = OpCapability::none();
+                    }
                     all
                 },
                 has_native_exp2: false,
