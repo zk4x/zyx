@@ -7,11 +7,11 @@
 //! to `exp(x)`, which allows backends like Tenstorrent to use their
 //! native `exp_tile` instead of the unsupported `exp2_tile`.
 
+use crate::scalar::{bf16, f16};
 use crate::{
     dtype::Constant,
     kernel::{BOp, Kernel, Op, OpId, UOp},
 };
-use crate::scalar::{bf16, f16};
 
 const LOG2_E: f64 = std::f64::consts::LOG2_E;
 

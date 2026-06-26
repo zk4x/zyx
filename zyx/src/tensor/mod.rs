@@ -13,11 +13,11 @@ use crate::error::ZyxError;
 use crate::kernel::{BOp, UOp};
 use crate::runtime::TempData;
 use crate::scalar::{Float, Scalar};
+use crate::scalar::{bf16, f16};
 use crate::shape::{Dim, IntoShape, UAxis, into_axes, into_axis};
 use crate::slab::SlabId;
 use crate::{DebugMask, RT};
 use core::cmp::Ordering;
-use crate::scalar::{bf16, f16};
 use std::fmt::{Debug, Display};
 use std::iter::{once, repeat_n};
 use std::ops::{Bound, Mul, Neg, Not, Range, RangeBounds};
@@ -1790,12 +1790,7 @@ impl Tensor {
     /// # Errors
     ///
     /// Returns error if the shapes are incompatible.
-    pub fn scatter(
-        &self,
-        axis: Axis,
-        indices: impl Into<Tensor>,
-        src: impl Into<Tensor>,
-    ) -> Result<Tensor, ZyxError> {
+    pub fn scatter(&self, axis: Axis, indices: impl Into<Tensor>, src: impl Into<Tensor>) -> Result<Tensor, ZyxError> {
         let indices = indices.into();
         let src = src.into();
         let shape = self.shape();
@@ -1805,33 +1800,20 @@ impl Tensor {
 
         if shape.len() != index_shape.len() {
             return Err(ZyxError::shape_error(
-                format!(
-                    "self.rank({}) != indices.rank({})",
-                    shape.len(),
-                    index_shape.len()
-                )
-                .into(),
+                format!("self.rank({}) != indices.rank({})", shape.len(), index_shape.len()).into(),
             ));
         }
 
         if index_shape != src.shape() {
             return Err(ZyxError::shape_error(
-                format!(
-                    "indices shape {:?} != src shape {:?}",
-                    index_shape,
-                    src.shape()
-                )
-                .into(),
+                format!("indices shape {:?} != src shape {:?}", index_shape, src.shape()).into(),
             ));
         }
 
         for (d, (&s, &i)) in shape.iter().zip(index_shape.iter()).enumerate() {
             if d != dim && s < i {
                 return Err(ZyxError::shape_error(
-                    format!(
-                        "Shape mismatch at dimension {d}: self.shape[{d}] = {s} < indices.shape[{d}] = {i}"
-                    )
-                    .into(),
+                    format!("Shape mismatch at dimension {d}: self.shape[{d}] = {s} < indices.shape[{d}] = {i}").into(),
                 ));
             }
         }

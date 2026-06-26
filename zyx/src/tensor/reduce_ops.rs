@@ -248,11 +248,7 @@ impl Tensor {
     ///
     /// # Errors
     /// When axes are out of range
-    pub fn sum_dtype(
-        &self,
-        axes: impl IntoIterator<Item = Axis>,
-        dtype: DType,
-    ) -> Result<Tensor, ZyxError> {
+    pub fn sum_dtype(&self, axes: impl IntoIterator<Item = Axis>, dtype: DType) -> Result<Tensor, ZyxError> {
         self.reduce_impl::<false>(ReduceOp::Sum, axes, Some(dtype), 1)
     }
 
@@ -265,11 +261,7 @@ impl Tensor {
     ///
     /// # Errors
     /// When axes are out of range
-    pub fn sum_keepdim_dtype(
-        &self,
-        axes: impl IntoIterator<Item = Axis>,
-        dtype: DType,
-    ) -> Result<Tensor, ZyxError> {
+    pub fn sum_keepdim_dtype(&self, axes: impl IntoIterator<Item = Axis>, dtype: DType) -> Result<Tensor, ZyxError> {
         self.reduce_impl::<true>(ReduceOp::Sum, axes, Some(dtype), 1)
     }
 }
@@ -378,11 +370,7 @@ impl Tensor {
     ///
     /// # Errors
     /// When axes are out of range
-    pub fn mean_dtype(
-        &self,
-        axes: impl IntoIterator<Item = Axis>,
-        dtype: DType,
-    ) -> Result<Tensor, ZyxError> {
+    pub fn mean_dtype(&self, axes: impl IntoIterator<Item = Axis>, dtype: DType) -> Result<Tensor, ZyxError> {
         self.reduce_impl::<false>(ReduceOp::Mean, axes, Some(dtype), 1)
     }
 
@@ -395,11 +383,7 @@ impl Tensor {
     ///
     /// # Errors
     /// When axes are out of range
-    pub fn mean_keepdim_dtype(
-        &self,
-        axes: impl IntoIterator<Item = Axis>,
-        dtype: DType,
-    ) -> Result<Tensor, ZyxError> {
+    pub fn mean_keepdim_dtype(&self, axes: impl IntoIterator<Item = Axis>, dtype: DType) -> Result<Tensor, ZyxError> {
         self.reduce_impl::<true>(ReduceOp::Mean, axes, Some(dtype), 1)
     }
 }
@@ -508,11 +492,7 @@ impl Tensor {
     ///
     /// # Errors
     /// When axes are out of range
-    pub fn max_dtype(
-        &self,
-        axes: impl IntoIterator<Item = Axis>,
-        dtype: DType,
-    ) -> Result<Tensor, ZyxError> {
+    pub fn max_dtype(&self, axes: impl IntoIterator<Item = Axis>, dtype: DType) -> Result<Tensor, ZyxError> {
         self.reduce_impl::<false>(ReduceOp::Max, axes, Some(dtype), 1)
     }
 
@@ -525,11 +505,7 @@ impl Tensor {
     ///
     /// # Errors
     /// When axes are out of range
-    pub fn max_keepdim_dtype(
-        &self,
-        axes: impl IntoIterator<Item = Axis>,
-        dtype: DType,
-    ) -> Result<Tensor, ZyxError> {
+    pub fn max_keepdim_dtype(&self, axes: impl IntoIterator<Item = Axis>, dtype: DType) -> Result<Tensor, ZyxError> {
         self.reduce_impl::<true>(ReduceOp::Max, axes, Some(dtype), 1)
     }
 }
@@ -638,11 +614,7 @@ impl Tensor {
     ///
     /// # Errors
     /// When axes are out of range
-    pub fn min_dtype(
-        &self,
-        axes: impl IntoIterator<Item = Axis>,
-        dtype: DType,
-    ) -> Result<Tensor, ZyxError> {
+    pub fn min_dtype(&self, axes: impl IntoIterator<Item = Axis>, dtype: DType) -> Result<Tensor, ZyxError> {
         self.reduce_impl::<false>(ReduceOp::Min, axes, Some(dtype), 1)
     }
 
@@ -655,11 +627,7 @@ impl Tensor {
     ///
     /// # Errors
     /// When axes are out of range
-    pub fn min_keepdim_dtype(
-        &self,
-        axes: impl IntoIterator<Item = Axis>,
-        dtype: DType,
-    ) -> Result<Tensor, ZyxError> {
+    pub fn min_keepdim_dtype(&self, axes: impl IntoIterator<Item = Axis>, dtype: DType) -> Result<Tensor, ZyxError> {
         self.reduce_impl::<true>(ReduceOp::Min, axes, Some(dtype), 1)
     }
 }
@@ -768,11 +736,7 @@ impl Tensor {
     ///
     /// # Errors
     /// When axes are out of range
-    pub fn prod_dtype(
-        &self,
-        axes: impl IntoIterator<Item = Axis>,
-        dtype: DType,
-    ) -> Result<Tensor, ZyxError> {
+    pub fn prod_dtype(&self, axes: impl IntoIterator<Item = Axis>, dtype: DType) -> Result<Tensor, ZyxError> {
         self.reduce_impl::<false>(ReduceOp::Prod, axes, Some(dtype), 1)
     }
 
@@ -785,11 +749,7 @@ impl Tensor {
     ///
     /// # Errors
     /// When axes are out of range
-    pub fn prod_keepdim_dtype(
-        &self,
-        axes: impl IntoIterator<Item = Axis>,
-        dtype: DType,
-    ) -> Result<Tensor, ZyxError> {
+    pub fn prod_keepdim_dtype(&self, axes: impl IntoIterator<Item = Axis>, dtype: DType) -> Result<Tensor, ZyxError> {
         self.reduce_impl::<true>(ReduceOp::Prod, axes, Some(dtype), 1)
     }
 }
@@ -845,11 +805,7 @@ impl Tensor {
     ///
     /// # Errors
     /// When axes are out of range
-    pub fn var_dtype(
-        &self,
-        axes: impl IntoIterator<Item = Axis>,
-        dtype: DType,
-    ) -> Result<Tensor, ZyxError> {
+    pub fn var_dtype(&self, axes: impl IntoIterator<Item = Axis>, dtype: DType) -> Result<Tensor, ZyxError> {
         self.reduce_impl::<false>(ReduceOp::Var, axes, Some(dtype), 1)
     }
 
@@ -861,11 +817,7 @@ impl Tensor {
     ///
     /// # Errors
     /// When axes are out of range
-    pub fn var_correction(
-        &self,
-        axes: impl IntoIterator<Item = Axis>,
-        correction: Dim,
-    ) -> Result<Tensor, ZyxError> {
+    pub fn var_correction(&self, axes: impl IntoIterator<Item = Axis>, correction: Dim) -> Result<Tensor, ZyxError> {
         self.reduce_impl::<false>(ReduceOp::Var, axes, None, correction)
     }
 
@@ -899,11 +851,7 @@ impl Tensor {
     ///
     /// # Errors
     /// When axes are out of range
-    pub fn var_axes_keepdim_dtype(
-        &self,
-        axes: impl IntoIterator<Item = Axis>,
-        dtype: DType,
-    ) -> Result<Tensor, ZyxError> {
+    pub fn var_axes_keepdim_dtype(&self, axes: impl IntoIterator<Item = Axis>, dtype: DType) -> Result<Tensor, ZyxError> {
         self.reduce_impl::<true>(ReduceOp::Var, axes, Some(dtype), 1)
     }
 
@@ -911,11 +859,7 @@ impl Tensor {
     ///
     /// # Errors
     /// When axes are out of range
-    pub fn var_keepdim_correction(
-        &self,
-        axes: impl IntoIterator<Item = Axis>,
-        correction: Dim,
-    ) -> Result<Tensor, ZyxError> {
+    pub fn var_keepdim_correction(&self, axes: impl IntoIterator<Item = Axis>, correction: Dim) -> Result<Tensor, ZyxError> {
         self.reduce_impl::<true>(ReduceOp::Var, axes, None, correction)
     }
 
@@ -1004,11 +948,7 @@ impl Tensor {
     ///
     /// # Errors
     /// When axes are out of range
-    pub fn std_dtype(
-        &self,
-        axes: impl IntoIterator<Item = Axis>,
-        dtype: DType,
-    ) -> Result<Tensor, ZyxError> {
+    pub fn std_dtype(&self, axes: impl IntoIterator<Item = Axis>, dtype: DType) -> Result<Tensor, ZyxError> {
         self.reduce_impl::<false>(ReduceOp::Std, axes, Some(dtype), 1)
     }
 
@@ -1020,11 +960,7 @@ impl Tensor {
     ///
     /// # Errors
     /// When axes are out of range
-    pub fn std_correction(
-        &self,
-        axes: impl IntoIterator<Item = Axis>,
-        correction: Dim,
-    ) -> Result<Tensor, ZyxError> {
+    pub fn std_correction(&self, axes: impl IntoIterator<Item = Axis>, correction: Dim) -> Result<Tensor, ZyxError> {
         self.reduce_impl::<false>(ReduceOp::Std, axes, None, correction)
     }
 
@@ -1058,11 +994,7 @@ impl Tensor {
     ///
     /// # Errors
     /// When axes are out of range
-    pub fn std_axes_keepdim_dtype(
-        &self,
-        axes: impl IntoIterator<Item = Axis>,
-        dtype: DType,
-    ) -> Result<Tensor, ZyxError> {
+    pub fn std_axes_keepdim_dtype(&self, axes: impl IntoIterator<Item = Axis>, dtype: DType) -> Result<Tensor, ZyxError> {
         self.reduce_impl::<true>(ReduceOp::Std, axes, Some(dtype), 1)
     }
 
@@ -1070,11 +1002,7 @@ impl Tensor {
     ///
     /// # Errors
     /// When axes are out of range
-    pub fn std_keepdim_correction(
-        &self,
-        axes: impl IntoIterator<Item = Axis>,
-        correction: Dim,
-    ) -> Result<Tensor, ZyxError> {
+    pub fn std_keepdim_correction(&self, axes: impl IntoIterator<Item = Axis>, correction: Dim) -> Result<Tensor, ZyxError> {
         self.reduce_impl::<true>(ReduceOp::Std, axes, None, correction)
     }
 

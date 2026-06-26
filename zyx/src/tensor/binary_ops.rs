@@ -2,8 +2,8 @@
 // SPDX-License-Identifier: LGPL-3.0-only
 
 use super::Tensor;
-use crate::{RT, kernel::BOp};
 use crate::scalar::{bf16, f16};
+use crate::{RT, kernel::BOp};
 use std::ops::{Add, BitAnd, BitOr, BitXor, Div, Mul, Sub};
 
 impl<IT: Into<Tensor>> Add<IT> for Tensor {

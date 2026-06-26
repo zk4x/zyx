@@ -294,9 +294,7 @@ impl Kernel {
             }
 
             // Try groups in descending size order
-            let mut indices: Vec<usize> = (0..groups.len())
-                .filter(|&i| groups[i].2.len() >= 2)
-                .collect();
+            let mut indices: Vec<usize> = (0..groups.len()).filter(|&i| groups[i].2.len() >= 2).collect();
             indices.sort_by(|&a, &b| groups[b].2.len().cmp(&groups[a].2.len()));
 
             let mut applied = false;
@@ -481,7 +479,6 @@ impl Kernel {
             op_id = self.prev_op(op_id);
         }
     }
-
 }
 
 #[cfg(test)]

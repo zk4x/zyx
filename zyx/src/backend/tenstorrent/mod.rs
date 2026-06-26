@@ -632,7 +632,7 @@ pub(super) fn initialize_device(
             local_mem_size: 1_500_000, // 1.5 MB L1 per Tensix core
             max_register_bytes: 128,
             tensor_cores: true,
-            warp_size: 1,               // Tensix has no SIMT warps
+            warp_size: 1, // Tensix has no SIMT warps
             supported_dtype_ops: [OpCapability::all(); DType::N_DTYPES],
             has_native_exp2: false,
             has_vector_ops: true,

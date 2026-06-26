@@ -11,11 +11,11 @@
 
 use super::{Device, DeviceInfo, MemoryPool, OpCapability};
 use crate::DType;
-use crate::scalar::{bf16, f16};
 use crate::backend::{DeviceId, DeviceProgramId, Event, PoolBufferId, PoolId};
 use crate::dtype::Constant;
 use crate::error::{BackendError, ErrorStatus};
 use crate::kernel::Kernel;
+use crate::scalar::{bf16, f16};
 use crate::shape::Dim;
 use crate::slab::Slab;
 use libloading::Library;

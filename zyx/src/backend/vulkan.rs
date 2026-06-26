@@ -5,7 +5,6 @@
 
 #![allow(non_camel_case_types)]
 #![allow(non_snake_case)]
-#![allow(dead_code)]
 
 use std::ffi::{CStr, CString};
 use std::sync::{
@@ -781,7 +780,10 @@ pub(super) fn initialize_device(
             if debug_dev {
                 println!("[vulkan] {name}: device: {res}");
             }
-            return Err(BackendError { status: ErrorStatus::Initialization, context: format!("[vulkan] {name}: device: {res}").into() });
+            return Err(BackendError {
+                status: ErrorStatus::Initialization,
+                context: format!("[vulkan] {name}: device: {res}").into(),
+            });
         }
 
         let vkGetDeviceQueue: unsafe extern "system" fn(VkDevice, u32, u32, *mut VkQueue) = unsafe {
@@ -1530,9 +1532,12 @@ pub(super) fn initialize_device(
                 supported_dtype_ops: {
                     let mut all = [OpCapability::all(); DType::N_DTYPES];
                     // Vulkan/SPIR-V f64 transcendentals crash or produce garbage
-                    all[DType::F64 as usize].0 &=
-                        !(OpCapability::EXP | OpCapability::EXP2 | OpCapability::LN
-                        | OpCapability::LOG2 | OpCapability::SIN | OpCapability::COS
+                    all[DType::F64 as usize].0 &= !(OpCapability::EXP
+                        | OpCapability::EXP2
+                        | OpCapability::LN
+                        | OpCapability::LOG2
+                        | OpCapability::SIN
+                        | OpCapability::COS
                         | OpCapability::POW);
                     if !has_shader_float16 {
                         all[DType::F16 as usize] = OpCapability::none();

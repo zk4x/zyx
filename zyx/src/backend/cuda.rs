@@ -42,9 +42,9 @@ use nanoserde::DeJson;
 use crate::{
     DType, Map,
     dtype::Constant,
-    scalar::{bf16, f16},
     error::{BackendError, ErrorStatus},
     kernel::{BOp, Kernel, MMADType, MMADims, MemLayout, Op, OpId, Scope, UOp},
+    scalar::{bf16, f16},
     shape::Dim,
     slab::{Slab, SlabId},
 };
@@ -1336,10 +1336,7 @@ impl CUDADevice {
                     match layout {
                         MemLayout::Scalar => _ = writeln!(source, "{indent}p{dst}[{idx}] = {x};"),
                         MemLayout::Vector(len) => {
-                            _ = writeln!(
-                                source,
-                                "{indent}*reinterpret_cast<{dtype}{len}*>(&p{dst}[{idx}]) = {x};",
-                            );
+                            _ = writeln!(source, "{indent}*reinterpret_cast<{dtype}{len}*>(&p{dst}[{idx}]) = {x};",);
                         }
                         MemLayout::Tile { x, y, stride } => todo!(),
                     }

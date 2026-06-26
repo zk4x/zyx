@@ -456,8 +456,6 @@ impl WGPUDevice {
         Ok(id)
     }
 
-
-
     pub fn release(&mut self, program_id: DeviceProgramId) {
         self.programs.remove(program_id);
     }

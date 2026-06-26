@@ -223,7 +223,7 @@ impl TryFrom<u16> for OpCode {
             12 => Ok(Self::OpExtInst),
             224 => Ok(Self::OpControlBarrier),
             79 => Ok(Self::OpCompositeConstruct),
-           81 => Ok(Self::OpCompositeExtract),
+            81 => Ok(Self::OpCompositeExtract),
             124 => Ok(Self::OpBitcast),
             _ => Err(()),
         }
@@ -534,7 +534,8 @@ pub fn compile(kernel: &Kernel, debug_asm: bool) -> Result<(Vec<u32>, Vec<Dim>, 
                           vec_type_cache: &mut Map<(u32, u16), u32>,
                           entries: &mut Vec<(OpCode, u32, Vec<u32>)>,
                           dt: DType,
-                          layout: MemLayout| -> u32 {
+                          layout: MemLayout|
+     -> u32 {
         let scalar_id = push_dtype(asm, type_cache, entries, dt);
         match layout {
             MemLayout::Scalar => scalar_id,
@@ -692,10 +693,16 @@ pub fn compile(kernel: &Kernel, debug_asm: bool) -> Result<(Vec<u32>, Vec<Dim>, 
                         const_entries.push((u32_type, one_cid, vec![1u32]));
                         const_entries.push((u32_type, zero_cid, vec![0u32]));
                         cast_u32_consts.insert(op_id, (one_cid, zero_cid));
-                    } else if src == DType::Bool && (dst == DType::U32 || dst == DType::I32
-                        || dst == DType::U64 || dst == DType::I64
-                        || dst == DType::U16 || dst == DType::I16
-                        || dst == DType::U8 || dst == DType::I8) {
+                    } else if src == DType::Bool
+                        && (dst == DType::U32
+                            || dst == DType::I32
+                            || dst == DType::U64
+                            || dst == DType::I64
+                            || dst == DType::U16
+                            || dst == DType::I16
+                            || dst == DType::U8
+                            || dst == DType::I8)
+                    {
                         let int_type = push_dtype(&mut asm, &mut type_cache, &mut type_entries, dst);
                         let one_cid = asm.id();
                         let zero_cid = asm.id();
@@ -710,10 +717,16 @@ pub fn compile(kernel: &Kernel, debug_asm: bool) -> Result<(Vec<u32>, Vec<Dim>, 
                         const_entries.push((int_type, one_cid, one_words));
                         const_entries.push((int_type, zero_cid, zero_words));
                         cast_u32_consts.insert(op_id, (one_cid, zero_cid));
-                    } else if (src == DType::U32 || src == DType::I32
-                        || src == DType::U64 || src == DType::I64
-                        || src == DType::U16 || src == DType::I16
-                        || src == DType::U8 || src == DType::I8) && dst == DType::Bool {
+                    } else if (src == DType::U32
+                        || src == DType::I32
+                        || src == DType::U64
+                        || src == DType::I64
+                        || src == DType::U16
+                        || src == DType::I16
+                        || src == DType::U8
+                        || src == DType::I8)
+                        && dst == DType::Bool
+                    {
                         let src_type = push_dtype(&mut asm, &mut type_cache, &mut type_entries, src);
                         let zero_cid = asm.id();
                         let zero_words = match src.bit_size() {
@@ -953,7 +966,8 @@ pub fn compile(kernel: &Kernel, debug_asm: bool) -> Result<(Vec<u32>, Vec<Dim>, 
 
                 Op::Vectorize { ops } => {
                     let (dt, layout) = dtypes[&op_id];
-                    let result_type = layout_type_id(&mut asm, &mut type_cache, &mut vec_type_cache, &mut type_entries, dt, layout);
+                    let result_type =
+                        layout_type_id(&mut asm, &mut type_cache, &mut vec_type_cache, &mut type_entries, dt, layout);
                     let rid = asm.id();
                     let operands: Vec<u32> = ops.iter().map(|x| spv_values[x]).collect();
                     asm.emit_typed(OpCompositeConstruct, result_type, rid, &operands);
@@ -984,7 +998,14 @@ pub fn compile(kernel: &Kernel, debug_asm: bool) -> Result<(Vec<u32>, Vec<Dim>, 
 
                 &Op::Load { src, index, layout } => {
                     let (load_dt, _) = dtypes[&op_id];
-                    let result_type = layout_type_id(&mut asm, &mut type_cache, &mut vec_type_cache, &mut type_entries, load_dt, layout);
+                    let result_type = layout_type_id(
+                        &mut asm,
+                        &mut type_cache,
+                        &mut vec_type_cache,
+                        &mut type_entries,
+                        load_dt,
+                        layout,
+                    );
                     let index_id = spv_values[&index];
 
                     // For vector loads, use scalar pointer type for OpAccessChain,
@@ -997,7 +1018,11 @@ pub fn compile(kernel: &Kernel, debug_asm: bool) -> Result<(Vec<u32>, Vec<Dim>, 
                             let sc = if is_local { SC_WORKGROUP } else { SC_STORAGE_BUFFER };
                             let is_bool_buf = bool_buffers.contains(&src) && !is_local;
                             // For bool storage buffers or vector loads, use scalar storage type
-                            let storage_type = if is_bool_buf { u8_id.unwrap() } else { push_dtype(&mut asm, &mut type_cache, &mut type_entries, load_dt) };
+                            let storage_type = if is_bool_buf {
+                                u8_id.unwrap()
+                            } else {
+                                push_dtype(&mut asm, &mut type_cache, &mut type_entries, load_dt)
+                            };
                             let elem_ptr = push_ptr_type(&mut asm, &mut ptr_cache, &mut type_entries, sc, storage_type);
                             (var_id, elem_ptr, !is_local, is_bool_buf)
                         } else if let Some(&var_id) = reg_vars.get(&src) {
@@ -1014,10 +1039,15 @@ pub fn compile(kernel: &Kernel, debug_asm: bool) -> Result<(Vec<u32>, Vec<Dim>, 
                     if is_vec && !is_bool_src {
                         // Vector load: access into buffer at index, then do N scalar loads
                         let mut scalars = Vec::new();
-                        let vec_len = match layout { MemLayout::Vector(n) => n as usize, _ => unreachable!() };
+                        let vec_len = match layout {
+                            MemLayout::Vector(n) => n as usize,
+                            _ => unreachable!(),
+                        };
                         for i in 0..vec_len {
                             let off_const = const_pool[&Constant::U32(i as u32)];
-                            let addr = if i == 0 { index_id } else {
+                            let addr = if i == 0 {
+                                index_id
+                            } else {
                                 let a = asm.id();
                                 asm.emit_typed(OpIAdd, u32_id, a, &[index_id, off_const]);
                                 a
@@ -1088,13 +1118,20 @@ pub fn compile(kernel: &Kernel, debug_asm: bool) -> Result<(Vec<u32>, Vec<Dim>, 
                                 asm.emit_typed(OpCompositeExtract, val_type, lane, &[val_id, i as u32]);
                                 let lane_val = if is_bool_dst {
                                     let u8_tmp = asm.id();
-                                    asm.emit_typed(OpSelect, u8_id.unwrap(), u8_tmp, &[lane, const_u8_1.unwrap(), const_u8_0.unwrap()]);
+                                    asm.emit_typed(
+                                        OpSelect,
+                                        u8_id.unwrap(),
+                                        u8_tmp,
+                                        &[lane, const_u8_1.unwrap(), const_u8_0.unwrap()],
+                                    );
                                     u8_tmp
                                 } else {
                                     lane
                                 };
                                 let access = asm.id();
-                                let addr = if i == 0 { index_id } else {
+                                let addr = if i == 0 {
+                                    index_id
+                                } else {
                                     let off = asm.id();
                                     let off_const = const_pool[&Constant::U32(i as u32)];
                                     asm.emit_typed(OpIAdd, u32_id, off, &[index_id, off_const]);
@@ -1111,7 +1148,12 @@ pub fn compile(kernel: &Kernel, debug_asm: bool) -> Result<(Vec<u32>, Vec<Dim>, 
                         _ => {
                             let store_val = if is_bool_dst {
                                 let u8_tmp = asm.id();
-                                asm.emit_typed(OpSelect, u8_id.unwrap(), u8_tmp, &[val_id, const_u8_1.unwrap(), const_u8_0.unwrap()]);
+                                asm.emit_typed(
+                                    OpSelect,
+                                    u8_id.unwrap(),
+                                    u8_tmp,
+                                    &[val_id, const_u8_1.unwrap(), const_u8_0.unwrap()],
+                                );
                                 u8_tmp
                             } else {
                                 val_id
@@ -1132,7 +1174,14 @@ pub fn compile(kernel: &Kernel, debug_asm: bool) -> Result<(Vec<u32>, Vec<Dim>, 
                     let src_id = spv_values[&x];
                     let dst_type = dtype;
                     let (_, layout) = dtypes[&op_id];
-                    let result_type = layout_type_id(&mut asm, &mut type_cache, &mut vec_type_cache, &mut type_entries, dst_type, layout);
+                    let result_type = layout_type_id(
+                        &mut asm,
+                        &mut type_cache,
+                        &mut vec_type_cache,
+                        &mut type_entries,
+                        dst_type,
+                        layout,
+                    );
 
                     let rid = asm.id();
                     if src_type == DType::Bool && dst_type.is_float() {
@@ -1141,10 +1190,16 @@ pub fn compile(kernel: &Kernel, debug_asm: bool) -> Result<(Vec<u32>, Vec<Dim>, 
                         let int_tmp = asm.id();
                         asm.emit_typed(OpSelect, u32_type, int_tmp, &[src_id, u32_one, u32_zero]);
                         asm.emit_typed(OpConvertUToF, result_type, rid, &[int_tmp]);
-                    } else if src_type == DType::Bool && (dst_type == DType::U32 || dst_type == DType::I32
-                        || dst_type == DType::U64 || dst_type == DType::I64
-                        || dst_type == DType::U16 || dst_type == DType::I16
-                        || dst_type == DType::U8 || dst_type == DType::I8) {
+                    } else if src_type == DType::Bool
+                        && (dst_type == DType::U32
+                            || dst_type == DType::I32
+                            || dst_type == DType::U64
+                            || dst_type == DType::I64
+                            || dst_type == DType::U16
+                            || dst_type == DType::I16
+                            || dst_type == DType::U8
+                            || dst_type == DType::I8)
+                    {
                         let (one_cid, zero_cid) = cast_u32_consts[&op_id];
                         let (true_val, false_val) = match layout {
                             MemLayout::Vector(n) => {
@@ -1159,10 +1214,16 @@ pub fn compile(kernel: &Kernel, debug_asm: bool) -> Result<(Vec<u32>, Vec<Dim>, 
                             _ => (one_cid, zero_cid),
                         };
                         asm.emit_typed(OpSelect, result_type, rid, &[src_id, true_val, false_val]);
-                    } else if dst_type == DType::Bool && (src_type == DType::U32 || src_type == DType::I32
-                        || src_type == DType::U64 || src_type == DType::I64
-                        || src_type == DType::U16 || src_type == DType::I16
-                        || src_type == DType::U8 || src_type == DType::I8) {
+                    } else if dst_type == DType::Bool
+                        && (src_type == DType::U32
+                            || src_type == DType::I32
+                            || src_type == DType::U64
+                            || src_type == DType::I64
+                            || src_type == DType::U16
+                            || src_type == DType::I16
+                            || src_type == DType::U8
+                            || src_type == DType::I8)
+                    {
                         let (zero_cid, _) = cast_u32_consts[&op_id];
                         asm.emit_typed(OpINotEqual, result_type, rid, &[src_id, zero_cid]);
                     } else {
@@ -1175,7 +1236,8 @@ pub fn compile(kernel: &Kernel, debug_asm: bool) -> Result<(Vec<u32>, Vec<Dim>, 
                 &Op::Unary { x, uop } => {
                     let src_id = spv_values[&x];
                     let (dt, layout) = dtypes[&x];
-                    let result_type = layout_type_id(&mut asm, &mut type_cache, &mut vec_type_cache, &mut type_entries, dt, layout);
+                    let result_type =
+                        layout_type_id(&mut asm, &mut type_cache, &mut vec_type_cache, &mut type_entries, dt, layout);
                     let rid = asm.id();
 
                     match uop {
@@ -1246,7 +1308,14 @@ pub fn compile(kernel: &Kernel, debug_asm: bool) -> Result<(Vec<u32>, Vec<Dim>, 
                     let y_id = spv_values[&y];
                     let dt = dtypes[&x].0;
                     let (res_dt, res_layout) = dtypes[&op_id];
-                    let result_type = layout_type_id(&mut asm, &mut type_cache, &mut vec_type_cache, &mut type_entries, res_dt, res_layout);
+                    let result_type = layout_type_id(
+                        &mut asm,
+                        &mut type_cache,
+                        &mut vec_type_cache,
+                        &mut type_entries,
+                        res_dt,
+                        res_layout,
+                    );
                     let rid = asm.id();
 
                     let (float_op, int_op, _): (Option<OpCode>, Option<OpCode>, Option<OpCode>) = match bop {
@@ -1339,7 +1408,8 @@ pub fn compile(kernel: &Kernel, debug_asm: bool) -> Result<(Vec<u32>, Vec<Dim>, 
                     let z_id = spv_values[&z];
                     let dt = dtypes[&x].0;
                     let (_, layout) = dtypes[&op_id];
-                    let result_type = layout_type_id(&mut asm, &mut type_cache, &mut vec_type_cache, &mut type_entries, dt, layout);
+                    let result_type =
+                        layout_type_id(&mut asm, &mut type_cache, &mut vec_type_cache, &mut type_entries, dt, layout);
                     let rid = asm.id();
 
                     // FMad not available in spirv crate, decompose to FMul + FAdd

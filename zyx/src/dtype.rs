@@ -5,12 +5,12 @@
 
 #![allow(unused)]
 
+use crate::scalar::{bf16, f16};
 use crate::{
     Scalar, ZyxError,
     kernel::{BOp, IDX_T, UOp},
     shape::Dim,
 };
-use crate::scalar::{bf16, f16};
 use nanoserde::{DeBin, SerBin};
 use std::fmt::{Debug, Display};
 

@@ -7,11 +7,11 @@
 //! to `ln(x)`, which allows backends that lack native `log2` to use
 //! a native `ln` function instead.
 
+use crate::scalar::{bf16, f16};
 use crate::{
     dtype::Constant,
     kernel::{BOp, Kernel, Op, UOp},
 };
-use crate::scalar::{bf16, f16};
 
 const LN_2: f64 = std::f64::consts::LN_2;
 

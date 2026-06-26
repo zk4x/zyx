@@ -17,9 +17,9 @@ use super::{Device, DeviceId, DeviceInfo, DeviceProgramId, Event, MemoryPool, Op
 use crate::{
     DType, Map,
     dtype::Constant,
-    scalar::{bf16, f16},
     error::{BackendError, ErrorStatus},
     kernel::{BOp, Kernel, MemLayout, Op, OpId, Scope, UOp},
+    scalar::{bf16, f16},
     shape::Dim,
     slab::Slab,
 };
@@ -964,7 +964,11 @@ impl OpenCLDevice {
                         match layout {
                             MemLayout::Scalar => _ = writeln!(source, "{indent}r{reg} = p{src}[{idx}];"),
                             MemLayout::Vector(len) => {
-                                _ = writeln!(source, "{indent}r{reg} = *((__global {}{len}*)(p{src} + {idx}));", dtype.0.ocl());
+                                _ = writeln!(
+                                    source,
+                                    "{indent}r{reg} = *((__global {}{len}*)(p{src} + {idx}));",
+                                    dtype.0.ocl()
+                                );
                             }
                             MemLayout::Tile { .. } => todo!(),
                         }
@@ -1305,9 +1309,7 @@ fn query_device_info(
         supported_dtype_ops: [OpCapability::all(); DType::N_DTYPES],
     };
     if let Ok(extensions) = get_device_data(device, clGetDeviceInfo, CL_DEVICE_EXTENSIONS) {
-        let has_fp16 = extensions
-            .split(|&b| b == b' ')
-            .any(|token| token == b"cl_khr_fp16");
+        let has_fp16 = extensions.split(|&b| b == b' ').any(|token| token == b"cl_khr_fp16");
         if !has_fp16 {
             dev_info.supported_dtype_ops[DType::F16 as usize] = OpCapability::none();
         }
