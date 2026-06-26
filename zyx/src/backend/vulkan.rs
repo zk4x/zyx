@@ -562,10 +562,6 @@ pub(super) fn initialize_device(
     }
 
     let vulkan_paths = [
-        "/usr/lib/libvulkan_radeon.so",
-        "/usr/lib64/libvulkan_radeon.so",
-        "/lib64/libvulkan_radeon.so",
-        "/lib/libvulkan_radeon.so",
         "/lib64/libvulkan.so",
         "/lib64/libvulkan.so.1",
         "/lib/libvulkan.so",
@@ -579,43 +575,22 @@ pub(super) fn initialize_device(
         "/lib64/x86_64-linux-gnu/libvulkan.so",
         "/lib64/x86_64-linux-gnu/libvulkan.so.1",
     ];
-    let mut lib_path = None;
-    for path in vulkan_paths {
-        if let Ok(l) = unsafe { Library::new(path) } {
-            lib_path = Some((l, path.contains("radeon")));
-            break;
-        }
-    }
-    let (lib, is_icd) = lib_path.ok_or_else(|| BackendError {
-        status: ErrorStatus::DyLibNotFound,
-        context: "[vulkan] libvulkan.so not found.".into(),
-    })?;
-
-    let vkGetInstanceProcAddr: unsafe extern "system" fn(VkInstance, *const i8) -> *mut std::ffi::c_void;
+    let lib = vulkan_paths
+        .into_iter()
+        .find_map(|path| unsafe { Library::new(path) }.ok())
+        .ok_or_else(|| {
+            if debug_dev {
+                println!("[vulkan] libvulkan.so not found");
+            }
+            BackendError { status: ErrorStatus::DyLibNotFound, context: "[vulkan] libvulkan.so not found.".into() }
+        })?;
+    let vkGetInstanceProcAddr: unsafe extern "system" fn(VkInstance, *const i8) -> *mut std::ffi::c_void =
+        *unsafe { lib.get(b"vkGetInstanceProcAddr\0") }?;
     let vkCreateInstance: unsafe extern "system" fn(
         *const VkInstanceCreateInfo,
         *const std::ffi::c_void,
         *mut VkInstance,
-    ) -> VkResult;
-
-    if is_icd {
-        let negotiate: unsafe extern "system" fn(*mut u32) =
-            *unsafe { lib.get(b"vk_icdNegotiateLoaderICDInterfaceVersion\0") }?;
-        let mut version = 0u32;
-        unsafe { negotiate(&mut version) };
-
-        let icd_get_proc_addr: unsafe extern "system" fn(VkInstance, *const i8) -> *mut std::ffi::c_void =
-            *unsafe { lib.get(b"vk_icdGetInstanceProcAddr\0") }?;
-        vkGetInstanceProcAddr = unsafe { std::mem::transmute(icd_get_proc_addr) };
-        vkCreateInstance = unsafe {
-            std::mem::transmute(
-                icd_get_proc_addr(std::ptr::null_mut(), c"vkCreateInstance".as_ptr() as *const i8),
-            )
-        };
-    } else {
-        vkGetInstanceProcAddr = *unsafe { lib.get(b"vkGetInstanceProcAddr\0") }?;
-        vkCreateInstance = *unsafe { lib.get(b"vkCreateInstance\0") }?;
-    }
+    ) -> VkResult = *unsafe { lib.get(b"vkCreateInstance\0") }?;
 
     let app_name = CString::new("zyx").unwrap();
     let engine_name = CString::new("zyx").unwrap();
@@ -641,6 +616,9 @@ pub(super) fn initialize_device(
     let mut instance = std::ptr::null_mut();
     let res = unsafe { vkCreateInstance(&ici, std::ptr::null(), &mut instance) };
     if res != VK_SUCCESS {
+        if debug_dev {
+            println!("[vulkan] instance: {res}");
+        }
         return Err(BackendError { status: ErrorStatus::Initialization, context: format!("[vulkan] instance: {res}").into() });
     }
 
@@ -681,23 +659,40 @@ pub(super) fn initialize_device(
 
     let mut gpu_count: u32 = 0;
     let _ = unsafe { vkEnumeratePhysicalDevices(instance, &mut gpu_count, std::ptr::null_mut()) };
+    if debug_dev {
+        println!("[vulkan] physical devices: {gpu_count}");
+    }
     let mut gpus: Vec<VkPhysicalDevice> = vec![std::ptr::null_mut(); gpu_count as usize];
     let _ = unsafe { vkEnumeratePhysicalDevices(instance, &mut gpu_count, gpus.as_mut_ptr()) };
 
-    for gpu in gpus {
+    // device_ids filter: Some([0,1]) means use those indices, None means all
+    let indices: Vec<usize> = match &config.device_ids {
+        Some(ids) => {
+            let v: Vec<usize> = ids.iter().map(|&i| i as usize).filter(|&i| i < gpus.len()).collect();
+            if debug_dev {
+                println!("[vulkan] device_ids {:?}, indices {:?}, gpus {}", ids, v, gpus.len());
+            }
+            v
+        }
+        None => {
+            let mut v = Vec::new();
+            for (i, gpu) in gpus.iter().enumerate() {
+                let mut props: VkPhysicalDeviceProperties = unsafe { std::mem::zeroed() };
+                unsafe { vkGetPhysicalDeviceProperties(*gpu, &mut props) };
+                v.push(i);
+            }
+            v
+        }
+    };
+
+    for &gpu_i in &indices {
+        let gpu = gpus[gpu_i];
         let mut props: VkPhysicalDeviceProperties = unsafe { std::mem::zeroed() };
         unsafe { vkGetPhysicalDeviceProperties(gpu, &mut props) };
         let name = {
             let cstr = unsafe { CStr::from_ptr(props.device_name.as_ptr() as *const i8) };
             cstr.to_string_lossy().into_owned()
         };
-
-        if name.contains("llvmpipe") {
-            if debug_dev {
-                println!("[vulkan] skipping sw rasterizer: {name}");
-            }
-            continue;
-        }
 
         let mut qfp_count: u32 = 0;
         unsafe { vkGetPhysicalDeviceQueueFamilyProperties(gpu, &mut qfp_count, std::ptr::null_mut()) };
@@ -745,7 +740,10 @@ pub(super) fn initialize_device(
         let mut device = std::ptr::null_mut();
         let res = unsafe { vkCreateDevice(gpu, &dci, std::ptr::null(), &mut device) };
         if res != VK_SUCCESS {
-            return Err(BackendError { status: ErrorStatus::Initialization, context: format!("[vulkan] device: {res}").into() });
+            if debug_dev {
+                println!("[vulkan] {name}: device: {res}");
+            }
+            return Err(BackendError { status: ErrorStatus::Initialization, context: format!("[vulkan] {name}: device: {res}").into() });
         }
 
         let vkGetDeviceQueue: unsafe extern "system" fn(VkDevice, u32, u32, *mut VkQueue) = unsafe {

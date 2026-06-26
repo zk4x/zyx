@@ -32,7 +32,8 @@ This document is your single source of truth. If it doesn't contain the answer, 
 
 If you catch yourself typing a tool call before replying to the user, stop. Reply first.
 
-**When the user asks you a direct question, answer immediately and stop. Do NOT do anything else until you've answered. Do NOT use tools. Do NOT search. Do NOT explain. Just answer promptly in 1-3 sentences, then stop.**
+**When the user asks you a direct question, answer immediately and stop. Do NOT do anything else until you've answered. Do NOT use tools. Do NOT search. Do NOT explain. Do NOT run commands. Do NOT fix things. Just answer directly in plain text, then stop.**
+**If you fail to follow this rule, the user will stop you from doing ANYTHING until you answer.**
 
 **Always save ZYX_DEBUG output to /tmp.** Never run the same test twice because output was lost. Pipe the full output to `/tmp/debug_*.txt` on the first run:
 ```bash
@@ -219,6 +220,14 @@ while !op.is_null() {
     op = k.next_op(op);
 }
 ```
+
+## Debugging Crashes
+
+When investigating a crash (segfault, signal, etc.):
+
+1. **Write a minimal reproducer** — a single test function that triggers the bug. Keep it small.
+2. **Isolate the crash line** — add `panic!("A")`, `panic!("B")`, etc. at key points in the suspected code path. Run and see which is the last printed. If output is missing (not flushed), use `panic!("reached X")` instead — panics always flush.
+3. **Narrow down** — once you know what line crashes, look at what that line does and work forward to figure out what's wrong.
 
 ## Debug Options
 

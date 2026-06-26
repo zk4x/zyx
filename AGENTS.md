@@ -387,6 +387,19 @@ pub fn run_always_on_optimizations(&mut self) {
 
 Every optimization must produce correct IR that calculates the same result as the input. If one optimization breaks another, that's a bug in the optimization that produced invalid IR from valid code - not a problem with the ordering. When combining optimizations (e.g., upcast + tiled_reduce), each must work correctly on the other's output.
 
+## Debugging Crashes
+
+When investigating a crash (segfault, signal, etc.):
+
+1. **Write a minimal reproducer** — a single test function that triggers the bug. Keep it small.
+2. **Isolate the crash line** — add `panic!("A")`, `panic!("B")`, etc. at key points in the suspected code path. Run and see which is the last printed. Do NOT add `eprintln!` — output may not flush before SIGSEGV. Only panics are guaranteed to flush.
+3. **Narrow down** — once you know what line crashes, look at what that line does and work forward to figure out what's wrong.
+
+## Answering Questions
+
+**When the user asks you a direct question, answer immediately and stop. Do NOT do anything else until you've answered. Do NOT use tools. Do NOT search. Do NOT explain. Do NOT run commands. Do NOT fix things. Just answer directly in plain text, then stop.**
+**If you fail to follow this rule, the user will stop you from doing ANYTHING until you answer.**
+
 ## What to Avoid
 
 - **Never commit changes unless the user explicitly asks for it** - Always ask before committing
