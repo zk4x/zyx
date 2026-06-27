@@ -8,7 +8,7 @@ use std::collections::BTreeSet;
 use crate::{
     DType, Map,
     dtype::Constant,
-    graph::Node,
+    graph::{Node, compiled::CompiledNode},
     kernel::{BOp, UOp},
     shape::{Dim, UAxis},
     slab::Slab,
@@ -64,7 +64,7 @@ impl<'a> EGraph<'a> {
     /// variants are tried. With large enough budgets, it's basically fully exhaustive.
     pub fn saturate(&mut self) {}
 
-    pub fn extract(self) -> Vec<crate::graph::compiled::CompiledNode> {
+    pub fn extract(self) -> Vec<CompiledNode> {
         todo!()
     }
 }

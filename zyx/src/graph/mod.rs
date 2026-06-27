@@ -74,6 +74,8 @@ pub struct Graph {
     pub nodes: Slab<TensorId, (u32, Node)>,
     pub tape_rc: u32,
     pub tape: Option<Set<TensorId>>,
+    pub tape_order: Vec<TensorId>,
+    pub tape_inputs: Vec<TensorId>,
     pub shapes: Map<TensorId, Box<[Dim]>>,
     paddings: Map<TensorId, Box<[(i64, i64)]>>,
     axes: Map<TensorId, Box<[UAxis]>>,
@@ -85,6 +87,8 @@ impl Graph {
             nodes: Slab::new(),
             tape_rc: 0,
             tape: None,
+            tape_order: Vec::new(),
+            tape_inputs: Vec::new(),
             shapes: Map::with_hasher(BuildHasherDefault::new()),
             paddings: Map::with_hasher(BuildHasherDefault::new()),
             axes: Map::with_hasher(BuildHasherDefault::new()),
@@ -152,8 +156,9 @@ impl Graph {
             }
         }
 
-        for nid in node.parameters() {
-            self.nodes[nid].0 += 1;
+        let params = node.parameters();
+        for nid in &params {
+            self.nodes[*nid].0 += 1;
         }
         let nid = self.nodes.push((1, node));
 
@@ -167,6 +172,12 @@ impl Graph {
 
         if let Some(tape) = self.tape.as_mut() {
             tape.insert(nid);
+            self.tape_order.push(nid);
+            for p in params {
+                if !tape.contains(&p) {
+                    self.tape_inputs.push(p);
+                }
+            }
         }
         nid
     }

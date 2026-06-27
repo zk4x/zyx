@@ -5,9 +5,10 @@
 
 //! Compiled graph caching layer.
 use crate::{
-    DType, Map, Set, ZyxError, hashers,
+    DType, Map, ZyxError,
     backend::{BufferId, Device, DeviceId, MemoryPool, PoolId, ProgramId},
-    graph::{Graph, Node, search::EGraph},
+    graph::{Graph, search::EGraph},
+    hashers,
     runtime::Runtime,
     shape::Dim,
     slab::Slab,
@@ -57,8 +58,7 @@ pub enum CompiledNode {
 fn hash_order(order: &[TensorId], graph: &Graph) -> u128 {
     use std::hash::{Hash, Hasher};
     let mut hashes: Vec<u64> = Vec::with_capacity(order.len());
-    let mut pos_of: Map<TensorId, usize> =
-        Map::with_capacity_and_hasher(order.len(), BuildHasherDefault::new());
+    let mut pos_of: Map<TensorId, usize> = Map::with_capacity_and_hasher(order.len(), BuildHasherDefault::new());
     for (i, &tid) in order.iter().enumerate() {
         pos_of.insert(tid, i);
     }
@@ -97,32 +97,28 @@ impl Runtime {
     /// Computes a structural hash from `order`, checks the cache, and either
     /// replays the cached [`CompiledNode`] sequence or compiles via [`EGraph`],
     /// stores it, and replays.
-    pub(crate) fn launch_or_store_graph_with_order(
-        &mut self,
-        realized_nodes: &Set<TensorId>,
-        order: &[TensorId],
-    ) -> Result<(), ZyxError> {
+    pub(crate) fn launch_or_store_graph_with_order(&mut self, inputs: &[TensorId], order: &[TensorId]) -> Result<(), ZyxError> {
         let key = hash_order(order, &self.graph);
 
+        let input_buffers: Vec<BufferId> = inputs
+            .iter()
+            .map(|tid| {
+                self.buffer_map
+                    .get(tid)
+                    .copied()
+                    .unwrap_or_else(|| panic!("input tensor {tid:?} not realized"))
+            })
+            .collect();
+
         if let Some(compiled_nodes) = self.graph_cache.get(&key) {
-            let inputs: Vec<BufferId> = order
-                .iter()
-                .filter(|tid| realized_nodes.contains(tid))
-                .filter_map(|tid| self.buffer_map.get(tid).copied())
-                .collect();
-            return replay_compiled(&mut self.pools, &mut self.devices, compiled_nodes, &inputs);
+            return replay_compiled(&mut self.pools, &mut self.devices, compiled_nodes, &input_buffers);
         }
 
         let mut egraph = EGraph::new(order, &self.graph);
         egraph.saturate();
         let compiled_nodes = egraph.extract();
 
-        let inputs: Vec<BufferId> = order
-            .iter()
-            .filter(|tid| realized_nodes.contains(tid))
-            .filter_map(|tid| self.buffer_map.get(tid).copied())
-            .collect();
-        replay_compiled(&mut self.pools, &mut self.devices, &compiled_nodes, &inputs)?;
+        replay_compiled(&mut self.pools, &mut self.devices, &compiled_nodes, &input_buffers)?;
         self.graph_cache.insert(key, compiled_nodes);
         Ok(())
     }
@@ -179,12 +175,8 @@ fn replay_compiled(
             CompiledNode::LaunchProgram { program, args } => {
                 let pool_id = devices[program.device].memory_pool_id();
                 let pool = &mut pools[pool_id];
-                let kernel_args: Vec<_> = args
-                    .iter()
-                    .map(|s| slots[s.0 as usize].unwrap().buffer)
-                    .collect();
-                let _event =
-                    devices[program.device].launch(program.program, pool, &kernel_args, vec![])?;
+                let kernel_args: Vec<_> = args.iter().map(|s| slots[s.0 as usize].unwrap().buffer).collect();
+                let _event = devices[program.device].launch(program.program, pool, &kernel_args, vec![])?;
             }
         }
     }
