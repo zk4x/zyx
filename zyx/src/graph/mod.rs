@@ -71,7 +71,7 @@ pub enum Node {
 #[derive(Debug)]
 pub struct Graph {
     // First value is reference count, second is node
-    pub nodes: Slab<TensorId, (u32, Node, u128)>,
+    pub nodes: Slab<TensorId, (u32, Node)>,
     pub tape_rc: u32,
     pub tape: Option<Set<TensorId>>,
     pub shapes: Map<TensorId, Box<[Dim]>>,
@@ -155,7 +155,7 @@ impl Graph {
         for nid in node.parameters() {
             self.nodes[nid].0 += 1;
         }
-        let nid = self.nodes.push((1, node, 0));
+        let nid = self.nodes.push((1, node));
 
         let shape = shape.unwrap_or_else(|| match &self.nodes[nid].1 {
             Node::Const { .. } => vec![1],
@@ -164,8 +164,6 @@ impl Graph {
             _ => unreachable!("shape must be provided for shape-changing ops"),
         });
         self.shapes.insert(nid, shape.into_boxed_slice());
-
-        self.nodes[nid].2 = self.compute_hash(nid);
 
         if let Some(tape) = self.tape.as_mut() {
             tape.insert(nid);
@@ -184,40 +182,6 @@ impl Graph {
     pub(super) fn add_shape(&mut self, id: TensorId) {
         let shape = self.shape(id).into();
         self.shapes.insert(id, shape);
-    }
-
-    fn compute_hash(&self, nid: TensorId) -> u128 {
-        let node = &self.nodes[nid].1;
-        let kind_tag = node.kind_tag();
-        let extra = node.extra_hash();
-        let dtype = self.dtype(nid);
-        let shape = self.shapes.get(&nid).map(|s| s.as_ref()).unwrap_or(&[]);
-
-        let params = node.parameters();
-        let h1 = params.first().map(|&p| self.nodes[p].2).unwrap_or(0);
-        let h2 = params.get(1).map(|&p| self.nodes[p].2).unwrap_or(0);
-
-        use std::hash::{Hash, Hasher};
-
-        let mut hasher = crate::hashers::AHasher::default();
-        kind_tag.hash(&mut hasher);
-        extra.hash(&mut hasher);
-        dtype.hash(&mut hasher);
-        shape.hash(&mut hasher);
-        h1.hash(&mut hasher);
-        h2.hash(&mut hasher);
-        let low = hasher.finish() as u128;
-
-        let mut hasher = crate::hashers::AHasher::default();
-        h2.hash(&mut hasher);
-        h1.hash(&mut hasher);
-        shape.hash(&mut hasher);
-        dtype.hash(&mut hasher);
-        extra.hash(&mut hasher);
-        kind_tag.hash(&mut hasher);
-        let high = (hasher.finish() as u128) << 64;
-
-        low | high
     }
 
     /*pub(super) fn delete_tensors_without_deallocation(&mut self, tensors: &Set<TensorId>) {
@@ -548,7 +512,7 @@ impl Node {
         }
     }
 
-    fn kind_tag(&self) -> u64 {
+    pub(super) fn kind_tag(&self) -> u64 {
         match self {
             Node::Const { .. } => 0,
             Node::Leaf { .. } => 1,
@@ -565,7 +529,7 @@ impl Node {
         }
     }
 
-    fn extra_hash(&self) -> u64 {
+    pub(super) fn extra_hash(&self) -> u64 {
         match self {
             Node::Const { value } => {
                 use std::hash::{Hash, Hasher};

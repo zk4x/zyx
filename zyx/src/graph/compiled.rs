@@ -5,25 +5,17 @@
 
 //! Compiled graph caching layer.
 use crate::{
-    DType, Map, Set, ZyxError,
-    backend::{BufferId, DeviceId, PoolId, ProgramId},
-    graph::{Node, search::EGraph},
+    DType, Map, Set, ZyxError, hashers,
+    backend::{BufferId, Device, DeviceId, MemoryPool, PoolId, ProgramId},
+    graph::{Graph, Node, search::EGraph},
     runtime::Runtime,
-    shape::{Dim, UAxis},
-    slab::{Slab, SlabId},
+    shape::Dim,
+    slab::Slab,
     tensor::TensorId,
 };
-use std::collections::BTreeMap;
 use std::hash::BuildHasherDefault;
 
-/// Cached result of compiling a graph, ready for replay.
-#[allow(dead_code)]
-pub struct CompiledGraph {
-    pub nodes: Vec<CompiledNode>,
-    pub buffer_slots: Vec<BufferId>,
-}
-
-/// Index into [`CompiledGraph::buffer_slots`], used instead of raw [`BufferId`]
+/// Logical index into a replay-time slot table, used instead of raw [`BufferId`]
 /// so the compiled graph is stable across runs with different buffer IDs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct BufferSlot(pub u32);
@@ -31,9 +23,13 @@ pub struct BufferSlot(pub u32);
 /// A single step in a compiled graph execution.
 #[derive(Debug, Clone)]
 pub enum CompiledNode {
-    Allocate {
+    Leaf {
         pool: PoolId,
+        slot: BufferSlot,
+    },
+    Allocate {
         size: Dim,
+        pool: PoolId,
         slot: BufferSlot,
     },
     Deallocate {
@@ -42,175 +38,155 @@ pub enum CompiledNode {
     },
     CopyMemory {
         src_pool: PoolId,
-        src_buffer: BufferSlot,
+        src: BufferSlot,
         dst_pool: PoolId,
-        dst_buffer: BufferSlot,
+        dst: BufferSlot,
     },
     LaunchProgram {
         program: ProgramId,
-        device: DeviceId,
+        args: Vec<BufferSlot>,
     },
 }
 
-#[derive(Debug, Copy, Clone, Hash, Ord, PartialEq, PartialOrd, Eq)]
-pub struct NodeId(pub u32);
-
-impl SlabId for NodeId {
-    const ZERO: Self = Self(0);
-    const NULL: Self = Self(u32::MAX);
-
-    fn inc(&mut self) {
-        self.0 += 1;
-    }
-}
-
-impl From<usize> for NodeId {
-    fn from(value: usize) -> Self {
-        Self(value as u32)
-    }
-}
-
-impl From<NodeId> for usize {
-    fn from(val: NodeId) -> Self {
-        val.0 as usize
-    }
-}
-
-/// Compact representation of a graph, used as cache key.
-#[derive(Debug, PartialEq, Eq, Hash, Clone)]
-pub struct CachedGraph {
-    pub nodes: Slab<NodeId, Node>,
-    pub shapes: BTreeMap<NodeId, Box<[Dim]>>,
-    pub paddings: BTreeMap<NodeId, Box<[(i64, i64)]>>,
-    pub axes: BTreeMap<NodeId, Box<[UAxis]>>,
-}
-
-impl CachedGraph {
-    pub(super) fn shape(&self, mut node_id: NodeId) -> &[Dim] {
-        for _ in 0..1_000_000 {
-            if let Some(shape) = self.shapes.get(&node_id) {
-                //println!("Found shape {shape:?} for tensor {tensor_id}");
-                return shape;
-            } else if let Node::Const { .. } = self.nodes[node_id] {
-                return &[1];
-            }
-            //println!("Getting params of id: {tensor_id}, {:?}", self.nodes[tensor_id].1);
-            node_id = NodeId(self.nodes[node_id].param1().0);
-        }
-        panic!("Shape of {node_id:?} could not be found. This is internal bug.")
+/// Compute a structural hash for the subgraph in `order`.
+///
+/// The hash is position-based: for each node in topological order, its input
+/// hashes are the hashes of positions `order[i]` for its input TensorIds.
+/// This gives the same key for structurally identical subgraphs regardless
+/// of TensorId or buffer contents.
+fn hash_order(order: &[TensorId], graph: &Graph) -> u128 {
+    use std::hash::{Hash, Hasher};
+    let mut hashes: Vec<u64> = Vec::with_capacity(order.len());
+    let mut pos_of: Map<TensorId, usize> =
+        Map::with_capacity_and_hasher(order.len(), BuildHasherDefault::new());
+    for (i, &tid) in order.iter().enumerate() {
+        pos_of.insert(tid, i);
     }
 
-    pub(super) fn dtype(&self, mut node_id: NodeId) -> DType {
-        for _ in 0..100_000 {
-            match self.nodes[node_id] {
-                Node::Const { value } => return value.dtype(),
-                Node::Leaf { dtype } | Node::Cast { dtype, .. } => return dtype,
-                Node::Binary { bop, .. } if bop.returns_bool() => {
-                    return DType::Bool;
-                }
-                _ => {
-                    node_id = NodeId(self.nodes[node_id].parameters().into_iter().next().unwrap().0);
-                }
-            }
-        }
-        panic!("DType of {node_id:?} could not be found. This is internal bug.")
+    for &tid in order {
+        let node = &graph[tid];
+        let dtype = graph.dtype(tid);
+        let shape = graph.shape(tid);
+        let params = node.parameters();
+
+        let h1 = params.first().map(|&p| hashes[pos_of[&p]]).unwrap_or(0);
+        let h2 = params.get(1).map(|&p| hashes[pos_of[&p]]).unwrap_or(0);
+
+        let mut hasher = hashers::AHasher::default();
+        node.kind_tag().hash(&mut hasher);
+        node.extra_hash().hash(&mut hasher);
+        dtype.hash(&mut hasher);
+        shape.hash(&mut hasher);
+        h1.hash(&mut hasher);
+        h2.hash(&mut hasher);
+        hashes.push(hasher.finish());
     }
+
+    let mut h1 = 0u128;
+    let mut h2 = 0u128;
+    for &h in &hashes {
+        h1 = h1.wrapping_mul(0x9E37_79B9_7F4A_7C15).wrapping_add(h as u128);
+        h2 = h2.wrapping_mul(0x9E37_79B9_7F4A_7C15).wrapping_add((h >> 1) as u128);
+    }
+    h1 | (h2 << 64)
 }
 
 impl Runtime {
     /// Launch graph or store in cache for faster replay.
     ///
-    /// This function implements the following flow:
-    /// 1. **Build compacted [`CachedGraph`]**: Create a minimal representation of the graph by
-    ///    re-indexing all tensor IDs to 0..N and extracting shapes/paddings/axes. This compacted
-    ///    form is used as the hash key for cache lookup.
-    /// 2. **Cache hit**: If [`CachedGraph`] exists in `graph_cache`, execute its `CompiledGraph.nodes`
-    ///    which contains an optimized sequence of Allocate/CopyMemory/LaunchProgram/Deallocate ops.
-    /// 3. **Cache miss**: If not found, call `search::search(&compacted)` to:
-    ///    - Build an [`EGraph`] from the [`CachedGraph`] nodes
-    ///    - Enumerate all fusion strategies by add ing fused variants (matmul, elementwise, reduce chains)
-    ///    - Compute and compare costs for each variant combination
-    ///    - Select the fastest execution path and convert to `CompiledGraph`
-    ///    - Store `(egraph, compiled_graph)` in cache for future reuse
-    /// 4. **Execute**: After either cache hit or miss, perform necessary memory operations (allocate,
-    ///    copy, deallocate buffers) before launching programs.
-    #[allow(clippy::unnecessary_wraps)]
+    /// Computes a structural hash from `order`, checks the cache, and either
+    /// replays the cached [`CompiledNode`] sequence or compiles via [`EGraph`],
+    /// stores it, and replays.
     pub(crate) fn launch_or_store_graph_with_order(
         &mut self,
-        _rcs: &Map<TensorId, u32>,
         realized_nodes: &Set<TensorId>,
         order: &[TensorId],
-        _to_eval: &Set<TensorId>,
     ) -> Result<(), ZyxError> {
-        let mut compacted = CachedGraph {
-            nodes: Slab::with_capacity(order.len()),
-            shapes: BTreeMap::new(),
-            paddings: BTreeMap::new(),
-            axes: BTreeMap::new(),
-        };
-        let mut id_map: Map<TensorId, NodeId> = Map::with_capacity_and_hasher(order.len(), BuildHasherDefault::new());
+        let key = hash_order(order, &self.graph);
 
-        for (id, &nid) in order.iter().enumerate() {
-            let new_id = NodeId::from(id);
-            let node = &self.graph[nid];
-            let reindexed = if realized_nodes.contains(&nid) {
-                Node::Leaf { dtype: self.graph.dtype(nid) }
-            } else {
-                match node {
-                    Node::Const { value } => Node::Const { value: *value },
-                    Node::Leaf { dtype } => Node::Leaf { dtype: *dtype },
-                    Node::Expand { x } => Node::Expand { x: TensorId(id_map[x].0) },
-                    Node::Permute { x } => Node::Permute { x: TensorId(id_map[x].0) },
-                    Node::Reshape { x } => Node::Reshape { x: TensorId(id_map[x].0) },
-                    Node::Pad { x } => Node::Pad { x: TensorId(id_map[x].0) },
-                    Node::Reduce { x, rop } => Node::Reduce { x: TensorId(id_map[x].0), rop: *rop },
-                    Node::Cast { x, dtype } => Node::Cast { x: TensorId(id_map[x].0), dtype: *dtype },
-                    Node::Unary { x, uop } => Node::Unary { x: TensorId(id_map[x].0), uop: *uop },
-                    Node::Binary { x, y, bop } => Node::Binary { x: TensorId(id_map[x].0), y: TensorId(id_map[y].0), bop: *bop },
-                    Node::Custom { .. } => todo!(),
-                    Node::ToDevice { x, device } => Node::ToDevice { x: TensorId(id_map[x].0), device: *device },
-                }
-            };
-            compacted.nodes.push(reindexed);
-            id_map.insert(nid, new_id);
-
-            if matches!(
-                node,
-                Node::Leaf { .. }
-                    | Node::Expand { .. }
-                    | Node::Permute { .. }
-                    | Node::Reshape { .. }
-                    | Node::Pad { .. }
-                    | Node::Reduce { .. }
-            ) {
-                compacted.shapes.insert(new_id, self.graph.shape(nid).into());
-            }
-            if matches!(node, Node::Pad { .. }) {
-                compacted.paddings.insert(new_id, self.graph.padding(nid).into());
-            }
-            if matches!(node, Node::Permute { .. } | Node::Reduce { .. }) {
-                compacted.axes.insert(new_id, self.graph.axes(nid).into());
-            }
+        if let Some(compiled_nodes) = self.graph_cache.get(&key) {
+            let inputs: Vec<BufferId> = order
+                .iter()
+                .filter(|tid| realized_nodes.contains(tid))
+                .filter_map(|tid| self.buffer_map.get(tid).copied())
+                .collect();
+            return replay_compiled(&mut self.pools, &mut self.devices, compiled_nodes, &inputs);
         }
 
-        if let Some(compiled_graph) = self.graph_cache.get(&compacted) {
-            // TODO: Execute cached_graph
-            return Ok(());
-        }
-
-        //let compacted_realized: Set<TensorId> = realized_nodes.iter().filter_map(|&tid| id_map.get(&tid).copied()).collect();
-
-        let mut egraph = EGraph::new(&compacted);
+        let mut egraph = EGraph::new(order, &self.graph);
         egraph.saturate();
-        let compiled_graph = egraph.extract();
+        let compiled_nodes = egraph.extract();
 
-        self.graph_cache.insert(compacted.clone(), compiled_graph);
-
-        if let Some(compiled_graph) = self.graph_cache.get(&compacted) {
-            // TODO: Execute cached_graph
-            return Ok(());
-        }
-
+        let inputs: Vec<BufferId> = order
+            .iter()
+            .filter(|tid| realized_nodes.contains(tid))
+            .filter_map(|tid| self.buffer_map.get(tid).copied())
+            .collect();
+        replay_compiled(&mut self.pools, &mut self.devices, &compiled_nodes, &inputs)?;
+        self.graph_cache.insert(key, compiled_nodes);
         Ok(())
     }
+}
+
+/// Replay a cached compiled graph.
+///
+/// Maintains an ephemeral slot table (`Vec<Option<BufferId>>`) that is indexed
+/// by [`BufferSlot`].
+///
+/// [`CompiledNode::Leaf`] pre-populates a slot from the `inputs` slice
+/// (one per Leaf, in order of appearance).
+/// [`CompiledNode::Allocate`] allocates and fills a slot.
+/// [`CompiledNode::LaunchProgram`] reads argument slots.
+/// [`CompiledNode::Deallocate`] drains them.
+fn replay_compiled(
+    pools: &mut Slab<PoolId, MemoryPool>,
+    devices: &mut Slab<DeviceId, Device>,
+    nodes: &[CompiledNode],
+    inputs: &[BufferId],
+) -> Result<(), ZyxError> {
+    let mut slots: Vec<Option<BufferId>> = Vec::new();
+    let mut input_idx = 0;
+
+    for node in nodes {
+        match node {
+            CompiledNode::Leaf { slot, .. } => {
+                let buf = inputs[input_idx];
+                input_idx += 1;
+                let idx = slot.0 as usize;
+                if idx >= slots.len() {
+                    slots.resize(idx + 1, None);
+                }
+                slots[idx] = Some(buf);
+            }
+            CompiledNode::Allocate { pool, size, slot } => {
+                let (buf, _event) = pools[*pool].allocate(*size)?;
+                let idx = slot.0 as usize;
+                if idx >= slots.len() {
+                    slots.resize(idx + 1, None);
+                }
+                slots[idx] = Some(BufferId { pool: *pool, buffer: buf });
+            }
+            CompiledNode::Deallocate { pool, slot } => {
+                if let Some(buf) = slots[slot.0 as usize].take() {
+                    pools[*pool].deallocate(buf.buffer, vec![]);
+                }
+            }
+            CompiledNode::CopyMemory { src_pool, src, dst_pool, dst } => {
+                let _src_buf = slots[src.0 as usize].unwrap();
+                let _dst_buf = slots[dst.0 as usize].unwrap();
+                // TODO: device-to-device copy between pools
+            }
+            CompiledNode::LaunchProgram { program, args } => {
+                let pool_id = devices[program.device].memory_pool_id();
+                let pool = &mut pools[pool_id];
+                let kernel_args: Vec<_> = args
+                    .iter()
+                    .map(|s| slots[s.0 as usize].unwrap().buffer)
+                    .collect();
+                let _event =
+                    devices[program.device].launch(program.program, pool, &kernel_args, vec![])?;
+            }
+        }
+    }
+    Ok(())
 }

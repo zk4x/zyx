@@ -1,3 +1,6 @@
+// Copyright (C) 2025 zk4x
+// SPDX-License-Identifier: LGPL-3.0-only
+
 #![allow(unused)]
 
 use std::collections::BTreeSet;
@@ -5,17 +8,17 @@ use std::collections::BTreeSet;
 use crate::{
     DType, Map,
     dtype::Constant,
-    graph::{
-        Node,
-        compiled::{CachedGraph, CompiledGraph, NodeId},
-    },
+    graph::Node,
     kernel::{BOp, UOp},
     shape::{Dim, UAxis},
-    slab::{Slab, SlabId},
+    slab::Slab,
+    tensor::TensorId,
 };
 
+use super::Graph;
+
 trait FusedKernel: std::fmt::Debug {
-    fn try_fuse(g: &mut EGraph, nid: NodeId) -> Option<Self>
+    fn try_fuse(g: &mut EGraph, nid: TensorId) -> Option<Self>
     where
         Self: Sized;
 }
@@ -24,19 +27,20 @@ trait FusedKernel: std::fmt::Debug {
 struct FusedSlot {
     pre_reshape: Option<Vec<Dim>>,
     pre_permute: Option<Vec<UAxis>>,
-    fused_nodes: BTreeSet<NodeId>,
+    fused_nodes: BTreeSet<TensorId>,
     post_permute: Option<Vec<UAxis>>,
     post_reshape: Option<Vec<Dim>>,
 }
 
 pub struct EGraph<'a> {
-    graph: &'a CachedGraph,
+    order: &'a [TensorId],
+    graph: &'a Graph,
     kernels: Map<FusedSlot, Box<dyn FusedKernel>>,
 }
 
 impl<'a> EGraph<'a> {
-    pub fn new(graph: &'a CachedGraph) -> Self {
-        Self { graph, kernels: Map::default() }
+    pub fn new(order: &'a [TensorId], graph: &'a Graph) -> Self {
+        Self { order, graph, kernels: Map::default() }
     }
 
     /// We have an array of all available fused kernels.
@@ -60,7 +64,7 @@ impl<'a> EGraph<'a> {
     /// variants are tried. With large enough budgets, it's basically fully exhaustive.
     pub fn saturate(&mut self) {}
 
-    pub fn extract(self) -> CompiledGraph {
+    pub fn extract(self) -> Vec<crate::graph::compiled::CompiledNode> {
         todo!()
     }
 }
@@ -69,7 +73,7 @@ impl<'a> EGraph<'a> {
 struct Matmul {}
 
 impl FusedKernel for Matmul {
-    fn try_fuse(g: &mut EGraph, nid: NodeId) -> Option<Self>
+    fn try_fuse(g: &mut EGraph, nid: TensorId) -> Option<Self>
     where
         Self: Sized,
     {
