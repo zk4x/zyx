@@ -120,7 +120,7 @@ impl Runtime {
     }
 
     pub fn debug_graph(&self) {
-        for (id, (rc, node)) in self.graph.nodes.iter() {
+        for (id, (rc, node, ..)) in self.graph.nodes.iter() {
             println!("{id} x {rc} -> {node:?} {:?} {:?}", self.shape(id), self.dtype(id));
         }
     }
@@ -723,7 +723,7 @@ impl Runtime {
         }
 
         let mut to_eval = Set::with_hasher(BuildHasherDefault::new());
-        for (id, (rc, _)) in self.graph.nodes.iter() {
+        for (id, (rc, _, ..)) in self.graph.nodes.iter() {
             if let Some(graph_rc) = rcs.get(&id) {
                 if rc > graph_rc {
                     to_eval.insert(id);

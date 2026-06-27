@@ -71,7 +71,7 @@ pub enum Node {
 #[derive(Debug)]
 pub struct Graph {
     // First value is reference count, second is node
-    pub nodes: Slab<TensorId, (u32, Node)>,
+    pub nodes: Slab<TensorId, (u32, Node, u128)>,
     pub gradient_tape_ref_count: u32,
     pub gradient_tape: Option<Set<TensorId>>,
     pub shapes: Map<TensorId, Box<[Dim]>>,
@@ -106,7 +106,7 @@ impl Graph {
         let mut to_remove = Set::with_capacity_and_hasher(10, BuildHasherDefault::default());
         while let Some(x) = params.pop() {
             //println!("Releasing {x}");
-            if let Some((rc, node)) = self.nodes.get_mut(x) {
+            if let Some((rc, node, ..)) = self.nodes.get_mut(x) {
                 let a = rc.saturating_sub(1);
                 *rc = a;
                 if a == 0 {
@@ -128,19 +128,26 @@ impl Graph {
     }
 
     pub(super) fn push(&mut self, node: Node) -> TensorId {
-        //println!("Pushing {node:?}");
+        self.push_inner(node, None)
+    }
+
+    pub(super) fn push_wshape(&mut self, node: Node, shape: Vec<Dim>) -> TensorId {
+        self.push_inner(node, Some(shape))
+    }
+
+    fn push_inner(&mut self, node: Node, shape: Option<Vec<Dim>>) -> TensorId {
         #[cfg(debug_assertions)]
         if !matches!(node, Node::Custom(_)) {
-            let mut shape = None;
+            let mut sh = None;
             for nid in node.parameters() {
-                if let Some(sh) = shape {
+                if let Some(sh) = sh {
                     let shape = self.shape(nid);
                     if sh != shape {
                         println!("{:?}", self.shapes);
                         panic!("{sh:?} != {shape:?} Pushing new node {node:?}");
                     }
                 } else {
-                    shape = Some(self.shape(nid));
+                    sh = Some(self.shape(nid));
                 }
             }
         }
@@ -148,18 +155,22 @@ impl Graph {
         for nid in node.parameters() {
             self.nodes[nid].0 += 1;
         }
-        let nid = self.nodes.push((1, node));
+        let nid = self.nodes.push((1, node, 0));
+
+        let shape = shape.unwrap_or_else(|| match &self.nodes[nid].1 {
+            Node::Const { .. } => vec![1],
+            Node::Cast { x, .. } | Node::Unary { x, .. } => self.shape(*x).to_vec(),
+            Node::Binary { x, .. } => self.shape(*x).to_vec(),
+            _ => unreachable!("shape must be provided for shape-changing ops"),
+        });
+        self.shapes.insert(nid, shape.into_boxed_slice());
+
+        self.nodes[nid].2 = self.compute_hash(nid);
+
         if let Some(tape) = self.gradient_tape.as_mut() {
             tape.insert(nid);
         }
         nid
-    }
-
-    pub(super) fn push_wshape(&mut self, node: Node, shape: Vec<Dim>) -> TensorId {
-        //println!("Pushing wshape {node:?}");
-        let id = self.push(node);
-        self.shapes.insert(id, shape.into_boxed_slice());
-        id
     }
 
     pub(super) fn push_padding(&mut self, id: TensorId, padding: Vec<(i64, i64)>) {
@@ -175,6 +186,40 @@ impl Graph {
         self.shapes.insert(id, shape);
     }
 
+    fn compute_hash(&self, nid: TensorId) -> u128 {
+        let node = &self.nodes[nid].1;
+        let kind_tag = node.kind_tag();
+        let extra = node.extra_hash();
+        let dtype = self.dtype(nid);
+        let shape = self.shapes.get(&nid).map(|s| s.as_ref()).unwrap_or(&[]);
+
+        let params = node.parameters();
+        let h1 = params.first().map(|&p| self.nodes[p].2).unwrap_or(0);
+        let h2 = params.get(1).map(|&p| self.nodes[p].2).unwrap_or(0);
+
+        use std::hash::{Hash, Hasher};
+
+        let mut hasher = crate::hashers::AHasher::default();
+        kind_tag.hash(&mut hasher);
+        extra.hash(&mut hasher);
+        dtype.hash(&mut hasher);
+        shape.hash(&mut hasher);
+        h1.hash(&mut hasher);
+        h2.hash(&mut hasher);
+        let low = hasher.finish() as u128;
+
+        let mut hasher = crate::hashers::AHasher::default();
+        h2.hash(&mut hasher);
+        h1.hash(&mut hasher);
+        shape.hash(&mut hasher);
+        dtype.hash(&mut hasher);
+        extra.hash(&mut hasher);
+        kind_tag.hash(&mut hasher);
+        let high = (hasher.finish() as u128) << 64;
+
+        low | high
+    }
+
     /*pub(super) fn delete_tensors_without_deallocation(&mut self, tensors: &Set<TensorId>) {
         /*for &tensor in tensors {
             self.nodes.remove(tensor);
@@ -185,7 +230,7 @@ impl Graph {
         let mut params: Vec<TensorId> = tensors.iter().copied().collect();
         while let Some(x) = params.pop() {
             //println!("Releasing {x}");
-            if let Some((rc, node)) = self.nodes.get_mut(x) {
+            if let Some((rc, node, ..)) = self.nodes.get_mut(x) {
                 let a = rc.saturating_sub(1);
                 *rc = a;
                 if a == 0 {
@@ -377,8 +422,8 @@ impl Graph {
             }
         }
         // Puts graph of nodes into dot language for visualization
-        let mut user_rc: Map<TensorId, u32> = self.nodes.iter().map(|(k, (rc, _))| (k, *rc)).collect();
-        for (_, node) in self.nodes.values() {
+        let mut user_rc: Map<TensorId, u32> = self.nodes.iter().map(|(k, (rc, ..))| (k, *rc)).collect();
+        for (_, node, ..) in self.nodes.values() {
             for param in node.parameters() {
                 *user_rc.get_mut(&param).unwrap() -= 1;
             }
@@ -503,22 +548,36 @@ impl Node {
         }
     }
 
-    /*
-    pub const fn param2(&self) -> (TensorId, TensorId) {
-        match *self {
-            Node::Binary { x, y, .. } => (x, y),
-            _ => unreachable!(),
+    fn kind_tag(&self) -> u64 {
+        match self {
+            Node::Const { .. } => 0,
+            Node::Leaf { .. } => 1,
+            Node::Expand { .. } => 2,
+            Node::Permute { .. } => 3,
+            Node::Reshape { .. } => 4,
+            Node::Pad { .. } => 5,
+            Node::Reduce { .. } => 6,
+            Node::Cast { .. } => 7,
+            Node::Unary { .. } => 8,
+            Node::Binary { .. } => 9,
+            Node::Custom(_) => 10,
+            Node::ToDevice { .. } => 11,
         }
-    }*/
-
-    /*pub(super) const fn is_movement(&self) -> bool {
-        matches!(
-            self,
-            Node::Pad { .. } | Node::Reshape { .. } | Node::Expand { .. } | Node::Permute { .. }
-        )
     }
 
-    pub(super) const fn is_unary(&self) -> bool {
-        matches!(self, Node::Unary { .. })
-    }*/
+    fn extra_hash(&self) -> u64 {
+        match self {
+            Node::Const { value } => {
+                use std::hash::{Hash, Hasher};
+                let mut h = crate::hashers::AHasher::default();
+                value.hash(&mut h);
+                h.finish()
+            }
+            Node::Reduce { rop, .. } => *rop as u64,
+            Node::Unary { uop, .. } => *uop as u64,
+            Node::Binary { bop, .. } => *bop as u64,
+            Node::ToDevice { device, .. } => device.0 as u64,
+            _ => 0,
+        }
+    }
 }
