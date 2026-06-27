@@ -79,7 +79,7 @@ impl Tape {
     /// Tensors created inside this scope are traced and realized on drop.
     /// Use this around inference loops to batch-realize outputs and
     /// enable graph caching across structurally identical iterations.
-    pub fn no_grad() -> Tape {
+    pub fn nograd() -> Tape {
         let mut rt = RT.lock();
         rt.graph.tape_rc += 1;
         if rt.graph.tape.is_some() {
@@ -93,19 +93,8 @@ impl Tape {
 
 impl GradientTape {
     /// Returns gradients of target derived w.r.t. sources
-    /// Any ops following this function will not be traced.
-    /// If you want to keep tracing, use [`gradient_persistent`](GradientTape::gradient_persistent)
     #[must_use]
-    pub fn gradient<'a>(self, target: &Tensor, sources: impl IntoIterator<Item = &'a Tensor>) -> Vec<Option<Tensor>> {
-        self.gradient_persistent(target, sources)
-        // here tape is dropped automatically
-    }
-
-    /// Returns gradients of target derived w.r.t. sources
-    /// This persistent version keeps gradient tape alive and new ops will be traced until [`GradientTape`] gets destroyed.
-    /// This function is useful for higher order derivatives or derivating multiple tensors.
-    #[must_use]
-    pub fn gradient_persistent<'a>(&self, target: &Tensor, sources: impl IntoIterator<Item = &'a Tensor>) -> Vec<Option<Tensor>> {
+    pub fn gradient<'a>(&self, target: &Tensor, sources: impl IntoIterator<Item = &'a Tensor>) -> Vec<Option<Tensor>> {
         let sources: Vec<TensorId> = sources.into_iter().map(Tensor::id).collect();
         //println!("Sources: {sources:?}");
         let grads: Map<TensorId, TensorId> = RT.lock().gradient(target.id(), &sources.iter().copied().collect());
