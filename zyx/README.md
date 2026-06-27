@@ -26,18 +26,18 @@ zyx-optim = "*"
 Zyx uses syntax similar to other ML frameworks.
 
 ```rust
-use zyx::{Tensor, DType, GradientTape};
+use zyx::{DType, Tape, Tensor};
 
 let x = Tensor::randn([8, 1024, 1024], DType::F32)?;
 let y = Tensor::uniform([8, 1024, 1024], -1f32..4f32)?;
 let b = Tensor::zeros([1024], DType::F32);
-let tape = GradientTape::new();
+let tape = Tape::autograd();
 let z = &x + &y;
 let z = (x.dot(&y)? + &b).gelu();
 // Zyx allows for arbitrary differentiation
-let b_grad = tape.gradient_persistent(&z, [&b])[0].clone().unwrap();
-// Higher order derivatives keeps tape alive
-let bb_grad = tape.gradient_persistent(&b_grad, [&b])[0].clone().unwrap();
+let b_grad = tape.gradient(&z, [&b])[0].clone();
+// Higher order derivatives keep tape alive
+let bb_grad = tape.gradient(&b_grad, [&b])[0].clone();
 # Ok::<(), zyx::ZyxError>(())
 ```
 

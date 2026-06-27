@@ -92,16 +92,26 @@ impl Tape {
 }
 
 impl GradientTape {
-    /// Returns gradients of target derived w.r.t. sources
+    /// Returns gradients of target derived w.r.t. sources.
+    /// Non-differentiable paths return a zero tensor.
     #[must_use]
-    pub fn gradient<'a>(&self, target: &Tensor, sources: impl IntoIterator<Item = &'a Tensor>) -> Vec<Option<Tensor>> {
+    pub fn gradient<'a>(&self, target: &Tensor, sources: impl IntoIterator<Item = &'a Tensor>) -> Vec<Tensor> {
         let sources: Vec<TensorId> = sources.into_iter().map(Tensor::id).collect();
-        //println!("Sources: {sources:?}");
-        let grads: Map<TensorId, TensorId> = RT.lock().gradient(target.id(), &sources.iter().copied().collect());
+        let mut rt = RT.lock();
+        let grads: Map<TensorId, TensorId> = rt.gradient(target.id(), &sources.iter().copied().collect());
         sources
             .into_iter()
-            .map(|x: TensorId| grads.get(&x).copied())
-            .map(|id: Option<TensorId>| id.map(|id| Tensor { id }))
+            .map(|x: TensorId| {
+                let id = match grads.get(&x) {
+                    Some(&id) => id,
+                    None => {
+                        let shape = rt.shape(x).into();
+                        let dtype = rt.dtype(x);
+                        rt.zeros(shape, dtype)
+                    }
+                };
+                Tensor { id }
+            })
             .collect()
     }
 }

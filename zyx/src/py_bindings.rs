@@ -36,12 +36,12 @@ impl GradientTape {
     /// Panics if sources are not List(Tensor).
     #[must_use]
     #[pyo3(name = "gradient")]
-    pub fn gradient_py(&self, x: &Tensor, sources: &Bound<'_, PyList>) -> Vec<Option<Tensor>> {
+    pub fn gradient_py(&self, x: &Tensor, sources: &Bound<'_, PyList>) -> Vec<Tensor> {
         let sources: Vec<Tensor> = sources
             .into_iter()
             .map(|d| d.extract::<Tensor>().expect("sources must be List(Tensor)"))
             .collect();
-        self.gradient_persistent(x, &sources)
+        self.gradient(x, &sources)
     }
 }
 

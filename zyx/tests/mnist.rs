@@ -67,9 +67,9 @@ fn mnist() -> Result<(), ZyxError> {
 
             let grads = tape.gradient(&loss, [&net.l1_weight, &net.l1_bias, &net.l2_weight, &net.l2_bias, &loss]);
 
-            //println!("{}", grads[1].clone().unwrap());
-            println!("{}", grads[3].clone().unwrap());
-            println!("{}", grads[4].clone().unwrap());
+            //println!("{}", grads[1].clone());
+            println!("{}", grads[3].clone());
+            println!("{}", grads[4].clone());
             panic!();
 
             /*for (i, grad) in grads.iter().enumerate() {
