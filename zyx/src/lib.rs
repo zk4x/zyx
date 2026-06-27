@@ -73,6 +73,7 @@ mod scalar;
 mod schedule;
 mod shape;
 mod slab;
+mod tape;
 mod tensor;
 // Constant initializable hasher because apparently noone invented that yet...
 mod autograd;
@@ -85,12 +86,12 @@ mod view;
 type Set<T> = std::collections::HashSet<T, std::hash::BuildHasherDefault<crate::hashers::FHasher>>;
 type Map<K, V> = std::collections::HashMap<K, V, std::hash::BuildHasherDefault<crate::hashers::FHasher>>;
 
-pub use autograd::GradientTape;
 pub use dtype::DType;
 pub use error::ZyxError;
 pub use module::Module;
 pub use scalar::{Float, Scalar};
 pub use shape::IntoShape;
+pub use tape::Tape;
 pub use tensor::ReduceOp;
 pub use tensor::Tensor;
 

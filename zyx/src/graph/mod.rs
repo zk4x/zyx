@@ -72,8 +72,8 @@ pub enum Node {
 pub struct Graph {
     // First value is reference count, second is node
     pub nodes: Slab<TensorId, (u32, Node, u128)>,
-    pub gradient_tape_ref_count: u32,
-    pub gradient_tape: Option<Set<TensorId>>,
+    pub tape_rc: u32,
+    pub tape: Option<Set<TensorId>>,
     pub shapes: Map<TensorId, Box<[Dim]>>,
     paddings: Map<TensorId, Box<[(i64, i64)]>>,
     axes: Map<TensorId, Box<[UAxis]>>,
@@ -83,8 +83,8 @@ impl Graph {
     pub(super) const fn new() -> Self {
         Self {
             nodes: Slab::new(),
-            gradient_tape_ref_count: 0,
-            gradient_tape: None,
+            tape_rc: 0,
+            tape: None,
             shapes: Map::with_hasher(BuildHasherDefault::new()),
             paddings: Map::with_hasher(BuildHasherDefault::new()),
             axes: Map::with_hasher(BuildHasherDefault::new()),
@@ -118,7 +118,7 @@ impl Graph {
                     _ = self.axes.remove(&x);
                     _ = self.paddings.remove(&x);
 
-                    if let Some(tape) = self.gradient_tape.as_mut() {
+                    if let Some(tape) = self.tape.as_mut() {
                         _ = tape.remove(&x);
                     }
                 }
@@ -167,7 +167,7 @@ impl Graph {
 
         self.nodes[nid].2 = self.compute_hash(nid);
 
-        if let Some(tape) = self.gradient_tape.as_mut() {
+        if let Some(tape) = self.tape.as_mut() {
             tape.insert(nid);
         }
         nid
@@ -308,7 +308,7 @@ impl Graph {
 
     pub(super) fn build_topo(&self, x: TensorId, sources: &Set<TensorId>) -> Vec<TensorId> {
         //self.debug();
-        let Some(tape) = self.gradient_tape.as_ref() else {
+        let Some(tape) = self.tape.as_ref() else {
             return Vec::new();
         };
         //for (id, (rc, node)) in self.nodes.iter() { println!("{id} x {rc}  {node:?}"); }

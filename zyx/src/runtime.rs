@@ -666,7 +666,7 @@ impl Runtime {
                 "Runtime realize graph order for {}/{} tensors with gradient_tape={}",
                 order.len(),
                 usize::from(self.graph.nodes.len()),
-                self.graph.gradient_tape.is_some(),
+                self.graph.tape.is_some(),
             );
         }
 
@@ -675,7 +675,7 @@ impl Runtime {
 
         // Delete all unnecessary nodes no longer needed after realization
         let mut to_release = Vec::new();
-        if let Some(tape) = self.graph.gradient_tape.as_ref() {
+        if let Some(tape) = self.graph.tape.as_ref() {
             for &nid in &to_eval {
                 if !tape.contains(&nid) {
                     let dtype = self.dtype(nid);
@@ -766,7 +766,7 @@ impl Runtime {
                 "Runtime realize graph order for {}/{} tensors with gradient_tape={}",
                 order.len(),
                 usize::from(self.graph.nodes.len()),
-                self.graph.gradient_tape.is_some(),
+                self.graph.tape.is_some(),
             );
         }
 
@@ -775,7 +775,7 @@ impl Runtime {
 
         // Delete all unnecessary nodes no longer needed after realization
         let mut to_release = Vec::new();
-        if let Some(tape) = self.graph.gradient_tape.as_ref() {
+        if let Some(tape) = self.graph.tape.as_ref() {
             for &nid in &to_eval {
                 if !tape.contains(&nid) {
                     let dtype = self.dtype(nid);
