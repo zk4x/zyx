@@ -670,6 +670,7 @@ impl Runtime {
             );
         }
 
+        //self.realize_with_order(rcs, realized_nodes, &order, &to_eval)?;
         let inputs: Vec<TensorId> = order.iter().copied().filter(|tid| realized_nodes.contains(tid)).collect();
         self.launch_or_store_graph_with_order(&inputs, &order)?;
 
