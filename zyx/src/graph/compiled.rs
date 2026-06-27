@@ -69,8 +69,8 @@ fn hash_order(order: &[TensorId], graph: &Graph) -> u128 {
         let shape = graph.shape(tid);
         let params = node.parameters();
 
-        let h1 = params.first().map(|&p| hashes[pos_of[&p]]).unwrap_or(0);
-        let h2 = params.get(1).map(|&p| hashes[pos_of[&p]]).unwrap_or(0);
+        let h1 = params.first().and_then(|&p| pos_of.get(&p)).map(|&pos| hashes[pos]).unwrap_or(0);
+        let h2 = params.get(1).and_then(|&p| pos_of.get(&p)).map(|&pos| hashes[pos]).unwrap_or(0);
 
         let mut hasher = hashers::AHasher::default();
         node.kind_tag().hash(&mut hasher);

@@ -113,17 +113,20 @@ impl FusedKernel for Matmul {
         Self: Sized,
     {
         // Pattern: a matmul is compiled as:
-        //   reduce_sum over dim 1
+        //   reduce_sum over the contracting dimension (last axis)
         //     ← binary mul
-        //         ← expand ← leaf  (A side)
+        //         ← expand ← reshape ← leaf  (A side)
         //         ← expand ← reshape ← permute[1,0] ← leaf  (B^T side)
 
-        // Check nid is a reduction summing over the contracting dimension.
+        // Check nid is a reduction summing over the last dimension.
         let mul_id = match g.graph[nid] {
             Node::Reduce { x, rop: BOp::Add } => x,
             _ => return None,
         };
-        if g.graph.axes(nid) != &[1] {
+        // The reduce is over the contracting dimension, which is
+        // always the last axis after the mul (K in [M,N,K]).
+        let reduce_axes = g.graph.axes(nid);
+        if reduce_axes.len() != 1 || reduce_axes[0] + 1 != g.graph.shape(mul_id).len() as UAxis {
             return None;
         }
 
@@ -133,11 +136,17 @@ impl FusedKernel for Matmul {
             _ => return None,
         };
 
-        // Try both orderings: the two branches can be on either side of the mul.
+        // Try both orderings.
         for &(a, b) in &[(left, right), (right, left)] {
-            // A side: Expand ← Leaf
-            let a_leaf = match g.graph[a] {
+            // A side: Expand ← [optional Reshape] ← Leaf
+            let a_inner = match g.graph[a] {
                 Node::Expand { x } => x,
+                _ => continue,
+            };
+            // The input to Expand might be a Reshape or a Leaf directly.
+            let a_leaf = match &g.graph[a_inner] {
+                Node::Reshape { x } => *x,
+                Node::Leaf { .. } => a_inner,
                 _ => continue,
             };
             if !matches!(g.graph[a_leaf], Node::Leaf { .. }) {
