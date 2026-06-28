@@ -5,14 +5,14 @@
 //! Eventually replaces `kernelize.rs` once the full pipeline works.
 
 use crate::{
-    DType,
+    DType, Map, Set,
     graph::{Graph, Node},
+    graph::search::{EGraph, FusedKernel, FusedSlot},
     kernel::{BOp, Kernel, Op, OpId, UOp},
     slab::Slab,
     tensor::TensorId,
     view::View,
 };
-use crate::{Map, Set};
 use std::hash::BuildHasherDefault;
 
 pub use crate::kernelize::KMKernelId;
@@ -449,5 +449,19 @@ impl<'a> Kernelizer<'a> {
             }
         }
         self.kernels
+    }
+}
+
+impl FusedKernel for Kernel {
+    fn try_fuse(_g: &mut EGraph, _nid: TensorId) -> Option<(FusedSlot, Self)>
+    where
+        Self: Sized,
+    {
+        None
+    }
+
+    fn time_cost_ns(&self) -> u64 {
+        let n: usize = self.ops.len().into();
+        n as u64 * 10
     }
 }

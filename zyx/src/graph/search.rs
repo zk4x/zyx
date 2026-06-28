@@ -3,8 +3,6 @@
 
 #![allow(unused)]
 
-use std::collections::BTreeSet;
-
 use crate::{
     DType, Map, Set,
     dtype::Constant,
@@ -13,7 +11,7 @@ use crate::{
         compiled::CompiledNode,
         kernelizer::{KMKernelId, Kernelizer},
     },
-    kernel::{BOp, UOp},
+    kernel::{BOp, Kernel, UOp},
     shape::{Dim, UAxis},
     slab::Slab,
     tensor::TensorId,
@@ -26,13 +24,16 @@ pub trait FusedKernel: std::fmt::Debug {
     fn try_fuse(g: &mut EGraph, nid: TensorId) -> Option<(FusedSlot, Self)>
     where
         Self: Sized;
+
+    fn time_cost_ns(&self) -> u64;
 }
 
 #[derive(Debug, Hash, PartialEq, Eq)]
 pub struct FusedSlot {
     pre_reshape: Option<Vec<Dim>>,
     pre_permute: Option<Vec<UAxis>>,
-    fused_nodes: BTreeSet<TensorId>,
+    inputs: Vec<TensorId>,
+    outputs: Vec<TensorId>,
     post_permute: Option<Vec<UAxis>>,
     post_reshape: Option<Vec<Dim>>,
 }
@@ -95,9 +96,20 @@ impl<'a> EGraph<'a> {
 
     pub fn kernelize(&mut self, inputs: &[TensorId], to_eval: &Set<TensorId>) {
         let kernelizer = Kernelizer::new(self.order, self.graph, inputs);
-        let kernel_slab = kernelizer.kernelize(to_eval);
-        for (_, kernel) in kernel_slab.iter() {
+        let mut kernel_slab = kernelizer.kernelize(to_eval);
+        let ids: Vec<KMKernelId> = kernel_slab.ids().collect();
+        for id in ids {
+            let kernel = unsafe { kernel_slab.remove_and_return(id) };
             kernel.debug();
+            let slot = FusedSlot {
+                pre_reshape: None,
+                pre_permute: None,
+                inputs: kernel.loads.clone(),
+                outputs: kernel.stores.clone(),
+                post_permute: None,
+                post_reshape: None,
+            };
+            self.kernels.insert(slot, Box::new(kernel));
         }
     }
 
@@ -178,25 +190,19 @@ impl FusedKernel for Matmul {
                 continue;
             }
 
-            let mut fused_nodes = BTreeSet::from([
-                nid,        // Reduce
-                mul_id,     // Mul
-                a,          // A-side Expand
-                b,          // B-side Expand
-                reshape_id, // B-side Reshape
-                permute_id, // B-side Permute
-            ]);
-            // a_inner is a Reshape if A side has one, otherwise it's a Leaf
-            if !matches!(g.graph[a_inner], Node::Leaf { .. }) {
-                fused_nodes.insert(a_inner);
-            }
+            let inputs = vec![a_leaf, b_leaf];
+            let outputs = vec![nid];
 
             return Some((
-                FusedSlot { pre_reshape: None, pre_permute: None, fused_nodes, post_permute: None, post_reshape: None },
+                FusedSlot { pre_reshape: None, pre_permute: None, inputs, outputs, post_permute: None, post_reshape: None },
                 Matmul {},
             ));
         }
 
         None
+    }
+
+    fn time_cost_ns(&self) -> u64 {
+        1_000
     }
 }
