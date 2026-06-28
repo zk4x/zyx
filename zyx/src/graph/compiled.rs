@@ -69,8 +69,16 @@ fn hash_order(order: &[TensorId], graph: &Graph) -> u128 {
         let shape = graph.shape(tid);
         let params = node.parameters();
 
-        let h1 = params.first().and_then(|&p| pos_of.get(&p)).map(|&pos| hashes[pos]).unwrap_or(0);
-        let h2 = params.get(1).and_then(|&p| pos_of.get(&p)).map(|&pos| hashes[pos]).unwrap_or(0);
+        let h1 = params
+            .first()
+            .and_then(|&p| pos_of.get(&p))
+            .map(|&pos| hashes[pos])
+            .unwrap_or(0);
+        let h2 = params
+            .get(1)
+            .and_then(|&p| pos_of.get(&p))
+            .map(|&pos| hashes[pos])
+            .unwrap_or(0);
 
         let mut hasher = hashers::AHasher::default();
         node.kind_tag().hash(&mut hasher);
@@ -114,9 +122,7 @@ impl Runtime {
             return replay_compiled(&mut self.pools, &mut self.devices, compiled_nodes, &input_buffers);
         }
 
-        let mut egraph = EGraph::new(order, &self.graph);
-        egraph.saturate();
-        let compiled_nodes = egraph.extract();
+        let compiled_nodes = EGraph::compile(order, &self.graph);
 
         replay_compiled(&mut self.pools, &mut self.devices, &compiled_nodes, &input_buffers)?;
         self.graph_cache.insert(key, compiled_nodes);

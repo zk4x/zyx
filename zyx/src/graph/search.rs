@@ -17,7 +17,7 @@ use crate::{
 
 use super::Graph;
 
-trait FusedKernel: std::fmt::Debug {
+pub trait FusedKernel: std::fmt::Debug {
     fn try_fuse(g: &mut EGraph, nid: TensorId) -> Option<Self>
     where
         Self: Sized;
@@ -40,8 +40,11 @@ pub struct EGraph<'a> {
 }
 
 impl<'a> EGraph<'a> {
-    pub fn new(order: &'a [TensorId], graph: &'a Graph) -> Self {
-        Self { order, graph, kernels: Map::default() }
+    pub fn compile(order: &'a [TensorId], graph: &'a Graph) -> Vec<CompiledNode> {
+        let mut egraph = Self { order, graph, kernels: Map::default() };
+        egraph.saturate();
+        egraph.fill_with_auto_kernels();
+        egraph.extract()
     }
 
     /// We have an array of all available fused kernels.
@@ -95,6 +98,8 @@ impl<'a> EGraph<'a> {
             }
         }
     }
+
+    pub fn fill_with_auto_kernels(&mut self) {}
 
     pub fn extract(self) -> Vec<CompiledNode> {
         for kernel in self.kernels {
