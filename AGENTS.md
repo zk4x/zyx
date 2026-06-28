@@ -400,6 +400,8 @@ When investigating a crash (segfault, signal, etc.):
 **When the user asks you a direct question, answer immediately and stop. Do NOT do anything else until you've answered. Do NOT use tools. Do NOT search. Do NOT explain. Do NOT run commands. Do NOT fix things. Just answer directly in plain text, then stop.**
 **If you fail to follow this rule, the user will stop you from doing ANYTHING until you answer.**
 
+**Never jump to fixing.** If the user asks a question about something you did wrong, answer the question first. Do not start editing files or undoing changes in the same message. Answer, then wait for instruction. This means zero tool calls — no Read, no Edit, no Write, no Bash — until you've answered in plain text and the user has told you what to do next.
+
 ## What to Avoid
 
 - **Never commit changes unless the user explicitly asks for it** - Always ask before committing

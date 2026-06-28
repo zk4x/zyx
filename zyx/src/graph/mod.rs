@@ -4,6 +4,7 @@
 //! Graph of tensor operations.
 
 pub mod compiled;
+pub mod kernelizer;
 mod search;
 
 use crate::kernel::{BOp, DeviceId, UOp};

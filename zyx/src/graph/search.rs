@@ -8,8 +8,12 @@ use std::collections::BTreeSet;
 use crate::{
     DType, Map, Set,
     dtype::Constant,
-    graph::{Node, compiled::CompiledNode},
-    kernel::{BOp, UOp},
+    graph::{
+        Node,
+        compiled::CompiledNode,
+        kernelizer::{KMKernelId, Kernelizer},
+    },
+    kernel::{BOp, Kernel, UOp},
     shape::{Dim, UAxis},
     slab::Slab,
     tensor::TensorId,
@@ -44,7 +48,7 @@ impl<'a> EGraph<'a> {
     pub fn compile(order: &'a [TensorId], graph: &'a Graph) -> Vec<CompiledNode> {
         let mut egraph = Self { order, graph, kernels: Map::default() };
         egraph.saturate();
-        egraph.fill_with_auto_kernels();
+        egraph.kernelize();
         egraph.extract()
     }
 
@@ -89,10 +93,18 @@ impl<'a> EGraph<'a> {
         }
     }
 
-    pub fn fill_with_auto_kernels(&mut self) {}
+    pub fn kernelize(&mut self) {
+        let kernelizer = Kernelizer::new(self.order, self.graph);
+        let kernel_slab = kernelizer.kernelize();
+        for (_, kernel) in kernel_slab.iter() {
+            println!("{kernel:?}");
+        }
+
+        todo!();
+    }
 
     pub fn extract(self) -> Vec<CompiledNode> {
-        for kernel in self.kernels {
+        for (_, kernel) in self.kernels.iter() {
             println!("{kernel:?}");
         }
         todo!()
