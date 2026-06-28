@@ -45,10 +45,10 @@ pub struct EGraph<'a> {
 }
 
 impl<'a> EGraph<'a> {
-    pub fn compile(order: &'a [TensorId], graph: &'a Graph) -> Vec<CompiledNode> {
+    pub fn compile(inputs: &[TensorId], order: &'a [TensorId], graph: &'a Graph) -> Vec<CompiledNode> {
         let mut egraph = Self { order, graph, kernels: Map::default() };
         egraph.saturate();
-        egraph.kernelize();
+        egraph.kernelize(inputs);
         egraph.extract()
     }
 
@@ -93,14 +93,12 @@ impl<'a> EGraph<'a> {
         }
     }
 
-    pub fn kernelize(&mut self) {
-        let kernelizer = Kernelizer::new(self.order, self.graph);
+    pub fn kernelize(&mut self, inputs: &[TensorId]) {
+        let kernelizer = Kernelizer::new(self.order, self.graph, inputs);
         let kernel_slab = kernelizer.kernelize();
         for (_, kernel) in kernel_slab.iter() {
-            println!("{kernel:?}");
+            kernel.debug();
         }
-
-        todo!();
     }
 
     pub fn extract(self) -> Vec<CompiledNode> {

@@ -24,14 +24,14 @@ pub struct Kernelizer<'a> {
     visited: Map<TensorId, (KMKernelId, OpId)>,
     rcs: Map<TensorId, u32>,
     pending_stores: Set<TensorId>,
-    realized: Set<TensorId>,
 }
 
 impl<'a> Kernelizer<'a> {
-    pub fn new(order: &'a [TensorId], graph: &'a Graph) -> Self {
+    pub fn new(order: &'a [TensorId], graph: &'a Graph, realized: &[TensorId]) -> Self {
         let mut rcs: Map<TensorId, u32> =
             Map::with_capacity_and_hasher(order.len(), BuildHasherDefault::new());
         for &nid in order {
+            rcs.entry(nid).or_insert(1);
             for param in graph[nid].parameters() {
                 *rcs.entry(param).or_insert(0) += 1;
             }
@@ -42,8 +42,7 @@ impl<'a> Kernelizer<'a> {
             kernels: Slab::with_capacity(30),
             visited: Map::with_capacity_and_hasher(100, BuildHasherDefault::new()),
             rcs,
-            pending_stores: Set::with_capacity_and_hasher(10, BuildHasherDefault::new()),
-            realized: Set::with_capacity_and_hasher(10, BuildHasherDefault::new()),
+            pending_stores: realized.iter().copied().collect(),
         }
     }
 
@@ -368,7 +367,7 @@ impl<'a> Kernelizer<'a> {
             };
 
             self.kernels[kidy].remove_first_output(y);
-            let Kernel { outputs, loads, stores, ops, head, tail: _, device_id: _, custom_kernel_id } =
+            let Kernel { outputs, loads, stores, ops, head, tail: _, device_id: _, custom_kernel_id: _ } =
                 unsafe { self.kernels.remove_and_return(kidy) };
 
             let mut y_ops_map = Map::with_capacity_and_hasher(5, BuildHasherDefault::new());
