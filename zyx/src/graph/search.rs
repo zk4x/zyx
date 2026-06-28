@@ -6,7 +6,7 @@
 use std::collections::BTreeSet;
 
 use crate::{
-    DType, Map,
+    DType, Map, Set,
     dtype::Constant,
     graph::{Node, compiled::CompiledNode},
     kernel::{BOp, UOp},
@@ -14,17 +14,18 @@ use crate::{
     slab::Slab,
     tensor::TensorId,
 };
+use std::hash::BuildHasherDefault;
 
 use super::Graph;
 
 pub trait FusedKernel: std::fmt::Debug {
-    fn try_fuse(g: &mut EGraph, nid: TensorId) -> Option<Self>
+    fn try_fuse(g: &mut EGraph, nid: TensorId) -> Option<(FusedSlot, Self)>
     where
         Self: Sized;
 }
 
 #[derive(Debug, Hash, PartialEq, Eq)]
-struct FusedSlot {
+pub struct FusedSlot {
     pre_reshape: Option<Vec<Dim>>,
     pre_permute: Option<Vec<UAxis>>,
     fused_nodes: BTreeSet<TensorId>,
@@ -67,27 +68,16 @@ impl<'a> EGraph<'a> {
     /// This whole saturation is driven by budget. The higher budget, the more fusion
     /// variants are tried. With large enough budgets, it's basically fully exhaustive.
     pub fn saturate(&mut self) {
-        let mut unfused: BTreeSet<TensorId> = self.order.iter().copied().collect();
-
         let fusers = [Matmul::try_fuse];
 
         loop {
             let mut found = false;
             for fuser in fusers {
-                // Fixpoint: keep trying until a full pass consumes nothing.
                 for &nid in self.order {
-                    if !unfused.contains(&nid) {
-                        continue;
-                    }
-                    if let Some(kernel) = fuser(self, nid) {
-                        unfused.remove(&nid);
-                        let slot = FusedSlot {
-                            pre_reshape: None,
-                            pre_permute: None,
-                            fused_nodes: BTreeSet::from([nid]),
-                            post_permute: None,
-                            post_reshape: None,
-                        };
+                    if let Some((slot, kernel)) = fuser(self, nid) {
+                        if self.kernels.contains_key(&slot) {
+                            continue;
+                        }
                         self.kernels.insert(slot, Box::new(kernel));
                         found = true;
                     }
@@ -113,7 +103,7 @@ impl<'a> EGraph<'a> {
 struct Matmul {}
 
 impl FusedKernel for Matmul {
-    fn try_fuse(g: &mut EGraph, nid: TensorId) -> Option<Self>
+    fn try_fuse(g: &mut EGraph, nid: TensorId) -> Option<(FusedSlot, Self)>
     where
         Self: Sized,
     {
@@ -178,7 +168,23 @@ impl FusedKernel for Matmul {
                 continue;
             }
 
-            return Some(Matmul {});
+            let mut fused_nodes = BTreeSet::from([
+                nid,        // Reduce
+                mul_id,     // Mul
+                a,          // A-side Expand
+                b,          // B-side Expand
+                reshape_id, // B-side Reshape
+                permute_id, // B-side Permute
+            ]);
+            // a_inner is a Reshape if A side has one, otherwise it's a Leaf
+            if !matches!(g.graph[a_inner], Node::Leaf { .. }) {
+                fused_nodes.insert(a_inner);
+            }
+
+            return Some((
+                FusedSlot { pre_reshape: None, pre_permute: None, fused_nodes, post_permute: None, post_reshape: None },
+                Matmul {},
+            ));
         }
 
         None
