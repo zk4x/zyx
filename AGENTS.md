@@ -402,6 +402,8 @@ When investigating a crash (segfault, signal, etc.):
 
 **Never jump to fixing.** If the user asks a question about something you did wrong, answer the question first. Do not start editing files or undoing changes in the same message. Answer, then wait for instruction. This means zero tool calls — no Read, no Edit, no Write, no Bash — until you've answered in plain text and the user has told you what to do next.
 
+**Edit precisely, don't cascade.** When the user gives feedback on a specific change, only modify exactly what they referenced. Do not revert, restructure, or delete unrelated code. If you think other changes are needed, ask first. Never make multiple reverts in a chain without being asked — each revert is a new change requiring permission.
+
 ## What to Avoid
 
 - **Never commit changes unless the user explicitly asks for it** - Always ask before committing

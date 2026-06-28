@@ -95,7 +95,10 @@ impl<'a> EGraph<'a> {
 
     pub fn kernelize(&mut self, inputs: &[TensorId], to_eval: &Set<TensorId>) {
         let kernelizer = Kernelizer::new(self.order, self.graph, inputs);
-        let _kernel_slab = kernelizer.kernelize(to_eval);
+        let kernel_slab = kernelizer.kernelize(to_eval);
+        for (_, kernel) in kernel_slab.iter() {
+            kernel.debug();
+        }
     }
 
     pub fn extract(self) -> Vec<CompiledNode> {
