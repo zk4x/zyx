@@ -397,10 +397,15 @@ When investigating a crash (segfault, signal, etc.):
 
 ## Answering Questions
 
-**When the user asks you a direct question, answer immediately and stop. Do NOT do anything else until you've answered. Do NOT use tools. Do NOT search. Do NOT explain. Do NOT run commands. Do NOT fix things. Just answer directly in plain text, then stop.**
-**If you fail to follow this rule, the user will stop you from doing ANYTHING until you answer.**
+**Every user message: before writing ANY tool call, check if the message contains a `?`.**
 
-**Never jump to fixing.** If the user asks a question about something you did wrong, answer the question first. Do not start editing files or undoing changes in the same message. Answer, then wait for instruction. This means zero tool calls — no Read, no Edit, no Write, no Bash — until you've answered in plain text and the user has told you what to do next.
+**If YES → answer in plain text. ZERO tool calls. Not even Read. Not even grep to "verify". Nothing. Pure text answer. Tools only in the NEXT message after the user responds.**
+
+**If NO → proceed normally.**
+
+There are no exceptions. Rhetorical questions are questions. "What do you mean" is a question. "Did you" is a question. If there is a `?`, you text-first, tools-never.
+
+**Failure to follow this will get you corrected. Again and again and again.**
 
 **Edit precisely, don't cascade.** When the user gives feedback on a specific change, only modify exactly what they referenced. Do not revert, restructure, or delete unrelated code. If you think other changes are needed, ask first. Never make multiple reverts in a chain without being asked — each revert is a new change requiring permission.
 

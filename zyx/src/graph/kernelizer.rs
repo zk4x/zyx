@@ -28,13 +28,16 @@ pub struct Kernelizer<'a> {
 
 impl<'a> Kernelizer<'a> {
     pub fn new(order: &'a [TensorId], graph: &'a Graph, realized: &[TensorId]) -> Self {
-        let mut rcs: Map<TensorId, u32> =
-            Map::with_capacity_and_hasher(order.len(), BuildHasherDefault::new());
+        let mut rcs: Map<TensorId, u32> = Map::with_capacity_and_hasher(order.len(), BuildHasherDefault::new());
+        for &nid in order {
+            if !realized.contains(&nid) {
+                for param in graph[nid].parameters() {
+                    *rcs.entry(param).or_insert(0) += 1;
+                }
+            }
+        }
         for &nid in order {
             rcs.entry(nid).or_insert(1);
-            for param in graph[nid].parameters() {
-                *rcs.entry(param).or_insert(0) += 1;
-            }
         }
         Self {
             order,
@@ -183,10 +186,7 @@ impl<'a> Kernelizer<'a> {
         let shape = self.graph.shape(nid);
         let kernel = &mut self.kernels[kid];
 
-        let op_id = kernel.push_back(Op::Move {
-            x: op_id,
-            mop: Box::new(crate::kernel::MoveOp::Expand { shape: shape.into() }),
-        });
+        let op_id = kernel.push_back(Op::Move { x: op_id, mop: Box::new(crate::kernel::MoveOp::Expand { shape: shape.into() }) });
 
         kernel.remove_first_output(x);
         kernel.outputs.extend(vec![nid; self.rcs[&nid] as usize]);
@@ -200,10 +200,8 @@ impl<'a> Kernelizer<'a> {
         let shape = self.graph.shape(nid);
         let kernel = &mut self.kernels[kid];
 
-        let op_id = kernel.push_back(Op::Move {
-            x: op_id,
-            mop: Box::new(crate::kernel::MoveOp::Reshape { shape: shape.into() }),
-        });
+        let op_id =
+            kernel.push_back(Op::Move { x: op_id, mop: Box::new(crate::kernel::MoveOp::Reshape { shape: shape.into() }) });
 
         kernel.remove_first_output(x);
         kernel.outputs.extend(vec![nid; self.rcs[&nid] as usize]);
@@ -217,10 +215,7 @@ impl<'a> Kernelizer<'a> {
         let kernel = &mut self.kernels[kid];
 
         let shape = self.graph.shape(nid).into();
-        let op_id = kernel.push_back(Op::Move {
-            x: op_id,
-            mop: Box::new(crate::kernel::MoveOp::Permute { axes, shape }),
-        });
+        let op_id = kernel.push_back(Op::Move { x: op_id, mop: Box::new(crate::kernel::MoveOp::Permute { axes, shape }) });
 
         kernel.remove_first_output(x);
         kernel.outputs.extend(vec![nid; self.rcs[&nid] as usize]);
@@ -234,10 +229,7 @@ impl<'a> Kernelizer<'a> {
         let kernel = &mut self.kernels[kid];
 
         let shape = self.graph.shape(nid).into();
-        let op_id = kernel.push_back(Op::Move {
-            x: op_id,
-            mop: Box::new(crate::kernel::MoveOp::Pad { padding, shape }),
-        });
+        let op_id = kernel.push_back(Op::Move { x: op_id, mop: Box::new(crate::kernel::MoveOp::Pad { padding, shape }) });
 
         kernel.remove_first_output(x);
         kernel.outputs.extend(vec![nid; self.rcs[&nid] as usize]);
@@ -288,8 +280,10 @@ impl<'a> Kernelizer<'a> {
 
             if !permute_axes.iter().copied().eq(0..permute_axes.len()) {
                 let shape = crate::shape::permute(self.graph.shape(x), &permute_axes);
-                op_id = self.kernels[kid]
-                    .push_back(Op::Move { x: op_id, mop: Box::new(crate::kernel::MoveOp::Permute { axes: permute_axes, shape }) });
+                op_id = self.kernels[kid].push_back(Op::Move {
+                    x: op_id,
+                    mop: Box::new(crate::kernel::MoveOp::Permute { axes: permute_axes, shape }),
+                });
             }
         }
 
@@ -300,10 +294,8 @@ impl<'a> Kernelizer<'a> {
         *self.rcs.get_mut(&x).unwrap() -= 1;
 
         if shape.len() == axes.len() {
-            op_id = self.kernels[kid].push_back(Op::Move {
-                x: op_id,
-                mop: Box::new(crate::kernel::MoveOp::Reshape { shape: vec![1] }),
-            });
+            op_id = self.kernels[kid]
+                .push_back(Op::Move { x: op_id, mop: Box::new(crate::kernel::MoveOp::Reshape { shape: vec![1] }) });
         }
 
         self.visited.insert(nid, (kid, op_id));
@@ -414,6 +406,14 @@ impl<'a> Kernelizer<'a> {
     /// Walk through `order` and create kernels for every node.
     pub fn kernelize(mut self, to_eval: &Set<TensorId>) -> Slab<KMKernelId, Kernel> {
         for &nid in self.order {
+            /*println!(
+                "{}{nid} x {} -> {:?}  {}  {:?}",
+                if self.has_pending_store(nid) { "LOAD " } else { "" },
+                self.rcs[&nid],
+                self.graph[nid],
+                self.graph.dtype(nid),
+                self.graph.shape(nid)
+            );*/
             if self.has_pending_store(nid) {
                 self.create_load_kernel(nid);
             } else {
