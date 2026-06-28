@@ -412,7 +412,7 @@ impl<'a> Kernelizer<'a> {
     }
 
     /// Walk through `order` and create kernels for every node.
-    pub fn kernelize(mut self) -> Slab<KMKernelId, Kernel> {
+    pub fn kernelize(mut self, to_eval: &Set<TensorId>) -> Slab<KMKernelId, Kernel> {
         for &nid in self.order {
             if self.has_pending_store(nid) {
                 self.create_load_kernel(nid);
@@ -437,6 +437,14 @@ impl<'a> Kernelizer<'a> {
                     Node::Custom(_) => {
                         // Custom kernels not yet handled in graph kernelizer
                     }
+                }
+            }
+
+            if to_eval.contains(&nid) && !self.has_pending_store(nid) {
+                self.add_store(nid);
+                *self.rcs.get_mut(&nid).unwrap() -= 1;
+                if self.rcs[&nid] > 0 {
+                    self.create_load_kernel(nid);
                 }
             }
         }

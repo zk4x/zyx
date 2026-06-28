@@ -13,7 +13,7 @@ use crate::{
         compiled::CompiledNode,
         kernelizer::{KMKernelId, Kernelizer},
     },
-    kernel::{BOp, Kernel, UOp},
+    kernel::{BOp, UOp},
     shape::{Dim, UAxis},
     slab::Slab,
     tensor::TensorId,
@@ -45,10 +45,10 @@ pub struct EGraph<'a> {
 }
 
 impl<'a> EGraph<'a> {
-    pub fn compile(inputs: &[TensorId], order: &'a [TensorId], graph: &'a Graph) -> Vec<CompiledNode> {
+    pub fn compile(inputs: &[TensorId], to_eval: &Set<TensorId>, order: &'a [TensorId], graph: &'a Graph) -> Vec<CompiledNode> {
         let mut egraph = Self { order, graph, kernels: Map::default() };
         egraph.saturate();
-        egraph.kernelize(inputs);
+        egraph.kernelize(inputs, to_eval);
         egraph.extract()
     }
 
@@ -93,11 +93,11 @@ impl<'a> EGraph<'a> {
         }
     }
 
-    pub fn kernelize(&mut self, inputs: &[TensorId]) {
+    pub fn kernelize(&mut self, inputs: &[TensorId], to_eval: &Set<TensorId>) {
         let kernelizer = Kernelizer::new(self.order, self.graph, inputs);
-        let kernel_slab = kernelizer.kernelize();
+        let kernel_slab = kernelizer.kernelize(to_eval);
         for (_, kernel) in kernel_slab.iter() {
-            kernel.debug();
+            println!("{kernel:?}");
         }
     }
 

@@ -5,7 +5,7 @@
 
 //! Compiled graph caching layer.
 use crate::{
-    DType, Map, ZyxError,
+    DType, Map, Set, ZyxError,
     backend::{BufferId, Device, DeviceId, MemoryPool, PoolId, ProgramId},
     graph::{Graph, search::EGraph},
     hashers,
@@ -105,7 +105,7 @@ impl Runtime {
     /// Computes a structural hash from `order`, checks the cache, and either
     /// replays the cached [`CompiledNode`] sequence or compiles via [`EGraph`],
     /// stores it, and replays.
-    pub(crate) fn launch_or_store_graph_with_order(&mut self, inputs: &[TensorId], order: &[TensorId]) -> Result<(), ZyxError> {
+    pub(crate) fn launch_or_store_graph_with_order(&mut self, inputs: &[TensorId], to_eval: &Set<TensorId>, order: &[TensorId]) -> Result<(), ZyxError> {
         let key = hash_order(order, &self.graph);
 
         let input_buffers: Vec<BufferId> = inputs
@@ -122,7 +122,7 @@ impl Runtime {
             return replay_compiled(&mut self.pools, &mut self.devices, compiled_nodes, &input_buffers);
         }
 
-        let compiled_nodes = EGraph::compile(inputs, order, &self.graph);
+        let compiled_nodes = EGraph::compile(inputs, to_eval, order, &self.graph);
 
         replay_compiled(&mut self.pools, &mut self.devices, &compiled_nodes, &input_buffers)?;
         self.graph_cache.insert(key, compiled_nodes);
