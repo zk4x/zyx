@@ -34,10 +34,7 @@ impl EGraph {
             }
             let nodes: Vec<NodeId> = self.classes[cid].nodes.clone();
             for &nid in &nodes {
-                if self.nodes[nid].is_kernel()
-                    || self.nodes[nid].is_transform()
-                    || matches!(&self.nodes[nid], ENode::Leaf(_))
-                {
+                if self.nodes[nid].is_kernel() || self.nodes[nid].is_transform() || matches!(&self.nodes[nid], ENode::Leaf(_)) {
                     continue;
                 }
                 let mut inputs: Vec<ClassId> = self.nodes[nid].child_classes().to_vec();
@@ -88,8 +85,7 @@ impl EGraph {
                         }
                         let child_nodes: Vec<NodeId> = self.classes[child].nodes.clone();
                         for &cnid in &child_nodes {
-                            let ENode::Kernel(child_inputs, child_outputs, _) = &self.nodes[cnid]
-                            else {
+                            let ENode::Kernel(child_inputs, child_outputs, _) = &self.nodes[cnid] else {
                                 continue;
                             };
                             if !child_outputs.contains(&child) {
@@ -102,9 +98,7 @@ impl EGraph {
                                     if self.classes[self.find_class(other_child)]
                                         .nodes
                                         .iter()
-                                        .any(|&n| {
-                                            matches!(&self.nodes[n], ENode::Leaf(_))
-                                        })
+                                        .any(|&n| matches!(&self.nodes[n], ENode::Leaf(_)))
                                     {
                                         continue;
                                     }
@@ -130,9 +124,7 @@ impl EGraph {
                             }
                             changed = true;
 
-                            if let Some(kernel) =
-                                self.extend_kernel(cnid, nid, child, &child_classes)
-                            {
+                            if let Some(kernel) = self.extend_kernel(cnid, nid, child, &child_classes) {
                                 self.kernel_irs.insert(knid, kernel);
                             }
                         }
@@ -181,15 +173,15 @@ impl EGraph {
             ENode::Reduce(_, rop) => {
                 let in_dtype = self.classes[inputs[0]].dtype?;
                 let in_shape: Vec<Dim> = self.classes[inputs[0]].shape.clone()?.to_vec();
-                let out_shape: Vec<Dim> = self.classes[self.find(nid)]
-                    .shape
-                    .clone()?
-                    .to_vec();
+                let out_shape: Vec<Dim> = self.classes[self.find(nid)].shape.clone()?.to_vec();
                 let load = kernel.load_contiguous(in_dtype, &in_shape);
 
                 let n_axes = in_shape.len().saturating_sub(out_shape.len());
-                let result =
-                    kernel.push_back(Op::Reduce { x: load, rop: *rop, n_axes });
+                let result = kernel.push_back(Op::Reduce {
+                    x: load,
+                    rop: *rop,
+                    n_axes,
+                });
 
                 if out_shape.len() == 1 && n_axes > 0 && in_shape.len() > 1 {
                     kernel.reshape(result, &out_shape);
@@ -197,10 +189,7 @@ impl EGraph {
                 Some(kernel)
             }
             ENode::Const(v) => {
-                kernel.push_back(Op::ConstView(Box::new((
-                    *v,
-                    View::contiguous(&[1]),
-                ))));
+                kernel.push_back(Op::ConstView(Box::new((*v, View::contiguous(&[1])))));
                 Some(kernel)
             }
             _ => None,
@@ -209,13 +198,7 @@ impl EGraph {
 
     /// Extend a child kernel (`cnid`) forward through the enode at `nid`.
     /// No stores — same as `kernelize.rs` which extends first and stores later.
-    fn extend_kernel(
-        &self,
-        cnid: NodeId,
-        nid: NodeId,
-        child_class: ClassId,
-        child_classes: &[ClassId],
-    ) -> Option<Kernel> {
+    fn extend_kernel(&self, cnid: NodeId, nid: NodeId, child_class: ClassId, child_classes: &[ClassId]) -> Option<Kernel> {
         let mut kernel = self.kernel_irs.get(&cnid)?.clone();
 
         // The last op in the child kernel is the last compute result.
@@ -225,28 +208,20 @@ impl EGraph {
         }
 
         let op = &self.nodes[nid];
-        let out_shape: Vec<Dim> = self.classes[self.find(nid)]
-            .shape
-            .clone()?
-            .to_vec();
+        let out_shape: Vec<Dim> = self.classes[self.find(nid)].shape.clone()?.to_vec();
 
         match op {
             ENode::Expand(_) => {
                 kernel.push_back(Op::Move {
                     x: child_result,
-                    mop: Box::new(MoveOp::Expand {
-                        shape: out_shape,
-                    }),
+                    mop: Box::new(MoveOp::Expand { shape: out_shape }),
                 });
             }
             ENode::Permute(_, axes) => {
                 let axes: Vec<UAxis> = axes.to_vec();
                 kernel.push_back(Op::Move {
                     x: child_result,
-                    mop: Box::new(MoveOp::Permute {
-                        axes,
-                        shape: out_shape,
-                    }),
+                    mop: Box::new(MoveOp::Permute { axes, shape: out_shape }),
                 });
             }
             ENode::Reshape(_, shape) => {
@@ -276,10 +251,7 @@ impl EGraph {
                 });
             }
             ENode::Reduce(_, rop) => {
-                let in_shape_len = self.classes[self.find_class(child_class)]
-                    .shape
-                    .as_ref()?
-                    .len();
+                let in_shape_len = self.classes[self.find_class(child_class)].shape.as_ref()?.len();
                 let n_axes = in_shape_len.saturating_sub(out_shape.len());
                 kernel.push_back(Op::Reduce {
                     x: child_result,
@@ -297,31 +269,22 @@ impl EGraph {
                     .any(|&n| matches!(&self.nodes[n], ENode::Const(_)));
 
                 let other_load = if other_is_const {
-                    let const_val = self.classes[other_cid]
-                        .nodes
-                        .iter()
-                        .find_map(|&n| {
-                            if let ENode::Const(c) = &self.nodes[n] {
-                                Some(*c)
-                            } else {
-                                None
-                            }
-                        })?;
-                    kernel.push_back(Op::ConstView(Box::new((
-                        const_val,
-                        View::contiguous(&[1]),
-                    ))))
+                    let const_val = self.classes[other_cid].nodes.iter().find_map(|&n| {
+                        if let ENode::Const(c) = &self.nodes[n] {
+                            Some(*c)
+                        } else {
+                            None
+                        }
+                    })?;
+                    kernel.push_back(Op::ConstView(Box::new((const_val, View::contiguous(&[1])))))
                 } else {
                     let other_dtype = self.classes[other_cid].dtype?;
-                    let other_shape: Vec<Dim> =
-                        self.classes[other_cid].shape.clone()?.to_vec();
+                    let other_shape: Vec<Dim> = self.classes[other_cid].shape.clone()?.to_vec();
                     kernel.load_contiguous(other_dtype, &other_shape)
                 };
 
                 let (lhs, rhs) = match &self.nodes[nid] {
-                    ENode::Binary(a, _, _) if *a == child_class => {
-                        (child_result, other_load)
-                    }
+                    ENode::Binary(a, _, _) if *a == child_class => (child_result, other_load),
                     _ => (other_load, child_result),
                 };
                 kernel.binary(lhs, rhs, *bop);
@@ -331,5 +294,4 @@ impl EGraph {
 
         Some(kernel)
     }
-
 }
