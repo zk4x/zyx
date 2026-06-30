@@ -266,45 +266,6 @@ impl EGraph {
         }
     }
 
-    // ── Union two e-classes ───────────────────────────────
-
-    pub(crate) fn union(&mut self, a: ClassId, b: ClassId) {
-        let a = self.find_class(a);
-        let b = self.find_class(b);
-        if a == b {
-            return;
-        }
-
-        let (keep, drop) = if self.class_rank[a.0 as usize] >= self.class_rank[b.0 as usize] {
-            (a, b)
-        } else {
-            (b, a)
-        };
-
-        self.class_parent[drop.0 as usize] = keep;
-        if self.class_rank[keep.0 as usize] == self.class_rank[drop.0 as usize] {
-            self.class_rank[keep.0 as usize] += 1;
-        }
-
-        let drop_nodes: Vec<NodeId> = self.classes[drop].nodes.drain(..).collect();
-        for &nid in &drop_nodes {
-            self.class_of[nid.0 as usize] = keep;
-            self.classes[keep].nodes.push(nid);
-        }
-
-        let drop_parents = std::mem::take(&mut self.classes[drop].parents);
-        if !drop_parents.is_empty() {
-            self.classes[keep].parents.extend(drop_parents);
-        }
-
-        if self.classes[keep].shape.is_none() {
-            self.classes[keep].shape = self.classes[drop].shape.take();
-        }
-        if self.classes[keep].dtype.is_none() {
-            self.classes[keep].dtype = self.classes[drop].dtype.take();
-        }
-    }
-
     // ── Path compression ───────────────────────────────────
 
     pub(crate) fn compress_paths(&mut self) {
