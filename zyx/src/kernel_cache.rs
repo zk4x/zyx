@@ -3,9 +3,9 @@
 
 use crate::{
     //optimizer::{self, Optimizer},
-    Map,
-    backend::{Device, DeviceId, DeviceInfo, DeviceProgramId},
-    kernel::{Kernel, autotune::OptSeq},
+    DebugMask, Map, ZyxError,
+    backend::{AutotuneConfig, Device, DeviceId, DeviceInfo, DeviceProgramId, MemoryPool, PoolBufferId},
+    kernel::{Kernel, OpId, autotune::OptSeq},
     slab::Slab,
 };
 use nanoserde::{DeBin, SerBin};
@@ -141,6 +141,61 @@ impl KernelCache {
         let newly_inserted = self.kernels.insert(kernel, kernel_id).is_none();
         assert!(newly_inserted);
         kernel_id
+    }
+
+    /// Look up `kernel` in cache and either return a cached program, or
+    /// autotune it, cache the result, and return the new program.
+    /// `kernel` is mutated in place (unfold, merge, renumber, optimize).
+    pub fn get_or_autotune(
+        &mut self,
+        dev_id: DeviceId,
+        kernel: &mut Kernel,
+        device: &mut Device,
+        memory_pool: &mut MemoryPool,
+        config: &AutotuneConfig,
+        args: &[PoolBufferId],
+        flop: u64,
+        read: u64,
+        write: u64,
+        debug: DebugMask,
+    ) -> Result<DeviceProgramId, ZyxError> {
+        let dev_info_id = self.get_or_add_dev_info(device.info());
+
+        let kernel_id = if let Some(&kid) = self.kernels.get(kernel) {
+            // Already compiled for this device → fast path
+            if let Some(&program_id) = self.programs.get(&(kid, dev_id)) {
+                return Ok(program_id);
+            }
+            // Cached optimizations available → apply and compile
+            if let Some(opt_seq) = self.optimizations.get(&(kid, dev_info_id)) {
+                opt_seq.apply(kernel, device.info());
+                let program_id = device.compile(kernel, debug.asm())?;
+                self.programs.insert((kid, dev_id), program_id);
+                return Ok(program_id);
+            }
+            kid
+        } else {
+            self.insert_kernel(kernel.clone())
+        };
+
+        // Not in cache at all → full autotune
+        kernel.unfold_movement_ops();
+        let global_indices = kernel.get_global_indices();
+        let max_global_dims = device.info().max_global_work_dims.len();
+        if global_indices.len() > max_global_dims {
+            let n = global_indices.len() + 1 - max_global_dims;
+            let loops: Vec<OpId> = global_indices.values().copied().take(n).collect();
+            kernel.merge_indices(&loops);
+        }
+        kernel.renumber_indices();
+        kernel.verify();
+
+        let (program_id, opts) =
+            kernel.autotune_(args, device, memory_pool, config, flop, read, write, debug)?;
+        self.programs.insert((kernel_id, dev_id), program_id);
+        self.optimizations.insert((kernel_id, dev_info_id), opts);
+
+        Ok(program_id)
     }
 }
 
