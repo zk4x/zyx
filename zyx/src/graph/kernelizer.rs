@@ -37,6 +37,7 @@ impl EGraph {
                     continue;
                 }
 
+
                 let out_dtype = match self.classes[cid].dtype {
                     Some(dt) => dt,
                     None => continue,
