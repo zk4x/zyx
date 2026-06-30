@@ -42,12 +42,12 @@ Run `ZYX_DEBUG=1` to see which backends initialized.
     "enabled": true
   },
   "vulkan": {
-    "device_ids": []
+    "device_ids": null
   }
 }
 ```
 
-Any key can be omitted — the missing section falls back to defaults.
+Any key can be omitted — the missing section falls back to defaults. By default, all backends are enabled. So if you enable just one backend and omit others, all omitted kernels will be enabled as well.
 
 ## Options Reference
 
@@ -100,6 +100,14 @@ OpenCL supports multiple platforms (e.g., Intel GPU, POCL CPU). Each platform ma
 |-------|------|---------|-------------|
 | `platform_ids` | `Option<Vec<usize>>` | `null` | Which OpenCL platforms to use. `null` = all available. `[]` = disable OpenCL. `[0]` = use first platform only. |
 
+### `vulkan` — Vulkan backend
+
+Uses the vulkano crate for Vulkan compute operations.
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `device_ids` | `Option<Vec<i32>>` | `null` | Which Vulkan devices to use. `null` = all available. `[]` = disable Vulkan. `[0]` = use first device only. |
+
 ### `wgpu` — WGPU backend (feature `wgpu`)
 
 Requires `--features wgpu` at compile time. Supports Vulkan, Metal, DX12, and OpenGL ES.
@@ -115,14 +123,6 @@ Requires `--features tenstorrent` at compile time.
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `device_ids` | `Option<Vec<i32>>` | `null` | Which Tenstorrent devices to use. `null` = all available. `[]` = disable Tenstorrent. |
-
-### `vulkan` — Vulkan backend
-
-Uses the vulkano crate for Vulkan compute operations.
-
-| Field | Type | Default | Description |
-|-------|------|---------|-------------|
-| `device_ids` | `Option<Vec<i32>>` | `null` | Which Vulkan devices to use. `null` = all available. `[]` = disable Vulkan. `[0]` = use first device only. |
 
 ## Backend selection rules
 
