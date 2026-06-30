@@ -522,9 +522,9 @@ impl EGraph {
     // ── Extraction (DP) ───────────────────────────────────
 
     /// Extract the cheapest all-kernel plan from the e-graph.
-    /// Returns the selected kernel enodes in topological order.
+    /// Returns the selected kernels as (NodeId, ENode) pairs in topological order.
     /// Panics if any class on the path has no Kernel alternative.
-    pub(crate) fn extract(&mut self, outputs: &[ClassId]) -> Vec<ENode> {
+    pub(crate) fn extract(&mut self, outputs: &[ClassId]) -> Vec<(NodeId, ENode)> {
         let mut cost_map: Map<ClassId, u64> = Map::default();
         let mut choice: Map<ClassId, NodeId> = Map::default();
 
@@ -533,7 +533,7 @@ impl EGraph {
         }
 
         // Build plan: walk outputs, follow choices, emit only reachable kernels.
-        let mut plan: Vec<ENode> = Vec::new();
+        let mut plan: Vec<(NodeId, ENode)> = Vec::new();
         let mut emitted: Set<ClassId> = Set::default();
         for &out in outputs {
             self.emit_plan(out, &choice, &mut plan, &mut emitted);
@@ -588,7 +588,7 @@ impl EGraph {
         &self,
         cid: ClassId,
         choice: &Map<ClassId, NodeId>,
-        plan: &mut Vec<ENode>,
+        plan: &mut Vec<(NodeId, ENode)>,
         emitted: &mut Set<ClassId>,
     ) {
         let cid = self.find_class(cid);
@@ -600,7 +600,7 @@ impl EGraph {
         for &child in &children {
             self.emit_plan(child, choice, plan, emitted);
         }
-        plan.push(self.nodes[nid].clone());
+        plan.push((nid, self.nodes[nid].clone()));
     }
 
     // ── Compile (orchestrate build → saturate → extract) ─
@@ -632,20 +632,22 @@ impl EGraph {
         Vec::new()
     }
 
-    pub(crate) fn debug_print_plan(&self, plan: &[ENode]) {
+    pub(crate) fn debug_print_plan(&self, plan: &[(NodeId, ENode)]) {
         let line = "─".repeat(60);
         println!("\n{}", line);
         println!("  Extracted Plan");
         println!("{}", line);
-        for (i, enode) in plan.iter().enumerate() {
+        for (i, (nid, enode)) in plan.iter().enumerate() {
             if let ENode::Kernel(inputs, outputs, prog) = enode {
-                let nid = self.hashcons.get(enode).copied().unwrap_or(NodeId::NULL);
-                let ops = self.ops_count.get(&nid).copied().unwrap_or(0);
-                let cost = self.costs.get(&nid).copied().unwrap_or(0);
+                let ops = self.ops_count.get(nid).copied().unwrap_or(0);
+                let cost = self.costs.get(nid).copied().unwrap_or(0);
                 println!(
-                    "  Kernel {}: {} fused ops, cost={}, inputs={:?} outputs={:?}",
-                    i, ops, cost, inputs, outputs
+                    "  Kernel {} (n{}): {} fused ops, cost={}, inputs={:?} outputs={:?}",
+                    i, nid.0, ops, cost, inputs, outputs
                 );
+                if let Some(kernel) = self.kernel_irs.get(nid) {
+                    kernel.debug();
+                }
             } else {
                 println!("  Step {}: {:?} (non-kernel)", i, enode);
             }

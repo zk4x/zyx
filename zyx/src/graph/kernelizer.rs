@@ -4,8 +4,7 @@
 //! E-graph kernelizer.
 //!
 //! Walks the e-graph's e-classes and inserts `ENode::Kernel` variants for
-//! different fusion granularities, building real `Kernel` IR for each variant
-//! so they can be compiled through `KernelCache`.
+//! different fusion granularities, building real `Kernel` IR for each variant.
 
 use crate::{
     backend::ProgramId,
@@ -22,15 +21,13 @@ fn kernel_cost(ops_count: u32) -> u64 {
 }
 
 impl EGraph {
-    /// Walk all e-classes, building fused `Kernel` IR for every fusion
-    /// alternative. Stores both the structural `ENode::Kernel` marker and the
-    /// compilable `Kernel` IR in `self.kernel_irs`.
+    /// Walk all e-classes, inserting `ENode::Kernel` alternatives and building
+    /// the corresponding `Kernel` IR (without stores — stores are added at
+    /// launch time, matching `kernelize.rs`).
     pub(crate) fn kernelize_all(&mut self) {
         let classes: Vec<ClassId> = self.classes.ids().collect();
 
-        // Phase 1: single-op kernels for every non-kernel, non-transform, non-leaf enode.
-        // Transforms have no kernel in Phase 1 — they get fused kernels in Phase 2.
-        // Leaf has no kernel — it's an implicit input buffer, fused into compute kernels.
+        // First pass: create a kernel for every eligible enode.
         for &cid in &classes {
             if !self.classes.contains_key(cid) {
                 continue;
@@ -58,14 +55,13 @@ impl EGraph {
                 self.ops_count.insert(knid, 1);
                 self.add_to_class(knid, cid);
 
-                // Build the actual Kernel IR
-                if let Some(kernel) = self.build_phase1_kernel(nid, cid) {
+                if let Some(kernel) = self.build_kernel(nid) {
                     self.kernel_irs.insert(knid, kernel);
                 }
             }
         }
 
-        // Phase 2: extend kernels forward through transforms and ops.
+        // Fixpoint: extend kernels forward through ops (transforms + compute).
         for _ in 0..5 {
             let mut changed = false;
             let classes: Vec<ClassId> = self.classes.ids().collect();
@@ -134,9 +130,8 @@ impl EGraph {
                             }
                             changed = true;
 
-                            // Build the fused Kernel IR
                             if let Some(kernel) =
-                                self.build_phase2_kernel(cnid, nid, cid, child, &child_classes)
+                                self.extend_kernel(cnid, nid, child, &child_classes)
                             {
                                 self.kernel_irs.insert(knid, kernel);
                             }
@@ -151,11 +146,10 @@ impl EGraph {
         }
     }
 
-    /// Build a single-op Kernel IR for a non-kernel, non-transform enode.
-    fn build_phase1_kernel(&self, nid: NodeId, cid: ClassId) -> Option<Kernel> {
+    /// Build a kernel for a single enode (no fusion). No stores — matches
+    /// `kernelize.rs` which creates kernels without stores.
+    fn build_kernel(&self, nid: NodeId) -> Option<Kernel> {
         let op = &self.nodes[nid];
-        let out_dtype = self.classes[cid].dtype?;
-        let out_shape: Vec<Dim> = self.classes[cid].shape.clone()?.to_vec();
         let inputs: Vec<ClassId> = op.child_classes().to_vec();
         let mut kernel = Kernel::new(DeviceId::AUTO);
 
@@ -167,90 +161,81 @@ impl EGraph {
                 let rhs_shape: Vec<Dim> = self.classes[inputs[1]].shape.clone()?.to_vec();
                 let lhs = kernel.load_contiguous(lhs_dtype, &lhs_shape);
                 let rhs = kernel.load_contiguous(rhs_dtype, &rhs_shape);
-                let result = kernel.binary(lhs, rhs, *bop);
-                kernel.store_contiguous(result, out_dtype);
+                kernel.binary(lhs, rhs, *bop);
                 Some(kernel)
             }
             ENode::Unary(_, uop) => {
                 let in_dtype = self.classes[inputs[0]].dtype?;
                 let in_shape: Vec<Dim> = self.classes[inputs[0]].shape.clone()?.to_vec();
                 let load = kernel.load_contiguous(in_dtype, &in_shape);
-                let result = kernel.push_back(Op::Unary { x: load, uop: *uop });
-                kernel.store_contiguous(result, out_dtype);
+                kernel.push_back(Op::Unary { x: load, uop: *uop });
                 Some(kernel)
             }
             ENode::Cast(_, dt) => {
                 let in_dtype = self.classes[inputs[0]].dtype?;
                 let in_shape: Vec<Dim> = self.classes[inputs[0]].shape.clone()?.to_vec();
                 let load = kernel.load_contiguous(in_dtype, &in_shape);
-                let result = kernel.cast(load, *dt);
-                kernel.store_contiguous(result, out_dtype);
+                kernel.cast(load, *dt);
                 Some(kernel)
             }
             ENode::Reduce(_, rop) => {
                 let in_dtype = self.classes[inputs[0]].dtype?;
                 let in_shape: Vec<Dim> = self.classes[inputs[0]].shape.clone()?.to_vec();
+                let out_shape: Vec<Dim> = self.classes[self.find(nid)]
+                    .shape
+                    .clone()?
+                    .to_vec();
                 let load = kernel.load_contiguous(in_dtype, &in_shape);
 
-                // Determine number of reduced axes from shape difference.
                 let n_axes = in_shape.len().saturating_sub(out_shape.len());
                 let result =
                     kernel.push_back(Op::Reduce { x: load, rop: *rop, n_axes });
 
-                // If all dims reduced, reshape to 1-element output.
                 if out_shape.len() == 1 && n_axes > 0 && in_shape.len() > 1 {
                     kernel.reshape(result, &out_shape);
                 }
-                // Store after last compute op.
-                let last = kernel.tail;
-                kernel.store_contiguous(last, out_dtype);
                 Some(kernel)
             }
-            ENode::Const(_) => {
-                // Const kernels are inlined during fusion (Phase 2).
-                // Single-const kernel doesn't need a GPU launch on its own.
-                None
+            ENode::Const(v) => {
+                kernel.push_back(Op::ConstView(Box::new((
+                    *v,
+                    View::contiguous(&[1]),
+                ))));
+                Some(kernel)
             }
             _ => None,
         }
     }
 
-    /// Build a fused Kernel IR by extending a child kernel (`cnid`) forward
-    /// through the enode at `nid` (which lives in class `cid`).
-    fn build_phase2_kernel(
+    /// Extend a child kernel (`cnid`) forward through the enode at `nid`.
+    /// No stores — same as `kernelize.rs` which extends first and stores later.
+    fn extend_kernel(
         &self,
         cnid: NodeId,
         nid: NodeId,
-        cid: ClassId,
         child_class: ClassId,
         child_classes: &[ClassId],
     ) -> Option<Kernel> {
         let mut kernel = self.kernel_irs.get(&cnid)?.clone();
 
-        // Remove the trailing StoreView from the child kernel so we can extend.
-        if !kernel.tail.is_null() {
-            if matches!(kernel.ops[kernel.tail].op, Op::StoreView { .. }) {
-                kernel.remove_op(kernel.tail);
-            }
-        }
-
-        // The child kernel's last compute op is now the tail.
+        // The last op in the child kernel is the last compute result.
         let child_result = kernel.tail;
         if child_result.is_null() {
             return None;
         }
 
         let op = &self.nodes[nid];
-        let out_shape: Vec<Dim> = self.classes[cid].shape.clone()?.to_vec();
-        let out_dtype = self.classes[cid].dtype?;
+        let out_shape: Vec<Dim> = self.classes[self.find(nid)]
+            .shape
+            .clone()?
+            .to_vec();
 
         match op {
             ENode::Expand(_) => {
-                // For expand, use output shape from the current class.
                 kernel.push_back(Op::Move {
                     x: child_result,
                     mop: Box::new(MoveOp::Expand {
-                        shape: out_shape.clone(),
+                        shape: out_shape,
                     }),
                 });
             }
@@ -259,8 +244,8 @@ impl EGraph {
                 kernel.push_back(Op::Move {
                     x: child_result,
                     mop: Box::new(MoveOp::Permute {
-                        axes: axes.clone(),
-                        shape: out_shape.clone(),
+                        axes,
+                        shape: out_shape,
                     }),
                 });
             }
@@ -277,7 +262,7 @@ impl EGraph {
                     x: child_result,
                     mop: Box::new(MoveOp::Pad {
                         padding,
-                        shape: out_shape.clone(),
+                        shape: out_shape,
                     }),
                 });
             }
@@ -303,18 +288,15 @@ impl EGraph {
                 });
             }
             ENode::Binary(_, _, bop) => {
-                // Find the other input class (not child_class).
                 let other_class = child_classes.iter().find(|&&c| c != child_class)?;
                 let other_cid = self.find_class(*other_class);
 
-                // Check if other input is a const — inline it if so.
                 let other_is_const = self.classes[other_cid]
                     .nodes
                     .iter()
                     .any(|&n| matches!(&self.nodes[n], ENode::Const(_)));
 
                 let other_load = if other_is_const {
-                    // Find the const value.
                     let const_val = self.classes[other_cid]
                         .nodes
                         .iter()
@@ -336,7 +318,6 @@ impl EGraph {
                     kernel.load_contiguous(other_dtype, &other_shape)
                 };
 
-                // Determine operand order: is child on left or right side?
                 let (lhs, rhs) = match &self.nodes[nid] {
                     ENode::Binary(a, _, _) if *a == child_class => {
                         (child_result, other_load)
@@ -347,10 +328,6 @@ impl EGraph {
             }
             _ => {}
         }
-
-        // Add new StoreView for the fused output.
-        let last = kernel.tail;
-        kernel.store_contiguous(last, out_dtype);
 
         Some(kernel)
     }
