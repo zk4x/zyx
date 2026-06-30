@@ -1022,8 +1022,8 @@ impl OpenCLDevice {
                             MemLayout::Vector(len) => {
                                 _ = writeln!(
                                     source,
-                                    "{indent}r{reg} = *((__global {}{len}*)(p{src} + {idx}));",
-                                    dtype.0.ocl()
+                                    "{indent}r{reg} = *((__global {}*)(p{src} + {idx}));",
+                                    dtype.0.ocl_vec_type(len)
                                 );
                             }
                             MemLayout::Tile { .. } => todo!(),
@@ -1041,8 +1041,8 @@ impl OpenCLDevice {
                     match layout {
                         MemLayout::Scalar => _ = writeln!(source, "{indent}p{dst}[{idx}] = {x};"),
                         MemLayout::Vector(len) => {
-                            let ocl_type = dtypes[&op_id].0.ocl();
-                            _ = writeln!(source, "{indent}*((__global {ocl_type}{len}*)(p{dst} + {idx})) = {x};");
+                            let ocl_type = dtypes[&op_id].0.ocl_vec_type(len);
+                            _ = writeln!(source, "{indent}*((__global {ocl_type}*)(p{dst} + {idx})) = {x};");
                         }
                         MemLayout::Tile { .. } => todo!(),
                     }
@@ -1051,36 +1051,77 @@ impl OpenCLDevice {
                     let layout = dtypes[&xop].1;
                     let x = get_var(xop, &constants, &indices, &reg_map, &mut registers, loop_id);
                     let reg = new_reg(op_id, &mut reg_map, &mut registers, (dtype, layout), rcs[&op_id], loop_id);
-                    _ = writeln!(source, "{indent}r{reg} = ({}){x};", dtype.ocl());
+                    match layout {
+                        MemLayout::Vector(len) => {
+                            for i in 0..len as usize {
+                                let c = VEC_COMPONENTS[i];
+                                _ = writeln!(source, "{indent}r{reg}.{c} = ({}){x}.{c};", dtype.ocl());
+                            }
+                        }
+                        _ => _ = writeln!(source, "{indent}r{reg} = ({}){x};", dtype.ocl()),
+                    }
                 }
                 &Op::Unary { x, uop } => {
                     let dtype = dtypes[&x];
                     let x = get_var(x, &constants, &indices, &reg_map, &mut registers, loop_id);
                     let reg = new_reg(op_id, &mut reg_map, &mut registers, dtype, rcs[&op_id], loop_id);
-                    match uop {
-                        UOp::BitNot => _ = writeln!(source, "{indent}r{reg} = ~{x};"),
-                        UOp::Neg => _ = writeln!(source, "{indent}r{reg} = -{x};"),
-                        UOp::Exp => unreachable!(
-                            "internal bug: UOp::Exp should be converted to Exp2 + mul by ln2(e) by IR pass before reaching OpenCL backend"
-                        ),
-                        UOp::Exp2 => {
-                            if dtype.0 == DType::F16 {
-                                _ = writeln!(source, "{indent}r{reg} = (half)exp2((float){x});");
-                            } else {
-                                _ = writeln!(source, "{indent}r{reg} = exp2({x});");
+                    match dtype.1 {
+                        MemLayout::Vector(len) => {
+                            for i in 0..len as usize {
+                                let c = VEC_COMPONENTS[i];
+                                _ = match uop {
+                                    UOp::BitNot => writeln!(source, "{indent}r{reg}.{c} = ~{x}.{c};"),
+                                    UOp::Neg => writeln!(source, "{indent}r{reg}.{c} = -{x}.{c};"),
+                                    UOp::Exp => unreachable!(
+                                        "internal bug: UOp::Exp should be converted to Exp2 + mul by ln2(e) by IR pass before reaching OpenCL backend"
+                                    ),
+                                    UOp::Exp2 => {
+                                        if dtype.0 == DType::F16 {
+                                            writeln!(source, "{indent}r{reg}.{c} = (half)exp2((float){x}.{c});")
+                                        } else {
+                                            writeln!(source, "{indent}r{reg}.{c} = exp2({x}.{c});")
+                                        }
+                                    }
+                                    UOp::Log2 => writeln!(source, "{indent}r{reg}.{c} = log2({x}.{c});"),
+                                    UOp::Reciprocal => {
+                                        writeln!(source, "{indent}r{reg}.{c} = {}/{x}.{c};", dtype.0.one_constant().ocl())
+                                    }
+                                    UOp::Sqrt => writeln!(source, "{indent}r{reg}.{c} = sqrt({x}.{c});"),
+                                    UOp::Sin => writeln!(source, "{indent}r{reg}.{c} = sin({x}.{c});"),
+                                    UOp::Cos => writeln!(source, "{indent}r{reg}.{c} = cos({x}.{c});"),
+                                    UOp::Floor => writeln!(source, "{indent}r{reg}.{c} = floor({x}.{c});"),
+                                    UOp::Trunc => writeln!(source, "{indent}r{reg}.{c} = trunc({x}.{c});"),
+                                    UOp::Ln => writeln!(source, "{indent}r{reg}.{c} = log({x}.{c});"),
+                                    UOp::Abs => writeln!(source, "{indent}r{reg}.{c} = fabs({x}.{c});"),
+                                };
                             }
                         }
-                        UOp::Log2 => _ = writeln!(source, "{indent}r{reg} = log2({x});"),
-                        UOp::Reciprocal => {
-                            _ = writeln!(source, "{indent}r{reg} = {}/{x};", dtype.0.one_constant().ocl());
-                        }
-                        UOp::Sqrt => _ = writeln!(source, "{indent}r{reg} = sqrt({x});"),
-                        UOp::Sin => _ = writeln!(source, "{indent}r{reg} = sin({x});"),
-                        UOp::Cos => _ = writeln!(source, "{indent}r{reg} = cos({x});"),
-                        UOp::Floor => _ = writeln!(source, "{indent}r{reg} = floor({x});"),
-                        UOp::Trunc => _ = writeln!(source, "{indent}r{reg} = trunc({x});"),
-                        UOp::Ln => _ = writeln!(source, "{indent}r{reg} = log({x});"),
-                        UOp::Abs => _ = writeln!(source, "{indent}r{reg} = fabs({x});"),
+                        MemLayout::Scalar => match uop {
+                            UOp::BitNot => _ = writeln!(source, "{indent}r{reg} = ~{x};"),
+                            UOp::Neg => _ = writeln!(source, "{indent}r{reg} = -{x};"),
+                            UOp::Exp => unreachable!(
+                                "internal bug: UOp::Exp should be converted to Exp2 + mul by ln2(e) by IR pass before reaching OpenCL backend"
+                            ),
+                            UOp::Exp2 => {
+                                if dtype.0 == DType::F16 {
+                                    _ = writeln!(source, "{indent}r{reg} = (half)exp2((float){x});");
+                                } else {
+                                    _ = writeln!(source, "{indent}r{reg} = exp2({x});");
+                                }
+                            }
+                            UOp::Log2 => _ = writeln!(source, "{indent}r{reg} = log2({x});"),
+                            UOp::Reciprocal => {
+                                _ = writeln!(source, "{indent}r{reg} = {}/{x};", dtype.0.one_constant().ocl());
+                            }
+                            UOp::Sqrt => _ = writeln!(source, "{indent}r{reg} = sqrt({x});"),
+                            UOp::Sin => _ = writeln!(source, "{indent}r{reg} = sin({x});"),
+                            UOp::Cos => _ = writeln!(source, "{indent}r{reg} = cos({x});"),
+                            UOp::Floor => _ = writeln!(source, "{indent}r{reg} = floor({x});"),
+                            UOp::Trunc => _ = writeln!(source, "{indent}r{reg} = trunc({x});"),
+                            UOp::Ln => _ = writeln!(source, "{indent}r{reg} = log({x});"),
+                            UOp::Abs => _ = writeln!(source, "{indent}r{reg} = fabs({x});"),
+                        },
+                        MemLayout::Tile { .. } => unreachable!(),
                     }
                 }
                 Op::Vectorize { ops } => {
@@ -1098,7 +1139,7 @@ impl OpenCLDevice {
                         MemLayout::Vector(len) => len,
                         _ => unreachable!(),
                     };
-                    _ = writeln!(source, "{indent}r{reg} = ({}{})({vars});", dtype.0.ocl(), vlen);
+                    _ = writeln!(source, "{indent}r{reg} = ({})({vars});", dtype.0.ocl_vec_type(vlen));
                 }
                 &Op::Devectorize { vec, idx } => {
                     let dtype = dtypes[&op_id];
@@ -1117,26 +1158,54 @@ impl OpenCLDevice {
                     let x = get_var(x, &constants, &indices, &reg_map, &mut registers, loop_id);
                     let y = get_var(y, &constants, &indices, &reg_map, &mut registers, loop_id);
                     let reg = new_reg(op_id, &mut reg_map, &mut registers, dtype, rcs[&op_id], loop_id);
-                    _ = match bop {
-                        BOp::Add => writeln!(source, "{indent}r{reg} = {x} + {y};"),
-                        BOp::Sub => writeln!(source, "{indent}r{reg} = {x} - {y};"),
-                        BOp::Mul => writeln!(source, "{indent}r{reg} = {x} * {y};"),
-                        BOp::Div => writeln!(source, "{indent}r{reg} = {x} / {y};"),
-                        BOp::Pow => writeln!(source, "{indent}r{reg} = pow((double){x}, (double){y});"),
-                        BOp::Mod => writeln!(source, "{indent}r{reg} = {x} % {y};"),
-                        BOp::Cmplt => writeln!(source, "{indent}r{reg} = {x} < {y};"),
-                        BOp::Cmpgt => writeln!(source, "{indent}r{reg} = {x} > {y};"),
-                        BOp::Max => writeln!(source, "{indent}r{reg} = max({x}, {y});"),
-                        BOp::Or => writeln!(source, "{indent}r{reg} = {x} || {y};"),
-                        BOp::And => writeln!(source, "{indent}r{reg} = {x} && {y};"),
-                        BOp::BitXor => writeln!(source, "{indent}r{reg} = {x} ^ {y};"),
-                        BOp::BitOr => writeln!(source, "{indent}r{reg} = {x} | {y};"),
-                        BOp::BitAnd => writeln!(source, "{indent}r{reg} = {x} & {y};"),
-                        BOp::BitShiftLeft => writeln!(source, "{indent}r{reg} = {x} << {y};"),
-                        BOp::BitShiftRight => writeln!(source, "{indent}r{reg} = {x} >> {y};"),
-                        BOp::NotEq => writeln!(source, "{indent}r{reg} = {x} != {y};"),
-                        BOp::Eq => writeln!(source, "{indent}r{reg} = {x} == {y};"),
-                    };
+                    match dtype.1 {
+                        MemLayout::Vector(len) => {
+                            for i in 0..len as usize {
+                                let c = VEC_COMPONENTS[i];
+                                _ = match bop {
+                                    BOp::Add => writeln!(source, "{indent}r{reg}.{c} = {x}.{c} + {y}.{c};"),
+                                    BOp::Sub => writeln!(source, "{indent}r{reg}.{c} = {x}.{c} - {y}.{c};"),
+                                    BOp::Mul => writeln!(source, "{indent}r{reg}.{c} = {x}.{c} * {y}.{c};"),
+                                    BOp::Div => writeln!(source, "{indent}r{reg}.{c} = {x}.{c} / {y}.{c};"),
+                                    BOp::Pow => writeln!(source, "{indent}r{reg}.{c} = pow((double){x}.{c}, (double){y}.{c});"),
+                                    BOp::Mod => writeln!(source, "{indent}r{reg}.{c} = {x}.{c} % {y}.{c};"),
+                                    BOp::Cmplt => writeln!(source, "{indent}r{reg}.{c} = (unsigned int)({x}.{c} < {y}.{c});"),
+                                    BOp::Cmpgt => writeln!(source, "{indent}r{reg}.{c} = (unsigned int)({x}.{c} > {y}.{c});"),
+                                    BOp::Max => writeln!(source, "{indent}r{reg}.{c} = max({x}.{c}, {y}.{c});"),
+                                    BOp::Or => writeln!(source, "{indent}r{reg}.{c} = {x}.{c} || {y}.{c};"),
+                                    BOp::And => writeln!(source, "{indent}r{reg}.{c} = {x}.{c} && {y}.{c};"),
+                                    BOp::BitXor => writeln!(source, "{indent}r{reg}.{c} = {x}.{c} ^ {y}.{c};"),
+                                    BOp::BitOr => writeln!(source, "{indent}r{reg}.{c} = {x}.{c} | {y}.{c};"),
+                                    BOp::BitAnd => writeln!(source, "{indent}r{reg}.{c} = {x}.{c} & {y}.{c};"),
+                                    BOp::BitShiftLeft => writeln!(source, "{indent}r{reg}.{c} = {x}.{c} << {y}.{c};"),
+                                    BOp::BitShiftRight => writeln!(source, "{indent}r{reg}.{c} = {x}.{c} >> {y}.{c};"),
+                                    BOp::NotEq => writeln!(source, "{indent}r{reg}.{c} = (unsigned int)({x}.{c} != {y}.{c});"),
+                                    BOp::Eq => writeln!(source, "{indent}r{reg}.{c} = (unsigned int)({x}.{c} == {y}.{c});"),
+                                };
+                            }
+                        }
+                        MemLayout::Scalar => _ = match bop {
+                            BOp::Add => writeln!(source, "{indent}r{reg} = {x} + {y};"),
+                            BOp::Sub => writeln!(source, "{indent}r{reg} = {x} - {y};"),
+                            BOp::Mul => writeln!(source, "{indent}r{reg} = {x} * {y};"),
+                            BOp::Div => writeln!(source, "{indent}r{reg} = {x} / {y};"),
+                            BOp::Pow => writeln!(source, "{indent}r{reg} = pow((double){x}, (double){y});"),
+                            BOp::Mod => writeln!(source, "{indent}r{reg} = {x} % {y};"),
+                            BOp::Cmplt => writeln!(source, "{indent}r{reg} = {x} < {y};"),
+                            BOp::Cmpgt => writeln!(source, "{indent}r{reg} = {x} > {y};"),
+                            BOp::Max => writeln!(source, "{indent}r{reg} = max({x}, {y});"),
+                            BOp::Or => writeln!(source, "{indent}r{reg} = {x} || {y};"),
+                            BOp::And => writeln!(source, "{indent}r{reg} = {x} && {y};"),
+                            BOp::BitXor => writeln!(source, "{indent}r{reg} = {x} ^ {y};"),
+                            BOp::BitOr => writeln!(source, "{indent}r{reg} = {x} | {y};"),
+                            BOp::BitAnd => writeln!(source, "{indent}r{reg} = {x} & {y};"),
+                            BOp::BitShiftLeft => writeln!(source, "{indent}r{reg} = {x} << {y};"),
+                            BOp::BitShiftRight => writeln!(source, "{indent}r{reg} = {x} >> {y};"),
+                            BOp::NotEq => writeln!(source, "{indent}r{reg} = {x} != {y};"),
+                            BOp::Eq => writeln!(source, "{indent}r{reg} = {x} == {y};"),
+                        },
+                        MemLayout::Tile { .. } => unreachable!(),
+                    }
                 }
                 &Op::Mad { x, y, z } => {
                     let dtype = dtypes[&op_id];
@@ -1144,7 +1213,15 @@ impl OpenCLDevice {
                     let y = get_var(y, &constants, &indices, &reg_map, &mut registers, loop_id);
                     let z = get_var(z, &constants, &indices, &reg_map, &mut registers, loop_id);
                     let reg = new_reg(op_id, &mut reg_map, &mut registers, dtype, rcs[&op_id], loop_id);
-                    _ = writeln!(source, "{indent}r{reg} = {x} * {y} + {z};");
+                    match dtype.1 {
+                        MemLayout::Vector(len) => {
+                            for i in 0..len as usize {
+                                let c = VEC_COMPONENTS[i];
+                                _ = writeln!(source, "{indent}r{reg}.{c} = {x}.{c} * {y}.{c} + {z}.{c};");
+                            }
+                        }
+                        _ => _ = writeln!(source, "{indent}r{reg} = {x} * {y} + {z};"),
+                    }
                 }
                 &Op::Index { len: dim, scope, axis } => {
                     indices.insert(op_id, loop_id);
@@ -1206,11 +1283,10 @@ impl OpenCLDevice {
             let mut prev_dt = dt;
             _ = write!(
                 reg_str,
-                "{indent}{}{} r0",
-                dt.0.ocl(),
+                "{indent}{} r0",
                 match dt.1 {
-                    MemLayout::Scalar => "".into(),
-                    MemLayout::Vector(len) => len.to_string(),
+                    MemLayout::Scalar => dt.0.ocl().to_string(),
+                    MemLayout::Vector(len) => dt.0.ocl_vec_type(len),
                     MemLayout::Tile { .. } => unreachable!(),
                 }
             );
@@ -1221,11 +1297,10 @@ impl OpenCLDevice {
                 } else {
                     _ = write!(
                         reg_str,
-                        ";\n{indent}{}{} r{i}",
-                        dt.0.ocl(),
+                        ";\n{indent}{} r{i}",
                         match dt.1 {
-                            MemLayout::Scalar => "".into(),
-                            MemLayout::Vector(len) => len.to_string(),
+                            MemLayout::Scalar => dt.0.ocl().to_string(),
+                            MemLayout::Vector(len) => dt.0.ocl_vec_type(len),
                             MemLayout::Tile { .. } => unreachable!(),
                         }
                     );
@@ -1501,6 +1576,12 @@ impl DType {
             Self::Bool => "bool",
             Self::U32 => "uint",
             Self::U64 => "ulong",
+        }
+    }
+    fn ocl_vec_type(self, len: u16) -> String {
+        match self {
+            Self::Bool => format!("uint{len}"),
+            other => format!("{}{len}", other.ocl()),
         }
     }
 }
