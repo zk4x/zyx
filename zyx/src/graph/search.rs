@@ -680,31 +680,21 @@ impl EGraph {
             for &nid in &eclass.nodes {
                 let kind = &self.nodes[nid];
                 let inputs = kind.child_classes();
-                let extra = match kind {
-                    ENode::Reduce(_, rop) => format!("{:?}", rop),
-                    ENode::Binary(_, _, bop) => format!("{:?}", bop),
-                    ENode::Unary(_, uop) => format!("{:?}", uop),
-                    ENode::Cast(_, dt) => format!("{:?}", dt),
-                    ENode::Kernel(_, _, p) => format!("prog={:?}", p),
-                    ENode::Expand(_) => "expand".into(),
-                    ENode::Permute(_, a) => format!("{:?}", a),
-                    ENode::Reshape(_, s) => format!("{:?}", s),
-                    ENode::Pad(_, p) => format!("{:?}", p),
-                    ENode::ToDevice(_, d) => format!("{:?}", d),
-                    ENode::Const(v) => format!("{:?}", v),
-                    ENode::Leaf(dt) => format!("{:?}", dt),
+                let (name, extra) = match kind {
+                    ENode::Reduce(_, rop) => ("Reduce", format!("{:?}", rop)),
+                    ENode::Binary(_, _, bop) => ("Binary", format!("{:?}", bop)),
+                    ENode::Unary(_, uop) => ("Unary", format!("{:?}", uop)),
+                    ENode::Cast(_, dt) => ("Cast", format!("{:?}", dt)),
+                    ENode::Kernel(_, _, p) => ("Kernel", format!("prog={:?}", p)),
+                    ENode::Expand(_) => ("Expand", String::new()),
+                    ENode::Permute(_, a) => ("Permute", format!("{:?}", a)),
+                    ENode::Reshape(_, s) => ("Reshape", format!("{:?}", s)),
+                    ENode::Pad(_, p) => ("Pad", format!("{:?}", p)),
+                    ENode::ToDevice(_, d) => ("ToDevice", format!("{:?}", d)),
+                    ENode::Const(v) => ("Const", format!("{:?}", v)),
+                    ENode::Leaf(dt) => ("Leaf", format!("{:?}", dt)),
                 };
-                let desc = match kind {
-                    ENode::Kernel(..) => "KERNEL",
-                    _ => "op",
-                };
-                println!(
-                    "  [{desc}] Node {:?}: {:?} inputs={:?} {}",
-                    nid,
-                    std::mem::discriminant(kind),
-                    inputs,
-                    extra
-                );
+                println!("  {name} {:?}: inputs={:?} {}", nid, inputs, extra);
             }
         }
         println!("{}\n", line);

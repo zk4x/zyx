@@ -54,7 +54,7 @@ impl EGraph {
                 let nodes: Vec<NodeId> = self.classes[cid].nodes.clone();
                 for &nid in &nodes {
                     let op = &self.nodes[nid];
-                    if op.is_kernel() || op.is_transform() {
+                    if op.is_kernel() {
                         continue;
                     }
 
