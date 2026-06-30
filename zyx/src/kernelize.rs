@@ -648,61 +648,25 @@ impl<'a> Kernelizer<'a> {
 
         debug_assert!(!kernel.ops.is_empty());
 
-        let dev_info_id = self.cache.get_or_add_dev_info(device.info());
-
-        let kernel_id = if let Some(&kid) = self.cache.kernels.get(&kernel) {
-            // If it has been compiled for the device
-            if let Some(&program_id) = self.cache.programs.get(&(kid, dev_id)) {
-                //println!("Program in cache dev_id={dev_id:?}, program_id={program_id:?}'");
-                if self.debug.kmd() {
-                    println!("Kernel launch from memory pool {pool_id:?} with args: {args:?}");
-                }
-                let event = device.launch(program_id, pool, &args, event_wait_list)?;
-                self.events.insert(kernel_buffers, event);
-                return Ok(());
-            }
-
-            // The kernel was optimized and is cached in disk, but was not compiled as of this run
-            if let Some(opt_seq) = self.cache.optimizations.get(&(kid, dev_info_id)) {
-                opt_seq.apply(&mut kernel, device.info());
-                let program_id = device.compile(&kernel, self.debug.asm())?;
-                let event = device.launch(program_id, pool, &args, event_wait_list)?;
-                self.events.insert(kernel_buffers, event);
-                return Ok(());
-            }
-
-            // Kernel is in cache but not compiled/optimized for this device; use existing id
-            kid
-        } else {
-            // Not in cache, insert it
-            self.cache.insert_kernel(kernel.clone())
-        };
-
         if self.debug.sched() {
             kernel.debug();
         }
 
         let (flop, read, write) = kernel.flop_mem_rw();
 
-        // Fix kernels for movement ops and if they have too many dims
-        kernel.unfold_movement_ops();
-        let global_indices = kernel.get_global_indices();
-        let max_global_dims = device.info().max_global_work_dims.len();
-        if global_indices.len() > max_global_dims {
-            let n = global_indices.len() + 1 - max_global_dims;
-            let loops: Vec<OpId> = global_indices.values().copied().take(n).collect();
-            kernel.merge_indices(&loops);
-        }
-        // Reset indices after merges
-        kernel.renumber_indices();
-        kernel.verify();
-        //kernel.run_always_on_optimizations();
-        //kernel.debug();
+        let program_id = self.cache.get_or_autotune(
+            dev_id,
+            &mut kernel,
+            device,
+            pool,
+            self.autotune_config,
+            &args,
+            flop,
+            read,
+            write,
+            self.debug,
+        )?;
 
-        let (program_id, opts) = kernel.autotune_(&args, device, pool, self.autotune_config, flop, read, write, self.debug)?;
-        self.cache.programs.insert((kernel_id, dev_id), program_id);
-        //println!("Insert into cache dev_id={dev_id:?}, program_id={program_id:?}'");
-        self.cache.optimizations.insert((kernel_id, dev_info_id), opts);
         let event = device.launch(program_id, pool, &args, event_wait_list)?;
         self.events.insert(kernel_buffers, event);
 
