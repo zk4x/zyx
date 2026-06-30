@@ -13,36 +13,46 @@ use crate::{
     graph::search::{ClassId, EGraph, ENode, NodeId},
 };
 
+const HIGH_COST: u64 = 1_000_000;
+
+fn kernel_cost(ops_count: u32) -> u64 {
+    ((1.0 + ops_count as f64).ln() * HIGH_COST as f64) as u64
+}
+
 impl EGraph {
     /// Insert kernel alternatives into every e-class that doesn't have one.
     pub(crate) fn kernelize_all(&mut self) {
-        // Build a topological order of classes
         let classes: Vec<ClassId> = self.classes.ids().collect();
 
-        // Phase 1: insert single-op kernels for every non-kernel enode
+        // Phase 1: single-op kernels for every non-kernel, non-transform, non-leaf enode.
+        // Transforms (Cast, Expand, Permute, Reshape, Pad) have no kernel in Phase 1
+        // — they get fused kernels in Phase 2.
+        // Leaf has no kernel — it's an implicit input buffer, fused into compute kernels.
         for &cid in &classes {
             if !self.classes.contains_key(cid) {
                 continue;
             }
             let nodes: Vec<NodeId> = self.classes[cid].nodes.clone();
             for &nid in &nodes {
-                if self.nodes[nid].is_kernel() || self.nodes[nid].is_transform() {
+                if self.nodes[nid].is_kernel() || self.nodes[nid].is_transform() || matches!(&self.nodes[nid], ENode::Leaf(_)) {
                     continue;
                 }
                 let mut inputs: Vec<ClassId> = self.nodes[nid].child_classes().to_vec();
+                inputs.retain(|&c| {
+                    !self.classes[self.find_class(c)].nodes.iter().any(|&n| matches!(&self.nodes[n], ENode::Leaf(_)))
+                });
                 inputs.sort();
                 let inputs: Box<[ClassId]> = inputs.into_boxed_slice();
                 let outputs: Box<[ClassId]> = vec![cid].into_boxed_slice();
                 let (knid, _) = self.make(ENode::Kernel(inputs, outputs, ProgramId::NULL));
+                self.costs.insert(knid, kernel_cost(1));
+                self.ops_count.insert(knid, 1);
                 self.add_to_class(knid, cid);
             }
         }
 
-        // Phase 2: extend kernels forward (fuse chains)
-        // Walk classes in topological order, try to extend each kernel
-        // by one op.
+        // Phase 2: extend kernels forward through transforms and ops.
         for _ in 0..5 {
-            // Iterate to fixpoint (small limit for safety)
             let mut changed = false;
             let classes: Vec<ClassId> = self.classes.ids().collect();
 
@@ -50,7 +60,6 @@ impl EGraph {
                 if !self.classes.contains_key(cid) {
                     continue;
                 }
-                // This class has enodes. Look at its op enodes (not kernels).
                 let nodes: Vec<NodeId> = self.classes[cid].nodes.clone();
                 for &nid in &nodes {
                     let op = &self.nodes[nid];
@@ -58,15 +67,11 @@ impl EGraph {
                         continue;
                     }
 
-                    // All children of this op are already computed by kernels.
-                    // Try to extend: create a kernel that fuses us with any
-                    // single-op kernel from our children.
                     let child_classes: Vec<ClassId> = op.child_classes();
                     if child_classes.is_empty() {
                         continue;
                     }
 
-                    // Find kernel alternatives in each child class
                     for &child in &child_classes {
                         if !self.classes.contains_key(child) {
                             continue;
@@ -76,20 +81,16 @@ impl EGraph {
                             let ENode::Kernel(child_inputs, child_outputs, _) = &self.nodes[cnid] else {
                                 continue;
                             };
-                            // child_outputs must include child
                             if !child_outputs.contains(&child) {
                                 continue;
                             }
 
-                            // Fuse: new kernel = (child_inputs + current other-inputs, outputs)
                             let mut new_inputs: Vec<ClassId> = child_inputs.to_vec();
-                            // If child kernel has no compute inputs (leaf/const), the fused
-                            // kernel still needs the child's buffer as an input.
-                            if child_inputs.is_empty() {
-                                new_inputs.push(child);
-                            }
                             for &other_child in &child_classes {
                                 if other_child != child {
+                                    if self.classes[self.find_class(other_child)].nodes.iter().any(|&n| matches!(&self.nodes[n], ENode::Leaf(_))) {
+                                        continue;
+                                    }
                                     new_inputs.push(other_child);
                                 }
                             }
@@ -101,6 +102,12 @@ impl EGraph {
                                 outputs.clone().into_boxed_slice(),
                                 ProgramId::NULL,
                             ));
+
+                            let child_ops = self.ops_count.get(&cnid).copied().unwrap_or(1);
+                            let total_ops = 1 + child_ops;
+                            self.costs.insert(knid, kernel_cost(total_ops));
+                            self.ops_count.insert(knid, total_ops);
+
                             for &out in &outputs {
                                 self.add_to_class(knid, out);
                             }

@@ -172,6 +172,8 @@ pub(crate) struct EGraph {
     class_parent: Vec<ClassId>,
     class_rank: Vec<u8>,
     hashcons: Map<ENode, NodeId>,
+    pub(crate) costs: Map<NodeId, u64>,
+    pub(crate) ops_count: Map<NodeId, u32>,
 }
 
 impl EGraph {
@@ -183,6 +185,8 @@ impl EGraph {
             class_parent: Vec::new(),
             class_rank: Vec::new(),
             hashcons: Map::default(),
+            costs: Map::default(),
+            ops_count: Map::default(),
         }
     }
 
@@ -515,124 +519,86 @@ impl EGraph {
 
     // ── Extraction (DP) ───────────────────────────────────
 
-    /// Extract the cheapest plan from the e-graph.
-    /// Returns the selected enodes in topological order.
+    /// Extract the cheapest all-kernel plan from the e-graph.
+    /// Returns the selected kernel enodes in topological order.
+    /// Panics if any class on the path has no Kernel alternative.
     pub(crate) fn extract(&mut self, outputs: &[ClassId]) -> Vec<ENode> {
-        let mut cost_map: Map<ClassId, SelectResult> = Map::default();
-        let mut order: Vec<ClassId> = Vec::new();
-        let mut visited: Set<ClassId> = Set::default();
+        let mut cost_map: Map<ClassId, u64> = Map::default();
+        let mut choice: Map<ClassId, NodeId> = Map::default();
 
         for &out in outputs {
-            self.extract_dp(out, &mut cost_map, &mut order, &mut visited);
+            self.extract_dp(out, &mut cost_map, &mut choice);
         }
 
-        // Build the execution plan from selected nodes
-        let mut result: Vec<ENode> = Vec::new();
-        for &cid in &order {
-            let sel = &cost_map[&cid];
-            match &sel.kind {
-                SelKind::Kernel => {
-                    result.push(self.nodes[sel.node].clone());
-                }
-                SelKind::Transform | SelKind::Ops => {}
-            }
+        // Build plan: walk outputs, follow choices, emit only reachable kernels.
+        let mut plan: Vec<ENode> = Vec::new();
+        let mut emitted: Set<ClassId> = Set::default();
+        for &out in outputs {
+            self.emit_plan(out, &choice, &mut plan, &mut emitted);
         }
-
-        result
+        plan
     }
 
     fn extract_dp(
         &mut self,
         cid: ClassId,
-        cost_map: &mut Map<ClassId, SelectResult>,
-        order: &mut Vec<ClassId>,
-        visited: &mut Set<ClassId>,
-    ) {
+        cost_map: &mut Map<ClassId, u64>,
+        choice: &mut Map<ClassId, NodeId>,
+    ) -> u64 {
         let cid = self.find_class(cid);
-        if visited.contains(&cid) {
-            return;
+        if let Some(&cost) = cost_map.get(&cid) {
+            return cost;
         }
-        visited.insert(cid);
 
-        // Find the cheapest enode in this e-class
         let enodes: Vec<NodeId> = self.classes[cid].nodes.clone();
-        let mut best: Option<SelectResult> = None;
+        let mut best_cost: u64 = u64::MAX;
+        let mut best_nid: Option<NodeId> = None;
 
         for &nid in &enodes {
-            let (is_kernel, kind_tag) = {
-                let kind = &self.nodes[nid];
-                let is_kernel = kind.is_kernel();
-                let is_transform = matches!(
-                    kind,
-                    ENode::Expand(_) | ENode::Permute(_, _) | ENode::Reshape(_, _) | ENode::Pad(_, _) | ENode::Cast(_, _)
-                );
-                let tag = if is_kernel {
-                    SelKind::Kernel
-                } else if is_transform {
-                    SelKind::Transform
-                } else {
-                    SelKind::Ops
-                };
-                (is_kernel, tag)
-            };
+            if !self.nodes[nid].is_kernel() {
+                continue;
+            }
 
             let children: Vec<ClassId> = self.nodes[nid].child_classes();
-
-            // Ensure children are computed first (no borrow conflict now)
+            let mut total = self.costs.get(&nid).copied().unwrap_or(u64::MAX);
             for &child in &children {
-                self.extract_dp(child, cost_map, order, visited);
+                let child_cost = self.extract_dp(child, cost_map, choice);
+                total = total.saturating_add(child_cost);
             }
 
-            let cost = self.enode_cost(nid, cost_map);
-
-            let is_better = match &best {
-                None => true,
-                Some(b) => cost < b.cost,
-            };
-
-            if is_better {
-                best = Some(SelectResult {
-                    cost,
-                    node: nid,
-                    kind: kind_tag,
-                });
+            if total < best_cost {
+                best_cost = total;
+                best_nid = Some(nid);
             }
         }
 
-        if let Some(result) = best {
-            cost_map.insert(cid, result);
-            order.push(cid);
-        }
+        let nid = best_nid.expect(
+            &format!("extract_dp: class {cid:?} has no Kernel alternative — kernelizer must fix this")
+        );
+        cost_map.insert(cid, best_cost);
+        choice.insert(cid, nid);
+        best_cost
     }
 
-    fn enode_cost(&self, nid: NodeId, cost_map: &Map<ClassId, SelectResult>) -> u64 {
-        let kind = &self.nodes[nid];
-
-        // Transforms are free
-        if matches!(
-            kind,
-            ENode::Expand(_) | ENode::Permute(_, _) | ENode::Reshape(_, _) | ENode::Pad(_, _) | ENode::Cast(_, _)
-        ) {
-            let children: Vec<ClassId> = kind.child_classes().to_vec();
-            return children.iter().map(|c| cost_map.get(c).map(|r| r.cost).unwrap_or(0)).sum();
+    /// Walk choices from output classes, emitting kernels bottom-up
+    /// (children before parents).
+    fn emit_plan(
+        &self,
+        cid: ClassId,
+        choice: &Map<ClassId, NodeId>,
+        plan: &mut Vec<ENode>,
+        emitted: &mut Set<ClassId>,
+    ) {
+        let cid = self.find_class(cid);
+        if !emitted.insert(cid) {
+            return;
         }
-
-        // Ops have high cost (they'll go to kernelizer)
-        if !kind.is_kernel() {
-            let children: Vec<ClassId> = kind.child_classes().to_vec();
-            let child_cost: u64 = children.iter().map(|c| cost_map.get(c).map(|r| r.cost).unwrap_or(0)).sum();
-            return 100_000 + child_cost; // high cost to encourage kernel matching
+        let &nid = choice.get(&cid).expect("extract: no kernel chosen for class");
+        let children: Vec<ClassId> = self.nodes[nid].child_classes();
+        for &child in &children {
+            self.emit_plan(child, choice, plan, emitted);
         }
-
-        // Kernel cost: fixed cost for now
-        if let ENode::Kernel(inputs, _, _) = kind {
-            let child_cost: u64 = inputs.iter().map(|c| cost_map.get(c).map(|r| r.cost).unwrap_or(0)).sum();
-            1_000 + child_cost
-        } else {
-            let children: Vec<ClassId> = kind.child_classes().to_vec();
-            let child_cost: u64 = children.iter().map(|c| cost_map.get(c).map(|r| r.cost).unwrap_or(0)).sum();
-            100_000 + child_cost
-        }
+        plan.push(self.nodes[nid].clone());
     }
 
     // ── Compile (orchestrate build → saturate → extract) ─
@@ -654,11 +620,38 @@ impl EGraph {
             return Vec::new();
         }
 
-        // TODO: extract and convert to CompiledNodes
+        // Extract: pick cheapest all-kernel plan
+        let plan = eg.extract(&output_classes);
         if debug.sched() {
             eg.debug_print();
+            eg.debug_print_plan(&plan);
         }
+        // TODO: convert plan (Vec<ENode>) to Vec<CompiledNode> with buffer slot management
         Vec::new()
+    }
+
+    pub(crate) fn debug_print_plan(&self, plan: &[ENode]) {
+        let line = "─".repeat(60);
+        println!("\n{}", line);
+        println!("  Extracted Plan");
+        println!("{}", line);
+        for (i, enode) in plan.iter().enumerate() {
+            if let ENode::Kernel(inputs, outputs, prog) = enode {
+                let nid = self.hashcons.get(enode).copied().unwrap_or(NodeId::NULL);
+                let ops = self.ops_count.get(&nid).copied().unwrap_or(0);
+                let cost = self.costs.get(&nid).copied().unwrap_or(0);
+                println!(
+                    "  Kernel {}: {} fused ops, cost={}, inputs={:?} outputs={:?}",
+                    i, ops, cost, inputs, outputs
+                );
+            } else {
+                println!("  Step {}: {:?} (non-kernel)", i, enode);
+            }
+        }
+        if plan.is_empty() {
+            println!("  (empty plan)");
+        }
+        println!("{}\n", line);
     }
 
     pub(crate) fn debug_print(&self) {
@@ -701,18 +694,4 @@ impl EGraph {
     }
 }
 
-// ── Extraction result types ────────────────────────────────────
 
-#[derive(Debug)]
-struct SelectResult {
-    cost: u64,
-    node: NodeId,
-    kind: SelKind,
-}
-
-#[derive(Debug)]
-enum SelKind {
-    Kernel,
-    Transform,
-    Ops,
-}
