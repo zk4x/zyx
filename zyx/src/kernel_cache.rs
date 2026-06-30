@@ -6,7 +6,7 @@ use crate::{
     DebugMask,
     Map,
     ZyxError,
-    backend::{AutotuneConfig, Device, DeviceId, DeviceInfo, DeviceProgramId, MemoryPool, PoolBufferId},
+    backend::{AutotuneConfig, Device, DeviceId, DeviceInfo, DeviceProgramId, MemoryPool},
     kernel::{Kernel, OpId, autotune::OptSeq},
     slab::Slab,
 };
@@ -155,7 +155,6 @@ impl KernelCache {
         device: &mut Device,
         memory_pool: &mut MemoryPool,
         config: &AutotuneConfig,
-        args: &[PoolBufferId],
         flop: u64,
         read: u64,
         write: u64,
@@ -192,7 +191,7 @@ impl KernelCache {
         kernel.renumber_indices();
         kernel.verify();
 
-        let (program_id, opts) = kernel.autotune_(args, device, memory_pool, config, flop, read, write, debug)?;
+        let (program_id, opts) = kernel.autotune_(device, memory_pool, config, flop, read, write, debug)?;
         self.programs.insert((kernel_id, dev_id), program_id);
         self.optimizations.insert((kernel_id, dev_info_id), opts);
 
@@ -200,11 +199,8 @@ impl KernelCache {
     }
 }
 
-#[allow(unused)]
 #[allow(clippy::similar_names)]
 pub fn get_perf(flop: u64, bytes_read: u64, bytes_written: u64, nanos: u64) -> String {
-    const K: usize = 16;
-
     const fn value_unit(x: u64) -> (u64, &'static str) {
         match x {
             0..1000 => (x * 100, ""),

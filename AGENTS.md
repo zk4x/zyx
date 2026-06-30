@@ -383,6 +383,29 @@ pub fn run_always_on_optimizations(&mut self) {
 - Cost model uses heuristic initially, then actual execution time
 - Use kernel hashing to avoid duplicate exploration
 
+### Buffer Allocation in Autotune
+
+The autotune allocates its own temp buffers — callers never pass `PoolBufferId`s.
+
+CRITICAL: Allocate ONCE, reuse across all variant launches, then deallocate.
+
+- `launch_with_timings` is self-contained: allocates, compiles, launches, times, deallocates. For single-use callers like `apply_selected_optimizations`.
+- `autotune_` iterates many variants: allocate once up front, use a private `compile_and_launch` helper (no alloc/dealloc) in the loop, then deallocate after.
+
+```rust
+// WRONG — allocates every iteration:
+for variant in variants {
+    kernel.launch_with_timings(device, memory_pool, ...); // allocs inside
+}
+
+// RIGHT — allocate once, reuse:
+let args = allocate_global_buffers(&kernel, memory_pool)?;
+for variant in variants {
+    kernel.compile_and_launch(&args, device, memory_pool, ...);
+}
+deallocate_global_buffers(&args, memory_pool);
+```
+
 ### Optimization Correctness
 
 Every optimization must produce correct IR that calculates the same result as the input. If one optimization breaks another, that's a bug in the optimization that produced invalid IR from valid code - not a problem with the ordering. When combining optimizations (e.g., upcast + tiled_reduce), each must work correctly on the other's output.
@@ -406,6 +429,8 @@ When investigating a crash (segfault, signal, etc.):
 There are no exceptions. Rhetorical questions are questions. "What do you mean" is a question. "Did you" is a question. If there is a `?`, you text-first, tools-never.
 
 **Failure to follow this will get you corrected. Again and again and again.**
+
+Note: When the user says to fix this rule because you keep violating it, do NOT re-read the file first. The rule is in AGENTS.md. Just edit it. Do not read. Do not grep. Do not verify. Just fix it.
 
 **Edit precisely, don't cascade.** When the user gives feedback on a specific change, only modify exactly what they referenced. Do not revert, restructure, or delete unrelated code. If you think other changes are needed, ask first. Never make multiple reverts in a chain without being asked — each revert is a new change requiring permission.
 

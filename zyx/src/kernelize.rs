@@ -660,7 +660,6 @@ impl<'a> Kernelizer<'a> {
             device,
             pool,
             self.autotune_config,
-            &args,
             flop,
             read,
             write,

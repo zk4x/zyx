@@ -650,7 +650,6 @@ impl EGraph {
                 device,
                 memory_pool,
                 config,
-                &[],
                 flop,
                 read,
                 write,

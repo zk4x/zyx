@@ -33,7 +33,6 @@
 //! - `Vectorize`: Combine scalar loads, stores and ops into vectorized ops
 //!
 
-#![allow(unused)]
 #![allow(clippy::cast_precision_loss)]
 #![allow(clippy::derived_hash_with_manual_eq)]
 
@@ -45,12 +44,10 @@ use crate::kernel::{Kernel, Op, OpId, Scope};
 use crate::rng::Rng;
 use crate::shape::Dim;
 use crate::slab::SlabId;
-use crate::{DebugMask, Map, Set};
+use crate::{DebugMask, Set};
 use nanoserde::{DeBin, SerBin};
 use std::collections::BTreeMap;
 use std::hash::{Hash, Hasher};
-use std::sync::{Arc, Mutex, mpsc};
-use std::thread;
 
 /// A config function scans the kernel at a stable state and returns an
 /// Optimization with OpIds embedded. No other optimizations run between
@@ -186,7 +183,7 @@ impl Optimization {
                 for (i, (&reduce_id, factors)) in reduce_splits.iter().enumerate() {
                     let factor_idx = reduce_indices[i];
                     let reduce_factor = factors[factor_idx];
-                    write!(info, "unroll loop_id={reduce_id} by {reduce_factor}");
+                    _ = write!(info, "unroll loop_id={reduce_id} by {reduce_factor}");
                 }
 
                 // Then apply thread coarsing
@@ -195,7 +192,7 @@ impl Optimization {
                     let factor_idx = global_indices[idx];
                     let factor = if factor_idx == 0 { 1 } else { factors[factor_idx - 1] };
                     if factor > 1 {
-                        write!(info, ", thread coarse gidx op_id={op_id} by {factor}");
+                        _ = write!(info, ", thread coarse gidx op_id={op_id} by {factor}");
                     }
                     idx += 1;
                 }
@@ -366,13 +363,42 @@ impl Kernel {
     }
 
     /// Autotune for debugging, applying only a selected series of optimizations
-    #[allow(unused)]
+    fn alloc_buffers(&self, memory_pool: &mut MemoryPool) -> Result<Vec<PoolBufferId>, BackendError> {
+        let mut args = Vec::new();
+        let mut events = Vec::new();
+        let mut op_id = self.head;
+        while !op_id.is_null() {
+            match self.ops[op_id].op {
+                Op::Define {
+                    dtype,
+                    scope: Scope::Global,
+                    len,
+                    ..
+                } => {
+                    let bytes = (dtype.bit_size() as Dim) * len / 8;
+                    let (buf, ev) = memory_pool.allocate(bytes)?;
+                    args.push(buf);
+                    events.push(ev);
+                }
+                _ => break,
+            }
+            op_id = self.next_op(op_id);
+        }
+        let _ = memory_pool.sync_events(events);
+        Ok(args)
+    }
+
+    fn dealloc_buffers(&self, args: Vec<PoolBufferId>, memory_pool: &mut MemoryPool) {
+        for buf in args {
+            memory_pool.deallocate(buf, Vec::new());
+        }
+    }
+
     pub(crate) fn apply_selected_optimizations(
         &self,
-        buffers: &[PoolBufferId],
         device: &mut Device,
         memory_pool: &mut MemoryPool,
-        config: &AutotuneConfig,
+        _config: &AutotuneConfig,
         flop: u64,
         read_bytes: u64,
         write_bytes: u64,
@@ -400,8 +426,9 @@ impl Kernel {
 
         kernel.debug();
 
+        let args = kernel.alloc_buffers(memory_pool)?;
         let (program_id, _) = kernel.launch_with_timings(
-            buffers,
+            &args,
             device,
             memory_pool,
             debug,
@@ -410,6 +437,7 @@ impl Kernel {
             write_bytes,
             self.get_hash(),
         )?;
+        kernel.dealloc_buffers(args, memory_pool);
 
         Ok((
             program_id,
@@ -437,7 +465,6 @@ impl Kernel {
     ///
     /// # Arguments
     ///
-    /// * `buffers` - Memory buffers for the kernel
     /// * `device` - Target device for compilation
     /// * `memory_pool` - Shared memory pool for buffers
     /// * `config` - Autotuning configuration
@@ -449,7 +476,6 @@ impl Kernel {
     /// Returns the best program ID and optimization sequence found.
     pub(crate) fn autotune_(
         &self,
-        buffers: &[PoolBufferId],
         device: &mut Device,
         memory_pool: &mut MemoryPool,
         config: &AutotuneConfig,
@@ -459,7 +485,7 @@ impl Kernel {
         debug: DebugMask,
     ) -> Result<(DeviceProgramId, OptSeq), BackendError> {
         if false {
-            return self.apply_selected_optimizations(buffers, device, memory_pool, config, flop, read_bytes, write_bytes, debug);
+            return self.apply_selected_optimizations(device, memory_pool, config, flop, read_bytes, write_bytes, debug);
         }
 
         let variant_hash = self.get_hash();
@@ -592,6 +618,8 @@ impl Kernel {
         items.sort_by_key(|opt_seq| opt_seq.cost.cost);
         items.truncate(n_launches);
 
+        let args = self.alloc_buffers(memory_pool)?;
+
         for opt_seq in items.iter() {
             let mut kernel = kernel.clone();
 
@@ -603,7 +631,7 @@ impl Kernel {
                 }
                 opt.apply(&mut kernel, opt_cfg);
             }
-            let (gws, lws) = kernel.work_sizes();
+            //let (gws, lws) = kernel.work_sizes();
 
             kernel.run_always_on_optimizations();
             kernel.run_always_on_optimizations();
@@ -619,16 +647,7 @@ impl Kernel {
                     kernel.debug();
                 }
 
-                match kernel.launch_with_timings(
-                    buffers,
-                    device,
-                    memory_pool,
-                    debug,
-                    flop,
-                    read_bytes,
-                    write_bytes,
-                    variant_hash,
-                ) {
+                match kernel.launch_with_timings(&args, device, memory_pool, debug, flop, read_bytes, write_bytes, variant_hash) {
                     Ok((program_id, time)) => {
                         any_success = true;
                         if time < best_time {
@@ -643,6 +662,8 @@ impl Kernel {
                 }
             }
         }
+
+        self.dealloc_buffers(args, memory_pool);
 
         if !any_success {
             return Err(last_error.unwrap_or_else(|| BackendError {
@@ -691,7 +712,7 @@ impl Kernel {
         flops: u64,
         bytes_read: u64,
         bytes_written: u64,
-        variant_hash: u64,
+        _variant_hash: u64,
     ) -> Result<(DeviceProgramId, u64), BackendError> {
         let program_id = device.compile(self, debug.asm())?;
         let begin = std::time::Instant::now();
