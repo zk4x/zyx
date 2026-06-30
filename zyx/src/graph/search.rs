@@ -541,12 +541,7 @@ impl EGraph {
         plan
     }
 
-    fn extract_dp(
-        &mut self,
-        cid: ClassId,
-        cost_map: &mut Map<ClassId, u64>,
-        choice: &mut Map<ClassId, NodeId>,
-    ) -> u64 {
+    fn extract_dp(&mut self, cid: ClassId, cost_map: &mut Map<ClassId, u64>, choice: &mut Map<ClassId, NodeId>) -> u64 {
         let cid = self.find_class(cid);
         if let Some(&cost) = cost_map.get(&cid) {
             return cost;
@@ -574,9 +569,9 @@ impl EGraph {
             }
         }
 
-        let nid = best_nid.expect(
-            &format!("extract_dp: class {cid:?} has no Kernel alternative — kernelizer must fix this")
-        );
+        let nid = best_nid.expect(&format!(
+            "extract_dp: class {cid:?} has no Kernel alternative — kernelizer must fix this"
+        ));
         cost_map.insert(cid, best_cost);
         choice.insert(cid, nid);
         best_cost
@@ -697,5 +692,3 @@ impl EGraph {
         println!("{}\n", line);
     }
 }
-
-
