@@ -691,7 +691,7 @@ impl Runtime {
             );
         }
 
-        let use_egraph = true;
+        let use_egraph = false;
         if use_egraph {
             let inputs: Vec<TensorId> = order.iter().copied().filter(|tid| realized_nodes.contains(tid)).collect();
             self.launch_or_store_graph_with_order(&inputs, &to_eval, &order)?;
