@@ -3,7 +3,9 @@
 
 use crate::{
     //optimizer::{self, Optimizer},
-    DebugMask, Map, ZyxError,
+    DebugMask,
+    Map,
+    ZyxError,
     backend::{AutotuneConfig, Device, DeviceId, DeviceInfo, DeviceProgramId, MemoryPool, PoolBufferId},
     kernel::{Kernel, OpId, autotune::OptSeq},
     slab::Slab,
@@ -190,8 +192,7 @@ impl KernelCache {
         kernel.renumber_indices();
         kernel.verify();
 
-        let (program_id, opts) =
-            kernel.autotune_(args, device, memory_pool, config, flop, read, write, debug)?;
+        let (program_id, opts) = kernel.autotune_(args, device, memory_pool, config, flop, read, write, debug)?;
         self.programs.insert((kernel_id, dev_id), program_id);
         self.optimizations.insert((kernel_id, dev_info_id), opts);
 
