@@ -13,7 +13,7 @@ use crate::{
     backend::ProgramId,
     dtype::Constant,
     graph::{Node, compiled::CompiledNode},
-    kernel::{BOp, DeviceId, UOp},
+    kernel::{BOp, DeviceId, Kernel, UOp},
     shape::{Dim, UAxis},
     slab::{Slab, SlabId},
     tensor::TensorId,
@@ -174,6 +174,7 @@ pub(crate) struct EGraph {
     hashcons: Map<ENode, NodeId>,
     pub(crate) costs: Map<NodeId, u64>,
     pub(crate) ops_count: Map<NodeId, u32>,
+    pub(crate) kernel_irs: Map<NodeId, Kernel>,
 }
 
 impl EGraph {
@@ -187,6 +188,7 @@ impl EGraph {
             hashcons: Map::default(),
             costs: Map::default(),
             ops_count: Map::default(),
+            kernel_irs: Map::default(),
         }
     }
 

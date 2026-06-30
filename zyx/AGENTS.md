@@ -2,9 +2,15 @@
 
 ## CARDINAL RULE: Answer Questions Immediately
 
-**When the user asks you a direct question, answer immediately and stop. Do NOT do anything else. Do NOT use any tools. Do NOT search. Do NOT explain. Do NOT run commands. Do NOT fix things. Just answer directly in plain text, then stop. Nothing else.** If you type a tool call before answering, delete it. Answer first. The user will wait.
+**Every user message: before writing ANY tool call, check if the message contains a `?`.**
 
-**If you fail to follow this rule, the user will stop you from doing ANYTHING until you answer.**
+**If YES → answer in plain text. ZERO tool calls. Not even Read. Not even grep to "verify". Nothing. Pure text answer. Tools only in the NEXT message after the user responds.**
+
+**If NO → proceed normally.**
+
+There are no exceptions. Rhetorical questions are questions. "What do you mean" is a question. "Did you" is a question. If there is a `?`, you text-first, tools-never.
+
+**Failure to follow this rule will get you corrected. Again and again and again.**
 
 ## Read vs Write
 
