@@ -1,4 +1,2 @@
 max_width = 130
 edition = "2024"
-struct_lit_width = 125
-single_line_let_else_max_width = 130
