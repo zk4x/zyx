@@ -56,7 +56,6 @@ impl EGraph {
         let outputs: Box<[ClassId]> = vec![cid].into_boxed_slice();
         let (knid, _) = self.make(ENode::Kernel(inputs, outputs, ProgramId::NULL));
         self.costs.insert(knid, kernel_cost(1));
-        self.ops_count.insert(knid, 1);
         self.add_to_class(knid, cid);
         knid
     }

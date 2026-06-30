@@ -6,8 +6,6 @@
 //! Builds an e-graph from the computation graph, enumerates kernel alternatives
 //! via pattern matching, then extracts the cheapest execution plan.
 
-#![allow(unused)]
-
 use crate::{
     DType, DebugMask, Map, Set, ZyxError,
     backend::{AutotuneConfig, Device, DeviceId, MemoryPool, PoolId, ProgramId},
@@ -26,12 +24,6 @@ use super::Graph;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub(crate) struct NodeId(pub u32);
-
-impl NodeId {
-    pub(crate) const fn null() -> Self {
-        Self(u32::MAX)
-    }
-}
 
 impl From<usize> for NodeId {
     fn from(v: usize) -> Self {
@@ -55,12 +47,6 @@ impl SlabId for NodeId {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub(crate) struct ClassId(pub u32);
 
-impl ClassId {
-    pub(crate) const fn null() -> Self {
-        Self(u32::MAX)
-    }
-}
-
 impl From<usize> for ClassId {
     fn from(v: usize) -> Self {
         Self(v as u32)
@@ -80,7 +66,7 @@ impl SlabId for ClassId {
     }
 }
 
-// ── ENode — the e-graph language ──────────────────────────────
+// ── ENode —
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub(crate) enum ENode {
@@ -134,13 +120,6 @@ impl ENode {
     pub(crate) fn is_kernel(&self) -> bool {
         matches!(self, ENode::Kernel(..))
     }
-
-    pub(crate) fn is_transform(&self) -> bool {
-        matches!(
-            self,
-            ENode::Expand(_) | ENode::Permute(_, _) | ENode::Reshape(_, _) | ENode::Pad(_, _) | ENode::Cast(_, _)
-        )
-    }
 }
 
 // ── EClass ─────────────────────────────────────────────────────
@@ -174,7 +153,6 @@ pub(crate) struct EGraph {
     class_rank: Vec<u8>,
     hashcons: Map<ENode, NodeId>,
     pub(crate) costs: Map<NodeId, u64>,
-    pub(crate) ops_count: Map<NodeId, u32>,
     pub(crate) kernel_irs: Map<NodeId, Kernel>,
 }
 
@@ -188,7 +166,6 @@ impl EGraph {
             class_rank: Vec::new(),
             hashcons: Map::default(),
             costs: Map::default(),
-            ops_count: Map::default(),
             kernel_irs: Map::default(),
         }
     }
@@ -203,24 +180,6 @@ impl EGraph {
     pub(crate) fn find(&self, nid: NodeId) -> ClassId {
         let cid = self.class_of[nid.0 as usize];
         self.find_class(cid)
-    }
-
-    fn compress_class_paths(&mut self, cid: ClassId) -> ClassId {
-        let parent = self.class_parent[cid.0 as usize];
-        if parent != cid {
-            let root = self.compress_class_paths(parent);
-            self.class_parent[cid.0 as usize] = root;
-            root
-        } else {
-            cid
-        }
-    }
-
-    pub(crate) fn compress_paths(&mut self) {
-        let cids: Vec<ClassId> = self.classes.ids().collect();
-        for &cid in &cids {
-            self.compress_class_paths(cid);
-        }
     }
 
     fn grow_uf_arrays(&mut self, idx: usize) {
@@ -415,7 +374,6 @@ impl EGraph {
                 if mul_shape.len() < 2 {
                     continue;
                 }
-                let contracted = mul_shape.len() - 1;
                 // shape after reduction should be mul_shape without the contracted dim
                 if shape.len() != mul_shape.len() - 1 {
                     continue;
@@ -674,7 +632,9 @@ impl EGraph {
             if let Some(class) = self.classes.get_mut(*cid) {
                 class.nodes.retain(|&n| n != *nid);
             }
-            let Some(kernel) = self.kernel_irs.get(nid).cloned() else { continue };
+            let Some(kernel) = self.kernel_irs.get(nid).cloned() else {
+                continue;
+            };
             let heuristic_cost = self.costs.get(nid).copied().unwrap_or(u64::MAX);
 
             let device_ids: Vec<DeviceId> = devices.ids().collect();
@@ -686,10 +646,13 @@ impl EGraph {
                 let mut kernel = kernel.clone();
                 let (flop, read, write) = kernel.flop_mem_rw();
 
-                if let Ok((device_prog, timing)) = cache.get_or_autotune(
-                    dev_id, &mut kernel, device, pool, config, flop, read, write, debug,
-                ) {
-                    let prog = ProgramId { device: dev_id, program: device_prog };
+                if let Ok((device_prog, timing)) =
+                    cache.get_or_autotune(dev_id, &mut kernel, device, pool, config, flop, read, write, debug)
+                {
+                    let prog = ProgramId {
+                        device: dev_id,
+                        program: device_prog,
+                    };
                     let (new_nid, _) = self.make(ENode::Kernel(inputs.clone(), outputs.clone(), prog));
                     let cost = if timing > 0 { timing } else { heuristic_cost };
                     self.costs.insert(new_nid, cost);
@@ -701,39 +664,6 @@ impl EGraph {
         Ok(())
     }
 
-    /// Autotune every kernel in the extracted plan.
-    /// Updates each `ENode::Kernel`'s `ProgramId` with the compiled result.
-    pub(crate) fn autotune_plan(
-        &mut self,
-        plan: &mut [(NodeId, ENode)],
-        dev_id: DeviceId,
-        device: &mut Device,
-        memory_pool: &mut MemoryPool,
-        cache: &mut KernelCache,
-        config: &AutotuneConfig,
-        debug: DebugMask,
-    ) -> Result<(), ZyxError> {
-        for (nid, enode) in plan.iter_mut() {
-            let ENode::Kernel(_, _, prog) = enode else { continue };
-            let Some(kernel) = self.kernel_irs.get_mut(nid) else {
-                continue;
-            };
-
-            let (flop, read, write) = kernel.flop_mem_rw();
-
-            let (device_prog, timing) = cache.get_or_autotune(dev_id, kernel, device, memory_pool, config, flop, read, write, debug)?;
-            *prog = ProgramId {
-                device: dev_id,
-                program: device_prog,
-            };
-            // Use real timing as cost for e-graph extraction
-            if timing > 0 {
-                self.costs.insert(*nid, timing);
-            }
-        }
-        Ok(())
-    }
-
     pub(crate) fn debug_print_plan(&self, plan: &[(NodeId, ENode)]) {
         let line = "─".repeat(60);
         println!("\n{}", line);
@@ -741,11 +671,10 @@ impl EGraph {
         println!("{}", line);
         for (i, (nid, enode)) in plan.iter().enumerate() {
             if let ENode::Kernel(inputs, outputs, prog) = enode {
-                let ops = self.ops_count.get(nid).copied().unwrap_or(0);
                 let cost = self.costs.get(nid).copied().unwrap_or(0);
                 println!(
-                    "  Kernel {} (n{}): {} fused ops, cost={}, inputs={:?} outputs={:?}",
-                    i, nid.0, ops, cost, inputs, outputs
+                    "  Kernel {} n{} d{}:  cost={}, inputs={:?} outputs={:?}",
+                    i, nid.0, prog.device.0, cost, inputs, outputs
                 );
                 if let Some(kernel) = self.kernel_irs.get(nid) {
                     kernel.debug();
