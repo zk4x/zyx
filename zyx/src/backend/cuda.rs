@@ -1097,6 +1097,15 @@ impl DType {
             Self::U64 => "unsigned long",
         }
     }
+    pub(super) fn cu_vec_type(&self, len: u16) -> String {
+        match self {
+            Self::Bool => format!("uint{len}"),
+            Self::U16 => format!("ushort{len}"),
+            Self::U32 => format!("uint{len}"),
+            Self::U64 => format!("ulong{len}"),
+            other => format!("{}{len}", other.cu()),
+        }
+    }
 }
 
 impl Constant {
@@ -1395,8 +1404,8 @@ impl CUDADevice {
                             MemLayout::Vector(len) => {
                                 _ = writeln!(
                                     source,
-                                    "{indent}r{reg} = *reinterpret_cast<const {}{len}*>(&p{src}[{idx}]);",
-                                    dtype.0.cu()
+                                    "{indent}r{reg} = *reinterpret_cast<const {}*>(&p{src}[{idx}]);",
+                                    dtype.0.cu_vec_type(len)
                                 )
                             }
                             MemLayout::Tile { x, y, stride } => todo!(),
@@ -1415,7 +1424,8 @@ impl CUDADevice {
                     match layout {
                         MemLayout::Scalar => _ = writeln!(source, "{indent}p{dst}[{idx}] = {x};"),
                         MemLayout::Vector(len) => {
-                            _ = writeln!(source, "{indent}*reinterpret_cast<{dtype}{len}*>(&p{dst}[{idx}]) = {x};",);
+                            let vec_type = dtypes[&src].0.cu_vec_type(len);
+                            _ = writeln!(source, "{indent}*reinterpret_cast<{vec_type}*>(&p{dst}[{idx}]) = {x};",);
                         }
                         MemLayout::Tile { x, y, stride } => todo!(),
                     }
@@ -1449,49 +1459,90 @@ impl CUDADevice {
                 }
                 &Op::Cast { x, dtype } => {
                     let x_var = get_var(x, &constants, &indices, &reg_map, &mut registers, loop_id);
+                    let mem_layout = dtypes[&x].1;
                     let reg = new_reg(
                         op_id,
                         &mut reg_map,
                         &mut registers,
-                        (dtype, dtypes[&x].1),
+                        (dtype, mem_layout),
                         rcs[&op_id],
                         loop_id,
                     );
                     if dtype == DType::BF16 {
                         _ = writeln!(source, "{indent}r{reg} = __float2bfloat16((float){x_var});");
                     } else {
-                        _ = writeln!(source, "{indent}r{reg} = ({}){x_var};", dtype.cu());
+                        match mem_layout {
+                            MemLayout::Vector(len) => {
+                                for i in 0..len as usize {
+                                    let c = VEC_COMPONENTS[i];
+                                    _ = writeln!(source, "{indent}r{reg}.{c} = ({}){x_var}.{c};", dtype.cu());
+                                }
+                            }
+                            _ => _ = writeln!(source, "{indent}r{reg} = ({}){x_var};", dtype.cu()),
+                        }
                     }
                 }
                 &Op::Unary { x, uop } => {
                     let dtype = dtypes[&x];
                     let x = get_var(x, &constants, &indices, &reg_map, &mut registers, loop_id);
                     let reg = new_reg(op_id, &mut reg_map, &mut registers, dtype, rcs[&op_id], loop_id);
-                    match uop {
-                        UOp::BitNot => _ = writeln!(source, "{indent}r{reg} = ~{x};"),
-                        UOp::Neg => _ = writeln!(source, "{indent}r{reg} = -{x};"),
-                        UOp::Exp => unreachable!(
-                            "internal bug: UOp::Exp should be converted to Exp2 + mul by ln2(e) by IR pass before reaching CUDA backend"
-                        ),
-                        UOp::Exp2 => {
-                            if dtype.0 == DType::F16 {
-                                _ = writeln!(source, "{indent}r{reg} = (half)exp2((float){x});");
-                            } else {
-                                _ = writeln!(source, "{indent}r{reg} = exp2({x});");
+                    match dtype.1 {
+                        MemLayout::Vector(len) => {
+                            for i in 0..len as usize {
+                                let c = VEC_COMPONENTS[i];
+                                _ = match uop {
+                                    UOp::BitNot => writeln!(source, "{indent}r{reg}.{c} = ~{x}.{c};"),
+                                    UOp::Neg => writeln!(source, "{indent}r{reg}.{c} = -{x}.{c};"),
+                                    UOp::Exp => unreachable!(
+                                        "internal bug: UOp::Exp should be converted to Exp2 + mul by ln2(e) by IR pass before reaching CUDA backend"
+                                    ),
+                                    UOp::Exp2 => {
+                                        if dtype.0 == DType::F16 {
+                                            writeln!(source, "{indent}r{reg}.{c} = (half)exp2((float){x}.{c});")
+                                        } else {
+                                            writeln!(source, "{indent}r{reg}.{c} = exp2({x}.{c});")
+                                        }
+                                    }
+                                    UOp::Log2 => writeln!(source, "{indent}r{reg}.{c} = log2({x}.{c});"),
+                                    UOp::Reciprocal => {
+                                        writeln!(source, "{indent}r{reg}.{c} = {}/{x}.{c};", dtype.0.one_constant().cu())
+                                    }
+                                    UOp::Sqrt => writeln!(source, "{indent}r{reg}.{c} = sqrt({x}.{c});"),
+                                    UOp::Sin => writeln!(source, "{indent}r{reg}.{c} = sin({x}.{c});"),
+                                    UOp::Cos => writeln!(source, "{indent}r{reg}.{c} = cos({x}.{c});"),
+                                    UOp::Floor => writeln!(source, "{indent}r{reg}.{c} = floor({x}.{c});"),
+                                    UOp::Trunc => writeln!(source, "{indent}r{reg}.{c} = trunc({x}.{c});"),
+                                    UOp::Ln => writeln!(source, "{indent}r{reg}.{c} = log({x}.{c});"),
+                                    UOp::Abs => writeln!(source, "{indent}r{reg}.{c} = fabsf({x}.{c});"),
+                                };
                             }
-                            //_ = writeln!(source, "{indent}printf(\"%d\\n\", r{reg});");
                         }
-                        UOp::Log2 => _ = writeln!(source, "{indent}r{reg} = log2({x});"),
-                        UOp::Reciprocal => {
-                            _ = writeln!(source, "{indent}r{reg} = {}/{x};", dtype.0.one_constant().cu());
-                        }
-                        UOp::Sqrt => _ = writeln!(source, "{indent}r{reg} = sqrt({x});"),
-                        UOp::Sin => _ = writeln!(source, "{indent}r{reg} = sin({x});"),
-                        UOp::Cos => _ = writeln!(source, "{indent}r{reg} = cos({x});"),
-                        UOp::Floor => _ = writeln!(source, "{indent}r{reg} = floor({x});"),
-                        UOp::Trunc => _ = writeln!(source, "{indent}r{reg} = trunc({x});"),
-                        UOp::Ln => _ = writeln!(source, "{indent}r{reg} = log({x});"),
-                        UOp::Abs => _ = writeln!(source, "{indent}r{reg} = fabsf({x});"),
+                        MemLayout::Scalar => match uop {
+                            UOp::BitNot => _ = writeln!(source, "{indent}r{reg} = ~{x};"),
+                            UOp::Neg => _ = writeln!(source, "{indent}r{reg} = -{x};"),
+                            UOp::Exp => unreachable!(
+                                "internal bug: UOp::Exp should be converted to Exp2 + mul by ln2(e) by IR pass before reaching CUDA backend"
+                            ),
+                            UOp::Exp2 => {
+                                if dtype.0 == DType::F16 {
+                                    _ = writeln!(source, "{indent}r{reg} = (half)exp2((float){x});");
+                                } else {
+                                    _ = writeln!(source, "{indent}r{reg} = exp2({x});");
+                                }
+                            }
+                            UOp::Log2 => _ = writeln!(source, "{indent}r{reg} = log2({x});"),
+                            UOp::Reciprocal => {
+                                _ = writeln!(source, "{indent}r{reg} = {}/{x};", dtype.0.one_constant().cu());
+                            }
+                            UOp::Sqrt => _ = writeln!(source, "{indent}r{reg} = sqrt({x});"),
+                            UOp::Sin => _ = writeln!(source, "{indent}r{reg} = sin({x});"),
+                            UOp::Cos => _ = writeln!(source, "{indent}r{reg} = cos({x});"),
+                            UOp::Floor => _ = writeln!(source, "{indent}r{reg} = floor({x});"),
+                            UOp::Trunc => _ = writeln!(source, "{indent}r{reg} = trunc({x});"),
+                            UOp::Ln => _ = writeln!(source, "{indent}r{reg} = log({x});"),
+                            UOp::Abs => _ = writeln!(source, "{indent}r{reg} = fabsf({x});"),
+                        },
+                        MemLayout::Tile { .. } => unreachable!(),
                     }
                 }
                 &Op::Binary { x, y, bop } => {
@@ -1499,26 +1550,54 @@ impl CUDADevice {
                     let x = get_var(x, &constants, &indices, &reg_map, &mut registers, loop_id);
                     let y = get_var(y, &constants, &indices, &reg_map, &mut registers, loop_id);
                     let reg = new_reg(op_id, &mut reg_map, &mut registers, dtype, rcs[&op_id], loop_id);
-                    _ = match bop {
-                        BOp::Add => writeln!(source, "{indent}r{reg} = {x} + {y};"),
-                        BOp::Sub => writeln!(source, "{indent}r{reg} = {x} - {y};"),
-                        BOp::Mul => writeln!(source, "{indent}r{reg} = {x} * {y};"),
-                        BOp::Div => writeln!(source, "{indent}r{reg} = {x} / {y};"),
-                        BOp::Pow => writeln!(source, "{indent}r{reg} = pow((double){x}, (double){y});"),
-                        BOp::Mod => writeln!(source, "{indent}r{reg} = {x} % {y};"),
-                        BOp::Cmplt => writeln!(source, "{indent}r{reg} = {x} < {y};"),
-                        BOp::Cmpgt => writeln!(source, "{indent}r{reg} = {x} > {y};"),
-                        BOp::Max => writeln!(source, "{indent}r{reg} = max({x}, {y});"),
-                        BOp::Or => writeln!(source, "{indent}r{reg} = {x} || {y};"),
-                        BOp::And => writeln!(source, "{indent}r{reg} = {x} && {y};"),
-                        BOp::BitXor => writeln!(source, "{indent}r{reg} = {x} ^ {y};"),
-                        BOp::BitOr => writeln!(source, "{indent}r{reg} = {x} | {y};"),
-                        BOp::BitAnd => writeln!(source, "{indent}r{reg} = {x} & {y};"),
-                        BOp::BitShiftLeft => writeln!(source, "{indent}r{reg} = {x} << {y};"),
-                        BOp::BitShiftRight => writeln!(source, "{indent}r{reg} = {x} >> {y};"),
-                        BOp::NotEq => writeln!(source, "{indent}r{reg} = {x} != {y};"),
-                        BOp::Eq => writeln!(source, "{indent}r{reg} = {x} == {y};"),
-                    };
+                    match dtype.1 {
+                        MemLayout::Vector(len) => {
+                            for i in 0..len as usize {
+                                let c = VEC_COMPONENTS[i];
+                                _ = match bop {
+                                    BOp::Add => writeln!(source, "{indent}r{reg}.{c} = {x}.{c} + {y}.{c};"),
+                                    BOp::Sub => writeln!(source, "{indent}r{reg}.{c} = {x}.{c} - {y}.{c};"),
+                                    BOp::Mul => writeln!(source, "{indent}r{reg}.{c} = {x}.{c} * {y}.{c};"),
+                                    BOp::Div => writeln!(source, "{indent}r{reg}.{c} = {x}.{c} / {y}.{c};"),
+                                    BOp::Pow => writeln!(source, "{indent}r{reg}.{c} = pow((double){x}.{c}, (double){y}.{c});"),
+                                    BOp::Mod => writeln!(source, "{indent}r{reg}.{c} = {x}.{c} % {y}.{c};"),
+                                    BOp::Cmplt => writeln!(source, "{indent}r{reg}.{c} = (unsigned int)({x}.{c} < {y}.{c});"),
+                                    BOp::Cmpgt => writeln!(source, "{indent}r{reg}.{c} = (unsigned int)({x}.{c} > {y}.{c});"),
+                                    BOp::Max => writeln!(source, "{indent}r{reg}.{c} = max({x}.{c}, {y}.{c});"),
+                                    BOp::Or => writeln!(source, "{indent}r{reg}.{c} = {x}.{c} || {y}.{c};"),
+                                    BOp::And => writeln!(source, "{indent}r{reg}.{c} = {x}.{c} && {y}.{c};"),
+                                    BOp::BitXor => writeln!(source, "{indent}r{reg}.{c} = {x}.{c} ^ {y}.{c};"),
+                                    BOp::BitOr => writeln!(source, "{indent}r{reg}.{c} = {x}.{c} | {y}.{c};"),
+                                    BOp::BitAnd => writeln!(source, "{indent}r{reg}.{c} = {x}.{c} & {y}.{c};"),
+                                    BOp::BitShiftLeft => writeln!(source, "{indent}r{reg}.{c} = {x}.{c} << {y}.{c};"),
+                                    BOp::BitShiftRight => writeln!(source, "{indent}r{reg}.{c} = {x}.{c} >> {y}.{c};"),
+                                    BOp::NotEq => writeln!(source, "{indent}r{reg}.{c} = (unsigned int)({x}.{c} != {y}.{c});"),
+                                    BOp::Eq => writeln!(source, "{indent}r{reg}.{c} = (unsigned int)({x}.{c} == {y}.{c});"),
+                                };
+                            }
+                        }
+                        MemLayout::Scalar => _ = match bop {
+                            BOp::Add => writeln!(source, "{indent}r{reg} = {x} + {y};"),
+                            BOp::Sub => writeln!(source, "{indent}r{reg} = {x} - {y};"),
+                            BOp::Mul => writeln!(source, "{indent}r{reg} = {x} * {y};"),
+                            BOp::Div => writeln!(source, "{indent}r{reg} = {x} / {y};"),
+                            BOp::Pow => writeln!(source, "{indent}r{reg} = pow((double){x}, (double){y});"),
+                            BOp::Mod => writeln!(source, "{indent}r{reg} = {x} % {y};"),
+                            BOp::Cmplt => writeln!(source, "{indent}r{reg} = {x} < {y};"),
+                            BOp::Cmpgt => writeln!(source, "{indent}r{reg} = {x} > {y};"),
+                            BOp::Max => writeln!(source, "{indent}r{reg} = max({x}, {y});"),
+                            BOp::Or => writeln!(source, "{indent}r{reg} = {x} || {y};"),
+                            BOp::And => writeln!(source, "{indent}r{reg} = {x} && {y};"),
+                            BOp::BitXor => writeln!(source, "{indent}r{reg} = {x} ^ {y};"),
+                            BOp::BitOr => writeln!(source, "{indent}r{reg} = {x} | {y};"),
+                            BOp::BitAnd => writeln!(source, "{indent}r{reg} = {x} & {y};"),
+                            BOp::BitShiftLeft => writeln!(source, "{indent}r{reg} = {x} << {y};"),
+                            BOp::BitShiftRight => writeln!(source, "{indent}r{reg} = {x} >> {y};"),
+                            BOp::NotEq => writeln!(source, "{indent}r{reg} = {x} != {y};"),
+                            BOp::Eq => writeln!(source, "{indent}r{reg} = {x} == {y};"),
+                        },
+                        MemLayout::Tile { .. } => unreachable!(),
+                    }
                 }
                 Op::Vectorize { ops } => {
                     let dtype = dtypes[&op_id];
@@ -1545,7 +1624,15 @@ impl CUDADevice {
                     let y = get_var(y, &constants, &indices, &reg_map, &mut registers, loop_id);
                     let z = get_var(z, &constants, &indices, &reg_map, &mut registers, loop_id);
                     let reg = new_reg(op_id, &mut reg_map, &mut registers, dtype, rcs[&op_id], loop_id);
-                    _ = writeln!(source, "{indent}r{reg} = {x} * {y} + {z};"); // CUDA compiler will handle this just fine
+                    match dtype.1 {
+                        MemLayout::Vector(len) => {
+                            for i in 0..len as usize {
+                                let c = VEC_COMPONENTS[i];
+                                _ = writeln!(source, "{indent}r{reg}.{c} = {x}.{c} * {y}.{c} + {z}.{c};");
+                            }
+                        }
+                        _ => _ = writeln!(source, "{indent}r{reg} = {x} * {y} + {z};"),
+                    }
                 }
                 &Op::Index { len: dim, scope, axis } => {
                     indices.insert(op_id, loop_id);
@@ -1621,11 +1708,10 @@ impl CUDADevice {
             let mut prev_dt = dt;
             _ = write!(
                 reg_str,
-                "{indent}{}{} r0",
-                dt.0.cu(),
+                "{indent}{} r0",
                 match dt.1 {
-                    MemLayout::Scalar => "".into(),
-                    MemLayout::Vector(len) => len.to_string(),
+                    MemLayout::Scalar => dt.0.cu().to_string(),
+                    MemLayout::Vector(len) => dt.0.cu_vec_type(len),
                     MemLayout::Tile { .. } => unreachable!(),
                 }
             );
@@ -1636,11 +1722,10 @@ impl CUDADevice {
                 } else {
                     _ = write!(
                         reg_str,
-                        ";\n{indent}{}{} r{i}",
-                        dt.0.cu(),
+                        ";\n{indent}{} r{i}",
                         match dt.1 {
-                            MemLayout::Scalar => "".into(),
-                            MemLayout::Vector(len) => len.to_string(),
+                            MemLayout::Scalar => dt.0.cu().to_string(),
+                            MemLayout::Vector(len) => dt.0.cu_vec_type(len),
                             MemLayout::Tile { .. } => unreachable!(),
                         }
                     );
