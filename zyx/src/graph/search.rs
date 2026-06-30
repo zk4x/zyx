@@ -1,208 +1,707 @@
 // Copyright (C) 2025 zk4x
 // SPDX-License-Identifier: LGPL-3.0-only
 
+//! E-graph-based kernel search.
+//!
+//! Builds an e-graph from the computation graph, enumerates kernel alternatives
+//! via pattern matching, then extracts the cheapest execution plan.
+
 #![allow(unused)]
 
 use crate::{
     DType, Map, Set,
+    backend::ProgramId,
     dtype::Constant,
-    graph::{
-        Node,
-        compiled::CompiledNode,
-        kernelizer::{KMKernelId, Kernelizer},
-    },
-    kernel::{BOp, Kernel, UOp},
+    graph::{Node, compiled::CompiledNode},
+    kernel::{BOp, DeviceId, UOp},
     shape::{Dim, UAxis},
-    slab::Slab,
+    slab::{Slab, SlabId},
     tensor::TensorId,
 };
-use std::hash::BuildHasherDefault;
 
 use super::Graph;
 
-pub trait FusedKernel: std::fmt::Debug {
-    fn try_fuse(g: &mut EGraph, nid: TensorId) -> Option<(FusedSlot, Self)>
-    where
-        Self: Sized;
+// ── IDs ────────────────────────────────────────────────────────
 
-    fn time_cost_ns(&self) -> u64;
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub(crate) struct NodeId(pub u32);
+
+impl NodeId {
+    pub(crate) const fn null() -> Self {
+        Self(u32::MAX)
+    }
 }
 
-#[derive(Debug, Hash, PartialEq, Eq)]
-pub struct FusedSlot {
-    pre_reshape: Option<Vec<Dim>>,
-    pre_permute: Option<Vec<UAxis>>,
-    inputs: Vec<TensorId>,
-    outputs: Vec<TensorId>,
-    post_permute: Option<Vec<UAxis>>,
-    post_reshape: Option<Vec<Dim>>,
+impl From<usize> for NodeId {
+    fn from(v: usize) -> Self {
+        Self(v as u32)
+    }
+}
+impl From<NodeId> for usize {
+    fn from(v: NodeId) -> usize {
+        v.0 as usize
+    }
 }
 
-#[derive(Debug)]
-pub struct EGraph<'a> {
-    order: &'a [TensorId],
-    graph: &'a Graph,
-    kernels: Map<FusedSlot, Box<dyn FusedKernel>>,
+impl SlabId for NodeId {
+    const ZERO: Self = Self(0);
+    const NULL: Self = Self(u32::MAX);
+    fn inc(&mut self) {
+        self.0 += 1;
+    }
 }
 
-impl<'a> EGraph<'a> {
-    pub fn compile(inputs: &[TensorId], to_eval: &Set<TensorId>, order: &'a [TensorId], graph: &'a Graph) -> Vec<CompiledNode> {
-        let mut egraph = Self { order, graph, kernels: Map::default() };
-        egraph.saturate();
-        egraph.kernelize(inputs, to_eval);
-        egraph.extract()
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub(crate) struct ClassId(pub u32);
+
+impl ClassId {
+    pub(crate) const fn null() -> Self {
+        Self(u32::MAX)
+    }
+}
+
+impl From<usize> for ClassId {
+    fn from(v: usize) -> Self {
+        Self(v as u32)
+    }
+}
+impl From<ClassId> for usize {
+    fn from(v: ClassId) -> usize {
+        v.0 as usize
+    }
+}
+
+impl SlabId for ClassId {
+    const ZERO: Self = Self(0);
+    const NULL: Self = Self(u32::MAX);
+    fn inc(&mut self) {
+        self.0 += 1;
+    }
+}
+
+// ── ENode — the e-graph language ──────────────────────────────
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub(crate) enum ENode {
+    Const(Constant),
+    Leaf(DType),
+    Expand(ClassId),
+    Permute(ClassId, Box<[UAxis]>),
+    Reshape(ClassId, Box<[Dim]>),
+    Pad(ClassId, Box<[(i64, i64)]>),
+    Reduce(ClassId, BOp),
+    Cast(ClassId, DType),
+    Unary(ClassId, UOp),
+    Binary(ClassId, ClassId, BOp),
+    ToDevice(ClassId, DeviceId),
+    Kernel(Box<[ClassId]>, Box<[ClassId]>, ProgramId),
+}
+
+impl ENode {
+    pub(crate) fn child_classes(&self) -> Vec<ClassId> {
+        match self {
+            ENode::Const(_) | ENode::Leaf(_) => vec![],
+            ENode::Expand(x) => vec![*x],
+            ENode::Permute(x, _) => vec![*x],
+            ENode::Reshape(x, _) => vec![*x],
+            ENode::Pad(x, _) => vec![*x],
+            ENode::Reduce(x, _) => vec![*x],
+            ENode::Cast(x, _) => vec![*x],
+            ENode::Unary(x, _) => vec![*x],
+            ENode::ToDevice(x, _) => vec![*x],
+            ENode::Binary(x, y, _) => vec![*x, *y],
+            ENode::Kernel(inputs, _, _) => inputs.to_vec(),
+        }
     }
 
-    /// We have an array of all available fused kernels.
-    /// 1. Filter only those for which we have available devices.
-    /// 2. Go from largest.
-    /// 3. Continue adding kernels to kernels until the end of the graph.
-    /// 4. Now start from the beginning of the graph. Skip the already fused ops
-    ///    and fuse again if possible, still using the largest fused kernel.
-    /// 5. Iterate with the largest kernel as long as at least one largest kernel
-    ///    can be added outside of ops that are already fused.
-    ///    Since we are skipping already fused ones, this is not perfectly optimal,
-    ///    but close enough.
-    /// 6. After all largest kernel fusions were exhausted go with the next largest
-    ///    kernel and do the same iterative exhaustive process.
-    /// 7. Once all fused kernels were tried, fill in the smallest gaps with zyx
-    ///    kernels, first just the smallest gaps.
-    /// 8. Then continue by filling larger and larger gaps with zyx kernels, depending
-    ///    on the budget.
-    ///
-    /// This whole saturation is driven by budget. The higher budget, the more fusion
-    /// variants are tried. With large enough budgets, it's basically fully exhaustive.
-    pub fn saturate(&mut self) {
-        let fusers = [Matmul::try_fuse];
+    fn child_classes_mut(&mut self) -> Vec<&mut ClassId> {
+        match self {
+            ENode::Const(_) | ENode::Leaf(_) => vec![],
+            ENode::Expand(x) => vec![x],
+            ENode::Permute(x, _) => vec![x],
+            ENode::Reshape(x, _) => vec![x],
+            ENode::Pad(x, _) => vec![x],
+            ENode::Reduce(x, _) => vec![x],
+            ENode::Cast(x, _) => vec![x],
+            ENode::Unary(x, _) => vec![x],
+            ENode::ToDevice(x, _) => vec![x],
+            ENode::Binary(x, y, _) => vec![x, y],
+            ENode::Kernel(inputs, _, _) => inputs.iter_mut().collect(),
+        }
+    }
 
-        loop {
-            let mut found = false;
-            for fuser in fusers {
-                for &nid in self.order {
-                    if let Some((slot, kernel)) = fuser(self, nid) {
-                        if self.kernels.contains_key(&slot) {
-                            continue;
-                        }
-                        self.kernels.insert(slot, Box::new(kernel));
-                        found = true;
-                    }
-                }
+    pub(crate) fn is_kernel(&self) -> bool {
+        matches!(self, ENode::Kernel(..))
+    }
+
+    pub(crate) fn is_transform(&self) -> bool {
+        matches!(
+            self,
+            ENode::Expand(_) | ENode::Permute(_, _) | ENode::Reshape(_, _) | ENode::Pad(_, _) | ENode::Cast(_, _)
+        )
+    }
+}
+
+// ── EClass ─────────────────────────────────────────────────────
+
+#[derive(Debug)]
+pub(crate) struct EClass {
+    pub nodes: Vec<NodeId>,
+    pub parents: Vec<(NodeId, usize)>,
+    pub shape: Option<Box<[Dim]>>,
+    pub dtype: Option<DType>,
+}
+
+impl EClass {
+    fn new(node: NodeId) -> Self {
+        Self { nodes: vec![node], parents: vec![], shape: None, dtype: None }
+    }
+}
+
+// ── EGraph ─────────────────────────────────────────────────────
+
+pub(crate) struct EGraph {
+    pub(crate) nodes: Slab<NodeId, ENode>,
+    pub(crate) classes: Slab<ClassId, EClass>,
+    class_of: Vec<ClassId>,
+    class_parent: Vec<ClassId>,
+    class_rank: Vec<u8>,
+    hashcons: Map<ENode, NodeId>,
+}
+
+impl EGraph {
+    pub(crate) fn new() -> Self {
+        Self {
+            nodes: Slab::new(),
+            classes: Slab::new(),
+            class_of: Vec::new(),
+            class_parent: Vec::new(),
+            class_rank: Vec::new(),
+            hashcons: Map::default(),
+        }
+    }
+
+    // ── Union-Find ─────────────────────────────────────────
+
+    pub(crate) fn find_class(&self, cid: ClassId) -> ClassId {
+        let parent = self.class_parent[cid.0 as usize];
+        if parent != cid { self.find_class(parent) } else { cid }
+    }
+
+    pub(crate) fn find(&self, nid: NodeId) -> ClassId {
+        let cid = self.class_of[nid.0 as usize];
+        self.find_class(cid)
+    }
+
+    fn compress_class_paths(&mut self, cid: ClassId) -> ClassId {
+        let parent = self.class_parent[cid.0 as usize];
+        if parent != cid {
+            let root = self.compress_class_paths(parent);
+            self.class_parent[cid.0 as usize] = root;
+            root
+        } else {
+            cid
+        }
+    }
+
+    pub(crate) fn compress_paths(&mut self) {
+        let cids: Vec<ClassId> = self.classes.ids().collect();
+        for &cid in &cids {
+            self.compress_class_paths(cid);
+        }
+    }
+
+    fn grow_uf_arrays(&mut self, idx: usize) {
+        if idx >= self.class_of.len() {
+            let cid = ClassId(self.class_of.len() as u32);
+            self.class_of.resize(idx + 1, cid);
+            self.class_parent.resize(idx + 1, cid);
+            self.class_rank.resize(idx + 1, 0);
+        }
+    }
+
+    // ── Hashcons + creation ────────────────────────────────
+
+    pub(crate) fn make(&mut self, mut kind: ENode) -> (NodeId, ClassId) {
+        for c in kind.child_classes_mut() {
+            *c = self.find_class(*c);
+        }
+
+        if let Some(&nid) = self.hashcons.get(&kind) {
+            let cid = self.find(nid);
+            return (nid, cid);
+        }
+
+        let children: Vec<ClassId> = kind.child_classes();
+
+        let nid = self.nodes.push(kind.clone());
+        let cid = self.classes.push(EClass::new(nid));
+
+        let idx = nid.0 as usize;
+        self.grow_uf_arrays(idx);
+        self.class_of[idx] = cid;
+        let cidx = cid.0 as usize;
+        self.grow_uf_arrays(cidx);
+        self.class_parent[cidx] = cid;
+
+        self.hashcons.insert(kind, nid);
+
+        for (child_idx, &child) in children.iter().enumerate() {
+            let child_root = self.find_class(child);
+            self.classes[child_root].parents.push((nid, child_idx));
+        }
+
+        (nid, cid)
+    }
+
+    // ── Add enode to an existing class ─────────────────────
+
+    pub(crate) fn add_to_class(&mut self, nid: NodeId, cid: ClassId) {
+        let cid = self.find_class(cid);
+        let old_cid = self.find(nid);
+        if old_cid == cid {
+            return;
+        }
+        self.class_of[nid.0 as usize] = cid;
+        self.classes[cid].nodes.push(nid);
+
+        let children: Vec<ClassId> = self.nodes[nid].child_classes();
+        for (child_idx, &child) in children.iter().enumerate() {
+            let child_root = self.find_class(child);
+            self.classes[child_root].parents.push((nid, child_idx));
+        }
+    }
+
+    // ── Union two e-classes ───────────────────────────────
+
+    pub(crate) fn union(&mut self, a: ClassId, b: ClassId) {
+        let a = self.find_class(a);
+        let b = self.find_class(b);
+        if a == b {
+            return;
+        }
+
+        let (keep, drop) = if self.class_rank[a.0 as usize] >= self.class_rank[b.0 as usize] {
+            (a, b)
+        } else {
+            (b, a)
+        };
+
+        self.class_parent[drop.0 as usize] = keep;
+        if self.class_rank[keep.0 as usize] == self.class_rank[drop.0 as usize] {
+            self.class_rank[keep.0 as usize] += 1;
+        }
+
+        let drop_nodes: Vec<NodeId> = self.classes[drop].nodes.drain(..).collect();
+        for &nid in &drop_nodes {
+            self.class_of[nid.0 as usize] = keep;
+            self.classes[keep].nodes.push(nid);
+        }
+
+        let drop_parents = std::mem::take(&mut self.classes[drop].parents);
+        if !drop_parents.is_empty() {
+            self.classes[keep].parents.extend(drop_parents);
+        }
+
+        if self.classes[keep].shape.is_none() {
+            self.classes[keep].shape = self.classes[drop].shape.take();
+        }
+        if self.classes[keep].dtype.is_none() {
+            self.classes[keep].dtype = self.classes[drop].dtype.take();
+        }
+    }
+
+    // ── Build from Graph ─────────────────────────────────
+
+    pub(crate) fn build_from_graph(&mut self, order: &[TensorId], graph: &Graph) -> Map<TensorId, ClassId> {
+        let mut tensor_to_cid: Map<TensorId, ClassId> = Map::default();
+
+        for &tid in order {
+            let kind = self.node_to_enkind(tid, &tensor_to_cid, graph);
+            let (_, cid) = self.make(kind);
+            let cid = self.find_class(cid);
+            let shape: Box<[Dim]> = graph.shape(tid).to_vec().into_boxed_slice();
+            self.classes[cid].shape = Some(shape);
+            self.classes[cid].dtype = Some(graph.dtype(tid));
+            tensor_to_cid.insert(tid, cid);
+        }
+
+        tensor_to_cid
+    }
+
+    fn node_to_enkind(&self, tid: TensorId, map: &Map<TensorId, ClassId>, graph: &Graph) -> ENode {
+        match &graph[tid] {
+            Node::Const { value } => ENode::Const(*value),
+            Node::Leaf { dtype } => ENode::Leaf(*dtype),
+            Node::Expand { x } => ENode::Expand(map[x]),
+            Node::Permute { x } => {
+                let axes = graph.axes(tid).to_vec().into_boxed_slice();
+                ENode::Permute(map[x], axes)
             }
-            if !found {
+            Node::Reshape { x } => {
+                let shape = graph.shape(tid).to_vec().into_boxed_slice();
+                ENode::Reshape(map[x], shape)
+            }
+            Node::Pad { x } => {
+                let padding = graph.padding(tid).to_vec().into_boxed_slice();
+                ENode::Pad(map[x], padding)
+            }
+            Node::Reduce { x, rop } => ENode::Reduce(map[x], *rop),
+            Node::Cast { x, dtype } => ENode::Cast(map[x], *dtype),
+            Node::Unary { x, uop } => ENode::Unary(map[x], *uop),
+            Node::Binary { x, y, bop } => ENode::Binary(map[x], map[y], *bop),
+            Node::Custom(_) => panic!("Custom nodes not supported in e-graph"),
+            Node::ToDevice { x, device } => ENode::ToDevice(map[x], *device),
+        }
+    }
+
+    // ── Kernel enumeration ────────────────────────────────
+
+    pub(crate) fn saturate(&mut self) {
+        // Each fuser tries to match enodes in e-classes and insert kernel
+        // alternatives. Run to fixpoint since one match may enable another.
+        loop {
+            let mut added = false;
+            if self.try_fuse_matmul() {
+                added = true;
+            }
+            if !added {
                 break;
             }
         }
     }
 
-    pub fn kernelize(&mut self, inputs: &[TensorId], to_eval: &Set<TensorId>) {
-        let kernelizer = Kernelizer::new(self.order, self.graph, inputs);
-        let mut kernel_slab = kernelizer.kernelize(to_eval);
-        let ids: Vec<KMKernelId> = kernel_slab.ids().collect();
-        for id in ids {
-            let kernel = unsafe { kernel_slab.remove_and_return(id) };
-            kernel.debug();
-            let slot = FusedSlot {
-                pre_reshape: None,
-                pre_permute: None,
-                inputs: kernel.loads.clone(),
-                outputs: kernel.stores.clone(),
-                post_permute: None,
-                post_reshape: None,
+    /// Try to match all e-classes for `reduce_sum(mul(expand(A), expand(permute(B))))`
+    /// and insert `MatmulKernel` alternatives.
+    fn try_fuse_matmul(&mut self) -> bool {
+        let mut added = false;
+        let classes: Vec<ClassId> = self.classes.ids().collect();
+
+        for cid in classes {
+            if !self.classes.contains_key(cid) {
+                continue;
+            }
+            // Collect enodes from this class (clone to avoid borrow issues)
+            let enodes: Vec<NodeId> = self.classes[cid].nodes.clone();
+            for &nid in &enodes {
+                // Pattern: Reduce(Add, mul_class)
+                let mul_class = match &self.nodes[nid] {
+                    ENode::Reduce(x, BOp::Add) => *x,
+                    _ => continue,
+                };
+
+                // Check the reduce is over the last dimension.
+                let shape = match &self.classes[cid].shape {
+                    Some(s) => s.clone(),
+                    None => continue,
+                };
+                let mul_shape = match &self.classes[self.find_class(mul_class)].shape {
+                    Some(s) => s.clone(),
+                    None => continue,
+                };
+                // Reduce must contract one axis — the last axis of the mul output.
+                if mul_shape.len() < 2 {
+                    continue;
+                }
+                let contracted = mul_shape.len() - 1;
+                // shape after reduction should be mul_shape without the contracted dim
+                if shape.len() != mul_shape.len() - 1 {
+                    continue;
+                }
+
+                // Check mul_class contains Binary(Mul, ...)
+                let mul_nodes: Vec<NodeId> = self.classes[self.find_class(mul_class)].nodes.clone();
+                let found_mul = mul_nodes
+                    .iter()
+                    .any(|&mn| matches!(&self.nodes[mn], ENode::Binary(_, _, BOp::Mul)));
+                if !found_mul {
+                    continue;
+                }
+
+                // Try both orderings for A and B sides.
+                // We need: left = Expand(A_raw), right = Expand(Permute[1,0](B_raw))
+                let mul_nid = mul_nodes
+                    .iter()
+                    .find(|&&mn| matches!(&self.nodes[mn], ENode::Binary(_, _, BOp::Mul)))
+                    .copied()
+                    .unwrap();
+                let (left, right) = match &self.nodes[mul_nid] {
+                    ENode::Binary(a, b, BOp::Mul) => (*a, *b),
+                    _ => unreachable!(),
+                };
+
+                for &(expand_a, expand_b) in &[(left, right), (right, left)] {
+                    let a_raw = match self.classes[self.find_class(expand_a)]
+                        .nodes
+                        .iter()
+                        .find_map(|&n| match &self.nodes[n] {
+                            ENode::Expand(x) => Some(*x),
+                            _ => None,
+                        }) {
+                        Some(x) => x,
+                        None => continue,
+                    };
+
+                    // B side: Expand → Reshape → Permute[1,0] → Leaf
+                    let reshape_class =
+                        match self.classes[self.find_class(expand_b)]
+                            .nodes
+                            .iter()
+                            .find_map(|&n| match &self.nodes[n] {
+                                ENode::Expand(x) => Some(*x),
+                                _ => None,
+                            }) {
+                            Some(x) => x,
+                            None => continue,
+                        };
+
+                    let permute_class = match self.classes[self.find_class(reshape_class)]
+                        .nodes
+                        .iter()
+                        .find_map(|&n| match &self.nodes[n] {
+                            ENode::Reshape(x, _) => Some(*x),
+                            _ => None,
+                        }) {
+                        Some(x) => x,
+                        None => continue,
+                    };
+
+                    let b_raw =
+                        match self.classes[self.find_class(permute_class)]
+                            .nodes
+                            .iter()
+                            .find_map(|&n| match &self.nodes[n] {
+                                ENode::Permute(x, axes) if axes.len() == 2 && axes[0] == 1 && axes[1] == 0 => Some(*x),
+                                _ => None,
+                            }) {
+                            Some(x) => x,
+                            None => continue,
+                        };
+
+                    // Verify inputs are leaves
+                    if !self.classes[self.find_class(a_raw)]
+                        .nodes
+                        .iter()
+                        .any(|&n| matches!(&self.nodes[n], ENode::Leaf(_)))
+                    {
+                        continue;
+                    }
+                    if !self.classes[self.find_class(b_raw)]
+                        .nodes
+                        .iter()
+                        .any(|&n| matches!(&self.nodes[n], ENode::Leaf(_)))
+                    {
+                        continue;
+                    }
+
+                    // Create the MatmulKernel enode
+                    let inputs: Box<[ClassId]> = vec![a_raw, b_raw].into_boxed_slice();
+                    let outputs: Box<[ClassId]> = vec![cid].into_boxed_slice();
+                    let (knid, _own_class) = self.make(ENode::Kernel(inputs, outputs, ProgramId::NULL));
+                    self.add_to_class(knid, cid);
+                    added = true;
+                    break;
+                }
+            }
+        }
+
+        added
+    }
+
+    // ── Extraction (DP) ───────────────────────────────────
+
+    /// Extract the cheapest plan from the e-graph.
+    /// Returns the selected enodes in topological order.
+    pub(crate) fn extract(&mut self, outputs: &[ClassId]) -> Vec<ENode> {
+        let mut cost_map: Map<ClassId, SelectResult> = Map::default();
+        let mut order: Vec<ClassId> = Vec::new();
+        let mut visited: Set<ClassId> = Set::default();
+
+        for &out in outputs {
+            self.extract_dp(out, &mut cost_map, &mut order, &mut visited);
+        }
+
+        // Build the execution plan from selected nodes
+        let mut result: Vec<ENode> = Vec::new();
+        for &cid in &order {
+            let sel = &cost_map[&cid];
+            match &sel.kind {
+                SelKind::Kernel => {
+                    result.push(self.nodes[sel.node].clone());
+                }
+                SelKind::Transform | SelKind::Ops => {}
+            }
+        }
+
+        result
+    }
+
+    fn extract_dp(
+        &mut self,
+        cid: ClassId,
+        cost_map: &mut Map<ClassId, SelectResult>,
+        order: &mut Vec<ClassId>,
+        visited: &mut Set<ClassId>,
+    ) {
+        let cid = self.find_class(cid);
+        if visited.contains(&cid) {
+            return;
+        }
+        visited.insert(cid);
+
+        // Find the cheapest enode in this e-class
+        let enodes: Vec<NodeId> = self.classes[cid].nodes.clone();
+        let mut best: Option<SelectResult> = None;
+
+        for &nid in &enodes {
+            let (is_kernel, kind_tag) = {
+                let kind = &self.nodes[nid];
+                let is_kernel = kind.is_kernel();
+                let is_transform = matches!(
+                    kind,
+                    ENode::Expand(_) | ENode::Permute(_, _) | ENode::Reshape(_, _) | ENode::Pad(_, _) | ENode::Cast(_, _)
+                );
+                let tag = if is_kernel {
+                    SelKind::Kernel
+                } else if is_transform {
+                    SelKind::Transform
+                } else {
+                    SelKind::Ops
+                };
+                (is_kernel, tag)
             };
-            self.kernels.insert(slot, Box::new(kernel));
+
+            let children: Vec<ClassId> = self.nodes[nid].child_classes();
+
+            // Ensure children are computed first (no borrow conflict now)
+            for &child in &children {
+                self.extract_dp(child, cost_map, order, visited);
+            }
+
+            let cost = self.enode_cost(nid, cost_map);
+
+            let is_better = match &best {
+                None => true,
+                Some(b) => cost < b.cost,
+            };
+
+            if is_better {
+                best = Some(SelectResult { cost, node: nid, kind: kind_tag });
+            }
+        }
+
+        if let Some(result) = best {
+            cost_map.insert(cid, result);
+            order.push(cid);
         }
     }
 
-    pub fn extract(self) -> Vec<CompiledNode> {
-        for kernel in self.kernels {
-            println!("{kernel:?}");
+    fn enode_cost(&self, nid: NodeId, cost_map: &Map<ClassId, SelectResult>) -> u64 {
+        let kind = &self.nodes[nid];
+
+        // Transforms are free
+        if matches!(
+            kind,
+            ENode::Expand(_) | ENode::Permute(_, _) | ENode::Reshape(_, _) | ENode::Pad(_, _) | ENode::Cast(_, _)
+        ) {
+            let children: Vec<ClassId> = kind.child_classes().to_vec();
+            return children.iter().map(|c| cost_map.get(c).map(|r| r.cost).unwrap_or(0)).sum();
         }
-        todo!()
+
+        // Ops have high cost (they'll go to kernelizer)
+        if !kind.is_kernel() {
+            let children: Vec<ClassId> = kind.child_classes().to_vec();
+            let child_cost: u64 = children.iter().map(|c| cost_map.get(c).map(|r| r.cost).unwrap_or(0)).sum();
+            return 100_000 + child_cost; // high cost to encourage kernel matching
+        }
+
+        // Kernel cost: fixed cost for now
+        if let ENode::Kernel(inputs, _, _) = kind {
+            let child_cost: u64 = inputs.iter().map(|c| cost_map.get(c).map(|r| r.cost).unwrap_or(0)).sum();
+            1_000 + child_cost
+        } else {
+            let children: Vec<ClassId> = kind.child_classes().to_vec();
+            let child_cost: u64 = children.iter().map(|c| cost_map.get(c).map(|r| r.cost).unwrap_or(0)).sum();
+            100_000 + child_cost
+        }
+    }
+
+    // ── Compile (orchestrate build → saturate → extract) ─
+
+    pub(crate) fn compile(inputs: &[TensorId], to_eval: &Set<TensorId>, order: &[TensorId], graph: &Graph) -> Vec<CompiledNode> {
+        let mut eg = Self::new();
+        let tensor_to_cid = eg.build_from_graph(order, graph);
+        eg.saturate();
+        eg.kernelize_all();
+
+        let output_classes: Vec<ClassId> = to_eval.iter().filter_map(|tid| tensor_to_cid.get(tid).copied()).collect();
+        if output_classes.is_empty() {
+            return Vec::new();
+        }
+
+        // TODO: extract and convert to CompiledNodes
+        if std::env::var("ZYX_DEBUG").map(|v| v.as_str() == "1").unwrap_or(false) {
+            eg.debug_print();
+        }
+        Vec::new()
+    }
+
+    pub(crate) fn debug_print(&self) {
+        let line = "─".repeat(60);
+        println!("\n{}", line);
+        println!("  E-Graph");
+        println!("{}", line);
+        for cid in self.classes.ids() {
+            let eclass = &self.classes[cid];
+            let shape_str = match &eclass.shape {
+                Some(s) => format!("{:?}", s),
+                None => "?".to_string(),
+            };
+            let dtype_str = match &eclass.dtype {
+                Some(dt) => format!("{:?}", dt),
+                None => "?".to_string(),
+            };
+            println!("Class {:?} shape={} dtype={}", cid, shape_str, dtype_str);
+            for &nid in &eclass.nodes {
+                let kind = &self.nodes[nid];
+                let inputs = kind.child_classes();
+                let extra = match kind {
+                    ENode::Reduce(_, rop) => format!("{:?}", rop),
+                    ENode::Binary(_, _, bop) => format!("{:?}", bop),
+                    ENode::Unary(_, uop) => format!("{:?}", uop),
+                    ENode::Cast(_, dt) => format!("{:?}", dt),
+                    ENode::Kernel(_, _, p) => format!("prog={:?}", p),
+                    ENode::Expand(_) => "expand".into(),
+                    ENode::Permute(_, a) => format!("{:?}", a),
+                    ENode::Reshape(_, s) => format!("{:?}", s),
+                    ENode::Pad(_, p) => format!("{:?}", p),
+                    ENode::ToDevice(_, d) => format!("{:?}", d),
+                    ENode::Const(v) => format!("{:?}", v),
+                    ENode::Leaf(dt) => format!("{:?}", dt),
+                };
+                let desc = match kind {
+                    ENode::Kernel(..) => "KERNEL",
+                    _ => "op",
+                };
+                println!("  [{desc}] Node {:?}: {:?} inputs={:?} {}", nid, std::mem::discriminant(kind), inputs, extra);
+            }
+        }
+        println!("{}\n", line);
     }
 }
 
+// ── Extraction result types ────────────────────────────────────
+
 #[derive(Debug)]
-struct Matmul {}
+struct SelectResult {
+    cost: u64,
+    node: NodeId,
+    kind: SelKind,
+}
 
-impl FusedKernel for Matmul {
-    fn try_fuse(g: &mut EGraph, nid: TensorId) -> Option<(FusedSlot, Self)>
-    where
-        Self: Sized,
-    {
-        // Pattern: a matmul is compiled as:
-        //   reduce_sum over the contracting dimension (last axis)
-        //     ← binary mul
-        //         ← expand ← reshape ← leaf  (A side)
-        //         ← expand ← reshape ← permute[1,0] ← leaf  (B^T side)
-
-        // Check nid is a reduction summing over the last dimension.
-        let mul_id = match g.graph[nid] {
-            Node::Reduce { x, rop: BOp::Add } => x,
-            _ => return None,
-        };
-        // The reduce is over the contracting dimension, which is
-        // always the last axis after the mul (K in [M,N,K]).
-        let reduce_axes = g.graph.axes(nid);
-        if reduce_axes.len() != 1 || reduce_axes[0] + 1 != g.graph.shape(mul_id).len() as UAxis {
-            return None;
-        }
-
-        // Check the reduction input is an element-wise multiply.
-        let (left, right) = match g.graph[mul_id] {
-            Node::Binary { x, y, bop: BOp::Mul } => (x, y),
-            _ => return None,
-        };
-
-        // Try both orderings.
-        for &(a, b) in &[(left, right), (right, left)] {
-            // A side: Expand ← [optional Reshape] ← Leaf
-            let a_inner = match g.graph[a] {
-                Node::Expand { x } => x,
-                _ => continue,
-            };
-            // The input to Expand might be a Reshape or a Leaf directly.
-            let a_leaf = match &g.graph[a_inner] {
-                Node::Reshape { x } => *x,
-                Node::Leaf { .. } => a_inner,
-                _ => continue,
-            };
-            if !matches!(g.graph[a_leaf], Node::Leaf { .. }) {
-                continue;
-            }
-
-            // B side: Expand ← Reshape ← Permute[1,0] ← Leaf
-            let reshape_id = match g.graph[b] {
-                Node::Expand { x } => x,
-                _ => continue,
-            };
-            let permute_id = match g.graph[reshape_id] {
-                Node::Reshape { x } => x,
-                _ => continue,
-            };
-            let b_leaf = match g.graph[permute_id] {
-                Node::Permute { x } => x,
-                _ => continue,
-            };
-            if g.graph.axes(permute_id) != &[1, 0] {
-                continue;
-            }
-            if !matches!(g.graph[b_leaf], Node::Leaf { .. }) {
-                continue;
-            }
-
-            let inputs = vec![a_leaf, b_leaf];
-            let outputs = vec![nid];
-
-            return Some((
-                FusedSlot { pre_reshape: None, pre_permute: None, inputs, outputs, post_permute: None, post_reshape: None },
-                Matmul {},
-            ));
-        }
-
-        None
-    }
-
-    fn time_cost_ns(&self) -> u64 {
-        1_000
-    }
+#[derive(Debug)]
+enum SelKind {
+    Kernel,
+    Transform,
+    Ops,
 }

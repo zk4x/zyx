@@ -105,7 +105,12 @@ impl Runtime {
     /// Computes a structural hash from `order`, checks the cache, and either
     /// replays the cached [`CompiledNode`] sequence or compiles via [`EGraph`],
     /// stores it, and replays.
-    pub(crate) fn launch_or_store_graph_with_order(&mut self, inputs: &[TensorId], to_eval: &Set<TensorId>, order: &[TensorId]) -> Result<(), ZyxError> {
+    pub(crate) fn launch_or_store_graph_with_order(
+        &mut self,
+        inputs: &[TensorId],
+        to_eval: &Set<TensorId>,
+        order: &[TensorId],
+    ) -> Result<(), ZyxError> {
         let key = hash_order(order, &self.graph);
 
         let input_buffers: Vec<BufferId> = inputs
