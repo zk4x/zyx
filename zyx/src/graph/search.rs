@@ -9,11 +9,12 @@
 #![allow(unused)]
 
 use crate::{
-    DType, DebugMask, Map, Set,
-    backend::ProgramId,
+    DType, DebugMask, Map, Set, ZyxError,
+    backend::{AutotuneConfig, Device, DeviceId, MemoryPool, PoolId, ProgramId},
     dtype::Constant,
     graph::{Node, compiled::CompiledNode},
-    kernel::{BOp, DeviceId, Kernel, UOp},
+    kernel::{BOp, Kernel, UOp},
+    kernel_cache::KernelCache,
     shape::{Dim, UAxis},
     slab::{Slab, SlabId},
     tensor::TensorId,
@@ -613,9 +614,7 @@ impl EGraph {
         eg.kernelize_all();
 
         let output_classes: Vec<ClassId> = to_eval.iter().filter_map(|tid| tensor_to_cid.get(tid).copied()).collect();
-        if output_classes.is_empty() {
-            return Vec::new();
-        }
+        debug_assert!(!output_classes.is_empty(), "compile: no output tensors found in e-graph");
 
         // Extract: pick cheapest all-kernel plan
         let plan = eg.extract(&output_classes);
@@ -625,6 +624,41 @@ impl EGraph {
         }
         // TODO: convert plan (Vec<ENode>) to Vec<CompiledNode> with buffer slot management
         Vec::new()
+    }
+
+    /// Autotune every kernel in the extracted plan.
+    /// Updates each `ENode::Kernel`'s `ProgramId` with the compiled result.
+    pub(crate) fn autotune_plan(
+        &mut self,
+        plan: &mut [(NodeId, ENode)],
+        dev_id: DeviceId,
+        device: &mut Device,
+        memory_pool: &mut MemoryPool,
+        cache: &mut KernelCache,
+        config: &AutotuneConfig,
+        debug: DebugMask,
+    ) -> Result<(), ZyxError> {
+        for (nid, enode) in plan.iter_mut() {
+            let ENode::Kernel(_, _, prog) = enode else { continue };
+            let Some(kernel) = self.kernel_irs.get_mut(nid) else { continue };
+            let Some(kernel) = self.kernel_irs.get_mut(nid) else { continue };
+            let (flop, read, write) = kernel.flop_mem_rw();
+            // TODO: resolve args (PoolBufferIds) from the plan's buffer slots
+            let device_prog = cache.get_or_autotune(
+                dev_id,
+                kernel,
+                device,
+                memory_pool,
+                config,
+                &[],
+                flop,
+                read,
+                write,
+                debug,
+            )?;
+            *prog = ProgramId { device: dev_id, program: device_prog };
+        }
+        Ok(())
     }
 
     pub(crate) fn debug_print_plan(&self, plan: &[(NodeId, ENode)]) {
