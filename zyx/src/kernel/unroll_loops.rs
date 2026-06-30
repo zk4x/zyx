@@ -30,7 +30,12 @@ impl Kernel {
     /// Returns the optimization variant and number of variants.
     #[allow(unused)]
     pub(crate) fn opt_unroll(_: &Kernel) -> (Optimization, usize) {
-        (Optimization::UnrollLoops { factors: vec![8, 4, 16, 2] }, 4)
+        (
+            Optimization::UnrollLoops {
+                factors: vec![8, 4, 16, 2],
+            },
+            4,
+        )
     }
 
     /// Configure loop unrolling for constant-length loops.
@@ -155,13 +160,17 @@ impl Kernel {
                     }
                 }
                 Op::Store { dst, .. } => {
-                    let Op::Define { scope, .. } = self.ops[dst].op else { unreachable!() };
+                    let Op::Define { scope, .. } = self.ops[dst].op else {
+                        unreachable!()
+                    };
                     if scope != Scope::Register {
                         *constant_loops.last_mut().unwrap() = false;
                     }
                 }
                 Op::Load { src, .. } => {
-                    let Op::Define { scope, .. } = self.ops[src].op else { unreachable!() };
+                    let Op::Define { scope, .. } = self.ops[src].op else {
+                        unreachable!()
+                    };
                     if scope != Scope::Register {
                         *constant_loops.last_mut().unwrap() = false;
                     }
@@ -279,7 +288,9 @@ impl Kernel {
             }
             match self.ops[op_id].op {
                 Op::Loop { .. } => return, // nested reduce or no reduce
-                Op::Define { scope: Scope::Register, .. } => {
+                Op::Define {
+                    scope: Scope::Register, ..
+                } => {
                     acc_id = op_id;
                     break;
                 }
@@ -330,11 +341,22 @@ impl Kernel {
         let new_loop = self.insert_before(loop_id, Op::Loop { len: len / factor });
         let mut op_id = self.next_op(loop_id);
         let stride = self.insert_before(loop_id, Op::Const(Constant::idx(factor)));
-        self.ops[loop_id].op = Op::Binary { x: new_loop, y: stride, bop: BOp::Mul };
+        self.ops[loop_id].op = Op::Binary {
+            x: new_loop,
+            y: stride,
+            bop: BOp::Mul,
+        };
         let mut new_ones = Vec::with_capacity(factor as usize - 1);
         for i in 1..factor {
             let offset = self.insert_before(op_id, Op::Const(Constant::idx(i)));
-            let new_id = self.insert_before(op_id, Op::Binary { x: loop_id, y: offset, bop: BOp::Add });
+            let new_id = self.insert_before(
+                op_id,
+                Op::Binary {
+                    x: loop_id,
+                    y: offset,
+                    bop: BOp::Add,
+                },
+            );
             new_ones.push(new_id);
         }
         map.insert(loop_id, new_ones);
@@ -342,15 +364,26 @@ impl Kernel {
         while op_id != endloop_id {
             let this_id = op_id;
             op_id = self.next_op(op_id);
-            if let Op::Load { src, index: _, layout: MemLayout::Scalar } = self.ops[this_id].op
+            if let Op::Load {
+                src,
+                index: _,
+                layout: MemLayout::Scalar,
+            } = self.ops[this_id].op
                 && src == acc_id
             {
                 // TODO debug assert index is const zero
                 map.insert(this_id, vec![acc_init; factor as usize - 1]);
-            } else if let Op::Store { dst, x, index, layout: MemLayout::Scalar } = self.ops[this_id].op
+            } else if let Op::Store {
+                dst,
+                x,
+                index,
+                layout: MemLayout::Scalar,
+            } = self.ops[this_id].op
                 && dst == acc_id
             {
-                let Op::Binary { bop, .. } = self.ops[x].op else { unreachable!() };
+                let Op::Binary { bop, .. } = self.ops[x].op else {
+                    unreachable!()
+                };
                 // TODO debug assert index is const zero
                 let y = if let Some(mapping) = map.get(&x) { mapping[0] } else { x };
                 let mut carry = this_id;
@@ -363,7 +396,15 @@ impl Kernel {
                     };
                     carry = self.insert_before(op_id, Op::Binary { x, y: carry, bop });
                 }
-                self.insert_before(op_id, Op::Store { dst, x: carry, index, layout: MemLayout::Scalar });
+                self.insert_before(
+                    op_id,
+                    Op::Store {
+                        dst,
+                        x: carry,
+                        index,
+                        layout: MemLayout::Scalar,
+                    },
+                );
             } else {
                 let mut new_ones = Vec::with_capacity(factor as usize - 1);
                 for i in 1..factor {

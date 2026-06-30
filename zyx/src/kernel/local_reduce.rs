@@ -41,7 +41,12 @@ impl Kernel {
 
         let mut local_axis_sizes: crate::Map<u32, u64> = crate::Map::default();
         for op in self.ops.values() {
-            if let Op::Index { scope: Scope::Local, axis, len } = op.op {
+            if let Op::Index {
+                scope: Scope::Local,
+                axis,
+                len,
+            } = op.op
+            {
                 if let Some(&existing) = local_axis_sizes.get(&axis) {
                     debug_assert_eq!(existing, len);
                 } else {
@@ -103,7 +108,12 @@ impl Kernel {
             .ops
             .values()
             .filter_map(|node| {
-                if let Op::Index { scope: Scope::Local, axis, .. } = node.op {
+                if let Op::Index {
+                    scope: Scope::Local,
+                    axis,
+                    ..
+                } = node.op
+                {
                     Some(axis + 1)
                 } else {
                     None
@@ -172,28 +182,53 @@ impl Kernel {
         // ***** IMPLEMENTATION ***** //
 
         // Add local index
-        let lidx = self.insert_before(reg_acc, Op::Index { len: factor, scope: Scope::Local, axis: laxis });
+        let lidx = self.insert_before(
+            reg_acc,
+            Op::Index {
+                len: factor,
+                scope: Scope::Local,
+                axis: laxis,
+            },
+        );
 
         // Divide reduce loop by factor
         let factor_const = self.insert_before(loop_start, Op::Const(Constant::idx(factor as u64)));
         let ridx = self.insert_before(loop_start, Op::Loop { len: loop_len / factor });
-        self.ops[loop_start].op = Op::Mad { x: ridx, y: factor_const, z: lidx };
+        self.ops[loop_start].op = Op::Mad {
+            x: ridx,
+            y: factor_const,
+            z: lidx,
+        };
 
         // Add local accumulator
         let loc_acc = self.insert_before(
             acc_load_id,
-            Op::Define { dtype: acc_dtype, scope: Scope::Local, ro: false, len: factor },
+            Op::Define {
+                dtype: acc_dtype,
+                scope: Scope::Local,
+                ro: false,
+                len: factor,
+            },
         );
 
         // Store to local accumulator
         let const_zero = self.insert_before(acc_load_id, Op::Const(Constant::idx(0)));
         let x = self.insert_before(
             acc_load_id,
-            Op::Load { src: reg_acc, index: const_zero, layout: MemLayout::Scalar },
+            Op::Load {
+                src: reg_acc,
+                index: const_zero,
+                layout: MemLayout::Scalar,
+            },
         );
         self.insert_before(
             acc_load_id,
-            Op::Store { dst: loc_acc, x, index: lidx, layout: MemLayout::Scalar },
+            Op::Store {
+                dst: loc_acc,
+                x,
+                index: lidx,
+                layout: MemLayout::Scalar,
+            },
         );
 
         // Sync memory
@@ -210,7 +245,14 @@ impl Kernel {
             let use_tree_branch = stride >= tree_branch;
             let active_threads = if use_tree_branch { stride / tree_branch } else { stride / 2 };
             let limit_const = self.insert_before(acc_load_id, Op::Const(Constant::idx(active_threads as u64)));
-            let condition = self.insert_before(acc_load_id, Op::Binary { x: lidx, y: limit_const, bop: BOp::Cmplt });
+            let condition = self.insert_before(
+                acc_load_id,
+                Op::Binary {
+                    x: lidx,
+                    y: limit_const,
+                    bop: BOp::Cmplt,
+                },
+            );
             self.insert_before(acc_load_id, Op::If { condition });
 
             let branch = if use_tree_branch { tree_branch } else { 2 };
@@ -218,23 +260,59 @@ impl Kernel {
             for i in 1..branch {
                 let offset = i * active_threads;
                 let offset_const = self.insert_before(acc_load_id, Op::Const(Constant::idx(offset as u64)));
-                let offset_idx = self.insert_before(acc_load_id, Op::Binary { x: lidx, y: offset_const, bop: BOp::Add });
+                let offset_idx = self.insert_before(
+                    acc_load_id,
+                    Op::Binary {
+                        x: lidx,
+                        y: offset_const,
+                        bop: BOp::Add,
+                    },
+                );
                 let local_load = self.insert_before(
                     acc_load_id,
-                    Op::Load { src: loc_acc, index: offset_idx, layout: MemLayout::Scalar },
+                    Op::Load {
+                        src: loc_acc,
+                        index: offset_idx,
+                        layout: MemLayout::Scalar,
+                    },
                 );
                 if let Some(prev_sum) = sum_x {
-                    sum_x = Some(self.insert_before(acc_load_id, Op::Binary { x: prev_sum, y: local_load, bop }));
+                    sum_x = Some(self.insert_before(
+                        acc_load_id,
+                        Op::Binary {
+                            x: prev_sum,
+                            y: local_load,
+                            bop,
+                        },
+                    ));
                 } else {
-                    let current_val =
-                        self.insert_before(acc_load_id, Op::Load { src: loc_acc, index: lidx, layout: MemLayout::Scalar });
-                    sum_x = Some(self.insert_before(acc_load_id, Op::Binary { x: current_val, y: local_load, bop }));
+                    let current_val = self.insert_before(
+                        acc_load_id,
+                        Op::Load {
+                            src: loc_acc,
+                            index: lidx,
+                            layout: MemLayout::Scalar,
+                        },
+                    );
+                    sum_x = Some(self.insert_before(
+                        acc_load_id,
+                        Op::Binary {
+                            x: current_val,
+                            y: local_load,
+                            bop,
+                        },
+                    ));
                 }
             }
             let bop_id = sum_x.unwrap();
             self.insert_before(
                 acc_load_id,
-                Op::Store { dst: loc_acc, x: bop_id, index: lidx, layout: MemLayout::Scalar },
+                Op::Store {
+                    dst: loc_acc,
+                    x: bop_id,
+                    index: lidx,
+                    layout: MemLayout::Scalar,
+                },
             );
 
             self.insert_before(acc_load_id, Op::EndIf);
@@ -244,15 +322,31 @@ impl Kernel {
         }
 
         // Load final result from local[0] to register (only thread 0)
-        let condition = self.insert_before(acc_load_id, Op::Binary { x: lidx, y: const_zero, bop: BOp::Eq });
+        let condition = self.insert_before(
+            acc_load_id,
+            Op::Binary {
+                x: lidx,
+                y: const_zero,
+                bop: BOp::Eq,
+            },
+        );
         self.insert_before(acc_load_id, Op::If { condition });
         let final_val = self.insert_before(
             acc_load_id,
-            Op::Load { src: loc_acc, index: const_zero, layout: MemLayout::Scalar },
+            Op::Load {
+                src: loc_acc,
+                index: const_zero,
+                layout: MemLayout::Scalar,
+            },
         );
         self.insert_before(
             acc_load_id,
-            Op::Store { dst: reg_acc, x: final_val, index: const_zero, layout: MemLayout::Scalar },
+            Op::Store {
+                dst: reg_acc,
+                x: final_val,
+                index: const_zero,
+                layout: MemLayout::Scalar,
+            },
         );
         self.insert_after(self.tail, Op::EndIf);
 

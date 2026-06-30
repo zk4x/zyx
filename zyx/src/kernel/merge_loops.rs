@@ -97,7 +97,9 @@ impl Kernel {
         // Insert all new ops before the anchor so all definitions
         // precede all uses (avoids backward-reference verification errors).
         for i in (0..loop_ids.len()).rev() {
-            let Op::Loop { len } = self.ops[loop_ids[i]].op else { unreachable!() };
+            let Op::Loop { len } = self.ops[loop_ids[i]].op else {
+                unreachable!()
+            };
             let y = self.insert_before(anchor, Op::Const(Constant::idx(len)));
             self.ops[loop_ids[i]].op = Op::Binary { x, y, bop: BOp::Mod };
             x = self.insert_before(anchor, Op::Binary { x, y, bop: BOp::Div });
@@ -112,7 +114,9 @@ impl Kernel {
         let mut op_id = self.head;
         while axes.len() != loops.len() {
             if loops.contains(&op_id) {
-                let Op::Index { len, scope, axis } = self.ops[op_id].op else { unreachable!() };
+                let Op::Index { len, scope, axis } = self.ops[op_id].op else {
+                    unreachable!()
+                };
                 debug_assert_eq!(scope, Scope::Global);
                 acc *= len;
                 axes.insert(axis, (op_id, len));
@@ -123,7 +127,9 @@ impl Kernel {
             op_id = self.next_op(op_id);
         }
 
-        let Op::Index { scope, axis, .. } = self.ops[first_id.unwrap()].op else { unreachable!() };
+        let Op::Index { scope, axis, .. } = self.ops[first_id.unwrap()].op else {
+            unreachable!()
+        };
         let mut x = self.insert_before(first_id.unwrap(), Op::Index { len: acc, scope, axis });
 
         for (.., (loop_id, len)) in axes {

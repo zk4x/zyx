@@ -22,7 +22,10 @@ pub(super) fn initialize_pool(memory_pools: &mut Slab<PoolId, MemoryPool>, debug
     if debug_dev {
         println!("[host] initialized");
     }
-    let pool = MemoryPool::Host(HostMemoryPool { free_bytes: 1024 * 1024 * 1024 * 64, buffers: Slab::new() });
+    let pool = MemoryPool::Host(HostMemoryPool {
+        free_bytes: 1024 * 1024 * 1024 * 64,
+        buffers: Slab::new(),
+    });
     if debug_dev {
         println!("[host] device total memory: {} MB", 64 * 1024);
     }
@@ -41,11 +44,15 @@ impl HostMemoryPool {
     }
 
     pub fn allocate(&mut self, bytes: Dim) -> Result<(PoolBufferId, Event), BackendError> {
-        let bytes: usize = bytes
-            .try_into()
-            .map_err(|_| BackendError { status: ErrorStatus::MemoryAllocation, context: "allocation size too large".into() })?;
+        let bytes: usize = bytes.try_into().map_err(|_| BackendError {
+            status: ErrorStatus::MemoryAllocation,
+            context: "allocation size too large".into(),
+        })?;
         if self.free_bytes < bytes as Dim {
-            return Err(BackendError { status: ErrorStatus::MemoryAllocation, context: "OOM".into() });
+            return Err(BackendError {
+                status: ErrorStatus::MemoryAllocation,
+                context: "OOM".into(),
+            });
         }
         self.free_bytes -= bytes as Dim;
         let buffer = vec![0u8; bytes].into_boxed_slice();
@@ -71,10 +78,10 @@ impl HostMemoryPool {
     #[allow(clippy::needless_pass_by_ref_mut)]
     pub fn host_to_pool(&mut self, src: &[u8], dst: PoolBufferId, event_wait_list: Vec<Event>) -> Result<Event, BackendError> {
         let _ = event_wait_list;
-        let buffer = self
-            .buffers
-            .get_mut(dst)
-            .ok_or_else(|| BackendError { status: ErrorStatus::MemoryCopyH2P, context: "invalid buffer id".into() })?;
+        let buffer = self.buffers.get_mut(dst).ok_or_else(|| BackendError {
+            status: ErrorStatus::MemoryCopyH2P,
+            context: "invalid buffer id".into(),
+        })?;
         let len = src.len().min(buffer.len());
         buffer[..len].copy_from_slice(&src[..len]);
         Ok(Event::Host(HostEvent))

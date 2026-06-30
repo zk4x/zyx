@@ -590,7 +590,14 @@ impl SerBin for Op {
                 y.ser_bin(output);
                 z.ser_bin(output);
             }
-            Op::Wmma { dims, layout, dtype, a, b, c } => {
+            Op::Wmma {
+                dims,
+                layout,
+                dtype,
+                a,
+                b,
+                c,
+            } => {
                 output.push(11);
                 dims.ser_bin(output);
                 layout.ser_bin(output);
@@ -715,7 +722,14 @@ impl DeBin for Op {
                 let a = OpId::de_bin(offset, bytes)?;
                 let b = OpId::de_bin(offset, bytes)?;
                 let c = OpId::de_bin(offset, bytes)?;
-                Ok(Op::Wmma { dims, layout, dtype, a, b, c })
+                Ok(Op::Wmma {
+                    dims,
+                    layout,
+                    dtype,
+                    a,
+                    b,
+                    c,
+                })
             }
             12 => {
                 let ops = Vec::<OpId>::de_bin(offset, bytes)?;
@@ -1027,7 +1041,14 @@ impl Kernel {
                     dtypes.insert(op_id, (dtype.0, MemLayout::Scalar));
                     *rcs.entry(*vec).or_insert(0) += 1;
                 }
-                Op::Wmma { dims: _, layout: _, dtype, a, b, c } => {
+                Op::Wmma {
+                    dims: _,
+                    layout: _,
+                    dtype,
+                    a,
+                    b,
+                    c,
+                } => {
                     let out_dtype = match dtype {
                         MMADType::f16_f16_f16_f32 => DType::F32,
                     };
@@ -1131,7 +1152,13 @@ impl Kernel {
             .ops
             .values()
             .find_map(|n| {
-                if let Op::Define { dtype, scope: Scope::Global, ro: false, .. } = n.op {
+                if let Op::Define {
+                    dtype,
+                    scope: Scope::Global,
+                    ro: false,
+                    ..
+                } = n.op
+                {
                     Some(dtype)
                 } else {
                     None
@@ -1150,10 +1177,17 @@ impl Kernel {
         }
         let debug_asm = rt.debug.asm();
         let program_id = rt.devices[device_id].compile(&self, debug_asm)?;
-        let prog = crate::backend::ProgramId { device: device_id, program: program_id };
+        let prog = crate::backend::ProgramId {
+            device: device_id,
+            program: program_id,
+        };
         let kid = rt.kernel_cache.insert_kernel(self);
         rt.kernel_cache.programs.insert((kid, device_id), program_id);
-        Ok(crate::kernel::custom::CompiledKernel { program: prog, dtype, kernel_id: kid })
+        Ok(crate::kernel::custom::CompiledKernel {
+            program: prog,
+            dtype,
+            kernel_id: kid,
+        })
     }
 
     /// Run autotuning then compile the kernel.
@@ -1176,19 +1210,28 @@ impl Kernel {
         let axes = axes.to_vec();
         let shape = self.shape();
         let shape = crate::shape::permute(&shape, &axes);
-        self.push_back(Op::Move { x, mop: Box::new(MoveOp::Permute { axes, shape }) })
+        self.push_back(Op::Move {
+            x,
+            mop: Box::new(MoveOp::Permute { axes, shape }),
+        })
     }
 
     /// Reshape tensor.
     pub fn reshape(&mut self, x: OpId, shape: &[Dim]) -> OpId {
         let shape = shape.to_vec();
-        self.push_back(Op::Move { x, mop: Box::new(MoveOp::Reshape { shape }) })
+        self.push_back(Op::Move {
+            x,
+            mop: Box::new(MoveOp::Reshape { shape }),
+        })
     }
 
     /// Expand tensor (adds singleton dims).
     pub fn expand(&mut self, x: OpId, shape: &[Dim]) -> OpId {
         let shape = shape.to_vec();
-        self.push_back(Op::Move { x, mop: Box::new(MoveOp::Expand { shape }) })
+        self.push_back(Op::Move {
+            x,
+            mop: Box::new(MoveOp::Expand { shape }),
+        })
     }
 
     /// Pad tensor with zeros.
@@ -1196,22 +1239,37 @@ impl Kernel {
         let padding = padding.to_vec();
         let mut shape = self.shape();
         crate::shape::pad(&mut shape, &padding);
-        self.push_back(Op::Move { x, mop: Box::new(MoveOp::Pad { padding, shape }) })
+        self.push_back(Op::Move {
+            x,
+            mop: Box::new(MoveOp::Pad { padding, shape }),
+        })
     }
 
     /// Sum over the last `n_axes` dimensions.
     pub fn reduce_sum(&mut self, x: OpId, n_axes: usize) -> OpId {
-        self.push_back(Op::Reduce { x, rop: BOp::Add, n_axes })
+        self.push_back(Op::Reduce {
+            x,
+            rop: BOp::Add,
+            n_axes,
+        })
     }
 
     /// Max over the last `n_axes` dimensions.
     pub fn reduce_max(&mut self, x: OpId, n_axes: usize) -> OpId {
-        self.push_back(Op::Reduce { x, rop: BOp::Max, n_axes })
+        self.push_back(Op::Reduce {
+            x,
+            rop: BOp::Max,
+            n_axes,
+        })
     }
 
     /// Product over the last `n_axes` dimensions.
     pub fn reduce_prod(&mut self, x: OpId, n_axes: usize) -> OpId {
-        self.push_back(Op::Reduce { x, rop: BOp::Mul, n_axes })
+        self.push_back(Op::Reduce {
+            x,
+            rop: BOp::Mul,
+            n_axes,
+        })
     }
 
     /// Store tensor to contiguous device memory.
@@ -1243,12 +1301,20 @@ impl Kernel {
 
     /// Global thread index.
     pub fn gidx(&mut self, axis: u32, len: Dim) -> OpId {
-        self.push_back(Op::Index { len, scope: Scope::Global, axis })
+        self.push_back(Op::Index {
+            len,
+            scope: Scope::Global,
+            axis,
+        })
     }
 
     /// Local thread index.
     pub fn lidx(&mut self, axis: u32, len: Dim) -> OpId {
-        self.push_back(Op::Index { len, scope: Scope::Local, axis })
+        self.push_back(Op::Index {
+            len,
+            scope: Scope::Local,
+            axis,
+        })
     }
 
     /// Store `x` to `dst` at `index`.
@@ -1436,7 +1502,14 @@ impl Kernel {
 
     /// Warp matrix multiply-accumulate.
     pub fn wmma(&mut self, dims: MMADims, layout: MMALayout, dtype: MMADType, a: OpId, b: OpId, c: OpId) -> OpId {
-        self.push_back(Op::Wmma { dims, layout, dtype, a, b, c })
+        self.push_back(Op::Wmma {
+            dims,
+            layout,
+            dtype,
+            a,
+            b,
+            c,
+        })
     }
 
     /// Vectorize ops into a single value.
@@ -1506,7 +1579,11 @@ impl Kernel {
         debug_assert!(!self.ops.is_empty());
 
         let prev = self.ops[before_id].prev;
-        let op_node = OpNode { prev, next: before_id, op };
+        let op_node = OpNode {
+            prev,
+            next: before_id,
+            op,
+        };
         let op_id = self.ops.push(op_node);
         self.ops[before_id].prev = op_id;
         if prev.is_null() {
@@ -1522,7 +1599,11 @@ impl Kernel {
         debug_assert!(!self.ops.is_empty());
 
         let next = self.ops[after_id].next;
-        let op_node = OpNode { prev: after_id, next, op };
+        let op_node = OpNode {
+            prev: after_id,
+            next,
+            op,
+        };
         let op_id = self.ops.push(op_node);
         self.ops[after_id].next = op_id;
         if next.is_null() {
@@ -1644,7 +1725,13 @@ impl Kernel {
         let mut insert_after = OpId::NULL;
         let mut op_id = self.head;
         while !op_id.is_null() {
-            if matches!(self.ops[op_id].op, Op::Define { scope: Scope::Global, .. }) {
+            if matches!(
+                self.ops[op_id].op,
+                Op::Define {
+                    scope: Scope::Global,
+                    ..
+                }
+            ) {
                 insert_after = op_id;
             } else {
                 break;
@@ -1656,7 +1743,13 @@ impl Kernel {
         }
         while !op_id.is_null() {
             let next = self.next_op(op_id);
-            if matches!(self.ops[op_id].op, Op::Define { scope: Scope::Global, .. }) {
+            if matches!(
+                self.ops[op_id].op,
+                Op::Define {
+                    scope: Scope::Global,
+                    ..
+                }
+            ) {
                 self.move_op_after(op_id, insert_after);
                 insert_after = op_id;
             }
@@ -1683,24 +1776,44 @@ impl Kernel {
             let info = match self.at(op_id) {
                 Op::ConstView(x) => {
                     let shape = x.1.shape();
-                    Info { shape, flops: 0, mem_read: 0, mem_write: 0 }
+                    Info {
+                        shape,
+                        flops: 0,
+                        mem_read: 0,
+                        mem_write: 0,
+                    }
                 }
                 Op::LoadView(x) => {
                     let (dtype, view) = x.as_ref();
                     let shape = view.shape();
                     let mem_read = view.original_numel() * u64::from(dtype.bit_size()) / 8;
-                    Info { shape, flops: 0, mem_read, mem_write: 0 }
+                    Info {
+                        shape,
+                        flops: 0,
+                        mem_read,
+                        mem_write: 0,
+                    }
                 }
                 Op::StoreView { src, dtype } => {
                     let Info { shape, .. } = stack[src].clone();
                     let mem_write = shape.iter().product::<Dim>() * u64::from(dtype.bit_size()) / 8;
-                    Info { shape, flops: 0, mem_read: 0, mem_write }
+                    Info {
+                        shape,
+                        flops: 0,
+                        mem_read: 0,
+                        mem_write,
+                    }
                 }
                 Op::Move { mop, .. } => match mop.as_ref() {
                     MoveOp::Reshape { shape, .. }
                     | MoveOp::Expand { shape }
                     | MoveOp::Permute { shape, .. }
-                    | MoveOp::Pad { shape, .. } => Info { shape: shape.clone(), flops: 0, mem_read: 0, mem_write: 0 },
+                    | MoveOp::Pad { shape, .. } => Info {
+                        shape: shape.clone(),
+                        flops: 0,
+                        mem_read: 0,
+                        mem_write: 0,
+                    },
                 },
                 Op::Reduce { x, n_axes, .. } => {
                     let Info { mut shape, .. } = stack[x].clone();
@@ -1709,22 +1822,42 @@ impl Kernel {
                     let n: Dim = shape.iter().product();
                     let flops = n * (rd - 1);
                     let flops = flops as u64;
-                    Info { shape, flops, mem_read: 0, mem_write: 0 }
+                    Info {
+                        shape,
+                        flops,
+                        mem_read: 0,
+                        mem_write: 0,
+                    }
                 }
                 Op::Cast { x, .. } => {
                     let Info { shape, .. } = stack[x].clone();
                     let flops = 0; // Cast is not computation
-                    Info { shape, flops, mem_read: 0, mem_write: 0 }
+                    Info {
+                        shape,
+                        flops,
+                        mem_read: 0,
+                        mem_write: 0,
+                    }
                 }
                 Op::Unary { x, .. } => {
                     let Info { shape, .. } = stack[x].clone();
                     let flops = shape.iter().product::<Dim>() as u64;
-                    Info { shape, flops, mem_read: 0, mem_write: 0 }
+                    Info {
+                        shape,
+                        flops,
+                        mem_read: 0,
+                        mem_write: 0,
+                    }
                 }
                 Op::Binary { x, .. } => {
                     let Info { shape, .. } = stack[x].clone();
                     let flops = shape.iter().product::<Dim>() as u64;
-                    Info { shape, flops, mem_read: 0, mem_write: 0 }
+                    Info {
+                        shape,
+                        flops,
+                        mem_read: 0,
+                        mem_write: 0,
+                    }
                 }
                 Op::Wmma { .. }
                 | Op::Vectorize { .. }
@@ -1962,7 +2095,11 @@ impl Kernel {
 
     /// Add an operation to the kernel.
     pub(crate) fn push_back(&mut self, op: Op) -> OpId {
-        let op_node = OpNode { prev: self.tail, next: OpId::NULL, op };
+        let op_node = OpNode {
+            prev: self.tail,
+            next: OpId::NULL,
+            op,
+        };
         let op_id = self.ops.push(op_node);
         if self.head.is_null() {
             self.head = op_id;
@@ -2073,7 +2210,9 @@ impl Kernel {
         for (_, scoped_indices) in indices {
             let mut ax = 0;
             for &idx_id in scoped_indices.values() {
-                let Op::Index { axis, .. } = &mut self.ops[idx_id].op else { unreachable!() };
+                let Op::Index { axis, .. } = &mut self.ops[idx_id].op else {
+                    unreachable!()
+                };
                 *axis = ax;
                 ax += 1;
             }

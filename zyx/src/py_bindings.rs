@@ -1246,7 +1246,10 @@ impl Tensor {
             if indices.step != 1 {
                 return Err(PyIndexError::new_err("Slice step != 1 is not supported"));
             }
-            Ok(DimIndex::Range { start: indices.start as i64, end: indices.stop as i64 })
+            Ok(DimIndex::Range {
+                start: indices.start as i64,
+                end: indices.stop as i64,
+            })
         }
 
         fn index_to_dimindices(idx: &Bound<'_, PyAny>) -> PyResult<Vec<DimIndex>> {

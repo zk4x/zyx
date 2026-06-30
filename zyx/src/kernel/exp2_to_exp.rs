@@ -38,7 +38,12 @@ impl Kernel {
         while !op_id.is_null() {
             let next = self.next_op(op_id);
             if let &Op::Unary { x, uop: UOp::Exp2 } = self.at(op_id) {
-                if let &Op::Binary { x: left, y: right, bop: BOp::Mul } = self.at(x) {
+                if let &Op::Binary {
+                    x: left,
+                    y: right,
+                    bop: BOp::Mul,
+                } = self.at(x)
+                {
                     let input = match (self.at(left), self.at(right)) {
                         (&Op::Const(c), _) if constant_is_log2_e(&c) => right,
                         (_, &Op::Const(c)) if constant_is_log2_e(&c) => left,

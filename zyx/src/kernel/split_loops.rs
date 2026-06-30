@@ -37,7 +37,12 @@ impl Kernel {
         }
         let mut local_axis_sizes: crate::Map<u32, u64> = crate::Map::default();
         for op in self.ops.values() {
-            if let Op::Index { scope: Scope::Local, axis, len } = op.op {
+            if let Op::Index {
+                scope: Scope::Local,
+                axis,
+                len,
+            } = op.op
+            {
                 if let Some(&existing) = local_axis_sizes.get(&axis) {
                     debug_assert_eq!(existing, len);
                 } else {
@@ -156,7 +161,11 @@ impl Kernel {
 
         let y = self.insert_before(dim_id, last_op);
         split_ids.push(y);
-        self.ops[dim_id].op = Op::Binary { x: acc, y, bop: BOp::Add };
+        self.ops[dim_id].op = Op::Binary {
+            x: acc,
+            y,
+            bop: BOp::Add,
+        };
 
         self.verify();
         split_ids

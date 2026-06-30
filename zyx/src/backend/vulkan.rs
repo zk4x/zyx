@@ -431,7 +431,10 @@ impl VulkanMemoryPool {
     }
     pub(super) fn deallocate(&mut self, buffer_id: PoolBufferId, event_wait_list: Vec<Event>) {
         self.tx
-            .send(VulkanCommand::Deallocate { buffer_id, event_wait_list })
+            .send(VulkanCommand::Deallocate {
+                buffer_id,
+                event_wait_list,
+            })
             .unwrap();
     }
     pub(super) fn host_to_pool(
@@ -442,7 +445,13 @@ impl VulkanMemoryPool {
     ) -> Result<Event, BackendError> {
         let (reply, rx) = channel();
         self.tx
-            .send(VulkanCommand::HostToPool { src: src.as_ptr(), bytes: src.len(), dst, event_wait_list, reply })
+            .send(VulkanCommand::HostToPool {
+                src: src.as_ptr(),
+                bytes: src.len(),
+                dst,
+                event_wait_list,
+                reply,
+            })
             .unwrap();
         rx.recv().unwrap()
     }
@@ -454,7 +463,13 @@ impl VulkanMemoryPool {
     ) -> Result<(), BackendError> {
         let (reply, rx) = channel();
         self.tx
-            .send(VulkanCommand::PoolToHost { src, dst: dst.as_mut_ptr(), bytes: dst.len(), event_wait_list, reply })
+            .send(VulkanCommand::PoolToHost {
+                src,
+                dst: dst.as_mut_ptr(),
+                bytes: dst.len(),
+                event_wait_list,
+                reply,
+            })
             .unwrap();
         rx.recv().unwrap()
     }
@@ -527,7 +542,11 @@ impl VulkanDevice {
     pub(super) fn compile(&mut self, kernel: &Kernel, debug_asm: bool) -> Result<DeviceProgramId, BackendError> {
         let (reply, rx) = channel();
         self.tx
-            .send(VulkanCommand::Compile { kernel: Box::new(kernel.clone()), debug_asm, reply })
+            .send(VulkanCommand::Compile {
+                kernel: Box::new(kernel.clone()),
+                debug_asm,
+                reply,
+            })
             .unwrap();
         rx.recv().unwrap()
     }
@@ -540,7 +559,12 @@ impl VulkanDevice {
     ) -> Result<Event, BackendError> {
         let (reply, rx) = channel();
         self.tx
-            .send(VulkanCommand::Launch { program_id, args: args.to_vec(), event_wait_list, reply })
+            .send(VulkanCommand::Launch {
+                program_id,
+                args: args.to_vec(),
+                event_wait_list,
+                reply,
+            })
             .unwrap();
         rx.recv().unwrap()
     }
@@ -599,7 +623,10 @@ pub(super) fn initialize_device(
             if debug_dev {
                 println!("[vulkan] libvulkan.so not found");
             }
-            BackendError { status: ErrorStatus::DyLibNotFound, context: "[vulkan] libvulkan.so not found.".into() }
+            BackendError {
+                status: ErrorStatus::DyLibNotFound,
+                context: "[vulkan] libvulkan.so not found.".into(),
+            }
         })?;
     let vkGetInstanceProcAddr: unsafe extern "system" fn(VkInstance, *const i8) -> *mut std::ffi::c_void =
         *unsafe { lib.get(b"vkGetInstanceProcAddr\0") }?;
@@ -636,7 +663,10 @@ pub(super) fn initialize_device(
         if debug_dev {
             println!("[vulkan] instance: {res}");
         }
-        return Err(BackendError { status: ErrorStatus::Initialization, context: format!("[vulkan] instance: {res}").into() });
+        return Err(BackendError {
+            status: ErrorStatus::Initialization,
+            context: format!("[vulkan] instance: {res}").into(),
+        });
     }
 
     // Instance-level function pointers (loaded once)
@@ -969,7 +999,10 @@ pub(super) fn initialize_device(
                     return;
                 }
 
-                let pool_sizes = [VkDescriptorPoolSize { ty: VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, descriptorCount: 1024 }];
+                let pool_sizes = [VkDescriptorPoolSize {
+                    ty: VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                    descriptorCount: 1024,
+                }];
                 let dp_ci = VkDescriptorPoolCreateInfo {
                     sType: VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
                     pNext: std::ptr::null(),
@@ -1083,7 +1116,10 @@ pub(super) fn initialize_device(
                                 }),
                             )));
                         }
-                        VulkanCommand::Deallocate { buffer_id, mut event_wait_list } => {
+                        VulkanCommand::Deallocate {
+                            buffer_id,
+                            mut event_wait_list,
+                        } => {
                             while let Some(Event::Vulkan(ev)) = event_wait_list.pop() {
                                 if !ev.fence.is_null() {
                                     unsafe {
@@ -1112,7 +1148,13 @@ pub(super) fn initialize_device(
                             }
                             free_bytes_atomic.fetch_add(size as u64, Ordering::SeqCst);
                         }
-                        VulkanCommand::HostToPool { src, bytes, dst, mut event_wait_list, reply } => {
+                        VulkanCommand::HostToPool {
+                            src,
+                            bytes,
+                            dst,
+                            mut event_wait_list,
+                            reply,
+                        } => {
                             while let Some(Event::Vulkan(ev)) = event_wait_list.pop() {
                                 if !ev.fence.is_null() {
                                     unsafe {
@@ -1129,7 +1171,13 @@ pub(super) fn initialize_device(
                                 desc_set: std::ptr::null_mut(),
                             })));
                         }
-                        VulkanCommand::PoolToHost { src, dst, bytes, mut event_wait_list, reply } => {
+                        VulkanCommand::PoolToHost {
+                            src,
+                            dst,
+                            bytes,
+                            mut event_wait_list,
+                            reply,
+                        } => {
                             while let Some(Event::Vulkan(ev)) = event_wait_list.pop() {
                                 if !ev.fence.is_null() {
                                     unsafe {
@@ -1142,7 +1190,11 @@ pub(super) fn initialize_device(
                             unsafe { std::ptr::copy_nonoverlapping(ptr, dst, bytes) };
                             let _ = reply.send(Ok(()));
                         }
-                        VulkanCommand::Compile { kernel, debug_asm, reply } => {
+                        VulkanCommand::Compile {
+                            kernel,
+                            debug_asm,
+                            reply,
+                        } => {
                             let (spirv, gws, lws) = send_or_continue!(
                                 crate::backend::spirv::compile(&kernel, debug_asm).map_err(|e| BackendError {
                                     status: ErrorStatus::KernelCompilation,
@@ -1276,10 +1328,20 @@ pub(super) fn initialize_device(
 
                             unsafe { vkDestroyShaderModule(device, shader, std::ptr::null()) };
 
-                            let id = programs.push(VulkanProgram { gws, pipeline, pipeline_layout, desc_layout });
+                            let id = programs.push(VulkanProgram {
+                                gws,
+                                pipeline,
+                                pipeline_layout,
+                                desc_layout,
+                            });
                             let _ = reply.send(Ok(id));
                         }
-                        VulkanCommand::Launch { program_id, args, mut event_wait_list, reply } => {
+                        VulkanCommand::Launch {
+                            program_id,
+                            args,
+                            mut event_wait_list,
+                            reply,
+                        } => {
                             while let Some(Event::Vulkan(ev)) = event_wait_list.pop() {
                                 if !ev.fence.is_null() {
                                     unsafe {
@@ -1312,7 +1374,11 @@ pub(super) fn initialize_device(
                             let mut buf_infos: Vec<VkDescriptorBufferInfo> = Vec::with_capacity(n);
                             for &arg_id in &args {
                                 let &(buf, _, _, _) = &buffers[arg_id];
-                                buf_infos.push(VkDescriptorBufferInfo { buffer: buf, offset: 0, range: VK_WHOLE_SIZE });
+                                buf_infos.push(VkDescriptorBufferInfo {
+                                    buffer: buf,
+                                    offset: 0,
+                                    range: VK_WHOLE_SIZE,
+                                });
                             }
                             let mut writes: Vec<VkWriteDescriptorSet> = Vec::with_capacity(n);
                             for i in 0..n {
@@ -1515,7 +1581,10 @@ pub(super) fn initialize_device(
             }
         });
 
-        let mem_pool = VulkanMemoryPool { tx: tx.clone(), free_bytes: Arc::clone(&free_bytes_atomic) };
+        let mem_pool = VulkanMemoryPool {
+            tx: tx.clone(),
+            free_bytes: Arc::clone(&free_bytes_atomic),
+        };
         memory_pools.push(MemoryPool::Vulkan(mem_pool));
         let dev = VulkanDevice {
             tx,

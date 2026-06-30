@@ -154,7 +154,12 @@ pub(crate) struct EClass {
 
 impl EClass {
     fn new(node: NodeId) -> Self {
-        Self { nodes: vec![node], parents: vec![], shape: None, dtype: None }
+        Self {
+            nodes: vec![node],
+            parents: vec![],
+            shape: None,
+            dtype: None,
+        }
     }
 }
 
@@ -586,7 +591,11 @@ impl EGraph {
             };
 
             if is_better {
-                best = Some(SelectResult { cost, node: nid, kind: kind_tag });
+                best = Some(SelectResult {
+                    cost,
+                    node: nid,
+                    kind: kind_tag,
+                });
             }
         }
 

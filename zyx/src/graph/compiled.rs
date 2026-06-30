@@ -171,14 +171,22 @@ fn replay_compiled(
                 if idx >= slots.len() {
                     slots.resize(idx + 1, None);
                 }
-                slots[idx] = Some(BufferId { pool: *pool, buffer: buf });
+                slots[idx] = Some(BufferId {
+                    pool: *pool,
+                    buffer: buf,
+                });
             }
             CompiledNode::Deallocate { pool, slot } => {
                 if let Some(buf) = slots[slot.0 as usize].take() {
                     pools[*pool].deallocate(buf.buffer, vec![]);
                 }
             }
-            CompiledNode::CopyMemory { src_pool, src, dst_pool, dst } => {
+            CompiledNode::CopyMemory {
+                src_pool,
+                src,
+                dst_pool,
+                dst,
+            } => {
                 let _src_buf = slots[src.0 as usize].unwrap();
                 let _dst_buf = slots[dst.0 as usize].unwrap();
                 // TODO: device-to-device copy between pools

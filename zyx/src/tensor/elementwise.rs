@@ -69,7 +69,9 @@ impl Tensor {
     #[must_use]
     pub fn cos(&self) -> Tensor {
         let x = self.float_cast().unwrap();
-        Tensor { id: RT.lock().unary(x.id, UOp::Cos) }
+        Tensor {
+            id: RT.lock().unary(x.id, UOp::Cos),
+        }
     }
 
     /// `cosh(x) = (exp(x) + exp(-x)) / 2`.
@@ -101,7 +103,9 @@ impl Tensor {
     #[must_use]
     pub fn exp2(&self) -> Tensor {
         let x = self.float_cast().unwrap();
-        Tensor { id: RT.lock().unary(x.id, UOp::Exp2) }
+        Tensor {
+            id: RT.lock().unary(x.id, UOp::Exp2),
+        }
     }
 
     /// Returns a new floored tensor
@@ -110,7 +114,9 @@ impl Tensor {
     #[must_use]
     pub fn floor(&self) -> Tensor {
         let x = self.float_cast().unwrap();
-        Tensor { id: RT.lock().unary(x.id, UOp::Floor) }
+        Tensor {
+            id: RT.lock().unary(x.id, UOp::Floor),
+        }
     }
 
     /// Returns a new tensor with each element truncated toward zero.
@@ -121,7 +127,9 @@ impl Tensor {
     #[must_use]
     pub fn trunc(&self) -> Tensor {
         let x = self.float_cast().unwrap();
-        Tensor { id: RT.lock().unary(x.id, UOp::Trunc) }
+        Tensor {
+            id: RT.lock().unary(x.id, UOp::Trunc),
+        }
     }
 
     /// Computes the exponential of each element in the input tensor using base e.
@@ -181,7 +189,9 @@ impl Tensor {
     #[must_use]
     pub fn log2(&self) -> Tensor {
         let x = self.float_cast().unwrap();
-        return Tensor { id: RT.lock().unary(x.id, UOp::Log2) };
+        return Tensor {
+            id: RT.lock().unary(x.id, UOp::Log2),
+        };
     }
 
     /// Computes the natural logarithm (ln) of each element in the input tensor.
@@ -252,7 +262,9 @@ impl Tensor {
     /// **Returns:** A new tensor with the same shape as the input, where each element is the multiplicative inverse (reciprocal) of the corresponding element in the input tensor using a faster implementation.
     #[must_use]
     pub fn reciprocal(&self) -> Tensor {
-        return Tensor { id: RT.lock().unary(self.id, UOp::Reciprocal) };
+        return Tensor {
+            id: RT.lock().unary(self.id, UOp::Reciprocal),
+        };
     }
 
     /// Applies the Rectified Linear Unit (`ReLU`) activation function to each element in the input tensor.
@@ -468,7 +480,9 @@ impl Tensor {
     #[must_use]
     pub fn sin(&self) -> Tensor {
         let x = self.float_cast().unwrap();
-        Tensor { id: RT.lock().unary(x.id, UOp::Sin) }
+        Tensor {
+            id: RT.lock().unary(x.id, UOp::Sin),
+        }
     }
 
     /// Applies the hyperbolic sine function to each element in the input tensor.
@@ -524,7 +538,9 @@ impl Tensor {
     #[must_use]
     pub fn sqrt(&self) -> Tensor {
         let x = self.float_cast().unwrap();
-        Tensor { id: RT.lock().unary(x.id, UOp::Sqrt) }
+        Tensor {
+            id: RT.lock().unary(x.id, UOp::Sqrt),
+        }
     }
 
     /// Applies the Swish activation function to each element in the input tensor.
@@ -639,7 +655,9 @@ impl Tensor {
     /// Bitnot
     #[must_use]
     pub fn bitnot(&self) -> Tensor {
-        Tensor { id: RT.lock().unary(self.id, UOp::BitNot) }
+        Tensor {
+            id: RT.lock().unary(self.id, UOp::BitNot),
+        }
     }
 
     /// Clamps the elements of this tensor within a specified range.

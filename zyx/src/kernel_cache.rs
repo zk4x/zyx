@@ -85,7 +85,12 @@ impl DeBin for KernelCache {
         }
 
         let programs = Map::with_hasher(BuildHasherDefault::new());
-        Ok(KernelCache { device_infos, kernels, optimizations, programs })
+        Ok(KernelCache {
+            device_infos,
+            kernels,
+            optimizations,
+            programs,
+        })
     }
 }
 

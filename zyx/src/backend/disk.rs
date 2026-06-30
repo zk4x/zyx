@@ -60,7 +60,11 @@ impl DiskMemoryPool {
     }
 
     pub fn buffer_from_path(&mut self, bytes: Dim, path: &Path, offset_bytes: u64) -> PoolBufferId {
-        self.buffers.push(DiskBuffer { bytes, path: path.into(), offset_bytes })
+        self.buffers.push(DiskBuffer {
+            bytes,
+            path: path.into(),
+            offset_bytes,
+        })
     }
 
     #[allow(clippy::needless_pass_by_value)]
@@ -95,7 +99,10 @@ impl DiskMemoryPool {
             }
             Ok(())
         })();
-        result.map_err(|err| BackendError { status: ErrorStatus::MemoryCopyP2H, context: format!("{err}").into() })
+        result.map_err(|err| BackendError {
+            status: ErrorStatus::MemoryCopyP2H,
+            context: format!("{err}").into(),
+        })
     }
 
     #[allow(clippy::needless_pass_by_value)]

@@ -29,7 +29,9 @@ impl EGraph {
                 if self.nodes[nid].is_kernel() || self.nodes[nid].is_transform() {
                     continue;
                 }
-                let inputs: Box<[ClassId]> = self.nodes[nid].child_classes().into_boxed_slice();
+                let mut inputs: Vec<ClassId> = self.nodes[nid].child_classes().to_vec();
+                inputs.sort();
+                let inputs: Box<[ClassId]> = inputs.into_boxed_slice();
                 let outputs: Box<[ClassId]> = vec![cid].into_boxed_slice();
                 let (knid, _) = self.make(ENode::Kernel(inputs, outputs, ProgramId::NULL));
                 self.add_to_class(knid, cid);
@@ -81,6 +83,11 @@ impl EGraph {
 
                             // Fuse: new kernel = (child_inputs + current other-inputs, outputs)
                             let mut new_inputs: Vec<ClassId> = child_inputs.to_vec();
+                            // If child kernel has no compute inputs (leaf/const), the fused
+                            // kernel still needs the child's buffer as an input.
+                            if child_inputs.is_empty() {
+                                new_inputs.push(child);
+                            }
                             for &other_child in &child_classes {
                                 if other_child != child {
                                     new_inputs.push(other_child);

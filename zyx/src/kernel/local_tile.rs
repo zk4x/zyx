@@ -23,7 +23,13 @@ impl Kernel {
         while !op_id.is_null() {
             match &self.ops[op_id].op {
                 Op::Load { src, .. } => {
-                    if matches!(self.ops[*src].op, Op::Define { scope: Scope::Global, .. }) {
+                    if matches!(
+                        self.ops[*src].op,
+                        Op::Define {
+                            scope: Scope::Global,
+                            ..
+                        }
+                    ) {
                         cur += 1;
                     } else {
                         max_batch = max_batch.max(cur);
@@ -49,7 +55,12 @@ impl Kernel {
         let mut lidxs: Vec<(OpId, Dim, u32)> = Vec::new();
         let mut op_id = self.head;
         while !op_id.is_null() {
-            if let Op::Index { len, scope: Scope::Local, axis } = self.ops[op_id].op {
+            if let Op::Index {
+                len,
+                scope: Scope::Local,
+                axis,
+            } = self.ops[op_id].op
+            {
                 lidxs.push((op_id, len, axis));
             }
             op_id = self.next_op(op_id);
@@ -90,8 +101,22 @@ impl Kernel {
         let mut stride: Dim = 1;
         for (lid, dim, _axis) in &lidxs {
             let st = self.insert_before(insert_point, Op::Const(Constant::idx(stride as u64)));
-            let scaled = self.insert_before(insert_point, Op::Binary { x: *lid, y: st, bop: BOp::Mul });
-            lin_lidx = self.insert_before(insert_point, Op::Binary { x: lin_lidx, y: scaled, bop: BOp::Add });
+            let scaled = self.insert_before(
+                insert_point,
+                Op::Binary {
+                    x: *lid,
+                    y: st,
+                    bop: BOp::Mul,
+                },
+            );
+            lin_lidx = self.insert_before(
+                insert_point,
+                Op::Binary {
+                    x: lin_lidx,
+                    y: scaled,
+                    bop: BOp::Add,
+                },
+            );
             stride *= dim;
         }
 
@@ -101,7 +126,12 @@ impl Kernel {
             .iter()
             .find_map(|(_, node)| {
                 if let Op::Load { src, .. } = node.op {
-                    if let Op::Define { dtype, scope: Scope::Global, .. } = self.ops[src].op {
+                    if let Op::Define {
+                        dtype,
+                        scope: Scope::Global,
+                        ..
+                    } = self.ops[src].op
+                    {
                         return Some(dtype);
                     }
                 }
@@ -111,7 +141,12 @@ impl Kernel {
 
         let tile_buf = self.insert_before(
             insert_point,
-            Op::Define { dtype: tile_dtype, scope: Scope::Local, ro: false, len: tile_size * max_batch as Dim },
+            Op::Define {
+                dtype: tile_dtype,
+                scope: Scope::Local,
+                ro: false,
+                len: tile_size * max_batch as Dim,
+            },
         );
 
         // Walk all ops, batch consecutive global loads, wrap each batch
@@ -121,7 +156,13 @@ impl Kernel {
             let next = self.next_op(op_id);
             match &self.ops[op_id].op {
                 Op::Load { src, .. } => {
-                    if matches!(self.ops[*src].op, Op::Define { scope: Scope::Global, .. }) {
+                    if matches!(
+                        self.ops[*src].op,
+                        Op::Define {
+                            scope: Scope::Global,
+                            ..
+                        }
+                    ) {
                         pending.push(op_id);
                         op_id = next;
                         continue;
@@ -160,9 +201,23 @@ impl Kernel {
         for i in 0..n {
             let idx = self.insert_after(insert_pt, Op::Const(Constant::idx(i as u64)));
             insert_pt = idx;
-            let scaled = self.insert_after(insert_pt, Op::Binary { x: idx, y: ts, bop: BOp::Mul });
+            let scaled = self.insert_after(
+                insert_pt,
+                Op::Binary {
+                    x: idx,
+                    y: ts,
+                    bop: BOp::Mul,
+                },
+            );
             insert_pt = scaled;
-            let pos = self.insert_after(insert_pt, Op::Binary { x: lin_lidx, y: scaled, bop: BOp::Add });
+            let pos = self.insert_after(
+                insert_pt,
+                Op::Binary {
+                    x: lin_lidx,
+                    y: scaled,
+                    bop: BOp::Add,
+                },
+            );
             insert_pt = pos;
             positions.push(pos);
         }
@@ -171,7 +226,12 @@ impl Kernel {
         for (&load_id, &pos) in pending.iter().zip(positions.iter()) {
             insert_pt = self.insert_after(
                 insert_pt,
-                Op::Store { dst: tile_buf, x: load_id, index: pos, layout: MemLayout::Scalar },
+                Op::Store {
+                    dst: tile_buf,
+                    x: load_id,
+                    index: pos,
+                    layout: MemLayout::Scalar,
+                },
             );
         }
 
@@ -181,7 +241,14 @@ impl Kernel {
         // Insert Loads (each from its own position)
         let mut new_loads: Vec<OpId> = Vec::with_capacity(n);
         for &pos in positions.iter() {
-            insert_pt = self.insert_after(insert_pt, Op::Load { src: tile_buf, index: pos, layout: MemLayout::Scalar });
+            insert_pt = self.insert_after(
+                insert_pt,
+                Op::Load {
+                    src: tile_buf,
+                    index: pos,
+                    layout: MemLayout::Scalar,
+                },
+            );
             new_loads.push(insert_pt);
         }
 

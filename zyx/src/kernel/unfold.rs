@@ -30,10 +30,15 @@ impl Kernel {
     /// It cannot be applied if both explicit global indices and view moves
     /// are present in the kernel.
     pub fn unfold_movement_ops(&mut self) {
-        let has_gidx = self
-            .ops
-            .values()
-            .any(|n| matches!(n.op, Op::Index { scope: Scope::Global, .. }));
+        let has_gidx = self.ops.values().any(|n| {
+            matches!(
+                n.op,
+                Op::Index {
+                    scope: Scope::Global,
+                    ..
+                }
+            )
+        });
         let has_view_moves = self
             .ops
             .values()
@@ -71,7 +76,14 @@ impl Kernel {
         let mut axis = shape.len() as u32;
         for len in shape.into_iter().rev() {
             axis -= 1;
-            self.insert_before(self.head, Op::Index { len, scope: Scope::Global, axis });
+            self.insert_before(
+                self.head,
+                Op::Index {
+                    len,
+                    scope: Scope::Global,
+                    axis,
+                },
+            );
         }
 
         self.verify();
@@ -162,7 +174,9 @@ impl Kernel {
         }
 
         while let Some(reduce_op_id) = reduce_op_ids.pop() {
-            let Op::Reduce { x, rop, n_axes } = self.ops[reduce_op_id].op else { unreachable!() };
+            let Op::Reduce { x, rop, n_axes } = self.ops[reduce_op_id].op else {
+                unreachable!()
+            };
 
             let mut reduce_loop_ops_set = Set::default();
             let mut params = vec![x];
@@ -208,13 +222,23 @@ impl Kernel {
 
             let acc = self.insert_before(
                 loop_start,
-                Op::Define { dtype: acc_dtype, scope: Scope::Register, ro: false, len: 1 },
+                Op::Define {
+                    dtype: acc_dtype,
+                    scope: Scope::Register,
+                    ro: false,
+                    len: 1,
+                },
             );
 
             // Zero the accumulator
             self.insert_before(
                 loop_start,
-                Op::Store { dst: acc, x: acc_init_id, index: const_zero, layout: super::MemLayout::Scalar },
+                Op::Store {
+                    dst: acc,
+                    x: acc_init_id,
+                    index: const_zero,
+                    layout: super::MemLayout::Scalar,
+                },
             );
 
             // Add Loops for the reduce
@@ -225,12 +249,28 @@ impl Kernel {
             // Add reduction operation, load from acc, accumulate, store to acc
             let load_acc = self.insert_before(
                 reduce_op_id,
-                Op::Load { src: acc, index: const_zero, layout: MemLayout::Scalar },
+                Op::Load {
+                    src: acc,
+                    index: const_zero,
+                    layout: MemLayout::Scalar,
+                },
             );
-            let bin_acc = self.insert_before(reduce_op_id, Op::Binary { x, y: load_acc, bop: rop });
+            let bin_acc = self.insert_before(
+                reduce_op_id,
+                Op::Binary {
+                    x,
+                    y: load_acc,
+                    bop: rop,
+                },
+            );
             self.insert_before(
                 reduce_op_id,
-                Op::Store { dst: acc, x: bin_acc, index: const_zero, layout: MemLayout::Scalar },
+                Op::Store {
+                    dst: acc,
+                    x: bin_acc,
+                    index: const_zero,
+                    layout: MemLayout::Scalar,
+                },
             );
 
             // Close the reduce loop
@@ -239,7 +279,11 @@ impl Kernel {
             }
 
             // Replace old reduce op with the acc load op
-            self.ops[reduce_op_id].op = Op::Load { src: acc, index: const_zero, layout: MemLayout::Scalar };
+            self.ops[reduce_op_id].op = Op::Load {
+                src: acc,
+                index: const_zero,
+                layout: MemLayout::Scalar,
+            };
         }
 
         self.verify();
@@ -302,13 +346,27 @@ impl Kernel {
                                     old_offset
                                 } else {
                                     let ost_c = self.new_op(opi, Op::Const(Constant::idx(t_ost)));
-                                    self.new_op(opi, Op::Binary { x: old_offset, y: ost_c, bop: BOp::Div })
+                                    self.new_op(
+                                        opi,
+                                        Op::Binary {
+                                            x: old_offset,
+                                            y: ost_c,
+                                            bop: BOp::Div,
+                                        },
+                                    )
                                 };
                                 if dim.d == 1 {
                                     constant_zero
                                 } else {
                                     let dimd_c = self.new_op(opi, Op::Const(Constant::idx(dim.d as u64)));
-                                    self.new_op(opi, Op::Binary { x, y: dimd_c, bop: BOp::Mod })
+                                    self.new_op(
+                                        opi,
+                                        Op::Binary {
+                                            x,
+                                            y: dimd_c,
+                                            bop: BOp::Mod,
+                                        },
+                                    )
                                 }
                             } else if dim.d == 1 {
                                 self.new_op(opi, Op::Const(Constant::idx(0u64)))
@@ -321,9 +379,23 @@ impl Kernel {
                             let t = if dim.lp != 0 {
                                 let lp = self.new_op(opi, Op::Const(Constant::idx(dim.lp.unsigned_abs() as u64)));
                                 if dim.lp > 0 {
-                                    self.new_op(opi, Op::Binary { x: loop_id, y: lp, bop: BOp::Sub })
+                                    self.new_op(
+                                        opi,
+                                        Op::Binary {
+                                            x: loop_id,
+                                            y: lp,
+                                            bop: BOp::Sub,
+                                        },
+                                    )
                                 } else {
-                                    self.new_op(opi, Op::Binary { x: loop_id, y: lp, bop: BOp::Add })
+                                    self.new_op(
+                                        opi,
+                                        Op::Binary {
+                                            x: loop_id,
+                                            y: lp,
+                                            bop: BOp::Add,
+                                        },
+                                    )
                                 }
                             } else {
                                 loop_id
@@ -333,19 +405,54 @@ impl Kernel {
                                 let stride = self.new_op(opi, Op::Const(Constant::idx(dim.st as u64)));
                                 //let x = self.new_op(opi, Op::Binary { x: t, y: stride, bop: BOp::Mul });
                                 //offset = self.new_op(opi, Op::Binary { x, y: offset, bop: BOp::Add });
-                                offset = self.new_op(opi, Op::Mad { x: t, y: stride, z: offset });
+                                offset = self.new_op(
+                                    opi,
+                                    Op::Mad {
+                                        x: t,
+                                        y: stride,
+                                        z: offset,
+                                    },
+                                );
                             }
 
                             // Padding condition
                             if dim.lp > 0 {
                                 let lp = self.new_op(opi, Op::Const(Constant::idx((dim.lp - 1) as u64)));
-                                let t = self.new_op(opi, Op::Binary { x: loop_id, y: lp, bop: BOp::Cmpgt });
-                                pc = self.new_op(opi, Op::Binary { x: t, y: pc, bop: BOp::And });
+                                let t = self.new_op(
+                                    opi,
+                                    Op::Binary {
+                                        x: loop_id,
+                                        y: lp,
+                                        bop: BOp::Cmpgt,
+                                    },
+                                );
+                                pc = self.new_op(
+                                    opi,
+                                    Op::Binary {
+                                        x: t,
+                                        y: pc,
+                                        bop: BOp::And,
+                                    },
+                                );
                             }
                             if dim.rp > 0 {
                                 let rp = self.new_op(opi, Op::Const(Constant::idx((dim.d as i64 - dim.rp) as u64)));
-                                let t = self.new_op(opi, Op::Binary { x: loop_id, y: rp, bop: BOp::Cmplt });
-                                pc = self.new_op(opi, Op::Binary { x: t, y: pc, bop: BOp::And });
+                                let t = self.new_op(
+                                    opi,
+                                    Op::Binary {
+                                        x: loop_id,
+                                        y: rp,
+                                        bop: BOp::Cmplt,
+                                    },
+                                );
+                                pc = self.new_op(
+                                    opi,
+                                    Op::Binary {
+                                        x: t,
+                                        y: pc,
+                                        bop: BOp::And,
+                                    },
+                                );
                             }
                         }
                         old_offset = Some(offset);
@@ -357,7 +464,11 @@ impl Kernel {
                     let pcd = self.new_op(opi, Op::Cast { x: pc, dtype });
 
                     // Nullify z if padding condition is false (if there is padding at that index)
-                    self.ops[op_id].op = Op::Binary { x: pcd, y: z, bop: BOp::Mul };
+                    self.ops[op_id].op = Op::Binary {
+                        x: pcd,
+                        y: z,
+                        bop: BOp::Mul,
+                    };
                     // this is now the new op_id
                 }
                 Op::LoadView(ref x) => {
@@ -401,13 +512,27 @@ impl Kernel {
                                     old_offset
                                 } else {
                                     let ost_c = self.new_op(opi, Op::Const(Constant::idx(t_ost)));
-                                    self.new_op(opi, Op::Binary { x: old_offset, y: ost_c, bop: BOp::Div })
+                                    self.new_op(
+                                        opi,
+                                        Op::Binary {
+                                            x: old_offset,
+                                            y: ost_c,
+                                            bop: BOp::Div,
+                                        },
+                                    )
                                 };
                                 if dim.d == 1 {
                                     constant_zero
                                 } else {
                                     let dimd_c = self.new_op(opi, Op::Const(Constant::idx(dim.d as u64)));
-                                    self.new_op(opi, Op::Binary { x, y: dimd_c, bop: BOp::Mod })
+                                    self.new_op(
+                                        opi,
+                                        Op::Binary {
+                                            x,
+                                            y: dimd_c,
+                                            bop: BOp::Mod,
+                                        },
+                                    )
                                 }
                             } else if dim.d == 1 {
                                 constant_zero
@@ -421,9 +546,23 @@ impl Kernel {
                             let padded_loop_id = if dim.lp != 0 {
                                 let lp = self.new_op(opi, Op::Const(Constant::idx(dim.lp.unsigned_abs() as u64)));
                                 if dim.lp > 0 {
-                                    self.new_op(opi, Op::Binary { x: loop_id, y: lp, bop: BOp::Sub })
+                                    self.new_op(
+                                        opi,
+                                        Op::Binary {
+                                            x: loop_id,
+                                            y: lp,
+                                            bop: BOp::Sub,
+                                        },
+                                    )
                                 } else {
-                                    self.new_op(opi, Op::Binary { x: loop_id, y: lp, bop: BOp::Add })
+                                    self.new_op(
+                                        opi,
+                                        Op::Binary {
+                                            x: loop_id,
+                                            y: lp,
+                                            bop: BOp::Add,
+                                        },
+                                    )
                                 }
                             } else {
                                 loop_id
@@ -433,36 +572,94 @@ impl Kernel {
                                 let stride = self.new_op(opi, Op::Const(Constant::idx(dim.st as u64)));
                                 //let x = self.new_op(opi, Op::Binary { x: padded_loop_id, y: stride, bop: BOp::Mul });
                                 //offset = self.new_op(opi, Op::Binary { x, y: offset, bop: BOp::Add });
-                                offset = self.new_op(opi, Op::Mad { x: padded_loop_id, y: stride, z: offset });
+                                offset = self.new_op(
+                                    opi,
+                                    Op::Mad {
+                                        x: padded_loop_id,
+                                        y: stride,
+                                        z: offset,
+                                    },
+                                );
                             }
 
                             // Padding condition
                             if dim.lp > 0 {
                                 let lp = self.new_op(opi, Op::Const(Constant::idx((dim.lp - 1) as u64)));
-                                let t = self.new_op(opi, Op::Binary { x: loop_id, y: lp, bop: BOp::Cmpgt });
-                                pc = self.new_op(opi, Op::Binary { x: t, y: pc, bop: BOp::And });
+                                let t = self.new_op(
+                                    opi,
+                                    Op::Binary {
+                                        x: loop_id,
+                                        y: lp,
+                                        bop: BOp::Cmpgt,
+                                    },
+                                );
+                                pc = self.new_op(
+                                    opi,
+                                    Op::Binary {
+                                        x: t,
+                                        y: pc,
+                                        bop: BOp::And,
+                                    },
+                                );
                             }
                             if dim.rp > 0 {
                                 let rp = self.new_op(opi, Op::Const(Constant::idx((dim.d as i64 - dim.rp) as u64)));
-                                let t = self.new_op(opi, Op::Binary { x: loop_id, y: rp, bop: BOp::Cmplt });
-                                pc = self.new_op(opi, Op::Binary { x: t, y: pc, bop: BOp::And });
+                                let t = self.new_op(
+                                    opi,
+                                    Op::Binary {
+                                        x: loop_id,
+                                        y: rp,
+                                        bop: BOp::Cmplt,
+                                    },
+                                );
+                                pc = self.new_op(
+                                    opi,
+                                    Op::Binary {
+                                        x: t,
+                                        y: pc,
+                                        bop: BOp::And,
+                                    },
+                                );
                             }
                         }
                         old_offset = Some(offset);
                     }
 
                     let pcu = self.new_op(opi, Op::Cast { x: pc, dtype: IDX_T });
-                    let offset = self.new_op(opi, Op::Binary { x: pcu, y: offset, bop: BOp::Mul });
+                    let offset = self.new_op(
+                        opi,
+                        Op::Binary {
+                            x: pcu,
+                            y: offset,
+                            bop: BOp::Mul,
+                        },
+                    );
 
                     let src = self.insert_before(
                         start,
-                        Op::Define { dtype, scope: Scope::Global, ro: true, len: view.original_numel() as u64 },
+                        Op::Define {
+                            dtype,
+                            scope: Scope::Global,
+                            ro: true,
+                            len: view.original_numel() as u64,
+                        },
                     );
-                    let z = self.new_op(opi, Op::Load { src, index: offset, layout: MemLayout::Scalar });
+                    let z = self.new_op(
+                        opi,
+                        Op::Load {
+                            src,
+                            index: offset,
+                            layout: MemLayout::Scalar,
+                        },
+                    );
 
                     let pcd = self.new_op(opi, Op::Cast { x: pc, dtype });
                     // Nullify z if padding condition is false (if there is padding at that index)
-                    self.ops[op_id].op = Op::Binary { x: pcd, y: z, bop: BOp::Mul };
+                    self.ops[op_id].op = Op::Binary {
+                        x: pcd,
+                        y: z,
+                        bop: BOp::Mul,
+                    };
                 }
                 Op::StoreView { dtype, src } => {
                     let mut st = 1;
@@ -493,8 +690,21 @@ impl Kernel {
                         len *= dim;
                     }
 
-                    let dst = self.insert_before(start, Op::Define { dtype, scope: Scope::Global, ro: false, len });
-                    self.ops[op_id].op = Op::Store { dst, x: src, index, layout: MemLayout::Scalar };
+                    let dst = self.insert_before(
+                        start,
+                        Op::Define {
+                            dtype,
+                            scope: Scope::Global,
+                            ro: false,
+                            len,
+                        },
+                    );
+                    self.ops[op_id].op = Op::Store {
+                        dst,
+                        x: src,
+                        index,
+                        layout: MemLayout::Scalar,
+                    };
                 }
                 Op::Index { axis, .. } => {
                     axes.insert(axis, op_id);
@@ -514,7 +724,9 @@ impl Kernel {
         let mut op_id = self.prev_op(start);
         let mut last_load = OpId::NULL;
         while !op_id.is_null() {
-            let Op::Define { ro, .. } = self.ops[op_id].op else { unreachable!() };
+            let Op::Define { ro, .. } = self.ops[op_id].op else {
+                unreachable!()
+            };
             if ro {
                 if last_load.is_null() {
                     last_load = op_id;

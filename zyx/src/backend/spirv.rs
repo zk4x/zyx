@@ -256,7 +256,10 @@ struct Asm {
 
 impl Asm {
     fn new() -> Self {
-        Self { words: Vec::new(), next_id: 1 }
+        Self {
+            words: Vec::new(),
+            next_id: 1,
+        }
     }
 
     fn id(&mut self) -> u32 {
@@ -402,7 +405,12 @@ pub fn compile(kernel: &Kernel, debug_asm: bool) -> Result<(Vec<u32>, Vec<Dim>, 
         let mut op_id = kernel.head;
         let mut found = false;
         while !op_id.is_null() {
-            if let Op::Define { dtype: DType::Bool, scope: Scope::Global, .. } = kernel.at(op_id) {
+            if let Op::Define {
+                dtype: DType::Bool,
+                scope: Scope::Global,
+                ..
+            } = kernel.at(op_id)
+            {
                 found = true;
                 break;
             }

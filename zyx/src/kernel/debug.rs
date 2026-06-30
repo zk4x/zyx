@@ -117,7 +117,9 @@ impl Kernel {
                         dtypes[&op_id]
                     );
                 }
-                Op::Define { dtype, scope, ro, len, .. } => {
+                Op::Define {
+                    dtype, scope, ro, len, ..
+                } => {
                     dtypes.insert(op_id, dtype);
                     let ro = if ro { "" } else { "mut " };
                     println!("{indent}{red}r{out_id}{reset}{grey}: {dtype}{reset} = {yellow}def {ro}{reset}{scope}, len={len}");
@@ -233,7 +235,14 @@ impl Kernel {
                         println!("{indent}r{out_id}{grey}: {dtype}{reset} = r{x} * r{y} + r{z}");
                     }
                 }
-                Op::Wmma { dims, layout, dtype, c, a, b } => {
+                Op::Wmma {
+                    dims,
+                    layout,
+                    dtype,
+                    c,
+                    a,
+                    b,
+                } => {
                     let cdtype = dtypes[&c];
                     dtypes.insert(op_id, cdtype);
                     let a = id_map.get(&a).copied().unwrap_or(OpId::NULL);

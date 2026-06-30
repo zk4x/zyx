@@ -63,7 +63,13 @@ impl Kernel {
     /// On success, the loop and accumulator are removed and replaced with closed-form ops.
     fn fold_loop(&mut self, acc_id: OpId) -> bool {
         // Step 1: Check that acc_id is a register define with length 1 (scalar accumulator)
-        let &Op::Define { dtype: acc_dtype, scope, ro, len: 1 } = self.at(acc_id) else {
+        let &Op::Define {
+            dtype: acc_dtype,
+            scope,
+            ro,
+            len: 1,
+        } = self.at(acc_id)
+        else {
             return false;
         };
         // We only fold register-scoped accumulators; global/local have different semantics
@@ -162,7 +168,14 @@ impl Kernel {
             load_id = self.next_op(load_id);
         }
 
-        let &Op::Load { src, index, layout: MemLayout::Scalar } = self.at(load_id) else { return None };
+        let &Op::Load {
+            src,
+            index,
+            layout: MemLayout::Scalar,
+        } = self.at(load_id)
+        else {
+            return None;
+        };
         let &Op::Const(index) = self.at(index) else { return None };
         if index.as_dim() != Some(0) {
             return None;
@@ -186,7 +199,15 @@ impl Kernel {
         };
 
         let store_id = self.next_op(add_id);
-        let &Op::Store { dst, x, index, layout: MemLayout::Scalar } = self.at(store_id) else { return None };
+        let &Op::Store {
+            dst,
+            x,
+            index,
+            layout: MemLayout::Scalar,
+        } = self.at(store_id)
+        else {
+            return None;
+        };
         let &Op::Const(index) = self.at(index) else { return None };
         if index.as_dim() != Some(0) {
             return None;
@@ -199,7 +220,14 @@ impl Kernel {
         let Op::EndLoop = self.at(endloop_id) else { return None };
 
         let load2_id = self.next_op(endloop_id);
-        let &Op::Load { src, index, layout: MemLayout::Scalar } = self.at(load2_id) else { return None };
+        let &Op::Load {
+            src,
+            index,
+            layout: MemLayout::Scalar,
+        } = self.at(load2_id)
+        else {
+            return None;
+        };
         let &Op::Const(index) = self.at(index) else { return None };
         if index.as_dim() != Some(0) {
             return None;
@@ -276,7 +304,13 @@ impl Kernel {
         //let Op::Loop { len: loop_len } = self.ops[loop_id].op else { return false };
 
         // Convert indices to IDX_T
-        let loop_replace = self.insert_after(indices_id, Op::Cast { x: indices_id, dtype: IDX_T });
+        let loop_replace = self.insert_after(
+            indices_id,
+            Op::Cast {
+                x: indices_id,
+                dtype: IDX_T,
+            },
+        );
 
         // Replace loop index
         let endloop_id = self.prev_op(after_loop_load_id);
@@ -298,7 +332,9 @@ impl Kernel {
 
     /// Find the equality op
     fn get_indices(&self, mask_id: OpId, loop_id: OpId) -> Option<OpId> {
-        let Op::Binary { x, y, bop: BOp::Eq } = self.ops[self.peel_casts(mask_id)].op else { return None };
+        let Op::Binary { x, y, bop: BOp::Eq } = self.ops[self.peel_casts(mask_id)].op else {
+            return None;
+        };
         let indices_id = if self.check_loop(x, loop_id) {
             y
         } else if self.check_loop(y, loop_id) {
@@ -345,8 +381,18 @@ impl Kernel {
         accumulated_value_id: OpId,
         after_loop_load_id: OpId,
     ) -> bool {
-        let &Op::Loop { len: loop_len } = self.at(loop_id) else { return false };
-        let &Op::Define { dtype, scope: Scope::Register, ro: false, len: 1 } = self.at(acc_id) else { return false };
+        let &Op::Loop { len: loop_len } = self.at(loop_id) else {
+            return false;
+        };
+        let &Op::Define {
+            dtype,
+            scope: Scope::Register,
+            ro: false,
+            len: 1,
+        } = self.at(acc_id)
+        else {
+            return false;
+        };
 
         let Some((a, b, c, mul_const, gidx_id)) = self.trace_to_linear_comparison(accumulated_value_id, loop_id) else {
             return false;
@@ -363,9 +409,23 @@ impl Kernel {
         let step = mul_const;
         let offset = loop_len - c - 1;
         let offset_id = self.insert_before(after_loop_load_id, Op::Const(Constant::idx(offset)));
-        let sum_id = self.insert_before(after_loop_load_id, Op::Binary { x: gidx_id, y: offset_id, bop: BOp::Add });
+        let sum_id = self.insert_before(
+            after_loop_load_id,
+            Op::Binary {
+                x: gidx_id,
+                y: offset_id,
+                bop: BOp::Add,
+            },
+        );
         let step_id = self.insert_before(after_loop_load_id, Op::Const(Constant::idx(step)));
-        let result_id = self.insert_before(after_loop_load_id, Op::Binary { x: sum_id, y: step_id, bop: BOp::Mul });
+        let result_id = self.insert_before(
+            after_loop_load_id,
+            Op::Binary {
+                x: sum_id,
+                y: step_id,
+                bop: BOp::Mul,
+            },
+        );
 
         self.ops[after_loop_load_id].op = Op::Cast { x: result_id, dtype };
 
@@ -402,7 +462,10 @@ impl Kernel {
     /// For example, if accumulating `i` (the loop index directly):
     ///   a=1, b=1, c=n, `mul_const`=1, gidx is the loop index variable
     fn trace_to_linear_comparison(&self, accumulated_value_id: OpId, loop_id: OpId) -> Option<(u64, u64, u64, u64, OpId)> {
-        if let Op::Index { scope: Scope::Global, .. } = self.at(accumulated_value_id) {
+        if let Op::Index {
+            scope: Scope::Global, ..
+        } = self.at(accumulated_value_id)
+        {
             return None;
         }
 
@@ -410,7 +473,12 @@ impl Kernel {
             return self.trace_cmpgt(*x, 1, loop_id);
         }
 
-        if let Op::Binary { x: mul_x, y: mul_y, bop: BOp::Mul } = self.at(accumulated_value_id) {
+        if let Op::Binary {
+            x: mul_x,
+            y: mul_y,
+            bop: BOp::Mul,
+        } = self.at(accumulated_value_id)
+        {
             let mul_const = if let Op::Const(c) = self.at(*mul_x) {
                 c.as_dim().unwrap_or(1)
             } else if let Op::Const(c) = self.at(*mul_y) {
@@ -424,7 +492,12 @@ impl Kernel {
             }
         }
 
-        if let Op::Binary { x: add_x, y: add_y, bop: BOp::Add } = self.at(accumulated_value_id) {
+        if let Op::Binary {
+            x: add_x,
+            y: add_y,
+            bop: BOp::Add,
+        } = self.at(accumulated_value_id)
+        {
             if let Op::Cast { x, .. } = self.at(*add_x) {
                 return self.trace_cmpgt(*x, 1, loop_id);
             }
@@ -460,7 +533,12 @@ impl Kernel {
                 return None;
             };
 
-            if let Op::Binary { x: add_x, y: add_y, bop: BOp::Add } = self.at(*x) {
+            if let Op::Binary {
+                x: add_x,
+                y: add_y,
+                bop: BOp::Add,
+            } = self.at(*x)
+            {
                 let gidx = if *add_x == loop_id {
                     *add_y
                 } else if *add_y == loop_id {
@@ -492,12 +570,20 @@ impl Kernel {
     fn is_condition_based_accumulation(&self, op_id: OpId) -> bool {
         match self.at(op_id) {
             Op::Cast { x, .. } => self.is_condition_based_accumulation(*x),
-            Op::Binary { x: _, y: _, bop: BOp::Mul } => {
+            Op::Binary {
+                x: _,
+                y: _,
+                bop: BOp::Mul,
+            } => {
                 let mut current = op_id;
                 loop {
                     match self.at(current) {
                         Op::Cast { x, .. } => current = *x,
-                        Op::Binary { x: mul_x, y: mul_y, bop: BOp::Mul } => {
+                        Op::Binary {
+                            x: mul_x,
+                            y: mul_y,
+                            bop: BOp::Mul,
+                        } => {
                             if let Op::Const(_) = self.at(*mul_x) {
                                 current = *mul_y;
                             } else if let Op::Const(_) = self.at(*mul_y) {

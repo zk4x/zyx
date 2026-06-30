@@ -78,13 +78,23 @@ impl Kernel {
                     }
                     // x + c1 - c1 simplifies to x
                     // Handle: Cast(Sub(Cast(Add(x, c1)), c2)) where c1 == c2 → Cast(x)
-                    if let Op::Binary { x: sub_x, y: sub_y, bop: BOp::Sub } = *self.at(x) {
+                    if let Op::Binary {
+                        x: sub_x,
+                        y: sub_y,
+                        bop: BOp::Sub,
+                    } = *self.at(x)
+                    {
                         let add_x = if let Op::Cast { x: inner_cast_x, .. } = *self.at(sub_x) {
                             inner_cast_x
                         } else {
                             sub_x
                         };
-                        if let Op::Binary { x: inner_add_x, y: add_y, bop: BOp::Add } = *self.at(add_x) {
+                        if let Op::Binary {
+                            x: inner_add_x,
+                            y: add_y,
+                            bop: BOp::Add,
+                        } = *self.at(add_x)
+                        {
                             if self.constants_equal(add_y, sub_y) {
                                 self.ops[op_id].op = Op::Cast { x: inner_add_x, dtype };
                             }
@@ -110,10 +120,19 @@ impl Kernel {
                         BOp::Mul if cx.is_two() => self.ops[op_id].op = Op::Binary { x: y, y, bop: BOp::Add },
                         BOp::Mul if cx.is_power_of_two() && cx.dtype() == IDX_T => {
                             let c = self.insert_before(op_id, Op::Const(cx.unary(UOp::Log2)));
-                            self.ops[op_id].op = Op::Binary { x: y, y: c, bop: BOp::BitShiftLeft };
+                            self.ops[op_id].op = Op::Binary {
+                                x: y,
+                                y: c,
+                                bop: BOp::BitShiftLeft,
+                            };
                         }
                         BOp::Div if cx.is_zero() => self.remap(op_id, x),
-                        BOp::Div if cx.is_one() => self.ops[op_id].op = Op::Unary { x: y, uop: UOp::Reciprocal },
+                        BOp::Div if cx.is_one() => {
+                            self.ops[op_id].op = Op::Unary {
+                                x: y,
+                                uop: UOp::Reciprocal,
+                            }
+                        }
                         BOp::Pow if cx.is_one() => self.ops[op_id].op = Op::Const(cx),
                         BOp::Max if cx.is_minimum() => self.remap(op_id, y),
                         BOp::BitShiftLeft | BOp::BitShiftRight if cx.is_zero() => self.remap(op_id, y),
@@ -128,13 +147,21 @@ impl Kernel {
                         BOp::Mul if cy.is_two() => self.ops[op_id].op = Op::Binary { x, y: x, bop: BOp::Add },
                         BOp::Mul if cy.is_power_of_two() && cy.dtype() == IDX_T => {
                             let c = self.insert_before(op_id, Op::Const(cy.unary(UOp::Log2)));
-                            self.ops[op_id].op = Op::Binary { x, y: c, bop: BOp::BitShiftLeft };
+                            self.ops[op_id].op = Op::Binary {
+                                x,
+                                y: c,
+                                bop: BOp::BitShiftLeft,
+                            };
                         }
                         BOp::Div if cy.is_zero() => panic!("Division by constant zero"),
                         BOp::Div if cy.is_one() => self.remap(op_id, x),
                         BOp::Div if cy.is_power_of_two() && cy.dtype() == IDX_T => {
                             let y = self.insert_before(op_id, Op::Const(cy.unary(UOp::Log2)));
-                            self.ops[op_id].op = Op::Binary { x, y, bop: BOp::BitShiftRight };
+                            self.ops[op_id].op = Op::Binary {
+                                x,
+                                y,
+                                bop: BOp::BitShiftRight,
+                            };
                         }
                         BOp::Mod if cy.is_zero() && cy.dtype() == IDX_T => {
                             let shift = Constant::binary(cy, Constant::idx(1), BOp::Sub);
@@ -151,7 +178,11 @@ impl Kernel {
                                     if ciy > cy {
                                         self.ops[op_id].op = Op::Binary { x: xi, y, bop: BOp::Mod };
                                     } else {
-                                        self.ops[op_id].op = Op::Binary { x: xi, y: yi, bop: BOp::Mod };
+                                        self.ops[op_id].op = Op::Binary {
+                                            x: xi,
+                                            y: yi,
+                                            bop: BOp::Mod,
+                                        };
                                     }
                                 }
                             }
@@ -190,7 +221,11 @@ impl Kernel {
                         self.remap(op_id, z);
                     }
                     (Op::Const(cx), _, _) if cx.is_one() => {
-                        self.ops[op_id].op = Op::Binary { x: y, y: z, bop: BOp::Add };
+                        self.ops[op_id].op = Op::Binary {
+                            x: y,
+                            y: z,
+                            bop: BOp::Add,
+                        };
                     }
                     (_, Op::Const(cy), _) if cy.is_zero() => {
                         self.remap(op_id, z);
@@ -225,7 +260,9 @@ impl Kernel {
         let mut op_id = self.head;
         while !op_id.is_null() {
             match *self.at(op_id) {
-                Op::Define { scope: Scope::Register, .. } => {
+                Op::Define {
+                    scope: Scope::Register, ..
+                } => {
                     defines.insert(op_id, loop_level);
                 }
                 Op::Store { dst, .. } => {
@@ -258,7 +295,9 @@ impl Kernel {
     /// constant values and eliminating redundant computations.
     pub(crate) fn fold_acc(&mut self, define_id: OpId) {
         //println!("Folding acc {define_id}");
-        let Op::Define { len, .. } = self.ops[define_id].op else { unreachable!() };
+        let Op::Define { len, .. } = self.ops[define_id].op else {
+            unreachable!()
+        };
         self.remove_op(define_id);
         let mut latest_stores = vec![OpId::NULL; len as usize];
 
@@ -275,7 +314,9 @@ impl Kernel {
                         self.remove_op(op_id);
                         // x may have been removed as a previous load. If that was the case, the load was redundant
                         if self.ops.contains_key(x) {
-                            let Op::Const(index) = self.ops[index].op else { unreachable!() };
+                            let Op::Const(index) = self.ops[index].op else {
+                                unreachable!()
+                            };
                             let Constant::U32(index) = index else { unreachable!() };
                             latest_stores[index as usize] = x;
                             //println!("Latest stores = {latest_stores:?}");
@@ -286,7 +327,9 @@ impl Kernel {
                 }
                 Op::Load { src, index, .. } if src == define_id => {
                     self.remove_op(op_id);
-                    let Op::Const(index) = self.ops[index].op else { unreachable!() };
+                    let Op::Const(index) = self.ops[index].op else {
+                        unreachable!()
+                    };
                     let Constant::U32(index) = index else { unreachable!() };
                     remaps.insert(op_id, latest_stores[index as usize]);
                     op_id = next;

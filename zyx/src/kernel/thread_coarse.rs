@@ -96,7 +96,9 @@ impl Kernel {
     pub fn thread_coarse(&mut self, gidx_id: OpId, factor: u64) {
         #[cfg(feature = "time")]
         let _timer = crate::Timer::new("thread_coarse");
-        let Op::Index { len, scope, axis } = self.ops[gidx_id].op else { unreachable!() };
+        let Op::Index { len, scope, axis } = self.ops[gidx_id].op else {
+            unreachable!()
+        };
         debug_assert!(len.is_multiple_of(factor));
         debug_assert_eq!(scope, Scope::Global);
 
@@ -123,7 +125,11 @@ impl Kernel {
         while !op_id.is_null()
             && matches!(
                 self.ops[op_id].op,
-                Op::Define { scope: Scope::Global | Scope::Local, .. } | Op::Index { .. } | Op::Const(_)
+                Op::Define {
+                    scope: Scope::Global | Scope::Local,
+                    ..
+                } | Op::Index { .. }
+                    | Op::Const(_)
             )
         {
             op_id = self.next_op(op_id);
@@ -145,12 +151,30 @@ impl Kernel {
         let mut remaps: Map<OpId, Vec<OpId>> = Map::default();
 
         // Global index now split into multiple indices with constant offsets
-        let x = self.insert_before(gidx_id, Op::Index { len: len / factor, scope, axis });
-        self.ops[gidx_id].op = Op::Binary { x, y: const_factor, bop: BOp::Mul };
+        let x = self.insert_before(
+            gidx_id,
+            Op::Index {
+                len: len / factor,
+                scope,
+                axis,
+            },
+        );
+        self.ops[gidx_id].op = Op::Binary {
+            x,
+            y: const_factor,
+            bop: BOp::Mul,
+        };
         let mut ids = Vec::with_capacity((factor - 1) as usize);
         let mut id = gidx_id;
         for &offset in &offsets {
-            id = self.insert_after(id, Op::Binary { x: gidx_id, y: offset, bop: BOp::Add });
+            id = self.insert_after(
+                id,
+                Op::Binary {
+                    x: gidx_id,
+                    y: offset,
+                    bop: BOp::Add,
+                },
+            );
             ids.push(id);
         }
         remaps.insert(gidx_id, ids);
@@ -160,8 +184,18 @@ impl Kernel {
         while !op_id.is_null() {
             let next_op_id = self.next_op(op_id);
             match self.ops[op_id].op {
-                Op::Define { dtype, scope: Scope::Register, ro, len } => {
-                    self.ops[op_id].op = Op::Define { dtype, scope: Scope::Register, ro, len: len * factor };
+                Op::Define {
+                    dtype,
+                    scope: Scope::Register,
+                    ro,
+                    len,
+                } => {
+                    self.ops[op_id].op = Op::Define {
+                        dtype,
+                        scope: Scope::Register,
+                        ro,
+                        len: len * factor,
+                    };
                     acc_defines.insert(op_id);
                 }
                 Op::Index { .. } | Op::Loop { .. } | Op::EndLoop | Op::If { .. } | Op::EndIf | Op::Barrier { .. } => {}
@@ -174,11 +208,25 @@ impl Kernel {
                             if let Some(remap) = remaps.get(&x) {
                                 x = remap[i];
                             }
-                            let index = self.insert_before(id, Op::Mad { x: index, y: const_factor, z: offsets[i] });
+                            let index = self.insert_before(
+                                id,
+                                Op::Mad {
+                                    x: index,
+                                    y: const_factor,
+                                    z: offsets[i],
+                                },
+                            );
                             id = self.insert_after(index, Op::Store { dst, x, index, layout });
                             ids.push(id);
                         }
-                        let index = self.insert_before(op_id, Op::Binary { x: index, y: const_factor, bop: BOp::Mul });
+                        let index = self.insert_before(
+                            op_id,
+                            Op::Binary {
+                                x: index,
+                                y: const_factor,
+                                bop: BOp::Mul,
+                            },
+                        );
                         self.ops[op_id].op = Op::Store { dst, x, index, layout };
                     } else {
                         for i in 0..(factor - 1) as usize {
@@ -201,11 +249,25 @@ impl Kernel {
                     let mut id = op_id;
                     if acc_defines.contains(&src) {
                         for &offset in &offsets {
-                            let index = self.insert_before(id, Op::Mad { x: index, y: const_factor, z: offset });
+                            let index = self.insert_before(
+                                id,
+                                Op::Mad {
+                                    x: index,
+                                    y: const_factor,
+                                    z: offset,
+                                },
+                            );
                             id = self.insert_after(index, Op::Load { src, index, layout });
                             ids.push(id);
                         }
-                        let index = self.insert_before(op_id, Op::Binary { x: index, y: const_factor, bop: BOp::Mul });
+                        let index = self.insert_before(
+                            op_id,
+                            Op::Binary {
+                                x: index,
+                                y: const_factor,
+                                bop: BOp::Mul,
+                            },
+                        );
                         self.ops[op_id].op = Op::Load { src, index, layout };
                     } else {
                         for i in 0..(factor - 1) as usize {
@@ -284,7 +346,10 @@ impl Kernel {
 
         if global_upcasts.is_empty() || reduce_factors.is_empty() {
             return (
-                Optimization::RegisterBlocking { reduce_splits: reduce_factors, thread_coarses: global_upcasts },
+                Optimization::RegisterBlocking {
+                    reduce_splits: reduce_factors,
+                    thread_coarses: global_upcasts,
+                },
                 0,
             );
         }
@@ -294,7 +359,10 @@ impl Kernel {
 
         let n_configs = n_global_options * n_reduce_options;
         (
-            Optimization::RegisterBlocking { reduce_splits: reduce_factors, thread_coarses: global_upcasts },
+            Optimization::RegisterBlocking {
+                reduce_splits: reduce_factors,
+                thread_coarses: global_upcasts,
+            },
             n_configs,
         )
     }

@@ -276,7 +276,9 @@ impl Kernel {
                     if !indexing_ops.contains(&op_id) {
                         wi_compute_ops += loop_mult;
                     }
-                    let Op::Define { scope, .. } = self.ops[src].op else { unreachable!() };
+                    let Op::Define { scope, .. } = self.ops[src].op else {
+                        unreachable!()
+                    };
                     let total_elements = loop_mult * layout.n_elements();
                     match scope {
                         Scope::Global => {
@@ -301,7 +303,13 @@ impl Kernel {
                                         if oid.is_null() || *st == 0 {
                                             return None;
                                         }
-                                        if matches!(self.ops[*oid].op, Op::Index { scope: Scope::Global, .. }) {
+                                        if matches!(
+                                            self.ops[*oid].op,
+                                            Op::Index {
+                                                scope: Scope::Global,
+                                                ..
+                                            }
+                                        ) {
                                             Some(*st)
                                         } else {
                                             None
@@ -349,7 +357,13 @@ impl Kernel {
                                         if oid.is_null() || *st == 0 {
                                             return None;
                                         }
-                                        if matches!(self.ops[*oid].op, Op::Index { scope: Scope::Global, .. }) {
+                                        if matches!(
+                                            self.ops[*oid].op,
+                                            Op::Index {
+                                                scope: Scope::Global,
+                                                ..
+                                            }
+                                        ) {
                                             Some(*st)
                                         } else {
                                             None
@@ -386,7 +400,9 @@ impl Kernel {
                     if !indexing_ops.contains(&op_id) {
                         wi_compute_ops += loop_mult * 3;
                     }
-                    let Op::Define { scope, .. } = self.ops[dst].op else { unreachable!() };
+                    let Op::Define { scope, .. } = self.ops[dst].op else {
+                        unreachable!()
+                    };
                     match scope {
                         Scope::Global => {
                             let n_bits = loop_mult * layout.n_elements() * dtypes[&op_id].0.bit_size() as u64;
@@ -410,7 +426,13 @@ impl Kernel {
                                         if oid.is_null() || *st == 0 {
                                             return None;
                                         }
-                                        if matches!(self.ops[*oid].op, Op::Index { scope: Scope::Global, .. }) {
+                                        if matches!(
+                                            self.ops[*oid].op,
+                                            Op::Index {
+                                                scope: Scope::Global,
+                                                ..
+                                            }
+                                        ) {
                                             Some(*st)
                                         } else {
                                             None
@@ -458,7 +480,13 @@ impl Kernel {
                                         if oid.is_null() || *st == 0 {
                                             return None;
                                         }
-                                        if matches!(self.ops[*oid].op, Op::Index { scope: Scope::Global, .. }) {
+                                        if matches!(
+                                            self.ops[*oid].op,
+                                            Op::Index {
+                                                scope: Scope::Global,
+                                                ..
+                                            }
+                                        ) {
                                             Some(*st)
                                         } else {
                                             None

@@ -165,12 +165,18 @@ pub struct BufferId {
 }
 
 impl BufferId {
-    pub const NULL: Self = Self { pool: PoolId::NULL, buffer: PoolBufferId(u32::MAX) };
+    pub const NULL: Self = Self {
+        pool: PoolId::NULL,
+        buffer: PoolBufferId(u32::MAX),
+    };
 }
 
 impl From<usize> for BufferId {
     fn from(value: usize) -> Self {
-        BufferId { pool: PoolId::ZERO, buffer: PoolBufferId(u32::try_from(value).unwrap()) }
+        BufferId {
+            pool: PoolId::ZERO,
+            buffer: PoolBufferId(u32::try_from(value).unwrap()),
+        }
     }
 }
 
@@ -188,12 +194,18 @@ pub struct ProgramId {
 }
 
 impl ProgramId {
-    pub const NULL: Self = Self { device: DeviceId::NULL, program: DeviceProgramId(u32::MAX) };
+    pub const NULL: Self = Self {
+        device: DeviceId::NULL,
+        program: DeviceProgramId(u32::MAX),
+    };
 }
 
 impl From<usize> for ProgramId {
     fn from(value: usize) -> Self {
-        ProgramId { device: DeviceId::ZERO, program: DeviceProgramId(u32::try_from(value).unwrap()) }
+        ProgramId {
+            device: DeviceId::ZERO,
+            program: DeviceProgramId(u32::try_from(value).unwrap()),
+        }
     }
 }
 
@@ -205,7 +217,10 @@ impl From<ProgramId> for usize {
 
 impl From<libloading::Error> for BackendError {
     fn from(value: libloading::Error) -> Self {
-        BackendError { status: ErrorStatus::Initialization, context: value.to_string().into() }
+        BackendError {
+            status: ErrorStatus::Initialization,
+            context: value.to_string().into(),
+        }
     }
 }
 
@@ -830,7 +845,9 @@ impl Device {
                 dev.launch(program_id, pool, args, event_wait_list)
             }
             Device::Dummy(dev) => {
-                let MemoryPool::Dummy(pool) = memory_pool else { unreachable!() };
+                let MemoryPool::Dummy(pool) = memory_pool else {
+                    unreachable!()
+                };
                 dev.launch(program_id, pool, args, event_wait_list)
             }
             Device::CUDA(dev) => {
@@ -838,7 +855,9 @@ impl Device {
                 dev.launch(program_id, pool, args, event_wait_list)
             }
             Device::OpenCL(dev) => {
-                let MemoryPool::OpenCL(pool) = memory_pool else { unreachable!() };
+                let MemoryPool::OpenCL(pool) = memory_pool else {
+                    unreachable!()
+                };
                 dev.launch(program_id, pool, args, event_wait_list)
             }
             Device::HIP(dev) => {
@@ -851,7 +870,9 @@ impl Device {
                 dev.launch(program_id, pool, args, event_wait_list)
             }
             Device::Vulkan(dev) => {
-                let MemoryPool::Vulkan(pool) = memory_pool else { unreachable!() };
+                let MemoryPool::Vulkan(pool) = memory_pool else {
+                    unreachable!()
+                };
                 dev.launch(program_id, pool, args, event_wait_list)
             }
             #[cfg(feature = "wgpu")]

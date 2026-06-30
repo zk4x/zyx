@@ -110,14 +110,25 @@ impl Kernel {
                     };
                     // Merge constant terms
                     let constant = match (lc, rc) {
-                        (Some(a), Some(b)) => Some(k.insert_before(op_id, Op::Binary { x: a, y: b, bop: BOp::Add })),
+                        (Some(a), Some(b)) => Some(k.insert_before(
+                            op_id,
+                            Op::Binary {
+                                x: a,
+                                y: b,
+                                bop: BOp::Add,
+                            },
+                        )),
                         (Some(a), None) => Some(a),
                         (None, Some(b)) => Some(b),
                         (None, None) => None,
                     };
                     (slices, constant)
                 }
-                &Op::Binary { x, y, bop: BOp::BitShiftLeft } if is_const(k, y) => {
+                &Op::Binary {
+                    x,
+                    y,
+                    bop: BOp::BitShiftLeft,
+                } if is_const(k, y) => {
                     let c = match const_u64(k, y) {
                         Some(c) => c,
                         None => return (vec![], None),
@@ -158,7 +169,11 @@ impl Kernel {
                     }
                     (slices, constant)
                 }
-                &Op::Binary { x, y, bop: BOp::BitShiftRight } if is_const(k, y) => {
+                &Op::Binary {
+                    x,
+                    y,
+                    bop: BOp::BitShiftRight,
+                } if is_const(k, y) => {
                     let c = match const_u64(k, y) {
                         Some(c) => c,
                         None => return (vec![], None),
@@ -186,7 +201,15 @@ impl Kernel {
                 }
                 _ => {
                     if matches!(k.at(op_id), Op::Loop { .. }) {
-                        (vec![Slice { root: op_id, lo: 0, width: u64::MAX, shift: 0 }], None)
+                        (
+                            vec![Slice {
+                                root: op_id,
+                                lo: 0,
+                                width: u64::MAX,
+                                shift: 0,
+                            }],
+                            None,
+                        )
                     } else {
                         // Not a loop root — treat entire expression as constant
                         (vec![], Some(op_id))
@@ -297,9 +320,20 @@ impl Kernel {
 
             // Replace with root << k_val + constant
             let shift_const = self.insert_before(op_id, Op::Const(Constant::idx(k_val)));
-            let shl = self.insert_before(op_id, Op::Binary { x: root, y: shift_const, bop: BOp::BitShiftLeft });
+            let shl = self.insert_before(
+                op_id,
+                Op::Binary {
+                    x: root,
+                    y: shift_const,
+                    bop: BOp::BitShiftLeft,
+                },
+            );
             if !constant_term.is_null() {
-                self.ops[op_id].op = Op::Binary { x: shl, y: constant_term, bop: BOp::Add };
+                self.ops[op_id].op = Op::Binary {
+                    x: shl,
+                    y: constant_term,
+                    bop: BOp::Add,
+                };
             } else {
                 self.remap(op_id, shl);
             }
@@ -321,7 +355,12 @@ impl Kernel {
     }
 
     fn match_shl_shr_roundtrip(&self, op_id: OpId) -> Option<OpId> {
-        let Op::Binary { x: add_op, y: shift_amount, bop: BOp::BitShiftRight } = self.at(op_id) else {
+        let Op::Binary {
+            x: add_op,
+            y: shift_amount,
+            bop: BOp::BitShiftRight,
+        } = self.at(op_id)
+        else {
             return None;
         };
         let Op::Const(cst) = self.at(*shift_amount) else { return None };
@@ -329,11 +368,21 @@ impl Kernel {
         if n >= 64 {
             return None;
         }
-        let Op::Binary { x: add_x, y: add_y, bop: BOp::Add } = self.at(*add_op) else {
+        let Op::Binary {
+            x: add_x,
+            y: add_y,
+            bop: BOp::Add,
+        } = self.at(*add_op)
+        else {
             return None;
         };
         for candidate in [add_x, add_y] {
-            if let Op::Binary { x: y, y: s, bop: BOp::BitShiftLeft } = self.at(*candidate) {
+            if let Op::Binary {
+                x: y,
+                y: s,
+                bop: BOp::BitShiftLeft,
+            } = self.at(*candidate)
+            {
                 if let Op::Const(c) = self.at(*s) {
                     if c.as_dim() == Some(n) {
                         return Some(*y);
@@ -406,7 +455,9 @@ impl Kernel {
     }
 
     fn simplify_mod(&mut self, op_id: OpId, x: OpId, divisor_const: OpId, _dtype: DType, bounds: &Map<OpId, (Dim, Dim)>) {
-        let Op::Const(divisor) = self.ops[divisor_const].op else { return };
+        let Op::Const(divisor) = self.ops[divisor_const].op else {
+            return;
+        };
         let Some(divisor) = divisor.as_dim() else { return };
 
         //self.debug();
@@ -424,7 +475,11 @@ impl Kernel {
             // Math: (a*c + b) % c = ((a*c) % c + b % c) % c = (0 + b % c) % c = b % c
             // Since c == divisor: result = b % divisor
             if c == divisor {
-                self.ops[op_id].op = Op::Binary { x: b, y: divisor_const, bop: BOp::Mod };
+                self.ops[op_id].op = Op::Binary {
+                    x: b,
+                    y: divisor_const,
+                    bop: BOp::Mod,
+                };
                 // Pattern 1 on result: if b < divisor, b % divisor = b
                 if let Some(&(_, max_b)) = bounds.get(&b) {
                     if max_b < divisor {
@@ -436,8 +491,19 @@ impl Kernel {
             // Pattern 2b: (a*c + b) % d when c % d == 1 -> (a + b) % d
             // Math: (a*c + b) % d = ((a*(c%d) + b) % d) = ((a*1 + b) % d) = (a + b) % d
             if c % divisor == 1 {
-                let a_plus_b = self.insert_before(op_id, Op::Binary { x: a, y: b, bop: BOp::Add });
-                self.ops[op_id].op = Op::Binary { x: a_plus_b, y: divisor_const, bop: BOp::Mod };
+                let a_plus_b = self.insert_before(
+                    op_id,
+                    Op::Binary {
+                        x: a,
+                        y: b,
+                        bop: BOp::Add,
+                    },
+                );
+                self.ops[op_id].op = Op::Binary {
+                    x: a_plus_b,
+                    y: divisor_const,
+                    bop: BOp::Mod,
+                };
                 // Pattern 1 on result: if max(a) + max(b) < divisor, (a+b) % divisor = a+b
                 if let Some(&(_, max_a)) = bounds.get(&a)
                     && let Some(&(_, max_b)) = bounds.get(&b)
@@ -454,7 +520,11 @@ impl Kernel {
                 let max_a_c = max_a.saturating_mul(c);
                 if let Some(&(min_b, max_b)) = bounds.get(&b) {
                     if min_b == 0 && max_a_c.saturating_add(max_b) < divisor {
-                        self.ops[op_id].op = Op::Binary { x: b, y: divisor_const, bop: BOp::Mod };
+                        self.ops[op_id].op = Op::Binary {
+                            x: b,
+                            y: divisor_const,
+                            bop: BOp::Mod,
+                        };
                         // Pattern 1 on result: if b < divisor, b % divisor = b
                         if max_b < divisor {
                             self.remap(op_id, b);
@@ -481,7 +551,12 @@ impl Kernel {
 
         // Pattern 3: (a + b) % divisor when min_a > 0, min_b > 0, max(a+b) < divisor
         // If both are positive and sum < divisor, no wraparound, so result = a + b
-        if let Op::Binary { x: a, y: b, bop: BOp::Add } = self.ops[x].op {
+        if let Op::Binary {
+            x: a,
+            y: b,
+            bop: BOp::Add,
+        } = self.ops[x].op
+        {
             if let Some(&(min_a, max_a)) = bounds.get(&a) {
                 if let Some(&(min_b, max_b)) = bounds.get(&b) {
                     if min_a > 0 && min_b > 0 {
@@ -497,7 +572,12 @@ impl Kernel {
 
         // Pattern 4: (a * c) % divisor -> reduce c modulo divisor
         // Math: (a * c) % d = (a * (c % d)) % d
-        if let Op::Binary { x: a, y: c, bop: BOp::Mul } = self.ops[x].op {
+        if let Op::Binary {
+            x: a,
+            y: c,
+            bop: BOp::Mul,
+        } = self.ops[x].op
+        {
             if let Op::Const(y) = self.ops[c].op {
                 if let Some(c) = y.as_dim() {
                     let c_reduced = c % divisor;
@@ -518,7 +598,12 @@ impl Kernel {
 
         // Pattern 5: (a + C) % divisor where C is constant and max(a) + C < divisor
         // If max(a) + C < divisor, no wraparound, so result = a + C
-        if let Op::Binary { x: a, y: b, bop: BOp::Add } = self.ops[x].op {
+        if let Op::Binary {
+            x: a,
+            y: b,
+            bop: BOp::Add,
+        } = self.ops[x].op
+        {
             if let Op::Const(y) = self.ops[b].op {
                 if let Some(y) = y.as_dim() {
                     if let Some(&(_, max_a)) = bounds.get(&a) {
@@ -538,14 +623,24 @@ fn mul_add(k: &Kernel, x: OpId) -> Option<(OpId, u64, OpId)> {
         return Some(x);
     }
     // Case 1: (a * c) + b  (also (a << c) + b for constant c)
-    let Op::Binary { x: mul, y: add, bop: BOp::Add } = k.at(x) else {
+    let Op::Binary {
+        x: mul,
+        y: add,
+        bop: BOp::Add,
+    } = k.at(x)
+    else {
         return None;
     };
     if let Some((a, cval)) = match_mul_or_shl(k, *mul) {
         return Some((a, cval, *add));
     }
     // Case 2: b + (a * c)  (also b + (a << c) for constant c)
-    let Op::Binary { x: b, y: mul, bop: BOp::Add } = k.at(x) else {
+    let Op::Binary {
+        x: b,
+        y: mul,
+        bop: BOp::Add,
+    } = k.at(x)
+    else {
         return None;
     };
     if let Some((a, cval)) = match_mul_or_shl(k, *mul) {
@@ -555,14 +650,24 @@ fn mul_add(k: &Kernel, x: OpId) -> Option<(OpId, u64, OpId)> {
 }
 
 fn match_mul_or_shl(k: &Kernel, op: OpId) -> Option<(OpId, u64)> {
-    if let Op::Binary { x: a, y: c, bop: BOp::Mul } = k.at(op) {
+    if let Op::Binary {
+        x: a,
+        y: c,
+        bop: BOp::Mul,
+    } = k.at(op)
+    {
         if let Op::Const(cst) = k.at(*c) {
             if let Some(cval) = cst.as_dim() {
                 return Some((*a, cval));
             }
         }
     }
-    if let Op::Binary { x: a, y: c, bop: BOp::BitShiftLeft } = k.at(op) {
+    if let Op::Binary {
+        x: a,
+        y: c,
+        bop: BOp::BitShiftLeft,
+    } = k.at(op)
+    {
         if let Op::Const(cst) = k.at(*c) {
             if let Some(cval) = cst.as_dim() {
                 if cval < 64 {

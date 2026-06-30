@@ -217,7 +217,10 @@ pub(super) fn initialize_device(
         if debug_dev {
             println!("[CUDA] libcuda.so not found");
         }
-        return Err(BackendError { status: ErrorStatus::DyLibNotFound, context: "[CUDA] libcuda.so not found.".into() });
+        return Err(BackendError {
+            status: ErrorStatus::DyLibNotFound,
+            context: "[CUDA] libcuda.so not found.".into(),
+        });
     };
 
     let mut include_path: Option<PathBuf> = None;
@@ -316,7 +319,10 @@ pub(super) fn initialize_device(
     let mut num_devices = 0;
     unsafe { cuDeviceGetCount(&raw mut num_devices) }.check(ErrorStatus::DeviceQuery)?;
     if num_devices == 0 {
-        return Err(BackendError { status: ErrorStatus::DeviceEnumeration, context: "[CUDA] no available device.".into() });
+        return Err(BackendError {
+            status: ErrorStatus::DeviceEnumeration,
+            context: "[CUDA] no available device.".into(),
+        });
     }
     let device_ids: Vec<i32> = (0..num_devices)
         .filter(|id| config.device_ids.as_ref().is_none_or(|ids| ids.contains(id)))
@@ -419,7 +425,10 @@ pub(super) fn initialize_device(
                             let event = Event::CUDA(CUDAEvent { event });
                             let _ = reply.send(Ok((buffer_id, event)));
                         }
-                        CUDACommand::Deallocate { buffer_id, event_wait_list: mut events } => {
+                        CUDACommand::Deallocate {
+                            buffer_id,
+                            event_wait_list: mut events,
+                        } => {
                             let stream = next_stream(&mut streams, cuStreamSynchronize);
                             while let Some(Event::CUDA(CUDAEvent { event })) = events.pop() {
                                 if !event.is_null() {
@@ -433,7 +442,13 @@ pub(super) fn initialize_device(
                             free_bytes_atomic.fetch_add(buffer.bytes, Ordering::SeqCst);
                             buffers.remove(buffer_id);
                         }
-                        CUDACommand::HostToPool { src, bytes, dst, mut event_wait_list, reply } => {
+                        CUDACommand::HostToPool {
+                            src,
+                            bytes,
+                            dst,
+                            mut event_wait_list,
+                            reply,
+                        } => {
                             let stream = next_stream(&mut streams, cuStreamSynchronize);
                             let dst = &buffers[dst];
                             while let Some(Event::CUDA(CUDAEvent { event })) = event_wait_list.pop() {
@@ -464,7 +479,13 @@ pub(super) fn initialize_device(
                             //unsafe { (cuStreamSynchronize)(stream) }.check(ErrorStatus::MemoryCopyH2P).unwrap();
                             _ = reply.send(Ok(Event::CUDA(CUDAEvent { event })));
                         }
-                        CUDACommand::PoolToHost { src, dst, bytes, mut event_wait_list, reply } => {
+                        CUDACommand::PoolToHost {
+                            src,
+                            dst,
+                            bytes,
+                            mut event_wait_list,
+                            reply,
+                        } => {
                             let stream = next_stream(&mut streams, cuStreamSynchronize);
                             while let Some(Event::CUDA(CUDAEvent { event })) = event_wait_list.pop() {
                                 if !event.is_null() {
@@ -498,7 +519,13 @@ pub(super) fn initialize_device(
                             send_or_continue!(unsafe { (cuEventDestroy)(event) }.check(ErrorStatus::MemoryCopyP2H), reply);
                             _ = reply.send(Ok(()));
                         }
-                        CUDACommand::Compile { gws, lws, name, ptx, reply } => {
+                        CUDACommand::Compile {
+                            gws,
+                            lws,
+                            name,
+                            ptx,
+                            reply,
+                        } => {
                             //println!("name {name}, gws {gws:?}, lws {lws:?} ptx:\n{}", std::ffi::CString::from_vec_with_nul(ptx.clone()).unwrap().into_string().unwrap());
 
                             let mut module = ptr::null_mut();
@@ -535,7 +562,12 @@ pub(super) fn initialize_device(
                             });
                             _ = reply.send(Ok(program_id));
                         }
-                        CUDACommand::Launch { program_id, args, mut event_wait_list, reply } => {
+                        CUDACommand::Launch {
+                            program_id,
+                            args,
+                            mut event_wait_list,
+                            reply,
+                        } => {
                             let stream = next_stream(&mut streams, cuStreamSynchronize);
                             let program = &programs[program_id];
                             //println!("CUDA launch program id: {program_id}, gws: {:?}, lws: {:?}", program.global_work_size, program.local_work_size);
@@ -611,7 +643,9 @@ pub(super) fn initialize_device(
                         }
                         CUDACommand::ReleaseEvents { events } => {
                             for event in events {
-                                let Event::CUDA(CUDAEvent { event }) = event else { unreachable!() };
+                                let Event::CUDA(CUDAEvent { event }) = event else {
+                                    unreachable!()
+                                };
                                 _ = unsafe { (cuEventDestroy)(event) }.check(ErrorStatus::Deinitialization);
                             }
                         }
@@ -621,7 +655,10 @@ pub(super) fn initialize_device(
             }
         });
 
-        let pool = MemoryPool::CUDA(CUDAMemoryPool { tx: tx.clone(), free_bytes: free_bytes_atomic });
+        let pool = MemoryPool::CUDA(CUDAMemoryPool {
+            tx: tx.clone(),
+            free_bytes: free_bytes_atomic,
+        });
         memory_pools.push(pool);
 
         let mut dev = CUDADevice {
@@ -697,7 +734,10 @@ impl CUDAMemoryPool {
     #[allow(clippy::needless_pass_by_ref_mut)]
     pub fn allocate(&mut self, bytes: Dim) -> Result<(PoolBufferId, Event), BackendError> {
         if bytes > self.free_bytes.load(Ordering::SeqCst) {
-            return Err(BackendError { status: ErrorStatus::MemoryAllocation, context: "Allocation failure.".into() });
+            return Err(BackendError {
+                status: ErrorStatus::MemoryAllocation,
+                context: "Allocation failure.".into(),
+            });
         }
         let (reply, reply_rx) = channel();
         self.tx.send(CUDACommand::Allocate { bytes, reply }).unwrap();
@@ -707,7 +747,10 @@ impl CUDAMemoryPool {
     #[allow(clippy::needless_pass_by_ref_mut)]
     pub fn deallocate(&mut self, buffer_id: PoolBufferId, events: Vec<Event>) {
         self.tx
-            .send(CUDACommand::Deallocate { buffer_id, event_wait_list: events })
+            .send(CUDACommand::Deallocate {
+                buffer_id,
+                event_wait_list: events,
+            })
             .unwrap();
     }
 
@@ -715,7 +758,13 @@ impl CUDAMemoryPool {
     pub fn host_to_pool(&mut self, src: &[u8], dst: PoolBufferId, event_wait_list: Vec<Event>) -> Result<Event, BackendError> {
         let (reply, reply_rx) = channel();
         self.tx
-            .send(CUDACommand::HostToPool { src: src.as_ptr(), bytes: src.len() as u64, dst, event_wait_list, reply })
+            .send(CUDACommand::HostToPool {
+                src: src.as_ptr(),
+                bytes: src.len() as u64,
+                dst,
+                event_wait_list,
+                reply,
+            })
             .unwrap();
         reply_rx.recv().unwrap()
     }
@@ -724,7 +773,13 @@ impl CUDAMemoryPool {
     pub fn pool_to_host(&mut self, src: PoolBufferId, dst: &mut [u8], event_wait_list: Vec<Event>) -> Result<(), BackendError> {
         let (reply, reply_rx) = channel();
         self.tx
-            .send(CUDACommand::PoolToHost { src, dst: dst.as_mut_ptr(), bytes: dst.len() as u64, event_wait_list, reply })
+            .send(CUDACommand::PoolToHost {
+                src,
+                dst: dst.as_mut_ptr(),
+                bytes: dst.len() as u64,
+                event_wait_list,
+                reply,
+            })
             .unwrap();
         reply_rx.recv().unwrap()
     }
@@ -764,7 +819,15 @@ impl CUDADevice {
     pub fn compile(&mut self, kernel: &Kernel, debug_asm: bool) -> Result<DeviceProgramId, BackendError> {
         let (gws, lws, name, ptx) = self.compile_cuda(kernel, debug_asm)?;
         let (reply, reply_rx) = channel();
-        self.tx.send(CUDACommand::Compile { gws, lws, name, ptx, reply }).unwrap();
+        self.tx
+            .send(CUDACommand::Compile {
+                gws,
+                lws,
+                name,
+                ptx,
+                reply,
+            })
+            .unwrap();
         reply_rx.recv().unwrap()
     }
 
@@ -779,7 +842,12 @@ impl CUDADevice {
     ) -> Result<Event, BackendError> {
         let (reply, reply_rx) = channel();
         self.tx
-            .send(CUDACommand::Launch { program_id, args: args.into(), event_wait_list, reply })
+            .send(CUDACommand::Launch {
+                program_id,
+                args: args.into(),
+                event_wait_list,
+                reply,
+            })
             .unwrap();
         reply_rx.recv().unwrap()
     }
@@ -1164,7 +1232,10 @@ impl CUDAStatus {
             let cudaPeek: unsafe extern "C" fn(c_uint) -> CUDAStatus =
             *unsafe { cuda.get(b"cudaPeekAtLastError\0") }.unwrap();*/
 
-            Err(BackendError { status, context: format!("{self:?}").into() })
+            Err(BackendError {
+                status,
+                context: format!("{self:?}").into(),
+            })
         }
     }
 }
@@ -1245,7 +1316,10 @@ impl CUDADevice {
         }
 
         if lws.iter().product::<u64>() > self.dev_info.max_local_threads {
-            return Err(BackendError { status: ErrorStatus::KernelCompilation, context: "Invalid local work size.".into() });
+            return Err(BackendError {
+                status: ErrorStatus::KernelCompilation,
+                context: "Invalid local work size.".into(),
+            });
         }
 
         let mut global_args = String::new();
@@ -1329,7 +1403,12 @@ impl CUDADevice {
                         }
                     }
                 }
-                &Op::Store { dst, x: src, index, layout } => {
+                &Op::Store {
+                    dst,
+                    x: src,
+                    index,
+                    layout,
+                } => {
                     let idx = get_var(index, &constants, &indices, &reg_map, &mut registers, loop_id);
                     let x = get_var(src, &constants, &indices, &reg_map, &mut registers, loop_id);
                     let dtype = dtypes[&src].0.cu();
@@ -1341,7 +1420,14 @@ impl CUDADevice {
                         MemLayout::Tile { x, y, stride } => todo!(),
                     }
                 }
-                &Op::Wmma { dims, layout, dtype, c, a, b } => {
+                &Op::Wmma {
+                    dims,
+                    layout,
+                    dtype,
+                    c,
+                    a,
+                    b,
+                } => {
                     helper_funcs += r#"__device__ float4 wmma_m16n8k8_row_col_f32_f16_f16_f32(half4 a, half2 b, float4 c) {
   int *a_pk = (int *)(&a), *b_pk = (int *)(&b), *c_pk = (int *)(&c);
   asm("mma.sync.aligned.m16n8k8.row.col.f32.f16.f16.f32"
@@ -1597,7 +1683,10 @@ impl CUDADevice {
         ];
         let cudartc = cudartc_paths.iter().find_map(|&path| unsafe { Library::new(path) }.ok());
         let Some(cudartc) = cudartc else {
-            return Err(BackendError { status: ErrorStatus::Initialization, context: "[CUDA] libnvrtc.so not found.".into() });
+            return Err(BackendError {
+                status: ErrorStatus::Initialization,
+                context: "[CUDA] libnvrtc.so not found.".into(),
+            });
         };
         let nvrtcCreateProgram: unsafe extern "C" fn(
             *mut nvrtcProgram,
@@ -1702,7 +1791,10 @@ impl nvrtcResult {
         if self == Self::NVRTC_SUCCESS {
             Ok(())
         } else {
-            Err(BackendError { status, context: format!("{self:?}").into() })
+            Err(BackendError {
+                status,
+                context: format!("{self:?}").into(),
+            })
         }
     }
 }

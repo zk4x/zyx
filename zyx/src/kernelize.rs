@@ -224,7 +224,10 @@ impl<'a> Kernelizer<'a> {
         let kernel = &mut self.kernels[kid];
 
         //kernel.apply_movement(|view| view.expand(shape));
-        let op_id = kernel.push_back(Op::Move { x: op_id, mop: Box::new(MoveOp::Expand { shape: shape.into() }) });
+        let op_id = kernel.push_back(Op::Move {
+            x: op_id,
+            mop: Box::new(MoveOp::Expand { shape: shape.into() }),
+        });
 
         kernel.remove_first_output(x);
         kernel.outputs.extend(vec![nid; self.rcs[&nid] as usize]);
@@ -240,7 +243,10 @@ impl<'a> Kernelizer<'a> {
         let shape = self.graph.shape(nid);
         let kernel = &mut self.kernels[kid];
 
-        let op_id = kernel.push_back(Op::Move { x: op_id, mop: Box::new(MoveOp::Reshape { shape: shape.into() }) });
+        let op_id = kernel.push_back(Op::Move {
+            x: op_id,
+            mop: Box::new(MoveOp::Reshape { shape: shape.into() }),
+        });
 
         kernel.remove_first_output(x);
         kernel.outputs.extend(vec![nid; self.rcs[&nid] as usize]);
@@ -258,7 +264,10 @@ impl<'a> Kernelizer<'a> {
         let kernel = &mut self.kernels[kid];
 
         let shape = self.graph.shape(nid).into();
-        let op_id = kernel.push_back(Op::Move { x: op_id, mop: Box::new(MoveOp::Permute { axes, shape }) });
+        let op_id = kernel.push_back(Op::Move {
+            x: op_id,
+            mop: Box::new(MoveOp::Permute { axes, shape }),
+        });
 
         kernel.remove_first_output(x);
         kernel.outputs.extend(vec![nid; self.rcs[&nid] as usize]);
@@ -278,7 +287,10 @@ impl<'a> Kernelizer<'a> {
         //let rank = self.graph.shape(nid).len();
         //kernel.apply_movement(|view| view.pad(rank, padding));
         let shape = self.graph.shape(nid).into();
-        let op_id = kernel.push_back(Op::Move { x: op_id, mop: Box::new(MoveOp::Pad { padding, shape }) });
+        let op_id = kernel.push_back(Op::Move {
+            x: op_id,
+            mop: Box::new(MoveOp::Pad { padding, shape }),
+        });
 
         kernel.remove_first_output(x);
         kernel.outputs.extend(vec![nid; self.rcs[&nid] as usize]);
@@ -357,13 +369,22 @@ impl<'a> Kernelizer<'a> {
             //self.kernels[kid].apply_movement(|v| v.permute(&permute_axes));
             if !permute_axes.iter().copied().eq(0..permute_axes.len()) {
                 let shape = crate::shape::permute(self.graph.shape(x), &permute_axes);
-                op_id = self.kernels[kid]
-                    .push_back(Op::Move { x: op_id, mop: Box::new(MoveOp::Permute { axes: permute_axes, shape }) });
+                op_id = self.kernels[kid].push_back(Op::Move {
+                    x: op_id,
+                    mop: Box::new(MoveOp::Permute {
+                        axes: permute_axes,
+                        shape,
+                    }),
+                });
             }
         }
 
         let kernel = &mut self.kernels[kid];
-        op_id = kernel.push_back(Op::Reduce { x: op_id, rop, n_axes: axes.len() });
+        op_id = kernel.push_back(Op::Reduce {
+            x: op_id,
+            rop,
+            n_axes: axes.len(),
+        });
         kernel.remove_first_output(x);
         kernel.outputs.extend(vec![nid; self.rcs[&nid] as usize]);
         *self.rcs.get_mut(&x).unwrap() -= 1;
@@ -371,7 +392,10 @@ impl<'a> Kernelizer<'a> {
         // If all dims are reduced
         if shape.len() == axes.len() {
             //self.kernels[kid].apply_movement(|v| v.reshape(0..1, &[1, shape[0]]));
-            op_id = self.kernels[kid].push_back(Op::Move { x: op_id, mop: Box::new(MoveOp::Reshape { shape: vec![1] }) });
+            op_id = self.kernels[kid].push_back(Op::Move {
+                x: op_id,
+                mop: Box::new(MoveOp::Reshape { shape: vec![1] }),
+            });
         }
 
         debug_assert_eq!(self.graph.shape(nid), self.kernels[kid].shape());
@@ -472,8 +496,16 @@ impl<'a> Kernelizer<'a> {
             };
 
             self.kernels[kidy].remove_first_output(y);
-            let Kernel { outputs, loads, stores, ops, head, tail: _, device_id: _, custom_kernel_id } =
-                unsafe { self.kernels.remove_and_return(kidy) };
+            let Kernel {
+                outputs,
+                loads,
+                stores,
+                ops,
+                head,
+                tail: _,
+                device_id: _,
+                custom_kernel_id,
+            } = unsafe { self.kernels.remove_and_return(kidy) };
             debug_assert!(custom_kernel_id.is_none(), "must not duplicate custom kernel stub");
 
             // Extend x kernel with y ops

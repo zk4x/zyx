@@ -39,12 +39,18 @@ pub(super) fn initialize_device(
     debug_dev: bool,
 ) -> Result<(), BackendError> {
     if !config.enabled {
-        return Err(BackendError { status: ErrorStatus::Initialization, context: "[dummy] backend configured out.".into() });
+        return Err(BackendError {
+            status: ErrorStatus::Initialization,
+            context: "[dummy] backend configured out.".into(),
+        });
     }
     if debug_dev {
         println!("[dummy] initialized");
     }
-    let pool = MemoryPool::Dummy(DummyMemoryPool { free_bytes: 1024 * 1024 * 1024 * 1024, buffers: Slab::new() });
+    let pool = MemoryPool::Dummy(DummyMemoryPool {
+        free_bytes: 1024 * 1024 * 1024 * 1024,
+        buffers: Slab::new(),
+    });
     if debug_dev {
         println!("[dummy] device total memory: {} MB", 1024 * 1024);
     }
@@ -84,7 +90,10 @@ impl DummyMemoryPool {
         if self.free_bytes > bytes {
             self.free_bytes -= bytes;
         } else {
-            return Err(BackendError { status: ErrorStatus::MemoryAllocation, context: "OOM".into() });
+            return Err(BackendError {
+                status: ErrorStatus::MemoryAllocation,
+                context: "OOM".into(),
+            });
         }
         let id = self.buffers.push(bytes);
         Ok((id, Event::OpenCL(OpenCLEvent { event: ptr::null_mut() })))

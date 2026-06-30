@@ -26,7 +26,10 @@ impl Kernel {
     pub(crate) fn opt_vectorize(&self, dev_info: &DeviceInfo) -> (Optimization, usize) {
         let supported_lens = if dev_info.has_vector_ops { vec![2, 4] } else { vec![] };
         (
-            Optimization::Vectorize { supported_lens, vectorize_ops: dev_info.has_vector_ops },
+            Optimization::Vectorize {
+                supported_lens,
+                vectorize_ops: dev_info.has_vector_ops,
+            },
             1,
         )
     }
@@ -107,11 +110,18 @@ impl Kernel {
                 if base_index.is_some() {
                     let vload = self.insert_before(
                         loads[0].id,
-                        Op::Load { src, index: loads[0].index, layout: MemLayout::Vector(vec_len as u16) },
+                        Op::Load {
+                            src,
+                            index: loads[0].index,
+                            layout: MemLayout::Vector(vec_len as u16),
+                        },
                     );
                     self.ops[loads[0].id].op = Op::Devectorize { vec: vload, idx: 0 };
                     for (load, &off) in loads[1..].iter().zip(&offset_order) {
-                        self.ops[load.id].op = Op::Devectorize { vec: vload, idx: off as usize };
+                        self.ops[load.id].op = Op::Devectorize {
+                            vec: vload,
+                            idx: off as usize,
+                        };
                     }
                 }
             }
@@ -199,8 +209,12 @@ impl Kernel {
                     }
 
                     let vstore = self.insert_before(stores[0].id, Op::Vectorize { ops: vec_values });
-                    self.ops[stores[0].id].op =
-                        Op::Store { dst, x: vstore, index: stores[0].index, layout: MemLayout::Vector(vec_len as u16) };
+                    self.ops[stores[0].id].op = Op::Store {
+                        dst,
+                        x: vstore,
+                        index: stores[0].index,
+                        layout: MemLayout::Vector(vec_len as u16),
+                    };
                     for store in &stores[1..] {
                         self.remove_op(store.id);
                     }

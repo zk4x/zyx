@@ -296,8 +296,13 @@ impl Runtime {
         if let Some(disk) = self.pools[PoolId::from(1)].disk_pool() {
             let buffer_id = disk.buffer_from_path(bytes, path, offset_bytes);
             let id = self.graph.push_wshape(Node::Leaf { dtype }, shape);
-            self.buffer_map
-                .insert(id, BufferId { pool: PoolId::from(1), buffer: buffer_id });
+            self.buffer_map.insert(
+                id,
+                BufferId {
+                    pool: PoolId::from(1),
+                    buffer: buffer_id,
+                },
+            );
             Ok(id)
         } else {
             Err(ZyxError::NoBackendAvailable)
@@ -355,10 +360,15 @@ impl Runtime {
         let host_pool_id = PoolId::from(0);
         let host_data = data.read();
         let host_buf_id = {
-            let MemoryPool::Host(pool) = &mut self.pools[host_pool_id] else { unreachable!() };
+            let MemoryPool::Host(pool) = &mut self.pools[host_pool_id] else {
+                unreachable!()
+            };
             pool.insert(host_data)
         };
-        let host_global_id = BufferId { pool: host_pool_id, buffer: host_buf_id };
+        let host_global_id = BufferId {
+            pool: host_pool_id,
+            buffer: host_buf_id,
+        };
 
         if memory_pool_id == host_pool_id {
             // Device is host — use the staging buffer directly
@@ -369,14 +379,19 @@ impl Runtime {
 
         // Get raw pointer to host staging (no borrow on self.pools)
         let host_ptr = {
-            let MemoryPool::Host(pool) = &self.pools[host_pool_id] else { unreachable!() };
+            let MemoryPool::Host(pool) = &self.pools[host_pool_id] else {
+                unreachable!()
+            };
             pool.buffer_ptr(host_buf_id)
         };
         let host_src = unsafe { std::slice::from_raw_parts(host_ptr, bytes as usize) };
 
         // Copy to device pool
         let (buffer_id, event) = self.pools[memory_pool_id].allocate(alloc_bytes)?;
-        let global_id = BufferId { pool: memory_pool_id, buffer: buffer_id };
+        let global_id = BufferId {
+            pool: memory_pool_id,
+            buffer: buffer_id,
+        };
         let event = self.pools[memory_pool_id].host_to_pool(host_src, buffer_id, vec![event])?;
 
         let id = self.graph.push_wshape(Node::Leaf { dtype }, shape);
@@ -387,7 +402,9 @@ impl Runtime {
 
     #[must_use]
     pub(super) fn constant(&mut self, value: impl Scalar) -> TensorId {
-        self.graph.push(Node::Const { value: Constant::new(value) })
+        self.graph.push(Node::Const {
+            value: Constant::new(value),
+        })
     }
 
     // Initialization
@@ -400,7 +417,9 @@ impl Runtime {
 
     #[must_use]
     pub(super) fn ones(&mut self, shape: Vec<Dim>, dtype: DType) -> TensorId {
-        let x = self.graph.push(Node::Const { value: dtype.one_constant() });
+        let x = self.graph.push(Node::Const {
+            value: dtype.one_constant(),
+        });
         let expanded = self.expand(x, shape).unwrap();
         self.release(x);
         expanded
@@ -408,7 +427,9 @@ impl Runtime {
 
     #[must_use]
     pub(super) fn zeros(&mut self, shape: Vec<Dim>, dtype: DType) -> TensorId {
-        let x = self.graph.push(Node::Const { value: dtype.zero_constant() });
+        let x = self.graph.push(Node::Const {
+            value: dtype.zero_constant(),
+        });
         let expanded = self.expand(x, shape).unwrap();
         self.release(x);
         expanded

@@ -56,37 +56,113 @@ impl Kernel {
             let next = self.next_op(op_id);
 
             // Redirect OOB stores to trash element at index `limit`
-            if let Op::Store { dst, x, index: store_idx, layout } = self.ops[op_id].op.clone() {
+            if let Op::Store {
+                dst,
+                x,
+                index: store_idx,
+                layout,
+            } = self.ops[op_id].op.clone()
+            {
                 if self.depends_on(store_idx, gidx_id, &mut Set::default()) {
                     let buf_len = match &self.ops[dst].op {
-                        Op::Define { len, scope: Scope::Global, .. } => Some(*len),
+                        Op::Define {
+                            len,
+                            scope: Scope::Global,
+                            ..
+                        } => Some(*len),
                         _ => None,
                     };
                     if let Some(buf_len) = buf_len {
                         let clen = self.insert_before(op_id, Op::Const(Constant::idx(buf_len)));
-                        let cond = self.insert_before(op_id, Op::Binary { x: gidx_id, y: limit, bop: BOp::Cmplt });
+                        let cond = self.insert_before(
+                            op_id,
+                            Op::Binary {
+                                x: gidx_id,
+                                y: limit,
+                                bop: BOp::Cmplt,
+                            },
+                        );
                         let cast_cond = self.insert_before(op_id, Op::Cast { x: cond, dtype: IDX_T });
                         let one = self.insert_before(op_id, Op::Const(Constant::idx(1)));
-                        let not_cond = self.insert_before(op_id, Op::Binary { x: one, y: cast_cond, bop: BOp::Sub });
-                        let idx_term = self.insert_before(op_id, Op::Binary { x: store_idx, y: cast_cond, bop: BOp::Mul });
-                        let lim_term = self.insert_before(op_id, Op::Binary { x: clen, y: not_cond, bop: BOp::Mul });
-                        let safe_idx = self.insert_before(op_id, Op::Binary { x: idx_term, y: lim_term, bop: BOp::Add });
-                        self.ops[op_id].op = Op::Store { dst, x, index: safe_idx, layout };
+                        let not_cond = self.insert_before(
+                            op_id,
+                            Op::Binary {
+                                x: one,
+                                y: cast_cond,
+                                bop: BOp::Sub,
+                            },
+                        );
+                        let idx_term = self.insert_before(
+                            op_id,
+                            Op::Binary {
+                                x: store_idx,
+                                y: cast_cond,
+                                bop: BOp::Mul,
+                            },
+                        );
+                        let lim_term = self.insert_before(
+                            op_id,
+                            Op::Binary {
+                                x: clen,
+                                y: not_cond,
+                                bop: BOp::Mul,
+                            },
+                        );
+                        let safe_idx = self.insert_before(
+                            op_id,
+                            Op::Binary {
+                                x: idx_term,
+                                y: lim_term,
+                                bop: BOp::Add,
+                            },
+                        );
+                        self.ops[op_id].op = Op::Store {
+                            dst,
+                            x,
+                            index: safe_idx,
+                            layout,
+                        };
                     }
                 }
             }
 
             // Guard loads: redirect OOB reads to element 0 (safe)
-            if let Op::Load { src, index: load_idx, layout } = self.ops[op_id].op.clone() {
+            if let Op::Load {
+                src,
+                index: load_idx,
+                layout,
+            } = self.ops[op_id].op.clone()
+            {
                 if layout != MemLayout::Scalar {
                     op_id = next;
                     continue;
                 }
                 if self.depends_on(load_idx, gidx_id, &mut Set::default()) {
-                    let cond = self.insert_before(op_id, Op::Binary { x: gidx_id, y: limit, bop: BOp::Cmplt });
+                    let cond = self.insert_before(
+                        op_id,
+                        Op::Binary {
+                            x: gidx_id,
+                            y: limit,
+                            bop: BOp::Cmplt,
+                        },
+                    );
                     let cast_idx = self.insert_before(op_id, Op::Cast { x: cond, dtype: IDX_T });
-                    let safe_idx = self.insert_before(op_id, Op::Binary { x: load_idx, y: cast_idx, bop: BOp::Mul });
-                    let safe_load = self.insert_before(op_id, Op::Load { src, index: safe_idx, layout });
+                    let safe_idx = self.insert_before(
+                        op_id,
+                        Op::Binary {
+                            x: load_idx,
+                            y: cast_idx,
+                            bop: BOp::Mul,
+                        },
+                    );
+                    let safe_load = self.insert_before(
+                        op_id,
+                        Op::Load {
+                            src,
+                            index: safe_idx,
+                            layout,
+                        },
+                    );
                     self.remap(op_id, safe_load);
                     self.remove_op(op_id);
                 }
@@ -100,7 +176,12 @@ impl Kernel {
         let mut factors = Vec::new();
         let mut op_id = self.head;
         while !op_id.is_null() {
-            if let Op::Index { len, scope: Scope::Global, .. } = self.ops[op_id].op {
+            if let Op::Index {
+                len,
+                scope: Scope::Global,
+                ..
+            } = self.ops[op_id].op
+            {
                 if len % 32 != 0 {
                     factors.push((op_id, 32));
                 }

@@ -555,19 +555,27 @@ impl Tensor {
             match dtype {
                 DType::BF16 => {
                     let data: Vec<bf16> = (0..n).map(|_| rt.rng.rand()).collect();
-                    Ok(Tensor { id: rt.new_tensor(shape, data)? })
+                    Ok(Tensor {
+                        id: rt.new_tensor(shape, data)?,
+                    })
                 }
                 DType::F16 => {
                     let data: Vec<f16> = (0..n).map(|_| rt.rng.rand()).collect();
-                    Ok(Tensor { id: rt.new_tensor(shape, data)? })
+                    Ok(Tensor {
+                        id: rt.new_tensor(shape, data)?,
+                    })
                 }
                 DType::F32 => {
                     let data: Vec<f32> = (0..n).map(|_| rt.rng.rand()).collect();
-                    Ok(Tensor { id: rt.new_tensor(shape, data)? })
+                    Ok(Tensor {
+                        id: rt.new_tensor(shape, data)?,
+                    })
                 }
                 DType::F64 => {
                     let data: Vec<f64> = (0..n).map(|_| rt.rng.rand()).collect();
-                    Ok(Tensor { id: rt.new_tensor(shape, data)? })
+                    Ok(Tensor {
+                        id: rt.new_tensor(shape, data)?,
+                    })
                 }
                 DType::U8
                 | DType::U16
@@ -584,35 +592,51 @@ impl Tensor {
             match dtype {
                 DType::U8 => {
                     let data: Vec<u8> = (0..n).map(|_| rt.rng.rand()).collect();
-                    Ok(Tensor { id: rt.new_tensor(shape, data)? })
+                    Ok(Tensor {
+                        id: rt.new_tensor(shape, data)?,
+                    })
                 }
                 DType::U16 => {
                     let data: Vec<u16> = (0..n).map(|_| rt.rng.rand()).collect();
-                    Ok(Tensor { id: rt.new_tensor(shape, data)? })
+                    Ok(Tensor {
+                        id: rt.new_tensor(shape, data)?,
+                    })
                 }
                 DType::U32 => {
                     let data: Vec<u32> = (0..n).map(|_| rt.rng.rand()).collect();
-                    Ok(Tensor { id: rt.new_tensor(shape, data)? })
+                    Ok(Tensor {
+                        id: rt.new_tensor(shape, data)?,
+                    })
                 }
                 DType::U64 => {
                     let data: Vec<u64> = (0..n).map(|_| rt.rng.rand()).collect();
-                    Ok(Tensor { id: rt.new_tensor(shape, data)? })
+                    Ok(Tensor {
+                        id: rt.new_tensor(shape, data)?,
+                    })
                 }
                 DType::I8 => {
                     let data: Vec<i8> = (0..n).map(|_| rt.rng.rand()).collect();
-                    Ok(Tensor { id: rt.new_tensor(shape, data)? })
+                    Ok(Tensor {
+                        id: rt.new_tensor(shape, data)?,
+                    })
                 }
                 DType::I16 => {
                     let data: Vec<i16> = (0..n).map(|_| rt.rng.rand()).collect();
-                    Ok(Tensor { id: rt.new_tensor(shape, data)? })
+                    Ok(Tensor {
+                        id: rt.new_tensor(shape, data)?,
+                    })
                 }
                 DType::I32 => {
                     let data: Vec<i32> = (0..n).map(|_| rt.rng.rand()).collect();
-                    Ok(Tensor { id: rt.new_tensor(shape, data)? })
+                    Ok(Tensor {
+                        id: rt.new_tensor(shape, data)?,
+                    })
                 }
                 DType::I64 => {
                     let data: Vec<i64> = (0..n).map(|_| rt.rng.rand()).collect();
-                    Ok(Tensor { id: rt.new_tensor(shape, data)? })
+                    Ok(Tensor {
+                        id: rt.new_tensor(shape, data)?,
+                    })
                 }
                 DType::Bool => Err(ZyxError::dtype_error("Uniform is not supported for bool".into())),
                 DType::BF16 | DType::F16 | DType::F32 | DType::F64 => unreachable!(),
@@ -685,7 +709,9 @@ impl Tensor {
         let n = shape.iter().product();
         let mut rt = RT.lock();
         let data: Vec<T> = (0..n).map(|_| rt.rng.range(low..high)).collect();
-        Ok(Tensor { id: rt.new_tensor(shape, data)? })
+        Ok(Tensor {
+            id: rt.new_tensor(shape, data)?,
+        })
     }
 
     /// Create tensor sampled from kaiming uniform distribution.
@@ -718,7 +744,9 @@ impl Tensor {
     /// Create tensor filled with zeros.
     #[must_use]
     pub fn zeros(shape: impl IntoShape, dtype: DType) -> Tensor {
-        Tensor { id: RT.lock().zeros(shape.into_shape().collect(), dtype) }
+        Tensor {
+            id: RT.lock().zeros(shape.into_shape().collect(), dtype),
+        }
     }
 
     /// Create tensor filled with zeros with the same shape and dtype as input.
@@ -731,7 +759,9 @@ impl Tensor {
     /// Create tensor filled with ones.
     #[must_use]
     pub fn ones(shape: impl IntoShape, dtype: DType) -> Tensor {
-        Tensor { id: RT.lock().ones(shape.into_shape().collect(), dtype) }
+        Tensor {
+            id: RT.lock().ones(shape.into_shape().collect(), dtype),
+        }
     }
 
     /// Create tensor filled with ones with the same shape and dtype as input.
@@ -746,7 +776,9 @@ impl Tensor {
     /// Returns device error if the device failed to allocate memory for tensor.
     #[allow(clippy::missing_panics_doc)]
     pub fn full(shape: impl IntoShape, value: impl Scalar) -> Tensor {
-        Tensor { id: RT.lock().full(shape.into_shape().collect(), value) }
+        Tensor {
+            id: RT.lock().full(shape.into_shape().collect(), value),
+        }
     }
 
     /// Create square tensor with ones on the main diagonal and all other values set to zero.
@@ -789,7 +821,9 @@ impl Tensor {
     /// Casts self to [dtype](crate::DType).
     #[must_use]
     pub fn cast(&self, dtype: DType) -> Tensor {
-        return Tensor { id: RT.lock().cast(self.id, dtype) };
+        return Tensor {
+            id: RT.lock().cast(self.id, dtype),
+        };
     }
 
     /// Changes dtype of the tensor without mutating it.
@@ -1082,7 +1116,9 @@ impl Tensor {
                 .into(),
             ));
         }
-        Ok(Tensor { id: RT.lock().permute(self.id, &axes) })
+        Ok(Tensor {
+            id: RT.lock().permute(self.id, &axes),
+        })
     }
 
     /// Creates a new tensor by padding zeros around this tensor based on the specified padding configuration.
@@ -1138,7 +1174,9 @@ impl Tensor {
                 ));
             }
         }
-        Ok(Tensor { id: RT.lock().pad_zeros(self.id, padding) })
+        Ok(Tensor {
+            id: RT.lock().pad_zeros(self.id, padding),
+        })
     }
 
     /// Creates a new tensor by padding zeros around this tensor based on the specified padding configuration.
@@ -1197,7 +1235,9 @@ impl Tensor {
             }
         }
 
-        Ok(Tensor { id: RT.lock().pad_zeros(self.id, padding) })
+        Ok(Tensor {
+            id: RT.lock().pad_zeros(self.id, padding),
+        })
     }
 
     /// Constant padding
@@ -1337,7 +1377,9 @@ impl Tensor {
             ));
         }
 
-        Ok(Tensor { id: RT.lock().reshape(self.id, shape) })
+        Ok(Tensor {
+            id: RT.lock().reshape(self.id, shape),
+        })
     }
 
     /// Transpose (swap) the last two dimensions of this tensor.
@@ -1987,7 +2029,9 @@ impl Tensor {
     #[track_caller]
     pub fn mse_loss(&self, target: impl Into<Tensor>) -> Result<Tensor, ZyxError> {
         let (x, y) = Tensor::broadcast(self, target)?;
-        let x = Tensor { id: RT.lock().binary(x.id, y.id, BOp::Sub) };
+        let x = Tensor {
+            id: RT.lock().binary(x.id, y.id, BOp::Sub),
+        };
         Ok((x.clone() * x).mean_all())
     }
 
@@ -2787,7 +2831,9 @@ impl Tensor {
         // TODO
 
         let dtype = self.dtype();
-        let value: Tensor = Tensor { id: RT.lock().new_constant(dtype.min_constant()) };
+        let value: Tensor = Tensor {
+            id: RT.lock().new_constant(dtype.min_constant()),
+        };
         let pooled = self.pad(padding, value)?.pool(kernel_size, stride, dilation)?;
 
         if !return_indices {
@@ -2975,7 +3021,9 @@ impl Tensor {
 
     /// Create new tensor from file on disk.
     pub(crate) fn from_path(shape: Vec<Dim>, dtype: DType, path: impl AsRef<Path>, offset: u64) -> Result<Tensor, ZyxError> {
-        Ok(Tensor { id: RT.lock().tensor_from_path(shape, dtype, path.as_ref(), offset)? })
+        Ok(Tensor {
+            id: RT.lock().tensor_from_path(shape, dtype, path.as_ref(), offset)?,
+        })
     }
 
     /// All tensor elements as contiguous `le_bytes` vector in row major order
@@ -3504,7 +3552,9 @@ impl From<&Tensor> for Tensor {
 
 impl<T: Scalar> From<T> for Tensor {
     fn from(value: T) -> Self {
-        Tensor { id: RT.lock().new_tensor(vec![1], value).unwrap() }
+        Tensor {
+            id: RT.lock().new_tensor(vec![1], value).unwrap(),
+        }
     }
 }
 
@@ -3524,7 +3574,9 @@ impl<T: Scalar> TempData for T {
 
 impl<T: Scalar> From<Vec<T>> for Tensor {
     fn from(data: Vec<T>) -> Self {
-        Tensor { id: RT.lock().new_tensor(vec![data.len() as Dim], data).unwrap() }
+        Tensor {
+            id: RT.lock().new_tensor(vec![data.len() as Dim], data).unwrap(),
+        }
     }
 }
 
@@ -3600,7 +3652,9 @@ impl<T: Scalar> TempData for Vec<Vec<Vec<T>>> {
 impl<T: Scalar> From<&'static [T]> for Tensor {
     fn from(data: &'static [T]) -> Self {
         let n = data.len() as Dim;
-        Tensor { id: RT.lock().new_tensor(vec![n], data).unwrap() }
+        Tensor {
+            id: RT.lock().new_tensor(vec![n], data).unwrap(),
+        }
     }
 }
 
@@ -3620,7 +3674,9 @@ impl<T: Scalar> TempData for &'static [T] {
 
 impl<T: Scalar, const D0: usize> From<[T; D0]> for Tensor {
     fn from(data: [T; D0]) -> Self {
-        Tensor { id: RT.lock().new_tensor(vec![D0 as Dim], data).unwrap() }
+        Tensor {
+            id: RT.lock().new_tensor(vec![D0 as Dim], data).unwrap(),
+        }
     }
 }
 
@@ -3641,7 +3697,9 @@ impl<T: Scalar, const D0: usize> TempData for [T; D0] {
 impl<T: Scalar, const D0: usize, const D1: usize> From<[[T; D1]; D0]> for Tensor {
     fn from(data: [[T; D1]; D0]) -> Self {
         let data = unsafe { core::slice::from_raw_parts(data[0].as_ptr(), D0 * D1) };
-        Tensor { id: RT.lock().new_tensor(vec![D0 as Dim, D1 as Dim], data).unwrap() }
+        Tensor {
+            id: RT.lock().new_tensor(vec![D0 as Dim, D1 as Dim], data).unwrap(),
+        }
     }
 }
 
@@ -3662,7 +3720,9 @@ impl<T: Scalar, const D0: usize, const D1: usize> TempData for [[T; D1]; D0] {
 impl<T: Scalar, const D0: usize, const D1: usize, const D2: usize> From<[[[T; D2]; D1]; D0]> for Tensor {
     fn from(data: [[[T; D2]; D1]; D0]) -> Self {
         let data = unsafe { core::slice::from_raw_parts(data[0][0].as_ptr(), D0 * D1 * D2) };
-        Tensor { id: RT.lock().new_tensor(vec![D0 as Dim, D1 as Dim, D2 as Dim], data).unwrap() }
+        Tensor {
+            id: RT.lock().new_tensor(vec![D0 as Dim, D1 as Dim, D2 as Dim], data).unwrap(),
+        }
     }
 }
 
@@ -3907,14 +3967,18 @@ impl<T: Scalar, const D0: usize, const D1: usize, const D2: usize, const D3: usi
 impl Neg for Tensor {
     type Output = Tensor;
     fn neg(self) -> Self::Output {
-        Tensor { id: RT.lock().unary(self.id, UOp::Neg) }
+        Tensor {
+            id: RT.lock().unary(self.id, UOp::Neg),
+        }
     }
 }
 
 impl Neg for &Tensor {
     type Output = Tensor;
     fn neg(self) -> Self::Output {
-        Tensor { id: RT.lock().unary(self.id, UOp::Neg) }
+        Tensor {
+            id: RT.lock().unary(self.id, UOp::Neg),
+        }
     }
 }
 

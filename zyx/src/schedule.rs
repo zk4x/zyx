@@ -97,7 +97,10 @@ pub fn schedule(
             }
 
             let (dst, event) = pools[pool_id].allocate(alloc_bytes)?;
-            let dst_global = BufferId { pool: pool_id, buffer: dst };
+            let dst_global = BufferId {
+                pool: pool_id,
+                buffer: dst,
+            };
             let event = pools[pool_id].host_to_pool(&byte_slice, dst, vec![event])?;
             pools[pool_id].sync_events(vec![event])?;
             buffer_map.insert(tid, dst_global);
@@ -118,7 +121,10 @@ pub fn schedule(
         let bytes = graph.shape(tid).iter().product::<Dim>() * Dim::from(graph.dtype(tid).bit_size() / 8);
         let alloc_bytes = bytes + Dim::from(graph.dtype(tid).bit_size() / 8); // +1 element for trash slot
         let (buffer_id, event) = pools[pool_id].allocate(alloc_bytes)?;
-        let global_id = BufferId { pool: pool_id, buffer: buffer_id };
+        let global_id = BufferId {
+            pool: pool_id,
+            buffer: buffer_id,
+        };
         buffer_map.insert(tid, global_id);
         event_wait_list.push(event);
     }

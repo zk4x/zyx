@@ -203,7 +203,10 @@ pub(super) fn initialize_device(
 
     let opencl = opencl_paths.into_iter().find_map(|path| unsafe { Library::new(path) }.ok());
     let Some(opencl) = opencl else {
-        return Err(BackendError { status: ErrorStatus::DyLibNotFound, context: "[OPENCL] runtime not found.".into() });
+        return Err(BackendError {
+            status: ErrorStatus::DyLibNotFound,
+            context: "[OPENCL] runtime not found.".into(),
+        });
     };
     let clGetPlatformIDs: unsafe extern "C" fn(cl_uint, *mut *mut c_void, *mut cl_uint) -> OpenCLStatus =
         *unsafe { opencl.get(b"clGetPlatformIDs\0") }?;
@@ -427,7 +430,10 @@ pub(super) fn initialize_device(
                         let mut qstatus = OpenCLStatus::CL_SUCCESS;
                         let new_queue = unsafe { clCreateCommandQueue(context, dev, 0, &raw mut qstatus) };
                         if qstatus.check(ErrorStatus::Initialization).is_ok() {
-                            dev_queues.push(OpenCLQueue { queue: new_queue, load: 0 });
+                            dev_queues.push(OpenCLQueue {
+                                queue: new_queue,
+                                load: 0,
+                            });
                         }
                     }
                     queues.push(dev_queues);
@@ -472,7 +478,10 @@ pub(super) fn initialize_device(
                             let id = buffers.push(OpenCLBuffer { buffer, bytes });
                             let _ = reply.send(Ok((id, OpenCLEvent { event: ptr::null_mut() })));
                         }
-                        Command::Deallocate { buffer_id, event_wait_list } => {
+                        Command::Deallocate {
+                            buffer_id,
+                            event_wait_list,
+                        } => {
                             let buffer = &buffers[buffer_id];
                             debug_assert!(!buffer.buffer.is_null(), "Deallocating null buffer is invalid");
                             let event_wait_list: Vec<*mut c_void> = event_wait_list
@@ -490,7 +499,13 @@ pub(super) fn initialize_device(
                             free_bytes_atomic.fetch_add(buffer.bytes, Ordering::SeqCst);
                             buffers.remove(buffer_id);
                         }
-                        Command::HostToPool { src, bytes, dst, event_wait_list, reply } => {
+                        Command::HostToPool {
+                            src,
+                            bytes,
+                            dst,
+                            event_wait_list,
+                            reply,
+                        } => {
                             let dst = &buffers[dst];
                             debug_assert!(bytes <= dst.bytes);
                             let event_wait_list: Vec<*mut c_void> = event_wait_list
@@ -523,7 +538,13 @@ pub(super) fn initialize_device(
                             }
                             let _ = reply.send(Ok(OpenCLEvent { event }));
                         }
-                        Command::PoolToHost { src, dst, bytes, event_wait_list, reply } => {
+                        Command::PoolToHost {
+                            src,
+                            dst,
+                            bytes,
+                            event_wait_list,
+                            reply,
+                        } => {
                             let src = &buffers[src];
                             debug_assert!(!src.buffer.is_null(), "Trying to read null memory. Internal bug.");
                             let mut event_wait_list: Vec<*mut c_void> = event_wait_list
@@ -574,7 +595,13 @@ pub(super) fn initialize_device(
                             };
                             let _ = reply.send(result);
                         }
-                        Command::Compile { name, source, gws, lws, reply } => {
+                        Command::Compile {
+                            name,
+                            source,
+                            gws,
+                            lws,
+                            reply,
+                        } => {
                             let sources: &[&str] = &[source.as_str()];
                             let mut status = OpenCLStatus::CL_SUCCESS;
                             let program = unsafe {
@@ -622,11 +649,22 @@ pub(super) fn initialize_device(
                                 let _ = reply.send(Err(e));
                                 continue 'work_thread_loop;
                             }
-                            let program_id = programs.push(OpenCLProgram { program, kernel, gws, lws });
+                            let program_id = programs.push(OpenCLProgram {
+                                program,
+                                kernel,
+                                gws,
+                                lws,
+                            });
                             //println!("Pushed program_id={program_id:?}'");
                             let _ = reply.send(Ok(program_id));
                         }
-                        Command::Launch { device_id: device_idx, program_id, args, event_wait_list, reply } => {
+                        Command::Launch {
+                            device_id: device_idx,
+                            program_id,
+                            args,
+                            event_wait_list,
+                            reply,
+                        } => {
                             // Sync events
                             let events: Vec<*mut c_void> = event_wait_list
                                 .into_iter()
@@ -753,7 +791,10 @@ impl OpenCLMemoryPool {
             })
             .collect();
         self.tx
-            .send(Command::Deallocate { buffer_id, event_wait_list: events })
+            .send(Command::Deallocate {
+                buffer_id,
+                event_wait_list: events,
+            })
             .unwrap();
     }
 
@@ -767,7 +808,13 @@ impl OpenCLMemoryPool {
             .collect();
         let (reply, reply_rx) = channel();
         self.tx
-            .send(Command::HostToPool { src: src.as_ptr(), bytes: src.len() as Dim, dst, event_wait_list, reply })
+            .send(Command::HostToPool {
+                src: src.as_ptr(),
+                bytes: src.len() as Dim,
+                dst,
+                event_wait_list,
+                reply,
+            })
             .unwrap();
         reply_rx.recv().unwrap().map(Event::OpenCL)
     }
@@ -782,7 +829,13 @@ impl OpenCLMemoryPool {
             .collect();
         let (reply, reply_rx) = channel();
         self.tx
-            .send(Command::PoolToHost { src, dst: dst.as_mut_ptr(), bytes: dst.len() as Dim, event_wait_list, reply })
+            .send(Command::PoolToHost {
+                src,
+                dst: dst.as_mut_ptr(),
+                bytes: dst.len() as Dim,
+                event_wait_list,
+                reply,
+            })
             .unwrap();
         reply_rx.recv().unwrap()
     }
@@ -892,7 +945,10 @@ impl OpenCLDevice {
         }
 
         if lws.iter().product::<u64>() > self.dev_info.max_local_threads {
-            return Err(BackendError { status: ErrorStatus::KernelCompilation, context: "Invalid local work size.".into() });
+            return Err(BackendError {
+                status: ErrorStatus::KernelCompilation,
+                context: "Invalid local work size.".into(),
+            });
         }
 
         let mut global_args = String::new();
@@ -974,7 +1030,12 @@ impl OpenCLDevice {
                         }
                     }
                 }
-                &Op::Store { dst, x: src, index, layout } => {
+                &Op::Store {
+                    dst,
+                    x: src,
+                    index,
+                    layout,
+                } => {
                     let idx = get_var(index, &constants, &indices, &reg_map, &mut registers, loop_id);
                     let x = get_var(src, &constants, &indices, &reg_map, &mut registers, loop_id);
                     match layout {
@@ -1201,7 +1262,13 @@ impl OpenCLDevice {
 
         let (reply, reply_rx) = channel();
         self.tx
-            .send(Command::Compile { name: name.into(), source, gws, lws, reply })
+            .send(Command::Compile {
+                name: name.into(),
+                source,
+                gws,
+                lws,
+                reply,
+            })
             .unwrap();
         reply_rx.recv().unwrap()
     }
@@ -1222,7 +1289,13 @@ impl OpenCLDevice {
             .collect();
         let (reply, reply_rx) = channel();
         self.tx
-            .send(Command::Launch { device_id: self.device_idx, program_id, args: args.to_vec(), event_wait_list: events, reply })
+            .send(Command::Launch {
+                device_id: self.device_idx,
+                program_id,
+                args: args.to_vec(),
+                event_wait_list: events,
+                reply,
+            })
             .unwrap();
         reply_rx.recv().unwrap().map(Event::OpenCL)
     }
@@ -1242,7 +1315,10 @@ impl OpenCLStatus {
         if self == Self::CL_SUCCESS {
             Ok(())
         } else {
-            Err(BackendError { status, context: format!("{self:?}").into() })
+            Err(BackendError {
+                status,
+                context: format!("{self:?}").into(),
+            })
         }
     }
 }

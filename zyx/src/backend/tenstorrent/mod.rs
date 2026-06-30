@@ -557,7 +557,10 @@ pub(super) fn initialize_device(
     // output_size_bytes must be >= sizeof(out struct). The kernel copies min(in.size, sizeof(out))
     // bytes. The out struct starts at offset 4 (after in.output_size_bytes).
     let out_size = size_of::<TTGetDeviceInfo>() as u32 - 4;
-    let mut info = TTGetDeviceInfo { output_size_bytes: out_size, ..Default::default() };
+    let mut info = TTGetDeviceInfo {
+        output_size_bytes: out_size,
+        ..Default::default()
+    };
     unsafe {
         let ret = ioctl_ptr(fd, TENSTORRENT_IOCTL_GET_DEVICE_INFO, &mut info);
         if ret != 0 {
@@ -664,14 +667,20 @@ impl TTMemoryPool {
         })?;
 
         if self.device_file.is_none() {
-            return Err(BackendError { status: ErrorStatus::MemoryAllocation, context: "device not opened".into() });
+            return Err(BackendError {
+                status: ErrorStatus::MemoryAllocation,
+                context: "device not opened".into(),
+            });
         }
 
         // Round up to page boundary (kernel requires page-aligned size)
         let page_aligned = bytes32.next_multiple_of(PAGE_SIZE);
 
         if self.free_bytes < page_aligned as Dim {
-            return Err(BackendError { status: ErrorStatus::MemoryAllocation, context: "OOM on tenstorrent device".into() });
+            return Err(BackendError {
+                status: ErrorStatus::MemoryAllocation,
+                context: "OOM on tenstorrent device".into(),
+            });
         }
 
         let buf_index = self.next_buf_index.fetch_add(1, Ordering::Relaxed);
@@ -738,7 +747,13 @@ impl TTMemoryPool {
 
         self.free_bytes -= actual_size as Dim;
 
-        let buf = TTBuffer { file: buf_file, mmap_ptr, size: actual_size, noc_address: alloc.out.noc_address, buf_index };
+        let buf = TTBuffer {
+            file: buf_file,
+            mmap_ptr,
+            size: actual_size,
+            noc_address: alloc.out.noc_address,
+            buf_index,
+        };
 
         let id = self.buffers.push(buf);
         Ok((id, Event::TT(TTEvent)))
@@ -755,10 +770,10 @@ impl TTMemoryPool {
 
     pub fn host_to_pool(&mut self, src: &[u8], dst: PoolBufferId, event_wait_list: Vec<Event>) -> Result<Event, BackendError> {
         let _ = event_wait_list;
-        let buf = self
-            .buffers
-            .get_mut(dst)
-            .ok_or_else(|| BackendError { status: ErrorStatus::MemoryCopyH2P, context: "invalid buffer id".into() })?;
+        let buf = self.buffers.get_mut(dst).ok_or_else(|| BackendError {
+            status: ErrorStatus::MemoryCopyH2P,
+            context: "invalid buffer id".into(),
+        })?;
         let len = src.len().min(buf.size as usize);
         unsafe {
             ptr::copy_nonoverlapping(src.as_ptr(), buf.mmap_ptr, len);
@@ -768,10 +783,10 @@ impl TTMemoryPool {
 
     pub fn pool_to_host(&mut self, src: PoolBufferId, dst: &mut [u8], event_wait_list: Vec<Event>) -> Result<(), BackendError> {
         let _ = event_wait_list;
-        let buf = self
-            .buffers
-            .get_mut(src)
-            .ok_or_else(|| BackendError { status: ErrorStatus::MemoryCopyP2H, context: "invalid buffer id".into() })?;
+        let buf = self.buffers.get_mut(src).ok_or_else(|| BackendError {
+            status: ErrorStatus::MemoryCopyP2H,
+            context: "invalid buffer id".into(),
+        })?;
         let len = dst.len().min(buf.size as usize);
         unsafe {
             ptr::copy_nonoverlapping(buf.mmap_ptr, dst.as_mut_ptr(), len);
@@ -794,7 +809,10 @@ impl TTMemoryPool {
         if self.buffers.contains_key(buffer_id) {
             Ok(self.buffers[buffer_id].noc_address)
         } else {
-            Err(BackendError { status: ErrorStatus::MemoryAllocation, context: "invalid buffer id".into() })
+            Err(BackendError {
+                status: ErrorStatus::MemoryAllocation,
+                context: "invalid buffer id".into(),
+            })
         }
     }
 
@@ -802,7 +820,10 @@ impl TTMemoryPool {
         if self.buffers.contains_key(buffer_id) {
             Ok(self.buffers[buffer_id].size as u64)
         } else {
-            Err(BackendError { status: ErrorStatus::MemoryAllocation, context: "invalid buffer id".into() })
+            Err(BackendError {
+                status: ErrorStatus::MemoryAllocation,
+                context: "invalid buffer id".into(),
+            })
         }
     }
 }
@@ -831,14 +852,14 @@ impl RuntimeProcess {
                 context: format!("spawn tt-runtime {runtime_path}: {e}").into(),
             })?;
 
-        let stdin = child
-            .stdin
-            .take()
-            .ok_or_else(|| BackendError { status: ErrorStatus::Initialization, context: "tt-runtime: no stdin".into() })?;
-        let stdout = child
-            .stdout
-            .take()
-            .ok_or_else(|| BackendError { status: ErrorStatus::Initialization, context: "tt-runtime: no stdout".into() })?;
+        let stdin = child.stdin.take().ok_or_else(|| BackendError {
+            status: ErrorStatus::Initialization,
+            context: "tt-runtime: no stdin".into(),
+        })?;
+        let stdout = child.stdout.take().ok_or_else(|| BackendError {
+            status: ErrorStatus::Initialization,
+            context: "tt-runtime: no stdout".into(),
+        })?;
 
         let mut rt = RuntimeProcess {
             stdin: BufWriter::new(stdin),
@@ -862,16 +883,18 @@ impl RuntimeProcess {
     }
 
     fn send(&mut self, json: &str) -> Result<(), BackendError> {
-        self.stdin
-            .write_all(json.as_bytes())
-            .map_err(|e| BackendError { status: ErrorStatus::KernelLaunch, context: format!("tt-runtime write: {e}").into() })?;
+        self.stdin.write_all(json.as_bytes()).map_err(|e| BackendError {
+            status: ErrorStatus::KernelLaunch,
+            context: format!("tt-runtime write: {e}").into(),
+        })?;
         self.stdin.write_all(b"\n").map_err(|e| BackendError {
             status: ErrorStatus::KernelLaunch,
             context: format!("tt-runtime write nl: {e}").into(),
         })?;
-        self.stdin
-            .flush()
-            .map_err(|e| BackendError { status: ErrorStatus::KernelLaunch, context: format!("tt-runtime flush: {e}").into() })?;
+        self.stdin.flush().map_err(|e| BackendError {
+            status: ErrorStatus::KernelLaunch,
+            context: format!("tt-runtime flush: {e}").into(),
+        })?;
         Ok(())
     }
 
@@ -894,7 +917,11 @@ impl RuntimeProcess {
         }
 
         let fd = std::os::unix::io::AsRawFd::as_raw_fd(self.stdout.get_mut());
-        let mut pollfd = libc::pollfd { fd, events: libc::POLLIN, revents: 0 };
+        let mut pollfd = libc::pollfd {
+            fd,
+            events: libc::POLLIN,
+            revents: 0,
+        };
 
         let timeout_ms = i32::try_from(timeout_ms).unwrap_or(i32::MAX);
         let ret = unsafe { libc::poll(&mut pollfd, 1, timeout_ms) };
@@ -902,7 +929,10 @@ impl RuntimeProcess {
         match ret {
             -1 => {
                 let err = std::io::Error::last_os_error();
-                return Err(BackendError { status: ErrorStatus::KernelLaunch, context: format!("poll error: {err}").into() });
+                return Err(BackendError {
+                    status: ErrorStatus::KernelLaunch,
+                    context: format!("poll error: {err}").into(),
+                });
             }
             0 => Ok(false),                              // timeout
             _ => Ok(pollfd.revents & libc::POLLIN != 0), // data available or error
@@ -1115,13 +1145,16 @@ impl TTDevice {
         let prog = if self.programs.contains_key(program_id) {
             &self.programs[program_id]
         } else {
-            return Err(BackendError { status: ErrorStatus::KernelLaunch, context: "invalid program id".into() });
+            return Err(BackendError {
+                status: ErrorStatus::KernelLaunch,
+                context: "invalid program id".into(),
+            });
         };
 
-        let rt = self
-            .runtime
-            .as_mut()
-            .ok_or_else(|| BackendError { status: ErrorStatus::KernelLaunch, context: "runtime not initialized".into() })?;
+        let rt = self.runtime.as_mut().ok_or_else(|| BackendError {
+            status: ErrorStatus::KernelLaunch,
+            context: "runtime not initialized".into(),
+        })?;
 
         // args: first half are inputs, second half are outputs
         // The scheduler convention is: loads first, then stores
@@ -1137,29 +1170,37 @@ impl TTDevice {
         let src_buf = args[0];
         let dst_buf = args[n_inputs];
 
-        let src_noc = memory_pool
-            .noc_address(src_buf)
-            .map_err(|e| BackendError { status: ErrorStatus::KernelLaunch, context: format!("src noc address: {e}").into() })?;
-        let dst_noc = memory_pool
-            .noc_address(dst_buf)
-            .map_err(|e| BackendError { status: ErrorStatus::KernelLaunch, context: format!("dst noc address: {e}").into() })?;
+        let src_noc = memory_pool.noc_address(src_buf).map_err(|e| BackendError {
+            status: ErrorStatus::KernelLaunch,
+            context: format!("src noc address: {e}").into(),
+        })?;
+        let dst_noc = memory_pool.noc_address(dst_buf).map_err(|e| BackendError {
+            status: ErrorStatus::KernelLaunch,
+            context: format!("dst noc address: {e}").into(),
+        })?;
 
         // Count tiles from buffer size (round up to tile boundary)
-        let src_bytes = memory_pool
-            .buffer_size(src_buf)
-            .map_err(|e| BackendError { status: ErrorStatus::KernelLaunch, context: format!("src buffer size: {e}").into() })?;
+        let src_bytes = memory_pool.buffer_size(src_buf).map_err(|e| BackendError {
+            status: ErrorStatus::KernelLaunch,
+            context: format!("src buffer size: {e}").into(),
+        })?;
         let tile_bytes: u64 = 2048; // TILE_ELEMS * sizeof(bfloat16) = 1024 * 2
         let n_tiles = ((src_bytes + tile_bytes - 1) / tile_bytes) as u32;
         if n_tiles == 0 {
-            return Err(BackendError { status: ErrorStatus::KernelLaunch, context: "empty buffer".into() });
+            return Err(BackendError {
+                status: ErrorStatus::KernelLaunch,
+                context: "empty buffer".into(),
+            });
         }
 
         // Use longer timeout for kernel execution (60 seconds)
         let kernel_timeout_ms = 60000;
         rt.set_timeout(kernel_timeout_ms);
 
-        rt.run(&prog.hash, n_tiles, src_noc, dst_noc)
-            .map_err(|e| BackendError { status: ErrorStatus::KernelLaunch, context: format!("runtime run: {e}").into() })?;
+        rt.run(&prog.hash, n_tiles, src_noc, dst_noc).map_err(|e| BackendError {
+            status: ErrorStatus::KernelLaunch,
+            context: format!("runtime run: {e}").into(),
+        })?;
 
         // Reset timeout to default
         rt.set_timeout(30000);
@@ -1180,31 +1221,49 @@ struct SfpuInfo {
 
 fn uop_to_sfpu(uop: UOp) -> Result<SfpuInfo, BackendError> {
     match uop {
-        UOp::Exp => Ok(SfpuInfo { header: "api/compute/eltwise_unary/exp.h", init_fn: "exp_tile_init", tile_fn: "exp_tile" }),
+        UOp::Exp => Ok(SfpuInfo {
+            header: "api/compute/eltwise_unary/exp.h",
+            init_fn: "exp_tile_init",
+            tile_fn: "exp_tile",
+        }),
         // Exp2 is not available in tt-metal SFPU (no exp2_tile). An IR
         // optimization pass must convert Exp2 → Exp + multiply by ln(2)
         // before the kernel reaches this backend.
-        UOp::Reciprocal => {
-            Ok(SfpuInfo { header: "api/compute/eltwise_unary/recip.h", init_fn: "recip_tile_init", tile_fn: "recip_tile" })
-        }
-        UOp::Sqrt => Ok(SfpuInfo { header: "api/compute/eltwise_unary/sqrt.h", init_fn: "sqrt_tile_init", tile_fn: "sqrt_tile" }),
-        UOp::Sin => {
-            Ok(SfpuInfo { header: "api/compute/eltwise_unary/trigonometry.h", init_fn: "sin_tile_init", tile_fn: "sin_tile" })
-        }
-        UOp::Cos => {
-            Ok(SfpuInfo { header: "api/compute/eltwise_unary/trigonometry.h", init_fn: "cos_tile_init", tile_fn: "cos_tile" })
-        }
+        UOp::Reciprocal => Ok(SfpuInfo {
+            header: "api/compute/eltwise_unary/recip.h",
+            init_fn: "recip_tile_init",
+            tile_fn: "recip_tile",
+        }),
+        UOp::Sqrt => Ok(SfpuInfo {
+            header: "api/compute/eltwise_unary/sqrt.h",
+            init_fn: "sqrt_tile_init",
+            tile_fn: "sqrt_tile",
+        }),
+        UOp::Sin => Ok(SfpuInfo {
+            header: "api/compute/eltwise_unary/trigonometry.h",
+            init_fn: "sin_tile_init",
+            tile_fn: "sin_tile",
+        }),
+        UOp::Cos => Ok(SfpuInfo {
+            header: "api/compute/eltwise_unary/trigonometry.h",
+            init_fn: "cos_tile_init",
+            tile_fn: "cos_tile",
+        }),
         UOp::Neg => Ok(SfpuInfo {
             header: "api/compute/eltwise_unary/negative.h",
             init_fn: "negative_tile_init",
             tile_fn: "negative_tile",
         }),
-        UOp::Floor => {
-            Ok(SfpuInfo { header: "api/compute/eltwise_unary/rounding.h", init_fn: "floor_tile_init", tile_fn: "floor_tile" })
-        }
-        UOp::Trunc => {
-            Ok(SfpuInfo { header: "api/compute/eltwise_unary/rounding.h", init_fn: "trunc_tile_init", tile_fn: "trunc_tile" })
-        }
+        UOp::Floor => Ok(SfpuInfo {
+            header: "api/compute/eltwise_unary/rounding.h",
+            init_fn: "floor_tile_init",
+            tile_fn: "floor_tile",
+        }),
+        UOp::Trunc => Ok(SfpuInfo {
+            header: "api/compute/eltwise_unary/rounding.h",
+            init_fn: "trunc_tile_init",
+            tile_fn: "trunc_tile",
+        }),
         _ => Err(BackendError {
             status: ErrorStatus::KernelCompilation,
             context: format!("unsupported unary op {uop:?} for Tenstorrent (add an IR optimization pass)").into(),

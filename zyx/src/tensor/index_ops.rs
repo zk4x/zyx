@@ -329,49 +329,73 @@ impl From<u64> for DimIndex {
 
 impl From<Range<i64>> for DimIndex {
     fn from(val: Range<i64>) -> DimIndex {
-        DimIndex::Range { start: val.start, end: val.end }
+        DimIndex::Range {
+            start: val.start,
+            end: val.end,
+        }
     }
 }
 
 impl From<Range<i32>> for DimIndex {
     fn from(val: Range<i32>) -> DimIndex {
-        DimIndex::Range { start: i64::from(val.start), end: i64::from(val.end) }
+        DimIndex::Range {
+            start: i64::from(val.start),
+            end: i64::from(val.end),
+        }
     }
 }
 
 impl From<Range<usize>> for DimIndex {
     fn from(val: Range<usize>) -> DimIndex {
-        DimIndex::Range { start: val.start as i64, end: val.end as i64 }
+        DimIndex::Range {
+            start: val.start as i64,
+            end: val.end as i64,
+        }
     }
 }
 
 impl From<Range<u64>> for DimIndex {
     fn from(val: Range<u64>) -> DimIndex {
-        DimIndex::Range { start: val.start as i64, end: val.end as i64 }
+        DimIndex::Range {
+            start: val.start as i64,
+            end: val.end as i64,
+        }
     }
 }
 
 impl From<RangeInclusive<i64>> for DimIndex {
     fn from(val: RangeInclusive<i64>) -> DimIndex {
-        DimIndex::Range { start: *val.start(), end: val.end() + 1 }
+        DimIndex::Range {
+            start: *val.start(),
+            end: val.end() + 1,
+        }
     }
 }
 
 impl From<RangeInclusive<i32>> for DimIndex {
     fn from(val: RangeInclusive<i32>) -> DimIndex {
-        DimIndex::Range { start: i64::from(*val.start()), end: i64::from(*val.end()) + 1 }
+        DimIndex::Range {
+            start: i64::from(*val.start()),
+            end: i64::from(*val.end()) + 1,
+        }
     }
 }
 
 impl From<RangeInclusive<usize>> for DimIndex {
     fn from(val: RangeInclusive<usize>) -> DimIndex {
-        DimIndex::Range { start: *val.start() as i64, end: *val.end() as i64 + 1 }
+        DimIndex::Range {
+            start: *val.start() as i64,
+            end: *val.end() as i64 + 1,
+        }
     }
 }
 
 impl From<RangeInclusive<u64>> for DimIndex {
     fn from(val: RangeInclusive<u64>) -> DimIndex {
-        DimIndex::Range { start: *val.start() as i64, end: *val.end() as i64 + 1 }
+        DimIndex::Range {
+            start: *val.start() as i64,
+            end: *val.end() as i64 + 1,
+        }
     }
 }
 
@@ -383,7 +407,9 @@ impl From<RangeFrom<i64>> for DimIndex {
 
 impl From<RangeFrom<i32>> for DimIndex {
     fn from(val: RangeFrom<i32>) -> DimIndex {
-        DimIndex::RangeFrom { start: i64::from(val.start) }
+        DimIndex::RangeFrom {
+            start: i64::from(val.start),
+        }
     }
 }
 
