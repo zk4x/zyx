@@ -570,12 +570,21 @@ impl EGraph {
             }
         }
 
-        let nid = best_nid.expect(&format!(
-            "extract_dp: class {cid:?} has no Kernel alternative — kernelizer must fix this"
-        ));
-        cost_map.insert(cid, best_cost);
-        choice.insert(cid, nid);
-        best_cost
+        if let Some(nid) = best_nid {
+            cost_map.insert(cid, best_cost);
+            choice.insert(cid, nid);
+            return best_cost;
+        }
+
+        // No kernel alternative in this class. If it's an input (Leaf), cost is 0.
+        if self.classes[cid].nodes.iter().any(|&n| matches!(&self.nodes[n], ENode::Leaf(_))) {
+            cost_map.insert(cid, 0);
+            return 0;
+        }
+
+        panic!(
+            "extract_dp: class {cid:?} has no Kernel or Leaf alternative"
+        );
     }
 
     /// Walk choices from output classes, emitting kernels bottom-up
@@ -591,7 +600,10 @@ impl EGraph {
         if !emitted.insert(cid) {
             return;
         }
-        let &nid = choice.get(&cid).expect("extract: no kernel chosen for class");
+        let &nid = match choice.get(&cid) {
+            Some(nid) => nid,
+            None => return, // external input (Leaf), no kernel to emit
+        };
         let children: Vec<ClassId> = self.nodes[nid].child_classes();
         for &child in &children {
             self.emit_plan(child, choice, plan, emitted);
@@ -641,9 +653,9 @@ impl EGraph {
         for (nid, enode) in plan.iter_mut() {
             let ENode::Kernel(_, _, prog) = enode else { continue };
             let Some(kernel) = self.kernel_irs.get_mut(nid) else { continue };
-            let Some(kernel) = self.kernel_irs.get_mut(nid) else { continue };
+
             let (flop, read, write) = kernel.flop_mem_rw();
-            // TODO: resolve args (PoolBufferIds) from the plan's buffer slots
+
             let device_prog = cache.get_or_autotune(
                 dev_id,
                 kernel,
