@@ -127,7 +127,7 @@ impl Runtime {
             return replay_compiled(&mut self.pools, &mut self.devices, compiled_nodes, &input_buffers);
         }
 
-        let compiled_nodes = EGraph::compile(inputs, to_eval, order, &self.graph);
+        let compiled_nodes = EGraph::compile(inputs, to_eval, order, &self.graph, self.debug);
 
         replay_compiled(&mut self.pools, &mut self.devices, &compiled_nodes, &input_buffers)?;
         self.graph_cache.insert(key, compiled_nodes);

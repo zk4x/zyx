@@ -9,7 +9,7 @@
 #![allow(unused)]
 
 use crate::{
-    DType, Map, Set,
+    DType, DebugMask, Map, Set,
     backend::ProgramId,
     dtype::Constant,
     graph::{Node, compiled::CompiledNode},
@@ -628,7 +628,13 @@ impl EGraph {
 
     // ── Compile (orchestrate build → saturate → extract) ─
 
-    pub(crate) fn compile(inputs: &[TensorId], to_eval: &Set<TensorId>, order: &[TensorId], graph: &Graph) -> Vec<CompiledNode> {
+    pub(crate) fn compile(
+        inputs: &[TensorId],
+        to_eval: &Set<TensorId>,
+        order: &[TensorId],
+        graph: &Graph,
+        debug: DebugMask,
+    ) -> Vec<CompiledNode> {
         let mut eg = Self::new();
         let tensor_to_cid = eg.build_from_graph(order, graph);
         eg.saturate();
@@ -640,7 +646,7 @@ impl EGraph {
         }
 
         // TODO: extract and convert to CompiledNodes
-        if std::env::var("ZYX_DEBUG").map(|v| v.as_str() == "1").unwrap_or(false) {
+        if debug.sched() {
             eg.debug_print();
         }
         Vec::new()
@@ -683,7 +689,13 @@ impl EGraph {
                     ENode::Kernel(..) => "KERNEL",
                     _ => "op",
                 };
-                println!("  [{desc}] Node {:?}: {:?} inputs={:?} {}", nid, std::mem::discriminant(kind), inputs, extra);
+                println!(
+                    "  [{desc}] Node {:?}: {:?} inputs={:?} {}",
+                    nid,
+                    std::mem::discriminant(kind),
+                    inputs,
+                    extra
+                );
             }
         }
         println!("{}\n", line);
