@@ -189,6 +189,10 @@ impl EGraph {
             self.class_parent.resize(idx + 1, cid);
             self.class_rank.resize(idx + 1, 0);
         }
+        // Ensure class_parent[idx] self-points for new UF entries.
+        if idx < self.class_parent.len() && self.class_parent[idx] != ClassId(idx as u32) {
+            self.class_parent[idx] = ClassId(idx as u32);
+        }
     }
 
     // ── Hashcons + creation ────────────────────────────────
@@ -228,18 +232,37 @@ impl EGraph {
     // ── Add enode to an existing class ─────────────────────
 
     pub(crate) fn add_to_class(&mut self, nid: NodeId, cid: ClassId) {
-        let cid = self.find_class(cid);
+        let target = self.find_class(cid);
         let old_cid = self.find(nid);
-        if old_cid == cid {
+        if old_cid == target {
             return;
         }
-        self.class_of[nid.0 as usize] = cid;
-        self.classes[cid].nodes.push(nid);
+        // Remove from old class, add to target.
+        self.classes[old_cid].nodes.retain(|&n| n != nid);
+        self.class_of[nid.0 as usize] = target;
+        self.classes[target].nodes.push(nid);
+        // Link UF: old root → target root (no draining).
+        self.link_into(old_cid, target);
 
         let children: Vec<ClassId> = self.nodes[nid].child_classes();
         for (child_idx, &child) in children.iter().enumerate() {
             let child_root = self.find_class(child);
             self.classes[child_root].parents.push((nid, child_idx));
+        }
+    }
+
+    /// Link UF structure: merge class `a` into class `b` without draining nodes.
+    fn link_into(&mut self, a: ClassId, b: ClassId) {
+        let a = self.find_class(a);
+        let b = self.find_class(b);
+        if a != b {
+            // Union by rank to keep trees shallow; always make b the logical root.
+            let rank_a = self.class_rank[a.0 as usize];
+            let rank_b = self.class_rank[b.0 as usize];
+            self.class_parent[a.0 as usize] = b;
+            if rank_a >= rank_b {
+                self.class_rank[b.0 as usize] = rank_a + 1;
+            }
         }
     }
 
@@ -279,6 +302,29 @@ impl EGraph {
         }
         if self.classes[keep].dtype.is_none() {
             self.classes[keep].dtype = self.classes[drop].dtype.take();
+        }
+    }
+
+    // ── Path compression ───────────────────────────────────
+
+    pub(crate) fn compress_paths(&mut self) {
+        let cids: Vec<ClassId> = self.classes.ids().collect();
+        for &cid in &cids {
+            self.compress_class_paths(cid);
+        }
+    }
+
+    fn compress_class_paths(&mut self, cid: ClassId) {
+        // Iterative path compression to avoid stack overflow.
+        let mut root = cid;
+        while root != self.class_parent[root.0 as usize] {
+            root = self.class_parent[root.0 as usize];
+        }
+        let mut cur = cid;
+        while cur != root {
+            let next = self.class_parent[cur.0 as usize];
+            self.class_parent[cur.0 as usize] = root;
+            cur = next;
         }
     }
 
@@ -587,6 +633,7 @@ impl EGraph {
         let mut eg = Self::new();
         let tensor_to_cid = eg.build_from_graph(order, graph);
         eg.saturate();
+        eg.compress_paths();
         eg.kernelize_all();
 
         // Autotune every kernel variant on every available device.
@@ -695,6 +742,10 @@ impl EGraph {
         println!("  E-Graph");
         println!("{}", line);
         for cid in self.classes.ids() {
+            // Skip dead classes left by `make` (not a UF root).
+            if self.class_parent[cid.0 as usize] != cid {
+                continue;
+            }
             let eclass = &self.classes[cid];
             let shape_str = match &eclass.shape {
                 Some(s) => format!("{:?}", s),
