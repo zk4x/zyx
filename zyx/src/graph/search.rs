@@ -577,14 +577,16 @@ impl EGraph {
         }
 
         // No kernel alternative in this class. If it's an input (Leaf), cost is 0.
-        if self.classes[cid].nodes.iter().any(|&n| matches!(&self.nodes[n], ENode::Leaf(_))) {
+        if self.classes[cid]
+            .nodes
+            .iter()
+            .any(|&n| matches!(&self.nodes[n], ENode::Leaf(_)))
+        {
             cost_map.insert(cid, 0);
             return 0;
         }
 
-        panic!(
-            "extract_dp: class {cid:?} has no Kernel or Leaf alternative"
-        );
+        panic!("extract_dp: class {cid:?} has no Kernel or Leaf alternative");
     }
 
     /// Walk choices from output classes, emitting kernels bottom-up
@@ -611,19 +613,26 @@ impl EGraph {
         plan.push((nid, self.nodes[nid].clone()));
     }
 
-    // ── Compile (orchestrate build → saturate → extract) ─
+    // ── Compile (orchestrate build → saturate → autotune → extract) ─
 
     pub(crate) fn compile(
         inputs: &[TensorId],
         to_eval: &Set<TensorId>,
         order: &[TensorId],
         graph: &Graph,
+        devices: &mut Slab<DeviceId, Device>,
+        pools: &mut Slab<PoolId, MemoryPool>,
+        cache: &mut KernelCache,
+        config: &AutotuneConfig,
         debug: DebugMask,
     ) -> Vec<CompiledNode> {
         let mut eg = Self::new();
         let tensor_to_cid = eg.build_from_graph(order, graph);
         eg.saturate();
         eg.kernelize_all();
+
+        // Autotune every kernel variant on every available device.
+        let _ = eg.autotune_all_kernels(devices, pools, cache, config, debug);
 
         let output_classes: Vec<ClassId> = to_eval.iter().filter_map(|tid| tensor_to_cid.get(tid).copied()).collect();
         debug_assert!(!output_classes.is_empty(), "compile: no output tensors found in e-graph");
@@ -636,6 +645,60 @@ impl EGraph {
         }
         // TODO: convert plan (Vec<ENode>) to Vec<CompiledNode> with buffer slot management
         Vec::new()
+    }
+
+    /// Compile every kernel enode on every available device.
+    /// Inserts device-specific kernel enodes into each class with real timing costs.
+    fn autotune_all_kernels(
+        &mut self,
+        devices: &mut Slab<DeviceId, Device>,
+        pools: &mut Slab<PoolId, MemoryPool>,
+        cache: &mut KernelCache,
+        config: &AutotuneConfig,
+        debug: DebugMask,
+    ) -> Result<(), ZyxError> {
+        let kernel_enodes: Vec<(NodeId, ClassId, Box<[ClassId]>, Box<[ClassId]>)> = {
+            let mut v = Vec::new();
+            for cid in self.classes.ids() {
+                for &nid in &self.classes[cid].nodes {
+                    if let ENode::Kernel(inputs, outputs, _) = &self.nodes[nid] {
+                        v.push((nid, cid, inputs.clone(), outputs.clone()));
+                    }
+                }
+            }
+            v
+        };
+
+        for (nid, cid, inputs, outputs) in &kernel_enodes {
+            // Remove the un-compiled original from its class.
+            if let Some(class) = self.classes.get_mut(*cid) {
+                class.nodes.retain(|&n| n != *nid);
+            }
+            let Some(kernel) = self.kernel_irs.get(nid).cloned() else { continue };
+            let heuristic_cost = self.costs.get(nid).copied().unwrap_or(u64::MAX);
+
+            let device_ids: Vec<DeviceId> = devices.ids().collect();
+            for dev_id in device_ids {
+                let device = &mut devices[dev_id];
+                let pool_id = device.memory_pool_id();
+                let pool = &mut pools[pool_id];
+
+                let mut kernel = kernel.clone();
+                let (flop, read, write) = kernel.flop_mem_rw();
+
+                if let Ok((device_prog, timing)) = cache.get_or_autotune(
+                    dev_id, &mut kernel, device, pool, config, flop, read, write, debug,
+                ) {
+                    let prog = ProgramId { device: dev_id, program: device_prog };
+                    let (new_nid, _) = self.make(ENode::Kernel(inputs.clone(), outputs.clone(), prog));
+                    let cost = if timing > 0 { timing } else { heuristic_cost };
+                    self.costs.insert(new_nid, cost);
+                    self.add_to_class(new_nid, *cid);
+                }
+            }
+        }
+
+        Ok(())
     }
 
     /// Autotune every kernel in the extracted plan.
@@ -652,22 +715,21 @@ impl EGraph {
     ) -> Result<(), ZyxError> {
         for (nid, enode) in plan.iter_mut() {
             let ENode::Kernel(_, _, prog) = enode else { continue };
-            let Some(kernel) = self.kernel_irs.get_mut(nid) else { continue };
+            let Some(kernel) = self.kernel_irs.get_mut(nid) else {
+                continue;
+            };
 
             let (flop, read, write) = kernel.flop_mem_rw();
 
-            let device_prog = cache.get_or_autotune(
-                dev_id,
-                kernel,
-                device,
-                memory_pool,
-                config,
-                flop,
-                read,
-                write,
-                debug,
-            )?;
-            *prog = ProgramId { device: dev_id, program: device_prog };
+            let (device_prog, timing) = cache.get_or_autotune(dev_id, kernel, device, memory_pool, config, flop, read, write, debug)?;
+            *prog = ProgramId {
+                device: dev_id,
+                program: device_prog,
+            };
+            // Use real timing as cost for e-graph extraction
+            if timing > 0 {
+                self.costs.insert(*nid, timing);
+            }
         }
         Ok(())
     }

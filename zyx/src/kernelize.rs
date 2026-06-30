@@ -654,7 +654,7 @@ impl<'a> Kernelizer<'a> {
 
         let (flop, read, write) = kernel.flop_mem_rw();
 
-        let program_id = self.cache.get_or_autotune(
+        let (program_id, _timing) = self.cache.get_or_autotune(
             dev_id,
             &mut kernel,
             device,

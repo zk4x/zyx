@@ -159,20 +159,20 @@ impl KernelCache {
         read: u64,
         write: u64,
         debug: DebugMask,
-    ) -> Result<DeviceProgramId, ZyxError> {
+    ) -> Result<(DeviceProgramId, u64), ZyxError> {
         let dev_info_id = self.get_or_add_dev_info(device.info());
 
         let kernel_id = if let Some(&kid) = self.kernels.get(kernel) {
             // Already compiled for this device → fast path
             if let Some(&program_id) = self.programs.get(&(kid, dev_id)) {
-                return Ok(program_id);
+                return Ok((program_id, 0));
             }
             // Cached optimizations available → apply and compile
             if let Some(opt_seq) = self.optimizations.get(&(kid, dev_info_id)) {
                 opt_seq.apply(kernel, device.info());
                 let program_id = device.compile(kernel, debug.asm())?;
                 self.programs.insert((kid, dev_id), program_id);
-                return Ok(program_id);
+                return Ok((program_id, 0));
             }
             kid
         } else {
@@ -191,11 +191,11 @@ impl KernelCache {
         kernel.renumber_indices();
         kernel.verify();
 
-        let (program_id, opts) = kernel.autotune_(device, memory_pool, config, flop, read, write, debug)?;
+        let (program_id, opts, timing) = kernel.autotune_(device, memory_pool, config, flop, read, write, debug)?;
         self.programs.insert((kernel_id, dev_id), program_id);
         self.optimizations.insert((kernel_id, dev_info_id), opts);
 
-        Ok(program_id)
+        Ok((program_id, timing))
     }
 }
 

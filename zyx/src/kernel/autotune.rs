@@ -403,7 +403,7 @@ impl Kernel {
         read_bytes: u64,
         write_bytes: u64,
         debug: DebugMask,
-    ) -> Result<(DeviceProgramId, OptSeq), BackendError> {
+    ) -> Result<(DeviceProgramId, OptSeq, u64), BackendError> {
         let mut kernel = self.clone();
 
         kernel.run_always_on_optimizations();
@@ -427,7 +427,7 @@ impl Kernel {
         kernel.debug();
 
         let args = kernel.alloc_buffers(memory_pool)?;
-        let (program_id, _) = kernel.launch_with_timings(
+        let (program_id, timing) = kernel.launch_with_timings(
             &args,
             device,
             memory_pool,
@@ -445,6 +445,7 @@ impl Kernel {
                 opts: Vec::new(),
                 cost: Cost::default(),
             },
+            timing,
         ))
     }
 
@@ -483,7 +484,7 @@ impl Kernel {
         read_bytes: u64,
         write_bytes: u64,
         debug: DebugMask,
-    ) -> Result<(DeviceProgramId, OptSeq), BackendError> {
+    ) -> Result<(DeviceProgramId, OptSeq, u64), BackendError> {
         if false {
             return self.apply_selected_optimizations(device, memory_pool, config, flop, read_bytes, write_bytes, debug);
         }
@@ -672,7 +673,7 @@ impl Kernel {
             }));
         }
 
-        Ok((best_program, best_opt_seq))
+        Ok((best_program, best_opt_seq, best_time))
     }
 
     /// Get a hash of the kernel for deduplication during autotuning.
