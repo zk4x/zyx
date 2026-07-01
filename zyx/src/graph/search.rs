@@ -10,7 +10,10 @@ use crate::{
     DType, DebugMask, Map, Set, ZyxError,
     backend::{AutotuneConfig, Device, DeviceId, MemoryPool, PoolId, ProgramId},
     dtype::Constant,
-    graph::{Node, compiled::CompiledNode},
+    graph::{
+        Node,
+        compiled::{BufferSlot, CompiledNode},
+    },
     kernel::{BOp, Kernel, UOp},
     kernel_cache::KernelCache,
     shape::{Dim, UAxis},
@@ -674,7 +677,7 @@ impl EGraph {
 
     pub(crate) fn compile(
         inputs: &[TensorId],
-        to_eval: &Set<TensorId>,
+        output_order: &[TensorId],
         order: &[TensorId],
         graph: &Graph,
         devices: &mut Slab<DeviceId, Device>,
@@ -682,7 +685,7 @@ impl EGraph {
         cache: &mut KernelCache,
         config: &AutotuneConfig,
         debug: DebugMask,
-    ) -> Vec<CompiledNode> {
+    ) -> (Vec<CompiledNode>, Vec<BufferSlot>) {
         let mut eg = Self::new();
         let tensor_to_cid = eg.build_from_graph(order, graph);
         eg.saturate();
@@ -692,7 +695,7 @@ impl EGraph {
         // Autotune every kernel variant on every available device.
         let _ = eg.autotune_all_kernels(devices, pools, cache, config, debug);
 
-        let output_classes: Vec<ClassId> = to_eval.iter().filter_map(|tid| tensor_to_cid.get(tid).copied()).collect();
+        let output_classes: Vec<ClassId> = output_order.iter().filter_map(|tid| tensor_to_cid.get(tid).copied()).collect();
         debug_assert!(!output_classes.is_empty(), "compile: no output tensors found in e-graph");
 
         eg.debug_print();
@@ -702,8 +705,124 @@ impl EGraph {
         if debug.sched() {
             eg.debug_print_plan(&plan);
         }
-        // TODO: convert plan (Vec<ENode>) to Vec<CompiledNode> with buffer slot management
-        Vec::new()
+        eg.plan_to_compiled(inputs, output_order, &tensor_to_cid, &plan, devices)
+    }
+
+    /// Convert an extracted kernel plan to a sequence of [`CompiledNode`]s with
+    /// buffer slot management.
+    ///
+    /// The plan is already in bottom-up topological order (children before
+    /// parents).  Each kernel references input/output [`ClassId`]s.  We assign
+    /// a [`BufferSlot`] to every class that appears in the plan, then emit:
+    ///
+    ///   • [`CompiledNode::Leaf`] for each input tensor (in caller order),
+    ///   • [`CompiledNode::Allocate`] for every intermediate/output class,
+    ///   • [`CompiledNode::LaunchProgram`] for each kernel.
+    ///
+    /// Returns the compiled nodes plus the output [`BufferSlot`]s in the same
+    /// order as `output_order` (no TensorIds — the caller matches by position).
+    fn plan_to_compiled(
+        &mut self,
+        inputs: &[TensorId],
+        output_order: &[TensorId],
+        tensor_to_cid: &Map<TensorId, ClassId>,
+        plan: &[(NodeId, ENode)],
+        devices: &Slab<DeviceId, Device>,
+    ) -> (Vec<CompiledNode>, Vec<BufferSlot>) {
+        // 1. Collect every class referenced in the plan.
+        let mut all_classes: Vec<ClassId> = Vec::new();
+        let mut seen: Set<ClassId> = Set::default();
+        for (_, enode) in plan {
+            if let ENode::Kernel(inputs, outputs, _) = enode {
+                for &cid in inputs.iter() {
+                    if seen.insert(cid) {
+                        all_classes.push(cid);
+                    }
+                }
+                for &cid in outputs.iter() {
+                    if seen.insert(cid) {
+                        all_classes.push(cid);
+                    }
+                }
+            }
+        }
+
+        // 2. Identify input classes (Leaf/Const enodes — not produced by a kernel).
+        let input_cids: Set<ClassId> = inputs.iter().filter_map(|tid| tensor_to_cid.get(tid).copied()).collect();
+
+        // 3. Assign a BufferSlot to every class.
+        let mut class_to_slot: Map<ClassId, BufferSlot> = Map::default();
+        for (i, &cid) in all_classes.iter().enumerate() {
+            class_to_slot.insert(cid, BufferSlot(i as u32));
+        }
+
+        let mut nodes: Vec<CompiledNode> = Vec::new();
+        let mut allocated: Set<ClassId> = Set::default();
+        let mut output_slots: Vec<BufferSlot> = Vec::new();
+
+        // 4. Leaf nodes for input tensors (in caller order, one per input).
+        for &tid in inputs {
+            if let Some(&cid) = tensor_to_cid.get(&tid) {
+                let cid = self.find_class(cid);
+                if let Some(&slot) = class_to_slot.get(&cid) {
+                    nodes.push(CompiledNode::Leaf {
+                        pool: PoolId::from(0usize),
+                        slot,
+                    });
+                }
+            }
+        }
+
+        // 5. Process each kernel in plan order.
+        for (_, enode) in plan {
+            let (kernel_inputs, kernel_outputs, prog) = match enode {
+                ENode::Kernel(inputs, outputs, prog) => (inputs, outputs, *prog),
+                _ => continue,
+            };
+
+            // Allocate outputs that haven't been allocated yet.
+            for &out_cid in kernel_outputs.iter() {
+                let out_cid = self.find_class(out_cid);
+                if !input_cids.contains(&out_cid) && allocated.insert(out_cid) {
+                    let shape = self.classes[out_cid].shape.as_ref().unwrap();
+                    let dtype = self.classes[out_cid].dtype.unwrap();
+                    let elem_count: Dim = shape.iter().product();
+                    let bytes = elem_count * Dim::from(dtype.bit_size() / 8);
+                    let pool_id = devices[prog.device].memory_pool_id();
+                    nodes.push(CompiledNode::Allocate {
+                        size: bytes,
+                        pool: pool_id,
+                        slot: class_to_slot[&out_cid],
+                    });
+                }
+            }
+
+            // Build launch args: inputs then outputs.
+            let mut args: Vec<BufferSlot> = Vec::with_capacity(kernel_inputs.len() + kernel_outputs.len());
+            for &in_cid in kernel_inputs.iter() {
+                let in_cid = self.find_class(in_cid);
+                args.push(class_to_slot[&in_cid]);
+            }
+            for &out_cid in kernel_outputs.iter() {
+                let out_cid = self.find_class(out_cid);
+                args.push(class_to_slot[&out_cid]);
+            }
+            nodes.push(CompiledNode::LaunchProgram { program: prog, args });
+        }
+
+        // 6. Output slots in the same order as output_order.
+        for &tid in output_order {
+            if let Some(&cid) = tensor_to_cid.get(&tid) {
+                let cid = self.find_class(cid);
+                if let Some(&slot) = class_to_slot.get(&cid) {
+                    if !input_cids.contains(&cid) {
+                        output_slots.push(slot);
+                    }
+                }
+            }
+        }
+
+        (nodes, output_slots)
     }
 
     /// Compile every kernel enode on every available device.

@@ -113,6 +113,9 @@ impl Runtime {
     ) -> Result<(), ZyxError> {
         let key = hash_order(order, &self.graph);
 
+        // Output tensors in deterministic order (their position in the topo order).
+        let output_order: Vec<TensorId> = order.iter().copied().filter(|tid| to_eval.contains(tid)).collect();
+
         let input_buffers: Vec<BufferId> = inputs
             .iter()
             .map(|tid| {
@@ -123,24 +126,32 @@ impl Runtime {
             })
             .collect();
 
-        if let Some(compiled_nodes) = self.graph_cache.get(&key) {
-            return replay_compiled(&mut self.pools, &mut self.devices, compiled_nodes, &input_buffers);
+        let (compiled_nodes, output_slots) = if let Some(cached) = self.graph_cache.get(&key) {
+            cached.clone()
+        } else {
+            let result = EGraph::compile(
+                inputs,
+                &output_order,
+                order,
+                &self.graph,
+                &mut self.devices,
+                &mut self.pools,
+                &mut self.kernel_cache,
+                &self.autotune_config,
+                self.debug,
+            );
+            self.graph_cache.insert(key, result.clone());
+            result
+        };
+
+        let slots = replay_compiled(&mut self.pools, &mut self.devices, &compiled_nodes, &input_buffers)?;
+
+        for (tid, buf_slot) in output_order.iter().zip(output_slots.iter()) {
+            if let Some(buf) = slots[buf_slot.0 as usize] {
+                self.buffer_map.insert(*tid, buf);
+            }
         }
 
-        let compiled_nodes = EGraph::compile(
-            inputs,
-            to_eval,
-            order,
-            &self.graph,
-            &mut self.devices,
-            &mut self.pools,
-            &mut self.kernel_cache,
-            &self.autotune_config,
-            self.debug,
-        );
-
-        replay_compiled(&mut self.pools, &mut self.devices, &compiled_nodes, &input_buffers)?;
-        self.graph_cache.insert(key, compiled_nodes);
         Ok(())
     }
 }
@@ -155,12 +166,14 @@ impl Runtime {
 /// [`CompiledNode::Allocate`] allocates and fills a slot.
 /// [`CompiledNode::LaunchProgram`] reads argument slots.
 /// [`CompiledNode::Deallocate`] drains them.
+///
+/// Returns the slot table so callers can retrieve output buffer IDs.
 fn replay_compiled(
     pools: &mut Slab<PoolId, MemoryPool>,
     devices: &mut Slab<DeviceId, Device>,
     nodes: &[CompiledNode],
     inputs: &[BufferId],
-) -> Result<(), ZyxError> {
+) -> Result<Vec<Option<BufferId>>, ZyxError> {
     let mut slots: Vec<Option<BufferId>> = Vec::new();
     let mut input_idx = 0;
 
@@ -209,5 +222,5 @@ fn replay_compiled(
             }
         }
     }
-    Ok(())
+    Ok(slots)
 }

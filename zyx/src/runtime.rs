@@ -5,7 +5,7 @@
 use crate::backend::{AutotuneConfig, BufferId, Config, Device, DeviceId, Event, MemoryPool, OpCapability, PoolId};
 use crate::dtype::{Constant, DType};
 use crate::error::ZyxError;
-use crate::graph::compiled::CompiledNode;
+use crate::graph::compiled::{BufferSlot, CompiledNode};
 use crate::graph::{Graph, Node};
 use crate::kernel::{BOp, UOp};
 use crate::kernel_cache::KernelCache;
@@ -66,9 +66,8 @@ pub(crate) struct Runtime {
     pub implicit_casts: bool,
     /// Are we in training mode?
     pub training: bool,
-    // Cache for compiled kernels, maps structural hash to compiled nodes.
-    #[allow(unused)]
-    pub(crate) graph_cache: Map<u128, Vec<CompiledNode>>,
+    // Cache for compiled graphs, maps structural hash to (compiled nodes, output buffer slots).
+    pub(crate) graph_cache: Map<u128, (Vec<CompiledNode>, Vec<BufferSlot>)>,
 }
 
 pub trait TempData: Send {
