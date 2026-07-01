@@ -209,7 +209,7 @@ impl EGraph {
             if self.is_leaf_or_const(cid) {
                 let rc = rcs.get(&cid).copied().unwrap_or(0);
                 if rc > 0 {
-                    let kid = self.new_load_kernel(cid, &mut kernel_id_counter);
+                    let kid = self.new_load_kernel(cid, &mut kernel_id_counter, &mut kernel_loads);
                     visited.insert(cid, (kid, kid_first_op(kid, &self.kernel_irs)));
                     outputs.entry(kid).or_default().push(cid);
                 }
@@ -244,7 +244,7 @@ impl EGraph {
                 } else {
                     // Child not in visited (shouldn't happen for a valid
                     // topo order), create load kernel on the fly.
-                    let kid = self.new_load_kernel(root, &mut kernel_id_counter);
+                    let kid = self.new_load_kernel(root, &mut kernel_id_counter, &mut kernel_loads);
                     let op = kid_first_op(kid, &self.kernel_irs);
                     visited.insert(root, (kid, op));
                     child_kids.push((kid, op));
@@ -255,7 +255,7 @@ impl EGraph {
             let target_kid = child_kids[0].0;
             for &(ckid, _) in &child_kids[1..] {
                 if ckid != target_kid {
-                    self.merge_kernels(ckid, target_kid, &mut visited);
+                    self.merge_kernels(ckid, target_kid, &mut visited, &mut kernel_loads, &mut kernel_stores);
                 }
             }
             // After merge, re-read from visited (merge_kernels remapped OpIds).
@@ -287,6 +287,11 @@ impl EGraph {
                 &child_kids,
                 target_kid,
             );
+            debug_assert!(
+                !result_op.is_null(),
+                "emit_enode returned NULL op for cid={cid:?}, nid={:?}",
+                enodes[0]
+            );
 
             // Add result to outputs and visited.
             visited.insert(cid, (target_kid, result_op));
@@ -301,7 +306,7 @@ impl EGraph {
             let is_multi = child_kids.len() > 1 || multi_in_same_kid;
 
             if is_output || is_multi || is_reduce {
-                self.add_store(cid, target_kid, result_op, &mut visited, &mut outputs, &mut kernel_id_counter);
+                self.add_store(cid, target_kid, result_op, &mut visited, &mut outputs, &mut kernel_id_counter, &kernel_loads, &mut kernel_stores);
             }
 
             // ── Process subsequent enode variants (cloned per variant) ──
@@ -339,10 +344,26 @@ impl EGraph {
         src: KMKernelId,
         dst: KMKernelId,
         visited: &mut Map<ClassId, (KMKernelId, OpId)>,
+        kernel_loads: &mut Map<KMKernelId, Vec<ClassId>>,
+        kernel_stores: &mut Map<KMKernelId, Vec<ClassId>>,
     ) {
-        let src_kernel = self.kernel_irs.remove(&src).unwrap_or_else(|| {
-            panic!("merge_kernels: src={src:?}, dst={dst:?} not found in kernel_irs")
-        });
+        debug_assert!(src != dst, "merge_kernels: self-merge src={src:?}==dst");
+        debug_assert!(
+            self.kernel_irs.contains_key(&dst),
+            "merge_kernels: dst={dst:?} not in kernel_irs"
+        );
+        debug_assert!(
+            self.kernel_irs.contains_key(&src),
+            "merge_kernels: src={src:?} not in kernel_irs (removed already?)"
+        );
+        let src_kernel = self.kernel_irs.remove(&src).unwrap();
+        // Merge load/store tracking.
+        if let Some(loads) = kernel_loads.remove(&src) {
+            kernel_loads.entry(dst).or_default().extend(loads);
+        }
+        if let Some(stores) = kernel_stores.remove(&src) {
+            kernel_stores.entry(dst).or_default().extend(stores);
+        }
         let mut op_map: Map<OpId, OpId> = Map::default();
         let mut i = src_kernel.head;
         while !i.is_null() {
@@ -480,10 +501,15 @@ impl EGraph {
         visited: &mut Map<ClassId, (KMKernelId, OpId)>,
         outputs: &mut Map<KMKernelId, Vec<ClassId>>,
         _counter: &mut u32,
+        kernel_loads: &Map<KMKernelId, Vec<ClassId>>,
+        kernel_stores: &mut Map<KMKernelId, Vec<ClassId>>,
     ) {
+        debug_assert!(self.kernel_irs.contains_key(&kid), "add_store: kid={kid:?} not in kernel_irs");
+        debug_assert!(!op_id.is_null(), "add_store: NULL op_id for cid={cid:?}");
         let dtype = self.classes[cid].dtype;
         let kernel = self.kernel_irs.get_mut(&kid).unwrap();
         kernel.store_contiguous(op_id, dtype);
+        kernel_stores.entry(kid).or_default().push(cid);
 
         // Remove from visited — stored classes are loaded, not merged.
         visited.remove(&cid);
@@ -496,30 +522,20 @@ impl EGraph {
                 // Remove ALL visited entries pointing to this kernel so
                 // their stale (kid, op) pairs don't get reused later.
                 visited.retain(|_, &mut (k, _)| k != kid);
-                let kernel = self.kernel_irs.remove(&kid).unwrap();
-                // Collect the actual input/output class IDs from the kernel's
-                // load and store ops by scanning the linked list.
-                let mut input_cids: Vec<ClassId> = Vec::new();
-                let mut output_cids: Vec<ClassId> = Vec::new();
-                let mut op_i = kernel.head;
-                while !op_i.is_null() {
-                    match &kernel.ops[op_i].op {
-                        Op::LoadView(_) => {
-                            // Each LoadView loads a class that was tracked in visited.
-                            // We need to know which class this load corresponds to.
-                            // For now, store a placeholder.
-                            input_cids.push(ClassId(u32::MAX));
-                        }
-                        Op::StoreView { .. } => {
-                            output_cids.push(ClassId(u32::MAX));
-                        }
-                        _ => {}
-                    }
-                    op_i = kernel.ops[op_i].next;
-                }
+                let owned_kernel = self.kernel_irs.remove(&kid).unwrap();
+                let input_cids = kernel_loads.get(&kid).cloned().unwrap_or_default();
+                let output_cids = kernel_stores.get(&kid).cloned().unwrap_or_default();
+                debug_assert!(
+                    !input_cids.iter().any(|&c| c.0 == u32::MAX),
+                    "add_store: NULL class in kernel_loads[{kid:?}]"
+                );
+                debug_assert!(
+                    !output_cids.iter().any(|&c| c.0 == u32::MAX),
+                    "add_store: NULL class in kernel_stores[{kid:?}]"
+                );
                 let inputs: Box<[ClassId]> = input_cids.into_boxed_slice();
                 let outputs_box: Box<[ClassId]> = output_cids.into_boxed_slice();
-                let compute_ops = kernel
+                let compute_ops = owned_kernel
                     .ops
                     .values()
                     .filter(|n| {
@@ -540,7 +556,7 @@ impl EGraph {
                 self.class_of[idx] = cid; // last stored class "owns" the enode
                 self.classes[cid].nodes.push(knid);
                 self.costs.insert(knid, kernel_cost(compute_ops.max(1)));
-                self.kernel_irs.insert(kid, kernel); // keep for autotune
+                self.kernel_irs.insert(kid, owned_kernel); // keep for autotune
                 self.kernel_map.insert(knid, kid);
             }
         }

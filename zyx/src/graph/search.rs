@@ -721,6 +721,15 @@ impl EGraph {
 
         eg.kernelize_all();
 
+        // Validate that no pre-existing class roots changed during kernelize_all.
+        debug_assert!(
+            order.iter().all(|&tid| {
+                let cid = tensor_to_cid.get(&tid).copied().unwrap_or(ClassId::NULL);
+                cid == ClassId::NULL || eg.find_class(cid) == cid
+            }),
+            "compile: class roots changed during kernelize_all"
+        );
+
         // Autotune every kernel variant on every available device.
         let _ = eg.autotune_all_kernels(devices, pools, cache, config, debug);
 
