@@ -685,7 +685,7 @@ impl EGraph {
         cache: &mut KernelCache,
         config: &AutotuneConfig,
         debug: DebugMask,
-    ) -> (Vec<CompiledNode>, Vec<BufferSlot>) {
+    ) -> Vec<CompiledNode> {
         let mut eg = Self::new();
         let tensor_to_cid = eg.build_from_graph(order, graph);
         eg.saturate();
@@ -695,7 +695,10 @@ impl EGraph {
         // Autotune every kernel variant on every available device.
         let _ = eg.autotune_all_kernels(devices, pools, cache, config, debug);
 
-        let output_classes: Vec<ClassId> = output_order.iter().filter_map(|tid| tensor_to_cid.get(tid).copied()).collect();
+        let output_classes: Vec<ClassId> = output_order
+            .iter()
+            .filter_map(|tid| tensor_to_cid.get(tid).copied())
+            .collect();
         debug_assert!(!output_classes.is_empty(), "compile: no output tensors found in e-graph");
 
         eg.debug_print();
@@ -705,7 +708,7 @@ impl EGraph {
         if debug.sched() {
             eg.debug_print_plan(&plan);
         }
-        eg.plan_to_compiled(inputs, output_order, &tensor_to_cid, &plan, devices)
+        eg.plan_to_compiled(inputs, output_order, &tensor_to_cid, plan, devices)
     }
 
     /// Convert an extracted kernel plan to a sequence of [`CompiledNode`]s with
@@ -726,13 +729,13 @@ impl EGraph {
         inputs: &[TensorId],
         output_order: &[TensorId],
         tensor_to_cid: &Map<TensorId, ClassId>,
-        plan: &[(NodeId, ENode)],
+        plan: Vec<(NodeId, ENode)>,
         devices: &Slab<DeviceId, Device>,
-    ) -> (Vec<CompiledNode>, Vec<BufferSlot>) {
+    ) -> Vec<CompiledNode> {
         // 1. Collect every class referenced in the plan.
         let mut all_classes: Vec<ClassId> = Vec::new();
         let mut seen: Set<ClassId> = Set::default();
-        for (_, enode) in plan {
+        for (_, enode) in &plan {
             if let ENode::Kernel(inputs, outputs, _) = enode {
                 for &cid in inputs.iter() {
                     if seen.insert(cid) {
@@ -758,7 +761,6 @@ impl EGraph {
 
         let mut nodes: Vec<CompiledNode> = Vec::new();
         let mut allocated: Set<ClassId> = Set::default();
-        let mut output_slots: Vec<BufferSlot> = Vec::new();
 
         // 4. Leaf nodes for input tensors (in caller order, one per input).
         for &tid in inputs {
@@ -775,9 +777,8 @@ impl EGraph {
 
         // 5. Process each kernel in plan order.
         for (_, enode) in plan {
-            let (kernel_inputs, kernel_outputs, prog) = match enode {
-                ENode::Kernel(inputs, outputs, prog) => (inputs, outputs, *prog),
-                _ => continue,
+            let ENode::Kernel(kernel_inputs, kernel_outputs, program) = enode else {
+                panic!("Plan must contain only kernels.")
             };
 
             // Allocate outputs that haven't been allocated yet.
@@ -788,7 +789,7 @@ impl EGraph {
                     let dtype = self.classes[out_cid].dtype.unwrap();
                     let elem_count: Dim = shape.iter().product();
                     let bytes = elem_count * Dim::from(dtype.bit_size() / 8);
-                    let pool_id = devices[prog.device].memory_pool_id();
+                    let pool_id = devices[program.device].memory_pool_id();
                     nodes.push(CompiledNode::Allocate {
                         size: bytes,
                         pool: pool_id,
@@ -807,22 +808,22 @@ impl EGraph {
                 let out_cid = self.find_class(out_cid);
                 args.push(class_to_slot[&out_cid]);
             }
-            nodes.push(CompiledNode::LaunchProgram { program: prog, args });
+            nodes.push(CompiledNode::LaunchProgram { program, args });
         }
 
-        // 6. Output slots in the same order as output_order.
+        // 6. Output markers in output_order order.
         for &tid in output_order {
             if let Some(&cid) = tensor_to_cid.get(&tid) {
                 let cid = self.find_class(cid);
                 if let Some(&slot) = class_to_slot.get(&cid) {
                     if !input_cids.contains(&cid) {
-                        output_slots.push(slot);
+                        nodes.push(CompiledNode::Output { slot });
                     }
                 }
             }
         }
 
-        (nodes, output_slots)
+        nodes
     }
 
     /// Compile every kernel enode on every available device.

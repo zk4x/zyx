@@ -47,6 +47,12 @@ pub enum CompiledNode {
         program: ProgramId,
         args: Vec<BufferSlot>,
     },
+    /// Marks a slot as an output buffer.
+    /// Emitted by the compiler to tell the runtime which slots hold output values.
+    /// The caller matches these positionally with the output tensor order.
+    Output {
+        slot: BufferSlot,
+    },
 }
 
 /// Compute a structural hash for the subgraph in `order`.
@@ -126,7 +132,7 @@ impl Runtime {
             })
             .collect();
 
-        let (compiled_nodes, output_slots) = if let Some(cached) = self.graph_cache.get(&key) {
+        let compiled_nodes = if let Some(cached) = self.graph_cache.get(&key) {
             cached.clone()
         } else {
             let result = EGraph::compile(
@@ -146,9 +152,17 @@ impl Runtime {
 
         let slots = replay_compiled(&mut self.pools, &mut self.devices, &compiled_nodes, &input_buffers)?;
 
-        for (tid, buf_slot) in output_order.iter().zip(output_slots.iter()) {
-            if let Some(buf) = slots[buf_slot.0 as usize] {
-                self.buffer_map.insert(*tid, buf);
+        // Output markers appear in the same order as output_order.
+        // Match them positionally to populate buffer_map.
+        let mut out_idx = 0;
+        for node in &compiled_nodes {
+            if let CompiledNode::Output { slot } = node {
+                if let Some(&tid) = output_order.get(out_idx) {
+                    if let Some(buf) = slots[slot.0 as usize] {
+                        self.buffer_map.insert(tid, buf);
+                    }
+                }
+                out_idx += 1;
             }
         }
 
@@ -219,6 +233,13 @@ fn replay_compiled(
                 let pool = &mut pools[pool_id];
                 let kernel_args: Vec<_> = args.iter().map(|s| slots[s.0 as usize].unwrap().buffer).collect();
                 let _event = devices[program.device].launch(program.program, pool, &kernel_args, vec![])?;
+            }
+            CompiledNode::Output { slot } => {
+                // Ensure the slot table is large enough (no-op otherwise).
+                let idx = slot.0 as usize;
+                if idx >= slots.len() {
+                    slots.resize(idx + 1, None);
+                }
             }
         }
     }
