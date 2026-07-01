@@ -7,7 +7,7 @@
 use crate::{
     DType, Map, Set, ZyxError,
     backend::{BufferId, Device, DeviceId, MemoryPool, PoolId, ProgramId},
-    graph::{Graph, search::EGraph},
+    graph::{Graph, Node, search::EGraph},
     hashers,
     runtime::Runtime,
     shape::Dim,
@@ -93,6 +93,10 @@ fn hash_order(order: &[TensorId], graph: &Graph) -> u128 {
         shape.hash(&mut hasher);
         h1.hash(&mut hasher);
         h2.hash(&mut hasher);
+        // Pad's padding values are stored in the graph, not the Node variant.
+        if let Node::Pad { .. } = node {
+            graph.padding(tid).hash(&mut hasher);
+        }
         hashes.push(hasher.finish());
     }
 

@@ -259,7 +259,7 @@ impl Graph {
         panic!("DType of {tensor_id:?} could not be found. This is internal bug.")
     }
 
-    pub(super) fn padding(&self, tensor_id: TensorId) -> &[(i64, i64)] {
+    pub(crate) fn padding(&self, tensor_id: TensorId) -> &[(i64, i64)] {
         &self.paddings[&tensor_id]
     }
 
