@@ -545,8 +545,15 @@ impl EGraph {
     // ── Extraction (DP) ───────────────────────────────────
 
     /// Extract the cheapest all-kernel plan from the e-graph.
-    /// Returns the selected kernels as (NodeId, ENode) pairs in topological order.
-    /// Panics if any class on the path has no Kernel alternative.
+    ///
+    /// Returns the selected kernels as `(NodeId, ENode)` pairs in topological order.
+    /// Every enode in the returned plan is a `ENode::Kernel` — raw operator enodes
+    /// cannot be executed directly, only compiled kernels can.
+    ///
+    /// # Invariant
+    /// Every class reachable from an output must contain at least one `ENode::Kernel`
+    /// alternative (or be a `Leaf`/`Const` base case). `kernelize_all` guarantees this.
+    /// Violation panics in `extract_dp`.
     pub(crate) fn extract(&mut self, outputs: &[ClassId]) -> Vec<(NodeId, ENode)> {
         let mut cost_map: Map<ClassId, u64> = Map::default();
         let mut choice: Map<ClassId, NodeId> = Map::default();
@@ -564,6 +571,15 @@ impl EGraph {
         plan
     }
 
+    /// Pick the cheapest kernel alternative for `cid`.
+    ///
+    /// Only considers `ENode::Kernel` enodes — non-kernel enodes (operator nodes
+    /// like Binary, Cast, Expand, etc.) are not valid execution targets because
+    /// the plan must be a sequence of compilable kernels, not raw graph operations.
+    ///
+    /// # Invariant
+    /// This function panics if `cid` has no kernel, Leaf, or Const alternatives.
+    /// Every class on the execution path must be kernelized — see `kernelize_all`.
     fn extract_dp(&mut self, cid: ClassId, cost_map: &mut Map<ClassId, u64>, choice: &mut Map<ClassId, NodeId>) -> u64 {
         let cid = self.find_class(cid);
         if let Some(&cost) = cost_map.get(&cid) {
@@ -575,6 +591,7 @@ impl EGraph {
         let mut best_nid: Option<NodeId> = None;
 
         for &nid in &enodes {
+            // Non-kernel enodes are not executable — skip them.
             if !self.nodes[nid].is_kernel() {
                 continue;
             }
@@ -598,8 +615,9 @@ impl EGraph {
             return best_cost;
         }
 
-        // No kernel alternative in this class. Base-case nodes (Leaf, Const)
-        // cost zero — they are materialized or baked into the kernel.
+        // The plan can only contain compiled kernels — non-kernel enodes (operator
+        // nodes like Binary, Cast, Expand, etc.) are not executable targets.
+        // Fall back to Leaf/Const base cases which cost nothing to load.
         if self.classes[cid]
             .nodes
             .iter()
@@ -609,11 +627,23 @@ impl EGraph {
             return 0;
         }
 
-        panic!("extract_dp: class {cid:?} has no Kernel, Leaf, or Const alternative");
+        // PANIC: This class is reachable from an output but has no kernel alternative.
+        // Every class on the execution path must have at least one compiled kernel.
+        // This means `kernelize_all` missed this class — it must be fixed.
+        panic!(
+            "extract_dp: class {cid:?} has no Kernel, Leaf, or Const alternative. \
+             Non-kernel enodes cannot appear in the extracted plan — only compiled \
+             kernels are executable. Fix: kernelize_all must create at least one \
+             kernel enode for this class."
+        );
     }
 
     /// Walk choices from output classes, emitting kernels bottom-up
     /// (children before parents).
+    ///
+    /// # Invariant
+    /// All enodes in `choice` are `ENode::Kernel` — non-kernel enodes are never
+    /// selected by `extract_dp`. The returned plan is 100% compilable kernels.
     fn emit_plan(
         &mut self,
         cid: ClassId,

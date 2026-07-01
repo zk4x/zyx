@@ -42,14 +42,22 @@ type InlineCache = crate::Map<ClassId, InlineResult>;
 // ── Public entry point ─────────────────────────────────────
 
 impl EGraph {
-    /// Walk every class and build a fused kernel IR for each non-trivial
-    /// enode.  Each kernel stores its result — this makes it a candidate
-    /// that later classes can either inline (by picking the original enode)
-    /// or load from (by picking the kernel enode).  The extract phase
-    /// chooses the cheapest combination.
+    /// Build fused kernel IR for every non-trivial enode, inserting kernel
+    /// alternatives into their e-classes.
     ///
-    /// Leaf, Kernel, and Const enodes are skipped (they have no computation
-    /// to emit).
+    /// Each kernel stores its result — this makes it a candidate that later
+    /// classes can either inline (by picking the original enode) or load from
+    /// (by picking the kernel enode).  The extract phase chooses the cheapest
+    /// combination.
+    ///
+    /// Leaf, Kernel, and Const enodes are skipped (they have no computation to emit).
+    ///
+    /// # Invariant
+    /// After `kernelize_all`, every class reachable from an output must contain
+    /// at least one `ENode::Kernel` or be a `Leaf`/`Const` base case.  The
+    /// extracted plan can only contain compiled kernels — non-kernel operator
+    /// enodes (Binary, Cast, Expand, etc.) are not executable.  `extract_dp`
+    /// panics if a class has no kernel alternative.
     pub(crate) fn kernelize_all(&mut self) {
         let to_kernelize: Vec<(NodeId, ClassId)> = {
             let mut v = Vec::new();
