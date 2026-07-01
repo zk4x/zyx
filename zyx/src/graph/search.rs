@@ -341,11 +341,19 @@ impl EGraph {
 
     // ── Build from Graph ─────────────────────────────────
 
-    pub(crate) fn build_from_graph(&mut self, order: &[TensorId], graph: &Graph) -> Map<TensorId, ClassId> {
+    pub(crate) fn build_from_graph(&mut self, order: &[TensorId], graph: &Graph, inputs: &[TensorId]) -> Map<TensorId, ClassId> {
         let mut tensor_to_cid: Map<TensorId, ClassId> = Map::default();
+        let input_set: Set<TensorId> = inputs.iter().copied().collect();
 
         for &tid in order {
-            let kind = self.node_to_enkind(tid, &tensor_to_cid, graph);
+            // Input tensors (already realized / have buffers) should be treated
+            // as leaves in the e-graph: their children may not be in `order`
+            // (skipped by realize_selected's !realized_nodes guard).
+            let kind = if input_set.contains(&tid) {
+                ENode::Leaf(graph.dtype(tid))
+            } else {
+                self.node_to_enkind(tid, &tensor_to_cid, graph)
+            };
             let (nid, cid) = self.make(kind);
             let cid = self.find_class(cid);
 
@@ -379,6 +387,10 @@ impl EGraph {
                 ENode::Permute(map[x], axes)
             }
             Node::Reshape { x } => {
+                if !map.contains_key(x) {
+                    panic!("Reshape {tid} child {x} not in map (dtype={:?} shape={:?} graph_node={:?})",
+                        graph.dtype(tid), graph.shape(tid), graph[tid]);
+                }
                 let shape = graph.shape(tid).to_vec().into_boxed_slice();
                 ENode::Reshape(map[x], shape)
             }
@@ -698,7 +710,7 @@ impl EGraph {
         debug: DebugMask,
     ) -> Vec<CompiledNode> {
         let mut eg = Self::new();
-        let tensor_to_cid = eg.build_from_graph(order, graph);
+        let tensor_to_cid = eg.build_from_graph(order, graph, inputs);
         eg.saturate();
         eg.compress_paths();
         eg.kernelize_all();
