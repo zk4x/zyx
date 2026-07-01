@@ -172,12 +172,22 @@ impl EGraph {
 
     // ── Union-Find ─────────────────────────────────────────
 
-    pub(crate) fn find_class(&self, cid: ClassId) -> ClassId {
-        let parent = self.class_parent[cid.0 as usize];
-        if parent != cid { self.find_class(parent) } else { cid }
+    pub(crate) fn find_class(&mut self, cid: ClassId) -> ClassId {
+        // Iterative find with path compression.
+        let mut root = cid;
+        while root != self.class_parent[root.0 as usize] {
+            root = self.class_parent[root.0 as usize];
+        }
+        let mut cur = cid;
+        while cur != root {
+            let next = self.class_parent[cur.0 as usize];
+            self.class_parent[cur.0 as usize] = root;
+            cur = next;
+        }
+        root
     }
 
-    pub(crate) fn find(&self, nid: NodeId) -> ClassId {
+    pub(crate) fn find(&mut self, nid: NodeId) -> ClassId {
         let cid = self.class_of[nid.0 as usize];
         self.find_class(cid)
     }
@@ -251,11 +261,16 @@ impl EGraph {
         }
     }
 
-    /// Link UF structure: merge class `a` into class `b` without draining nodes.
+    /// Link UF structure: merge class `a` into class `b`.
+    /// Propagates a's parents to b so reverse edges remain reachable.
     fn link_into(&mut self, a: ClassId, b: ClassId) {
         let a = self.find_class(a);
         let b = self.find_class(b);
         if a != b {
+            // Move parents from a to b (the surviving root).
+            let a_parents = std::mem::take(&mut self.classes[a].parents);
+            self.classes[b].parents.extend(a_parents);
+
             // Union by rank to keep trees shallow; always make b the logical root.
             let rank_a = self.class_rank[a.0 as usize];
             let rank_b = self.class_rank[b.0 as usize];
@@ -266,26 +281,47 @@ impl EGraph {
         }
     }
 
-    // ── Path compression ───────────────────────────────────
+    // ── Rebuild / path compression ─────────────────────────
 
     pub(crate) fn compress_paths(&mut self) {
         let cids: Vec<ClassId> = self.classes.ids().collect();
         for &cid in &cids {
-            self.compress_class_paths(cid);
+            self.find_class(cid);
         }
     }
 
-    fn compress_class_paths(&mut self, cid: ClassId) {
-        // Iterative path compression to avoid stack overflow.
-        let mut root = cid;
-        while root != self.class_parent[root.0 as usize] {
-            root = self.class_parent[root.0 as usize];
+    /// Canonicalize all enode children, rebuild the hashcons,
+    /// and rebuild parent lists from scratch.
+    /// Call after a batch of merges to keep the e-graph consistent.
+    pub(crate) fn rebuild(&mut self) {
+        let all_nids: Vec<NodeId> = self.nodes.ids().collect();
+
+        // 1. Canonicalize every enode's child ClassIds.
+        for &nid in &all_nids {
+            let old: Vec<ClassId> = self.nodes[nid].child_classes();
+            let canonical: Vec<ClassId> = old.iter().map(|&c| self.find_class(c)).collect();
+            for (i, c) in self.nodes[nid].child_classes_mut().into_iter().enumerate() {
+                *c = canonical[i];
+            }
         }
-        let mut cur = cid;
-        while cur != root {
-            let next = self.class_parent[cur.0 as usize];
-            self.class_parent[cur.0 as usize] = root;
-            cur = next;
+
+        // 2. Rebuild hashcons with canonicalized keys.
+        self.hashcons.clear();
+        for &nid in &all_nids {
+            self.hashcons.insert(self.nodes[nid].clone(), nid);
+        }
+
+        // 3. Rebuild parent lists from scratch.
+        let cids: Vec<ClassId> = self.classes.ids().collect();
+        for &cid in &cids {
+            self.classes[cid].parents.clear();
+        }
+        for &nid in &all_nids {
+            let children = self.nodes[nid].child_classes();
+            for (idx, &child) in children.iter().enumerate() {
+                let child_root = self.find_class(child);
+                self.classes[child_root].parents.push((nid, idx));
+            }
         }
     }
 
@@ -347,6 +383,9 @@ impl EGraph {
                 break;
             }
         }
+        // Rebuild after saturation so children, hashcons, and parents are
+        // fully canonicalised before extraction or further passes.
+        self.rebuild();
     }
 
     /// Try to match all e-classes for `reduce_sum(mul(expand(A), expand(permute(B))))`
@@ -368,12 +407,13 @@ impl EGraph {
                     _ => continue,
                 };
 
+                let mul_class_root = self.find_class(mul_class);
                 // Check the reduce is over the last dimension.
                 let shape = match &self.classes[cid].shape {
                     Some(s) => s.clone(),
                     None => continue,
                 };
-                let mul_shape = match &self.classes[self.find_class(mul_class)].shape {
+                let mul_shape = match &self.classes[mul_class_root].shape {
                     Some(s) => s.clone(),
                     None => continue,
                 };
@@ -387,7 +427,7 @@ impl EGraph {
                 }
 
                 // Check mul_class contains Binary(Mul, ...)
-                let mul_nodes: Vec<NodeId> = self.classes[self.find_class(mul_class)].nodes.clone();
+                let mul_nodes: Vec<NodeId> = self.classes[mul_class_root].nodes.clone();
                 let found_mul = mul_nodes
                     .iter()
                     .any(|&mn| matches!(&self.nodes[mn], ENode::Binary(_, _, BOp::Mul)));
@@ -408,31 +448,28 @@ impl EGraph {
                 };
 
                 for &(expand_a, expand_b) in &[(left, right), (right, left)] {
-                    let a_raw = match self.classes[self.find_class(expand_a)]
-                        .nodes
-                        .iter()
-                        .find_map(|&n| match &self.nodes[n] {
-                            ENode::Expand(x) => Some(*x),
-                            _ => None,
-                        }) {
+                    let expand_a_root = self.find_class(expand_a);
+                    let expand_b_root = self.find_class(expand_b);
+
+                    let a_raw = match self.classes[expand_a_root].nodes.iter().find_map(|&n| match &self.nodes[n] {
+                        ENode::Expand(x) => Some(*x),
+                        _ => None,
+                    }) {
                         Some(x) => x,
                         None => continue,
                     };
 
                     // B side: Expand → Reshape → Permute[1,0] → Leaf
-                    let reshape_class =
-                        match self.classes[self.find_class(expand_b)]
-                            .nodes
-                            .iter()
-                            .find_map(|&n| match &self.nodes[n] {
-                                ENode::Expand(x) => Some(*x),
-                                _ => None,
-                            }) {
-                            Some(x) => x,
-                            None => continue,
-                        };
+                    let reshape_class = match self.classes[expand_b_root].nodes.iter().find_map(|&n| match &self.nodes[n] {
+                        ENode::Expand(x) => Some(*x),
+                        _ => None,
+                    }) {
+                        Some(x) => x,
+                        None => continue,
+                    };
 
-                    let permute_class = match self.classes[self.find_class(reshape_class)]
+                    let reshape_class_root = self.find_class(reshape_class);
+                    let permute_class = match self.classes[reshape_class_root]
                         .nodes
                         .iter()
                         .find_map(|&n| match &self.nodes[n] {
@@ -443,27 +480,30 @@ impl EGraph {
                         None => continue,
                     };
 
-                    let b_raw =
-                        match self.classes[self.find_class(permute_class)]
-                            .nodes
-                            .iter()
-                            .find_map(|&n| match &self.nodes[n] {
-                                ENode::Permute(x, axes) if axes.len() == 2 && axes[0] == 1 && axes[1] == 0 => Some(*x),
-                                _ => None,
-                            }) {
-                            Some(x) => x,
-                            None => continue,
-                        };
+                    let permute_class_root = self.find_class(permute_class);
+                    let b_raw = match self.classes[permute_class_root]
+                        .nodes
+                        .iter()
+                        .find_map(|&n| match &self.nodes[n] {
+                            ENode::Permute(x, axes) if axes.len() == 2 && axes[0] == 1 && axes[1] == 0 => Some(*x),
+                            _ => None,
+                        }) {
+                        Some(x) => x,
+                        None => continue,
+                    };
+
+                    let a_raw_root = self.find_class(a_raw);
+                    let b_raw_root = self.find_class(b_raw);
 
                     // Verify inputs are leaves
-                    if !self.classes[self.find_class(a_raw)]
+                    if !self.classes[a_raw_root]
                         .nodes
                         .iter()
                         .any(|&n| matches!(&self.nodes[n], ENode::Leaf(_)))
                     {
                         continue;
                     }
-                    if !self.classes[self.find_class(b_raw)]
+                    if !self.classes[b_raw_root]
                         .nodes
                         .iter()
                         .any(|&n| matches!(&self.nodes[n], ENode::Leaf(_)))
@@ -557,7 +597,7 @@ impl EGraph {
     /// Walk choices from output classes, emitting kernels bottom-up
     /// (children before parents).
     fn emit_plan(
-        &self,
+        &mut self,
         cid: ClassId,
         choice: &Map<ClassId, NodeId>,
         plan: &mut Vec<(NodeId, ENode)>,

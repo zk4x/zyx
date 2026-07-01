@@ -439,8 +439,7 @@ Note: When the user says to fix this rule because you keep violating it, do NOT 
 - **Never commit unless the user explicitly asks** — but when they say "commit", just do it. Derive a concise commit message from the diff matching the repo style. Do NOT ask for a message.
 - **When in doubt, ask me immediately** - Don't try to figure things out on your own if uncertain. Just ask.
 - **Ask before hunting for specs/values** - If I might have a spec, a mapping, or any information that could save time, ask me first. I always have it, so don't dig through source code or run experiments to derive it.
-- **Stay on task** — Don't run investigations the user didn't ask for. No git archaeology, no random test runs, no looking up history. Only do exactly what the user tells you.
-- **Don't run the full test suite unless asked.** Running it to "make sure nothing broke" after a change is going off track. If the user wants it run, they'll say so.
+- **Never run tests to check for regressions or confirm pre-existing failures.** If the user wants to know about test status, they'll ask. Don't run tests to "make sure nothing broke" after a change or to check if a failure existed before your changes.
 - **Never blame pre-existing test failures.** If a test fails but you didn't touch the code it exercises, the failure is yours to investigate and fix. The phrase "pre-existing test failure" is FORBIDDEN.
 - **Never touch `~/.config/zyx/config.json`** — never read, write, create, modify, or delete it. If a test needs a specific backend, ask the user to configure it. Do not even look at this file.
 - Inheritance (use composition/enums)

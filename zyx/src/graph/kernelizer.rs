@@ -62,72 +62,75 @@ impl EGraph {
     }
 }
 
-fn build_kernel(eg: &EGraph, nid: NodeId, inputs: &[ClassId], out_dtype: DType) -> Option<Kernel> {
-    let op = &eg.nodes[nid];
+fn build_kernel(eg: &mut EGraph, nid: NodeId, inputs: &[ClassId], out_dtype: DType) -> Option<Kernel> {
+    let kind = eg.nodes[nid].clone();
+    let input0_root = eg.find_class(inputs[0]);
+    let nid_root = eg.find(nid);
     let mut k = Kernel::new(DeviceId::AUTO);
 
-    match op {
+    match kind {
         ENode::Binary(_, _, bop) => {
-            let lhs = load(&mut k, eg, inputs[0])?;
-            let rhs = load(&mut k, eg, inputs[1])?;
-            k.binary(lhs, rhs, *bop);
+            let lhs = load(&mut k, eg, input0_root)?;
+            let input1_root = eg.find_class(inputs[1]);
+            let rhs = load(&mut k, eg, input1_root)?;
+            k.binary(lhs, rhs, bop);
         }
         ENode::Unary(_, uop) => {
-            let x = load(&mut k, eg, inputs[0])?;
-            k.push_back(Op::Unary { x, uop: *uop });
+            let x = load(&mut k, eg, input0_root)?;
+            k.push_back(Op::Unary { x, uop });
         }
         ENode::Cast(_, dt) => {
-            let x = load(&mut k, eg, inputs[0])?;
-            k.cast(x, *dt);
+            let x = load(&mut k, eg, input0_root)?;
+            k.cast(x, dt);
         }
         ENode::Reduce(_, rop) => {
-            let x = load(&mut k, eg, inputs[0])?;
-            let in_shape: Vec<Dim> = eg.classes[eg.find_class(inputs[0])].shape.clone()?.to_vec();
-            let out_shape: Vec<Dim> = eg.classes[eg.find(nid)].shape.clone()?.to_vec();
+            let x = load(&mut k, eg, input0_root)?;
+            let in_shape: Vec<Dim> = eg.classes[input0_root].shape.clone()?.to_vec();
+            let out_shape: Vec<Dim> = eg.classes[nid_root].shape.clone()?.to_vec();
             let n_axes = in_shape.len().saturating_sub(out_shape.len());
-            let r = k.push_back(Op::Reduce { x, rop: *rop, n_axes });
+            let r = k.push_back(Op::Reduce { x, rop, n_axes });
             if out_shape.len() == 1 && n_axes > 0 && in_shape.len() > 1 {
                 k.reshape(r, &out_shape);
             }
         }
         ENode::Const(v) => {
-            k.push_back(Op::ConstView(Box::new((*v, View::contiguous(&[1])))));
+            k.push_back(Op::ConstView(Box::new((v, View::contiguous(&[1])))));
         }
-        ENode::Expand(_) => {
-            let x = load(&mut k, eg, inputs[0])?;
-            let shape: Vec<Dim> = eg.classes[eg.find(nid)].shape.clone()?.to_vec();
+        ENode::Expand(..) => {
+            let x = load(&mut k, eg, input0_root)?;
+            let shape: Vec<Dim> = eg.classes[nid_root].shape.clone()?.to_vec();
             k.push_back(Op::Move {
                 x,
                 mop: Box::new(MoveOp::Expand { shape }),
             });
         }
-        ENode::Permute(_, axes) => {
-            let x = load(&mut k, eg, inputs[0])?;
-            let shape: Vec<Dim> = eg.classes[eg.find(nid)].shape.clone()?.to_vec();
-            let axes: Vec<UAxis> = axes.to_vec();
+        ENode::Permute(_, ref axes) => {
+            let x = load(&mut k, eg, input0_root)?;
+            let shape: Vec<Dim> = eg.classes[nid_root].shape.clone()?.to_vec();
+            let axes: Vec<UAxis> = axes.clone().into_vec();
             k.push_back(Op::Move {
                 x,
                 mop: Box::new(MoveOp::Permute { axes, shape }),
             });
         }
-        ENode::Reshape(_, shape) => {
-            let x = load(&mut k, eg, inputs[0])?;
-            let shape: Vec<Dim> = shape.to_vec();
+        ENode::Reshape(_, ref shape) => {
+            let x = load(&mut k, eg, input0_root)?;
+            let shape: Vec<Dim> = shape.clone().into_vec();
             k.push_back(Op::Move {
                 x,
                 mop: Box::new(MoveOp::Reshape { shape }),
             });
         }
-        ENode::Pad(_, padding) => {
-            let x = load(&mut k, eg, inputs[0])?;
-            let shape: Vec<Dim> = eg.classes[eg.find(nid)].shape.clone()?.to_vec();
-            let padding: Vec<(i64, i64)> = padding.to_vec();
+        ENode::Pad(_, ref padding) => {
+            let x = load(&mut k, eg, input0_root)?;
+            let shape: Vec<Dim> = eg.classes[nid_root].shape.clone()?.to_vec();
+            let padding: Vec<(i64, i64)> = padding.clone().into_vec();
             k.push_back(Op::Move {
                 x,
                 mop: Box::new(MoveOp::Pad { padding, shape }),
             });
         }
-        ENode::ToDevice(_, _) => return None,
+        ENode::ToDevice(..) => return None,
         _ => return None,
     }
 
@@ -138,8 +141,8 @@ fn build_kernel(eg: &EGraph, nid: NodeId, inputs: &[ClassId], out_dtype: DType) 
     Some(k)
 }
 
-fn load(k: &mut Kernel, eg: &EGraph, cid: ClassId) -> Option<OpId> {
-    let dtype = eg.classes[eg.find_class(cid)].dtype?;
-    let shape: Vec<Dim> = eg.classes[eg.find_class(cid)].shape.clone()?.to_vec();
+fn load(k: &mut Kernel, eg: &mut EGraph, cid_root: ClassId) -> Option<OpId> {
+    let dtype = eg.classes[cid_root].dtype?;
+    let shape: Vec<Dim> = eg.classes[cid_root].shape.clone()?.to_vec();
     Some(k.load_contiguous(dtype, &shape))
 }
