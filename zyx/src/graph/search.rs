@@ -131,17 +131,17 @@ impl ENode {
 pub(crate) struct EClass {
     pub nodes: Vec<NodeId>,
     pub parents: Vec<(NodeId, usize)>,
-    pub shape: Option<Box<[Dim]>>,
-    pub dtype: Option<DType>,
+    pub shape: Box<[Dim]>,
+    pub dtype: DType,
 }
 
 impl EClass {
-    fn new(node: NodeId) -> Self {
+    fn new(node: NodeId, shape: Box<[Dim]>, dtype: DType) -> Self {
         Self {
             nodes: vec![node],
             parents: vec![],
-            shape: None,
-            dtype: None,
+            shape,
+            dtype,
         }
     }
 }
@@ -210,7 +210,7 @@ impl EGraph {
 
     // ── Hashcons + creation ────────────────────────────────
 
-    pub(crate) fn make(&mut self, mut kind: ENode) -> (NodeId, ClassId) {
+    pub(crate) fn make(&mut self, mut kind: ENode, shape: Box<[Dim]>, dtype: DType) -> (NodeId, ClassId) {
         for c in kind.child_classes_mut() {
             *c = self.find_class(*c);
         }
@@ -229,7 +229,7 @@ impl EGraph {
         let children: Vec<ClassId> = kind.child_classes();
 
         let nid = self.nodes.push(kind.clone());
-        let cid = self.classes.push(EClass::new(nid));
+        let cid = self.classes.push(EClass::new(nid, shape, dtype));
 
         let idx = nid.0 as usize;
         self.grow_uf_arrays(idx);
@@ -354,7 +354,8 @@ impl EGraph {
             } else {
                 self.node_to_enkind(tid, &tensor_to_cid, graph)
             };
-            let (nid, cid) = self.make(kind);
+            let shape: Box<[Dim]> = graph.shape(tid).to_vec().into_boxed_slice();
+            let (nid, cid) = self.make(kind, shape, graph.dtype(tid));
             let cid = self.find_class(cid);
 
             // For Custom nodes, fix the Kernel enode's output class (it was
@@ -368,9 +369,6 @@ impl EGraph {
                 self.costs.insert(nid, 1000);
             }
 
-            let shape: Box<[Dim]> = graph.shape(tid).to_vec().into_boxed_slice();
-            self.classes[cid].shape = Some(shape);
-            self.classes[cid].dtype = Some(graph.dtype(tid));
             tensor_to_cid.insert(tid, cid);
         }
 
@@ -452,14 +450,8 @@ impl EGraph {
 
                 let mul_class_root = self.find_class(mul_class);
                 // Check the reduce is over the last dimension.
-                let shape = match &self.classes[cid].shape {
-                    Some(s) => s.clone(),
-                    None => continue,
-                };
-                let mul_shape = match &self.classes[mul_class_root].shape {
-                    Some(s) => s.clone(),
-                    None => continue,
-                };
+                let shape = self.classes[cid].shape.clone();
+                let mul_shape = self.classes[mul_class_root].shape.clone();
                 // Reduce must contract one axis — the last axis of the mul output.
                 if mul_shape.len() < 2 {
                     continue;
@@ -557,7 +549,7 @@ impl EGraph {
                     // Create the MatmulKernel enode
                     let inputs: Box<[ClassId]> = vec![a_raw, b_raw].into_boxed_slice();
                     let outputs: Box<[ClassId]> = vec![cid].into_boxed_slice();
-                    let (knid, _own_class) = self.make(ENode::Kernel(inputs, outputs, ProgramId::NULL));
+                    let (knid, _own_class) = self.make(ENode::Kernel(inputs, outputs, ProgramId::NULL), Box::new([]), DType::F32);
                     self.add_to_class(knid, cid);
                     added = true;
                     break;
@@ -808,8 +800,8 @@ impl EGraph {
             for &out_cid in kernel_outputs.iter() {
                 let out_cid = self.find_class(out_cid);
                 if !input_cids.contains(&out_cid) && allocated.insert(out_cid) {
-                    let shape = self.classes[out_cid].shape.as_ref().unwrap();
-                    let dtype = self.classes[out_cid].dtype.unwrap();
+                    let shape = &self.classes[out_cid].shape;
+                    let dtype = self.classes[out_cid].dtype;
                     let elem_count: Dim = shape.iter().product();
                     let bytes = elem_count * Dim::from(dtype.bit_size() / 8);
                     let pool_id = devices[program.device].memory_pool_id();
@@ -901,7 +893,7 @@ impl EGraph {
                         device: dev_id,
                         program: device_prog,
                     };
-                    let (new_nid, _) = self.make(ENode::Kernel(inputs.clone(), outputs.clone(), prog));
+                    let (new_nid, _) = self.make(ENode::Kernel(inputs.clone(), outputs.clone(), prog), Box::new([]), DType::F32);
                     let cost = if timing > 0 { timing } else { heuristic_cost };
                     self.costs.insert(new_nid, cost);
                     self.kernel_irs.insert(new_nid, debug_kernel);
@@ -949,14 +941,8 @@ impl EGraph {
                 continue;
             }
             let eclass = &self.classes[cid];
-            let shape_str = match &eclass.shape {
-                Some(s) => format!("{:?}", s),
-                None => "?".to_string(),
-            };
-            let dtype_str = match &eclass.dtype {
-                Some(dt) => format!("{:?}", dt),
-                None => "?".to_string(),
-            };
+            let shape_str = format!("{:?}", &eclass.shape);
+            let dtype_str = format!("{:?}", &eclass.dtype);
             println!("Class {:?} shape={} dtype={}", cid, shape_str, dtype_str);
             for &nid in &eclass.nodes {
                 let kind = &self.nodes[nid];

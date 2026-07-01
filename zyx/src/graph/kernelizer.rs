@@ -73,7 +73,7 @@ impl EGraph {
                 continue;
             }
 
-            let out_dtype = self.classes[cid].dtype.unwrap();
+            let out_dtype = self.classes[cid].dtype;
 
             // Build a kernel for each non-trivial enode.
             for &nid in &nids {
@@ -212,8 +212,8 @@ fn find_class_of(eg: &mut EGraph, nid: NodeId, cid_override: Option<ClassId>) ->
 fn load_child(eg: &mut EGraph, cid: ClassId, k: &mut Kernel, loaded: &mut Vec<ClassId>) -> Option<OpId> {
     let root = eg.find_class(cid);
     loaded.push(root);
-    let dtype = eg.classes[root].dtype?;
-    let shape: Vec<Dim> = eg.classes[root].shape.clone()?.to_vec();
+    let dtype = eg.classes[root].dtype;
+    let shape: Vec<Dim> = eg.classes[root].shape.to_vec();
     Some(k.load_contiguous(dtype, &shape))
 }
 
@@ -288,7 +288,7 @@ fn build_enode_forward(
         ENode::Leaf(_) | ENode::Kernel(..) | ENode::ToDevice(..) => None,
         ENode::Expand(..) => {
             let cid = find_class_of(eg, nid, cid_override);
-            let shape: Vec<Dim> = eg.classes[cid].shape.clone()?.to_vec();
+            let shape: Vec<Dim> = eg.classes[cid].shape.to_vec();
             let x = resolve_child(eg, children[0], k, visited, loaded)?;
             Some(k.push_back(Op::Move {
                 x,
@@ -297,7 +297,7 @@ fn build_enode_forward(
         }
         ENode::Permute(_, axes) => {
             let cid = find_class_of(eg, nid, cid_override);
-            let shape: Vec<Dim> = eg.classes[cid].shape.clone()?.to_vec();
+            let shape: Vec<Dim> = eg.classes[cid].shape.to_vec();
             let axes: Vec<UAxis> = axes.into_vec();
             let x = resolve_child(eg, children[0], k, visited, loaded)?;
             Some(k.push_back(Op::Move {
@@ -315,7 +315,7 @@ fn build_enode_forward(
         }
         ENode::Pad(_, padding) => {
             let cid = find_class_of(eg, nid, cid_override);
-            let shape: Vec<Dim> = eg.classes[cid].shape.clone()?.to_vec();
+            let shape: Vec<Dim> = eg.classes[cid].shape.to_vec();
             let padding: Vec<(i64, i64)> = padding.into_vec();
             let x = resolve_child(eg, children[0], k, visited, loaded)?;
             Some(k.push_back(Op::Move {
@@ -327,11 +327,11 @@ fn build_enode_forward(
             // Reductions always load their input (fusion boundary).
             let in_shape: Vec<Dim> = {
                 let root = eg.find_class(children[0]);
-                eg.classes[root].shape.clone()?
+                eg.classes[root].shape.clone()
             }
             .to_vec();
             let cid = find_class_of(eg, nid, cid_override);
-            let out_shape: Vec<Dim> = eg.classes[cid].shape.clone()?.to_vec();
+            let out_shape: Vec<Dim> = eg.classes[cid].shape.to_vec();
             let n_axes = in_shape.len().saturating_sub(out_shape.len());
 
             let x = {
@@ -431,9 +431,9 @@ mod tests {
     #[test]
     fn topo_chain() {
         let mut eg = EGraph::new();
-        let (_, c0) = eg.make(ENode::Leaf(DType::F32));
-        let (_, c1) = eg.make(ENode::Expand(c0));
-        let (_, c2) = eg.make(ENode::Expand(c1));
+        let (_, c0) = eg.make(ENode::Leaf(DType::F32), Box::new([]), DType::F32);
+        let (_, c1) = eg.make(ENode::Expand(c0), Box::new([]), DType::F32);
+        let (_, c2) = eg.make(ENode::Expand(c1), Box::new([]), DType::F32);
 
         let order = super::topo_sort_classes(&eg);
         assert_eq!(order.len(), 3, "expected 3 classes, got {}", order.len());
@@ -452,10 +452,10 @@ mod tests {
     #[test]
     fn topo_diamond() {
         let mut eg = EGraph::new();
-        let (_, leaf) = eg.make(ENode::Leaf(DType::F32));
-        let (_, neg) = eg.make(ENode::Unary(leaf, UOp::Neg));
-        let (_, abs) = eg.make(ENode::Unary(leaf, UOp::Abs));
-        let (_, add) = eg.make(ENode::Binary(neg, abs, BOp::Add));
+        let (_, leaf) = eg.make(ENode::Leaf(DType::F32), Box::new([]), DType::F32);
+        let (_, neg) = eg.make(ENode::Unary(leaf, UOp::Neg), Box::new([]), DType::F32);
+        let (_, abs) = eg.make(ENode::Unary(leaf, UOp::Abs), Box::new([]), DType::F32);
+        let (_, add) = eg.make(ENode::Binary(neg, abs, BOp::Add), Box::new([]), DType::F32);
 
         let order = super::topo_sort_classes(&eg);
         assert_eq!(order.len(), 4, "expected 4 classes, got {}", order.len());
@@ -471,9 +471,9 @@ mod tests {
     #[test]
     fn topo_disjoint() {
         let mut eg = EGraph::new();
-        let (_, l0) = eg.make(ENode::Leaf(DType::F32));
-        let (_, l1) = eg.make(ENode::Leaf(DType::F64));
-        let (_, e0) = eg.make(ENode::Expand(l0));
+        let (_, l0) = eg.make(ENode::Leaf(DType::F32), Box::new([]), DType::F32);
+        let (_, l1) = eg.make(ENode::Leaf(DType::F64), Box::new([]), DType::F64);
+        let (_, e0) = eg.make(ENode::Expand(l0), Box::new([]), DType::F32);
 
         let order = super::topo_sort_classes(&eg);
         assert_eq!(order.len(), 3, "expected 3 classes, got {}", order.len());
