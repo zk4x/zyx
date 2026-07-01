@@ -53,9 +53,9 @@ impl Kernel {
     /// ```
     pub fn debug(&self) {
         let remap_ids = false;
-        println!("\nloads={:?}", self.loads);
-        println!("stores={:?}", self.stores);
-        println!("outputs={:?}", self.outputs);
+        //println!("\nloads={:?}", self.loads);
+        //println!("stores={:?}", self.stores);
+        //println!("outputs={:?}", self.outputs);
         let mut indent = String::from(" ");
         let bounds = self.compute_bounds();
         let mut dtypes: Map<OpId, DType> = Map::default();

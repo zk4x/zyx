@@ -784,21 +784,21 @@ impl EGraph {
             for &nid in &eclass.nodes {
                 let kind = &self.nodes[nid];
                 let inputs = kind.child_classes();
-                let (name, extra) = match kind {
-                    ENode::Reduce(_, rop) => ("Reduce", format!("{:?}", rop)),
-                    ENode::Binary(_, _, bop) => ("Binary", format!("{:?}", bop)),
-                    ENode::Unary(_, uop) => ("Unary", format!("{:?}", uop)),
-                    ENode::Cast(_, dt) => ("Cast", format!("{:?}", dt)),
-                    ENode::Kernel(_, _, p) => ("Kernel", format!("prog={:?}", p)),
-                    ENode::Expand(_) => ("Expand", String::new()),
-                    ENode::Permute(_, a) => ("Permute", format!("{:?}", a)),
-                    ENode::Reshape(_, s) => ("Reshape", format!("{:?}", s)),
-                    ENode::Pad(_, p) => ("Pad", format!("{:?}", p)),
-                    ENode::ToDevice(_, d) => ("ToDevice", format!("{:?}", d)),
-                    ENode::Const(v) => ("Const", format!("{:?}", v)),
-                    ENode::Leaf(dt) => ("Leaf", format!("{:?}", dt)),
+                let name = match kind {
+                    ENode::Reduce(_, rop) => format!("Reduce {:?}", rop),
+                    ENode::Binary(_, _, bop) => format!("Binary {:?}", bop),
+                    ENode::Unary(_, uop) => format!("Unary {:?}", uop),
+                    ENode::Cast(_, dt) => format!("Cast {:?}", dt),
+                    ENode::Kernel(_, _, p) => format!("Kernel prog={:?}", p),
+                    ENode::Expand(_) => format!("Expand"),
+                    ENode::Permute(_, a) => format!("Permute {:?}", a),
+                    ENode::Reshape(_, s) => format!("Reshape {:?}", s),
+                    ENode::Pad(_, p) => format!("Pad {:?}", p),
+                    ENode::ToDevice(_, d) => format!("ToDevice {:?}", d),
+                    ENode::Const(v) => format!("Const {:?}", v),
+                    ENode::Leaf(dt) => format!("Leaf {:?}", dt),
                 };
-                println!("  {name} {extra} {nid:?}: inputs={inputs:?}");
+                println!("  {name} {nid:?}: inputs={inputs:?}");
             }
         }
         println!("{}\n", line);
