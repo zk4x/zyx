@@ -16,6 +16,7 @@ use crate::{
     },
     kernel::{BOp, Kernel, UOp},
     kernel_cache::KernelCache,
+    kernelize::KMKernelId,
     shape::{Dim, UAxis},
     slab::{Slab, SlabId},
     tensor::TensorId,
@@ -156,7 +157,8 @@ pub(crate) struct EGraph {
     pub(crate) class_rank: Vec<u8>,
     hashcons: Map<ENode, NodeId>,
     pub(crate) costs: Map<NodeId, u64>,
-    pub(crate) kernel_irs: Map<NodeId, Kernel>,
+    pub(crate) kernel_map: Map<NodeId, KMKernelId>,
+    pub(crate) kernel_irs: Map<KMKernelId, Kernel>,
 }
 
 impl EGraph {
@@ -386,8 +388,12 @@ impl EGraph {
             }
             Node::Reshape { x } => {
                 if !map.contains_key(x) {
-                    panic!("Reshape {tid} child {x} not in map (dtype={:?} shape={:?} graph_node={:?})",
-                        graph.dtype(tid), graph.shape(tid), graph[tid]);
+                    panic!(
+                        "Reshape {tid} child {x} not in map (dtype={:?} shape={:?} graph_node={:?})",
+                        graph.dtype(tid),
+                        graph.shape(tid),
+                        graph[tid]
+                    );
                 }
                 let shape = graph.shape(tid).to_vec().into_boxed_slice();
                 ENode::Reshape(map[x], shape)

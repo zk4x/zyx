@@ -80,38 +80,41 @@
 //!
 //! ## Adaptation to e-graph
 //!
-//! In this module:
+//! In this module, the SAME kernelizer architecture from `kernelize.rs` is
+//! followed as closely as the e-graph allows:
+//!
 //!   - `ClassId` replaces `TensorId`
-//!   - The e-graph replaces the flat `Graph`
-//!   - `ENode::Leaf` and `ENode::Const` replace `Node::Leaf`/`Node::Const`
-//!   - `ENode::Kernel(inputs, outputs, prog)` replaces the separate
-//!     kernel slab — each kernel variant is a node in the e-graph
-//!   - `build_enode_forward` replaces the per-op methods
-//!   - Kernel merging in `resolve_child` (when child is in a different
-//!     kernel) replaces the merge logic in `add_binary_op` / `duplicate_or_store`
-//!   - An e-graph equivalent of `outputs` + `pending_stores` determines
-//!     when kernels can be launched
-//!
-//! ## pending_stores cannot exist in the original form
-//!
-//! In `kernelize.rs`, `pending_stores` is a flat `Set<TensorId>` —
-//! a tensor either has a store or it doesn't.  The e-graph has
-//! equivalence classes with multiple alternative enodes (branches).
-//! A class might be stored in one branch but computed inline in
-//! another.  For example, if the rewrite system discovers that
-//! `reshape(expand(x))` can be replaced by a direct expand, the
-//! class for `reshape(expand(x))` might have both a `Kernel` enode
-//! (with a store) and an `Expand` enode (inlineable).  In the
-//! extract step, only ONE enode is selected per class, so whether
-//! the class needs storage depends on which enode the extractor
-//! picks and what the consuming enode expects.
-//!
-//! Therefore, `pending_stores` cannot be a simple set like in
-//! `kernelize.rs`.  Instead, storage decisions are encoded in the
-//! kernel enodes themselves: a `Kernel` enode that contains a Store
-//! op represents a stored class; one without a Store op represents
-//! an inlineable computation.  The extractor chooses the correct
-//! variant based on cost and consumer requirements.
+//!   - `visited: Map<ClassId, (KMKernelId, OpId)>` — EVERY class is
+//!     inserted after processing.  Maps each class → (which kernel it
+//!     lives in, the OpId of its result within that kernel).
+//!   - Kernels live in `EGraph::kernel_irs: Map<KMKernelId, Kernel>`,
+//!     a slab indexed by `KMKernelId`.  A kernel accumulates ops across
+//!     MULTIPLE classes (not one per class).
+//!   - When a parent class needs a child's value, it looks up
+//!     `visited[child] = (kid, op_id)`.  If `kid == parent_kid`, the
+//!     result register is already in the same kernel — use `op_id`
+//!     directly.  If `kid != parent_kid`, the child's kernel is merged
+//!     into the parent's (ops copied, OpIds remapped, visited updated).
+//!     This is exactly how `kernelize.rs`'s `add_binary_op` merges
+//!     kernels when `kid != kidy`.
+//!   - Each kernel has an `outputs: Vec<ClassId>` field tracking which
+//!     classes have been computed in this kernel but not yet stored.
+//!     When a class is used as an input by a later op, `remove_first_output`
+//!     removes one occurrence.  A class is added to `outputs` once per
+//!     "reference count" (number of consumers).
+//!   - Kernels are registered as `ENode::Kernel` enodes in the e-graph
+//!     ONLY when their `outputs` list becomes empty — meaning every
+//!     intermediate result has been stored and the kernel cannot be
+//!     enlarged any more.  At that point, it is a complete, compilable
+//!     kernel and can participate in autotuning and extraction.
+//!   - `EGraph::kernel_map: Map<NodeId, KMKernelId>` links each
+//!     kernel enode (`ENode::Kernel`) back to its `KMKernelId` in the
+//!     kernel builder slab.
+//!   - Each class is processed ONCE and only once — no recursion.
+//!     Processing mirrors the `add_*_op` methods of `kernelize.rs`:
+//!     look up children in `visited`, merge if needed, emit the op
+//!     into the kernel, update `outputs`, add self to `visited`,
+//!     store if needed.
 
 use crate::{
     Map, Set,
