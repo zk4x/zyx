@@ -9,14 +9,13 @@
 //! on the egraph's class/enode structure.
 
 use crate::{
-    DType, Map, Set,
+    Map, Set,
     backend::ProgramId,
     graph::search::{ClassId, EGraph, ENode, NodeId},
     kernel::{DeviceId, Kernel, MoveOp, Op, OpId},
     shape::{Dim, UAxis},
     view::View,
 };
-use std::hash::BuildHasherDefault;
 
 const HIGH_COST: u64 = 1_000_000;
 
@@ -25,40 +24,25 @@ fn kernel_cost(ops_count: u32) -> u64 {
     ((1.0 + ops_count as f64).ln() * HIGH_COST as f64) as u64
 }
 
-/// Maximum number of parent classes before we stop inlining.
-const MAX_INLINE_PARENTS: usize = 1;
+// ── Shared visited map ────────────────────────────────────
 
-// ── Inline-or-load frontier ────────────────────────────────
-
-/// Result of resolving a child class: either we inlined its
-/// computation into the current kernel, or we must load it.
-enum InlineResult {
-    Op(OpId),
-    Load(OpId),
-}
-
-type InlineCache = crate::Map<ClassId, InlineResult>;
+/// Maps a class whose value was already computed (multi-consumer →
+/// stored) to the kernel enode that stores it and the result `OpId`
+/// within that kernel.
+type Visited = Map<ClassId, (NodeId, OpId)>;
 
 // ── Public entry point ─────────────────────────────────────
 
 impl EGraph {
-    /// Build fused kernel IR for every non-trivial enode, inserting kernel
-    /// alternatives into their e-classes.
+    /// Build fused kernels for classes in topological order.
     ///
-    /// Each kernel stores its result — this makes it a candidate that later
-    /// classes can either inline (by picking the original enode) or load from
-    /// (by picking the kernel enode).  The extract phase chooses the cheapest
-    /// combination.
+    /// Only classes with multiple consumers (or  consumers that
+    /// are all output classes) get their own kernel — single-consumer
+    /// classes are inlined into their parent's kernel.
     ///
-    /// Leaf, Kernel, and Const enodes are skipped (they have no computation to emit).
-    ///
-    /// For each class we create:
-    ///   • Always — a store (load-everything) variant, so extraction can
-    ///     materialise this class's value if a parent picks the store path.
-    ///   • Only for 0-parent (output) and multi-parent classes — a fused
-    ///     (duplicate) variant that inlines children.  Single-parent classes
-    ///     are always inlined by their parent's fused variant, so a fused
-    ///     variant here would never be cheaper than inlining into the parent.
+    /// After `kernelize_all`, every class reachable from an output must
+    /// contain at least one `ENode::Kernel` or be a  `Leaf`/`Const` base
+    /// case (the extracted plan can only execute kernels).
     ///
     /// # Invariant
     /// After `kernelize_all`, every class reachable from an output must contain
@@ -66,42 +50,85 @@ impl EGraph {
     /// extracted plan can only contain compiled kernels — non-kernel operator
     /// enodes (Binary, Cast, Expand, etc.) are not executable.  `extract_dp`
     /// panics if a class has no kernel alternative.
-    ///
-    /// # Future work
-    /// The parent-count heuristic is a coarse approximation of the
-    /// `duplicate_or_store` logic from `kernelize.rs`.  It should be refined
-    /// to also consider reduction boundaries and computation depth — if a
-    /// fused variant would be identical to the store variant (nothing to
-    /// inline), skip it.  Likewise, classes with many parents and cheap
-    /// computation might still benefit from a fused variant even if a Reduce
-    /// is present.
     pub(crate) fn kernelize_all(&mut self) {
-        let to_kernelize: Vec<(NodeId, ClassId)> = {
-            let mut v = Vec::new();
-            for cid in self.classes.ids() {
-                for &nid in &self.classes[cid].nodes {
-                    if matches!(&self.nodes[nid], ENode::Leaf(_) | ENode::Kernel(..) | ENode::Const(_)) {
-                        continue;
-                    }
-                    v.push((nid, cid));
-                }
-            }
-            v
-        };
+        let order = topo_sort_classes(self);
 
-        for (nid, cid) in to_kernelize {
+        // Shared map: which classes have been computed and stored.
+        // When a class is in `visited`, its kernel is registered and
+        // consumers must  load  its value from global memory.
+        let mut visited: Visited = Map::default();
+
+        // Determine which classes need their own kernel.
+        // A class needs a kernel if:
+        //   • it is an output (0 parents) — no consumer to inline into
+        //   • it has multiple consumers — store once, load by each
+        //   • it is the input of a Reduce — Reduce always loads its input
+        let mut needs_kernel: Set<ClassId> = Set::default();
+        for (cid, class) in self.classes.iter() {
+            let has_compute = class.nodes.iter().any(|nid| {
+                !matches!(&self.nodes[*nid], ENode::Leaf(_) | ENode::Kernel(..) | ENode::Const(_))
+            });
+            if !has_compute {
+                continue;
+            }
+            if class.parents.len() != 1 {
+                // Multi-consumer (parents > 1) or output (parents == 0)
+                needs_kernel.insert(cid);
+                continue;
+            }
+            // Single-consumer: check if this class itself is a Reduce
+            // or its parent is a Reduce.  Reduce is always a fusion boundary.
+            let is_reduce = class.nodes.iter().any(|nid| {
+                matches!(&self.nodes[*nid], ENode::Reduce(..))
+            });
+            let has_reduce_parent = class.parents.iter().any(|(parent_nid, _)| {
+                matches!(&self.nodes[*parent_nid], ENode::Reduce(..))
+            });
+            if is_reduce || has_reduce_parent {
+                needs_kernel.insert(cid);
+            }
+        }
+
+        for cid in order {
+            if !needs_kernel.contains(&cid) {
+                continue;
+            }
+
             let out_dtype = match self.classes[cid].dtype {
                 Some(dt) => dt,
                 None => continue,
             };
 
-            // Build one kernel per enode using forward fusion: inline children
-            // that can be inlined (single-parent, non-reduce, non-kernel),
-            // load the rest from global buffers.  Constants are always inlined
-            // as ConstView — they have no buffer allocation.
-            if let Some((kernel, loaded_classes)) = build_kernel(self, nid, cid, out_dtype) {
-                let knid = self.make_kernel_enode(cid, &loaded_classes, &kernel);
-                self.kernel_irs.insert(knid, kernel);
+            // Build a kernel for each non-trivial enode in this class.
+            let nids: Vec<NodeId> = self.classes[cid]
+                .nodes
+                .iter()
+                .copied()
+                .filter(|&nid| {
+                    !matches!(&self.nodes[nid], ENode::Leaf(_) | ENode::Kernel(..) | ENode::Const(_))
+                })
+                .collect();
+
+            for &nid in &nids {
+                let mut k = Kernel::new(DeviceId::AUTO);
+                let mut loaded: Vec<ClassId> = Vec::new();
+
+                let result =
+                    if let Some(op) = build_enode_forward(self, nid, Some(cid), &mut k, &mut visited, &mut loaded) {
+                        op
+                    } else {
+                        continue;
+                    };
+
+                if k.tail.is_null() {
+                    continue;
+                }
+
+                k.store_contiguous(result, out_dtype);
+
+                let knid = self.make_kernel_enode(cid, &loaded, &k);
+                self.kernel_irs.insert(knid, k);
+                visited.insert(cid, (knid, result));
             }
         }
     }
@@ -130,8 +157,6 @@ impl EGraph {
         let inputs: Box<[ClassId]> = inputs.to_vec().into_boxed_slice();
         let outputs: Box<[ClassId]> = vec![cid].into_boxed_slice();
         let kind = ENode::Kernel(inputs, outputs, ProgramId::NULL);
-        // Push directly without `make` — we don't want parent-list pollution
-        // from kernel alternatives interfering with can_inline decisions.
         let knid = self.nodes.push(kind);
         let idx = knid.0 as usize;
         self.grow_uf_arrays(idx);
@@ -203,36 +228,7 @@ pub(crate) fn topo_sort_classes(eg: &EGraph) -> Vec<ClassId> {
     order
 }
 
-// ── Fused kernel builder ──────────────────────────────────
-
-/// Build a fused kernel for the computation represented by `nid` in class `cid`.
-///
-/// Starting from the given enode, the builder recursively inlines fusible
-/// input classes until it hits a boundary (Reduce, multi-consumer, Leaf, Const).
-/// At boundaries a `LoadView` is emitted instead.
-///
-/// Returns `(Kernel, Vec<ClassId>)` where the vec lists every class whose
-/// data is loaded from global memory in the kernel.
-fn build_kernel(
-    eg: &mut EGraph,
-    nid: NodeId,
-    cid: ClassId,
-    out_dtype: DType,
-) -> Option<(Kernel, Vec<ClassId>)> {
-    let mut k = Kernel::new(DeviceId::AUTO);
-    let mut cache: InlineCache = crate::Map::with_capacity_and_hasher(8, BuildHasherDefault::new());
-    let mut loaded: Vec<ClassId> = Vec::new();
-
-    let result = build_enode(eg, nid, Some(cid), &mut k, &mut cache, &mut loaded)?;
-
-    if k.tail.is_null() {
-        return None;
-    }
-    k.store_contiguous(result, out_dtype);
-    Some((k, loaded))
-}
-
-// ── Per-enode builder ─────────────────────────────────────
+// ── Forward fused kernel builder ──────────────────────────
 
 /// Resolve a node's class, using `cid_override` when supplied (root enode)
 /// or falling back to `eg.find(nid)` for inlined children.
@@ -240,19 +236,76 @@ fn find_class_of(eg: &mut EGraph, nid: NodeId, cid_override: Option<ClassId>) ->
     cid_override.unwrap_or_else(|| eg.find(nid))
 }
 
-/// Emit the ops for a single enode, inlining child classes where possible.
-/// `cid_override` is `Some` for the root enode (the one we're kernelizing),
+/// Emit a `LoadView` for a class and return the resulting `OpId`.
+/// Records `root` in `loaded` for building accurate kernel input metadata.
+fn load_child(eg: &mut EGraph, cid: ClassId, k: &mut Kernel, loaded: &mut Vec<ClassId>) -> Option<OpId> {
+    let root = eg.find_class(cid);
+    loaded.push(root);
+    let dtype = eg.classes[root].dtype?;
+    let shape: Vec<Dim> = eg.classes[root].shape.clone()?.to_vec();
+    Some(k.load_contiguous(dtype, &shape))
+}
+
+/// Resolve a child class to an `OpId` for use in the current kernel.
+///
+/// If the child is multi-consumer (in `visited`) it was already stored
+/// to global memory — emit a `LoadView`.  If it is a single-consumer
+/// operator (not in `visited`) inline its computation by recursing into
+/// its enode.  Leaf and Const are handled  directly  (load / literal).
+fn resolve_child(
+    eg: &mut EGraph,
+    child_cid: ClassId,
+    k: &mut Kernel,
+    visited: &Visited,
+    loaded: &mut Vec<ClassId>,
+) -> Option<OpId> {
+    let root = eg.find_class(child_cid);
+
+    // Multi-consumer class that was already computed and stored → load.
+    if visited.contains_key(&root) {
+        return load_child(eg, root, k, loaded);
+    }
+
+    // Single-consumer — inline or handle base cases.
+    // Collect first to avoid borrow conflicts with build_enode_forward.
+    let enodes: Vec<NodeId> = eg.classes[root].nodes.clone();
+    for &nid in &enodes {
+        match &eg.nodes[nid] {
+            ENode::Const(v) => {
+                let op = Op::ConstView(Box::new((v.clone(), View::contiguous(&[1]))));
+                return Some(k.push_back(op));
+            }
+            ENode::Leaf(_) => {
+                return load_child(eg, root, k, loaded);
+            }
+            ENode::Kernel(..) => {
+                // Already compiled kernel → load.
+                return load_child(eg, root, k, loaded);
+            }
+            _ => {
+                // First non-trivial enode — inline it.
+                return build_enode_forward(eg, nid, None, k, visited, loaded);
+            }
+        }
+    }
+
+    // No enode produced a value (shouldn't happen for a valid graph).
+    None
+}
+
+/// Emit the ops for a single enode, resolving children via the shared
+/// `visited` map.
+///
+/// `cid_override` is `Some` for the root enode (the one we are kernelizing),
 /// `None` for inlined children.
-/// `loaded` accumulates every class that gets loaded from global memory.
-fn build_enode(
+fn build_enode_forward(
     eg: &mut EGraph,
     nid: NodeId,
     cid_override: Option<ClassId>,
     k: &mut Kernel,
-    cache: &mut InlineCache,
+    visited: &Visited,
     loaded: &mut Vec<ClassId>,
 ) -> Option<OpId> {
-    // Clone the enode and extract children so we can borrow eg mutably later.
     let kind = eg.nodes[nid].clone();
     let children: Vec<ClassId> = kind.child_classes();
 
@@ -261,11 +314,11 @@ fn build_enode(
             let op = Op::ConstView(Box::new((v, View::contiguous(&[1]))));
             Some(k.push_back(op))
         }
-        ENode::Leaf(_) => None,
+        ENode::Leaf(_) | ENode::Kernel(..) | ENode::ToDevice(..) => None,
         ENode::Expand(..) => {
             let cid = find_class_of(eg, nid, cid_override);
             let shape: Vec<Dim> = eg.classes[cid].shape.clone()?.to_vec();
-            let x = inline_or_load(eg, children[0], k, cache, loaded)?;
+            let x = resolve_child(eg, children[0], k, visited, loaded)?;
             Some(k.push_back(Op::Move {
                 x,
                 mop: Box::new(MoveOp::Expand { shape }),
@@ -275,7 +328,7 @@ fn build_enode(
             let cid = find_class_of(eg, nid, cid_override);
             let shape: Vec<Dim> = eg.classes[cid].shape.clone()?.to_vec();
             let axes: Vec<UAxis> = axes.into_vec();
-            let x = inline_or_load(eg, children[0], k, cache, loaded)?;
+            let x = resolve_child(eg, children[0], k, visited, loaded)?;
             Some(k.push_back(Op::Move {
                 x,
                 mop: Box::new(MoveOp::Permute { axes, shape }),
@@ -283,7 +336,7 @@ fn build_enode(
         }
         ENode::Reshape(_, shape) => {
             let shape: Vec<Dim> = shape.into_vec();
-            let x = inline_or_load(eg, children[0], k, cache, loaded)?;
+            let x = resolve_child(eg, children[0], k, visited, loaded)?;
             Some(k.push_back(Op::Move {
                 x,
                 mop: Box::new(MoveOp::Reshape { shape }),
@@ -293,14 +346,14 @@ fn build_enode(
             let cid = find_class_of(eg, nid, cid_override);
             let shape: Vec<Dim> = eg.classes[cid].shape.clone()?.to_vec();
             let padding: Vec<(i64, i64)> = padding.into_vec();
-            let x = inline_or_load(eg, children[0], k, cache, loaded)?;
+            let x = resolve_child(eg, children[0], k, visited, loaded)?;
             Some(k.push_back(Op::Move {
                 x,
                 mop: Box::new(MoveOp::Pad { padding, shape }),
             }))
         }
         ENode::Reduce(_, rop) => {
-            // Reductions materialize their input (no inlining through a reduce).
+            // Reductions always load their input (fusion boundary).
             let in_shape: Vec<Dim> = {
                 let root = eg.find_class(children[0]);
                 eg.classes[root].shape.clone()?
@@ -310,10 +363,11 @@ fn build_enode(
             let out_shape: Vec<Dim> = eg.classes[cid].shape.clone()?.to_vec();
             let n_axes = in_shape.len().saturating_sub(out_shape.len());
 
-            let x = load_class(eg, children[0], k, loaded)?;
+            let x = {
+                let root = eg.find_class(children[0]);
+                load_child(eg, root, k, loaded)?
+            };
 
-            // If the reduced axes are not the trailing dimensions, insert a
-            // permute to move them there (required by unfold_reduces).
             let permuted = try_permute_reduce_axes(k, x, &in_shape, &out_shape, n_axes);
 
             let r = k.push_back(Op::Reduce {
@@ -329,94 +383,19 @@ fn build_enode(
             Some(r)
         }
         ENode::Cast(_, dt) => {
-            let x = inline_or_load(eg, children[0], k, cache, loaded)?;
+            let x = resolve_child(eg, children[0], k, visited, loaded)?;
             Some(k.cast(x, dt))
         }
         ENode::Unary(_, uop) => {
-            let x = inline_or_load(eg, children[0], k, cache, loaded)?;
+            let x = resolve_child(eg, children[0], k, visited, loaded)?;
             Some(k.push_back(Op::Unary { x, uop }))
         }
         ENode::Binary(_, _, bop) => {
-            let lhs = inline_or_load(eg, children[0], k, cache, loaded)?;
-            let rhs = inline_or_load(eg, children[1], k, cache, loaded)?;
+            let lhs = resolve_child(eg, children[0], k, visited, loaded)?;
+            let rhs = resolve_child(eg, children[1], k, visited, loaded)?;
             Some(k.binary(lhs, rhs, bop))
         }
-        ENode::ToDevice(..) => None,
-        ENode::Kernel(..) => {
-            // A pre-existing Kernel enode is a materialized result — load it.
-            let cid = find_class_of(eg, nid, cid_override);
-            load_class(eg, cid, k, loaded)
-        }
     }
-}
-
-// ── Inline-or-load decision ───────────────────────────────
-
-/// Resolve a child class to an `OpId` – either by inlining its
-/// computation into the current kernel, or by emitting a load.
-fn inline_or_load(
-    eg: &mut EGraph,
-    child_cid: ClassId,
-    k: &mut Kernel,
-    cache: &mut InlineCache,
-    loaded: &mut Vec<ClassId>,
-) -> Option<OpId> {
-    let root = eg.find_class(child_cid);
-
-    if let Some(cached) = cache.get(&root) {
-        return Some(match cached {
-            InlineResult::Op(op) => *op,
-            InlineResult::Load(op) => *op,
-        });
-    }
-
-    let result = if can_inline(eg, root) {
-        // Pick the first non-Leaf, non-Kernel enode (Const is inlinable as literal).
-        let inline_nid = eg.classes[root]
-            .nodes
-            .iter()
-            .copied()
-            .find(|&n| {
-                !matches!(&eg.nodes[n], ENode::Leaf(_) | ENode::Kernel(..))
-            })?;
-        InlineResult::Op(build_enode(eg, inline_nid, None, k, cache, loaded)?)
-    } else {
-        InlineResult::Load(load_class(eg, root, k, loaded)?)
-    };
-
-    let op_id = match result {
-        InlineResult::Op(op) => op,
-        InlineResult::Load(op) => op,
-    };
-    cache.insert(root, match result {
-        InlineResult::Op(_) => InlineResult::Op(op_id),
-        InlineResult::Load(_) => InlineResult::Load(op_id),
-    });
-    Some(op_id)
-}
-
-/// A class can be inlined if it has few enough parents and contains
-/// an enode that can be computed inline (anything other than Leaf or Kernel).
-/// Leaf and Kernel are terminal — they must be loaded from global memory.
-/// Const is fine — it emits as a literal (`Op::ConstView`), not a global load.
-/// Reduce is handled specially in `build_enode` (it loads its input).
-fn can_inline(eg: &EGraph, root: ClassId) -> bool {
-    if eg.classes[root].parents.len() > MAX_INLINE_PARENTS {
-        return false;
-    }
-    eg.classes[root].nodes.iter().any(|&n| {
-        !matches!(&eg.nodes[n], ENode::Leaf(_) | ENode::Kernel(..))
-    })
-}
-
-/// Emit a `LoadView` for a class and return the resulting `OpId`.
-/// Records `root` in `loaded` for building accurate kernel input metadata.
-fn load_class(eg: &mut EGraph, cid: ClassId, k: &mut Kernel, loaded: &mut Vec<ClassId>) -> Option<OpId> {
-    let root = eg.find_class(cid);
-    loaded.push(root);
-    let dtype = eg.classes[root].dtype?;
-    let shape: Vec<Dim> = eg.classes[root].shape.clone()?.to_vec();
-    Some(k.load_contiguous(dtype, &shape))
 }
 
 // ── Reduce-axis permutation ───────────────────────────────
