@@ -552,7 +552,8 @@ impl EGraph {
     ///
     /// # Invariant
     /// Every class reachable from an output must contain at least one `ENode::Kernel`
-    /// alternative (or be a `Leaf`/`Const` base case). `kernelize_all` guarantees this.
+    /// alternative (or be a `Leaf` base case — `Const` is always compiled into kernels
+    /// as a literal, never loaded from memory). `kernelize_all` guarantees this.
     /// Violation panics in `extract_dp`.
     pub(crate) fn extract(&mut self, outputs: &[ClassId]) -> Vec<(NodeId, ENode)> {
         let mut cost_map: Map<ClassId, u64> = Map::default();
@@ -578,7 +579,8 @@ impl EGraph {
     /// the plan must be a sequence of compilable kernels, not raw graph operations.
     ///
     /// # Invariant
-    /// This function panics if `cid` has no kernel, Leaf, or Const alternatives.
+    /// This function panics if `cid` has no kernel or Leaf alternatives
+    /// (`Const` is always compiled into kernels as a literal, never loaded from memory).
     /// Every class on the execution path must be kernelized — see `kernelize_all`.
     fn extract_dp(&mut self, cid: ClassId, cost_map: &mut Map<ClassId, u64>, choice: &mut Map<ClassId, NodeId>) -> u64 {
         let cid = self.find_class(cid);
@@ -617,7 +619,8 @@ impl EGraph {
 
         // The plan can only contain compiled kernels — non-kernel enodes (operator
         // nodes like Binary, Cast, Expand, etc.) are not executable targets.
-        // Fall back to Leaf/Const base cases which cost nothing to load.
+        // Fall back to Leaf base cases which cost nothing to load.
+        // (Const is never reached here — it is always compiled into kernels as a literal.)
         if self.classes[cid]
             .nodes
             .iter()
@@ -631,10 +634,11 @@ impl EGraph {
         // Every class on the execution path must have at least one compiled kernel.
         // This means `kernelize_all` missed this class — it must be fixed.
         panic!(
-            "extract_dp: class {cid:?} has no Kernel, Leaf, or Const alternative. \
+            "extract_dp: class {cid:?} has no Kernel or Leaf alternative. \
              Non-kernel enodes cannot appear in the extracted plan — only compiled \
-             kernels are executable. Fix: kernelize_all must create at least one \
-             kernel enode for this class."
+             kernels are executable. (Const is always compiled into kernels as a \
+             literal, so it should never be missing a kernel.) Fix: kernelize_all \
+             must create at least one kernel enode for this class."
         );
     }
 
