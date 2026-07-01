@@ -36,70 +36,30 @@ type Visited = Map<ClassId, (NodeId, OpId)>;
 impl EGraph {
     /// Build fused kernels for classes in topological order.
     ///
-    /// Only classes with multiple consumers (or  consumers that
-    /// are all output classes) get their own kernel — single-consumer
-    /// classes are inlined into their parent's kernel.
+    /// Mirrors `kernelize.rs`: walk classes in topological order and
+    /// build at least one kernel enode for every class that has non-trivial
+    /// enodes.  After this pass, every class reachable from an output contains
+    /// at least one `ENode::Kernel` or is a `Leaf`/`Const` base case.
     ///
-    /// After `kernelize_all`, every class reachable from an output must
-    /// contain at least one `ENode::Kernel` or be a  `Leaf`/`Const` base
-    /// case (the extracted plan can only execute kernels).
-    ///
-    /// # Invariant
-    /// After `kernelize_all`, every class reachable from an output must contain
-    /// at least one `ENode::Kernel` or be a `Leaf`/`Const` base case.  The
-    /// extracted plan can only contain compiled kernels — non-kernel operator
-    /// enodes (Binary, Cast, Expand, etc.) are not executable.  `extract_dp`
-    /// panics if a class has no kernel alternative.
+    /// `visited` tracks which classes have already been assigned to a kernel
+    /// (analogous to `visited` in kernelize.rs).  When building a kernel for
+    /// class C, children already in `visited` are loaded from global memory;
+    /// children not yet visited are inlined via `build_enode_forward`
+    /// (the e-graph equivalent of kernelize.rs's per-op methods).
     pub(crate) fn kernelize_all(&mut self) {
         let order = topo_sort_classes(self);
 
-        // Shared map: which classes have been computed and stored.
-        // When a class is in `visited`, its kernel is registered and
-        // consumers must  load  its value from global memory.
+        // Mirrors kernelize.rs `visited`: maps each computed class to
+        // the (kernel_enode_id, result_op_id) that produces its value.
         let mut visited: Visited = Map::default();
 
-        // Determine which classes need their own kernel.
-        // A class needs a kernel if:
-        //   • it is an output (0 parents) — no consumer to inline into
-        //   • it has multiple consumers — store once, load by each
-        //   • it is the input of a Reduce — Reduce always loads its input
-        let mut needs_kernel: Set<ClassId> = Set::default();
-        for (cid, class) in self.classes.iter() {
-            let has_compute = class.nodes.iter().any(|nid| {
-                !matches!(&self.nodes[*nid], ENode::Leaf(_) | ENode::Kernel(..) | ENode::Const(_))
-            });
-            if !has_compute {
-                continue;
-            }
-            if class.parents.len() != 1 {
-                // Multi-consumer (parents > 1) or output (parents == 0)
-                needs_kernel.insert(cid);
-                continue;
-            }
-            // Single-consumer: check if this class itself is a Reduce
-            // or its parent is a Reduce.  Reduce is always a fusion boundary.
-            let is_reduce = class.nodes.iter().any(|nid| {
-                matches!(&self.nodes[*nid], ENode::Reduce(..))
-            });
-            let has_reduce_parent = class.parents.iter().any(|(parent_nid, _)| {
-                matches!(&self.nodes[*parent_nid], ENode::Reduce(..))
-            });
-            if is_reduce || has_reduce_parent {
-                needs_kernel.insert(cid);
-            }
-        }
-
         for cid in order {
-            if !needs_kernel.contains(&cid) {
+            // Already computed by a previous kernel → skip.
+            if visited.contains_key(&cid) {
                 continue;
             }
 
-            let out_dtype = match self.classes[cid].dtype {
-                Some(dt) => dt,
-                None => continue,
-            };
-
-            // Build a kernel for each non-trivial enode in this class.
+            // Collect non-trivial enodes in this class.
             let nids: Vec<NodeId> = self.classes[cid]
                 .nodes
                 .iter()
@@ -109,6 +69,13 @@ impl EGraph {
                 })
                 .collect();
 
+            if nids.is_empty() {
+                continue;
+            }
+
+            let out_dtype = self.classes[cid].dtype.unwrap();
+
+            // Build a kernel for each non-trivial enode.
             for &nid in &nids {
                 let mut k = Kernel::new(DeviceId::AUTO);
                 let mut loaded: Vec<ClassId> = Vec::new();
@@ -130,6 +97,10 @@ impl EGraph {
                 self.kernel_irs.insert(knid, k);
                 visited.insert(cid, (knid, result));
             }
+
+            // If this class is an output and wasn't assigned a kernel
+            // (all build_enode_forward returned None), the extractor will
+            // still find a Leaf/Const fallback or panic below.
         }
     }
 
