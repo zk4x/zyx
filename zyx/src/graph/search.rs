@@ -171,6 +171,7 @@ impl EGraph {
             class_rank: Vec::new(),
             hashcons: Map::default(),
             costs: Map::default(),
+            kernel_map: Map::default(),
             kernel_irs: Map::default(),
         }
     }
@@ -718,7 +719,7 @@ impl EGraph {
             .collect();
         debug_assert!(!output_classes.is_empty(), "compile: no output tensors found in e-graph");
 
-        eg.kernelize_all(&output_classes);
+        eg.kernelize_all();
 
         // Autotune every kernel variant on every available device.
         let _ = eg.autotune_all_kernels(devices, pools, cache, config, debug);
@@ -871,10 +872,19 @@ impl EGraph {
             v
         };
 
+        // Snapshot class roots before autotune to detect unexpected unification.
+        let pre_roots: Vec<(ClassId, ClassId)> = {
+            let ids: Vec<ClassId> = self.classes.ids().collect();
+            ids.into_iter().map(|cid| (cid, self.find_class(cid))).collect()
+        };
+
         for (nid, cid, inputs, outputs) in &kernel_enodes {
-            let Some(kernel) = self.kernel_irs.remove(nid) else {
-                // Pre-compiled kernel (custom kernel) — keep it in its class
-                // and use the heuristic cost already set in build_from_graph.
+            // Look up the builder kernel ID for this enode.
+            let Some(&kid) = self.kernel_map.get(nid) else {
+                // Pre-compiled kernel (custom kernel) — keep it in its class.
+                continue;
+            };
+            let Some(kernel) = self.kernel_irs.remove(&kid) else {
                 continue;
             };
 
@@ -904,11 +914,21 @@ impl EGraph {
                     let (new_nid, _) = self.make(ENode::Kernel(inputs.clone(), outputs.clone(), prog), Box::new([]), DType::F32);
                     let cost = if timing > 0 { timing } else { heuristic_cost };
                     self.costs.insert(new_nid, cost);
-                    self.kernel_irs.insert(new_nid, debug_kernel);
+                    let new_kid = KMKernelId::from(self.kernel_irs.len());
+                    self.kernel_irs.insert(new_kid, debug_kernel);
+                    self.kernel_map.insert(new_nid, new_kid);
                     self.add_to_class(new_nid, *cid);
                 }
             }
         }
+
+        debug_assert!(
+            pre_roots.iter().all(|&(cid, root_before)| {
+                let root_after = self.find_class(cid);
+                root_before == root_after
+            }),
+            "autotune_all_kernels unexpectedly unified classes"
+        );
 
         Ok(())
     }
@@ -925,8 +945,10 @@ impl EGraph {
                     "Kernel {} n{} d{}:  cost={}, inputs={:?} outputs={:?}",
                     i, nid.0, prog.device.0, cost, inputs, outputs
                 );
-                if let Some(kernel) = self.kernel_irs.get(nid) {
-                    kernel.debug();
+                if let Some(&kid) = self.kernel_map.get(nid) {
+                    if let Some(kernel) = self.kernel_irs.get(&kid) {
+                        kernel.debug();
+                    }
                 }
             } else {
                 println!("  Step {}: {:?} (non-kernel)", i, enode);
