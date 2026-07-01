@@ -3,10 +3,115 @@
 
 //! E-graph kernelizer.
 //!
-//! Walks the egraph and builds fused kernel IRs by greedily inlining
-//! operations into kernels, stopping at reduction/physical boundaries.
-//! This mirrors the fusion strategy from the old kernelize.rs but works
-//! on the egraph's class/enode structure.
+//! This module MUST mirror the fusion/launch strategy of `kernelize.rs`,
+//! operating on e-graph classes (`ClassId`) instead of graph tensors
+//! (`TensorId`).  Below is how `kernelize.rs` works — this module must
+//! do the same, adapted to the e-graph.
+//!
+//! ── How kernelize.rs works ──────────────────────────────────
+//!
+//! The kernelizer processes tensors in topological order (children
+//! before parents).  It maintains two key data structures:
+//!
+//! * `visited: Map<TensorId, (KMKernelId, OpId)>`
+//!   Every tensor is inserted into `visited` after being processed.
+//!   Maps each tensor → (which kernel it lives in, the OpId of its
+//!   result within that kernel).
+//!
+//! * `pending_stores: Set<TensorId>`
+//!   Tracks tensors that have been stored (have a Store op somewhere).
+//!   NOT the same as `visited` — a tensor can be in `visited` without
+//!   being in `pending_stores` (its computation is in a kernel but has
+//!   not yet been stored to memory).
+//!
+//! Each kernel has an `outputs: Vec<TensorId>` field.  When a tensor is
+//! added to a kernel (as the result of a compute op), it is appended to
+//! `outputs` (once for each reference count).  When a tensor is used as
+//! an input to a later op, `remove_first_output` removes one occurrence.
+//! A tensor still in `outputs` is "live" — its value exists only as a
+//! register in the kernel, not yet stored to global memory.
+//!
+//! ## Processing a tensor (pseudocode)
+//!
+//! ```text
+//! for each nid in order:
+//!     if nid is in pending_stores:
+//!         create_load_kernel(nid)   // new kernel with just a Load
+//!     else:
+//!         match graph[nid]:
+//!             Leaf/Const → handled directly
+//!             Unary  → add_unary_op(nid, x, uop)
+//!             Binary → add_binary_op(nid, x, y, bop)
+//!             Expand → add_expand_op(nid, x)
+//!             ...
+//!
+//!     if nid is output (to_eval) and not realized:
+//!         add_store(nid)             // persist to memory
+//! ```
+//!
+//! ## Kernel merging (the key to fusion)
+//!
+//! When `add_binary_op` processes a binary op, the operands x and y
+//! may live in different kernels.  Instead of loading between them,
+//! the kernels are **merged**: all ops from y's kernel are copied into
+//! x's kernel (with OpIds remapped), and `visited` entries pointing to
+//! y's kernel are updated to point to x's kernel.  After merging, both
+//! operands and the result are in the same kernel.  The binary op is
+//! appended, and the result tensor is added to `visited`.
+//!
+//! This is what produces fused kernels — single-use intermediate
+//! tensors stay in the same kernel as their consumer; no load/store
+//! boundary is created between them.
+//!
+//! ## Storing and launching
+//!
+//! `add_store(nid)` is called when a tensor needs to be persisted:
+//!   - It is an output (`to_eval`)
+//!   - It is used by multiple consumers (refcount > 1)
+//!   - A Reduce needs its input materialised (reduction boundary)
+//!   - Other heuristics from `duplicate_or_store`
+//!
+//! `add_store` removes the tensor from `visited`, adds a Store op,
+//! inserts it into `pending_stores`, and removes it from the kernel's
+//! `outputs` list.  If the kernel's `outputs` becomes empty AND all its
+//! loads are already realized tensors, the kernel is launched
+//! immediately — it cannot be enlarged any more because every
+//! intermediate result has been stored.
+//!
+//! ## Adaptation to e-graph
+//!
+//! In this module:
+//!   - `ClassId` replaces `TensorId`
+//!   - The e-graph replaces the flat `Graph`
+//!   - `ENode::Leaf` and `ENode::Const` replace `Node::Leaf`/`Node::Const`
+//!   - `ENode::Kernel(inputs, outputs, prog)` replaces the separate
+//!     kernel slab — each kernel variant is a node in the e-graph
+//!   - `build_enode_forward` replaces the per-op methods
+//!   - Kernel merging in `resolve_child` (when child is in a different
+//!     kernel) replaces the merge logic in `add_binary_op` / `duplicate_or_store`
+//!   - An e-graph equivalent of `outputs` + `pending_stores` determines
+//!     when kernels can be launched
+//!
+//! ## pending_stores cannot exist in the original form
+//!
+//! In `kernelize.rs`, `pending_stores` is a flat `Set<TensorId>` —
+//! a tensor either has a store or it doesn't.  The e-graph has
+//! equivalence classes with multiple alternative enodes (branches).
+//! A class might be stored in one branch but computed inline in
+//! another.  For example, if the rewrite system discovers that
+//! `reshape(expand(x))` can be replaced by a direct expand, the
+//! class for `reshape(expand(x))` might have both a `Kernel` enode
+//! (with a store) and an `Expand` enode (inlineable).  In the
+//! extract step, only ONE enode is selected per class, so whether
+//! the class needs storage depends on which enode the extractor
+//! picks and what the consuming enode expects.
+//!
+//! Therefore, `pending_stores` cannot be a simple set like in
+//! `kernelize.rs`.  Instead, storage decisions are encoded in the
+//! kernel enodes themselves: a `Kernel` enode that contains a Store
+//! op represents a stored class; one without a Store op represents
+//! an inlineable computation.  The extractor chooses the correct
+//! variant based on cost and consumer requirements.
 
 use crate::{
     Map, Set,
@@ -46,7 +151,7 @@ impl EGraph {
     /// class C, children already in `visited` are loaded from global memory;
     /// children not yet visited are inlined via `build_enode_forward`
     /// (the e-graph equivalent of kernelize.rs's per-op methods).
-    pub(crate) fn kernelize_all(&mut self) {
+    pub(crate) fn kernelize_all(&mut self, output_classes: &Set<ClassId>) {
         let order = topo_sort_classes(self);
 
         // Mirrors kernelize.rs `visited`: maps each computed class to
@@ -73,7 +178,22 @@ impl EGraph {
 
                 let knid = self.make_kernel_enode(cid, &loaded, &k);
                 self.kernel_irs.insert(knid, k);
-                visited.insert(cid, (knid, result));
+
+                // Only register in visited if the class needs its own storage
+                // (output, multi-consumer, or Reduce boundary).  Mirroring
+                // kernelize.rs: single-consumer tensors don't get add_store —
+                // their parent's kernel inlines their computation.
+                let parent_count = self.classes[cid].parents.len();
+                let is_output = output_classes.contains(&cid);
+                let is_multi = parent_count > 1;
+                let is_reduce = self.classes[cid].nodes.iter().any(|n| {
+                    matches!(&self.nodes[*n], ENode::Reduce(..))
+                }) || self.classes[cid].parents.iter().any(|(pn, _)| {
+                    matches!(&self.nodes[*pn], ENode::Reduce(..))
+                });
+                if is_output || is_multi || is_reduce {
+                    visited.insert(cid, (knid, result));
+                }
             }
         }
     }

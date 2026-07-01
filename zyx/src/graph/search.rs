@@ -705,20 +705,22 @@ impl EGraph {
         let tensor_to_cid = eg.build_from_graph(order, graph, inputs);
         eg.saturate();
         eg.compress_paths();
-        eg.kernelize_all();
 
-        // Autotune every kernel variant on every available device.
-        let _ = eg.autotune_all_kernels(devices, pools, cache, config, debug);
-
-        let output_classes: Vec<ClassId> = output_order
+        let output_classes: Set<ClassId> = output_order
             .iter()
             .filter_map(|tid| tensor_to_cid.get(tid).copied())
             .collect();
         debug_assert!(!output_classes.is_empty(), "compile: no output tensors found in e-graph");
 
+        eg.kernelize_all(&output_classes);
+
+        // Autotune every kernel variant on every available device.
+        let _ = eg.autotune_all_kernels(devices, pools, cache, config, debug);
+
         eg.debug_print();
 
         // Extract: pick cheapest all-kernel plan
+        let output_classes: Vec<ClassId> = output_classes.iter().copied().collect();
         let plan = eg.extract(&output_classes);
         if debug.sched() {
             eg.debug_print_plan(&plan);
