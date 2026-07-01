@@ -215,9 +215,15 @@ impl EGraph {
             *c = self.find_class(*c);
         }
 
-        if let Some(&nid) = self.hashcons.get(&kind) {
-            let cid = self.find(nid);
-            return (nid, cid);
+        // Leaf has no children and its identity is its TensorId, not its DType.
+        // We skip the hashcons so different tensors with the same dtype get
+        // distinct classes.  Without this, e.g. x + y where both are I32 would
+        // hash-cons the two Leaf(I32) into one class, corrupting the graph.
+        if !matches!(kind, ENode::Leaf(_)) {
+            if let Some(&nid) = self.hashcons.get(&kind) {
+                let cid = self.find(nid);
+                return (nid, cid);
+            }
         }
 
         let children: Vec<ClassId> = kind.child_classes();
@@ -232,7 +238,9 @@ impl EGraph {
         self.grow_uf_arrays(cidx);
         self.class_parent[cidx] = cid;
 
-        self.hashcons.insert(kind, nid);
+        if !matches!(kind, ENode::Leaf(_)) {
+            self.hashcons.insert(kind, nid);
+        }
 
         for (child_idx, &child) in children.iter().enumerate() {
             let child_root = self.find_class(child);
@@ -309,9 +317,12 @@ impl EGraph {
         }
 
         // 2. Rebuild hashcons with canonicalized keys.
+        // Skip Leaf enodes — they must remain distinct per their TensorId.
         self.hashcons.clear();
         for &nid in &all_nids {
-            self.hashcons.insert(self.nodes[nid].clone(), nid);
+            if !matches!(self.nodes[nid], ENode::Leaf(_)) {
+                self.hashcons.insert(self.nodes[nid].clone(), nid);
+            }
         }
 
         // 3. Rebuild parent lists from scratch.
