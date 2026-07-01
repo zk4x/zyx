@@ -9,7 +9,7 @@
 //! on the egraph's class/enode structure.
 
 use crate::{
-    DType,
+    DType, Map, Set,
     backend::ProgramId,
     graph::search::{ClassId, EGraph, ENode, NodeId},
     kernel::{DeviceId, Kernel, MoveOp, Op, OpId},
@@ -140,6 +140,67 @@ impl EGraph {
         self.costs.insert(knid, kernel_cost(compute_ops.max(1)));
         knid
     }
+}
+
+// ── Topological sort ──────────────────────────────────────
+
+/// Topologically sort e-graph classes (children before parents)
+/// using Kahn's algorithm on the enode dependency DAG.
+///
+/// All classes are included in the result.  Classes with no children
+/// (Leaf, Const) come first; classes whose children have all been
+/// emitted come next.
+pub(crate) fn topo_sort_classes(eg: &EGraph) -> Vec<ClassId> {
+    // Map each class to its set of unique child classes (dependencies).
+    let mut children_of: Map<ClassId, Set<ClassId>> = Map::default();
+    for (cid, class) in eg.classes.iter() {
+        let mut children: Set<ClassId> = Set::default();
+        for &nid in &class.nodes {
+            for &child in eg.nodes[nid].child_classes().iter() {
+                let root = eg.class_parent[child.0 as usize];
+                children.insert(root);
+            }
+        }
+        children_of.insert(cid, children);
+    }
+
+    // in_degree: how many children each class depends on.
+    // dependents: for each child class, which classes depend on it.
+    let mut in_degree: Map<ClassId, u32> = Map::default();
+    let mut dependents: Map<ClassId, Vec<ClassId>> = Map::default();
+    for (&cid, children) in &children_of {
+        let deg = children.len() as u32;
+        in_degree.insert(cid, deg);
+        for &child in children {
+            dependents.entry(child).or_default().push(cid);
+        }
+    }
+
+    // Start queue with classes that have no dependencies.
+    let mut queue: Vec<ClassId> = Vec::new();
+    for (&cid, &deg) in &in_degree {
+        if deg == 0 {
+            queue.push(cid);
+        }
+    }
+
+    // Process in topological order.
+    let mut order = Vec::new();
+    while let Some(cid) = queue.pop() {
+        order.push(cid);
+        if let Some(deps) = dependents.get(&cid) {
+            for &parent in deps {
+                if let Some(deg) = in_degree.get_mut(&parent) {
+                    *deg = deg.saturating_sub(1);
+                    if *deg == 0 {
+                        queue.push(parent);
+                    }
+                }
+            }
+        }
+    }
+
+    order
 }
 
 // ── Fused kernel builder ──────────────────────────────────
@@ -404,4 +465,73 @@ fn try_permute_reduce_axes(
         x,
         mop: Box::new(MoveOp::Permute { axes: permute, shape }),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::{
+        graph::search::{ENode, ClassId},
+        kernel::{BOp, UOp},
+        DType,
+    };
+
+    use super::EGraph;
+
+    /// Simple chain: Leaf -> Expand -> Expand
+    #[test]
+    fn topo_chain() {
+        let mut eg = EGraph::new();
+        let (_, c0) = eg.make(ENode::Leaf(DType::F32));
+        let (_, c1) = eg.make(ENode::Expand(c0));
+        let (_, c2) = eg.make(ENode::Expand(c1));
+
+        let order = super::topo_sort_classes(&eg);
+        assert_eq!(order.len(), 3, "expected 3 classes, got {}", order.len());
+
+        // Children before parents: c0 (Leaf) -> c1 -> c2
+        let pos = |cid: ClassId| order.iter().position(|&x| x == cid).unwrap();
+        assert!(pos(c0) < pos(c1), "c0 should come before c1");
+        assert!(pos(c1) < pos(c2), "c1 should come before c2");
+    }
+
+    /// Diamond:      leaf
+    ///              /    \
+    ///           Neg     Abs
+    ///              \    /
+    ///               Add
+    #[test]
+    fn topo_diamond() {
+        let mut eg = EGraph::new();
+        let (_, leaf) = eg.make(ENode::Leaf(DType::F32));
+        let (_, neg) = eg.make(ENode::Unary(leaf, UOp::Neg));
+        let (_, abs) = eg.make(ENode::Unary(leaf, UOp::Abs));
+        let (_, add) = eg.make(ENode::Binary(neg, abs, BOp::Add));
+
+        let order = super::topo_sort_classes(&eg);
+        assert_eq!(order.len(), 4, "expected 4 classes, got {}", order.len());
+
+        let pos = |cid: ClassId| order.iter().position(|&x| x == cid).unwrap();
+        assert!(pos(leaf) < pos(neg), "leaf should come before neg");
+        assert!(pos(leaf) < pos(abs), "leaf should come before abs");
+        assert!(pos(neg) < pos(add), "neg should come before add");
+        assert!(pos(abs) < pos(add), "abs should come before add");
+    }
+
+    /// Disjoint classes: two independent chains
+    #[test]
+    fn topo_disjoint() {
+        let mut eg = EGraph::new();
+        let (_, l0) = eg.make(ENode::Leaf(DType::F32));
+        let (_, l1) = eg.make(ENode::Leaf(DType::F64));
+        let (_, e0) = eg.make(ENode::Expand(l0));
+
+        let order = super::topo_sort_classes(&eg);
+        assert_eq!(order.len(), 3, "expected 3 classes, got {}", order.len());
+
+        let pos = |cid: ClassId| order.iter().position(|&x| x == cid).unwrap();
+        // Both leaves before expand
+        assert!(pos(l0) < pos(e0));
+        // l1 can be anywhere, just check it's in order
+        assert!(order.contains(&l1));
+    }
 }
