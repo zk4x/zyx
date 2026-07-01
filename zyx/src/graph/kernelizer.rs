@@ -54,29 +54,12 @@ impl EGraph {
         let mut visited: Visited = Map::default();
 
         for cid in order {
-            // Already computed by a previous kernel → skip.
+            let cid = self.find_class(cid);
             if visited.contains_key(&cid) {
                 continue;
             }
 
-            // Collect non-trivial enodes in this class.
-            let nids: Vec<NodeId> = self.classes[cid]
-                .nodes
-                .iter()
-                .copied()
-                .filter(|&nid| {
-                    !matches!(&self.nodes[nid], ENode::Leaf(_) | ENode::Kernel(..) | ENode::Const(_))
-                })
-                .collect();
-
-            if nids.is_empty() {
-                continue;
-            }
-
-            let out_dtype = self.classes[cid].dtype;
-
-            // Build a kernel for each non-trivial enode.
-            for &nid in &nids {
+            for &nid in self.classes[cid].nodes.clone().iter() {
                 let mut k = Kernel::new(DeviceId::AUTO);
                 let mut loaded: Vec<ClassId> = Vec::new();
 
@@ -91,16 +74,12 @@ impl EGraph {
                     continue;
                 }
 
-                k.store_contiguous(result, out_dtype);
+                k.store_contiguous(result, self.classes[cid].dtype);
 
                 let knid = self.make_kernel_enode(cid, &loaded, &k);
                 self.kernel_irs.insert(knid, k);
                 visited.insert(cid, (knid, result));
             }
-
-            // If this class is an output and wasn't assigned a kernel
-            // (all build_enode_forward returned None), the extractor will
-            // still find a Leaf/Const fallback or panic below.
         }
     }
 
