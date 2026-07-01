@@ -54,11 +54,6 @@ impl EGraph {
         let mut visited: Visited = Map::default();
 
         for cid in order {
-            let cid = self.find_class(cid);
-            if visited.contains_key(&cid) {
-                continue;
-            }
-
             for &nid in self.classes[cid].nodes.clone().iter() {
                 let mut k = Kernel::new(DeviceId::AUTO);
                 let mut loaded: Vec<ClassId> = Vec::new();
@@ -126,9 +121,13 @@ impl EGraph {
 /// (Leaf, Const) come first; classes whose children have all been
 /// emitted come next.
 pub(crate) fn topo_sort_classes(eg: &EGraph) -> Vec<ClassId> {
-    // Map each class to its set of unique child classes (dependencies).
+    // Skip merged (non-root) classes — only process each equivalence
+    // class root once.
     let mut children_of: Map<ClassId, Set<ClassId>> = Map::default();
     for (cid, class) in eg.classes.iter() {
+        if eg.class_parent[cid.0 as usize] != cid {
+            continue;
+        }
         let mut children: Set<ClassId> = Set::default();
         for &nid in &class.nodes {
             for &child in eg.nodes[nid].child_classes().iter() {
