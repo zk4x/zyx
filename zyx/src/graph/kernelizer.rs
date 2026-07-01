@@ -133,6 +133,12 @@
 //!     looks up the child's kernel via `visited[child_class]`.
 //!     The extractor picks the cheapest among all kernel enodes
 //!     in the class.
+//!   - `pending_stores` (from `kernelize.rs`) is NOT present in the
+//!     e-graph version.  In `kernelize.rs` it prevents double-stores
+//!     during merge — but in the e-graph a class is stored once and
+//!     then removed from the builder slab; no second `add_store` is
+//!     possible.  If a problem arises from not tracking pending
+//!     stores, it will be fixed on the fly.
 
 use crate::{
     Map, Set,
