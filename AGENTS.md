@@ -437,6 +437,7 @@ There are no exceptions. Rhetorical questions are questions. "What do you mean" 
 - **Ask before hunting for specs/values** - If I might have a spec, a mapping, or any information that could save time, ask me first. I always have it, so don't dig through source code or run experiments to derive it.
 - **Never use `git stash`. Never discard or hide changes.**
 - **Never run tests to check for regressions.** If the user wants to know about test status, they'll ask. Don't run tests to "make sure nothing broke" after a change or to check if a failure existed before your changes.
+- **Never say "pre-existing".** Do not use that word in any context.
 - **Never blame test failures on anything other than yourself.** If a test fails, it's your fault — find and fix it.
 - **Never touch `~/.config/zyx/config.json`** — never read, write, create, modify, or delete it. If a test needs a specific backend, ask the user to configure it. Do not even look at this file.
 - Inheritance (use composition/enums)

@@ -332,8 +332,20 @@ impl EGraph {
 
         for &tid in order {
             let kind = self.node_to_enkind(tid, &tensor_to_cid, graph);
-            let (_, cid) = self.make(kind);
+            let (nid, cid) = self.make(kind);
             let cid = self.find_class(cid);
+
+            // For Custom nodes, fix the Kernel enode's output class (it was
+            // unknown at construction time) and set a heuristic cost so extraction
+            // can find it.  No kernel_irs entry — these are pre-compiled programs
+            // and autotune_all_kernels will skip them.
+            if matches!(&graph[tid], Node::Custom(_)) {
+                if let ENode::Kernel(_, outputs, _) = &mut self.nodes[nid] {
+                    outputs[0] = cid;
+                }
+                self.costs.insert(nid, 1000);
+            }
+
             let shape: Box<[Dim]> = graph.shape(tid).to_vec().into_boxed_slice();
             self.classes[cid].shape = Some(shape);
             self.classes[cid].dtype = Some(graph.dtype(tid));
@@ -364,7 +376,12 @@ impl EGraph {
             Node::Cast { x, dtype } => ENode::Cast(map[x], *dtype),
             Node::Unary { x, uop } => ENode::Unary(map[x], *uop),
             Node::Binary { x, y, bop } => ENode::Binary(map[x], map[y], *bop),
-            Node::Custom(_) => panic!("Custom nodes not supported in e-graph"),
+            Node::Custom(ck) => {
+                let inputs: Vec<ClassId> = ck.inputs.iter().map(|tid| map[tid]).collect();
+                // Output class is unknown yet — fixed up in build_from_graph.
+                let outputs = vec![ClassId::NULL].into_boxed_slice();
+                ENode::Kernel(inputs.into_boxed_slice(), outputs, ck.program)
+            }
             Node::ToDevice { x, device } => ENode::ToDevice(map[x], *device),
         }
     }
@@ -581,17 +598,18 @@ impl EGraph {
             return best_cost;
         }
 
-        // No kernel alternative in this class. If it's an input (Leaf), cost is 0.
+        // No kernel alternative in this class. Base-case nodes (Leaf, Const)
+        // cost zero — they are materialized or baked into the kernel.
         if self.classes[cid]
             .nodes
             .iter()
-            .any(|&n| matches!(&self.nodes[n], ENode::Leaf(_)))
+            .any(|&n| matches!(&self.nodes[n], ENode::Leaf(_) | ENode::Const(_)))
         {
             cost_map.insert(cid, 0);
             return 0;
         }
 
-        panic!("extract_dp: class {cid:?} has no Kernel or Leaf alternative");
+        panic!("extract_dp: class {cid:?} has no Kernel, Leaf, or Const alternative");
     }
 
     /// Walk choices from output classes, emitting kernels bottom-up
@@ -643,10 +661,11 @@ impl EGraph {
         let output_classes: Vec<ClassId> = to_eval.iter().filter_map(|tid| tensor_to_cid.get(tid).copied()).collect();
         debug_assert!(!output_classes.is_empty(), "compile: no output tensors found in e-graph");
 
+        eg.debug_print();
+
         // Extract: pick cheapest all-kernel plan
         let plan = eg.extract(&output_classes);
         if debug.sched() {
-            eg.debug_print();
             eg.debug_print_plan(&plan);
         }
         // TODO: convert plan (Vec<ENode>) to Vec<CompiledNode> with buffer slot management
@@ -676,13 +695,16 @@ impl EGraph {
         };
 
         for (nid, cid, inputs, outputs) in &kernel_enodes {
+            let Some(kernel) = self.kernel_irs.remove(nid) else {
+                // Pre-compiled kernel (custom kernel) — keep it in its class
+                // and use the heuristic cost already set in build_from_graph.
+                continue;
+            };
+
             // Remove the un-compiled original from its class.
             if let Some(class) = self.classes.get_mut(*cid) {
                 class.nodes.retain(|&n| n != *nid);
             }
-            let Some(kernel) = self.kernel_irs.remove(nid) else {
-                continue;
-            };
             let heuristic_cost = self.costs.get(nid).copied().unwrap_or(u64::MAX);
 
             let device_ids: Vec<DeviceId> = devices.ids().collect();
@@ -723,12 +745,10 @@ impl EGraph {
             if let ENode::Kernel(inputs, outputs, prog) = enode {
                 let cost = self.costs.get(nid).copied().unwrap_or(0);
                 println!(
-                    "  Kernel {} n{} d{}:  cost={}, inputs={:?} outputs={:?}",
+                    "Kernel {} n{} d{}:  cost={}, inputs={:?} outputs={:?}",
                     i, nid.0, prog.device.0, cost, inputs, outputs
                 );
-                println!("printing");
                 if let Some(kernel) = self.kernel_irs.get(nid) {
-                    println!("printing2");
                     kernel.debug();
                 }
             } else {
