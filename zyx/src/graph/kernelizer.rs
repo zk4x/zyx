@@ -123,6 +123,14 @@
 //!     look up children in `visited`, merge if needed, emit the op
 //!     into the kernel, update `outputs`, add self to `visited`,
 //!     store if needed.
+//!   - Reference counts (`rcs: Map<ClassId, u32>`) are computed directly
+//!     from the e-graph, using the same topo-sort order used for
+//!     processing.  Iterate the order and count each child occurrence
+//!     across all enodes.  This mirrors how `kernelize.rs` computes
+//!     `rcs` from the graph order.  `rcs` is decremented each time a
+//!     child class is consumed as input by a parent op.  When the
+//!     processing loop finishes and `rcs[cid] > 0`, the class still
+//!     has consumers and needs to be stored (output, multi-consumer).
 //!   - When a class has multiple enode variants (from rewrites), the
 //!     accumulated kernel state (children's ops already merged in) is
 //!     CLONED once per variant.  Each clone gets the variant's ops
