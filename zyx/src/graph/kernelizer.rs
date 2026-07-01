@@ -37,7 +37,6 @@ impl EGraph {
                     continue;
                 }
 
-
                 let out_dtype = match self.classes[cid].dtype {
                     Some(dt) => dt,
                     None => continue,
@@ -64,28 +63,31 @@ impl EGraph {
 
 fn build_kernel(eg: &mut EGraph, nid: NodeId, inputs: &[ClassId], out_dtype: DType) -> Option<Kernel> {
     let kind = eg.nodes[nid].clone();
-    let input0_root = eg.find_class(inputs[0]);
-    let nid_root = eg.find(nid);
     let mut k = Kernel::new(DeviceId::AUTO);
 
     match kind {
         ENode::Binary(_, _, bop) => {
-            let lhs = load(&mut k, eg, input0_root)?;
+            let input0_root = eg.find_class(inputs[0]);
             let input1_root = eg.find_class(inputs[1]);
+            let lhs = load(&mut k, eg, input0_root)?;
             let rhs = load(&mut k, eg, input1_root)?;
             k.binary(lhs, rhs, bop);
         }
         ENode::Unary(_, uop) => {
+            let input0_root = eg.find_class(inputs[0]);
             let x = load(&mut k, eg, input0_root)?;
             k.push_back(Op::Unary { x, uop });
         }
         ENode::Cast(_, dt) => {
+            let input0_root = eg.find_class(inputs[0]);
             let x = load(&mut k, eg, input0_root)?;
             k.cast(x, dt);
         }
         ENode::Reduce(_, rop) => {
+            let input0_root = eg.find_class(inputs[0]);
             let x = load(&mut k, eg, input0_root)?;
             let in_shape: Vec<Dim> = eg.classes[input0_root].shape.clone()?.to_vec();
+            let nid_root = eg.find(nid);
             let out_shape: Vec<Dim> = eg.classes[nid_root].shape.clone()?.to_vec();
             let n_axes = in_shape.len().saturating_sub(out_shape.len());
             let r = k.push_back(Op::Reduce { x, rop, n_axes });
@@ -97,7 +99,9 @@ fn build_kernel(eg: &mut EGraph, nid: NodeId, inputs: &[ClassId], out_dtype: DTy
             k.push_back(Op::ConstView(Box::new((v, View::contiguous(&[1])))));
         }
         ENode::Expand(..) => {
+            let input0_root = eg.find_class(inputs[0]);
             let x = load(&mut k, eg, input0_root)?;
+            let nid_root = eg.find(nid);
             let shape: Vec<Dim> = eg.classes[nid_root].shape.clone()?.to_vec();
             k.push_back(Op::Move {
                 x,
@@ -105,7 +109,9 @@ fn build_kernel(eg: &mut EGraph, nid: NodeId, inputs: &[ClassId], out_dtype: DTy
             });
         }
         ENode::Permute(_, ref axes) => {
+            let input0_root = eg.find_class(inputs[0]);
             let x = load(&mut k, eg, input0_root)?;
+            let nid_root = eg.find(nid);
             let shape: Vec<Dim> = eg.classes[nid_root].shape.clone()?.to_vec();
             let axes: Vec<UAxis> = axes.clone().into_vec();
             k.push_back(Op::Move {
@@ -114,6 +120,7 @@ fn build_kernel(eg: &mut EGraph, nid: NodeId, inputs: &[ClassId], out_dtype: DTy
             });
         }
         ENode::Reshape(_, ref shape) => {
+            let input0_root = eg.find_class(inputs[0]);
             let x = load(&mut k, eg, input0_root)?;
             let shape: Vec<Dim> = shape.clone().into_vec();
             k.push_back(Op::Move {
@@ -122,7 +129,9 @@ fn build_kernel(eg: &mut EGraph, nid: NodeId, inputs: &[ClassId], out_dtype: DTy
             });
         }
         ENode::Pad(_, ref padding) => {
+            let input0_root = eg.find_class(inputs[0]);
             let x = load(&mut k, eg, input0_root)?;
+            let nid_root = eg.find(nid);
             let shape: Vec<Dim> = eg.classes[nid_root].shape.clone()?.to_vec();
             let padding: Vec<(i64, i64)> = padding.clone().into_vec();
             k.push_back(Op::Move {
@@ -141,7 +150,7 @@ fn build_kernel(eg: &mut EGraph, nid: NodeId, inputs: &[ClassId], out_dtype: DTy
     Some(k)
 }
 
-fn load(k: &mut Kernel, eg: &mut EGraph, cid_root: ClassId) -> Option<OpId> {
+fn load(k: &mut Kernel, eg: &EGraph, cid_root: ClassId) -> Option<OpId> {
     let dtype = eg.classes[cid_root].dtype?;
     let shape: Vec<Dim> = eg.classes[cid_root].shape.clone()?.to_vec();
     Some(k.load_contiguous(dtype, &shape))

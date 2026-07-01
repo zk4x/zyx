@@ -422,15 +422,11 @@ When investigating a crash (segfault, signal, etc.):
 
 **Every user message: before writing ANY tool call, check if the message contains a `?`.**
 
-**If YES → answer in plain text. ZERO tool calls. Not even Read. Not even grep to "verify". Nothing. Pure text answer. Tools only in the NEXT message after the user responds.**
+**If YES → you may use search/read/grep tools, but do NOT edit or write files (no edit, write, or bash commands that modify files).**
 
 **If NO → proceed normally.**
 
-There are no exceptions. Rhetorical questions are questions. "What do you mean" is a question. "Did you" is a question. If there is a `?`, you text-first, tools-never.
-
-**Failure to follow this will get you corrected. Again and again and again.**
-
-Note: When the user says to fix this rule because you keep violating it, do NOT re-read the file first. The rule is in AGENTS.md. Just edit it. Do not read. Do not grep. Do not verify. Just fix it.
+There are no exceptions. Rhetorical questions are questions. "What do you mean" is a question. "Did you" is a question.
 
 **Edit precisely, don't cascade.** When the user gives feedback on a specific change, only modify exactly what they referenced. Do not revert, restructure, or delete unrelated code. If you think other changes are needed, ask first. Never make multiple reverts in a chain without being asked — each revert is a new change requiring permission.
 
@@ -439,8 +435,9 @@ Note: When the user says to fix this rule because you keep violating it, do NOT 
 - **Never commit unless the user explicitly asks** — but when they say "commit", just do it. Derive a concise commit message from the diff matching the repo style. Do NOT ask for a message.
 - **When in doubt, ask me immediately** - Don't try to figure things out on your own if uncertain. Just ask.
 - **Ask before hunting for specs/values** - If I might have a spec, a mapping, or any information that could save time, ask me first. I always have it, so don't dig through source code or run experiments to derive it.
-- **Never run tests to check for regressions or confirm pre-existing failures.** If the user wants to know about test status, they'll ask. Don't run tests to "make sure nothing broke" after a change or to check if a failure existed before your changes.
-- **Never blame pre-existing test failures.** If a test fails but you didn't touch the code it exercises, the failure is yours to investigate and fix. The phrase "pre-existing test failure" is FORBIDDEN.
+- **Never use `git stash`. Never discard or hide changes.**
+- **Never run tests to check for regressions.** If the user wants to know about test status, they'll ask. Don't run tests to "make sure nothing broke" after a change or to check if a failure existed before your changes.
+- **Never blame test failures on anything other than yourself.** If a test fails, it's your fault — find and fix it.
 - **Never touch `~/.config/zyx/config.json`** — never read, write, create, modify, or delete it. If a test needs a specific backend, ask the user to configure it. Do not even look at this file.
 - Inheritance (use composition/enums)
 - `Rc<RefCell<T>>` unless absolutely necessary

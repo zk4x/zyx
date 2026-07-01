@@ -87,7 +87,7 @@ codegen-units = 16       # Parallelize LLVM codegen for faster debug builds.
 #rpath = false           # Sets the rpath linking option.
 
 [profile.test]
-opt-level = 1
+opt-level = 0
 debug = false
 strip = false
 debug-assertions = true

@@ -26,7 +26,7 @@ This document is your single source of truth. If it doesn't contain the answer, 
 
 **ALWAYS report bugs you introduce.** If your change breaks tests, causes crashes, or introduces any regression, tell the user immediately with the exact error and your analysis. Do not silently fix it, do not move on, do not wait to be asked. Stop and explain the problem.
 
-**Never blame pre-existing test failures.** If a test fails but you didn't touch the code it exercises, the failure is yours to investigate and fix. The phrase "pre-existing test failure" is FORBIDDEN.
+**If a test fails, find and fix it.** You broke it. The phrase "pre-existing" is FORBIDDEN.
 
 **Never delete or modify comments/code without asking first.** If you're editing around comments, preserve them exactly. Accidental deletion is not an excuse — re-read your edit before applying.
 

@@ -680,7 +680,7 @@ impl EGraph {
             if let Some(class) = self.classes.get_mut(*cid) {
                 class.nodes.retain(|&n| n != *nid);
             }
-            let Some(kernel) = self.kernel_irs.get(nid).cloned() else {
+            let Some(kernel) = self.kernel_irs.remove(nid) else {
                 continue;
             };
             let heuristic_cost = self.costs.get(nid).copied().unwrap_or(u64::MAX);
@@ -692,6 +692,7 @@ impl EGraph {
                 let pool = &mut pools[pool_id];
 
                 let mut kernel = kernel.clone();
+                let debug_kernel = kernel.clone();
                 let (flop, read, write) = kernel.flop_mem_rw();
 
                 if let Ok((device_prog, timing)) =
@@ -704,6 +705,7 @@ impl EGraph {
                     let (new_nid, _) = self.make(ENode::Kernel(inputs.clone(), outputs.clone(), prog));
                     let cost = if timing > 0 { timing } else { heuristic_cost };
                     self.costs.insert(new_nid, cost);
+                    self.kernel_irs.insert(new_nid, debug_kernel);
                     self.add_to_class(new_nid, *cid);
                 }
             }
@@ -715,7 +717,7 @@ impl EGraph {
     pub(crate) fn debug_print_plan(&self, plan: &[(NodeId, ENode)]) {
         let line = "─".repeat(60);
         println!("\n{}", line);
-        println!("  Extracted Plan");
+        println!("  Extracted Plan with {} auto kernels", self.kernel_irs.len());
         println!("{}", line);
         for (i, (nid, enode)) in plan.iter().enumerate() {
             if let ENode::Kernel(inputs, outputs, prog) = enode {
@@ -724,7 +726,9 @@ impl EGraph {
                     "  Kernel {} n{} d{}:  cost={}, inputs={:?} outputs={:?}",
                     i, nid.0, prog.device.0, cost, inputs, outputs
                 );
+                println!("printing");
                 if let Some(kernel) = self.kernel_irs.get(nid) {
+                    println!("printing2");
                     kernel.debug();
                 }
             } else {
