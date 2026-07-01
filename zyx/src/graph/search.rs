@@ -148,9 +148,9 @@ impl EClass {
 pub(crate) struct EGraph {
     pub(crate) nodes: Slab<NodeId, ENode>,
     pub(crate) classes: Slab<ClassId, EClass>,
-    class_of: Vec<ClassId>,
-    class_parent: Vec<ClassId>,
-    class_rank: Vec<u8>,
+    pub(crate) class_of: Vec<ClassId>,
+    pub(crate) class_parent: Vec<ClassId>,
+    pub(crate) class_rank: Vec<u8>,
     hashcons: Map<ENode, NodeId>,
     pub(crate) costs: Map<NodeId, u64>,
     pub(crate) kernel_irs: Map<NodeId, Kernel>,
@@ -192,7 +192,7 @@ impl EGraph {
         self.find_class(cid)
     }
 
-    fn grow_uf_arrays(&mut self, idx: usize) {
+    pub(crate) fn grow_uf_arrays(&mut self, idx: usize) {
         if idx >= self.class_of.len() {
             let cid = ClassId(self.class_of.len() as u32);
             self.class_of.resize(idx + 1, cid);
@@ -798,7 +798,7 @@ impl EGraph {
                     ENode::Const(v) => ("Const", format!("{:?}", v)),
                     ENode::Leaf(dt) => ("Leaf", format!("{:?}", dt)),
                 };
-                println!("  {name} {:?}: inputs={:?} {}", nid, inputs, extra);
+                println!("  {name} {extra} {nid:?}: inputs={inputs:?}");
             }
         }
         println!("{}\n", line);
