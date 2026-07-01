@@ -52,12 +52,29 @@ impl EGraph {
     ///
     /// Leaf, Kernel, and Const enodes are skipped (they have no computation to emit).
     ///
+    /// For each class we create:
+    ///   • Always — a store (load-everything) variant, so extraction can
+    ///     materialise this class's value if a parent picks the store path.
+    ///   • Only for 0-parent (output) and multi-parent classes — a fused
+    ///     (duplicate) variant that inlines children.  Single-parent classes
+    ///     are always inlined by their parent's fused variant, so a fused
+    ///     variant here would never be cheaper than inlining into the parent.
+    ///
     /// # Invariant
     /// After `kernelize_all`, every class reachable from an output must contain
     /// at least one `ENode::Kernel` or be a `Leaf`/`Const` base case.  The
     /// extracted plan can only contain compiled kernels — non-kernel operator
     /// enodes (Binary, Cast, Expand, etc.) are not executable.  `extract_dp`
     /// panics if a class has no kernel alternative.
+    ///
+    /// # Future work
+    /// The parent-count heuristic is a coarse approximation of the
+    /// `duplicate_or_store` logic from `kernelize.rs`.  It should be refined
+    /// to also consider reduction boundaries and computation depth — if a
+    /// fused variant would be identical to the store variant (nothing to
+    /// inline), skip it.  Likewise, classes with many parents and cheap
+    /// computation might still benefit from a fused variant even if a Reduce
+    /// is present.
     pub(crate) fn kernelize_all(&mut self) {
         let to_kernelize: Vec<(NodeId, ClassId)> = {
             let mut v = Vec::new();
@@ -78,18 +95,38 @@ impl EGraph {
                 None => continue,
             };
 
-            // Variant 1: fused kernel — inline single-parent children,
-            // load multi-parent ones.  This avoids materialising
-            // intermediates when the child has only one consumer.
-            if let Some((kernel, loaded_classes)) = build_fused_kernel(self, nid, cid, out_dtype) {
+            // Number of consumers for this class.  Used to decide whether a
+            // fused (duplicate) variant is valuable or wasteful.
+            let n_parents = self.classes[cid].parents.len();
+
+            // Always create the store (load-everything) variant.
+            // Every computed class needs at least one kernel so extraction
+            // can materialise and load it if the parent picks the store path.
+            if let Some((kernel, loaded_classes)) = build_load_kernel(self, nid, cid, out_dtype) {
                 let knid = self.make_kernel_enode(cid, &loaded_classes, &kernel);
                 self.kernel_irs.insert(knid, kernel);
             }
 
-            // Variant 2: load-everything kernel — every child is loaded
-            // from global memory.  This is the "store" alternative:
-            // intermediates are always materialised.
-            if let Some((kernel, loaded_classes)) = build_load_kernel(self, nid, cid, out_dtype) {
+            // Create the fused (duplicate) variant only when it is useful:
+            //
+            //   • 0 parents  — output class, no parent can inline it.
+            //   • >1 parents — multi-consumer class; one consumer may load
+            //                  (store variant) while another inlines (fused).
+            //
+            // Single-parent classes are always inlined by their parent's
+            // fused variant — creating a fused variant here would never be
+            // cheaper than inlining into the parent.
+            //
+            // TODO: This parent-count heuristic is a coarse approximation of
+            // kernelize.rs's duplicate_or_store.  Refine to also skip the
+            // fused variant when it would be identical to the store variant
+            // (nothing to inline), and consider reduction boundaries and
+            // computation depth for multi-parent classes.
+            if n_parents == 1 {
+                continue;
+            }
+
+            if let Some((kernel, loaded_classes)) = build_fused_kernel(self, nid, cid, out_dtype) {
                 let knid = self.make_kernel_enode(cid, &loaded_classes, &kernel);
                 self.kernel_irs.insert(knid, kernel);
             }
