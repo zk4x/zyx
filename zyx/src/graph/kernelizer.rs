@@ -86,7 +86,13 @@
 //!   - `ClassId` replaces `TensorId`
 //!   - `visited: Map<ClassId, (KMKernelId, OpId)>` — EVERY class is
 //!     inserted after processing.  Maps each class → (which kernel it
-//!     lives in, the OpId of its result within that kernel).
+//!     lives in, the OpId of its result within that kernel).  Keyed by
+//!     `ClassId`, not `NodeId`, because enodes reference child classes
+//!     (e.g. `ENode::Binary(a_cid, b_cid, Add)`) and all enodes in a
+//!     class are equivalent — the kernelizer just needs the child's
+//!     kernel+op regardless of which variant produced it.  The e-graph
+//!     makes decisions among kernel enodes; non-kernel enodes are just
+//!     IR and don't need per-variant tracking.
 //!   - Kernels live in `EGraph::kernel_irs: Map<KMKernelId, Kernel>`,
 //!     a slab indexed by `KMKernelId`.  A kernel accumulates ops across
 //!     MULTIPLE classes (not one per class).
@@ -96,17 +102,19 @@
 //!     directly.  If `kid != parent_kid`, the child's kernel is merged
 //!     into the parent's (ops copied, OpIds remapped, visited updated).
 //!     This is exactly how `kernelize.rs`'s `add_binary_op` merges
-//!     kernels when `kid != kidy`.
-//!   - Each kernel has an `outputs: Vec<ClassId>` field tracking which
-//!     classes have been computed in this kernel but not yet stored.
-//!     When a class is used as an input by a later op, `remove_first_output`
-//!     removes one occurrence.  A class is added to `outputs` once per
-//!     "reference count" (number of consumers).
-//!   - Kernels are registered as `ENode::Kernel` enodes in the e-graph
-//!     ONLY when their `outputs` list becomes empty — meaning every
-//!     intermediate result has been stored and the kernel cannot be
-//!     enlarged any more.  At that point, it is a complete, compilable
-//!     kernel and can participate in autotuning and extraction.
+//!     kernels when `kid != kidy`.  This merge-or-same-kernel check
+//!     is ONLY about kernel identity — it has nothing to do with
+//!     outputs or whether the kernel is "done".
+//!   - An `outputs: Map<KMKernelId, ClassId>` tracks which classes
+//!     have been computed in each kernel but not yet stored.  When a
+//!     child class is consumed by a parent in the same kernel
+//!     (`kid == parent_kid`), it is removed from outputs.  When a
+//!     class is stored (output, multi-consumer, reduce boundary), it
+//!     is also removed from outputs.  When no more entries exist for
+//!     a kernel, no new ops can be fused into it — it is finalized,
+//!     added as `ENode::Kernel` to the e-graph, and removed from the
+//!     builder slab.  Outputs are about fusion lifetime, not about
+//!     merge decisions.
 //!   - `EGraph::kernel_map: Map<NodeId, KMKernelId>` links each
 //!     kernel enode (`ENode::Kernel`) back to its `KMKernelId` in the
 //!     kernel builder slab.
@@ -115,6 +123,16 @@
 //!     look up children in `visited`, merge if needed, emit the op
 //!     into the kernel, update `outputs`, add self to `visited`,
 //!     store if needed.
+//!   - When a class has multiple enode variants (from rewrites), the
+//!     accumulated kernel state (children's ops already merged in) is
+//!     CLONED once per variant.  Each clone gets the variant's ops
+//!     emitted into it, becomes its own `KMKernelId` and its own
+//!     `ENode::Kernel` in the class.  Each clone updates
+//!     `visited[class]` — the last one wins.  Since all variants
+//!     compute the same value, any one works when a parent class
+//!     looks up the child's kernel via `visited[child_class]`.
+//!     The extractor picks the cheapest among all kernel enodes
+//!     in the class.
 
 use crate::{
     Map, Set,
