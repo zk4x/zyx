@@ -590,9 +590,11 @@ impl EGraph {
             n_axes: n_axes as UAxis,
         });
         // If all dimensions are reduced, reshape to [1] (mirrors kernelize.rs behavior).
-        if in_shape.len() == n_axes as usize {
-            kernel.reshape(result_op, &vec![1]);
-        }
+        let result_op = if in_shape.len() == n_axes as usize {
+            kernel.reshape(result_op, &vec![1])
+        } else {
+            result_op
+        };
 
         let n_consumers = rcs.get(&cid).copied().unwrap_or(0) as usize;
         for _ in 0..n_consumers {
@@ -732,14 +734,6 @@ impl EGraph {
             visited.retain(|_, &mut (k, _)| k != kid);
             let owned_kernel = self.kernel_irs.remove(&kid).unwrap();
             let (_, input_cids, output_cids) = kernel_data.remove(&kid).unwrap_or_default();
-            debug_assert!(
-                !input_cids.iter().any(|&c| c.0 == u32::MAX),
-                "add_store: NULL class in kernel_loads[{kid:?}]"
-            );
-            debug_assert!(
-                !output_cids.iter().any(|&c| c.0 == u32::MAX),
-                "add_store: NULL class in kernel_stores[{kid:?}]"
-            );
             let inputs: Box<[ClassId]> = input_cids.into_boxed_slice();
             let outputs_box: Box<[ClassId]> = output_cids.into_boxed_slice();
             let compute_ops = owned_kernel

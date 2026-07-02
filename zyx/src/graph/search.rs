@@ -864,7 +864,7 @@ impl EGraph {
     }
 
     /// Compile every kernel enode on every available device.
-    /// Inserts device-specific kernel enodes into each class with real timing costs.
+    /// Updates each enode's ProgramId in-place with the compiled program.
     fn autotune_all_kernels(
         &mut self,
         devices: &mut Slab<DeviceId, Device>,
@@ -873,12 +873,12 @@ impl EGraph {
         config: &AutotuneConfig,
         debug: DebugMask,
     ) -> Result<(), ZyxError> {
-        let kernel_enodes: Vec<(NodeId, ClassId, Box<[ClassId]>, Box<[ClassId]>)> = {
+        let kernel_enodes: Vec<(NodeId, ClassId)> = {
             let mut v = Vec::new();
             for cid in self.classes.ids() {
                 for &nid in &self.classes[cid].nodes {
-                    if let ENode::Kernel(inputs, outputs, _) = &self.nodes[nid] {
-                        v.push((nid, cid, inputs.clone(), outputs.clone()));
+                    if matches!(&self.nodes[nid], ENode::Kernel(..)) {
+                        v.push((nid, cid));
                     }
                 }
             }
@@ -891,21 +891,15 @@ impl EGraph {
             ids.into_iter().map(|cid| (cid, self.find_class(cid))).collect()
         };
 
-        for (nid, cid, inputs, outputs) in &kernel_enodes {
-            // Look up the builder kernel ID for this enode.
+        for (nid, _cid) in &kernel_enodes {
             let Some(&kid) = self.kernel_map.get(nid) else {
-                // Pre-compiled kernel (custom kernel) — keep it in its class.
                 continue;
             };
-            let Some(kernel) = self.kernel_irs.remove(&kid) else {
+            let Some(kernel) = self.kernel_irs.get(&kid) else {
                 continue;
             };
 
-            // Remove the un-compiled original from its class.
-            if let Some(class) = self.classes.get_mut(*cid) {
-                class.nodes.retain(|&n| n != *nid);
-            }
-            let heuristic_cost = self.costs.get(nid).copied().unwrap_or(u64::MAX);
+            let (flop, read, write) = kernel.flop_mem_rw();
 
             let device_ids: Vec<DeviceId> = devices.ids().collect();
             for dev_id in device_ids {
@@ -914,23 +908,14 @@ impl EGraph {
                 let pool = &mut pools[pool_id];
 
                 let mut kernel = kernel.clone();
-                let debug_kernel = kernel.clone();
-                let (flop, read, write) = kernel.flop_mem_rw();
-
-                if let Ok((device_prog, timing)) =
+                if let Ok((device_prog, _timing)) =
                     cache.get_or_autotune(dev_id, &mut kernel, device, pool, config, flop, read, write, debug)
                 {
-                    let prog = ProgramId {
-                        device: dev_id,
-                        program: device_prog,
-                    };
-                    let (new_nid, _) = self.make(ENode::Kernel(inputs.clone(), outputs.clone(), prog), Box::new([]), DType::F32);
-                    let cost = if timing > 0 { timing } else { heuristic_cost };
-                    self.costs.insert(new_nid, cost);
-                    let new_kid = KMKernelId::from(self.kernel_irs.len());
-                    self.kernel_irs.insert(new_kid, debug_kernel);
-                    self.kernel_map.insert(new_nid, new_kid);
-                    self.add_to_class(new_nid, *cid);
+                    let prog = ProgramId { device: dev_id, program: device_prog };
+                    // Update the enode's ProgramId in-place.
+                    if let ENode::Kernel(_, _, old_prog) = &mut self.nodes[*nid] {
+                        *old_prog = prog;
+                    }
                 }
             }
         }

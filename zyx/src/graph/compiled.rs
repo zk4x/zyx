@@ -93,9 +93,12 @@ fn hash_order(order: &[TensorId], graph: &Graph) -> u128 {
         shape.hash(&mut hasher);
         h1.hash(&mut hasher);
         h2.hash(&mut hasher);
-        // Pad's padding values are stored in the graph, not the Node variant.
+        // Pad's padding and Reduce's axes are stored in the graph, not the Node variant.
         if let Node::Pad { .. } = node {
             graph.padding(tid).hash(&mut hasher);
+        }
+        if let Node::Reduce { .. } = node {
+            graph.axes(tid).hash(&mut hasher);
         }
         hashes.push(hasher.finish());
     }
