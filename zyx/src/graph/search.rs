@@ -80,7 +80,7 @@ pub(crate) enum ENode {
     Permute(ClassId, Box<[UAxis]>),
     Reshape(ClassId, Box<[Dim]>),
     Pad(ClassId, Box<[(i64, i64)]>),
-    Reduce(ClassId, BOp),
+    Reduce(ClassId, BOp, Box<[UAxis]>),
     Cast(ClassId, DType),
     Unary(ClassId, UOp),
     Binary(ClassId, ClassId, BOp),
@@ -96,7 +96,7 @@ impl ENode {
             ENode::Permute(x, _) => vec![*x],
             ENode::Reshape(x, _) => vec![*x],
             ENode::Pad(x, _) => vec![*x],
-            ENode::Reduce(x, _) => vec![*x],
+            ENode::Reduce(x, _, _) => vec![*x],
             ENode::Cast(x, _) => vec![*x],
             ENode::Unary(x, _) => vec![*x],
             ENode::ToDevice(x, _) => vec![*x],
@@ -112,7 +112,7 @@ impl ENode {
             ENode::Permute(x, _) => vec![x],
             ENode::Reshape(x, _) => vec![x],
             ENode::Pad(x, _) => vec![x],
-            ENode::Reduce(x, _) => vec![x],
+            ENode::Reduce(x, _, _) => vec![x],
             ENode::Cast(x, _) => vec![x],
             ENode::Unary(x, _) => vec![x],
             ENode::ToDevice(x, _) => vec![x],
@@ -403,7 +403,11 @@ impl EGraph {
                 let padding = graph.padding(tid).to_vec().into_boxed_slice();
                 ENode::Pad(map[x], padding)
             }
-            Node::Reduce { x, rop } => ENode::Reduce(map[x], *rop),
+            Node::Reduce { x, rop } => {
+                // Axes are stored on the OUTPUT tensor (tid), not the input (x).
+                let axes = graph.axes(tid).to_vec().into_boxed_slice();
+                ENode::Reduce(map[x], *rop, axes)
+            }
             Node::Cast { x, dtype } => ENode::Cast(map[x], *dtype),
             Node::Unary { x, uop } => ENode::Unary(map[x], *uop),
             Node::Binary { x, y, bop } => ENode::Binary(map[x], map[y], *bop),
@@ -451,7 +455,7 @@ impl EGraph {
             for &nid in &enodes {
                 // Pattern: Reduce(Add, mul_class)
                 let mul_class = match &self.nodes[nid] {
-                    ENode::Reduce(x, BOp::Add) => *x,
+                    ENode::Reduce(x, BOp::Add, _) => *x,
                     _ => continue,
                 };
 
@@ -987,7 +991,7 @@ impl EGraph {
                 let kind = &self.nodes[nid];
                 let inputs = kind.child_classes();
                 let name = match kind {
-                    ENode::Reduce(_, rop) => format!("Reduce {:?}", rop),
+                    ENode::Reduce(_, rop, _) => format!("Reduce {:?}", rop),
                     ENode::Binary(_, _, bop) => format!("Binary {:?}", bop),
                     ENode::Unary(_, uop) => format!("Unary {:?}", uop),
                     ENode::Cast(_, dt) => format!("Cast {:?}", dt),

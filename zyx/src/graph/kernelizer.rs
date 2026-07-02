@@ -257,8 +257,9 @@ impl EGraph {
                     &mut kernel_id_counter,
                     &rcs,
                 ),
-                ENode::Reduce(child, rop) => {
-                    self.add_reduce(cid, child, rop, &mut visited, &mut kernel_data, &mut kernel_id_counter, &rcs)
+                ENode::Reduce(child, rop, ref axes) => {
+                    let axes: Vec<UAxis> = axes.to_vec();
+                    self.add_reduce(cid, child, rop, axes, &mut visited, &mut kernel_data, &mut kernel_id_counter, &rcs)
                 }
                 ENode::Expand(child) => self.add_expand(cid, child, &mut visited, &mut kernel_data, &mut kernel_id_counter, &rcs),
                 ENode::Permute(child, ref axes) => {
@@ -545,32 +546,52 @@ impl EGraph {
         cid: ClassId,
         child: ClassId,
         rop: BOp,
+        axes: Vec<UAxis>,
         visited: &mut Map<ClassId, (KMKernelId, OpId)>,
         kernel_data: &mut Map<KMKernelId, KernelData>,
         counter: &mut u32,
         rcs: &Map<ClassId, u32>,
     ) {
+        let n_axes = axes.len() as UAxis;
         let (kid, op_id) = self.child_to_kid(child, visited, counter, kernel_data);
         Self::remove_first_output(kernel_data, kid, child);
 
-        // Permute reduce axes to be trailing.
+        // Permute reduce axes to be trailing (mirrors kernelize.rs).
         let in_root = self.find_class(child);
         let in_shape: Vec<Dim> = self.classes[in_root].shape.to_vec();
-        let out_shape: Vec<Dim> = self.classes[cid].shape.to_vec();
-        let n_axes = in_shape.len().saturating_sub(out_shape.len());
         let kernel = self.kernel_irs.get_mut(&kid).unwrap();
-        let permuted = if n_axes > 0 {
-            try_permute_reduce_axes(kernel, op_id, &in_shape, &out_shape, n_axes)
-        } else {
-            op_id
+        let permuted = {
+            let n = in_shape.len();
+            let max_axis = *axes.last().unwrap() as usize;
+            let mut permute_axes = Vec::with_capacity(n);
+            let mut ai = 0;
+            for i in 0..=max_axis {
+                if axes[ai] as usize == i {
+                    ai += 1;
+                } else {
+                    permute_axes.push(i as UAxis);
+                }
+            }
+            permute_axes.extend((max_axis + 1..n).map(|i| i as UAxis));
+            permute_axes.extend_from_slice(&axes);
+            if !permute_axes.iter().copied().eq(0..permute_axes.len() as UAxis) {
+                let shape = crate::shape::permute(&in_shape, &permute_axes);
+                kernel.push_back(Op::Move {
+                    x: op_id,
+                    mop: Box::new(MoveOp::Permute { axes: permute_axes, shape }),
+                })
+            } else {
+                op_id
+            }
         };
         let result_op = kernel.push_back(Op::Reduce {
             x: permuted,
             rop,
             n_axes: n_axes as UAxis,
         });
-        if out_shape.len() == 1 && n_axes > 0 && in_shape.len() > 1 {
-            kernel.reshape(result_op, &out_shape);
+        // If all dimensions are reduced, reshape to [1] (mirrors kernelize.rs behavior).
+        if in_shape.len() == n_axes as usize {
+            kernel.reshape(result_op, &vec![1]);
         }
 
         let n_consumers = rcs.get(&cid).copied().unwrap_or(0) as usize;
@@ -813,46 +834,6 @@ pub(crate) fn topo_sort_classes(eg: &EGraph) -> Vec<ClassId> {
     }
 
     order
-}
-
-// ── Reduce-axis permutation ───────────────────────────────
-
-/// If the reduction axes are not the trailing dimensions, insert a
-/// permute before the reduce op to move them there.
-/// Returns the (possibly permuted) input op id.
-fn try_permute_reduce_axes(k: &mut Kernel, x: OpId, in_shape: &[Dim], out_shape: &[Dim], n_axes: usize) -> OpId {
-    if n_axes == 0 {
-        return x;
-    }
-
-    // Walk in_shape and out_shape together to find which axes are reduced.
-    let mut kept = Vec::new();
-    let mut reduced = Vec::new();
-    let mut j = 0;
-    for (i, &dim) in in_shape.iter().enumerate() {
-        if j < out_shape.len() && dim == out_shape[j] {
-            kept.push(i as UAxis);
-            j += 1;
-        } else {
-            reduced.push(i as UAxis);
-        }
-    }
-
-    // If reduced axes are already trailing, no permute needed.
-    let kept_end = kept.len();
-    let already_trailing = reduced.iter().enumerate().all(|(idx, &ax)| ax as usize == kept_end + idx);
-    if already_trailing {
-        return x;
-    }
-
-    // Build permute: kept axes first, then reduced axes.
-    let mut permute = kept;
-    permute.extend(reduced);
-    let shape = crate::shape::permute(in_shape, &permute);
-    k.push_back(Op::Move {
-        x,
-        mop: Box::new(MoveOp::Permute { axes: permute, shape }),
-    })
 }
 
 #[cfg(test)]
