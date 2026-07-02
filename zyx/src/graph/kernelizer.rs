@@ -208,6 +208,16 @@ impl EGraph {
         for cid in order {
             debug_assert!(!visited.contains_key(&cid), "class {cid:?} already visited");
 
+            // Classes with only Kernel enodes are pre-compiled programs
+            // (CustomKernel). Skip — they don't need kernelization.
+            let has_non_kernel = self.classes[cid]
+                .nodes
+                .iter()
+                .any(|&nid| !matches!(self.nodes[nid], ENode::Kernel(..)));
+            if !has_non_kernel {
+                continue;
+            }
+
             // Leaf & Const classes: create load kernel so parents can
             // reference their value.
             if self.is_leaf_or_const(cid) {
@@ -259,7 +269,16 @@ impl EGraph {
                 ),
                 ENode::Reduce(child, rop, ref axes) => {
                     let axes: Vec<UAxis> = axes.to_vec();
-                    self.add_reduce(cid, child, rop, axes, &mut visited, &mut kernel_data, &mut kernel_id_counter, &rcs)
+                    self.add_reduce(
+                        cid,
+                        child,
+                        rop,
+                        axes,
+                        &mut visited,
+                        &mut kernel_data,
+                        &mut kernel_id_counter,
+                        &rcs,
+                    )
                 }
                 ENode::Expand(child) => self.add_expand(cid, child, &mut visited, &mut kernel_data, &mut kernel_id_counter, &rcs),
                 ENode::Permute(child, ref axes) => {
@@ -429,6 +448,64 @@ impl EGraph {
         }
     }
 
+    /// If `op_id` is already referenced as input by any Move in kernel `kid`,
+    /// clone the chain (LoadView → ... → chain output) so the new Move gets
+    /// an independent LoadView to mutate during unfold.
+    ///
+    /// Also updates `kernel_data` loads so the extra cloned LoadView gets its
+    /// own buffer argument at launch time.
+    fn ensure_exclusive_move_source(
+        &mut self,
+        kid: KMKernelId,
+        mut op_id: OpId,
+        kernel_data: &mut Map<KMKernelId, KernelData>,
+        child: ClassId,
+    ) -> OpId {
+        let shared = {
+            let kernel = &self.kernel_irs[&kid];
+            let mut cur = kernel.head;
+            let mut found = false;
+            while !cur.is_null() {
+                if let Op::Move { x, .. } = &kernel.ops[cur].op {
+                    if *x == op_id {
+                        found = true;
+                        break;
+                    }
+                }
+                cur = kernel.ops[cur].next;
+            }
+            found
+        };
+        if shared {
+            let kernel = self.kernel_irs.get_mut(&kid).unwrap();
+            op_id = kernel.clone_chain_to(op_id);
+            // The cloned LoadView loads from the same leaf class as the original chain.
+            let load_class = self.root_load_class(child);
+            kernel_data.entry(kid).or_default().1.push(load_class);
+        }
+        op_id
+    }
+
+    /// Walk the e-graph chain backwards from `child` to find the root
+    /// Leaf/Const class that a LoadView loads from.
+    fn root_load_class(&mut self, cid: ClassId) -> ClassId {
+        let cid = self.find_class(cid);
+        let nodes = &self.classes[cid].nodes;
+        for nid in nodes {
+            match &self.nodes[*nid] {
+                ENode::Cast(x, _) | ENode::Unary(x, _) | ENode::Expand(x) => {
+                    return self.root_load_class(*x);
+                }
+                ENode::Permute(x, _) | ENode::Reshape(x, _) | ENode::Pad(x, _) => {
+                    return self.root_load_class(*x);
+                }
+                ENode::Leaf(_) | ENode::Const(_) => return cid,
+                _ => {}
+            }
+        }
+        cid
+    }
+
     // ── Per-op methods (mirror kernelize.rs add_*_op) ──────
 
     fn child_to_kid(
@@ -553,7 +630,8 @@ impl EGraph {
         rcs: &Map<ClassId, u32>,
     ) {
         let n_axes = axes.len() as UAxis;
-        let (kid, op_id) = self.child_to_kid(child, visited, counter, kernel_data);
+        let (kid, mut op_id) = self.child_to_kid(child, visited, counter, kernel_data);
+        op_id = self.ensure_exclusive_move_source(kid, op_id, kernel_data, child);
         Self::remove_first_output(kernel_data, kid, child);
 
         // Permute reduce axes to be trailing (mirrors kernelize.rs).
@@ -578,7 +656,10 @@ impl EGraph {
                 let shape = crate::shape::permute(&in_shape, &permute_axes);
                 kernel.push_back(Op::Move {
                     x: op_id,
-                    mop: Box::new(MoveOp::Permute { axes: permute_axes, shape }),
+                    mop: Box::new(MoveOp::Permute {
+                        axes: permute_axes,
+                        shape,
+                    }),
                 })
             } else {
                 op_id
@@ -612,7 +693,8 @@ impl EGraph {
         counter: &mut u32,
         rcs: &Map<ClassId, u32>,
     ) {
-        let (kid, op_id) = self.child_to_kid(child, visited, counter, kernel_data);
+        let (kid, mut op_id) = self.child_to_kid(child, visited, counter, kernel_data);
+        op_id = self.ensure_exclusive_move_source(kid, op_id, kernel_data, child);
         Self::remove_first_output(kernel_data, kid, child);
         let shape: Vec<Dim> = self.classes[cid].shape.to_vec();
         let kernel = self.kernel_irs.get_mut(&kid).unwrap();
@@ -637,7 +719,8 @@ impl EGraph {
         counter: &mut u32,
         rcs: &Map<ClassId, u32>,
     ) {
-        let (kid, op_id) = self.child_to_kid(child, visited, counter, kernel_data);
+        let (kid, mut op_id) = self.child_to_kid(child, visited, counter, kernel_data);
+        op_id = self.ensure_exclusive_move_source(kid, op_id, kernel_data, child);
         Self::remove_first_output(kernel_data, kid, child);
         let shape: Vec<Dim> = self.classes[cid].shape.to_vec();
         let kernel = self.kernel_irs.get_mut(&kid).unwrap();
@@ -662,7 +745,8 @@ impl EGraph {
         counter: &mut u32,
         rcs: &Map<ClassId, u32>,
     ) {
-        let (kid, op_id) = self.child_to_kid(child, visited, counter, kernel_data);
+        let (kid, mut op_id) = self.child_to_kid(child, visited, counter, kernel_data);
+        op_id = self.ensure_exclusive_move_source(kid, op_id, kernel_data, child);
         Self::remove_first_output(kernel_data, kid, child);
         let kernel = self.kernel_irs.get_mut(&kid).unwrap();
         let result_op = kernel.push_back(Op::Move {
@@ -686,7 +770,8 @@ impl EGraph {
         counter: &mut u32,
         rcs: &Map<ClassId, u32>,
     ) {
-        let (kid, op_id) = self.child_to_kid(child, visited, counter, kernel_data);
+        let (kid, mut op_id) = self.child_to_kid(child, visited, counter, kernel_data);
+        op_id = self.ensure_exclusive_move_source(kid, op_id, kernel_data, child);
         Self::remove_first_output(kernel_data, kid, child);
         let shape: Vec<Dim> = self.classes[cid].shape.to_vec();
         let kernel = self.kernel_irs.get_mut(&kid).unwrap();

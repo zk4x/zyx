@@ -2083,6 +2083,34 @@ impl Kernel {
         op_id
     }
 
+    /// Clone the chain from the root LoadView/ConstView up to (and including)
+    /// `op_id`, inserting clones at the end. Returns the clone of `op_id`.
+    pub(crate) fn clone_chain_to(&mut self, op_id: OpId) -> OpId {
+        let mut chain = Vec::new();
+        let mut cur = op_id;
+        loop {
+            chain.push(cur);
+            match &self.ops[cur].op {
+                Op::LoadView(_) | Op::ConstView(_) => break,
+                Op::Reduce { x, .. } | Op::Cast { x, .. } | Op::Unary { x, .. } | Op::Move { x, .. } => cur = *x,
+                Op::Binary { x, .. } => cur = *x,
+                _ => break,
+            }
+        }
+        chain.reverse();
+        let mut remap: Map<OpId, OpId> = Map::default();
+        for &orig in &chain {
+            let mut cloned = self.ops[orig].op.clone();
+            for param in cloned.parameters_mut() {
+                if let Some(&new_param) = remap.get(param) {
+                    *param = new_param;
+                }
+            }
+            remap.insert(orig, self.push_back(cloned));
+        }
+        remap[&op_id]
+    }
+
     /// Remove the first output tensor.
     pub(crate) fn remove_first_output(&mut self, x: TensorId) {
         //println!("removing tensor {x} from kernel {kid:?}");
