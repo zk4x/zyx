@@ -231,7 +231,7 @@ impl EGraph {
                 .find(|&nid| !matches!(self.nodes[nid], ENode::Kernel(..)))
             {
                 Some(nid) => nid,
-                None => continue,
+                None => panic!("There shouldn't be empty classes. This is internal bug."),
             };
 
             match self.nodes[nid] {
@@ -859,7 +859,7 @@ fn try_permute_reduce_axes(k: &mut Kernel, x: OpId, in_shape: &[Dim], out_shape:
 mod tests {
     use crate::{
         DType,
-        graph::search::{ClassId, ENode},
+        graph::search::{ClassId, ENode, NodeId},
         kernel::{BOp, UOp},
     };
 
@@ -921,5 +921,43 @@ mod tests {
         assert!(pos(l0) < pos(e0));
         // l1 can be anywhere, just check it's in order
         assert!(order.contains(&l1));
+    }
+
+    /// Test that classes with only Kernel enodes reach the `None` case at line 234
+    #[test]
+    fn kernel_only_classes() {
+        let mut eg = EGraph::new();
+
+        // Create a simple class with a non-Kernel enode
+        let (_, leaf) = eg.make(
+            crate::graph::search::ENode::Leaf(crate::DType::F32),
+            Box::new([]),
+            crate::DType::F32,
+        );
+
+        // Now create a Kernel enode and move it to the leaf's class
+        // This simulates what happens in `add_to_class` when moving Kernel enodes
+        let kernel_nid: NodeId = eg
+            .make(
+                crate::graph::search::ENode::Kernel(vec![leaf].into_boxed_slice(), Box::new([]), crate::backend::ProgramId::NULL),
+                Box::new([]),
+                crate::DType::F32,
+            )
+            .0;
+
+        // Move the kernel to the leaf's class
+        eg.add_to_class(kernel_nid, leaf);
+
+        // The leaf's class should now have two enodes: the leaf and the kernel
+        // The kernel's original class should be empty
+
+        // Check if the leaf's class has both enodes
+        let leaf_class = eg.find_class(leaf);
+        assert_eq!(eg.classes[leaf_class].nodes.len(), 2, "Leaf's class should have 2 enodes");
+
+        // Now try to kernelize - there should be no empty classes
+        eg.kernelize_all();
+
+        // This should not panic
     }
 }
