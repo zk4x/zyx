@@ -453,7 +453,6 @@ impl EGraph {
             kernel.push_back(Op::ConstView(Box::new((value, View::contiguous(&[1])))));
         } else {
             kernel.load_contiguous(self.classes[cid].dtype, &shape);
-            kernel.loads = vec![TensorId(cid.0)];
         };
         let kid = KMKernelId::from(*counter as usize);
         *counter += 1;
@@ -580,9 +579,10 @@ impl EGraph {
         kernel_data: &mut Map<KMKernelId, KernelData>,
         counter: &mut u32,
     ) -> KMKernelId {
+        let orig_loads: Vec<TensorId> = kernel_data.get(&kid).map(|(_, l, _)| l.iter().map(|c| TensorId(c.0)).collect()).unwrap_or_default();
         // Clone kernel IR — new kernel gets only child's ops
         let mut clone = self.kernel_irs[&kid].clone();
-        clone.drop_unused_ops_by_params(vec![op_id]);
+        clone.drop_unused_ops_by_params(vec![op_id], &orig_loads);
         let new_kid = KMKernelId::from(*counter as usize);
         *counter += 1;
         self.kernel_irs.insert(new_kid, clone);
@@ -600,10 +600,10 @@ impl EGraph {
             })
             .unwrap_or_default();
         let orig_kernel = self.kernel_irs.get_mut(&kid).unwrap();
-        orig_kernel.drop_unused_ops_by_params(remaining_op_ids);
-        // Sync kernel_data loads with rebuilt Kernel loads
+        let new_loads = orig_kernel.drop_unused_ops_by_params(remaining_op_ids, &orig_loads);
+        // Sync kernel_data loads with rebuilt loads
         if let Some((_, loads, _)) = kernel_data.get_mut(&kid) {
-            *loads = orig_kernel.loads.iter().map(|t| ClassId(t.0)).collect();
+            *loads = new_loads.iter().map(|t| ClassId(t.0)).collect();
         }
 
         // New kernel gets ONE copy of child as output (mirrors kernelize.rs:

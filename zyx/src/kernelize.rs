@@ -156,10 +156,10 @@ impl<'a> Kernelizer<'a> {
         //self.kernels[kid].debug();
         // Instead of copy of the whole kernel, copy only relevant ops
         // and remove these ops from the original if not needed.
+        let orig_loads = self.io[&kid].1.clone();
         let mut kernel = self.kernels[kid].clone();
         let new_params = vec![self.visited[&x].1];
-        kernel.drop_unused_ops_by_params(new_params);
-        let new_loads = kernel.loads.clone();
+        let new_loads = kernel.drop_unused_ops_by_params(new_params, &orig_loads);
         // Remove first occurrence of x from original outputs (same as remove_first_output)
         {
             let outputs = &mut self.io.get_mut(&kid).unwrap().0;
@@ -167,8 +167,8 @@ impl<'a> Kernelizer<'a> {
         }
         let old_outputs: Vec<TensorId> = self.io[&kid].0.clone();
         let old_params: Vec<OpId> = old_outputs.iter().map(|tid| self.visited[tid].1).collect();
-        self.kernels[kid].drop_unused_ops_by_params(old_params);
-        self.io.get_mut(&kid).unwrap().1 = self.kernels[kid].loads.clone();
+        let old_loads = self.kernels[kid].drop_unused_ops_by_params(old_params, &orig_loads);
+        self.io.get_mut(&kid).unwrap().1 = old_loads;
         let stores = self.io[&kid].2.clone();
         let new_kid = self.kernels.push(kernel);
         self.io.insert(new_kid, (vec![x], new_loads, stores));
@@ -179,9 +179,6 @@ impl<'a> Kernelizer<'a> {
         let shape = self.graph.shape(nid);
         let dtype = self.graph.dtype(nid);
         let mut kernel = Kernel {
-            outputs: vec![nid; self.rcs[&nid] as usize],
-            loads: vec![nid],
-            stores: Vec::new(),
             ops: Slab::with_capacity(100),
             head: OpId::NULL,
             tail: OpId::NULL,
@@ -197,9 +194,6 @@ impl<'a> Kernelizer<'a> {
 
     fn create_const_kernel(&mut self, nid: TensorId, value: Constant) {
         let mut kernel = Kernel {
-            outputs: vec![nid; self.rcs[&nid] as usize],
-            loads: Vec::new(),
-            stores: Vec::new(),
             ops: Slab::with_capacity(100),
             head: OpId::NULL,
             tail: OpId::NULL,
@@ -623,17 +617,14 @@ impl<'a> Kernelizer<'a> {
                 let (_, l, s) = &self.io[&kid];
                 (l.clone(), s.clone())
             };
-            // Sync kernel fields from io before launch (launch_kernel reads kernel.loads/stores)
-            self.kernels[kid].loads = loads.clone();
-            self.kernels[kid].stores = stores.clone();
             self.io.remove(&kid);
             let kernel = unsafe { self.kernels.remove_and_return(kid) };
-            self.launch_kernel(kernel)?;
+            self.launch_kernel(kernel, &loads, &stores)?;
             self.realized_nodes.extend(stores);
             // Delete unneeded intermediate tensors from memory pools
             let mut to_remove = Set::with_capacity_and_hasher(1, BuildHasherDefault::new());
             for tid in loads {
-                if !self.kernels.values().any(|kernel| kernel.loads.contains(&tid)) && !self.must_keep_nodes.contains(&tid) {
+                if !self.io.keys().any(|kid| self.io[kid].1.contains(&tid)) && !self.must_keep_nodes.contains(&tid) {
                     to_remove.insert(tid);
                 }
             }
@@ -643,12 +634,12 @@ impl<'a> Kernelizer<'a> {
         Ok(())
     }
 
-    fn launch_kernel(&mut self, mut kernel: Kernel) -> Result<(), ZyxError> {
+    fn launch_kernel(&mut self, mut kernel: Kernel, loads: &[TensorId], stores: &[TensorId]) -> Result<(), ZyxError> {
         // Custom kernel: use pre-compiled program instead of compiling
         if let Some(cache_kid) = kernel.custom_kernel_id {
             let (dev_id, pool_id, event_wait_list, kernel_buffers, args) = schedule(
-                &kernel.loads,
-                &kernel.stores,
+                loads,
+                stores,
                 self.graph,
                 self.devices,
                 self.pools,
@@ -671,19 +662,19 @@ impl<'a> Kernelizer<'a> {
             return Ok(());
         }
 
-        if kernel.stores.is_empty() {
+        if stores.is_empty() {
             println!("Empty stores in this kernel:");
             kernel.debug();
             panic!("Empty stores in this kernel:");
         }
-        debug_assert!(!kernel.stores.is_empty());
+        debug_assert!(!stores.is_empty());
 
         self.n_launches += 1;
 
         //let time_w = std::time::Instant::now();
         let (dev_id, pool_id, event_wait_list, kernel_buffers, args) = schedule(
-            &kernel.loads,
-            &kernel.stores,
+            loads,
+            stores,
             self.graph,
             self.devices,
             self.pools,
@@ -790,11 +781,8 @@ impl Runtime {
                             }
                         }
 
-                        // 2. Build a minimal stub kernel (loads/stores for schedule)
+                        // 2. Build a minimal stub kernel
                         let kernel = Kernel {
-                            outputs: vec![nid; kernelizer.rcs[&nid] as usize],
-                            loads: ck.inputs.clone(),
-                            stores: vec![nid],
                             ops: Slab::new(),
                             head: OpId::NULL,
                             tail: OpId::NULL,
@@ -857,12 +845,9 @@ impl Runtime {
                     (l.clone(), s.clone())
                 };
                 if !stores.is_empty() {
-                    // Sync kernel fields from io before launch
-                    kernelizer.kernels[kid].loads = loads.clone();
-                    kernelizer.kernels[kid].stores = stores.clone();
                     kernelizer.io.remove(&kid);
                     let kernel = unsafe { kernelizer.kernels.remove_and_return(kid) };
-                    kernelizer.launch_kernel(kernel)?;
+                    kernelizer.launch_kernel(kernel, &loads, &stores)?;
                     kernelizer.realized_nodes.extend(stores);
                 } else {
                     kernelizer.io.remove(&kid);
@@ -872,7 +857,7 @@ impl Runtime {
                 // Delete unneeded intermediate tensors in memory pools
                 let mut to_remove = Set::with_capacity_and_hasher(1, BuildHasherDefault::new());
                 for tid in loads {
-                    if !kernelizer.kernels.values().any(|kernel| kernel.loads.contains(&tid))
+                    if !kernelizer.io.keys().any(|kid| kernelizer.io[kid].1.contains(&tid))
                         && !kernelizer.must_keep_nodes.contains(&tid)
                     {
                         to_remove.insert(tid);

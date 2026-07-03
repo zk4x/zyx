@@ -95,7 +95,6 @@ use crate::{
     DType, Map, Set,
     dtype::Constant,
     kernel_cache::KernelId,
-    kernelize::KMKernelId,
     shape::{Dim, UAxis},
     slab::{Slab, SlabId},
     tensor::TensorId,
@@ -198,12 +197,6 @@ pub(crate) const IDX_T: DType = DType::U32;
 /// ```
 #[derive(Debug, Clone)]
 pub struct Kernel {
-    /// Tensor IDs that this kernel produces.
-    pub(crate) outputs: Vec<TensorId>,
-    /// Tensor IDs loaded from memory.
-    pub(crate) loads: Vec<TensorId>,
-    /// Tensor IDs stored to memory.
-    pub(crate) stores: Vec<TensorId>,
     /// Operation slab containing the kernel IR.
     pub(crate) ops: Slab<OpId, OpNode>,
     /// Head of the operation linked list.
@@ -931,9 +924,6 @@ impl DeBin for Kernel {
             head: start,
             tail: end,
             ops,
-            outputs: Vec::new(),
-            loads: Vec::new(),
-            stores: Vec::new(),
             device_id: DeviceId::AUTO,
             custom_kernel_id: None,
         })
@@ -972,9 +962,6 @@ impl Kernel {
     /// ```
     pub fn new(device_id: DeviceId) -> Self {
         Self {
-            outputs: Vec::new(),
-            loads: Vec::new(),
-            stores: Vec::new(),
             ops: Slab::new(),
             head: OpId::NULL,
             tail: OpId::NULL,
@@ -2084,27 +2071,12 @@ impl Kernel {
     }
 
     /// Remove the first output tensor.
-    pub(crate) fn remove_first_output(&mut self, x: TensorId) {
-        //println!("removing tensor {x} from kernel {kid:?}");
-        let outputs = &mut self.outputs;
-        outputs.iter().position(|elem| *elem == x).map(|i| outputs.remove(i));
-    }
-
-    /// Drop unused operations from the kernel.
-    ///
-    /// Removes operations that are not required by the outputs.
-    pub(crate) fn drop_unused_ops(&mut self, visited: &Map<TensorId, (KMKernelId, OpId)>) {
-        let params = self.outputs.iter().map(|tid| visited[tid].1).collect();
-        self.drop_unused_ops_by_params(params);
-    }
-
     /// Drop unused operations, keeping only those needed by `params` (OpIds).
-    /// Rebuilds `self.loads` from the remaining LoadViews.
-    pub(crate) fn drop_unused_ops_by_params(&mut self, params: Vec<OpId>) {
+    /// Returns the updated `loads` (remaining LoadViews' tensor IDs).
+    pub(crate) fn drop_unused_ops_by_params(&mut self, params: Vec<OpId>, loads: &[TensorId]) -> Vec<TensorId> {
         let required = self.get_required_ops(params);
         let mut loaded_tensors = Vec::new();
         let mut load_index = 0;
-        let loads = self.loads.clone(); // TODO remove the clone once partial borrows are working in rust
         let mut op_id = self.head;
         while !op_id.is_null() {
             let is_required = required.contains(&op_id);
@@ -2120,12 +2092,7 @@ impl Kernel {
                 self.remove_op(temp);
             }
         }
-        self.loads = loaded_tensors;
-        #[cfg(debug_assertions)]
-        if self.loads.len() != self.ops.values().filter(|op| matches!(op.op, Op::LoadView { .. })).count() {
-            self.debug();
-            panic!();
-        }
+        loaded_tensors
     }
 
     /// Get all required operations for a set of parameters.
