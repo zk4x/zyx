@@ -582,7 +582,7 @@ impl EGraph {
         let orig_loads: Vec<TensorId> = kernel_data.get(&kid).map(|(_, l, _)| l.iter().map(|c| TensorId(c.0)).collect()).unwrap_or_default();
         // Clone kernel IR — new kernel gets only child's ops
         let mut clone = self.kernel_irs[&kid].clone();
-        clone.drop_unused_ops_by_params(vec![op_id], &orig_loads);
+        let clone_loads = clone.drop_unused_ops_by_params(vec![op_id], &orig_loads);
         let new_kid = KMKernelId::from(*counter as usize);
         *counter += 1;
         self.kernel_irs.insert(new_kid, clone);
@@ -606,15 +606,15 @@ impl EGraph {
             *loads = new_loads.iter().map(|t| ClassId(t.0)).collect();
         }
 
-        // New kernel gets ONE copy of child as output (mirrors kernelize.rs:
-        // kernel.outputs = vec![x]; no visited update here!)
-        let (kid_loads, kid_stores) = kernel_data
+        // New kernel gets ONE copy of child as output, with loads matching
+        // the subset of LoadView ops that survived drop_unused_ops_by_params.
+        let (_, kid_stores) = kernel_data
             .get(&kid)
             .map(|(_, l, s)| (l.clone(), s.clone()))
             .unwrap_or_default();
         let (new_outputs, new_loads, new_stores) = kernel_data.entry(new_kid).or_default();
         new_outputs.push(child);
-        *new_loads = kid_loads;
+        *new_loads = clone_loads.iter().map(|&t| ClassId(t.0)).collect();
         *new_stores = kid_stores;
 
         new_kid
