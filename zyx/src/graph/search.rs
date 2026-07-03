@@ -425,22 +425,10 @@ impl EGraph {
     // ── Kernel enumeration ────────────────────────────────
 
     pub(crate) fn saturate(&mut self) {
-        // Each fuser tries to match enodes in e-classes and insert kernel
-        // alternatives. Run to fixpoint since one match may enable another.
-        loop {
-            let mut added = false;
-            if self.try_fuse_matmul() {
-                added = true;
-            }
-            if !added {
-                break;
-            }
-        }
         self.rebuild();
     }
 
-    /// Try to match all e-classes for `reduce_sum(mul(expand(A), expand(permute(B))))`
-    /// and insert `MatmulKernel` alternatives.
+    #[allow(unused)]
     fn try_fuse_matmul(&mut self) -> bool {
         let mut added = false;
         let classes: Vec<ClassId> = self.classes.ids().collect();

@@ -291,12 +291,13 @@ fn replay_compiled(
                 let event =
                     devices[program.device].launch(program.program, pool, &kernel_args, event_wait_list)?;
 
-                // Group output slot indices and store the completion event for all of them.
-                let mut out_set = BTreeSet::new();
-                for s in &args[*num_inputs as usize..] {
-                    out_set.insert(s.0 as usize);
+                // Store the completion event for ALL buffer slots (inputs + outputs),
+                // matching kernelize.rs behavior which tracks all kernel buffers.
+                let mut all_slots = BTreeSet::new();
+                for s in args.iter() {
+                    all_slots.insert(s.0 as usize);
                 }
-                events.insert(out_set, event);
+                events.insert(all_slots, event);
             }
             CompiledNode::Output { slot } => {
                 let idx = slot.0 as usize;
