@@ -435,8 +435,6 @@ impl EGraph {
                 break;
             }
         }
-        // Rebuild after saturation so children, hashcons, and parents are
-        // fully canonicalised before extraction or further passes.
         self.rebuild();
     }
 
@@ -448,6 +446,10 @@ impl EGraph {
 
         for cid in classes {
             if !self.classes.contains_key(cid) {
+                continue;
+            }
+            // Skip if this class already has a MatmulKernel (prevents infinite loop)
+            if self.classes[cid].nodes.iter().any(|&n| matches!(&self.nodes[n], ENode::Kernel(..))) {
                 continue;
             }
             // Collect enodes from this class (clone to avoid borrow issues)

@@ -547,6 +547,7 @@ impl EGraph {
         let n_outputs = kernel_data.get(&kid).map(|(o, _, _)| o.len()).unwrap_or(0);
         if n_outputs > 1 {
 
+
             // Check if this op is preceded by a reduce (complex case → store+reload)
             let preceded_by_reduce = self.kernel_irs.get(&kid).is_some_and(|k| k.is_preceded_by_reduce(op_id));
             if preceded_by_reduce {
