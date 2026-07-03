@@ -845,7 +845,11 @@ impl EGraph {
                 let out_cid = self.find_class(out_cid);
                 args.push(class_to_slot[&out_cid]);
             }
-            nodes.push(CompiledNode::LaunchProgram { program, args });
+            nodes.push(CompiledNode::LaunchProgram {
+                program,
+                args,
+                num_inputs: kernel_inputs.len() as u32,
+            });
         }
 
         // 6. Output markers in output_order order.
