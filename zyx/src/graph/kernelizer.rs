@@ -874,7 +874,26 @@ impl EGraph {
         rcs: &Map<ClassId, u32>,
         pending_stores: &mut Set<ClassId>,
     ) {
-        let (kid, mut op_id) = self.duplicate_or_store(child, visited, counter, kernel_data, pending_stores);
+        // If the pad EXPANDS the element count (result shape has more elements
+        // than the input), force a store boundary to prevent a single kernel
+        // from having outputs with different shapes. This mirrors the
+        // kernelize.rs behavior where block-level movement ops that change size
+        // are never inlined.
+        let child_root = self.find_class(child);
+        let child_n: Dim = self.classes[child_root].shape.iter().product();
+        let pad_n: Dim = self.classes[cid].shape.iter().product();
+        let expands = pad_n > child_n;
+
+        let kid;
+        let mut op_id;
+        if expands {
+            if let Some(&(ckid, cop_id)) = visited.get(&child) {
+                self.add_store(child, ckid, cop_id, visited, kernel_data, pending_stores);
+            }
+            (kid, op_id) = self.child_to_kid(child, visited, counter, kernel_data);
+        } else {
+            (kid, op_id) = self.duplicate_or_store(child, visited, counter, kernel_data, pending_stores);
+        }
         op_id = self.ensure_exclusive_move_source(kid, op_id, kernel_data, child);
         Self::remove_first_output(kernel_data, kid, child);
         let shape: Vec<Dim> = self.classes[cid].shape.to_vec();
