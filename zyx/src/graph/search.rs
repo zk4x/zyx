@@ -6,6 +6,7 @@
 //! Builds an e-graph from the computation graph, enumerates kernel alternatives
 //! via pattern matching, then extracts the cheapest execution plan.
 
+use crate::prog_bar::ProgressBar;
 use crate::{
     DType, DebugMask, Map, Set, ZyxError,
     backend::{AutotuneConfig, Device, DeviceId, MemoryPool, PoolId, ProgramId},
@@ -897,6 +898,14 @@ impl EGraph {
             ids.into_iter().map(|cid| (cid, self.find_class(cid))).collect()
         };
 
+        let device_ids: Vec<DeviceId> = devices.ids().collect();
+        let n_total = kernel_enodes.len() * device_ids.len();
+        let mut progress_bar = if debug.sched() {
+            Some(ProgressBar::new(n_total as u64))
+        } else {
+            None
+        };
+        let mut kernel_idx = 0u64;
         for (nid, _cid) in &kernel_enodes {
             let Some(&kid) = self.kernel_map.get(nid) else {
                 continue;
@@ -907,11 +916,15 @@ impl EGraph {
 
             let (flop, read, write) = kernel.flop_mem_rw();
 
-            let device_ids: Vec<DeviceId> = devices.ids().collect();
-            for dev_id in device_ids {
+            for &dev_id in &device_ids {
                 let device = &mut devices[dev_id];
                 let pool_id = device.memory_pool_id();
                 let pool = &mut pools[pool_id];
+
+                kernel_idx += 1;
+                if let Some(pb) = &mut progress_bar {
+                    pb.inc(1, &format!("Kernel {kernel_idx}/{n_total}"));
+                }
 
                 let mut kernel = kernel.clone();
                 if let Ok((device_prog, _timing)) =
