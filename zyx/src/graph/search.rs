@@ -737,10 +737,10 @@ impl EGraph {
             "compile: class roots changed during kernelize_all"
         );
 
+        eg.debug_print();
+
         // Autotune every kernel variant on every available device.
         let _ = eg.autotune_all_kernels(devices, pools, cache, config, debug);
-
-        eg.debug_print();
 
         // Extract: pick cheapest all-kernel plan
         let output_classes: Vec<ClassId> = output_classes.iter().copied().collect();
