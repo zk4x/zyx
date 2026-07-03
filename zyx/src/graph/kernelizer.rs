@@ -3,10 +3,14 @@
 
 //! E-graph kernelizer.
 //!
-//! This module MUST mirror the fusion/launch strategy of `kernelize.rs`,
-//! operating on e-graph classes (`ClassId`) instead of graph tensors
-//! (`TensorId`).  Below is how `kernelize.rs` works — this module must
-//! do the same, adapted to the e-graph.
+//! **CRITICAL RULE: This module MUST produce the EXACT SAME kernels as
+//! `src/kernelize.rs`.**  Every kernel built here (op sequence, load/store
+//! structure, output tensors/classes, duplication boundaries) must match
+//! what kernelize.rs would produce for the same computation.  If the
+//! kernels differ, test failures are introduced here, not in kernelize.rs.
+//!
+//! Below is how `kernelize.rs` works — this module must do the same,
+//! adapted to the e-graph.
 //!
 //! ── How kernelize.rs works ──────────────────────────────────
 //!
@@ -504,40 +508,6 @@ impl EGraph {
 
     // ── Per-op methods (mirror kernelize.rs add_*_op) ──────
 
-    /// If `op_id` is already referenced as input by any Move in kernel `kid`,
-    /// clone the chain (LoadView → ... → chain output) so the new Move gets
-    /// an independent LoadView.  This is needed because unfold_movement_ops
-    /// mutates LoadViews and a shared source would give wrong indexing.
-    fn ensure_exclusive_move_source(
-        &mut self,
-        kid: KMKernelId,
-        mut op_id: OpId,
-        kernel_data: &mut Map<KMKernelId, KernelData>,
-        child: ClassId,
-    ) -> OpId {
-        let shared = {
-            let kernel = &self.kernel_irs[&kid];
-            let mut cur = kernel.head;
-            let mut found = false;
-            while !cur.is_null() {
-                if let Op::Move { x, .. } = &kernel.ops[cur].op {
-                    if *x == op_id {
-                        found = true;
-                        break;
-                    }
-                }
-                cur = kernel.ops[cur].next;
-            }
-            found
-        };
-        if shared {
-            let kernel = self.kernel_irs.get_mut(&kid).unwrap();
-            op_id = kernel.clone_chain_to(op_id);
-            kernel_data.entry(kid).or_default().1.push(child);
-        }
-        op_id
-    }
-
     /// If `child` lives in a kernel that has stores, store it and create a fresh
     /// load kernel (matches kernelize.rs duplicate_or_store).
     fn duplicate_or_store(
@@ -727,7 +697,6 @@ impl EGraph {
     ) {
         let n_axes = axes.len() as UAxis;
         let (mut kid, mut op_id) = self.duplicate_or_store(child, visited, counter, kernel_data, pending_stores);
-        op_id = self.ensure_exclusive_move_source(kid, op_id, kernel_data, child);
         Self::remove_first_output(kernel_data, kid, child);
 
         // Permute reduce axes to be trailing (mirrors kernelize.rs).
@@ -791,7 +760,6 @@ impl EGraph {
         pending_stores: &mut Set<ClassId>,
     ) {
         let (kid, mut op_id) = self.duplicate_or_store(child, visited, counter, kernel_data, pending_stores);
-        op_id = self.ensure_exclusive_move_source(kid, op_id, kernel_data, child);
         Self::remove_first_output(kernel_data, kid, child);
         let shape: Vec<Dim> = self.classes[cid].shape.to_vec();
         let kernel = self.kernel_irs.get_mut(&kid).unwrap();
@@ -818,7 +786,6 @@ impl EGraph {
         pending_stores: &mut Set<ClassId>,
     ) {
         let (kid, mut op_id) = self.duplicate_or_store(child, visited, counter, kernel_data, pending_stores);
-        op_id = self.ensure_exclusive_move_source(kid, op_id, kernel_data, child);
         Self::remove_first_output(kernel_data, kid, child);
         let shape: Vec<Dim> = self.classes[cid].shape.to_vec();
         let kernel = self.kernel_irs.get_mut(&kid).unwrap();
@@ -845,7 +812,6 @@ impl EGraph {
         pending_stores: &mut Set<ClassId>,
     ) {
         let (kid, mut op_id) = self.duplicate_or_store(child, visited, counter, kernel_data, pending_stores);
-        op_id = self.ensure_exclusive_move_source(kid, op_id, kernel_data, child);
         Self::remove_first_output(kernel_data, kid, child);
 
         // Permute reduce axes to be trailing (mirrors kernelize.rs).
@@ -894,7 +860,6 @@ impl EGraph {
         } else {
             (kid, op_id) = self.duplicate_or_store(child, visited, counter, kernel_data, pending_stores);
         }
-        op_id = self.ensure_exclusive_move_source(kid, op_id, kernel_data, child);
         Self::remove_first_output(kernel_data, kid, child);
         let shape: Vec<Dim> = self.classes[cid].shape.to_vec();
         let kernel = self.kernel_irs.get_mut(&kid).unwrap();

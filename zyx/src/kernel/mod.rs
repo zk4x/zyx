@@ -2123,6 +2123,12 @@ impl Kernel {
     /// Removes operations that are not required by the outputs.
     pub(crate) fn drop_unused_ops(&mut self, visited: &Map<TensorId, (KMKernelId, OpId)>) {
         let params = self.outputs.iter().map(|tid| visited[tid].1).collect();
+        self.drop_unused_ops_by_params(params);
+    }
+
+    /// Drop unused operations, keeping only those needed by `params` (OpIds).
+    /// Rebuilds `self.loads` from the remaining LoadViews.
+    pub(crate) fn drop_unused_ops_by_params(&mut self, params: Vec<OpId>) {
         let required = self.get_required_ops(params);
         let mut loaded_tensors = Vec::new();
         let mut load_index = 0;
