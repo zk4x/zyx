@@ -44,6 +44,7 @@ use crate::kernel::{Kernel, Op, OpId, Scope};
 use crate::rng::Rng;
 use crate::shape::Dim;
 use crate::slab::SlabId;
+use crate::prog_bar::ProgressBar;
 use crate::{DebugMask, Set};
 use nanoserde::{DeBin, SerBin};
 use std::collections::BTreeMap;
@@ -540,9 +541,17 @@ impl Kernel {
 
         let mut rng = Rng::seed_from_u64(3_498_203_498);
         let mut exhausted = Set::default();
+        let mut progress_bar = if debug.sched() {
+            Some(ProgressBar::new(n_total_opts as u64))
+        } else {
+            None
+        };
         let mut i = 0;
         while i < n_total_opts && !items.is_empty() {
             i += 1;
+            if let Some(pb) = &mut progress_bar {
+                pb.inc(1, &format!("Exploring opt seq {i}/{n_total_opts}"));
+            }
             let mut thread_kernel = kernel.clone();
             let Some(opt_seq) = sample_best(&items, &exhausted, &mut rng).cloned() else {
                 break;
