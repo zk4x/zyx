@@ -176,8 +176,8 @@ impl EGraph {
     /// accumulating ops into kernels shared by MULTIPLE classes.
     /// Kernels are added as `ENode::Kernel` to the e-graph only when
     /// their output list becomes empty.
-    pub(crate) fn kernelize_all(&mut self) {
-        let order = topo_sort_classes(self);
+    pub(crate) fn kernelize_all(&mut self, output_classes: &Set<ClassId>) {
+        let order = topo_sort_classes(self, output_classes);
 
         // Reference counts: how many times each class appears as a child.
         let mut rcs: Map<ClassId, u32> = Map::default();
@@ -201,6 +201,7 @@ impl EGraph {
             }
         }
 
+        let mut pending_stores: Set<ClassId> = Set::default();
         let mut visited: Map<ClassId, (KMKernelId, OpId)> = Map::default();
         let mut kernel_data: Map<KMKernelId, KernelData> = Map::default();
         let mut kernel_id_counter: u32 = 0;
@@ -266,6 +267,7 @@ impl EGraph {
                     &mut kernel_data,
                     &mut kernel_id_counter,
                     &rcs,
+                    &mut pending_stores,
                 ),
                 ENode::Reduce(child, rop, ref axes) => {
                     let axes: Vec<UAxis> = axes.to_vec();
@@ -278,12 +280,30 @@ impl EGraph {
                         &mut kernel_data,
                         &mut kernel_id_counter,
                         &rcs,
+                        &mut pending_stores,
                     )
                 }
-                ENode::Expand(child) => self.add_expand(cid, child, &mut visited, &mut kernel_data, &mut kernel_id_counter, &rcs),
+                ENode::Expand(child) => self.add_expand(
+                    cid,
+                    child,
+                    &mut visited,
+                    &mut kernel_data,
+                    &mut kernel_id_counter,
+                    &rcs,
+                    &mut pending_stores,
+                ),
                 ENode::Permute(child, ref axes) => {
                     let axes: Vec<UAxis> = axes.clone().into_vec();
-                    self.add_permute(cid, child, axes, &mut visited, &mut kernel_data, &mut kernel_id_counter, &rcs)
+                    self.add_permute(
+                        cid,
+                        child,
+                        axes,
+                        &mut visited,
+                        &mut kernel_data,
+                        &mut kernel_id_counter,
+                        &rcs,
+                        &mut pending_stores,
+                    )
                 }
                 ENode::Reshape(child, ref shape) => {
                     let shape: Vec<Dim> = shape.clone().into_vec();
@@ -295,6 +315,7 @@ impl EGraph {
                         &mut kernel_data,
                         &mut kernel_id_counter,
                         &rcs,
+                        &mut pending_stores,
                     )
                 }
                 ENode::Pad(child, ref padding) => {
@@ -307,6 +328,7 @@ impl EGraph {
                         &mut kernel_data,
                         &mut kernel_id_counter,
                         &rcs,
+                        &mut pending_stores,
                     )
                 }
                 ENode::ToDevice(child, _dev) => {
@@ -320,7 +342,14 @@ impl EGraph {
                             (kid, op)
                         }
                     };
-                    self.add_store(child, child_kid, child_op, &mut visited, &mut kernel_data);
+                    self.add_store(
+                        child,
+                        child_kid,
+                        child_op,
+                        &mut visited,
+                        &mut kernel_data,
+                        &mut pending_stores,
+                    );
                     let (kid, op_id) = match visited.get(&child) {
                         Some(&v) => v,
                         None => unreachable!(),
@@ -334,13 +363,13 @@ impl EGraph {
                 ENode::Kernel(..) => continue,
             }
 
-            // Post-processing: store if final output or reduce boundary.
+            // Post-processing: store if output, final, or reduce boundary.
             if !visited.contains_key(&cid) {
                 // add_* method stored this class already.
                 continue;
             }
             let remaining_rc = rcs.get(&cid).copied().unwrap_or(0);
-            let is_output = remaining_rc == 0;
+            let is_output = remaining_rc == 0 || output_classes.contains(&cid);
             let is_reduce = self.classes[cid]
                 .nodes
                 .iter()
@@ -348,11 +377,36 @@ impl EGraph {
 
             if is_output || is_reduce {
                 let (kid, op_id) = visited[&cid];
-                self.add_store(cid, kid, op_id, &mut visited, &mut kernel_data);
+                self.add_store(cid, kid, op_id, &mut visited, &mut kernel_data, &mut pending_stores);
+                // If this output still has consumers, reload it in a new kernel.
+                if output_classes.contains(&cid) && remaining_rc > 0 {
+                    let new_kid = self.new_load_kernel(cid, &mut kernel_id_counter, &mut kernel_data);
+                    let new_op = kid_first_op(new_kid, &self.kernel_irs);
+                    visited.insert(cid, (new_kid, new_op));
+                }
             }
 
             // ── Process subsequent enode variants (cloned per variant) ──
             // TODO: implement after first-variant path is working.
+        }
+
+        // Force-seal remaining kernels that still have output classes.
+        let kid_list: Vec<KMKernelId> = self.kernel_irs.keys().copied().collect();
+        for &kid in &kid_list {
+            if !self.kernel_irs.contains_key(&kid) {
+                continue;
+            }
+            let remaining: Vec<ClassId> = kernel_data
+                .get(&kid)
+                .map(|(outputs, _, _)| outputs.iter().copied().filter(|&c| output_classes.contains(&c)).collect())
+                .unwrap_or_default();
+            for &cid in &remaining {
+                let op_id = match visited.get(&cid) {
+                    Some(&(_, op)) => op,
+                    None => continue,
+                };
+                self.add_store(cid, kid, op_id, &mut visited, &mut kernel_data, &mut pending_stores);
+            }
         }
     }
 
@@ -448,12 +502,12 @@ impl EGraph {
         }
     }
 
+    // ── Per-op methods (mirror kernelize.rs add_*_op) ──────
+
     /// If `op_id` is already referenced as input by any Move in kernel `kid`,
     /// clone the chain (LoadView → ... → chain output) so the new Move gets
-    /// an independent LoadView to mutate during unfold.
-    ///
-    /// Also updates `kernel_data` loads so the extra cloned LoadView gets its
-    /// own buffer argument at launch time.
+    /// an independent LoadView.  This is needed because unfold_movement_ops
+    /// mutates LoadViews and a shared source would give wrong indexing.
     fn ensure_exclusive_move_source(
         &mut self,
         kid: KMKernelId,
@@ -479,34 +533,36 @@ impl EGraph {
         if shared {
             let kernel = self.kernel_irs.get_mut(&kid).unwrap();
             op_id = kernel.clone_chain_to(op_id);
-            // The cloned LoadView loads from the same leaf class as the original chain.
-            let load_class = self.root_load_class(child);
-            kernel_data.entry(kid).or_default().1.push(load_class);
+            kernel_data.entry(kid).or_default().1.push(child);
         }
         op_id
     }
 
-    /// Walk the e-graph chain backwards from `child` to find the root
-    /// Leaf/Const class that a LoadView loads from.
-    fn root_load_class(&mut self, cid: ClassId) -> ClassId {
-        let cid = self.find_class(cid);
-        let nodes = &self.classes[cid].nodes;
-        for nid in nodes {
-            match &self.nodes[*nid] {
-                ENode::Cast(x, _) | ENode::Unary(x, _) | ENode::Expand(x) => {
-                    return self.root_load_class(*x);
-                }
-                ENode::Permute(x, _) | ENode::Reshape(x, _) | ENode::Pad(x, _) => {
-                    return self.root_load_class(*x);
-                }
-                ENode::Leaf(_) | ENode::Const(_) => return cid,
-                _ => {}
-            }
+    /// If `child` lives in a kernel that has stores, store it and create a fresh
+    /// load kernel (matches kernelize.rs duplicate_or_store).
+    fn duplicate_or_store(
+        &mut self,
+        child: ClassId,
+        visited: &mut Map<ClassId, (KMKernelId, OpId)>,
+        counter: &mut u32,
+        kernel_data: &mut Map<KMKernelId, KernelData>,
+        pending_stores: &mut Set<ClassId>,
+    ) -> (KMKernelId, OpId) {
+        let (kid, op_id) = match visited.get(&child) {
+            Some(&v) => v,
+            None => return self.child_to_kid(child, visited, counter, kernel_data),
+        };
+        let has_stores = self.kernel_irs.get(&kid).is_some_and(|k| k.contains_stores());
+        if has_stores {
+            self.add_store(child, kid, op_id, visited, kernel_data, pending_stores);
+            let new_kid = self.new_load_kernel(child, counter, kernel_data);
+            let new_op = kid_first_op(new_kid, &self.kernel_irs);
+            visited.insert(child, (new_kid, new_op));
+            (new_kid, new_op)
+        } else {
+            (kid, op_id)
         }
-        cid
     }
-
-    // ── Per-op methods (mirror kernelize.rs add_*_op) ──────
 
     fn child_to_kid(
         &mut self,
@@ -576,6 +632,12 @@ impl EGraph {
         visited.insert(cid, (kid, result_op));
     }
 
+    /// True if the kernel has any store operations (meaning it's "dirty" and
+    /// should not be merged back into a kernel that loads its outputs).
+    fn kernel_has_stores(&self, kid: KMKernelId) -> bool {
+        self.kernel_irs.get(&kid).is_some_and(|k| k.contains_stores())
+    }
+
     fn add_binary(
         &mut self,
         cid: ClassId,
@@ -586,12 +648,15 @@ impl EGraph {
         kernel_data: &mut Map<KMKernelId, KernelData>,
         counter: &mut u32,
         rcs: &Map<ClassId, u32>,
+        pending_stores: &mut Set<ClassId>,
     ) {
-        let (kid, op_id) = self.child_to_kid(lhs, visited, counter, kernel_data);
-        let (kidy, op_idy) = self.child_to_kid(rhs, visited, counter, kernel_data);
+        let (mut kid, mut op_id) = self.child_to_kid(lhs, visited, counter, kernel_data);
+        let (mut kidy, mut op_idy) = self.child_to_kid(rhs, visited, counter, kernel_data);
+
+        let kid_stores = self.kernel_irs.get(&kid).is_some_and(|k| k.contains_stores());
+        let kidy_stores = self.kernel_irs.get(&kidy).is_some_and(|k| k.contains_stores());
 
         if kid == kidy {
-            // Same kernel — emit binary op directly.
             Self::remove_first_output(kernel_data, kid, lhs);
             Self::remove_first_output(kernel_data, kid, rhs);
             let kernel = self.kernel_irs.get_mut(&kid).unwrap();
@@ -602,9 +667,39 @@ impl EGraph {
             }
             visited.insert(cid, (kid, result_op));
         } else {
-            // Different kernels: merge rhs kernel into lhs kernel.
+            match (kid_stores, kidy_stores) {
+                (true, true) => {
+                    self.add_store(lhs, kid, op_id, visited, kernel_data, pending_stores);
+                    let new_kid = self.new_load_kernel(lhs, counter, kernel_data);
+                    let new_op = kid_first_op(new_kid, &self.kernel_irs);
+                    visited.insert(lhs, (new_kid, new_op));
+                    (kid, op_id) = (new_kid, new_op);
+
+                    self.add_store(rhs, kidy, op_idy, visited, kernel_data, pending_stores);
+                    let new_kid = self.new_load_kernel(rhs, counter, kernel_data);
+                    let new_op = kid_first_op(new_kid, &self.kernel_irs);
+                    visited.insert(rhs, (new_kid, new_op));
+                    (kidy, op_idy) = (new_kid, new_op);
+                }
+                (true, false) => {
+                    self.add_store(lhs, kid, op_id, visited, kernel_data, pending_stores);
+                    let new_kid = self.new_load_kernel(lhs, counter, kernel_data);
+                    let new_op = kid_first_op(new_kid, &self.kernel_irs);
+                    visited.insert(lhs, (new_kid, new_op));
+                    (kid, op_id) = (new_kid, new_op);
+                }
+                (false, true) => {
+                    self.add_store(rhs, kidy, op_idy, visited, kernel_data, pending_stores);
+                    let new_kid = self.new_load_kernel(rhs, counter, kernel_data);
+                    let new_op = kid_first_op(new_kid, &self.kernel_irs);
+                    visited.insert(rhs, (new_kid, new_op));
+                    (kidy, op_idy) = (new_kid, new_op);
+                }
+                (false, false) => {}
+            }
+
+            // Merge rhs kernel into lhs kernel.
             self.merge_kernels(kidy, kid, visited, kernel_data);
-            // Re-read remapped op for rhs.
             let (_, op_idy) = visited[&rhs];
             Self::remove_first_output(kernel_data, kid, lhs);
             Self::remove_first_output(kernel_data, kid, rhs);
@@ -628,9 +723,10 @@ impl EGraph {
         kernel_data: &mut Map<KMKernelId, KernelData>,
         counter: &mut u32,
         rcs: &Map<ClassId, u32>,
+        pending_stores: &mut Set<ClassId>,
     ) {
         let n_axes = axes.len() as UAxis;
-        let (kid, mut op_id) = self.child_to_kid(child, visited, counter, kernel_data);
+        let (mut kid, mut op_id) = self.duplicate_or_store(child, visited, counter, kernel_data, pending_stores);
         op_id = self.ensure_exclusive_move_source(kid, op_id, kernel_data, child);
         Self::remove_first_output(kernel_data, kid, child);
 
@@ -692,8 +788,9 @@ impl EGraph {
         kernel_data: &mut Map<KMKernelId, KernelData>,
         counter: &mut u32,
         rcs: &Map<ClassId, u32>,
+        pending_stores: &mut Set<ClassId>,
     ) {
-        let (kid, mut op_id) = self.child_to_kid(child, visited, counter, kernel_data);
+        let (kid, mut op_id) = self.duplicate_or_store(child, visited, counter, kernel_data, pending_stores);
         op_id = self.ensure_exclusive_move_source(kid, op_id, kernel_data, child);
         Self::remove_first_output(kernel_data, kid, child);
         let shape: Vec<Dim> = self.classes[cid].shape.to_vec();
@@ -718,8 +815,9 @@ impl EGraph {
         kernel_data: &mut Map<KMKernelId, KernelData>,
         counter: &mut u32,
         rcs: &Map<ClassId, u32>,
+        pending_stores: &mut Set<ClassId>,
     ) {
-        let (kid, mut op_id) = self.child_to_kid(child, visited, counter, kernel_data);
+        let (kid, mut op_id) = self.duplicate_or_store(child, visited, counter, kernel_data, pending_stores);
         op_id = self.ensure_exclusive_move_source(kid, op_id, kernel_data, child);
         Self::remove_first_output(kernel_data, kid, child);
         let shape: Vec<Dim> = self.classes[cid].shape.to_vec();
@@ -744,10 +842,15 @@ impl EGraph {
         kernel_data: &mut Map<KMKernelId, KernelData>,
         counter: &mut u32,
         rcs: &Map<ClassId, u32>,
+        pending_stores: &mut Set<ClassId>,
     ) {
-        let (kid, mut op_id) = self.child_to_kid(child, visited, counter, kernel_data);
+        let (kid, mut op_id) = self.duplicate_or_store(child, visited, counter, kernel_data, pending_stores);
         op_id = self.ensure_exclusive_move_source(kid, op_id, kernel_data, child);
         Self::remove_first_output(kernel_data, kid, child);
+
+        // Permute reduce axes to be trailing (mirrors kernelize.rs).
+        let in_root = self.find_class(child);
+        let in_shape: Vec<Dim> = self.classes[in_root].shape.to_vec();
         let kernel = self.kernel_irs.get_mut(&kid).unwrap();
         let result_op = kernel.push_back(Op::Move {
             x: op_id,
@@ -769,8 +872,9 @@ impl EGraph {
         kernel_data: &mut Map<KMKernelId, KernelData>,
         counter: &mut u32,
         rcs: &Map<ClassId, u32>,
+        pending_stores: &mut Set<ClassId>,
     ) {
-        let (kid, mut op_id) = self.child_to_kid(child, visited, counter, kernel_data);
+        let (kid, mut op_id) = self.duplicate_or_store(child, visited, counter, kernel_data, pending_stores);
         op_id = self.ensure_exclusive_move_source(kid, op_id, kernel_data, child);
         Self::remove_first_output(kernel_data, kid, child);
         let shape: Vec<Dim> = self.classes[cid].shape.to_vec();
@@ -793,9 +897,19 @@ impl EGraph {
         op_id: OpId,
         visited: &mut Map<ClassId, (KMKernelId, OpId)>,
         kernel_data: &mut Map<KMKernelId, KernelData>,
+        pending_stores: &mut Set<ClassId>,
     ) {
-        debug_assert!(self.kernel_irs.contains_key(&kid), "add_store: kid={kid:?} not in kernel_irs");
         debug_assert!(!op_id.is_null(), "add_store: NULL op_id for cid={cid:?}");
+        if pending_stores.contains(&cid) {
+            // Already stored — just remove from visited/outputs.
+            visited.remove(&cid);
+            if let Some((outputs, _, _)) = kernel_data.get_mut(&kid) {
+                outputs.retain(|&x| x != cid);
+            }
+            return;
+        }
+        debug_assert!(self.kernel_irs.contains_key(&kid), "add_store: kid={kid:?} not in kernel_irs");
+        pending_stores.insert(cid);
         let dtype = self.classes[cid].dtype;
         let kernel = self.kernel_irs.get_mut(&kid).unwrap();
         kernel.store_contiguous(op_id, dtype);
@@ -818,9 +932,16 @@ impl EGraph {
             // their stale (kid, op) pairs don't get reused later.
             visited.retain(|_, &mut (k, _)| k != kid);
             let owned_kernel = self.kernel_irs.remove(&kid).unwrap();
-            let (_, input_cids, output_cids) = kernel_data.remove(&kid).unwrap_or_default();
+            let (_, mut input_cids, output_cids) = kernel_data.remove(&kid).unwrap_or_default();
+            // Remove from inputs any class that is also an output — this prevents
+            // cycles where a class appears as both kernel input and output
+            // (e.g., when a stored value is re-loaded in the same kernel after a merge).
+            {
+                let output_set: Set<ClassId> = output_cids.iter().copied().collect();
+                input_cids.retain(|c| !output_set.contains(c));
+            }
             let inputs: Box<[ClassId]> = input_cids.into_boxed_slice();
-            let outputs_box: Box<[ClassId]> = output_cids.into_boxed_slice();
+            let outputs_box: Box<[ClassId]> = output_cids.clone().into_boxed_slice();
             let compute_ops = owned_kernel
                 .ops
                 .values()
@@ -835,8 +956,16 @@ impl EGraph {
             let knid = self.nodes.push(kind);
             let idx = knid.0 as usize;
             self.grow_uf_arrays(idx);
-            self.class_of[idx] = cid; // last stored class "owns" the enode
-            self.classes[cid].nodes.push(knid);
+            self.class_of[idx] = cid;
+            // Add the kernel enode to ALL classes it computes (all stored outputs).
+            for &scid in &output_cids {
+                let sci = scid.0 as usize;
+                self.grow_uf_arrays(sci);
+                self.classes[scid].nodes.push(knid);
+            }
+            if !output_cids.contains(&cid) {
+                self.classes[cid].nodes.push(knid);
+            }
             self.costs.insert(knid, kernel_cost(compute_ops.max(1)));
             self.kernel_irs.insert(kid, owned_kernel); // keep for autotune
             self.kernel_map.insert(knid, kid);
@@ -918,7 +1047,7 @@ pub(crate) fn topo_sort_classes(eg: &EGraph) -> Vec<ClassId> {
 #[cfg(test)]
 mod tests {
     use crate::{
-        DType,
+        DType, Set,
         graph::search::{ClassId, ENode, NodeId},
         kernel::{BOp, UOp},
     };
@@ -1016,7 +1145,7 @@ mod tests {
         assert_eq!(eg.classes[leaf_class].nodes.len(), 2, "Leaf's class should have 2 enodes");
 
         // Now try to kernelize - there should be no empty classes
-        eg.kernelize_all();
+        eg.kernelize_all(&Set::default());
 
         // This should not panic
     }

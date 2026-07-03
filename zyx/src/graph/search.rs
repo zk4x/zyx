@@ -723,7 +723,7 @@ impl EGraph {
             .collect();
         debug_assert!(!output_classes.is_empty(), "compile: no output tensors found in e-graph");
 
-        eg.kernelize_all();
+        eg.kernelize_all(&output_classes);
 
         // Validate that no pre-existing class roots changed during kernelize_all.
         debug_assert!(
