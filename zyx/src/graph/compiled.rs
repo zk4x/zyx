@@ -6,7 +6,7 @@
 //! Compiled graph caching layer.
 use crate::{
     DType, Map, Set, ZyxError,
-    backend::{BufferId, Device, DeviceId, MemoryPool, PoolId, ProgramId},
+    backend::{BufferId, Device, DeviceId, Event, MemoryPool, PoolId, ProgramId},
     graph::{Graph, Node, search::EGraph},
     hashers,
     runtime::Runtime,
@@ -14,6 +14,7 @@ use crate::{
     slab::Slab,
     tensor::TensorId,
 };
+use std::collections::BTreeSet;
 use std::hash::BuildHasherDefault;
 
 /// Logical index into a replay-time slot table, used instead of raw [`BufferId`]
@@ -46,6 +47,7 @@ pub enum CompiledNode {
     LaunchProgram {
         program: ProgramId,
         args: Vec<BufferSlot>,
+        num_inputs: u32,
     },
     /// Marks a slot as an output buffer.
     /// Emitted by the compiler to tell the runtime which slots hold output values.
@@ -157,7 +159,21 @@ impl Runtime {
             result
         };
 
-        let slots = replay_compiled(&mut self.pools, &mut self.devices, &compiled_nodes, &input_buffers)?;
+        let (slots, events) = replay_compiled(&mut self.pools, &mut self.devices, &compiled_nodes, &input_buffers)?;
+
+        // Propagate events from replay into self.events so that Runtime::load
+        // can wait on them before reading output buffers.
+        for (slot_set, event) in events {
+            let mut buffer_set = BTreeSet::new();
+            for slot_idx in slot_set {
+                if let Some(buf) = slots[slot_idx] {
+                    buffer_set.insert(buf);
+                }
+            }
+            if !buffer_set.is_empty() {
+                self.events.insert(buffer_set, event);
+            }
+        }
 
         // Output markers appear in the same order as output_order.
         // Match them positionally to populate buffer_map.
@@ -194,8 +210,10 @@ fn replay_compiled(
     devices: &mut Slab<DeviceId, Device>,
     nodes: &[CompiledNode],
     inputs: &[BufferId],
-) -> Result<Vec<Option<BufferId>>, ZyxError> {
+) -> Result<(Vec<Option<BufferId>>, Map<BTreeSet<usize>, Event>), ZyxError> {
     let mut slots: Vec<Option<BufferId>> = Vec::new();
+    // Events keyed by the set of buffer slot indices they apply to.
+    let mut events: Map<BTreeSet<usize>, Event> = Map::default();
     let mut input_idx = 0;
 
     for node in nodes {
@@ -210,7 +228,7 @@ fn replay_compiled(
                 slots[idx] = Some(buf);
             }
             CompiledNode::Allocate { pool, size, slot } => {
-                let (buf, _event) = pools[*pool].allocate(*size)?;
+                let (buf, event) = pools[*pool].allocate(*size)?;
                 let idx = slot.0 as usize;
                 if idx >= slots.len() {
                     slots.resize(idx + 1, None);
@@ -219,10 +237,23 @@ fn replay_compiled(
                     pool: *pool,
                     buffer: buf,
                 });
+                // Allocation event: signal that this buffer is ready for use.
+                let mut set = BTreeSet::new();
+                set.insert(idx);
+                events.insert(set, event);
             }
             CompiledNode::Deallocate { pool, slot } => {
                 if let Some(buf) = slots[slot.0 as usize].take() {
-                    pools[*pool].deallocate(buf.buffer, vec![]);
+                    // Drain any pending event for this slot.
+                    let idx = slot.0 as usize;
+                    let mut wait_list = Vec::new();
+                    let key: Vec<BTreeSet<usize>> = events.keys().filter(|k| k.contains(&idx)).cloned().collect();
+                    for k in key {
+                        if let Some(e) = events.remove(&k) {
+                            wait_list.push(e);
+                        }
+                    }
+                    pools[*pool].deallocate(buf.buffer, wait_list);
                 }
             }
             CompiledNode::CopyMemory {
@@ -235,14 +266,40 @@ fn replay_compiled(
                 let _dst_buf = slots[dst.0 as usize].unwrap();
                 // TODO: device-to-device copy between pools
             }
-            CompiledNode::LaunchProgram { program, args } => {
+            CompiledNode::LaunchProgram {
+                program,
+                args,
+                num_inputs,
+            } => {
                 let pool_id = devices[program.device].memory_pool_id();
                 let pool = &mut pools[pool_id];
                 let kernel_args: Vec<_> = args.iter().map(|s| slots[s.0 as usize].unwrap().buffer).collect();
-                let _event = devices[program.device].launch(program.program, pool, &kernel_args, vec![])?;
+
+                // Collect events for all input slots from the pending-events map.
+                let mut event_wait_list = Vec::new();
+                for s in &args[..*num_inputs as usize] {
+                    let idx = s.0 as usize;
+                    let key: Vec<BTreeSet<usize>> =
+                        events.keys().filter(|k| k.contains(&idx)).cloned().collect();
+                    for k in key {
+                        if let Some(e) = events.remove(&k) {
+                            event_wait_list.push(e);
+                        }
+                    }
+                }
+
+                let event =
+                    devices[program.device].launch(program.program, pool, &kernel_args, event_wait_list)?;
+
+                // Store the completion event for ALL buffer slots (inputs + outputs),
+                // matching kernelize.rs behavior which tracks all kernel buffers.
+                let mut all_slots = BTreeSet::new();
+                for s in args.iter() {
+                    all_slots.insert(s.0 as usize);
+                }
+                events.insert(all_slots, event);
             }
             CompiledNode::Output { slot } => {
-                // Ensure the slot table is large enough (no-op otherwise).
                 let idx = slot.0 as usize;
                 if idx >= slots.len() {
                     slots.resize(idx + 1, None);
@@ -250,5 +307,5 @@ fn replay_compiled(
             }
         }
     }
-    Ok(slots)
+    Ok((slots, events))
 }

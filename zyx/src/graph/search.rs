@@ -6,6 +6,7 @@
 //! Builds an e-graph from the computation graph, enumerates kernel alternatives
 //! via pattern matching, then extracts the cheapest execution plan.
 
+use crate::prog_bar::ProgressBar;
 use crate::{
     DType, DebugMask, Map, Set, ZyxError,
     backend::{AutotuneConfig, Device, DeviceId, MemoryPool, PoolId, ProgramId},
@@ -424,30 +425,20 @@ impl EGraph {
     // ── Kernel enumeration ────────────────────────────────
 
     pub(crate) fn saturate(&mut self) {
-        // Each fuser tries to match enodes in e-classes and insert kernel
-        // alternatives. Run to fixpoint since one match may enable another.
-        loop {
-            let mut added = false;
-            if self.try_fuse_matmul() {
-                added = true;
-            }
-            if !added {
-                break;
-            }
-        }
-        // Rebuild after saturation so children, hashcons, and parents are
-        // fully canonicalised before extraction or further passes.
         self.rebuild();
     }
 
-    /// Try to match all e-classes for `reduce_sum(mul(expand(A), expand(permute(B))))`
-    /// and insert `MatmulKernel` alternatives.
+    #[allow(unused)]
     fn try_fuse_matmul(&mut self) -> bool {
         let mut added = false;
         let classes: Vec<ClassId> = self.classes.ids().collect();
 
         for cid in classes {
             if !self.classes.contains_key(cid) {
+                continue;
+            }
+            // Skip if this class already has a MatmulKernel (prevents infinite loop)
+            if self.classes[cid].nodes.iter().any(|&n| matches!(&self.nodes[n], ENode::Kernel(..))) {
                 continue;
             }
             // Collect enodes from this class (clone to avoid borrow issues)
@@ -734,10 +725,10 @@ impl EGraph {
             "compile: class roots changed during kernelize_all"
         );
 
+        eg.debug_print();
+
         // Autotune every kernel variant on every available device.
         let _ = eg.autotune_all_kernels(devices, pools, cache, config, debug);
-
-        eg.debug_print();
 
         // Extract: pick cheapest all-kernel plan
         let output_classes: Vec<ClassId> = output_classes.iter().copied().collect();
@@ -845,7 +836,11 @@ impl EGraph {
                 let out_cid = self.find_class(out_cid);
                 args.push(class_to_slot[&out_cid]);
             }
-            nodes.push(CompiledNode::LaunchProgram { program, args });
+            nodes.push(CompiledNode::LaunchProgram {
+                program,
+                args,
+                num_inputs: kernel_inputs.len() as u32,
+            });
         }
 
         // 6. Output markers in output_order order.
@@ -891,6 +886,14 @@ impl EGraph {
             ids.into_iter().map(|cid| (cid, self.find_class(cid))).collect()
         };
 
+        let device_ids: Vec<DeviceId> = devices.ids().collect();
+        let n_total = kernel_enodes.len() * device_ids.len();
+        let mut progress_bar = if debug.sched() {
+            Some(ProgressBar::new(n_total as u64))
+        } else {
+            None
+        };
+        let mut kernel_idx = 0u64;
         for (nid, _cid) in &kernel_enodes {
             let Some(&kid) = self.kernel_map.get(nid) else {
                 continue;
@@ -901,11 +904,15 @@ impl EGraph {
 
             let (flop, read, write) = kernel.flop_mem_rw();
 
-            let device_ids: Vec<DeviceId> = devices.ids().collect();
-            for dev_id in device_ids {
+            for &dev_id in &device_ids {
                 let device = &mut devices[dev_id];
                 let pool_id = device.memory_pool_id();
                 let pool = &mut pools[pool_id];
+
+                kernel_idx += 1;
+                if let Some(pb) = &mut progress_bar {
+                    pb.inc(1, &format!("Kernel {kernel_idx}/{n_total}"));
+                }
 
                 let mut kernel = kernel.clone();
                 if let Ok((device_prog, _timing)) =
