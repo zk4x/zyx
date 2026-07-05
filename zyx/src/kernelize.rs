@@ -187,7 +187,8 @@ impl<'a> Kernelizer<'a> {
         };
         let op_id = kernel.load_contiguous(dtype, shape);
         let kid = self.kernels.push(kernel);
-        self.io.insert(kid, (vec![nid; self.rcs[&nid] as usize], vec![nid], Vec::new()));
+        self.io
+            .insert(kid, (vec![nid; self.rcs[&nid] as usize], vec![nid], Vec::new()));
         self.visited.insert(nid, (kid, op_id));
         (kid, op_id)
     }
@@ -202,7 +203,8 @@ impl<'a> Kernelizer<'a> {
         };
         let op_id = kernel.push_back(Op::ConstView(Box::new((value, View::contiguous(&[1])))));
         let kid = self.kernels.push(kernel);
-        self.io.insert(kid, (vec![nid; self.rcs[&nid] as usize], Vec::new(), Vec::new()));
+        self.io
+            .insert(kid, (vec![nid; self.rcs[&nid] as usize], Vec::new(), Vec::new()));
         self.visited.insert(nid, (kid, op_id));
     }
 
@@ -790,7 +792,9 @@ impl Runtime {
                             custom_kernel_id: Some(ck.kernel_id),
                         };
                         let kid = kernelizer.kernels.push(kernel);
-                        kernelizer.io.insert(kid, (vec![nid; kernelizer.rcs[&nid] as usize], ck.inputs.clone(), vec![nid]));
+                        kernelizer
+                            .io
+                            .insert(kid, (vec![nid; kernelizer.rcs[&nid] as usize], ck.inputs.clone(), vec![nid]));
                         kernelizer.visited.insert(nid, (kid, OpId::NULL));
                         kernelizer.pending_stores.insert(nid);
                     }
@@ -831,12 +835,7 @@ impl Runtime {
             let mut kids: Vec<KMKernelId> = kernelizer.kernels.ids().collect();
             while let Some(kid) = kids
                 .iter()
-                .find(|&&kid| {
-                    kernelizer.io[&kid]
-                        .1
-                        .iter()
-                        .all(|x| kernelizer.realized_nodes.contains(x))
-                })
+                .find(|&&kid| kernelizer.io[&kid].1.iter().all(|x| kernelizer.realized_nodes.contains(x)))
                 .copied()
             {
                 kids.retain(|x| *x != kid);

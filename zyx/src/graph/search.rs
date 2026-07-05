@@ -438,7 +438,11 @@ impl EGraph {
                 continue;
             }
             // Skip if this class already has a MatmulKernel (prevents infinite loop)
-            if self.classes[cid].nodes.iter().any(|&n| matches!(&self.nodes[n], ENode::Kernel(..))) {
+            if self.classes[cid]
+                .nodes
+                .iter()
+                .any(|&n| matches!(&self.nodes[n], ENode::Kernel(..)))
+            {
                 continue;
             }
             // Collect enodes from this class (clone to avoid borrow issues)
@@ -918,7 +922,10 @@ impl EGraph {
                 if let Ok((device_prog, _timing)) =
                     cache.get_or_autotune(dev_id, &mut kernel, device, pool, config, flop, read, write, debug)
                 {
-                    let prog = ProgramId { device: dev_id, program: device_prog };
+                    let prog = ProgramId {
+                        device: dev_id,
+                        program: device_prog,
+                    };
                     // Update the enode's ProgramId in-place.
                     if let ENode::Kernel(_, _, old_prog) = &mut self.nodes[*nid] {
                         *old_prog = prog;

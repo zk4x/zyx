@@ -545,8 +545,6 @@ impl EGraph {
         // gets its own copy (avoids sharing LoadViews between Move chains).
         let n_outputs = kernel_data.get(&kid).map(|(o, _, _)| o.len()).unwrap_or(0);
         if n_outputs > 1 {
-
-
             // Check if this op is preceded by a reduce (complex case → store+reload)
             let preceded_by_reduce = self.kernel_irs.get(&kid).is_some_and(|k| k.is_preceded_by_reduce(op_id));
             if preceded_by_reduce {
@@ -579,7 +577,10 @@ impl EGraph {
         kernel_data: &mut Map<KMKernelId, KernelData>,
         counter: &mut u32,
     ) -> KMKernelId {
-        let orig_loads: Vec<TensorId> = kernel_data.get(&kid).map(|(_, l, _)| l.iter().map(|c| TensorId(c.0)).collect()).unwrap_or_default();
+        let orig_loads: Vec<TensorId> = kernel_data
+            .get(&kid)
+            .map(|(_, l, _)| l.iter().map(|c| TensorId(c.0)).collect())
+            .unwrap_or_default();
         // Clone kernel IR — new kernel gets only child's ops
         let mut clone = self.kernel_irs[&kid].clone();
         let clone_loads = clone.drop_unused_ops_by_params(vec![op_id], &orig_loads);
@@ -592,12 +593,7 @@ impl EGraph {
         Self::remove_first_output(kernel_data, kid, child);
         let remaining_op_ids: Vec<OpId> = kernel_data
             .get(&kid)
-            .map(|(outputs, _, _)| {
-                outputs
-                    .iter()
-                    .filter_map(|c| visited.get(c).map(|&(_, oid)| oid))
-                    .collect()
-            })
+            .map(|(outputs, _, _)| outputs.iter().filter_map(|c| visited.get(c).map(|&(_, oid)| oid)).collect())
             .unwrap_or_default();
         let orig_kernel = self.kernel_irs.get_mut(&kid).unwrap();
         let new_loads = orig_kernel.drop_unused_ops_by_params(remaining_op_ids, &orig_loads);

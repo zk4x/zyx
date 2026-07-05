@@ -13,7 +13,7 @@ use super::{
     Device, DeviceId, DeviceInfo, DeviceProgramId, Event, MemoryPool, OpCapability, PoolBufferId, PoolId, host::HostMemoryPool,
 };
 use crate::{
-    DType, Map, Set,
+    DType, Map,
     dtype::Constant,
     error::{BackendError, ErrorStatus},
     kernel::{BOp, Kernel, MemLayout, Op, OpId, Scope, UOp},
@@ -50,6 +50,7 @@ pub struct CDevice {
     memory_pool_id: PoolId,
     programs: Slab<DeviceProgramId, CProgram>,
     has_vector_exts: bool,
+    has_openmp: bool,
 }
 
 pub(super) fn initialize_device(
@@ -113,6 +114,19 @@ pub(super) fn initialize_device(
         })
         .map(|s| s.success())
         .unwrap_or(false);
+    let has_openmp = Command::new(compiler)
+        .args(["-shared", "-O3", "-fopenmp", "-x", "c", "-", "-o", "/dev/null"])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .and_then(|mut child| {
+            use std::io::Write;
+            child.stdin.take().unwrap().write_all(b"int main(){return 0;}").ok();
+            child.wait()
+        })
+        .map(|s| s.success())
+        .unwrap_or(false);
     devices.push(Device::C(CDevice {
         device_info: DeviceInfo {
             compute: 10 * 1024 * 1024 * 1024 * 1024,
@@ -131,9 +145,11 @@ pub(super) fn initialize_device(
         memory_pool_id: pool_id,
         programs: Slab::new(),
         has_vector_exts,
+        has_openmp,
     }));
     if debug_dev {
         println!("[C] vector extensions: {has_vector_exts}");
+        println!("[C] OpenMP: {has_openmp}");
     }
     Ok(())
 }
@@ -186,89 +202,52 @@ impl CDevice {
             }
         }
 
-        // --- Phase 1: collect global args, gws/lws ---
-        let mut gws = [1u64; 3];
-        let mut op_id = kernel.head;
-        while !op_id.is_null() {
-            let op = kernel.at(op_id);
-            if let &Op::Index { len: dim, scope, axis } = op {
-                if scope == Scope::Global {
-                    gws[axis as usize] = dim.max(1u64);
-                }
-            }
-            op_id = kernel.next_op(op_id);
-        }
-
-        // --- Phase 2: RC and dtype analysis ---
+        // --- RC and dtype analysis ---
         let (dtypes, rcs) = kernel.compute_dtypes_and_rcs();
 
-        // --- Phase 3: Codegen ---
+        // --- Codegen ---
+        let mut gws = [1u64; 3];
         let mut reg_map: Map<OpId, usize> = Map::with_capacity_and_hasher(kernel.ops.len().into(), BuildHasherDefault::new());
         let mut registers: Vec<((DType, MemLayout), u32, u8)> = Vec::new();
         let mut constants: Map<OpId, Constant> = Map::with_capacity_and_hasher(100, BuildHasherDefault::new());
         let mut indices: Map<OpId, u8> = Map::with_capacity_and_hasher(20, BuildHasherDefault::new());
 
-        // Collect all Index ops and assign loop IDs.
-        // Index ops with Global or Local scope become nested for-loops.
-        // Register-scope indices are just variable declarations (no loop).
+        // One pass: collect gws, indices, loop IDs, and Global defines
         let mut loop_id: u8 = 0;
-        let mut op_id = kernel.head;
-        while !op_id.is_null() {
-            if matches!(kernel.at(op_id), Op::Index { .. }) {
-                indices.insert(op_id, loop_id);
-                loop_id += 1;
+        let mut global_cast = String::new();
+        let mut n_global_defines: usize = 0;
+        {
+            let mut op_id = kernel.head;
+            while !op_id.is_null() {
+                let op = kernel.at(op_id);
+                match op {
+                    &Op::Index { len: dim, scope, axis } => {
+                        if scope == Scope::Global {
+                            gws[axis as usize] = dim.max(1u64);
+                        }
+                        indices.insert(op_id, loop_id);
+                        loop_id = loop_id.checked_add(1).expect("C: too many loops (>255)");
+                    }
+                    &Op::Define { dtype, scope, .. } if scope == Scope::Global => {
+                        if matches!(dtype, DType::F16 | DType::BF16) {
+                            _ = writeln!(
+                                global_cast,
+                                "  unsigned short* p{op_id} = (unsigned short*)args[{n_global_defines}];"
+                            );
+                        } else {
+                            let ct = dtype.c_type();
+                            _ = writeln!(global_cast, "  {ct}* p{op_id} = ({ct}*)args[{n_global_defines}];");
+                        }
+                        n_global_defines += 1;
+                    }
+                    _ => {}
+                }
+                op_id = kernel.next_op(op_id);
             }
-            op_id = kernel.next_op(op_id);
         }
 
         let mut indent = String::from("  ");
         let mut source = String::with_capacity(1000);
-
-        let mut global_cast = String::new();
-        let mut index: usize = 0;
-        let mut op_id = kernel.head;
-        while !op_id.is_null() {
-            let op = kernel.at(op_id);
-            if let &Op::Define { dtype, scope, .. } = op {
-                if scope == Scope::Global {
-                    if matches!(dtype, DType::F16 | DType::BF16) {
-                        _ = writeln!(global_cast, "  unsigned short* p{op_id} = (unsigned short*)args[{index}];");
-                    } else {
-                        let ct = dtype.c_type();
-                        _ = writeln!(global_cast, "  {ct}* p{op_id} = ({ct}*)args[{index}];");
-                    }
-                    index += 1;
-                }
-            } else {
-                break;
-            }
-            op_id = kernel.next_op(op_id);
-        }
-
-        // Emit function header with void** args
-        _ = writeln!(source, "void {name}(void** args, unsigned long nargs) {{");
-        _ = writeln!(source, "  (void)nargs;");
-        // Emit pointer casts from args array
-        _ = write!(source, "{global_cast}");
-
-        // Emit all Register/Local defines (may appear anywhere in the IR,
-        // not just at the beginning — e.g. after Global defines and Index ops)
-        let mut emitted_defines: Set<OpId> = Set::with_capacity_and_hasher(8, BuildHasherDefault::new());
-        let mut op_id = kernel.head;
-        while !op_id.is_null() {
-            if let &Op::Define { dtype, scope, ro, len } = kernel.at(op_id) {
-                if matches!(scope, Scope::Register | Scope::Local) && !emitted_defines.contains(&op_id) {
-                    emitted_defines.insert(op_id);
-                    _ = writeln!(
-                        source,
-                        "{indent}{}{} p{op_id}[{len}] __attribute__((aligned));",
-                        if ro { "const " } else { "" },
-                        dtype.c_type(),
-                    );
-                }
-            }
-            op_id = kernel.next_op(op_id);
-        }
 
         // --- Process all ops in order ---
         // For Index (Global/Local): emit for-loop header
@@ -285,7 +264,7 @@ impl CDevice {
                 &Op::Index { len, scope, .. } => {
                     match scope {
                         Scope::Global | Scope::Local => {
-                            if index_loop_depth == 0 && scope == Scope::Global && gws[0] > 1 {
+                            if index_loop_depth == 0 && scope == Scope::Global && gws[0] > 1 && self.has_openmp {
                                 _ = writeln!(source, "{indent}#pragma omp parallel for");
                             }
                             _ = writeln!(
@@ -535,9 +514,19 @@ impl CDevice {
                     }
                     _ = writeln!(source, "{indent}}}");
                 }
-                Op::Define { .. } | Op::Barrier { .. } => {}
+                &Op::Define { dtype, scope, ro, len } => {
+                    if matches!(scope, Scope::Register | Scope::Local) {
+                        _ = writeln!(
+                            source,
+                            "{indent}{}{} p{op_id}[{len}] __attribute__((aligned));",
+                            if ro { "const " } else { "" },
+                            dtype.c_type(),
+                        );
+                    }
+                }
+                Op::Barrier { .. } => {}
                 Op::ConstView { .. } | Op::LoadView { .. } | Op::StoreView { .. } | Op::Move { .. } | Op::Reduce { .. } => {
-                    unreachable!()
+                    unreachable!("Op::ConstView/LoadView/StoreView/Move/Reduce should not appear in the C backend")
                 }
             }
             op_id = kernel.next_op(op_id);
@@ -552,11 +541,6 @@ impl CDevice {
             }
             _ = writeln!(source, "{indent}}}");
         }
-
-        // Close function
-        indent.pop();
-        indent.pop();
-        _ = writeln!(source, "}}");
 
         // Build register declarations string
         let mut reg_str = String::new();
@@ -592,19 +576,6 @@ impl CDevice {
                 i += 1;
             }
             _ = writeln!(reg_str, ";");
-        }
-
-        // Insert register declarations after function opening brace
-        // Find the position after the opening brace line
-        if let Some(pos) = source.find("{\n") {
-            source.insert_str(pos + 2, &reg_str);
-        } else {
-            _ = writeln!(source, "{reg_str}");
-        }
-
-        if debug_asm {
-            println!();
-            println!("{source}");
         }
 
         // --- Phase 4: Compile with clang ---
@@ -662,7 +633,7 @@ static inline unsigned short f32tobf16(float v) {
             .to_string()
         };
         // Add #include for math functions and optional OpenMP header
-        let omp_include = if gws[0] > 1 { "#include <omp.h>\n" } else { "" };
+        let omp_include = if self.has_openmp { "#include <omp.h>\n" } else { "" };
         let mut vec_types = String::new();
         for (dt, _, _) in &registers {
             if let MemLayout::Vector(len) = dt.1 {
@@ -676,8 +647,22 @@ static inline unsigned short f32tobf16(float v) {
                 }
             }
         }
-        let full_source =
-            format!("#include <math.h>\n#include <stdint.h>\n#include <string.h>\n{omp_include}{vec_types}{f16_helpers}{source}");
+        let nargs_check = if n_global_defines > 0 {
+            format!("  if (nargs != {n_global_defines}) return;\n")
+        } else {
+            String::new()
+        };
+        let full_source = format!(
+            "#include <math.h>\n#include <stdint.h>\n#include <string.h>\n\
+             {omp_include}\
+             {vec_types}\
+             {f16_helpers}\
+             void {name}(void** args, unsigned long nargs) {{\n\
+             {nargs_check}\
+             {global_cast}\
+             {reg_str}\
+             {source}}}\n"
+        );
         std::fs::write(&c_path, &full_source).map_err(|e| BackendError {
             status: ErrorStatus::KernelCompilation,
             context: format!("Failed to write C source: {e}").into(),
@@ -691,52 +676,33 @@ static inline unsigned short f32tobf16(float v) {
             .copied()
             .unwrap_or("cc");
         let is_clang = compiler.contains("clang");
-
-        // Try compiling with OpenMP first (best-effort parallelism)
-        let has_openmp = gws[0] > 1;
-        let openmp_success = if has_openmp {
-            let openmp_flag = if is_clang { "-fopenmp=libgomp" } else { "-fopenmp" };
-            let output = Command::new(compiler)
-                .args(["-shared", "-O3", "-ffast-math", "-fPIC", "-o"])
-                .arg(&so_path)
-                .arg(&c_path)
-                .arg("-lm")
-                .arg(openmp_flag)
-                .output();
-            matches!(output, Ok(o) if o.status.success())
-        } else {
-            false
-        };
-
-        if !openmp_success {
-            // Fall back to sequential: strip OpenMP pragma and include, recompile without -fopenmp
-            let seq_source = full_source
-                .replace("#pragma omp parallel for\n", "")
-                .replace("#include <omp.h>\n", "");
-            std::fs::write(&c_path, &seq_source).map_err(|e| BackendError {
+        let mut cmd = Command::new(compiler);
+        cmd.args(["-shared", "-O3", "-ffast-math", "-fPIC", "-o"])
+            .arg(&so_path)
+            .arg(&c_path)
+            .arg("-lm");
+        if self.has_openmp && gws[0] > 1 {
+            cmd.arg(if is_clang { "-fopenmp=libgomp" } else { "-fopenmp" });
+        }
+        let output = cmd.output()
+            .map_err(|e| BackendError {
                 status: ErrorStatus::KernelCompilation,
-                context: format!("Failed to write C source: {e}").into(),
+                context: format!("Failed to run compiler '{compiler}': {e}. Is a C compiler installed?").into(),
             })?;
-            let output = Command::new(compiler)
-                .args(["-shared", "-O3", "-ffast-math", "-fPIC", "-o"])
-                .arg(&so_path)
-                .arg(&c_path)
-                .arg("-lm")
-                .output()
-                .map_err(|e| BackendError {
-                    status: ErrorStatus::KernelCompilation,
-                    context: format!("Failed to run compiler '{compiler}': {e}. Is a C compiler installed?").into(),
-                })?;
-            if !output.status.success() {
-                let stderr = String::from_utf8_lossy(&output.stderr);
-                if debug_asm {
-                    println!("[C] compiler stderr:\n{stderr}");
-                }
-                return Err(BackendError {
-                    status: ErrorStatus::KernelCompilation,
-                    context: format!("Compiler '{compiler}' compilation failed:\n{stderr}").into(),
-                });
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            if debug_asm {
+                println!("[C] compiler stderr:\n{stderr}");
             }
+            return Err(BackendError {
+                status: ErrorStatus::KernelCompilation,
+                context: format!("Compiler '{compiler}' compilation failed:\n{stderr}").into(),
+            });
+        }
+
+        if debug_asm {
+            println!();
+            println!("{full_source}");
         }
 
         // Cache the compiled .so for future runs

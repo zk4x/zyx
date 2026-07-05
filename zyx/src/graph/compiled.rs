@@ -279,8 +279,7 @@ fn replay_compiled(
                 let mut event_wait_list = Vec::new();
                 for s in &args[..*num_inputs as usize] {
                     let idx = s.0 as usize;
-                    let key: Vec<BTreeSet<usize>> =
-                        events.keys().filter(|k| k.contains(&idx)).cloned().collect();
+                    let key: Vec<BTreeSet<usize>> = events.keys().filter(|k| k.contains(&idx)).cloned().collect();
                     for k in key {
                         if let Some(e) = events.remove(&k) {
                             event_wait_list.push(e);
@@ -288,8 +287,7 @@ fn replay_compiled(
                     }
                 }
 
-                let event =
-                    devices[program.device].launch(program.program, pool, &kernel_args, event_wait_list)?;
+                let event = devices[program.device].launch(program.program, pool, &kernel_args, event_wait_list)?;
 
                 // Store the completion event for ALL buffer slots (inputs + outputs),
                 // matching kernelize.rs behavior which tracks all kernel buffers.

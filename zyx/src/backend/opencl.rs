@@ -1184,26 +1184,28 @@ impl OpenCLDevice {
                                 };
                             }
                         }
-                        MemLayout::Scalar => _ = match bop {
-                            BOp::Add => writeln!(source, "{indent}r{reg} = {x} + {y};"),
-                            BOp::Sub => writeln!(source, "{indent}r{reg} = {x} - {y};"),
-                            BOp::Mul => writeln!(source, "{indent}r{reg} = {x} * {y};"),
-                            BOp::Div => writeln!(source, "{indent}r{reg} = {x} / {y};"),
-                            BOp::Pow => writeln!(source, "{indent}r{reg} = pow((double){x}, (double){y});"),
-                            BOp::Mod => writeln!(source, "{indent}r{reg} = {x} % {y};"),
-                            BOp::Cmplt => writeln!(source, "{indent}r{reg} = {x} < {y};"),
-                            BOp::Cmpgt => writeln!(source, "{indent}r{reg} = {x} > {y};"),
-                            BOp::Max => writeln!(source, "{indent}r{reg} = max({x}, {y});"),
-                            BOp::Or => writeln!(source, "{indent}r{reg} = {x} || {y};"),
-                            BOp::And => writeln!(source, "{indent}r{reg} = {x} && {y};"),
-                            BOp::BitXor => writeln!(source, "{indent}r{reg} = {x} ^ {y};"),
-                            BOp::BitOr => writeln!(source, "{indent}r{reg} = {x} | {y};"),
-                            BOp::BitAnd => writeln!(source, "{indent}r{reg} = {x} & {y};"),
-                            BOp::BitShiftLeft => writeln!(source, "{indent}r{reg} = {x} << {y};"),
-                            BOp::BitShiftRight => writeln!(source, "{indent}r{reg} = {x} >> {y};"),
-                            BOp::NotEq => writeln!(source, "{indent}r{reg} = {x} != {y};"),
-                            BOp::Eq => writeln!(source, "{indent}r{reg} = {x} == {y};"),
-                        },
+                        MemLayout::Scalar => {
+                            _ = match bop {
+                                BOp::Add => writeln!(source, "{indent}r{reg} = {x} + {y};"),
+                                BOp::Sub => writeln!(source, "{indent}r{reg} = {x} - {y};"),
+                                BOp::Mul => writeln!(source, "{indent}r{reg} = {x} * {y};"),
+                                BOp::Div => writeln!(source, "{indent}r{reg} = {x} / {y};"),
+                                BOp::Pow => writeln!(source, "{indent}r{reg} = pow((double){x}, (double){y});"),
+                                BOp::Mod => writeln!(source, "{indent}r{reg} = {x} % {y};"),
+                                BOp::Cmplt => writeln!(source, "{indent}r{reg} = {x} < {y};"),
+                                BOp::Cmpgt => writeln!(source, "{indent}r{reg} = {x} > {y};"),
+                                BOp::Max => writeln!(source, "{indent}r{reg} = max({x}, {y});"),
+                                BOp::Or => writeln!(source, "{indent}r{reg} = {x} || {y};"),
+                                BOp::And => writeln!(source, "{indent}r{reg} = {x} && {y};"),
+                                BOp::BitXor => writeln!(source, "{indent}r{reg} = {x} ^ {y};"),
+                                BOp::BitOr => writeln!(source, "{indent}r{reg} = {x} | {y};"),
+                                BOp::BitAnd => writeln!(source, "{indent}r{reg} = {x} & {y};"),
+                                BOp::BitShiftLeft => writeln!(source, "{indent}r{reg} = {x} << {y};"),
+                                BOp::BitShiftRight => writeln!(source, "{indent}r{reg} = {x} >> {y};"),
+                                BOp::NotEq => writeln!(source, "{indent}r{reg} = {x} != {y};"),
+                                BOp::Eq => writeln!(source, "{indent}r{reg} = {x} == {y};"),
+                            }
+                        }
                         MemLayout::Tile { .. } => unreachable!(),
                     }
                 }
