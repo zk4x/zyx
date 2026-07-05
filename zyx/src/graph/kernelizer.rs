@@ -187,7 +187,7 @@ impl EGraph {
     /// Kernels are added as `ENode::Kernel` to the e-graph only when
     /// their output list becomes empty.
     pub(crate) fn kernelize_all(&mut self, output_classes: &Set<ClassId>) {
-        let order = topo_sort_classes(self);
+        let order = topo_sort_classes(self, output_classes);
 
         // Reference counts: how many times each class appears as a child.
         let mut rcs: Map<ClassId, u32> = Map::default();
