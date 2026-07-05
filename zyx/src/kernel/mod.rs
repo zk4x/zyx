@@ -1169,7 +1169,7 @@ impl Kernel {
             program: program_id,
         };
         let kid = rt.kernel_cache.insert_kernel(self);
-        rt.kernel_cache.programs.insert((kid, device_id), program_id);
+        rt.kernel_cache.programs.insert(kid, program_id);
         Ok(crate::kernel::custom::CompiledKernel {
             program: prog,
             dtype,

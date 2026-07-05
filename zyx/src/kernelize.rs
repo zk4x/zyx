@@ -654,7 +654,7 @@ impl<'a> Kernelizer<'a> {
             let &program_id = self
                 .cache
                 .programs
-                .get(&(cache_kid, dev_id))
+                .get(&cache_kid)
                 .expect("custom kernel program not found in cache");
             if self.debug.kmd() {
                 println!("Custom kernel launch from memory pool {pool_id:?} with args: {args:?}");
@@ -699,7 +699,6 @@ impl<'a> Kernelizer<'a> {
         let (flop, read, write) = kernel.flop_mem_rw();
 
         let (program_id, _timing) = self.cache.get_or_autotune(
-            dev_id,
             &mut kernel,
             device,
             pool,

@@ -920,7 +920,7 @@ impl EGraph {
 
                 let mut kernel = kernel.clone();
                 if let Ok((device_prog, _timing)) =
-                    cache.get_or_autotune(dev_id, &mut kernel, device, pool, config, flop, read, write, debug)
+                    cache.get_or_autotune(&mut kernel, device, pool, config, flop, read, write, debug)
                 {
                     let prog = ProgramId {
                         device: dev_id,

@@ -26,7 +26,7 @@ pub struct KernelCache {
     // Finished optimizations of kernels for given devices
     pub optimizations: Map<(KernelId, DeviceInfoId), OptSeq>,
     // This last one is not stored to disk
-    pub programs: Map<(KernelId, DeviceId), DeviceProgramId>,
+    pub programs: Map<KernelId, DeviceProgramId>,
 }
 
 impl SerBin for KernelCache {
@@ -108,8 +108,10 @@ impl KernelCache {
 
     #[allow(unused)]
     pub fn deinitialize(&mut self, devices: &mut Slab<DeviceId, Device>) {
-        for (&(_, dev_id), &program_id) in &self.programs {
-            devices[dev_id].release(program_id);
+        for (kernel, &kernel_id) in &self.kernels {
+            if let Some(&program_id) = self.programs.get(&kernel_id) {
+                devices[kernel.device_id].release(program_id);
+            }
         }
         self.device_infos = Map::default();
         self.kernels = Map::default();
@@ -150,7 +152,6 @@ impl KernelCache {
     /// `kernel` is mutated in place (unfold, merge, renumber, optimize).
     pub fn get_or_autotune(
         &mut self,
-        dev_id: DeviceId,
         kernel: &mut Kernel,
         device: &mut Device,
         memory_pool: &mut MemoryPool,
@@ -164,14 +165,14 @@ impl KernelCache {
 
         let kernel_id = if let Some(&kid) = self.kernels.get(kernel) {
             // Already compiled for this device → fast path
-            if let Some(&program_id) = self.programs.get(&(kid, dev_id)) {
+            if let Some(&program_id) = self.programs.get(&kid) {
                 return Ok((program_id, 0));
             }
             // Cached optimizations available → apply and compile
             if let Some(opt_seq) = self.optimizations.get(&(kid, dev_info_id)) {
                 opt_seq.apply(kernel, device.info());
                 let program_id = device.compile(kernel, debug.asm())?;
-                self.programs.insert((kid, dev_id), program_id);
+                self.programs.insert(kid, program_id);
                 return Ok((program_id, 0));
             }
             kid
@@ -192,7 +193,7 @@ impl KernelCache {
         kernel.verify();
 
         let (program_id, opts, timing) = kernel.autotune_(device, memory_pool, config, flop, read, write, debug)?;
-        self.programs.insert((kernel_id, dev_id), program_id);
+        self.programs.insert(kernel_id, program_id);
         self.optimizations.insert((kernel_id, dev_info_id), opts);
 
         Ok((program_id, timing))
