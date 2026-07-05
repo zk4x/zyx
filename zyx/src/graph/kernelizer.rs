@@ -986,8 +986,11 @@ fn kid_first_op(kid: KMKernelId, kernel_irs: &Map<KMKernelId, Kernel>) -> OpId {
 ///
 /// All classes are included in the result.  Classes with no children
 /// (Leaf, Const) come first; classes whose children have all been
-/// emitted come next.
-pub(crate) fn topo_sort_classes(eg: &EGraph) -> Vec<ClassId> {
+/// emitted come next.  Output classes are prioritized over non-outputs
+/// when siblings become available simultaneously — this matches the
+/// processing order in kernelize.rs and prevents non-output siblings
+/// from being fused into a kernel before its output siblings are stored.
+pub(crate) fn topo_sort_classes(eg: &EGraph, output_classes: &Set<ClassId>) -> Vec<ClassId> {
     // Skip merged (non-root) classes — only process each equivalence
     // class root once.
     let mut children_of: Map<ClassId, Set<ClassId>> = Map::default();
@@ -1018,23 +1021,34 @@ pub(crate) fn topo_sort_classes(eg: &EGraph) -> Vec<ClassId> {
     }
 
     // Start queue with classes that have no dependencies.
-    let mut queue: Vec<ClassId> = Vec::new();
+    // Use a deque: push outputs at front so they are processed first
+    // when siblings become ready at the same time.
+    use std::collections::VecDeque;
+    let mut queue: VecDeque<ClassId> = VecDeque::new();
     for (&cid, &deg) in &in_degree {
         if deg == 0 {
-            queue.push(cid);
+            if output_classes.contains(&cid) {
+                queue.push_front(cid);
+            } else {
+                queue.push_back(cid);
+            }
         }
     }
 
     // Process in topological order.
     let mut order = Vec::new();
-    while let Some(cid) = queue.pop() {
+    while let Some(cid) = queue.pop_front() {
         order.push(cid);
         if let Some(deps) = dependents.get(&cid) {
             for &parent in deps {
                 if let Some(deg) = in_degree.get_mut(&parent) {
                     *deg = deg.saturating_sub(1);
                     if *deg == 0 {
-                        queue.push(parent);
+                        if output_classes.contains(&parent) {
+                            queue.push_front(parent);
+                        } else {
+                            queue.push_back(parent);
+                        }
                     }
                 }
             }
@@ -1062,7 +1076,7 @@ mod tests {
         let (_, c1) = eg.make(ENode::Expand(c0), Box::new([]), DType::F32);
         let (_, c2) = eg.make(ENode::Expand(c1), Box::new([]), DType::F32);
 
-        let order = super::topo_sort_classes(&eg);
+        let order = super::topo_sort_classes(&eg, &Set::default());
         assert_eq!(order.len(), 3, "expected 3 classes, got {}", order.len());
 
         // Children before parents: c0 (Leaf) -> c1 -> c2
@@ -1084,7 +1098,7 @@ mod tests {
         let (_, abs) = eg.make(ENode::Unary(leaf, UOp::Abs), Box::new([]), DType::F32);
         let (_, add) = eg.make(ENode::Binary(neg, abs, BOp::Add), Box::new([]), DType::F32);
 
-        let order = super::topo_sort_classes(&eg);
+        let order = super::topo_sort_classes(&eg, &Set::default());
         assert_eq!(order.len(), 4, "expected 4 classes, got {}", order.len());
 
         let pos = |cid: ClassId| order.iter().position(|&x| x == cid).unwrap();
@@ -1102,7 +1116,7 @@ mod tests {
         let (_, l1) = eg.make(ENode::Leaf(DType::F64), Box::new([]), DType::F64);
         let (_, e0) = eg.make(ENode::Expand(l0), Box::new([]), DType::F32);
 
-        let order = super::topo_sort_classes(&eg);
+        let order = super::topo_sort_classes(&eg, &Set::default());
         assert_eq!(order.len(), 3, "expected 3 classes, got {}", order.len());
 
         let pos = |cid: ClassId| order.iter().position(|&x| x == cid).unwrap();
