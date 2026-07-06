@@ -1539,6 +1539,11 @@ impl Kernel {
         self.push_back(Op::Cast { x, dtype })
     }
 
+    /// Bitcast to a different dtype.
+    pub fn bitcast(&mut self, x: OpId, dtype: DType) -> OpId {
+        todo!()
+    }
+
     /// `x * y + z`
     pub fn mad(&mut self, x: OpId, y: OpId, z: OpId) -> OpId {
         self.push_back(Op::Mad { x, y, z })

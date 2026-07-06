@@ -8,7 +8,7 @@ use crate::{
     ZyxError,
     backend::{AutotuneConfig, Device, DeviceId, DeviceInfo, DeviceProgramId, MemoryPool},
     kernel::{Kernel, OpId, autotune::OptSeq},
-    slab::Slab,
+    slab::{Slab, SlabId},
 };
 use nanoserde::{DeBin, SerBin};
 use std::hash::BuildHasherDefault;
@@ -18,6 +18,26 @@ pub struct DeviceInfoId(u32);
 
 #[derive(Debug, Clone, Copy, PartialEq, PartialOrd, Eq, Ord, Hash, DeBin, SerBin)]
 pub struct KernelId(u32);
+
+impl From<usize> for KernelId {
+    fn from(value: usize) -> Self {
+        KernelId(value as u32)
+    }
+}
+
+impl From<KernelId> for usize {
+    fn from(value: KernelId) -> Self {
+        value.0 as usize
+    }
+}
+
+impl SlabId for KernelId {
+    const ZERO: Self = Self(0);
+    const NULL: Self = Self(u32::MAX);
+    fn inc(&mut self) {
+        todo!()
+    }
+}
 
 #[derive(Debug)]
 pub struct KernelCache {

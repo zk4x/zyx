@@ -11,12 +11,13 @@ use crate::{
     DType, DebugMask, Map, Scalar, ZyxError,
     backend::{AutotuneConfig, BufferId, Config, Device, DeviceInfo, Event, MemoryPool, PoolId, ProgramId},
     dtype::Constant,
-    kernel::{BOp, DeviceId, Kernel, OpId, UOp},
+    kernel::{BOp, DeviceId, Kernel, Op, OpId, UOp},
     kernel_cache::{DeviceInfoId, KernelId},
     rng::Rng,
     shape::{Dim, UAxis},
     slab::{Slab, SlabId},
     tensor::TensorId,
+    view::View,
 };
 
 #[derive(Debug, Copy, Clone, Hash, PartialEq, PartialOrd, Eq, Ord)]
@@ -44,7 +45,7 @@ impl SlabId for ShapeId {
 
 struct TensorData {
     rc: u32,
-    shape: ShapeId,
+    shape_id: ShapeId,
     dtype: DType,
 }
 
@@ -58,13 +59,15 @@ struct Runtime {
     tensors: Slab<TensorId, TensorData>,
     shape_map: Map<Box<[Dim]>, ShapeId>,
     shapes: Slab<ShapeId, Box<[Dim]>>,
-    tensor_kernel: Map<TensorId, (KernelId, OpId)>,
+    visited: Map<TensorId, (KernelId, OpId)>,
     kernel_data: Map<KernelId, KernelData>,
+    kernels: Slab<KernelId, Kernel>,
+    kernel_map: Map<Kernel, KernelId>,
     device_infos: Map<DeviceInfo, DeviceInfoId>,
-    kernels: Map<Kernel, KernelId>,
-    programs: Map<(KernelId, DeviceId), ProgramId>,
     devices: Slab<DeviceId, Device>,
+    // Pool 0 is always host, pool 1 is disk if disk is present
     pools: Slab<PoolId, MemoryPool>,
+    programs: Map<KernelId, ProgramId>,
     config_dir: Option<PathBuf>,
     buffer_map: Map<TensorId, BufferId>,
     events: Map<BTreeSet<BufferId>, Event>,
@@ -79,13 +82,14 @@ impl Runtime {
             tensors: Slab::new(),
             shape_map: Map::with_hasher(BuildHasherDefault::new()),
             shapes: Slab::new(),
-            tensor_kernel: Map::with_hasher(BuildHasherDefault::new()),
+            visited: Map::with_hasher(BuildHasherDefault::new()),
             kernel_data: Map::with_hasher(BuildHasherDefault::new()),
+            kernels: Slab::new(),
+            kernel_map: Map::with_hasher(BuildHasherDefault::new()),
             device_infos: Map::with_hasher(BuildHasherDefault::new()),
-            kernels: Map::with_hasher(BuildHasherDefault::new()),
-            programs: Map::with_hasher(BuildHasherDefault::new()),
             devices: Slab::new(),
             pools: Slab::new(),
+            programs: Map::with_hasher(BuildHasherDefault::new()),
             config_dir: None,
             buffer_map: Map::with_hasher(BuildHasherDefault::new()),
             events: Map::with_hasher(BuildHasherDefault::new()),
@@ -101,10 +105,81 @@ impl Runtime {
 
     pub fn release(&mut self, x: TensorId) {}
 
-    pub fn new_constant_tensor(&mut self, value: Constant) -> TensorId {
-        todo!()
+    fn push_shape(&mut self, shape: Box<[Dim]>) -> ShapeId {
+        if let Some(&shape_id) = self.shape_map.get(&shape) {
+            shape_id
+        } else {
+            let shape_id = self.shapes.push(shape.clone());
+            self.shape_map.insert(shape, shape_id);
+            shape_id
+        }
     }
 
+    fn new_kernel(&mut self, op: Op, shape: Box<[Dim]>, dtype: DType) -> TensorId {
+        let shape_id = self.push_shape(shape);
+        let tid = self.tensors.push(TensorData { rc: 1, shape_id, dtype });
+        let mut kernel = Kernel::new(DeviceId::AUTO);
+        let op_id = kernel.push_back(op);
+        let kid = self.kernels.push(kernel);
+        self.kernel_data.insert(
+            kid,
+            KernelData {
+                outputs: vec![tid],
+                loads: Vec::new(),
+                stores: Vec::new(),
+            },
+        );
+        self.visited.insert(tid, (kid, op_id));
+        tid
+    }
+
+    pub fn new_constant_tensor(&mut self, value: Constant) -> TensorId {
+        let op = Op::ConstView(Box::new((value, View::contiguous(&[1]))));
+        self.new_kernel(op, [1].into(), value.dtype())
+    }
+
+    pub fn new_full(&mut self, shape: Box<[Dim]>, value: Constant) -> TensorId {
+        let dtype = value.dtype();
+        let op = Op::ConstView(Box::new((value, View::contiguous(&[1]))));
+        let x = self.new_kernel(op, [1].into(), dtype);
+        let expanded = self.expand(x, shape).unwrap();
+        self.release(x);
+        expanded
+    }
+
+    // Creates new tensor in host memory
+    pub fn new_host_tensor<T: Scalar>(&mut self, shape: Box<[Dim]>, data: Box<[T]>) -> Result<TensorId, ZyxError> {
+        let dtype = T::dtype();
+
+        self.initialize_devices()?;
+        debug_assert_eq!(shape.iter().product::<Dim>(), data.len() as Dim);
+        let bytes = (data.len() * dtype.bit_size() as usize / 8) as Dim;
+        debug_assert_eq!(data.len() * std::mem::size_of::<T>(), bytes as usize);
+
+        // Convert to Box<[u8]>
+        let ptr = (Box::into_raw(data) as *mut T) as *mut u8;
+        let slice = std::ptr::slice_from_raw_parts_mut(ptr, bytes as usize);
+        let data = unsafe { Box::from_raw(slice) };
+
+        // Store to Host memory
+        let MemoryPool::Host(ref mut pool) = self.pools[PoolId::HOST] else {
+            unreachable!("Host must exist.")
+        };
+        let buffer_id = BufferId {
+            pool: PoolId::HOST,
+            buffer: pool.insert(data),
+        };
+
+        // Create kerenl for it
+        let op = Op::LoadView(Box::new((T::dtype(), View::contiguous(&shape))));
+        let tid = self.new_kernel(op, shape, dtype);
+
+        self.buffer_map.insert(tid, buffer_id);
+
+        Ok(tid)
+    }
+
+    // Creates new tensor in disk
     pub fn new_disk_tensor(
         &mut self,
         shape: Box<[Dim]>,
@@ -112,59 +187,39 @@ impl Runtime {
         path: &Path,
         offset_bytes: u64,
     ) -> Result<TensorId, ZyxError> {
-        /*let bytes = shape.iter().product::<Dim>() * Dim::from(dtype.bit_size() / 8);
         self.initialize_devices()?;
-        if let Some(disk) = self.pools[PoolId::from(1)].disk_pool() {
-            let buffer_id = disk.buffer_from_path(bytes, path, offset_bytes);
-            let id = self.graph.push_wshape(Node::Leaf { dtype }, shape);
-            self.buffer_map.insert(
-                id,
-                BufferId {
-                    pool: PoolId::from(1),
-                    buffer: buffer_id,
-                },
-            );
-            Ok(id)
-        } else {
-            Err(ZyxError::NoBackendAvailable)
-        }*/
-        todo!()
-    }
-
-    // Creates new tensor in host memory
-    pub fn new_host_tensor<T: Scalar>(&mut self, shape: Box<[Dim]>, data: Box<[T]>) -> Result<TensorId, ZyxError> {
-        let shape_id = if let Some(&shape_id) = self.shape_map.get(&shape) {
-            shape_id
-        } else {
-            let shape_id = self.shapes.push(shape.clone());
-            self.shape_map.insert(shape, shape_id);
-            shape_id
-        };
-        todo!()
-    }
-
-    pub fn new_zeros(&mut self, shape: Box<[Dim]>, dtype: DType) -> TensorId {
-        todo!()
-    }
-
-    pub fn new_ones(&mut self, shape: Box<[Dim]>, dtype: DType) -> TensorId {
-        todo!()
-    }
-
-    pub fn new_full<T: Scalar>(&mut self, shape: Box<[Dim]>, value: T) -> TensorId {
         todo!()
     }
 
     pub fn cast(&mut self, x: TensorId, dtype: DType) -> TensorId {
-        todo!()
+        let shape_id = self.tensors[x].shape_id;
+        let tid = self.tensors.push(TensorData { rc: 1, shape_id, dtype });
+        let (kid, op_id) = self.visited[&x];
+        let op_id = self.kernels[kid].cast(op_id, dtype);
+        self.kernel_data.get_mut(&kid).unwrap().outputs.push(tid);
+        self.visited.insert(tid, (kid, op_id));
+        tid
     }
 
     pub fn bitcast(&mut self, x: TensorId, dtype: DType) -> TensorId {
-        todo!()
+        let shape_id = self.tensors[x].shape_id;
+        let tid = self.tensors.push(TensorData { rc: 1, shape_id, dtype });
+        let (kid, op_id) = self.visited[&x];
+        let op_id = self.kernels[kid].bitcast(op_id, dtype);
+        self.kernel_data.get_mut(&kid).unwrap().outputs.push(tid);
+        self.visited.insert(tid, (kid, op_id));
+        tid
     }
 
     pub fn unary(&mut self, x: TensorId, uop: UOp) -> TensorId {
-        todo!()
+        let shape_id = self.tensors[x].shape_id;
+        let dtype = self.tensors[x].dtype;
+        let tid = self.tensors.push(TensorData { rc: 1, shape_id, dtype });
+        let (kid, op_id) = self.visited[&x];
+        let op_id = self.kernels[kid].unary(op_id, uop);
+        self.kernel_data.get_mut(&kid).unwrap().outputs.push(tid);
+        self.visited.insert(tid, (kid, op_id));
+        tid
     }
 
     pub fn binary(&mut self, x: TensorId, bop: BOp) -> Result<TensorId, ZyxError> {
@@ -176,6 +231,22 @@ impl Runtime {
     }
 
     pub fn to_device(&mut self) -> Result<TensorId, ZyxError> {
+        todo!()
+    }
+
+    pub(super) fn reshape(&mut self, x: TensorId, shape: Box<[Dim]>) -> TensorId {
+        todo!()
+    }
+
+    pub fn expand(&mut self, x: TensorId, shape: Box<[Dim]>) -> Result<TensorId, ZyxError> {
+        todo!()
+    }
+
+    pub fn permute(&mut self, x: TensorId, axes: &[UAxis]) -> TensorId {
+        todo!()
+    }
+
+    pub fn pad_zeros(&mut self, x: TensorId, padding: Vec<(i64, i64)>) -> TensorId {
         todo!()
     }
 
@@ -283,7 +354,7 @@ impl Runtime {
         self.tensors = Slab::new();
         self.shape_map = Map::default();
         self.shapes = Slab::new();
-        self.tensor_kernel = Map::default();
+        self.visited = Map::default();
     }
 
     pub const fn manual_seed(&mut self, seed: u64) {

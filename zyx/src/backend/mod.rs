@@ -100,6 +100,10 @@ impl SlabId for DeviceProgramId {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct PoolId(u32);
 
+impl PoolId {
+    pub const HOST: Self = Self(0);
+}
+
 impl From<usize> for PoolId {
     fn from(value: usize) -> Self {
         PoolId(u32::try_from(value).unwrap())
