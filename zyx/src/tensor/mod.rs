@@ -3520,6 +3520,38 @@ impl<T: Scalar, const D0: usize> From<[T; D0]> for Tensor {
     }
 }
 
+impl<T: Scalar> From<Vec<T>> for Tensor {
+    fn from(data: Vec<T>) -> Self {
+        let len = data.len() as Dim;
+        Tensor {
+            id: RT.lock().new_host_tensor(vec![len], data.into_boxed_slice()).unwrap(),
+        }
+    }
+}
+
+impl<T: Scalar + Clone> From<Vec<Vec<T>>> for Tensor {
+    fn from(data: Vec<Vec<T>>) -> Self {
+        let rows = data.len() as Dim;
+        let cols = data.first().map_or(0, |v| v.len()) as Dim;
+        let flat: Vec<T> = data.into_iter().flatten().collect();
+        Tensor {
+            id: RT.lock().new_host_tensor(vec![rows, cols], flat.into_boxed_slice()).unwrap(),
+        }
+    }
+}
+
+impl<T: Scalar + Clone> From<Vec<Vec<Vec<T>>>> for Tensor {
+    fn from(data: Vec<Vec<Vec<T>>>) -> Self {
+        let depth = data.len() as Dim;
+        let rows = data.first().map_or(0, |v| v.len()) as Dim;
+        let cols = data.first().and_then(|v| v.first()).map_or(0, |v| v.len()) as Dim;
+        let flat: Vec<T> = data.into_iter().flatten().flatten().collect();
+        Tensor {
+            id: RT.lock().new_host_tensor(vec![depth, rows, cols], flat.into_boxed_slice()).unwrap(),
+        }
+    }
+}
+
 impl<T: Scalar, const D0: usize, const D1: usize> From<[[T; D1]; D0]> for Tensor {
     fn from(data: [[T; D1]; D0]) -> Self {
         let data = unsafe { core::slice::from_raw_parts(data[0].as_ptr(), D0 * D1) };

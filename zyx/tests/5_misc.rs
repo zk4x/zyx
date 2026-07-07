@@ -75,7 +75,7 @@ fn complex_binary() -> Result<(), ZyxError> {
     let x = Tensor::from([[2, 4, 3], [1, 5, 1]]).cast(DType::F32);
     let y = Tensor::from([[2, 4, 3], [1, 5, 7]]).cast(DType::F32);
     let z = x.sqrt() + y.exp2();
-    Tensor::realize([&z])?;
+    let _: Vec<f32> = z.try_into()?;
     Ok(())
 }
 
@@ -116,7 +116,8 @@ fn fuse_4() -> Result<(), ZyxError> {
     let y = Tensor::from([[2f32, 4., 3.], [1., 5., 3.]]).exp2();
     let z1 = x + &y;
     let z2 = y.exp2();
-    Tensor::realize([&z1, &z2])?;
+    let _: Vec<f32> = z1.try_into()?;
+    let _: Vec<f32> = z2.try_into()?;
     Ok(())
 }
 
@@ -128,7 +129,8 @@ fn fuse_5() -> Result<(), ZyxError> {
     x = x.exp2();
     x = x.reshape([2, 3])?;
     y = y.t();
-    Tensor::realize([&x, &y])?;
+    let _: Vec<f32> = x.try_into()?;
+    let _: Vec<f32> = y.try_into()?;
     Ok(())
 }
 
@@ -138,7 +140,6 @@ fn fuse_6() -> Result<(), ZyxError> {
     x = x.sum([1])?;
     let y = x.log2();
     let x = x.exp2();
-    Tensor::realize([&x, &y])?;
     assert_eq!(x, [512f32, 128.]);
     assert_eq!(y, [3.16993f32, 2.807355]);
     Ok(())
@@ -287,7 +288,6 @@ fn mix_expand_reshape_reduce() -> Result<(), ZyxError> {
     x = x.sum([1])?;
     let y = x.expand([2, 2])?;
     x = x.reshape([2, 1])?.expand([2, 2])?;
-    Tensor::realize([&x, &y])?;
     //println!("{y}");
     //println!("{x}");
     assert_eq!(y, [[9i32, 7], [9, 7]]);
@@ -324,7 +324,6 @@ fn mix_reshape1() -> Result<(), ZyxError> {
     x = x.permute([0, 2, 1, 3])?;
     assert_eq!(x.shape(), [1, 2, 3, 1]);
     x = x.reshape([1, 2, 1, 3, 1]).unwrap();
-    Tensor::realize([&x])?;
     assert_eq!(x.shape(), [1, 2, 1, 3, 1]);
     assert_eq!(x, [[[[[2i32], [3], [5]]], [[[4], [1], [1]]]]]);
     Ok(())
@@ -685,7 +684,7 @@ fn t3() {
         .unwrap()
         .expand([1024, 1024, 1024, 1024, 1024, 1024])
         .unwrap();
-    Tensor::realize([&x]).unwrap();
+    let _: Vec<f32> = x.try_into().unwrap();
 }
 
 #[test]
@@ -724,7 +723,6 @@ fn multiple_stores() -> Result<(), ZyxError> {
     let x = Tensor::from([[3f32, 4., 2.], [5., 4., 1.]]);
     let y = x.ln();
     let z = y.tanh();
-    Tensor::realize([&y, &z])?;
     //println!("{z:.14}");
     assert_eq!(
         z,
@@ -755,8 +753,8 @@ fn repeat1() -> Result<(), ZyxError> {
 fn mix_2() {
     let x = Tensor::from([[2f32, 3.], [4., 5.]]);
     let y = x.t();
+    let _ = y;
     let z = x.exp().cast(DType::I32);
-    Tensor::realize([&y, &z]).unwrap();
     assert_eq!(z, [[7i32, 20], [54, 148]]);
 }
 
@@ -1184,7 +1182,7 @@ fn dot3() -> Result<(), ZyxError> {
     let w = Tensor::from([[2i32, 3, 2], [2, 1, 1], [4, 1, 4]]);
     let b = Tensor::from([2i32, 3, 5]);
     let x = x.dot(&w)? + &b;
-    Tensor::realize([&x])?;
+    let _: Vec<i32> = x.try_into()?;
     Ok(())
 }
 
@@ -1302,7 +1300,7 @@ fn test_permute_on_reduce_kernel() {
 fn arange_1() -> Result<(), ZyxError> {
     let x = Tensor::arange(0, 784 * 7, 1)?.cast(DType::F32).exp2().sin();
     //x = x.sum(0)
-    Tensor::realize([&x]).unwrap();
+    let _: Vec<f32> = x.try_into().unwrap();
     Ok(())
 }
 
@@ -1310,7 +1308,7 @@ fn arange_1() -> Result<(), ZyxError> {
 fn arange_2() {
     let x = Tensor::arange(0, 2, 1).unwrap().exp2().sin();
     //x = x.sum(0)
-    Tensor::realize([&x]).unwrap();
+    let _: Vec<f32> = x.try_into().unwrap();
 }
 
 /*#[test]

@@ -161,7 +161,7 @@ fn sum_reduce_last_dim_3d() -> Result<(), ZyxError> {
 fn sum_big_4d() -> Result<(), ZyxError> {
     let x = Tensor::rand([128, 16, 32, 32], DType::F32)?;
     let z = x.sum_all();
-    Tensor::realize([&z])?;
+    let _: Vec<f32> = z.try_into()?;
     Ok(())
 }
 
