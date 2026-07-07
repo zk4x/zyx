@@ -18,7 +18,6 @@
 
 use crate::IntoShape;
 use crate::backend::{DeviceInfo, ProgramId};
-use crate::runtime::KernelId;
 use crate::tensor::TensorId;
 
 /// Custom kernel referencing a pre-compiled program.
@@ -36,8 +35,6 @@ pub(crate) struct CustomKernel {
     pub inputs: Vec<TensorId>,
     /// Output dtype.
     pub dtype: crate::DType,
-    /// Kernel cache id for the compiled kernel IR.
-    pub kernel_id: KernelId,
 }
 
 /// A compiled kernel ready for repeated execution.
@@ -47,8 +44,6 @@ pub struct CompiledKernel {
     pub program: ProgramId,
     /// Output dtype.
     pub dtype: crate::DType,
-    /// Kernel cache id for the compiled kernel IR.
-    pub kernel_id: KernelId,
 }
 
 impl CompiledKernel {
@@ -64,7 +59,6 @@ impl CompiledKernel {
             program: self.program,
             inputs: ids,
             dtype: self.dtype,
-            kernel_id: self.kernel_id,
         };
         /*let tensor_id = crate::RT
         .lock()
