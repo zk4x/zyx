@@ -287,7 +287,163 @@ impl Runtime {
     }
 
     pub fn load<T: Scalar>(&mut self, x: TensorId, data: &mut [T]) -> Result<(), ZyxError> {
-        todo!()
+        let dt = self.tensors[x].dtype;
+        if dt != T::dtype() {
+            return Err(ZyxError::DTypeError(
+                format!("loading dtype {}, but the data has dtype {dt}", T::dtype()).into(),
+            ));
+        }
+
+        // Fast path: already realized
+        if let Some(&buffer_id) = self.buffer_map.get(&x) {
+            let n: usize = self.shape(x).iter().product::<Dim>() as usize;
+            let bytes = n * (T::bit_size() / 8) as usize;
+            let byte_slice = unsafe { std::slice::from_raw_parts_mut(data.as_mut_ptr().cast(), bytes) };
+            for buffers in self.events.keys() {
+                if buffers.contains(&buffer_id) {
+                    let buffers = buffers.clone();
+                    let event = self.events.remove(&buffers).unwrap();
+                    self.pools[buffer_id.pool].pool_to_host(buffer_id.buffer, byte_slice, vec![event])?;
+                    return Ok(());
+                }
+            }
+            self.pools[buffer_id.pool].pool_to_host(buffer_id.buffer, byte_slice, Vec::new())?;
+            return Ok(());
+        }
+
+        self.initialize_devices()?;
+
+        let (kid, op_id) = self.visited[&x];
+
+        // Add store op for the output
+        self.kernels[kid].store_contiguous(op_id, dt);
+        let store_op_id = self.kernels[kid].tail;
+
+        let kd = self.kernel_data.get_mut(&kid).unwrap();
+        kd.stores.push(x);
+        let loads = kd.loads.clone();
+        let store_tids = kd.stores.clone();
+
+        // Clone kernel and drop unused ops on both original and clone
+        let mut kernel = self.kernels[kid].clone();
+        self.kernels[kid].drop_unused_ops_by_params(vec![store_op_id], &loads);
+        let active_loads: Vec<TensorId> = kernel.drop_unused_ops_by_params(vec![store_op_id], &loads);
+
+        // Pick device and pool
+        let mut dev_ids: Vec<DeviceId> = self.devices.ids().collect();
+        dev_ids.sort_unstable_by_key(|&dev_id| self.devices[dev_id].free_compute());
+        dev_ids.reverse();
+        let dev_id = *dev_ids
+            .first()
+            .ok_or_else(|| ZyxError::AllocationError("no available device".into()))?;
+        let pool_id = self.devices[dev_id].memory_pool_id();
+
+        // Ensure loads are in the target pool
+        let mut event_wait_list = Vec::new();
+        for &tid in &active_loads {
+            let buf_id = self.buffer_map[&tid];
+            if buf_id.pool != pool_id {
+                let src = buf_id.buffer;
+                let bytes = self.shape(tid).iter().product::<Dim>() as usize * (self.dtype(tid).bit_size() / 8) as usize;
+                let mut byte_slice = vec![0u8; bytes];
+
+                let mut ev = Vec::new();
+                for buffers in self.events.keys() {
+                    if buffers.contains(&buf_id) {
+                        let buffers = buffers.clone();
+                        let event = self.events.remove(&buffers).unwrap();
+                        ev.push(event);
+                        break;
+                    }
+                }
+                self.pools[buf_id.pool].pool_to_host(src, &mut byte_slice, ev)?;
+                self.buffer_map.remove(&tid);
+
+                let (dst, event) = self.pools[pool_id].allocate(bytes as Dim)?;
+                let dst_global = BufferId {
+                    pool: pool_id,
+                    buffer: dst,
+                };
+                let event = self.pools[pool_id].host_to_pool(&byte_slice, dst, vec![event])?;
+                self.pools[pool_id].sync_events(vec![event])?;
+                self.buffer_map.insert(tid, dst_global);
+            } else {
+                let buf_id = self.buffer_map[&tid];
+                for buffers in self.events.keys() {
+                    if buffers.contains(&buf_id) {
+                        let buffers = buffers.clone();
+                        let event = self.events.remove(&buffers).unwrap();
+                        event_wait_list.push(event);
+                        break;
+                    }
+                }
+            }
+        }
+
+        // Allocate store buffers and record for event tracking
+        let mut kernel_buffers = BTreeSet::new();
+        for &tid in &store_tids {
+            let bytes = self.shape(tid).iter().product::<Dim>() as usize * (self.dtype(tid).bit_size() / 8) as usize;
+            let alloc_bytes = bytes as Dim + Dim::from(self.dtype(tid).bit_size() / 8);
+            let (buf, event) = self.pools[pool_id].allocate(alloc_bytes)?;
+            let global_id = BufferId {
+                pool: pool_id,
+                buffer: buf,
+            };
+            self.buffer_map.insert(tid, global_id);
+            kernel_buffers.insert(global_id);
+            event_wait_list.push(event);
+        }
+
+        // Build args: load buffers first, then store buffers
+        let mut args = Vec::new();
+        for &tid in &active_loads {
+            args.push(self.buffer_map[&tid].buffer);
+        }
+        for &tid in &store_tids {
+            args.push(self.buffer_map[&tid].buffer);
+        }
+
+        // Compile and launch
+        if self.debug.sched() {
+            kernel.debug();
+        }
+        kernel.unfold_movement_ops();
+        {
+            let global_indices = kernel.get_global_indices();
+            let max_global_dims = self.devices[dev_id].info().max_global_work_dims.len();
+            if global_indices.len() > max_global_dims {
+                let n = global_indices.len() + 1 - max_global_dims;
+                let loops: Vec<OpId> = global_indices.values().copied().take(n).collect();
+                kernel.merge_indices(&loops);
+            }
+        }
+        kernel.renumber_indices();
+        kernel.verify();
+        let dev_prog = self.devices[dev_id].compile(&kernel, self.debug.asm())?;
+        let program_id = ProgramId {
+            device: dev_id,
+            program: dev_prog,
+        };
+
+        let event = self.devices[dev_id].launch(program_id.program, &mut self.pools[pool_id], &args, event_wait_list)?;
+        self.events.insert(kernel_buffers, event);
+
+        // Copy result to host
+        let n: usize = self.shape(x).iter().product::<Dim>() as usize;
+        let bytes = n * (T::bit_size() / 8) as usize;
+        let byte_slice = unsafe { std::slice::from_raw_parts_mut(data.as_mut_ptr().cast(), bytes) };
+        let buf_id = self.buffer_map[&x];
+        for buffers in self.events.keys() {
+            if buffers.contains(&buf_id) {
+                let buffers = buffers.clone();
+                let event = self.events.remove(&buffers).unwrap();
+                self.pools[buf_id.pool].pool_to_host(buf_id.buffer, byte_slice, vec![event])?;
+                return Ok(());
+            }
+        }
+        self.pools[buf_id.pool].pool_to_host(buf_id.buffer, byte_slice, Vec::new())?;
+        Ok(())
     }
 
     // Initializes all available devices, creating a device for each compute
