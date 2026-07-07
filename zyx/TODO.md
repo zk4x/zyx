@@ -197,4 +197,7 @@
   - [x] linear algebra: matmul, dot
   - [x] nn ops: softmax, log_softmax, cross_entropy, conv2d
   - [x] indexing: slice, index_select, gather, scatter
-  - [x] gather, index_select, one_hot, argmax, argmax_axis, conv
+   - [x] gather, index_select, one_hot, argmax, argmax_axis, conv
+
+- [ ] known bugs
+  - [ ] `println!` to stdout under `cargo test --nocapture` hangs after several calls — deterministic, cumulative. Root cause is in Rust std's `Stdout` wrapper (`ReentrantMutex<RefCell<LineWriter<File>>>`). Raw `write(1, ...)` syscall works fine. Workaround: use `eprintln!` (stderr). Only manifests with `--nocapture` (pipe mode).
