@@ -293,7 +293,11 @@ impl Runtime {
 
     pub fn binary(&mut self, x: TensorId, y: TensorId, bop: BOp) -> Result<TensorId, ZyxError> {
         let shape_id = self.tensors[x].shape_id;
-        let dtype = self.tensors[x].dtype;
+        let dtype = if bop.returns_bool() {
+            DType::Bool
+        } else {
+            self.tensors[x].dtype
+        };
         let tid = self.tensors.push(TensorData { shape_id, dtype });
         let (kid_x, op_id_x) = self.visited[&x];
         let (kid_y, op_id_y) = self.visited[&y];

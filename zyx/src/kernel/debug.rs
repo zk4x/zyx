@@ -183,7 +183,7 @@ impl Kernel {
                     }
                 }
                 Op::Binary { x, y, bop, .. } => {
-                    let dtype = dtypes[&x];
+                    let dtype = if bop.returns_bool() { DType::Bool } else { dtypes[&x] };
                     dtypes.insert(op_id, dtype);
                     let (op1, op2, op3) = match bop {
                         BOp::Add => ("", " + ", ""),
