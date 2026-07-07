@@ -63,7 +63,7 @@ mod dtype;
 mod error;
 //mod graph;
 pub mod kernel;
-mod kernel_cache;
+//mod kernel_cache;
 mod mutex;
 #[cfg(feature = "py")]
 pub mod py_bindings;

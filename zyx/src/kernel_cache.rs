@@ -31,6 +31,12 @@ impl From<KernelId> for usize {
     }
 }
 
+impl From<usize> for DeviceInfoId {
+    fn from(value: usize) -> Self {
+        DeviceInfoId(value as u32)
+    }
+}
+
 impl SlabId for KernelId {
     const ZERO: Self = Self(0);
     const NULL: Self = Self(u32::MAX);

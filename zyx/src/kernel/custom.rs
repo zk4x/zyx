@@ -18,7 +18,7 @@
 
 use crate::IntoShape;
 use crate::backend::{DeviceInfo, ProgramId};
-use crate::kernel_cache::KernelId;
+use crate::runtime::KernelId;
 use crate::tensor::TensorId;
 
 /// Custom kernel referencing a pre-compiled program.
@@ -67,9 +67,9 @@ impl CompiledKernel {
             kernel_id: self.kernel_id,
         };
         /*let tensor_id = crate::RT
-            .lock()
-            .graph
-            .push_wshape(crate::graph::Node::Custom(Box::new(ck)), shape.into_shape().collect());*/
+        .lock()
+        .graph
+        .push_wshape(crate::graph::Node::Custom(Box::new(ck)), shape.into_shape().collect());*/
         let tensor_id = todo!();
         crate::tensor::Tensor { id: tensor_id }
     }

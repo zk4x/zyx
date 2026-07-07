@@ -94,7 +94,7 @@ use crate::view::View;
 use crate::{
     DType, Map, Set,
     dtype::Constant,
-    kernel_cache::KernelId,
+    runtime::KernelId,
     shape::{Dim, UAxis},
     slab::{Slab, SlabId},
     tensor::TensorId,
@@ -1564,7 +1564,7 @@ impl Kernel {
     }
 
     /// Bitcast to a different dtype.
-    pub fn bitcast(&mut self, x: OpId, dtype: DType) -> OpId {
+    pub fn bitcast(&mut self, _x: OpId, _dtype: DType) -> OpId {
         todo!()
     }
 

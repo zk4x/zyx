@@ -9,10 +9,9 @@ use nanoserde::DeJson;
 
 use crate::{
     DType, DebugMask, Map, Scalar, ZyxError,
-    backend::{AutotuneConfig, BufferId, Config, Device, DeviceInfo, Event, MemoryPool, OpCapability, PoolId, ProgramId},
+    backend::{AutotuneConfig, BufferId, Config, Device, DeviceInfo, DeviceProgramId, Event, MemoryPool, OpCapability, PoolId},
     dtype::Constant,
-    kernel::{BOp, DeviceId, Kernel, Op, OpId, UOp},
-    kernel_cache::{DeviceInfoId, KernelId},
+    kernel::{BOp, DeviceId, Kernel, Op, OpId, UOp, autotune::OptSeq},
     rng::Rng,
     shape::{Dim, UAxis},
     slab::{Slab, SlabId},
@@ -43,6 +42,38 @@ impl SlabId for ShapeId {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, PartialOrd, Eq, Ord, Hash)]
+pub(crate) struct DeviceInfoId(u32);
+
+impl From<usize> for DeviceInfoId {
+    fn from(value: usize) -> Self {
+        DeviceInfoId(value as u32)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, PartialOrd, Eq, Ord, Hash)]
+pub(crate) struct KernelId(u32);
+
+impl From<usize> for KernelId {
+    fn from(value: usize) -> Self {
+        KernelId(value as u32)
+    }
+}
+
+impl From<KernelId> for usize {
+    fn from(value: KernelId) -> Self {
+        value.0 as usize
+    }
+}
+
+impl SlabId for KernelId {
+    const ZERO: Self = Self(0);
+    const NULL: Self = Self(u32::MAX);
+    fn inc(&mut self) {
+        todo!()
+    }
+}
+
 struct TensorData {
     shape_id: ShapeId,
     dtype: DType,
@@ -66,8 +97,9 @@ pub struct Runtime {
     pub devices: Slab<DeviceId, Device>,
     // Pool 0 is always host, pool 1 is disk if disk is present
     pools: Slab<PoolId, MemoryPool>,
-    programs: Map<KernelId, ProgramId>,
+    programs: Map<KernelId, DeviceProgramId>,
     config_dir: Option<PathBuf>,
+    optimizations: Map<(KernelId, DeviceInfoId), OptSeq>,
     buffer_map: Map<TensorId, BufferId>,
     events: Map<BTreeSet<BufferId>, Event>,
     pub rng: Rng,
@@ -92,6 +124,7 @@ impl Runtime {
             pools: Slab::new(),
             programs: Map::with_hasher(BuildHasherDefault::new()),
             config_dir: None,
+            optimizations: Map::with_hasher(BuildHasherDefault::new()),
             buffer_map: Map::with_hasher(BuildHasherDefault::new()),
             events: Map::with_hasher(BuildHasherDefault::new()),
             rng: Rng::seed_from_u64(42069),
@@ -286,6 +319,91 @@ impl Runtime {
         todo!()
     }
 
+    pub fn get_or_autotune(
+        &mut self,
+        mut kernel: Kernel,
+        device_id: DeviceId,
+        pool_id: PoolId,
+        flop: u64,
+        read: u64,
+        write: u64,
+    ) -> Result<(DeviceProgramId, u64), ZyxError> {
+        let dev_info = self.devices[device_id].info().clone();
+        let dev_info_id = self.get_or_add_dev_info(&dev_info);
+
+        let kernel_id = if let Some(&cached_kid) = self.kernel_map.get(&kernel) {
+            if let Some(&program_id) = self.programs.get(&cached_kid) {
+                return Ok((program_id, 0));
+            }
+            if let Some(opt_seq) = self.optimizations.get(&(cached_kid, dev_info_id)) {
+                opt_seq.apply(&mut kernel, &dev_info);
+                let program_id = {
+                    let device = &mut self.devices[device_id];
+                    let pool = &mut self.pools[pool_id];
+                    device.compile(&kernel, self.debug.asm())?
+                };
+                self.programs.insert(cached_kid, program_id);
+                return Ok((program_id, 0));
+            }
+            cached_kid
+        } else {
+            let kernel_id = KernelId::from(
+                self.kernel_map
+                    .values()
+                    .copied()
+                    .max()
+                    .map_or(0, |id| usize::from(id).checked_add(1).unwrap()),
+            );
+            let newly_inserted = self.kernel_map.insert(kernel.clone(), kernel_id).is_none();
+            assert!(newly_inserted);
+            kernel_id
+        };
+
+        kernel.unfold_movement_ops();
+        {
+            let device = &mut self.devices[device_id];
+            let global_indices = kernel.get_global_indices();
+            let max_global_dims = device.info().max_global_work_dims.len();
+            if global_indices.len() > max_global_dims {
+                let n = global_indices.len() + 1 - max_global_dims;
+                let loops: Vec<OpId> = global_indices.values().copied().take(n).collect();
+                kernel.merge_indices(&loops);
+            }
+            kernel.renumber_indices();
+            kernel.verify();
+        }
+        let (program_id, opts, timing) = kernel.autotune_(
+            &mut self.devices[device_id],
+            &mut self.pools[pool_id],
+            &self.autotune_config,
+            flop,
+            read,
+            write,
+            self.debug,
+        )?;
+        self.programs.insert(kernel_id, program_id);
+        self.optimizations.insert((kernel_id, dev_info_id), opts);
+
+        Ok((program_id, timing))
+    }
+
+    fn get_or_add_dev_info(&mut self, device_info: &DeviceInfo) -> DeviceInfoId {
+        if let Some(&dev_info_id) = self.device_infos.get(device_info) {
+            dev_info_id
+        } else {
+            let dev_info_id = DeviceInfoId(
+                self.device_infos
+                    .values()
+                    .copied()
+                    .max()
+                    .map_or(0, |id| id.0.checked_add(1).unwrap()),
+            );
+            let newly_inserted = self.device_infos.insert(device_info.clone(), dev_info_id).is_none();
+            assert!(newly_inserted);
+            dev_info_id
+        }
+    }
+
     pub fn load<T: Scalar>(&mut self, x: TensorId, data: &mut [T]) -> Result<(), ZyxError> {
         let dt = self.tensors[x].dtype;
         if dt != T::dtype() {
@@ -326,8 +444,8 @@ impl Runtime {
 
         // Clone kernel and drop unused ops on both original and clone
         let mut kernel = self.kernels[kid].clone();
-        self.kernels[kid].drop_unused_ops_by_params(vec![store_op_id], &loads);
-        let active_loads: Vec<TensorId> = kernel.drop_unused_ops_by_params(vec![store_op_id], &loads);
+        //self.kernels[kid].drop_unused_ops_by_params(vec![store_op_id], &loads);
+        //let loads: Vec<TensorId> = kernel.drop_unused_ops_by_params(vec![store_op_id], &loads);
 
         // Pick device and pool
         let mut dev_ids: Vec<DeviceId> = self.devices.ids().collect();
@@ -340,7 +458,7 @@ impl Runtime {
 
         // Ensure loads are in the target pool
         let mut event_wait_list = Vec::new();
-        for &tid in &active_loads {
+        for &tid in &loads {
             let buf_id = self.buffer_map[&tid];
             if buf_id.pool != pool_id {
                 let src = buf_id.buffer;
@@ -397,7 +515,7 @@ impl Runtime {
 
         // Build args: load buffers first, then store buffers
         let mut args = Vec::new();
-        for &tid in &active_loads {
+        for &tid in &loads {
             args.push(self.buffer_map[&tid].buffer);
         }
         for &tid in &store_tids {
@@ -405,28 +523,14 @@ impl Runtime {
         }
 
         // Compile and launch
-        if self.debug.sched() {
+        let debug = self.debug;
+        if debug.sched() {
             kernel.debug();
         }
-        kernel.unfold_movement_ops();
-        {
-            let global_indices = kernel.get_global_indices();
-            let max_global_dims = self.devices[dev_id].info().max_global_work_dims.len();
-            if global_indices.len() > max_global_dims {
-                let n = global_indices.len() + 1 - max_global_dims;
-                let loops: Vec<OpId> = global_indices.values().copied().take(n).collect();
-                kernel.merge_indices(&loops);
-            }
-        }
-        kernel.renumber_indices();
-        kernel.verify();
-        let dev_prog = self.devices[dev_id].compile(&kernel, self.debug.asm())?;
-        let program_id = ProgramId {
-            device: dev_id,
-            program: dev_prog,
-        };
+        let (flop, read, write) = kernel.flop_mem_rw();
+        let (dev_prog, _timing) = self.get_or_autotune(kernel, dev_id, pool_id, flop, read, write)?;
 
-        let event = self.devices[dev_id].launch(program_id.program, &mut self.pools[pool_id], &args, event_wait_list)?;
+        let event = self.devices[dev_id].launch(dev_prog, &mut self.pools[pool_id], &args, event_wait_list)?;
         self.events.insert(kernel_buffers, event);
 
         // Copy result to host
@@ -552,4 +656,47 @@ impl Runtime {
     pub const fn manual_seed(&mut self, seed: u64) {
         self.rng = Rng::seed_from_u64(seed);
     }
+}
+
+#[allow(clippy::similar_names)]
+pub fn get_perf(flop: u64, bytes_read: u64, bytes_written: u64, nanos: u64) -> String {
+    const fn value_unit(x: u64) -> (u64, &'static str) {
+        match x {
+            0..1000 => (x * 100, ""),
+            1_000..1_000_000 => (x / 10, "k"),
+            1_000_000..1_000_000_000 => (x / 10_000, "M"),
+            1_000_000_000..1_000_000_000_000 => (x / 10_000_000, "G"),
+            1_000_000_000_000..1_000_000_000_000_000 => (x / 10_000_000_000, "T"),
+            1_000_000_000_000_000..1_000_000_000_000_000_000 => (x / 10_000_000_000_000, "P"),
+            1_000_000_000_000_000_000.. => (x / 10_000_000_000_000_000, "E"),
+        }
+    }
+
+    if nanos == u64::MAX {
+        return "INF time taken".to_string();
+    }
+
+    let (t, t_u) = match nanos {
+        0..1_000 => (nanos * 10, "ns"),
+        1_000..1_000_000 => (nanos / 100, "μs"),
+        1_000_000..1_000_000_000 => (nanos / 100_000, "ms"),
+        1_000_000_000..1_000_000_000_000 => (nanos / 100_000_000, "s"),
+        1_000_000_000_000.. => (nanos / 6_000_000_000, "min"),
+    };
+
+    let (fs, f_us) = value_unit(flop * 1_000_000 / nanos * 1000);
+    let (brs, br_us) = value_unit(bytes_read * 1_000_000_000 / nanos);
+    let (bws, bw_us) = value_unit(bytes_written * 1_000_000_000 / nanos);
+
+    format!(
+        "{}.{} {t_u} ~ {}.{:02} {f_us}FLOP/s, {}.{:02} {br_us}B/s r, {}.{:02} {bw_us}B/s w",
+        t / 10,
+        t % 10,
+        fs / 100,
+        fs % 100,
+        brs / 100,
+        brs % 100,
+        bws / 100,
+        bws % 100,
+    )
 }
