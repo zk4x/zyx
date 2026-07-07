@@ -167,9 +167,13 @@ impl Runtime {
     pub fn release(&mut self, x: TensorId) {
         let kid = self.visited.get_mut(&x).unwrap().0;
         let outputs = &mut self.kernel_data.get_mut(&kid).unwrap().outputs;
-        outputs.push(x);
+        outputs.iter().position(|e| *e == x).map(|i| outputs.remove(i));
         if outputs.is_empty() {
-            todo!("check if we can remove kernel or realize one")
+            if !self.kernels[kid].contains_stores() {
+                self.kernels.remove(kid);
+            } else {
+                todo!("check if we can remove kernel or realize one. If kernel contains stores, it should be launched")
+            }
         }
     }
 
