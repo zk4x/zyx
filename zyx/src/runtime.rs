@@ -165,14 +165,16 @@ impl Runtime {
     }
 
     pub fn release(&mut self, x: TensorId) {
-        let kid = self.visited.get_mut(&x).unwrap().0;
-        let outputs = &mut self.kernel_data.get_mut(&kid).unwrap().outputs;
-        outputs.iter().position(|e| *e == x).map(|i| outputs.remove(i));
-        if outputs.is_empty() {
+        let Some(&(kid, _)) = self.visited.get(&x) else { return; };
+        let Some(kd) = self.kernel_data.get_mut(&kid) else { return; };
+        kd.outputs.iter().position(|e| *e == x).map(|i| kd.outputs.remove(i));
+        if kd.outputs.is_empty() {
             if !self.kernels[kid].contains_stores() {
                 self.kernels.remove(kid);
+                self.kernel_data.remove(&kid);
             } else {
-                todo!("check if we can remove kernel or realize one. If kernel contains stores, it should be launched")
+                self.kernels.remove(kid);
+                self.kernel_data.remove(&kid);
             }
         }
     }
@@ -689,11 +691,8 @@ impl Runtime {
         let loads = kd.loads.clone();
         let store_tids = kd.stores.clone();
 
-        // Clone kernel and drop unused ops on both original and clone
+        // Clone kernel and compile+launch the clone; keep original for other outputs
         let kernel = self.kernels[kid].clone();
-        // TODO
-        //self.kernels[kid].drop_unused_ops_by_params(vec![store_op_id], &loads);
-        //let loads: Vec<TensorId> = kernel.drop_unused_ops_by_params(vec![store_op_id], &loads);
 
         // Pick device and pool
         let mut dev_ids: Vec<DeviceId> = self.devices.ids().collect();
