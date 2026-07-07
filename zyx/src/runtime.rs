@@ -9,7 +9,7 @@ use nanoserde::DeJson;
 
 use crate::{
     DType, DebugMask, Map, Scalar, ZyxError,
-    backend::{AutotuneConfig, BufferId, Config, Device, DeviceInfo, Event, MemoryPool, PoolId, ProgramId},
+    backend::{AutotuneConfig, BufferId, Config, Device, DeviceInfo, Event, MemoryPool, OpCapability, PoolId, ProgramId},
     dtype::Constant,
     kernel::{BOp, DeviceId, Kernel, Op, OpId, UOp},
     kernel_cache::{DeviceInfoId, KernelId},
@@ -96,6 +96,30 @@ impl Runtime {
             autotune_config: AutotuneConfig::new(),
             debug: DebugMask::new(0),
         }
+    }
+
+    pub fn shape(&self, x: TensorId) -> &[Dim] {
+        &self.shapes[self.tensors[x].shape_id]
+    }
+
+    pub fn dtype(&self, x: TensorId) -> DType {
+        self.tensors[x].dtype
+    }
+
+    pub fn is_realized(&self, x: TensorId) -> bool {
+        self.buffer_map.contains_key(&x)
+    }
+
+    /// Returns operation capabilities for a dtype across all devices.
+    pub fn supports_dtype(&mut self, dtype: DType) -> OpCapability {
+        if self.initialize_devices().is_err() {
+            return OpCapability::none();
+        }
+        let mut caps = OpCapability::none();
+        for (_id, dev) in self.devices.iter() {
+            caps.0 |= dev.info().supports_dtype(dtype).0;
+        }
+        caps
     }
 
     pub fn retain(&mut self, x: TensorId) {
@@ -229,11 +253,11 @@ impl Runtime {
         tid
     }
 
-    pub fn binary(&mut self, x: TensorId, bop: BOp) -> Result<TensorId, ZyxError> {
+    pub fn binary(&mut self, x: TensorId, y: TensorId, bop: BOp) -> Result<TensorId, ZyxError> {
         todo!()
     }
 
-    pub fn reduce(&mut self, x: TensorId, rop: BOp, axes: Box<[UAxis]>) -> Result<TensorId, ZyxError> {
+    pub fn reduce(&mut self, x: TensorId, axes: Box<[UAxis]>, rop: BOp) -> Result<TensorId, ZyxError> {
         todo!()
     }
 

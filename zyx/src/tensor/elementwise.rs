@@ -690,7 +690,7 @@ impl Tensor {
     /// Returns error if the tensors have non broadcasteable shapes.
     pub fn cmplt(&self, rhs: impl Into<Tensor>) -> Result<Tensor, ZyxError> {
         let (x, y) = Tensor::broadcast(self.clone(), rhs)?;
-        let id = RT.lock().binary(x.id, y.id, crate::kernel::BOp::Cmplt);
+        let id = RT.lock().binary(x.id, y.id, crate::kernel::BOp::Cmplt)?;
         Ok(Tensor { id })
     }
 
@@ -701,7 +701,7 @@ impl Tensor {
     /// Returns error if the tensors have non broadcasteable shapes.
     pub fn cmpgt(&self, rhs: impl Into<Tensor>) -> Result<Tensor, ZyxError> {
         let (x, y) = Tensor::broadcast(self.clone(), rhs)?;
-        let id = RT.lock().binary(x.id, y.id, crate::kernel::BOp::Cmpgt);
+        let id = RT.lock().binary(x.id, y.id, crate::kernel::BOp::Cmpgt)?;
         Ok(Tensor { id })
     }
 
@@ -712,7 +712,7 @@ impl Tensor {
     /// Returns error if the tensors have non broadcasteable shapes.
     pub fn maximum(&self, rhs: impl Into<Tensor>) -> Result<Tensor, ZyxError> {
         let (x, y) = Tensor::broadcast(self.clone(), rhs)?;
-        let id = RT.lock().binary(x.id, y.id, crate::kernel::BOp::Max);
+        let id = RT.lock().binary(x.id, y.id, crate::kernel::BOp::Max)?;
         Ok(Tensor { id })
     }
 

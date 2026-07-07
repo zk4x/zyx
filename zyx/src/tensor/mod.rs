@@ -8,7 +8,7 @@
 #![allow(clippy::fallible_impl_from)]
 
 use crate::backend::OpCapability;
-use crate::dtype::DType;
+use crate::dtype::{Constant, DType};
 use crate::error::ZyxError;
 use crate::kernel::{BOp, UOp};
 use crate::scalar::{Float, Scalar};
@@ -439,59 +439,71 @@ impl Tensor {
     /// fails to realize self.
     pub fn detach(self) -> Result<Tensor, ZyxError> {
         // TODO remove realization from here
-        let shape = self.shape();
         let id = match self.dtype() {
             DType::BF16 => {
+                let shape = self.shape();
                 let data: Vec<bf16> = self.try_into()?;
-                RT.lock().new_tensor(shape, data)
+                RT.lock().new_host_tensor(shape.into(), data.into())
             }
             DType::F16 => {
+                let shape = self.shape();
                 let data: Vec<f16> = self.try_into()?;
-                RT.lock().new_tensor(shape, data)
+                RT.lock().new_host_tensor(shape.into(), data.into())
             }
             DType::F32 => {
+                let shape = self.shape();
                 let data: Vec<f32> = self.try_into()?;
-                RT.lock().new_tensor(shape, data)
+                RT.lock().new_host_tensor(shape.into(), data.into())
             }
             DType::F64 => {
+                let shape = self.shape();
                 let data: Vec<f64> = self.try_into()?;
-                RT.lock().new_tensor(shape, data)
+                RT.lock().new_host_tensor(shape.into(), data.into())
             }
             DType::U8 => {
+                let shape = self.shape();
                 let data: Vec<u8> = self.try_into()?;
-                RT.lock().new_tensor(shape, data)
+                RT.lock().new_host_tensor(shape.into(), data.into())
             }
             DType::U16 => {
+                let shape = self.shape();
                 let data: Vec<u16> = self.try_into()?;
-                RT.lock().new_tensor(shape, data)
+                RT.lock().new_host_tensor(shape.into(), data.into())
             }
             DType::U32 => {
+                let shape = self.shape();
                 let data: Vec<u32> = self.try_into()?;
-                RT.lock().new_tensor(shape, data)
+                RT.lock().new_host_tensor(shape.into(), data.into())
             }
             DType::U64 => {
+                let shape = self.shape();
                 let data: Vec<u64> = self.try_into()?;
-                RT.lock().new_tensor(shape, data)
+                RT.lock().new_host_tensor(shape.into(), data.into())
             }
             DType::I8 => {
+                let shape = self.shape();
                 let data: Vec<i8> = self.try_into()?;
-                RT.lock().new_tensor(shape, data)
+                RT.lock().new_host_tensor(shape.into(), data.into())
             }
             DType::I16 => {
+                let shape = self.shape();
                 let data: Vec<i16> = self.try_into()?;
-                RT.lock().new_tensor(shape, data)
+                RT.lock().new_host_tensor(shape.into(), data.into())
             }
             DType::I32 => {
+                let shape = self.shape();
                 let data: Vec<i32> = self.try_into()?;
-                RT.lock().new_tensor(shape, data)
+                RT.lock().new_host_tensor(shape.into(), data.into())
             }
             DType::I64 => {
+                let shape = self.shape();
                 let data: Vec<i64> = self.try_into()?;
-                RT.lock().new_tensor(shape, data)
+                RT.lock().new_host_tensor(shape.into(), data.into())
             }
             DType::Bool => {
+                let shape = self.shape();
                 let data: Vec<bool> = self.try_into()?;
-                RT.lock().new_tensor(shape, data)
+                RT.lock().new_host_tensor(shape.into(), data.into())
             }
         }?;
         Ok(Tensor { id })
@@ -555,25 +567,25 @@ impl Tensor {
                 DType::BF16 => {
                     let data: Vec<bf16> = (0..n).map(|_| rt.rng.rand()).collect();
                     Ok(Tensor {
-                        id: rt.new_tensor(shape, data)?,
+                        id: rt.new_host_tensor(shape.clone().into(), data.into())?,
                     })
                 }
                 DType::F16 => {
                     let data: Vec<f16> = (0..n).map(|_| rt.rng.rand()).collect();
                     Ok(Tensor {
-                        id: rt.new_tensor(shape, data)?,
+                        id: rt.new_host_tensor(shape.clone().into(), data.into())?,
                     })
                 }
                 DType::F32 => {
                     let data: Vec<f32> = (0..n).map(|_| rt.rng.rand()).collect();
                     Ok(Tensor {
-                        id: rt.new_tensor(shape, data)?,
+                        id: rt.new_host_tensor(shape.clone().into(), data.into())?,
                     })
                 }
                 DType::F64 => {
                     let data: Vec<f64> = (0..n).map(|_| rt.rng.rand()).collect();
                     Ok(Tensor {
-                        id: rt.new_tensor(shape, data)?,
+                        id: rt.new_host_tensor(shape.clone().into(), data.into())?,
                     })
                 }
                 DType::U8
@@ -592,49 +604,49 @@ impl Tensor {
                 DType::U8 => {
                     let data: Vec<u8> = (0..n).map(|_| rt.rng.rand()).collect();
                     Ok(Tensor {
-                        id: rt.new_tensor(shape, data)?,
+                        id: rt.new_host_tensor(shape.clone().into(), data.into())?,
                     })
                 }
                 DType::U16 => {
                     let data: Vec<u16> = (0..n).map(|_| rt.rng.rand()).collect();
                     Ok(Tensor {
-                        id: rt.new_tensor(shape, data)?,
+                        id: rt.new_host_tensor(shape.clone().into(), data.into())?,
                     })
                 }
                 DType::U32 => {
                     let data: Vec<u32> = (0..n).map(|_| rt.rng.rand()).collect();
                     Ok(Tensor {
-                        id: rt.new_tensor(shape, data)?,
+                        id: rt.new_host_tensor(shape.clone().into(), data.into())?,
                     })
                 }
                 DType::U64 => {
                     let data: Vec<u64> = (0..n).map(|_| rt.rng.rand()).collect();
                     Ok(Tensor {
-                        id: rt.new_tensor(shape, data)?,
+                        id: rt.new_host_tensor(shape.clone().into(), data.into())?,
                     })
                 }
                 DType::I8 => {
                     let data: Vec<i8> = (0..n).map(|_| rt.rng.rand()).collect();
                     Ok(Tensor {
-                        id: rt.new_tensor(shape, data)?,
+                        id: rt.new_host_tensor(shape.clone().into(), data.into())?,
                     })
                 }
                 DType::I16 => {
                     let data: Vec<i16> = (0..n).map(|_| rt.rng.rand()).collect();
                     Ok(Tensor {
-                        id: rt.new_tensor(shape, data)?,
+                        id: rt.new_host_tensor(shape.clone().into(), data.into())?,
                     })
                 }
                 DType::I32 => {
                     let data: Vec<i32> = (0..n).map(|_| rt.rng.rand()).collect();
                     Ok(Tensor {
-                        id: rt.new_tensor(shape, data)?,
+                        id: rt.new_host_tensor(shape.clone().into(), data.into())?,
                     })
                 }
                 DType::I64 => {
                     let data: Vec<i64> = (0..n).map(|_| rt.rng.rand()).collect();
                     Ok(Tensor {
-                        id: rt.new_tensor(shape, data)?,
+                        id: rt.new_host_tensor(shape.clone().into(), data.into())?,
                     })
                 }
                 DType::Bool => Err(ZyxError::dtype_error("Uniform is not supported for bool".into())),
@@ -709,7 +721,7 @@ impl Tensor {
         let mut rt = RT.lock();
         let data: Vec<T> = (0..n).map(|_| rt.rng.range(low..high)).collect();
         Ok(Tensor {
-            id: rt.new_tensor(shape, data)?,
+            id: rt.new_host_tensor(shape.clone().into(), data.into())?,
         })
     }
 
@@ -744,7 +756,7 @@ impl Tensor {
     #[must_use]
     pub fn zeros(shape: impl IntoShape, dtype: DType) -> Tensor {
         Tensor {
-            id: RT.lock().zeros(shape.into_shape().collect(), dtype),
+            id: RT.lock().new_full(shape.into_shape().collect().into(), dtype.zero_constant()),
         }
     }
 
@@ -759,7 +771,7 @@ impl Tensor {
     #[must_use]
     pub fn ones(shape: impl IntoShape, dtype: DType) -> Tensor {
         Tensor {
-            id: RT.lock().ones(shape.into_shape().collect(), dtype),
+            id: RT.lock().new_full(shape.into_shape().collect().into(), dtype.one_constant()),
         }
     }
 
@@ -776,7 +788,7 @@ impl Tensor {
     #[allow(clippy::missing_panics_doc)]
     pub fn full(shape: impl IntoShape, value: impl Scalar) -> Tensor {
         Tensor {
-            id: RT.lock().full(shape.into_shape().collect(), value),
+            id: RT.lock().new_full(shape.into_shape().collect().into(), Constant::new(value)),
         }
     }
 
@@ -812,7 +824,7 @@ impl Tensor {
     /// Returns allocation failure or backend initialization failure
     pub fn from_vec<T: Scalar>(data: Vec<T>, shape: impl IntoShape) -> Result<Tensor, ZyxError> {
         let shape = shape.into_shape().collect();
-        let id = RT.lock().new_tensor(shape, data)?;
+        let id = RT.lock().new_host_tensor(shape.into(), data.into())?;
         Ok(Tensor { id })
     }
 
@@ -835,10 +847,9 @@ impl Tensor {
     /// # Errors
     /// Returns device error if the device failed to allocate memory for tensor.
     #[allow(clippy::missing_panics_doc)]
-    pub unsafe fn bitcast(&self, dtype: DType) -> Result<Tensor, ZyxError> {
-        let id = unsafe { RT.lock().bitcast(self.id, dtype)? };
-        let x = Tensor { id };
-        Ok(x)
+    pub unsafe fn bitcast(&self, dtype: DType) -> Tensor {
+        let id = RT.lock().bitcast(self.id, dtype);
+        Tensor { id }
     }
 
     /// Applies dropout to the tensor with a given probability.
@@ -3560,9 +3571,9 @@ impl<T: Scalar> From<T> for Tensor {
 impl<T: Scalar, const D0: usize, const D1: usize> From<[[T; D1]; D0]> for Tensor {
     fn from(data: [[T; D1]; D0]) -> Self {
         let data = unsafe { core::slice::from_raw_parts(data[0].as_ptr(), D0 * D1) };
-        let data = Box::from();
+        let data = Box::from(data);
         Tensor {
-            id: RT.lock().new_tensor(vec![D0 as Dim, D1 as Dim], data).unwrap(),
+            id: RT.lock().new_host_tensor(vec![D0 as Dim, D1 as Dim].into(), data).unwrap(),
         }
     }
 }
@@ -3571,7 +3582,7 @@ impl<T: Scalar, const D0: usize, const D1: usize, const D2: usize> From<[[[T; D2
     fn from(data: [[[T; D2]; D1]; D0]) -> Self {
         let data = unsafe { core::slice::from_raw_parts(data[0][0].as_ptr(), D0 * D1 * D2) };
         Tensor {
-            id: RT.lock().new_tensor(vec![D0 as Dim, D1 as Dim, D2 as Dim], data).unwrap(),
+            id: RT.lock().new_host_tensor(vec![D0 as Dim, D1 as Dim, D2 as Dim].into(), Box::from(data)).unwrap(),
         }
     }
 }
