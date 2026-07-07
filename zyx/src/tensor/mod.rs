@@ -260,16 +260,6 @@ impl Tensor {
         }
     }
 
-    /// Debug graph
-    pub fn debug_graph() {
-        RT.lock().debug_graph();
-    }
-
-    /// Reference count
-    pub fn ref_count(&self) -> u32 {
-        RT.lock().graph.nodes[self.id].0
-    }
-
     /// Returns a slice of the last N dimensions of this tensor.
     ///
     /// # Parameters
@@ -388,27 +378,6 @@ impl Tensor {
         RT.lock().implicit_casts = implicit_casts;
     }
 
-    /// Immediatelly evaluate passed tensors This will asynchronously enqueue the computational graph
-    /// to the device, but it will not block (await). This is for performance reasons. Actual
-    /// blocking only happens when you access a tensor by printing it, converting it to vector,
-    /// or some other operation that requires host to have access to data stored in the tensor.
-    ///
-    /// # Errors
-    /// Returns device error if the device fails to realize one or more tensors.
-    pub fn realize<'a>(tensors: impl IntoIterator<Item = &'a Tensor>) -> Result<(), ZyxError> {
-        //RT.lock().realize_and_cleanup(&tensors.into_iter().map(|t| t.id).collect())
-        RT.lock().realize_selected(&tensors.into_iter().map(|t| t.id).collect())
-    }
-
-    /// Realize all user held tensors.
-    ///
-    /// # Errors
-    ///
-    /// Returns error if any tensor cannot be realized.
-    pub fn realize_all() -> Result<(), ZyxError> {
-        RT.lock().realize_all()
-    }
-
     /// Item
     #[allow(clippy::missing_panics_doc)]
     pub fn item<T: Scalar>(&self) -> T {
@@ -519,31 +488,6 @@ impl Tensor {
         let guard = DebugGuard { debug: rt.debug };
         rt.debug = debug;
         guard
-    }
-
-    /// Write graph of operations between tensors as png image with given filename
-    /// Expects dot program to be in the path. Otherwise create dot graph file
-    /// without converting it to png.
-    /// # Errors
-    /// Returns error if graph image failed to write to disk.
-    pub fn plot_graph<'a>(tensors: impl IntoIterator<Item = &'a Tensor>, name: &str) -> Result<(), std::io::Error> {
-        use std::format;
-        let path = format!("{name}.dot");
-        let graph = RT.lock().plot_dot_graph(&tensors.into_iter().map(|t| t.id).collect());
-        std::fs::write(&path, graph)?;
-        println!("Path: {path:?}");
-        let output = std::process::Command::new("dot")
-            .arg("-Tsvg")
-            .arg(&path)
-            .arg("-o")
-            .arg(format!("{name}.svg"))
-            .output();
-        if let Err(err) = output {
-            println!("Graph svg could not be created: {err}");
-        } else {
-            let _ = std::fs::remove_file(path);
-        }
-        Ok(())
     }
 
     /// Manually sets the seed for the random number generator.
@@ -756,7 +700,7 @@ impl Tensor {
     #[must_use]
     pub fn zeros(shape: impl IntoShape, dtype: DType) -> Tensor {
         Tensor {
-            id: RT.lock().new_full(shape.into_shape().collect().into(), dtype.zero_constant()),
+            id: RT.lock().new_full(shape.into_shape().collect(), dtype.zero_constant()),
         }
     }
 
@@ -771,7 +715,7 @@ impl Tensor {
     #[must_use]
     pub fn ones(shape: impl IntoShape, dtype: DType) -> Tensor {
         Tensor {
-            id: RT.lock().new_full(shape.into_shape().collect().into(), dtype.one_constant()),
+            id: RT.lock().new_full(shape.into_shape().collect(), dtype.one_constant()),
         }
     }
 
@@ -788,7 +732,7 @@ impl Tensor {
     #[allow(clippy::missing_panics_doc)]
     pub fn full(shape: impl IntoShape, value: impl Scalar) -> Tensor {
         Tensor {
-            id: RT.lock().new_full(shape.into_shape().collect().into(), Constant::new(value)),
+            id: RT.lock().new_full(shape.into_shape().collect(), Constant::new(value)),
         }
     }
 
@@ -824,7 +768,7 @@ impl Tensor {
     /// Returns allocation failure or backend initialization failure
     pub fn from_vec<T: Scalar>(data: Vec<T>, shape: impl IntoShape) -> Result<Tensor, ZyxError> {
         let shape = shape.into_shape().collect();
-        let id = RT.lock().new_host_tensor(shape.into(), data.into())?;
+        let id = RT.lock().new_host_tensor(shape, data.into_boxed_slice())?;
         Ok(Tensor { id })
     }
 
@@ -1127,7 +1071,7 @@ impl Tensor {
             ));
         }
         Ok(Tensor {
-            id: RT.lock().permute(self.id, &axes),
+            id: RT.lock().permute(self.id, axes),
         })
     }
 
@@ -1679,7 +1623,7 @@ impl Tensor {
     pub fn pow(&self, exponent: impl Into<Tensor>) -> Result<Tensor, ZyxError> {
         //Ok((self.log2() * exponent).exp2())
         let (x, y) = Tensor::broadcast(self.clone(), exponent)?;
-        let id = RT.lock().binary(x.id, y.id, BOp::Pow);
+        let id = RT.lock().binary(x.id, y.id, BOp::Pow)?;
         Ok(Tensor { id })
     }
 
@@ -1690,7 +1634,7 @@ impl Tensor {
     /// Returns error if the tensors have non broadcasteable shapes.
     pub fn logical_and(&self, rhs: impl Into<Tensor>) -> Result<Tensor, ZyxError> {
         let (x, y) = Tensor::broadcast(self.clone(), rhs)?;
-        let id = RT.lock().binary(x.id, y.id, BOp::And);
+        let id = RT.lock().binary(x.id, y.id, BOp::And)?;
         Ok(Tensor { id })
     }
 
@@ -1701,7 +1645,7 @@ impl Tensor {
     /// Returns error if the tensors have non broadcasteable shapes.
     pub fn logical_or(&self, rhs: impl Into<Tensor>) -> Result<Tensor, ZyxError> {
         let (x, y) = Tensor::broadcast(self.clone(), rhs)?;
-        let id = RT.lock().binary(x.id, y.id, BOp::Or);
+        let id = RT.lock().binary(x.id, y.id, BOp::Or)?;
         Ok(Tensor { id })
     }
 
@@ -1712,7 +1656,7 @@ impl Tensor {
     /// Returns error if the tensors have non broadcasteable shapes.
     pub fn equal(&self, rhs: impl Into<Tensor>) -> Result<Tensor, ZyxError> {
         let (x, y) = Tensor::broadcast(self.clone(), rhs)?;
-        let id = RT.lock().binary(x.id, y.id, BOp::Eq);
+        let id = RT.lock().binary(x.id, y.id, BOp::Eq)?;
         let x = Tensor { id };
         Ok(x)
     }
@@ -1722,7 +1666,7 @@ impl Tensor {
     #[must_use]
     pub fn nonzero(&self) -> Tensor {
         let y = Tensor::from(0).cast(self.dtype()).expand(self.shape()).unwrap();
-        let id = RT.lock().binary(self.id, y.id, BOp::NotEq);
+        let id = RT.lock().binary(self.id, y.id, BOp::NotEq).unwrap();
         Tensor { id }
     }
 
@@ -2040,7 +1984,7 @@ impl Tensor {
     pub fn mse_loss(&self, target: impl Into<Tensor>) -> Result<Tensor, ZyxError> {
         let (x, y) = Tensor::broadcast(self, target)?;
         let x = Tensor {
-            id: RT.lock().binary(x.id, y.id, BOp::Sub),
+            id: RT.lock().binary(x.id, y.id, BOp::Sub)?,
         };
         Ok((x.clone() * x).mean_all())
     }
@@ -2842,7 +2786,7 @@ impl Tensor {
 
         let dtype = self.dtype();
         let value: Tensor = Tensor {
-            id: RT.lock().new_constant(dtype.min_constant()),
+            id: RT.lock().new_constant_tensor(dtype.min_constant()),
         };
         let pooled = self.pad(padding, value)?.pool(kernel_size, stride, dilation)?;
 
@@ -2981,7 +2925,7 @@ impl Tensor {
             }
         }
 
-        let sh: Vec<Dim> = self.shape();
+        let sh = self.shape();
         //println!("shape={sh:?}");
         //println!("sin_freqs={:?}", sin_freqs.shape());
         //println!("cos_freqs={:?}", cos_freqs.shape());
@@ -3032,7 +2976,7 @@ impl Tensor {
     /// Create new tensor from file on disk.
     pub(crate) fn from_path(shape: Vec<Dim>, dtype: DType, path: impl AsRef<Path>, offset: u64) -> Result<Tensor, ZyxError> {
         Ok(Tensor {
-            id: RT.lock().tensor_from_path(shape, dtype, path.as_ref(), offset)?,
+            id: RT.lock().new_disk_tensor(shape, dtype, path.as_ref(), offset)?,
         })
     }
 
@@ -3110,9 +3054,9 @@ impl Tensor {
     /// Move this tensor to the specified device. Creates a new graph node
     /// that will be realized via a cross-device copy during kernelization.
     #[must_use]
-    pub fn to(&self, device: crate::kernel::DeviceId) -> Tensor {
-        let id = RT.lock().to_device(self.id, device);
-        Tensor { id }
+    pub fn to(&self, device: crate::kernel::DeviceId) -> Result<Tensor, ZyxError> {
+        let id = RT.lock().to_device(self.id, device)?;
+        Ok(Tensor { id })
     }
 }
 
@@ -3563,7 +3507,7 @@ impl From<&Tensor> for Tensor {
 impl<T: Scalar> From<T> for Tensor {
     fn from(value: T) -> Self {
         Tensor {
-            id: RT.lock().new_host_tensor(vec![1], value).unwrap(),
+            id: RT.lock().new_host_tensor(vec![1 as Dim], Box::new([value])).unwrap(),
         }
     }
 }
@@ -3582,7 +3526,10 @@ impl<T: Scalar, const D0: usize, const D1: usize, const D2: usize> From<[[[T; D2
     fn from(data: [[[T; D2]; D1]; D0]) -> Self {
         let data = unsafe { core::slice::from_raw_parts(data[0][0].as_ptr(), D0 * D1 * D2) };
         Tensor {
-            id: RT.lock().new_host_tensor(vec![D0 as Dim, D1 as Dim, D2 as Dim].into(), Box::from(data)).unwrap(),
+            id: RT
+                .lock()
+                .new_host_tensor(vec![D0 as Dim, D1 as Dim, D2 as Dim].into(), Box::from(data))
+                .unwrap(),
         }
     }
 }
@@ -3593,7 +3540,7 @@ impl<T: Scalar, const D0: usize, const D1: usize, const D2: usize, const D3: usi
         Tensor {
             id: RT
                 .lock()
-                .new_host_tensor([D0 as Dim, D1 as Dim, D2 as Dim, D3 as Dim].into(), data)
+                .new_host_tensor([D0 as Dim, D1 as Dim, D2 as Dim, D3 as Dim].into(), Box::from(data))
                 .unwrap(),
         }
     }
