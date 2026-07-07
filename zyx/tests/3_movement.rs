@@ -72,7 +72,6 @@ fn rope_1() -> Result<(), ZyxError> {
     //drop(z);
     drop(z2);
     //Tensor::plot_graph([], "graph")?;
-    Tensor::realize([&z, &z3])?;
     assert_eq!(z, [[8, 18], [36, 14]]);
     assert_eq!(z3, [[8, 18, 4, 6], [36, 14, 6, 2]]);
     Ok(())

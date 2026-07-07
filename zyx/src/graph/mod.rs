@@ -465,31 +465,6 @@ impl std::ops::IndexMut<TensorId> for Graph {
 
 use crate::dtype::Constant;
 
-impl BOp {
-    /// Returns true if the binary operation is associative:
-    /// `(a op b) op c == a op (b op c)`.
-    pub const fn is_associative(self) -> bool {
-        use BOp::{Add, And, BitAnd, BitOr, BitShiftLeft, BitShiftRight, BitXor, Max, Mul, Or};
-        matches!(
-            self,
-            Add | Mul | And | Or | BitXor | BitAnd | BitOr | BitShiftLeft | BitShiftRight | Max
-        )
-    }
-
-    /// Returns true if the binary operation is commutative:
-    /// `a op b == b op a`.
-    pub const fn is_commutative(self) -> bool {
-        use BOp::{Add, And, BitAnd, BitOr, BitXor, Max, Mul, Or};
-        matches!(self, Add | Mul | And | Or | BitXor | BitAnd | BitOr | Max)
-    }
-
-    /// Returns true if the operation produces a boolean result.
-    pub const fn returns_bool(self) -> bool {
-        use BOp::{And, Cmpgt, Cmplt, Eq, NotEq, Or};
-        matches!(self, Cmpgt | Cmplt | NotEq | Eq | And | Or)
-    }
-}
-
 impl Node {
     /// Get all parameters of self.
     pub fn parameters(&self) -> Vec<TensorId> {

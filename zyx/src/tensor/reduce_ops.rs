@@ -73,7 +73,7 @@ impl Tensor {
                     self.cast(reduce_acc_dtype(x_dtype))
                 };
                 Tensor {
-                    id: RT.lock().reduce(x.id, axes_vec.clone(), BOp::Add),
+                    id: RT.lock().reduce(x.id, axes_vec.clone(), BOp::Add)?,
                 }
             }
             ReduceOp::Max => {
@@ -83,7 +83,7 @@ impl Tensor {
                     self.cast(reduce_acc_dtype(x_dtype))
                 };
                 Tensor {
-                    id: RT.lock().reduce(x.id, axes_vec.clone(), BOp::Max),
+                    id: RT.lock().reduce(x.id, axes_vec.clone(), BOp::Max)?,
                 }
             }
             ReduceOp::Prod => {
@@ -93,7 +93,7 @@ impl Tensor {
                     self.cast(reduce_acc_dtype(x_dtype))
                 };
                 Tensor {
-                    id: RT.lock().reduce(x.id, axes_vec.clone(), BOp::Mul),
+                    id: RT.lock().reduce(x.id, axes_vec.clone(), BOp::Mul)?,
                 }
             }
             ReduceOp::Min => {

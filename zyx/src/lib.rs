@@ -74,7 +74,7 @@ mod scalar;
 //mod schedule;
 mod shape;
 mod slab;
-mod tape;
+//mod tape;
 mod tensor;
 // Constant initializable hasher because apparently noone invented that yet...
 //mod autograd;
@@ -92,7 +92,7 @@ pub use error::ZyxError;
 pub use module::Module;
 pub use scalar::{Float, Scalar};
 pub use shape::IntoShape;
-pub use tape::Tape;
+//pub use tape::Tape;
 pub use tensor::ReduceOp;
 pub use tensor::Tensor;
 

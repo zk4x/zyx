@@ -56,22 +56,24 @@ struct KernelData {
 
 pub struct Runtime {
     tensors: Slab<TensorId, TensorData>,
-    shape_map: Map<Box<[Dim]>, ShapeId>,
-    shapes: Slab<ShapeId, Box<[Dim]>>,
+    shape_map: Map<Vec<Dim>, ShapeId>,
+    shapes: Slab<ShapeId, Vec<Dim>>,
     visited: Map<TensorId, (KernelId, OpId)>,
     kernel_data: Map<KernelId, KernelData>,
     kernels: Slab<KernelId, Kernel>,
     kernel_map: Map<Kernel, KernelId>,
     device_infos: Map<DeviceInfo, DeviceInfoId>,
-    devices: Slab<DeviceId, Device>,
+    pub devices: Slab<DeviceId, Device>,
     // Pool 0 is always host, pool 1 is disk if disk is present
     pools: Slab<PoolId, MemoryPool>,
     programs: Map<KernelId, ProgramId>,
     config_dir: Option<PathBuf>,
     buffer_map: Map<TensorId, BufferId>,
     events: Map<BTreeSet<BufferId>, Event>,
-    rng: Rng,
+    pub rng: Rng,
     autotune_config: AutotuneConfig,
+    pub implicit_casts: bool,
+    pub training: bool,
     pub debug: DebugMask,
 }
 
@@ -94,6 +96,8 @@ impl Runtime {
             events: Map::with_hasher(BuildHasherDefault::new()),
             rng: Rng::seed_from_u64(42069),
             autotune_config: AutotuneConfig::new(),
+            implicit_casts: true,
+            training: false,
             debug: DebugMask::new(0),
         }
     }
@@ -136,7 +140,7 @@ impl Runtime {
         }
     }
 
-    fn push_shape(&mut self, shape: Box<[Dim]>) -> ShapeId {
+    fn push_shape(&mut self, shape: Vec<Dim>) -> ShapeId {
         if let Some(&shape_id) = self.shape_map.get(&shape) {
             shape_id
         } else {
@@ -146,7 +150,7 @@ impl Runtime {
         }
     }
 
-    fn new_kernel(&mut self, op: Op, shape: Box<[Dim]>, dtype: DType) -> TensorId {
+    fn new_kernel(&mut self, op: Op, shape: Vec<Dim>, dtype: DType) -> TensorId {
         let shape_id = self.push_shape(shape);
         let tid = self.tensors.push(TensorData { shape_id, dtype });
         let mut kernel = Kernel::new(DeviceId::AUTO);
@@ -169,7 +173,7 @@ impl Runtime {
         self.new_kernel(op, [1].into(), value.dtype())
     }
 
-    pub fn new_full(&mut self, shape: Box<[Dim]>, value: Constant) -> TensorId {
+    pub fn new_full(&mut self, shape: Vec<Dim>, value: Constant) -> TensorId {
         let dtype = value.dtype();
         let op = Op::ConstView(Box::new((value, View::contiguous(&[1]))));
         let x = self.new_kernel(op, [1].into(), dtype);
@@ -179,7 +183,7 @@ impl Runtime {
     }
 
     // Creates new tensor in host memory
-    pub fn new_host_tensor<T: Scalar>(&mut self, shape: Box<[Dim]>, data: Box<[T]>) -> Result<TensorId, ZyxError> {
+    pub fn new_host_tensor<T: Scalar>(&mut self, shape: Vec<Dim>, data: Box<[T]>) -> Result<TensorId, ZyxError> {
         let dtype = T::dtype();
 
         self.initialize_devices()?;
@@ -213,7 +217,7 @@ impl Runtime {
     // Creates new tensor in disk
     pub fn new_disk_tensor(
         &mut self,
-        shape: Box<[Dim]>,
+        shape: Vec<Dim>,
         dtype: DType,
         path: &Path,
         offset_bytes: u64,
@@ -257,23 +261,23 @@ impl Runtime {
         todo!()
     }
 
-    pub fn reduce(&mut self, x: TensorId, axes: Box<[UAxis]>, rop: BOp) -> Result<TensorId, ZyxError> {
+    pub fn reduce(&mut self, x: TensorId, axes: Vec<UAxis>, rop: BOp) -> Result<TensorId, ZyxError> {
         todo!()
     }
 
-    pub fn to_device(&mut self) -> Result<TensorId, ZyxError> {
+    pub fn to_device(&mut self, x: TensorId, device_id: DeviceId) -> Result<TensorId, ZyxError> {
         todo!()
     }
 
-    pub(super) fn reshape(&mut self, x: TensorId, shape: Box<[Dim]>) -> TensorId {
+    pub(super) fn reshape(&mut self, x: TensorId, shape: Vec<Dim>) -> TensorId {
         todo!()
     }
 
-    pub fn expand(&mut self, x: TensorId, shape: Box<[Dim]>) -> Result<TensorId, ZyxError> {
+    pub fn expand(&mut self, x: TensorId, shape: Vec<Dim>) -> Result<TensorId, ZyxError> {
         todo!()
     }
 
-    pub fn permute(&mut self, x: TensorId, axes: &[UAxis]) -> TensorId {
+    pub fn permute(&mut self, x: TensorId, axes: Vec<UAxis>) -> TensorId {
         todo!()
     }
 

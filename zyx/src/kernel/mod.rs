@@ -299,6 +299,31 @@ pub(crate) enum BOp {
     Eq,
 }
 
+impl BOp {
+    /// Returns true if the binary operation is associative:
+    /// `(a op b) op c == a op (b op c)`.
+    pub const fn is_associative(self) -> bool {
+        use BOp::{Add, And, BitAnd, BitOr, BitShiftLeft, BitShiftRight, BitXor, Max, Mul, Or};
+        matches!(
+            self,
+            Add | Mul | And | Or | BitXor | BitAnd | BitOr | BitShiftLeft | BitShiftRight | Max
+        )
+    }
+
+    /// Returns true if the binary operation is commutative:
+    /// `a op b == b op a`.
+    pub const fn is_commutative(self) -> bool {
+        use BOp::{Add, And, BitAnd, BitOr, BitXor, Max, Mul, Or};
+        matches!(self, Add | Mul | And | Or | BitXor | BitAnd | BitOr | Max)
+    }
+
+    /// Returns true if the operation produces a boolean result.
+    pub const fn returns_bool(self) -> bool {
+        use BOp::{And, Cmpgt, Cmplt, Eq, NotEq, Or};
+        matches!(self, Cmpgt | Cmplt | NotEq | Eq | And | Or)
+    }
+}
+
 /// Movement operations for tensor shape transformations.
 ///
 /// These operations change the shape of tensors without changing their data.
@@ -1127,7 +1152,7 @@ impl Kernel {
     /// assert_eq!(data, vec![2.0, 4.0, 6.0, 8.0]);
     /// # Ok::<_, ZyxError>(())
     /// ```
-    pub fn compile(mut self) -> Result<CompiledKernel, crate::ZyxError> {
+    /*pub fn compile(mut self) -> Result<CompiledKernel, crate::ZyxError> {
         self.unfold_movement_ops();
         self.sort_global_defines();
         self.dead_code_elimination();
@@ -1174,17 +1199,17 @@ impl Kernel {
             dtype,
             kernel_id: kid,
         })
-    }
+    }*/
 
     /// Run autotuning then compile the kernel.
     /// Consumes the kernel.
     ///
     /// TODO: real autotune — must allocate temp buffers and call [`Kernel::autotune_`].
     /// For now this is identical to [`Kernel::compile`].
-    #[allow(unused)]
+    /*#[allow(unused)]
     fn autotune(self) -> Result<CompiledKernel, crate::ZyxError> {
         self.compile()
-    }
+    }*/
 
     /// Load a contiguous tensor from device memory.
     pub fn load_contiguous(&mut self, dtype: DType, shape: &[Dim]) -> OpId {

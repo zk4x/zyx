@@ -19,15 +19,6 @@ pub trait Module {
     /// From tensors
     fn iter_tensors_mut(&mut self) -> impl Iterator<Item = (String, &mut Tensor)>;
 
-    /// Realize all tensors in the module
-    ///
-    /// # Errors
-    ///
-    /// Returns error if any tensor cannot be realized.
-    fn realize(&self) -> Result<(), ZyxError> {
-        Tensor::realize(self.iter())
-    }
-
     /// Set parameters, removes them from params, skips parameters that are not found in params.
     fn set_params(&mut self, params: &mut HashMap<String, Tensor>) {
         for (label, tensor) in self.iter_tensors_mut() {
