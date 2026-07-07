@@ -3547,7 +3547,10 @@ impl<T: Scalar + Clone> From<Vec<Vec<Vec<T>>>> for Tensor {
         let cols = data.first().and_then(|v| v.first()).map_or(0, |v| v.len()) as Dim;
         let flat: Vec<T> = data.into_iter().flatten().flatten().collect();
         Tensor {
-            id: RT.lock().new_host_tensor(vec![depth, rows, cols], flat.into_boxed_slice()).unwrap(),
+            id: RT
+                .lock()
+                .new_host_tensor(vec![depth, rows, cols], flat.into_boxed_slice())
+                .unwrap(),
         }
     }
 }

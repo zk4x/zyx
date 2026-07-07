@@ -684,11 +684,10 @@ static inline unsigned short f32tobf16(float v) {
         if self.has_openmp && gws[0] > 1 {
             cmd.arg(if is_clang { "-fopenmp=libgomp" } else { "-fopenmp" });
         }
-        let output = cmd.output()
-            .map_err(|e| BackendError {
-                status: ErrorStatus::KernelCompilation,
-                context: format!("Failed to run compiler '{compiler}': {e}. Is a C compiler installed?").into(),
-            })?;
+        let output = cmd.output().map_err(|e| BackendError {
+            status: ErrorStatus::KernelCompilation,
+            context: format!("Failed to run compiler '{compiler}': {e}. Is a C compiler installed?").into(),
+        })?;
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
             if debug_asm {

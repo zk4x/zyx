@@ -367,20 +367,196 @@ impl Runtime {
         todo!()
     }
 
+    /// Adds a StoreView for x to its kernel, removes x from visited and outputs.
+    /// Unlike `load`, this does not launch the kernel — it only records the store in the IR.
+    fn add_store(&mut self, x: TensorId) {
+        let (kid, op_id) = self.visited.remove(&x).unwrap();
+        let dtype = self.tensors[x].dtype;
+        self.kernels[kid].store_contiguous(op_id, dtype);
+        let kd = self.kernel_data.get_mut(&kid).unwrap();
+        kd.stores.push(x);
+        let pos = kd.outputs.iter().position(|e| *e == x).unwrap();
+        kd.outputs.remove(pos);
+    }
+
+    /// Creates a new kernel with a LoadView for x (used to reload after a store).
+    fn create_load_kernel(&mut self, x: TensorId) -> (KernelId, OpId) {
+        let shape = self.shape(x).to_vec();
+        let dtype = self.tensors[x].dtype;
+        let mut kernel = Kernel::new(DeviceId::AUTO);
+        let op_id = kernel.load_contiguous(dtype, &shape);
+        let kid = self.kernels.push(kernel);
+        self.kernel_data.insert(
+            kid,
+            KernelData {
+                outputs: vec![x],
+                loads: vec![x],
+                stores: Vec::new(),
+            },
+        );
+        self.visited.insert(x, (kid, op_id));
+        (kid, op_id)
+    }
+
+    /// Splits x's op chain into its own kernel. Both the original and new kernel
+    /// keep only their needed ops via `drop_unused_ops_by_params`.
+    fn duplicate_kernel(&mut self, x: TensorId, kid: KernelId) -> KernelId {
+        let orig_loads = self.kernel_data[&kid].loads.clone();
+        let mut kernel = self.kernels[kid].clone();
+        let new_params = vec![self.visited[&x].1];
+        let new_loads = kernel.drop_unused_ops_by_params(new_params, &orig_loads);
+
+        let kd = self.kernel_data.get_mut(&kid).unwrap();
+        let pos = kd.outputs.iter().position(|e| *e == x).unwrap();
+        kd.outputs.remove(pos);
+
+        let old_outputs: Vec<TensorId> = kd.outputs.clone();
+        let old_params: Vec<OpId> = old_outputs.iter().map(|tid| self.visited[tid].1).collect();
+        let old_loads = self.kernels[kid].drop_unused_ops_by_params(old_params, &orig_loads);
+        kd.loads = old_loads;
+
+        let stores = kd.stores.clone();
+        let new_kid = self.kernels.push(kernel);
+        self.kernel_data.insert(
+            new_kid,
+            KernelData {
+                outputs: vec![x],
+                loads: new_loads,
+                stores,
+            },
+        );
+        new_kid
+    }
+
+    /// Ensures x is in a kernel where it's safe to append a movement op.
+    /// Handles four cases:
+    /// 1. Kernel has stores → materialize x, create new load kernel
+    /// 2. x not in outputs (already replaced by prior movement op) → materialize
+    /// 3. Multi-output + preceded by reduce → materialize, load back
+    /// 4. Multi-output only → duplicate kernel
+    fn duplicate_or_store(&mut self, x: TensorId) -> Result<(KernelId, OpId), ZyxError> {
+        let (mut kid, mut op_id) = self.visited[&x];
+
+        if self.kernels[kid].contains_stores() {
+            self.add_store(x);
+            (kid, op_id) = self.create_load_kernel(x);
+            if self.kernel_data[&kid].outputs.len() > 1 {
+                kid = self.duplicate_kernel(x, kid);
+            }
+        }
+
+        if !self.kernel_data[&kid].outputs.contains(&x) {
+            self.add_store(x);
+            (kid, op_id) = self.create_load_kernel(x);
+            if self.kernel_data[&kid].outputs.len() > 1 {
+                kid = self.duplicate_kernel(x, kid);
+            }
+        }
+
+        if self.kernel_data[&kid].outputs.len() > 1 {
+            let reduce_dims_big = self.kernels[kid].is_preceded_by_reduce(op_id);
+            if reduce_dims_big {
+                self.add_store(x);
+                (kid, op_id) = self.create_load_kernel(x);
+                if self.kernel_data[&kid].outputs.len() > 1 {
+                    kid = self.duplicate_kernel(x, kid);
+                }
+            } else {
+                kid = self.duplicate_kernel(x, kid);
+            }
+        }
+
+        Ok((kid, op_id))
+    }
+
     pub(super) fn reshape(&mut self, x: TensorId, shape: Vec<Dim>) -> TensorId {
-        todo!()
+        let (kid, op_id) = self.duplicate_or_store(x).unwrap();
+        let shape_id = self.push_shape(shape.clone());
+        let dtype = self.tensors[x].dtype;
+        let tid = self.tensors.push(TensorData { shape_id, dtype });
+
+        let op_id = self.kernels[kid].reshape(op_id, &shape);
+        let kd = self.kernel_data.get_mut(&kid).unwrap();
+        let pos = kd.outputs.iter().position(|e| *e == x).unwrap();
+        kd.outputs[pos] = tid;
+        self.visited.insert(tid, (kid, op_id));
+        tid
     }
 
     pub fn expand(&mut self, x: TensorId, shape: Vec<Dim>) -> Result<TensorId, ZyxError> {
-        todo!()
+        let (mut kid, mut op_id) = self.visited[&x];
+
+        // Expand also checks is_preceded_by_compute (unlike permute/reshape/pad)
+        if self.kernels[kid].contains_stores() | self.kernels[kid].is_preceded_by_compute(op_id) {
+            self.add_store(x);
+            (kid, op_id) = self.create_load_kernel(x);
+            if self.kernel_data[&kid].outputs.len() > 1 {
+                kid = self.duplicate_kernel(x, kid);
+            }
+        }
+
+        if !self.kernel_data[&kid].outputs.contains(&x) {
+            self.add_store(x);
+            (kid, op_id) = self.create_load_kernel(x);
+            if self.kernel_data[&kid].outputs.len() > 1 {
+                kid = self.duplicate_kernel(x, kid);
+            }
+        }
+
+        if self.kernel_data[&kid].outputs.len() > 1 {
+            let reduce_dims_big = self.kernels[kid].is_preceded_by_reduce(op_id);
+            if reduce_dims_big {
+                self.add_store(x);
+                (kid, op_id) = self.create_load_kernel(x);
+                if self.kernel_data[&kid].outputs.len() > 1 {
+                    kid = self.duplicate_kernel(x, kid);
+                }
+            } else {
+                kid = self.duplicate_kernel(x, kid);
+            }
+        }
+
+        let shape_id = self.push_shape(shape.clone());
+        let dtype = self.tensors[x].dtype;
+        let tid = self.tensors.push(TensorData { shape_id, dtype });
+
+        let op_id = self.kernels[kid].expand(op_id, &shape);
+        let kd = self.kernel_data.get_mut(&kid).unwrap();
+        let pos = kd.outputs.iter().position(|e| *e == x).unwrap();
+        kd.outputs[pos] = tid;
+        self.visited.insert(tid, (kid, op_id));
+        Ok(tid)
     }
 
     pub fn permute(&mut self, x: TensorId, axes: Vec<UAxis>) -> TensorId {
-        todo!()
+        let (kid, op_id) = self.duplicate_or_store(x).unwrap();
+        let new_shape = crate::shape::permute(self.shape(x), &axes);
+        let shape_id = self.push_shape(new_shape);
+        let dtype = self.tensors[x].dtype;
+        let tid = self.tensors.push(TensorData { shape_id, dtype });
+
+        let op_id = self.kernels[kid].permute(op_id, &axes);
+        let kd = self.kernel_data.get_mut(&kid).unwrap();
+        let pos = kd.outputs.iter().position(|e| *e == x).unwrap();
+        kd.outputs[pos] = tid;
+        self.visited.insert(tid, (kid, op_id));
+        tid
     }
 
     pub fn pad_zeros(&mut self, x: TensorId, padding: Vec<(i64, i64)>) -> TensorId {
-        todo!()
+        let (kid, op_id) = self.duplicate_or_store(x).unwrap();
+        let mut new_shape = self.shape(x).to_vec();
+        crate::shape::pad(&mut new_shape, &padding);
+        let shape_id = self.push_shape(new_shape);
+        let dtype = self.tensors[x].dtype;
+        let tid = self.tensors.push(TensorData { shape_id, dtype });
+
+        let op_id = self.kernels[kid].pad(op_id, &padding);
+        let kd = self.kernel_data.get_mut(&kid).unwrap();
+        let pos = kd.outputs.iter().position(|e| *e == x).unwrap();
+        kd.outputs[pos] = tid;
+        self.visited.insert(tid, (kid, op_id));
+        tid
     }
 
     pub fn get_or_autotune(
