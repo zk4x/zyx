@@ -158,8 +158,8 @@ pub fn into_axis(axis: Axis, rank: UAxis) -> Result<UAxis, ZyxError> {
     )
 }
 
-pub fn into_axes(axes: impl IntoIterator<Item = Axis>, rank: UAxis) -> Result<Vec<UAxis>, ZyxError> {
-    let mut res = Vec::new();
+pub fn into_axes(axes: impl IntoIterator<Item = Axis>, rank: UAxis) -> Result<Box<[UAxis]>, ZyxError> {
+    let mut res = Vec::with_capacity(rank);
     let mut visited = std::collections::BTreeSet::new();
     for axis in axes {
         let a = into_axis(axis, rank)?;
@@ -168,9 +168,9 @@ pub fn into_axes(axes: impl IntoIterator<Item = Axis>, rank: UAxis) -> Result<Ve
         }
     }
     if res.is_empty() {
-        return Ok((0..rank).collect());
+        return Ok((0..rank).collect::<Box<[UAxis]>>());
     }
-    Ok(res)
+    Ok(res.into_boxed_slice())
 }
 
 #[must_use]
