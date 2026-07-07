@@ -292,7 +292,71 @@ impl Runtime {
     }
 
     pub fn binary(&mut self, x: TensorId, y: TensorId, bop: BOp) -> Result<TensorId, ZyxError> {
-        todo!()
+        let shape_id = self.tensors[x].shape_id;
+        let dtype = self.tensors[x].dtype;
+        let tid = self.tensors.push(TensorData { shape_id, dtype });
+        let (kid_x, op_id_x) = self.visited[&x];
+        let (kid_y, op_id_y) = self.visited[&y];
+
+        let (kid, op_id) = if kid_x == kid_y {
+            let op_id = self.kernels[kid_x].binary(op_id_x, op_id_y, bop);
+            (kid_x, op_id)
+        } else {
+            let swap = self.kernels[kid_y].is_reduce() && !self.kernels[kid_x].is_reduce();
+            let (keep_kid, merge_kid, keep_op, merge_op) = if swap {
+                (kid_y, kid_x, op_id_y, op_id_x)
+            } else {
+                (kid_x, kid_y, op_id_x, op_id_y)
+            };
+
+            let Kernel {
+                ops: merge_ops,
+                head: merge_head,
+                custom_kernel_id,
+                ..
+            } = unsafe { self.kernels.remove_and_return(merge_kid) };
+            debug_assert!(custom_kernel_id.is_none());
+
+            let mut op_map: Map<OpId, OpId> = Map::with_hasher(BuildHasherDefault::new());
+            let mut i = merge_head;
+            while !i.is_null() {
+                let mut op = merge_ops[i].op.clone();
+                for param in op.parameters_mut() {
+                    if let Some(&new_param) = op_map.get(param) {
+                        *param = new_param;
+                    }
+                }
+                let new_op_id = self.kernels[keep_kid].push_back(op);
+                op_map.insert(i, new_op_id);
+                i = merge_ops[i].next;
+            }
+
+            for (_tid, (kid, op_id)) in self.visited.iter_mut() {
+                if *kid == merge_kid {
+                    *kid = keep_kid;
+                    if let Some(&new_op_id) = op_map.get(op_id) {
+                        *op_id = new_op_id;
+                    }
+                }
+            }
+
+            let merge_data = self.kernel_data.remove(&merge_kid).unwrap();
+            let keep_data = self.kernel_data.get_mut(&keep_kid).unwrap();
+            keep_data.outputs.extend(merge_data.outputs);
+            keep_data.loads.extend(merge_data.loads);
+            keep_data.stores.extend(merge_data.stores);
+
+            let op_id = if swap {
+                self.kernels[keep_kid].binary(op_map[&merge_op], keep_op, bop)
+            } else {
+                self.kernels[keep_kid].binary(keep_op, op_map[&merge_op], bop)
+            };
+            (keep_kid, op_id)
+        };
+
+        self.kernel_data.get_mut(&kid).unwrap().outputs.push(tid);
+        self.visited.insert(tid, (kid, op_id));
+        Ok(tid)
     }
 
     pub fn reduce(&mut self, x: TensorId, axes: Vec<UAxis>, rop: BOp) -> Result<TensorId, ZyxError> {
