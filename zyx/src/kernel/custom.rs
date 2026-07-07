@@ -66,10 +66,11 @@ impl CompiledKernel {
             dtype: self.dtype,
             kernel_id: self.kernel_id,
         };
-        let tensor_id = crate::RT
+        /*let tensor_id = crate::RT
             .lock()
             .graph
-            .push_wshape(crate::graph::Node::Custom(Box::new(ck)), shape.into_shape().collect());
+            .push_wshape(crate::graph::Node::Custom(Box::new(ck)), shape.into_shape().collect());*/
+        let tensor_id = todo!();
         crate::tensor::Tensor { id: tensor_id }
     }
 }

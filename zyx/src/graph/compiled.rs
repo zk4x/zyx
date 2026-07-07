@@ -9,7 +9,7 @@ use crate::{
     backend::{BufferId, Device, DeviceId, Event, MemoryPool, PoolId, ProgramId},
     graph::{Graph, Node, search::EGraph},
     hashers,
-    runtime::Runtime,
+    runtime3::Runtime,
     shape::Dim,
     slab::Slab,
     tensor::TensorId,

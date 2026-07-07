@@ -6,7 +6,7 @@ use crate::{
     dtype::Constant,
     graph::Node,
     kernel::{BOp, UOp},
-    runtime::{Runtime, deallocate_tensors},
+    runtime3::{Runtime, deallocate_tensors},
     shape::{Dim, UAxis},
     tensor::TensorId,
 };

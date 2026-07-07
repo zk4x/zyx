@@ -103,7 +103,6 @@ use nanoserde::{DeBin, SerBin};
 use std::{fmt::Display, hash::BuildHasherDefault, hash::Hash};
 
 pub use custom::CompiledKernel;
-pub(crate) use custom::CustomKernel;
 
 mod algebraic;
 /// Autotuning optimizations for kernel compilation.

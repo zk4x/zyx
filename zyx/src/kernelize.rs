@@ -10,7 +10,7 @@ use crate::{
     graph::{Graph, Node},
     kernel::{BOp, Kernel, MoveOp, Op, OpId, UOp},
     kernel_cache::KernelCache,
-    runtime::{Runtime, deallocate_tensors},
+    runtime3::{Runtime, deallocate_tensors},
     schedule::schedule,
     slab::{Slab, SlabId},
     tensor::TensorId,

@@ -11,7 +11,6 @@ use crate::backend::OpCapability;
 use crate::dtype::DType;
 use crate::error::ZyxError;
 use crate::kernel::{BOp, UOp};
-use crate::runtime::TempData;
 use crate::scalar::{Float, Scalar};
 use crate::scalar::{bf16, f16};
 use crate::shape::{Dim, IntoShape, UAxis, into_axes, into_axis};
@@ -3553,167 +3552,18 @@ impl From<&Tensor> for Tensor {
 impl<T: Scalar> From<T> for Tensor {
     fn from(value: T) -> Self {
         Tensor {
-            id: RT.lock().new_tensor(vec![1], value).unwrap(),
+            id: RT.lock().new_host_tensor(vec![1], value).unwrap(),
         }
-    }
-}
-
-impl<T: Scalar> TempData for T {
-    fn bytes(&self) -> Dim {
-        Dim::from(T::bit_size() / 8)
-    }
-
-    fn dtype(&self) -> DType {
-        T::dtype()
-    }
-
-    fn read(&self) -> Box<[u8]> {
-        self.to_ne_bytes().iter().copied().collect()
-    }
-}
-
-impl<T: Scalar> From<Vec<T>> for Tensor {
-    fn from(data: Vec<T>) -> Self {
-        Tensor {
-            id: RT.lock().new_tensor(vec![data.len() as Dim], data).unwrap(),
-        }
-    }
-}
-
-impl<T: Scalar> TempData for Vec<T> {
-    fn bytes(&self) -> Dim {
-        (self.len() * (T::bit_size() / 8) as usize) as Dim
-    }
-
-    fn dtype(&self) -> DType {
-        T::dtype()
-    }
-
-    fn read(&self) -> Box<[u8]> {
-        self.iter().flat_map(Scalar::to_ne_bytes).copied().collect()
-    }
-}
-
-impl<T: Scalar> From<Vec<Vec<T>>> for Tensor {
-    fn from(data: Vec<Vec<T>>) -> Self {
-        Tensor {
-            id: RT
-                .lock()
-                .new_tensor(vec![data.len() as Dim, data[0].len() as Dim], data)
-                .unwrap(),
-        }
-    }
-}
-
-impl<T: Scalar> TempData for Vec<Vec<T>> {
-    fn bytes(&self) -> Dim {
-        (self.len() * self[0].len() * (T::bit_size() / 8) as usize) as Dim
-    }
-
-    fn dtype(&self) -> DType {
-        T::dtype()
-    }
-
-    fn read(&self) -> Box<[u8]> {
-        self.iter().flatten().flat_map(Scalar::to_ne_bytes).copied().collect()
-    }
-}
-
-impl<T: Scalar> From<Vec<Vec<Vec<T>>>> for Tensor {
-    fn from(data: Vec<Vec<Vec<T>>>) -> Self {
-        Tensor {
-            id: RT
-                .lock()
-                .new_tensor(vec![data.len() as Dim, data[0].len() as Dim, data[0][0].len() as Dim], data)
-                .unwrap(),
-        }
-    }
-}
-
-impl<T: Scalar> TempData for Vec<Vec<Vec<T>>> {
-    fn bytes(&self) -> Dim {
-        (self.len() * self[0].len() * self[0][0].len() * (T::bit_size() / 8) as usize) as Dim
-    }
-
-    fn dtype(&self) -> DType {
-        T::dtype()
-    }
-
-    fn read(&self) -> Box<[u8]> {
-        self.iter()
-            .flatten()
-            .flatten()
-            .flat_map(Scalar::to_ne_bytes)
-            .copied()
-            .collect()
-    }
-}
-
-impl<T: Scalar> From<&'static [T]> for Tensor {
-    fn from(data: &'static [T]) -> Self {
-        let n = data.len() as Dim;
-        Tensor {
-            id: RT.lock().new_tensor(vec![n], data).unwrap(),
-        }
-    }
-}
-
-impl<T: Scalar> TempData for &'static [T] {
-    fn bytes(&self) -> Dim {
-        (self.len() * (T::bit_size() / 8) as usize) as Dim
-    }
-
-    fn dtype(&self) -> DType {
-        T::dtype()
-    }
-
-    fn read(&self) -> Box<[u8]> {
-        self.iter().flat_map(Scalar::to_ne_bytes).copied().collect()
-    }
-}
-
-impl<T: Scalar, const D0: usize> From<[T; D0]> for Tensor {
-    fn from(data: [T; D0]) -> Self {
-        Tensor {
-            id: RT.lock().new_tensor(vec![D0 as Dim], data).unwrap(),
-        }
-    }
-}
-
-impl<T: Scalar, const D0: usize> TempData for [T; D0] {
-    fn bytes(&self) -> Dim {
-        (D0 * (T::bit_size() / 8) as usize) as Dim
-    }
-
-    fn dtype(&self) -> DType {
-        T::dtype()
-    }
-
-    fn read(&self) -> Box<[u8]> {
-        self.iter().flat_map(Scalar::to_ne_bytes).copied().collect()
     }
 }
 
 impl<T: Scalar, const D0: usize, const D1: usize> From<[[T; D1]; D0]> for Tensor {
     fn from(data: [[T; D1]; D0]) -> Self {
         let data = unsafe { core::slice::from_raw_parts(data[0].as_ptr(), D0 * D1) };
+        let data = Box::from();
         Tensor {
             id: RT.lock().new_tensor(vec![D0 as Dim, D1 as Dim], data).unwrap(),
         }
-    }
-}
-
-impl<T: Scalar, const D0: usize, const D1: usize> TempData for [[T; D1]; D0] {
-    fn bytes(&self) -> Dim {
-        (D0 * D1 * (T::bit_size() / 8) as usize) as Dim
-    }
-
-    fn dtype(&self) -> DType {
-        T::dtype()
-    }
-
-    fn read(&self) -> Box<[u8]> {
-        self.iter().flatten().flat_map(Scalar::to_ne_bytes).copied().collect()
     }
 }
 
@@ -3726,54 +3576,15 @@ impl<T: Scalar, const D0: usize, const D1: usize, const D2: usize> From<[[[T; D2
     }
 }
 
-impl<T: Scalar, const D0: usize, const D1: usize, const D2: usize> TempData for [[[T; D2]; D1]; D0] {
-    fn bytes(&self) -> Dim {
-        (D0 * D1 * D2 * (T::bit_size() / 8) as usize) as Dim
-    }
-
-    fn dtype(&self) -> DType {
-        T::dtype()
-    }
-
-    fn read(&self) -> Box<[u8]> {
-        self.iter()
-            .flatten()
-            .flatten()
-            .flat_map(Scalar::to_ne_bytes)
-            .copied()
-            .collect()
-    }
-}
-
 impl<T: Scalar, const D0: usize, const D1: usize, const D2: usize, const D3: usize> From<[[[[T; D3]; D2]; D1]; D0]> for Tensor {
     fn from(data: [[[[T; D3]; D2]; D1]; D0]) -> Self {
         let data = unsafe { core::slice::from_raw_parts(data[0][0][0].as_ptr(), D0 * D1 * D2 * D3) };
         Tensor {
             id: RT
                 .lock()
-                .new_tensor(vec![D0 as Dim, D1 as Dim, D2 as Dim, D3 as Dim], data)
+                .new_host_tensor([D0 as Dim, D1 as Dim, D2 as Dim, D3 as Dim].into(), data)
                 .unwrap(),
         }
-    }
-}
-
-impl<T: Scalar, const D0: usize, const D1: usize, const D2: usize, const D3: usize> TempData for [[[[T; D3]; D2]; D1]; D0] {
-    fn bytes(&self) -> Dim {
-        (D0 * D1 * D2 * D3 * (T::bit_size() / 8) as usize) as Dim
-    }
-
-    fn dtype(&self) -> DType {
-        T::dtype()
-    }
-
-    fn read(&self) -> Box<[u8]> {
-        self.iter()
-            .flatten()
-            .flatten()
-            .flatten()
-            .flat_map(Scalar::to_ne_bytes)
-            .copied()
-            .collect()
     }
 }
 
