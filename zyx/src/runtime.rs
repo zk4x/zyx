@@ -381,6 +381,8 @@ impl Runtime {
     /// Unlike `load`, this does not launch the kernel — it only records the store in the IR.
     fn add_store(&mut self, x: TensorId) {
         let (kid, op_id) = self.visited.remove(&x).unwrap();
+        println!("Adding store to kernel at tid={x}, op_id={op_id}:");
+        self.kernels[kid].debug();
         let dtype = self.tensors[x].dtype;
         self.kernels[kid].store_contiguous(op_id, dtype);
         let kd = self.kernel_data.get_mut(&kid).unwrap();
@@ -455,14 +457,7 @@ impl Runtime {
             }
         }
 
-        if !self.kernel_data[&kid].outputs.contains(&x) {
-            self.add_store(x);
-            (kid, op_id) = self.create_load_kernel(x);
-            if self.kernel_data[&kid].outputs.len() > 1 {
-                kid = self.duplicate_kernel(x, kid);
-            }
-        }
-
+        // If values inside reduction need to be used elsewhere, we have to duplicate
         if self.kernel_data[&kid].outputs.len() > 1 {
             let reduce_dims_big = self.kernels[kid].is_preceded_by_reduce(op_id);
             if reduce_dims_big {
@@ -589,7 +584,6 @@ impl Runtime {
                 opt_seq.apply(&mut kernel, &dev_info);
                 let program_id = {
                     let device = &mut self.devices[device_id];
-                    let pool = &mut self.pools[pool_id];
                     device.compile(&kernel, self.debug.asm())?
                 };
                 self.programs.insert(cached_kid, program_id);
@@ -685,7 +679,6 @@ impl Runtime {
 
         // Add store op for the output
         self.kernels[kid].store_contiguous(op_id, dt);
-        let store_op_id = self.kernels[kid].tail;
 
         let kd = self.kernel_data.get_mut(&kid).unwrap();
         kd.stores.push(x);
@@ -693,7 +686,8 @@ impl Runtime {
         let store_tids = kd.stores.clone();
 
         // Clone kernel and drop unused ops on both original and clone
-        let mut kernel = self.kernels[kid].clone();
+        let kernel = self.kernels[kid].clone();
+        // TODO
         //self.kernels[kid].drop_unused_ops_by_params(vec![store_op_id], &loads);
         //let loads: Vec<TensorId> = kernel.drop_unused_ops_by_params(vec![store_op_id], &loads);
 
