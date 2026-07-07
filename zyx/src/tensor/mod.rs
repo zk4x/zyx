@@ -3512,6 +3512,14 @@ impl<T: Scalar> From<T> for Tensor {
     }
 }
 
+impl<T: Scalar, const D0: usize> From<[T; D0]> for Tensor {
+    fn from(data: [T; D0]) -> Self {
+        Tensor {
+            id: RT.lock().new_host_tensor(vec![D0 as Dim], Box::from(data)).unwrap(),
+        }
+    }
+}
+
 impl<T: Scalar, const D0: usize, const D1: usize> From<[[T; D1]; D0]> for Tensor {
     fn from(data: [[T; D1]; D0]) -> Self {
         let data = unsafe { core::slice::from_raw_parts(data[0].as_ptr(), D0 * D1) };

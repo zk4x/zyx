@@ -512,7 +512,6 @@ fn f16_relu() -> Result<(), ZyxError> {
     }
     let data: [f32; 6] = [-3.0, -1.0, 0.0, 1.0, 2.0, 5.0];
     let x = Tensor::from(data).cast(DType::F16);
-    Tensor::realize([&x])?;
     let z = x.relu().cast(DType::F32);
     let zdata: Vec<f32> = z.try_into()?;
     for (x, y) in data.iter().zip(zdata) {
@@ -528,7 +527,6 @@ fn f16_neg() -> Result<(), ZyxError> {
     }
     let data: [f32; 6] = [-3.0, -1.0, 0.0, 1.0, 2.0, 5.0];
     let x = Tensor::from(data).cast(DType::F16);
-    Tensor::realize([&x])?;
     let zdata: Vec<f32> = (-x).cast(DType::F32).try_into()?;
     for (x, y) in data.iter().zip(zdata) {
         assert!((-x).is_equal(y));
@@ -543,7 +541,6 @@ fn f16_exp2() -> Result<(), ZyxError> {
     }
     let data: [f32; 5] = [-2.0, -1.0, 0.0, 1.0, 2.0];
     let x = Tensor::from(data).cast(DType::F16);
-    Tensor::realize([&x])?;
     let zdata: Vec<f32> = x.exp2().cast(DType::F32).try_into()?;
     for (x, y) in data.iter().zip(zdata) {
         assert!(x.exp2().is_equal(y));
@@ -558,7 +555,6 @@ fn f16_log2() -> Result<(), ZyxError> {
     }
     let data: [f32; 5] = [0.5, 1.0, 2.0, 4.0, 8.0];
     let x = Tensor::from(data).cast(DType::F16);
-    Tensor::realize([&x])?;
     let zdata: Vec<f32> = x.log2().cast(DType::F32).try_into()?;
     for (x, y) in data.iter().zip(zdata) {
         assert!(x.log2().is_equal(y));
@@ -573,7 +569,6 @@ fn f16_sqrt() -> Result<(), ZyxError> {
     }
     let data: [f32; 4] = [0.0, 1.0, 4.0, 9.0];
     let x = Tensor::from(data).cast(DType::F16);
-    Tensor::realize([&x])?;
     let zdata: Vec<f32> = x.sqrt().cast(DType::F32).try_into()?;
     for (x, y) in data.iter().zip(zdata) {
         assert!(x.sqrt().is_equal(y));
@@ -588,7 +583,6 @@ fn f16_sin() -> Result<(), ZyxError> {
     }
     let data: [f32; 5] = [0.0, 0.5, 1.0, 1.5, 3.14159];
     let x = Tensor::from(data).cast(DType::F16);
-    Tensor::realize([&x])?;
     let zdata: Vec<f32> = x.sin().cast(DType::F32).try_into()?;
     println!("{zdata:?}");
     for (i, y) in zdata.iter().enumerate() {
@@ -609,7 +603,6 @@ fn bf16_relu() -> Result<(), ZyxError> {
     }
     let data: [f32; 6] = [-3.0, -1.0, 0.0, 1.0, 2.0, 5.0];
     let x = Tensor::from(data).cast(DType::BF16);
-    Tensor::realize([&x])?;
     let z = x.relu().cast(DType::F32);
     let zdata: Vec<f32> = z.try_into()?;
     for (x, y) in data.iter().zip(zdata) {
@@ -625,7 +618,6 @@ fn bf16_neg() -> Result<(), ZyxError> {
     }
     let data: [f32; 6] = [-3.0, -1.0, 0.0, 1.0, 2.0, 5.0];
     let x = Tensor::from(data).cast(DType::BF16);
-    Tensor::realize([&x])?;
     let zdata: Vec<f32> = (-x).cast(DType::F32).try_into()?;
     for (x, y) in data.iter().zip(zdata) {
         assert!((-x).is_equal(y));
@@ -640,7 +632,6 @@ fn bf16_exp2() -> Result<(), ZyxError> {
     }
     let data: [f32; 5] = [-2.0, -1.0, 0.0, 1.0, 2.0];
     let x = Tensor::from(data).cast(DType::BF16);
-    Tensor::realize([&x])?;
     let zdata: Vec<f32> = x.exp2().cast(DType::F32).try_into()?;
     for (x, y) in data.iter().zip(zdata) {
         assert!(x.exp2().is_equal(y));
@@ -655,7 +646,6 @@ fn bf16_log2() -> Result<(), ZyxError> {
     }
     let data: [f32; 5] = [0.5, 1.0, 2.0, 4.0, 8.0];
     let x = Tensor::from(data).cast(DType::BF16);
-    Tensor::realize([&x])?;
     let zdata: Vec<f32> = x.log2().cast(DType::F32).try_into()?;
     for (x, y) in data.iter().zip(zdata) {
         assert!(x.log2().is_equal(y));

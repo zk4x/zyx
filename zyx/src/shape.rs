@@ -130,6 +130,16 @@ impl IntoShape for &Vec<Dim> {
     }
 }
 
+impl IntoShape for Box<[Dim]> {
+    fn into_shape(self) -> impl Iterator<Item = Dim> {
+        self.into_vec().into_iter()
+    }
+
+    fn rank(&self) -> UAxis {
+        self.len()
+    }
+}
+
 pub fn into_axis(axis: Axis, rank: UAxis) -> Result<UAxis, ZyxError> {
     TryInto::<Axis>::try_into(rank).map_or_else(
         |_| {
@@ -158,7 +168,7 @@ pub fn into_axis(axis: Axis, rank: UAxis) -> Result<UAxis, ZyxError> {
     )
 }
 
-pub fn into_axes(axes: impl IntoIterator<Item = Axis>, rank: UAxis) -> Result<Box<[UAxis]>, ZyxError> {
+pub fn into_axes(axes: impl IntoIterator<Item = Axis>, rank: UAxis) -> Result<Vec<UAxis>, ZyxError> {
     let mut res = Vec::with_capacity(rank);
     let mut visited = std::collections::BTreeSet::new();
     for axis in axes {
@@ -168,9 +178,9 @@ pub fn into_axes(axes: impl IntoIterator<Item = Axis>, rank: UAxis) -> Result<Bo
         }
     }
     if res.is_empty() {
-        return Ok((0..rank).collect::<Box<[UAxis]>>());
+        return Ok((0..rank).collect());
     }
-    Ok(res.into_boxed_slice())
+    Ok(res)
 }
 
 #[must_use]
