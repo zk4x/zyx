@@ -208,6 +208,7 @@ impl Runtime {
         // Create kerenl for it
         let op = Op::LoadView(Box::new((T::dtype(), View::contiguous(&shape))));
         let tid = self.new_kernel(op, shape, dtype);
+        self.kernel_data.get_mut(&self.visited[&tid].0).unwrap().loads.push(tid);
 
         self.buffer_map.insert(tid, buffer_id);
 

@@ -216,6 +216,7 @@ impl<Id: SlabId, T> Slab<Id, T> {
         self.values.len() - self.empty.len() == 0
     }
 
+    #[allow(unused)]
     pub fn get_mut(&mut self, index: Id) -> Option<&mut T> {
         if self.empty.contains(&index) {
             return None;
