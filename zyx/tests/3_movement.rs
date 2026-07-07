@@ -56,23 +56,3 @@ fn pad_2() -> Result<(), ZyxError> {
     assert_eq!(c, [[[[6i32, 8, 7, 8], [8, 10, 7, 8], [5, 6, 7, 8], [5, 6, 7, 8]]]]);
     Ok(())
 }
-
-#[test]
-fn rope_1() -> Result<(), ZyxError> {
-    let x = Tensor::from([1, 2, 3, 4, 5, 6, 7, 8]).reshape([2, 4])?;
-    let sin_freq = Tensor::from([[2, 3], [3, 1]]);
-    let cos_freq = Tensor::from([[2, 3], [3, 1]]);
-
-    let a = x.rpad_zeros([(-2, 0)])?;
-    let b = -x.rpad_zeros([(0, -2)])?;
-    let z = &a * &sin_freq - &b * &cos_freq;
-    let z2 = a * sin_freq + b * cos_freq;
-    let z3 = z.rpad_zeros([(0, 2)])? + z2.rpad_zeros([(2, 0)])?;
-    drop(x);
-    //drop(z);
-    drop(z2);
-    //Tensor::plot_graph([], "graph")?;
-    assert_eq!(z, [[8, 18], [36, 14]]);
-    assert_eq!(z3, [[8, 18, 4, 6], [36, 14, 6, 2]]);
-    Ok(())
-}

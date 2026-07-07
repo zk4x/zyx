@@ -306,6 +306,12 @@ impl Runtime {
             let op_id = self.kernels[kid_x].binary(op_id_x, op_id_y, bop);
             (kid_x, op_id)
         } else {
+            let x_stores = !self.kernel_data.get(&kid_x).unwrap().stores.is_empty();
+            let y_stores = !self.kernel_data.get(&kid_y).unwrap().stores.is_empty();
+            if x_stores || y_stores {
+                todo!("binary with stores not yet handled (kernelize.rs materializes input via add_store before merge)");
+            }
+
             let swap = self.kernels[kid_y].is_reduce() && !self.kernels[kid_x].is_reduce();
             let (keep_kid, merge_kid, keep_op, merge_op) = if swap {
                 (kid_y, kid_x, op_id_y, op_id_x)
