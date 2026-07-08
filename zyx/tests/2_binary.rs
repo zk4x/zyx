@@ -4,7 +4,7 @@
 use zyx::{DType, Scalar, Tensor, ZyxError};
 
 #[test]
-fn add() -> Result<(), ZyxError> {
+fn add_1() -> Result<(), ZyxError> {
     let datax: [f32; 10] = [-3.285, 0.001, 1.780, 5.675, -8.521, -0.456, 1.215, -3.474, -4.128, -7.657];
     let datay: [f32; 10] = [2.772, -8.327, 1.945, 9.286, 3.989, 8.105, -5.307, 2.865, 3.106, 3.111];
     let x = Tensor::from(datax);

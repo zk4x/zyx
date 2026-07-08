@@ -442,17 +442,41 @@ impl Runtime {
     /// Unlike `load`, this does not launch the kernel — it only records the store in the IR.
     fn add_store(&mut self, x: TensorId) -> Result<(), ZyxError> {
         let &(kid, op_id) = self.visited.get(&x).unwrap();
-        let outputs_empty = {
+        let (outputs_empty, count) = {
             let kd = self.kernel_data.get_mut(&kid).unwrap();
-            if !kd.stores.contains(&x) {
+
+            // Remove ALL occurrences of x (handles reference counting from retain/clone)
+            let prev_len = kd.outputs.len();
+            kd.outputs.retain(|&e| e != x);
+            let count = prev_len - kd.outputs.len();
+            debug_assert!(count > 0, "add_store called for tid not in outputs");
+
+            // Only add StoreView if x isn't already realized
+            if !self.buffer_map.contains_key(&x) && !kd.stores.contains(&x) {
                 let dtype = self.tensors[x].dtype;
                 self.kernels[kid].store_contiguous(op_id, dtype);
+                kd.stores.push(x);
             }
-            kd.stores.push(x);
-            let pos = kd.outputs.iter().position(|e| *e == x).unwrap();
-            kd.outputs.remove(pos);
-            kd.outputs.is_empty()
+
+            (kd.outputs.is_empty(), count)
         };
+
+        // Create load kernel so the tensor remains usable (visited must point to a live kernel)
+        let shape = self.shape(x).to_vec();
+        let dtype = self.tensors[x].dtype;
+        let mut kernel = Kernel::new(DeviceId::AUTO);
+        let load_op_id = kernel.load_contiguous(dtype, &shape);
+        let load_kid = self.kernels.push(kernel);
+        self.kernel_data.insert(
+            load_kid,
+            KernelData {
+                outputs: vec![x; count],
+                loads: vec![x],
+                stores: Vec::new(),
+            },
+        );
+        self.visited.insert(x, (load_kid, load_op_id));
+
         if outputs_empty {
             self.materialize_kernel(kid)?;
         }
@@ -762,17 +786,7 @@ impl Runtime {
         debug_assert!(kd.outputs.is_empty(), "all outputs must be stored before materialize");
 
         let loads = kd.loads.clone();
-
-        // Count store occurrences per tid, preserving first-occurrence order
-        let mut store_order: Vec<TensorId> = Vec::new();
-        let mut store_counts: std::collections::BTreeMap<TensorId, usize> = std::collections::BTreeMap::new();
-        for &tid in &kd.stores {
-            let entry = store_counts.entry(tid).or_insert(0);
-            if *entry == 0 {
-                store_order.push(tid);
-            }
-            *entry += 1;
-        }
+        let store_tids: Vec<TensorId> = kd.stores; // already deduplicated by add_store
 
         // Pick device and pool
         self.initialize_devices()?;
@@ -827,7 +841,7 @@ impl Runtime {
 
         // Allocate store buffers (one per unique tid)
         let mut kernel_buffers = BTreeSet::new();
-        for &tid in &store_order {
+        for &tid in &store_tids {
             let bytes = self.shape(tid).iter().product::<Dim>() as usize * (self.dtype(tid).bit_size() / 8) as usize;
             let alloc_bytes = bytes as Dim + Dim::from(self.dtype(tid).bit_size() / 8);
             let (buf, event) = self.pools[pool_id].allocate(alloc_bytes)?;
@@ -846,12 +860,12 @@ impl Runtime {
             self.kernels.remove_and_return(kid)
         };
 
-        // Build args: load buffers first, then store buffers (one per unique tid)
+        // Build args: load buffers first, then store buffers
         let mut args = Vec::new();
         for &tid in &loads {
             args.push(self.buffer_map[&tid].buffer);
         }
-        for &tid in &store_order {
+        for &tid in &store_tids {
             args.push(self.buffer_map[&tid].buffer);
         }
 
@@ -865,26 +879,6 @@ impl Runtime {
 
         let event = self.devices[dev_id].launch(dev_prog, &mut self.pools[pool_id], &args, event_wait_list)?;
         self.events.insert(kernel_buffers, event);
-
-        // Create load kernels for all stored outputs so tensors remain usable.
-        // Each tid appears in outputs as many times as it appeared in stores.
-        for &tid in &store_order {
-            let count = store_counts[&tid];
-            let shape = self.shape(tid).to_vec();
-            let dtype = self.tensors[tid].dtype;
-            let mut kernel = Kernel::new(DeviceId::AUTO);
-            let op_id = kernel.load_contiguous(dtype, &shape);
-            let kid = self.kernels.push(kernel);
-            self.kernel_data.insert(
-                kid,
-                KernelData {
-                    outputs: vec![tid; count],
-                    loads: vec![tid],
-                    stores: Vec::new(),
-                },
-            );
-            self.visited.insert(tid, (kid, op_id));
-        }
 
         Ok(())
     }
@@ -940,7 +934,15 @@ impl Runtime {
         // Slow path: add store for each output, last one triggers materialize
         self.initialize_devices()?;
         let (kid, _) = self.visited[&x];
-        let outputs: Vec<TensorId> = self.kernel_data[&kid].outputs.clone();
+        // Deduplicate: add_store removes ALL occurrences at once and creates a load kernel,
+        // so we must process each unique tid only once
+        let mut seen = std::collections::BTreeSet::new();
+        let outputs: Vec<TensorId> = self.kernel_data[&kid]
+            .outputs
+            .iter()
+            .copied()
+            .filter(|&tid| seen.insert(tid))
+            .collect();
         for &tid in &outputs {
             self.add_store(tid)?;
         }
