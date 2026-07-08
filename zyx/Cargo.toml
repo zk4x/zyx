@@ -56,7 +56,8 @@ default = [
     #"tenstorrent",
     #"wgpu",
     #"py",
-    #"time"
+    #"time",
+    "debug_tensor_op",
 ]
 
 # Enables C/Clang CPU backend

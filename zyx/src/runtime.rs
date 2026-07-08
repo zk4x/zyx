@@ -166,14 +166,15 @@ impl Runtime {
 
     pub fn release(&mut self, x: TensorId) {
         let Some(&(kid, _)) = self.visited.get(&x) else {
-            return;
+            panic!("Kernel must exist");
         };
         let Some(kd) = self.kernel_data.get_mut(&kid) else {
-            return;
+            panic!("Kernel must exist");
         };
         kd.outputs.iter().position(|e| *e == x).map(|i| kd.outputs.remove(i));
         if kd.outputs.is_empty() {
             if !self.kernels[kid].contains_stores() {
+                println!("Remove kernel {kid:?} after releasing {x}");
                 self.kernels.remove(kid);
                 self.kernel_data.remove(&kid);
             } else {
@@ -324,6 +325,7 @@ impl Runtime {
         let tid = self.tensors.push(TensorData { shape_id, dtype });
         let (kid_x, op_id_x) = self.visited[&x];
         let (kid_y, op_id_y) = self.visited[&y];
+        println!("Binary input kernels: {kid_x:?} and {kid_y:?}");
 
         let (kid, op_id) = if kid_x == kid_y {
             let op_id = self.kernels[kid_x].binary(op_id_x, op_id_y, bop);
@@ -342,6 +344,7 @@ impl Runtime {
                 (kid_x, kid_y, op_id_x, op_id_y)
             };
 
+            println!("Remove kernel {merge_kid:?}");
             let Kernel {
                 ops: merge_ops,
                 head: merge_head,
@@ -389,6 +392,10 @@ impl Runtime {
 
         self.kernel_data.get_mut(&kid).unwrap().outputs.push(tid);
         self.visited.insert(tid, (kid, op_id));
+
+        println!("Binary kernel kid={kid:?}, op_id={op_id}, tid={tid}");
+        self.kernels[kid].debug();
+
         Ok(tid)
     }
 
@@ -446,9 +453,6 @@ impl Runtime {
         let new_loads = kernel.drop_unused_ops_by_params(new_params, &orig_loads);
 
         let kd = self.kernel_data.get_mut(&kid).unwrap();
-        let pos = kd.outputs.iter().position(|e| *e == x).unwrap();
-        kd.outputs.remove(pos);
-
         let old_outputs: Vec<TensorId> = kd.outputs.clone();
         let old_params: Vec<OpId> = old_outputs.iter().map(|tid| self.visited[tid].1).collect();
         let old_loads = self.kernels[kid].drop_unused_ops_by_params(old_params, &orig_loads);
@@ -510,9 +514,7 @@ impl Runtime {
         let tid = self.tensors.push(TensorData { shape_id, dtype });
 
         let op_id = self.kernels[kid].reshape(op_id, &shape);
-        let kd = self.kernel_data.get_mut(&kid).unwrap();
-        let pos = kd.outputs.iter().position(|e| *e == x).unwrap();
-        kd.outputs[pos] = tid;
+        self.kernel_data.get_mut(&kid).unwrap().outputs.push(tid);
         self.visited.insert(tid, (kid, op_id));
         tid
     }
@@ -557,9 +559,7 @@ impl Runtime {
         let tid = self.tensors.push(TensorData { shape_id, dtype });
 
         let op_id = self.kernels[kid].expand(op_id, &shape);
-        let kd = self.kernel_data.get_mut(&kid).unwrap();
-        let pos = kd.outputs.iter().position(|e| *e == x).unwrap();
-        kd.outputs[pos] = tid;
+        self.kernel_data.get_mut(&kid).unwrap().outputs.push(tid);
         self.visited.insert(tid, (kid, op_id));
         Ok(tid)
     }
@@ -574,9 +574,7 @@ impl Runtime {
         let tid = self.tensors.push(TensorData { shape_id, dtype });
 
         let op_id = self.kernels[kid].permute(op_id, &axes);
-        let kd = self.kernel_data.get_mut(&kid).unwrap();
-        let pos = kd.outputs.iter().position(|e| *e == x).unwrap();
-        kd.outputs[pos] = tid;
+        self.kernel_data.get_mut(&kid).unwrap().outputs.push(tid);
         self.visited.insert(tid, (kid, op_id));
         tid
     }
@@ -592,9 +590,7 @@ impl Runtime {
         let tid = self.tensors.push(TensorData { shape_id, dtype });
 
         let op_id = self.kernels[kid].pad(op_id, &padding);
-        let kd = self.kernel_data.get_mut(&kid).unwrap();
-        let pos = kd.outputs.iter().position(|e| *e == x).unwrap();
-        kd.outputs[pos] = tid;
+        self.kernel_data.get_mut(&kid).unwrap().outputs.push(tid);
         self.visited.insert(tid, (kid, op_id));
         tid
     }
