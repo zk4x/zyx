@@ -631,6 +631,11 @@ impl Runtime {
     pub fn expand(&mut self, x: TensorId, shape: Vec<Dim>) -> Result<TensorId, ZyxError> {
         #[cfg(feature = "debug_tensor_op")]
         println!("runtime::expand(x={x}, shape={shape:?})");
+        let sh = self.shape(x);
+        if shape == sh {
+            self.retain(x);
+            return Ok(x);
+        }
         let (mut kid, mut op_id) = self.visited[&x];
 
         // Expand also checks is_preceded_by_compute (unlike permute/reshape/pad)
@@ -664,6 +669,11 @@ impl Runtime {
     pub fn permute(&mut self, x: TensorId, axes: Vec<UAxis>) -> TensorId {
         #[cfg(feature = "debug_tensor_op")]
         println!("runtime::permute(x={x}, axes={axes:?})");
+        let sh = self.shape(x);
+        if axes.iter().copied().eq(0..sh.len() as UAxis) {
+            self.retain(x);
+            return x;
+        }
         let (kid, op_id) = self.duplicate_or_store(x).unwrap();
         let new_shape = crate::shape::permute(self.shape(x), &axes);
         let shape_id = self.push_shape(new_shape);
