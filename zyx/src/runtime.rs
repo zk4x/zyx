@@ -498,6 +498,7 @@ impl Runtime {
         let old_loads = self.kernels[kid].drop_unused_ops_by_params(old_params, &orig_loads);
         kd.loads = old_loads;
 
+        let old_op = self.visited[&x].1;
         let stores = kd.stores.clone();
         let new_kid = self.kernels.push(kernel);
         self.kernel_data.insert(
@@ -508,6 +509,7 @@ impl Runtime {
                 stores,
             },
         );
+        self.visited.insert(x, (new_kid, old_op));
         new_kid
     }
 
