@@ -786,6 +786,11 @@ impl Runtime {
         let loads = kd.loads.clone();
         let store_tids: Vec<TensorId> = kd.stores; // already deduplicated by add_store
 
+        debug_assert!(loads.iter().all(|&tid| {
+            self.buffer_map.contains_key(&tid)
+                || self.kernel_data.values().any(|d| d.outputs.contains(&tid))
+        }), "load tid must be realized or in some kernel's outputs");
+
         // Debug: ensure each store tid is in exactly one kernel's outputs
         if cfg!(debug_assertions) {
             for &tid in &store_tids {
@@ -795,6 +800,16 @@ impl Runtime {
                     .count();
                 debug_assert!(count <= 1, "store tid={tid} is in {count} kernels' outputs");
             }
+        }
+
+        // Recursively materialize any un-realized loads first
+        let unrealized: Vec<KernelId> = loads
+            .iter()
+            .filter(|&&tid| !self.buffer_map.contains_key(&tid))
+            .map(|&tid| self.visited[&tid].0)
+            .collect();
+        for producer_kid in unrealized {
+            self.materialize_kernel(producer_kid)?;
         }
 
         // Pick device and pool
