@@ -859,15 +859,17 @@ impl Runtime {
             }
         }
 
-        // Recursively materialize any un-realized loads first
-        let unrealized: Vec<KernelId> = loads
-            .iter()
-            .filter(|&&tid| !self.buffer_map.contains_key(&tid))
-            .map(|&tid| self.visited[&tid].0)
-            .collect();
-        for producer_kid in unrealized {
-            self.materialize_kernel(producer_kid)?;
+        // Recursively materialize any un-realized loads first via add_store.
+        for &tid in &loads {
+            if !self.buffer_map.contains_key(&tid) {
+                let (producer_kid, _) = self.visited[&tid];
+                if producer_kid != kid {
+                    self.add_store(tid)?;
+                }
+            }
         }
+        debug_assert!(loads.iter().all(|&tid| self.buffer_map.contains_key(&tid)),
+            "all loads must be realized after recursive materialization");
 
         // Pick device and pool
         self.initialize_devices()?;
