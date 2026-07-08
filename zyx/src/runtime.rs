@@ -441,6 +441,23 @@ impl Runtime {
         todo!()
     }
 
+    // ----- ASYNC EVENT RULES -----
+    //
+    // host_to_pool is async: the host-side source buffer must stay valid
+    // until the returned event is synced via sync_events.
+    //
+    // Kernel launch is async: ALL buffers used by the kernel (both loads
+    // and stores) must stay valid until the kernel's event is consumed.
+    //
+    // Events are tracked in self.events: Map<BTreeSet<BufferId>, Event>.
+    // The key set must include every buffer the kernel touches, so future
+    // operations can find and wait on the event before reusing the buffer.
+    //
+    // When extracting a pending event for a buffer: iterate events.keys(),
+    // find the set containing the buffer, remove the event, and add it to
+    // the wait list passed to the next launch. A removed event is consumed.
+    // -----------------------------
+
     /// Adds a StoreView for x to its kernel, removes x from visited and outputs.
     /// Unlike `load`, this does not launch the kernel — it only records the store in the IR.
     fn add_store(&mut self, x: TensorId) -> Result<(), ZyxError> {
@@ -769,6 +786,10 @@ impl Runtime {
                 }
                 self.pools[buf_id.pool].pool_to_host(src, &mut byte_slice, ev)?;
                 self.buffer_map.remove(&tid);
+                // Deallocate old buffer if no other mapping uses it
+                if !self.buffer_map.values().any(|b| b.buffer == src) {
+                    self.pools[buf_id.pool].deallocate(src, vec![]);
+                }
 
                 let (dst, event) = self.pools[pool_id].allocate(bytes as Dim)?;
                 let dst_global = BufferId {
@@ -792,6 +813,12 @@ impl Runtime {
 
         // Allocate store buffers (one per unique tid)
         let mut kernel_buffers = BTreeSet::new();
+        // All kernel buffers (loads + stores) must be tracked in kernel_buffers
+        // so future operations can find and wait on the kernel's event before
+        // reusing any of these buffers.
+        for &tid in &loads {
+            kernel_buffers.insert(self.buffer_map[&tid]);
+        }
         for &tid in &store_tids {
             let bytes = self.shape(tid).iter().product::<Dim>() as usize * (self.dtype(tid).bit_size() / 8) as usize;
             let alloc_bytes = bytes as Dim + Dim::from(self.dtype(tid).bit_size() / 8);
