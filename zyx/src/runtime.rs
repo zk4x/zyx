@@ -165,16 +165,19 @@ impl Runtime {
     }
 
     pub fn release(&mut self, x: TensorId) {
-        let Some(&(kid, _)) = self.visited.get(&x) else { return; };
-        let Some(kd) = self.kernel_data.get_mut(&kid) else { return; };
+        let Some(&(kid, _)) = self.visited.get(&x) else {
+            return;
+        };
+        let Some(kd) = self.kernel_data.get_mut(&kid) else {
+            return;
+        };
         kd.outputs.iter().position(|e| *e == x).map(|i| kd.outputs.remove(i));
         if kd.outputs.is_empty() {
             if !self.kernels[kid].contains_stores() {
                 self.kernels.remove(kid);
                 self.kernel_data.remove(&kid);
             } else {
-                self.kernels.remove(kid);
-                self.kernel_data.remove(&kid);
+                todo!("Need to launch kernel")
             }
         }
     }
