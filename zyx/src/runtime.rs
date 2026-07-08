@@ -569,11 +569,6 @@ impl Runtime {
             (kid, op_id) = self.visited[&x];
         }
 
-        if !self.kernel_data[&kid].outputs.contains(&x) {
-            self.add_store(x)?;
-            (kid, op_id) = self.visited[&x];
-        }
-
         if self.kernel_data[&kid].outputs.len() > 1 {
             let reduce_dims_big = self.kernels[kid].is_preceded_by_reduce(op_id);
             if reduce_dims_big {
