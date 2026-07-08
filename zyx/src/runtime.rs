@@ -174,11 +174,10 @@ impl Runtime {
         kd.outputs.iter().position(|e| *e == x).map(|i| kd.outputs.remove(i));
         if kd.outputs.is_empty() {
             if !self.kernels[kid].contains_stores() {
-                println!("Remove kernel {kid:?} after releasing {x}");
                 self.kernels.remove(kid);
                 self.kernel_data.remove(&kid);
             } else {
-                todo!("Need to launch kernel")
+                self.materialize_kernel(kid).unwrap();
             }
         }
     }
@@ -325,7 +324,7 @@ impl Runtime {
         let tid = self.tensors.push(TensorData { shape_id, dtype });
         let (kid_x, op_id_x) = self.visited[&x];
         let (kid_y, op_id_y) = self.visited[&y];
-        println!("Binary input kernels: {kid_x:?} and {kid_y:?}");
+        //println!("Binary input kernels: {kid_x:?} and {kid_y:?}");
 
         let (kid, op_id) = if kid_x == kid_y {
             let op_id = self.kernels[kid_x].binary(op_id_x, op_id_y, bop);
@@ -344,7 +343,7 @@ impl Runtime {
                 (kid_x, kid_y, op_id_x, op_id_y)
             };
 
-            println!("Remove kernel {merge_kid:?}");
+            //println!("Remove kernel {merge_kid:?}");
             let Kernel {
                 ops: merge_ops,
                 head: merge_head,
@@ -392,9 +391,6 @@ impl Runtime {
 
         self.kernel_data.get_mut(&kid).unwrap().outputs.push(tid);
         self.visited.insert(tid, (kid, op_id));
-
-        println!("Binary kernel kid={kid:?}, op_id={op_id}, tid={tid}");
-        self.kernels[kid].debug();
 
         Ok(tid)
     }
@@ -662,6 +658,132 @@ impl Runtime {
         Ok((program_id, timing))
     }
 
+    /// Materializes a kernel by adding store ops for all its outputs, compiling,
+    /// launching, then creating load kernels for each output so the tensors remain
+    /// usable in further graph construction. The kernel is consumed (removed from
+    /// the slab) and cached in `kernel_map`/`programs` for reuse.
+    fn materialize_kernel(&mut self, kid: KernelId) -> Result<(), ZyxError> {
+        let kd = self.kernel_data.remove(&kid).unwrap();
+
+        // Debug: stores and outputs must be disjoint sets
+        debug_assert!({
+            let stores_set: BTreeSet<TensorId> = kd.stores.iter().copied().collect();
+            let outputs_set: BTreeSet<TensorId> = kd.outputs.iter().copied().collect();
+            stores_set.is_disjoint(&outputs_set)
+        });
+
+        // Add store for each output
+        for &tid in &kd.outputs {
+            let &(_, op_id) = self.visited.get(&tid).unwrap();
+            let dtype = self.tensors[tid].dtype;
+            self.kernels[kid].store_contiguous(op_id, dtype);
+        }
+
+        let loads = kd.loads.clone();
+        let store_tids: Vec<TensorId> = kd.outputs.iter().copied().collect();
+
+        // Pick device and pool
+        self.initialize_devices()?;
+        let mut dev_ids: Vec<DeviceId> = self.devices.ids().collect();
+        dev_ids.sort_unstable_by_key(|&dev_id| self.devices[dev_id].free_compute());
+        dev_ids.reverse();
+        let dev_id = *dev_ids
+            .first()
+            .ok_or_else(|| ZyxError::AllocationError("no available device".into()))?;
+        let pool_id = self.devices[dev_id].memory_pool_id();
+
+        // Ensure loads are in target pool
+        let mut event_wait_list = Vec::new();
+        for &tid in &loads {
+            let buf_id = self.buffer_map[&tid];
+            if buf_id.pool != pool_id {
+                let src = buf_id.buffer;
+                let bytes = self.shape(tid).iter().product::<Dim>() as usize
+                    * (self.dtype(tid).bit_size() / 8) as usize;
+                let mut byte_slice = vec![0u8; bytes];
+
+                let mut ev = Vec::new();
+                for buffers in self.events.keys() {
+                    if buffers.contains(&buf_id) {
+                        let buffers = buffers.clone();
+                        let event = self.events.remove(&buffers).unwrap();
+                        ev.push(event);
+                        break;
+                    }
+                }
+                self.pools[buf_id.pool].pool_to_host(src, &mut byte_slice, ev)?;
+                self.buffer_map.remove(&tid);
+
+                let (dst, event) = self.pools[pool_id].allocate(bytes as Dim)?;
+                let dst_global = BufferId {
+                    pool: pool_id,
+                    buffer: dst,
+                };
+                let event =
+                    self.pools[pool_id].host_to_pool(&byte_slice, dst, vec![event])?;
+                self.pools[pool_id].sync_events(vec![event])?;
+                self.buffer_map.insert(tid, dst_global);
+            } else {
+                for buffers in self.events.keys() {
+                    if buffers.contains(&buf_id) {
+                        let buffers = buffers.clone();
+                        let event = self.events.remove(&buffers).unwrap();
+                        event_wait_list.push(event);
+                        break;
+                    }
+                }
+            }
+        }
+
+        // Allocate store buffers
+        let mut kernel_buffers = BTreeSet::new();
+        for &tid in &store_tids {
+            let bytes = self.shape(tid).iter().product::<Dim>() as usize
+                * (self.dtype(tid).bit_size() / 8) as usize;
+            let alloc_bytes = bytes as Dim + Dim::from(self.dtype(tid).bit_size() / 8);
+            let (buf, event) = self.pools[pool_id].allocate(alloc_bytes)?;
+            let global_id = BufferId {
+                pool: pool_id,
+                buffer: buf,
+            };
+            self.buffer_map.insert(tid, global_id);
+            kernel_buffers.insert(global_id);
+            event_wait_list.push(event);
+        }
+
+        // Remove kernel from the slab (it is consumed)
+        let kernel = unsafe { self.kernels.remove_and_return(kid) };
+
+        // Build args: load buffers first, then store buffers
+        let mut args = Vec::new();
+        for &tid in &loads {
+            args.push(self.buffer_map[&tid].buffer);
+        }
+        for &tid in &store_tids {
+            args.push(self.buffer_map[&tid].buffer);
+        }
+
+        // Compile and launch (caches in kernel_map / programs)
+        let debug = self.debug;
+        if debug.sched() {
+            kernel.debug();
+        }
+        let (flop, read, write) = kernel.flop_mem_rw();
+        let (dev_prog, _timing) =
+            self.get_or_autotune(kernel, dev_id, pool_id, flop, read, write)?;
+
+        let event = self.devices[dev_id]
+            .launch(dev_prog, &mut self.pools[pool_id], &args, event_wait_list)?;
+        self.events.insert(kernel_buffers, event);
+
+        // Create load kernels for all outputs so tensors remain usable
+        for &tid in &kd.outputs {
+            self.create_load_kernel(tid);
+        }
+
+        Ok(())
+    }
+
     fn get_or_add_dev_info(&mut self, device_info: &DeviceInfo) -> DeviceInfoId {
         if let Some(&dev_info_id) = self.device_infos.get(device_info) {
             dev_info_id
@@ -708,6 +830,7 @@ impl Runtime {
 
         self.initialize_devices()?;
 
+        let dt = self.tensors[x].dtype;
         let (kid, op_id) = self.visited[&x];
 
         // Add store op for the output
