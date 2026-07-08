@@ -90,6 +90,7 @@ pub struct Runtime {
     shape_map: Map<Vec<Dim>, ShapeId>,
     shapes: Slab<ShapeId, Vec<Dim>>,
     visited: Map<TensorId, (KernelId, OpId)>,
+    pending_stores: Map<TensorId, KernelId>,
     kernel_data: Map<KernelId, KernelData>,
     kernels: Slab<KernelId, Kernel>,
     kernel_map: Map<Kernel, KernelId>,
@@ -116,6 +117,7 @@ impl Runtime {
             shape_map: Map::with_hasher(BuildHasherDefault::new()),
             shapes: Slab::new(),
             visited: Map::with_hasher(BuildHasherDefault::new()),
+            pending_stores: Map::with_hasher(BuildHasherDefault::new()),
             kernel_data: Map::with_hasher(BuildHasherDefault::new()),
             kernels: Slab::new(),
             kernel_map: Map::with_hasher(BuildHasherDefault::new()),
@@ -173,7 +175,7 @@ impl Runtime {
             panic!("Kernel must exist");
         };
         kd.outputs.iter().position(|e| *e == x).map(|i| kd.outputs.remove(i));
-        if !kd.outputs.contains(&x) && !self.buffer_map.contains_key(&x) {
+        if !kd.outputs.contains(&x) && !self.buffer_map.contains_key(&x) && !self.pending_stores.contains_key(&x) {
             self.tensors.remove(x);
         }
         if kd.outputs.is_empty() {
@@ -533,13 +535,15 @@ impl Runtime {
             debug_assert!(count > 0, "add_store called for tid not in outputs");
 
             // Only add StoreView if x isn't already realized
-            if !self.buffer_map.contains_key(&x) && !kd.stores.contains(&x) {
+            if !self.buffer_map.contains_key(&x) && !self.pending_stores.contains_key(&x) {
                 // Invariant: a kernel must never both load and store the same tensor
                 debug_assert!(!kd.loads.contains(&x), "kernel {kid:?} both loads and stores tid {x}");
 
                 let dtype = self.tensors[x].dtype;
                 self.kernels[kid].store_contiguous(op_id, dtype);
                 kd.stores.push(x);
+
+                self.pending_stores.insert(x, kid);
             }
 
             (kd.outputs.is_empty(), count)
@@ -851,6 +855,12 @@ impl Runtime {
         eprintln!("E: Materialize kernel and kernel_data.remove({kid:?})");
         let kd = self.kernel_data.remove(&kid).unwrap();
 
+        // Remove kernel from the slab (it is consumed)
+        let kernel = unsafe {
+            eprintln!("F: kernels.remove_and_return({kid:?})");
+            self.kernels.remove_and_return(kid)
+        };
+
         debug_assert!(kd.outputs.is_empty(), "all outputs must be stored before materialize");
 
         let loads = kd.loads.clone();
@@ -869,28 +879,23 @@ impl Runtime {
         );
 
         // Debug: ensure each store tid is in exactly one kernel's outputs
-        if cfg!(debug_assertions) {
+        #[cfg(debug_assertions)]
+        {
             for &tid in &store_tids {
                 let count = self.kernel_data.iter().filter(|(_, d)| d.outputs.contains(&tid)).count();
                 debug_assert!(count <= 1, "store tid={tid} is in {count} kernels' outputs");
             }
         }
 
-        // Recursively materialize any un-realized loads first via add_store.
-        // A kernel must never both load and store the same tid — assert this.
-        let unrealized_tensors: Set<TensorId> = loads.iter().filter(|x| !self.buffer_map.contains_key(&x)).copied().collect();
-        // We have to materialize kernel that produces tid
-        // But which one is it?
-        // TODO later replace this crude search with something better
-        let kids: Vec<KernelId> = self.kernels.ids().collect();
-        for id in kids {
-            println!("yo kid={id:?}");
-            if self.kernel_data[&id].stores.iter().any(|x| unrealized_tensors.contains(x)) {
-                for output in self.kernel_data[&id].outputs.clone().into_iter() {
+        // Recursive materialization
+        for load in loads.iter() {
+            if let Some(kid) = self.pending_stores.get(&load) {
+                for output in self.kernel_data[&kid].outputs.clone().into_iter() {
                     self.add_store(output)?;
                 }
             }
         }
+
         debug_assert!(
             loads.iter().all(|&tid| self.buffer_map.contains_key(&tid)),
             "all loads must be realized after recursive materialization"
@@ -968,15 +973,10 @@ impl Runtime {
                 buffer: buf,
             };
             self.buffer_map.insert(tid, global_id);
+            self.pending_stores.remove(&tid);
             kernel_buffers.insert(global_id);
             event_wait_list.push(event);
         }
-
-        // Remove kernel from the slab (it is consumed)
-        let kernel = unsafe {
-            eprintln!("F: kernels.remove_and_return({kid:?})");
-            self.kernels.remove_and_return(kid)
-        };
 
         // Build args: load buffers first, then store buffers
         let mut args = Vec::new();
