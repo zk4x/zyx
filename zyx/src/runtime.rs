@@ -174,7 +174,9 @@ impl Runtime {
         kd.outputs.iter().position(|e| *e == x).map(|i| kd.outputs.remove(i));
         if kd.outputs.is_empty() {
             if !self.kernels[kid].contains_stores() {
+                eprintln!("A: kernels.remove({kid:?})");
                 self.kernels.remove(kid);
+                eprintln!("B: kernel_data.remove({kid:?})");
                 self.kernel_data.remove(&kid);
             } else {
                 self.materialize_kernel(kid).unwrap();
@@ -349,7 +351,10 @@ impl Runtime {
                 head: merge_head,
                 custom_kernel_id,
                 ..
-            } = unsafe { self.kernels.remove_and_return(merge_kid) };
+            } = unsafe {
+                eprintln!("C: kernels.remove_and_return({merge_kid:?})");
+                self.kernels.remove_and_return(merge_kid)
+            };
             debug_assert!(custom_kernel_id.is_none());
 
             let mut op_map: Map<OpId, OpId> = Map::with_hasher(BuildHasherDefault::new());
@@ -375,6 +380,7 @@ impl Runtime {
                 }
             }
 
+            eprintln!("D: kernel_data.remove({merge_kid:?})");
             let merge_data = self.kernel_data.remove(&merge_kid).unwrap();
             let keep_data = self.kernel_data.get_mut(&keep_kid).unwrap();
             keep_data.outputs.extend(merge_data.outputs);
@@ -422,24 +428,6 @@ impl Runtime {
     }
 
     /// Creates a new kernel with a LoadView for x (used to reload after a store).
-    fn create_load_kernel(&mut self, x: TensorId) -> (KernelId, OpId) {
-        let shape = self.shape(x).to_vec();
-        let dtype = self.tensors[x].dtype;
-        let mut kernel = Kernel::new(DeviceId::AUTO);
-        let op_id = kernel.load_contiguous(dtype, &shape);
-        let kid = self.kernels.push(kernel);
-        self.kernel_data.insert(
-            kid,
-            KernelData {
-                outputs: vec![x],
-                loads: vec![x],
-                stores: Vec::new(),
-            },
-        );
-        self.visited.insert(x, (kid, op_id));
-        (kid, op_id)
-    }
-
     /// Splits x's op chain into its own kernel. Both the original and new kernel
     /// keep only their needed ops via `drop_unused_ops_by_params`.
     fn duplicate_kernel(&mut self, x: TensorId, kid: KernelId) -> KernelId {
@@ -478,7 +466,20 @@ impl Runtime {
 
         if self.kernels[kid].contains_stores() {
             self.add_store(x);
-            (kid, op_id) = self.create_load_kernel(x);
+            let shape = self.shape(x).to_vec();
+            let dtype = self.tensors[x].dtype;
+            let mut kernel = Kernel::new(DeviceId::AUTO);
+            op_id = kernel.load_contiguous(dtype, &shape);
+            kid = self.kernels.push(kernel);
+            self.kernel_data.insert(
+                kid,
+                KernelData {
+                    outputs: vec![x],
+                    loads: vec![x],
+                    stores: Vec::new(),
+                },
+            );
+            self.visited.insert(x, (kid, op_id));
             if self.kernel_data[&kid].outputs.len() > 1 {
                 kid = self.duplicate_kernel(x, kid);
             }
@@ -489,7 +490,20 @@ impl Runtime {
             let reduce_dims_big = self.kernels[kid].is_preceded_by_reduce(op_id);
             if reduce_dims_big {
                 self.add_store(x);
-                (kid, op_id) = self.create_load_kernel(x);
+                let shape = self.shape(x).to_vec();
+                let dtype = self.tensors[x].dtype;
+                let mut kernel = Kernel::new(DeviceId::AUTO);
+                op_id = kernel.load_contiguous(dtype, &shape);
+                kid = self.kernels.push(kernel);
+                self.kernel_data.insert(
+                    kid,
+                    KernelData {
+                        outputs: vec![x],
+                        loads: vec![x],
+                        stores: Vec::new(),
+                    },
+                );
+                self.visited.insert(x, (kid, op_id));
                 if self.kernel_data[&kid].outputs.len() > 1 {
                     kid = self.duplicate_kernel(x, kid);
                 }
@@ -523,7 +537,20 @@ impl Runtime {
         // Expand also checks is_preceded_by_compute (unlike permute/reshape/pad)
         if self.kernels[kid].contains_stores() | self.kernels[kid].is_preceded_by_compute(op_id) {
             self.add_store(x);
-            (kid, op_id) = self.create_load_kernel(x);
+            let shape = self.shape(x).to_vec();
+            let dtype = self.tensors[x].dtype;
+            let mut kernel = Kernel::new(DeviceId::AUTO);
+            op_id = kernel.load_contiguous(dtype, &shape);
+            kid = self.kernels.push(kernel);
+            self.kernel_data.insert(
+                kid,
+                KernelData {
+                    outputs: vec![x],
+                    loads: vec![x],
+                    stores: Vec::new(),
+                },
+            );
+            self.visited.insert(x, (kid, op_id));
             if self.kernel_data[&kid].outputs.len() > 1 {
                 kid = self.duplicate_kernel(x, kid);
             }
@@ -531,7 +558,20 @@ impl Runtime {
 
         if !self.kernel_data[&kid].outputs.contains(&x) {
             self.add_store(x);
-            (kid, op_id) = self.create_load_kernel(x);
+            let shape = self.shape(x).to_vec();
+            let dtype = self.tensors[x].dtype;
+            let mut kernel = Kernel::new(DeviceId::AUTO);
+            op_id = kernel.load_contiguous(dtype, &shape);
+            kid = self.kernels.push(kernel);
+            self.kernel_data.insert(
+                kid,
+                KernelData {
+                    outputs: vec![x],
+                    loads: vec![x],
+                    stores: Vec::new(),
+                },
+            );
+            self.visited.insert(x, (kid, op_id));
             if self.kernel_data[&kid].outputs.len() > 1 {
                 kid = self.duplicate_kernel(x, kid);
             }
@@ -541,7 +581,20 @@ impl Runtime {
             let reduce_dims_big = self.kernels[kid].is_preceded_by_reduce(op_id);
             if reduce_dims_big {
                 self.add_store(x);
-                (kid, op_id) = self.create_load_kernel(x);
+                let shape = self.shape(x).to_vec();
+                let dtype = self.tensors[x].dtype;
+                let mut kernel = Kernel::new(DeviceId::AUTO);
+                op_id = kernel.load_contiguous(dtype, &shape);
+                kid = self.kernels.push(kernel);
+                self.kernel_data.insert(
+                    kid,
+                    KernelData {
+                        outputs: vec![x],
+                        loads: vec![x],
+                        stores: Vec::new(),
+                    },
+                );
+                self.visited.insert(x, (kid, op_id));
                 if self.kernel_data[&kid].outputs.len() > 1 {
                     kid = self.duplicate_kernel(x, kid);
                 }
@@ -663,6 +716,7 @@ impl Runtime {
     /// usable in further graph construction. The kernel is consumed (removed from
     /// the slab) and cached in `kernel_map`/`programs` for reuse.
     fn materialize_kernel(&mut self, kid: KernelId) -> Result<(), ZyxError> {
+        eprintln!("E: kernel_data.remove({kid:?})");
         let kd = self.kernel_data.remove(&kid).unwrap();
 
         // Debug: stores and outputs must be disjoint sets
@@ -752,7 +806,10 @@ impl Runtime {
         }
 
         // Remove kernel from the slab (it is consumed)
-        let kernel = unsafe { self.kernels.remove_and_return(kid) };
+        let kernel = unsafe {
+            eprintln!("F: kernels.remove_and_return({kid:?})");
+            self.kernels.remove_and_return(kid)
+        };
 
         // Build args: load buffers first, then store buffers
         let mut args = Vec::new();
@@ -778,7 +835,20 @@ impl Runtime {
 
         // Create load kernels for all outputs so tensors remain usable
         for &tid in &kd.outputs {
-            self.create_load_kernel(tid);
+            let shape = self.shape(tid).to_vec();
+            let dtype = self.tensors[tid].dtype;
+            let mut kernel = Kernel::new(DeviceId::AUTO);
+            let op_id = kernel.load_contiguous(dtype, &shape);
+            let kid = self.kernels.push(kernel);
+            self.kernel_data.insert(
+                kid,
+                KernelData {
+                    outputs: vec![tid],
+                    loads: vec![tid],
+                    stores: Vec::new(),
+                },
+            );
+            self.visited.insert(tid, (kid, op_id));
         }
 
         Ok(())
