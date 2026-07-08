@@ -72,6 +72,9 @@ py = ["dep:pyo3"]
 # Enables timing for optimization passes
 time = []
 
+# Enables debug println! at the start of every tensor op
+debug_tensor_op = []
+
 # Optimize for linking time, 'cause linker is so slow...
 [profile.dev] # Modify profile settings via config.
 opt-level = 0 # Optimization level.

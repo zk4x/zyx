@@ -211,11 +211,15 @@ impl Runtime {
     }
 
     pub fn new_constant_tensor(&mut self, value: Constant) -> TensorId {
+        #[cfg(feature = "debug_tensor_op")]
+        println!("runtime::new_constant_tensor(value={value:?})");
         let op = Op::ConstView(Box::new((value, View::contiguous(&[1]))));
         self.new_kernel(op, [1].into(), value.dtype())
     }
 
     pub fn new_full(&mut self, shape: Vec<Dim>, value: Constant) -> TensorId {
+        #[cfg(feature = "debug_tensor_op")]
+        println!("runtime::new_full(shape={shape:?}, value={value:?})");
         let dtype = value.dtype();
         let op = Op::ConstView(Box::new((value, View::contiguous(&[1]))));
         let x = self.new_kernel(op, [1].into(), dtype);
@@ -226,6 +230,8 @@ impl Runtime {
 
     // Creates new tensor in host memory
     pub fn new_host_tensor<T: Scalar>(&mut self, shape: Vec<Dim>, data: Box<[T]>) -> Result<TensorId, ZyxError> {
+        #[cfg(feature = "debug_tensor_op")]
+        println!("runtime::new_host_tensor(shape={shape:?})");
         let dtype = T::dtype();
 
         self.initialize_devices()?;
@@ -270,6 +276,8 @@ impl Runtime {
     }
 
     pub fn cast(&mut self, x: TensorId, dtype: DType) -> TensorId {
+        #[cfg(feature = "debug_tensor_op")]
+        println!("runtime::cast(x={x}, dtype={dtype:?})");
         let shape_id = self.tensors[x].shape_id;
         let tid = self.tensors.push(TensorData { shape_id, dtype });
         let (kid, op_id) = self.visited[&x];
@@ -280,6 +288,8 @@ impl Runtime {
     }
 
     pub fn bitcast(&mut self, x: TensorId, dtype: DType) -> TensorId {
+        #[cfg(feature = "debug_tensor_op")]
+        println!("runtime::bitcast(x={x}, dtype={dtype:?})");
         let shape_id = self.tensors[x].shape_id;
         let tid = self.tensors.push(TensorData { shape_id, dtype });
         let (kid, op_id) = self.visited[&x];
@@ -290,6 +300,8 @@ impl Runtime {
     }
 
     pub fn unary(&mut self, x: TensorId, uop: UOp) -> TensorId {
+        #[cfg(feature = "debug_tensor_op")]
+        println!("runtime::unary(x={x}, uop={uop:?})");
         let shape_id = self.tensors[x].shape_id;
         let dtype = self.tensors[x].dtype;
         let tid = self.tensors.push(TensorData { shape_id, dtype });
@@ -301,6 +313,8 @@ impl Runtime {
     }
 
     pub fn binary(&mut self, x: TensorId, y: TensorId, bop: BOp) -> Result<TensorId, ZyxError> {
+        #[cfg(feature = "debug_tensor_op")]
+        println!("runtime::binary(x={x}, y={y}, bop={bop:?})");
         let shape_id = self.tensors[x].shape_id;
         let dtype = if bop.returns_bool() {
             DType::Bool
@@ -379,10 +393,14 @@ impl Runtime {
     }
 
     pub fn reduce(&mut self, x: TensorId, axes: Vec<UAxis>, rop: BOp) -> Result<TensorId, ZyxError> {
+        #[cfg(feature = "debug_tensor_op")]
+        println!("runtime::reduce(x={x}, axes={axes:?}, rop={rop:?})");
         todo!()
     }
 
     pub fn to_device(&mut self, x: TensorId, device_id: DeviceId) -> Result<TensorId, ZyxError> {
+        #[cfg(feature = "debug_tensor_op")]
+        println!("runtime::to_device(x={x}, device_id={device_id:?})");
         todo!()
     }
 
@@ -484,6 +502,8 @@ impl Runtime {
     }
 
     pub(super) fn reshape(&mut self, x: TensorId, shape: Vec<Dim>) -> TensorId {
+        #[cfg(feature = "debug_tensor_op")]
+        println!("runtime::reshape(x={x}, shape={shape:?})");
         let (kid, op_id) = self.duplicate_or_store(x).unwrap();
         let shape_id = self.push_shape(shape.clone());
         let dtype = self.tensors[x].dtype;
@@ -498,6 +518,8 @@ impl Runtime {
     }
 
     pub fn expand(&mut self, x: TensorId, shape: Vec<Dim>) -> Result<TensorId, ZyxError> {
+        #[cfg(feature = "debug_tensor_op")]
+        println!("runtime::expand(x={x}, shape={shape:?})");
         let (mut kid, mut op_id) = self.visited[&x];
 
         // Expand also checks is_preceded_by_compute (unlike permute/reshape/pad)
@@ -543,6 +565,8 @@ impl Runtime {
     }
 
     pub fn permute(&mut self, x: TensorId, axes: Vec<UAxis>) -> TensorId {
+        #[cfg(feature = "debug_tensor_op")]
+        println!("runtime::permute(x={x}, axes={axes:?})");
         let (kid, op_id) = self.duplicate_or_store(x).unwrap();
         let new_shape = crate::shape::permute(self.shape(x), &axes);
         let shape_id = self.push_shape(new_shape);
@@ -558,6 +582,8 @@ impl Runtime {
     }
 
     pub fn pad_zeros(&mut self, x: TensorId, padding: Vec<(i64, i64)>) -> TensorId {
+        #[cfg(feature = "debug_tensor_op")]
+        println!("runtime::pad_zeros(x={x}, padding={padding:?})");
         let (kid, op_id) = self.duplicate_or_store(x).unwrap();
         let mut new_shape = self.shape(x).to_vec();
         crate::shape::pad(&mut new_shape, &padding);
@@ -658,6 +684,8 @@ impl Runtime {
     }
 
     pub fn load<T: Scalar>(&mut self, x: TensorId, data: &mut [T]) -> Result<(), ZyxError> {
+        #[cfg(feature = "debug_tensor_op")]
+        println!("runtime::load(x={x})");
         let dt = self.tensors[x].dtype;
         if dt != T::dtype() {
             return Err(ZyxError::DTypeError(
