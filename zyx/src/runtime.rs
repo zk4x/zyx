@@ -173,6 +173,9 @@ impl Runtime {
             panic!("Kernel must exist");
         };
         kd.outputs.iter().position(|e| *e == x).map(|i| kd.outputs.remove(i));
+        if !kd.outputs.contains(&x) {
+            self.tensors.remove(x);
+        }
         if kd.outputs.is_empty() {
             if !self.kernels[kid].contains_stores() {
                 eprintln!("A: kernels.remove({kid:?})");
@@ -182,7 +185,6 @@ impl Runtime {
             } else {
                 self.materialize_kernel(kid).unwrap();
             }
-            self.tensors.remove(x);
         }
     }
 
@@ -814,8 +816,10 @@ impl Runtime {
             eprintln!("loads (tids): {loads:?}");
             eprintln!("stores (tids): {store_tids:?}");
             for (info_kid, info_kd) in &self.kernel_data {
-                eprintln!("  kernel {info_kid:?}: outputs={:?}, loads={:?}, stores={:?}",
-                    info_kd.outputs, info_kd.loads, info_kd.stores);
+                eprintln!(
+                    "  kernel {info_kid:?}: outputs={:?}, loads={:?}, stores={:?}",
+                    info_kd.outputs, info_kd.loads, info_kd.stores
+                );
             }
             kernel.debug();
         }
