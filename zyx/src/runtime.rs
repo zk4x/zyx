@@ -8,7 +8,7 @@ use std::{
 use nanoserde::DeJson;
 
 use crate::{
-    DType, DebugMask, Map, Scalar, ZyxError,
+    DType, DebugMask, Map, Scalar, Set, ZyxError,
     backend::{AutotuneConfig, BufferId, Config, Device, DeviceInfo, DeviceProgramId, Event, MemoryPool, OpCapability, PoolId},
     dtype::Constant,
     kernel::{BOp, DeviceId, Kernel, Op, OpId, UOp, autotune::OptSeq},
@@ -70,7 +70,7 @@ impl SlabId for KernelId {
     const ZERO: Self = Self(0);
     const NULL: Self = Self(u32::MAX);
     fn inc(&mut self) {
-        todo!()
+        self.0 += 1;
     }
 }
 
@@ -526,9 +526,6 @@ impl Runtime {
         let (outputs_empty, count) = {
             let kd = self.kernel_data.get_mut(&kid).unwrap();
 
-            // Invariant: a kernel must never both load and store the same tensor
-            debug_assert!(!kd.loads.contains(&x), "kernel {kid:?} both loads and stores tid {x}");
-
             // Remove ALL occurrences of x (handles reference counting from retain/clone)
             let prev_len = kd.outputs.len();
             kd.outputs.retain(|&e| e != x);
@@ -537,6 +534,9 @@ impl Runtime {
 
             // Only add StoreView if x isn't already realized
             if !self.buffer_map.contains_key(&x) && !kd.stores.contains(&x) {
+                // Invariant: a kernel must never both load and store the same tensor
+                debug_assert!(!kd.loads.contains(&x), "kernel {kid:?} both loads and stores tid {x}");
+
                 let dtype = self.tensors[x].dtype;
                 self.kernels[kid].store_contiguous(op_id, dtype);
                 kd.stores.push(x);
@@ -782,6 +782,8 @@ impl Runtime {
         let dev_info = self.devices[device_id].info().clone();
         let dev_info_id = self.get_or_add_dev_info(&dev_info);
 
+        kernel.sort_global_defines();
+
         let kernel_id = if let Some(&cached_kid) = self.kernel_map.get(&kernel) {
             if let Some(&program_id) = self.programs.get(&cached_kid) {
                 return Ok((program_id, 0));
@@ -846,7 +848,7 @@ impl Runtime {
     /// A kernel must never both load and store the same tensor (prevents aliasing).
     /// The debug_assert in the recursive materialization loop enforces this.
     fn materialize_kernel(&mut self, kid: KernelId) -> Result<(), ZyxError> {
-        eprintln!("E: kernel_data.remove({kid:?})");
+        eprintln!("E: Materialize kernel and kernel_data.remove({kid:?})");
         let kd = self.kernel_data.remove(&kid).unwrap();
 
         debug_assert!(kd.outputs.is_empty(), "all outputs must be stored before materialize");
@@ -876,14 +878,17 @@ impl Runtime {
 
         // Recursively materialize any un-realized loads first via add_store.
         // A kernel must never both load and store the same tid — assert this.
-        for &tid in &loads {
-            if !self.buffer_map.contains_key(&tid) {
-                let (producer_kid, _) = self.visited[&tid];
-                debug_assert_ne!(
-                    producer_kid, kid,
-                    "kernel {kid:?} both loads and stores tid {tid}, which is forbidden"
-                );
-                self.add_store(tid)?;
+        let unrealized_tensors: Set<TensorId> = loads.iter().filter(|x| !self.buffer_map.contains_key(&x)).copied().collect();
+        // We have to materialize kernel that produces tid
+        // But which one is it?
+        // TODO later replace this crude search with something better
+        let kids: Vec<KernelId> = self.kernels.ids().collect();
+        for id in kids {
+            println!("yo kid={id:?}");
+            if self.kernel_data[&id].stores.iter().any(|x| unrealized_tensors.contains(x)) {
+                for output in self.kernel_data[&id].outputs.clone().into_iter() {
+                    self.add_store(output)?;
+                }
             }
         }
         debug_assert!(
@@ -1058,7 +1063,7 @@ impl Runtime {
         let (kid, _) = self.visited[&x];
         // Deduplicate: add_store removes ALL occurrences at once and creates a load kernel,
         // so we must process each unique tid only once
-        let mut seen = std::collections::BTreeSet::new();
+        let mut seen = Set::default();
         let outputs: Vec<TensorId> = self.kernel_data[&kid]
             .outputs
             .iter()
@@ -1171,6 +1176,7 @@ impl Runtime {
 
     /// This function deinitializes the whole runtime, deallocates all allocated memory and deallocates all caches
     /// It does not reset the rng and it does not change debug, search, training and `config_dir` fields
+    #[allow(unused)]
     pub fn deinitialize(&mut self) {
         #[cfg(feature = "time")]
         {

@@ -86,13 +86,13 @@ impl<Id: SlabId, T> Slab<Id, T> {
         }
     }
 
-    pub(crate) fn with_capacity(capacity: usize) -> Self {
+    /*pub(crate) fn with_capacity(capacity: usize) -> Self {
         Self {
             values: Vec::with_capacity(capacity),
             empty: Set::default(),
             _index: PhantomData,
         }
-    }
+    }*/
 
     pub(crate) fn push(&mut self, value: T) -> Id {
         if let Some(id) = self.empty.iter().copied().next() {

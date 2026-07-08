@@ -652,9 +652,12 @@ impl Kernel {
                     Ok((program_id, time)) => {
                         any_success = true;
                         if time < best_time {
+                            device.release(best_program);
                             best_program = program_id;
                             best_time = time;
                             best_opt_seq = opt_seq.clone();
+                        } else {
+                            device.release(program_id);
                         }
                     }
                     Err(e) => {
