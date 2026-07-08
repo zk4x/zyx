@@ -584,6 +584,37 @@ impl Runtime {
     pub(super) fn reshape(&mut self, x: TensorId, shape: Vec<Dim>) -> TensorId {
         #[cfg(feature = "debug_tensor_op")]
         println!("runtime::reshape(x={x}, shape={shape:?})");
+        let sh = self.shape(x);
+        debug_assert_eq!(shape.iter().product::<Dim>(), sh.iter().product::<Dim>());
+        if shape == sh {
+            self.retain(x);
+            return x;
+        }
+        // If x is realized, create a load kernel with the target shape.
+        // The result shares x's buffer (set in buffer_map), so add_store
+        // won't add a StoreView for it. This avoids copying data for a
+        // view-only reshape.
+        if let Some(&buf_id) = self.buffer_map.get(&x) {
+            let dtype = self.tensors[x].dtype;
+            let mut kernel = Kernel::new(DeviceId::AUTO);
+            let load_op_id = kernel.load_contiguous(dtype, &shape);
+            let shape_id = self.push_shape(shape);
+            let tid = self.tensors.push(TensorData { shape_id, dtype });
+            let load_kid = self.kernels.push(kernel);
+            self.buffer_map.insert(tid, buf_id);
+            self.kernel_data.insert(
+                load_kid,
+                KernelData {
+                    outputs: vec![tid],
+                    loads: vec![x],
+                    stores: Vec::new(),
+                },
+            );
+            self.visited.insert(tid, (load_kid, load_op_id));
+            #[cfg(feature = "debug_tensor_op")]
+            println!("  -> tid={tid} (load kernel, shares buffer with x={x})");
+            return tid;
+        }
         let (kid, op_id) = self.duplicate_or_store(x).unwrap();
         let shape_id = self.push_shape(shape.clone());
         let dtype = self.tensors[x].dtype;
