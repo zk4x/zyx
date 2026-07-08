@@ -219,7 +219,10 @@ impl Runtime {
         let op = Op::ConstView(Box::new((value, View::contiguous(&[1]))));
         let result = self.new_kernel(op, [1].into(), value.dtype());
         #[cfg(feature = "debug_tensor_op")]
-        println!("  -> tid={result}, kid={:?}, op_id={:?}", self.visited[&result].0, self.visited[&result].1);
+        println!(
+            "  -> tid={result}, kid={:?}, op_id={:?}",
+            self.visited[&result].0, self.visited[&result].1
+        );
         result
     }
 
@@ -232,7 +235,10 @@ impl Runtime {
         let expanded = self.expand(x, shape).unwrap();
         self.release(x);
         #[cfg(feature = "debug_tensor_op")]
-        println!("  -> tid={expanded}, kid={:?}, op_id={:?}", self.visited[&expanded].0, self.visited[&expanded].1);
+        println!(
+            "  -> tid={expanded}, kid={:?}, op_id={:?}",
+            self.visited[&expanded].0, self.visited[&expanded].1
+        );
         expanded
     }
 
@@ -269,7 +275,10 @@ impl Runtime {
         self.buffer_map.insert(tid, buffer_id);
 
         #[cfg(feature = "debug_tensor_op")]
-        println!("  -> tid={tid}, kid={:?}, op_id={:?}", self.visited[&tid].0, self.visited[&tid].1);
+        println!(
+            "  -> tid={tid}, kid={:?}, op_id={:?}",
+            self.visited[&tid].0, self.visited[&tid].1
+        );
         Ok(tid)
     }
 
@@ -438,8 +447,8 @@ impl Runtime {
             if !kd.stores.contains(&x) {
                 let dtype = self.tensors[x].dtype;
                 self.kernels[kid].store_contiguous(op_id, dtype);
-                kd.stores.push(x);
             }
+            kd.stores.push(x);
             let pos = kd.outputs.iter().position(|e| *e == x).unwrap();
             kd.outputs.remove(pos);
             kd.outputs.is_empty()
@@ -753,7 +762,17 @@ impl Runtime {
         debug_assert!(kd.outputs.is_empty(), "all outputs must be stored before materialize");
 
         let loads = kd.loads.clone();
-        let store_tids: Vec<TensorId> = kd.stores.clone();
+
+        // Count store occurrences per tid, preserving first-occurrence order
+        let mut store_order: Vec<TensorId> = Vec::new();
+        let mut store_counts: std::collections::BTreeMap<TensorId, usize> = std::collections::BTreeMap::new();
+        for &tid in &kd.stores {
+            let entry = store_counts.entry(tid).or_insert(0);
+            if *entry == 0 {
+                store_order.push(tid);
+            }
+            *entry += 1;
+        }
 
         // Pick device and pool
         self.initialize_devices()?;
@@ -806,9 +825,9 @@ impl Runtime {
             }
         }
 
-        // Allocate store buffers
+        // Allocate store buffers (one per unique tid)
         let mut kernel_buffers = BTreeSet::new();
-        for &tid in &store_tids {
+        for &tid in &store_order {
             let bytes = self.shape(tid).iter().product::<Dim>() as usize * (self.dtype(tid).bit_size() / 8) as usize;
             let alloc_bytes = bytes as Dim + Dim::from(self.dtype(tid).bit_size() / 8);
             let (buf, event) = self.pools[pool_id].allocate(alloc_bytes)?;
@@ -827,12 +846,12 @@ impl Runtime {
             self.kernels.remove_and_return(kid)
         };
 
-        // Build args: load buffers first, then store buffers
+        // Build args: load buffers first, then store buffers (one per unique tid)
         let mut args = Vec::new();
         for &tid in &loads {
             args.push(self.buffer_map[&tid].buffer);
         }
-        for &tid in &store_tids {
+        for &tid in &store_order {
             args.push(self.buffer_map[&tid].buffer);
         }
 
@@ -847,8 +866,10 @@ impl Runtime {
         let event = self.devices[dev_id].launch(dev_prog, &mut self.pools[pool_id], &args, event_wait_list)?;
         self.events.insert(kernel_buffers, event);
 
-        // Create load kernels for all stored outputs so tensors remain usable
-        for &tid in &store_tids {
+        // Create load kernels for all stored outputs so tensors remain usable.
+        // Each tid appears in outputs as many times as it appeared in stores.
+        for &tid in &store_order {
+            let count = store_counts[&tid];
             let shape = self.shape(tid).to_vec();
             let dtype = self.tensors[tid].dtype;
             let mut kernel = Kernel::new(DeviceId::AUTO);
@@ -857,7 +878,7 @@ impl Runtime {
             self.kernel_data.insert(
                 kid,
                 KernelData {
-                    outputs: vec![tid],
+                    outputs: vec![tid; count],
                     loads: vec![tid],
                     stores: Vec::new(),
                 },
