@@ -182,6 +182,7 @@ impl Runtime {
             } else {
                 self.materialize_kernel(kid).unwrap();
             }
+            self.tensors.remove(x);
         }
     }
 
@@ -486,6 +487,22 @@ impl Runtime {
     /// Creates a new kernel with a LoadView for x (used to reload after a store).
     /// Splits x's op chain into its own kernel. Both the original and new kernel
     /// keep only their needed ops via `drop_unused_ops_by_params`.
+    ///
+    /// # Avoiding phantom references
+    /// `duplicate_kernel` moves `x` from the old kernel's outputs to the new
+    /// kernel's outputs. This is critical: if `x` stays in the old kernel's
+    /// outputs, it becomes a phantom reference — `visited[x]` now points to the
+    /// new kernel, so `release(x)` will only hit the new kernel, never the old
+    /// one. The old kernel keeps a stale entry that inflates `self.tensors`
+    /// and may keep the old kernel alive indefinitely.
+    ///
+    /// # Debug printing
+    /// When alive-tensor counts are out of sync with `self.tensors`, add prints at
+    /// materialization time dumping `self.tensors.ids()` and all kernel_data
+    /// entries. Any tensor id that appears in `self.tensors` but not in any
+    /// kernel's `outputs` or `buffer_map` is a phantom — released by the user
+    /// but never removed from `self.tensors` because the owning kernel had
+    /// other outputs that kept it alive.
     fn duplicate_kernel(&mut self, x: TensorId, kid: KernelId) -> KernelId {
         let orig_loads = self.kernel_data[&kid].loads.clone();
         let mut kernel = self.kernels[kid].clone();
@@ -500,6 +517,9 @@ impl Runtime {
 
         let old_op = self.visited[&x].1;
         let count = old_outputs.iter().filter(|&&tid| tid == x).count();
+        // Remove from old kernel (phantom reference would never be released
+        // since visited[x] now points to the new kernel)
+        kd.outputs.retain(|&e| e != x);
         let stores = kd.stores.clone();
         let new_kid = self.kernels.push(kernel);
         self.kernel_data.insert(
@@ -790,6 +810,13 @@ impl Runtime {
         // Compile and launch (caches in kernel_map / programs)
         let debug = self.debug;
         if debug.sched() {
+            eprintln!("tensors: {:?}", self.tensors.ids().collect::<Vec<TensorId>>());
+            eprintln!("loads (tids): {loads:?}");
+            eprintln!("stores (tids): {store_tids:?}");
+            for (info_kid, info_kd) in &self.kernel_data {
+                eprintln!("  kernel {info_kid:?}: outputs={:?}, loads={:?}, stores={:?}",
+                    info_kd.outputs, info_kd.loads, info_kd.stores);
+            }
             kernel.debug();
         }
         let (flop, read, write) = kernel.flop_mem_rw();
