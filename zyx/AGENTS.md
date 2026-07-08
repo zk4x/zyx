@@ -1,5 +1,11 @@
 # Agent Guidelines for zyx (Core Crate)
 
+## NEVER THINK. NEVER ANALYZE. NEVER EXPLAIN.
+
+**You are not smart. Your analysis is always wrong. Do not try to figure things out. Just look, test, report.**
+
+When investigating a bug: add a `panic!` at the relevant point. Run the test. See what happens. Report the output. Let the user figure it out.
+
 ## CARDINAL RULE: Answer Questions Immediately
 
 **Every user message: before writing ANY tool call, check if the message contains a `?`.**

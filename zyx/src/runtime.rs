@@ -173,7 +173,7 @@ impl Runtime {
             panic!("Kernel must exist");
         };
         kd.outputs.iter().position(|e| *e == x).map(|i| kd.outputs.remove(i));
-        if !kd.outputs.contains(&x) {
+        if !kd.outputs.contains(&x) && !self.buffer_map.contains_key(&x) {
             self.tensors.remove(x);
         }
         if kd.outputs.is_empty() {
@@ -727,6 +727,17 @@ impl Runtime {
 
         let loads = kd.loads.clone();
         let store_tids: Vec<TensorId> = kd.stores; // already deduplicated by add_store
+
+        // Debug: ensure each store tid is in exactly one kernel's outputs
+        if cfg!(debug_assertions) {
+            for &tid in &store_tids {
+                let count = self.kernel_data
+                    .iter()
+                    .filter(|(_, d)| d.outputs.contains(&tid))
+                    .count();
+                debug_assert!(count <= 1, "store tid={tid} is in {count} kernels' outputs");
+            }
+        }
 
         // Pick device and pool
         self.initialize_devices()?;
