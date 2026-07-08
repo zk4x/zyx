@@ -160,6 +160,7 @@ impl Runtime {
     }
 
     pub fn retain(&mut self, x: TensorId) {
+        eprintln!("Retain tensor x={x}");
         let kid = self.visited.get_mut(&x).unwrap().0;
         self.kernel_data.get_mut(&kid).unwrap().outputs.push(x);
     }
@@ -216,7 +217,10 @@ impl Runtime {
         #[cfg(feature = "debug_tensor_op")]
         println!("runtime::new_constant_tensor(value={value:?})");
         let op = Op::ConstView(Box::new((value, View::contiguous(&[1]))));
-        self.new_kernel(op, [1].into(), value.dtype())
+        let result = self.new_kernel(op, [1].into(), value.dtype());
+        #[cfg(feature = "debug_tensor_op")]
+        println!("  -> tid={result}, kid={:?}, op_id={:?}", self.visited[&result].0, self.visited[&result].1);
+        result
     }
 
     pub fn new_full(&mut self, shape: Vec<Dim>, value: Constant) -> TensorId {
@@ -227,6 +231,8 @@ impl Runtime {
         let x = self.new_kernel(op, [1].into(), dtype);
         let expanded = self.expand(x, shape).unwrap();
         self.release(x);
+        #[cfg(feature = "debug_tensor_op")]
+        println!("  -> tid={expanded}, kid={:?}, op_id={:?}", self.visited[&expanded].0, self.visited[&expanded].1);
         expanded
     }
 
@@ -262,6 +268,8 @@ impl Runtime {
 
         self.buffer_map.insert(tid, buffer_id);
 
+        #[cfg(feature = "debug_tensor_op")]
+        println!("  -> tid={tid}, kid={:?}, op_id={:?}", self.visited[&tid].0, self.visited[&tid].1);
         Ok(tid)
     }
 
@@ -286,6 +294,8 @@ impl Runtime {
         let op_id = self.kernels[kid].cast(op_id, dtype);
         self.kernel_data.get_mut(&kid).unwrap().outputs.push(tid);
         self.visited.insert(tid, (kid, op_id));
+        #[cfg(feature = "debug_tensor_op")]
+        println!("  -> tid={tid}, kid={kid:?}, op_id={op_id:?}");
         tid
     }
 
@@ -298,6 +308,8 @@ impl Runtime {
         let op_id = self.kernels[kid].bitcast(op_id, dtype);
         self.kernel_data.get_mut(&kid).unwrap().outputs.push(tid);
         self.visited.insert(tid, (kid, op_id));
+        #[cfg(feature = "debug_tensor_op")]
+        println!("  -> tid={tid}, kid={kid:?}, op_id={op_id:?}");
         tid
     }
 
@@ -311,6 +323,8 @@ impl Runtime {
         let op_id = self.kernels[kid].unary(op_id, uop);
         self.kernel_data.get_mut(&kid).unwrap().outputs.push(tid);
         self.visited.insert(tid, (kid, op_id));
+        #[cfg(feature = "debug_tensor_op")]
+        println!("  -> tid={tid}, kid={kid:?}, op_id={op_id:?}");
         tid
     }
 
@@ -398,6 +412,8 @@ impl Runtime {
         self.kernel_data.get_mut(&kid).unwrap().outputs.push(tid);
         self.visited.insert(tid, (kid, op_id));
 
+        #[cfg(feature = "debug_tensor_op")]
+        println!("  -> tid={tid}, kid={kid:?}, op_id={op_id:?}");
         Ok(tid)
     }
 
@@ -415,16 +431,23 @@ impl Runtime {
 
     /// Adds a StoreView for x to its kernel, removes x from visited and outputs.
     /// Unlike `load`, this does not launch the kernel — it only records the store in the IR.
-    fn add_store(&mut self, x: TensorId) {
-        let (kid, op_id) = self.visited.remove(&x).unwrap();
-        println!("Adding store to kernel at tid={x}, op_id={op_id}:");
-        self.kernels[kid].debug();
-        let dtype = self.tensors[x].dtype;
-        self.kernels[kid].store_contiguous(op_id, dtype);
-        let kd = self.kernel_data.get_mut(&kid).unwrap();
-        kd.stores.push(x);
-        let pos = kd.outputs.iter().position(|e| *e == x).unwrap();
-        kd.outputs.remove(pos);
+    fn add_store(&mut self, x: TensorId) -> Result<(), ZyxError> {
+        let &(kid, op_id) = self.visited.get(&x).unwrap();
+        let outputs_empty = {
+            let kd = self.kernel_data.get_mut(&kid).unwrap();
+            if !kd.stores.contains(&x) {
+                let dtype = self.tensors[x].dtype;
+                self.kernels[kid].store_contiguous(op_id, dtype);
+                kd.stores.push(x);
+            }
+            let pos = kd.outputs.iter().position(|e| *e == x).unwrap();
+            kd.outputs.remove(pos);
+            kd.outputs.is_empty()
+        };
+        if outputs_empty {
+            self.materialize_kernel(kid)?;
+        }
+        Ok(())
     }
 
     /// Creates a new kernel with a LoadView for x (used to reload after a store).
@@ -465,7 +488,7 @@ impl Runtime {
         let (mut kid, mut op_id) = self.visited[&x];
 
         if self.kernels[kid].contains_stores() {
-            self.add_store(x);
+            self.add_store(x)?;
             let shape = self.shape(x).to_vec();
             let dtype = self.tensors[x].dtype;
             let mut kernel = Kernel::new(DeviceId::AUTO);
@@ -489,7 +512,7 @@ impl Runtime {
         if self.kernel_data[&kid].outputs.len() > 1 {
             let reduce_dims_big = self.kernels[kid].is_preceded_by_reduce(op_id);
             if reduce_dims_big {
-                self.add_store(x);
+                self.add_store(x)?;
                 let shape = self.shape(x).to_vec();
                 let dtype = self.tensors[x].dtype;
                 let mut kernel = Kernel::new(DeviceId::AUTO);
@@ -526,6 +549,8 @@ impl Runtime {
         let op_id = self.kernels[kid].reshape(op_id, &shape);
         self.kernel_data.get_mut(&kid).unwrap().outputs.push(tid);
         self.visited.insert(tid, (kid, op_id));
+        #[cfg(feature = "debug_tensor_op")]
+        println!("  -> tid={tid}, kid={kid:?}, op_id={op_id:?}");
         tid
     }
 
@@ -536,7 +561,7 @@ impl Runtime {
 
         // Expand also checks is_preceded_by_compute (unlike permute/reshape/pad)
         if self.kernels[kid].contains_stores() | self.kernels[kid].is_preceded_by_compute(op_id) {
-            self.add_store(x);
+            self.add_store(x)?;
             let shape = self.shape(x).to_vec();
             let dtype = self.tensors[x].dtype;
             let mut kernel = Kernel::new(DeviceId::AUTO);
@@ -557,7 +582,7 @@ impl Runtime {
         }
 
         if !self.kernel_data[&kid].outputs.contains(&x) {
-            self.add_store(x);
+            self.add_store(x)?;
             let shape = self.shape(x).to_vec();
             let dtype = self.tensors[x].dtype;
             let mut kernel = Kernel::new(DeviceId::AUTO);
@@ -580,7 +605,7 @@ impl Runtime {
         if self.kernel_data[&kid].outputs.len() > 1 {
             let reduce_dims_big = self.kernels[kid].is_preceded_by_reduce(op_id);
             if reduce_dims_big {
-                self.add_store(x);
+                self.add_store(x)?;
                 let shape = self.shape(x).to_vec();
                 let dtype = self.tensors[x].dtype;
                 let mut kernel = Kernel::new(DeviceId::AUTO);
@@ -610,6 +635,8 @@ impl Runtime {
         let op_id = self.kernels[kid].expand(op_id, &shape);
         self.kernel_data.get_mut(&kid).unwrap().outputs.push(tid);
         self.visited.insert(tid, (kid, op_id));
+        #[cfg(feature = "debug_tensor_op")]
+        println!("  -> tid={tid}, kid={kid:?}, op_id={op_id:?}");
         Ok(tid)
     }
 
@@ -625,6 +652,8 @@ impl Runtime {
         let op_id = self.kernels[kid].permute(op_id, &axes);
         self.kernel_data.get_mut(&kid).unwrap().outputs.push(tid);
         self.visited.insert(tid, (kid, op_id));
+        #[cfg(feature = "debug_tensor_op")]
+        println!("  -> tid={tid}, kid={kid:?}, op_id={op_id:?}");
         tid
     }
 
@@ -641,6 +670,8 @@ impl Runtime {
         let op_id = self.kernels[kid].pad(op_id, &padding);
         self.kernel_data.get_mut(&kid).unwrap().outputs.push(tid);
         self.visited.insert(tid, (kid, op_id));
+        #[cfg(feature = "debug_tensor_op")]
+        println!("  -> tid={tid}, kid={kid:?}, op_id={op_id:?}");
         tid
     }
 
@@ -719,22 +750,10 @@ impl Runtime {
         eprintln!("E: kernel_data.remove({kid:?})");
         let kd = self.kernel_data.remove(&kid).unwrap();
 
-        // Debug: stores and outputs must be disjoint sets
-        debug_assert!({
-            let stores_set: BTreeSet<TensorId> = kd.stores.iter().copied().collect();
-            let outputs_set: BTreeSet<TensorId> = kd.outputs.iter().copied().collect();
-            stores_set.is_disjoint(&outputs_set)
-        });
-
-        // Add store for each output
-        for &tid in &kd.outputs {
-            let &(_, op_id) = self.visited.get(&tid).unwrap();
-            let dtype = self.tensors[tid].dtype;
-            self.kernels[kid].store_contiguous(op_id, dtype);
-        }
+        debug_assert!(kd.outputs.is_empty(), "all outputs must be stored before materialize");
 
         let loads = kd.loads.clone();
-        let store_tids: Vec<TensorId> = kd.outputs.iter().copied().collect();
+        let store_tids: Vec<TensorId> = kd.stores.clone();
 
         // Pick device and pool
         self.initialize_devices()?;
@@ -752,8 +771,7 @@ impl Runtime {
             let buf_id = self.buffer_map[&tid];
             if buf_id.pool != pool_id {
                 let src = buf_id.buffer;
-                let bytes = self.shape(tid).iter().product::<Dim>() as usize
-                    * (self.dtype(tid).bit_size() / 8) as usize;
+                let bytes = self.shape(tid).iter().product::<Dim>() as usize * (self.dtype(tid).bit_size() / 8) as usize;
                 let mut byte_slice = vec![0u8; bytes];
 
                 let mut ev = Vec::new();
@@ -773,8 +791,7 @@ impl Runtime {
                     pool: pool_id,
                     buffer: dst,
                 };
-                let event =
-                    self.pools[pool_id].host_to_pool(&byte_slice, dst, vec![event])?;
+                let event = self.pools[pool_id].host_to_pool(&byte_slice, dst, vec![event])?;
                 self.pools[pool_id].sync_events(vec![event])?;
                 self.buffer_map.insert(tid, dst_global);
             } else {
@@ -792,8 +809,7 @@ impl Runtime {
         // Allocate store buffers
         let mut kernel_buffers = BTreeSet::new();
         for &tid in &store_tids {
-            let bytes = self.shape(tid).iter().product::<Dim>() as usize
-                * (self.dtype(tid).bit_size() / 8) as usize;
+            let bytes = self.shape(tid).iter().product::<Dim>() as usize * (self.dtype(tid).bit_size() / 8) as usize;
             let alloc_bytes = bytes as Dim + Dim::from(self.dtype(tid).bit_size() / 8);
             let (buf, event) = self.pools[pool_id].allocate(alloc_bytes)?;
             let global_id = BufferId {
@@ -826,15 +842,13 @@ impl Runtime {
             kernel.debug();
         }
         let (flop, read, write) = kernel.flop_mem_rw();
-        let (dev_prog, _timing) =
-            self.get_or_autotune(kernel, dev_id, pool_id, flop, read, write)?;
+        let (dev_prog, _timing) = self.get_or_autotune(kernel, dev_id, pool_id, flop, read, write)?;
 
-        let event = self.devices[dev_id]
-            .launch(dev_prog, &mut self.pools[pool_id], &args, event_wait_list)?;
+        let event = self.devices[dev_id].launch(dev_prog, &mut self.pools[pool_id], &args, event_wait_list)?;
         self.events.insert(kernel_buffers, event);
 
-        // Create load kernels for all outputs so tensors remain usable
-        for &tid in &kd.outputs {
+        // Create load kernels for all stored outputs so tensors remain usable
+        for &tid in &store_tids {
             let shape = self.shape(tid).to_vec();
             let dtype = self.tensors[tid].dtype;
             let mut kernel = Kernel::new(DeviceId::AUTO);
@@ -891,17 +905,24 @@ impl Runtime {
                     let buffers = buffers.clone();
                     let event = self.events.remove(&buffers).unwrap();
                     self.pools[buffer_id.pool].pool_to_host(buffer_id.buffer, byte_slice, vec![event])?;
+                    #[cfg(feature = "debug_tensor_op")]
+                    println!("  -> x={x}, kid={:?}, op_id={:?}", self.visited[&x].0, self.visited[&x].1);
                     return Ok(());
                 }
             }
             self.pools[buffer_id.pool].pool_to_host(buffer_id.buffer, byte_slice, Vec::new())?;
+            #[cfg(feature = "debug_tensor_op")]
+            println!("  -> x={x}, kid={:?}, op_id={:?}", self.visited[&x].0, self.visited[&x].1);
             return Ok(());
         }
 
-        // Slow path: materialize the kernel (stores all outputs, launches, creates load kernels)
+        // Slow path: add store for each output, last one triggers materialize
         self.initialize_devices()?;
         let (kid, _) = self.visited[&x];
-        self.materialize_kernel(kid)?;
+        let outputs: Vec<TensorId> = self.kernel_data[&kid].outputs.clone();
+        for &tid in &outputs {
+            self.add_store(tid)?;
+        }
 
         // Copy result to host
         let n: usize = self.shape(x).iter().product::<Dim>() as usize;
@@ -913,10 +934,14 @@ impl Runtime {
                 let buffers = buffers.clone();
                 let event = self.events.remove(&buffers).unwrap();
                 self.pools[buffer_id.pool].pool_to_host(buffer_id.buffer, byte_slice, vec![event])?;
+                #[cfg(feature = "debug_tensor_op")]
+                println!("  -> x={x}, kid={:?}, op_id={:?}", self.visited[&x].0, self.visited[&x].1);
                 return Ok(());
             }
         }
         self.pools[buffer_id.pool].pool_to_host(buffer_id.buffer, byte_slice, Vec::new())?;
+        #[cfg(feature = "debug_tensor_op")]
+        println!("  -> x={x}, kid={:?}, op_id={:?}", self.visited[&x].0, self.visited[&x].1);
         Ok(())
     }
 
