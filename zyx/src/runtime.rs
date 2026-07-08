@@ -517,10 +517,17 @@ impl Runtime {
 
     /// Adds a StoreView for x to its kernel, removes x from visited and outputs.
     /// Unlike `load`, this does not launch the kernel — it only records the store in the IR.
+    ///
+    /// # Invariant
+    /// A kernel must never both load and store the same tensor (prevents aliasing).
+    /// `add_store` asserts that x is not already in the kernel's load list.
     fn add_store(&mut self, x: TensorId) -> Result<(), ZyxError> {
         let &(kid, op_id) = self.visited.get(&x).unwrap();
         let (outputs_empty, count) = {
             let kd = self.kernel_data.get_mut(&kid).unwrap();
+
+            // Invariant: a kernel must never both load and store the same tensor
+            debug_assert!(!kd.loads.contains(&x), "kernel {kid:?} both loads and stores tid {x}");
 
             // Remove ALL occurrences of x (handles reference counting from retain/clone)
             let prev_len = kd.outputs.len();
@@ -834,6 +841,10 @@ impl Runtime {
     /// launching, then creating load kernels for each output so the tensors remain
     /// usable in further graph construction. The kernel is consumed (removed from
     /// the slab) and cached in `kernel_map`/`programs` for reuse.
+    ///
+    /// # Invariant
+    /// A kernel must never both load and store the same tensor (prevents aliasing).
+    /// The debug_assert in the recursive materialization loop enforces this.
     fn materialize_kernel(&mut self, kid: KernelId) -> Result<(), ZyxError> {
         eprintln!("E: kernel_data.remove({kid:?})");
         let kd = self.kernel_data.remove(&kid).unwrap();
@@ -843,33 +854,42 @@ impl Runtime {
         let loads = kd.loads.clone();
         let store_tids: Vec<TensorId> = kd.stores; // already deduplicated by add_store
 
-        debug_assert!(loads.iter().all(|&tid| {
-            self.buffer_map.contains_key(&tid)
-                || self.kernel_data.values().any(|d| d.outputs.contains(&tid))
-        }), "load tid must be realized or in some kernel's outputs");
+        debug_assert!(
+            loads.iter().all(|&tid| {
+                self.buffer_map.contains_key(&tid)
+                    || kd.outputs.contains(&tid)
+                    || self
+                        .kernel_data
+                        .values()
+                        .any(|d| d.outputs.contains(&tid) || d.stores.contains(&tid))
+            }),
+            "load tid must be realized or in kernel's own outputs, or in some other kernel's outputs/stores"
+        );
 
         // Debug: ensure each store tid is in exactly one kernel's outputs
         if cfg!(debug_assertions) {
             for &tid in &store_tids {
-                let count = self.kernel_data
-                    .iter()
-                    .filter(|(_, d)| d.outputs.contains(&tid))
-                    .count();
+                let count = self.kernel_data.iter().filter(|(_, d)| d.outputs.contains(&tid)).count();
                 debug_assert!(count <= 1, "store tid={tid} is in {count} kernels' outputs");
             }
         }
 
         // Recursively materialize any un-realized loads first via add_store.
+        // A kernel must never both load and store the same tid — assert this.
         for &tid in &loads {
             if !self.buffer_map.contains_key(&tid) {
                 let (producer_kid, _) = self.visited[&tid];
-                if producer_kid != kid {
-                    self.add_store(tid)?;
-                }
+                debug_assert_ne!(
+                    producer_kid, kid,
+                    "kernel {kid:?} both loads and stores tid {tid}, which is forbidden"
+                );
+                self.add_store(tid)?;
             }
         }
-        debug_assert!(loads.iter().all(|&tid| self.buffer_map.contains_key(&tid)),
-            "all loads must be realized after recursive materialization");
+        debug_assert!(
+            loads.iter().all(|&tid| self.buffer_map.contains_key(&tid)),
+            "all loads must be realized after recursive materialization"
+        );
 
         // Pick device and pool
         self.initialize_devices()?;
