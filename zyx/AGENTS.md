@@ -32,7 +32,9 @@ This document is your single source of truth. If it doesn't contain the answer, 
 
 **ALWAYS report bugs you introduce.** If your change breaks tests, causes crashes, or introduces any regression, tell the user immediately with the exact error and your analysis. Do not silently fix it, do not move on, do not wait to be asked. Stop and explain the problem.
 
-**If a test fails, find and fix it.** You broke it. The phrase "pre-existing" is FORBIDDEN.
+**If a test fails, find and fix it.** You broke it.
+
+**THE PHRASE "PRE-EXISTING" IS FORBIDDEN. NEVER USE IT. EVER. IN ANY CONTEXT. IF YOU USE IT, YOU WILL BE CORRECTED. REPEATEDLY. FOREVER.**
 
 **Never delete or modify comments/code without asking first.** If you're editing around comments, preserve them exactly. Accidental deletion is not an excuse — re-read your edit before applying.
 
