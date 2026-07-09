@@ -1946,28 +1946,23 @@ impl Kernel {
     }
 
     fn shape_of(&self, op_id: OpId) -> Vec<Dim> {
-        match &self.ops[op_id].op {
-            Op::LoadView(x) => x.1.shape(),
-            Op::ConstView(x) => x.1.shape(),
-            Op::Cast { x, .. } | Op::Unary { x, .. } => self.shape_of(*x),
-            Op::Binary { x, y, .. } | Op::Mad { x, y, .. } => {
-                let sx = self.shape_of(*x);
-                let sy = self.shape_of(*y);
-                if sx.len() >= sy.len() { sx } else { sy }
-            }
+        match self.ops[op_id].op {
+            Op::LoadView(ref x) => x.1.shape(),
+            Op::ConstView(ref x) => x.1.shape(),
+            Op::Cast { x, .. } | Op::Unary { x, .. } | Op::Binary { x, .. } | Op::Mad { x, .. } => self.shape_of(x),
             Op::Reduce { x, n_axes, .. } => {
-                let mut s = self.shape_of(*x);
-                s.truncate(s.len() - *n_axes as usize);
+                let mut s = self.shape_of(x);
+                s.truncate(s.len() - n_axes);
                 s
             }
-            Op::Move { mop, .. } => match mop.as_ref() {
+            Op::Move { ref mop, .. } => match mop.as_ref() {
                 MoveOp::Reshape { shape, .. }
                 | MoveOp::Expand { shape }
                 | MoveOp::Permute { shape, .. }
                 | MoveOp::Pad { shape, .. } => shape.clone(),
             },
-            Op::Const(_) | Op::Define { .. } => vec![],
-            _ => vec![],
+            Op::Const(_) => vec![1],
+            _ => unreachable!(),
         }
     }
 
