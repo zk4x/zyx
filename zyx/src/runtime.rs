@@ -712,23 +712,7 @@ impl Runtime {
             return Ok(x);
         }
 
-        let (mut kid, mut op_id) = self.visited[&x];
-
-        // Expand also checks is_preceded_by_compute (unlike permute/reshape/pad)
-        if self.kernels[kid].contains_stores() | self.kernels[kid].is_preceded_by_compute(op_id) {
-            self.add_store(x)?;
-            (kid, op_id) = self.visited[&x];
-        }
-
-        if self.kernel_data[&kid].outputs.len() > 1 {
-            let reduce_dims_big = self.kernels[kid].is_preceded_by_reduce(op_id);
-            if reduce_dims_big {
-                self.add_store(x)?;
-                (kid, op_id) = self.visited[&x];
-            } else {
-                kid = self.duplicate_kernel(x, kid);
-            }
-        }
+        let (mut kid, mut op_id) = self.duplicate_or_store(x)?;
 
         let shape_id = self.push_shape(shape.clone());
         let dtype = self.tensors[x].dtype;
