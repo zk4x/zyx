@@ -484,10 +484,13 @@ impl Runtime {
             op_id = self.kernels[kid].reshape(op_id, &[1]);
         }
 
+        let reduce_shape = crate::shape::reduce(&shape, &axes);
+        let shape_id = self.push_shape(reduce_shape);
+        let dtype = self.tensors[x].dtype;
         let tid = self.tensors.push(TensorData { shape_id, dtype });
 
         self.kernel_data.get_mut(&kid).unwrap().outputs.push(tid);
-        debug_assert_eq!(self.kernel_data[&kid].outputs.len(), 1);
+        debug_assert_eq!(self.kernel_data[&kid].outputs.len(), 1, "reduce must produce exactly one output");
         self.visited.insert(tid, (kid, op_id));
 
         #[cfg(feature = "debug_tensor_op")]
@@ -686,7 +689,7 @@ impl Runtime {
 
         let op_id = self.kernels[kid].reshape(op_id, &shape);
         self.kernel_data.get_mut(&kid).unwrap().outputs.push(tid);
-        debug_assert_eq!(self.kernel_data[&kid].outputs.len(), 1);
+        debug_assert_eq!(self.kernel_data[&kid].outputs.len(), 1, "reshape must produce exactly one output");
         self.visited.insert(tid, (kid, op_id));
         #[cfg(feature = "debug_tensor_op")]
         println!("  -> tid={tid}, kid={kid:?}, op_id={op_id:?}");
@@ -733,7 +736,7 @@ impl Runtime {
 
         let op_id = self.kernels[kid].expand(op_id, &shape);
         self.kernel_data.get_mut(&kid).unwrap().outputs.push(tid);
-        debug_assert_eq!(self.kernel_data[&kid].outputs.len(), 1);
+        debug_assert_eq!(self.kernel_data[&kid].outputs.len(), 1, "expand must produce exactly one output");
         self.visited.insert(tid, (kid, op_id));
         #[cfg(feature = "debug_tensor_op")]
         println!("  -> tid={tid}, kid={kid:?}, op_id={op_id:?}");
@@ -765,7 +768,7 @@ impl Runtime {
             })
         };
         self.kernel_data.get_mut(&kid).unwrap().outputs.push(tid);
-        debug_assert_eq!(self.kernel_data[&kid].outputs.len(), 1);
+        debug_assert_eq!(self.kernel_data[&kid].outputs.len(), 1, "permute must produce exactly one output");
         self.visited.insert(tid, (kid, op_id));
         #[cfg(feature = "debug_tensor_op")]
         println!("  -> tid={tid}, kid={kid:?}, op_id={op_id:?}");
@@ -793,7 +796,7 @@ impl Runtime {
             })
         };
         self.kernel_data.get_mut(&kid).unwrap().outputs.push(tid);
-        debug_assert_eq!(self.kernel_data[&kid].outputs.len(), 1);
+        debug_assert_eq!(self.kernel_data[&kid].outputs.len(), 1, "pad must produce exactly one output");
         self.visited.insert(tid, (kid, op_id));
         #[cfg(feature = "debug_tensor_op")]
         println!("  -> tid={tid}, kid={kid:?}, op_id={op_id:?}");
