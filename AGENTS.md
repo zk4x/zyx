@@ -1,5 +1,7 @@
 # Agent Guidelines for zyx
 
+## ⚠️ NEVER USE THE WORD "PRE-EXISTING" — EVER. NOT ONCE. NOT IN ANY CONTEXT.
+
 Quick reference for coding agents working in the zyx repository.
 
 ## Essential Commands
