@@ -38,7 +38,7 @@ Wait for the user's next instruction between steps. Do not proactively read more
 
 - **Read ops** (benchmark, search, grep, glob, read files, web fetch): Just do them. No need to ask even if uncertain.
 - **Write ops** (edit, delete, write files): If even the slightest uncertainty, immediately stop and ask.
-- **Commit**: Never commit without asking first. When the user says "commit", ask for confirmation including which files. The agent writes the commit message.
+- **Commit**: Never commit unless the user says the word "commit". When the user says "commit", derive a concise commit message from the diff matching the repo style and commit. Do NOT ask for a message. When the user says something unrelated, do NOT commit.
 
 This document is your single source of truth. If it doesn't contain the answer, ask. Don't search.
 

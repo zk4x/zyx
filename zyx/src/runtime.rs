@@ -80,6 +80,9 @@ struct TensorData {
 }
 
 struct KernelData {
+    /// Tensor reference count. Each entry is a tensor this kernel must produce.
+    /// When a tensor is consumed as input to a new op within the same kernel,
+    /// it is removed from outputs (since the kernel produces the new op's result instead).
     outputs: Vec<TensorId>,
     loads: Vec<TensorId>,
     stores: Vec<TensorId>,
@@ -481,13 +484,10 @@ impl Runtime {
             op_id = self.kernels[kid].reshape(op_id, &[1]);
         }
 
-        let reduce_shape = crate::shape::reduce(&shape, &axes);
-        let shape_id = self.push_shape(reduce_shape);
-        let dtype = self.tensors[x].dtype;
         let tid = self.tensors.push(TensorData { shape_id, dtype });
 
-        debug_assert_eq!(self.kernel_data[&kid].outputs.len(), 0);
         self.kernel_data.get_mut(&kid).unwrap().outputs.push(tid);
+        debug_assert_eq!(self.kernel_data[&kid].outputs.len(), 1);
         self.visited.insert(tid, (kid, op_id));
 
         #[cfg(feature = "debug_tensor_op")]
@@ -631,21 +631,16 @@ impl Runtime {
     fn duplicate_or_store(&mut self, x: TensorId) -> Result<(KernelId, OpId), ZyxError> {
         let (mut kid, mut op_id) = self.visited[&x];
 
-        if self.kernels[kid].contains_stores() {
+        let contains_stores = self.kernels[kid].contains_stores();
+        let reduce_dims_big = self.kernels[kid].is_preceded_by_reduce(op_id);
+        if contains_stores | reduce_dims_big {
             self.add_store(x)?;
             (kid, op_id) = self.visited[&x];
+        } else {
+            kid = self.duplicate_kernel(x, kid);
         }
 
-        // If values inside reduction need to be used elsewhere, we have to duplicate
-        if self.kernel_data[&kid].outputs.len() > 1 {
-            let reduce_dims_big = self.kernels[kid].is_preceded_by_reduce(op_id);
-            if reduce_dims_big {
-                self.add_store(x)?;
-                (kid, op_id) = self.visited[&x];
-            } else {
-                kid = self.duplicate_kernel(x, kid);
-            }
-        }
+        self.kernel_data.get_mut(&kid).unwrap().outputs = Vec::new();
 
         Ok((kid, op_id))
     }
@@ -689,9 +684,9 @@ impl Runtime {
         let dtype = self.tensors[x].dtype;
         let tid = self.tensors.push(TensorData { shape_id, dtype });
 
-        debug_assert_eq!(self.kernel_data[&kid].outputs.len(), 0);
         let op_id = self.kernels[kid].reshape(op_id, &shape);
         self.kernel_data.get_mut(&kid).unwrap().outputs.push(tid);
+        debug_assert_eq!(self.kernel_data[&kid].outputs.len(), 1);
         self.visited.insert(tid, (kid, op_id));
         #[cfg(feature = "debug_tensor_op")]
         println!("  -> tid={tid}, kid={kid:?}, op_id={op_id:?}");
@@ -736,9 +731,9 @@ impl Runtime {
         let dtype = self.tensors[x].dtype;
         let tid = self.tensors.push(TensorData { shape_id, dtype });
 
-        debug_assert_eq!(self.kernel_data[&kid].outputs.len(), 0);
         let op_id = self.kernels[kid].expand(op_id, &shape);
         self.kernel_data.get_mut(&kid).unwrap().outputs.push(tid);
+        debug_assert_eq!(self.kernel_data[&kid].outputs.len(), 1);
         self.visited.insert(tid, (kid, op_id));
         #[cfg(feature = "debug_tensor_op")]
         println!("  -> tid={tid}, kid={kid:?}, op_id={op_id:?}");
@@ -769,8 +764,8 @@ impl Runtime {
                 }),
             })
         };
-        debug_assert_eq!(self.kernel_data[&kid].outputs.len(), 0);
         self.kernel_data.get_mut(&kid).unwrap().outputs.push(tid);
+        debug_assert_eq!(self.kernel_data[&kid].outputs.len(), 1);
         self.visited.insert(tid, (kid, op_id));
         #[cfg(feature = "debug_tensor_op")]
         println!("  -> tid={tid}, kid={kid:?}, op_id={op_id:?}");
@@ -797,9 +792,8 @@ impl Runtime {
                 }),
             })
         };
-        let kd = self.kernel_data.get_mut(&kid).unwrap();
-        kd.outputs.push(tid);
-        debug_assert_eq!(kd.outputs.len(), 1);
+        self.kernel_data.get_mut(&kid).unwrap().outputs.push(tid);
+        debug_assert_eq!(self.kernel_data[&kid].outputs.len(), 1);
         self.visited.insert(tid, (kid, op_id));
         #[cfg(feature = "debug_tensor_op")]
         println!("  -> tid={tid}, kid={kid:?}, op_id={op_id:?}");
