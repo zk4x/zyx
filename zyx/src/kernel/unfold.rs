@@ -763,6 +763,7 @@ impl Kernel {
         false
     }
 
+    #[allow(unused)]
     pub(crate) fn is_preceded_by_compute(&self, x: OpId) -> bool {
         let mut params = vec![x];
         while let Some(param) = params.pop() {
