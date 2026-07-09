@@ -303,13 +303,7 @@ impl Kernel {
                                         if oid.is_null() || *st == 0 {
                                             return None;
                                         }
-                                        if matches!(
-                                            self.ops[*oid].op,
-                                            Op::Index {
-                                                scope: Scope::Global,
-                                                ..
-                                            }
-                                        ) {
+                                        if matches!(self.ops[*oid].op, Op::Index { scope: Scope::Global, .. }) {
                                             Some(*st)
                                         } else {
                                             None
@@ -357,13 +351,7 @@ impl Kernel {
                                         if oid.is_null() || *st == 0 {
                                             return None;
                                         }
-                                        if matches!(
-                                            self.ops[*oid].op,
-                                            Op::Index {
-                                                scope: Scope::Global,
-                                                ..
-                                            }
-                                        ) {
+                                        if matches!(self.ops[*oid].op, Op::Index { scope: Scope::Global, .. }) {
                                             Some(*st)
                                         } else {
                                             None
@@ -426,13 +414,7 @@ impl Kernel {
                                         if oid.is_null() || *st == 0 {
                                             return None;
                                         }
-                                        if matches!(
-                                            self.ops[*oid].op,
-                                            Op::Index {
-                                                scope: Scope::Global,
-                                                ..
-                                            }
-                                        ) {
+                                        if matches!(self.ops[*oid].op, Op::Index { scope: Scope::Global, .. }) {
                                             Some(*st)
                                         } else {
                                             None
@@ -480,13 +462,7 @@ impl Kernel {
                                         if oid.is_null() || *st == 0 {
                                             return None;
                                         }
-                                        if matches!(
-                                            self.ops[*oid].op,
-                                            Op::Index {
-                                                scope: Scope::Global,
-                                                ..
-                                            }
-                                        ) {
+                                        if matches!(self.ops[*oid].op, Op::Index { scope: Scope::Global, .. }) {
                                             Some(*st)
                                         } else {
                                             None

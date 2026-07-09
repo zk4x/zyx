@@ -60,10 +60,7 @@ pub(super) fn initialize_device(
     debug_dev: bool,
 ) -> Result<(), BackendError> {
     if !config.enabled {
-        return Err(BackendError {
-            status: ErrorStatus::Initialization,
-            context: "[C] backend configured out.".into(),
-        });
+        return Err(BackendError { status: ErrorStatus::Initialization, context: "[C] backend configured out.".into() });
     }
     if debug_dev {
         println!("[C] initialized");
@@ -347,12 +344,7 @@ impl CDevice {
                         }
                     }
                 }
-                &Op::Store {
-                    dst,
-                    x: src,
-                    index,
-                    layout,
-                } => {
+                &Op::Store { dst, x: src, index, layout } => {
                     let idx = get_var(index, &constants, &indices, &reg_map, &mut registers, loop_id);
                     let x = get_var(src, &constants, &indices, &reg_map, &mut registers, loop_id);
                     match layout {

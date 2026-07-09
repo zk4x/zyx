@@ -11,9 +11,7 @@ impl<IT: Into<Tensor>> Add<IT> for Tensor {
     fn add(self, rhs: IT) -> Self::Output {
         let (x, y) = Tensor::broadcast(self, rhs).unwrap();
         #[allow(clippy::let_and_return)] // otherwise it deadlocks
-        let tensor = Tensor {
-            id: RT.lock().binary(x.id, y.id, BOp::Add).unwrap(),
-        };
+        let tensor = Tensor { id: RT.lock().binary(x.id, y.id, BOp::Add).unwrap() };
         tensor
     }
 }
@@ -23,9 +21,7 @@ impl<IT: Into<Tensor>> Add<IT> for &Tensor {
     fn add(self, rhs: IT) -> Self::Output {
         let (x, y) = Tensor::broadcast(self.clone(), rhs).unwrap();
         #[allow(clippy::let_and_return)] // otherwise it deadlocks
-        let tensor = Tensor {
-            id: RT.lock().binary(x.id, y.id, BOp::Add).unwrap(),
-        };
+        let tensor = Tensor { id: RT.lock().binary(x.id, y.id, BOp::Add).unwrap() };
         tensor
     }
 }
@@ -35,9 +31,7 @@ impl<IT: Into<Tensor>> Sub<IT> for Tensor {
     fn sub(self, rhs: IT) -> Self::Output {
         let (x, y) = Tensor::broadcast(self, rhs).unwrap();
         #[allow(clippy::let_and_return)] // otherwise it deadlocks
-        let tensor = Tensor {
-            id: RT.lock().binary(x.id, y.id, BOp::Sub).unwrap(),
-        };
+        let tensor = Tensor { id: RT.lock().binary(x.id, y.id, BOp::Sub).unwrap() };
         tensor
     }
 }
@@ -47,9 +41,7 @@ impl<IT: Into<Tensor>> Sub<IT> for &Tensor {
     fn sub(self, rhs: IT) -> Self::Output {
         let (x, y) = Tensor::broadcast(self.clone(), rhs).unwrap();
         #[allow(clippy::let_and_return)] // otherwise it deadlocks
-        let tensor = Tensor {
-            id: RT.lock().binary(x.id, y.id, BOp::Sub).unwrap(),
-        };
+        let tensor = Tensor { id: RT.lock().binary(x.id, y.id, BOp::Sub).unwrap() };
         tensor
     }
 }
@@ -60,9 +52,7 @@ impl<IT: Into<Tensor>> Mul<IT> for Tensor {
         let rhs = rhs.into();
         let (x, y) = Tensor::broadcast(self, rhs).unwrap();
         #[allow(clippy::let_and_return)] // otherwise it deadlocks
-        let tensor = Tensor {
-            id: RT.lock().binary(x.id, y.id, BOp::Mul).unwrap(),
-        };
+        let tensor = Tensor { id: RT.lock().binary(x.id, y.id, BOp::Mul).unwrap() };
         tensor
     }
 }
@@ -73,9 +63,7 @@ impl<IT: Into<Tensor>> Mul<IT> for &Tensor {
         let rhs = rhs.into();
         let (x, y) = Tensor::broadcast(self.clone(), rhs).unwrap();
         #[allow(clippy::let_and_return)] // otherwise it deadlocks
-        let tensor = Tensor {
-            id: RT.lock().binary(x.id, y.id, BOp::Mul).unwrap(),
-        };
+        let tensor = Tensor { id: RT.lock().binary(x.id, y.id, BOp::Mul).unwrap() };
         tensor
     }
 }
@@ -85,9 +73,7 @@ impl<IT: Into<Tensor>> Div<IT> for Tensor {
     fn div(self, rhs: IT) -> Self::Output {
         let (x, y) = Tensor::broadcast(self, rhs).unwrap();
         #[allow(clippy::let_and_return)] // otherwise it deadlocks
-        let tensor = Tensor {
-            id: RT.lock().binary(x.id, y.id, BOp::Div).unwrap(),
-        };
+        let tensor = Tensor { id: RT.lock().binary(x.id, y.id, BOp::Div).unwrap() };
         tensor
     }
 }
@@ -97,9 +83,7 @@ impl<IT: Into<Tensor>> Div<IT> for &Tensor {
     fn div(self, rhs: IT) -> Self::Output {
         let (x, y) = Tensor::broadcast(self.clone(), rhs).unwrap();
         #[allow(clippy::let_and_return)] // otherwise it deadlocks
-        let tensor = Tensor {
-            id: RT.lock().binary(x.id, y.id, BOp::Div).unwrap(),
-        };
+        let tensor = Tensor { id: RT.lock().binary(x.id, y.id, BOp::Div).unwrap() };
         tensor
     }
 }
@@ -109,9 +93,7 @@ impl<IT: Into<Tensor>> BitOr<IT> for Tensor {
     fn bitor(self, rhs: IT) -> Self::Output {
         let (x, y) = Tensor::broadcast(self, rhs).unwrap();
         #[allow(clippy::let_and_return)] // otherwise it deadlocks
-        let tensor = Tensor {
-            id: RT.lock().binary(x.id, y.id, BOp::BitOr).unwrap(),
-        };
+        let tensor = Tensor { id: RT.lock().binary(x.id, y.id, BOp::BitOr).unwrap() };
         tensor
     }
 }
@@ -121,9 +103,7 @@ impl<IT: Into<Tensor>> BitOr<IT> for &Tensor {
     fn bitor(self, rhs: IT) -> Self::Output {
         let (x, y) = Tensor::broadcast(self.clone(), rhs).unwrap();
         #[allow(clippy::let_and_return)] // otherwise it deadlocks
-        let tensor = Tensor {
-            id: RT.lock().binary(x.id, y.id, BOp::BitOr).unwrap(),
-        };
+        let tensor = Tensor { id: RT.lock().binary(x.id, y.id, BOp::BitOr).unwrap() };
         tensor
     }
 }
@@ -133,9 +113,7 @@ impl<IT: Into<Tensor>> BitXor<IT> for Tensor {
     fn bitxor(self, rhs: IT) -> Self::Output {
         let (x, y) = Tensor::broadcast(self, rhs).unwrap();
         #[allow(clippy::let_and_return)] // otherwise it deadlocks
-        let tensor = Tensor {
-            id: RT.lock().binary(x.id, y.id, BOp::BitXor).unwrap(),
-        };
+        let tensor = Tensor { id: RT.lock().binary(x.id, y.id, BOp::BitXor).unwrap() };
         tensor
     }
 }
@@ -145,9 +123,7 @@ impl<IT: Into<Tensor>> BitXor<IT> for &Tensor {
     fn bitxor(self, rhs: IT) -> Self::Output {
         let (x, y) = Tensor::broadcast(self.clone(), rhs).unwrap();
         #[allow(clippy::let_and_return)] // otherwise it deadlocks
-        let tensor = Tensor {
-            id: RT.lock().binary(x.id, y.id, BOp::BitXor).unwrap(),
-        };
+        let tensor = Tensor { id: RT.lock().binary(x.id, y.id, BOp::BitXor).unwrap() };
         tensor
     }
 }
@@ -157,9 +133,7 @@ impl<IT: Into<Tensor>> BitAnd<IT> for Tensor {
     fn bitand(self, rhs: IT) -> Self::Output {
         let (x, y) = Tensor::broadcast(self, rhs).unwrap();
         #[allow(clippy::let_and_return)] // otherwise it deadlocks
-        let tensor = Tensor {
-            id: RT.lock().binary(x.id, y.id, BOp::BitAnd).unwrap(),
-        };
+        let tensor = Tensor { id: RT.lock().binary(x.id, y.id, BOp::BitAnd).unwrap() };
         tensor
     }
 }
@@ -169,9 +143,7 @@ impl<IT: Into<Tensor>> BitAnd<IT> for &Tensor {
     fn bitand(self, rhs: IT) -> Self::Output {
         let (x, y) = Tensor::broadcast(self.clone(), rhs).unwrap();
         #[allow(clippy::let_and_return)] // otherwise it deadlocks
-        let tensor = Tensor {
-            id: RT.lock().binary(x.id, y.id, BOp::BitAnd).unwrap(),
-        };
+        let tensor = Tensor { id: RT.lock().binary(x.id, y.id, BOp::BitAnd).unwrap() };
         tensor
     }
 }

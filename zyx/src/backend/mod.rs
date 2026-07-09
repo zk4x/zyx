@@ -169,18 +169,12 @@ pub struct BufferId {
 }
 
 impl BufferId {
-    pub const NULL: Self = Self {
-        pool: PoolId::NULL,
-        buffer: PoolBufferId(u32::MAX),
-    };
+    pub const NULL: Self = Self { pool: PoolId::NULL, buffer: PoolBufferId(u32::MAX) };
 }
 
 impl From<usize> for BufferId {
     fn from(value: usize) -> Self {
-        BufferId {
-            pool: PoolId::ZERO,
-            buffer: PoolBufferId(u32::try_from(value).unwrap()),
-        }
+        BufferId { pool: PoolId::ZERO, buffer: PoolBufferId(u32::try_from(value).unwrap()) }
     }
 }
 
@@ -198,18 +192,12 @@ pub struct ProgramId {
 }
 
 impl ProgramId {
-    pub const NULL: Self = Self {
-        device: DeviceId::NULL,
-        program: DeviceProgramId(u32::MAX),
-    };
+    pub const NULL: Self = Self { device: DeviceId::NULL, program: DeviceProgramId(u32::MAX) };
 }
 
 impl From<usize> for ProgramId {
     fn from(value: usize) -> Self {
-        ProgramId {
-            device: DeviceId::ZERO,
-            program: DeviceProgramId(u32::try_from(value).unwrap()),
-        }
+        ProgramId { device: DeviceId::ZERO, program: DeviceProgramId(u32::try_from(value).unwrap()) }
     }
 }
 
@@ -221,10 +209,7 @@ impl From<ProgramId> for usize {
 
 impl From<libloading::Error> for BackendError {
     fn from(value: libloading::Error) -> Self {
-        BackendError {
-            status: ErrorStatus::Initialization,
-            context: value.to_string().into(),
-        }
+        BackendError { status: ErrorStatus::Initialization, context: value.to_string().into() }
     }
 }
 

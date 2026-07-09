@@ -44,11 +44,7 @@ struct IdIter<'a, Id> {
 
 impl<'a, Id: SlabId> IdIter<'a, Id> {
     const fn new(empty: &'a Set<Id>, max_exclusive: Id) -> Self {
-        Self {
-            id: Id::ZERO,
-            max_exclusive,
-            empty,
-        }
+        Self { id: Id::ZERO, max_exclusive, empty }
     }
 }
 
@@ -79,11 +75,7 @@ impl<Id: SlabId, T> Drop for Slab<Id, T> {
 
 impl<Id: SlabId, T> Slab<Id, T> {
     pub(crate) const fn new() -> Self {
-        Self {
-            values: Vec::new(),
-            empty: Set::with_hasher(BuildHasherDefault::new()),
-            _index: PhantomData,
-        }
+        Self { values: Vec::new(), empty: Set::with_hasher(BuildHasherDefault::new()), _index: PhantomData }
     }
 
     /*pub(crate) fn with_capacity(capacity: usize) -> Self {
@@ -158,13 +150,13 @@ impl<Id: SlabId, T> Slab<Id, T> {
         id < Id::from(self.values.len()) && !self.empty.contains(&id)
     }
 
-    /*pub(crate) fn iter_mut(&mut self) -> impl Iterator<Item = (Id, &mut T)> {
+    pub(crate) fn iter_mut(&mut self) -> impl Iterator<Item = (Id, &mut T)> {
         self.values
             .iter_mut()
             .enumerate()
             .filter(|(id, _)| !self.empty.contains(&(Id::try_from(*id).unwrap())))
             .map(|(id, x)| (Id::try_from(id).unwrap(), unsafe { x.assume_init_mut() }))
-    }*/
+    }
 
     /*pub(crate) fn first_id(&self) -> Id {
         if self.is_empty() {
@@ -257,11 +249,7 @@ impl<Id: SlabId, T> FromIterator<(Id, T)> for Slab<Id, T> {
             values.push(MaybeUninit::new(v));
             i.inc();
         }
-        Self {
-            values,
-            empty,
-            _index: PhantomData,
-        }
+        Self { values, empty, _index: PhantomData }
     }
 }
 
@@ -354,10 +342,6 @@ impl<T: DeBin, Id: SlabId + DeBin> DeBin for Slab<Id, T> {
                 values.push(MaybeUninit::new(value));
             }
         }
-        Ok(Self {
-            values,
-            empty,
-            _index: PhantomData,
-        })
+        Ok(Self { values, empty, _index: PhantomData })
     }
 }

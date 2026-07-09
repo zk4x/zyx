@@ -144,10 +144,7 @@ impl Optimization {
                 let (op_id, factor) = factors[config];
                 println!("thread_coarse axis {op_id} by {factor}, cfg_opt={config}");
             }
-            Optimization::RegisterBlocking {
-                reduce_splits,
-                thread_coarses,
-            } => {
+            Optimization::RegisterBlocking { reduce_splits, thread_coarses } => {
                 use std::fmt::Write;
 
                 let mut info = String::new();
@@ -248,16 +245,8 @@ impl Optimization {
                 kernel.split_dim(
                     op_id,
                     vec![
-                        Op::Index {
-                            len: len / factor,
-                            scope: Scope::Global,
-                            axis,
-                        },
-                        Op::Index {
-                            len: factor,
-                            scope: Scope::Local,
-                            axis,
-                        },
+                        Op::Index { len: len / factor, scope: Scope::Global, axis },
+                        Op::Index { len: factor, scope: Scope::Local, axis },
                     ],
                 );
             }
@@ -268,10 +257,7 @@ impl Optimization {
                 let (op_id, factor) = factors[config];
                 kernel.thread_coarse(op_id, factor);
             }
-            Optimization::RegisterBlocking {
-                reduce_splits,
-                thread_coarses,
-            } => {
+            Optimization::RegisterBlocking { reduce_splits, thread_coarses } => {
                 kernel.apply_register_blocking(reduce_splits, thread_coarses, config);
             }
             Optimization::UnrollConstantLoops => {
@@ -301,10 +287,7 @@ impl Optimization {
                     kernel.pad_index(gidx_id, current_len, pad_len, crate::dtype::Constant::idx(0));
                 }
             }
-            Optimization::Vectorize {
-                supported_lens,
-                vectorize_ops,
-            } => {
+            Optimization::Vectorize { supported_lens, vectorize_ops } => {
                 kernel.vectorize_loads(supported_lens);
                 kernel.vectorize_stores(supported_lens);
                 if *vectorize_ops {
@@ -369,12 +352,7 @@ impl Kernel {
         let mut op_id = self.head;
         while !op_id.is_null() {
             match self.ops[op_id].op {
-                Op::Define {
-                    dtype,
-                    scope: Scope::Global,
-                    len,
-                    ..
-                } => {
+                Op::Define { dtype, scope: Scope::Global, len, .. } => {
                     let bytes = (dtype.bit_size() as Dim) * len / 8;
                     let (buf, ev) = memory_pool.allocate(bytes)?;
                     args.push(buf);
@@ -439,14 +417,7 @@ impl Kernel {
         )?;
         kernel.dealloc_buffers(args, memory_pool);
 
-        Ok((
-            program_id,
-            OptSeq {
-                opts: Vec::new(),
-                cost: Cost::default(),
-            },
-            timing,
-        ))
+        Ok((program_id, OptSeq { opts: Vec::new(), cost: Cost::default() }, timing))
     }
 
     /// Release mode autotune with beam-like search and multithreading.
@@ -528,10 +499,7 @@ impl Kernel {
                     continue;
                 }
                 let cost = new_kernel.get_cost(device.info());
-                let new_seq = OptSeq {
-                    opts: vec![(opt_id, config_id)],
-                    cost,
-                };
+                let new_seq = OptSeq { opts: vec![(opt_id, config_id)], cost };
                 visited.insert(hash);
                 items.push(new_seq);
                 config_id += 1;
@@ -571,10 +539,7 @@ impl Kernel {
                     if visited.contains(&hash) {
                         continue;
                     }
-                    let new_seq = OptSeq {
-                        opts,
-                        cost: new_kernel.get_cost(device.info()),
-                    };
+                    let new_seq = OptSeq { opts, cost: new_kernel.get_cost(device.info()) };
                     visited.insert(hash);
 
                     if new_kernel.ops.len().0 > 10000 {
@@ -598,10 +563,7 @@ impl Kernel {
         let mut launched_kernels = Set::default();
         let mut best_time = u64::MAX;
         let mut best_program = DeviceProgramId::NULL;
-        let mut best_opt_seq = OptSeq {
-            opts: Vec::new(),
-            cost: Cost::default(),
-        };
+        let mut best_opt_seq = OptSeq { opts: Vec::new(), cost: Cost::default() };
         let mut any_success = false;
         let mut last_error = None;
 

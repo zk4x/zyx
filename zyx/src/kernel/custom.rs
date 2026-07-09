@@ -55,11 +55,7 @@ impl CompiledKernel {
     /// Execute the compiled kernel with new input tensors.
     pub fn forward(&self, inputs: &[&crate::tensor::Tensor], shape: impl IntoShape) -> crate::tensor::Tensor {
         let ids: Vec<_> = inputs.iter().map(|t| t.id).collect();
-        let ck = CustomKernel {
-            program: self.program,
-            inputs: ids,
-            dtype: self.dtype,
-        };
+        let ck = CustomKernel { program: self.program, inputs: ids, dtype: self.dtype };
         /*let tensor_id = crate::RT
         .lock()
         .graph

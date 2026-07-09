@@ -193,10 +193,7 @@ impl Timer {
     pub(crate) fn new(name: &str) -> Timer {
         let name: String = name.into();
         ET.lock().entry(name.clone()).or_insert((0, 0));
-        Timer {
-            name,
-            begin: std::time::Instant::now(),
-        }
+        Timer { name, begin: std::time::Instant::now() }
     }
 }
 
