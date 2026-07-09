@@ -696,14 +696,22 @@ impl Runtime {
         tid
     }
 
-    pub fn expand(&mut self, x: TensorId, shape: Vec<Dim>) -> Result<TensorId, ZyxError> {
+    pub fn expand(&mut self, mut x: TensorId, shape: Vec<Dim>) -> Result<TensorId, ZyxError> {
         #[cfg(feature = "debug_tensor_op")]
         println!("runtime::expand(x={x}, shape={shape:?})");
         let sh = self.shape(x);
-        if shape == sh {
+        // View::expand cannot increase rank — unsqueeze leading dims via reshape first.
+        if shape.len() > sh.len() {
+            let new_shape: Vec<Dim> = std::iter::repeat_n(1, shape.len() - sh.len())
+                .chain(sh.iter().copied())
+                .collect();
+            x = self.reshape(x, new_shape);
+        }
+        if shape == self.shape(x) {
             self.retain(x);
             return Ok(x);
         }
+
         let (mut kid, mut op_id) = self.visited[&x];
 
         // Expand also checks is_preceded_by_compute (unlike permute/reshape/pad)
