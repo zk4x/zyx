@@ -434,70 +434,6 @@ impl Runtime {
         Ok(tid)
     }
 
-    pub fn reduce(&mut self, x: TensorId, axes: Vec<UAxis>, rop: BOp) -> Result<TensorId, ZyxError> {
-        #[cfg(feature = "debug_tensor_op")]
-        println!("runtime::reduce(x={x}, axes={axes:?}, rop={rop:?})");
-        let (mut kid, mut op_id) = self.visited[&x];
-
-        if self.kernels[kid].contains_stores() | self.kernels[kid].is_preceded_by_reduce(op_id) {
-            self.add_store(x)?;
-            (kid, op_id) = self.visited[&x];
-        }
-
-        if self.kernel_data[&kid].outputs.len() > 1 {
-            let reduce_dims_big = self.kernels[kid].is_preceded_by_reduce(op_id);
-            if reduce_dims_big {
-                self.add_store(x)?;
-                (kid, op_id) = self.visited[&x];
-            } else {
-                kid = self.duplicate_kernel(x, kid);
-            }
-        }
-
-        // Permute axes so reduce axes are last
-        let shape = self.shape(x).to_vec();
-        let n = shape.len();
-        let max_axis = *axes.last().unwrap() as usize;
-        let mut ai = 0;
-        let mut permute_axes = Vec::with_capacity(n);
-        for i in 0..=max_axis {
-            if axes[ai] as usize == i {
-                ai += 1;
-            } else {
-                permute_axes.push(i as UAxis);
-            }
-        }
-        permute_axes.extend((max_axis + 1..n).map(|i| i as UAxis));
-        permute_axes.extend_from_slice(&axes);
-
-        if !permute_axes.iter().copied().eq(0..permute_axes.len() as UAxis) {
-            op_id = self.kernels[kid].permute(op_id, &permute_axes);
-        }
-
-        op_id = self.kernels[kid].push_back(Op::Reduce {
-            x: op_id,
-            rop,
-            n_axes: axes.len(),
-        });
-
-        if shape.len() == axes.len() {
-            op_id = self.kernels[kid].reshape(op_id, &[1]);
-        }
-
-        let reduce_shape = crate::shape::reduce(&shape, &axes);
-        let shape_id = self.push_shape(reduce_shape);
-        let dtype = self.tensors[x].dtype;
-        let tid = self.tensors.push(TensorData { shape_id, dtype });
-
-        self.kernel_data.get_mut(&kid).unwrap().outputs.push(tid);
-        debug_assert_eq!(self.kernel_data[&kid].outputs.len(), 1, "reduce must produce exactly one output");
-        self.visited.insert(tid, (kid, op_id));
-
-        #[cfg(feature = "debug_tensor_op")]
-        println!("  -> tid={tid}, kid={kid:?}, op_id={op_id:?}");
-        Ok(tid)
-    }
-
     pub fn to_device(&mut self, x: TensorId, device_id: DeviceId) -> Result<TensorId, ZyxError> {
         #[cfg(feature = "debug_tensor_op")]
         println!("runtime::to_device(x={x}, device_id={device_id:?})");
@@ -637,15 +573,67 @@ impl Runtime {
         let contains_stores = self.kernels[kid].contains_stores();
         let reduce_dims_big = self.kernels[kid].is_preceded_by_reduce(op_id);
         if contains_stores | reduce_dims_big {
+            eprintln!("STORE PATH");
             self.add_store(x)?;
             (kid, op_id) = self.visited[&x];
         } else {
+            eprintln!("DUPLICATE PATH");
             kid = self.duplicate_kernel(x, kid);
         }
 
         self.kernel_data.get_mut(&kid).unwrap().outputs = Vec::new();
 
         Ok((kid, op_id))
+    }
+
+    pub fn reduce(&mut self, x: TensorId, axes: Vec<UAxis>, rop: BOp) -> Result<TensorId, ZyxError> {
+        #[cfg(feature = "debug_tensor_op")]
+        println!("runtime::reduce(x={x}, axes={axes:?}, rop={rop:?})");
+
+        let (kid, mut op_id) = self.duplicate_or_store(x)?;
+
+        // Permute axes so reduce axes are last
+        let shape = self.shape(x).to_vec();
+        let n = shape.len();
+        let max_axis = *axes.last().unwrap() as usize;
+        let mut ai = 0;
+        let mut permute_axes = Vec::with_capacity(n);
+        for i in 0..=max_axis {
+            if axes[ai] as usize == i {
+                ai += 1;
+            } else {
+                permute_axes.push(i as UAxis);
+            }
+        }
+        permute_axes.extend((max_axis + 1..n).map(|i| i as UAxis));
+        permute_axes.extend_from_slice(&axes);
+
+        if !permute_axes.iter().copied().eq(0..permute_axes.len() as UAxis) {
+            op_id = self.kernels[kid].permute(op_id, &permute_axes);
+        }
+
+        op_id = self.kernels[kid].push_back(Op::Reduce {
+            x: op_id,
+            rop,
+            n_axes: axes.len(),
+        });
+
+        if shape.len() == axes.len() {
+            op_id = self.kernels[kid].reshape(op_id, &[1]);
+        }
+
+        let reduce_shape = crate::shape::reduce(&shape, &axes);
+        let shape_id = self.push_shape(reduce_shape);
+        let dtype = self.tensors[x].dtype;
+        let tid = self.tensors.push(TensorData { shape_id, dtype });
+
+        debug_assert_eq!(self.kernel_data[&kid].outputs.len(), 0, "input into reduce must have empty outputs");
+        self.kernel_data.get_mut(&kid).unwrap().outputs.push(tid);
+        self.visited.insert(tid, (kid, op_id));
+
+        #[cfg(feature = "debug_tensor_op")]
+        println!("  -> tid={tid}, kid={kid:?}, op_id={op_id:?}");
+        Ok(tid)
     }
 
     pub(super) fn reshape(&mut self, x: TensorId, shape: Vec<Dim>) -> TensorId {
@@ -688,8 +676,8 @@ impl Runtime {
         let tid = self.tensors.push(TensorData { shape_id, dtype });
 
         let op_id = self.kernels[kid].reshape(op_id, &shape);
+        debug_assert_eq!(self.kernel_data[&kid].outputs.len(), 0, "input into reshape must have empty outputs");
         self.kernel_data.get_mut(&kid).unwrap().outputs.push(tid);
-        debug_assert_eq!(self.kernel_data[&kid].outputs.len(), 1, "reshape must produce exactly one output");
         self.visited.insert(tid, (kid, op_id));
         #[cfg(feature = "debug_tensor_op")]
         println!("  -> tid={tid}, kid={kid:?}, op_id={op_id:?}");
@@ -712,15 +700,15 @@ impl Runtime {
             return Ok(x);
         }
 
-        let (mut kid, mut op_id) = self.duplicate_or_store(x)?;
+        let (kid, op_id) = self.duplicate_or_store(x)?;
 
         let shape_id = self.push_shape(shape.clone());
         let dtype = self.tensors[x].dtype;
         let tid = self.tensors.push(TensorData { shape_id, dtype });
 
         let op_id = self.kernels[kid].expand(op_id, &shape);
+        debug_assert_eq!(self.kernel_data[&kid].outputs.len(), 0, "input into expand must have empty outputs");
         self.kernel_data.get_mut(&kid).unwrap().outputs.push(tid);
-        debug_assert_eq!(self.kernel_data[&kid].outputs.len(), 1, "expand must produce exactly one output");
         self.visited.insert(tid, (kid, op_id));
         #[cfg(feature = "debug_tensor_op")]
         println!("  -> tid={tid}, kid={kid:?}, op_id={op_id:?}");
@@ -751,8 +739,8 @@ impl Runtime {
                 }),
             })
         };
+        debug_assert_eq!(self.kernel_data[&kid].outputs.len(), 0, "input into permute must have empty outputs");
         self.kernel_data.get_mut(&kid).unwrap().outputs.push(tid);
-        debug_assert_eq!(self.kernel_data[&kid].outputs.len(), 1, "permute must produce exactly one output");
         self.visited.insert(tid, (kid, op_id));
         #[cfg(feature = "debug_tensor_op")]
         println!("  -> tid={tid}, kid={kid:?}, op_id={op_id:?}");
@@ -779,8 +767,8 @@ impl Runtime {
                 }),
             })
         };
+        debug_assert_eq!(self.kernel_data[&kid].outputs.len(), 0, "input into pad must have empty outputs");
         self.kernel_data.get_mut(&kid).unwrap().outputs.push(tid);
-        debug_assert_eq!(self.kernel_data[&kid].outputs.len(), 1, "pad must produce exactly one output");
         self.visited.insert(tid, (kid, op_id));
         #[cfg(feature = "debug_tensor_op")]
         println!("  -> tid={tid}, kid={kid:?}, op_id={op_id:?}");
