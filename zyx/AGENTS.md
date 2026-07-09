@@ -16,7 +16,23 @@ When investigating a bug: add a `panic!` at the relevant point. Run the test. Se
 
 There are no exceptions. Rhetorical questions are questions. "What do you mean" is a question. "Did you" is a question. If there is a `?`, you text-first, tools-never.
 
+**This means: when asked a question, do NOT search, read, grep, or run any tool "to verify" or "to find the answer." Answer from what you already know or what the user already told you.**
+
 **Failure to follow this rule will get you corrected. Again and again and again.**
+
+## DO NOT Search Without Instruction
+
+**Stop guessing what to look at.** The user will tell you exactly what code to read, grep, or examine. Do not search on your own initiative. Do not launch task agents to investigate. Do not "figure out" what code is responsible. If you don't know, say so and ask.
+
+The user knows the codebase. Your job is to do what you're told, not to explore.
+
+## Answer Questions. Do Not Speculate.
+
+**State observations, not conclusions.** When asked a question about observed behavior (log output, test failure, etc.), answer with what you see. Do not add analysis, root cause theories, or guesses. The user will interpret the evidence.
+
+## Do Not Anticipate
+
+Wait for the user's next instruction between steps. Do not proactively read more code, run more tests, or launch investigations after answering a question. The user will tell you what to do next.
 
 ## Read vs Write
 

@@ -11,7 +11,7 @@ use crate::{
     DType, DebugMask, Map, Scalar, Set, ZyxError,
     backend::{AutotuneConfig, BufferId, Config, Device, DeviceInfo, DeviceProgramId, Event, MemoryPool, OpCapability, PoolId},
     dtype::Constant,
-    kernel::{BOp, DeviceId, Kernel, Op, OpId, UOp, autotune::OptSeq},
+    kernel::{BOp, DeviceId, Kernel, MoveOp, Op, OpId, UOp, autotune::OptSeq},
     rng::Rng,
     shape::{Dim, UAxis},
     slab::{Slab, SlabId},
@@ -752,11 +752,20 @@ impl Runtime {
         }
         let (kid, op_id) = self.duplicate_or_store(x).unwrap();
         let new_shape = crate::shape::permute(self.shape(x), &axes);
-        let shape_id = self.push_shape(new_shape);
+        let shape_id = self.push_shape(new_shape.clone());
         let dtype = self.tensors[x].dtype;
         let tid = self.tensors.push(TensorData { shape_id, dtype });
 
-        let op_id = self.kernels[kid].permute(op_id, &axes);
+        let op_id = {
+            let kid = &mut self.kernels[kid];
+            kid.push_back(Op::Move {
+                x: op_id,
+                mop: Box::new(MoveOp::Permute {
+                    axes: axes.into(),
+                    shape: new_shape,
+                }),
+            })
+        };
         self.kernel_data.get_mut(&kid).unwrap().outputs.push(tid);
         self.visited.insert(tid, (kid, op_id));
         #[cfg(feature = "debug_tensor_op")]
@@ -770,11 +779,20 @@ impl Runtime {
         let (kid, op_id) = self.duplicate_or_store(x).unwrap();
         let mut new_shape = self.shape(x).to_vec();
         crate::shape::pad(&mut new_shape, &padding);
-        let shape_id = self.push_shape(new_shape);
+        let shape_id = self.push_shape(new_shape.clone());
         let dtype = self.tensors[x].dtype;
         let tid = self.tensors.push(TensorData { shape_id, dtype });
 
-        let op_id = self.kernels[kid].pad(op_id, &padding);
+        let op_id = {
+            let kid = &mut self.kernels[kid];
+            kid.push_back(Op::Move {
+                x: op_id,
+                mop: Box::new(MoveOp::Pad {
+                    padding: padding.into(),
+                    shape: new_shape,
+                }),
+            })
+        };
         self.kernel_data.get_mut(&kid).unwrap().outputs.push(tid);
         self.visited.insert(tid, (kid, op_id));
         #[cfg(feature = "debug_tensor_op")]

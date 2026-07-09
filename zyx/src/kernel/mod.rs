@@ -1219,7 +1219,7 @@ impl Kernel {
     /// Permute tensor axes.
     pub fn permute(&mut self, x: OpId, axes: &[UAxis]) -> OpId {
         let axes = axes.to_vec();
-        let shape = self.shape();
+        let shape = self.shape_of(x);
         let shape = crate::shape::permute(&shape, &axes);
         self.push_back(Op::Move {
             x,
@@ -1248,7 +1248,7 @@ impl Kernel {
     /// Pad tensor with zeros.
     pub fn pad(&mut self, x: OpId, padding: &[(i64, i64)]) -> OpId {
         let padding = padding.to_vec();
-        let mut shape = self.shape();
+        let mut shape = self.shape_of(x);
         crate::shape::pad(&mut shape, &padding);
         self.push_back(Op::Move {
             x,
@@ -1927,47 +1927,48 @@ impl Kernel {
             indices.sort_by_key(|x| x.1);
             return indices.into_iter().map(|x| x.0).collect();
         }
-        let mut reduce_dims = 0;
+        let mut max_shape = Vec::<Dim>::new();
+        let mut max_numel = 0usize;
         let mut op_id = self.tail;
         while !op_id.is_null() {
-            match self.at(op_id) {
-                Op::ConstView(x) => {
-                    let shape = x.1.shape();
-                    let shape: Vec<Dim> = shape[..shape.len() - reduce_dims].into();
-                    if shape.is_empty() {
-                        return vec![1];
-                    }
-                    return shape;
+            if let Op::StoreView { src, .. } = self.at(op_id) {
+                let shape = self.shape_of(*src);
+                let numel = shape.iter().copied().map(|d| d as usize).product();
+                if numel > max_numel {
+                    max_numel = numel;
+                    max_shape = shape;
                 }
-                Op::LoadView(x) => {
-                    let shape = x.1.shape();
-                    let shape: Vec<Dim> = shape[..shape.len() - reduce_dims].into();
-                    if shape.is_empty() {
-                        return vec![1];
-                    }
-                    return shape;
-                }
-                Op::Reduce { n_axes, .. } => {
-                    reduce_dims += n_axes;
-                }
-                Op::Move { mop, .. } => {
-                    let shape = match mop.as_ref() {
-                        MoveOp::Reshape { shape, .. }
-                        | MoveOp::Expand { shape }
-                        | MoveOp::Permute { shape, .. }
-                        | MoveOp::Pad { shape, .. } => shape,
-                    };
-                    let shape: Vec<Dim> = shape[..shape.len() - reduce_dims].into();
-                    if shape.is_empty() {
-                        return vec![1];
-                    }
-                    return shape;
-                }
-                _ => {}
             }
             op_id = self.prev_op(op_id);
         }
-        Vec::new()
+        assert!(!max_shape.is_empty(), "shape(): no StoreViews found in kernel");
+        max_shape
+    }
+
+    fn shape_of(&self, op_id: OpId) -> Vec<Dim> {
+        match &self.ops[op_id].op {
+            Op::LoadView(x) => x.1.shape(),
+            Op::ConstView(x) => x.1.shape(),
+            Op::Cast { x, .. } | Op::Unary { x, .. } => self.shape_of(*x),
+            Op::Binary { x, y, .. } | Op::Mad { x, y, .. } => {
+                let sx = self.shape_of(*x);
+                let sy = self.shape_of(*y);
+                if sx.len() >= sy.len() { sx } else { sy }
+            }
+            Op::Reduce { x, n_axes, .. } => {
+                let mut s = self.shape_of(*x);
+                s.truncate(s.len() - *n_axes as usize);
+                s
+            }
+            Op::Move { mop, .. } => match mop.as_ref() {
+                MoveOp::Reshape { shape, .. }
+                | MoveOp::Expand { shape }
+                | MoveOp::Permute { shape, .. }
+                | MoveOp::Pad { shape, .. } => shape.clone(),
+            },
+            Op::Const(_) | Op::Define { .. } => vec![],
+            _ => vec![],
+        }
     }
 
     #[allow(unused)]
