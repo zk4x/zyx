@@ -1,5 +1,7 @@
 # Agent Guidelines for zyx (Core Crate)
 
+## ⚠️ NEVER USE THE WORD "PRE-EXISTING" — EVER. NOT ONCE. NOT IN ANY CONTEXT.
+
 ## NEVER THINK. NEVER ANALYZE. NEVER EXPLAIN.
 
 **You are not smart. Your analysis is always wrong. Do not try to figure things out. Just look, test, report.**
