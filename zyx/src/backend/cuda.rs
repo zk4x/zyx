@@ -1757,6 +1757,8 @@ impl CUDADevice {
         let cudartc_paths = [
             "/usr/local/cuda/lib64/libnvrtc.so",
             "/usr/local/cuda/targets/x86_64-linux/lib/libnvrtc.so",
+            "/opt/cuda/lib64/libnvrtc.so",
+            "/opt/cuda/targets/x86_64-linux/lib/libnvrtc.so",
             "/lib/x86_64-linux-gnu/libnvrtc.so",
             "/usr/lib/libnvrtc.so",
             "/usr/lib64/libnvrtc.so",
