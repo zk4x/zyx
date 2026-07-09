@@ -486,6 +486,7 @@ impl Runtime {
         let dtype = self.tensors[x].dtype;
         let tid = self.tensors.push(TensorData { shape_id, dtype });
 
+        debug_assert_eq!(self.kernel_data[&kid].outputs.len(), 0);
         self.kernel_data.get_mut(&kid).unwrap().outputs.push(tid);
         self.visited.insert(tid, (kid, op_id));
 
@@ -688,6 +689,7 @@ impl Runtime {
         let dtype = self.tensors[x].dtype;
         let tid = self.tensors.push(TensorData { shape_id, dtype });
 
+        debug_assert_eq!(self.kernel_data[&kid].outputs.len(), 0);
         let op_id = self.kernels[kid].reshape(op_id, &shape);
         self.kernel_data.get_mut(&kid).unwrap().outputs.push(tid);
         self.visited.insert(tid, (kid, op_id));
@@ -734,6 +736,7 @@ impl Runtime {
         let dtype = self.tensors[x].dtype;
         let tid = self.tensors.push(TensorData { shape_id, dtype });
 
+        debug_assert_eq!(self.kernel_data[&kid].outputs.len(), 0);
         let op_id = self.kernels[kid].expand(op_id, &shape);
         self.kernel_data.get_mut(&kid).unwrap().outputs.push(tid);
         self.visited.insert(tid, (kid, op_id));
@@ -766,6 +769,7 @@ impl Runtime {
                 }),
             })
         };
+        debug_assert_eq!(self.kernel_data[&kid].outputs.len(), 0);
         self.kernel_data.get_mut(&kid).unwrap().outputs.push(tid);
         self.visited.insert(tid, (kid, op_id));
         #[cfg(feature = "debug_tensor_op")]
@@ -793,7 +797,9 @@ impl Runtime {
                 }),
             })
         };
-        self.kernel_data.get_mut(&kid).unwrap().outputs.push(tid);
+        let kd = self.kernel_data.get_mut(&kid).unwrap();
+        kd.outputs.push(tid);
+        debug_assert_eq!(kd.outputs.len(), 1);
         self.visited.insert(tid, (kid, op_id));
         #[cfg(feature = "debug_tensor_op")]
         println!("  -> tid={tid}, kid={kid:?}, op_id={op_id:?}");
