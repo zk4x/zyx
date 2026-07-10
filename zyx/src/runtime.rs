@@ -605,6 +605,8 @@ impl Runtime {
         tid
     }
 
+    // Data can be smaller or equal lenght as number of elements in tensor.
+    // If data is smaller, only first elements in tensor will be loaded.
     pub fn load<T: Scalar>(&mut self, x: TensorId, data: &mut [T]) -> Result<(), ZyxError> {
         #[cfg(feature = "debug_tensor_op")]
         println!("runtime::load(x={x})");
@@ -613,10 +615,16 @@ impl Runtime {
             return Err(ZyxError::DTypeError(format!("loading dtype {}, but the data has dtype {dt}", T::dtype()).into()));
         }
 
+        let shape_numel: Dim = self.shape(x).iter().product();
+        if (data.len() as Dim) > shape_numel {
+            return Err(ZyxError::AllocationError(
+                format!("load buffer of {} elements is larger than tensor with {shape_numel} elements", data.len()).into(),
+            ));
+        }
+
         // Fast path: already realized
         if let Some(&buffer_id) = self.buffer_map.get(&x) {
-            let n: usize = self.shape(x).iter().product::<Dim>() as usize;
-            let bytes = n * (T::bit_size() / 8) as usize;
+            let bytes = data.len() * (T::bit_size() / 8) as usize;
             let byte_slice = unsafe { std::slice::from_raw_parts_mut(data.as_mut_ptr().cast(), bytes) };
             for buffers in self.events.keys() {
                 if buffers.contains(&buffer_id) {
@@ -647,8 +655,7 @@ impl Runtime {
         }
 
         // Copy result to host
-        let n: usize = self.shape(x).iter().product::<Dim>() as usize;
-        let bytes = n * (T::bit_size() / 8) as usize;
+        let bytes = data.len() * (T::bit_size() / 8) as usize;
         let byte_slice = unsafe { std::slice::from_raw_parts_mut(data.as_mut_ptr().cast(), bytes) };
         let buffer_id = self.buffer_map[&x];
         for buffers in self.events.keys() {
