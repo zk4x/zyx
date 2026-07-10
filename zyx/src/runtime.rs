@@ -258,6 +258,7 @@ impl Runtime {
         let bytes = (data.len() * dtype.bit_size() as usize / 8) as Dim;
         debug_assert_eq!(data.len() * std::mem::size_of::<T>(), bytes as usize);
 
+
         // Convert to Box<[u8]>
         let ptr = (Box::into_raw(data) as *mut T) as *mut u8;
         let slice = std::ptr::slice_from_raw_parts_mut(ptr, bytes as usize);
@@ -500,10 +501,9 @@ impl Runtime {
         }
 
         let (kernel_id, op_id) = self.duplicate_or_store(x).unwrap();
+        let op_id = self.kernels[kernel_id].kernel.reshape(op_id, &shape);
         let shape_id = self.push_shape(shape);
         let dtype = self.tensors[x].dtype;
-
-        let op_id = self.kernels[kernel_id].kernel.reshape(op_id, &shape);
         let tid = self.tensors.push(TensorData { shape_id, dtype, kernel_id, op_id, pending_store: false });
 
         debug_assert_eq!(self.kernels[kernel_id].outputs.len(), 0, "input into reshape must have empty outputs");
@@ -802,17 +802,20 @@ pub fn get_perf(flop: u64, bytes_read: u64, bytes_written: u64, nanos: u64) -> S
 
 impl Runtime {
     fn duplicate_or_store(&mut self, x: TensorId) -> Result<(KernelId, OpId), ZyxError> {
-        let (mut kid, mut op_id) = self.visited[&x];
+        let mut kid = self.tensors[x].kernel_id;
+        let mut op_id = self.tensors[x].op_id;
 
-        let contains_stores = self.kernels[kid].contains_stores();
-        let reduce_dims_big = self.kernels[kid].is_preceded_by_reduce(op_id);
+        let contains_stores = self.kernels[kid].kernel.contains_stores();
+        let reduce_dims_big = self.kernels[kid].kernel.is_preceded_by_reduce(op_id);
         if contains_stores | reduce_dims_big {
             eprintln!("STORE PATH");
             self.add_store(x)?;
-            (kid, op_id) = self.visited[&x];
+            kid = self.tensors[x].kernel_id;
+            op_id = self.tensors[x].op_id;
         } else {
             eprintln!("DUPLICATE PATH");
-            kid = {
+            todo!();
+            /*kid = {
                 let this = &mut *self;
                 let x = x;
                 let orig_loads = this.kernels[kid].loads.clone();
@@ -825,7 +828,7 @@ impl Runtime {
                 let old_loads = this.kernels[kid].kernel.drop_unused_ops_by_params(old_params, &orig_loads);
                 this.kernels[kid].loads = old_loads;
 
-                let op_id = this.tensors[&x].op_id;
+                let op_id = this.tensors[x].op_id;
                 let count = old_outputs.iter().filter(|&&tid| tid == x).count();
                 // No, this iw WRONG assumption, fix it
                 //
@@ -837,10 +840,10 @@ impl Runtime {
                 let new_kid = this.kernels.push(KernelData { outputs: vec![x; count], loads: new_loads, stores, kernel });
                 this.tensors[x].kernel_id = new_kid;
                 new_kid
-            };
+            };*/
         }
 
-        self.kernel_data.get_mut(&kid).unwrap().outputs = Vec::new();
+        self.kernels[kid].outputs = Vec::new();
 
         Ok((kid, op_id))
     }

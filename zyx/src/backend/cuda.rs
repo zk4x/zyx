@@ -220,12 +220,21 @@ pub(super) fn initialize_device(
         return Err(BackendError { status: ErrorStatus::DyLibNotFound, context: "[CUDA] libcuda.so not found.".into() });
     };
 
-    let mut include_path: Option<PathBuf> = None;
     // Prefer the system CUDA toolkit include path (compatible with the installed nvrtc).
-    let system_include = PathBuf::from("/usr/include/cuda_fp16.h");
-    if system_include.exists() {
-        include_path = Some(PathBuf::from("/usr/include"));
-    } else {
+    let include_paths = [
+        "/usr/include",
+        "/usr/local/cuda/include",
+    ];
+    let mut include_path: Option<PathBuf> = None;
+    for path in include_paths {
+        let mut path_buf = PathBuf::from(path);
+        path_buf.push("cuda_fp16.h");
+        if path_buf.exists() {
+            include_path = Some(PathBuf::from(path));
+            break;
+        }
+    }
+    if include_path.is_none() {
         let roots = [PathBuf::from("/usr"), PathBuf::from("/opt")];
         let mut stack: Vec<PathBuf> = roots.to_vec();
         'a: while let Some(dir) = stack.pop() {
