@@ -28,6 +28,7 @@ use crate::{
     DType, DebugMask, Map, Scalar, Set, ZyxError,
     backend::{AutotuneConfig, BufferId, Config, Device, DeviceInfo, DeviceProgramId, Event, MemoryPool, OpCapability, PoolId},
     dtype::Constant,
+    error::{BackendError, ErrorStatus},
     kernel::{BOp, DeviceId, Kernel, MoveOp, Op, OpId, UOp, autotune::OptSeq},
     rng::Rng,
     shape::{Dim, UAxis},
@@ -290,7 +291,18 @@ impl Runtime {
         offset_bytes: u64,
     ) -> Result<TensorId, ZyxError> {
         self.initialize_devices()?;
-        todo!()
+        let bytes: Dim = shape.iter().product::<Dim>() * dtype.bit_size() as Dim / 8;
+
+        let pool = self.pools[PoolId::DISK]
+            .disk_pool()
+            .ok_or(BackendError { status: ErrorStatus::Initialization, context: "[disk] not available.".into() })?;
+        let buffer_id = BufferId { pool: PoolId::DISK, buffer: pool.buffer_from_path(bytes, path, offset_bytes) };
+
+        let op = Op::LoadView(Box::new((dtype, View::contiguous(&shape))));
+        let tid = self.new_kernel(op, shape, dtype);
+        self.kernels[self.tensors[tid].kernel_id].loads.push(tid);
+        self.buffer_map.insert(tid, buffer_id);
+        Ok(tid)
     }
 
     pub fn cast(&mut self, x: TensorId, dtype: DType) -> TensorId {

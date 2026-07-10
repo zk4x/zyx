@@ -102,6 +102,7 @@ pub struct PoolId(u32);
 
 impl PoolId {
     pub const HOST: Self = Self(0);
+    pub const DISK: Self = Self(1);
 }
 
 impl From<usize> for PoolId {
