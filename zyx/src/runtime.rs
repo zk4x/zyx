@@ -196,8 +196,15 @@ impl Runtime {
         }
         if kd.outputs.is_empty() {
             if !kd.kernel.contains_stores() {
-                eprintln!("A: kernels.remove({kid:?})");
-                self.kernels.remove(kid);
+                //eprintln!("A: kernels.remove({kid:?})");
+                //self.kernels.remove(kid);
+                if kd.loads.is_empty() {
+                    eprintln!("A: kernels.remove({kid:?})");
+                    self.kernels.remove(kid);
+                }
+                // If kernel still has loads, keep it as a mapping placeholder
+                // so tensors don't get stale kernel_ids. It will be cleaned up
+                // when all referencing tensors are dropped.
             } else {
                 self.materialize_kernel(kid).unwrap();
             }
@@ -257,7 +264,6 @@ impl Runtime {
         debug_assert_eq!(shape.iter().product::<Dim>(), data.len() as Dim);
         let bytes = (data.len() * dtype.bit_size() as usize / 8) as Dim;
         debug_assert_eq!(data.len() * std::mem::size_of::<T>(), bytes as usize);
-
 
         // Convert to Box<[u8]>
         let ptr = (Box::into_raw(data) as *mut T) as *mut u8;
@@ -559,7 +565,9 @@ impl Runtime {
         let dtype = self.tensors[x].dtype;
 
         let tid = self.tensors.push(TensorData { shape_id, dtype, kernel_id, op_id, pending_store: false });
-        let op_id = self.kernels[kernel_id].kernel.push_back(Op::Move { x: op_id, mop: Box::new(MoveOp::Permute { axes: axes.into(), shape: new_shape }) });
+        let op_id = self.kernels[kernel_id]
+            .kernel
+            .push_back(Op::Move { x: op_id, mop: Box::new(MoveOp::Permute { axes: axes.into(), shape: new_shape }) });
 
         debug_assert_eq!(self.kernels[kernel_id].outputs.len(), 0, "input into permute must have empty outputs");
         self.kernels[kernel_id].outputs.push(tid);
@@ -580,7 +588,9 @@ impl Runtime {
         let dtype = self.tensors[x].dtype;
 
         let tid = self.tensors.push(TensorData { shape_id, dtype, kernel_id, op_id, pending_store: false });
-        let op_id = self.kernels[kernel_id].kernel.push_back(Op::Move { x: op_id, mop: Box::new(MoveOp::Pad { padding: padding.into(), shape: new_shape }) });
+        let op_id = self.kernels[kernel_id]
+            .kernel
+            .push_back(Op::Move { x: op_id, mop: Box::new(MoveOp::Pad { padding: padding.into(), shape: new_shape }) });
 
         debug_assert_eq!(self.kernels[kernel_id].outputs.len(), 0, "input into pad must have empty outputs");
         self.kernels[kernel_id].outputs.push(tid);
@@ -941,7 +951,6 @@ impl Runtime {
     /// A kernel must never both load and store the same tensor (prevents aliasing).
     /// The debug_assert in the recursive materialization loop enforces this.
     fn materialize_kernel(&mut self, kid: KernelId) -> Result<(), ZyxError> {
-        eprintln!("E: Materialize kernel and kernel_data.remove({kid:?})");
         let KernelData { outputs, loads, stores, kernel } = unsafe { self.kernels.remove_and_return(kid) };
 
         debug_assert!(outputs.is_empty(), "all outputs must be stored before materialize");
@@ -956,21 +965,27 @@ impl Runtime {
         );
 
         // Debug: ensure each store tid is in exactly one kernel's outputs
+        // (count may be 0 if add_store removed it and triggered this materialization)
         #[cfg(debug_assertions)]
         {
             for &tid in &stores {
                 let count = self.kernels.values().filter(|kd| kd.outputs.contains(&tid)).count();
-                debug_assert_eq!(count, 1, "store tid={tid} is in {count} kernels' outputs");
+                debug_assert!(count <= 1, "store tid={tid} is in {count} kernels' outputs");
             }
         }
 
-        // Recursive materialization
+        // Recursive materialization: find producer kernels (those that have stores for our loads)
+        // and materialize them so our loads become available.
         for &load in &loads {
             if self.tensors[load].pending_store {
-                let kid = self.tensors[load].kernel_id;
-                let outputs: Set<TensorId> = self.kernels[kid].outputs.iter().copied().collect();
-                for output in outputs {
-                    self.add_store(output)?;
+                // Find the producer kernel that has a store for this load
+                let producer: Option<KernelId> =
+                    self.kernels.iter().find_map(|(id, kd)| if kd.stores.contains(&load) { Some(id) } else { None });
+                if let Some(producer_kid) = producer {
+                    let outputs: Set<TensorId> = self.kernels[producer_kid].outputs.iter().copied().collect();
+                    for output in outputs {
+                        self.add_store(output)?;
+                    }
                 }
             }
         }
