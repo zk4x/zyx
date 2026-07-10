@@ -61,27 +61,19 @@ use crate::runtime::Runtime;
 mod backend;
 mod dtype;
 mod error;
-//mod graph;
+mod hashers;
 pub mod kernel;
-//mod kernel_cache;
+mod module;
 mod mutex;
+mod prog_bar;
 #[cfg(feature = "py")]
 pub mod py_bindings;
 mod rng;
-//mod runtime3;
 mod runtime;
 mod scalar;
-//mod schedule;
 mod shape;
 mod slab;
-//mod tape;
 mod tensor;
-// Constant initializable hasher because apparently noone invented that yet...
-//mod autograd;
-mod hashers;
-//mod kernelize;
-mod module;
-mod prog_bar;
 mod view;
 
 type Set<T> = std::collections::HashSet<T, std::hash::BuildHasherDefault<crate::hashers::FHasher>>;
