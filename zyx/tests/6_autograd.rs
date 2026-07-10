@@ -397,7 +397,7 @@ fn grad_linear_2() -> Result<(), ZyxError> {
     let b1_grad = grads.pop().unwrap();
     let w1_grad = grads.pop().unwrap();
 
-    Tensor::realize([&w1_grad, &b1_grad, &w2_grad, &b2_grad])?;
+    tape.realize([&w1_grad, &b1_grad, &w2_grad, &b2_grad])?;
 
     //println!("{w1_grad}");
     //println!("{b1_grad}");

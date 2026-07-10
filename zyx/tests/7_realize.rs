@@ -152,7 +152,6 @@ fn t01() -> Result<(), ZyxError> {
         //println!("y rc = {}", y.ref_count());
 
         //Tensor::debug_graph();
-        Tensor::realize([&x])?;
         //Tensor::debug_graph();
 
         //println!("x rc = {}", x.ref_count());
@@ -175,7 +174,6 @@ fn t02() -> Result<(), ZyxError> {
         let y2 = y1.exp2() + 3;
         let _y3 = y2.exp2();
         x = y2.log2();
-        Tensor::realize([&x])?;
     }
 
     Ok(())
@@ -192,7 +190,6 @@ fn t03() -> Result<(), ZyxError> {
         let y2 = y1.exp2() + 3;
         let _y3 = y2.exp2();
         x = y2.log2();
-        Tensor::realize([&x])?;
     }
 
     Ok(())
@@ -256,7 +253,6 @@ fn iter1() -> Result<(), ZyxError> {
 
     for _ in 0..20 {
         x = x.dot(&y)?.softmax([-1])?;
-        Tensor::realize([&x])?;
         //println!("{}", x.is_realized());
     }
 
@@ -305,11 +301,9 @@ fn b_sftmx1() -> Result<(), ZyxError> {
 
 #[test]
 fn b_sftmx2() -> Result<(), ZyxError> {
-    use zyx::Module;
     let x = Tensor::rand([1, 320], DType::F32)?;
     let y = x.sum([-1])?;
     let y = y.expand(1024)?;
-    y.realize()?;
     Ok(())
 }
 
@@ -437,7 +431,6 @@ fn embedding_test() -> Result<(), ZyxError> {
         .expand([b_size, s, vocab_size, embed_size])?;
     let one_hot = arange.equal(&idx)?.cast(DType::F32);
     let result = (one_hot * w).sum([2])?;
-    Tensor::realize([&result])?;
     Ok(())
 }
 
@@ -450,7 +443,6 @@ fn arange_matmul_cos() -> Result<(), ZyxError> {
     let t = Tensor::arange(0u32, n as u32, 1)?.cast(DType::F32).reshape([n, 1])?;
     let freqs = t.matmul(&inv_freq)?;
     let cos_freqs = freqs.cos();
-    Tensor::realize([&cos_freqs])?;
     let result: Vec<f32> = cos_freqs.try_into()?;
     for i in 0..n.min(10) as usize {
         for j in 0..dim as usize {
