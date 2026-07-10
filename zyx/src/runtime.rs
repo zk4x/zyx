@@ -196,15 +196,8 @@ impl Runtime {
         }
         if kd.outputs.is_empty() {
             if !kd.kernel.contains_stores() {
-                //eprintln!("A: kernels.remove({kid:?})");
-                //self.kernels.remove(kid);
-                if kd.loads.is_empty() {
-                    eprintln!("A: kernels.remove({kid:?})");
-                    self.kernels.remove(kid);
-                }
-                // If kernel still has loads, keep it as a mapping placeholder
-                // so tensors don't get stale kernel_ids. It will be cleaned up
-                // when all referencing tensors are dropped.
+                eprintln!("A: kernels.remove({kid:?})");
+                self.kernels.remove(kid);
             } else {
                 self.materialize_kernel(kid).unwrap();
             }
