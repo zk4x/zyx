@@ -771,6 +771,11 @@ impl Runtime {
     pub const fn manual_seed(&mut self, seed: u64) {
         self.rng = Rng::seed_from_u64(seed);
     }
+
+    /// Returns the maximum free bytes available across all memory pools.
+    pub fn free_memory(&self) -> Dim {
+        self.pools.iter().map(|(_, p)| p.free_bytes()).max().unwrap_or(0)
+    }
 }
 
 #[allow(clippy::similar_names)]
