@@ -428,11 +428,12 @@ impl Runtime {
         todo!()
     }
 
-    pub fn reduce(&mut self, x: TensorId, axes: Vec<UAxis>, rop: BOp) -> Result<TensorId, ZyxError> {
+    pub fn reduce(&mut self, x: TensorId, mut axes: Vec<UAxis>, rop: BOp) -> Result<TensorId, ZyxError> {
         #[cfg(feature = "debug_tensor_op")]
         println!("runtime::reduce(x={x}, axes={axes:?}, rop={rop:?})");
 
         let (kid, mut op_id) = self.duplicate_or_store(x)?;
+        axes.sort_unstable();
 
         // Permute axes so reduce axes are last
         let shape = self.shape(x).to_vec();
