@@ -61,6 +61,7 @@ use crate::runtime::Runtime;
 mod backend;
 mod dtype;
 mod error;
+mod graph;
 mod hashers;
 pub mod kernel;
 mod module;
