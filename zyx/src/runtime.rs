@@ -806,44 +806,22 @@ impl Runtime {
         let mut op_id = self.tensors[x].op_id;
 
         let contains_stores = self.kernels[kid].kernel.contains_stores();
-        let reduce_dims_big = self.kernels[kid].kernel.is_preceded_by_reduce(op_id);
-        if contains_stores | reduce_dims_big {
-            eprintln!("STORE PATH");
+        let preceded_by_reduce = self.kernels[kid].kernel.is_preceded_by_reduce(op_id);
+        if contains_stores | preceded_by_reduce {
             self.add_store(x)?;
             kid = self.tensors[x].kernel_id;
             op_id = self.tensors[x].op_id;
-        } else {
-            eprintln!("DUPLICATE PATH");
-            todo!();
-            /*kid = {
-                let this = &mut *self;
-                let x = x;
-                let orig_loads = this.kernels[kid].loads.clone();
-                let mut kernel = this.kernels[kid].kernel.clone();
-                let new_output = vec![this.tensors[x].op_id];
-                let new_loads = kernel.drop_unused_ops_by_params(new_output, &orig_loads);
-
-                let old_outputs: Vec<TensorId> = this.kernels[kid].outputs.clone();
-                let old_params: Vec<OpId> = old_outputs.iter().map(|&tid| this.tensors[tid].op_id).collect();
-                let old_loads = this.kernels[kid].kernel.drop_unused_ops_by_params(old_params, &orig_loads);
-                this.kernels[kid].loads = old_loads;
-
-                let op_id = this.tensors[x].op_id;
-                let count = old_outputs.iter().filter(|&&tid| tid == x).count();
-                // No, this iw WRONG assumption, fix it
-                //
-                // Remove from old kernel (phantom reference would never be released
-                // since visited[x] now points to the new kernel)
-                //
-                this.kernels[kid].outputs.position(|&e| e != x);
-                let stores = kd.stores.clone();
-                let new_kid = this.kernels.push(KernelData { outputs: vec![x; count], loads: new_loads, stores, kernel });
-                this.tensors[x].kernel_id = new_kid;
-                new_kid
-            };*/
+            // We need to duplicate the new load kernel too, which we do below
         }
 
-        self.kernels[kid].outputs = Vec::new();
+        debug_assert!(self.kernels[kid].stores.is_empty(), "duplicated kernel must not have stores");
+
+        let loads = self.kernels[kid].loads.clone();
+        let kernel = self.kernels[kid].kernel.clone();
+
+        kid = self.kernels.push(KernelData { outputs: Vec::new(), loads, stores: Vec::new(), kernel });
+
+        // TODO Drop unused ops from both source kernel and duplicated kernel
 
         Ok((kid, op_id))
     }
