@@ -74,14 +74,7 @@ fn wmma_matmul() -> Result<(), ZyxError> {
 
     // WMMA: acc = A_frag @ B_frag + acc
     let acc_old = kernel.load(acc, c0, MemLayout::Vector(4));
-    let acc_new = kernel.wmma(
-        MMADims::m16n8k8,
-        MMALayout::row_col,
-        MMADType::f16_f16_f16_f32,
-        a_frag,
-        b_frag,
-        acc_old,
-    );
+    let acc_new = kernel.wmma(MMADims::m16n8k8, MMALayout::row_col, MMADType::f16_f16_f16_f32, a_frag, b_frag, acc_old);
     kernel.store(acc, acc_new, c0, MemLayout::Vector(4));
     kernel.end_loop();
 
@@ -418,17 +411,12 @@ fn embedding_test() -> Result<(), ZyxError> {
     let vocab_size = 3u64;
     let embed_size = 2u64;
 
-    let idx = input
-        .cast(DType::F32)
-        .reshape([b_size, s, 1u64, 1u64])?
-        .expand([b_size, s, vocab_size, 1u64])?;
+    let idx = input.cast(DType::F32).reshape([b_size, s, 1u64, 1u64])?.expand([b_size, s, vocab_size, 1u64])?;
     let arange = Tensor::arange(0, vocab_size as i64, 1)?
         .reshape([1u64, 1u64, vocab_size, 1u64])?
         .cast(DType::F32)
         .expand([b_size, s, vocab_size, 1u64])?;
-    let w = weight
-        .reshape([1u64, 1u64, vocab_size, embed_size])?
-        .expand([b_size, s, vocab_size, embed_size])?;
+    let w = weight.reshape([1u64, 1u64, vocab_size, embed_size])?.expand([b_size, s, vocab_size, embed_size])?;
     let one_hot = arange.equal(&idx)?.cast(DType::F32);
     let result = (one_hot * w).sum([2])?;
     Ok(())
@@ -448,10 +436,7 @@ fn arange_matmul_cos() -> Result<(), ZyxError> {
         for j in 0..dim as usize {
             let expected = (i as f32 * inv_freq_data[j]).cos();
             let got = result[i * dim as usize + j];
-            assert!(
-                got.is_equal(expected),
-                "Mismatch at ({i},{j}): got {got}, expected {expected}"
-            );
+            assert!(got.is_equal(expected), "Mismatch at ({i},{j}): got {got}, expected {expected}");
         }
     }
     Ok(())

@@ -213,14 +213,11 @@ impl Kernel {
             if produces {
                 if let Some(&rc) = rcs.get(&op_id) {
                     let dtype = dtypes[&op_id];
-                    let idx = reg_slots
-                        .iter()
-                        .position(|(r, dt)| *r == 0 && *dt == dtype)
-                        .unwrap_or_else(|| {
-                            let i = reg_slots.len();
-                            reg_slots.push((0, dtype));
-                            i
-                        });
+                    let idx = reg_slots.iter().position(|(r, dt)| *r == 0 && *dt == dtype).unwrap_or_else(|| {
+                        let i = reg_slots.len();
+                        reg_slots.push((0, dtype));
+                        i
+                    });
                     reg_slots[idx].0 = rc;
                     reg_map.insert(op_id, idx);
                 }
@@ -537,11 +534,8 @@ impl Kernel {
             }
 
             // Track peak register bytes
-            let bytes: u64 = reg_slots
-                .iter()
-                .filter(|(r, _)| *r > 0)
-                .map(|(_, dt)| u64::from(dt.0.bit_size() / 8) * dt.1.n_elements())
-                .sum();
+            let bytes: u64 =
+                reg_slots.iter().filter(|(r, _)| *r > 0).map(|(_, dt)| u64::from(dt.0.bit_size() / 8) * dt.1.n_elements()).sum();
             if bytes > wi_peak_reg_bytes {
                 wi_peak_reg_bytes = bytes;
             }

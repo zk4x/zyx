@@ -78,11 +78,7 @@ pub(super) fn initialize_device(
         println!("[C] device total memory: {} MB", 10_485_760u64);
     }
     let compilers = ["clang-11", "clang", "gcc", "cc"];
-    let compiler = compilers
-        .iter()
-        .find(|c| Command::new(c).arg("--version").output().is_ok())
-        .copied()
-        .unwrap_or("cc");
+    let compiler = compilers.iter().find(|c| Command::new(c).arg("--version").output().is_ok()).copied().unwrap_or("cc");
     let has_vector_exts = Command::new(compiler)
         .args(["-O2", "-x", "c", "-", "-o", "/dev/null"])
         .arg("-Werror")
@@ -227,10 +223,7 @@ impl CDevice {
                     }
                     &Op::Define { dtype, scope, .. } if scope == Scope::Global => {
                         if matches!(dtype, DType::F16 | DType::BF16) {
-                            _ = writeln!(
-                                global_cast,
-                                "  unsigned short* p{op_id} = (unsigned short*)args[{n_global_defines}];"
-                            );
+                            _ = writeln!(global_cast, "  unsigned short* p{op_id} = (unsigned short*)args[{n_global_defines}];");
                         } else {
                             let ct = dtype.c_type();
                             _ = writeln!(global_cast, "  {ct}* p{op_id} = ({ct}*)args[{n_global_defines}];");
@@ -280,10 +273,7 @@ impl CDevice {
                 }
                 &Op::Loop { len, .. } => {
                     indices.insert(op_id, loop_id);
-                    _ = writeln!(
-                        source,
-                        "{indent}for (unsigned int idx{loop_id} = 0; idx{loop_id} < {len}; ++idx{loop_id}) {{"
-                    );
+                    _ = writeln!(source, "{indent}for (unsigned int idx{loop_id} = 0; idx{loop_id} < {len}; ++idx{loop_id}) {{");
                     indent += "  ";
                     loop_id += 1;
                 }
@@ -631,11 +621,7 @@ static inline unsigned short f32tobf16(float v) {
             if let MemLayout::Vector(len) = dt.1 {
                 let name = dt.0.vec_type_name(len);
                 if !vec_types.contains(&format!("\ntypedef {} {name}", dt.0.c_type())) {
-                    _ = writeln!(
-                        vec_types,
-                        "typedef {} {name} __attribute__((ext_vector_type({len})));",
-                        dt.0.c_type()
-                    );
+                    _ = writeln!(vec_types, "typedef {} {name} __attribute__((ext_vector_type({len})));", dt.0.c_type());
                 }
             }
         }
@@ -662,17 +648,10 @@ static inline unsigned short f32tobf16(float v) {
 
         // Try clang-11, clang, gcc, cc in order
         let compilers = ["clang-11", "clang", "gcc", "cc"];
-        let compiler = compilers
-            .iter()
-            .find(|c| Command::new(c).arg("--version").output().is_ok())
-            .copied()
-            .unwrap_or("cc");
+        let compiler = compilers.iter().find(|c| Command::new(c).arg("--version").output().is_ok()).copied().unwrap_or("cc");
         let is_clang = compiler.contains("clang");
         let mut cmd = Command::new(compiler);
-        cmd.args(["-shared", "-O3", "-ffast-math", "-fPIC", "-o"])
-            .arg(&so_path)
-            .arg(&c_path)
-            .arg("-lm");
+        cmd.args(["-shared", "-O3", "-ffast-math", "-fPIC", "-o"]).arg(&so_path).arg(&c_path).arg("-lm");
         if self.has_openmp && gws[0] > 1 {
             cmd.arg(if is_clang { "-fopenmp=libgomp" } else { "-fopenmp" });
         }

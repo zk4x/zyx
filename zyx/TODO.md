@@ -17,7 +17,7 @@
     - [ ] kernel launch
   - [x] wgpu
     - [ ] fix load calculation, probably using Atomic usize
-    - [ ] spirv compiler
+    - [x] spirv compiler
   - [x] dummy
     - [ ] validation for program ids
   - [x] c (clang)
@@ -25,7 +25,7 @@
 - [ ] runtime
   - [x] fix event handling
   - [x] node deallocation after realization
-  - [ ] clean up completed transfer events to free host staging buffers early
+  - [x] clean up completed transfer events to free host staging buffers early
   - [ ] static graphs - unfortunately necessary for very high performance networks to achieve hundreds of millions of tensor ops/second
 - [x] autograd
   - [x] fix t6 test
@@ -126,11 +126,12 @@
   - [x] div mod simplifications
     - [x] consequtive modulos
   - [x] dead accumulator elimination (after unroll)
-  - [ ] vectorization, vector dtypes
+  - [x] vectorization, vector dtypes
     - [x] vector dtypes
-    - [ ] automatic vectorization
-      - [ ] of stores
-      - [ ] of loads
+    - [x] automatic vectorization
+      - [x] of stores
+      - [x] of loads
+      - [x] of ops
   - [x] register tiling (needs improvement)
 - [x] index select, gather, remove last loop
 - [ ] better spreading of kernel variants in autotune across threads (instead of batched, where one thread can have complex kernel, blocking other threads with simpler kernels)

@@ -144,12 +144,7 @@ impl Kernel {
     }
 
     fn flush_tile_batch(&mut self, pending: &[OpId], tile_buf: OpId, lin_lidx: OpId, tile_size: Dim) {
-        eprintln!(
-            "=== flush: n={}, tile_buf={}, tile_size={} ===",
-            pending.len(),
-            tile_buf,
-            tile_size
-        );
+        eprintln!("=== flush: n={}, tile_buf={}, tile_size={} ===", pending.len(), tile_buf, tile_size);
         let n = pending.len();
         let mut insert_pt = pending[n - 1];
 
@@ -169,10 +164,8 @@ impl Kernel {
 
         // Insert Stores (each to its own position)
         for (&load_id, &pos) in pending.iter().zip(positions.iter()) {
-            insert_pt = self.insert_after(
-                insert_pt,
-                Op::Store { dst: tile_buf, x: load_id, index: pos, layout: MemLayout::Scalar },
-            );
+            insert_pt =
+                self.insert_after(insert_pt, Op::Store { dst: tile_buf, x: load_id, index: pos, layout: MemLayout::Scalar });
         }
 
         // One Barrier

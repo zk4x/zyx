@@ -304,10 +304,7 @@ impl BOp {
     /// `(a op b) op c == a op (b op c)`.
     pub const fn is_associative(self) -> bool {
         use BOp::{Add, And, BitAnd, BitOr, BitShiftLeft, BitShiftRight, BitXor, Max, Mul, Or};
-        matches!(
-            self,
-            Add | Mul | And | Or | BitXor | BitAnd | BitOr | BitShiftLeft | BitShiftRight | Max
-        )
+        matches!(self, Add | Mul | And | Or | BitXor | BitAnd | BitOr | BitShiftLeft | BitShiftRight | Max)
     }
 
     /// Returns true if the binary operation is commutative:
@@ -1119,7 +1116,7 @@ impl Kernel {
     /// assert_eq!(data, vec![2.0, 4.0, 6.0, 8.0]);
     /// # Ok::<_, ZyxError>(())
     /// ```
-    /*pub fn compile(mut self) -> Result<CompiledKernel, crate::ZyxError> {
+    pub fn compile(mut self) -> Result<CompiledKernel, crate::ZyxError> {
         self.unfold_movement_ops();
         self.sort_global_defines();
         self.dead_code_elimination();
@@ -1130,13 +1127,7 @@ impl Kernel {
             .ops
             .values()
             .find_map(|n| {
-                if let Op::Define {
-                    dtype,
-                    scope: Scope::Global,
-                    ro: false,
-                    ..
-                } = n.op
-                {
+                if let Op::Define { dtype, scope: Scope::Global, ro: false, .. } = n.op {
                     Some(dtype)
                 } else {
                     None
@@ -1155,18 +1146,12 @@ impl Kernel {
         }
         let debug_asm = rt.debug.asm();
         let program_id = rt.devices[device_id].compile(&self, debug_asm)?;
-        let prog = crate::backend::ProgramId {
-            device: device_id,
-            program: program_id,
-        };
-        let kid = rt.kernel_cache.insert_kernel(self);
-        rt.kernel_cache.programs.insert(kid, program_id);
-        Ok(crate::kernel::custom::CompiledKernel {
-            program: prog,
-            dtype,
-            kernel_id: kid,
-        })
-    }*/
+        let prog = crate::backend::ProgramId { device: device_id, program: program_id };
+        /*let kid = rt.kernel_map.insert(self);
+        rt.programs.insert(kid, program_id);
+        Ok(crate::kernel::custom::CompiledKernel { program: prog, dtype, kernel_id: kid })*/
+        todo!()
+    }
 
     /// Run autotuning then compile the kernel.
     /// Consumes the kernel.
@@ -1762,9 +1747,7 @@ impl Kernel {
             op_id = self.next_op(op_id);
         }
 
-        stack.into_values().fold((0, 0, 0), |acc, info| {
-            (acc.0 + info.flops, acc.1 + info.mem_read, acc.2 + info.mem_write)
-        })
+        stack.into_values().fold((0, 0, 0), |acc, info| (acc.0 + info.flops, acc.1 + info.mem_read, acc.2 + info.mem_write))
     }
 
     /// Check if the kernel contains any store operations.

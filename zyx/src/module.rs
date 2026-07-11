@@ -173,9 +173,7 @@ impl Tensor {
                     "GGUF data seems to be stored in big endian order. Only little endian is supported for GGUF in zyx.".into(),
                 ));
             }
-            return Err(ZyxError::parse_error(
-                format!("Unknown GGUF magic: {magic:?}. Please check your file.").into(),
-            ));
+            return Err(ZyxError::parse_error(format!("Unknown GGUF magic: {magic:?}. Please check your file.").into()));
         }
         let mut version_bytes = [0; 4];
         f.read_exact(&mut version_bytes)?;
@@ -384,10 +382,8 @@ impl Tensor {
             // shape (NOTE there is no explicit check for endiannes here)
             let mut shape = vec![0u8; rank as usize * 8];
             f.read_exact(&mut shape)?;
-            let shape: Vec<Dim> = shape
-                .chunks_exact(8)
-                .map(|x| u64::from_le_bytes([x[0], x[1], x[2], x[3], x[4], x[5], x[6], x[7]]))
-                .collect();
+            let shape: Vec<Dim> =
+                shape.chunks_exact(8).map(|x| u64::from_le_bytes([x[0], x[1], x[2], x[3], x[4], x[5], x[6], x[7]])).collect();
 
             // dtype
             let mut dtype = [0; 4];

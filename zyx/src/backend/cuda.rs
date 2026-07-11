@@ -221,10 +221,7 @@ pub(super) fn initialize_device(
     };
 
     // Prefer the system CUDA toolkit include path (compatible with the installed nvrtc).
-    let include_paths = [
-        "/usr/include",
-        "/usr/local/cuda/include",
-    ];
+    let include_paths = ["/usr/include", "/usr/local/cuda/include"];
     let mut include_path: Option<PathBuf> = None;
     for path in include_paths {
         let mut path_buf = PathBuf::from(path);
@@ -327,9 +324,8 @@ pub(super) fn initialize_device(
     if num_devices == 0 {
         return Err(BackendError { status: ErrorStatus::DeviceEnumeration, context: "[CUDA] no available device.".into() });
     }
-    let device_ids: Vec<i32> = (0..num_devices)
-        .filter(|id| config.device_ids.as_ref().is_none_or(|ids| ids.contains(id)))
-        .collect();
+    let device_ids: Vec<i32> =
+        (0..num_devices).filter(|id| config.device_ids.as_ref().is_none_or(|ids| ids.contains(id))).collect();
     if debug_dev && !device_ids.is_empty() {
         println!(
             "[CUDA] driver version {}.{} on devices:",
@@ -357,9 +353,7 @@ pub(super) fn initialize_device(
             continue;
         };
         if debug_dev {
-            println!("[CUDA] {:?}, compute: {major}.{minor}", unsafe {
-                std::ffi::CStr::from_ptr(device_name.as_ptr())
-            });
+            println!("[CUDA] {:?}, compute: {major}.{minor}", unsafe { std::ffi::CStr::from_ptr(device_name.as_ptr()) });
         }
         let mut free_bytes = 0;
         let Ok(()) = unsafe { cuDeviceTotalMem(&raw mut free_bytes, device) }.check(ErrorStatus::DeviceQuery) else {
@@ -466,10 +460,7 @@ pub(super) fn initialize_device(
                                 reply
                             );
                             //unsafe { (self.cuMemcpyHtoD)(dst.ptr, src.as_ptr().cast(), src.len()) }.check(ErrorStatus::MemoryCopyH2P)?;
-                            send_or_continue!(
-                                unsafe { (cuEventRecord)(event, stream) }.check(ErrorStatus::MemoryCopyH2P),
-                                reply
-                            );
+                            send_or_continue!(unsafe { (cuEventRecord)(event, stream) }.check(ErrorStatus::MemoryCopyH2P), reply);
                             //unsafe { (cuStreamSynchronize)(stream) }.check(ErrorStatus::MemoryCopyH2P).unwrap();
                             _ = reply.send(Ok(Event::CUDA(CUDAEvent { event })));
                         }
@@ -495,15 +486,9 @@ pub(super) fn initialize_device(
                                     .check(ErrorStatus::MemoryCopyP2H),
                                 reply
                             );
-                            send_or_continue!(
-                                unsafe { (cuEventRecord)(event, stream) }.check(ErrorStatus::MemoryCopyP2H),
-                                reply
-                            );
+                            send_or_continue!(unsafe { (cuEventRecord)(event, stream) }.check(ErrorStatus::MemoryCopyP2H), reply);
                             //unsafe { (self.cuStreamSynchronize)(self.stream) }.check(ErrorStatus::MemoryCopyP2H)?;
-                            send_or_continue!(
-                                unsafe { (cuEventSynchronize)(event) }.check(ErrorStatus::MemoryCopyP2H),
-                                reply
-                            );
+                            send_or_continue!(unsafe { (cuEventSynchronize)(event) }.check(ErrorStatus::MemoryCopyP2H), reply);
                             send_or_continue!(unsafe { (cuEventDestroy)(event) }.check(ErrorStatus::MemoryCopyP2H), reply);
                             _ = reply.send(Ok(()));
                         }
@@ -656,14 +641,10 @@ pub(super) fn initialize_device(
             compute_capability: [major, minor],
             include_path: include_path.clone(),
         };
-        let max_regs_per_block: i32 = dev.get(
-            CUdevice_attribute::CU_DEVICE_ATTRIBUTE_MAX_REGISTERS_PER_BLOCK,
-            cuDeviceGetAttribute,
-        )?;
-        let max_threads_per_block: i32 = dev.get(
-            CUdevice_attribute::CU_DEVICE_ATTRIBUTE_MAX_THREADS_PER_BLOCK,
-            cuDeviceGetAttribute,
-        )?;
+        let max_regs_per_block: i32 =
+            dev.get(CUdevice_attribute::CU_DEVICE_ATTRIBUTE_MAX_REGISTERS_PER_BLOCK, cuDeviceGetAttribute)?;
+        let max_threads_per_block: i32 =
+            dev.get(CUdevice_attribute::CU_DEVICE_ATTRIBUTE_MAX_THREADS_PER_BLOCK, cuDeviceGetAttribute)?;
         dev.dev_info = DeviceInfo {
             compute: 1024 * 1024 * 1024 * 1024, // TODO run a kernel to get an estimate
             max_global_work_dims: vec![
@@ -677,10 +658,9 @@ pub(super) fn initialize_device(
                 Dim::try_from(dev.get(CUdevice_attribute::CU_DEVICE_ATTRIBUTE_MAX_BLOCK_DIM_Y, cuDeviceGetAttribute)?).unwrap(),
                 Dim::try_from(dev.get(CUdevice_attribute::CU_DEVICE_ATTRIBUTE_MAX_BLOCK_DIM_Z, cuDeviceGetAttribute)?).unwrap(),
             ],
-            local_mem_size: Dim::try_from(dev.get(
-                CUdevice_attribute::CU_DEVICE_ATTRIBUTE_MAX_SHARED_MEMORY_PER_BLOCK,
-                cuDeviceGetAttribute,
-            )?)
+            local_mem_size: Dim::try_from(
+                dev.get(CUdevice_attribute::CU_DEVICE_ATTRIBUTE_MAX_SHARED_MEMORY_PER_BLOCK, cuDeviceGetAttribute)?,
+            )
             .unwrap(),
             max_register_bytes: (max_regs_per_block as u64 / max_threads_per_block as u64).min(256) * 4,
             preferred_vector_size: 16,
@@ -717,9 +697,7 @@ impl CUDAMemoryPool {
 
     #[allow(clippy::needless_pass_by_ref_mut)]
     pub fn deallocate(&mut self, buffer_id: PoolBufferId, events: Vec<Event>) {
-        self.tx
-            .send(CUDACommand::Deallocate { buffer_id, event_wait_list: events })
-            .unwrap();
+        self.tx.send(CUDACommand::Deallocate { buffer_id, event_wait_list: events }).unwrap();
     }
 
     #[allow(clippy::needless_pass_by_ref_mut)]
@@ -789,9 +767,7 @@ impl CUDADevice {
         event_wait_list: Vec<Event>,
     ) -> Result<Event, BackendError> {
         let (reply, reply_rx) = channel();
-        self.tx
-            .send(CUDACommand::Launch { program_id, args: args.into(), event_wait_list, reply })
-            .unwrap();
+        self.tx.send(CUDACommand::Launch { program_id, args: args.into(), event_wait_list, reply }).unwrap();
         reply_rx.recv().unwrap()
     }
 
@@ -1313,12 +1289,7 @@ impl CUDADevice {
                 }
                 &Op::Define { dtype, scope, ro, len } => {
                     if scope == Scope::Register {
-                        _ = writeln!(
-                            source,
-                            "{indent}{}{} p{op_id}[{len}];",
-                            if ro { "const " } else { "" },
-                            dtype.cu(),
-                        );
+                        _ = writeln!(source, "{indent}{}{} p{op_id}[{len}];", if ro { "const " } else { "" }, dtype.cu(),);
                         acc_bytes += u64::from(dtype.bit_size() / 8) * len;
                     } else if scope == Scope::Local {
                         _ = writeln!(
@@ -1377,10 +1348,7 @@ impl CUDADevice {
                     let b = get_var(b, &constants, &indices, &reg_map, &mut registers, loop_id);
                     let c = get_var(c, &constants, &indices, &reg_map, &mut registers, loop_id);
                     let reg = new_reg(op_id, &mut reg_map, &mut registers, dtypes[&op_id], rcs[&op_id], loop_id);
-                    _ = writeln!(
-                        source,
-                        "{indent}r{reg} = wmma_m16n8k8_row_col_f32_f16_f16_f32({a}, {b}, {c});"
-                    );
+                    _ = writeln!(source, "{indent}r{reg} = wmma_m16n8k8_row_col_f32_f16_f16_f32({a}, {b}, {c});");
                 }
                 &Op::Cast { x, dtype } => {
                     let x_var = get_var(x, &constants, &indices, &reg_map, &mut registers, loop_id);
@@ -1579,10 +1547,7 @@ impl CUDADevice {
                 }
                 &Op::Loop { len, .. } => {
                     indices.insert(op_id, loop_id);
-                    _ = writeln!(
-                        source,
-                        "{indent}for (unsigned int idx{loop_id} = 0; idx{loop_id} < {len}; ++idx{loop_id}) {{"
-                    );
+                    _ = writeln!(source, "{indent}for (unsigned int idx{loop_id} = 0; idx{loop_id} < {len}; ++idx{loop_id}) {{");
                     indent += "  ";
                     loop_id += 1;
                 }
@@ -1610,11 +1575,8 @@ impl CUDADevice {
             }
             op_id = kernel.next_op(op_id);
         }
-        let _total_bytes = registers
-            .iter()
-            .map(|(dtype, ..)| u64::from(dtype.0.bit_size() / 8) * dtype.1.n_elements())
-            .sum::<u64>()
-            + acc_bytes;
+        let _total_bytes =
+            registers.iter().map(|(dtype, ..)| u64::from(dtype.0.bit_size() / 8) * dtype.1.n_elements()).sum::<u64>() + acc_bytes;
         /*if total_bytes > 1024 {
             return Err(BackendError {
                 status: ErrorStatus::KernelCompilation,
@@ -1728,10 +1690,7 @@ impl CUDADevice {
 
         let mut opts = vec![
             "--use_fast_math".into(),
-            format!(
-                "--gpu-architecture=compute_{}{}",
-                self.compute_capability[0], self.compute_capability[1]
-            ),
+            format!("--gpu-architecture=compute_{}{}", self.compute_capability[0], self.compute_capability[1]),
         ];
 
         if let Some(path) = &self.include_path {

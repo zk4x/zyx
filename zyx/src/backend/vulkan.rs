@@ -413,9 +413,7 @@ unsafe impl Send for VulkanMemoryPool {}
 
 impl std::fmt::Debug for VulkanMemoryPool {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("VulkanMemoryPool")
-            .field("free_bytes", &self.free_bytes)
-            .finish()
+        f.debug_struct("VulkanMemoryPool").field("free_bytes", &self.free_bytes).finish()
     }
 }
 
@@ -430,9 +428,7 @@ impl VulkanMemoryPool {
         rx.recv().unwrap()
     }
     pub(super) fn deallocate(&mut self, buffer_id: PoolBufferId, event_wait_list: Vec<Event>) {
-        self.tx
-            .send(VulkanCommand::Deallocate { buffer_id, event_wait_list })
-            .unwrap();
+        self.tx.send(VulkanCommand::Deallocate { buffer_id, event_wait_list }).unwrap();
     }
     pub(super) fn host_to_pool(
         &mut self,
@@ -441,9 +437,7 @@ impl VulkanMemoryPool {
         event_wait_list: Vec<Event>,
     ) -> Result<Event, BackendError> {
         let (reply, rx) = channel();
-        self.tx
-            .send(VulkanCommand::HostToPool { src: src.as_ptr(), bytes: src.len(), dst, event_wait_list, reply })
-            .unwrap();
+        self.tx.send(VulkanCommand::HostToPool { src: src.as_ptr(), bytes: src.len(), dst, event_wait_list, reply }).unwrap();
         rx.recv().unwrap()
     }
     pub(super) fn pool_to_host(
@@ -503,10 +497,7 @@ pub struct VulkanDevice {
 
 impl std::fmt::Debug for VulkanDevice {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("VulkanDevice")
-            .field("dev_info", &self.dev_info)
-            .field("memory_pool_id", &self.memory_pool_id)
-            .finish()
+        f.debug_struct("VulkanDevice").field("dev_info", &self.dev_info).field("memory_pool_id", &self.memory_pool_id).finish()
     }
 }
 
@@ -526,9 +517,7 @@ impl VulkanDevice {
     }
     pub(super) fn compile(&mut self, kernel: &Kernel, debug_asm: bool) -> Result<DeviceProgramId, BackendError> {
         let (reply, rx) = channel();
-        self.tx
-            .send(VulkanCommand::Compile { kernel: Box::new(kernel.clone()), debug_asm, reply })
-            .unwrap();
+        self.tx.send(VulkanCommand::Compile { kernel: Box::new(kernel.clone()), debug_asm, reply }).unwrap();
         rx.recv().unwrap()
     }
     pub(super) fn launch(
@@ -539,9 +528,7 @@ impl VulkanDevice {
         event_wait_list: Vec<Event>,
     ) -> Result<Event, BackendError> {
         let (reply, rx) = channel();
-        self.tx
-            .send(VulkanCommand::Launch { program_id, args: args.to_vec(), event_wait_list, reply })
-            .unwrap();
+        self.tx.send(VulkanCommand::Launch { program_id, args: args.to_vec(), event_wait_list, reply }).unwrap();
         rx.recv().unwrap()
     }
 }
@@ -592,15 +579,12 @@ pub(super) fn initialize_device(
         "/lib64/x86_64-linux-gnu/libvulkan.so",
         "/lib64/x86_64-linux-gnu/libvulkan.so.1",
     ];
-    let lib = vulkan_paths
-        .into_iter()
-        .find_map(|path| unsafe { Library::new(path) }.ok())
-        .ok_or_else(|| {
-            if debug_dev {
-                println!("[vulkan] libvulkan.so not found");
-            }
-            BackendError { status: ErrorStatus::DyLibNotFound, context: "[vulkan] libvulkan.so not found.".into() }
-        })?;
+    let lib = vulkan_paths.into_iter().find_map(|path| unsafe { Library::new(path) }.ok()).ok_or_else(|| {
+        if debug_dev {
+            println!("[vulkan] libvulkan.so not found");
+        }
+        BackendError { status: ErrorStatus::DyLibNotFound, context: "[vulkan] libvulkan.so not found.".into() }
+    })?;
     let vkGetInstanceProcAddr: unsafe extern "system" fn(VkInstance, *const i8) -> *mut std::ffi::c_void =
         *unsafe { lib.get(b"vkGetInstanceProcAddr\0") }?;
     let vkCreateInstance: unsafe extern "system" fn(

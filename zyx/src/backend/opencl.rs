@@ -312,10 +312,8 @@ pub(super) fn initialize_device(
         }
     };
     let mut memory_pool_id = PoolId::from(usize::from(memory_pools.len()));
-    for (_platform_id, platform) in platform_ids
-        .iter()
-        .enumerate()
-        .filter(|(id, _)| config.platform_ids.as_ref().is_none_or(|ids| ids.contains(id)))
+    for (_platform_id, platform) in
+        platform_ids.iter().enumerate().filter(|(id, _)| config.platform_ids.as_ref().is_none_or(|ids| ids.contains(id)))
     {
         let platform = *platform;
         let Ok(device_ids) = {
@@ -432,11 +430,8 @@ pub(super) fn initialize_device(
                     }
                     queues.push(dev_queues);
                 }
-                let data_queue = queues
-                    .first()
-                    .and_then(|q| q.first())
-                    .map(|q| q.queue)
-                    .expect("no OpenCL command queue created");
+                let data_queue =
+                    queues.first().and_then(|q| q.first()).map(|q| q.queue).expect("no OpenCL command queue created");
 
                 let mut buffers: Slab<PoolBufferId, OpenCLBuffer> = Slab::new();
                 let mut programs: Slab<DeviceProgramId, OpenCLProgram> = Slab::new();
@@ -475,11 +470,8 @@ pub(super) fn initialize_device(
                         Command::Deallocate { buffer_id, event_wait_list } => {
                             let buffer = &buffers[buffer_id];
                             debug_assert!(!buffer.buffer.is_null(), "Deallocating null buffer is invalid");
-                            let event_wait_list: Vec<*mut c_void> = event_wait_list
-                                .into_iter()
-                                .map(|e| e.event)
-                                .filter(|event| !event.is_null())
-                                .collect();
+                            let event_wait_list: Vec<*mut c_void> =
+                                event_wait_list.into_iter().map(|e| e.event).filter(|event| !event.is_null()).collect();
                             if !event_wait_list.is_empty() {
                                 let _ = unsafe {
                                     clWaitForEvents(event_wait_list.len().try_into().unwrap(), event_wait_list.as_ptr())
@@ -493,11 +485,8 @@ pub(super) fn initialize_device(
                         Command::HostToPool { src, bytes, dst, event_wait_list, reply } => {
                             let dst = &buffers[dst];
                             debug_assert!(bytes <= dst.bytes);
-                            let event_wait_list: Vec<*mut c_void> = event_wait_list
-                                .into_iter()
-                                .map(|e| e.event)
-                                .filter(|event| !event.is_null())
-                                .collect();
+                            let event_wait_list: Vec<*mut c_void> =
+                                event_wait_list.into_iter().map(|e| e.event).filter(|event| !event.is_null()).collect();
                             let event_wait_list_ptr = if event_wait_list.is_empty() {
                                 ptr::null()
                             } else {
@@ -526,11 +515,8 @@ pub(super) fn initialize_device(
                         Command::PoolToHost { src, dst, bytes, event_wait_list, reply } => {
                             let src = &buffers[src];
                             debug_assert!(!src.buffer.is_null(), "Trying to read null memory. Internal bug.");
-                            let mut event_wait_list: Vec<*mut c_void> = event_wait_list
-                                .into_iter()
-                                .map(|e| e.event)
-                                .filter(|event| !event.is_null())
-                                .collect();
+                            let mut event_wait_list: Vec<*mut c_void> =
+                                event_wait_list.into_iter().map(|e| e.event).filter(|event| !event.is_null()).collect();
                             if !event_wait_list.is_empty() {
                                 let _ = unsafe {
                                     clWaitForEvents(
@@ -628,11 +614,8 @@ pub(super) fn initialize_device(
                         }
                         Command::Launch { device_id: device_idx, program_id, args, event_wait_list, reply } => {
                             // Sync events
-                            let events: Vec<*mut c_void> = event_wait_list
-                                .into_iter()
-                                .map(|e| e.event)
-                                .filter(|event| !event.is_null())
-                                .collect();
+                            let events: Vec<*mut c_void> =
+                                event_wait_list.into_iter().map(|e| e.event).filter(|event| !event.is_null()).collect();
                             if !events.is_empty() {
                                 let _ = unsafe {
                                     clWaitForEvents(events.len().try_into().expect("So many events..."), events.as_ptr())
@@ -711,18 +694,9 @@ pub(super) fn initialize_device(
             }
         });
 
-        memory_pools.push(MemoryPool::OpenCL(OpenCLMemoryPool {
-            tx: tx.clone(),
-            total_bytes,
-            free_bytes: free_bytes_atomic,
-        }));
+        memory_pools.push(MemoryPool::OpenCL(OpenCLMemoryPool { tx: tx.clone(), total_bytes, free_bytes: free_bytes_atomic }));
         for (orig_idx, dev_info) in dev_infos.into_iter() {
-            devices.push(Device::OpenCL(OpenCLDevice {
-                tx: tx.clone(),
-                dev_info,
-                memory_pool_id,
-                device_idx: orig_idx,
-            }));
+            devices.push(Device::OpenCL(OpenCLDevice { tx: tx.clone(), dev_info, memory_pool_id, device_idx: orig_idx }));
         }
         memory_pool_id += 1;
     }
@@ -752,9 +726,7 @@ impl OpenCLMemoryPool {
                 e
             })
             .collect();
-        self.tx
-            .send(Command::Deallocate { buffer_id, event_wait_list: events })
-            .unwrap();
+        self.tx.send(Command::Deallocate { buffer_id, event_wait_list: events }).unwrap();
     }
 
     pub fn host_to_pool(&mut self, src: &[u8], dst: PoolBufferId, event_wait_list: Vec<Event>) -> Result<Event, BackendError> {
@@ -766,9 +738,7 @@ impl OpenCLMemoryPool {
             })
             .collect();
         let (reply, reply_rx) = channel();
-        self.tx
-            .send(Command::HostToPool { src: src.as_ptr(), bytes: src.len() as Dim, dst, event_wait_list, reply })
-            .unwrap();
+        self.tx.send(Command::HostToPool { src: src.as_ptr(), bytes: src.len() as Dim, dst, event_wait_list, reply }).unwrap();
         reply_rx.recv().unwrap().map(Event::OpenCL)
     }
 
@@ -901,12 +871,7 @@ impl OpenCLDevice {
             let op = kernel.at(op_id);
             if let &Op::Define { dtype, scope, ro, .. } = op {
                 if scope == Scope::Global {
-                    _ = writeln!(
-                        global_args,
-                        "  __global {}{}* p{op_id},",
-                        if ro { "const " } else { "" },
-                        dtype.ocl()
-                    );
+                    _ = writeln!(global_args, "  __global {}{}* p{op_id},", if ro { "const " } else { "" }, dtype.ocl());
                 }
             } else {
                 break;
@@ -1168,18 +1133,10 @@ impl OpenCLDevice {
                     indices.insert(op_id, loop_id);
                     match scope {
                         Scope::Global => {
-                            _ = writeln!(
-                                source,
-                                "{indent}unsigned int idx{loop_id} = get_group_id({axis}); // 0..={}",
-                                dim - 1
-                            );
+                            _ = writeln!(source, "{indent}unsigned int idx{loop_id} = get_group_id({axis}); // 0..={}", dim - 1);
                         }
                         Scope::Local => {
-                            _ = writeln!(
-                                source,
-                                "{indent}unsigned int idx{loop_id} = get_local_id({axis}); // 0..={}",
-                                dim - 1
-                            );
+                            _ = writeln!(source, "{indent}unsigned int idx{loop_id} = get_local_id({axis}); // 0..={}", dim - 1);
                         }
                         Scope::Register => {}
                     }
@@ -1187,10 +1144,7 @@ impl OpenCLDevice {
                 }
                 &Op::Loop { len, .. } => {
                     indices.insert(op_id, loop_id);
-                    _ = writeln!(
-                        source,
-                        "{indent}for (unsigned int idx{loop_id} = 0; idx{loop_id} < {len}; ++idx{loop_id}) {{"
-                    );
+                    _ = writeln!(source, "{indent}for (unsigned int idx{loop_id} = 0; idx{loop_id} < {len}; ++idx{loop_id}) {{");
                     indent += "  ";
                     loop_id += 1;
                 }
@@ -1277,9 +1231,7 @@ impl OpenCLDevice {
         }
 
         let (reply, reply_rx) = channel();
-        self.tx
-            .send(Command::Compile { name: name.into(), source, gws, lws, reply })
-            .unwrap();
+        self.tx.send(Command::Compile { name: name.into(), source, gws, lws, reply }).unwrap();
         reply_rx.recv().unwrap()
     }
 
@@ -1359,16 +1311,12 @@ fn query_device_info(
         max_local_threads: mlt,
         max_local_work_dims,
         preferred_vector_size: u8::try_from(u32::from_ne_bytes(
-            get_device_data(device, clGetDeviceInfo, CL_DEVICE_PREFERRED_VECTOR_WIDTH_FLOAT)?
-                .try_into()
-                .unwrap(),
+            get_device_data(device, clGetDeviceInfo, CL_DEVICE_PREFERRED_VECTOR_WIDTH_FLOAT)?.try_into().unwrap(),
         ))
         .expect("What a vector width...")
             * 4,
         local_mem_size: Dim::try_from(usize::from_ne_bytes(
-            get_device_data(device, clGetDeviceInfo, CL_DEVICE_LOCAL_MEM_SIZE)?
-                .try_into()
-                .unwrap(),
+            get_device_data(device, clGetDeviceInfo, CL_DEVICE_LOCAL_MEM_SIZE)?.try_into().unwrap(),
         ))
         .expect("What a memory size..."),
         max_register_bytes: 256,
@@ -1390,15 +1338,11 @@ fn query_device_info(
         if !has_fp16 {
             dev_info.supported_dtype_ops[DType::F16 as usize] = OpCapability::none();
         }
-        let has_bf16 = extensions
-            .split(|&b| b == b' ')
-            .any(|token| token == b"cl_intel_bfloat16_conversions");
+        let has_bf16 = extensions.split(|&b| b == b' ').any(|token| token == b"cl_intel_bfloat16_conversions");
         if !has_bf16 {
             dev_info.supported_dtype_ops[DType::BF16 as usize] = OpCapability::none();
         }
-        let has_tensor = extensions
-            .split(|&b| b == b' ')
-            .any(|token| token == b"cl_intel_subgroup_matrix_multiply_accumulate");
+        let has_tensor = extensions.split(|&b| b == b' ').any(|token| token == b"cl_intel_subgroup_matrix_multiply_accumulate");
         if has_tensor {
             dev_info.tensor_cores = true;
         }

@@ -74,6 +74,7 @@ mod runtime;
 mod scalar;
 mod shape;
 mod slab;
+mod tape;
 mod tensor;
 mod view;
 
@@ -85,7 +86,7 @@ pub use error::ZyxError;
 pub use module::Module;
 pub use scalar::{Float, Scalar};
 pub use shape::IntoShape;
-//pub use tape::Tape;
+pub use tape::Tape;
 pub use tensor::ReduceOp;
 pub use tensor::Tensor;
 
@@ -199,24 +200,3 @@ impl Drop for Timer {
         x.1 += 1;
     }
 }
-
-/*#[test]
-fn binary_cross_dependency1() -> Result<(), ZyxError> {
-
-    let x = Tensor::from([4, 5, 1]);
-
-    let y = Tensor::from([4, 1, 2]);
-
-    let x1 = x.sum([])?;
-    let x2 = x1.expand([3, 3])?;
-
-    let y1 = y + &x1;
-    let y2 = y1.sum([])?;
-    //let y3 = y2.expand([3, 3])?;
-
-    let x3 = x2 + &y2;
-
-    Tensor::realize([&x1, &y2, &x3])?;
-
-    Ok(())
-}*/

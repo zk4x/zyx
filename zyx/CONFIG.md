@@ -38,11 +38,11 @@ Run `ZYX_DEBUG=1` to see which backends initialized.
   "opencl": {
     "platform_ids": null
   },
-  "wgpu": {
-    "enabled": true
-  },
   "vulkan": {
     "device_ids": null
+  },
+  "wgpu": {
+    "enabled": true
   }
 }
 ```

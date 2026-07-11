@@ -53,19 +53,12 @@ fn main() {
     cmd.arg(format!("-DTT_METAL_ROOT_DEFAULT=\"{tt_metal_root}\""));
 
     // Source file
-    let src_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("src")
-        .join("backend")
-        .join("tenstorrent");
+    let src_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src").join("backend").join("tenstorrent");
     cmd.arg(src_dir.join("runtime.cpp"));
 
     // Link flags
     cmd.arg(format!("-L{}", lib_dir.display()));
-    cmd.arg("-ltt_metal")
-        .arg("-ltt-umd")
-        .arg("-ltt_stl")
-        .arg("-lfmt")
-        .arg("-lspdlog");
+    cmd.arg("-ltt_metal").arg("-ltt-umd").arg("-ltt_stl").arg("-lfmt").arg("-lspdlog");
     cmd.arg(format!("-Wl,-rpath,{}", lib_dir.display()));
 
     // Output to config dir
@@ -83,11 +76,8 @@ fn main() {
     });
     assert!(status.success(), "g++ build failed");
 
-    let kernel_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("src")
-        .join("backend")
-        .join("tenstorrent")
-        .join("kernels");
+    let kernel_dir =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src").join("backend").join("tenstorrent").join("kernels");
     println!("cargo:rustc-env=ZYX_TT_KERNEL_DIR={}", kernel_dir.display());
 
     // Rerun if C++ sources change

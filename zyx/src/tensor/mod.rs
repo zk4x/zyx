@@ -3068,9 +3068,9 @@ impl<T: Scalar> TryFrom<Tensor> for Vec<T> {
     type Error = ZyxError;
     fn try_from(value: Tensor) -> Result<Self, Self::Error> {
         let numel = value.numel();
-        let bytes = (numel as usize).checked_mul(std::mem::size_of::<T>()).ok_or_else(|| {
-            ZyxError::AllocationError("allocation size overflow".into())
-        })?;
+        let bytes = (numel as usize)
+            .checked_mul(std::mem::size_of::<T>())
+            .ok_or_else(|| ZyxError::AllocationError("allocation size overflow".into()))?;
         let max_free = RT.lock().free_memory();
         if bytes as Dim > max_free {
             return Err(ZyxError::AllocationError(

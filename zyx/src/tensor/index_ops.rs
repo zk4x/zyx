@@ -86,9 +86,7 @@ impl Tensor {
         let padding_len = index.len();
 
         if rank < padding_len {
-            return Err(ZyxError::shape_error(
-                format!("Slice with {padding_len} indices, but tensor has rank {rank}").into(),
-            ));
+            return Err(ZyxError::shape_error(format!("Slice with {padding_len} indices, but tensor has rank {rank}").into()));
         }
 
         //let padding = std::iter::repeat_n((0, 0), rank - padding_len);
@@ -174,9 +172,7 @@ impl Tensor {
         let padding_len = index.len();
 
         if padding_len > rank {
-            return Err(ZyxError::shape_error(
-                format!("Index length {padding_len} > rank {rank}").into(),
-            ));
+            return Err(ZyxError::shape_error(format!("Index length {padding_len} > rank {rank}").into()));
         }
 
         let padding = index
@@ -234,9 +230,7 @@ impl Tensor {
             })
             .collect::<Result<Vec<_>, _>>()?;
 
-        let padding = padding
-            .into_iter()
-            .chain(std::iter::repeat_n((0i64, 0i64), rank - padding_len));
+        let padding = padding.into_iter().chain(std::iter::repeat_n((0i64, 0i64), rank - padding_len));
 
         let mut padding_vec: Vec<(i64, i64)> = padding.into_iter().collect();
         padding_vec.reverse();

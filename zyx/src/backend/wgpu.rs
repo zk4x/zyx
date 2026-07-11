@@ -257,9 +257,7 @@ impl WGPUMemoryPool {
             self.queue.write_buffer(dst, 0, src);
         }
 
-        let encoder = self
-            .device
-            .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("GpuBuffer::write") });
+        let encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("GpuBuffer::write") });
         self.queue.submit(Some(encoder.finish()));
 
         Ok(Event::WGPU(WGPUEvent { submission_index: None }))
@@ -303,9 +301,8 @@ impl WGPUMemoryPool {
         });
 
         // Record a command to copy the data from the GPU buffer to the download buffer
-        let mut encoder = self
-            .device
-            .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("CopyBufferEncoder") });
+        let mut encoder =
+            self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("CopyBufferEncoder") });
 
         // Copy data from the source buffer to the download buffer
         encoder.copy_buffer_to_buffer(
@@ -330,9 +327,7 @@ impl WGPUMemoryPool {
         });
 
         // Poll the device to wait for the buffer mapping to complete
-        self.device
-            .poll(wgpu::PollType::Wait { submission_index: None, timeout: None })
-            .unwrap(); // Make sure polling completes
+        self.device.poll(wgpu::PollType::Wait { submission_index: None, timeout: None }).unwrap(); // Make sure polling completes
 
         // Wait for the map operation to complete
         let mapping_result = rx.recv().unwrap();
@@ -430,9 +425,8 @@ impl WGPUDevice {
             })
             .collect();
 
-        let bind_group_layout = self
-            .device
-            .create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor { label: None, entries: &bg_layout_entries });
+        let bind_group_layout =
+            self.device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor { label: None, entries: &bg_layout_entries });
 
         let pipeline_layout = self.device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: None,
@@ -449,9 +443,7 @@ impl WGPUDevice {
             compilation_options: wgpu::PipelineCompilationOptions::default(),
         });
 
-        let id = self
-            .programs
-            .push(WGPUProgram { name, gws, arg_ro_flags, shader: shader_module, pipeline, bind_group_layout });
+        let id = self.programs.push(WGPUProgram { name, gws, arg_ro_flags, shader: shader_module, pipeline, bind_group_layout });
 
         Ok(id)
     }
@@ -484,9 +476,7 @@ impl WGPUDevice {
             layout: &program.bind_group_layout,
             entries: &binds,
         });
-        let mut encoder = self
-            .device
-            .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("Kernel::enqueue") });
+        let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("Kernel::enqueue") });
         {
             let mut cpass = encoder
                 .begin_compute_pass(&wgpu::ComputePassDescriptor { label: Some("Kernel::enqueue"), timestamp_writes: None });

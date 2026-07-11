@@ -504,10 +504,7 @@ impl Tensor {
     #[must_use]
     pub fn softplus(&self, beta: impl Float, threshold: impl Float) -> Tensor {
         let x = self * beta;
-        x.cmplt(threshold)
-            .unwrap()
-            .where_(((x).exp() + 1).ln() * beta.reciprocal(), x)
-            .unwrap()
+        x.cmplt(threshold).unwrap().where_(((x).exp() + 1).ln() * beta.reciprocal(), x).unwrap()
     }
 
     /// Applies the square root function to each element in the input tensor.

@@ -26,11 +26,7 @@ impl Kernel {
         let _timer = crate::Timer::new("opt_tiled_reduce");
         // Let's not tile reduce kernel with barriers for now
         // Don't apply tiled reduce if there's already a barrier or local index
-        if self
-            .ops
-            .values()
-            .any(|node| matches!(node.op, Op::Barrier { .. } | Op::Index { scope: Scope::Local, .. }))
-        {
+        if self.ops.values().any(|node| matches!(node.op, Op::Barrier { .. } | Op::Index { scope: Scope::Local, .. })) {
             return (Optimization::TiledReduce { factors: Vec::new() }, 0);
         }
         // Only apply tiled reduce if there's exactly one loop in the kernel
@@ -180,21 +176,13 @@ impl Kernel {
         self.ops[loop_start].op = Op::Mad { x: ridx, y: factor_const, z: lidx };
 
         // Add local accumulator
-        let loc_acc = self.insert_before(
-            acc_load_id,
-            Op::Define { dtype: acc_dtype, scope: Scope::Local, ro: false, len: factor },
-        );
+        let loc_acc =
+            self.insert_before(acc_load_id, Op::Define { dtype: acc_dtype, scope: Scope::Local, ro: false, len: factor });
 
         // Store to local accumulator
         let const_zero = self.insert_before(acc_load_id, Op::Const(Constant::idx(0)));
-        let x = self.insert_before(
-            acc_load_id,
-            Op::Load { src: reg_acc, index: const_zero, layout: MemLayout::Scalar },
-        );
-        self.insert_before(
-            acc_load_id,
-            Op::Store { dst: loc_acc, x, index: lidx, layout: MemLayout::Scalar },
-        );
+        let x = self.insert_before(acc_load_id, Op::Load { src: reg_acc, index: const_zero, layout: MemLayout::Scalar });
+        self.insert_before(acc_load_id, Op::Store { dst: loc_acc, x, index: lidx, layout: MemLayout::Scalar });
 
         // Sync memory
         self.insert_before(acc_load_id, Op::Barrier { scope: Scope::Local });
@@ -219,10 +207,8 @@ impl Kernel {
                 let offset = i * active_threads;
                 let offset_const = self.insert_before(acc_load_id, Op::Const(Constant::idx(offset as u64)));
                 let offset_idx = self.insert_before(acc_load_id, Op::Binary { x: lidx, y: offset_const, bop: BOp::Add });
-                let local_load = self.insert_before(
-                    acc_load_id,
-                    Op::Load { src: loc_acc, index: offset_idx, layout: MemLayout::Scalar },
-                );
+                let local_load =
+                    self.insert_before(acc_load_id, Op::Load { src: loc_acc, index: offset_idx, layout: MemLayout::Scalar });
                 if let Some(prev_sum) = sum_x {
                     sum_x = Some(self.insert_before(acc_load_id, Op::Binary { x: prev_sum, y: local_load, bop }));
                 } else {
@@ -232,10 +218,7 @@ impl Kernel {
                 }
             }
             let bop_id = sum_x.unwrap();
-            self.insert_before(
-                acc_load_id,
-                Op::Store { dst: loc_acc, x: bop_id, index: lidx, layout: MemLayout::Scalar },
-            );
+            self.insert_before(acc_load_id, Op::Store { dst: loc_acc, x: bop_id, index: lidx, layout: MemLayout::Scalar });
 
             self.insert_before(acc_load_id, Op::EndIf);
             self.insert_before(acc_load_id, Op::Barrier { scope: Scope::Local });
@@ -246,14 +229,8 @@ impl Kernel {
         // Load final result from local[0] to register (only thread 0)
         let condition = self.insert_before(acc_load_id, Op::Binary { x: lidx, y: const_zero, bop: BOp::Eq });
         self.insert_before(acc_load_id, Op::If { condition });
-        let final_val = self.insert_before(
-            acc_load_id,
-            Op::Load { src: loc_acc, index: const_zero, layout: MemLayout::Scalar },
-        );
-        self.insert_before(
-            acc_load_id,
-            Op::Store { dst: reg_acc, x: final_val, index: const_zero, layout: MemLayout::Scalar },
-        );
+        let final_val = self.insert_before(acc_load_id, Op::Load { src: loc_acc, index: const_zero, layout: MemLayout::Scalar });
+        self.insert_before(acc_load_id, Op::Store { dst: reg_acc, x: final_val, index: const_zero, layout: MemLayout::Scalar });
         self.insert_after(self.tail, Op::EndIf);
 
         self.verify();

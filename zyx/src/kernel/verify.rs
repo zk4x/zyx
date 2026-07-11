@@ -23,10 +23,7 @@ impl Kernel {
         stack.push(Set::default());
         let check = |op_id, x: OpId, stack: &[Set<OpId>]| {
             if !stack.iter().any(|set| set.contains(&x)) {
-                println!(
-                    "{op_id} {:?} uses {x} -> {:?} before declaration.",
-                    self.ops[op_id].op, self.ops[x].op
-                );
+                println!("{op_id} {:?} uses {x} -> {:?} before declaration.", self.ops[op_id].op, self.ops[x].op);
                 self.debug();
                 panic!();
             }
@@ -228,10 +225,7 @@ impl Kernel {
                     if let Some(range) = idx_range {
                         if *range.end() >= defines[&src] {
                             self.debug();
-                            panic!(
-                                "OOB detected in op {}: index {:?} exceeds buffer length {:?}",
-                                op_id, range, defines[&src]
-                            );
+                            panic!("OOB detected in op {}: index {:?} exceeds buffer length {:?}", op_id, range, defines[&src]);
                         }
                     }
                 }
@@ -240,10 +234,7 @@ impl Kernel {
                     if let Some(range) = idx_range {
                         if *range.start() > defines[&dst] + 1 {
                             self.debug();
-                            panic!(
-                                "OOB detected in op {}: index {:?} exceeds buffer length {:?}",
-                                op_id, range, defines[&dst]
-                            );
+                            panic!("OOB detected in op {}: index {:?} exceeds buffer length {:?}", op_id, range, defines[&dst]);
                         }
                     }
                 }
@@ -520,10 +511,7 @@ impl Kernel {
                 let Some(&(xl, xu)) = prev.get(&x) else { return };
                 let Some(&(yl, yu)) = prev.get(&y) else { return };
                 let Some(&(zl, zu)) = prev.get(&z) else { return };
-                prev.insert(
-                    op_id,
-                    (xl.wrapping_mul(yl).wrapping_add(zl), xu.wrapping_mul(yu).wrapping_add(zu)),
-                );
+                prev.insert(op_id, (xl.wrapping_mul(yl).wrapping_add(zl), xu.wrapping_mul(yu).wrapping_add(zu)));
             }
             _ => {}
         }

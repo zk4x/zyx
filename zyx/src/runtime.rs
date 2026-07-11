@@ -38,7 +38,7 @@ use crate::{
 };
 
 #[derive(Debug, Copy, Clone, Hash, PartialEq, PartialOrd, Eq, Ord)]
-struct ShapeId(u16);
+pub struct ShapeId(u16);
 
 impl From<usize> for ShapeId {
     fn from(value: usize) -> Self {

@@ -96,16 +96,12 @@ impl View {
     }
 
     pub(crate) fn shape(&self) -> Vec<Dim> {
-        self.0
-            .last()
-            .map_or_else(|| vec![1], |inner| inner.iter().map(|dim| dim.d).collect())
+        self.0.last().map_or_else(|| vec![1], |inner| inner.iter().map(|dim| dim.d).collect())
     }
 
     #[cfg(test)]
     fn strides(&self) -> Vec<Dim> {
-        self.0
-            .last()
-            .map_or_else(|| vec![1], |inner| inner.iter().map(|dim| dim.st).collect())
+        self.0.last().map_or_else(|| vec![1], |inner| inner.iter().map(|dim| dim.st).collect())
     }
 
     pub(crate) fn original_numel(&self) -> Dim {
@@ -170,10 +166,7 @@ impl View {
             self.0.last().map_or(1, Vec::len)
         );
         debug_assert_eq!(
-            self.0.last().unwrap()[axes.start as usize..axes.end as usize]
-                .iter()
-                .map(|dim| dim.d)
-                .product::<Dim>(),
+            self.0.last().unwrap()[axes.start as usize..axes.end as usize].iter().map(|dim| dim.d).product::<Dim>(),
             new_shape.iter().product::<Dim>(),
             "Reshape failed, products are different: {:?} axes {axes:?} -> {:?}",
             self.shape(),
@@ -282,17 +275,8 @@ impl View {
     pub(crate) fn permute(&mut self, axes: &[usize]) {
         // Move around strides, dim, rp and lp
         let inner = self.0.last_mut().unwrap();
-        debug_assert!(
-            inner.len() >= axes.len(),
-            "Failed to permute {:?} by axes={axes:?}",
-            self.shape()
-        );
-        debug_assert_eq!(
-            *axes.iter().max().unwrap(),
-            axes.len() - 1,
-            "Failed to permute {:?} by axes={axes:?}",
-            self.shape()
-        );
+        debug_assert!(inner.len() >= axes.len(), "Failed to permute {:?} by axes={axes:?}", self.shape());
+        debug_assert_eq!(*axes.iter().max().unwrap(), axes.len() - 1, "Failed to permute {:?} by axes={axes:?}", self.shape());
 
         let mut temp_data = inner.clone();
         for i in 0..axes.len() {

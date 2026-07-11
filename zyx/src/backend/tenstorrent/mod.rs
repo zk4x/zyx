@@ -542,14 +542,10 @@ pub(super) fn initialize_device(
         return Ok(());
     }
 
-    let device_file = File::options()
-        .read(true)
-        .write(true)
-        .open("/dev/tenstorrent/0")
-        .map_err(|e| BackendError {
-            status: ErrorStatus::Initialization,
-            context: format!("open /dev/tenstorrent/0: {e}").into(),
-        })?;
+    let device_file = File::options().read(true).write(true).open("/dev/tenstorrent/0").map_err(|e| BackendError {
+        status: ErrorStatus::Initialization,
+        context: format!("open /dev/tenstorrent/0: {e}").into(),
+    })?;
 
     let fd = device_file.as_raw_fd();
 
@@ -571,11 +567,8 @@ pub(super) fn initialize_device(
     let total_bytes = dram_size_for_subsystem_id(info.subsystem_id)?;
 
     if debug_dev {
-        let card_name = DRAM_SIZE_TABLE
-            .iter()
-            .find(|&&(id, _, _)| id == info.subsystem_id)
-            .map(|&(_, name, _)| name)
-            .unwrap_or("?");
+        let card_name =
+            DRAM_SIZE_TABLE.iter().find(|&&(id, _, _)| id == info.subsystem_id).map(|&(_, name, _)| name).unwrap_or("?");
         println!(
             "[tenstorrent] vendor=0x{:04x} device=0x{:04x} subsys=0x{:04x} card={card_name} (subven=0x{:04x})",
             info.vendor_id, info.device_id, info.subsystem_id, info.subsystem_vendor_id
@@ -610,11 +603,7 @@ pub(super) fn initialize_device(
     if !runtime_path.exists() {
         return Err(BackendError {
             status: ErrorStatus::Initialization,
-            context: format!(
-                "runtime not found at {}. Rebuild with TT_METAL_ROOT set.",
-                runtime_path.display()
-            )
-            .into(),
+            context: format!("runtime not found at {}. Rebuild with TT_METAL_ROOT set.", runtime_path.display()).into(),
         });
     }
 
@@ -678,14 +667,10 @@ impl TTMemoryPool {
 
         // Open a new fd per buffer (workaround: ioctl_free_dma_buf returns -EINVAL;
         // closing the fd triggers kernel cleanup of the DMA buffer)
-        let buf_file = File::options()
-            .read(true)
-            .write(true)
-            .open("/dev/tenstorrent/0")
-            .map_err(|e| BackendError {
-                status: ErrorStatus::MemoryAllocation,
-                context: format!("open /dev/tenstorrent/0 for buffer {buf_index}: {e}").into(),
-            })?;
+        let buf_file = File::options().read(true).write(true).open("/dev/tenstorrent/0").map_err(|e| BackendError {
+            status: ErrorStatus::MemoryAllocation,
+            context: format!("open /dev/tenstorrent/0 for buffer {buf_index}: {e}").into(),
+        })?;
 
         let buf_fd = buf_file.as_raw_fd();
 
@@ -726,11 +711,7 @@ impl TTMemoryPool {
                 // buf_file dropped here → fd close → kernel frees DMA buf
                 return Err(BackendError {
                     status: ErrorStatus::MemoryAllocation,
-                    context: format!(
-                        "mmap DMA buffer (size={actual_size}, offset=0x{:x})",
-                        alloc.out.mapping_offset
-                    )
-                    .into(),
+                    context: format!("mmap DMA buffer (size={actual_size}, offset=0x{:x})", alloc.out.mapping_offset).into(),
                 });
             }
             ptr as *mut u8

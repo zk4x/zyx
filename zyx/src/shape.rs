@@ -142,25 +142,15 @@ impl IntoShape for Box<[Dim]> {
 
 pub fn into_axis(axis: Axis, rank: UAxis) -> Result<UAxis, ZyxError> {
     TryInto::<Axis>::try_into(rank).map_or_else(
-        |_| {
-            Err(ZyxError::ShapeError(
-                format!("Axis {axis} is out of range of rank {rank}").into(),
-            ))
-        },
+        |_| Err(ZyxError::ShapeError(format!("Axis {axis} is out of range of rank {rank}").into())),
         |rank2| {
             TryInto::<UAxis>::try_into(axis + rank2).map_or_else(
-                |_| {
-                    Err(ZyxError::ShapeError(
-                        format!("Axis {axis} is out of range of rank {rank}").into(),
-                    ))
-                },
+                |_| Err(ZyxError::ShapeError(format!("Axis {axis} is out of range of rank {rank}").into())),
                 |a| {
                     if a < 2 * rank {
                         Ok(a % rank)
                     } else {
-                        Err(ZyxError::ShapeError(
-                            format!("Axis {axis} is out of range of rank {rank}").into(),
-                        ))
+                        Err(ZyxError::ShapeError(format!("Axis {axis} is out of range of rank {rank}").into()))
                     }
                 },
             )

@@ -263,9 +263,7 @@ impl Kernel {
                 continue;
             }
 
-            let root_width = bounds
-                .get(&root)
-                .map_or(64, |&(_, max)| if max == 0 { 1 } else { (max.ilog2() + 1) as u64 });
+            let root_width = bounds.get(&root).map_or(64, |&(_, max)| if max == 0 { 1 } else { (max.ilog2() + 1) as u64 });
 
             // Sort by lo, fill in MAX widths from bounds, verify partition
             slices.sort_by_key(|s| s.lo);

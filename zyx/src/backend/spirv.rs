@@ -874,10 +874,7 @@ pub fn compile(kernel: &Kernel, debug_asm: bool) -> Result<(Vec<u32>, Vec<Dim>, 
     }
 
     // Execution mode
-    asm.emit(
-        OpExecutionMode,
-        &[func_id, MODE_LOCAL_SIZE, lws[0] as u32, lws[1] as u32, lws[2] as u32],
-    );
+    asm.emit(OpExecutionMode, &[func_id, MODE_LOCAL_SIZE, lws[0] as u32, lws[1] as u32, lws[2] as u32]);
 
     // Annotations
     for (var_id, dec, operands) in &decorations {
@@ -998,14 +995,8 @@ pub fn compile(kernel: &Kernel, debug_asm: bool) -> Result<(Vec<u32>, Vec<Dim>, 
 
                 &Op::Load { src, index, layout } => {
                     let (load_dt, _) = dtypes[&op_id];
-                    let result_type = layout_type_id(
-                        &mut asm,
-                        &mut type_cache,
-                        &mut vec_type_cache,
-                        &mut type_entries,
-                        load_dt,
-                        layout,
-                    );
+                    let result_type =
+                        layout_type_id(&mut asm, &mut type_cache, &mut vec_type_cache, &mut type_entries, load_dt, layout);
                     let index_id = spv_values[&index];
 
                     // For vector loads, use scalar pointer type for OpAccessChain,
@@ -1174,14 +1165,8 @@ pub fn compile(kernel: &Kernel, debug_asm: bool) -> Result<(Vec<u32>, Vec<Dim>, 
                     let src_id = spv_values[&x];
                     let dst_type = dtype;
                     let (_, layout) = dtypes[&op_id];
-                    let result_type = layout_type_id(
-                        &mut asm,
-                        &mut type_cache,
-                        &mut vec_type_cache,
-                        &mut type_entries,
-                        dst_type,
-                        layout,
-                    );
+                    let result_type =
+                        layout_type_id(&mut asm, &mut type_cache, &mut vec_type_cache, &mut type_entries, dst_type, layout);
 
                     let rid = asm.id();
                     if src_type == DType::Bool && dst_type.is_float() {
@@ -1308,14 +1293,8 @@ pub fn compile(kernel: &Kernel, debug_asm: bool) -> Result<(Vec<u32>, Vec<Dim>, 
                     let y_id = spv_values[&y];
                     let dt = dtypes[&x].0;
                     let (res_dt, res_layout) = dtypes[&op_id];
-                    let result_type = layout_type_id(
-                        &mut asm,
-                        &mut type_cache,
-                        &mut vec_type_cache,
-                        &mut type_entries,
-                        res_dt,
-                        res_layout,
-                    );
+                    let result_type =
+                        layout_type_id(&mut asm, &mut type_cache, &mut vec_type_cache, &mut type_entries, res_dt, res_layout);
                     let rid = asm.id();
 
                     let (float_op, int_op, _): (Option<OpCode>, Option<OpCode>, Option<OpCode>) = match bop {
@@ -1820,12 +1799,7 @@ pub fn debug_print(spv: &[u32]) {
             21 => {
                 // TypeInt
                 if operands.len() >= 2 {
-                    print!(
-                        " %{} {} {}",
-                        operands[0],
-                        operands[1],
-                        if operands[2] == 0 { "u" } else { "i" }
-                    );
+                    print!(" %{} {} {}", operands[0], operands[1], if operands[2] == 0 { "u" } else { "i" });
                 }
             }
             22 => {

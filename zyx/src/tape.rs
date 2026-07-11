@@ -29,28 +29,7 @@
 //!   for the full subgraph — just collect the leaf TensorIds and map to their current
 //!   BufferIds.
 
-use crate::{Map, RT, Set, Tensor, tensor::TensorId};
-
-/// Gradient tape for automatic differentiation.
-///
-/// Graph is always recorded, but when tensor is realized, it's graph is dropped.
-/// When [`GradientTape`] is alive, graph is not dropped until [`GradientTape`] is dropped.
-///
-/// Unlike other deep learning frameworks, there is no need to specify which tensors
-/// are differentiable nor is there need to specify multiple gradient tapes to calculate
-/// higher order derivatives. In zyx as long as gradient tape is alive, derivatives
-/// of all operations then occured since it's creation can be calculated.
-///
-/// Gradient tape is necessary because without it graph would grow
-/// indefinitely with each iteration of training/inference loop.
-/// By creating gradient tape in the beginning of each training loop and dropping
-/// it at the end, the user ensures that graph of tensors is dropped after each
-/// iteration of the training loop.
-///
-/// Since tensors are realized lazily, intermediate tensors needed for backpropagation
-/// are not held in memory.
-#[cfg_attr(feature = "py", pyo3::pyclass)]
-pub struct GradientTape {}
+use crate::{Map, RT, Set, Tensor, ZyxError, runtime::Runtime, tensor::TensorId};
 
 /// Non-differentiating tape scope.
 ///
@@ -62,43 +41,31 @@ pub struct Tape {}
 
 impl Tape {
     /// Create gradient tape for automatic differentiation.
-    /// Only one gradient tape can exist at a time.
-    pub fn autograd() -> GradientTape {
-        let mut rt = RT.lock();
-        rt.graph.tape_rc += 1;
-        if rt.graph.tape.is_some() {
-            return GradientTape {};
-        }
-        rt.graph.tape = Some(Set::with_capacity_and_hasher(100, Default::default()));
-        drop(rt);
-        GradientTape {}
-    }
-
-    /// Create non-differentiating tape scope.
+    /// Only one tape can exist at a time.
     ///
     /// Tensors created inside this scope are traced and realized on drop.
     /// Use this around inference loops to batch-realize outputs and
     /// enable graph caching across structurally identical iterations.
-    pub fn nograd() -> Tape {
-        let mut rt = RT.lock();
+    pub fn new() -> Tape {
+        /*let mut rt = RT.lock();
         rt.graph.tape_rc += 1;
         if rt.graph.tape.is_some() {
             return Tape {};
         }
         rt.graph.tape = Some(Set::with_capacity_and_hasher(100, Default::default()));
-        drop(rt);
+        drop(rt);*/
         Tape {}
     }
 }
 
-impl GradientTape {
+impl Tape {
     /// Returns gradients of target derived w.r.t. sources.
     /// Non-differentiable paths return a zero tensor.
     #[must_use]
     pub fn gradient<'a>(&self, target: &Tensor, sources: impl IntoIterator<Item = &'a Tensor>) -> Vec<Tensor> {
         let sources: Vec<TensorId> = sources.into_iter().map(Tensor::id).collect();
         let mut rt = RT.lock();
-        let grads: Map<TensorId, TensorId> = rt.gradient(target.id(), &sources.iter().copied().collect());
+        let grads: Map<TensorId, TensorId> = rt.gradient(target.id(), sources.iter().copied().collect());
         sources
             .into_iter()
             .map(|x: TensorId| {
@@ -107,12 +74,20 @@ impl GradientTape {
                     None => {
                         let shape = rt.shape(x).into();
                         let dtype = rt.dtype(x);
-                        rt.zeros(shape, dtype)
+                        rt.new_full(shape, dtype.zero_constant())
                     }
                 };
                 Tensor { id }
             })
             .collect()
+    }
+
+    pub fn realize<'a>(self, tensors: impl IntoIterator<Item = &'a Tensor>) -> Result<(), ZyxError> {
+        todo!()
+    }
+
+    pub fn realize_all<'a>(self, tensors: impl IntoIterator<Item = &'a Tensor>) -> Result<(), ZyxError> {
+        todo!()
     }
 }
 
@@ -120,20 +95,15 @@ impl Drop for Tape {
     fn drop(&mut self) {
         //RT.lock().drop_gradient_tape();
         if let Ok(mut rt) = RT.try_lock() {
-            rt.drop_gradient_tape();
+            todo!();
         } else {
             println!("Warning: Unable to drop GradientTape due to runtime mutex lock.");
         }
     }
 }
 
-impl Drop for GradientTape {
-    fn drop(&mut self) {
-        //RT.lock().drop_gradient_tape();
-        if let Ok(mut rt) = RT.try_lock() {
-            rt.drop_gradient_tape();
-        } else {
-            println!("Warning: Unable to drop GradientTape due to runtime mutex lock.");
-        }
+impl Runtime {
+    fn gradient(&mut self, target: TensorId, sources: Set<TensorId>) -> Map<TensorId, TensorId> {
+        todo!()
     }
 }

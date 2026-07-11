@@ -188,9 +188,8 @@ pub(super) fn initialize_device(
     if num_devices == 0 {
         return Err(BackendError { status: ErrorStatus::DeviceEnumeration, context: "[HIP] no devices found.".into() });
     }
-    let device_ids: Vec<_> = (0..num_devices)
-        .filter(|id| config.device_ids.as_ref().is_none_or(|ids| ids.contains(id)))
-        .collect();
+    let device_ids: Vec<_> =
+        (0..num_devices).filter(|id| config.device_ids.as_ref().is_none_or(|ids| ids.contains(id))).collect();
     if device_ids.is_empty() {
         return Err(BackendError {
             status: ErrorStatus::DeviceEnumeration,
@@ -221,9 +220,7 @@ pub(super) fn initialize_device(
             continue;
         };
         if debug_dev {
-            println!("[HIP] {:?}, compute: {major}.{minor}", unsafe {
-                std::ffi::CStr::from_ptr(device_name.as_ptr())
-            });
+            println!("[HIP] {:?}, compute: {major}.{minor}", unsafe { std::ffi::CStr::from_ptr(device_name.as_ptr()) });
         }
         let mut free_bytes: usize = 0;
         let Ok(()) = unsafe { hipDeviceTotalMem(&raw mut free_bytes, device) }.check(ErrorStatus::DeviceQuery) else {
@@ -303,20 +300,18 @@ pub(super) fn initialize_device(
                 Dim::try_from(dev.get(HIPdevice_attribute::hipDeviceAttributeMaxGridDimY, hipDeviceGetAttribute)?).unwrap(),
                 Dim::try_from(dev.get(HIPdevice_attribute::hipDeviceAttributeMaxGridDimZ, hipDeviceGetAttribute)?).unwrap(),
             ],
-            max_local_threads: Dim::try_from(dev.get(
-                HIPdevice_attribute::hipDeviceAttributeMaxThreadsPerBlock,
-                hipDeviceGetAttribute,
-            )?)
+            max_local_threads: Dim::try_from(
+                dev.get(HIPdevice_attribute::hipDeviceAttributeMaxThreadsPerBlock, hipDeviceGetAttribute)?,
+            )
             .unwrap(),
             max_local_work_dims: vec![
                 Dim::try_from(dev.get(HIPdevice_attribute::hipDeviceAttributeMaxBlockDimX, hipDeviceGetAttribute)?).unwrap(),
                 Dim::try_from(dev.get(HIPdevice_attribute::hipDeviceAttributeMaxBlockDimY, hipDeviceGetAttribute)?).unwrap(),
                 Dim::try_from(dev.get(HIPdevice_attribute::hipDeviceAttributeMaxBlockDimZ, hipDeviceGetAttribute)?).unwrap(),
             ],
-            local_mem_size: Dim::try_from(dev.get(
-                HIPdevice_attribute::hipDeviceAttributeMaxSharedMemoryPerBlock,
-                hipDeviceGetAttribute,
-            )?)
+            local_mem_size: Dim::try_from(
+                dev.get(HIPdevice_attribute::hipDeviceAttributeMaxSharedMemoryPerBlock, hipDeviceGetAttribute)?,
+            )
             .unwrap(),
             max_register_bytes: 96,
             preferred_vector_size: 16,
@@ -370,19 +365,13 @@ impl HIPMemoryPool {
     pub(super) fn deallocate(&mut self, buffer_id: PoolBufferId, mut event_wait_list: Vec<Event>) {
         while let Some(Event::HIP(HIPEvent { event })) = event_wait_list.pop() {
             if !event.is_null() {
-                unsafe { (self.hipStreamWaitEvent)(self.stream, event, 0) }
-                    .check(ErrorStatus::MemoryDeallocation)
-                    .unwrap();
-                unsafe { (self.hipEventDestroy)(event) }
-                    .check(ErrorStatus::MemoryCopyP2H)
-                    .unwrap();
+                unsafe { (self.hipStreamWaitEvent)(self.stream, event, 0) }.check(ErrorStatus::MemoryDeallocation).unwrap();
+                unsafe { (self.hipEventDestroy)(event) }.check(ErrorStatus::MemoryCopyP2H).unwrap();
             }
         }
         let buffer = &mut self.buffers[buffer_id];
         //unsafe { (self.hipMemFreeAsync)(buffer.ptr, self.stream) }.check(ErrorStatus::MemoryDeallocation).unwrap();
-        unsafe { (self.hipMemFree)(buffer.ptr) }
-            .check(ErrorStatus::MemoryDeallocation)
-            .unwrap();
+        unsafe { (self.hipMemFree)(buffer.ptr) }.check(ErrorStatus::MemoryDeallocation).unwrap();
         self.free_bytes += buffer.bytes;
         self.buffers.remove(buffer_id);
     }
@@ -456,9 +445,7 @@ impl HIPMemoryPool {
             let Event::HIP(HIPEvent { event }) = event else {
                 unreachable!()
             };
-            unsafe { (self.hipEventDestroy)(event) }
-                .check(ErrorStatus::Deinitialization)
-                .unwrap();
+            unsafe { (self.hipEventDestroy)(event) }.check(ErrorStatus::Deinitialization).unwrap();
         }
     }
 }

@@ -49,6 +49,27 @@ fn rope_1() -> Result<(), ZyxError> {
     Ok(())
 }
 
+/*#[test]
+fn binary_cross_dependency1() -> Result<(), ZyxError> {
+
+    let x = Tensor::from([4, 5, 1]);
+
+    let y = Tensor::from([4, 1, 2]);
+
+    let x1 = x.sum([])?;
+    let x2 = x1.expand([3, 3])?;
+
+    let y1 = y + &x1;
+    let y2 = y1.sum([])?;
+    //let y3 = y2.expand([3, 3])?;
+
+    let x3 = x2 + &y2;
+
+    Tensor::realize([&x1, &y2, &x3])?;
+
+    Ok(())
+}*/
+
 #[test]
 fn test_max_pool() -> Result<(), ZyxError> {
     // Create a 4x4 tensor
@@ -212,20 +233,12 @@ fn batched_matmul() -> Result<(), ZyxError> {
                 for n in (8..128).step_by(59) {
                     // x: [B, M, K]
                     let x_data: Vec<Vec<Vec<i32>>> = (0..b)
-                        .map(|bb| {
-                            (0..m)
-                                .map(|i| (0..k).map(|j| bb as i32 + i as i32 + j as i32).collect())
-                                .collect()
-                        })
+                        .map(|bb| (0..m).map(|i| (0..k).map(|j| bb as i32 + i as i32 + j as i32).collect()).collect())
                         .collect();
 
                     // y: [B, K, N]
                     let y_data: Vec<Vec<Vec<i32>>> = (0..b)
-                        .map(|bb| {
-                            (0..k)
-                                .map(|i| (0..n).map(|j| bb as i32 + i as i32 - j as i32).collect())
-                                .collect()
-                        })
+                        .map(|bb| (0..k).map(|i| (0..n).map(|j| bb as i32 + i as i32 - j as i32).collect()).collect())
                         .collect();
 
                     let x = Tensor::from(x_data.clone());
@@ -246,13 +259,7 @@ fn batched_matmul() -> Result<(), ZyxError> {
                     }
 
                     let expected_shape = vec![b as u64, m as u64, n as u64];
-                    assert_eq!(
-                        z.shape(),
-                        expected_shape,
-                        "Shape mismatch: expected {:?}, got {:?}",
-                        expected_shape,
-                        z.shape()
-                    );
+                    assert_eq!(z.shape(), expected_shape, "Shape mismatch: expected {:?}, got {:?}", expected_shape, z.shape());
 
                     // ---- Dtype check ----
                     assert_eq!(z.dtype(), DType::I32, "Dtype mismatch: expected I32, got {:?}", z.dtype());
@@ -357,10 +364,7 @@ fn pool() -> Result<(), ZyxError> {
     //x = x.reshape([12, 3]);
     //println!("{x}");
     x = x.pool([2, 2], 1, 1)?;
-    assert_eq!(
-        x,
-        [[[[0, 1], [3, 4]], [[1, 2], [4, 5]]], [[[3, 4], [6, 7]], [[4, 5], [7, 8]]]]
-    );
+    assert_eq!(x, [[[[0, 1], [3, 4]], [[1, 2], [4, 5]]], [[[3, 4], [6, 7]], [[4, 5], [7, 8]]]]);
     //println!("{x}");
     Ok(())
 }
@@ -489,10 +493,7 @@ fn slicing_comprehensive() {
         [[[1, 2], [3, 4]], [[5, 6], [7, 8]]],
         [[[9, 10], [11, 12]], [[13, 14], [15, 16]]],
     ]);
-    assert_eq!(
-        z.slice((.., .., .., 1..2)).unwrap(),
-        [[[[2], [4]], [[6], [8]]], [[[10], [12]], [[14], [16]]]]
-    );
+    assert_eq!(z.slice((.., .., .., 1..2)).unwrap(), [[[[2], [4]], [[6], [8]]], [[[10], [12]], [[14], [16]]]]);
     assert_eq!(z.slice((0..1, .., 0..1, ..)).unwrap(), [[[[1, 2]], [[5, 6]]]]);
     assert_eq!(z.slice(1..2).unwrap(), [[[[9, 10], [11, 12]], [[13, 14], [15, 16]]]]);
     assert!(z.slice((.., .., .., .., ..)).is_err() || z.slice((.., .., .., .., ..)).is_ok());
@@ -518,19 +519,10 @@ fn rslicing_comprehensive() {
         [[[3, 5], [7, 9]], [[11, 13], [15, 17]]],
         [[[19, 21], [23, 25]], [[27, 29], [31, 33]]],
     ]);
-    assert_eq!(
-        z.rslice((.., .., .., 0..1)).unwrap(),
-        [[[[3, 5], [7, 9]], [[11, 13], [15, 17]]]]
-    );
-    assert_eq!(
-        z.rslice((.., .., .., 1..2)).unwrap(),
-        [[[[19, 21], [23, 25]], [[27, 29], [31, 33]]]]
-    );
+    assert_eq!(z.rslice((.., .., .., 0..1)).unwrap(), [[[[3, 5], [7, 9]], [[11, 13], [15, 17]]]]);
+    assert_eq!(z.rslice((.., .., .., 1..2)).unwrap(), [[[[19, 21], [23, 25]], [[27, 29], [31, 33]]]]);
     assert_eq!(z.rslice((0..1, .., 0..1, ..)).unwrap(), [[[[3], [7]]], [[[19], [23]]]]);
-    assert_eq!(
-        z.rslice(1..2).unwrap(),
-        [[[[5], [9]], [[13], [17]]], [[[21], [25]], [[29], [33]]]]
-    );
+    assert_eq!(z.rslice(1..2).unwrap(), [[[[5], [9]], [[13], [17]]], [[[21], [25]], [[29], [33]]]]);
     assert!(z.rslice((.., .., .., .., ..)).is_err() || z.rslice((.., .., .., .., ..)).is_ok());
 }
 
@@ -568,17 +560,11 @@ fn more_padding() -> Result<(), ZyxError> {
 
     // pad_zeros: normal order (first tuple → rows, second → cols)
     let padded2 = t2.pad_zeros([(1, 1), (2, 1)])?;
-    assert_eq!(
-        padded2,
-        [[0, 0, 0, 0, 0, 0], [0, 0, 1, 2, 3, 0], [0, 0, 4, 5, 6, 0], [0, 0, 0, 0, 0, 0]]
-    );
+    assert_eq!(padded2, [[0, 0, 0, 0, 0, 0], [0, 0, 1, 2, 3, 0], [0, 0, 4, 5, 6, 0], [0, 0, 0, 0, 0, 0]]);
 
     // rpad_zeros: reverse order (first tuple → cols, second → rows)
     let rpadded2 = t2.rpad_zeros([(2, 1), (1, 1)])?;
-    assert_eq!(
-        rpadded2,
-        [[0, 0, 0, 0, 0, 0], [0, 0, 1, 2, 3, 0], [0, 0, 4, 5, 6, 0], [0, 0, 0, 0, 0, 0]]
-    );
+    assert_eq!(rpadded2, [[0, 0, 0, 0, 0, 0], [0, 0, 1, 2, 3, 0], [0, 0, 4, 5, 6, 0], [0, 0, 0, 0, 0, 0]]);
 
     // Invalid padding
     let err = t1.rpad_zeros([(-10, 0)]).unwrap_err();
@@ -680,10 +666,7 @@ fn softmax_1() -> Result<(), ZyxError> {
     //assert_eq!(y, [0.09003056585788726807, 0.66524088382720947266, 0.24472846090793609619]);
     let y = x.softmax([])?;
     //println!("{y}");
-    assert_eq!(
-        y,
-        [0.09003056585788726807f32, 0.66524088382720947266, 0.24472846090793609619,]
-    );
+    assert_eq!(y, [0.09003056585788726807f32, 0.66524088382720947266, 0.24472846090793609619,]);
     //Tensor::plot_graph([], "graph").unwrap();
     Ok(())
 }
@@ -700,10 +683,7 @@ fn dot_pad() -> Result<(), ZyxError> {
 #[test]
 #[should_panic]
 fn t3() {
-    let x = Tensor::randn([1024, 1024], DType::F32)
-        .unwrap()
-        .expand([1024, 1024, 1024, 1024, 1024, 1024])
-        .unwrap();
+    let x = Tensor::randn([1024, 1024], DType::F32).unwrap().expand([1024, 1024, 1024, 1024, 1024, 1024]).unwrap();
     let _: Vec<f32> = x.try_into().unwrap();
 }
 
@@ -868,23 +848,7 @@ fn binary_y_depends_on_x() -> Result<(), ZyxError> {
     let z = {
         let x = Tensor::from([[2, 4, 1], [3, 2, 4]]).cast(DType::F32);
 
-        let x = x
-            .exp2()
-            .log2()
-            .exp2()
-            .log2()
-            .exp2()
-            .log2()
-            .exp2()
-            .log2()
-            .exp2()
-            .log2()
-            .exp2()
-            .log2()
-            .exp2()
-            .log2()
-            .exp2()
-            .log2();
+        let x = x.exp2().log2().exp2().log2().exp2().log2().exp2().log2().exp2().log2().exp2().log2().exp2().log2().exp2().log2();
 
         let y = x.permute([1, 0]).unwrap();
 
@@ -990,14 +954,8 @@ fn rope_4() -> Result<(), ZyxError> {
 
 #[test]
 fn complex_movement_reduce() -> Result<(), ZyxError> {
-    let x = Tensor::from([[[2f32, 3.]], [[4., 5.]]])
-        .expand([2, 3, 2])?
-        .exp()
-        .ln()
-        .reshape([2, 3, 2, 1])?;
-    let y = Tensor::from([[2f32, 3., 1.], [4., 3., 2.]])
-        .reshape([2, 3, 1, 1])?
-        .expand([2, 3, 2, 1])?;
+    let x = Tensor::from([[[2f32, 3.]], [[4., 5.]]]).expand([2, 3, 2])?.exp().ln().reshape([2, 3, 2, 1])?;
+    let y = Tensor::from([[2f32, 3., 1.], [4., 3., 2.]]).reshape([2, 3, 1, 1])?.expand([2, 3, 2, 1])?;
     let z = (&x + &y).expand([2, 3, 2, 2])?.sum([3, 0])?;
     let z = z.exp().ln().permute([1, 0])?.sum([0])?;
     assert_eq!(z, [52f32, 52., 40.]);

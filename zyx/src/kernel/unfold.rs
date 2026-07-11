@@ -30,14 +30,8 @@ impl Kernel {
     /// It cannot be applied if both explicit global indices and view moves
     /// are present in the kernel.
     pub fn unfold_movement_ops(&mut self) {
-        let has_gidx = self
-            .ops
-            .values()
-            .any(|n| matches!(n.op, Op::Index { scope: Scope::Global, .. }));
-        let has_view_moves = self
-            .ops
-            .values()
-            .any(|n| matches!(n.op, Op::LoadView(_) | Op::StoreView { .. } | Op::Move { .. }));
+        let has_gidx = self.ops.values().any(|n| matches!(n.op, Op::Index { scope: Scope::Global, .. }));
+        let has_view_moves = self.ops.values().any(|n| matches!(n.op, Op::LoadView(_) | Op::StoreView { .. } | Op::Move { .. }));
 
         match (has_gidx, has_view_moves) {
             (true, false) => return,
@@ -208,10 +202,7 @@ impl Kernel {
                 }),
             );
 
-            let acc = self.insert_before(
-                loop_start,
-                Op::Define { dtype: acc_dtype, scope: Scope::Register, ro: false, len: 1 },
-            );
+            let acc = self.insert_before(loop_start, Op::Define { dtype: acc_dtype, scope: Scope::Register, ro: false, len: 1 });
 
             // Zero the accumulator
             self.insert_before(
@@ -225,15 +216,9 @@ impl Kernel {
             }
 
             // Add reduction operation, load from acc, accumulate, store to acc
-            let load_acc = self.insert_before(
-                reduce_op_id,
-                Op::Load { src: acc, index: const_zero, layout: MemLayout::Scalar },
-            );
+            let load_acc = self.insert_before(reduce_op_id, Op::Load { src: acc, index: const_zero, layout: MemLayout::Scalar });
             let bin_acc = self.insert_before(reduce_op_id, Op::Binary { x, y: load_acc, bop: rop });
-            self.insert_before(
-                reduce_op_id,
-                Op::Store { dst: acc, x: bin_acc, index: const_zero, layout: MemLayout::Scalar },
-            );
+            self.insert_before(reduce_op_id, Op::Store { dst: acc, x: bin_acc, index: const_zero, layout: MemLayout::Scalar });
 
             // Close the reduce loop
             for _ in 0..n_axes {
