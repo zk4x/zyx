@@ -57,10 +57,21 @@ impl ZyxError {
         Self::ParseError(e.into())
     }
 
+    /// Error when trying to load a graph tensor that has not been realized yet.
+    /// Graph tensors must be materialized (via `Tape::realize`) before their
+    /// buffers can be accessed. This error indicates the graph was never compiled.
     #[track_caller]
     pub fn graph_tensor_not_realized(tid: impl std::fmt::Display) -> Self {
         let location = std::panic::Location::caller();
-        Self::GraphTensorNotRealized(format!("tensor {tid} must be realized before loading, at {}:{}:{}", location.file(), location.line(), location.column()).into())
+        Self::GraphTensorNotRealized(
+            format!(
+                "tensor {tid} must be realized before loading, at {}:{}:{}",
+                location.file(),
+                location.line(),
+                location.column()
+            )
+            .into(),
+        )
     }
 }
 
