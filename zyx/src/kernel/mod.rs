@@ -1942,66 +1942,6 @@ impl Kernel {
         op_id
     }
 
-    /// Remove the first output tensor.
-    /// Drop unused operations, keeping only those needed by `params` (OpIds).
-    /// Returns the updated `loads` (remaining LoadViews' tensor IDs).
-    pub(crate) fn drop_unused_ops_by_params(&mut self, params: Vec<OpId>, loads: &[TensorId]) -> Vec<TensorId> {
-        let required = self.get_required_ops(params);
-        let mut loaded_tensors = Vec::new();
-        let mut load_index = 0;
-        let mut op_id = self.head;
-        while !op_id.is_null() {
-            let is_required = required.contains(&op_id);
-            if let Op::LoadView { .. } = self.at(op_id) {
-                if is_required {
-                    loaded_tensors.push(loads[load_index]);
-                }
-                load_index += 1;
-            }
-            let temp = op_id;
-            op_id = self.next_op(op_id);
-            if !is_required {
-                self.remove_op(temp);
-            }
-        }
-        loaded_tensors
-    }
-
-    /// Get all required operations for a set of parameters.
-    pub(crate) fn get_required_ops(&self, mut params: Vec<OpId>) -> Set<OpId> {
-        let mut required = Set::default();
-        while let Some(param) = params.pop() {
-            if required.insert(param) {
-                //println!("param={param}");
-                match self.at(param) {
-                    Op::Reduce { x, .. } | Op::Cast { x, .. } | Op::Unary { x, .. } | Op::Move { x, .. } => {
-                        params.push(*x);
-                    }
-                    Op::Binary { x, y, .. } => {
-                        params.push(*x);
-                        params.push(*y);
-                    }
-                    Op::Const { .. } | Op::ConstView { .. } | Op::LoadView { .. } => {}
-                    Op::Vectorize { .. }
-                    | Op::Devectorize { .. }
-                    | Op::Wmma { .. }
-                    | Op::Barrier { .. }
-                    | Op::Define { .. }
-                    | Op::Mad { .. }
-                    | Op::StoreView { .. }
-                    | Op::Load { .. }
-                    | Op::Store { .. }
-                    | Op::Index { .. }
-                    | Op::If { .. }
-                    | Op::EndIf
-                    | Op::Loop { .. }
-                    | Op::EndLoop => unreachable!(),
-                }
-            }
-        }
-        required
-    }
-
     /// Get all global indices used in the kernel.
     pub(crate) fn get_global_indices(&self) -> std::collections::BTreeMap<u32, OpId> {
         let mut indices = std::collections::BTreeMap::new();

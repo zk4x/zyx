@@ -3,22 +3,20 @@
 
 use zyx::{DType, Tape, Tensor, ZyxError};
 
-#[cfg(not(feature = "wgpu"))]
 #[test]
 fn grad_relu_1() -> Result<(), ZyxError> {
     let x = Tensor::from([3, 0, -1]);
-    let _tape = Tape::new();
+    let _tape = Tape::new()?;
     let z = x.relu();
     assert_eq!(z, [3, 0, 0]);
     //println!("{z}");
     Ok(())
 }
 
-#[cfg(not(feature = "wgpu"))]
 #[test]
 fn grad_relu_2() -> Result<(), ZyxError> {
     let x = Tensor::from([3, -2, 0]);
-    let tape = Tape::new();
+    let tape = Tape::new()?;
     let z = x.relu();
     let mut grads = tape.gradient(&z, [&x]);
     let x_grad = grads.pop().unwrap();
@@ -29,7 +27,7 @@ fn grad_relu_2() -> Result<(), ZyxError> {
 #[test]
 fn grad_reciprocal() -> Result<(), ZyxError> {
     let x = Tensor::from([3f32, 2., 4.]);
-    let tape = Tape::new();
+    let tape = Tape::new()?;
     let z = x.reciprocal();
     let mut grads = tape.gradient(&z, [&x]);
     let x_grad = grads.pop().unwrap();
@@ -41,7 +39,7 @@ fn grad_reciprocal() -> Result<(), ZyxError> {
 fn grad_exp2() -> Result<(), ZyxError> {
     let data = vec![1f32, 2., 0.5];
     let x = Tensor::from(data.clone());
-    let tape = Tape::new();
+    let tape = Tape::new()?;
     let y = x.exp2();
     let mut grads = tape.gradient(&y, [&x]);
     let x_grad = grads.pop().unwrap();
@@ -59,7 +57,7 @@ fn grad_reciprocal_2() -> Result<(), ZyxError> {
     let x = Tensor::from([2.0, -1.0, 0.5]);
 
     // Create gradient tape
-    let tape = Tape::new();
+    let tape = Tape::new()?;
 
     // Forward pass: y = 1 / x
     let y = x.reciprocal();
@@ -83,7 +81,7 @@ fn grad_floor() -> Result<(), ZyxError> {
         return Ok(());
     }
     let x = Tensor::from([0.5, 1.5, -0.5, -1.5, 0.1, 0.9, -0.1, -0.9, 2.3, -2.3]);
-    let tape = Tape::new();
+    let tape = Tape::new()?;
     let y = x.floor();
     let mut grads = tape.gradient(&y, [&x]);
     let x_grad = grads.pop().unwrap();
@@ -97,7 +95,7 @@ fn grad_trunc() -> Result<(), ZyxError> {
         return Ok(());
     }
     let x = Tensor::from([0.5, 1.5, -0.5, -1.5, 0.1, 0.9, -0.1, -0.9, 2.3, -2.3]);
-    let tape = Tape::new();
+    let tape = Tape::new()?;
     let y = x.trunc();
     let mut grads = tape.gradient(&y, [&x]);
     let x_grad = grads.pop().unwrap();
@@ -112,7 +110,7 @@ fn grad_pow_2() -> Result<(), ZyxError> {
     let y = Tensor::from([3.0f32, 2.0, 0.5]);
 
     // Forward pass: z = x ^ y
-    let tape = Tape::new();
+    let tape = Tape::new()?;
     let z = x.pow(&y)?;
 
     // Compute gradients
@@ -141,7 +139,6 @@ fn grad_pow_2() -> Result<(), ZyxError> {
     Ok(())
 }
 
-#[cfg(not(feature = "wgpu"))]
 #[test]
 fn grad_pow_3() -> Result<(), ZyxError> {
     if !Tensor::supports(DType::F64).pow() {
@@ -152,7 +149,7 @@ fn grad_pow_3() -> Result<(), ZyxError> {
     let y = Tensor::from([0.7, 1.2, 0.3]);
 
     // Forward pass: z = x ^ y
-    let tape = Tape::new();
+    let tape = Tape::new()?;
     let z = x.pow(&y)?;
 
     // Compute gradients
@@ -187,7 +184,7 @@ fn grad_pow_3() -> Result<(), ZyxError> {
 #[test]
 fn grad_cos_2() -> Result<(), ZyxError> {
     let x = Tensor::from([3f32, 2., 4.]);
-    let tape = Tape::new();
+    let tape = Tape::new()?;
     let z = x.cos();
     let mut grads = tape.gradient(&z, [&x]);
     let x_grad = grads.pop().unwrap();
@@ -200,7 +197,7 @@ fn grad_cos_2() -> Result<(), ZyxError> {
 fn grad_add() -> Result<(), ZyxError> {
     let x = Tensor::from([3, 2, 4]);
     let y = Tensor::from([3, 1, 5]);
-    let tape = Tape::new();
+    let tape = Tape::new()?;
     let z = &x + &y;
     let mut grads = tape.gradient(&z, [&x, &y]);
     let y_grad = grads.pop().unwrap();
@@ -214,7 +211,7 @@ fn grad_add() -> Result<(), ZyxError> {
 fn grad_sub() -> Result<(), ZyxError> {
     let x = Tensor::from([3, 2, 4]);
     let y = Tensor::from([3, 1, 5]);
-    let tape = Tape::new();
+    let tape = Tape::new()?;
     let z = &x - &y;
     let mut grads = tape.gradient(&z, [&x, &y]);
     let y_grad = grads.pop().unwrap();
@@ -228,7 +225,7 @@ fn grad_sub() -> Result<(), ZyxError> {
 fn grad_mul() -> Result<(), ZyxError> {
     let x = Tensor::from([3i32, 2, 4]);
     let y = Tensor::from([3, 1, 5]);
-    let tape = Tape::new();
+    let tape = Tape::new()?;
     let z = &x * &y;
     let mut grads = tape.gradient(&z, [&x, &y]);
     let y_grad = grads.pop().unwrap();
@@ -242,7 +239,7 @@ fn grad_mul() -> Result<(), ZyxError> {
 fn grad_div() -> Result<(), ZyxError> {
     let x = Tensor::from([3f32, 2., 4.]);
     let y = Tensor::from([3f32, 1., 5.]);
-    let tape = Tape::new();
+    let tape = Tape::new()?;
     let z = &x / &y;
     let mut grads = tape.gradient(&z, [&x, &y]);
     let y_grad = grads.pop().unwrap();
@@ -256,7 +253,7 @@ fn grad_div() -> Result<(), ZyxError> {
 fn grad_pow() -> Result<(), ZyxError> {
     let x = Tensor::from([3f32, 2., 4.]);
     let y = Tensor::from([3f32, 1., 5.]);
-    let tape = Tape::new();
+    let tape = Tape::new()?;
     let z = x.pow(&y)?;
     let mut grads = tape.gradient(&z, [&x, &y]);
     let y_grad = grads.pop().unwrap();
@@ -269,7 +266,7 @@ fn grad_pow() -> Result<(), ZyxError> {
 #[test]
 fn grad_reshape() -> Result<(), ZyxError> {
     let x = Tensor::from([[4i32], [3], [1]]);
-    let tape = Tape::new();
+    let tape = Tape::new()?;
     let z = x.reshape([1, 3, 1, 1])?;
     let mut grads = tape.gradient(&z, [&x]);
     let x_grad = grads.pop().unwrap();
@@ -280,7 +277,7 @@ fn grad_reshape() -> Result<(), ZyxError> {
 #[test]
 fn grad_expand_1() -> Result<(), ZyxError> {
     let x = Tensor::from([[4i32], [3], [1]]);
-    let tape = Tape::new();
+    let tape = Tape::new()?;
     let z = x.expand([3, 4])?;
     let mut grads = tape.gradient(&z, [&x]);
     let x_grad = grads.pop().unwrap();
@@ -291,7 +288,7 @@ fn grad_expand_1() -> Result<(), ZyxError> {
 #[test]
 fn grad_expand_2() -> Result<(), ZyxError> {
     let x = Tensor::from([4i32, 3, 1]);
-    let tape = Tape::new();
+    let tape = Tape::new()?;
     let z = x.reshape([3, 1])?.expand([3, 4])?;
     let mut grads = tape.gradient(&z, [&x]);
     let x_grad = grads.pop().unwrap();
@@ -302,7 +299,7 @@ fn grad_expand_2() -> Result<(), ZyxError> {
 #[test]
 fn grad_permute() -> Result<(), ZyxError> {
     let x = Tensor::from([[4i32], [3], [1]]);
-    let tape = Tape::new();
+    let tape = Tape::new()?;
     let z = x.permute([1, 0])?;
     let mut grads = tape.gradient(&z, [&x]);
     let x_grad = grads.pop().unwrap();
@@ -311,16 +308,17 @@ fn grad_permute() -> Result<(), ZyxError> {
 }
 
 #[test]
-fn grad_dot() {
+fn grad_dot() -> Result<(), ZyxError> {
     let x = Tensor::from([2, 3, 1]);
     let y = Tensor::from([2, 3, 1]).reshape([3, 1]).unwrap();
-    let tape = Tape::new();
+    let tape = Tape::new()?;
     let z = x.dot(&y).unwrap();
     let mut grads = tape.gradient(&z, [&x, &y]);
     let y_grad = grads.pop().unwrap();
     let x_grad = grads.pop().unwrap();
     assert_eq!(x_grad, [2, 3, 1]);
     assert_eq!(y_grad, [[2], [3], [1]]);
+    Ok(())
 }
 
 #[test]
@@ -329,7 +327,7 @@ fn grad_linear_1() -> Result<(), ZyxError> {
     let w = Tensor::from([2, 3, 1, 4, 5, 1, 6, 2, 3, 1, 6, 2, 4, 1, 4]).reshape([3, 5])?;
     let b = Tensor::from([4, 1, 5, 7, 6]);
 
-    let tape = Tape::new();
+    let tape = Tape::new()?;
 
     let z = x.matmul(&w)? + &b;
 
@@ -347,7 +345,7 @@ fn grad_linear_1() -> Result<(), ZyxError> {
 fn grad_mse() -> Result<(), ZyxError> {
     let x = Tensor::from([2f32, 3., 1.]);
     let y = Tensor::from([5f32, 1., 1.]);
-    let tape = Tape::new();
+    let tape = Tape::new()?;
     let z = &x - &y;
     let z = &z * &z;
     let mut grads = tape.gradient(&z, [&x, &y]);
@@ -361,7 +359,6 @@ fn grad_mse() -> Result<(), ZyxError> {
     Ok(())
 }
 
-#[cfg(not(feature = "wgpu"))]
 #[test]
 fn grad_linear_2() -> Result<(), ZyxError> {
     let x = Tensor::from([2, 3, 1]);
@@ -372,7 +369,7 @@ fn grad_linear_2() -> Result<(), ZyxError> {
     let w2 = Tensor::from([2, 3, 1, 4, 5, 1, 6, 2, 3, 1, 6, 2, 4, 1, 4, 5, 1, 2, 4, 1]).reshape([5, 4])?;
     let b2 = Tensor::from([4, 1, 5, 7]);
 
-    let tape = Tape::new();
+    let tape = Tape::new()?;
 
     let x = x.matmul(&w1)? + &b1;
     let x = x.relu();
@@ -426,7 +423,7 @@ fn grad_t6() -> Result<(), ZyxError> {
     let x = Tensor::randn([8, 10, 10], DType::F32).unwrap();
     let y = Tensor::uniform([8, 10, 10], -1f32..4f32).unwrap();
     let b = Tensor::zeros([10], DType::F32);
-    let tape = Tape::new();
+    let tape = Tape::new()?;
     let _z = &x + &y;
     let z = x.dot(&y).unwrap() + &b;
     let z = z.gelu(); // TODO there is some numeric instability in gelu
@@ -445,7 +442,7 @@ fn grad_t6() -> Result<(), ZyxError> {
 #[test]
 fn grad_t7() -> Result<(), ZyxError> {
     let x = Tensor::rand([8, 10, 10], DType::F32).unwrap();
-    let tape = Tape::new();
+    let tape = Tape::new()?;
 
     let z = x.sum_all();
 
@@ -461,7 +458,7 @@ fn grad_add_2() -> Result<(), ZyxError> {
     let data = vec![1f32, 2., 3.];
     let x = Tensor::from(data.clone());
     let y = Tensor::from(vec![4f32, 5., 6.]);
-    let tape = Tape::new();
+    let tape = Tape::new()?;
 
     let z = &x + y;
     let mut grads = tape.gradient(&z, [&x]);
@@ -477,7 +474,7 @@ fn grad_sub_2() -> Result<(), ZyxError> {
     let data = vec![1f32, 2., 3.];
     let x = Tensor::from(data.clone());
     let y = Tensor::from(vec![4f32, 5., 6.]);
-    let tape = Tape::new();
+    let tape = Tape::new()?;
 
     let z = &x - y;
     let mut grads = tape.gradient(&z, [&x]);
@@ -494,7 +491,7 @@ fn grad_mul_2() -> Result<(), ZyxError> {
     let x = Tensor::from(data.clone());
     let y_data = vec![4f32, 5., 6.];
     let y = Tensor::from(y_data.clone());
-    let tape = Tape::new();
+    let tape = Tape::new()?;
 
     let z = &x * y;
     let mut grads = tape.gradient(&z, [&x]);
@@ -510,7 +507,7 @@ fn grad_div_2() -> Result<(), ZyxError> {
     let x = Tensor::from(data.clone());
     let y_data = vec![1f32, 2., 3.];
     let y = Tensor::from(y_data.clone());
-    let tape = Tape::new();
+    let tape = Tape::new()?;
 
     let z = &x / y;
     let mut grads = tape.gradient(&z, [&x]);
@@ -526,7 +523,7 @@ fn grad_pow_4() -> Result<(), ZyxError> {
     let data = vec![1f32, 2., 3.];
     let x = Tensor::from(data.clone());
     let y = Tensor::from(vec![2f32; 3]);
-    let tape = Tape::new();
+    let tape = Tape::new()?;
 
     let z = x.pow(&y)?;
     let mut grads = tape.gradient(&z, [&x]);
@@ -541,7 +538,7 @@ fn grad_pow_4() -> Result<(), ZyxError> {
 fn grad_neg() -> Result<(), ZyxError> {
     let data = vec![1f32, -2., 3.];
     let x = Tensor::from(data.clone());
-    let tape = Tape::new();
+    let tape = Tape::new()?;
 
     let y = -&x;
     let mut grads = tape.gradient(&y, [&x]);
@@ -556,7 +553,7 @@ fn grad_neg() -> Result<(), ZyxError> {
 fn grad_log2() -> Result<(), ZyxError> {
     let data = vec![1f32, 2., 4.];
     let x = Tensor::from(data.clone());
-    let tape = Tape::new();
+    let tape = Tape::new()?;
 
     let y = x.log2();
     let mut grads = tape.gradient(&y, [&x]);
@@ -571,7 +568,7 @@ fn grad_log2() -> Result<(), ZyxError> {
 fn grad_ln() -> Result<(), ZyxError> {
     let data = vec![1f32, 2., 4.];
     let x = Tensor::from(data.clone());
-    let tape = Tape::new();
+    let tape = Tape::new()?;
 
     let y = x.ln();
     let mut grads = tape.gradient(&y, [&x]);
@@ -586,7 +583,7 @@ fn grad_ln() -> Result<(), ZyxError> {
 fn grad_reciprocal_3() -> Result<(), ZyxError> {
     let data = vec![1f32, 2., 4.];
     let x = Tensor::from(data.clone());
-    let tape = Tape::new();
+    let tape = Tape::new()?;
 
     let y = x.reciprocal();
     let mut grads = tape.gradient(&y, [&x]);
@@ -601,7 +598,7 @@ fn grad_reciprocal_3() -> Result<(), ZyxError> {
 fn grad_sqrt() -> Result<(), ZyxError> {
     let data = vec![1f32, 4., 9.];
     let x = Tensor::from(data.clone());
-    let tape = Tape::new();
+    let tape = Tape::new()?;
 
     let y = x.sqrt();
     let mut grads = tape.gradient(&y, [&x]);
@@ -616,7 +613,7 @@ fn grad_sqrt() -> Result<(), ZyxError> {
 fn grad_sin() -> Result<(), ZyxError> {
     let data = vec![0f32, 1., 2.];
     let x = Tensor::from(data.clone());
-    let tape = Tape::new();
+    let tape = Tape::new()?;
 
     let y = x.sin();
     let mut grads = tape.gradient(&y, [&x]);
@@ -631,7 +628,7 @@ fn grad_sin() -> Result<(), ZyxError> {
 fn grad_cos() -> Result<(), ZyxError> {
     let data = vec![0f32, 1., 2.];
     let x = Tensor::from(data.clone());
-    let tape = Tape::new();
+    let tape = Tape::new()?;
 
     let y = x.cos();
     let mut grads = tape.gradient(&y, [&x]);
@@ -646,7 +643,7 @@ fn grad_cos() -> Result<(), ZyxError> {
 fn grad_sum() -> Result<(), ZyxError> {
     let data = vec![1f32, 2., 3.];
     let x = Tensor::from(data.clone());
-    let tape = Tape::new();
+    let tape = Tape::new()?;
 
     let y = x.sum_all();
     let mut grads = tape.gradient(&y, [&x]);
@@ -661,7 +658,7 @@ fn grad_sum() -> Result<(), ZyxError> {
 fn grad_max() -> Result<(), ZyxError> {
     let data = vec![1f32, 3., 2.];
     let x = Tensor::from(data.clone());
-    let tape = Tape::new();
+    let tape = Tape::new()?;
 
     let y = x.max_all();
     let mut grads = tape.gradient(&y, [&x]);
@@ -676,7 +673,7 @@ fn grad_max() -> Result<(), ZyxError> {
 fn grad_cmplt_none() -> Result<(), ZyxError> {
     let x = Tensor::from(vec![1f32, 2., 3.]);
     let y = Tensor::from(vec![2f32, 2., 2.]);
-    let tape = Tape::new();
+    let tape = Tape::new()?;
 
     let z = x.cmplt(&y)?;
     let mut grads = tape.gradient(&z, [&x]);
@@ -692,7 +689,7 @@ fn grad_maximum() -> Result<(), ZyxError> {
 
     let x = Tensor::from(x_data.clone());
     let y = Tensor::from(y_data.clone());
-    let tape = Tape::new();
+    let tape = Tape::new()?;
 
     let z = x.maximum(&y)?;
     let mut grads = tape.gradient(&z, [&x]);
@@ -704,8 +701,8 @@ fn grad_maximum() -> Result<(), ZyxError> {
 }
 
 #[test]
-fn grad7() {
-    let tape = Tape::new();
+fn grad7() -> Result<(), ZyxError> {
+    let tape = Tape::new()?;
 
     let x = Tensor::from([[1.0f32, 2.0, 3.0, 4.0]]);
     let w1 = Tensor::from([[1.0f32, 2.0], [3.0, 4.0], [5.0, 6.0], [7.0, 8.0]]);
@@ -740,13 +737,14 @@ fn grad7() {
     println!("d_spike1: {:?}", d_spike1);
 
     drop(tape);
+    Ok(())
 }
 
 #[test]
-fn grad_cmpgt_source() {
+fn grad_cmpgt_source() -> Result<(), ZyxError> {
     // Test gradient when source is INPUT to cmpgt (non-differentiable op)
     // d_loss/dx should be None because cmpgt is non-differentiable
-    let tape = Tape::new();
+    let tape = Tape::new()?;
 
     let x = Tensor::from([1.0f32, 2.0, 3.0]);
     let th = Tensor::from([2.0f32]);
@@ -769,11 +767,12 @@ fn grad_cmpgt_source() {
     assert_eq!(d_w[0], [0f32, 0., 1.]);
 
     drop(tape);
+    Ok(())
 }
 
 #[test]
-fn grad8() {
-    let tape = Tape::new();
+fn grad8() -> Result<(), ZyxError> {
+    let tape = Tape::new()?;
 
     let x = Tensor::from([[1.0f32, 2.0, 3.0, 4.0]]);
     let w1 = Tensor::from([[1.0f32, 2.0], [3.0, 4.0], [5.0, 6.0], [7.0, 8.0]]);
@@ -831,4 +830,5 @@ fn grad8() {
     drop(tape);
 
     println!("All tensors realized successfully");
+    Ok(())
 }
