@@ -13,7 +13,7 @@
 //! model selects the cheapest extraction for kernel compilation.
 
 use crate::{
-    DType, Map,
+    DType, Map, Set,
     backend::ProgramId,
     dtype::Constant,
     kernel::{BOp, DeviceId, UOp},
@@ -140,9 +140,77 @@ pub struct Graph {
     //kernel_map: Map<NodeId, (KernelId, u64)>,
 }
 
+impl Node {
+    fn class_params(&self) -> Vec<ClassId> {
+        match self {
+            Self::Const(_) | Self::Leaf { .. } => vec![],
+            Self::Expand { x, .. } => vec![*x],
+            Self::Permute { x, .. } => vec![*x],
+            Self::Reshape { x, .. } => vec![*x],
+            Self::PadZeros { x, .. } => vec![*x],
+            Self::Reduce { x, .. } => vec![*x],
+            Self::Cast { x, .. } => vec![*x],
+            Self::Unary { x, .. } => vec![*x],
+            Self::Binary { x, y, .. } => vec![*x, *y],
+            Self::ToDevice { x, .. } => vec![*x],
+            Self::Kernel { inputs, outputs, .. } => {
+                let mut deps = inputs.to_vec();
+                deps.extend(outputs.iter().copied());
+                deps
+            }
+        }
+    }
+}
+
 impl Graph {
     pub fn new() -> Self {
         Self { hashcons: Map::default(), nodes: Slab::new(), classes: Slab::new() }
+    }
+
+    pub fn topo_sort_classes(&self, outputs: &[ClassId]) -> Vec<ClassId> {
+        let mut rcs: Map<ClassId, u32> = Map::default();
+        let mut stack: Vec<ClassId> = outputs.to_vec();
+        while let Some(cid) = stack.pop() {
+            rcs.entry(cid).and_modify(|rc| *rc += 1).or_insert_with(|| {
+                let mut deps = Vec::new();
+                for nid in &self.classes[cid].nodes {
+                    for p in self.nodes[*nid].node.class_params() {
+                        if !deps.contains(&p) {
+                            deps.push(p);
+                        }
+                    }
+                }
+                stack.extend(deps);
+                1
+            });
+        }
+
+        let mut order = Vec::new();
+        let mut internal_rcs: Map<ClassId, u32> = Map::default();
+        let mut stack: Vec<ClassId> = outputs.to_vec();
+        while let Some(cid) = stack.pop() {
+            if let Some(&rc) = rcs.get(&cid) {
+                let visited = internal_rcs.entry(cid).and_modify(|c| *c += 1).or_insert(1);
+                if rc == *visited {
+                    order.push(cid);
+                    let mut deps = Vec::new();
+                    for nid in &self.classes[cid].nodes {
+                        for p in self.nodes[*nid].node.class_params() {
+                            if !deps.contains(&p) {
+                                deps.push(p);
+                            }
+                        }
+                    }
+                    stack.extend(deps);
+                }
+            }
+        }
+        order.reverse();
+        order
+    }
+
+    pub fn fill_remaining(&mut self, outputs: &[ClassId]) {
+        let order = self.topo_sort_classes(outputs);
     }
 
     pub fn push(&mut self, node: Node) -> (NodeId, ClassId) {
