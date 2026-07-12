@@ -17,7 +17,7 @@ use crate::{
     backend::ProgramId,
     dtype::Constant,
     kernel::{BOp, DeviceId, UOp},
-    runtime::{KernelId, ShapeId},
+    runtime::ShapeId,
     shape::UAxis,
     slab::{Slab, SlabId},
 };
@@ -135,7 +135,20 @@ pub struct EClass {
 pub struct Graph {
     hashcons: Map<Node, NodeId>,
     nodes: Slab<NodeId, NodeData>,
-    classes: Slab<ClassId, EClass>,
+    pub(crate) classes: Slab<ClassId, EClass>,
     // Node -> Kernel, cost
     //kernel_map: Map<NodeId, (KernelId, u64)>,
+}
+
+impl Graph {
+    pub fn push(&mut self, node: Node) -> (NodeId, ClassId) {
+        if let Some(&nid) = self.hashcons.get(&node) {
+            return (nid, self.nodes[nid].class_of);
+        }
+        let nid = self.nodes.push(NodeData { node: node.clone(), class_of: ClassId::NULL });
+        let cid = self.classes.push(EClass { nodes: vec![nid], shape: ShapeId::NULL, dtype: DType::F32 });
+        self.nodes[nid].class_of = cid;
+        self.hashcons.insert(node, nid);
+        (nid, cid)
+    }
 }
