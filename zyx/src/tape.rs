@@ -86,8 +86,8 @@ impl Tape {
         let mut rt = RT.lock();
         let output_classes: Vec<ClassId> = tensors
             .into_iter()
-            .map(|t| match &rt.tensors[t.id].state {
-                TensorState::Graph { class_id, .. } => *class_id,
+            .map(|t| match rt.tensors[t.id].state {
+                TensorState::Graph { class_id, .. } => class_id,
                 _ => unreachable!("non-graph tensor in realize"),
             })
             .collect();

@@ -13,7 +13,7 @@
 //! model selects the cheapest extraction for kernel compilation.
 
 use crate::{
-    DType, Map, Set,
+    DType, Map,
     backend::ProgramId,
     dtype::Constant,
     kernel::{BOp, DeviceId, UOp},
