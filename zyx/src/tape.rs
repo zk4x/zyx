@@ -29,7 +29,12 @@
 //!   for the full subgraph — just collect the leaf TensorIds and map to their current
 //!   BufferIds.
 
-use crate::{Map, RT, Set, Tensor, ZyxError, graph::Graph, runtime::Runtime, tensor::TensorId};
+use crate::{
+    Map, RT, Set, Tensor, ZyxError,
+    graph::{ClassId, Graph},
+    runtime::{Runtime, TensorState},
+    tensor::TensorId,
+};
 
 /// Non-differentiating tape scope.
 ///
@@ -78,7 +83,18 @@ impl Tape {
     }
 
     pub fn realize<'a>(self, tensors: impl IntoIterator<Item = &'a Tensor>) -> Result<(), ZyxError> {
-        todo!()
+        let mut rt = RT.lock();
+        let output_classes: Vec<ClassId> = tensors
+            .into_iter()
+            .map(|t| match &rt.tensors[t.id].state {
+                TensorState::Graph { class_id, .. } => *class_id,
+                _ => unreachable!("non-graph tensor in realize"),
+            })
+            .collect();
+        if let Some(graph) = &mut rt.graph {
+            graph.fill_remaining(&output_classes);
+        }
+        Ok(())
     }
 
     pub fn realize_all<'a>(self, tensors: impl IntoIterator<Item = &'a Tensor>) -> Result<(), ZyxError> {
