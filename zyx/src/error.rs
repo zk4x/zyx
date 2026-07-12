@@ -22,6 +22,8 @@ pub enum ZyxError {
     BackendError(BackendError),
     /// Failed to launch kernel due to unknown reasons
     KernelLaunchFailure,
+    /// Tried to load a graph tensor without calling realize first
+    GraphTensorNotRealized(Box<str>),
 }
 
 impl ZyxError {
@@ -54,6 +56,12 @@ impl ZyxError {
         write!(e, ", {}:{}:{}", location.file(), location.line(), location.column()).unwrap();
         Self::ParseError(e.into())
     }
+
+    #[track_caller]
+    pub fn graph_tensor_not_realized(tid: impl std::fmt::Display) -> Self {
+        let location = std::panic::Location::caller();
+        Self::GraphTensorNotRealized(format!("tensor {tid} must be realized before loading, at {}:{}:{}", location.file(), location.line(), location.column()).into())
+    }
 }
 
 impl std::fmt::Display for ZyxError {
@@ -69,6 +77,7 @@ impl std::fmt::Display for ZyxError {
             ZyxError::KernelLaunchFailure => f.write_fmt(format_args!(
                 "Multiple kernel variations failed to launch. Could be autotuner issue, but more likely faulty hardware driver."
             )),
+            ZyxError::GraphTensorNotRealized(e) => f.write_str(e),
         }
     }
 }

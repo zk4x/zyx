@@ -860,7 +860,7 @@ impl Runtime {
         let kid = match &self.tensors[x].state {
             TensorState::Eager { kernel_id, .. } => *kernel_id,
             TensorState::Graph { .. } => {
-                todo!("load from graph tensor not yet supported");
+                return Err(ZyxError::graph_tensor_not_realized(x));
             }
         };
 
