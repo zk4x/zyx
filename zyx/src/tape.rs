@@ -111,8 +111,8 @@ impl Tape {
     }
 
     /// Materializes the given graph tensors by compiling and executing the
-    /// subgraph they depend on. The tape is consumed — graph mode ends and all
-    /// output tensors become eager (realized).
+    /// subgraph they depend on. The tape is consumed — graph mode ends and
+    /// all output tensors become realized (buffers allocated).
     pub fn realize<'a>(self, tensors: impl IntoIterator<Item = &'a Tensor>) -> Result<(), ZyxError> {
         let mut rt = RT.lock();
         let output_classes: Vec<ClassId> = tensors
@@ -130,7 +130,7 @@ impl Tape {
 
     /// Materializes ALL graph tensors still alive in the tape scope.
     /// The tape is consumed — graph mode ends and every tracked tensor
-    /// becomes eager (realized). Useful when you need everything computed.
+    /// becomes realized (buffers allocated).
     pub fn realize_all(self) -> Result<(), ZyxError> {
         todo!()
     }
