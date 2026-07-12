@@ -1,15 +1,29 @@
+//! E-graph for tensor operation equivalence and optimization.
+//!
+//! The graph supports rewrites that produce equivalent forms of a computation:
+//! - **CSE** (common subexpression elimination) via hashconsing
+//! - **Algebraic rewrites** like transpose fusion: `transpose(A) @ transpose(B)` ↔ `(B @ A).transpose()`
+//! - **Layout rewrites**: a matmul can be realized as transposed or un-transposed,
+//!   with the transpose either fused into the kernel or materialized as a separate
+//!   pre-processing step
+//! - **Shape rewrites**: reshape and padding can be fused into adjacent ops or
+//!   split out as separate nodes
+//!
+//! Each equivalence class (`EClass`) holds all equivalent node forms. A cost
+//! model selects the cheapest extraction for kernel compilation.
+
 use crate::{
     DType, Map,
     backend::ProgramId,
     dtype::Constant,
     kernel::{BOp, DeviceId, UOp},
     runtime::{KernelId, ShapeId},
-    shape::{Dim, UAxis},
+    shape::UAxis,
     slab::{Slab, SlabId},
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub(crate) struct NodeId(pub u32);
+pub struct NodeId(pub u32);
 
 impl From<usize> for NodeId {
     fn from(v: usize) -> Self {
@@ -31,7 +45,7 @@ impl SlabId for NodeId {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub(crate) struct ClassId(pub u32);
+pub struct ClassId(pub u32);
 
 impl From<usize> for ClassId {
     fn from(v: usize) -> Self {
@@ -53,7 +67,7 @@ impl SlabId for ClassId {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub(crate) enum ENode {
+pub(crate) enum Node {
     Const(Constant),
     Leaf {
         dtype: DType,
@@ -105,20 +119,23 @@ pub(crate) enum ENode {
 }
 
 #[derive(Debug)]
-pub(crate) struct EClass {
+struct NodeData {
+    node: Node,
+    class_of: ClassId,
+}
+
+#[derive(Debug)]
+pub struct EClass {
     pub nodes: Vec<NodeId>,
-    pub parents: Vec<(NodeId, usize)>,
-    pub shape: Box<[Dim]>,
+    pub shape: ShapeId,
     pub dtype: DType,
 }
 
-pub(crate) struct EGraph {
-    nodes: Slab<NodeId, ENode>,
+#[derive(Debug)]
+pub struct Graph {
+    hashcons: Map<Node, NodeId>,
+    nodes: Slab<NodeId, NodeData>,
     classes: Slab<ClassId, EClass>,
-    class_of: Vec<ClassId>,
-    class_parent: Vec<ClassId>,
-    class_rank: Vec<u8>,
-    hashcons: Map<ENode, NodeId>,
     // Node -> Kernel, cost
-    kernel_map: Map<NodeId, (KernelId, u64)>,
+    //kernel_map: Map<NodeId, (KernelId, u64)>,
 }

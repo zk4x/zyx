@@ -25,16 +25,7 @@ use std::{
 use nanoserde::DeJson;
 
 use crate::{
-    DType, DebugMask, Map, Scalar, Set, ZyxError,
-    backend::{AutotuneConfig, BufferId, Config, Device, DeviceInfo, DeviceProgramId, Event, MemoryPool, OpCapability, PoolId},
-    dtype::Constant,
-    error::{BackendError, ErrorStatus},
-    kernel::{BOp, DeviceId, Kernel, MoveOp, Op, OpId, UOp, autotune::OptSeq},
-    rng::Rng,
-    shape::{Dim, UAxis},
-    slab::{Slab, SlabId},
-    tensor::TensorId,
-    view::View,
+    DType, DebugMask, Map, Scalar, Set, ZyxError, backend::{AutotuneConfig, BufferId, Config, Device, DeviceInfo, DeviceProgramId, Event, MemoryPool, OpCapability, PoolId}, dtype::Constant, error::{BackendError, ErrorStatus}, graph::{ClassId, Graph, NodeId}, kernel::{BOp, DeviceId, Kernel, MoveOp, Op, OpId, UOp, autotune::OptSeq}, rng::Rng, shape::{Dim, UAxis}, slab::{Slab, SlabId}, tensor::TensorId, view::View
 };
 
 #[derive(Debug, Copy, Clone, Hash, PartialEq, PartialOrd, Eq, Ord)]
@@ -96,9 +87,20 @@ impl SlabId for KernelId {
 struct TensorData {
     shape_id: ShapeId,
     dtype: DType,
-    kernel_id: KernelId,
-    op_id: OpId,
-    pending_store: bool,
+    state: TensorState,
+}
+
+#[derive(Debug)]
+enum TensorState {
+    Eager {
+        kernel_id: KernelId,
+        op_id: OpId,
+        pending_store: bool,
+    },
+    Graph {
+        node_id: NodeId,
+        class_id: ClassId,
+    }
 }
 
 #[derive(Debug)]
@@ -113,6 +115,7 @@ struct KernelData {
 }
 
 pub struct Runtime {
+    graph: Option<Graph>,
     shape_map: Map<Vec<Dim>, ShapeId>,
     shapes: Slab<ShapeId, Vec<Dim>>,
     tensors: Slab<TensorId, TensorData>,
@@ -137,6 +140,7 @@ pub struct Runtime {
 impl Runtime {
     pub const fn new() -> Self {
         Runtime {
+            graph: None,
             shape_map: Map::with_hasher(BuildHasherDefault::new()),
             shapes: Slab::new(),
             tensors: Slab::new(),
@@ -308,15 +312,19 @@ impl Runtime {
     pub fn cast(&mut self, x: TensorId, dtype: DType) -> TensorId {
         #[cfg(feature = "debug_tensor_op")]
         println!("runtime::cast(x={x}, dtype={dtype:?})");
-        let shape_id = self.tensors[x].shape_id;
-        let kernel_id = self.tensors[x].kernel_id;
-        let op_id = self.tensors[x].op_id;
-        let op_id = self.kernels[kernel_id].kernel.cast(op_id, dtype);
-        let tid = self.tensors.push(TensorData { shape_id, dtype, kernel_id, op_id, pending_store: false });
-        self.kernels[kernel_id].outputs.push(tid);
-        #[cfg(feature = "debug_tensor_op")]
-        println!("  -> tid={tid}, kid={kernel_id:?}, op_id={op_id:?}");
-        tid
+        if let Some(graph) = &self.graph {
+            self.graph.push()
+        } else {
+            let shape_id = self.tensors[x].shape_id;
+            let kernel_id = self.tensors[x].kernel_id;
+            let op_id = self.tensors[x].op_id;
+            let op_id = self.kernels[kernel_id].kernel.cast(op_id, dtype);
+            let tid = self.tensors.push(TensorData { shape_id, dtype, kernel_id, op_id, pending_store: false });
+            self.kernels[kernel_id].outputs.push(tid);
+            #[cfg(feature = "debug_tensor_op")]
+            println!("  -> tid={tid}, kid={kernel_id:?}, op_id={op_id:?}");
+            tid
+        }
     }
 
     pub fn bitcast(&mut self, x: TensorId, dtype: DType) -> TensorId {
