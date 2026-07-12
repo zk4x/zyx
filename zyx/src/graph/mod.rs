@@ -266,17 +266,7 @@ impl Graph {
         let mut visited: Map<ClassId, (EKernelId, OpId)> = Map::default();
 
         for &cid in &order {
-            if visited.contains_key(&cid) {
-                continue;
-            }
-
-            let has_non_kernel = self.classes[cid]
-                .nodes
-                .iter()
-                .any(|&nid| !matches!(self.nodes[nid].node, Node::Kernel { .. }));
-            if !has_non_kernel {
-                continue;
-            }
+            debug_assert!(!visited.contains_key(&cid), "class {cid:?} already visited");
 
             // If this class is in pending_stores (realized), create a load kernel.
             if pending_stores.contains(&cid) {
@@ -289,16 +279,7 @@ impl Graph {
                 continue;
             }
 
-            // Pick the first non-Kernel enode (all are equivalent in a class).
-            let nid = match self.classes[cid]
-                .nodes
-                .iter()
-                .copied()
-                .find(|&nid| !matches!(self.nodes[nid].node, Node::Kernel { .. }))
-            {
-                Some(nid) => nid,
-                None => continue,
-            };
+            let nid = self.classes[cid].nodes[0];
             let node = &self.nodes[nid].node;
 
             match node {
