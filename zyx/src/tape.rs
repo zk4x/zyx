@@ -129,6 +129,7 @@ impl Tape {
         if let Some(graph) = &mut rt.graph {
             graph.fill_remaining(&output_classes, unsafe { &*shapes_ptr });
         }
+        rt.autotune_all_kernels()?;
         Ok(())
     }
 

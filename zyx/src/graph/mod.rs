@@ -13,7 +13,7 @@
 //! model selects the cheapest extraction for kernel compilation.
 
 use crate::{
-    DType, Map, Set,
+    DType, Map, Set, ZyxError,
     backend::ProgramId,
     dtype::Constant,
     kernel::{BOp, DeviceId, Kernel, MoveOp, Op, OpId, UOp},
@@ -167,6 +167,7 @@ pub struct Graph {
     nodes: Slab<NodeId, NodeData>,
     pub(crate) classes: Slab<ClassId, EClass>,
     pub(crate) ekernels: Slab<EKernelId, EKernelData>,
+    pub(crate) kernel_map: Map<NodeId, EKernelId>,
 }
 
 impl Node {
@@ -193,7 +194,13 @@ impl Node {
 
 impl Graph {
     pub fn new() -> Self {
-        Self { hashcons: Map::default(), nodes: Slab::new(), classes: Slab::new(), ekernels: Slab::new() }
+        Self {
+            hashcons: Map::default(),
+            nodes: Slab::new(),
+            classes: Slab::new(),
+            ekernels: Slab::new(),
+            kernel_map: Map::default(),
+        }
     }
 
     pub fn topo_sort_classes(&self, outputs: &[ClassId]) -> Vec<ClassId> {
@@ -524,16 +531,19 @@ impl Graph {
             let output_set: Set<ClassId> = output_cids.iter().copied().collect();
             input_cids.retain(|c| !output_set.contains(c));
 
-            let inputs: Box<[ClassId]> = input_cids.into_boxed_slice();
-            let outputs_box: Box<[ClassId]> = output_cids.clone().into_boxed_slice();
-            let kernel_node = Node::Kernel { inputs, outputs: outputs_box, program_id: ProgramId::NULL };
-
+            let kind = Node::Kernel {
+                inputs: input_cids.into_boxed_slice(),
+                outputs: output_cids.clone().into_boxed_slice(),
+                program_id: ProgramId::NULL,
+            };
+            let knid = self.nodes.push(NodeData { node: kind, class_of: cid });
             for &ocid in &output_cids {
-                self.add_equivalence(kernel_node.clone(), ocid);
+                self.classes[ocid].nodes.push(knid);
             }
             if !output_cids.contains(&cid) {
-                self.add_equivalence(kernel_node, cid);
+                self.classes[cid].nodes.push(knid);
             }
+            self.kernel_map.insert(knid, kid);
         }
     }
 
@@ -914,5 +924,44 @@ impl Graph {
             self.ekernels[kid].outputs.push(cid);
         }
         visited.insert(cid, (kid, result_op));
+    }
+}
+
+impl crate::runtime::Runtime {
+    pub fn autotune_all_kernels(&mut self) -> Result<(), ZyxError> {
+        let kernel_data: Vec<(NodeId, Kernel)> = if let Some(ref graph) = self.graph {
+            let mut v = Vec::new();
+            for cid in graph.classes.ids() {
+                for &nid in &graph.classes[cid].nodes {
+                    if matches!(&graph.nodes[nid].node, Node::Kernel { .. }) {
+                        if let Some(&kid) = graph.kernel_map.get(&nid) {
+                            v.push((nid, graph.ekernels[kid].kernel.clone()));
+                        }
+                    }
+                }
+            }
+            v
+        } else {
+            Vec::new()
+        };
+
+        for (nid, kernel) in &kernel_data {
+            let (flop, read, write) = kernel.flop_mem_rw();
+            let device_ids: Vec<DeviceId> = self.devices.ids().collect();
+            for &dev_id in &device_ids {
+                let pool_id = self.devices[dev_id].memory_pool_id();
+                let (dev_prog, _timing) = self.get_or_autotune(
+                    kernel.clone(), dev_id, pool_id, flop, read, write,
+                )?;
+                let prog = ProgramId { device: dev_id, program: dev_prog };
+                if let Some(ref mut graph) = self.graph {
+                    if let Node::Kernel { program_id, .. } = &mut graph.nodes[*nid].node {
+                        *program_id = prog;
+                    }
+                }
+            }
+        }
+
+        Ok(())
     }
 }
