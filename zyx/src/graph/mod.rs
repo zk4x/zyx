@@ -388,9 +388,12 @@ impl Graph {
             let dtype_str = format!("{:?}", &class.dtype);
             println!("Class {:?} shape={} dtype={}", cid, shape_str, dtype_str);
             for &nid in &class.nodes {
-                let node = &self.nodes[nid].node;
-                let inputs = node.class_params();
-                let name = match node {
+                let kind = &self.nodes[nid].node;
+                let inputs: Vec<ClassId> = match kind {
+                    Node::Kernel { inputs, .. } => inputs.to_vec(),
+                    _ => kind.class_params(),
+                };
+                let name = match kind {
                     Node::Reduce { bop, .. } => format!("Reduce {:?}", bop),
                     Node::Binary { bop, .. } => format!("Binary {:?}", bop),
                     Node::Unary { uop, .. } => format!("Unary {:?}", uop),
@@ -398,11 +401,11 @@ impl Graph {
                     Node::Kernel { program_id, .. } => format!("Kernel prog={:?}", program_id),
                     Node::Expand { .. } => "Expand".into(),
                     Node::Permute { axes, .. } => format!("Permute {:?}", axes),
-                    Node::Reshape { .. } => "Reshape".into(),
-                    Node::PadZeros { .. } => "Pad".into(),
+                    Node::Reshape { shape, .. } => format!("Reshape {:?}", shapes[*shape]),
+                    Node::PadZeros { padding, .. } => format!("Pad {:?}", padding),
                     Node::ToDevice { device, .. } => format!("ToDevice {:?}", device),
                     Node::Const(v) => format!("Const {:?}", v),
-                    Node::Leaf { .. } => "Leaf".into(),
+                    Node::Leaf { dtype, .. } => format!("Leaf {:?}", dtype),
                 };
                 println!("  {name} {nid:?}: inputs={inputs:?}");
             }
