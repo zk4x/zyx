@@ -58,16 +58,18 @@ impl Tape {
         let tids: Vec<TensorId> = rt.tensors.iter().map(|(id, _)| id).collect();
 
         // Realize any eager tensors that don't have buffers yet.
-        let mut to_realize: Vec<TensorId> = Vec::new();
+        // Follow the pattern from Runtime::load: collect all outputs of
+        // the tensor's kernel into a deduplicated Set, then add_store each.
+        let mut seen: Set<TensorId> = Set::default();
         for tid in &tids {
             if rt.buffer_map.contains_key(tid) {
                 continue;
             }
             if let TensorState::Eager { kernel_id, .. } = rt.tensors[*tid].state {
-                to_realize.extend(rt.kernels[kernel_id].outputs.iter().copied());
+                seen.extend(rt.kernels[kernel_id].outputs.iter().copied());
             }
         }
-        for tid in to_realize {
+        for tid in seen {
             rt.add_store(tid).unwrap();
         }
 
