@@ -31,8 +31,8 @@
 
 use crate::{
     Map, RT, Set, Tensor, ZyxError,
-    graph::{ClassId, Graph},
-    runtime::{Runtime, TensorState},
+    graph::{ClassId, Graph, Node},
+    runtime::{Runtime, ShapeId, TensorState},
     tensor::TensorId,
 };
 
@@ -53,7 +53,19 @@ impl Tape {
     /// enable graph caching across structurally identical iterations.
     pub fn new() -> Tape {
         let mut rt = RT.lock();
-        rt.graph = Some(Graph::new());
+        let mut graph = Graph::new();
+
+        // Promote all existing tensors to graph Leaf nodes so ops inside the tape
+        // can reference them without hitting eager-to-graph conversion panics.
+        let tids: Vec<TensorId> = rt.tensors.iter().map(|(id, _)| id).collect();
+        for tid in tids {
+            let shape_id = rt.tensors[tid].shape_id;
+            let dtype = rt.tensors[tid].dtype;
+            let (node_id, class_id) = graph.push(Node::Leaf { dtype, shape: shape_id });
+            rt.tensors[tid].state = TensorState::Graph { node_id, class_id };
+        }
+
+        rt.graph = Some(graph);
         Tape {}
     }
 }
@@ -108,11 +120,12 @@ impl Tape {
 impl Drop for Tape {
     fn drop(&mut self) {
         //RT.lock().drop_gradient_tape();
-        if let Ok(mut rt) = RT.try_lock() {
+        /*if let Ok(mut rt) = RT.try_lock() {
             todo!();
         } else {
             println!("Warning: Unable to drop GradientTape due to runtime mutex lock.");
-        }
+        }*/
+        // TODO
     }
 }
 
