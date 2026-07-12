@@ -221,7 +221,11 @@ pub(super) fn initialize_device(
     };
 
     // Prefer the system CUDA toolkit include path (compatible with the installed nvrtc).
-    let include_paths = ["/usr/include", "/usr/local/cuda/include"];
+    let include_paths = [
+        "/usr/include",
+        "/usr/local/cuda/include",
+        "/opt/cuda/targets/x86_64-linux/include",
+    ];
     let mut include_path: Option<PathBuf> = None;
     for path in include_paths {
         let mut path_buf = PathBuf::from(path);
