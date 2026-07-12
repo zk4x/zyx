@@ -29,7 +29,7 @@
 //!   for the full subgraph — just collect the leaf TensorIds and map to their current
 //!   BufferIds.
 
-use crate::{Map, RT, Set, Tensor, ZyxError, runtime::Runtime, tensor::TensorId};
+use crate::{Map, RT, Set, Tensor, ZyxError, graph::Graph, runtime::Runtime, tensor::TensorId};
 
 /// Non-differentiating tape scope.
 ///
@@ -47,13 +47,8 @@ impl Tape {
     /// Use this around inference loops to batch-realize outputs and
     /// enable graph caching across structurally identical iterations.
     pub fn new() -> Tape {
-        /*let mut rt = RT.lock();
-        rt.graph.tape_rc += 1;
-        if rt.graph.tape.is_some() {
-            return Tape {};
-        }
-        rt.graph.tape = Some(Set::with_capacity_and_hasher(100, Default::default()));
-        drop(rt);*/
+        let mut rt = RT.lock();
+        rt.graph = Some(Graph::new());
         Tape {}
     }
 }

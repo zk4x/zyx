@@ -115,7 +115,7 @@ struct KernelData {
 }
 
 pub struct Runtime {
-    graph: Option<Graph>,
+    pub(crate) graph: Option<Graph>,
     shape_map: Map<Vec<Dim>, ShapeId>,
     shapes: Slab<ShapeId, Vec<Dim>>,
     tensors: Slab<TensorId, TensorData>,

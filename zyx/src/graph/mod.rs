@@ -141,6 +141,10 @@ pub struct Graph {
 }
 
 impl Graph {
+    pub fn new() -> Self {
+        Self { hashcons: Map::default(), nodes: Slab::new(), classes: Slab::new() }
+    }
+
     pub fn push(&mut self, node: Node) -> (NodeId, ClassId) {
         if let Some(&nid) = self.hashcons.get(&node) {
             return (nid, self.nodes[nid].class_of);
