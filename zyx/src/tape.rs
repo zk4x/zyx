@@ -55,9 +55,23 @@ impl Tape {
         let mut rt = RT.lock();
         let mut graph = Graph::new();
 
-        // Promote all existing tensors to graph Leaf nodes so ops inside the tape
-        // can reference them without hitting eager-to-graph conversion panics.
         let tids: Vec<TensorId> = rt.tensors.iter().map(|(id, _)| id).collect();
+
+        // Realize any eager tensors that don't have buffers yet.
+        let mut to_realize: Vec<TensorId> = Vec::new();
+        for tid in &tids {
+            if rt.buffer_map.contains_key(tid) {
+                continue;
+            }
+            if let TensorState::Eager { kernel_id, .. } = rt.tensors[*tid].state {
+                to_realize.extend(rt.kernels[kernel_id].outputs.iter().copied());
+            }
+        }
+        for tid in to_realize {
+            rt.add_store(tid).unwrap();
+        }
+
+        // Promote all existing tensors to graph Leaf nodes.
         for tid in tids {
             let shape_id = rt.tensors[tid].shape_id;
             let dtype = rt.tensors[tid].dtype;

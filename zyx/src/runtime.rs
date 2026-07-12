@@ -114,22 +114,22 @@ pub enum TensorState {
 }
 
 #[derive(Debug)]
-struct KernelData {
+pub(crate) struct KernelData {
     /// Tensor reference count. Each entry is a tensor this kernel must produce.
     /// When a tensor is consumed as input to a new op within the same kernel,
     /// it is removed from outputs (since the kernel produces the new op's result instead).
-    outputs: Vec<TensorId>,
+    pub(crate) outputs: Vec<TensorId>,
     loads: Vec<TensorId>,
     stores: Vec<TensorId>,
     kernel: Kernel,
 }
 
 pub struct Runtime {
-    pub(crate) graph: Option<Graph>,
+    pub graph: Option<Graph>,
     shape_map: Map<Vec<Dim>, ShapeId>,
     shapes: Slab<ShapeId, Vec<Dim>>,
     pub tensors: Slab<TensorId, TensorData>,
-    kernels: Slab<KernelId, KernelData>,
+    pub kernels: Slab<KernelId, KernelData>,
     kernel_map: Map<Kernel, KernelId>,
     optimizations: Map<(KernelId, DeviceInfoId), OptSeq>,
     device_infos: Map<DeviceInfo, DeviceInfoId>,
@@ -138,8 +138,8 @@ pub struct Runtime {
     // Pool 0 is always host, pool 1 is disk if disk is present
     pools: Slab<PoolId, MemoryPool>,
     config_dir: Option<PathBuf>,
-    buffer_map: Map<TensorId, BufferId>,
-    events: Map<BTreeSet<BufferId>, Event>,
+    pub buffer_map: Map<TensorId, BufferId>,
+    pub events: Map<BTreeSet<BufferId>, Event>,
     pub rng: Rng,
     autotune_config: AutotuneConfig,
     pub implicit_casts: bool,
@@ -1077,7 +1077,7 @@ impl Runtime {
         Ok((kid, op_id))
     }
 
-    fn add_store(&mut self, x: TensorId) -> Result<(), ZyxError> {
+    pub fn add_store(&mut self, x: TensorId) -> Result<(), ZyxError> {
         let (kid, op_id, pending_store) = match &self.tensors[x].state {
             TensorState::Eager { kernel_id, op_id, pending_store, .. } => (*kernel_id, *op_id, *pending_store),
             TensorState::Graph { .. } => unreachable!("add_store in graph mode"),
