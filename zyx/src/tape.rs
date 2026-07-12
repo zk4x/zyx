@@ -32,7 +32,7 @@
 use crate::{
     Map, RT, Set, Tensor, ZyxError,
     graph::{ClassId, Graph, Node},
-    runtime::{Runtime, ShapeId, TensorState},
+    runtime::{Runtime, TensorState},
     tensor::TensorId,
 };
 
@@ -51,7 +51,7 @@ impl Tape {
     /// Tensors created inside this scope are traced and realized on drop.
     /// Use this around inference loops to batch-realize outputs and
     /// enable graph caching across structurally identical iterations.
-    pub fn new() -> Tape {
+    pub fn new() -> Result<Tape, ZyxError> {
         let mut rt = RT.lock();
         let mut graph = Graph::new();
 
@@ -70,7 +70,7 @@ impl Tape {
             }
         }
         for tid in seen {
-            rt.add_store(tid).unwrap();
+            rt.add_store(tid)?;
         }
 
         // Promote all existing tensors to graph Leaf nodes.
@@ -82,7 +82,7 @@ impl Tape {
         }
 
         rt.graph = Some(graph);
-        Tape {}
+        Ok(Tape {})
     }
 }
 
@@ -128,7 +128,10 @@ impl Tape {
         Ok(())
     }
 
-    pub fn realize_all<'a>(self, tensors: impl IntoIterator<Item = &'a Tensor>) -> Result<(), ZyxError> {
+    /// Materializes ALL graph tensors still alive in the tape scope.
+    /// The tape is consumed — graph mode ends and every tracked tensor
+    /// becomes eager (realized). Useful when you need everything computed.
+    pub fn realize_all(self) -> Result<(), ZyxError> {
         todo!()
     }
 }
