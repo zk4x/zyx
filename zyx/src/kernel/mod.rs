@@ -92,12 +92,11 @@ pub use crate::backend::DeviceId;
 use crate::view::View;
 
 use crate::{
-    DType, Map, Set,
+    DType, Map,
     dtype::Constant,
     runtime::KernelId,
     shape::{Dim, UAxis},
     slab::{Slab, SlabId},
-    tensor::TensorId,
 };
 use nanoserde::{DeBin, SerBin};
 use std::{fmt::Display, hash::BuildHasherDefault, hash::Hash};

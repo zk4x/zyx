@@ -127,7 +127,7 @@ pub(crate) struct KernelData {
 pub struct Runtime {
     pub graph: Option<Graph>,
     shape_map: Map<Vec<Dim>, ShapeId>,
-    shapes: Slab<ShapeId, Vec<Dim>>,
+    pub shapes: Slab<ShapeId, Vec<Dim>>,
     pub tensors: Slab<TensorId, TensorData>,
     pub kernels: Slab<KernelId, KernelData>,
     kernel_map: Map<Kernel, KernelId>,
@@ -340,9 +340,7 @@ impl Runtime {
                 TensorState::Graph { class_id, .. } => *class_id,
                 _ => unreachable!("non-graph tensor in graph mode"),
             };
-            let (node_id, class_id) = graph.push(Node::Cast { x: x_class_id, dtype });
-            graph.classes[class_id].shape = shape_id;
-            graph.classes[class_id].dtype = dtype;
+            let (node_id, class_id) = graph.push(Node::Cast { x: x_class_id, dtype }, shape_id, dtype);
             let tid = self.tensors.push(TensorData { shape_id, dtype, state: TensorState::Graph { node_id, class_id } });
             #[cfg(feature = "debug_tensor_op")]
             println!("  -> tid={tid}, nid={node_id:?}, cid={class_id:?}");
@@ -374,9 +372,7 @@ impl Runtime {
                 TensorState::Graph { class_id, .. } => *class_id,
                 _ => unreachable!("non-graph tensor in graph mode"),
             };
-            let (node_id, class_id) = graph.push(Node::Cast { x: x_class_id, dtype });
-            graph.classes[class_id].shape = shape_id;
-            graph.classes[class_id].dtype = dtype;
+            let (node_id, class_id) = graph.push(Node::Cast { x: x_class_id, dtype }, shape_id, dtype);
             let tid = self.tensors.push(TensorData { shape_id, dtype, state: TensorState::Graph { node_id, class_id } });
             #[cfg(feature = "debug_tensor_op")]
             println!("  -> tid={tid}, nid={node_id:?}, cid={class_id:?}");
@@ -409,9 +405,8 @@ impl Runtime {
                 TensorState::Graph { class_id, .. } => *class_id,
                 _ => unreachable!("non-graph tensor in graph mode"),
             };
-            let (node_id, class_id) = graph.push(Node::Unary { x: x_class_id, uop });
-            graph.classes[class_id].shape = shape_id;
-            graph.classes[class_id].dtype = dtype;
+            let (node_id, class_id) = graph.push(Node::Unary { x: x_class_id, uop }, shape_id, dtype);
+
             let tid = self.tensors.push(TensorData { shape_id, dtype, state: TensorState::Graph { node_id, class_id } });
             #[cfg(feature = "debug_tensor_op")]
             println!("  -> tid={tid}, nid={node_id:?}, cid={class_id:?}");
@@ -452,9 +447,8 @@ impl Runtime {
                 TensorState::Graph { class_id, .. } => *class_id,
                 _ => unreachable!("non-graph tensor in graph mode"),
             };
-            let (node_id, class_id) = graph.push(Node::Binary { x: x_class_id, y: y_class_id, bop });
-            graph.classes[class_id].shape = shape_id;
-            graph.classes[class_id].dtype = dtype;
+            let (node_id, class_id) = graph.push(Node::Binary { x: x_class_id, y: y_class_id, bop }, shape_id, dtype);
+
             let tid = self.tensors.push(TensorData { shape_id, dtype, state: TensorState::Graph { node_id, class_id } });
             #[cfg(feature = "debug_tensor_op")]
             println!("  -> tid={tid}, nid={node_id:?}, cid={class_id:?}");
@@ -566,9 +560,9 @@ impl Runtime {
                 TensorState::Graph { class_id, .. } => *class_id,
                 _ => unreachable!("non-graph tensor in graph mode"),
             };
-            let (node_id, class_id) = graph.push(Node::Reduce { x: x_class_id, bop: rop, axes: axes.into_boxed_slice() });
-            graph.classes[class_id].shape = shape_id;
-            graph.classes[class_id].dtype = dtype;
+            let (node_id, class_id) =
+                graph.push(Node::Reduce { x: x_class_id, bop: rop, axes: axes.into_boxed_slice() }, shape_id, dtype);
+
             let tid = self.tensors.push(TensorData { shape_id, dtype, state: TensorState::Graph { node_id, class_id } });
             #[cfg(feature = "debug_tensor_op")]
             println!("  -> tid={tid}, nid={node_id:?}, cid={class_id:?}");
@@ -633,9 +627,8 @@ impl Runtime {
                 TensorState::Graph { class_id, .. } => *class_id,
                 _ => unreachable!("non-graph tensor in graph mode"),
             };
-            let (node_id, class_id) = graph.push(Node::Reshape { x: x_class_id, shape: shape_id });
-            graph.classes[class_id].shape = shape_id;
-            graph.classes[class_id].dtype = dtype;
+            let (node_id, class_id) = graph.push(Node::Reshape { x: x_class_id, shape: shape_id }, shape_id, dtype);
+
             let tid = self.tensors.push(TensorData { shape_id, dtype, state: TensorState::Graph { node_id, class_id } });
             #[cfg(feature = "debug_tensor_op")]
             println!("  -> tid={tid}, nid={node_id:?}, cid={class_id:?}");
@@ -703,9 +696,8 @@ impl Runtime {
                 TensorState::Graph { class_id, .. } => *class_id,
                 _ => unreachable!("non-graph tensor in graph mode"),
             };
-            let (node_id, class_id) = graph.push(Node::Expand { x: x_class_id, shape: shape_id });
-            graph.classes[class_id].shape = shape_id;
-            graph.classes[class_id].dtype = dtype;
+            let (node_id, class_id) = graph.push(Node::Expand { x: x_class_id, shape: shape_id }, shape_id, dtype);
+
             let tid = self.tensors.push(TensorData { shape_id, dtype, state: TensorState::Graph { node_id, class_id } });
             #[cfg(feature = "debug_tensor_op")]
             println!("  -> tid={tid}, nid={node_id:?}, cid={class_id:?}");
@@ -747,9 +739,8 @@ impl Runtime {
                 TensorState::Graph { class_id, .. } => *class_id,
                 _ => unreachable!("non-graph tensor in graph mode"),
             };
-            let (node_id, class_id) = graph.push(Node::Permute { x: x_class_id, axes: axes.into_boxed_slice() });
-            graph.classes[class_id].shape = shape_id;
-            graph.classes[class_id].dtype = dtype;
+            let (node_id, class_id) = graph.push(Node::Permute { x: x_class_id, axes: axes.into_boxed_slice() }, shape_id, dtype);
+
             let tid = self.tensors.push(TensorData { shape_id, dtype, state: TensorState::Graph { node_id, class_id } });
             #[cfg(feature = "debug_tensor_op")]
             println!("  -> tid={tid}, nid={node_id:?}, cid={class_id:?}");
@@ -789,9 +780,9 @@ impl Runtime {
                 TensorState::Graph { class_id, .. } => *class_id,
                 _ => unreachable!("non-graph tensor in graph mode"),
             };
-            let (node_id, class_id) = graph.push(Node::PadZeros { x: x_class_id, padding: padding.into_boxed_slice() });
-            graph.classes[class_id].shape = shape_id;
-            graph.classes[class_id].dtype = dtype;
+            let (node_id, class_id) =
+                graph.push(Node::PadZeros { x: x_class_id, padding: padding.into_boxed_slice() }, shape_id, dtype);
+
             let tid = self.tensors.push(TensorData { shape_id, dtype, state: TensorState::Graph { node_id, class_id } });
             #[cfg(feature = "debug_tensor_op")]
             println!("  -> tid={tid}, nid={node_id:?}, cid={class_id:?}");

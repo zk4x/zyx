@@ -32,7 +32,9 @@
 use crate::{
     Map, RT, Set, Tensor, ZyxError,
     graph::{ClassId, Graph, Node},
-    runtime::{Runtime, TensorState},
+    runtime::{Runtime, ShapeId, TensorState},
+    shape::Dim,
+    slab::Slab,
     tensor::TensorId,
 };
 
@@ -77,7 +79,7 @@ impl Tape {
         for tid in tids {
             let shape_id = rt.tensors[tid].shape_id;
             let dtype = rt.tensors[tid].dtype;
-            let (node_id, class_id) = graph.push(Node::Leaf { dtype, shape: shape_id });
+            let (node_id, class_id) = graph.push(Node::Leaf { dtype, shape: shape_id }, shape_id, dtype);
             rt.tensors[tid].state = TensorState::Graph { node_id, class_id };
         }
 
@@ -122,8 +124,10 @@ impl Tape {
                 _ => unreachable!("non-graph tensor in realize"),
             })
             .collect();
+        // SAFETY: graph and shapes are separate fields of Runtime, no aliasing, rust is stupid
+        let shapes_ptr = &rt.shapes as *const Slab<ShapeId, Vec<Dim>>;
         if let Some(graph) = &mut rt.graph {
-            graph.fill_remaining(&output_classes);
+            graph.fill_remaining(&output_classes, unsafe { &*shapes_ptr });
         }
         Ok(())
     }
