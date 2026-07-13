@@ -297,6 +297,7 @@ fn b_sftmx2() -> Result<(), ZyxError> {
     let x = Tensor::rand([1, 320], DType::F32)?;
     let y = x.sum([-1])?;
     let y = y.expand(1024)?;
+    assert_eq!(y.shape(), &[1024]);
     Ok(())
 }
 
@@ -418,7 +419,8 @@ fn embedding_test() -> Result<(), ZyxError> {
         .expand([b_size, s, vocab_size, 1u64])?;
     let w = weight.reshape([1u64, 1u64, vocab_size, embed_size])?.expand([b_size, s, vocab_size, embed_size])?;
     let one_hot = arange.equal(&idx)?.cast(DType::F32);
-    let result = (one_hot * w).sum([2])?;
+    let result: Vec<f32> = (one_hot * w).sum([2])?.try_into()?;
+    assert_eq!(result, vec![1.0, 2.0, 3.0, 4.0]);
     Ok(())
 }
 
