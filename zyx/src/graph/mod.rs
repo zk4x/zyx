@@ -17,7 +17,7 @@ use crate::{
     backend::ProgramId,
     dtype::Constant,
     kernel::{BOp, DeviceId, Kernel, MoveOp, Op, OpId, UOp},
-    runtime::ShapeId,
+    runtime::{Runtime, ShapeId},
     shape::{Dim, UAxis},
     slab::{Slab, SlabId},
     view::View,
@@ -263,12 +263,7 @@ impl Graph {
         let mut pending_stores: Set<ClassId> = self
             .classes
             .ids()
-            .filter(|&cid| {
-                self.classes[cid]
-                    .nodes
-                    .iter()
-                    .any(|&nid| matches!(&self.nodes[nid].node, Node::Leaf { .. }))
-            })
+            .filter(|&cid| self.classes[cid].nodes.iter().any(|&nid| matches!(&self.nodes[nid].node, Node::Leaf { .. })))
             .collect();
         let mut visited: Map<ClassId, (EKernelId, OpId)> = Map::default();
 
@@ -294,12 +289,8 @@ impl Graph {
                 Node::Const(c) => {
                     let mut kernel = Kernel::new(DeviceId::AUTO);
                     let result_op = kernel.push_back(Op::ConstView(Box::new((*c, View::contiguous(&[1])))));
-                    let kid = self.ekernels.push(EKernelData {
-                        kernel,
-                        outputs: Vec::new(),
-                        loads: Vec::new(),
-                        stores: Vec::new(),
-                    });
+                    let kid =
+                        self.ekernels.push(EKernelData { kernel, outputs: Vec::new(), loads: Vec::new(), stores: Vec::new() });
                     let n_consumers = rcs.get(&cid).copied().unwrap_or(0) as usize;
                     for _ in 0..n_consumers {
                         self.ekernels[kid].outputs.push(cid);
@@ -368,12 +359,8 @@ impl Graph {
             if !self.ekernels.contains_key(kid) {
                 continue;
             }
-            let remaining: Vec<ClassId> = self.ekernels[kid]
-                .outputs
-                .iter()
-                .copied()
-                .filter(|&c| output_set.contains(&c))
-                .collect();
+            let remaining: Vec<ClassId> =
+                self.ekernels[kid].outputs.iter().copied().filter(|&c| output_set.contains(&c)).collect();
             for &cid in &remaining {
                 if let Some(&(_, op_id)) = visited.get(&cid) {
                     self.add_store(cid, kid, op_id, &mut visited, &mut pending_stores);
@@ -444,10 +431,7 @@ impl Graph {
     fn new_load_kernel(&mut self, cid: ClassId, shapes: &Slab<ShapeId, Vec<Dim>>) -> EKernelId {
         let mut kernel = Kernel::new(DeviceId::AUTO);
         let shape: Vec<Dim> = shapes[self.classes[cid].shape].clone();
-        let is_const = self.classes[cid]
-            .nodes
-            .iter()
-            .any(|&nid| matches!(&self.nodes[nid].node, Node::Const(_)));
+        let is_const = self.classes[cid].nodes.iter().any(|&nid| matches!(&self.nodes[nid].node, Node::Const(_)));
         if is_const {
             let value = self.classes[cid]
                 .nodes
@@ -547,14 +531,8 @@ impl Graph {
         }
     }
 
-    fn merge_kernels(
-        &mut self,
-        src: EKernelId,
-        dst: EKernelId,
-        visited: &mut Map<ClassId, (EKernelId, OpId)>,
-    ) {
-        let EKernelData { kernel: src_kernel, outputs, loads, stores } =
-            unsafe { self.ekernels.remove_and_return(src) };
+    fn merge_kernels(&mut self, src: EKernelId, dst: EKernelId, visited: &mut Map<ClassId, (EKernelId, OpId)>) {
+        let EKernelData { kernel: src_kernel, outputs, loads, stores } = unsafe { self.ekernels.remove_and_return(src) };
 
         {
             let dst_data = &mut self.ekernels[dst];
@@ -624,23 +602,13 @@ impl Graph {
                 if n_outputs2 > 1 {
                     let loads = self.ekernels[kid].loads.clone();
                     let kernel = self.ekernels[kid].kernel.clone();
-                    let new_kid = self.ekernels.push(EKernelData {
-                        kernel,
-                        outputs: Vec::new(),
-                        loads,
-                        stores: Vec::new(),
-                    });
+                    let new_kid = self.ekernels.push(EKernelData { kernel, outputs: Vec::new(), loads, stores: Vec::new() });
                     kid = new_kid;
                 }
             } else {
                 let loads = self.ekernels[kid].loads.clone();
                 let kernel = self.ekernels[kid].kernel.clone();
-                let new_kid = self.ekernels.push(EKernelData {
-                    kernel,
-                    outputs: Vec::new(),
-                    loads,
-                    stores: Vec::new(),
-                });
+                let new_kid = self.ekernels.push(EKernelData { kernel, outputs: Vec::new(), loads, stores: Vec::new() });
                 kid = new_kid;
             }
         }
@@ -785,19 +753,12 @@ impl Graph {
             permute_axes.extend_from_slice(&axes);
             if !permute_axes.iter().copied().eq(0..permute_axes.len() as UAxis) {
                 let shape = crate::shape::permute(&in_shape, &permute_axes);
-                kernel.push_back(Op::Move {
-                    x: op_id,
-                    mop: Box::new(MoveOp::Permute { axes: permute_axes, shape }),
-                })
+                kernel.push_back(Op::Move { x: op_id, mop: Box::new(MoveOp::Permute { axes: permute_axes, shape }) })
             } else {
                 op_id
             }
         };
-        let mut result_op = kernel.push_back(Op::Reduce {
-            x: permuted,
-            rop,
-            n_axes: n_axes as UAxis,
-        });
+        let mut result_op = kernel.push_back(Op::Reduce { x: permuted, rop, n_axes: n_axes as UAxis });
         if in_shape.len() == n_axes as usize {
             result_op = kernel.reshape(result_op, &[1]);
         }
@@ -824,10 +785,7 @@ impl Graph {
         Self::remove_first_output(&mut self.ekernels, kid, child);
         let shape: Vec<Dim> = shapes[self.classes[cid].shape].clone();
         let kernel = &mut self.ekernels[kid].kernel;
-        let result_op = kernel.push_back(Op::Move {
-            x: op_id,
-            mop: Box::new(MoveOp::Expand { shape }),
-        });
+        let result_op = kernel.push_back(Op::Move { x: op_id, mop: Box::new(MoveOp::Expand { shape }) });
         let n_consumers = rcs.get(&cid).copied().unwrap_or(0) as usize;
         for _ in 0..n_consumers {
             self.ekernels[kid].outputs.push(cid);
@@ -850,10 +808,7 @@ impl Graph {
         Self::remove_first_output(&mut self.ekernels, kid, child);
         let shape: Vec<Dim> = shapes[self.classes[cid].shape].clone();
         let kernel = &mut self.ekernels[kid].kernel;
-        let result_op = kernel.push_back(Op::Move {
-            x: op_id,
-            mop: Box::new(MoveOp::Permute { axes, shape }),
-        });
+        let result_op = kernel.push_back(Op::Move { x: op_id, mop: Box::new(MoveOp::Permute { axes, shape }) });
         let n_consumers = rcs.get(&cid).copied().unwrap_or(0) as usize;
         for _ in 0..n_consumers {
             self.ekernels[kid].outputs.push(cid);
@@ -875,10 +830,7 @@ impl Graph {
         (kid, op_id) = self.duplicate_or_store_class(child, kid, op_id, visited, pending_stores, shapes);
         Self::remove_first_output(&mut self.ekernels, kid, child);
         let kernel = &mut self.ekernels[kid].kernel;
-        let result_op = kernel.push_back(Op::Move {
-            x: op_id,
-            mop: Box::new(MoveOp::Reshape { shape }),
-        });
+        let result_op = kernel.push_back(Op::Move { x: op_id, mop: Box::new(MoveOp::Reshape { shape }) });
         let n_consumers = rcs.get(&cid).copied().unwrap_or(0) as usize;
         for _ in 0..n_consumers {
             self.ekernels[kid].outputs.push(cid);
@@ -915,10 +867,7 @@ impl Graph {
         Self::remove_first_output(&mut self.ekernels, kid, child);
         let shape: Vec<Dim> = cid_shape;
         let kernel = &mut self.ekernels[kid].kernel;
-        let result_op = kernel.push_back(Op::Move {
-            x: op_id,
-            mop: Box::new(MoveOp::Pad { padding, shape }),
-        });
+        let result_op = kernel.push_back(Op::Move { x: op_id, mop: Box::new(MoveOp::Pad { padding, shape }) });
         let n_consumers = rcs.get(&cid).copied().unwrap_or(0) as usize;
         for _ in 0..n_consumers {
             self.ekernels[kid].outputs.push(cid);
@@ -927,7 +876,7 @@ impl Graph {
     }
 }
 
-impl crate::runtime::Runtime {
+impl Runtime {
     pub fn autotune_all_kernels(&mut self) -> Result<(), ZyxError> {
         let kernel_data: Vec<(NodeId, Kernel)> = if let Some(ref graph) = self.graph {
             let mut v = Vec::new();
@@ -950,9 +899,7 @@ impl crate::runtime::Runtime {
             let device_ids: Vec<DeviceId> = self.devices.ids().collect();
             for &dev_id in &device_ids {
                 let pool_id = self.devices[dev_id].memory_pool_id();
-                let (dev_prog, _timing) = self.get_or_autotune(
-                    kernel.clone(), dev_id, pool_id, flop, read, write,
-                )?;
+                let (dev_prog, _timing) = self.get_or_autotune(kernel.clone(), dev_id, pool_id, flop, read, write)?;
                 let prog = ProgramId { device: dev_id, program: dev_prog };
                 if let Some(ref mut graph) = self.graph {
                     if let Node::Kernel { program_id, .. } = &mut graph.nodes[*nid].node {

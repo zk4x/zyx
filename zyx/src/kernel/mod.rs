@@ -94,7 +94,6 @@ use crate::view::View;
 use crate::{
     DType, Map,
     dtype::Constant,
-    runtime::KernelId,
     shape::{Dim, UAxis},
     slab::{Slab, SlabId},
 };
@@ -203,8 +202,6 @@ pub struct Kernel {
     pub(crate) tail: OpId,
     /// Target device for compilation.
     pub(crate) device_id: DeviceId,
-    /// ID of custom kernel if applicable.
-    pub(crate) custom_kernel_id: Option<KernelId>,
 }
 
 /// Execution scope for kernel indices.
@@ -926,7 +923,7 @@ impl DeBin for Kernel {
         let ops = Slab::<OpId, OpNode>::de_bin(offset, bytes)?;
         let start = OpId::de_bin(offset, bytes)?;
         let end = OpId::de_bin(offset, bytes)?;
-        Ok(Self { head: start, tail: end, ops, device_id: DeviceId::AUTO, custom_kernel_id: None })
+        Ok(Self { head: start, tail: end, ops, device_id: DeviceId::AUTO })
     }
 }
 
@@ -961,7 +958,7 @@ impl Kernel {
     /// kernel.store(out, doubled, gidx, MemLayout::Scalar);
     /// ```
     pub fn new(device_id: DeviceId) -> Self {
-        Self { ops: Slab::new(), head: OpId::NULL, tail: OpId::NULL, device_id, custom_kernel_id: None }
+        Self { ops: Slab::new(), head: OpId::NULL, tail: OpId::NULL, device_id }
     }
 
     /// Compute dtypes and reference counts for all operations.
@@ -1077,90 +1074,6 @@ impl Kernel {
             }
         }
     }
-
-    /// Compile the kernel. Consumes `self`.
-    ///
-    /// Runs [`Kernel::unfold_movement_ops`] and [`Kernel::verify`] before compilation.
-    ///
-    /// # Panics
-    ///
-    /// If the kernel IR is invalid (see [`Kernel::verify`]).
-    ///
-    /// # Errors
-    ///
-    /// If device initialization or compilation fails.
-    ///
-    /// # Example
-    ///
-    /// Build a simple element-wise doubling kernel using [`DeviceId::AUTO`] to
-    /// let the runtime pick the first available device:
-    ///
-    /// ```rust
-    /// use zyx::kernel::{Kernel, Scope, MemLayout, DeviceId};
-    /// use zyx::{DType, Tensor, ZyxError};
-    ///
-    /// let mut kernel = Kernel::new(DeviceId::AUTO);
-    /// let n = 4;
-    /// let inp = kernel.define(DType::F32, Scope::Global, true, n);
-    /// let gidx = kernel.gidx(0, n);
-    /// let loaded = kernel.load(inp, gidx, MemLayout::Scalar);
-    /// let doubled = kernel.add(loaded, loaded);
-    /// let out = kernel.define(DType::F32, Scope::Global, false, n);
-    /// kernel.store(out, doubled, gidx, MemLayout::Scalar);
-    ///
-    /// let compiled = kernel.compile()?;
-    /// let x = Tensor::from([1.0f32, 2.0, 3.0, 4.0]);
-    /// let result = compiled.forward(&[&x], [n]);
-    /// let data: Vec<f32> = result.try_into().unwrap();
-    /// assert_eq!(data, vec![2.0, 4.0, 6.0, 8.0]);
-    /// # Ok::<_, ZyxError>(())
-    /// ```
-    pub fn compile(mut self) -> Result<CompiledKernel, crate::ZyxError> {
-        self.unfold_movement_ops();
-        self.sort_global_defines();
-        self.dead_code_elimination();
-        self.verify();
-
-        let device_id = self.device_id;
-        let dtype = self
-            .ops
-            .values()
-            .find_map(|n| {
-                if let Op::Define { dtype, scope: Scope::Global, ro: false, .. } = n.op {
-                    Some(dtype)
-                } else {
-                    None
-                }
-            })
-            .expect("custom kernel must have exactly one mutable global define");
-        let mut rt = crate::RT.lock();
-        rt.initialize_devices()?;
-        let device_id = if device_id == DeviceId::AUTO {
-            rt.devices.ids().next().expect("no devices available")
-        } else {
-            device_id
-        };
-        if rt.debug.ir() {
-            self.debug();
-        }
-        let debug_asm = rt.debug.asm();
-        let program_id = rt.devices[device_id].compile(&self, debug_asm)?;
-        let prog = crate::backend::ProgramId { device: device_id, program: program_id };
-        /*let kid = rt.kernel_map.insert(self);
-        rt.programs.insert(kid, program_id);
-        Ok(crate::kernel::custom::CompiledKernel { program: prog, dtype, kernel_id: kid })*/
-        todo!()
-    }
-
-    /// Run autotuning then compile the kernel.
-    /// Consumes the kernel.
-    ///
-    /// TODO: real autotune — must allocate temp buffers and call [`Kernel::autotune_`].
-    /// For now this is identical to [`Kernel::compile`].
-    /*#[allow(unused)]
-    fn autotune(self) -> Result<CompiledKernel, crate::ZyxError> {
-        self.compile()
-    }*/
 
     /// Load a contiguous tensor from device memory.
     pub fn load_contiguous(&mut self, dtype: DType, shape: &[Dim]) -> OpId {

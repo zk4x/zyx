@@ -96,6 +96,7 @@ impl Kernel {
         }
     }
 
+    #[allow(unused)]
     pub(crate) fn opt_pad_index(&self) -> (Optimization, usize) {
         let mut factors = Vec::new();
         let mut op_id = self.head;

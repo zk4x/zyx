@@ -16,34 +16,103 @@
 //! The custom kernel system allows backends to compile kernels
 //! to their native instruction set and cache them for repeated use.
 
-use crate::IntoShape;
 use crate::backend::{DeviceInfo, ProgramId};
+use crate::error::BackendError;
+use crate::kernel::{DeviceId, Kernel, Op, Scope};
 use crate::tensor::TensorId;
-
-/// Custom kernel referencing a pre-compiled program.
-///
-/// This struct represents a custom kernel that has been compiled
-/// to a backend-specific program and cached for repeated execution.
-///
-/// Custom kernels are used for operations that require backend-specific
-/// compilation, such as GPU tensor core operations or specialized kernels.
-#[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone, Hash)]
-pub(crate) struct CustomKernel {
-    /// Compiled program handle.
-    pub program: ProgramId,
-    /// Input tensors that this kernel reads from.
-    pub inputs: Vec<TensorId>,
-    /// Output dtype.
-    pub dtype: crate::DType,
-}
+use crate::{DType, IntoShape, ZyxError};
 
 /// A compiled kernel ready for repeated execution.
 #[derive(Debug, Clone)]
 pub struct CompiledKernel {
     /// Compiled program handle (includes device).
     pub program: ProgramId,
-    /// Output dtype.
-    pub dtype: crate::DType,
+}
+
+impl Kernel {
+    /// Compile the kernel. Consumes `self`.
+    ///
+    /// Runs [`Kernel::unfold_movement_ops`] and [`Kernel::verify`] before compilation.
+    ///
+    /// # Panics
+    ///
+    /// If the kernel IR is invalid (see [`Kernel::verify`]).
+    ///
+    /// # Errors
+    ///
+    /// If device initialization or compilation fails.
+    ///
+    /// # Example
+    ///
+    /// Build a simple element-wise doubling kernel using [`DeviceId::AUTO`] to
+    /// let the runtime pick the first available device:
+    ///
+    /// ```rust
+    /// use zyx::kernel::{Kernel, Scope, MemLayout, DeviceId};
+    /// use zyx::{DType, Tensor, ZyxError};
+    ///
+    /// let mut kernel = Kernel::new(DeviceId::AUTO);
+    /// let n = 4;
+    /// let inp = kernel.define(DType::F32, Scope::Global, true, n);
+    /// let gidx = kernel.gidx(0, n);
+    /// let loaded = kernel.load(inp, gidx, MemLayout::Scalar);
+    /// let doubled = kernel.add(loaded, loaded);
+    /// let out = kernel.define(DType::F32, Scope::Global, false, n);
+    /// kernel.store(out, doubled, gidx, MemLayout::Scalar);
+    ///
+    /// let compiled = kernel.compile()?;
+    /// let x = Tensor::from([1.0f32, 2.0, 3.0, 4.0]);
+    /// let result = compiled.forward(&[&x], [n]);
+    /// let data: Vec<f32> = result.try_into().unwrap();
+    /// assert_eq!(data, vec![2.0, 4.0, 6.0, 8.0]);
+    /// # Ok::<_, ZyxError>(())
+    /// ```
+    pub fn compile(mut self) -> Result<CompiledKernel, ZyxError> {
+        self.unfold_movement_ops();
+        self.sort_global_defines();
+        self.dead_code_elimination();
+        self.verify();
+
+        let device_id = self.device_id;
+        let output_dtypes: Vec<DType> = self
+            .ops
+            .values()
+            .filter_map(|n| {
+                if let Op::Define { dtype, scope: Scope::Global, ro: false, .. } = n.op {
+                    Some(dtype)
+                } else {
+                    None
+                }
+            })
+            .collect();
+        if output_dtypes.is_empty() {
+            return Err(ZyxError::BackendError(BackendError {
+                status: crate::error::ErrorStatus::KernelCompilation,
+                context: format!("Kernel must have at least one output.").into(),
+            }));
+        }
+        let mut rt = crate::RT.lock();
+        rt.initialize_devices()?;
+        let device_id = if device_id == DeviceId::AUTO {
+            rt.devices.ids().next().expect("no devices available")
+        } else {
+            device_id
+        };
+        if rt.debug.ir() {
+            self.debug();
+        }
+        let debug_asm = rt.debug.asm();
+        let program_id = rt.devices[device_id].compile(&self, debug_asm)?;
+        let program = crate::backend::ProgramId { device: device_id, program: program_id };
+        Ok(crate::kernel::custom::CompiledKernel { program })
+    }
+
+    // Run autotuning then compile the kernel.
+    // Consumes the kernel.
+    /*#[allow(unused)]
+    fn autotune(self) -> Result<CompiledKernel, crate::ZyxError> {
+        self.compile()
+    }*/
 }
 
 impl CompiledKernel {
@@ -54,13 +123,7 @@ impl CompiledKernel {
 
     /// Execute the compiled kernel with new input tensors.
     pub fn forward(&self, inputs: &[&crate::tensor::Tensor], shape: impl IntoShape) -> crate::tensor::Tensor {
-        let ids: Vec<_> = inputs.iter().map(|t| t.id).collect();
-        let ck = CustomKernel { program: self.program, inputs: ids, dtype: self.dtype };
-        /*let tensor_id = crate::RT
-        .lock()
-        .graph
-        .push_wshape(crate::graph::Node::Custom(Box::new(ck)), shape.into_shape().collect());*/
-        let tensor_id = todo!();
-        crate::tensor::Tensor { id: tensor_id }
+        let ids: Vec<TensorId> = inputs.iter().map(|t| t.id).collect();
+        todo!()
     }
 }

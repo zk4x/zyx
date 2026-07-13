@@ -108,6 +108,7 @@ pub enum TensorState {
         pending_store: bool,
     },
     Graph {
+        #[allow(unused)]
         node_id: NodeId,
         class_id: ClassId,
     },
