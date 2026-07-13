@@ -20,7 +20,8 @@ use std::collections::BTreeSet;
 
 use crate::backend::{BufferId, DeviceInfo, MemoryPool, ProgramId};
 use crate::error::BackendError;
-use crate::kernel::{DeviceId, Kernel, Op, Scope};
+use crate::kernel::{DeviceId, Kernel, Op, OpId, Scope};
+use crate::runtime::{KernelData, TensorData, TensorState};
 use crate::{DType, IntoShape, Tensor, ZyxError, shape::Dim};
 
 /// A compiled kernel ready for repeated execution.
@@ -129,7 +130,7 @@ impl CompiledKernel {
     }
 
     /// Execute the compiled kernel with new input tensors.
-    pub fn forward(&self, inputs: &[&Tensor], shapes: impl IntoIterator<Item = impl IntoShape>) -> Result<Tensor, ZyxError> {
+    pub fn forward(&self, inputs: &[&Tensor], shapes: Vec<impl IntoShape>) -> Result<Vec<Tensor>, ZyxError> {
         debug_assert_eq!(inputs.len(), self.inputs.len());
         let shapes: Vec<Vec<Dim>> = shapes.into_iter().map(|s| s.into_shape().collect()).collect();
         debug_assert_eq!(shapes.len(), self.outputs.len());
@@ -142,6 +143,7 @@ impl CompiledKernel {
         }
         debug_assert!(inputs.iter().all(|input| rt.buffer_map.contains_key(&input.id)));
 
+        // Launch kernel
         let device_id = self.program.device;
         let pool_id = rt.devices[device_id].memory_pool_id();
 
@@ -178,7 +180,28 @@ impl CompiledKernel {
         let event = unsafe { device.launch(self.program.program, &mut *pool_ptr, &args, event_wait_list)? };
         rt.events.insert(all_bufs, event);
 
-        todo!()
+        let kernel_id = rt.kernels.push(KernelData {
+            outputs: Vec::new(),
+            loads: Vec::new(),
+            stores: Vec::new(),
+            kernel: Kernel::new(device_id),
+        });
+
+        // Put to tensors
+        let mut tensors = Vec::new();
+        for ((dtype, shape), buf_id) in self.outputs.iter().copied().zip(shapes).zip(output_bufs) {
+            let shape_id = rt.push_shape(shape);
+            let id = rt.tensors.push(TensorData {
+                shape_id,
+                dtype,
+                state: TensorState::Eager { kernel_id, op_id: OpId::NULL, pending_store: false },
+            });
+            rt.kernels[kernel_id].outputs.push(id);
+            rt.buffer_map.insert(id, buf_id);
+            tensors.push(Tensor { id })
+        }
+
+        Ok(tensors)
     }
 }
 

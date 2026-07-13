@@ -198,7 +198,7 @@ impl Runtime {
     }
 
     pub fn retain(&mut self, x: TensorId) {
-        eprintln!("Retain tensor x={x}");
+        //eprintln!("Retain tensor x={x}");
         if let TensorState::Eager { kernel_id, .. } = &self.tensors[x].state {
             self.kernels[*kernel_id].outputs.push(x);
         }
@@ -216,7 +216,7 @@ impl Runtime {
         }
         if kd.outputs.is_empty() {
             if !kd.kernel.contains_stores() {
-                eprintln!("A: kernels.remove({kid:?})");
+                //eprintln!("A: kernels.remove({kid:?})");
                 self.kernels.remove(kid);
             } else {
                 self.materialize_kernel(kid).unwrap();
@@ -224,7 +224,7 @@ impl Runtime {
         }
     }
 
-    fn push_shape(&mut self, shape: Vec<Dim>) -> ShapeId {
+    pub fn push_shape(&mut self, shape: Vec<Dim>) -> ShapeId {
         if let Some(&shape_id) = self.shape_map.get(&shape) {
             shape_id
         } else {
@@ -484,7 +484,7 @@ impl Runtime {
 
                 //println!("Remove kernel {merge_kid:?}");
                 let KernelData { outputs: merge_outputs, loads: merge_loads, stores: merge_stores, kernel } = unsafe {
-                    eprintln!("C: kernels.remove_and_return({merge_kid:?})");
+                    //eprintln!("C: kernels.remove_and_return({merge_kid:?})");
                     self.kernels.remove_and_return(merge_kid)
                 };
                 let Kernel { ops: merge_ops, head: merge_head, .. } = kernel;
@@ -514,7 +514,7 @@ impl Runtime {
                     }
                 }
 
-                eprintln!("D: kernel_data.remove({merge_kid:?})");
+                //eprintln!("D: kernel_data.remove({merge_kid:?})");
                 let keep_data = &mut self.kernels[keep_kid];
                 keep_data.outputs.extend(merge_outputs);
                 keep_data.loads.extend(merge_loads);
@@ -1319,11 +1319,11 @@ impl Runtime {
         // Compile and launch (caches in kernel_map / programs)
         let debug = self.debug;
         if debug.sched() {
-            eprintln!("tensors: {:?}", self.tensors.ids().collect::<Vec<TensorId>>());
-            eprintln!("loads (tids): {loads:?}");
-            eprintln!("stores (tids): {stores:?}");
+            println!("tensors: {:?}", self.tensors.ids().collect::<Vec<TensorId>>());
+            println!("loads (tids): {loads:?}");
+            println!("stores (tids): {stores:?}");
             for (info_kid, info_kd) in self.kernels.iter() {
-                eprintln!(
+                println!(
                     "  kernel {info_kid:?}: outputs={:?}, loads={:?}, stores={:?}",
                     info_kd.outputs, info_kd.loads, info_kd.stores
                 );

@@ -693,7 +693,7 @@ mod tests {
         let compiled = k.compile().unwrap();
         let source = crate::Tensor::from([[10u16, 20, 30, 40, 50], [11, 21, 31, 41, 51], [12, 22, 32, 42, 52]]);
         let indices = crate::Tensor::from([[0u16, 2, 4], [1, 3, 0], [4, 1, 2]]);
-        let result = compiled.forward(&[&indices, &source], [3, 3]);
+        let result = compiled.forward(&[&indices, &source], vec![[3, 3]]).unwrap().pop().unwrap();
         assert_eq!(result, [[10u16, 30, 50], [21, 41, 11], [52, 22, 32]]);
     }
 

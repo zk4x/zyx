@@ -106,7 +106,7 @@ fn wmma_matmul() -> Result<(), ZyxError> {
     let a_host: Vec<f32> = a.clone().cast(DType::F32).try_into()?;
     let b_host: Vec<f32> = b.clone().cast(DType::F32).try_into()?;
 
-    let result = compiled.forward(&[&a, &b], [m, n]);
+    let result = compiled.forward(&[&a, &b], vec![[m, n]])?.pop().unwrap();
 
     let c_host: Vec<f32> = result.try_into()?;
 
