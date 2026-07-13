@@ -154,7 +154,7 @@ impl Drop for Tape {
 }
 
 impl Runtime {
-    fn gradient(&mut self, target: TensorId, sources: Set<TensorId>) -> Map<TensorId, TensorId> {
+    fn gradient(&mut self, _target: TensorId, _sources: Set<TensorId>) -> Map<TensorId, TensorId> {
         todo!()
     }
 }

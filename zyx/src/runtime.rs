@@ -581,7 +581,19 @@ impl Runtime {
     pub fn to_device(&mut self, x: TensorId, device_id: DeviceId) -> Result<TensorId, ZyxError> {
         #[cfg(feature = "debug_tensor_op")]
         println!("runtime::to_device(x={x}, device_id={device_id:?})");
-        todo!()
+        let TensorState::Graph { class_id, .. } = self.tensors[x].state else {
+            todo!("eager to_device")
+        };
+        let Some(ref mut graph) = self.graph else {
+            todo!("eager to_device (no graph)")
+        };
+        let shape_id = self.tensors[x].shape_id;
+        let dtype = self.tensors[x].dtype;
+        let (node_id, cid) = graph.push(Node::ToDevice { x: class_id, device: device_id }, shape_id, dtype);
+        let tid = self.tensors.push(TensorData { shape_id, dtype, state: TensorState::Graph { node_id, class_id: cid } });
+        #[cfg(feature = "debug_tensor_op")]
+        println!("  -> tid={tid}, nid={node_id:?}, cid={cid:?}");
+        Ok(tid)
     }
 
     pub fn reduce(&mut self, x: TensorId, mut axes: Vec<UAxis>, rop: BOp) -> Result<TensorId, ZyxError> {
