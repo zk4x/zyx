@@ -104,7 +104,7 @@ impl Kernel {
         let debug_asm = rt.debug.asm();
         let program_id = rt.devices[device_id].compile(&self, debug_asm)?;
         let program = crate::backend::ProgramId { device: device_id, program: program_id };
-        Ok(crate::kernel::custom::CompiledKernel { program })
+        Ok(CompiledKernel { program })
     }
 
     // Run autotuning then compile the kernel.
@@ -125,5 +125,11 @@ impl CompiledKernel {
     pub fn forward(&self, inputs: &[&crate::tensor::Tensor], shape: impl IntoShape) -> crate::tensor::Tensor {
         let ids: Vec<TensorId> = inputs.iter().map(|t| t.id).collect();
         todo!()
+    }
+}
+
+impl Drop for CompiledKernel {
+    fn drop(&mut self) {
+        crate::RT.lock().devices[self.program.device].release(self.program.program);
     }
 }

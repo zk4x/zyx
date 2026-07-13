@@ -120,9 +120,9 @@ pub(crate) struct KernelData {
     /// When a tensor is consumed as input to a new op within the same kernel,
     /// it is removed from outputs (since the kernel produces the new op's result instead).
     pub(crate) outputs: Vec<TensorId>,
-    loads: Vec<TensorId>,
-    stores: Vec<TensorId>,
-    kernel: Kernel,
+    pub(crate) loads: Vec<TensorId>,
+    pub(crate) stores: Vec<TensorId>,
+    pub(crate) kernel: Kernel,
 }
 
 pub struct Runtime {
