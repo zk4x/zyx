@@ -352,12 +352,19 @@ impl Runtime {
             .ok_or(BackendError { status: ErrorStatus::Initialization, context: "[disk] not available.".into() })?;
         let buffer_id = BufferId { pool: PoolId::DISK, buffer: pool.buffer_from_path(bytes, path, offset_bytes) };
 
-        let op = Op::LoadView(Box::new((dtype, View::contiguous(&shape))));
-        let tid = self.new_kernel(op, shape, dtype);
-        let TensorState::Eager { kernel_id, .. } = &self.tensors[tid].state else {
-            unreachable!()
+        let shape_id = self.push_shape(shape);
+        let tid = if let Some(ref mut graph) = self.graph {
+            let (node_id, class_id) = graph.push(Node::Leaf { dtype, shape: shape_id }, shape_id, dtype);
+            self.tensors.push(TensorData { shape_id, dtype, state: TensorState::Graph { node_id, class_id } })
+        } else {
+            let op = Op::LoadView(Box::new((dtype, View::contiguous(&self.shapes[shape_id]))));
+            let tid = self.new_kernel(op, self.shapes[shape_id].clone(), dtype);
+            let TensorState::Eager { kernel_id, .. } = &self.tensors[tid].state else {
+                unreachable!()
+            };
+            self.kernels[*kernel_id].loads.push(tid);
+            tid
         };
-        self.kernels[*kernel_id].loads.push(tid);
         self.buffer_map.insert(tid, buffer_id);
         Ok(tid)
     }
