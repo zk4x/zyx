@@ -256,11 +256,8 @@ impl Runtime {
         let shape_id = self.push_shape(shape);
         if let Some(ref mut graph) = self.graph {
             let (nid, cid) = graph.push(Node::Const(value), shape_id, dtype);
-            let tid = self.tensors.push(TensorData {
-                shape_id,
-                dtype,
-                state: TensorState::Graph { node_id: nid, class_id: cid },
-            });
+            let tid =
+                self.tensors.push(TensorData { shape_id, dtype, state: TensorState::Graph { node_id: nid, class_id: cid } });
             #[cfg(feature = "debug_tensor_op")]
             println!("  -> tid={tid}, {:?}", self.tensors[tid]);
             return tid;
@@ -281,11 +278,8 @@ impl Runtime {
         if let Some(ref mut graph) = self.graph {
             let (_, one_cid) = graph.push(Node::Const(value), one_shape_id, dtype);
             let (nid, cid) = graph.push(Node::Expand { x: one_cid, shape: shape_id }, shape_id, dtype);
-            let tid = self.tensors.push(TensorData {
-                shape_id,
-                dtype,
-                state: TensorState::Graph { node_id: nid, class_id: cid },
-            });
+            let tid =
+                self.tensors.push(TensorData { shape_id, dtype, state: TensorState::Graph { node_id: nid, class_id: cid } });
             #[cfg(feature = "debug_tensor_op")]
             println!("  -> tid={tid}, {:?}", self.tensors[tid]);
             return tid;
@@ -321,12 +315,19 @@ impl Runtime {
         };
         let buffer_id = BufferId { pool: PoolId::HOST, buffer: pool.insert(data) };
 
-        // Create kernel for it
-        let op = Op::LoadView(Box::new((T::dtype(), View::contiguous(&shape))));
-        let tid = self.new_kernel(op, shape, dtype);
-        if let TensorState::Eager { kernel_id, .. } = &self.tensors[tid].state {
+        let shape = self.push_shape(shape);
+        let tid = if let Some(ref mut graph) = self.graph {
+            let (node_id, class_id) = graph.push(Node::Leaf { dtype, shape }, shape, dtype);
+            self.tensors.push(TensorData { shape_id: shape, dtype, state: TensorState::Graph { node_id, class_id } })
+        } else {
+            let op = Op::LoadView(Box::new((dtype, View::contiguous(&self.shapes[shape]))));
+            let tid = self.new_kernel(op, self.shapes[shape].clone(), dtype);
+            let TensorState::Eager { kernel_id, .. } = &self.tensors[tid].state else {
+                unreachable!()
+            };
             self.kernels[*kernel_id].loads.push(tid);
-        }
+            tid
+        };
 
         self.buffer_map.insert(tid, buffer_id);
 
@@ -353,9 +354,10 @@ impl Runtime {
 
         let op = Op::LoadView(Box::new((dtype, View::contiguous(&shape))));
         let tid = self.new_kernel(op, shape, dtype);
-        if let TensorState::Eager { kernel_id, .. } = &self.tensors[tid].state {
-            self.kernels[*kernel_id].loads.push(tid);
-        }
+        let TensorState::Eager { kernel_id, .. } = &self.tensors[tid].state else {
+            unreachable!()
+        };
+        self.kernels[*kernel_id].loads.push(tid);
         self.buffer_map.insert(tid, buffer_id);
         Ok(tid)
     }
