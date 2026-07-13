@@ -251,8 +251,22 @@ impl Runtime {
     pub fn new_constant_tensor(&mut self, value: Constant) -> TensorId {
         #[cfg(feature = "debug_tensor_op")]
         println!("runtime::new_constant_tensor(value={value:?})");
+        let shape = vec![1 as Dim];
+        let dtype = value.dtype();
+        let shape_id = self.push_shape(shape);
+        if let Some(ref mut graph) = self.graph {
+            let (nid, cid) = graph.push(Node::Const(value), shape_id, dtype);
+            let tid = self.tensors.push(TensorData {
+                shape_id,
+                dtype,
+                state: TensorState::Graph { node_id: nid, class_id: cid },
+            });
+            #[cfg(feature = "debug_tensor_op")]
+            println!("  -> tid={tid}, {:?}", self.tensors[tid]);
+            return tid;
+        }
         let op = Op::ConstView(Box::new((value, View::contiguous(&[1]))));
-        let result = self.new_kernel(op, [1].into(), value.dtype());
+        let result = self.new_kernel(op, [1].into(), dtype);
         #[cfg(feature = "debug_tensor_op")]
         println!("  -> tid={result}, {:?}", self.tensors[result]);
         result
@@ -262,6 +276,20 @@ impl Runtime {
         #[cfg(feature = "debug_tensor_op")]
         println!("runtime::new_full(shape={shape:?}, value={value:?})");
         let dtype = value.dtype();
+        let shape_id = self.push_shape(shape.clone());
+        let one_shape_id = self.push_shape(vec![1 as Dim]);
+        if let Some(ref mut graph) = self.graph {
+            let (_, one_cid) = graph.push(Node::Const(value), one_shape_id, dtype);
+            let (nid, cid) = graph.push(Node::Expand { x: one_cid, shape: shape_id }, shape_id, dtype);
+            let tid = self.tensors.push(TensorData {
+                shape_id,
+                dtype,
+                state: TensorState::Graph { node_id: nid, class_id: cid },
+            });
+            #[cfg(feature = "debug_tensor_op")]
+            println!("  -> tid={tid}, {:?}", self.tensors[tid]);
+            return tid;
+        }
         let op = Op::ConstView(Box::new((value, View::contiguous(&[1]))));
         let x = self.new_kernel(op, [1].into(), dtype);
         let expanded = self.expand(x, shape).unwrap();
