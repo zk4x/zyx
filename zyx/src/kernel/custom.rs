@@ -20,13 +20,14 @@ use crate::backend::{DeviceInfo, ProgramId};
 use crate::error::BackendError;
 use crate::kernel::{DeviceId, Kernel, Op, Scope};
 use crate::tensor::TensorId;
-use crate::{DType, IntoShape, ZyxError};
+use crate::{DType, IntoShape, Tensor, ZyxError};
 
 /// A compiled kernel ready for repeated execution.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct CompiledKernel {
-    /// Compiled program handle (includes device).
-    pub program: ProgramId,
+    program: ProgramId,
+    inputs: Vec<DType>,
+    outputs: Vec<DType>,
 }
 
 impl Kernel {
@@ -73,30 +74,35 @@ impl Kernel {
         self.dead_code_elimination();
         self.verify();
 
-        let device_id = self.device_id;
-        let output_dtypes: Vec<DType> = self
-            .ops
-            .values()
-            .filter_map(|n| {
-                if let Op::Define { dtype, scope: Scope::Global, ro: false, .. } = n.op {
-                    Some(dtype)
+        let mut inputs = Vec::new();
+        let mut outputs = Vec::new();
+        let mut op_id = self.head;
+        while !op_id.is_null() {
+            if let Op::Define { dtype, scope: Scope::Global, ro, .. } = self.ops[op_id].op {
+                if ro {
+                    inputs.push(dtype);
                 } else {
-                    None
+                    outputs.push(dtype);
                 }
-            })
-            .collect();
-        if output_dtypes.is_empty() {
+            }
+            op_id = self.next_op(op_id);
+        }
+
+        if outputs.is_empty() {
             return Err(ZyxError::BackendError(BackendError {
                 status: crate::error::ErrorStatus::KernelCompilation,
                 context: format!("Kernel must have at least one output.").into(),
             }));
         }
+
+        // Get shapes and dtypes for inputs and outputs
+
         let mut rt = crate::RT.lock();
         rt.initialize_devices()?;
-        let device_id = if device_id == DeviceId::AUTO {
+        let device_id = if self.device_id == DeviceId::AUTO {
             rt.devices.ids().next().expect("no devices available")
         } else {
-            device_id
+            self.device_id
         };
         if rt.debug.ir() {
             self.debug();
@@ -104,7 +110,7 @@ impl Kernel {
         let debug_asm = rt.debug.asm();
         let program_id = rt.devices[device_id].compile(&self, debug_asm)?;
         let program = crate::backend::ProgramId { device: device_id, program: program_id };
-        Ok(CompiledKernel { program })
+        Ok(CompiledKernel { program, inputs, outputs })
     }
 
     // Run autotuning then compile the kernel.
@@ -122,7 +128,7 @@ impl CompiledKernel {
     }
 
     /// Execute the compiled kernel with new input tensors.
-    pub fn forward(&self, inputs: &[&crate::tensor::Tensor], shape: impl IntoShape) -> crate::tensor::Tensor {
+    pub fn forward(&self, inputs: &[&Tensor], shapes: impl IntoIterator<Item = impl IntoShape>) -> Tensor {
         let ids: Vec<TensorId> = inputs.iter().map(|t| t.id).collect();
         todo!()
     }
