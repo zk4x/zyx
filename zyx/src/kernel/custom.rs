@@ -16,11 +16,12 @@
 //! The custom kernel system allows backends to compile kernels
 //! to their native instruction set and cache them for repeated use.
 
-use crate::backend::{DeviceInfo, ProgramId};
+use std::collections::BTreeSet;
+
+use crate::backend::{BufferId, DeviceInfo, MemoryPool, ProgramId};
 use crate::error::BackendError;
 use crate::kernel::{DeviceId, Kernel, Op, Scope};
-use crate::tensor::TensorId;
-use crate::{DType, IntoShape, Tensor, ZyxError};
+use crate::{DType, IntoShape, Tensor, ZyxError, shape::Dim};
 
 /// A compiled kernel ready for repeated execution.
 #[derive(Debug)]
@@ -128,8 +129,55 @@ impl CompiledKernel {
     }
 
     /// Execute the compiled kernel with new input tensors.
-    pub fn forward(&self, inputs: &[&Tensor], shapes: impl IntoIterator<Item = impl IntoShape>) -> Tensor {
-        let ids: Vec<TensorId> = inputs.iter().map(|t| t.id).collect();
+    pub fn forward(&self, inputs: &[&Tensor], shapes: impl IntoIterator<Item = impl IntoShape>) -> Result<Tensor, ZyxError> {
+        debug_assert_eq!(inputs.len(), self.inputs.len());
+        let shapes: Vec<Vec<Dim>> = shapes.into_iter().map(|s| s.into_shape().collect()).collect();
+        debug_assert_eq!(shapes.len(), self.outputs.len());
+
+        let mut rt = crate::RT.lock();
+        for input in inputs {
+            if !rt.buffer_map.contains_key(&input.id) {
+                rt.add_store(input.id)?;
+            }
+        }
+        debug_assert!(inputs.iter().all(|input| rt.buffer_map.contains_key(&input.id)));
+
+        let device_id = self.program.device;
+        let pool_id = rt.devices[device_id].memory_pool_id();
+
+        let mut input_bufs = Vec::new();
+        let mut all_bufs = BTreeSet::new();
+        let mut event_wait_list = Vec::new();
+        for input in inputs {
+            let buf_id = rt.buffer_map[&input.id];
+            input_bufs.push(buf_id.buffer);
+            all_bufs.insert(buf_id);
+            let keys: Vec<BTreeSet<BufferId>> = rt.events.keys().filter(|k| k.contains(&buf_id)).cloned().collect();
+            for key in keys {
+                event_wait_list.push(rt.events.remove(&key).unwrap());
+            }
+        }
+
+        let mut output_bufs = Vec::new();
+        for (i, shape) in shapes.iter().enumerate() {
+            let dtype = self.outputs[i];
+            let bytes = (shape.iter().product::<Dim>() * dtype.bit_size() as Dim + 7) / 8;
+            let (buf, ev) = rt.pools[pool_id].allocate(bytes)?;
+            event_wait_list.push(ev);
+            let buf_id = BufferId { pool: pool_id, buffer: buf };
+            output_bufs.push(buf_id);
+            all_bufs.insert(buf_id);
+        }
+
+        let mut args = input_bufs;
+        for buf in &output_bufs {
+            args.push(buf.buffer);
+        }
+        let pool_ptr = &mut rt.pools[pool_id] as *mut MemoryPool;
+        let device = &mut rt.devices[device_id];
+        let event = unsafe { device.launch(self.program.program, &mut *pool_ptr, &args, event_wait_list)? };
+        rt.events.insert(all_bufs, event);
+
         todo!()
     }
 }

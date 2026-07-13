@@ -137,7 +137,7 @@ pub struct Runtime {
     programs: Map<KernelId, DeviceProgramId>,
     pub devices: Slab<DeviceId, Device>,
     // Pool 0 is always host, pool 1 is disk if disk is present
-    pools: Slab<PoolId, MemoryPool>,
+    pub(crate) pools: Slab<PoolId, MemoryPool>,
     config_dir: Option<PathBuf>,
     pub buffer_map: Map<TensorId, BufferId>,
     pub events: Map<BTreeSet<BufferId>, Event>,
@@ -279,7 +279,7 @@ impl Runtime {
 
         self.initialize_devices()?;
         debug_assert_eq!(shape.iter().product::<Dim>(), data.len() as Dim);
-        let bytes = (data.len() * dtype.bit_size() as usize / 8) as Dim;
+        let bytes = (data.len() * dtype.bit_size() as usize + 7) / 8;
         debug_assert_eq!(data.len() * std::mem::size_of::<T>(), bytes as usize);
 
         // Convert to Box<[u8]>
@@ -316,7 +316,7 @@ impl Runtime {
         offset_bytes: u64,
     ) -> Result<TensorId, ZyxError> {
         self.initialize_devices()?;
-        let bytes: Dim = shape.iter().product::<Dim>() * dtype.bit_size() as Dim / 8;
+        let bytes: Dim = (shape.iter().product::<Dim>() * dtype.bit_size() as Dim + 7) / 8;
 
         let pool = self.pools[PoolId::DISK]
             .disk_pool()
@@ -828,7 +828,7 @@ impl Runtime {
 
         // Fast path: already realized
         if let Some(&buffer_id) = self.buffer_map.get(&x) {
-            let bytes = data.len() * (T::bit_size() / 8) as usize;
+            let bytes = (data.len() * T::bit_size() as usize + 7) / 8;
             let byte_slice = unsafe { std::slice::from_raw_parts_mut(data.as_mut_ptr().cast(), bytes) };
             for buffers in self.events.keys() {
                 if buffers.contains(&buffer_id) {
@@ -864,7 +864,7 @@ impl Runtime {
         }
 
         // Copy result to host
-        let bytes = data.len() * (T::bit_size() / 8) as usize;
+        let bytes = (data.len() * T::bit_size() as usize + 7) / 8;
         let byte_slice = unsafe { std::slice::from_raw_parts_mut(data.as_mut_ptr().cast(), bytes) };
         let buffer_id = self.buffer_map[&x];
         for buffers in self.events.keys() {
@@ -1247,7 +1247,7 @@ impl Runtime {
             let buf_id = self.buffer_map[&tid];
             if buf_id.pool != pool_id {
                 let src = buf_id.buffer;
-                let bytes = self.shape(tid).iter().product::<Dim>() as usize * (self.dtype(tid).bit_size() / 8) as usize;
+                let bytes = (self.shape(tid).iter().product::<Dim>() as usize * self.dtype(tid).bit_size() as usize + 7) / 8;
                 let mut byte_slice = vec![0u8; bytes];
 
                 let mut ev = Vec::new();
@@ -1292,7 +1292,7 @@ impl Runtime {
             kernel_buffers.insert(self.buffer_map[&tid]);
         }
         for &tid in &stores {
-            let bytes = self.shape(tid).iter().product::<Dim>() as usize * (self.dtype(tid).bit_size() / 8) as usize;
+            let bytes = (self.shape(tid).iter().product::<Dim>() as usize * self.dtype(tid).bit_size() as usize + 7) / 8;
             let alloc_bytes = bytes as Dim + Dim::from(self.dtype(tid).bit_size() / 8);
             let (buf, event) = self.pools[pool_id].allocate(alloc_bytes)?;
             let global_id = BufferId { pool: pool_id, buffer: buf };
