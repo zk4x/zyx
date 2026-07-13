@@ -749,14 +749,14 @@ impl Runtime {
         } else {
             let (kernel_id, op_id) = self.duplicate_or_store(x).unwrap();
 
+            let op_id = self.kernels[kernel_id]
+                .kernel
+                .push_back(Op::Move { x: op_id, mop: Box::new(MoveOp::Permute { axes: axes.into(), shape: new_shape }) });
             let tid = self.tensors.push(TensorData {
                 shape_id,
                 dtype,
                 state: TensorState::Eager { kernel_id, op_id, pending_store: false },
             });
-            let op_id = self.kernels[kernel_id]
-                .kernel
-                .push_back(Op::Move { x: op_id, mop: Box::new(MoveOp::Permute { axes: axes.into(), shape: new_shape }) });
 
             debug_assert_eq!(self.kernels[kernel_id].outputs.len(), 0, "input into permute must have empty outputs");
             self.kernels[kernel_id].outputs.push(tid);
@@ -791,14 +791,14 @@ impl Runtime {
         } else {
             let (kernel_id, op_id) = self.duplicate_or_store(x).unwrap();
 
+            let op_id = self.kernels[kernel_id]
+                .kernel
+                .push_back(Op::Move { x: op_id, mop: Box::new(MoveOp::Pad { padding: padding.into(), shape: new_shape }) });
             let tid = self.tensors.push(TensorData {
                 shape_id,
                 dtype,
                 state: TensorState::Eager { kernel_id, op_id, pending_store: false },
             });
-            let op_id = self.kernels[kernel_id]
-                .kernel
-                .push_back(Op::Move { x: op_id, mop: Box::new(MoveOp::Pad { padding: padding.into(), shape: new_shape }) });
 
             debug_assert_eq!(self.kernels[kernel_id].outputs.len(), 0, "input into pad must have empty outputs");
             self.kernels[kernel_id].outputs.push(tid);

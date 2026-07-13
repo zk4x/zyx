@@ -418,14 +418,6 @@ impl Graph {
         (nid, cid)
     }
 
-    /// Add a node as an equivalence to an existing class, skipping hashcons.
-    /// Used for `Node::Kernel` equivalences that are specific to each class.
-    pub fn add_equivalence(&mut self, node: Node, class_id: ClassId) -> NodeId {
-        let nid = self.nodes.push(NodeData { node, class_of: class_id });
-        self.classes[class_id].nodes.push(nid);
-        nid
-    }
-
     // ── Kernelizer helpers ─────────────────────────────────
 
     fn new_load_kernel(&mut self, cid: ClassId, shapes: &Slab<ShapeId, Vec<Dim>>) -> EKernelId {
