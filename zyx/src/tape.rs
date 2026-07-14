@@ -29,6 +29,8 @@
 //!   for the full subgraph — just collect the leaf TensorIds and map to their current
 //!   BufferIds.
 
+use std::collections::BTreeSet;
+
 use crate::{
     Map, RT, Set, Tensor, ZyxError,
     graph::{ClassId, ExecPlan, Graph, Node},
@@ -118,10 +120,6 @@ impl Tape {
     pub fn realize<'a>(self, tensors: impl IntoIterator<Item = &'a Tensor>) -> Result<(), ZyxError> {
         let mut rt = RT.lock();
 
-        // TODO hash graph to look up compiled plan from cache
-
-        // TODO load compiled plan from cache if exists
-
         let output_classes: Vec<ClassId> = tensors
             .into_iter()
             .map(|t| match rt.tensors[t.id].state {
@@ -132,12 +130,20 @@ impl Tape {
 
         debug_assert!(rt.graph.is_some());
 
+        let output_set: BTreeSet<ClassId> = output_classes.iter().copied().collect();
+        let cache_key = rt.graph.as_ref().unwrap().cache_key(&output_set);
+        if let Some(plan) = rt.plan_cache.get(&cache_key) {
+            todo!("Execute plan");
+
+            return Ok(());
+        }
+
         // TODO pattern match cublas, cblas, etc. kernels
 
         // Fills missing places with zyx custom kernels
         // SAFETY: graph and shapes are separate fields of Runtime, no aliasing, rust is stupid
         let shapes_ptr: *const Slab<ShapeId, Vec<Dim>> = &rt.shapes;
-        rt.graph.as_mut().unwrap().fill_remaining(&output_classes, unsafe { &*shapes_ptr });
+        rt.graph.as_mut().unwrap().fill_remaining(&output_set, unsafe { &*shapes_ptr });
 
         // Autotunes custom zyx kernels for all devices and adds kernel nodes for all of them
         rt.autotune_all_kernels()?;
@@ -147,9 +153,12 @@ impl Tape {
 
         rt.graph.as_ref().unwrap().debug_print(&rt.shapes);
 
-        let nodes = rt.graph.as_ref().unwrap().extract(&output_classes);
+        let nodes = rt.graph.as_ref().unwrap().extract(&output_set);
 
         let plan = ExecPlan::new(rt.graph.as_ref().unwrap(), &nodes);
+        rt.plan_cache.insert(cache_key, plan);
+
+        todo!("Execute plan");
 
         Ok(())
     }

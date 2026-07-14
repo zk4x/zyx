@@ -28,6 +28,7 @@ use crate::{
     DType, DebugMask, Map, Scalar, Set, ZyxError,
     backend::{AutotuneConfig, BufferId, Config, Device, DeviceInfo, DeviceProgramId, Event, MemoryPool, OpCapability, PoolId},
     dtype::Constant,
+    graph::ExecPlan,
     error::{BackendError, ErrorStatus},
     graph::{ClassId, Graph, Node, NodeId},
     kernel::{BOp, DeviceId, Kernel, MoveOp, Op, OpId, UOp, autotune::OptSeq},
@@ -119,10 +120,10 @@ pub(crate) struct KernelData {
     /// Tensor reference count. Each entry is a tensor this kernel must produce.
     /// When a tensor is consumed as input to a new op within the same kernel,
     /// it is removed from outputs (since the kernel produces the new op's result instead).
-    pub(crate) outputs: Vec<TensorId>,
-    pub(crate) loads: Vec<TensorId>,
-    pub(crate) stores: Vec<TensorId>,
-    pub(crate) kernel: Kernel,
+    pub outputs: Vec<TensorId>,
+    pub loads: Vec<TensorId>,
+    pub stores: Vec<TensorId>,
+    pub kernel: Kernel,
 }
 
 pub struct Runtime {
@@ -137,7 +138,7 @@ pub struct Runtime {
     programs: Map<KernelId, DeviceProgramId>,
     pub devices: Slab<DeviceId, Device>,
     // Pool 0 is always host, pool 1 is disk if disk is present
-    pub(crate) pools: Slab<PoolId, MemoryPool>,
+    pub pools: Slab<PoolId, MemoryPool>,
     config_dir: Option<PathBuf>,
     pub buffer_map: Map<TensorId, BufferId>,
     pub events: Map<BTreeSet<BufferId>, Event>,
@@ -146,6 +147,7 @@ pub struct Runtime {
     pub implicit_casts: bool,
     pub training: bool,
     pub debug: DebugMask,
+    pub plan_cache: Map<u64, ExecPlan>,
 }
 
 impl Runtime {
@@ -170,6 +172,7 @@ impl Runtime {
             implicit_casts: true,
             training: false,
             debug: DebugMask::new(0),
+            plan_cache: Map::with_hasher(BuildHasherDefault::new()),
         }
     }
 

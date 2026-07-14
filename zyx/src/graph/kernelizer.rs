@@ -1,3 +1,5 @@
+use std::collections::BTreeSet;
+
 use crate::{
     DType, Map, Set,
     backend::ProgramId,
@@ -10,8 +12,7 @@ use crate::{
 };
 
 impl Graph {
-    pub fn fill_remaining(&mut self, outputs: &[ClassId], shapes: &Slab<ShapeId, Vec<Dim>>) {
-        let output_set: Set<ClassId> = outputs.iter().copied().collect();
+    pub fn fill_remaining(&mut self, outputs: &BTreeSet<ClassId>, shapes: &Slab<ShapeId, Vec<Dim>>) {
         let order = self.topo_sort_classes(outputs);
 
         // Reference counts: how many times each class appears as a child.
@@ -105,12 +106,12 @@ impl Graph {
                 continue;
             }
             let remaining_rc = rcs.get(&cid).copied().unwrap_or(0);
-            let is_output = remaining_rc == 0 || output_set.contains(&cid);
+            let is_output = remaining_rc == 0 || outputs.contains(&cid);
 
             if is_output {
                 let (kid, op_id) = visited[&cid];
                 self.add_store(cid, kid, op_id, &mut visited, &mut pending_stores);
-                if output_set.contains(&cid) && remaining_rc > 0 {
+                if outputs.contains(&cid) && remaining_rc > 0 {
                     let new_kid = self.new_load_kernel(cid, shapes);
                     let new_op = self.ekernels[new_kid].kernel.head;
                     visited.insert(cid, (new_kid, new_op));
@@ -125,7 +126,7 @@ impl Graph {
                 continue;
             }
             let remaining: Vec<ClassId> =
-                self.ekernels[kid].outputs.iter().copied().filter(|&c| output_set.contains(&c)).collect();
+                self.ekernels[kid].outputs.iter().copied().filter(|&c| outputs.contains(&c)).collect();
             for &cid in &remaining {
                 if let Some(&(_, op_id)) = visited.get(&cid) {
                     self.add_store(cid, kid, op_id, &mut visited, &mut pending_stores);

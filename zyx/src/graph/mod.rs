@@ -12,6 +12,8 @@
 //! Each equivalence class (`EClass`) holds all equivalent node forms. A cost
 //! model selects the cheapest extraction for kernel compilation.
 
+use std::collections::BTreeSet;
+
 use crate::{
     DType, Map, Set, ZyxError,
     backend::ProgramId,
@@ -261,9 +263,9 @@ impl Graph {
         (nid, cid)
     }
 
-    pub fn topo_sort_classes(&self, outputs: &[ClassId]) -> Vec<ClassId> {
+    pub fn topo_sort_classes(&self, outputs: &BTreeSet<ClassId>) -> Vec<ClassId> {
         let mut rcs: Map<ClassId, u32> = Map::default();
-        let mut stack: Vec<ClassId> = outputs.to_vec();
+        let mut stack: Vec<ClassId> = outputs.iter().copied().collect();
         while let Some(cid) = stack.pop() {
             rcs.entry(cid).and_modify(|rc| *rc += 1).or_insert_with(|| {
                 let mut deps = Vec::new();
@@ -281,7 +283,7 @@ impl Graph {
 
         let mut order = Vec::new();
         let mut internal_rcs: Map<ClassId, u32> = Map::default();
-        let mut stack: Vec<ClassId> = outputs.to_vec();
+        let mut stack: Vec<ClassId> = outputs.iter().copied().collect();
         while let Some(cid) = stack.pop() {
             if let Some(&rc) = rcs.get(&cid) {
                 let visited = internal_rcs.entry(cid).and_modify(|c| *c += 1).or_insert(1);
@@ -394,10 +396,29 @@ impl Graph {
         }
     }
 
+    /// Hash of the graph structure (hashcons) and output classes.
+    /// Deterministic across equivalent graphs — used as a cache key for compiled plans.
+    #[must_use]
+    pub fn cache_key(&self, outputs: &BTreeSet<ClassId>) -> u64 {
+        use std::hash::{Hash, Hasher};
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+
+        for (node, &id) in &self.hashcons {
+            id.hash(&mut hasher);
+            node.hash(&mut hasher);
+        }
+
+        for &cid in outputs {
+            cid.hash(&mut hasher);
+        }
+
+        hasher.finish()
+    }
+
     /// Returns the set of Kernel/ToDevice nodes forming the cheapest valid computation from leaves
     /// to all outputs. Panics if any output class depends on a non-Kernel/ToDevice node.
     #[must_use]
-    pub fn extract(&self, outputs: &[ClassId]) -> Vec<NodeId> {
+    pub fn extract(&self, outputs: &BTreeSet<ClassId>) -> Vec<NodeId> {
         let order = self.topo_sort_classes(outputs);
 
         let n = self.classes.ids().count();
