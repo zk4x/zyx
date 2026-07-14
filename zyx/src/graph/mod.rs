@@ -294,7 +294,60 @@ impl Graph {
     }
 
     pub fn add_memory_ops(&mut self) {
-        todo!()
+        let mut class_devices: Map<ClassId, Vec<DeviceId>> = Map::default();
+        for cid in self.classes.ids() {
+            for &nid in &self.classes[cid].nodes {
+                if let Node::Kernel { program_id, .. } = &self.nodes[nid].node {
+                    if program_id.device.0 != u32::MAX {
+                        class_devices.entry(cid).or_default().push(program_id.device);
+                    }
+                }
+            }
+        }
+
+        let kernel_list: Vec<(NodeId, Vec<ClassId>, Box<[ClassId]>, DeviceId)> = {
+            let mut v = Vec::new();
+            for cid in self.classes.ids() {
+                for &nid in &self.classes[cid].nodes {
+                    if let Node::Kernel { inputs, outputs, program_id } = &self.nodes[nid].node {
+                        if program_id.device.0 != u32::MAX {
+                            v.push((nid, inputs.to_vec(), outputs.clone(), program_id.device));
+                        }
+                    }
+                }
+            }
+            v
+        };
+
+        for (nid, mut inputs, _outputs, device) in kernel_list {
+            let mut changed = false;
+            for i in 0..inputs.len() {
+                let input_cid = inputs[i];
+                match class_devices.get(&input_cid) {
+                    Some(devs) => {
+                        debug_assert!(!devs.is_empty(), "input class with kernel has no device");
+                        if !devs.iter().any(|&d| d == device) {
+                            let shape = self.classes[input_cid].shape;
+                            let dtype = self.classes[input_cid].dtype;
+                            let (_, to_cid) = self.push(Node::ToDevice { x: input_cid, device }, shape, dtype);
+                            inputs[i] = to_cid;
+                            changed = true;
+                        }
+                    }
+                    None => {
+                        debug_assert!(
+                            self.classes[input_cid].nodes.iter().any(|n| matches!(&self.nodes[*n].node, Node::Leaf { .. } | Node::Const(_))),
+                            "input class must be a kernel output or a leaf/const"
+                        );
+                    }
+                }
+            }
+            if changed {
+                if let Node::Kernel { inputs: node_inputs, .. } = &mut self.nodes[nid].node {
+                    *node_inputs = inputs.into_boxed_slice();
+                }
+            }
+        }
     }
 }
 
