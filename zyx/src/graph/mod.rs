@@ -232,11 +232,7 @@ impl Node {
             Self::Unary { x, .. } => vec![*x],
             Self::Binary { x, y, .. } => vec![*x, *y],
             Self::ToDevice { x, .. } => vec![*x],
-            Self::Kernel { inputs, outputs, .. } => {
-                let mut deps = inputs.to_vec();
-                deps.extend(outputs.iter().copied());
-                deps
-            }
+            Self::Kernel { inputs, .. } => inputs.to_vec(),
         }
     }
 }
