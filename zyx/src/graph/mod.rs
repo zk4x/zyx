@@ -204,6 +204,17 @@ impl Graph {
         }
     }
 
+    pub fn push(&mut self, node: Node, shape: ShapeId, dtype: DType) -> (NodeId, ClassId) {
+        if let Some(&nid) = self.hashcons.get(&node) {
+            return (nid, self.nodes[nid].class_of);
+        }
+        let nid = self.nodes.push(NodeData { node: node.clone(), class_of: ClassId::NULL });
+        let cid = self.classes.push(EClass { nodes: vec![nid], shape, dtype });
+        self.nodes[nid].class_of = cid;
+        self.hashcons.insert(node, nid);
+        (nid, cid)
+    }
+
     pub fn topo_sort_classes(&self, outputs: &[ClassId]) -> Vec<ClassId> {
         let mut rcs: Map<ClassId, u32> = Map::default();
         let mut stack: Vec<ClassId> = outputs.to_vec();
@@ -282,15 +293,8 @@ impl Graph {
         println!("{}\n", line);
     }
 
-    pub fn push(&mut self, node: Node, shape: ShapeId, dtype: DType) -> (NodeId, ClassId) {
-        if let Some(&nid) = self.hashcons.get(&node) {
-            return (nid, self.nodes[nid].class_of);
-        }
-        let nid = self.nodes.push(NodeData { node: node.clone(), class_of: ClassId::NULL });
-        let cid = self.classes.push(EClass { nodes: vec![nid], shape, dtype });
-        self.nodes[nid].class_of = cid;
-        self.hashcons.insert(node, nid);
-        (nid, cid)
+    pub fn add_memory_ops(&mut self) {
+        todo!()
     }
 }
 
@@ -338,11 +342,7 @@ impl Runtime {
                         }
                     } else {
                         let knid = graph.nodes.push(NodeData {
-                            node: Node::Kernel {
-                                inputs: inputs.clone(),
-                                outputs: outputs.clone(),
-                                program_id: prog,
-                            },
+                            node: Node::Kernel { inputs: inputs.clone(), outputs: outputs.clone(), program_id: prog },
                             class_of,
                         });
                         for &ocid in &*outputs {

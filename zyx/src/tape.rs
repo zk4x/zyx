@@ -117,6 +117,11 @@ impl Tape {
     /// all output tensors become realized (buffers allocated).
     pub fn realize<'a>(self, tensors: impl IntoIterator<Item = &'a Tensor>) -> Result<(), ZyxError> {
         let mut rt = RT.lock();
+
+        // TODO hash graph to look up compiled plan from cache
+
+        // TODO load compiled plan from cache if exists
+
         let output_classes: Vec<ClassId> = tensors
             .into_iter()
             .map(|t| match rt.tensors[t.id].state {
@@ -124,15 +129,28 @@ impl Tape {
                 _ => unreachable!("non-graph tensor in realize"),
             })
             .collect();
+
+        debug_assert!(rt.graph.is_some());
+
+        // TODO pattern match cublas, cblas, etc. kernels
+
+        // Fills missing places with zyx custom kernels
         // SAFETY: graph and shapes are separate fields of Runtime, no aliasing, rust is stupid
-        let shapes_ptr = &rt.shapes as *const Slab<ShapeId, Vec<Dim>>;
-        if let Some(graph) = &mut rt.graph {
-            graph.fill_remaining(&output_classes, unsafe { &*shapes_ptr });
-        }
+        let shapes_ptr: *const Slab<ShapeId, Vec<Dim>> = &rt.shapes;
+        rt.graph.as_mut().unwrap().fill_remaining(&output_classes, unsafe { &*shapes_ptr });
+
+        // Autotunes custom zyx kernels for all devices and adds kernel nodes for all of them
         rt.autotune_all_kernels()?;
 
-        let shapes_ptr = &rt.shapes as *const Slab<ShapeId, Vec<Dim>>;
-        rt.graph.as_ref().unwrap().debug_print(unsafe { &*shapes_ptr });
+        // After all kernels nodes are added, this adds movement ops so extract can pick fastest path
+        rt.graph.as_mut().unwrap().add_memory_ops();
+
+        rt.graph.as_ref().unwrap().debug_print(&rt.shapes);
+
+        // TODO extract fastest path
+
+        // TOOD generate compiled plan and put it to cache
+
         Ok(())
     }
 
@@ -146,13 +164,9 @@ impl Tape {
 
 impl Drop for Tape {
     fn drop(&mut self) {
-        //RT.lock().drop_gradient_tape();
-        /*if let Ok(mut rt) = RT.try_lock() {
-            todo!();
-        } else {
-            println!("Warning: Unable to drop GradientTape due to runtime mutex lock.");
-        }*/
-        // TODO
+        // TODO realize all tensors that are outputs from graph and set graph to none
+
+        RT.lock().graph = None;
     }
 }
 

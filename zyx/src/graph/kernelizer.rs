@@ -1,4 +1,13 @@
-use crate::{DType, Map, Set, backend::ProgramId, graph::{ClassId, EKernelData, EKernelId, Graph, Node, NodeData}, kernel::{BOp, DeviceId, Kernel, MoveOp, Op, OpId, UOp}, runtime::ShapeId, shape::{Dim, UAxis}, slab::{Slab, SlabId}, view::View};
+use crate::{
+    DType, Map, Set,
+    backend::ProgramId,
+    graph::{ClassId, EKernelData, EKernelId, Graph, Node, NodeData},
+    kernel::{BOp, DeviceId, Kernel, MoveOp, Op, OpId, UOp},
+    runtime::ShapeId,
+    shape::{Dim, UAxis},
+    slab::{Slab, SlabId},
+    view::View,
+};
 
 impl Graph {
     pub fn fill_remaining(&mut self, outputs: &[ClassId], shapes: &Slab<ShapeId, Vec<Dim>>) {
