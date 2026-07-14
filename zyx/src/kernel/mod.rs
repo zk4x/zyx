@@ -904,7 +904,7 @@ impl Display for Scope {
 
 impl PartialEq for Kernel {
     fn eq(&self, other: &Self) -> bool {
-        self.ops == other.ops && self.head == other.head
+        self.ops == other.ops && self.head == other.head && self.device_id == other.device_id
     }
 }
 
@@ -931,6 +931,7 @@ impl Hash for Kernel {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
         self.head.hash(state);
         self.ops.hash(state);
+        self.device_id.hash(state);
     }
 }
 
