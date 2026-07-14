@@ -121,22 +121,23 @@ impl Tape {
     pub fn realize<'a>(self, tensors: impl IntoIterator<Item = &'a Tensor>) -> Result<(), ZyxError> {
         let mut rt = RT.lock();
 
-        let output_classes: Vec<ClassId> = tensors
+        let output_pairs: Vec<(TensorId, ClassId)> = tensors
             .into_iter()
             .map(|t| match rt.tensors[t.id].state {
-                TensorState::Graph { class_id, .. } => class_id,
+                TensorState::Graph { class_id, .. } => (t.id, class_id),
                 _ => unreachable!("non-graph tensor in realize"),
             })
             .collect();
+
+        let output_tids: Vec<TensorId> = output_pairs.iter().map(|(tid, _)| *tid).collect();
+        let output_classes: Vec<ClassId> = output_pairs.iter().map(|(_, cid)| *cid).collect();
 
         debug_assert!(rt.graph.is_some());
 
         let output_set: BTreeSet<ClassId> = output_classes.iter().copied().collect();
         let cache_key = rt.graph.as_ref().unwrap().cache_key(&output_set);
-        if let Some(plan) = rt.plan_cache.get(&cache_key) {
-            todo!("Execute plan");
-
-            return Ok(());
+        if let Some(plan) = rt.plan_cache.get(&cache_key).cloned() {
+            return rt.execute_plan(&plan, &output_tids, &output_classes);
         }
 
         // TODO pattern match cublas, cblas, etc. kernels
@@ -160,9 +161,9 @@ impl Tape {
 
         plan.debug();
 
-        rt.plan_cache.insert(cache_key, plan);
+        rt.execute_plan(&plan, &output_tids, &output_classes)?;
 
-        todo!("Execute plan");
+        rt.plan_cache.insert(cache_key, plan);
 
         Ok(())
     }

@@ -1,15 +1,16 @@
 use std::collections::BTreeSet;
 
 use crate::{
-    Map, Set,
-    backend::{Device, DeviceId, PoolId, ProgramId},
+    Map, Set, ZyxError,
+    backend::{BufferId, Device, DeviceId, Event, PoolId, ProgramId},
     graph::{ClassId, Graph, Node, NodeId},
-    runtime::ShapeId,
+    runtime::{Runtime, ShapeId},
     shape::Dim,
     slab::Slab,
+    tensor::TensorId,
 };
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum ExecNode {
     Allocate {
         class: ClassId,
@@ -31,9 +32,10 @@ pub enum ExecNode {
     },
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct ExecPlan {
     pub nodes: Vec<ExecNode>,
+    pub leaf_classes: BTreeSet<ClassId>,
 }
 
 impl ExecPlan {
@@ -123,7 +125,7 @@ impl ExecPlan {
             }
         }
 
-        Self { nodes: plan_nodes }
+        Self { nodes: plan_nodes, leaf_classes }
     }
 
     pub fn debug(&self) {
@@ -148,5 +150,91 @@ impl ExecPlan {
             }
         }
         println!("{}\n", line);
+    }
+}
+
+impl Runtime {
+    pub fn execute_plan(
+        &mut self,
+        plan: &ExecPlan,
+        output_tids: &[TensorId],
+        output_classes: &[ClassId],
+    ) -> Result<(), ZyxError> {
+        let mut class_buf: Map<ClassId, BufferId> = Map::default();
+
+        let graph = self.graph.as_ref().unwrap();
+        for &cid in &plan.leaf_classes {
+            let tid = graph.leaf_map[&cid];
+            class_buf.insert(cid, self.buffer_map[&tid]);
+        }
+
+        for node in &plan.nodes {
+            match node {
+                ExecNode::Allocate { class, pool, bytes } => {
+                    let (buf, event) = self.pools[*pool].allocate(*bytes)?;
+                    let buf_id = BufferId { pool: *pool, buffer: buf };
+                    class_buf.insert(*class, buf_id);
+                    self.events.insert(BTreeSet::from([buf_id]), event);
+                }
+                ExecNode::Launch { program_id, load_classes, store_classes } => {
+                    let pool_id = self.devices[program_id.device].memory_pool_id();
+                    let mut args = Vec::new();
+                    let mut kernel_bufs = BTreeSet::new();
+                    for c in load_classes.iter().chain(store_classes.iter()) {
+                        let buf = class_buf[c];
+                        args.push(buf.buffer);
+                        kernel_bufs.insert(buf);
+                    }
+                    let wait_list = self.drain_events_for_bufs(&kernel_bufs);
+                    let event = self.devices[program_id.device].launch(
+                        program_id.program,
+                        &mut self.pools[pool_id],
+                        &args,
+                        wait_list,
+                    )?;
+                    self.events.insert(kernel_bufs, event);
+                }
+                ExecNode::Copy { dst_class, src_class, bytes } => {
+                    let src = class_buf[src_class];
+                    let dst = class_buf[dst_class];
+                    let wait_list = self.drain_events_for_buf(src);
+                    let mut tmp = vec![0u8; *bytes as usize];
+                    self.pools[src.pool].pool_to_host(src.buffer, &mut tmp, wait_list)?;
+                    let event = self.pools[dst.pool].host_to_pool(&tmp, dst.buffer, vec![])?;
+                    self.pools[dst.pool].sync_events(vec![event])?;
+                }
+                ExecNode::Deallocate { class } => {
+                    let buf = class_buf.remove(class).unwrap();
+                    let wait_list = self.drain_events_for_buf(buf);
+                    self.pools[buf.pool].deallocate(buf.buffer, wait_list);
+                }
+            }
+        }
+
+        for (&tid, &cid) in output_tids.iter().zip(output_classes.iter()) {
+            self.buffer_map.insert(tid, class_buf[&cid]);
+        }
+
+        Ok(())
+    }
+
+    fn drain_events_for_buf(&mut self, buf: BufferId) -> Vec<Event> {
+        let keys: Vec<BTreeSet<BufferId>> =
+            self.events.keys().filter(|k| k.contains(&buf)).cloned().collect();
+        let mut result = Vec::new();
+        for key in keys {
+            result.push(self.events.remove(&key).unwrap());
+        }
+        result
+    }
+
+    fn drain_events_for_bufs(&mut self, bufs: &BTreeSet<BufferId>) -> Vec<Event> {
+        let keys: Vec<BTreeSet<BufferId>> =
+            self.events.keys().filter(|k| !k.is_disjoint(bufs)).cloned().collect();
+        let mut result = Vec::new();
+        for key in keys {
+            result.push(self.events.remove(&key).unwrap());
+        }
+        result
     }
 }
