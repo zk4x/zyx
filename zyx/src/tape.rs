@@ -147,7 +147,7 @@ impl Tape {
 
         rt.graph.as_ref().unwrap().debug_print(&rt.shapes);
 
-        // TODO extract fastest path
+        let nodes = rt.graph.as_ref().unwrap().extract(&output_classes);
 
         // TOOD generate compiled plan and put it to cache
 

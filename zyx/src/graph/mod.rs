@@ -13,7 +13,7 @@
 //! model selects the cheapest extraction for kernel compilation.
 
 use crate::{
-    DType, Map, ZyxError,
+    DType, Map, Set, ZyxError,
     backend::ProgramId,
     dtype::Constant,
     kernel::{BOp, DeviceId, Kernel, UOp},
@@ -23,6 +23,7 @@ use crate::{
 };
 
 mod kernelizer;
+mod plan;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct NodeId(pub u32);
@@ -393,8 +394,67 @@ impl Graph {
 
     /// Returns the set of Kernel/ToDevice nodes forming the cheapest valid computation from leaves
     /// to all outputs. Panics if any output class depends on a non-Kernel/ToDevice node.
-    fn extract(&self, outputs: &[ClassId]) -> Vec<NodeId> {
-        todo!()
+    #[must_use]
+    pub fn extract(&self, outputs: &[ClassId]) -> Vec<NodeId> {
+        let order = self.topo_sort_classes(outputs);
+
+        let n = self.classes.ids().count();
+        let mut cost: Vec<Option<u64>> = vec![None; n];
+        let mut producer: Vec<Option<NodeId>> = vec![None; n];
+
+        for &cid in &order {
+            let idx = cid.0 as usize;
+
+            if self.classes[cid].nodes.iter().any(|&nid| matches!(&self.nodes[nid].node, Node::Leaf { .. })) {
+                cost[idx] = Some(0);
+            }
+
+            for &nid in &self.classes[cid].nodes {
+                match &self.nodes[nid].node {
+                    Node::Kernel { inputs, outputs, time, .. } => {
+                        if inputs.iter().all(|icid| cost[icid.0 as usize].is_some()) {
+                            let total: u64 = inputs.iter().map(|icid| cost[icid.0 as usize].unwrap()).sum();
+                            let candidate = time + total;
+                            for &ocid in outputs {
+                                let oidx = ocid.0 as usize;
+                                if cost[oidx].map_or(true, |c| candidate < c) {
+                                    cost[oidx] = Some(candidate);
+                                    producer[oidx] = Some(nid);
+                                }
+                            }
+                        }
+                    }
+                    Node::ToDevice { x, time, .. } => {
+                        if let Some(c) = cost[x.0 as usize] {
+                            let candidate = time + c;
+                            if cost[idx].map_or(true, |c| candidate < c) {
+                                cost[idx] = Some(candidate);
+                                producer[idx] = Some(nid);
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+
+        for &ocid in outputs {
+            let idx = ocid.0 as usize;
+            if cost[idx].is_none() {
+                panic!("class {ocid:?} has no valid producer path through Kernel or ToDevice nodes");
+            }
+        }
+
+        let mut result = Vec::new();
+        let mut seen: Set<NodeId> = Set::default();
+        for &cid in &order {
+            if let Some(nid) = producer[cid.0 as usize] {
+                if seen.insert(nid) {
+                    result.push(nid);
+                }
+            }
+        }
+        result
     }
 }
 
