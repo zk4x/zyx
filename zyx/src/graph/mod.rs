@@ -294,7 +294,6 @@ impl Graph {
     }
 }
 
-
 impl Runtime {
     pub fn autotune_all_kernels(&mut self) -> Result<(), ZyxError> {
         let kernel_data: Vec<(NodeId, Kernel)> = if let Some(ref graph) = self.graph {

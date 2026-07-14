@@ -1169,15 +1169,14 @@ impl Runtime {
         read: u64,
         write: u64,
     ) -> Result<(DeviceProgramId, u64), ZyxError> {
-        let dev_info = self.devices[device_id].info().clone();
-        let dev_info_id = self.get_or_add_dev_info(&dev_info);
-
-        kernel.sort_global_defines();
-
         let kernel_id = if let Some(&cached_kid) = self.kernel_map.get(&kernel) {
             if let Some(&program_id) = self.programs.get(&cached_kid) {
                 return Ok((program_id, 0));
             }
+
+            let dev_info = self.devices[device_id].info().clone();
+            let dev_info_id = self.get_or_add_dev_info(&dev_info);
+
             if let Some(opt_seq) = self.optimizations.get(&(cached_kid, dev_info_id)) {
                 opt_seq.apply(&mut kernel, &dev_info);
                 let program_id = {
@@ -1196,19 +1195,27 @@ impl Runtime {
             kernel_id
         };
 
+        let dev_info = self.devices[device_id].info().clone();
+        let dev_info_id = self.get_or_add_dev_info(&dev_info);
+
+        kernel.sort_global_defines();
         kernel.unfold_movement_ops();
+
         {
             let device = &mut self.devices[device_id];
             let global_indices = kernel.get_global_indices();
             let max_global_dims = device.info().max_global_work_dims.len();
             if global_indices.len() > max_global_dims {
                 let n = global_indices.len() + 1 - max_global_dims;
-                let loops: Vec<OpId> = global_indices.values().copied().take(n).collect();
-                kernel.merge_indices(&loops);
+                let indices: Vec<OpId> = global_indices.values().copied().take(n).collect();
+                kernel.merge_indices(&indices);
             }
             kernel.renumber_indices();
             kernel.verify();
         }
+
+        kernel.device_id = device_id;
+
         let (program_id, opts, timing) = kernel.autotune_(
             &mut self.devices[device_id],
             &mut self.pools[pool_id],
@@ -1218,6 +1225,7 @@ impl Runtime {
             write,
             self.debug,
         )?;
+
         self.programs.insert(kernel_id, program_id);
         self.optimizations.insert((kernel_id, dev_info_id), opts);
 
