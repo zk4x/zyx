@@ -589,7 +589,8 @@ impl Runtime {
         };
         let shape_id = self.tensors[x].shape_id;
         let dtype = self.tensors[x].dtype;
-        let (node_id, cid) = graph.push(Node::ToDevice { x: class_id, device: device_id }, shape_id, dtype);
+        // TODO measure actual time by running a test copy
+        let (node_id, cid) = graph.push(Node::ToDevice { x: class_id, device: device_id, time: 0 }, shape_id, dtype);
         let tid = self.tensors.push(TensorData { shape_id, dtype, state: TensorState::Graph { node_id, class_id: cid } });
         #[cfg(feature = "debug_tensor_op")]
         println!("  -> tid={tid}, nid={node_id:?}, cid={cid:?}");

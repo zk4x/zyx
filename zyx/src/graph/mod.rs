@@ -68,7 +68,7 @@ impl SlabId for ClassId {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone)]
 pub(crate) enum Node {
     Const(Constant),
     Leaf {
@@ -112,12 +112,55 @@ pub(crate) enum Node {
     ToDevice {
         x: ClassId,
         device: DeviceId,
+        time: u64,
     },
     Kernel {
         inputs: Box<[ClassId]>,
         outputs: Box<[ClassId]>,
         program_id: ProgramId,
+        time: u64,
     },
+}
+
+impl PartialEq for Node {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::Const(a), Self::Const(b)) => a == b,
+            (Self::Leaf { dtype: ad, shape: as_ }, Self::Leaf { dtype: bd, shape: bs }) => ad == bd && as_ == bs,
+            (Self::Expand { x: a, shape: as_ }, Self::Expand { x: b, shape: bs }) => a == b && as_ == bs,
+            (Self::Permute { x: a, axes: aa }, Self::Permute { x: b, axes: ba }) => a == b && aa == ba,
+            (Self::Reshape { x: a, shape: as_ }, Self::Reshape { x: b, shape: bs }) => a == b && as_ == bs,
+            (Self::PadZeros { x: a, padding: ap }, Self::PadZeros { x: b, padding: bp }) => a == b && ap == bp,
+            (Self::Reduce { x: a, bop: ar, axes: aa }, Self::Reduce { x: b, bop: br, axes: ba }) => a == b && ar == br && aa == ba,
+            (Self::Cast { x: a, dtype: ad }, Self::Cast { x: b, dtype: bd }) => a == b && ad == bd,
+            (Self::Unary { x: a, uop: au }, Self::Unary { x: b, uop: bu }) => a == b && au == bu,
+            (Self::Binary { x: a, y: ay, bop: ab }, Self::Binary { x: b, y: by, bop: bb }) => a == b && ay == by && ab == bb,
+            (Self::ToDevice { x: a, device: ad, .. }, Self::ToDevice { x: b, device: bd, .. }) => a == b && ad == bd,
+            (Self::Kernel { inputs: ai, outputs: ao, program_id: ap, .. }, Self::Kernel { inputs: bi, outputs: bo, program_id: bp, .. }) => ai == bi && ao == bo && ap == bp,
+            _ => false,
+        }
+    }
+}
+
+impl Eq for Node {}
+
+impl std::hash::Hash for Node {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        match self {
+            Self::Const(v) => { 0u8.hash(state); v.hash(state); }
+            Self::Leaf { dtype, shape } => { 1u8.hash(state); dtype.hash(state); shape.hash(state); }
+            Self::Expand { x, shape } => { 2u8.hash(state); x.hash(state); shape.hash(state); }
+            Self::Permute { x, axes } => { 3u8.hash(state); x.hash(state); axes.hash(state); }
+            Self::Reshape { x, shape } => { 4u8.hash(state); x.hash(state); shape.hash(state); }
+            Self::PadZeros { x, padding } => { 5u8.hash(state); x.hash(state); padding.hash(state); }
+            Self::Reduce { x, bop, axes } => { 6u8.hash(state); x.hash(state); bop.hash(state); axes.hash(state); }
+            Self::Cast { x, dtype } => { 7u8.hash(state); x.hash(state); dtype.hash(state); }
+            Self::Unary { x, uop } => { 8u8.hash(state); x.hash(state); uop.hash(state); }
+            Self::Binary { x, y, bop } => { 9u8.hash(state); x.hash(state); y.hash(state); bop.hash(state); }
+            Self::ToDevice { x, device, .. } => { 10u8.hash(state); x.hash(state); device.hash(state); }
+            Self::Kernel { inputs, outputs, program_id, .. } => { 11u8.hash(state); inputs.hash(state); outputs.hash(state); program_id.hash(state); }
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -278,12 +321,12 @@ impl Graph {
                     Node::Binary { bop, .. } => format!("Binary {:?}", bop),
                     Node::Unary { uop, .. } => format!("Unary {:?}", uop),
                     Node::Cast { dtype, .. } => format!("Cast {:?}", dtype),
-                    Node::Kernel { program_id, .. } => format!("Kernel prog={:?}", program_id),
+                    Node::Kernel { program_id, time, .. } => format!("Kernel prog={:?} time={}", program_id, time),
                     Node::Expand { .. } => "Expand".into(),
                     Node::Permute { axes, .. } => format!("Permute {:?}", axes),
                     Node::Reshape { shape, .. } => format!("Reshape {:?}", shapes[*shape]),
                     Node::PadZeros { padding, .. } => format!("Pad {:?}", padding),
-                    Node::ToDevice { device, .. } => format!("ToDevice {:?}", device),
+                    Node::ToDevice { device, time, .. } => format!("ToDevice {:?} time={}", device, time),
                     Node::Const(v) => format!("Const {:?}", v),
                     Node::Leaf { dtype, .. } => format!("Leaf {:?}", dtype),
                 };
@@ -293,6 +336,10 @@ impl Graph {
         println!("{}\n", line);
     }
 
+    /// For each kernel node, it needs to go over inputs. Inputs are either realized or other kernel nodes.
+    /// Debug assert that. Then for each input, if that input comes from kernel on different device
+    /// or if it's in buffer_map on different device, add EGraph::ToDevice node that moves it
+    /// to the device of the Node::Kernel.
     pub fn add_memory_ops(&mut self) {
         let mut class_devices: Map<ClassId, Vec<DeviceId>> = Map::default();
         for cid in self.classes.ids() {
@@ -309,7 +356,7 @@ impl Graph {
             let mut v = Vec::new();
             for cid in self.classes.ids() {
                 for &nid in &self.classes[cid].nodes {
-                    if let Node::Kernel { inputs, outputs, program_id } = &self.nodes[nid].node {
+                    if let Node::Kernel { inputs, outputs, program_id, .. } = &self.nodes[nid].node {
                         if program_id.device.0 != u32::MAX {
                             v.push((nid, inputs.to_vec(), outputs.clone(), program_id.device));
                         }
@@ -329,7 +376,8 @@ impl Graph {
                         if !devs.iter().any(|&d| d == device) {
                             let shape = self.classes[input_cid].shape;
                             let dtype = self.classes[input_cid].dtype;
-                            let (_, to_cid) = self.push(Node::ToDevice { x: input_cid, device }, shape, dtype);
+                            // TODO measure actual time by running a test copy
+                            let (_, to_cid) = self.push(Node::ToDevice { x: input_cid, device, time: 0 }, shape, dtype);
                             inputs[i] = to_cid;
                             changed = true;
                         }
@@ -381,21 +429,21 @@ impl Runtime {
             } else {
                 continue;
             };
-            //println!("device_ids.len={}", device_ids.len());
             for (i, &dev_id) in device_ids.iter().enumerate() {
                 let pool_id = self.devices[dev_id].memory_pool_id();
                 let mut kernel = kernel.clone();
                 kernel.device_id = dev_id;
-                let (dev_prog, _timing) = self.get_or_autotune(kernel, pool_id, flop, read, write)?;
+                let (dev_prog, timing) = self.get_or_autotune(kernel, pool_id, flop, read, write)?;
                 let prog = ProgramId { device: dev_id, program: dev_prog };
                 if let Some(ref mut graph) = self.graph {
                     if i == 0 {
-                        if let Node::Kernel { program_id, .. } = &mut graph.nodes[*nid].node {
+                        if let Node::Kernel { program_id, time, .. } = &mut graph.nodes[*nid].node {
                             *program_id = prog;
+                            *time = timing;
                         }
                     } else {
                         let knid = graph.nodes.push(NodeData {
-                            node: Node::Kernel { inputs: inputs.clone(), outputs: outputs.clone(), program_id: prog },
+                            node: Node::Kernel { inputs: inputs.clone(), outputs: outputs.clone(), program_id: prog, time: timing },
                             class_of,
                         });
                         for &ocid in &*outputs {

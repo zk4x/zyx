@@ -225,6 +225,7 @@ impl Graph {
                 inputs: input_cids.into_boxed_slice(),
                 outputs: output_cids.clone().into_boxed_slice(),
                 program_id: ProgramId::NULL,
+                time: 0,
             };
             let knid = self.nodes.push(NodeData { node: kind, class_of: cid });
             for &ocid in &output_cids {
