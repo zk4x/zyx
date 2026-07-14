@@ -390,6 +390,12 @@ impl Graph {
             }
         }
     }
+
+    /// Returns the set of Kernel/ToDevice nodes forming the cheapest valid computation from leaves
+    /// to all outputs. Panics if any output class depends on a non-Kernel/ToDevice node.
+    fn extract(&self, outputs: &[ClassId]) -> Vec<NodeId> {
+        todo!()
+    }
 }
 
 impl Runtime {
