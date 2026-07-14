@@ -1163,7 +1163,6 @@ impl Runtime {
     pub fn get_or_autotune(
         &mut self,
         mut kernel: Kernel,
-        device_id: DeviceId,
         pool_id: PoolId,
         flop: u64,
         read: u64,
@@ -1174,13 +1173,13 @@ impl Runtime {
                 return Ok((program_id, 0));
             }
 
-            let dev_info = self.devices[device_id].info().clone();
+            let dev_info = self.devices[kernel.device_id].info().clone();
             let dev_info_id = self.get_or_add_dev_info(&dev_info);
 
             if let Some(opt_seq) = self.optimizations.get(&(cached_kid, dev_info_id)) {
                 opt_seq.apply(&mut kernel, &dev_info);
                 let program_id = {
-                    let device = &mut self.devices[device_id];
+                    let device = &mut self.devices[kernel.device_id];
                     device.compile(&kernel, self.debug.asm())?
                 };
                 self.programs.insert(cached_kid, program_id);
@@ -1195,14 +1194,14 @@ impl Runtime {
             kernel_id
         };
 
-        let dev_info = self.devices[device_id].info().clone();
+        let dev_info = self.devices[kernel.device_id].info().clone();
         let dev_info_id = self.get_or_add_dev_info(&dev_info);
 
         kernel.sort_global_defines();
         kernel.unfold_movement_ops();
 
         {
-            let device = &mut self.devices[device_id];
+            let device = &mut self.devices[kernel.device_id];
             let global_indices = kernel.get_global_indices();
             let max_global_dims = device.info().max_global_work_dims.len();
             if global_indices.len() > max_global_dims {
@@ -1214,10 +1213,8 @@ impl Runtime {
             kernel.verify();
         }
 
-        kernel.device_id = device_id;
-
         let (program_id, opts, timing) = kernel.autotune_(
-            &mut self.devices[device_id],
+            &mut self.devices[kernel.device_id],
             &mut self.pools[pool_id],
             &self.autotune_config,
             flop,
@@ -1241,7 +1238,7 @@ impl Runtime {
     /// A kernel must never both load and store the same tensor (prevents aliasing).
     /// The debug_assert in the recursive materialization loop enforces this.
     fn materialize_kernel(&mut self, kid: KernelId) -> Result<(), ZyxError> {
-        let KernelData { outputs, loads, stores, kernel } = unsafe { self.kernels.remove_and_return(kid) };
+        let KernelData { outputs, loads, stores, mut kernel } = unsafe { self.kernels.remove_and_return(kid) };
 
         debug_assert!(outputs.is_empty(), "all outputs must be stored before materialize");
 
@@ -1297,6 +1294,7 @@ impl Runtime {
         dev_ids.reverse();
         let dev_id = *dev_ids.first().ok_or_else(|| ZyxError::AllocationError("no available device".into()))?;
         let pool_id = self.devices[dev_id].memory_pool_id();
+        kernel.device_id = dev_id;
 
         // Ensure loads are in target pool
         let mut event_wait_list = Vec::new();
@@ -1388,7 +1386,7 @@ impl Runtime {
             kernel.debug();
         }
         let (flop, read, write) = kernel.flop_mem_rw();
-        let (dev_prog, _timing) = self.get_or_autotune(kernel, dev_id, pool_id, flop, read, write)?;
+        let (dev_prog, _timing) = self.get_or_autotune(kernel, pool_id, flop, read, write)?;
 
         let event = self.devices[dev_id].launch(dev_prog, &mut self.pools[pool_id], &args, event_wait_list)?;
         self.events.insert(kernel_buffers, event);

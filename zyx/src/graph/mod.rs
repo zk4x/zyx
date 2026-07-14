@@ -317,7 +317,9 @@ impl Runtime {
             let device_ids: Vec<DeviceId> = self.devices.ids().collect();
             for &dev_id in &device_ids {
                 let pool_id = self.devices[dev_id].memory_pool_id();
-                let (dev_prog, _timing) = self.get_or_autotune(kernel.clone(), dev_id, pool_id, flop, read, write)?;
+                let mut kernel = kernel.clone();
+                kernel.device_id = dev_id;
+                let (dev_prog, _timing) = self.get_or_autotune(kernel, pool_id, flop, read, write)?;
                 let prog = ProgramId { device: dev_id, program: dev_prog };
                 if let Some(ref mut graph) = self.graph {
                     if let Node::Kernel { program_id, .. } = &mut graph.nodes[*nid].node {
