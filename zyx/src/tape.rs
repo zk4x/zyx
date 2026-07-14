@@ -31,7 +31,7 @@
 
 use crate::{
     Map, RT, Set, Tensor, ZyxError,
-    graph::{ClassId, Graph, Node},
+    graph::{ClassId, ExecPlan, Graph, Node},
     runtime::{Runtime, ShapeId, TensorState},
     shape::Dim,
     slab::Slab,
@@ -149,7 +149,7 @@ impl Tape {
 
         let nodes = rt.graph.as_ref().unwrap().extract(&output_classes);
 
-        // TOOD generate compiled plan and put it to cache
+        let plan = ExecPlan::new(rt.graph.as_ref().unwrap(), &nodes);
 
         Ok(())
     }

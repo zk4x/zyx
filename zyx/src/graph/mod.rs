@@ -25,6 +25,8 @@ use crate::{
 mod kernelizer;
 mod plan;
 
+pub use plan::ExecPlan;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct NodeId(pub u32);
 

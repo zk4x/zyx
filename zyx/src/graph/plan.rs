@@ -1,6 +1,6 @@
 use crate::graph::{Graph, NodeId};
 
-struct ExecPlan {}
+pub struct ExecPlan {}
 
 enum ExecNode {
     Allocate {},
@@ -10,7 +10,8 @@ enum ExecNode {
 }
 
 impl ExecPlan {
-    fn new(graph: &Graph, nodes: &[NodeId]) -> Self {
+    #[must_use]
+    pub fn new(graph: &Graph, nodes: &[NodeId]) -> Self {
         todo!()
     }
 }
