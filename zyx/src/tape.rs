@@ -83,6 +83,7 @@ impl Tape {
             let dtype = rt.tensors[tid].dtype;
             let (node_id, class_id) = graph.push(Node::Leaf { dtype, shape: shape_id }, shape_id, dtype);
             rt.tensors[tid].state = TensorState::Graph { node_id, class_id };
+            graph.leaf_map.insert(class_id, tid);
         }
 
         rt.graph = Some(graph);
@@ -155,7 +156,10 @@ impl Tape {
 
         let nodes = rt.graph.as_ref().unwrap().extract(&output_set);
 
-        let plan = ExecPlan::new(rt.graph.as_ref().unwrap(), &nodes);
+        let plan = ExecPlan::new(rt.graph.as_ref().unwrap(), &nodes, &output_set, &rt.devices, &rt.shapes);
+
+        plan.debug();
+
         rt.plan_cache.insert(cache_key, plan);
 
         todo!("Execute plan");

@@ -22,6 +22,7 @@ use crate::{
     runtime::{Runtime, ShapeId},
     shape::{Dim, UAxis},
     slab::{Slab, SlabId},
+    tensor::TensorId,
 };
 
 mod kernelizer;
@@ -136,12 +137,17 @@ impl PartialEq for Node {
             (Self::Permute { x: a, axes: aa }, Self::Permute { x: b, axes: ba }) => a == b && aa == ba,
             (Self::Reshape { x: a, shape: as_ }, Self::Reshape { x: b, shape: bs }) => a == b && as_ == bs,
             (Self::PadZeros { x: a, padding: ap }, Self::PadZeros { x: b, padding: bp }) => a == b && ap == bp,
-            (Self::Reduce { x: a, bop: ar, axes: aa }, Self::Reduce { x: b, bop: br, axes: ba }) => a == b && ar == br && aa == ba,
+            (Self::Reduce { x: a, bop: ar, axes: aa }, Self::Reduce { x: b, bop: br, axes: ba }) => {
+                a == b && ar == br && aa == ba
+            }
             (Self::Cast { x: a, dtype: ad }, Self::Cast { x: b, dtype: bd }) => a == b && ad == bd,
             (Self::Unary { x: a, uop: au }, Self::Unary { x: b, uop: bu }) => a == b && au == bu,
             (Self::Binary { x: a, y: ay, bop: ab }, Self::Binary { x: b, y: by, bop: bb }) => a == b && ay == by && ab == bb,
             (Self::ToDevice { x: a, device: ad, .. }, Self::ToDevice { x: b, device: bd, .. }) => a == b && ad == bd,
-            (Self::Kernel { inputs: ai, outputs: ao, program_id: ap, .. }, Self::Kernel { inputs: bi, outputs: bo, program_id: bp, .. }) => ai == bi && ao == bo && ap == bp,
+            (
+                Self::Kernel { inputs: ai, outputs: ao, program_id: ap, .. },
+                Self::Kernel { inputs: bi, outputs: bo, program_id: bp, .. },
+            ) => ai == bi && ao == bo && ap == bp,
             _ => false,
         }
     }
@@ -152,18 +158,68 @@ impl Eq for Node {}
 impl std::hash::Hash for Node {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
         match self {
-            Self::Const(v) => { 0u8.hash(state); v.hash(state); }
-            Self::Leaf { dtype, shape } => { 1u8.hash(state); dtype.hash(state); shape.hash(state); }
-            Self::Expand { x, shape } => { 2u8.hash(state); x.hash(state); shape.hash(state); }
-            Self::Permute { x, axes } => { 3u8.hash(state); x.hash(state); axes.hash(state); }
-            Self::Reshape { x, shape } => { 4u8.hash(state); x.hash(state); shape.hash(state); }
-            Self::PadZeros { x, padding } => { 5u8.hash(state); x.hash(state); padding.hash(state); }
-            Self::Reduce { x, bop, axes } => { 6u8.hash(state); x.hash(state); bop.hash(state); axes.hash(state); }
-            Self::Cast { x, dtype } => { 7u8.hash(state); x.hash(state); dtype.hash(state); }
-            Self::Unary { x, uop } => { 8u8.hash(state); x.hash(state); uop.hash(state); }
-            Self::Binary { x, y, bop } => { 9u8.hash(state); x.hash(state); y.hash(state); bop.hash(state); }
-            Self::ToDevice { x, device, .. } => { 10u8.hash(state); x.hash(state); device.hash(state); }
-            Self::Kernel { inputs, outputs, program_id, .. } => { 11u8.hash(state); inputs.hash(state); outputs.hash(state); program_id.hash(state); }
+            Self::Const(v) => {
+                0u8.hash(state);
+                v.hash(state);
+            }
+            Self::Leaf { dtype, shape } => {
+                1u8.hash(state);
+                dtype.hash(state);
+                shape.hash(state);
+            }
+            Self::Expand { x, shape } => {
+                2u8.hash(state);
+                x.hash(state);
+                shape.hash(state);
+            }
+            Self::Permute { x, axes } => {
+                3u8.hash(state);
+                x.hash(state);
+                axes.hash(state);
+            }
+            Self::Reshape { x, shape } => {
+                4u8.hash(state);
+                x.hash(state);
+                shape.hash(state);
+            }
+            Self::PadZeros { x, padding } => {
+                5u8.hash(state);
+                x.hash(state);
+                padding.hash(state);
+            }
+            Self::Reduce { x, bop, axes } => {
+                6u8.hash(state);
+                x.hash(state);
+                bop.hash(state);
+                axes.hash(state);
+            }
+            Self::Cast { x, dtype } => {
+                7u8.hash(state);
+                x.hash(state);
+                dtype.hash(state);
+            }
+            Self::Unary { x, uop } => {
+                8u8.hash(state);
+                x.hash(state);
+                uop.hash(state);
+            }
+            Self::Binary { x, y, bop } => {
+                9u8.hash(state);
+                x.hash(state);
+                y.hash(state);
+                bop.hash(state);
+            }
+            Self::ToDevice { x, device, .. } => {
+                10u8.hash(state);
+                x.hash(state);
+                device.hash(state);
+            }
+            Self::Kernel { inputs, outputs, program_id, .. } => {
+                11u8.hash(state);
+                inputs.hash(state);
+                outputs.hash(state);
+                program_id.hash(state);
+            }
         }
     }
 }
@@ -217,6 +273,7 @@ pub struct Graph {
     pub(crate) classes: Slab<ClassId, EClass>,
     pub(crate) ekernels: Slab<EKernelId, EKernelData>,
     pub(crate) kernel_map: Map<NodeId, EKernelId>,
+    pub(crate) leaf_map: Map<ClassId, TensorId>,
 }
 
 impl Node {
@@ -245,6 +302,7 @@ impl Graph {
             classes: Slab::new(),
             ekernels: Slab::new(),
             kernel_map: Map::default(),
+            leaf_map: Map::default(),
         }
     }
 
@@ -521,7 +579,12 @@ impl Runtime {
                         }
                     } else {
                         let knid = graph.nodes.push(NodeData {
-                            node: Node::Kernel { inputs: inputs.clone(), outputs: outputs.clone(), program_id: prog, time: timing },
+                            node: Node::Kernel {
+                                inputs: inputs.clone(),
+                                outputs: outputs.clone(),
+                                program_id: prog,
+                                time: timing,
+                            },
                             class_of,
                         });
                         for &ocid in &*outputs {
