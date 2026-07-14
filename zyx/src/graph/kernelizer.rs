@@ -217,8 +217,8 @@ impl Graph {
 
             let ekdata = &self.ekernels[kid];
             let mut input_cids: Vec<ClassId> = ekdata.loads.clone();
-            let output_cids: Vec<ClassId> = ekdata.outputs.clone();
-            let output_set: Set<ClassId> = output_cids.iter().copied().collect();
+            let output_set: Set<ClassId> = ekdata.stores.iter().copied().collect();
+            let output_cids: Vec<ClassId> = output_set.iter().copied().collect();
             input_cids.retain(|c| !output_set.contains(c));
 
             let kind = Node::Kernel {
