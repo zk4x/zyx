@@ -341,58 +341,51 @@ impl Graph {
     /// or if it's in buffer_map on different device, add EGraph::ToDevice node that moves it
     /// to the device of the Node::Kernel.
     pub fn add_memory_ops(&mut self) {
-        let mut class_devices: Map<ClassId, Vec<DeviceId>> = Map::default();
-        for cid in self.classes.ids() {
-            for &nid in &self.classes[cid].nodes {
-                if let Node::Kernel { program_id, .. } = &self.nodes[nid].node {
-                    if program_id.device.0 != u32::MAX {
-                        class_devices.entry(cid).or_default().push(program_id.device);
+        let class_ids: Vec<ClassId> = self.classes.ids().collect();
+        for cid in class_ids {
+            let node_ids: Vec<NodeId> = self.classes[cid].nodes.iter().copied().collect();
+            for &nid in &node_ids {
+                let (device, inputs) = match &self.nodes[nid].node {
+                    Node::Kernel { program_id, inputs, .. } if program_id.device.0 != u32::MAX => {
+                        (program_id.device, inputs.clone())
                     }
-                }
-            }
-        }
+                    _ => continue,
+                };
 
-        let kernel_list: Vec<(NodeId, Vec<ClassId>, Box<[ClassId]>, DeviceId)> = {
-            let mut v = Vec::new();
-            for cid in self.classes.ids() {
-                for &nid in &self.classes[cid].nodes {
-                    if let Node::Kernel { inputs, outputs, program_id, .. } = &self.nodes[nid].node {
-                        if program_id.device.0 != u32::MAX {
-                            v.push((nid, inputs.to_vec(), outputs.clone(), program_id.device));
+                let mut new_inputs: Option<Box<[ClassId]>> = None;
+                for (i, &input_cid) in inputs.iter().enumerate() {
+                    let mut same_device = false;
+                    let mut from_kernel = false;
+                    for &inid in &self.classes[input_cid].nodes {
+                        if let Node::Kernel { program_id, .. } = &self.nodes[inid].node {
+                            from_kernel = true;
+                            if program_id.device == device {
+                                same_device = true;
+                                break;
+                            }
                         }
                     }
-                }
-            }
-            v
-        };
-
-        for (nid, mut inputs, _outputs, device) in kernel_list {
-            let mut changed = false;
-            for i in 0..inputs.len() {
-                let input_cid = inputs[i];
-                match class_devices.get(&input_cid) {
-                    Some(devs) => {
-                        debug_assert!(!devs.is_empty(), "input class with kernel has no device");
-                        if !devs.iter().any(|&d| d == device) {
-                            let shape = self.classes[input_cid].shape;
-                            let dtype = self.classes[input_cid].dtype;
-                            // TODO measure actual time by running a test copy
-                            let (_, to_cid) = self.push(Node::ToDevice { x: input_cid, device, time: 0 }, shape, dtype);
-                            inputs[i] = to_cid;
-                            changed = true;
+                    if from_kernel {
+                        if !same_device {
+                            let new_inputs = new_inputs.get_or_insert_with(|| inputs.clone());
+                            let (_, to_cid) = self.push(
+                                Node::ToDevice { x: input_cid, device, time: 0 },
+                                self.classes[input_cid].shape,
+                                self.classes[input_cid].dtype,
+                            );
+                            new_inputs[i] = to_cid;
                         }
-                    }
-                    None => {
+                    } else {
                         debug_assert!(
-                            self.classes[input_cid].nodes.iter().any(|n| matches!(&self.nodes[*n].node, Node::Leaf { .. } | Node::Const(_))),
-                            "input class must be a kernel output or a leaf/const"
+                            self.classes[input_cid].nodes.iter().any(|&inid| matches!(&self.nodes[inid].node, Node::Leaf { .. })),
+                            "input must be from a kernel or a realized tensor"
                         );
                     }
                 }
-            }
-            if changed {
-                if let Node::Kernel { inputs: node_inputs, .. } = &mut self.nodes[nid].node {
-                    *node_inputs = inputs.into_boxed_slice();
+                if let Some(new_inputs) = new_inputs {
+                    if let Node::Kernel { inputs: node_inputs, .. } = &mut self.nodes[nid].node {
+                        *node_inputs = new_inputs;
+                    }
                 }
             }
         }
