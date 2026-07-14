@@ -123,8 +123,6 @@ impl Graph {
                 }
             }
         }
-
-        self.debug_print(shapes);
     }
 
     fn new_load_kernel(&mut self, cid: ClassId, shapes: &Slab<ShapeId, Vec<Dim>>) -> EKernelId {

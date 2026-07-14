@@ -130,6 +130,9 @@ impl Tape {
             graph.fill_remaining(&output_classes, unsafe { &*shapes_ptr });
         }
         rt.autotune_all_kernels()?;
+
+        let shapes_ptr = &rt.shapes as *const Slab<ShapeId, Vec<Dim>>;
+        rt.graph.as_ref().unwrap().debug_print(unsafe { &*shapes_ptr });
         Ok(())
     }
 

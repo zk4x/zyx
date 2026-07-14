@@ -315,18 +315,46 @@ impl Runtime {
         for (nid, kernel) in &kernel_data {
             let (flop, read, write) = kernel.flop_mem_rw();
             let device_ids: Vec<DeviceId> = self.devices.ids().collect();
-            for &dev_id in &device_ids {
+            let (inputs, outputs, class_of) = if let Some(ref graph) = self.graph {
+                let node = &graph.nodes[*nid];
+                let Node::Kernel { ref inputs, ref outputs, .. } = node.node else {
+                    unreachable!()
+                };
+                (inputs.clone(), outputs.clone(), node.class_of)
+            } else {
+                continue;
+            };
+            //println!("device_ids.len={}", device_ids.len());
+            for (i, &dev_id) in device_ids.iter().enumerate() {
                 let pool_id = self.devices[dev_id].memory_pool_id();
                 let mut kernel = kernel.clone();
                 kernel.device_id = dev_id;
                 let (dev_prog, _timing) = self.get_or_autotune(kernel, pool_id, flop, read, write)?;
                 let prog = ProgramId { device: dev_id, program: dev_prog };
                 if let Some(ref mut graph) = self.graph {
-                    if let Node::Kernel { program_id, .. } = &mut graph.nodes[*nid].node {
-                        *program_id = prog;
+                    if i == 0 {
+                        if let Node::Kernel { program_id, .. } = &mut graph.nodes[*nid].node {
+                            *program_id = prog;
+                        }
+                    } else {
+                        let knid = graph.nodes.push(NodeData {
+                            node: Node::Kernel {
+                                inputs: inputs.clone(),
+                                outputs: outputs.clone(),
+                                program_id: prog,
+                            },
+                            class_of,
+                        });
+                        for &ocid in &*outputs {
+                            graph.classes[ocid].nodes.push(knid);
+                        }
+                        if !outputs.contains(&class_of) {
+                            graph.classes[class_of].nodes.push(knid);
+                        }
                     }
                 }
             }
+            //println!("len={}", self.graph.as_ref().unwrap().nodes.iter().filter(|x| matches!(x.1.node, Node::Kernel { .. })).count());
         }
 
         Ok(())
