@@ -136,8 +136,8 @@ impl Tape {
 
         let output_set: BTreeSet<ClassId> = output_classes.iter().copied().collect();
         let cache_key = rt.graph.as_ref().unwrap().cache_key(&output_set);
-        if let Some(plan) = rt.plan_cache.get(&cache_key).cloned() {
-            return rt.execute_plan(&plan, &output_tids, &output_classes);
+        if rt.plan_cache.contains_key(&cache_key) {
+            return rt.execute_plan(cache_key, &output_tids, &output_classes);
         }
 
         // TODO pattern match cublas, cblas, etc. kernels
@@ -161,9 +161,9 @@ impl Tape {
 
         plan.debug();
 
-        rt.execute_plan(&plan, &output_tids, &output_classes)?;
-
         rt.plan_cache.insert(cache_key, plan);
+
+        rt.execute_plan(cache_key, &output_tids, &output_classes)?;
 
         Ok(())
     }
