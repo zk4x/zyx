@@ -62,7 +62,8 @@ impl ExecPlan {
             }
         }
 
-        let leaf_classes: BTreeSet<ClassId> = graph.leaf_map.keys().copied().collect();
+        let reachable: BTreeSet<ClassId> = graph.topo_sort_classes(output_set).into_iter().collect();
+        let leaf_classes: BTreeSet<ClassId> = graph.leaf_map.keys().copied().filter(|c| reachable.contains(c)).collect();
         let mut plan_nodes = Vec::new();
         let mut allocated: Set<ClassId> = Set::default();
 
@@ -154,6 +155,16 @@ impl Runtime {
         let graph = self.graph.as_ref().unwrap();
         for &cid in &plan.leaf_classes {
             let tid = graph.leaf_map[&cid];
+            if !self.buffer_map.contains_key(&tid) {
+                let exists = self.tensors.contains_key(tid);
+                eprintln!("leaf class {cid:?} -> tid {tid:?} has no buffer_map entry (tensor exists={exists})");
+                eprintln!("  all leaf_map entries:");
+                for (&lc, &lt) in &graph.leaf_map {
+                    let has_buf = self.buffer_map.contains_key(&lt);
+                    eprintln!("    {lc:?} -> {lt:?} (buf={has_buf})");
+                }
+                panic!("buffer_map missing for leaf class {cid:?}");
+            }
             class_buf.insert(cid, self.buffer_map[&tid]);
         }
 

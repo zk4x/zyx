@@ -35,7 +35,7 @@ impl Runtime {
                     let shape_id = self.graph.as_ref().unwrap().classes[gcid].shape;
                     let dtype = self.graph.as_ref().unwrap().classes[gcid].dtype;
                     let nid = self.graph.as_ref().unwrap().classes[gcid].nodes[0];
-                    self.tensors.push(TensorData { shape_id, dtype, state: TensorState::Graph { node_id: nid, class_id: gcid } })
+                    self.tensors.push(TensorData { shape_id, dtype, state: TensorState::Graph { node_id: nid, class_id: gcid, rc: 1 } })
                 }
                 None => {
                     let shape = self.shape(tid).into();

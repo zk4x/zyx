@@ -84,7 +84,7 @@ impl Tape {
                 let shape_id = rt.tensors[tid].shape_id;
                 let dtype = rt.tensors[tid].dtype;
                 let (node_id, class_id) = graph.push(Node::Leaf { dtype, shape: shape_id }, shape_id, dtype);
-                rt.tensors[tid].state = TensorState::Graph { node_id, class_id };
+                rt.tensors[tid].state = TensorState::Graph { node_id, class_id, rc: 1 };
                 graph.leaf_map.insert(class_id, tid);
             }
             rt.graph = Some(graph);
@@ -118,7 +118,7 @@ impl Tape {
             let shape_id = rt.tensors[tid].shape_id;
             let dtype = rt.tensors[tid].dtype;
             let (node_id, class_id) = graph.push(Node::Leaf { dtype, shape: shape_id }, shape_id, dtype);
-            rt.tensors[tid].state = TensorState::Graph { node_id, class_id };
+            rt.tensors[tid].state = TensorState::Graph { node_id, class_id, rc: 1 };
             graph.leaf_map.insert(class_id, tid);
         }
 
