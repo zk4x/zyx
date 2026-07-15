@@ -53,7 +53,7 @@ impl Graph {
     pub(crate) fn gradient(
         &mut self,
         target: ClassId,
-        sources: &Set<ClassId>,
+        _sources: &Set<ClassId>,
         shapes: &Slab<ShapeId, Vec<Dim>>,
     ) -> Map<ClassId, ClassId> {
         let output_set: BTreeSet<ClassId> = [target].into();

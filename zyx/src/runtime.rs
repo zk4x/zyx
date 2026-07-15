@@ -321,7 +321,9 @@ impl Runtime {
         let shape = self.push_shape(shape);
         let tid = if let Some(ref mut graph) = self.graph {
             let (node_id, class_id) = graph.push(Node::Leaf { dtype, shape }, shape, dtype);
-            self.tensors.push(TensorData { shape_id: shape, dtype, state: TensorState::Graph { node_id, class_id } })
+            let tid = self.tensors.push(TensorData { shape_id: shape, dtype, state: TensorState::Graph { node_id, class_id } });
+            graph.leaf_map.insert(class_id, tid);
+            tid
         } else {
             let op = Op::LoadView(Box::new((dtype, View::contiguous(&self.shapes[shape]))));
             let tid = self.new_kernel(op, self.shapes[shape].clone(), dtype);
@@ -358,7 +360,9 @@ impl Runtime {
         let shape_id = self.push_shape(shape);
         let tid = if let Some(ref mut graph) = self.graph {
             let (node_id, class_id) = graph.push(Node::Leaf { dtype, shape: shape_id }, shape_id, dtype);
-            self.tensors.push(TensorData { shape_id, dtype, state: TensorState::Graph { node_id, class_id } })
+            let tid = self.tensors.push(TensorData { shape_id, dtype, state: TensorState::Graph { node_id, class_id } });
+            graph.leaf_map.insert(class_id, tid);
+            tid
         } else {
             let op = Op::LoadView(Box::new((dtype, View::contiguous(&self.shapes[shape_id]))));
             let tid = self.new_kernel(op, self.shapes[shape_id].clone(), dtype);
