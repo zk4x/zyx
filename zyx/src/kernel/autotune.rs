@@ -346,24 +346,37 @@ impl Kernel {
     }
 
     /// Autotune for debugging, applying only a selected series of optimizations
-    fn alloc_buffers(&self, memory_pool: &mut MemoryPool) -> Result<Vec<PoolBufferId>, BackendError> {
-        let mut args = Vec::new();
+    fn alloc_buffers(
+        &self,
+        memory_pool: &mut MemoryPool,
+        init_buffers: Option<&[PoolBufferId]>,
+    ) -> Result<Vec<PoolBufferId>, BackendError> {
+        let n_init = init_buffers.map_or(0, |b| b.len());
+        let mut store_bufs = Vec::new();
         let mut events = Vec::new();
+        let mut global_idx = 0usize;
         let mut op_id = self.head;
         while !op_id.is_null() {
             match self.ops[op_id].op {
                 Op::Define { dtype, scope: Scope::Global, len, .. } => {
-                    let bytes = (dtype.bit_size() as Dim) * len / 8;
-                    let (buf, ev) = memory_pool.allocate(bytes)?;
-                    args.push(buf);
-                    events.push(ev);
+                    if global_idx < n_init {
+                        // Use existing buffer for loads
+                    } else {
+                        let bytes = (dtype.bit_size() as Dim) * len / 8;
+                        let (buf, ev) = memory_pool.allocate(bytes)?;
+                        let fill = vec![1u8; bytes as usize];
+                        let ev = memory_pool.host_to_pool(&fill, buf, vec![ev])?;
+                        store_bufs.push(buf);
+                        events.push(ev);
+                    }
+                    global_idx += 1;
                 }
                 _ => break,
             }
             op_id = self.next_op(op_id);
         }
         let _ = memory_pool.sync_events(events);
-        Ok(args)
+        Ok(store_bufs)
     }
 
     fn dealloc_buffers(&self, args: Vec<PoolBufferId>, memory_pool: &mut MemoryPool) {
@@ -404,7 +417,7 @@ impl Kernel {
 
         kernel.debug();
 
-        let args = kernel.alloc_buffers(memory_pool)?;
+        let args = kernel.alloc_buffers(memory_pool, None)?;
         let (program_id, timing) =
             kernel.launch_with_timings(&args, device, memory_pool, debug, flop, read_bytes, write_bytes, self.get_hash())?;
         kernel.dealloc_buffers(args, memory_pool);
@@ -447,6 +460,7 @@ impl Kernel {
         read_bytes: u64,
         write_bytes: u64,
         debug: DebugMask,
+        init_buffers: Option<&[PoolBufferId]>,
     ) -> Result<(DeviceProgramId, OptSeq, u64), BackendError> {
         if false {
             return self.apply_selected_optimizations(device, memory_pool, config, flop, read_bytes, write_bytes, debug);
@@ -573,7 +587,11 @@ impl Kernel {
         items.sort_by_key(|opt_seq| opt_seq.cost.cost);
         items.truncate(n_launches);
 
-        let args = self.alloc_buffers(memory_pool)?;
+        let store_bufs = self.alloc_buffers(memory_pool, init_buffers)?;
+        let args: Vec<PoolBufferId> = match init_buffers {
+            Some(loads) => loads.iter().chain(&store_bufs).copied().collect(),
+            None => store_bufs.clone(),
+        };
 
         for opt_seq in items.iter() {
             let mut kernel = kernel.clone();
@@ -623,7 +641,7 @@ impl Kernel {
             }
         }
 
-        self.dealloc_buffers(args, memory_pool);
+        self.dealloc_buffers(store_bufs, memory_pool);
 
         if !any_success {
             return Err(last_error.unwrap_or_else(|| BackendError {

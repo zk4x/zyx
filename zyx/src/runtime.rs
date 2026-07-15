@@ -26,7 +26,10 @@ use nanoserde::DeJson;
 
 use crate::{
     DType, DebugMask, Map, Scalar, Set, ZyxError,
-    backend::{AutotuneConfig, BufferId, Config, Device, DeviceInfo, DeviceProgramId, Event, MemoryPool, OpCapability, PoolId},
+    backend::{
+        AutotuneConfig, BufferId, Config, Device, DeviceInfo, DeviceProgramId, Event, MemoryPool, OpCapability, PoolBufferId,
+        PoolId,
+    },
     dtype::Constant,
     error::{BackendError, ErrorStatus},
     graph::ExecPlan,
@@ -1195,6 +1198,7 @@ impl Runtime {
         flop: u64,
         read: u64,
         write: u64,
+        init_buffers: Option<&[PoolBufferId]>,
     ) -> Result<(DeviceProgramId, u64), ZyxError> {
         let kernel_id = if let Some(&cached_kid) = self.kernel_map.get(&kernel) {
             if let Some(&program_id) = self.programs.get(&cached_kid) {
@@ -1254,6 +1258,7 @@ impl Runtime {
             read,
             write,
             self.debug,
+            init_buffers,
         )?;
 
         self.programs.insert(kernel_id, program_id);
@@ -1400,9 +1405,6 @@ impl Runtime {
         for &tid in &loads {
             args.push(self.buffer_map[&tid].buffer);
         }
-        for &tid in &stores {
-            args.push(self.buffer_map[&tid].buffer);
-        }
 
         // Compile and launch (caches in kernel_map / programs)
         let debug = self.debug;
@@ -1419,7 +1421,11 @@ impl Runtime {
             kernel.debug();
         }
         let (flop, read, write) = kernel.flop_mem_rw();
-        let (dev_prog, _timing) = self.get_or_autotune(kernel, pool_id, flop, read, write)?;
+        let (dev_prog, _timing) = self.get_or_autotune(kernel, pool_id, flop, read, write, Some(&args))?;
+
+        for &tid in &stores {
+            args.push(self.buffer_map[&tid].buffer);
+        }
 
         let event = self.devices[dev_id].launch(dev_prog, &mut self.pools[pool_id], &args, event_wait_list)?;
         self.events.insert(kernel_buffers, event);
