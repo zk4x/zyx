@@ -25,6 +25,7 @@ use crate::{
     tensor::TensorId,
 };
 
+mod autograd;
 mod kernelizer;
 mod plan;
 

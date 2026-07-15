@@ -34,7 +34,7 @@ use std::collections::BTreeSet;
 use crate::{
     Map, RT, Set, Tensor, ZyxError,
     graph::{ClassId, ExecPlan, Graph, Node},
-    runtime::{Runtime, ShapeId, TensorState},
+    runtime::{ShapeId, TensorState},
     shape::Dim,
     slab::Slab,
     tensor::TensorId,
@@ -181,11 +181,5 @@ impl Drop for Tape {
         // TODO realize all tensors that are outputs from graph and set graph to none
 
         RT.lock().graph = None;
-    }
-}
-
-impl Runtime {
-    fn gradient(&mut self, _target: TensorId, _sources: Set<TensorId>) -> Map<TensorId, TensorId> {
-        todo!()
     }
 }
