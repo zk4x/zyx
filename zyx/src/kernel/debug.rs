@@ -320,5 +320,6 @@ impl Kernel {
             }
             op_id = self.ops[op_id].next;
         }
+        println!()
     }
 }

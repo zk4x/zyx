@@ -28,8 +28,8 @@ use crate::{
     DType, DebugMask, Map, Scalar, Set, ZyxError,
     backend::{AutotuneConfig, BufferId, Config, Device, DeviceInfo, DeviceProgramId, Event, MemoryPool, OpCapability, PoolId},
     dtype::Constant,
-    graph::ExecPlan,
     error::{BackendError, ErrorStatus},
+    graph::ExecPlan,
     graph::{ClassId, Graph, Node, NodeId},
     kernel::{BOp, DeviceId, Kernel, MoveOp, Op, OpId, UOp, autotune::OptSeq},
     rng::Rng,
@@ -1206,6 +1206,11 @@ impl Runtime {
         let dev_info_id = self.get_or_add_dev_info(&dev_info);
 
         kernel.sort_global_defines();
+
+        if self.debug.sched() {
+            kernel.debug();
+        }
+
         kernel.unfold_movement_ops();
 
         {
