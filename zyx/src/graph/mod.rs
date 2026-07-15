@@ -275,6 +275,7 @@ pub struct Graph {
     pub(crate) ekernels: Slab<EKernelId, EKernelData>,
     pub(crate) kernel_map: Map<NodeId, EKernelId>,
     pub(crate) leaf_map: Map<ClassId, TensorId>,
+    pub(crate) rc: u32,
 }
 
 impl Node {
@@ -304,6 +305,7 @@ impl Graph {
             ekernels: Slab::new(),
             kernel_map: Map::default(),
             leaf_map: Map::default(),
+            rc: 0,
         }
     }
 

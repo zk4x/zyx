@@ -57,7 +57,14 @@ impl Tape {
     /// enable graph caching across structurally identical iterations.
     pub fn new() -> Result<Tape, ZyxError> {
         let mut rt = RT.lock();
+
+        if let Some(graph) = &mut rt.graph {
+            graph.rc += 1;
+            return Ok(Tape {});
+        }
+
         let mut graph = Graph::new();
+        graph.rc = 1;
 
         let tids: Vec<TensorId> = rt.tensors.iter().map(|(id, _)| id).collect();
 
@@ -180,6 +187,12 @@ impl Drop for Tape {
     fn drop(&mut self) {
         // TODO realize all tensors that are outputs from graph and set graph to none
 
-        RT.lock().graph = None;
+        let mut rt = RT.lock();
+        if let Some(graph) = &mut rt.graph {
+            graph.rc -= 1;
+            if graph.rc == 0 {
+                rt.graph = None;
+            }
+        }
     }
 }
