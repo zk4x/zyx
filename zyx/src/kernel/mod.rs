@@ -202,8 +202,6 @@ pub struct Kernel {
     pub(crate) tail: OpId,
     /// Target device for compilation.
     pub(crate) device_id: DeviceId,
-    /// Output operation IDs that this kernel computes.
-    pub(crate) outputs: Vec<OpId>,
 }
 
 /// Execution scope for kernel indices.
@@ -925,7 +923,7 @@ impl DeBin for Kernel {
         let ops = Slab::<OpId, OpNode>::de_bin(offset, bytes)?;
         let start = OpId::de_bin(offset, bytes)?;
         let end = OpId::de_bin(offset, bytes)?;
-        Ok(Self { head: start, tail: end, ops, device_id: DeviceId::AUTO, outputs: Vec::new() })
+        Ok(Self { head: start, tail: end, ops, device_id: DeviceId::AUTO })
     }
 }
 
@@ -961,7 +959,7 @@ impl Kernel {
     /// kernel.store(out, doubled, gidx, MemLayout::Scalar);
     /// ```
     pub fn new(device_id: DeviceId) -> Self {
-        Self { ops: Slab::new(), head: OpId::NULL, tail: OpId::NULL, device_id, outputs: Vec::new() }
+        Self { ops: Slab::new(), head: OpId::NULL, tail: OpId::NULL, device_id }
     }
 
     /// Compute dtypes and reference counts for all operations.
@@ -1859,11 +1857,17 @@ impl Kernel {
 
     /// Extract ops reachable from `root_op` into a new kernel.
     ///
+    /// `all_outputs` contains all output OpIds in this kernel (including `root_op`).
+    /// `loads` — parallel to LoadView ops in linked-list order — is split into
+    /// `self_loads` and `new_loads` based on which kernel retains each LoadView.
     /// The new kernel contains only ops that `root_op` transitively depends on.
     /// Removes from `self` ops that are only needed by `root_op` and no other output.
-    /// Uses `self.outputs` to determine which ops are "other outputs".
-    /// Returns the new kernel and the new OpId corresponding to `root_op`.
-    pub(crate) fn extract_subkernel(&mut self, root_op: OpId) -> (Self, OpId) {
+    pub(crate) fn extract_subkernel<T: Copy>(
+        &mut self,
+        root_op: OpId,
+        all_outputs: &[OpId],
+        loads: &[T],
+    ) -> (Self, OpId, Vec<T>, Vec<T>) {
         // Walk 1: from root_op
         let mut root_required = Set::default();
         let mut stack = vec![root_op];
@@ -1876,7 +1880,7 @@ impl Kernel {
         // Walk 2: from other outputs
         let mut other_required = Set::default();
         let mut stack = Vec::new();
-        for &out in &self.outputs {
+        for &out in all_outputs {
             if out != root_op {
                 stack.push(out);
             }
@@ -1885,6 +1889,24 @@ impl Kernel {
             if other_required.insert(op) {
                 stack.extend(self.at(op).parameters());
             }
+        }
+
+        // Partition loads: for each LoadView, dispatch to the set(s) that keep it
+        let mut self_loads: Vec<T> = Vec::new();
+        let mut new_loads: Vec<T> = Vec::new();
+        let mut load_idx = 0;
+        let mut oid = self.head;
+        while !oid.is_null() {
+            if matches!(self.at(oid), Op::LoadView(_)) {
+                if other_required.contains(&oid) {
+                    self_loads.push(loads[load_idx]);
+                }
+                if root_required.contains(&oid) {
+                    new_loads.push(loads[load_idx]);
+                }
+                load_idx += 1;
+            }
+            oid = self.next_op(oid);
         }
 
         // Build new kernel by cloning root's ops (in topo order) with remapped OpIds
@@ -1916,10 +1938,7 @@ impl Kernel {
             old_id = next;
         }
 
-        // Update self.outputs
-        self.outputs.retain(|&o| o != root_op);
-
-        (new_kernel, new_root_op)
+        (new_kernel, new_root_op, self_loads, new_loads)
     }
 
     /// Get all global indices used in the kernel.

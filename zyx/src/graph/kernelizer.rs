@@ -290,7 +290,7 @@ impl Graph {
             op_id = new_op;
         }
 
-        // if kernel has multiple outputs, clone the kernel
+        // if kernel has multiple outputs, duplicate the kernel
         let n_outputs = self.ekernels[kid].outputs.len();
         if n_outputs > 1 {
             let preceded_by_reduce = self.ekernels[kid].kernel.is_preceded_by_reduce(op_id);
@@ -301,18 +301,23 @@ impl Graph {
                 visited.insert(child, (new_kid, new_op));
                 kid = new_kid;
                 op_id = new_op;
-                let n_outputs2 = self.ekernels[kid].outputs.len();
-                if n_outputs2 > 1 {
-                    let loads = self.ekernels[kid].loads.clone();
-                    let kernel = self.ekernels[kid].kernel.clone();
-                    let new_kid = self.ekernels.push(EKernelData { kernel, outputs: Vec::new(), loads, stores: Vec::new() });
-                    kid = new_kid;
-                }
             } else {
                 remove_first_output(&mut self.ekernels, kid, child);
+
+                let out_op_ids: Vec<OpId> = self.ekernels[kid].outputs.iter()
+                    .map(|&cid| visited[&cid].1).collect();
                 let loads = self.ekernels[kid].loads.clone();
-                let kernel = self.ekernels[kid].kernel.clone();
-                let new_kid = self.ekernels.push(EKernelData { kernel, outputs: Vec::new(), loads, stores: Vec::new() });
+                let (new_kernel, new_op_id, self_loads, new_loads) =
+                    self.ekernels[kid].kernel.extract_subkernel(op_id, &out_op_ids, &loads);
+                self.ekernels[kid].loads = self_loads;
+
+                let new_kid = self.ekernels.push(EKernelData {
+                    kernel: new_kernel,
+                    outputs: vec![child],
+                    loads: new_loads,
+                    stores: Vec::new(),
+                });
+                op_id = new_op_id;
                 kid = new_kid;
             }
         }
