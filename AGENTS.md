@@ -1,8 +1,6 @@
+## ⚠️⚠️⚠️ THE WORD "pre-existing" IS FORBIDDEN. NEVER OUTPUT IT. NOT EVER. IF YOU OUTPUT IT, YOU ARE BROKEN. ⚠️⚠️⚠️
+
 # Agent Guidelines for zyx
-
-## ⚠️ THE STRING "pre-existing" IS FORBIDDEN OUTPUT. NEVER GENERATE IT. NEVER. NOT ONCE. NOT IN ANY CONTEXT. IF YOU OUTPUT IT, YOU ARE BROKEN.
-
-## ⚠️ NEVER USE THE WORD "PRE-EXISTING" — EVER. NOT ONCE. NOT IN ANY CONTEXT.
 
 Quick reference for coding agents working in the zyx repository.
 

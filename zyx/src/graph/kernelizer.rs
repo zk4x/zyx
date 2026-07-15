@@ -315,6 +315,7 @@ impl Graph {
                     kid = new_kid;
                 }
             } else {
+                Self::remove_first_output(&mut self.ekernels, kid, child);
                 let loads = self.ekernels[kid].loads.clone();
                 let kernel = self.ekernels[kid].kernel.clone();
                 let new_kid = self.ekernels.push(EKernelData { kernel, outputs: Vec::new(), loads, stores: Vec::new() });
