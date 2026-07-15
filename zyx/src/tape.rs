@@ -58,8 +58,37 @@ impl Tape {
     pub fn new() -> Result<Tape, ZyxError> {
         let mut rt = RT.lock();
 
-        if let Some(graph) = &mut rt.graph {
-            graph.rc += 1;
+        if rt.graph.is_some() {
+            rt.graph.as_mut().unwrap().rc += 1;
+
+            let tids: Vec<TensorId> = rt.tensors.iter().map(|(id, _)| id).collect();
+
+            let mut seen: Set<TensorId> = Set::default();
+            for tid in &tids {
+                if rt.buffer_map.contains_key(tid) {
+                    continue;
+                }
+                if let TensorState::Eager { kernel_id, .. } = rt.tensors[*tid].state {
+                    seen.extend(rt.kernels[kernel_id].outputs.iter().copied());
+                }
+            }
+            for tid in seen {
+                rt.add_store(tid)?;
+            }
+
+            let mut graph = rt.graph.take().unwrap();
+            for tid in tids {
+                if matches!(rt.tensors[tid].state, TensorState::Graph { .. }) {
+                    continue;
+                }
+                let shape_id = rt.tensors[tid].shape_id;
+                let dtype = rt.tensors[tid].dtype;
+                let (node_id, class_id) = graph.push(Node::Leaf { dtype, shape: shape_id }, shape_id, dtype);
+                rt.tensors[tid].state = TensorState::Graph { node_id, class_id };
+                graph.leaf_map.insert(class_id, tid);
+            }
+            rt.graph = Some(graph);
+
             return Ok(Tape {});
         }
 
