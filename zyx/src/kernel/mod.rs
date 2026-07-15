@@ -92,7 +92,7 @@ pub use crate::backend::DeviceId;
 use crate::view::View;
 
 use crate::{
-    DType, Map,
+    DType, Map, Set,
     dtype::Constant,
     shape::{Dim, UAxis},
     slab::{Slab, SlabId},
@@ -1853,6 +1853,53 @@ impl Kernel {
         }
         self.tail = op_id;
         op_id
+    }
+
+    /// Get all ops transitively reachable from roots via `parameters()`.
+    pub(crate) fn get_required_ops(&self, roots: Vec<OpId>) -> Set<OpId> {
+        let mut required = Set::default();
+        let mut stack = roots;
+        while let Some(op) = stack.pop() {
+            if required.insert(op) {
+                stack.extend(self.at(op).parameters());
+            }
+        }
+        required
+    }
+
+    /// Extract ops reachable from `root_op` into a new kernel.
+    ///
+    /// `all_outputs` contains the OpIds of all output operations in this kernel.
+    /// The new kernel contains only ops that `root_op` transitively depends on.
+    /// Removes from `self` ops that are only needed by `root_op` and no other output.
+    pub(crate) fn extract_subkernel(&mut self, root_op: OpId, all_outputs: &[OpId]) -> Self {
+        let other_outputs: Vec<OpId> = all_outputs.iter().copied().filter(|&o| o != root_op).collect();
+        let root_required = self.get_required_ops(vec![root_op]);
+        let other_required = self.get_required_ops(other_outputs);
+
+        let mut new_kernel = self.clone();
+
+        // Keep only root's subtree in new_kernel
+        let mut op_id = new_kernel.head;
+        while !op_id.is_null() {
+            let next = new_kernel.next_op(op_id);
+            if !root_required.contains(&op_id) {
+                new_kernel.remove_op(op_id);
+            }
+            op_id = next;
+        }
+
+        // Keep only other outputs' subtrees in self
+        let mut op_id = self.head;
+        while !op_id.is_null() {
+            let next = self.next_op(op_id);
+            if !other_required.contains(&op_id) {
+                self.remove_op(op_id);
+            }
+            op_id = next;
+        }
+
+        new_kernel
     }
 
     /// Get all global indices used in the kernel.
