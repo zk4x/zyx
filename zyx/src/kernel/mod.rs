@@ -202,6 +202,8 @@ pub struct Kernel {
     pub(crate) tail: OpId,
     /// Target device for compilation.
     pub(crate) device_id: DeviceId,
+    /// Output operation IDs that this kernel computes.
+    pub(crate) outputs: Vec<OpId>,
 }
 
 /// Execution scope for kernel indices.
@@ -923,7 +925,7 @@ impl DeBin for Kernel {
         let ops = Slab::<OpId, OpNode>::de_bin(offset, bytes)?;
         let start = OpId::de_bin(offset, bytes)?;
         let end = OpId::de_bin(offset, bytes)?;
-        Ok(Self { head: start, tail: end, ops, device_id: DeviceId::AUTO })
+        Ok(Self { head: start, tail: end, ops, device_id: DeviceId::AUTO, outputs: Vec::new() })
     }
 }
 
@@ -959,7 +961,7 @@ impl Kernel {
     /// kernel.store(out, doubled, gidx, MemLayout::Scalar);
     /// ```
     pub fn new(device_id: DeviceId) -> Self {
-        Self { ops: Slab::new(), head: OpId::NULL, tail: OpId::NULL, device_id }
+        Self { ops: Slab::new(), head: OpId::NULL, tail: OpId::NULL, device_id, outputs: Vec::new() }
     }
 
     /// Compute dtypes and reference counts for all operations.
@@ -1855,51 +1857,69 @@ impl Kernel {
         op_id
     }
 
-    /// Get all ops transitively reachable from roots via `parameters()`.
-    pub(crate) fn get_required_ops(&self, roots: Vec<OpId>) -> Set<OpId> {
-        let mut required = Set::default();
-        let mut stack = roots;
+    /// Extract ops reachable from `root_op` into a new kernel.
+    ///
+    /// The new kernel contains only ops that `root_op` transitively depends on.
+    /// Removes from `self` ops that are only needed by `root_op` and no other output.
+    /// Uses `self.outputs` to determine which ops are "other outputs".
+    /// Returns the new kernel and the new OpId corresponding to `root_op`.
+    pub(crate) fn extract_subkernel(&mut self, root_op: OpId) -> (Self, OpId) {
+        // Walk 1: from root_op
+        let mut root_required = Set::default();
+        let mut stack = vec![root_op];
         while let Some(op) = stack.pop() {
-            if required.insert(op) {
+            if root_required.insert(op) {
                 stack.extend(self.at(op).parameters());
             }
         }
-        required
-    }
 
-    /// Extract ops reachable from `root_op` into a new kernel.
-    ///
-    /// `all_outputs` contains the OpIds of all output operations in this kernel.
-    /// The new kernel contains only ops that `root_op` transitively depends on.
-    /// Removes from `self` ops that are only needed by `root_op` and no other output.
-    pub(crate) fn extract_subkernel(&mut self, root_op: OpId, all_outputs: &[OpId]) -> Self {
-        let other_outputs: Vec<OpId> = all_outputs.iter().copied().filter(|&o| o != root_op).collect();
-        let root_required = self.get_required_ops(vec![root_op]);
-        let other_required = self.get_required_ops(other_outputs);
-
-        let mut new_kernel = self.clone();
-
-        // Keep only root's subtree in new_kernel
-        let mut op_id = new_kernel.head;
-        while !op_id.is_null() {
-            let next = new_kernel.next_op(op_id);
-            if !root_required.contains(&op_id) {
-                new_kernel.remove_op(op_id);
+        // Walk 2: from other outputs
+        let mut other_required = Set::default();
+        let mut stack = Vec::new();
+        for &out in &self.outputs {
+            if out != root_op {
+                stack.push(out);
             }
-            op_id = next;
+        }
+        while let Some(op) = stack.pop() {
+            if other_required.insert(op) {
+                stack.extend(self.at(op).parameters());
+            }
         }
 
-        // Keep only other outputs' subtrees in self
-        let mut op_id = self.head;
-        while !op_id.is_null() {
-            let next = self.next_op(op_id);
-            if !other_required.contains(&op_id) {
-                self.remove_op(op_id);
+        // Build new kernel by cloning root's ops (in topo order) with remapped OpIds
+        let mut new_kernel = Kernel::new(self.device_id);
+        let mut remap: Map<OpId, OpId> =
+            Map::with_capacity_and_hasher(root_required.len(), core::hash::BuildHasherDefault::default());
+        let mut new_root_op = OpId::NULL;
+        let mut old_id = self.head;
+        while !old_id.is_null() {
+            if root_required.contains(&old_id) {
+                let mut op = self.at(old_id).clone();
+                op.remap_params(&remap);
+                let new_id = new_kernel.push_back(op);
+                if old_id == root_op {
+                    new_root_op = new_id;
+                }
+                remap.insert(old_id, new_id);
             }
-            op_id = next;
+            old_id = self.next_op(old_id);
         }
 
-        new_kernel
+        // Remove from self ops not needed by other outputs
+        let mut old_id = self.head;
+        while !old_id.is_null() {
+            let next = self.next_op(old_id);
+            if !other_required.contains(&old_id) {
+                self.remove_op(old_id);
+            }
+            old_id = next;
+        }
+
+        // Update self.outputs
+        self.outputs.retain(|&o| o != root_op);
+
+        (new_kernel, new_root_op)
     }
 
     /// Get all global indices used in the kernel.
