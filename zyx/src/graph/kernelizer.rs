@@ -486,6 +486,14 @@ impl Graph {
     ) {
         let (mut kid, mut op_id) = self.child_to_kid(child, visited, shapes);
         (kid, op_id) = self.duplicate_or_store_class(child, kid, op_id, visited, pending_stores, shapes);
+        if self.ekernels[kid].kernel.is_preceded_by_compute(op_id) {
+            self.add_store(child, kid, op_id, visited, pending_stores);
+            let new_kid = self.new_load_kernel(child, shapes);
+            let new_op = self.ekernels[new_kid].kernel.head;
+            visited.insert(child, (new_kid, new_op));
+            kid = new_kid;
+            op_id = new_op;
+        }
         remove_first_output(&mut self.ekernels, kid, child);
         let shape: Vec<Dim> = shapes[self.classes[cid].shape].clone();
         let kernel = &mut self.ekernels[kid].kernel;
