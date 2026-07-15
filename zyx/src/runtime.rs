@@ -218,6 +218,10 @@ impl Runtime {
             TensorState::Eager { kernel_id, pending_store, .. } => (*kernel_id, *pending_store),
             TensorState::Graph { rc, .. } => {
                 *rc -= 1;
+                if *rc == 0 && self.graph.is_none() {
+                    assert!(!self.buffer_map.contains_key(&x));
+                    self.tensors.remove(x);
+                }
                 return;
             }
         };
@@ -268,8 +272,11 @@ impl Runtime {
         let shape_id = self.push_shape(shape);
         if let Some(ref mut graph) = self.graph {
             let (nid, cid) = graph.push(Node::Const(value), shape_id, dtype);
-            let tid =
-                self.tensors.push(TensorData { shape_id, dtype, state: TensorState::Graph { node_id: nid, class_id: cid, rc: 1 } });
+            let tid = self.tensors.push(TensorData {
+                shape_id,
+                dtype,
+                state: TensorState::Graph { node_id: nid, class_id: cid, rc: 1 },
+            });
             #[cfg(feature = "debug_tensor_op")]
             println!("  -> tid={tid}, {:?}", self.tensors[tid]);
             return tid;
@@ -290,8 +297,11 @@ impl Runtime {
         if let Some(ref mut graph) = self.graph {
             let (_, one_cid) = graph.push(Node::Const(value), one_shape_id, dtype);
             let (nid, cid) = graph.push(Node::Expand { x: one_cid, shape: shape_id }, shape_id, dtype);
-            let tid =
-                self.tensors.push(TensorData { shape_id, dtype, state: TensorState::Graph { node_id: nid, class_id: cid, rc: 1 } });
+            let tid = self.tensors.push(TensorData {
+                shape_id,
+                dtype,
+                state: TensorState::Graph { node_id: nid, class_id: cid, rc: 1 },
+            });
             #[cfg(feature = "debug_tensor_op")]
             println!("  -> tid={tid}, {:?}", self.tensors[tid]);
             return tid;
@@ -330,7 +340,8 @@ impl Runtime {
         let shape = self.push_shape(shape);
         let tid = if let Some(ref mut graph) = self.graph {
             let (node_id, class_id) = graph.push(Node::Leaf { dtype, shape }, shape, dtype);
-            let tid = self.tensors.push(TensorData { shape_id: shape, dtype, state: TensorState::Graph { node_id, class_id, rc: 1 } });
+            let tid =
+                self.tensors.push(TensorData { shape_id: shape, dtype, state: TensorState::Graph { node_id, class_id, rc: 1 } });
             graph.leaf_map.insert(class_id, tid);
             tid
         } else {

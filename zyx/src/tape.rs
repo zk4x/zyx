@@ -33,11 +33,14 @@ use std::collections::BTreeSet;
 
 use crate::{
     Map, RT, Set, Tensor, ZyxError,
+    backend::BufferId,
     graph::{ClassId, ExecPlan, Graph, Node},
-    runtime::{ShapeId, TensorState},
+    kernel::{DeviceId, Kernel, Op},
+    runtime::{KernelData, ShapeId, TensorState},
     shape::Dim,
     slab::Slab,
     tensor::TensorId,
+    view::View,
 };
 
 /// Non-differentiating tape scope.
@@ -214,13 +217,45 @@ impl Tape {
 
 impl Drop for Tape {
     fn drop(&mut self) {
-        // TODO realize all tensors that are outputs from graph and set graph to none
-
         let mut rt = RT.lock();
-        if let Some(graph) = &mut rt.graph {
-            graph.rc -= 1;
-            if graph.rc == 0 {
-                rt.graph = None;
+        let graph = &mut rt.graph;
+        let Some(graph) = graph else { unreachable!() };
+        graph.rc -= 1;
+        if graph.rc > 0 {
+            return;
+        }
+        rt.graph = None;
+
+        let tids: Vec<TensorId> = rt.tensors.iter().map(|(id, _)| id).collect();
+        for tid in tids {
+            let rc = match &rt.tensors[tid].state {
+                TensorState::Graph { rc, .. } => *rc,
+                _ => continue,
+            };
+            if rc == 0 {
+                if let Some(buf_id) = rt.buffer_map.remove(&tid) {
+                    let keys: Vec<BTreeSet<BufferId>> = rt.events.keys().filter(|k| k.contains(&buf_id)).cloned().collect();
+                    let mut wait_list = Vec::new();
+                    for key in keys {
+                        wait_list.push(rt.events.remove(&key).unwrap());
+                    }
+                    rt.pools[buf_id.pool].deallocate(buf_id.buffer, wait_list);
+                }
+                rt.tensors.remove(tid);
+            } else if rt.buffer_map.contains_key(&tid) {
+                let shape: Vec<Dim> = rt.shape(tid).into();
+                let dtype = rt.dtype(tid);
+                let op = Op::LoadView(Box::new((dtype, View::contiguous(&shape))));
+                let kernel_id = rt.kernels.push(KernelData {
+                    outputs: Vec::new(),
+                    loads: Vec::new(),
+                    stores: Vec::new(),
+                    kernel: Kernel::new(DeviceId::AUTO),
+                });
+                let op_id = rt.kernels[kernel_id].kernel.push_back(op);
+                rt.kernels[kernel_id].loads.push(tid);
+                rt.tensors[tid].state = TensorState::Eager { kernel_id, op_id, pending_store: false };
+                rt.kernels[kernel_id].outputs.push(tid);
             }
         }
     }
