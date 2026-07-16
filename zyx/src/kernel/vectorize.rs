@@ -23,6 +23,7 @@ struct StoreInfo {
 }
 
 impl Kernel {
+    #[allow(unused)]
     pub(crate) fn opt_vectorize(&self, dev_info: &DeviceInfo) -> (Optimization, usize) {
         let supported_lens = if dev_info.has_vector_ops { vec![2, 4] } else { vec![] };
         (Optimization::Vectorize { supported_lens, vectorize_ops: dev_info.has_vector_ops }, 1)

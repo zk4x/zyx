@@ -1881,9 +1881,7 @@ impl Kernel {
         let mut other_required = Set::default();
         let mut stack = Vec::new();
         for &out in all_outputs {
-            if out != root_op {
-                stack.push(out);
-            }
+            stack.push(out);
         }
         while let Some(op) = stack.pop() {
             if other_required.insert(op) {

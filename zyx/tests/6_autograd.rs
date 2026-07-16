@@ -6,8 +6,9 @@ use zyx::{DType, Tape, Tensor, ZyxError};
 #[test]
 fn grad_relu_1() -> Result<(), ZyxError> {
     let x = Tensor::from([3, 0, -1]);
-    let _tape = Tape::new()?;
+    let tape = Tape::new()?;
     let z = x.relu();
+    tape.realize([&z])?;
     assert_eq!(z, [3, 0, 0]);
     //println!("{z}");
     Ok(())
