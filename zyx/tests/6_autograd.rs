@@ -194,7 +194,7 @@ fn grad_cos_2() -> Result<(), ZyxError> {
 }
 
 #[test]
-fn grad_add() -> Result<(), ZyxError> {
+fn grad_add_1() -> Result<(), ZyxError> {
     let x = Tensor::from([3, 2, 4]);
     let y = Tensor::from([3, 1, 5]);
     let tape = Tape::new()?;
@@ -610,7 +610,7 @@ fn grad_sqrt() -> Result<(), ZyxError> {
 }
 
 #[test]
-fn grad_sin() -> Result<(), ZyxError> {
+fn grad_sin_1() -> Result<(), ZyxError> {
     let data = vec![0f32, 1., 2.];
     let x = Tensor::from(data.clone());
     let tape = Tape::new()?;
@@ -620,6 +620,9 @@ fn grad_sin() -> Result<(), ZyxError> {
     let x_grad = grads.pop().unwrap();
 
     let expected: Vec<_> = data.iter().map(|&x| x.cos()).collect();
+
+    tape.realize([&x_grad])?;
+
     assert_eq!(x_grad, expected);
     Ok(())
 }
