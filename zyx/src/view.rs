@@ -286,7 +286,13 @@ impl View {
     }
 
     pub(crate) fn expand(&mut self, shape: &[Dim]) {
-        debug_assert!(self.rank() >= shape.len());
+        //println!("expand {:?} to {shape:?}", self.shape());
+        if self.rank() != shape.len() {
+            debug_assert!(self.rank() < shape.len());
+            let sh = self.shape();
+            let new_shape: Vec<Dim> = std::iter::repeat_n(1, shape.len() - sh.len()).chain(sh.iter().copied()).collect();
+            self.reshape(0..sh.len(), &new_shape);
+        }
         let inner = self.0.last_mut().unwrap();
         for (dim, &d) in inner.iter_mut().zip(shape) {
             if d != dim.d {
