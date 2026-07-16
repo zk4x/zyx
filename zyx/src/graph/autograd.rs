@@ -36,7 +36,11 @@ impl Runtime {
                     let shape_id = self.graph.as_ref().unwrap().classes[gcid].shape;
                     let dtype = self.graph.as_ref().unwrap().classes[gcid].dtype;
                     let nid = self.graph.as_ref().unwrap().classes[gcid].nodes[0];
-                    self.tensors.push(TensorData { shape_id, dtype, state: TensorState::Graph { node_id: nid, class_id: gcid, rc: 1 } })
+                    self.tensors.push(TensorData {
+                        shape_id,
+                        dtype,
+                        state: TensorState::Graph { node_id: nid, class_id: gcid, rc: 1 },
+                    })
                 }
                 None => {
                     let shape = self.shape(tid).into();
@@ -54,7 +58,7 @@ impl Graph {
     pub(crate) fn gradient(
         &mut self,
         target: ClassId,
-        _sources: &Set<ClassId>,
+        sources: &Set<ClassId>,
         shapes: &Slab<ShapeId, Vec<Dim>>,
         scalar_shape: ShapeId,
     ) -> Map<ClassId, ClassId> {
@@ -374,6 +378,7 @@ impl Graph {
             }
         }
 
+        grads.retain(|k, _| sources.contains(k));
         grads
     }
 }
