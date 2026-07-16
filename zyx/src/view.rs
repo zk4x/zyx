@@ -286,7 +286,6 @@ impl View {
     }
 
     pub(crate) fn expand(&mut self, shape: &[Dim]) {
-        // Expands first shape.len() dims
         debug_assert!(self.rank() >= shape.len());
         let inner = self.0.last_mut().unwrap();
         for (dim, &d) in inner.iter_mut().zip(shape) {

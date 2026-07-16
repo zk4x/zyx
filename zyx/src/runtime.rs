@@ -756,15 +756,6 @@ impl Runtime {
         #[cfg(feature = "debug_tensor_op")]
         println!("runtime::expand(x={x}, shape={shape:?})");
 
-        // Handle reshaping (unsqueeze leading dims) and no-op before branching
-        let sh = self.shape(x).to_vec();
-        let x = if shape.len() > sh.len() {
-            let new_shape: Vec<Dim> = std::iter::repeat_n(1, shape.len() - sh.len()).chain(sh.iter().copied()).collect();
-            self.reshape(x, new_shape)
-        } else {
-            self.retain(x);
-            x
-        };
         if shape == self.shape(x) {
             return Ok(x);
         }
