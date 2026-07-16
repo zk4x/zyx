@@ -5,7 +5,7 @@ use crate::{
     kernel::{BOp, UOp},
     runtime::{Runtime, ShapeId, TensorData, TensorState},
     shape::{Dim, UAxis},
-    slab::{Slab, SlabId},
+    slab::Slab,
     tensor::TensorId,
 };
 use std::collections::BTreeSet;
@@ -23,7 +23,8 @@ impl Runtime {
                 _ => None,
             })
             .collect();
-        let class_grads = self.graph.as_mut().unwrap().gradient(target_class, &source_classes, &self.shapes);
+        let scalar_shape = self.push_shape(vec![1 as Dim]);
+        let class_grads = self.graph.as_mut().unwrap().gradient(target_class, &source_classes, &self.shapes, scalar_shape);
         let mut res = Map::default();
         for tid in sources {
             let class_id = match self.tensors[tid].state {
@@ -55,6 +56,7 @@ impl Graph {
         target: ClassId,
         _sources: &Set<ClassId>,
         shapes: &Slab<ShapeId, Vec<Dim>>,
+        scalar_shape: ShapeId,
     ) -> Map<ClassId, ClassId> {
         let output_set: BTreeSet<ClassId> = [target].into();
         let order = self.topo_sort_classes(&output_set);
@@ -63,7 +65,7 @@ impl Graph {
 
         // Initial gradient: ones in the target shape
         let one_cid = self
-            .push(Node::Const(Constant::new(1u8).cast(self.classes[target].dtype)), ShapeId::NULL, self.classes[target].dtype)
+            .push(Node::Const(Constant::new(1u8).cast(self.classes[target].dtype)), scalar_shape, self.classes[target].dtype)
             .1;
         let ones = self
             .push(
@@ -107,7 +109,7 @@ impl Graph {
                     }
                     UOp::Exp2 => {
                         let ln2 = Constant::new(std::f64::consts::LN_2).cast(self.classes[x].dtype);
-                        let ln2_cid = self.push(Node::Const(ln2), ShapeId::NULL, self.classes[x].dtype).1;
+                        let ln2_cid = self.push(Node::Const(ln2), scalar_shape, self.classes[x].dtype).1;
                         let ln2_e = self
                             .push(
                                 Node::Expand { x: ln2_cid, shape: self.classes[cid].shape },
@@ -121,7 +123,7 @@ impl Graph {
                     }
                     UOp::Log2 => {
                         let ln2 = Constant::new(std::f64::consts::LN_2).cast(self.classes[x].dtype);
-                        let ln2_cid = self.push(Node::Const(ln2), ShapeId::NULL, self.classes[x].dtype).1;
+                        let ln2_cid = self.push(Node::Const(ln2), scalar_shape, self.classes[x].dtype).1;
                         let ln2_e = self
                             .push(
                                 Node::Expand { x: ln2_cid, shape: self.classes[x].shape },
@@ -135,7 +137,7 @@ impl Graph {
                     }
                     UOp::Sqrt => {
                         let two = Constant::new(2u8).cast(self.classes[cid].dtype);
-                        let two_cid = self.push(Node::Const(two), ShapeId::NULL, self.classes[cid].dtype).1;
+                        let two_cid = self.push(Node::Const(two), scalar_shape, self.classes[cid].dtype).1;
                         let two_e = self
                             .push(
                                 Node::Expand { x: two_cid, shape: self.classes[cid].shape },
@@ -174,9 +176,9 @@ impl Graph {
                     }
                     UOp::Abs => {
                         let dtype = self.classes[x].dtype;
-                        let zero = self.push(Node::Const(Constant::new(0u8).cast(dtype)), ShapeId::NULL, dtype).1;
-                        let one = self.push(Node::Const(Constant::new(1u8).cast(dtype)), ShapeId::NULL, dtype).1;
-                        let neg_one = self.push(Node::Const(Constant::new(-1i8).cast(dtype)), ShapeId::NULL, dtype).1;
+                        let zero = self.push(Node::Const(Constant::new(0u8).cast(dtype)), scalar_shape, dtype).1;
+                        let one = self.push(Node::Const(Constant::new(1u8).cast(dtype)), scalar_shape, dtype).1;
+                        let neg_one = self.push(Node::Const(Constant::new(-1i8).cast(dtype)), scalar_shape, dtype).1;
                         let zero_e =
                             self.push(Node::Expand { x: zero, shape: self.classes[x].shape }, self.classes[x].shape, dtype).1;
                         let one_e =
@@ -224,7 +226,7 @@ impl Graph {
                     }
                     BOp::Pow => {
                         let dtype = self.classes[x].dtype;
-                        let one = self.push(Node::Const(Constant::new(1u8).cast(dtype)), ShapeId::NULL, dtype).1;
+                        let one = self.push(Node::Const(Constant::new(1u8).cast(dtype)), scalar_shape, dtype).1;
                         let one_e =
                             self.push(Node::Expand { x: one, shape: self.classes[y].shape }, self.classes[y].shape, dtype).1;
                         let y_1 = push_binary(self, y, one_e, BOp::Sub);
@@ -353,7 +355,7 @@ impl Graph {
                         let one = self
                             .push(
                                 Node::Const(Constant::new(1u8).cast(self.classes[x].dtype)),
-                                ShapeId::NULL,
+                                scalar_shape,
                                 self.classes[x].dtype,
                             )
                             .1;
