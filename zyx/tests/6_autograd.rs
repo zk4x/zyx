@@ -689,7 +689,7 @@ fn grad_sum() -> Result<(), ZyxError> {
 }
 
 #[test]
-fn grad_max() -> Result<(), ZyxError> {
+fn grad_max_1() -> Result<(), ZyxError> {
     let data = vec![1f32, 3., 2.];
     let x = Tensor::from(data.clone());
     let tape = Tape::new()?;

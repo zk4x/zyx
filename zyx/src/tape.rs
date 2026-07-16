@@ -182,6 +182,8 @@ impl Tape {
             return rt.execute_plan(cache_key, &output_tids, &output_classes);
         }
 
+        rt.graph.as_ref().unwrap().debug_print(&rt.shapes);
+
         // TODO pattern match cublas, cblas, etc. kernels
 
         // Fills missing places with zyx custom kernels
