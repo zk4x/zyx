@@ -125,8 +125,7 @@ impl Graph {
             if !self.ekernels.contains_key(kid) {
                 continue;
             }
-            let remaining: Vec<ClassId> =
-                self.ekernels[kid].outputs.iter().copied().filter(|&c| outputs.contains(&c)).collect();
+            let remaining: Vec<ClassId> = self.ekernels[kid].outputs.iter().copied().filter(|&c| outputs.contains(&c)).collect();
             for &cid in &remaining {
                 if let Some(&(_, op_id)) = visited.get(&cid) {
                     self.add_store(cid, kid, op_id, &mut visited, &mut pending_stores);
@@ -201,35 +200,27 @@ impl Graph {
         self.ekernels[kid].stores.push(cid);
         visited.remove(&cid);
 
-        let outputs_empty = {
-            let outputs = &mut self.ekernels[kid].outputs;
-            outputs.retain(|&x| x != cid);
-            outputs.is_empty()
-        };
+        let outputs = &mut self.ekernels[kid].outputs;
+        outputs.retain(|&x| x != cid);
 
-        if outputs_empty {
+        if outputs.is_empty() {
             visited.retain(|_, &mut (k, _)| k != kid);
 
             let ekdata = &self.ekernels[kid];
-            let mut input_cids: Vec<ClassId> = ekdata.loads.clone();
-            let output_set: Set<ClassId> = ekdata.stores.iter().copied().collect();
-            let output_cids: Vec<ClassId> = output_set.iter().copied().collect();
-            input_cids.retain(|c| !output_set.contains(c));
+            let input_cids: Vec<ClassId> = ekdata.loads.clone();
+            let output_cids: Vec<ClassId> = ekdata.stores.clone();
 
-            let kind = Node::Kernel {
+            let node = Node::Kernel {
                 inputs: input_cids.into_boxed_slice(),
                 outputs: output_cids.clone().into_boxed_slice(),
                 program_id: ProgramId::NULL,
                 time: 0,
             };
-            let knid = self.nodes.push(NodeData { node: kind, class_of: cid });
+            let nid = self.nodes.push(NodeData { node, class_of: cid });
             for &ocid in &output_cids {
-                self.classes[ocid].nodes.push(knid);
+                self.classes[ocid].nodes.push(nid);
             }
-            if !output_cids.contains(&cid) {
-                self.classes[cid].nodes.push(knid);
-            }
-            self.kernel_map.insert(knid, kid);
+            self.kernel_map.insert(nid, kid);
         }
     }
 
@@ -304,8 +295,7 @@ impl Graph {
             } else {
                 remove_first_output(&mut self.ekernels, kid, child);
 
-                let out_op_ids: Vec<OpId> = self.ekernels[kid].outputs.iter()
-                    .map(|&cid| visited[&cid].1).collect();
+                let out_op_ids: Vec<OpId> = self.ekernels[kid].outputs.iter().map(|&cid| visited[&cid].1).collect();
                 let loads = self.ekernels[kid].loads.clone();
                 let (new_kernel, new_op_id, self_loads, new_loads) =
                     self.ekernels[kid].kernel.extract_subkernel(op_id, &out_op_ids, &loads);

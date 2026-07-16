@@ -247,7 +247,7 @@ fn grad_mul() -> Result<(), ZyxError> {
 }
 
 #[test]
-fn grad_div() -> Result<(), ZyxError> {
+fn grad_div_1() -> Result<(), ZyxError> {
     let x = Tensor::from([3f32, 2., 4.]);
     let y = Tensor::from([3f32, 1., 5.]);
     let tape = Tape::new()?;
