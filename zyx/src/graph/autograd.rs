@@ -63,7 +63,7 @@ impl Graph {
         scalar_shape: ShapeId,
     ) -> Map<ClassId, ClassId> {
         let output_set: BTreeSet<ClassId> = [target].into();
-        let order = self.topo_sort_classes(&output_set);
+        let topo = self.build_topo(&output_set, sources);
 
         let mut grads: Map<ClassId, ClassId> = Map::default();
 
@@ -80,7 +80,7 @@ impl Graph {
             .1;
         grads.insert(target, ones);
 
-        for &cid in order.iter().rev() {
+        for &cid in &topo {
             let Some(&grad) = grads.get(&cid) else {
                 continue;
             };

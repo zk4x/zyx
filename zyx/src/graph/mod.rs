@@ -362,6 +362,81 @@ impl Graph {
         order
     }
 
+    pub fn build_topo(&self, outputs: &BTreeSet<ClassId>, sources: &Set<ClassId>) -> Vec<ClassId> {
+        let mut stack: Vec<ClassId> = outputs.iter().copied().collect();
+        let mut rcs: Map<ClassId, u32> = Map::default();
+        while let Some(cid) = stack.pop() {
+            rcs.entry(cid).and_modify(|rc| *rc += 1).or_insert_with(|| {
+                for nid in &self.classes[cid].nodes {
+                    let node = &self.nodes[*nid].node;
+                    if matches!(
+                        node,
+                        Node::Binary {
+                            bop: BOp::Cmpgt
+                                | BOp::Cmplt
+                                | BOp::Eq
+                                | BOp::NotEq
+                                | BOp::Or
+                                | BOp::And
+                                | BOp::BitAnd
+                                | BOp::BitOr
+                                | BOp::BitXor
+                                | BOp::BitShiftLeft
+                                | BOp::BitShiftRight,
+                            ..
+                        }
+                    ) {
+                        continue;
+                    }
+                    for p in node.class_params() {
+                        if !stack.contains(&p) {
+                            stack.push(p);
+                        }
+                    }
+                }
+                1
+            });
+        }
+
+        let mut order = Vec::new();
+        let mut internal_rcs: Map<ClassId, u32> = Map::default();
+        let mut stack: Vec<ClassId> = outputs.iter().copied().collect();
+        while let Some(cid) = stack.pop() {
+            if let Some(&rc) = rcs.get(&cid) {
+                if rc == *internal_rcs.entry(cid).and_modify(|c| *c += 1).or_insert(1) {
+                    order.push(cid);
+                    for nid in &self.classes[cid].nodes {
+                        for p in self.nodes[*nid].node.class_params() {
+                            if !stack.contains(&p) {
+                                stack.push(p);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        let mut topo = Vec::new();
+        let mut req_grad = sources.clone();
+        let mut visited: Set<ClassId> = Set::default();
+        for cid in order.into_iter().rev() {
+            for nid in &self.classes[cid].nodes {
+                for p in self.nodes[*nid].node.class_params() {
+                    if req_grad.contains(&p) && visited.insert(cid) {
+                        req_grad.insert(cid);
+                        topo.push(cid);
+                        break;
+                    }
+                }
+                if visited.contains(&cid) {
+                    break;
+                }
+            }
+        }
+        topo.reverse();
+        topo
+    }
+
     pub fn debug_print(&self, shapes: &Slab<ShapeId, Vec<Dim>>) {
         let line = "─".repeat(60);
         println!("\n{}", line);
