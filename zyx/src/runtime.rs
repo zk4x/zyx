@@ -757,6 +757,7 @@ impl Runtime {
         println!("runtime::expand(x={x}, shape={shape:?})");
 
         if shape == self.shape(x) {
+            self.retain(x);
             return Ok(x);
         }
 
