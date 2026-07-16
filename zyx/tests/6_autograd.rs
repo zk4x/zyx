@@ -202,6 +202,7 @@ fn grad_add_1() -> Result<(), ZyxError> {
     let mut grads = tape.gradient(&z, [&x, &y]);
     let y_grad = grads.pop().unwrap();
     let x_grad = grads.pop().unwrap();
+    tape.realize([&x_grad, &y_grad])?;
     assert_eq!(x_grad, [1, 1, 1]);
     assert_eq!(y_grad, [1, 1, 1]);
     Ok(())

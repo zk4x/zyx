@@ -342,7 +342,7 @@ impl Runtime {
 
         let shape = self.push_shape(shape);
         let tid = if let Some(ref mut graph) = self.graph {
-            let (node_id, class_id) = graph.push(Node::Leaf { dtype, shape }, shape, dtype);
+            let (node_id, class_id) = graph.push_leaf(dtype, shape);
             let tid =
                 self.tensors.push(TensorData { shape_id: shape, dtype, state: TensorState::Graph { node_id, class_id, rc: 1 } });
             graph.leaf_map.insert(class_id, tid);
@@ -382,7 +382,7 @@ impl Runtime {
 
         let shape_id = self.push_shape(shape);
         let tid = if let Some(ref mut graph) = self.graph {
-            let (node_id, class_id) = graph.push(Node::Leaf { dtype, shape: shape_id }, shape_id, dtype);
+            let (node_id, class_id) = graph.push_leaf(dtype, shape_id);
             let tid = self.tensors.push(TensorData { shape_id, dtype, state: TensorState::Graph { node_id, class_id, rc: 1 } });
             graph.leaf_map.insert(class_id, tid);
             tid

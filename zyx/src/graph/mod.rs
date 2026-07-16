@@ -80,7 +80,7 @@ pub(crate) enum Node {
     Const(Constant),
     Leaf {
         dtype: DType,
-        shape: ShapeId,
+        leaf_id: u32,
     },
     Expand {
         x: ClassId,
@@ -133,7 +133,7 @@ impl PartialEq for Node {
     fn eq(&self, other: &Self) -> bool {
         match (self, other) {
             (Self::Const(a), Self::Const(b)) => a == b,
-            (Self::Leaf { dtype: ad, shape: as_ }, Self::Leaf { dtype: bd, shape: bs }) => ad == bd && as_ == bs,
+            (Self::Leaf { leaf_id: a, .. }, Self::Leaf { leaf_id: b, .. }) => a == b,
             (Self::Expand { x: a, shape: as_ }, Self::Expand { x: b, shape: bs }) => a == b && as_ == bs,
             (Self::Permute { x: a, axes: aa }, Self::Permute { x: b, axes: ba }) => a == b && aa == ba,
             (Self::Reshape { x: a, shape: as_ }, Self::Reshape { x: b, shape: bs }) => a == b && as_ == bs,
@@ -163,10 +163,9 @@ impl std::hash::Hash for Node {
                 0u8.hash(state);
                 v.hash(state);
             }
-            Self::Leaf { dtype, shape } => {
+            Self::Leaf { leaf_id, .. } => {
                 1u8.hash(state);
-                dtype.hash(state);
-                shape.hash(state);
+                leaf_id.hash(state);
             }
             Self::Expand { x, shape } => {
                 2u8.hash(state);
@@ -276,6 +275,7 @@ pub struct Graph {
     pub(crate) kernel_map: Map<NodeId, EKernelId>,
     pub(crate) leaf_map: Map<ClassId, TensorId>,
     pub(crate) rc: u32,
+    max_leaf_id: u32,
 }
 
 impl Node {
@@ -306,6 +306,7 @@ impl Graph {
             kernel_map: Map::default(),
             leaf_map: Map::default(),
             rc: 0,
+            max_leaf_id: 0,
         }
     }
 
@@ -318,6 +319,12 @@ impl Graph {
         self.nodes[nid].class_of = cid;
         self.hashcons.insert(node, nid);
         (nid, cid)
+    }
+
+    pub fn push_leaf(&mut self, dtype: DType, shape: ShapeId) -> (NodeId, ClassId) {
+        let leaf_id = self.max_leaf_id;
+        self.max_leaf_id += 1;
+        self.push(Node::Leaf { dtype, leaf_id }, shape, dtype)
     }
 
     pub fn topo_sort_classes(&self, outputs: &BTreeSet<ClassId>) -> Vec<ClassId> {
