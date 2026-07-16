@@ -260,7 +260,9 @@ impl Drop for Tape {
                 let op_id = rt.kernels[kernel_id].kernel.push_back(op);
                 rt.kernels[kernel_id].loads.push(tid);
                 rt.tensors[tid].state = TensorState::Eager { kernel_id, op_id, pending_store: false };
-                rt.kernels[kernel_id].outputs.push(tid);
+                for _ in 0..rc {
+                    rt.kernels[kernel_id].outputs.push(tid);
+                }
             }
         }
     }

@@ -764,16 +764,16 @@ fn grad7() -> Result<(), ZyxError> {
     let loss = out.sum_all();
 
     // First call: gradient of loss wrt w3
-    let d_w3 = tape.gradient(&loss, &[w3.clone()]);
-    println!("d_w3: {:?}", d_w3);
+    let _d_w3 = tape.gradient(&loss, &[w3.clone()]);
+    //println!("d_w3: {:?}", d_w3);
 
     // Second call: gradient of loss wrt spike2
-    let d_spike2 = tape.gradient(&loss, &[spike2.clone()]);
-    println!("d_spike2: {:?}", d_spike2);
+    let _d_spike2 = tape.gradient(&loss, &[spike2.clone()]);
+    //println!("d_spike2: {:?}", d_spike2);
 
     // Third call: gradient of loss wrt spike1 - this is where the crash happens
-    let d_spike1 = tape.gradient(&loss, &[spike1.clone()]);
-    println!("d_spike1: {:?}", d_spike1);
+    let _d_spike1 = tape.gradient(&loss, &[spike1.clone()]);
+    //println!("d_spike1: {:?}", d_spike1);
 
     drop(tape);
     Ok(())
