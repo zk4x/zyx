@@ -296,8 +296,9 @@ impl Graph {
                         .1;
                     accum_grad(self, &mut grads, x, g);
                 }
-                Node::Reshape { x, shape } => {
-                    let g = self.push(Node::Reshape { x: grad, shape: shape }, shape, self.classes[grad].dtype).1;
+                Node::Reshape { x, .. } => {
+                    let x_shape = self.classes[x].shape;
+                    let g = self.push(Node::Reshape { x: grad, shape: x_shape }, x_shape, self.classes[grad].dtype).1;
                     accum_grad(self, &mut grads, x, g);
                 }
                 Node::Expand { x, .. } => {
