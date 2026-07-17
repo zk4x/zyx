@@ -811,64 +811,20 @@ fn grad_cmpgt_source() -> Result<(), ZyxError> {
 }
 
 #[test]
-fn grad8() -> Result<(), ZyxError> {
-    let tape = Tape::new()?;
+fn grad_overlapping_realize_cross_tape() -> Result<(), ZyxError> {
+    let tape1 = Tape::new()?;
+    let x = Tensor::from([3f32, 2., 4.]);
+    let z1 = x.reciprocal();
 
-    let x = Tensor::from([[1.0f32, 2.0, 3.0, 4.0]]);
-    let w1 = Tensor::from([[1.0f32, 2.0], [3.0, 4.0], [5.0, 6.0], [7.0, 8.0]]);
-    let b1 = Tensor::from([0.0f32, 0.0]);
+    let tape2 = Tape::new()?;
+    let y = Tensor::from([1f32, 2., 3.]);
+    let z2 = y.ln();
 
-    let v_pre1 = x.matmul(&w1).unwrap() + b1.clone();
-    let th = Tensor::from([1.0f32]);
-    let spike1 = v_pre1.cmpgt(&th).unwrap().cast(DType::F32);
+    let z3 = z1.clone() + z2.clone();
 
-    let w2 = Tensor::from([[1.0f32, 2.0, 3.0], [4.0, 5.0, 6.0]]);
-    let b2 = Tensor::from([0.0f32, 0.0, 0.0]);
+    tape1.realize([&z1])?;
 
-    let v_pre2 = spike1.matmul(&w2).unwrap() + b2.clone();
-    let spike2 = v_pre2.cmpgt(&th).unwrap().cast(DType::F32);
+    tape2.realize([&z2, &z3])?;
 
-    let w3 = Tensor::from([[1.0f32, 2.0], [3.0, 4.0], [5.0, 6.0]]);
-    let b3 = Tensor::from([0.0f32, 0.0]);
-
-    let out = spike2.matmul(&w3).unwrap() + b3.clone();
-    let loss = out.sum_all();
-
-    let d_w3 = tape.gradient(&loss, &[w3.clone()])[0].clone();
-    let d_b3 = tape.gradient(&loss, &[b3])[0].clone();
-
-    let sigma_t = Tensor::from([0.5f32]);
-    let neg_one = Tensor::from([-1.0f32]);
-    let oma_t = Tensor::from([0.1f32]);
-
-    //let diff2 = v_pre2 - th.clone();
-    //let abs_diff2 = diff2.abs();
-    //let surr2 = sigma_t.clone() * (neg_one.clone() * sigma_t.clone() * abs_diff2).exp();
-    let d_v2_pre = Tensor::from([[0.5f32, 0.5, 0.5]]);
-    let d_pre2 = oma_t.clone() * d_v2_pre;
-
-    let d_w2_acc = spike1.transpose(0, 1).unwrap().matmul(&d_pre2).unwrap();
-    let d_b2_acc = d_pre2.sum([0]).unwrap();
-    let d_spike1 = d_pre2.matmul(&w2.transpose(0, 1).unwrap()).unwrap();
-
-    let diff1 = v_pre1 - th;
-    let abs_diff1 = diff1.abs();
-    let surr1 = sigma_t.clone() * (neg_one.clone() * sigma_t.clone() * abs_diff1).exp();
-    let d_v1_pre = d_spike1 * surr1;
-    let d_pre1 = oma_t * d_v1_pre;
-
-    let d_w1_acc = x.transpose(0, 1).unwrap().matmul(&d_pre1).unwrap();
-    let d_b1_acc = d_pre1.sum([0]).unwrap();
-
-    println!("d_w3 shape: {:?}", d_w3.shape());
-    println!("d_b3 shape: {:?}", d_b3.shape());
-    println!("d_w2_acc shape: {:?}", d_w2_acc.shape());
-    println!("d_b2_acc shape: {:?}", d_b2_acc.shape());
-    println!("d_w1_acc shape: {:?}", d_w1_acc.shape());
-    println!("d_b1_acc shape: {:?}", d_b1_acc.shape());
-
-    drop(tape);
-
-    println!("All tensors realized successfully");
     Ok(())
 }
