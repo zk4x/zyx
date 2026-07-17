@@ -36,7 +36,7 @@ use crate::{
     backend::BufferId,
     graph::{ClassId, ExecPlan, Graph},
     kernel::{DeviceId, Kernel, Op},
-    runtime::{KernelData, ShapeId, TensorState},
+    runtime::{KernelData, KernelId, ShapeId, TensorState},
     shape::Dim,
     slab::Slab,
     tensor::TensorId,
@@ -66,17 +66,24 @@ impl Tape {
 
             let tids: Vec<TensorId> = rt.tensors.iter().map(|(id, _)| id).collect();
 
-            let mut seen: Set<TensorId> = Set::default();
+            let mut processed_kernels: Set<KernelId> = Set::default();
+            let mut eager_rcs: Map<TensorId, u32> = Map::default();
             for tid in &tids {
                 if rt.buffer_map.contains_key(tid) {
                     continue;
                 }
                 if let TensorState::Eager { kernel_id, .. } = rt.tensors[*tid].state {
-                    seen.extend(rt.kernels[kernel_id].outputs.iter().copied());
+                    if processed_kernels.insert(kernel_id) {
+                        for o in &rt.kernels[kernel_id].outputs {
+                            *eager_rcs.entry(*o).or_insert(0) += 1;
+                        }
+                    }
                 }
             }
-            for tid in seen {
-                rt.add_store(tid)?;
+            for tid in &tids {
+                if eager_rcs.contains_key(tid) {
+                    rt.add_store(*tid)?;
+                }
             }
 
             let mut graph = rt.graph.take().unwrap();
@@ -87,7 +94,8 @@ impl Tape {
                 let shape_id = rt.tensors[tid].shape_id;
                 let dtype = rt.tensors[tid].dtype;
                 let (node_id, class_id) = graph.push_leaf(dtype, shape_id);
-                rt.tensors[tid].state = TensorState::Graph { node_id, class_id, rc: 1 };
+                let rc = eager_rcs.get(&tid).copied().unwrap_or(1);
+                rt.tensors[tid].state = TensorState::Graph { node_id, class_id, rc };
                 graph.leaf_map.insert(class_id, tid);
             }
             rt.graph = Some(graph);
@@ -103,17 +111,27 @@ impl Tape {
         // Realize any eager tensors that don't have buffers yet.
         // Follow the pattern from Runtime::load: collect all outputs of
         // the tensor's kernel into a deduplicated Set, then add_store each.
-        let mut seen: Set<TensorId> = Set::default();
+        let mut processed_kernels: Set<KernelId> = Set::default();
+        let mut eager_rcs: Map<TensorId, u32> = Map::default();
         for tid in &tids {
             if rt.buffer_map.contains_key(tid) {
                 continue;
             }
             if let TensorState::Eager { kernel_id, .. } = rt.tensors[*tid].state {
-                seen.extend(rt.kernels[kernel_id].outputs.iter().copied());
+                if !rt.kernels.contains_key(kernel_id) {
+                    continue;
+                }
+                if processed_kernels.insert(kernel_id) {
+                    for o in &rt.kernels[kernel_id].outputs {
+                        *eager_rcs.entry(*o).or_insert(0) += 1;
+                    }
+                }
             }
         }
-        for tid in seen {
-            rt.add_store(tid)?;
+        for tid in &tids {
+            if eager_rcs.contains_key(tid) {
+                rt.add_store(*tid)?;
+            }
         }
 
         // Promote all existing tensors to graph Leaf nodes.
@@ -124,7 +142,8 @@ impl Tape {
             let shape_id = rt.tensors[tid].shape_id;
             let dtype = rt.tensors[tid].dtype;
             let (node_id, class_id) = graph.push_leaf(dtype, shape_id);
-            rt.tensors[tid].state = TensorState::Graph { node_id, class_id, rc: 1 };
+            let rc = eager_rcs.get(&tid).copied().unwrap_or(1);
+            rt.tensors[tid].state = TensorState::Graph { node_id, class_id, rc };
             graph.leaf_map.insert(class_id, tid);
         }
 
