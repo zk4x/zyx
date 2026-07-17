@@ -35,7 +35,7 @@
             const path_to_root = "../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-c0de12db.js";
+            window.path_to_searchindex_js = "../searchindex-f4414656.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../toc-e7c93a4e.js"></script>
@@ -207,7 +207,7 @@ let grads = tape.gradient(&amp;z, vec![&amp;x]);  // None — z doesn't depend o
 </span><span class="boring">}</span></code></pre>
 <p>This is more flexible — you don’t need to decide at tensor creation time which tensors will be differentiated.</p>
 <h2 id="higher-order-derivatives"><a class="header" href="#higher-order-derivatives">Higher-Order Derivatives</a></h2>
-<p>The gradient tape stays alive after <code>gradient()</code> for higher-order derivatives:</p>
+<p>The tape stays alive after <code>gradient()</code> for higher-order derivatives:</p>
 <pre><code class="language-rust ignore">let tape = Tape::new()?;
 let x = Tensor::randn([2, 3], DType::F32)?;
 let z = x.relu();

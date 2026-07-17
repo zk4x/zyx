@@ -36,7 +36,7 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-c0de12db.js";
+            window.path_to_searchindex_js = "searchindex-f4414656.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-e7c93a4e.js"></script>
@@ -384,53 +384,50 @@ let x_plus_one = &amp;x + 1.0;  // new tensor, no mutation
 <p>This makes autograd simpler (no mutation to track) and eliminates backpropagation errors from in-place modifications.</p>
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="the-graph"><a class="header" href="#the-graph">The Graph</a></h1>
-<p>The graph is the heart of zyx’s tape mode. Inside a <code>Tape</code>, every operation builds a node in this graph. Outside a tape, there is no graph — ops go directly to kernel fusion. When a tape is active, the graph is shared between computation and autograd — there is only one.</p>
+<p>The graph is an e-graph (equivalence graph) used in tape mode for tensor operation rewrites and optimization. Inside a <code>Tape</code>, every operation builds a node in this graph. Outside a tape, there is no graph — ops go directly to kernel fusion. When a tape is active, the graph is shared between computation and autograd — there is only one.</p>
 <h2 id="data-structure"><a class="header" href="#data-structure">Data Structure</a></h2>
 <p>The graph is stored in the <code>Runtime</code>:</p>
-<pre><code class="language-rust ignore">pub struct Runtime {
-    pub graph: Graph,
-    // ...
-}
-
-pub struct Graph {
-    pub nodes: Slab&lt;TensorId, (u32, Node)&gt;,
-    pub gradient_tape: Option&lt;Set&lt;TensorId&gt;&gt;,
-    pub shapes: Map&lt;TensorId, Box&lt;[Dim]&gt;&gt;,
-    // ...
+<pre><code class="language-rust ignore">pub struct Graph {
+    hashcons: Map&lt;Node, NodeId&gt;,
+    nodes: Slab&lt;NodeId, NodeData&gt;,
+    classes: Slab&lt;ClassId, EClass&gt;,
+    ekernels: Slab&lt;EKernelId, EKernelData&gt;,
+    kernel_map: Map&lt;NodeId, EKernelId&gt;,
+    leaf_map: Map&lt;ClassId, TensorId&gt;,
+    rc: u32,
+    max_leaf_id: u32,
 }</code></pre>
-<h3 id="slab-allocator"><a class="header" href="#slab-allocator">Slab Allocator</a></h3>
-<p>The <code>Slab&lt;TensorId, (u32, Node)&gt;</code> is a dense array with free-list tracking. Insertion is O(1) amortized, and iteration is cache-friendly. Each node is a <code>(reference_count, Node)</code> pair stored inline.</p>
-<p>A <code>TensorId</code> is just a <code>u32</code> index into this slab. This is why <code>Tensor</code> is 4 bytes — it’s an index, not a pointer.</p>
+<p>The <code>hashcons</code> deduplicates structurally identical nodes — if the same operation on the same inputs already exists, the existing <code>NodeId</code> is reused. This provides CSE (common subexpression elimination) for free.</p>
+<p>Each <code>NodeId</code> maps to a <code>NodeData</code> entry in the <code>nodes</code> slab, and each node belongs to an equivalence <code>ClassId</code> in the <code>classes</code> slab. Equivalent forms of the same computation (e.g. different layouts of a matmul) live in the same class.</p>
 <h3 id="node-types"><a class="header" href="#node-types">Node Types</a></h3>
-<p>The graph opset was derived from tinygrad, with changes to make it even smaller. By stacking these types, zyx can express ALL linear algebra operations and ALL PyTorch ops:</p>
-<pre><code class="language-rust ignore">pub enum Node {
-    Const { value: Constant },
-    Leaf { dtype: DType },
-    Expand { x: TensorId },
-    Permute { x: TensorId },
-    Reshape { x: TensorId },
-    Pad { x: TensorId },
-    Reduce { x: TensorId, rop: BOp },
-    Cast { x: TensorId, dtype: DType },
-    Unary { x: TensorId, uop: UOp },
-    Binary { x: TensorId, y: TensorId, bop: BOp },
-    ToDevice { x: TensorId, device: DeviceId },
-    Custom(Box&lt;CustomKernel&gt;),
+<p>The graph opset is derived from tinygrad. By stacking these types, zyx can express ALL linear algebra operations and ALL PyTorch ops:</p>
+<pre><code class="language-rust ignore">enum Node {
+    Const(Constant),
+    Leaf { dtype: DType, leaf_id: u32 },
+    Expand { x: ClassId, shape: ShapeId },
+    Permute { x: ClassId, axes: Box&lt;[UAxis]&gt; },
+    Reshape { x: ClassId, shape: ShapeId },
+    PadZeros { x: ClassId, padding: Box&lt;[(i64, i64)]&gt; },
+    Reduce { x: ClassId, bop: BOp, axes: Box&lt;[UAxis]&gt; },
+    Cast { x: ClassId, dtype: DType },
+    Unary { x: ClassId, uop: UOp },
+    Binary { x: ClassId, y: ClassId, bop: BOp },
+    ToDevice { x: ClassId, device: DeviceId, time: u64 },
+    Kernel { inputs: Box&lt;[ClassId]&gt;, outputs: Box&lt;[ClassId]&gt;, program_id: ProgramId, time: u64 },
 }</code></pre>
+<p>All inputs reference <code>ClassId</code> rather than <code>TensorId</code> — nodes operate on equivalence classes, not specific tensors.</p>
 <h2 id="lifecycle-with-tape"><a class="header" href="#lifecycle-with-tape">Lifecycle with Tape</a></h2>
 <p>There is no graph outside a tape — ops are fused directly into kernels.</p>
-<p>Inside a tape, realized nodes that the tape references are preserved:</p>
-<pre><code class="language-text">realize(x) with tape → compute x → if tape.contains(x), keep node → else replace with Leaf
-</code></pre>
-<p>This is how autograd works on the same graph: the tape prevents node deletion, so when you later call <code>tape.gradient()</code>, it can traverse the graph backward.</p>
+<p>Inside a tape, nodes accumulate until <code>Tape::realize()</code> or drop. The graph supports rewrites that produce equivalent forms of a computation:</p>
+<ul>
+<li><strong>CSE</strong> via hashconsing</li>
+<li><strong>Algebraic rewrites</strong> like transpose fusion</li>
+<li><strong>Layout rewrites</strong>: matmul can be realized as transposed or un-transposed</li>
+<li><strong>Shape rewrites</strong>: reshape and padding can be fused or split</li>
+</ul>
+<p>A cost model selects the cheapest extraction from each equivalence class for kernel compilation. Realized nodes that the tape references are preserved for autograd; unreferenced nodes are released.</p>
 <h2 id="graph-size"><a class="header" href="#graph-size">Graph Size</a></h2>
-<p>The graph is designed to stay small. With ~16 bytes per node + 4 bytes reference count, a training iteration with 10,000 operations costs ~200 KB. When the tape is dropped at the end of each iteration, the graph shrinks back to baseline.</p>
-<h2 id="debugging-the-graph"><a class="header" href="#debugging-the-graph">Debugging the Graph</a></h2>
-<p>Inspect the graph at runtime:</p>
-<pre><code class="language-rust ignore">Tensor::plot_graph(&amp;[&amp;output], "graph")?;</code></pre>
-<p>Or with environment variables:</p>
-<pre><code class="language-bash">ZYX_DEBUG=8 cargo run  # prints kernel IR during compilation
-</code></pre>
+<p>The graph is designed to stay small. Each node is ~16 bytes, and a training iteration with 10,000 operations costs ~200 KB. When the tape is dropped, the graph shrinks back to baseline.</p>
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="the-kernelizer"><a class="header" href="#the-kernelizer">The Kernelizer</a></h1>
 <p>The kernelizer (<code>kernelize.rs</code>) fuses tensor operations into kernels. In eager mode, ops are appended directly to kernels. In tape mode, it traverses the accumulated graph and fuses compatible nodes into kernels.</p>
@@ -774,7 +771,7 @@ let grads = tape.gradient(&amp;z, vec![&amp;x]);  // None — z doesn't depend o
 </span><span class="boring">}</span></code></pre>
 <p>This is more flexible — you don’t need to decide at tensor creation time which tensors will be differentiated.</p>
 <h2 id="higher-order-derivatives"><a class="header" href="#higher-order-derivatives">Higher-Order Derivatives</a></h2>
-<p>The gradient tape stays alive after <code>gradient()</code> for higher-order derivatives:</p>
+<p>The tape stays alive after <code>gradient()</code> for higher-order derivatives:</p>
 <pre><code class="language-rust ignore">let tape = Tape::new()?;
 let x = Tensor::randn([2, 3], DType::F32)?;
 let z = x.relu();

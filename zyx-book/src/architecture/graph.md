@@ -1,78 +1,64 @@
 # The Graph
 
-The graph is the heart of zyx's tape mode. Inside a `Tape`, every operation builds a node in this graph. Outside a tape, there is no graph — ops go directly to kernel fusion. When a tape is active, the graph is shared between computation and autograd — there is only one.
+The graph is an e-graph (equivalence graph) used in tape mode for tensor operation rewrites and optimization. Inside a `Tape`, every operation builds a node in this graph. Outside a tape, there is no graph — ops go directly to kernel fusion. When a tape is active, the graph is shared between computation and autograd — there is only one.
 
 ## Data Structure
 
 The graph is stored in the `Runtime`:
 
 ```rust,ignore
-pub struct Runtime {
-    pub graph: Graph,
-    // ...
-}
-
 pub struct Graph {
-    pub nodes: Slab<TensorId, (u32, Node)>,
-    pub gradient_tape: Option<Set<TensorId>>,
-    pub shapes: Map<TensorId, Box<[Dim]>>,
-    // ...
+    hashcons: Map<Node, NodeId>,
+    nodes: Slab<NodeId, NodeData>,
+    classes: Slab<ClassId, EClass>,
+    ekernels: Slab<EKernelId, EKernelData>,
+    kernel_map: Map<NodeId, EKernelId>,
+    leaf_map: Map<ClassId, TensorId>,
+    rc: u32,
+    max_leaf_id: u32,
 }
 ```
 
-### Slab Allocator
+The `hashcons` deduplicates structurally identical nodes — if the same operation on the same inputs already exists, the existing `NodeId` is reused. This provides CSE (common subexpression elimination) for free.
 
-The `Slab<TensorId, (u32, Node)>` is a dense array with free-list tracking. Insertion is O(1) amortized, and iteration is cache-friendly. Each node is a `(reference_count, Node)` pair stored inline.
-
-A `TensorId` is just a `u32` index into this slab. This is why `Tensor` is 4 bytes — it's an index, not a pointer.
+Each `NodeId` maps to a `NodeData` entry in the `nodes` slab, and each node belongs to an equivalence `ClassId` in the `classes` slab. Equivalent forms of the same computation (e.g. different layouts of a matmul) live in the same class.
 
 ### Node Types
 
-The graph opset was derived from tinygrad, with changes to make it even smaller. By stacking these types, zyx can express ALL linear algebra operations and ALL PyTorch ops:
+The graph opset is derived from tinygrad. By stacking these types, zyx can express ALL linear algebra operations and ALL PyTorch ops:
 
 ```rust,ignore
-pub enum Node {
-    Const { value: Constant },
-    Leaf { dtype: DType },
-    Expand { x: TensorId },
-    Permute { x: TensorId },
-    Reshape { x: TensorId },
-    Pad { x: TensorId },
-    Reduce { x: TensorId, rop: BOp },
-    Cast { x: TensorId, dtype: DType },
-    Unary { x: TensorId, uop: UOp },
-    Binary { x: TensorId, y: TensorId, bop: BOp },
-    ToDevice { x: TensorId, device: DeviceId },
-    Custom(Box<CustomKernel>),
+enum Node {
+    Const(Constant),
+    Leaf { dtype: DType, leaf_id: u32 },
+    Expand { x: ClassId, shape: ShapeId },
+    Permute { x: ClassId, axes: Box<[UAxis]> },
+    Reshape { x: ClassId, shape: ShapeId },
+    PadZeros { x: ClassId, padding: Box<[(i64, i64)]> },
+    Reduce { x: ClassId, bop: BOp, axes: Box<[UAxis]> },
+    Cast { x: ClassId, dtype: DType },
+    Unary { x: ClassId, uop: UOp },
+    Binary { x: ClassId, y: ClassId, bop: BOp },
+    ToDevice { x: ClassId, device: DeviceId, time: u64 },
+    Kernel { inputs: Box<[ClassId]>, outputs: Box<[ClassId]>, program_id: ProgramId, time: u64 },
 }
 ```
+
+All inputs reference `ClassId` rather than `TensorId` — nodes operate on equivalence classes, not specific tensors.
 
 ## Lifecycle with Tape
 
 There is no graph outside a tape — ops are fused directly into kernels.
 
-Inside a tape, realized nodes that the tape references are preserved:
+Inside a tape, nodes accumulate until `Tape::realize()` or drop. The graph supports rewrites that produce equivalent forms of a computation:
 
-```text
-realize(x) with tape → compute x → if tape.contains(x), keep node → else replace with Leaf
-```
+- **CSE** via hashconsing
+- **Algebraic rewrites** like transpose fusion
+- **Layout rewrites**: matmul can be realized as transposed or un-transposed
+- **Shape rewrites**: reshape and padding can be fused or split
 
-This is how autograd works on the same graph: the tape prevents node deletion, so when you later call `tape.gradient()`, it can traverse the graph backward.
+A cost model selects the cheapest extraction from each equivalence class for kernel compilation. Realized nodes that the tape references are preserved for autograd; unreferenced nodes are released.
 
 ## Graph Size
 
-The graph is designed to stay small. With ~16 bytes per node + 4 bytes reference count, a training iteration with 10,000 operations costs ~200 KB. When the tape is dropped at the end of each iteration, the graph shrinks back to baseline.
-
-## Debugging the Graph
-
-Inspect the graph at runtime:
-
-```rust,ignore
-Tensor::plot_graph(&[&output], "graph")?;
-```
-
-Or with environment variables:
-
-```bash
-ZYX_DEBUG=8 cargo run  # prints kernel IR during compilation
-```
+The graph is designed to stay small. Each node is ~16 bytes, and a training iteration with 10,000 operations costs ~200 KB. When the tape is dropped, the graph shrinks back to baseline.
