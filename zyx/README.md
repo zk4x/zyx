@@ -1,12 +1,19 @@
 # Zyx
 
-Zyx is a machine learning library.
-Zyx feels dynamic (no static graphs), but is lazy,
-waits with execution until it is explicitly asked for results.
-Zyx automatically generates and compiles
-optimized kernels at runtime for multiple backends.
-All tensors are differentiable (as if tensors used `requires_grad=True`),
-but thanks to lazyness and scope gradient tracing, all unnecessary memory allocations are optimized away.
+Zyx is a machine learning library with two execution modes:
+
+- **Eager-ish (default)**: Tensor operations fuse into kernels as you write them.
+  When no more fusion is possible, the kernel executes immediately.
+  No separate realize step needed. Ideal for one-off ops — data preprocessing,
+  initialization — like NumPy with GPU acceleration.
+- **Tape**: Create a `Tape` scope to enable lazy graph building, autograd, and complex
+  optimizations (egraph-based fusion and device allocation search).
+  Use this in training or inference loops where the same structure repeats.
+  Think of it as `torch.compile`, but less strict — no miscompilation issues.
+
+Zyx automatically generates and compiles optimized kernels at runtime for multiple backends.
+All tensors are differentiable, but thanks to tape-scoped gradient tracing,
+unnecessary memory allocations are optimized away.
 
 ## Install
 
@@ -24,6 +31,8 @@ zyx-optim = "*"
 ## Syntax
 
 Zyx uses syntax similar to other ML frameworks.
+Outside a tape, ops execute eagerly (fused into kernels automatically).
+Inside a `Tape`, they build a lazy graph for autograd and complex optimization:
 
 ```rust
 use zyx::{DType, Tape, Tensor};
@@ -34,9 +43,7 @@ let b = Tensor::zeros([1024], DType::F32);
 let tape = Tape::new()?;
 let z = &x + &y;
 let z = (x.dot(&y)? + &b).gelu();
-// Zyx allows for arbitrary differentiation
 let b_grad = tape.gradient(&z, [&b])[0].clone();
-// Higher order derivatives keep tape alive
 let bb_grad = tape.gradient(&b_grad, [&b])[0].clone();
 # Ok::<(), zyx::ZyxError>(())
 ```
@@ -61,12 +68,14 @@ See [ENV_VARS.md](ENV_VARS.md) for debugging with `ZYX_DEBUG`.
 If you'd like to add new backend to zyx, that would be awesome!
 Please read [BACKEND.md](https://github.com/zk4x/zyx/blob/main/zyx/BACKEND.md)
 
-## Simple neural network
+## Neural network training loop
 
-zyx-nn and zyx-optim provide high level constructs for neural networks.
+Use a `Tape` inside your training loop for autograd and graph caching.
+The tape scope detects tensors crossing the boundary (created outside, used inside)
+as dynamic inputs and caches everything internal across iterations:
 
 ```rust ignore
-use zyx::{Tensor, DType, GradientTape, ZyxError};
+use zyx::{Tensor, DType, Tape, ZyxError};
 use zyx_nn::{Linear, Module};
 use zyx_optim::SGD;
 
@@ -101,35 +110,42 @@ let x = Tensor::from([2, 3, 1]).cast(DType::F16);
 let target = Tensor::from([5, 7]);
 
 for _ in 0..100 {
-    {
-        let tape = GradientTape::new();
-        let y = net.forward(&x);
-        let loss = y.mse_loss(&target)?;
-        let grads = tape.gradient(&loss, &net);
-        optim.update(&mut net, grads);
-    } // All temporary tensors are dropped here
-    Tensor::realize_all(); // realizes all tensors left, which are only tensors persistent across training iterations
-}
+    let tape = Tape::new()?;
+    let y = net.forward(&x);
+    let loss = y.mse_loss(&target)?;
+    let grads = tape.gradient(&loss, &net);
+    optim.update(&mut net, grads);
+} // Tape drop realizes all alive tensors and caches graph
+  // for structurally identical iterations.
 # Ok::<(), zyx::ZyxError>(())
 ```
 
 For more details, there is a [book](https://zk4x.github.io/zyx) in works.
 
-## Lazyness
+## Execution modes
 
-Tensors do not get realized automatically. Realization happens only when user accesses tensors, or explicitly using `Tensor::realize` or `Tensor::realize_all` functions.
+### Default (eager-ish)
 
-```rust ignore
-Tensor::realize([&x, &y]).unwrap();
-```
+Outside a `Tape`, tensor operations fuse into kernels as you call them.
+When fusion is not possible (device mismatch, data dependency chain break, etc.),
+the pending kernel executes immediately. No explicit realize step required.
+Use this for one-off work: data loading, preprocessing, model initialization — tasks
+where spending time on complex optimization would be wasteful.
 
-If you do not know when to realize tensors, just do it after updating model weights.
+### Tape (lazy + autograd)
 
-```rust ignore
-sgd.update(&mut model, grads);
-Tensor::realize(&model).unwrap();
-Tensor::realize(&sgd).unwrap(); // sgd with momentum also keeps persistent tensors!
-```
+Wrap your training or inference loop in a `Tape` scope to get lazy graph building,
+automatic differentiation, and aggressive optimization (egraph-based fusion comparison,
+device allocation search, plan caching across structurally identical iterations). Kernel caching (compiled program reuse) is shared across both modes.
+
+The tape detects boundary-crossing tensors (created outside the scope, referenced inside)
+as dynamic inputs. Everything internal to the tape is cached by structural hash of the
+graph. On cache hit, only the dynamic leaf buffers are resolved — no
+graph traversal or recompilation.
+
+Create a tape with [`Tape::new`], get gradients with [`Tape::gradient`],
+and explicitly realize specific outputs with [`Tape::realize`] if needed.
+On drop, all alive tensors in the scope are realized automatically.
 
 ## Error handling
 

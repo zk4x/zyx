@@ -35,7 +35,7 @@
             const path_to_root = "../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-feb5aeb4.js";
+            window.path_to_searchindex_js = "../searchindex-c0de12db.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../toc-e7c93a4e.js"></script>
@@ -208,12 +208,12 @@ struct SimpleNet {
 }
 
 fn train_step(model: &amp;mut SimpleNet, optim: &amp;mut SGD, x: &amp;Tensor, target: &amp;Tensor) -&gt; f32 {
-    let tape = GradientTape::new();
+    let tape = Tape::new()?;
     let output = model.forward(x);
     let loss = output.mse_loss(target)?;
     let grads = tape.gradient(&amp;loss, &amp;model);
     optim.update(model, grads);
-    Tensor::realize_all()?;
+    // tape drop realizes and caches
     loss.item()
 }</code></pre>
 <p>The <code>tape.gradient(&amp;loss, &amp;model)</code> call passes the model itself as the sources. The autograd system iterates over <code>model.iter()</code> to get all parameters.</p>

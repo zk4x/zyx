@@ -35,7 +35,7 @@
             const path_to_root = "../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-feb5aeb4.js";
+            window.path_to_searchindex_js = "../searchindex-c0de12db.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../toc-e7c93a4e.js"></script>
@@ -191,20 +191,18 @@
     }
 }</code></pre>
 <p>If we used <code>Arc</code> instead, we would still need <code>Mutex</code> for the <code>Runtime</code> — <code>Tensor(id, Arc&lt;Mutex&lt;Runtime&gt;&gt;)</code>. The current approach avoids the <code>Arc</code> overhead and keeps <code>Tensor</code> at 4 bytes. Since every tensor operation already locks the runtime to append a graph node, there’s no additional lock contention from reference counting.</p>
-<h3 id="lazy-evaluation"><a class="header" href="#lazy-evaluation">Lazy Evaluation</a></h3>
-<p>Tensor operations don’t compute anything. They build graph nodes:</p>
+<h3 id="execution"><a class="header" href="#execution">Execution</a></h3>
+<p>Outside a tape, each op is appended directly to the kernel that produced its inputs. When fusion is not possible, the kernel compiles and executes:</p>
 <pre class="playground"><code class="language-rust"><span class="boring">extern crate zyx;
 </span><span class="boring">use zyx::{DType, Tensor, ZyxError};
 </span><span class="boring">fn main() -&gt; Result&lt;(), ZyxError&gt; {
 </span>let x = Tensor::randn([1024, 1024], DType::F32)?;
-let y = x.relu();
-let z = y.tanh();
-
-// This triggers the whole pipeline:
-Tensor::realize(vec![&amp;z])?;
+let y = x.relu();     // appended to x's kernel
+let z = y.tanh();     // appended to same kernel
+// at some point the kernel compiles and executes
 <span class="boring">Ok(())
 </span><span class="boring">}</span></code></pre>
-<p>The key insight: since operations just append to the graph, repeated graph patterns are automatically recognized and optimized. A training loop that builds the same graph structure every iteration gets the benefit of caching without explicit compilation steps.</p>
+<p>Inside a tape, operations build graph nodes lazily and execute when the tape is realized or dropped. The key insight: repeated graph patterns are automatically recognized and cached across structurally identical iterations.</p>
 <h3 id="construction-methods"><a class="header" href="#construction-methods">Construction Methods</a></h3>
 <p>Tensors can be created from:</p>
 <pre class="playground"><code class="language-rust"><span class="boring">extern crate zyx;

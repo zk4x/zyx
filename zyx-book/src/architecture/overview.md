@@ -3,9 +3,11 @@
 The zyx pipeline transforms high-level tensor operations into device-specific machine code.
 
 ```text
-Tensor API ──► Graph ──► Kernelizer ──► Kernel IR ──► Opt Passes ──► Backend Codegen
-                                                                         │
-                                            Autotune (clone + evaluate)  └── deSSA + linear pass
+Tensor API ──► Eager-ish: append to kernel ──► compile + execute
+            │
+            └── Tape: Graph (lazy) ──► Kernelizer ──► Kernel IR ──► Opt Passes ──► Backend Codegen
+                                                                                    │
+                                       Autotune (clone + evaluate)  └── deSSA + linear pass
 ```
 
 ## Pipeline Stages
@@ -25,7 +27,7 @@ let z = y * 2.0;
 # }
 ```
 
-These calls do not compute anything. Each operation appends a node to the graph and returns a lightweight `Tensor` handle.
+Outside a `Tape`, each op is appended directly to the kernel that produced its inputs. When fusion is not possible, the kernel compiles and executes — no graph, no separate realize step. Inside a `Tape`, ops build graph nodes lazily. Either way, each operation returns a lightweight `Tensor` handle.
 
 ### 2. The Graph
 
@@ -50,7 +52,7 @@ The graph is stored in a `Slab` — a dense array with free-list tracking. `Tens
 
 ### 3. The Kernelizer
 
-When `realize()` is called, the kernelizer traverses the graph bottom-up and fuses compatible nodes into kernels. The kernelizer uses heuristics to decide where kernel boundaries go — it's not a simple rule. A reduce node used by multiple downstream nodes does not necessarily force a split. If two downstream nodes are both expand ops, that may force fusion. Element-wise chains will almost always fuse into one kernel.
+The kernelizer fuses compatible graph nodes into kernels. Outside a tape it runs incrementally as ops are added; inside a tape it runs when `Tape::realize()` is called or the tape is dropped. The kernelizer uses heuristics to decide where kernel boundaries go — it's not a simple rule. A reduce node used by multiple downstream nodes does not necessarily force a split. If two downstream nodes are both expand ops, that may force fusion. Element-wise chains will almost always fuse into one kernel.
 
 View operations (reshape, expand, permute, pad) are unfolded into index arithmetic in the kernel, becoming "free" — they don't create separate operations.
 

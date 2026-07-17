@@ -29,25 +29,23 @@ impl Clone for Tensor {
 
 If we used `Arc` instead, we would still need `Mutex` for the `Runtime` — `Tensor(id, Arc<Mutex<Runtime>>)`. The current approach avoids the `Arc` overhead and keeps `Tensor` at 4 bytes. Since every tensor operation already locks the runtime to append a graph node, there's no additional lock contention from reference counting.
 
-### Lazy Evaluation
+### Execution
 
-Tensor operations don't compute anything. They build graph nodes:
+Outside a tape, each op is appended directly to the kernel that produced its inputs. When fusion is not possible, the kernel compiles and executes:
 
 ```rust
 # extern crate zyx;
 # use zyx::{DType, Tensor, ZyxError};
 # fn main() -> Result<(), ZyxError> {
 let x = Tensor::randn([1024, 1024], DType::F32)?;
-let y = x.relu();
-let z = y.tanh();
-
-// This triggers the whole pipeline:
-Tensor::realize(vec![&z])?;
+let y = x.relu();     // appended to x's kernel
+let z = y.tanh();     // appended to same kernel
+// at some point the kernel compiles and executes
 # Ok(())
 # }
 ```
 
-The key insight: since operations just append to the graph, repeated graph patterns are automatically recognized and optimized. A training loop that builds the same graph structure every iteration gets the benefit of caching without explicit compilation steps.
+Inside a tape, operations build graph nodes lazily and execute when the tape is realized or dropped. The key insight: repeated graph patterns are automatically recognized and cached across structurally identical iterations.
 
 ### Construction Methods
 

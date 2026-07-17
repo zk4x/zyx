@@ -1,26 +1,24 @@
 # The Kernelizer
 
-The kernelizer (`kernelize.rs`) is the bridge between the high-level tensor graph and the low-level kernel IR. It traverses the computation graph and fuses compatible nodes into kernels.
+The kernelizer (`kernelize.rs`) fuses tensor operations into kernels. In eager mode, ops are appended directly to kernels. In tape mode, it traverses the accumulated graph and fuses compatible nodes into kernels.
 
 ## When the Kernelizer Runs
 
-The kernelizer is invoked during `realize()`:
+Outside a tape, the kernelizer runs incrementally as each op is added — fusing compatible nodes and executing when a fusion boundary is hit. Inside a tape, the kernelizer runs once during `Tape::realize()` or on tape drop:
 
 ```rust,ignore
-pub fn realize(x: &[&Tensor]) -> Result<(), ZyxError> {
-    // 1. Lock the runtime
-    // 2. Identify which tensors need evaluation
-    // 3. Topological sort based on reference counts
-    // 4. Call kernelizer to build kernels
-    // 5. Optimize and compile each kernel
-    // 6. Execute on device
-    // 7. Release unused nodes
-}
+// Tape mode — kernelizer runs at realize/drop
+let tape = Tape::new()?;
+let y = x.relu();
+let z = y * 2.0;
+// at this point: no computation done yet
+tape.realize([&z])?;
+// kernelizer runs → optimizes → executes
 ```
 
 ## Fusion Logic
 
-The kernelizer processes graph nodes **bottom-up** in topological order. Each graph node type adds ops to the kernel its input lives in — fusion is the default, splitting happens only when needed.
+In tape mode, the kernelizer processes graph nodes **bottom-up** in topological order. Each graph node type adds ops to the kernel its input lives in — fusion is the default, splitting happens only when needed.
 
 ### Per-Node Type Behavior
 

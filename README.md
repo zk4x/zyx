@@ -28,8 +28,8 @@
 
 ## Features
 
-- **Unified Graph** — autograd and laziness share the same graph, enabling seamless kernel fusion across all operations.
-- **Lazy Evaluation** — operations accumulate until `realize()` triggers execution, reducing temporary allocations.
+- **Eager-ish Execution** — tensor operations fuse into kernels as you write them; when fusion is no longer possible, the kernel executes immediately. No separate realize step needed.
+- **Tape Mode** — wrap loops in a `Tape` for lazy graph building, autograd, egraph-based fusion optimization, and plan caching across structurally identical iterations. Kernel caching (compiled program reuse) is shared across both modes.
 - **Kernel Fusion** — tensor operations compile into single optimized kernels (CUDA, OpenCL, WebGPU, etc.).
 - **Cross‑Platform Backends** — native support for OpenCL (CPU via POCL, GPU via native OpenCL drivers), WebGPU, CUDA, and more.
 - **Full Linear‑Algebra Coverage** — mirrors the PyTorch ops API (matmul, convolutions, pooling, reductions, indexing, etc.) by stacking ops.
@@ -54,8 +54,8 @@ y = zyx.Tensor.uniform_(2, 3, from_=-1.0, to_=1.0)
 z = x.relu() + y.tanh()
 print(z.shape())
 
-# Autograd example
-tape = zyx.GradientTape()
+# Autograd example with tape
+tape = zyx.Tape()
 result = x.relu() * y
 grads = tape.gradient(result, [x, y])
 ```
@@ -64,7 +64,7 @@ grads = tape.gradient(result, [x, y])
 
 | Crate | Description |
 |-------|-------------|
-| `zyx` | Core tensor library with lazy graph and autodiff |
+| `zyx` | Core tensor library with eager-ish fusion and tape-based autodiff |
 | `zyx-nn` | Neural network layers (Linear, Conv2d, Attention, etc.) and `#[derive(Module)]` |
 | `zyx-optim` | Optimizers (SGD, Adam, AdamW, RMSprop) |
 
@@ -89,33 +89,26 @@ cargo add zyx zyx-nn zyx-optim
 
 ## Hello World
 
-Create tensors, apply operations, and trigger computation with `realize()`:
+Tensors fuse into kernels automatically — no explicit realize step needed:
 
 ```rust
 use zyx::{Tensor, DType};
 
 fn main() -> Result<(), zyx::ZyxError> {
-    // Create tensors
     let x = Tensor::randn([2, 3], DType::F32)?;
     let y = Tensor::uniform([2, 3], -1f32..1f32)?;
-    
-    // Perform operations (lazy evaluation)
     let z = x.relu()? + y.tanh()?;
-    
-    // Realize computation
-    let result = z.realize()?;
-    
-    println!("Result shape: {:?}", result.shape());
+    println!("Result shape: {:?}", z.shape());
     Ok(())
 }
 ```
 
 ## Basic Neural Network
 
-A training loop with a two-layer network, using `GradientTape` for autograd and `SGD` for optimization:
+A training loop with a two-layer network, using `Tape` for autograd and graph caching:
 
 ```rust
-use zyx::{Tensor, DType, GradientTape};
+use zyx::{Tensor, DType, Tape};
 use zyx_nn::{Linear, Module};
 use zyx_optim::SGD;
 
@@ -146,17 +139,13 @@ fn main() -> Result<(), zyx::ZyxError> {
     let target = Tensor::randn([64, 10], DType::F32)?;
     
     for epoch in 0..10 {
-        let tape = GradientTape::new();
+        let tape = Tape::new()?;
         let output = model.forward(&x);
         let loss = output.mse_loss(&target)?;
         
         let grads = tape.gradient(&loss, &model);
         optim.update(&mut model, grads);
-        
-        // Realize to trigger computation
-        Tensor::realize_all()?;
-        
-        println!("Epoch {}: Loss = {:.4}", epoch, loss.item::<f32>()?);
+        // Tape drop realizes all alive tensors and caches the graph
     }
     
     Ok(())
@@ -197,7 +186,7 @@ See the [WMMA matmul example](zyx/src/kernel/mod.rs#L9-L89) for a tensor-core ma
 A Transformer block with multi-head attention, layer normalization, and AdamW optimization:
 
 ```rust
-use zyx::{DType, GradientTape, Module, Tensor};
+use zyx::{DType, Tape, Module, Tensor};
 use zyx_nn::{Linear, LayerNorm, MultiheadAttention};
 use zyx_optim::AdamW;
 
@@ -235,15 +224,13 @@ fn main() -> Result<(), zyx::ZyxError> {
     let mut optim = AdamW::default();
     let x = Tensor::randn([2, 8, 64], DType::F32)?;
 
-    let tape = GradientTape::new();
+    let tape = Tape::new()?;
     let out = model.forward(&x)?;
     let grads = tape.gradient(&out, &model);
 
     // Update parameters with gradients
     optim.update(model.iter_mut(), grads);
-
-    // Realize model to trigger computation (zyx uses lazy evaluation)
-    model.realize()?;
+    // Tape drop realizes and caches
     Ok(())
 }
 ```
@@ -256,14 +243,20 @@ flowchart LR
     B --> C["Unified Kernel IR"]
     C --> D["Backend Code / Assembly"]
 ```
-Tensor operations build a lazy computation graph. During realization, the graph is analyzed for fusion opportunities and the optimal execution schedule is searched. The fused operations are lowered to a unified intermediate representation with device-specific instructions (e.g. WMMA tensor cores), then compiled to native code (PTX, OpenCL C, WGSL, etc.) for the target backend.
+Outside a tape, tensor operations fuse eagerly into kernels as you call them.
+Inside a tape, a lazy graph is built and analyzed for fusion opportunities during
+realization. In either mode, the fused operations are lowered to a unified
+intermediate representation with device-specific instructions (e.g. WMMA tensor
+cores), then compiled to native code (PTX, OpenCL C, WGSL, etc.) for the target
+backend. Tape mode additionally applies egraph-based optimization to compare
+fusion schemes and device allocations.
 
 ## Why zyx is Different
 
 | Feature | zyx | PyTorch | TensorFlow | JAX |
 |---------|-----|---------|------------|-----|
-| **Execution Model** | Lazy with explicit realization | Eager by default | Eager by default | Functional + XLA |
-| **Gradient Recording** | Explicit `GradientTape` | Implicit, requires `no_grad()` | Implicit, tf.function | Explicit + jit |
+| **Execution Model** | Eager-ish fusion (default) + Tape (lazy + autograd) | Eager by default | Eager by default | Functional + XLA |
+| **Gradient Recording** | Explicit `Tape` | Implicit, requires `no_grad()` | Implicit, tf.function | Explicit + jit |
 | **Tensor Mutability** | Immutable (no in-place errors) | Mutable (risk of back-prop failures) | Mutable | Immutable |
 | **Kernel Fusion** | Automatic, cross-backend | Manual (torch.jit) | Manual (XLA) | Manual (XLA) |
 | **Disk I/O** | Lazy loading parallel to compute | Typically blocking | Blocking | Blocking |

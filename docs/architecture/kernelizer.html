@@ -35,7 +35,7 @@
             const path_to_root = "../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-feb5aeb4.js";
+            window.path_to_searchindex_js = "../searchindex-c0de12db.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../toc-e7c93a4e.js"></script>
@@ -175,20 +175,18 @@
                 <div id="mdbook-content" class="content">
                     <main>
                         <h1 id="the-kernelizer"><a class="header" href="#the-kernelizer">The Kernelizer</a></h1>
-<p>The kernelizer (<code>kernelize.rs</code>) is the bridge between the high-level tensor graph and the low-level kernel IR. It traverses the computation graph and fuses compatible nodes into kernels.</p>
+<p>The kernelizer (<code>kernelize.rs</code>) fuses tensor operations into kernels. In eager mode, ops are appended directly to kernels. In tape mode, it traverses the accumulated graph and fuses compatible nodes into kernels.</p>
 <h2 id="when-the-kernelizer-runs"><a class="header" href="#when-the-kernelizer-runs">When the Kernelizer Runs</a></h2>
-<p>The kernelizer is invoked during <code>realize()</code>:</p>
-<pre><code class="language-rust ignore">pub fn realize(x: &amp;[&amp;Tensor]) -&gt; Result&lt;(), ZyxError&gt; {
-    // 1. Lock the runtime
-    // 2. Identify which tensors need evaluation
-    // 3. Topological sort based on reference counts
-    // 4. Call kernelizer to build kernels
-    // 5. Optimize and compile each kernel
-    // 6. Execute on device
-    // 7. Release unused nodes
-}</code></pre>
+<p>Outside a tape, the kernelizer runs incrementally as each op is added — fusing compatible nodes and executing when a fusion boundary is hit. Inside a tape, the kernelizer runs once during <code>Tape::realize()</code> or on tape drop:</p>
+<pre><code class="language-rust ignore">// Tape mode — kernelizer runs at realize/drop
+let tape = Tape::new()?;
+let y = x.relu();
+let z = y * 2.0;
+// at this point: no computation done yet
+tape.realize([&amp;z])?;
+// kernelizer runs → optimizes → executes</code></pre>
 <h2 id="fusion-logic"><a class="header" href="#fusion-logic">Fusion Logic</a></h2>
-<p>The kernelizer processes graph nodes <strong>bottom-up</strong> in topological order. Each graph node type adds ops to the kernel its input lives in — fusion is the default, splitting happens only when needed.</p>
+<p>In tape mode, the kernelizer processes graph nodes <strong>bottom-up</strong> in topological order. Each graph node type adds ops to the kernel its input lives in — fusion is the default, splitting happens only when needed.</p>
 <h3 id="per-node-type-behavior"><a class="header" href="#per-node-type-behavior">Per-Node Type Behavior</a></h3>
 <div class="table-wrapper">
 <table>

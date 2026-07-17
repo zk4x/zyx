@@ -35,7 +35,7 @@
             const path_to_root = "../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-feb5aeb4.js";
+            window.path_to_searchindex_js = "../searchindex-c0de12db.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../toc-e7c93a4e.js"></script>
@@ -175,7 +175,7 @@
                 <div id="mdbook-content" class="content">
                     <main>
                         <h1 id="the-graph"><a class="header" href="#the-graph">The Graph</a></h1>
-<p>The graph is the heart of zyx. Every operation a user performs builds a node in this graph. The graph is shared between computation and autograd — there is only one.</p>
+<p>The graph is the heart of zyx’s tape mode. Inside a <code>Tape</code>, every operation builds a node in this graph. Outside a tape, there is no graph — ops go directly to kernel fusion. When a tape is active, the graph is shared between computation and autograd — there is only one.</p>
 <h2 id="data-structure"><a class="header" href="#data-structure">Data Structure</a></h2>
 <p>The graph is stored in the <code>Runtime</code>:</p>
 <pre><code class="language-rust ignore">pub struct Runtime {
@@ -208,14 +208,12 @@ pub struct Graph {
     ToDevice { x: TensorId, device: DeviceId },
     Custom(Box&lt;CustomKernel&gt;),
 }</code></pre>
-<h2 id="lifecycle-with-gradienttape"><a class="header" href="#lifecycle-with-gradienttape">Lifecycle with GradientTape</a></h2>
-<p>Without a gradient tape, realized graph nodes are immediately released:</p>
-<pre><code class="language-text">realize(x) → compute x → replace x's node with Leaf → release x's inputs
-</code></pre>
-<p>With a gradient tape alive, realized nodes that the tape references are preserved:</p>
+<h2 id="lifecycle-with-tape"><a class="header" href="#lifecycle-with-tape">Lifecycle with Tape</a></h2>
+<p>There is no graph outside a tape — ops are fused directly into kernels.</p>
+<p>Inside a tape, realized nodes that the tape references are preserved:</p>
 <pre><code class="language-text">realize(x) with tape → compute x → if tape.contains(x), keep node → else replace with Leaf
 </code></pre>
-<p>This is how autograd works on the same graph: the gradient tape prevents node deletion, so when you later call <code>tape.gradient()</code>, it can traverse the graph backward.</p>
+<p>This is how autograd works on the same graph: the tape prevents node deletion, so when you later call <code>tape.gradient()</code>, it can traverse the graph backward.</p>
 <h2 id="graph-size"><a class="header" href="#graph-size">Graph Size</a></h2>
 <p>The graph is designed to stay small. With ~16 bytes per node + 4 bytes reference count, a training iteration with 10,000 operations costs ~200 KB. When the tape is dropped at the end of each iteration, the graph shrinks back to baseline.</p>
 <h2 id="debugging-the-graph"><a class="header" href="#debugging-the-graph">Debugging the Graph</a></h2>

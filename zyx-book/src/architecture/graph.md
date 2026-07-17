@@ -1,6 +1,6 @@
 # The Graph
 
-The graph is the heart of zyx. Every operation a user performs builds a node in this graph. The graph is shared between computation and autograd — there is only one.
+The graph is the heart of zyx's tape mode. Inside a `Tape`, every operation builds a node in this graph. Outside a tape, there is no graph — ops go directly to kernel fusion. When a tape is active, the graph is shared between computation and autograd — there is only one.
 
 ## Data Structure
 
@@ -47,21 +47,17 @@ pub enum Node {
 }
 ```
 
-## Lifecycle with GradientTape
+## Lifecycle with Tape
 
-Without a gradient tape, realized graph nodes are immediately released:
+There is no graph outside a tape — ops are fused directly into kernels.
 
-```text
-realize(x) → compute x → replace x's node with Leaf → release x's inputs
-```
-
-With a gradient tape alive, realized nodes that the tape references are preserved:
+Inside a tape, realized nodes that the tape references are preserved:
 
 ```text
 realize(x) with tape → compute x → if tape.contains(x), keep node → else replace with Leaf
 ```
 
-This is how autograd works on the same graph: the gradient tape prevents node deletion, so when you later call `tape.gradient()`, it can traverse the graph backward.
+This is how autograd works on the same graph: the tape prevents node deletion, so when you later call `tape.gradient()`, it can traverse the graph backward.
 
 ## Graph Size
 

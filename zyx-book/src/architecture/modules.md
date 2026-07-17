@@ -45,12 +45,12 @@ struct SimpleNet {
 }
 
 fn train_step(model: &mut SimpleNet, optim: &mut SGD, x: &Tensor, target: &Tensor) -> f32 {
-    let tape = GradientTape::new();
+    let tape = Tape::new()?;
     let output = model.forward(x);
     let loss = output.mse_loss(target)?;
     let grads = tape.gradient(&loss, &model);
     optim.update(model, grads);
-    Tensor::realize_all()?;
+    // tape drop realizes and caches
     loss.item()
 }
 ```

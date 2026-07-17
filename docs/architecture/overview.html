@@ -35,7 +35,7 @@
             const path_to_root = "../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-feb5aeb4.js";
+            window.path_to_searchindex_js = "../searchindex-c0de12db.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../toc-e7c93a4e.js"></script>
@@ -176,9 +176,11 @@
                     <main>
                         <h1 id="architecture-overview"><a class="header" href="#architecture-overview">Architecture Overview</a></h1>
 <p>The zyx pipeline transforms high-level tensor operations into device-specific machine code.</p>
-<pre><code class="language-text">Tensor API ──► Graph ──► Kernelizer ──► Kernel IR ──► Opt Passes ──► Backend Codegen
-                                                                         │
-                                            Autotune (clone + evaluate)  └── deSSA + linear pass
+<pre><code class="language-text">Tensor API ──► Eager-ish: append to kernel ──► compile + execute
+            │
+            └── Tape: Graph (lazy) ──► Kernelizer ──► Kernel IR ──► Opt Passes ──► Backend Codegen
+                                                                                    │
+                                       Autotune (clone + evaluate)  └── deSSA + linear pass
 </code></pre>
 <h2 id="pipeline-stages"><a class="header" href="#pipeline-stages">Pipeline Stages</a></h2>
 <h3 id="1-tensor-api"><a class="header" href="#1-tensor-api">1. Tensor API</a></h3>
@@ -191,7 +193,7 @@ let y = x.relu();
 let z = y * 2.0;
 <span class="boring">Ok(())
 </span><span class="boring">}</span></code></pre>
-<p>These calls do not compute anything. Each operation appends a node to the graph and returns a lightweight <code>Tensor</code> handle.</p>
+<p>Outside a <code>Tape</code>, each op is appended directly to the kernel that produced its inputs. When fusion is not possible, the kernel compiles and executes — no graph, no separate realize step. Inside a <code>Tape</code>, ops build graph nodes lazily. Either way, each operation returns a lightweight <code>Tensor</code> handle.</p>
 <h3 id="2-the-graph"><a class="header" href="#2-the-graph">2. The Graph</a></h3>
 <p>The graph opset was taken from tinygrad, with changes to make it even smaller. This is the minimal set of operations that can express ALL linear algebra operations and ALL PyTorch ops — by stacking these nodes:</p>
 <div class="table-wrapper">
@@ -216,7 +218,7 @@ let z = y * 2.0;
 <p>Each node is ~16 bytes, plus a 4-byte reference count and slab metadata overhead. Still small enough that 10,000 nodes cost ~200 KB.</p>
 <p>The graph is stored in a <code>Slab</code> — a dense array with free-list tracking. <code>TensorId</code> is a <code>u32</code> index into this slab, making tensor handles 4 bytes.</p>
 <h3 id="3-the-kernelizer"><a class="header" href="#3-the-kernelizer">3. The Kernelizer</a></h3>
-<p>When <code>realize()</code> is called, the kernelizer traverses the graph bottom-up and fuses compatible nodes into kernels. The kernelizer uses heuristics to decide where kernel boundaries go — it’s not a simple rule. A reduce node used by multiple downstream nodes does not necessarily force a split. If two downstream nodes are both expand ops, that may force fusion. Element-wise chains will almost always fuse into one kernel.</p>
+<p>The kernelizer fuses compatible graph nodes into kernels. Outside a tape it runs incrementally as ops are added; inside a tape it runs when <code>Tape::realize()</code> is called or the tape is dropped. The kernelizer uses heuristics to decide where kernel boundaries go — it’s not a simple rule. A reduce node used by multiple downstream nodes does not necessarily force a split. If two downstream nodes are both expand ops, that may force fusion. Element-wise chains will almost always fuse into one kernel.</p>
 <p>View operations (reshape, expand, permute, pad) are unfolded into index arithmetic in the kernel, becoming “free” — they don’t create separate operations.</p>
 <h3 id="4-the-kernel-ir"><a class="header" href="#4-the-kernel-ir">4. The Kernel IR</a></h3>
 <p>After unfolding, the DAG is converted into a <strong>linear structure</strong> — a doubly-linked list of ops stored in an arena (the <code>Slab&lt;OpId, OpNode&gt;</code>). Each <code>OpNode</code> is <strong>32 bytes</strong> stored inline in the arena — no <code>Box</code>, no vtables, no indirection.</p>
