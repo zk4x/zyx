@@ -828,3 +828,18 @@ fn grad_overlapping_realize_cross_tape() -> Result<(), ZyxError> {
 
     Ok(())
 }
+
+#[test]
+fn grad_orphan_then_use_directly() -> Result<(), ZyxError> {
+    let x = Tensor::from([3f32, 2., 4.]);
+    let y;
+
+    {
+        let tape = Tape::new()?;
+        y = x.relu();
+    }
+
+    let z = y.ln();
+
+    Ok(())
+}
