@@ -712,7 +712,9 @@ fn argmax_comprehensive() -> Result<(), ZyxError> {
 fn argmax_1() -> Result<(), ZyxError> {
     let x2 = Tensor::from([[1, 3, 2], [4, 6, 5], [7, 9, 8]]);
     let y = x2.argmax_axis(0)?;
+    assert_eq!(y, [2, 2, 2]); // max in each column
     let y = x2.argmax_axis(1)?;
+    assert_eq!(y, [1, 1, 1]); // max in each row
 
     Ok(())
 }
