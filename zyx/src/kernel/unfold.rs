@@ -83,13 +83,29 @@ impl Kernel {
                 MoveOp::Reshape { shape } => {
                     x.1.reshape(0..x.1.rank() - n_reduce_axes, shape);
                 }
-                MoveOp::Expand { shape } => x.1.expand(shape),
+                MoveOp::Expand { shape } => {
+                    let non_reduce = x.1.rank() - n_reduce_axes as usize;
+                    if non_reduce < shape.len() {
+                        let mut new_shape: Vec<Dim> = std::iter::repeat_n(1, shape.len() - non_reduce).collect();
+                        new_shape.extend_from_slice(&x.1.shape()[..non_reduce]);
+                        x.1.reshape(0..non_reduce, &new_shape);
+                    }
+                    x.1.expand_first(shape);
+                }
                 MoveOp::Permute { axes, .. } => x.1.permute(axes),
                 MoveOp::Pad { padding, .. } => x.1.pad(x.1.rank() - n_reduce_axes, padding),
             },
             Op::ConstView(x) => match move_op {
                 MoveOp::Reshape { shape } => x.1.reshape(0..x.1.rank() - n_reduce_axes, shape),
-                MoveOp::Expand { shape } => x.1.expand(shape),
+                MoveOp::Expand { shape } => {
+                    let non_reduce = x.1.rank() - n_reduce_axes as usize;
+                    if non_reduce < shape.len() {
+                        let mut new_shape: Vec<Dim> = std::iter::repeat_n(1, shape.len() - non_reduce).collect();
+                        new_shape.extend_from_slice(&x.1.shape()[..non_reduce]);
+                        x.1.reshape(0..non_reduce, &new_shape);
+                    }
+                    x.1.expand_first(shape);
+                }
                 MoveOp::Permute { axes, .. } => x.1.permute(axes),
                 MoveOp::Pad { padding, .. } => x.1.pad(x.1.rank() - n_reduce_axes, padding),
             },

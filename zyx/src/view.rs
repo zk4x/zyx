@@ -285,14 +285,9 @@ impl View {
         *inner = temp_data;
     }
 
-    pub(crate) fn expand(&mut self, shape: &[Dim]) {
-        println!("expand {:?} to {shape:?}", self.shape());
-        if self.rank() != shape.len() {
-            debug_assert!(self.rank() < shape.len());
-            let sh = self.shape();
-            let new_shape: Vec<Dim> = std::iter::repeat_n(1, shape.len() - sh.len()).chain(sh.iter().copied()).collect();
-            self.reshape(0..sh.len(), &new_shape);
-        }
+    pub(crate) fn expand_first(&mut self, shape: &[Dim]) {
+        //println!("expand {:?} to {shape:?}", self.shape());
+        debug_assert!(self.rank() >= shape.len(), "Expand assumes ranks are the same and expands shape.len first axes");
         let inner = self.0.last_mut().unwrap();
         for (dim, &d) in inner.iter_mut().zip(shape) {
             if d != dim.d {
