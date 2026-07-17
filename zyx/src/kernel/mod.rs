@@ -1084,38 +1084,63 @@ impl Kernel {
     /// Permute tensor axes.
     pub fn permute(&mut self, x: OpId, axes: &[UAxis]) -> OpId {
         let axes = axes.to_vec();
-        let shape = self.shape_of(x);
-        let shape = crate::shape::permute(&shape, &axes);
+        let in_shape = self.shape_of(x);
+        debug_assert_eq!(axes.len(), in_shape.len(), "permute: axes length {} != rank {}", axes.len(), in_shape.len());
+        {
+            let mut sorted = axes.clone();
+            sorted.sort();
+            debug_assert!(sorted.iter().copied().eq(0..in_shape.len() as UAxis), "permute: axes not a valid permutation: {axes:?} for rank {}", in_shape.len());
+        }
+        let shape = crate::shape::permute(&in_shape, &axes);
         self.push_back(Op::Move { x, mop: Box::new(MoveOp::Permute { axes, shape }) })
     }
 
     /// Reshape tensor.
     pub fn reshape(&mut self, x: OpId, shape: &[Dim]) -> OpId {
         let shape = shape.to_vec();
+        let in_shape = self.shape_of(x);
+        debug_assert_eq!(shape.iter().product::<Dim>(), in_shape.iter().product::<Dim>(), "reshape: element count mismatch: {:?} -> {:?}", in_shape, shape);
         self.push_back(Op::Move { x, mop: Box::new(MoveOp::Reshape { shape }) })
     }
 
     /// Expand tensor (adds singleton dims).
     pub fn expand(&mut self, x: OpId, shape: &[Dim]) -> OpId {
         let shape = shape.to_vec();
+        let in_shape = self.shape_of(x);
+        debug_assert!(
+            in_shape.len() <= shape.len(),
+            "expand: input rank {} > target rank {}: {:?} -> {:?}",
+            in_shape.len(), shape.len(), in_shape, shape
+        );
+        for (old, new) in in_shape.iter().copied().rev().zip(shape.iter().copied().rev()) {
+            debug_assert!(old == new || old == 1, "expand: incompatible dims: {old} vs {new} in {:?} -> {:?}", in_shape, shape);
+        }
         self.push_back(Op::Move { x, mop: Box::new(MoveOp::Expand { shape }) })
     }
 
     /// Pad tensor with zeros.
     pub fn pad(&mut self, x: OpId, padding: &[(i64, i64)]) -> OpId {
         let padding = padding.to_vec();
-        let mut shape = self.shape_of(x);
+        let in_shape = self.shape_of(x);
+        debug_assert_eq!(padding.len(), in_shape.len(), "pad: padding length {} != rank {}", padding.len(), in_shape.len());
+        let mut shape = in_shape.clone();
         crate::shape::pad(&mut shape, &padding);
         self.push_back(Op::Move { x, mop: Box::new(MoveOp::Pad { padding, shape }) })
     }
 
     /// Sum over the last `n_axes` dimensions.
     pub fn reduce_sum(&mut self, x: OpId, n_axes: usize) -> OpId {
+        let in_shape = self.shape_of(x);
+        debug_assert!(n_axes <= in_shape.len(), "reduce_sum: n_axes {} > rank {}", n_axes, in_shape.len());
+        debug_assert!(n_axes > 0, "reduce_sum: n_axes == 0");
         self.push_back(Op::Reduce { x, rop: BOp::Add, n_axes })
     }
 
     /// Max over the last `n_axes` dimensions.
     pub fn reduce_max(&mut self, x: OpId, n_axes: usize) -> OpId {
+        let in_shape = self.shape_of(x);
+        debug_assert!(n_axes <= in_shape.len(), "reduce_max: n_axes {} > rank {}", n_axes, in_shape.len());
+        debug_assert!(n_axes > 0, "reduce_max: n_axes == 0");
         self.push_back(Op::Reduce { x, rop: BOp::Max, n_axes })
     }
 
