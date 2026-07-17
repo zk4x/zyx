@@ -31,7 +31,7 @@ use zyx::{DType, Tape, Tensor};
 let x = Tensor::randn([8, 1024, 1024], DType::F32)?;
 let y = Tensor::uniform([8, 1024, 1024], -1f32..4f32)?;
 let b = Tensor::zeros([1024], DType::F32);
-let tape = Tape::autograd();
+let tape = Tape::new()?;
 let z = &x + &y;
 let z = (x.dot(&y)? + &b).gelu();
 // Zyx allows for arbitrary differentiation

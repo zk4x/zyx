@@ -187,8 +187,8 @@ pub(crate) const IDX_T: DType = DType::U32;
 ///
 /// let compiled = kernel.compile()?;
 /// let x = Tensor::from([1.0f32, 2.0, 3.0, 4.0]);
-/// let result = compiled.forward(&[&x], [n]);
-/// let data: Vec<f32> = result.try_into().unwrap();
+/// let result = compiled.forward(&[&x], vec![n])?;
+/// let data: Vec<f32> = result.into_iter().next().unwrap().try_into()?;
 /// assert_eq!(data, vec![2.0, 6.0, 12.0, 20.0]);
 /// # Ok::<_, ZyxError>(())
 /// ```
