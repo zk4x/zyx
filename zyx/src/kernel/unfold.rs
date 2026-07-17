@@ -307,7 +307,7 @@ impl Kernel {
                                     let ost_c = self.new_op(opi, Op::Const(Constant::idx(t_ost)));
                                     self.new_op(opi, Op::Binary { x: old_offset, y: ost_c, bop: BOp::Div })
                                 };
-                                if dim.d == 1 {
+                                if dim.d == 1 || (dim.st == 0 && dim.lp == 0 && dim.rp == 0) {
                                     constant_zero
                                 } else {
                                     let dimd_c = self.new_op(opi, Op::Const(Constant::idx(dim.d as u64)));
@@ -315,8 +315,10 @@ impl Kernel {
                                 }
                             } else if dim.d == 1 {
                                 self.new_op(opi, Op::Const(Constant::idx(0u64)))
-                            } else {
+                            } else if ax < axes.len() {
                                 axes[ax]
+                            } else {
+                                self.new_op(opi, Op::Const(Constant::idx(0u64)))
                             };
                             //println!("loop_id={loop_id} ax={ax} axes={axes:?} dim={dim:?}");
                             //println!("ost: {ost}, a: {a:?}, {dim:?}");
@@ -406,7 +408,7 @@ impl Kernel {
                                     let ost_c = self.new_op(opi, Op::Const(Constant::idx(t_ost)));
                                     self.new_op(opi, Op::Binary { x: old_offset, y: ost_c, bop: BOp::Div })
                                 };
-                                if dim.d == 1 {
+                                if dim.d == 1 || (dim.st == 0 && dim.lp == 0 && dim.rp == 0) {
                                     constant_zero
                                 } else {
                                     let dimd_c = self.new_op(opi, Op::Const(Constant::idx(dim.d as u64)));
@@ -414,8 +416,10 @@ impl Kernel {
                                 }
                             } else if dim.d == 1 {
                                 constant_zero
-                            } else {
+                            } else if ax < axes.len() {
                                 axes[ax]
+                            } else {
+                                constant_zero
                             };
                             //println!("loop_id={loop_id} ax={ax} axes={axes:?} dim={dim:?}");
 
