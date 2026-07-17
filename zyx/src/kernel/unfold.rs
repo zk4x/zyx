@@ -315,10 +315,8 @@ impl Kernel {
                                 }
                             } else if dim.d == 1 {
                                 self.new_op(opi, Op::Const(Constant::idx(0u64)))
-                            } else if ax < axes.len() {
-                                axes[ax]
                             } else {
-                                self.new_op(opi, Op::Const(Constant::idx(0u64)))
+                                axes[ax]
                             };
                             //println!("loop_id={loop_id} ax={ax} axes={axes:?} dim={dim:?}");
                             //println!("ost: {ost}, a: {a:?}, {dim:?}");
@@ -416,10 +414,8 @@ impl Kernel {
                                 }
                             } else if dim.d == 1 {
                                 constant_zero
-                            } else if ax < axes.len() {
-                                axes[ax]
                             } else {
-                                constant_zero
+                                axes[ax]
                             };
                             //println!("loop_id={loop_id} ax={ax} axes={axes:?} dim={dim:?}");
 
