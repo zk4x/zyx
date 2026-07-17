@@ -16,9 +16,14 @@ impl Graph {
         let order = self.topo_sort_classes(outputs);
 
         // Reference counts: how many times each class appears as a child.
+        // Kernel and ToDevice nodes represent already-compiled results from prior
+        // realize calls — don't count them, they'd inflate rcs for cross-tape graphs.
         let mut rcs: Map<ClassId, u32> = Map::default();
         for &cid in &order {
             for nid in &self.classes[cid].nodes {
+                if matches!(&self.nodes[*nid].node, Node::Kernel { .. } | Node::ToDevice { .. }) {
+                    continue;
+                }
                 for child in self.nodes[*nid].node.class_params() {
                     *rcs.entry(child).or_default() += 1;
                 }
