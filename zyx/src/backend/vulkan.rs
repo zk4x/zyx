@@ -409,8 +409,6 @@ pub struct VulkanMemoryPool {
     free_bytes: Arc<AtomicU64>,
 }
 
-unsafe impl Send for VulkanMemoryPool {}
-
 impl std::fmt::Debug for VulkanMemoryPool {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("VulkanMemoryPool").field("free_bytes", &self.free_bytes).finish()

@@ -694,7 +694,8 @@ impl Runtime {
         #[cfg(feature = "debug_tensor_op")]
         println!("runtime::reshape(x={x}, shape={shape:?})");
         let sh = self.shape(x);
-        debug_assert_eq!(shape.iter().product::<Dim>(), sh.iter().product::<Dim>());
+        debug_assert_eq!(shape.iter().product::<Dim>(), sh.iter().product::<Dim>(), "reshape: element count mismatch: {:?} vs {:?}", shape, sh);
+        debug_assert!(!shape.is_empty(), "reshape: empty shape");
         if shape == sh {
             self.retain(x);
             return x;
@@ -756,7 +757,17 @@ impl Runtime {
         #[cfg(feature = "debug_tensor_op")]
         println!("runtime::expand(x={x}, shape={shape:?})");
 
-        if shape == self.shape(x) {
+        let sh = self.shape(x);
+        debug_assert!(
+            sh.len() <= shape.len(),
+            "expand: input rank {} > target rank {}: {:?} -> {:?}",
+            sh.len(), shape.len(), sh, shape
+        );
+        for (old, new) in sh.iter().copied().rev().zip(shape.iter().copied().rev()) {
+            debug_assert!(old == new || old == 1, "expand: incompatible dims: {old} vs {new} in {:?} -> {:?}", sh, shape);
+        }
+
+        if shape == sh {
             self.retain(x);
             return Ok(x);
         }
@@ -798,6 +809,12 @@ impl Runtime {
         #[cfg(feature = "debug_tensor_op")]
         println!("runtime::permute(x={x}, axes={axes:?})");
         let sh = self.shape(x);
+        debug_assert_eq!(axes.len(), sh.len(), "permute: axes length {} != rank {}", axes.len(), sh.len());
+        {
+            let mut sorted = axes.clone();
+            sorted.sort();
+            debug_assert!(sorted.iter().copied().eq(0..sh.len() as UAxis), "permute: axes not a valid permutation: {axes:?} for rank {}", sh.len());
+        }
         if axes.iter().copied().eq(0..sh.len() as UAxis) {
             self.retain(x);
             return x;
@@ -843,7 +860,10 @@ impl Runtime {
         #[cfg(feature = "debug_tensor_op")]
         println!("runtime::pad_zeros(x={x}, padding={padding:?})");
 
-        let mut new_shape = self.shape(x).to_vec();
+        let sh = self.shape(x);
+        debug_assert_eq!(padding.len(), sh.len(), "pad_zeros: padding length {} != rank {}", padding.len(), sh.len());
+
+        let mut new_shape = sh.to_vec();
         crate::shape::pad(&mut new_shape, &padding);
         let shape_id = self.push_shape(new_shape.clone());
         let dtype = self.tensors[x].dtype;

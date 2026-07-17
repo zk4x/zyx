@@ -286,7 +286,7 @@ impl View {
     }
 
     pub(crate) fn expand(&mut self, shape: &[Dim]) {
-        //println!("expand {:?} to {shape:?}", self.shape());
+        println!("expand {:?} to {shape:?}", self.shape());
         if self.rank() != shape.len() {
             debug_assert!(self.rank() < shape.len());
             let sh = self.shape();
