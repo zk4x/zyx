@@ -416,6 +416,9 @@ impl Runtime {
         } else {
             let (kernel_id, x) = match self.tensors[x].state {
                 TensorState::Eager { kernel_id, op_id, .. } => (kernel_id, op_id),
+                TensorState::Graph { rc, .. } if rc > 0 => {
+                    panic!("tensor was never realized. Did you forget to call tape.realize()?");
+                }
                 _ => unreachable!("eager cast with graph tensor"),
             };
             let op_id = self.kernels[kernel_id].kernel.cast(x, dtype);
@@ -448,6 +451,9 @@ impl Runtime {
         } else {
             let (kernel_id, op_id) = match &self.tensors[x].state {
                 TensorState::Eager { kernel_id, op_id, .. } => (*kernel_id, *op_id),
+                TensorState::Graph { rc, .. } if *rc > 0 => {
+                    panic!("tensor was never realized. Did you forget to call tape.realize()?");
+                }
                 _ => unreachable!("eager bitcast with graph tensor"),
             };
             let op_id = self.kernels[kernel_id].kernel.bitcast(op_id, dtype);
@@ -482,6 +488,9 @@ impl Runtime {
         } else {
             let (kernel_id, op_id) = match &self.tensors[x].state {
                 TensorState::Eager { kernel_id, op_id, .. } => (*kernel_id, *op_id),
+                TensorState::Graph { rc, .. } if *rc > 0 => {
+                    panic!("tensor was never realized. Did you forget to call tape.realize()?");
+                }
                 _ => unreachable!("eager unary with graph tensor"),
             };
             let op_id = self.kernels[kernel_id].kernel.unary(op_id, uop);
@@ -524,10 +533,16 @@ impl Runtime {
         } else {
             let (kid_x, op_id_x) = match &self.tensors[x].state {
                 TensorState::Eager { kernel_id, op_id, .. } => (*kernel_id, *op_id),
+                TensorState::Graph { rc, .. } if *rc > 0 => {
+                    panic!("tensor was never realized. Did you forget to call tape.realize()?");
+                }
                 _ => unreachable!("eager binary with graph tensor"),
             };
             let (kid_y, op_id_y) = match &self.tensors[y].state {
                 TensorState::Eager { kernel_id, op_id, .. } => (*kernel_id, *op_id),
+                TensorState::Graph { rc, .. } if *rc > 0 => {
+                    panic!("tensor was never realized. Did you forget to call tape.realize()?");
+                }
                 _ => unreachable!("eager binary with graph tensor"),
             };
             //println!("Binary input kernels: {kid_x:?} and {kid_y:?}");

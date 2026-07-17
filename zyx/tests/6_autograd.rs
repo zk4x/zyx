@@ -830,16 +830,15 @@ fn grad_overlapping_realize_cross_tape() -> Result<(), ZyxError> {
 }
 
 #[test]
-fn grad_orphan_then_use_directly() -> Result<(), ZyxError> {
+#[should_panic(expected = "tensor was never realized")]
+fn grad_orphan_then_use_directly() {
     let x = Tensor::from([3f32, 2., 4.]);
     let y;
 
     {
-        let tape = Tape::new()?;
+        let tape = Tape::new().unwrap();
         y = x.relu();
     }
 
-    let z = y.ln();
-
-    Ok(())
+    let _z = y.ln();
 }
