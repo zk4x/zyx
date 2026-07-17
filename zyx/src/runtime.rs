@@ -414,11 +414,11 @@ impl Runtime {
             println!("  -> tid={tid}, nid={node_id:?}, cid={class_id:?}");
             tid
         } else {
-            let (kernel_id, op_id) = match &self.tensors[x].state {
-                TensorState::Eager { kernel_id, op_id, .. } => (*kernel_id, *op_id),
+            let (kernel_id, x) = match self.tensors[x].state {
+                TensorState::Eager { kernel_id, op_id, .. } => (kernel_id, op_id),
                 _ => unreachable!("eager cast with graph tensor"),
             };
-            let op_id = self.kernels[kernel_id].kernel.cast(op_id, dtype);
+            let op_id = self.kernels[kernel_id].kernel.cast(x, dtype);
             let tid = self.tensors.push(TensorData {
                 shape_id,
                 dtype,
@@ -694,7 +694,13 @@ impl Runtime {
         #[cfg(feature = "debug_tensor_op")]
         println!("runtime::reshape(x={x}, shape={shape:?})");
         let sh = self.shape(x);
-        debug_assert_eq!(shape.iter().product::<Dim>(), sh.iter().product::<Dim>(), "reshape: element count mismatch: {:?} vs {:?}", shape, sh);
+        debug_assert_eq!(
+            shape.iter().product::<Dim>(),
+            sh.iter().product::<Dim>(),
+            "reshape: element count mismatch: {:?} vs {:?}",
+            shape,
+            sh
+        );
         debug_assert!(!shape.is_empty(), "reshape: empty shape");
         if shape == sh {
             self.retain(x);
@@ -761,7 +767,10 @@ impl Runtime {
         debug_assert!(
             sh.len() <= shape.len(),
             "expand: input rank {} > target rank {}: {:?} -> {:?}",
-            sh.len(), shape.len(), sh, shape
+            sh.len(),
+            shape.len(),
+            sh,
+            shape
         );
         for (old, new) in sh.iter().copied().rev().zip(shape.iter().copied().rev()) {
             debug_assert!(old == new || old == 1, "expand: incompatible dims: {old} vs {new} in {:?} -> {:?}", sh, shape);
@@ -813,7 +822,11 @@ impl Runtime {
         {
             let mut sorted = axes.clone();
             sorted.sort();
-            debug_assert!(sorted.iter().copied().eq(0..sh.len() as UAxis), "permute: axes not a valid permutation: {axes:?} for rank {}", sh.len());
+            debug_assert!(
+                sorted.iter().copied().eq(0..sh.len() as UAxis),
+                "permute: axes not a valid permutation: {axes:?} for rank {}",
+                sh.len()
+            );
         }
         if axes.iter().copied().eq(0..sh.len() as UAxis) {
             self.retain(x);
