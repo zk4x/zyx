@@ -1165,11 +1165,19 @@ impl Runtime {
         debug_assert!(self.kernels[kid].stores.is_empty(), "duplicated kernel must not have stores");
 
         let loads = self.kernels[kid].loads.clone();
-        let kernel = self.kernels[kid].kernel.clone();
+        let out_op_ids: Vec<OpId> = self.kernels[kid]
+            .outputs
+            .iter()
+            .map(|&tid| match &self.tensors[tid].state {
+                TensorState::Eager { op_id, .. } => *op_id,
+                _ => unreachable!(),
+            })
+            .collect();
+        let (kernel, new_op_id, self_loads, loads) = self.kernels[kid].kernel.extract_subkernel(op_id, &out_op_ids, &loads);
+        self.kernels[kid].loads = self_loads;
 
         kid = self.kernels.push(KernelData { outputs: Vec::new(), loads, stores: Vec::new(), kernel });
-
-        // TODO Drop unused ops from both source kernel and duplicated kernel
+        op_id = new_op_id;
 
         Ok((kid, op_id))
     }
