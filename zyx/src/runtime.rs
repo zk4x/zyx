@@ -366,16 +366,19 @@ impl Runtime {
             self.add_store(tid)?;
         }
 
-        let graph = self.graph.as_mut().expect("promote_to_graph without active graph");
-        let (node_id, class_id) = graph.push_leaf(dtype, shape_id);
+        let (node_id, class_id) = self.graph.as_mut().unwrap().push_leaf(dtype, shape_id);
 
         let TensorState::Eager { kernel_id, .. } = self.tensors[tid].state else {
             unreachable!()
         };
         let rc = self.kernels[kernel_id].outputs.iter().filter(|&&o| o == tid).count() as u32;
+        self.kernels[kernel_id].outputs.retain(|&e| e != tid);
+        if self.kernels[kernel_id].outputs.is_empty() {
+            self.materialize_kernel(kernel_id)?;
+        }
 
         self.tensors[tid].state = TensorState::Graph { node_id, class_id, rc };
-        graph.leaf_map.insert(class_id, tid);
+        self.graph.as_mut().unwrap().leaf_map.insert(class_id, tid);
         Ok(class_id)
     }
 
@@ -1298,7 +1301,7 @@ impl Runtime {
         debug_assert!(outputs.is_empty(), "all outputs must be stored before materialize");
 
         if stores.is_empty() {
-            self.kernels.remove(kid);
+            return Ok(());
         }
 
         debug_assert!(
