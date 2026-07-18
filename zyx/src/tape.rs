@@ -70,7 +70,7 @@ impl Tape {
         }
 
         for p in params {
-            rt.promote_to_graph(p.id);
+            rt.promote_to_graph(p.id)?;
         }
 
         Ok(Tape {})
@@ -84,17 +84,19 @@ impl Tape {
 
     /// Promote a tensor into the tape's graph scope.
     /// All ops on this tensor from now on will be tracked in the graph.
-    pub fn add(&self, tensor: &Tensor) {
+    pub fn add(&self, tensor: &Tensor) -> Result<(), ZyxError> {
         let mut rt = RT.lock();
-        rt.promote_to_graph(tensor.id);
+        rt.promote_to_graph(tensor.id)?;
+        Ok(())
     }
 
     /// Promote multiple tensors into the tape's graph scope at once.
-    pub fn extend<'a>(&self, params: impl IntoIterator<Item = &'a Tensor>) {
+    pub fn extend<'a>(&self, params: impl IntoIterator<Item = &'a Tensor>) -> Result<(), ZyxError> {
         let mut rt = RT.lock();
         for p in params {
-            rt.promote_to_graph(p.id);
+            rt.promote_to_graph(p.id)?;
         }
+        Ok(())
     }
 }
 

@@ -409,9 +409,20 @@ impl Runtime {
                     })
                 }
                 None => {
-                    let shape = self.shape(tid).into();
+                    let shape: Vec<Dim> = self.shape(tid).into();
                     let dtype = self.dtype(tid);
-                    self.new_full(shape, dtype.zero_constant())
+                    let shape_id = self.push_shape(shape);
+                    let (_, zero_cid) = self.graph.as_mut().unwrap().push(
+                        Node::Const(Constant::new(0u8).cast(dtype)),
+                        shape_id,
+                        dtype,
+                    );
+                    let nid = self.graph.as_ref().unwrap().classes[zero_cid].nodes[0];
+                    self.tensors.push(TensorData {
+                        shape_id,
+                        dtype,
+                        state: TensorState::Graph { node_id: nid, class_id: zero_cid, rc: 1 },
+                    })
                 }
             };
             res.insert(tid, grad_tid);

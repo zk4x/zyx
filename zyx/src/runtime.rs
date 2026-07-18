@@ -355,15 +355,15 @@ impl Runtime {
         Ok(tid)
     }
 
-    pub(crate) fn promote_to_graph(&mut self, tid: TensorId) -> ClassId {
+    pub(crate) fn promote_to_graph(&mut self, tid: TensorId) -> Result<ClassId, ZyxError> {
         if let TensorState::Graph { class_id, .. } = self.tensors[tid].state {
-            return class_id;
+            return Ok(class_id);
         }
         let shape_id = self.tensors[tid].shape_id;
         let dtype = self.tensors[tid].dtype;
 
         if !self.buffer_map.contains_key(&tid) {
-            self.add_store(tid).expect("add_store in promote_to_graph");
+            self.add_store(tid)?;
         }
 
         let graph = self.graph.as_mut().expect("promote_to_graph without active graph");
@@ -376,7 +376,7 @@ impl Runtime {
 
         self.tensors[tid].state = TensorState::Graph { node_id, class_id, rc };
         graph.leaf_map.insert(class_id, tid);
-        class_id
+        Ok(class_id)
     }
 
     pub fn cast(&mut self, x: TensorId, dtype: DType) -> TensorId {
@@ -477,10 +477,10 @@ impl Runtime {
         let y_is_graph = matches!(&self.tensors[y].state, TensorState::Graph { .. });
         if x_is_graph || y_is_graph {
             if !x_is_graph {
-                self.promote_to_graph(x);
+                self.promote_to_graph(x)?;
             }
             if !y_is_graph {
-                self.promote_to_graph(y);
+                self.promote_to_graph(y)?;
             }
             let x_class_id = match self.tensors[x].state {
                 TensorState::Graph { class_id, .. } => class_id,
