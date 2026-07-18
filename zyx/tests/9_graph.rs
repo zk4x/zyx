@@ -98,3 +98,23 @@ fn causal_self_attention() -> Result<(), ZyxError> {
 
     Ok(())
 }
+
+// Reproducer for bug in promote_to_graph: promoting an eager tensor to Graph
+// leaves a stale store entry in the original kernel. When gradient needs the
+// value, materialize_kernel finds the store target in Graph state → panic.
+#[test]
+fn promote_and_gradient() -> Result<(), ZyxError> {
+    let gt = Tensor::randn([2, 4, 1, 1], DType::F32)?;
+    let tape = Tape::new([&gt])?;
+
+    let a = Tensor::ones([4], DType::F32);
+    let shape = [2, 4, 1, 1];
+    let b = a.reshape([1, 4, 1, 1])?;
+    let c = b.expand(shape)?;
+    let d = &c + 1e-5;
+    let e = d.rsqrt();
+
+    let result = &e + &gt;
+    let _g = tape.gradient(&result, [&gt]);
+    Ok(())
+}

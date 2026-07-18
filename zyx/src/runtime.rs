@@ -362,20 +362,25 @@ impl Runtime {
         let shape_id = self.tensors[tid].shape_id;
         let dtype = self.tensors[tid].dtype;
 
-        if !self.buffer_map.contains_key(&tid) {
-            self.add_store(tid)?;
+        let kernel_id = match self.tensors[tid].state {
+            TensorState::Eager { kernel_id, .. } => kernel_id,
+            _ => unreachable!(),
+        };
+        let unique_outputs: BTreeSet<TensorId> = self.kernels[kernel_id].outputs.iter().copied().collect();
+        for &other in &unique_outputs {
+            self.add_store(other)?;
         }
+
+        debug_assert!(self.buffer_map.contains_key(&tid));
 
         let (node_id, class_id) = self.graph.as_mut().unwrap().push_leaf(dtype, shape_id);
 
         let TensorState::Eager { kernel_id, .. } = self.tensors[tid].state else {
             unreachable!()
         };
-        let rc = self.kernels[kernel_id].outputs.iter().filter(|&&o| o == tid).count() as u32;
-        self.kernels[kernel_id].outputs.retain(|&e| e != tid);
-        if self.kernels[kernel_id].outputs.is_empty() {
-            self.materialize_kernel(kernel_id)?;
-        }
+        debug_assert!(self.kernels[kernel_id].outputs.iter().all(|&o| o == tid));
+        let rc = self.kernels[kernel_id].outputs.len() as u32;
+        self.kernels.remove(kernel_id);
 
         self.tensors[tid].state = TensorState::Graph { node_id, class_id, rc };
         self.graph.as_mut().unwrap().leaf_map.insert(class_id, tid);
