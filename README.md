@@ -174,7 +174,7 @@ for the target backend. Tape egraph compares fusion schemes and device allocatio
 
 - **Status**: Stable API with active performance optimization
 - **License**: LGPL-3.0-only (all crates)
-- **Rust Version**: stable rust >= 1.85
+- **Rust Version**: stable rust >= 1.88.0
 - **Platforms**: Linux (primary), macOS, Windows (planned)
 
 ## For Devs

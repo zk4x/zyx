@@ -11,6 +11,7 @@ repository = "https://github.com/zk4x/zyx"
 license = "LGPL-3.0-only"
 keywords = ["tensor", "deep-learning", "neural-network", "autodiff"]
 categories = ["computer-vision", "science"]
+rust-version = "1.88.0"
 include = [
     "src/**",
     "tests/1_unary.rs",
