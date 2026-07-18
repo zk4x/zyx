@@ -4,11 +4,12 @@ The kernelizer (`kernelize.rs`) fuses tensor operations into kernels. In eager m
 
 ## When the Kernelizer Runs
 
-Outside a tape, the kernelizer runs incrementally as each op is added — fusing compatible nodes and executing when a fusion boundary is hit. Inside a tape, the kernelizer runs once during `Tape::realize()` or on tape drop:
+Outside a tape, the kernelizer runs incrementally as each op is added — fusing compatible nodes and executing when a fusion boundary is hit. Inside a tape, the kernelizer runs once during `Tape::realize()` (dropping only cleans up graph state):
 
 ```rust,ignore
-// Tape mode — kernelizer runs at realize/drop
-let tape = Tape::new()?;
+// Tape mode — kernelizer runs at realize
+let x = Tensor::randn([4], DType::F32)?;
+let tape = Tape::new([&x])?;
 let y = x.relu();
 let z = y * 2.0;
 // at this point: no computation done yet

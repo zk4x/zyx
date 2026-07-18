@@ -45,12 +45,12 @@ struct SimpleNet {
 }
 
 fn train_step(model: &mut SimpleNet, optim: &mut SGD, x: &Tensor, target: &Tensor) -> f32 {
-    let tape = Tape::new()?;
+    let tape = Tape::new(&*model)?;
     let output = model.forward(x);
     let loss = output.mse_loss(target)?;
-    let grads = tape.gradient(&loss, &model);
+    let grads = tape.gradient(&loss, &*model);
     optim.update(model, grads);
-    // tape drop realizes and caches
+    // tape drop cleans up graph state; next iteration reuses cached plan
     loss.item()
 }
 ```

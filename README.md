@@ -34,7 +34,7 @@
 - **Cross‑Platform Backends** — native support for OpenCL (CPU via POCL, GPU via native OpenCL drivers), WebGPU, CUDA, and more.
 - **Full Linear‑Algebra Coverage** — mirrors the PyTorch ops API (matmul, convolutions, pooling, reductions, indexing, etc.) by stacking ops.
 - **Immutable Tensors** — tensors cannot be modified in place, preventing back‑prop errors common in PyTorch (`RuntimeError: a tensor was modified in place`).
-- **Explicit Gradient Tape** — you control what is recorded via `GradientTape`; no need for `torch.no_grad()` semantics.
+- **Explicit Tape** — you control what is recorded via `Tape`; no need for `torch.no_grad()` semantics.
 - **Higher-Order Gradients** — experimental (graph-based, forward-mode autograd planned)
 - **No Implicit Downcasting** — if a backend doesn't support a dtype, zyx will never silently downcast (e.g., F32→F16). Upcasting (e.g., F16→F32) is allowed when the backend does not natively support the narrower type — correctness is guaranteed.
 - **Lazy Device Loading** — tensors load from their current memory pool (disk, another device) into the compute device only when needed, via the runtime scheduler.
@@ -139,13 +139,14 @@ fn main() -> Result<(), zyx::ZyxError> {
     let target = Tensor::randn([64, 10], DType::F32)?;
     
     for epoch in 0..10 {
-        let tape = Tape::new()?;
+        let tape = Tape::new(&model)?;
         let output = model.forward(&x);
         let loss = output.mse_loss(&target)?;
         
         let grads = tape.gradient(&loss, &model);
         optim.update(&mut model, grads);
-        // Tape drop realizes all alive tensors and caches the graph
+        // Tape drop cleans up graph state; realize() must be called
+        // (e.g. via loss.item()) to trigger computation and cache the plan.
     }
     
     Ok(())
@@ -224,13 +225,14 @@ fn main() -> Result<(), zyx::ZyxError> {
     let mut optim = AdamW::default();
     let x = Tensor::randn([2, 8, 64], DType::F32)?;
 
-    let tape = Tape::new()?;
+    let tape = Tape::new(&model)?;
     let out = model.forward(&x)?;
     let grads = tape.gradient(&out, &model);
 
     // Update parameters with gradients
     optim.update(model.iter_mut(), grads);
-    // Tape drop realizes and caches
+    // Tape drop cleans up graph state; loss.item() or explicit realize()
+    // triggers computation and caches the plan.
     Ok(())
 }
 ```

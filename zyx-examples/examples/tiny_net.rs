@@ -1,7 +1,7 @@
 // Copyright (C) 2025 zk4x
 // SPDX-License-Identifier: LGPL-3.0-only
 
-use zyx::{DType, GradientTape, Tensor, ZyxError};
+use zyx::{DType, Tape, Tensor, ZyxError};
 use zyx_optim::SGD;
 
 fn main() -> Result<(), ZyxError> {
@@ -18,7 +18,7 @@ fn main() -> Result<(), ZyxError> {
 
     Tensor::realize([&w, &x, &target])?;
     for _ in 0..100 {
-        let tape = GradientTape::new();
+        let tape = Tape::new([&w])?;
         let y = x.matmul(&w)?.sigmoid();
         let grads = tape.gradient(&y, [&w]);
         optim.update([&mut w], grads);

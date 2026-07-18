@@ -45,7 +45,7 @@ let z = y.tanh();     // appended to same kernel
 # }
 ```
 
-Inside a tape, operations build graph nodes lazily and execute when the tape is realized or dropped. The key insight: repeated graph patterns are automatically recognized and cached across structurally identical iterations.
+Inside a tape, operations build graph nodes lazily and execute when the tape is realized (dropping only cleans up graph state — no computation is performed). The key insight: repeated graph patterns are automatically recognized and cached across structurally identical iterations.
 
 ### Construction Methods
 

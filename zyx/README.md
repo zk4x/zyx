@@ -110,13 +110,13 @@ let x = Tensor::from([2, 3, 1]).cast(DType::F16);
 let target = Tensor::from([5, 7]);
 
 for _ in 0..100 {
-    let tape = Tape::new()?;
+    let tape = Tape::new(&net)?;
     let y = net.forward(&x);
     let loss = y.mse_loss(&target)?;
     let grads = tape.gradient(&loss, &net);
     optim.update(&mut net, grads);
-} // Tape drop realizes all alive tensors and caches graph
-  // for structurally identical iterations.
+} // Tape goes out of scope; realize() called elsewhere (e.g. loss.item())
+  // caches the plan for structurally identical iterations.
 # Ok::<(), zyx::ZyxError>(())
 ```
 
@@ -145,7 +145,8 @@ graph traversal or recompilation.
 
 Create a tape with [`Tape::new`], get gradients with [`Tape::gradient`],
 and explicitly realize specific outputs with [`Tape::realize`] if needed.
-On drop, all alive tensors in the scope are realized automatically.
+On drop, the tape cleans up graph state — no computation is performed.
+Tensors must be realized before drop to have their values computed.
 
 ## Error handling
 

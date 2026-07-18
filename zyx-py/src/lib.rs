@@ -14,7 +14,7 @@ fn zyx_py(m: &Bound<'_, PyModule>) -> PyResult<()> {
     // Register tensor and core functionality
     zyx::py_bindings::register_tensor(m)?;
     zyx::py_bindings::register_dtype(m)?;
-    zyx::py_bindings::register_gradient_tape(m)?;
+    zyx::py_bindings::register_tape(m)?;
     
     // Create nn submodule
     let nn_mod = PyModule::new(m.py(), "nn")?;

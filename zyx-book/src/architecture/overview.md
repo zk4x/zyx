@@ -52,7 +52,7 @@ The graph is stored in a `Slab` — a dense array with free-list tracking. `Tens
 
 ### 3. The Kernelizer
 
-The kernelizer fuses compatible graph nodes into kernels. Outside a tape it runs incrementally as ops are added; inside a tape it runs when `Tape::realize()` is called or the tape is dropped. The kernelizer uses heuristics to decide where kernel boundaries go — it's not a simple rule. A reduce node used by multiple downstream nodes does not necessarily force a split. If two downstream nodes are both expand ops, that may force fusion. Element-wise chains will almost always fuse into one kernel.
+The kernelizer fuses compatible graph nodes into kernels. Outside a tape it runs incrementally as ops are added; inside a tape it runs when `Tape::realize()` is called (dropping only cleans up graph state). The kernelizer uses heuristics to decide where kernel boundaries go — it's not a simple rule. A reduce node used by multiple downstream nodes does not necessarily force a split. If two downstream nodes are both expand ops, that may force fusion. Element-wise chains will almost always fuse into one kernel.
 
 View operations (reshape, expand, permute, pad) are unfolded into index arithmetic in the kernel, becoming "free" — they don't create separate operations.
 
@@ -124,4 +124,4 @@ The scheduler picks a device based on free memory and compute capacity. It handl
 - **Inline ops** — all ops live in the arena as flat 32-byte entries. No `Box`, no vtables, no indirection. Passes allocate their own working data (hash maps, vecs) as needed.
 - **Linear IR** — linked list of fixed-size nodes. Optimizations traverse front-to-back or back-to-back.
 - **Backend codegen is trivial** — the hard work is in the IR-level optimization passes.
-- **Explicit GradientTape** — prevents graph node deletion instead of building a separate graph.
+- **Tape-scoped lazy graph** — ops inside a tape build graph nodes instead of executing eagerly. Enables egraph fusion, device allocation search, and plan caching across iterations.

@@ -45,7 +45,7 @@ c.realize()
 - **Lazy Evaluation** - Operations accumulate until `realize()`, reducing temporary allocations
 - **Kernel Fusion** - Multiple operations compile into single optimized GPU kernels
 - **Immutable Tensors** - No in-place modification errors common in other frameworks
-- **Explicit Gradient Tape** - Control what's recorded, no `no_grad()` semantics needed
+- **Explicit Tape** - Control what's recorded, no `no_grad()` semantics needed
 - **Arbitrary-Order Gradients** - Native support for 2nd, 3rd, and higher-order derivatives
 - **Cross-Platform** - OpenCL (CPU/GPU), WebGPU, CUDA/ROCm backends
 
@@ -123,8 +123,8 @@ result = y.numpy()
 ```python
 import zyx
 
-# Create a gradient tape
-tape = zyx.GradientTape()
+# Create a tape
+tape = zyx.Tape()
 
 # Forward pass
 x = zyx.Tensor([1.0, 2.0, 3.0])
@@ -136,7 +136,7 @@ grads = tape.gradient(y, [w])
 print(grads[0].numpy())  # [1.0, 2.0, 3.0]
 
 # Higher-order gradients
-tape2 = zyx.GradientTape()
+tape2 = zyx.Tape()
 y = x.relu().sum()
 grads = tape2.gradient(y, [x])
 ```
@@ -194,10 +194,9 @@ optimizer = optim.Adam(learning_rate=0.001)
 # or: optim.RMSprop(learning_rate=0.001)
 
 # Training loop
-tape = zyx.GradientTape()
+tape = zyx.Tape()
 x = zyx.Tensor.randn(32, 10)
 target = zyx.Tensor.randn(32, 5)
-
 # Forward
 pred = model(x)
 loss = ((pred - target) ** 2).mean()
@@ -243,7 +242,7 @@ optimizer = optim.Adam(learning_rate=0.001)
 
 # Training loop
 for epoch in range(10):
-    tape = zyx.GradientTape()
+    tape = zyx.Tape()
 
     # Dummy data
     x = zyx.Tensor.randn(64, 784)
@@ -323,7 +322,7 @@ Combine flags: `ZYX_DEBUG=18` (2 + 16) for perf + assembly output.
 
 | Feature | zyx | PyTorch |
 |---------|-----|---------|
-| Gradient recording | Explicit `GradientTape` | Implicit, requires `no_grad()` |
+| Gradient recording | Explicit `Tape` | Implicit, requires `no_grad()` |
 | Tensor mutability | Immutable (no in-place errors) | Mutable (can cause back-prop failures) |
 | Higher-order gradients | Arbitrary order natively | Supported but more complex |
 | Kernel fusion | Automatic via lazy graph | Manual or via torch.compile |

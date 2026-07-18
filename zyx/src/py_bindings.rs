@@ -6,7 +6,7 @@
 use crate::DebugMask;
 use crate::shape::Dim;
 use crate::tensor::{Axis, DebugGuard, ReduceOp};
-use crate::{DType, GradientTape, Tensor, ZyxError};
+use crate::{DType, Tape, Tensor, ZyxError};
 use pyo3::buffer::PyBuffer;
 use pyo3::exceptions::PyIndexError;
 use pyo3::prelude::*;
@@ -25,11 +25,11 @@ impl From<ZyxError> for PyErr {
 }
 
 #[pymethods]
-impl GradientTape {
-    /// Creates a new gradient tape.
+impl Tape {
+    /// Creates a new tape scope.
     #[new]
     pub fn py_new() -> Self {
-        GradientTape::new()
+        Tape::empty()
     }
 
     /// # Panics
@@ -1509,9 +1509,9 @@ pub fn register_dtype(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<DType>()
 }
 
-/// Re-export helper for zyx-py to register GradientTape class.
-pub fn register_gradient_tape(m: &Bound<'_, PyModule>) -> PyResult<()> {
-    m.add_class::<GradientTape>()
+/// Re-export helper for zyx-py to register Tape class.
+pub fn register_tape(m: &Bound<'_, PyModule>) -> PyResult<()> {
+    m.add_class::<Tape>()
 }
 
 fn from_numpy<T: crate::Scalar + pyo3::buffer::Element>(obj: &Bound<'_, PyAny>) -> PyResult<Tensor> {

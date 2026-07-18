@@ -34,7 +34,7 @@ Each op is appended directly to the kernel that produced its inputs. When a new 
 Tensor op ──► graph node (accumulates) ──► Autograd (reverse-mode on same graph)
                                   │
                                   ▼
-                          Tape::realize() / drop
+                           Tape::realize()
                                   │
                                   ▼
                     Kernelizer (batch, egraph explores
@@ -44,7 +44,7 @@ Tensor op ──► graph node (accumulates) ──► Autograd (reverse-mode on
                     Kernel IR ──► Opt ──► Codegen ──► Execute
 ```
 
-Inside a tape, graph nodes accumulate lazily. At realize/drop time, the kernelizer processes the full graph while egraph exploration tries different fusion schemes and device allocations, selecting the fastest. Autograd reuses the same graph nodes — the tape prevents their deletion so the backward pass can traverse them.
+Inside a tape, graph nodes accumulate lazily. At realize time, the kernelizer processes the full graph while egraph exploration tries different fusion schemes and device allocations, selecting the fastest. Autograd reuses the same graph nodes — the tape prevents their deletion so the backward pass can traverse them.
 
 ## Why This Design
 
@@ -58,4 +58,4 @@ Zyx uses **one graph** for both. This means:
 - The implementation is debuggable (one graph to inspect, not two)
 - Memory overhead is minimal: each graph node is ~16 bytes
 
-The trade-off in tape mode is that evaluation is lazy — you must call `realize()` or drop the tape to trigger computation. But this laziness enables optimizations that eager execution cannot: egraph exploration of fusion variants, device allocation search, and plan caching across structurally identical iterations. Outside a tape, optimization is lighter-weight (greedy fusion only), which is appropriate for one-off ops. Kernel caching (compiled program reuse) is shared across both modes.
+The trade-off in tape mode is that evaluation is lazy — you must call `realize()` to trigger computation (dropping the tape only cleans up graph state — no computation is performed). But this laziness enables optimizations that eager execution cannot: egraph exploration of fusion variants, device allocation search, and plan caching across structurally identical iterations. Outside a tape, optimization is lighter-weight (greedy fusion only), which is appropriate for one-off ops. Kernel caching (compiled program reuse) is shared across both modes.

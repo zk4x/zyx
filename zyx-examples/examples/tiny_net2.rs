@@ -1,7 +1,7 @@
 // Copyright (C) 2025 zk4x
 // SPDX-License-Identifier: LGPL-3.0-only
 
-use zyx::{DType, GradientTape, Tensor, ZyxError};
+use zyx::{DType, Tape, Tensor, ZyxError};
 use zyx_nn::{Linear, Module};
 use zyx_optim::SGD;
 
@@ -35,7 +35,7 @@ fn main() -> Result<(), ZyxError> {
     let target = Tensor::from([5, 7]).cast(DType::F16);
 
     for _ in 0..100 {
-        let tape = GradientTape::new();
+        let tape = Tape::new(&net)?;
         let y = net.forward(&x);
         let loss = y.mse_loss(&target)?;
         let grads = tape.gradient(&loss, &net);

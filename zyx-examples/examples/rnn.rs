@@ -11,7 +11,7 @@
 //! - After warmup, cached kernels run in ~30ms per step
 //! - 20 kernels is typical for this workload (8 sequence steps × multiple ops)
 
-use zyx::{DType, GradientTape, Tensor, ZyxError};
+use zyx::{DType, Tape, Tensor, ZyxError};
 use zyx_nn::RNNCell;
 use zyx_optim::SGD;
 
@@ -37,7 +37,7 @@ fn main() -> Result<(), ZyxError> {
 
     println!("Training RNN...");
     for step in 0..50 {
-        let tape = GradientTape::new();
+        let tape = Tape::new(&rnn)?;
 
         let mut hidden = Tensor::zeros([batch_size as u64, hidden_size], DType::F32);
         for t in 0..seq_len {

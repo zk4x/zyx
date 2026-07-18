@@ -3,7 +3,7 @@
 
 /*use std::collections::HashMap;
 
-use zyx::{DType, GradientTape, Tensor, ZyxError};
+use zyx::{DType, Tape, Tensor, ZyxError};
 
 #[test]
 fn mnist() -> Result<(), ZyxError> {
@@ -56,7 +56,7 @@ fn mnist() -> Result<(), ZyxError> {
             let x = train_x.slice([i..end])?;
             let y = train_y.slice([i..end])?;
 
-            let tape = GradientTape::new();
+            let tape = Tape::new([&net.l1_weight, &net.l1_bias, &net.l2_weight, &net.l2_bias])?;
             let logits = net.forward(&x); //.clamp(-100, 100)?;
             //println!("{:?}, {:?}", logits.shape(), y.shape());
             println!("{:.4}", logits.slice((0..4, 0..4)).unwrap());

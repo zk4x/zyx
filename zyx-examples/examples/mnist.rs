@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: LGPL-3.0-only
 
 use std::{collections::HashMap, time::Instant};
-use zyx::{DType, GradientTape, Module, ReduceOp, Tensor, ZyxError};
+use zyx::{DType, Tape, Module, ReduceOp, Tensor, ZyxError};
 use zyx_nn::{Linear, Module};
 use zyx_optim::SGD;
 
@@ -60,7 +60,7 @@ fn main() -> Result<(), ZyxError> {
     for step in 0..7000usize {
         let now = Instant::now();
         Tensor::set_training(true);
-        let tape = GradientTape::new();
+        let tape = Tape::new(&net)?;
         let samples = Tensor::uniform(batch_size, 0..n_train)?;
         let x = train_x.index_select(0, &samples)?;
         let y = train_y.index_select(0, &samples)?;

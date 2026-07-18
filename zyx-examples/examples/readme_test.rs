@@ -1,7 +1,7 @@
 // Copyright (C) 2025 zk4x
 // SPDX-License-Identifier: LGPL-3.0-only
 
-use zyx::{DType, GradientTape, Module, Tensor};
+use zyx::{DType, Tape, Module, Tensor};
 use zyx_nn::{LayerNorm, Linear, Module, MultiheadAttention};
 use zyx_optim::AdamW;
 
@@ -44,7 +44,7 @@ fn main() -> Result<(), zyx::ZyxError> {
     let mut optim = AdamW::default();
     let x = Tensor::randn([2, 8, 64], DType::F32)?;
 
-    let tape = GradientTape::new();
+    let tape = Tape::new(&model)?;
     let out = model.forward(&x)?;
     let grads = tape.gradient(&out, &model);
 

@@ -12,9 +12,9 @@ In most frameworks, autograd requires a separate graph because the eager executi
 # extern crate zyx;
 # use zyx::{DType, Tape, Tensor, ZyxError};
 # fn main() -> Result<(), ZyxError> {
-let tape = Tape::new()?;
 let x = Tensor::randn([2, 3], DType::F32)?;
 let y = Tensor::randn([2, 3], DType::F32)?;
+let tape = Tape::new([&x, &y])?;
 let z = x.relu() * y.tanh();
 
 let grads = tape.gradient(&z, vec![&x, &y]);
@@ -32,12 +32,12 @@ There's no `requires_grad` flag on tensors. The tape records the entire graph; w
 # extern crate zyx;
 # use zyx::{DType, Tape, Tensor, ZyxError};
 # fn main() -> Result<(), ZyxError> {
-let tape = Tape::new()?;
 let x = Tensor::randn([2, 3], DType::F32)?;
 let y = Tensor::randn([2, 3], DType::F32)?;
+let tape = Tape::new([&y])?;
 let z = y.exp();
 
-let grads = tape.gradient(&z, vec![&x]);  // None — z doesn't depend on x
+let grads = tape.gradient(&z, vec![&x]);  // zero — z doesn't depend on x
 # Ok(())
 # }
 ```
@@ -49,8 +49,8 @@ This is more flexible — you don't need to decide at tensor creation time which
 The tape stays alive after `gradient()` for higher-order derivatives:
 
 ```rust,ignore
-let tape = Tape::new()?;
 let x = Tensor::randn([2, 3], DType::F32)?;
+let tape = Tape::new([&x])?;
 let z = x.relu();
 let g = tape.gradient(&z, vec![&x]);
 let h = tape.gradient(&g[0], vec![&x]);  // second derivative

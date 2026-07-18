@@ -1,20 +1,21 @@
-//! Tape-based scope guards for graph boundary detection.
+//! Tape-scoped lazy graph for autograd and optimization.
+//!
+//! [`Tape::new`] creates a lazy computation graph. Operations on promoted tensors
+//! build graph nodes instead of executing eagerly. The same graph is shared by
+//! the forward pass and autograd — no separate autograd graph.
 //!
 //! The tape serves two purposes:
-//! 1. **Autograd boundary**: Tensors created inside a tape scope are retained for
+//! 1. **Autograd boundary**: Tensors promoted via [`Tape::new`] are retained for
 //!    backward pass until the tape is dropped.
 //! 2. **Graph caching boundary**: On drop, all alive tensors are realized together.
-//!    The tape detects boundary-crossing tensors: any tensor referenced inside the
-//!    scope but whose inputs are not tracked by the tape was created outside — these
-//!    are the dynamic inputs. Tensors fully internal to the tape are static and
-//!    their compiled kernel bindings are cached.
+//!    Promoted tensors are treated as graph inputs — their buffers change each
+//!    iteration (e.g. model parameters, inputs, targets). Everything computed from
+//!    them inside the scope is static and cached by structural hash across iterations.
 //!
-//! ## Input detection
-//!
-//! The tape maintains a set of all TensorIds created inside its scope. When a tensor
-//! is pushed to the graph, its input TensorIds are checked against this set. Any input
-//! not in the set is a boundary-crossing tensor — it was created before the tape and
-//! its buffers change each iteration (e.g. model inputs, targets).
+//! Think of [`Tape::new(&model)`] as setting `requires_grad` on the model's tensors
+//! for the duration of the scope — but it's not only for gradients. The tape also
+//! enables egraph-based fusion optimization, device allocation search, and plan
+//! caching across structurally identical iterations.
 //!
 //! ## Caching with Merkle hashes
 //!
@@ -43,21 +44,25 @@ use crate::{
     view::View,
 };
 
-/// Non-differentiating tape scope.
+/// Tape-scoped lazy graph.
 ///
-/// Same boundary tracking as [`GradientTape`] but without autograd.
+/// Promotes tensors to graph mode for autograd and egraph optimization.
 /// All alive tensors are realized when the tape is dropped.
 /// The Merkle hash cache avoids recompilation on structurally identical iterations.
 #[cfg_attr(feature = "py", pyo3::pyclass)]
 pub struct Tape {}
 
 impl Tape {
-    /// Create gradient tape for automatic differentiation.
-    /// Only one tape can exist at a time.
+    /// Create a tape scope, promoting the given tensors to graph mode.
     ///
-    /// Tensors created inside this scope are traced and realized on drop.
-    /// Use this around inference loops to batch-realize outputs and
-    /// enable graph caching across structurally identical iterations.
+    /// This is like setting `requires_grad` on those tensors for the scope's
+    /// duration — but it's not only for gradients. The tape also enables
+    /// egraph-based fusion optimization, device allocation search, and plan
+    /// caching across structurally identical iterations.
+    ///
+    /// Typically you pass the model: `Tape::new(&model)?` promotes all its
+    /// parameters. Input tensors (x, target) are auto-detected as boundary
+    /// inputs — they don't need to be promoted explicitly.
     pub fn new<'a>(params: impl IntoIterator<Item = &'a Tensor>) -> Result<Tape, ZyxError> {
         let mut rt = RT.lock();
 
@@ -76,8 +81,8 @@ impl Tape {
         Ok(Tape {})
     }
 
-    /// Create a tape scope without registering any tensors.
-    /// Tensors are promoted to graph by calling add method.
+    /// Create a tape scope without promoting any tensors yet.
+    /// Use [`Tape::add`] or [`Tape::extend`] to promote tensors later.
     pub fn empty() -> Tape {
         Self::new(std::iter::empty()).unwrap()
     }

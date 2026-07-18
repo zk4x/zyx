@@ -391,7 +391,7 @@ impl Tensor {
     /// }
     /// # Ok::<(), zyx::ZyxError>(())
     /// ```
-    /// [`GradientTape`](crate::GradientTape) limits scope of backpropagation graph, therefore detach
+    /// [`Tape`](crate::Tape) limits scope of backpropagation graph, therefore detach
     /// is only required in very advanced cases, not in simple RNNs.
     ///
     /// # Errors

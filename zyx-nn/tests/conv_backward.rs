@@ -1,7 +1,7 @@
 // Copyright (C) 2025 zk4x
 // SPDX-License-Identifier: LGPL-3.0-only
 
-use zyx::{DType, GradientTape, ReduceOp, Tensor, ZyxError};
+use zyx::{DType, Tape, ReduceOp, Tensor, ZyxError};
 use zyx_nn::{BatchNorm, Conv2d, Linear};
 
 fn make_bn(num_features: u64) -> BatchNorm {
@@ -25,7 +25,10 @@ fn conv_bn_backward_1() -> Result<(), ZyxError> {
     let x = Tensor::randn([128, 3, 32, 32], DType::F32)?;
     let y = Tensor::randint([128], 0i32, 10)?;
 
-    let tape = GradientTape::new();
+    let mut params: Vec<&Tensor> = conv.iter().collect();
+    params.extend(bn.iter());
+    params.extend(linear.iter());
+    let tape = Tape::new(params)?;
     let h = conv.forward(&x)?;
     let h = bn.forward(h)?;
     let h = h.relu();
@@ -47,7 +50,7 @@ fn conv_weight_backward() -> Result<(), ZyxError> {
     let conv = Conv2d::new(3, 16, 3, 1, 1, 1, 1, false, DType::F32)?;
     let x = Tensor::rand([128, 3, 32, 32], DType::F32)?;
 
-    let tape = GradientTape::new();
+    let tape = Tape::new([&conv.weight])?;
     let h = conv.forward(&x)?;
     let loss = h.sum_all();
 
