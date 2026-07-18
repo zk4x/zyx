@@ -28,7 +28,7 @@ fn matmul_bench() -> Result<(), ZyxError> {
     ] {
         let a = Tensor::rand([m, k], DType::F32)?;
         let b = Tensor::rand([n, k], DType::F32)?;
-        a.matmul(b.t())?.realize()?;
+        a.matmul(b.t())?;
     }
     //println!();
     Ok(())
@@ -45,13 +45,13 @@ fn reduce_bench() -> Result<(), ZyxError> {
         &[64, 64, 64],
     ] {
         let x = Tensor::rand(dims, DType::F32)?;
-        Tensor::realize([&x.sum_all()])?;
-        Tensor::realize([&x.mean_all()])?;
-        Tensor::realize([&x.max_all()])?;
-        Tensor::realize([&x.min_all()])?;
-        Tensor::realize([&x.prod_all()])?;
-        Tensor::realize([&x.var_all()])?;
-        Tensor::realize([&x.std_all()])?;
+        x.sum_all();
+        x.mean_all();
+        x.max_all();
+        x.min_all();
+        x.prod_all();
+        x.var_all();
+        x.std_all();
     }
     //println!();
     Ok(())
@@ -72,7 +72,7 @@ fn softmax_bench() -> Result<(), ZyxError> {
         (&[8, 512, 2048], &[2i32][..]),
     ] {
         let x = Tensor::rand(dims, DType::F32)?;
-        Tensor::realize([&x.softmax(axes.iter().copied())?])?;
+        x.softmax(axes.iter().copied())?;
     }
     //println!();
     Ok(())
@@ -86,7 +86,7 @@ fn embedding_bench() -> Result<(), ZyxError> {
         let embedding = Tensor::rand([vocab_size, embed_dim], DType::F32)?;
         let idx: Vec<i32> = (0..seq_len).map(|i| (i % vocab_size) as i32).collect();
         let indices = Tensor::from(idx);
-        Tensor::realize([&embedding.index_select(0, indices)?])?;
+        embedding.index_select(0, indices)?;
     }
     //println!();
     Ok(())
@@ -96,7 +96,7 @@ fn gelu_bench() -> Result<(), ZyxError> {
     //println!("=== GELU Activation ===");
     for dims in [&[4096u64][..], &[16384], &[1024, 4096], &[256, 1024, 512]] {
         let x = Tensor::rand(dims, DType::F32)?;
-        Tensor::realize([&x.gelu()])?;
+        x.gelu();
     }
     //println!();
     Ok(())
@@ -115,11 +115,11 @@ fn activation_bench() -> Result<(), ZyxError> {
         &[128u64, 16384u64],
     ] {
         let x = Tensor::rand(dims, DType::F32)?;
-        Tensor::realize([&x.relu()])?;
-        Tensor::realize([&x.sigmoid()])?;
-        Tensor::realize([&x.tanh()])?;
-        Tensor::realize([&x.exp()])?;
-        Tensor::realize([&x.log(Tensor::from(2.0))])?;
+        x.relu();
+        x.sigmoid();
+        x.tanh();
+        x.exp();
+        x.log(Tensor::from(2.0));
     }
     //println!();
     Ok(())
@@ -135,7 +135,7 @@ fn ln_softmax_bench() -> Result<(), ZyxError> {
         (&[64, 512], &[0i32][..]),
     ] {
         let x = Tensor::rand(dims, DType::F32)?;
-        Tensor::realize([&x.ln_softmax(axes.iter().copied())?])?;
+        x.ln_softmax(axes.iter().copied())?;
     }
     //println!();
     Ok(())
@@ -167,16 +167,16 @@ fn reduce_axis_bench() -> Result<(), ZyxError> {
     ] {
         let x = Tensor::rand(dims, DType::F32)?;
         let last = dims.len() as i32 - 1;
-        Tensor::realize([&x.sum([last])?])?;
-        Tensor::realize([&x.max([last])?])?;
-        Tensor::realize([&x.min([last])?])?;
-        Tensor::realize([&x.mean([last])?])?;
-        Tensor::realize([&x.var([last])?])?;
+        x.sum([last])?;
+        x.max([last])?;
+        x.min([last])?;
+        x.mean([last])?;
+        x.var([last])?;
         // Reduce along axis 0 as well
         if dims.len() > 1 {
-            Tensor::realize([&x.sum([0])?])?;
-            Tensor::realize([&x.max([0])?])?;
-            Tensor::realize([&x.mean([0])?])?;
+            x.sum([0])?;
+            x.max([0])?;
+            x.mean([0])?;
         }
     }
     //println!();
@@ -194,7 +194,7 @@ fn silu_like_bench() -> Result<(), ZyxError> {
         &[16, 768, 2048],
     ] {
         let x = Tensor::rand(dims, DType::F32)?;
-        Tensor::realize([&x.sigmoid().mul(&x)])?;
+        x.sigmoid().mul(&x);
     }
     //println!();
     Ok(())
@@ -212,7 +212,7 @@ fn layer_norm_like_bench() -> Result<(), ZyxError> {
         let var = centered.var([-1])?.unsqueeze(-1)?;
         let std = var.add(Tensor::from(1e-5)).sqrt();
         let norm = centered.div(&std);
-        Tensor::realize([&norm.mul(&gamma).add(&beta)])?;
+        norm.mul(&gamma).add(&beta);
     }
     //println!();
     Ok(())
@@ -227,10 +227,10 @@ fn reduce_multi_axis_bench() -> Result<(), ZyxError> {
         &[8, 512, 64],
     ] {
         let x = Tensor::rand(dims, DType::F32)?;
-        Tensor::realize([&x.sum([0, 1])?])?;
-        Tensor::realize([&x.max([0, 1])?])?;
-        Tensor::realize([&x.mean([1, 2])?])?;
-        Tensor::realize([&x.var([0, 2])?])?;
+        x.sum([0, 1])?;
+        x.max([0, 1])?;
+        x.mean([1, 2])?;
+        x.var([0, 2])?;
     }
     //println!();
     Ok(())
@@ -246,25 +246,25 @@ fn large_matmul_bench() -> Result<(), ZyxError> {
     for &n in dims {
         let a = Tensor::rand([n, n], DType::F32)?;
         let b = Tensor::rand([n, n], DType::F32)?;
-        a.matmul(b.t())?.realize()?;
+        a.matmul(b.t())?;
     }
     // Vary M (tall matrices)
     for &m in dims.iter().filter(|&&m| m != 1024) {
         let a = Tensor::rand([m, 1024], DType::F32)?;
         let b = Tensor::rand([1024, 1024], DType::F32)?;
-        a.matmul(b.t())?.realize()?;
+        a.matmul(b.t())?;
     }
     // Vary N (wide matrices)
     for &n in dims.iter().filter(|&&n| n != 1024) {
         let a = Tensor::rand([1024, 1024], DType::F32)?;
         let b = Tensor::rand([n, 1024], DType::F32)?;
-        a.matmul(b.t())?.realize()?;
+        a.matmul(b.t())?;
     }
     // Vary K (inner dimension)
     for &k in dims.iter().filter(|&&k| k != 1024) {
         let a = Tensor::rand([1024, k], DType::F32)?;
         let b = Tensor::rand([1024, k], DType::F32)?;
-        a.matmul(b.t())?.realize()?;
+        a.matmul(b.t())?;
     }
     //println!();
     Ok(())

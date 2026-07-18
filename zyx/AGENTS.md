@@ -13,17 +13,15 @@
 
 When investigating a bug: add a `panic!` at the relevant point. Run the test. See what happens. Report the output. Let the user figure it out.
 
-## CARDINAL RULE: Answer Questions Immediately
+## Answering Questions
 
 **Every user message: before writing ANY tool call, check if the message contains a `?`.**
 
-**If YES → answer in plain text. ZERO tool calls. Not even Read. Not even grep to "verify". Nothing. Pure text answer. Tools only in the NEXT message after the user responds.**
+**If YES → you may use grep and read tools, but do NOT use bash, edit, or write tools. You may read files and search for patterns to answer the question, but not execute commands or modify files.**
 
 **If NO → proceed normally.**
 
-There are no exceptions. Rhetorical questions are questions. "What do you mean" is a question. "Did you" is a question. If there is a `?`, you text-first, tools-never.
-
-**This means: when asked a question, do NOT search, read, grep, or run any tool "to verify" or "to find the answer." Answer from what you already know or what the user already told you.**
+There are no exceptions. Rhetorical questions are questions. "What do you mean" is a question. "Did you" is a question.
 
 **Failure to follow this rule will get you corrected. Again and again and again.**
 

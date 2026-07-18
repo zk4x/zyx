@@ -145,19 +145,6 @@ impl Tensor {
         })
     }
 
-    /// # Errors
-    /// Returns a `ZyxError` if the operation fails.
-    ///
-    /// # Panics
-    /// Panics if tensors are not List(Tensor).
-    #[staticmethod]
-    #[pyo3(name = "plot_dot_graph")]
-    pub fn plot_dot_graph_py(tensors: &Bound<'_, PyList>, name: &str) -> Result<(), std::io::Error> {
-        let tensors: Vec<Tensor> =
-            tensors.into_iter().map(|d| d.extract::<Tensor>().expect("tensors must be List(Tensor)")).collect();
-        Tensor::plot_graph(&tensors, name)
-    }
-
     /// Set the random seed.
     #[staticmethod]
     #[pyo3(name = "manual_seed")]
@@ -179,24 +166,6 @@ impl Tensor {
     pub fn set_training_py(training: bool) {
         Tensor::set_training(training);
     }
-
-    /// # Errors
-    /// Returns a `ZyxError` if the operation fails.
-    ///
-    /// # Panics
-    /// Panics if tensors are not List(Tensor).
-    #[staticmethod]
-    #[pyo3(name = "realize_multi")]
-    pub fn realize_py(tensors: &Bound<'_, PyList>) -> Result<(), ZyxError> {
-        let tensors: Vec<Tensor> =
-            tensors.into_iter().map(|d| d.extract::<Tensor>().expect("tensors must be List(Tensor)")).collect();
-        Tensor::realize(&tensors)
-    }
-
-    /// Realizes this single tensor, computing its data on the device.
-    ///
-    /// # Errors
-    /// Returns a `ZyxError` if the operation fails.
 
     /// Returns the shape of the tensor.
     #[must_use]
@@ -391,14 +360,6 @@ impl Tensor {
     #[pyo3(name = "arange", signature = (start=0, stop=1, step=1))]
     pub fn arange_py(start: i64, stop: i64, step: i64) -> Result<Tensor, ZyxError> {
         Tensor::arange(start, stop, step)
-    }
-
-    /// # Errors
-    /// Returns a `ZyxError` if the operation fails.
-    #[staticmethod]
-    #[pyo3(name = "realize_all")]
-    pub fn realize_all_py() -> Result<(), ZyxError> {
-        Tensor::realize_all()
     }
 
     /// Computes the absolute value element-wise.
