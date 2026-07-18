@@ -32,11 +32,11 @@
 use std::collections::BTreeSet;
 
 use crate::{
-    Map, RT, Set, Tensor, ZyxError,
+    Map, RT, Tensor, ZyxError,
     backend::BufferId,
     graph::{ClassId, ExecPlan, Graph},
     kernel::{DeviceId, Kernel, Op},
-    runtime::{KernelData, KernelId, ShapeId, TensorState},
+    runtime::{KernelData, ShapeId, TensorState},
     shape::Dim,
     slab::Slab,
     tensor::TensorId,
@@ -58,97 +58,43 @@ impl Tape {
     /// Tensors created inside this scope are traced and realized on drop.
     /// Use this around inference loops to batch-realize outputs and
     /// enable graph caching across structurally identical iterations.
-    pub fn new() -> Result<Tape, ZyxError> {
+    pub fn new<'a>(params: impl IntoIterator<Item = &'a Tensor>) -> Result<Tape, ZyxError> {
         let mut rt = RT.lock();
 
         if rt.graph.is_some() {
             rt.graph.as_mut().unwrap().rc += 1;
-
-            let tids: Vec<TensorId> = rt.tensors.iter().map(|(id, _)| id).collect();
-
-            let mut processed_kernels: Set<KernelId> = Set::default();
-            let mut eager_rcs: Map<TensorId, u32> = Map::default();
-            for tid in &tids {
-                if rt.buffer_map.contains_key(tid) {
-                    continue;
-                }
-                if let TensorState::Eager { kernel_id, .. } = rt.tensors[*tid].state {
-                    if processed_kernels.insert(kernel_id) {
-                        for o in &rt.kernels[kernel_id].outputs {
-                            *eager_rcs.entry(*o).or_insert(0) += 1;
-                        }
-                    }
-                }
-            }
-            for tid in &tids {
-                if eager_rcs.contains_key(tid) {
-                    rt.add_store(*tid)?;
-                }
-            }
-
-            let mut graph = rt.graph.take().unwrap();
-            for tid in tids {
-                if matches!(rt.tensors[tid].state, TensorState::Graph { .. }) {
-                    continue;
-                }
-                let shape_id = rt.tensors[tid].shape_id;
-                let dtype = rt.tensors[tid].dtype;
-                let (node_id, class_id) = graph.push_leaf(dtype, shape_id);
-                let rc = eager_rcs.get(&tid).copied().unwrap_or(1);
-                rt.tensors[tid].state = TensorState::Graph { node_id, class_id, rc };
-                graph.leaf_map.insert(class_id, tid);
-            }
+        } else {
+            let mut graph = Graph::new();
+            graph.rc = 1;
             rt.graph = Some(graph);
-
-            return Ok(Tape {});
         }
 
-        let mut graph = Graph::new();
-        graph.rc = 1;
-
-        let tids: Vec<TensorId> = rt.tensors.iter().map(|(id, _)| id).collect();
-
-        // Realize any eager tensors that don't have buffers yet.
-        // Follow the pattern from Runtime::load: collect all outputs of
-        // the tensor's kernel into a deduplicated Set, then add_store each.
-        let mut processed_kernels: Set<KernelId> = Set::default();
-        let mut eager_rcs: Map<TensorId, u32> = Map::default();
-        for tid in &tids {
-            if rt.buffer_map.contains_key(tid) {
-                continue;
-            }
-            if let TensorState::Eager { kernel_id, .. } = rt.tensors[*tid].state {
-                if !rt.kernels.contains_key(kernel_id) {
-                    continue;
-                }
-                if processed_kernels.insert(kernel_id) {
-                    for o in &rt.kernels[kernel_id].outputs {
-                        *eager_rcs.entry(*o).or_insert(0) += 1;
-                    }
-                }
-            }
-        }
-        for tid in &tids {
-            if eager_rcs.contains_key(tid) {
-                rt.add_store(*tid)?;
-            }
+        for p in params {
+            rt.promote_to_graph(p.id);
         }
 
-        // Promote all existing tensors to graph Leaf nodes.
-        for tid in tids {
-            if matches!(rt.tensors[tid].state, TensorState::Graph { .. }) {
-                continue;
-            }
-            let shape_id = rt.tensors[tid].shape_id;
-            let dtype = rt.tensors[tid].dtype;
-            let (node_id, class_id) = graph.push_leaf(dtype, shape_id);
-            let rc = eager_rcs.get(&tid).copied().unwrap_or(1);
-            rt.tensors[tid].state = TensorState::Graph { node_id, class_id, rc };
-            graph.leaf_map.insert(class_id, tid);
-        }
-
-        rt.graph = Some(graph);
         Ok(Tape {})
+    }
+
+    /// Create a tape scope without registering any tensors.
+    /// Tensors are promoted to graph by calling add method.
+    pub fn empty() -> Tape {
+        Self::new(std::iter::empty()).unwrap()
+    }
+
+    /// Promote a tensor into the tape's graph scope.
+    /// All ops on this tensor from now on will be tracked in the graph.
+    pub fn add(&self, tensor: &Tensor) {
+        let mut rt = RT.lock();
+        rt.promote_to_graph(tensor.id);
+    }
+
+    /// Promote multiple tensors into the tape's graph scope at once.
+    pub fn extend<'a>(&self, params: impl IntoIterator<Item = &'a Tensor>) {
+        let mut rt = RT.lock();
+        for p in params {
+            rt.promote_to_graph(p.id);
+        }
     }
 }
 

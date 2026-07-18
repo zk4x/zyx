@@ -7,7 +7,7 @@ use zyx::{DType, Scalar, Tape, Tensor, ZyxError};
 fn sin() -> Result<(), ZyxError> {
     let data: [f32; 10] = [-3.285, 0.001, 1.780, 5.675, -8.521, -0.456, 1.215, -3.474, -4.128, -7.657];
     let x = Tensor::from(data);
-    let tape = Tape::new()?;
+    let tape = Tape::empty();
     let z = x.sin();
     tape.realize([&z])?;
     let zdata: Vec<f32> = z.try_into()?;
@@ -21,7 +21,7 @@ fn sin() -> Result<(), ZyxError> {
 fn relu() -> Result<(), ZyxError> {
     let data: [f32; 10] = [-3.285, 0.001, 1.780, 5.675, -8.521, -0.456, 1.215, -3.474, -4.128, -7.657];
     let x = Tensor::from(data);
-    let tape = Tape::new()?;
+    let tape = Tape::empty();
     let z = x.relu();
     tape.realize([&z])?;
     assert_eq!(z, [0.0f32, 0.001, 1.780, 5.675, 0.0, 0.0, 1.215, 0.0, 0.0, 0.0]);
@@ -32,7 +32,7 @@ fn relu() -> Result<(), ZyxError> {
 fn matmul() -> Result<(), ZyxError> {
     let x = Tensor::from([[2, 4, 3], [1, 5, 1]]);
     let y = Tensor::from([[2, 4], [3, 1], [5, 1]]);
-    let tape = Tape::new()?;
+    let tape = Tape::empty();
     let z = x.dot(y)?;
     tape.realize([&z])?;
     assert_eq!(z, [[31, 15], [22, 10]]);
@@ -42,7 +42,7 @@ fn matmul() -> Result<(), ZyxError> {
 #[test]
 fn softmax() -> Result<(), ZyxError> {
     let x = Tensor::from([2f32, 4., 3.]);
-    let tape = Tape::new()?;
+    let tape = Tape::empty();
     let y = x.softmax([])?;
     tape.realize([&y])?;
     assert_eq!(y, [0.09003056585788726807f32, 0.66524088382720947266, 0.24472846090793609619]);
@@ -69,7 +69,7 @@ fn causal_self_attention() -> Result<(), ZyxError> {
         return Err(ZyxError::ShapeError("x must have exactly 3 dims, b, t, c".into()));
     };
 
-    let tape = Tape::new()?;
+    let tape = Tape::empty();
     let mut splits = x.dot(c_attn_weight.t())?.split([n_embd, n_embd, n_embd], 2)?;
     let mut v = splits.pop().unwrap();
     let mut k = splits.pop().unwrap();

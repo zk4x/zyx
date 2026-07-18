@@ -270,20 +270,7 @@ impl Runtime {
     pub fn new_constant_tensor(&mut self, value: Constant) -> TensorId {
         #[cfg(feature = "debug_tensor_op")]
         println!("runtime::new_constant_tensor(value={value:?})");
-        let shape = vec![1 as Dim];
         let dtype = value.dtype();
-        let shape_id = self.push_shape(shape);
-        if let Some(ref mut graph) = self.graph {
-            let (nid, cid) = graph.push(Node::Const(value), shape_id, dtype);
-            let tid = self.tensors.push(TensorData {
-                shape_id,
-                dtype,
-                state: TensorState::Graph { node_id: nid, class_id: cid, rc: 1 },
-            });
-            #[cfg(feature = "debug_tensor_op")]
-            println!("  -> tid={tid}, {:?}", self.tensors[tid]);
-            return tid;
-        }
         let op = Op::ConstView(Box::new((value, View::contiguous(&[1]))));
         let result = self.new_kernel(op, [1].into(), dtype);
         #[cfg(feature = "debug_tensor_op")]
@@ -295,20 +282,6 @@ impl Runtime {
         #[cfg(feature = "debug_tensor_op")]
         println!("runtime::new_full(shape={shape:?}, value={value:?})");
         let dtype = value.dtype();
-        let shape_id = self.push_shape(shape.clone());
-        let one_shape_id = self.push_shape(vec![1 as Dim]);
-        if let Some(ref mut graph) = self.graph {
-            let (_, one_cid) = graph.push(Node::Const(value), one_shape_id, dtype);
-            let (nid, cid) = graph.push(Node::Expand { x: one_cid, shape: shape_id }, shape_id, dtype);
-            let tid = self.tensors.push(TensorData {
-                shape_id,
-                dtype,
-                state: TensorState::Graph { node_id: nid, class_id: cid, rc: 1 },
-            });
-            #[cfg(feature = "debug_tensor_op")]
-            println!("  -> tid={tid}, {:?}", self.tensors[tid]);
-            return tid;
-        }
         let op = Op::ConstView(Box::new((value, View::contiguous(&[1]))));
         let x = self.new_kernel(op, [1].into(), dtype);
         let expanded = self.expand(x, shape).unwrap();
@@ -341,21 +314,12 @@ impl Runtime {
         let buffer_id = BufferId { pool: PoolId::HOST, buffer: pool.insert(data) };
 
         let shape = self.push_shape(shape);
-        let tid = if let Some(ref mut graph) = self.graph {
-            let (node_id, class_id) = graph.push_leaf(dtype, shape);
-            let tid =
-                self.tensors.push(TensorData { shape_id: shape, dtype, state: TensorState::Graph { node_id, class_id, rc: 1 } });
-            graph.leaf_map.insert(class_id, tid);
-            tid
-        } else {
-            let op = Op::LoadView(Box::new((dtype, View::contiguous(&self.shapes[shape]))));
-            let tid = self.new_kernel(op, self.shapes[shape].clone(), dtype);
-            let TensorState::Eager { kernel_id, .. } = &self.tensors[tid].state else {
-                unreachable!()
-            };
-            self.kernels[*kernel_id].loads.push(tid);
-            tid
+        let op = Op::LoadView(Box::new((dtype, View::contiguous(&self.shapes[shape]))));
+        let tid = self.new_kernel(op, self.shapes[shape].clone(), dtype);
+        let TensorState::Eager { kernel_id, .. } = &self.tensors[tid].state else {
+            unreachable!()
         };
+        self.kernels[*kernel_id].loads.push(tid);
 
         self.buffer_map.insert(tid, buffer_id);
 
@@ -381,56 +345,65 @@ impl Runtime {
         let buffer_id = BufferId { pool: PoolId::DISK, buffer: pool.buffer_from_path(bytes, path, offset_bytes) };
 
         let shape_id = self.push_shape(shape);
-        let tid = if let Some(ref mut graph) = self.graph {
-            let (node_id, class_id) = graph.push_leaf(dtype, shape_id);
-            let tid = self.tensors.push(TensorData { shape_id, dtype, state: TensorState::Graph { node_id, class_id, rc: 1 } });
-            graph.leaf_map.insert(class_id, tid);
-            tid
-        } else {
-            let op = Op::LoadView(Box::new((dtype, View::contiguous(&self.shapes[shape_id]))));
-            let tid = self.new_kernel(op, self.shapes[shape_id].clone(), dtype);
-            let TensorState::Eager { kernel_id, .. } = &self.tensors[tid].state else {
-                unreachable!()
-            };
-            self.kernels[*kernel_id].loads.push(tid);
-            tid
+        let op = Op::LoadView(Box::new((dtype, View::contiguous(&self.shapes[shape_id]))));
+        let tid = self.new_kernel(op, self.shapes[shape_id].clone(), dtype);
+        let TensorState::Eager { kernel_id, .. } = &self.tensors[tid].state else {
+            unreachable!()
         };
+        self.kernels[*kernel_id].loads.push(tid);
         self.buffer_map.insert(tid, buffer_id);
         Ok(tid)
+    }
+
+    pub(crate) fn promote_to_graph(&mut self, tid: TensorId) -> ClassId {
+        if let TensorState::Graph { class_id, .. } = self.tensors[tid].state {
+            return class_id;
+        }
+        let shape_id = self.tensors[tid].shape_id;
+        let dtype = self.tensors[tid].dtype;
+
+        if !self.buffer_map.contains_key(&tid) {
+            self.add_store(tid).expect("add_store in promote_to_graph");
+        }
+
+        let graph = self.graph.as_mut().expect("promote_to_graph without active graph");
+        let (node_id, class_id) = graph.push_leaf(dtype, shape_id);
+
+        let TensorState::Eager { kernel_id, .. } = self.tensors[tid].state else {
+            unreachable!()
+        };
+        let rc = self.kernels[kernel_id].outputs.iter().filter(|&&o| o == tid).count() as u32;
+
+        self.tensors[tid].state = TensorState::Graph { node_id, class_id, rc };
+        graph.leaf_map.insert(class_id, tid);
+        class_id
     }
 
     pub fn cast(&mut self, x: TensorId, dtype: DType) -> TensorId {
         #[cfg(feature = "debug_tensor_op")]
         println!("runtime::cast(x={x}, dtype={dtype:?})");
         let shape_id = self.tensors[x].shape_id;
-        if let Some(graph) = &mut self.graph {
-            let x_class_id = match &self.tensors[x].state {
-                TensorState::Graph { class_id, .. } => *class_id,
-                _ => unreachable!("non-graph tensor in graph mode"),
-            };
-            let (node_id, class_id) = graph.push(Node::Cast { x: x_class_id, dtype }, shape_id, dtype);
-            let tid = self.tensors.push(TensorData { shape_id, dtype, state: TensorState::Graph { node_id, class_id, rc: 1 } });
-            #[cfg(feature = "debug_tensor_op")]
-            println!("  -> tid={tid}, nid={node_id:?}, cid={class_id:?}");
-            tid
-        } else {
-            let (kernel_id, x) = match self.tensors[x].state {
-                TensorState::Eager { kernel_id, op_id, .. } => (kernel_id, op_id),
-                TensorState::Graph { rc, .. } if rc > 0 => {
-                    panic!("tensor was never realized. Did you forget to call tape.realize()?");
-                }
-                _ => unreachable!("eager cast with graph tensor"),
-            };
-            let op_id = self.kernels[kernel_id].kernel.cast(x, dtype);
-            let tid = self.tensors.push(TensorData {
-                shape_id,
-                dtype,
-                state: TensorState::Eager { kernel_id, op_id, pending_store: false },
-            });
-            self.kernels[kernel_id].outputs.push(tid);
-            #[cfg(feature = "debug_tensor_op")]
-            println!("  -> tid={tid}, kid={kernel_id:?}, op_id={op_id:?}");
-            tid
+        match self.tensors[x].state {
+            TensorState::Graph { class_id, .. } => {
+                let (node_id, class_id) = self.graph.as_mut().unwrap().push(Node::Cast { x: class_id, dtype }, shape_id, dtype);
+                let tid =
+                    self.tensors.push(TensorData { shape_id, dtype, state: TensorState::Graph { node_id, class_id, rc: 1 } });
+                #[cfg(feature = "debug_tensor_op")]
+                println!("  -> tid={tid}, nid={node_id:?}, cid={class_id:?}");
+                tid
+            }
+            TensorState::Eager { kernel_id, op_id, .. } => {
+                let op_id = self.kernels[kernel_id].kernel.cast(op_id, dtype);
+                let tid = self.tensors.push(TensorData {
+                    shape_id,
+                    dtype,
+                    state: TensorState::Eager { kernel_id, op_id, pending_store: false },
+                });
+                self.kernels[kernel_id].outputs.push(tid);
+                #[cfg(feature = "debug_tensor_op")]
+                println!("  -> tid={tid}, kid={kernel_id:?}, op_id={op_id:?}");
+                tid
+            }
         }
     }
 
@@ -438,34 +411,27 @@ impl Runtime {
         #[cfg(feature = "debug_tensor_op")]
         println!("runtime::bitcast(x={x}, dtype={dtype:?})");
         let shape_id = self.tensors[x].shape_id;
-        if let Some(graph) = &mut self.graph {
-            let x_class_id = match &self.tensors[x].state {
-                TensorState::Graph { class_id, .. } => *class_id,
-                _ => unreachable!("non-graph tensor in graph mode"),
-            };
-            let (node_id, class_id) = graph.push(Node::Cast { x: x_class_id, dtype }, shape_id, dtype);
-            let tid = self.tensors.push(TensorData { shape_id, dtype, state: TensorState::Graph { node_id, class_id, rc: 1 } });
-            #[cfg(feature = "debug_tensor_op")]
-            println!("  -> tid={tid}, nid={node_id:?}, cid={class_id:?}");
-            tid
-        } else {
-            let (kernel_id, op_id) = match &self.tensors[x].state {
-                TensorState::Eager { kernel_id, op_id, .. } => (*kernel_id, *op_id),
-                TensorState::Graph { rc, .. } if *rc > 0 => {
-                    panic!("tensor was never realized. Did you forget to call tape.realize()?");
-                }
-                _ => unreachable!("eager bitcast with graph tensor"),
-            };
-            let op_id = self.kernels[kernel_id].kernel.bitcast(op_id, dtype);
-            let tid = self.tensors.push(TensorData {
-                shape_id,
-                dtype,
-                state: TensorState::Eager { kernel_id, op_id, pending_store: false },
-            });
-            self.kernels[kernel_id].outputs.push(tid);
-            #[cfg(feature = "debug_tensor_op")]
-            println!("  -> tid={tid}, kid={kernel_id:?}, op_id={op_id:?}");
-            tid
+        match self.tensors[x].state {
+            TensorState::Graph { class_id, .. } => {
+                let (node_id, class_id) = self.graph.as_mut().unwrap().push(Node::Cast { x: class_id, dtype }, shape_id, dtype);
+                let tid =
+                    self.tensors.push(TensorData { shape_id, dtype, state: TensorState::Graph { node_id, class_id, rc: 1 } });
+                #[cfg(feature = "debug_tensor_op")]
+                println!("  -> tid={tid}, nid={node_id:?}, cid={class_id:?}");
+                tid
+            }
+            TensorState::Eager { kernel_id, op_id, .. } => {
+                let op_id = self.kernels[kernel_id].kernel.bitcast(op_id, dtype);
+                let tid = self.tensors.push(TensorData {
+                    shape_id,
+                    dtype,
+                    state: TensorState::Eager { kernel_id, op_id, pending_store: false },
+                });
+                self.kernels[kernel_id].outputs.push(tid);
+                #[cfg(feature = "debug_tensor_op")]
+                println!("  -> tid={tid}, kid={kernel_id:?}, op_id={op_id:?}");
+                tid
+            }
         }
     }
 
@@ -474,35 +440,27 @@ impl Runtime {
         println!("runtime::unary(x={x}, uop={uop:?})");
         let shape_id = self.tensors[x].shape_id;
         let dtype = self.tensors[x].dtype;
-        if let Some(graph) = &mut self.graph {
-            let x_class_id = match &self.tensors[x].state {
-                TensorState::Graph { class_id, .. } => *class_id,
-                _ => unreachable!("non-graph tensor in graph mode"),
-            };
-            let (node_id, class_id) = graph.push(Node::Unary { x: x_class_id, uop }, shape_id, dtype);
-
-            let tid = self.tensors.push(TensorData { shape_id, dtype, state: TensorState::Graph { node_id, class_id, rc: 1 } });
-            #[cfg(feature = "debug_tensor_op")]
-            println!("  -> tid={tid}, nid={node_id:?}, cid={class_id:?}");
-            tid
-        } else {
-            let (kernel_id, op_id) = match &self.tensors[x].state {
-                TensorState::Eager { kernel_id, op_id, .. } => (*kernel_id, *op_id),
-                TensorState::Graph { rc, .. } if *rc > 0 => {
-                    panic!("tensor was never realized. Did you forget to call tape.realize()?");
-                }
-                _ => unreachable!("eager unary with graph tensor"),
-            };
-            let op_id = self.kernels[kernel_id].kernel.unary(op_id, uop);
-            let tid = self.tensors.push(TensorData {
-                shape_id,
-                dtype,
-                state: TensorState::Eager { kernel_id, op_id, pending_store: false },
-            });
-            self.kernels[kernel_id].outputs.push(tid);
-            #[cfg(feature = "debug_tensor_op")]
-            println!("  -> tid={tid}, kid={kernel_id:?}, op_id={op_id:?}");
-            tid
+        match self.tensors[x].state {
+            TensorState::Graph { class_id, .. } => {
+                let (node_id, class_id) = self.graph.as_mut().unwrap().push(Node::Unary { x: class_id, uop }, shape_id, dtype);
+                let tid =
+                    self.tensors.push(TensorData { shape_id, dtype, state: TensorState::Graph { node_id, class_id, rc: 1 } });
+                #[cfg(feature = "debug_tensor_op")]
+                println!("  -> tid={tid}, nid={node_id:?}, cid={class_id:?}");
+                tid
+            }
+            TensorState::Eager { kernel_id, op_id, .. } => {
+                let op_id = self.kernels[kernel_id].kernel.unary(op_id, uop);
+                let tid = self.tensors.push(TensorData {
+                    shape_id,
+                    dtype,
+                    state: TensorState::Eager { kernel_id, op_id, pending_store: false },
+                });
+                self.kernels[kernel_id].outputs.push(tid);
+                #[cfg(feature = "debug_tensor_op")]
+                println!("  -> tid={tid}, kid={kernel_id:?}, op_id={op_id:?}");
+                tid
+            }
         }
     }
 
@@ -515,16 +473,25 @@ impl Runtime {
         } else {
             self.tensors[x].dtype
         };
-        if let Some(graph) = &mut self.graph {
-            let x_class_id = match &self.tensors[x].state {
-                TensorState::Graph { class_id, .. } => *class_id,
-                _ => unreachable!("non-graph tensor in graph mode"),
+        let x_is_graph = matches!(&self.tensors[x].state, TensorState::Graph { .. });
+        let y_is_graph = matches!(&self.tensors[y].state, TensorState::Graph { .. });
+        if x_is_graph || y_is_graph {
+            if !x_is_graph {
+                self.promote_to_graph(x);
+            }
+            if !y_is_graph {
+                self.promote_to_graph(y);
+            }
+            let x_class_id = match self.tensors[x].state {
+                TensorState::Graph { class_id, .. } => class_id,
+                _ => unreachable!(),
             };
-            let y_class_id = match &self.tensors[y].state {
-                TensorState::Graph { class_id, .. } => *class_id,
-                _ => unreachable!("non-graph tensor in graph mode"),
+            let y_class_id = match self.tensors[y].state {
+                TensorState::Graph { class_id, .. } => class_id,
+                _ => unreachable!(),
             };
-            let (node_id, class_id) = graph.push(Node::Binary { x: x_class_id, y: y_class_id, bop }, shape_id, dtype);
+            let (node_id, class_id) =
+                self.graph.as_mut().unwrap().push(Node::Binary { x: x_class_id, y: y_class_id, bop }, shape_id, dtype);
 
             let tid = self.tensors.push(TensorData { shape_id, dtype, state: TensorState::Graph { node_id, class_id, rc: 1 } });
             #[cfg(feature = "debug_tensor_op")]
@@ -651,57 +618,59 @@ impl Runtime {
         let reduce_shape = crate::shape::reduce(&shape, &axes);
         let shape_id = self.push_shape(reduce_shape);
 
-        if let Some(graph) = &mut self.graph {
-            let x_class_id = match &self.tensors[x].state {
-                TensorState::Graph { class_id, .. } => *class_id,
-                _ => unreachable!("non-graph tensor in graph mode"),
-            };
-            let (node_id, class_id) =
-                graph.push(Node::Reduce { x: x_class_id, bop: rop, axes: axes.into_boxed_slice() }, shape_id, dtype);
+        match self.tensors[x].state {
+            TensorState::Graph { class_id, .. } => {
+                let (node_id, class_id) = self.graph.as_mut().unwrap().push(
+                    Node::Reduce { x: class_id, bop: rop, axes: axes.into_boxed_slice() },
+                    shape_id,
+                    dtype,
+                );
+                let tid =
+                    self.tensors.push(TensorData { shape_id, dtype, state: TensorState::Graph { node_id, class_id, rc: 1 } });
+                #[cfg(feature = "debug_tensor_op")]
+                println!("  -> tid={tid}, nid={node_id:?}, cid={class_id:?}");
+                Ok(tid)
+            }
+            _ => {
+                let (kid, mut op_id) = self.duplicate_or_store(x)?;
 
-            let tid = self.tensors.push(TensorData { shape_id, dtype, state: TensorState::Graph { node_id, class_id, rc: 1 } });
-            #[cfg(feature = "debug_tensor_op")]
-            println!("  -> tid={tid}, nid={node_id:?}, cid={class_id:?}");
-            Ok(tid)
-        } else {
-            let (kid, mut op_id) = self.duplicate_or_store(x)?;
-
-            let n = shape.len();
-            let max_axis = *axes.last().unwrap() as usize;
-            let mut ai = 0;
-            let mut permute_axes = Vec::with_capacity(n);
-            for i in 0..=max_axis {
-                if axes[ai] as usize == i {
-                    ai += 1;
-                } else {
-                    permute_axes.push(i as UAxis);
+                let n = shape.len();
+                let max_axis = *axes.last().unwrap() as usize;
+                let mut ai = 0;
+                let mut permute_axes = Vec::with_capacity(n);
+                for i in 0..=max_axis {
+                    if axes[ai] as usize == i {
+                        ai += 1;
+                    } else {
+                        permute_axes.push(i as UAxis);
+                    }
                 }
+                permute_axes.extend((max_axis + 1..n).map(|i| i as UAxis));
+                permute_axes.extend_from_slice(&axes);
+
+                if !permute_axes.iter().copied().eq(0..permute_axes.len() as UAxis) {
+                    op_id = self.kernels[kid].kernel.permute(op_id, &permute_axes);
+                }
+
+                op_id = self.kernels[kid].kernel.push_back(Op::Reduce { x: op_id, rop, n_axes: axes.len() });
+
+                if shape.len() == axes.len() {
+                    op_id = self.kernels[kid].kernel.reshape(op_id, &[1]);
+                }
+
+                let tid = self.tensors.push(TensorData {
+                    shape_id,
+                    dtype,
+                    state: TensorState::Eager { kernel_id: kid, op_id, pending_store: false },
+                });
+
+                debug_assert_eq!(self.kernels[kid].outputs.len(), 0, "input into reduce must have empty outputs");
+                self.kernels[kid].outputs.push(tid);
+
+                #[cfg(feature = "debug_tensor_op")]
+                println!("  -> tid={tid}, kid={kid:?}, op_id={op_id:?}");
+                Ok(tid)
             }
-            permute_axes.extend((max_axis + 1..n).map(|i| i as UAxis));
-            permute_axes.extend_from_slice(&axes);
-
-            if !permute_axes.iter().copied().eq(0..permute_axes.len() as UAxis) {
-                op_id = self.kernels[kid].kernel.permute(op_id, &permute_axes);
-            }
-
-            op_id = self.kernels[kid].kernel.push_back(Op::Reduce { x: op_id, rop, n_axes: axes.len() });
-
-            if shape.len() == axes.len() {
-                op_id = self.kernels[kid].kernel.reshape(op_id, &[1]);
-            }
-
-            let tid = self.tensors.push(TensorData {
-                shape_id,
-                dtype,
-                state: TensorState::Eager { kernel_id: kid, op_id, pending_store: false },
-            });
-
-            debug_assert_eq!(self.kernels[kid].outputs.len(), 0, "input into reduce must have empty outputs");
-            self.kernels[kid].outputs.push(tid);
-
-            #[cfg(feature = "debug_tensor_op")]
-            println!("  -> tid={tid}, kid={kid:?}, op_id={op_id:?}");
-            Ok(tid)
         }
     }
 
@@ -725,52 +694,53 @@ impl Runtime {
         let shape_id = self.push_shape(shape.clone());
         let dtype = self.tensors[x].dtype;
 
-        if let Some(graph) = &mut self.graph {
-            let x_class_id = match &self.tensors[x].state {
-                TensorState::Graph { class_id, .. } => *class_id,
-                _ => unreachable!("non-graph tensor in graph mode"),
-            };
-            let (node_id, class_id) = graph.push(Node::Reshape { x: x_class_id, shape: shape_id }, shape_id, dtype);
+        match self.tensors[x].state {
+            TensorState::Graph { class_id, .. } => {
+                let (node_id, class_id) =
+                    self.graph.as_mut().unwrap().push(Node::Reshape { x: class_id, shape: shape_id }, shape_id, dtype);
+                let tid =
+                    self.tensors.push(TensorData { shape_id, dtype, state: TensorState::Graph { node_id, class_id, rc: 1 } });
+                #[cfg(feature = "debug_tensor_op")]
+                println!("  -> tid={tid}, nid={node_id:?}, cid={class_id:?}");
+                tid
+            }
+            TensorState::Eager { .. } => {
+                // If x is realized, create a load kernel with the target shape.
+                // The result shares x's buffer (set in buffer_map), so add_store
+                // won't add a StoreView for it. This avoids copying data for a
+                // view-only reshape.
+                if let Some(&buf_id) = self.buffer_map.get(&x) {
+                    let mut kernel = Kernel::new(DeviceId::AUTO);
+                    let op_id = kernel.load_contiguous(dtype, &shape);
+                    let kernel_id =
+                        self.kernels.push(KernelData { outputs: Vec::new(), loads: vec![x], stores: Vec::new(), kernel });
+                    let tid = self.tensors.push(TensorData {
+                        shape_id,
+                        dtype,
+                        state: TensorState::Eager { kernel_id, op_id, pending_store: false },
+                    });
+                    self.kernels[kernel_id].outputs.push(tid);
+                    self.buffer_map.insert(tid, buf_id);
+                    #[cfg(feature = "debug_tensor_op")]
+                    println!("  -> tid={tid} (load kernel, shares buffer with x={x})");
+                    return tid;
+                }
 
-            let tid = self.tensors.push(TensorData { shape_id, dtype, state: TensorState::Graph { node_id, class_id, rc: 1 } });
-            #[cfg(feature = "debug_tensor_op")]
-            println!("  -> tid={tid}, nid={node_id:?}, cid={class_id:?}");
-            tid
-        } else {
-            // If x is realized, create a load kernel with the target shape.
-            // The result shares x's buffer (set in buffer_map), so add_store
-            // won't add a StoreView for it. This avoids copying data for a
-            // view-only reshape.
-            if let Some(&buf_id) = self.buffer_map.get(&x) {
-                let mut kernel = Kernel::new(DeviceId::AUTO);
-                let op_id = kernel.load_contiguous(dtype, &shape);
-                let kernel_id = self.kernels.push(KernelData { outputs: Vec::new(), loads: vec![x], stores: Vec::new(), kernel });
+                let (kernel_id_dup, op_id_dup) = self.duplicate_or_store(x).unwrap();
+                let op_id = self.kernels[kernel_id_dup].kernel.reshape(op_id_dup, &shape);
                 let tid = self.tensors.push(TensorData {
                     shape_id,
                     dtype,
-                    state: TensorState::Eager { kernel_id, op_id, pending_store: false },
+                    state: TensorState::Eager { kernel_id: kernel_id_dup, op_id, pending_store: false },
                 });
-                self.kernels[kernel_id].outputs.push(tid);
-                self.buffer_map.insert(tid, buf_id);
+
+                debug_assert_eq!(self.kernels[kernel_id_dup].outputs.len(), 0, "input into reshape must have empty outputs");
+                self.kernels[kernel_id_dup].outputs.push(tid);
+
                 #[cfg(feature = "debug_tensor_op")]
-                println!("  -> tid={tid} (load kernel, shares buffer with x={x})");
-                return tid;
+                println!("  -> tid={tid}, kid={kernel_id_dup:?}, op_id={op_id:?}");
+                tid
             }
-
-            let (kernel_id, op_id) = self.duplicate_or_store(x).unwrap();
-            let op_id = self.kernels[kernel_id].kernel.reshape(op_id, &shape);
-            let tid = self.tensors.push(TensorData {
-                shape_id,
-                dtype,
-                state: TensorState::Eager { kernel_id, op_id, pending_store: false },
-            });
-
-            debug_assert_eq!(self.kernels[kernel_id].outputs.len(), 0, "input into reshape must have empty outputs");
-            self.kernels[kernel_id].outputs.push(tid);
-
-            #[cfg(feature = "debug_tensor_op")]
-            println!("  -> tid={tid}, kid={kernel_id:?}, op_id={op_id:?}");
-            tid
         }
     }
 
@@ -799,33 +769,33 @@ impl Runtime {
         let shape_id = self.push_shape(shape);
         let dtype = self.tensors[x].dtype;
 
-        if let Some(graph) = &mut self.graph {
-            let x_class_id = match &self.tensors[x].state {
-                TensorState::Graph { class_id, .. } => *class_id,
-                _ => unreachable!("non-graph tensor in graph mode"),
-            };
-            let (node_id, class_id) = graph.push(Node::Expand { x: x_class_id, shape: shape_id }, shape_id, dtype);
+        match self.tensors[x].state {
+            TensorState::Graph { class_id, .. } => {
+                let (node_id, class_id) =
+                    self.graph.as_mut().unwrap().push(Node::Expand { x: class_id, shape: shape_id }, shape_id, dtype);
+                let tid =
+                    self.tensors.push(TensorData { shape_id, dtype, state: TensorState::Graph { node_id, class_id, rc: 1 } });
+                #[cfg(feature = "debug_tensor_op")]
+                println!("  -> tid={tid}, nid={node_id:?}, cid={class_id:?}");
+                Ok(tid)
+            }
+            TensorState::Eager { .. } => {
+                let (kernel_id, op_id) = self.duplicate_or_store(x)?;
 
-            let tid = self.tensors.push(TensorData { shape_id, dtype, state: TensorState::Graph { node_id, class_id, rc: 1 } });
-            #[cfg(feature = "debug_tensor_op")]
-            println!("  -> tid={tid}, nid={node_id:?}, cid={class_id:?}");
-            Ok(tid)
-        } else {
-            let (kernel_id, op_id) = self.duplicate_or_store(x)?;
+                let op_id = self.kernels[kernel_id].kernel.expand(op_id, &self.shapes[shape_id]);
+                let tid = self.tensors.push(TensorData {
+                    shape_id,
+                    dtype,
+                    state: TensorState::Eager { kernel_id, op_id, pending_store: false },
+                });
 
-            let op_id = self.kernels[kernel_id].kernel.expand(op_id, &self.shapes[shape_id]);
-            let tid = self.tensors.push(TensorData {
-                shape_id,
-                dtype,
-                state: TensorState::Eager { kernel_id, op_id, pending_store: false },
-            });
+                debug_assert_eq!(self.kernels[kernel_id].outputs.len(), 0, "input into expand must have empty outputs");
+                self.kernels[kernel_id].outputs.push(tid);
 
-            debug_assert_eq!(self.kernels[kernel_id].outputs.len(), 0, "input into expand must have empty outputs");
-            self.kernels[kernel_id].outputs.push(tid);
-
-            #[cfg(feature = "debug_tensor_op")]
-            println!("  -> tid={tid}, kid={kernel_id:?}, op_id={op_id:?}");
-            Ok(tid)
+                #[cfg(feature = "debug_tensor_op")]
+                println!("  -> tid={tid}, kid={kernel_id:?}, op_id={op_id:?}");
+                Ok(tid)
+            }
         }
     }
 
@@ -852,35 +822,35 @@ impl Runtime {
         let shape_id = self.push_shape(new_shape.clone());
         let dtype = self.tensors[x].dtype;
 
-        if let Some(graph) = &mut self.graph {
-            let x_class_id = match &self.tensors[x].state {
-                TensorState::Graph { class_id, .. } => *class_id,
-                _ => unreachable!("non-graph tensor in graph mode"),
-            };
-            let (node_id, class_id) = graph.push(Node::Permute { x: x_class_id, axes: axes.into_boxed_slice() }, shape_id, dtype);
-
-            let tid = self.tensors.push(TensorData { shape_id, dtype, state: TensorState::Graph { node_id, class_id, rc: 1 } });
-            #[cfg(feature = "debug_tensor_op")]
-            println!("  -> tid={tid}, nid={node_id:?}, cid={class_id:?}");
-            tid
-        } else {
-            let (kernel_id, op_id) = self.duplicate_or_store(x).unwrap();
-
-            let op_id = self.kernels[kernel_id]
-                .kernel
-                .push_back(Op::Move { x: op_id, mop: Box::new(MoveOp::Permute { axes: axes.into(), shape: new_shape }) });
-            let tid = self.tensors.push(TensorData {
-                shape_id,
-                dtype,
-                state: TensorState::Eager { kernel_id, op_id, pending_store: false },
-            });
-
-            debug_assert_eq!(self.kernels[kernel_id].outputs.len(), 0, "input into permute must have empty outputs");
-            self.kernels[kernel_id].outputs.push(tid);
-
-            #[cfg(feature = "debug_tensor_op")]
-            println!("  -> tid={tid}, kid={kernel_id:?}, op_id={op_id:?}");
-            tid
+        match self.tensors[x].state {
+            TensorState::Graph { class_id, .. } => {
+                let (node_id, class_id) = self.graph.as_mut().unwrap().push(
+                    Node::Permute { x: class_id, axes: axes.into_boxed_slice() },
+                    shape_id,
+                    dtype,
+                );
+                let tid =
+                    self.tensors.push(TensorData { shape_id, dtype, state: TensorState::Graph { node_id, class_id, rc: 1 } });
+                #[cfg(feature = "debug_tensor_op")]
+                println!("  -> tid={tid}, nid={node_id:?}, cid={class_id:?}");
+                tid
+            }
+            TensorState::Eager { .. } => {
+                let (kernel_id, op_id) = self.duplicate_or_store(x).unwrap();
+                let op_id = self.kernels[kernel_id]
+                    .kernel
+                    .push_back(Op::Move { x: op_id, mop: Box::new(MoveOp::Permute { axes: axes.into(), shape: new_shape }) });
+                let tid = self.tensors.push(TensorData {
+                    shape_id,
+                    dtype,
+                    state: TensorState::Eager { kernel_id, op_id, pending_store: false },
+                });
+                debug_assert_eq!(self.kernels[kernel_id].outputs.len(), 0, "input into permute must have empty outputs");
+                self.kernels[kernel_id].outputs.push(tid);
+                #[cfg(feature = "debug_tensor_op")]
+                println!("  -> tid={tid}, kid={kernel_id:?}, op_id={op_id:?}");
+                tid
+            }
         }
     }
 
@@ -896,36 +866,35 @@ impl Runtime {
         let shape_id = self.push_shape(new_shape.clone());
         let dtype = self.tensors[x].dtype;
 
-        if let Some(graph) = &mut self.graph {
-            let x_class_id = match &self.tensors[x].state {
-                TensorState::Graph { class_id, .. } => *class_id,
-                _ => unreachable!("non-graph tensor in graph mode"),
-            };
-            let (node_id, class_id) =
-                graph.push(Node::PadZeros { x: x_class_id, padding: padding.into_boxed_slice() }, shape_id, dtype);
-
-            let tid = self.tensors.push(TensorData { shape_id, dtype, state: TensorState::Graph { node_id, class_id, rc: 1 } });
-            #[cfg(feature = "debug_tensor_op")]
-            println!("  -> tid={tid}, nid={node_id:?}, cid={class_id:?}");
-            tid
-        } else {
-            let (kernel_id, op_id) = self.duplicate_or_store(x).unwrap();
-
-            let op_id = self.kernels[kernel_id]
-                .kernel
-                .push_back(Op::Move { x: op_id, mop: Box::new(MoveOp::Pad { padding: padding.into(), shape: new_shape }) });
-            let tid = self.tensors.push(TensorData {
-                shape_id,
-                dtype,
-                state: TensorState::Eager { kernel_id, op_id, pending_store: false },
-            });
-
-            debug_assert_eq!(self.kernels[kernel_id].outputs.len(), 0, "input into pad must have empty outputs");
-            self.kernels[kernel_id].outputs.push(tid);
-
-            #[cfg(feature = "debug_tensor_op")]
-            println!("  -> tid={tid}, kid={kernel_id:?}, op_id={op_id:?}");
-            tid
+        match self.tensors[x].state {
+            TensorState::Graph { class_id, .. } => {
+                let (node_id, class_id) = self.graph.as_mut().unwrap().push(
+                    Node::PadZeros { x: class_id, padding: padding.into_boxed_slice() },
+                    shape_id,
+                    dtype,
+                );
+                let tid =
+                    self.tensors.push(TensorData { shape_id, dtype, state: TensorState::Graph { node_id, class_id, rc: 1 } });
+                #[cfg(feature = "debug_tensor_op")]
+                println!("  -> tid={tid}, nid={node_id:?}, cid={class_id:?}");
+                tid
+            }
+            TensorState::Eager { .. } => {
+                let (kernel_id, op_id) = self.duplicate_or_store(x).unwrap();
+                let op_id = self.kernels[kernel_id]
+                    .kernel
+                    .push_back(Op::Move { x: op_id, mop: Box::new(MoveOp::Pad { padding, shape: new_shape }) });
+                let tid = self.tensors.push(TensorData {
+                    shape_id,
+                    dtype,
+                    state: TensorState::Eager { kernel_id, op_id, pending_store: false },
+                });
+                debug_assert_eq!(self.kernels[kernel_id].outputs.len(), 0, "input into pad must have empty outputs");
+                self.kernels[kernel_id].outputs.push(tid);
+                #[cfg(feature = "debug_tensor_op")]
+                println!("  -> tid={tid}, kid={kernel_id:?}, op_id={op_id:?}");
+                tid
+            }
         }
     }
 
