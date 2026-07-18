@@ -68,26 +68,23 @@ grads = tape.gradient(result, [x, y])
 
 ## Installation
 
-### Python Installation
+### Python
 
 ```bash
-# Install from PyPI
+# from PyPI
 pip install zyx-py
-
-# Or install from source for development
-pip install git+https://github.com/zk4x/zyx.git#subdirectory=zyx-py
 ```
 
-### Rust Installation
+### Rust
 
 ```bash
-# Install from crates.io
+# from crates.io
 cargo add zyx zyx-nn zyx-optim
 ```
 
 ## Neural Nets
 
-A training loop with a two-layer network, using `Tape` for autograd and graph caching:
+A training loop with a two-layer network, using `Tape` for autograd and optimizations:
 
 ```rust
 use zyx::{Tensor, DType, Tape};
@@ -120,7 +117,7 @@ fn main() -> Result<(), zyx::ZyxError> {
     let x = Tensor::randn([64, 784], DType::F32)?;
     let target = Tensor::randn([64, 10], DType::F32)?;
     
-    for epoch in 0..10 {
+    for epoch in 0..100 {
         let tape = Tape::new(&model)?;
         let output = model.forward(&x);
         let loss = output.mse_loss(&target)?;
