@@ -13,7 +13,7 @@ impl Runtime {
     pub(crate) fn gradient(&mut self, target: TensorId, sources: Set<TensorId>) -> Map<TensorId, TensorId> {
         let target_class = match self.tensors[target].state {
             TensorState::Graph { class_id, .. } => class_id,
-            _ => unreachable!("gradient on non-graph tensor"),
+            TensorState::Eager { .. } => panic!("gradient on non-graph tensor"),
         };
         let source_classes: Set<ClassId> = sources
             .iter()
@@ -412,11 +412,8 @@ impl Runtime {
                     let shape: Vec<Dim> = self.shape(tid).into();
                     let dtype = self.dtype(tid);
                     let shape_id = self.push_shape(shape);
-                    let (_, zero_cid) = self.graph.as_mut().unwrap().push(
-                        Node::Const(Constant::new(0u8).cast(dtype)),
-                        shape_id,
-                        dtype,
-                    );
+                    let (_, zero_cid) =
+                        self.graph.as_mut().unwrap().push(Node::Const(Constant::new(0u8).cast(dtype)), shape_id, dtype);
                     let nid = self.graph.as_ref().unwrap().classes[zero_cid].nodes[0];
                     self.tensors.push(TensorData {
                         shape_id,
