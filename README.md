@@ -25,9 +25,6 @@
 
 ## 🐍 Python Bindings
 
-zyx has Python bindings:
-
-### Basic Usage
 ```python
 import zyx
 
@@ -36,8 +33,8 @@ y = zyx.Tensor.uniform_(2, 3, from_=-1.0, to_=1.0)
 z = x.relu() + y.tanh()
 print(z.shape())
 
-# Autograd example with tape
-tape = zyx.Tape()
+# Autograd with tape
+tape = zyx.Tape([x, y])
 result = x.relu() * y
 grads = tape.gradient(result, [x, y])
 ```
@@ -52,18 +49,12 @@ grads = tape.gradient(result, [x, y])
 
 ## Installation
 
-### Python
-
-```bash
-# from PyPI
-pip install zyx-py
-```
-
-### Rust
-
 ```bash
 # from crates.io
 cargo add zyx zyx-nn zyx-optim
+
+# from PyPI
+pip install zyx-py
 ```
 
 ## Neural Nets
@@ -154,7 +145,7 @@ flowchart LR
 Outside a tape, tensor operations fuse eagerly into kernels as you call them.
 Inside a tape, a lazy graph is built and analyzed for fusion opportunities during
 realization. The fused operations are lowered to a unified
-intermediate representation, then compiled to native code (PTX, OpenCL C, WGSL, etc.)
+intermediate representation, then compiled to native code (OpenCL, CUDA, C, SPIR-V, etc.)
 for the target backend. Tape egraph compares fusion schemes and device allocations.
 
 ## Why zyx is Different
@@ -175,7 +166,6 @@ for the target backend. Tape egraph compares fusion schemes and device allocatio
 
 - [x] **C** - C codegen (clang/gcc)
 - [x] **CUDA**
-- [x] **HIP** - ROCm
 - [x] **OpenCL**
 - [x] **Vulkan** - SPIR-V codegen
 - [x] **WGPU** - SPIR-V codegen, feature: `wgpu`
@@ -184,17 +174,17 @@ for the target backend. Tape egraph compares fusion schemes and device allocatio
 
 - **Status**: Stable API with active performance optimization
 - **License**: LGPL-3.0-only (all crates)
-- **Rust Version**: Requires latest stable Rust
-- **Platforms**: Linux (primary), macOS, Windows (experimental)
+- **Rust Version**: stable rust >= 1.85
+- **Platforms**: Linux (primary), macOS, Windows (planned)
 
 ## For Devs
 
 - [Architecture Book](https://zk4x.github.io/zyx/) - How zyx works under the hood
 - [Contributing](CONTRIBUTING.md) - How to contribute, code style, and PR workflow
 - [Configuration](zyx/CONFIG.md) - Hardware device selection, autotune settings, backend config
-- [Environment Variables](zyx/ENV_VARS.md) - Debug flags and runtime options
+- [Environment Variables](zyx/ENV_VARS.md) - Debug flags
 - [API Reference](https://docs.rs/zyx) - Complete API documentation
-- [Examples](zyx-examples/) - MNIST, RNN implementations
+- [Examples](zyx-examples/) - MNIST, RNN and others
 - [Issues](https://github.com/zk4x/zyx/issues) - Bug reports and feature requests
 
 ---
@@ -202,7 +192,7 @@ for the target backend. Tape egraph compares fusion schemes and device allocatio
 <div align="center">
 <a href="https://github.com/zk4x/zyx">
     <img src="https://github.githubassets.com/images/modules/logos_page/GitHub-Mark.png" width="20" height="20">
-    Star us on GitHub
+    Star on GitHub
 </a> | 
 <a href="https://docs.rs/zyx">
     <img src="https://simpleicons.org/icons/rust.svg" width="20" height="20">
