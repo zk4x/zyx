@@ -228,8 +228,6 @@ fn train() -> Result<(), ZyxError> {
     println!("\nTraining SNN for {total_steps} steps (T=30 time steps)");
     println!("Architecture: 784 -> 256 -> 128 -> 10\n");
 
-    Tensor::realize_all()?;
-
     for step in 0..total_steps {
         let indices = Tensor::randint::<i64>(batch_size, 0, n_train as i64)?;
 
@@ -239,7 +237,7 @@ fn train() -> Result<(), ZyxError> {
         let t0 = Instant::now();
 
         let (output, stored) = model.forward_store(&x)?;
-        Tensor::realize_all()?;
+        
         let loss = output.cross_entropy(y, ReduceOp::Mean)?;
         let pred = output.argmax_axis(-1)?;
         let correct_t = pred.equal(&y)?.cast(DType::F32).sum_all();
@@ -248,8 +246,6 @@ fn train() -> Result<(), ZyxError> {
 
         let grads = model.backward(&x, &y, &output, &stored)?;
         optimizer.update(model.params_mut(), grads.into_iter().map(Some));
-
-        Tensor::realize_all()?;
 
         let t1 = Instant::now();
         let elapsed_ms = (t1 - t0).as_secs_f64() * 1000.0;

@@ -16,15 +16,14 @@ fn main() -> Result<(), ZyxError> {
     let x = Tensor::from([2, 3, 1]).cast(DType::F16);
     let target = Tensor::from([5, 7]).cast(DType::F16);
 
-    Tensor::realize([&w, &x, &target])?;
     for _ in 0..100 {
         let tape = Tape::new([&w])?;
         let y = x.matmul(&w)?.sigmoid();
-        let grads = tape.gradient(&y, [&w]);
+        let grads = tape.gradient(&y, [&w]).into_iter().map(Some).collect::<Vec<_>>()
         optim.update([&mut w], grads);
-        Tensor::realize([&w])?;
-        Tensor::realize(optim.bias.iter())?;
-        //Tensor::realize_all()?;
+        w;
+        
+        //
     }
 
     Ok(())

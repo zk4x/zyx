@@ -52,8 +52,6 @@ fn main() -> Result<(), ZyxError> {
         train_y.shape()
     );
 
-    Tensor::realize_all()?;
-
     println!("Training...");
     let mut total_ms = 0.0f64;
     let mut count = 0u64;
@@ -67,10 +65,8 @@ fn main() -> Result<(), ZyxError> {
 
         let logits = net.forward(&x);
         let loss = logits.cross_entropy(y, ReduceOp::Mean)?;
-        let grads: Vec<_> = tape.gradient(&loss, &net);
-
+        let grads: Vec<_> = tape.gradient(&loss, &net).into_iter().map(Some).collect::<Vec<_>>();
         optim.update(&mut net, grads);
-        Tensor::realize(net.iter().chain(optim.iter()).chain([&loss]))?;
 
         let elapsed_ms = now.elapsed().as_secs_f64() * 1000.0;
         if step >= 100 {

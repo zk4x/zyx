@@ -51,8 +51,6 @@ fn main() -> Result<(), ZyxError> {
     let mut v2 = Tensor::zeros([b, h2], DType::F32);
     let mut sum_out = Tensor::zeros([b, n_out], DType::F32);
 
-    Tensor::realize_all()?;
-
     let mut cache: Vec<(Tensor, Tensor, Tensor, Tensor)> = Vec::with_capacity(t);
 
     for t_idx in 0..t {
@@ -69,8 +67,6 @@ fn main() -> Result<(), ZyxError> {
         sum_out = &sum_out + &spike2.matmul(&w3)? + &b3;
 
         cache.push((spike1.clone(), spike2.clone(), v1_pre.clone(), v2_pre.clone()));
-
-        Tensor::realize_all()?;
 
         if t_idx == 0 {
             println!("\n=== Step {t_idx} ===");
@@ -99,7 +95,6 @@ fn main() -> Result<(), ZyxError> {
     }
 
     let output = &sum_out * &inv_t;
-    Tensor::realize_all()?;
 
     println!("\nFinal output mean: {:.6}", output.mean_all().item::<f32>());
     let output_data: Vec<f32> = Vec::try_from(output.clone())?;
@@ -147,7 +142,6 @@ fn main() -> Result<(), ZyxError> {
         }
     }
 
-    Tensor::realize_all()?;
     let dw1_data: Vec<f32> = Vec::try_from(dw1_acc.clone())?;
     println!("\ndw1_acc[0, :5] = {:?}", &dw1_data[0..5]);
 

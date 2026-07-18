@@ -36,8 +36,6 @@ fn main() -> Result<(), ZyxError> {
     let mut v2 = Tensor::zeros([b, 128], DType::F32);
     let mut sum_out = Tensor::zeros([b, 10], DType::F32);
 
-    Tensor::realize_all()?;
-
     for t_idx in 0..t {
         let xw1 = x.matmul(&w1)?;
         let xw1_b = &xw1 + &b1;
@@ -50,8 +48,6 @@ fn main() -> Result<(), ZyxError> {
         v2 = &v2_pre - &spike2 * &th_t;
 
         sum_out = &sum_out + &spike2.matmul(&w3)? + &b3;
-
-        Tensor::realize_all()?;
 
         if t_idx == 0 {
             println!("\nRust step 0:");
@@ -96,7 +92,6 @@ fn main() -> Result<(), ZyxError> {
 
     let inv_t: Tensor = (1.0f32 / t as f32).into();
     let output = &sum_out * &inv_t;
-    Tensor::realize_all()?;
 
     println!("\nRust output mean: {:.6}", output.mean_all().item::<f32>());
     let output_data: Vec<f32> = Vec::try_from(output.clone())?;

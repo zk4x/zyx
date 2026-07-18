@@ -33,8 +33,6 @@ fn main() -> Result<(), ZyxError> {
         ..Default::default()
     };
 
-    Tensor::realize_all()?;
-
     println!("Training RNN...");
     for step in 0..50 {
         let tape = Tape::new(&rnn)?;
@@ -46,9 +44,8 @@ fn main() -> Result<(), ZyxError> {
         }
 
         let loss = hidden.mse_loss(&target)?;
-        let grads = tape.gradient(&loss, &rnn);
+        let grads = tape.gradient(&loss, &rnn).into_iter().map(Some).collect::<Vec<_>>();
         optim.update(&mut rnn, grads);
-        Tensor::realize_all()?;
 
         println!("step {}, loss {}", step, loss.item::<f32>());
     }

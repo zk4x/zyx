@@ -46,13 +46,12 @@ fn main() -> Result<(), zyx::ZyxError> {
 
     let tape = Tape::new(&model)?;
     let out = model.forward(&x)?;
-    let grads = tape.gradient(&out, &model);
+    let grads: Vec<Option<Tensor>> = tape.gradient(&out, &model).into_iter().map(Some).collect();
 
     // Update parameters with gradients
     optim.update(model.iter_mut(), grads);
 
-    // Realize model to trigger computation (zyx uses lazy evaluation)
-    model.realize()?;
+    // Eager tensors compute automatically
     println!("Training step completed!");
     Ok(())
 }
