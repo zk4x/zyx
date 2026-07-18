@@ -118,7 +118,6 @@ fn attention1() -> Result<(), ZyxError> {
 
     for _ in 0..5 {
         x = attn.forward(x)?;
-        Tensor::realize([&x])?;
     }
 
     //println!("{x:.8}");

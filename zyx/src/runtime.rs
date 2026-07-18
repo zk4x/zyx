@@ -485,16 +485,13 @@ impl Runtime {
             if !y_is_graph {
                 self.promote_to_graph(y)?;
             }
-            let x_class_id = match self.tensors[x].state {
-                TensorState::Graph { class_id, .. } => class_id,
-                _ => unreachable!(),
+            let TensorState::Graph { class_id: x, .. } = self.tensors[x].state else {
+                unreachable!()
             };
-            let y_class_id = match self.tensors[y].state {
-                TensorState::Graph { class_id, .. } => class_id,
-                _ => unreachable!(),
+            let TensorState::Graph { class_id: y, .. } = self.tensors[y].state else {
+                unreachable!()
             };
-            let (node_id, class_id) =
-                self.graph.as_mut().unwrap().push(Node::Binary { x: x_class_id, y: y_class_id, bop }, shape_id, dtype);
+            let (node_id, class_id) = self.graph.as_mut().unwrap().push(Node::Binary { x, y, bop }, shape_id, dtype);
 
             let tid = self.tensors.push(TensorData { shape_id, dtype, state: TensorState::Graph { node_id, class_id, rc: 1 } });
             #[cfg(feature = "debug_tensor_op")]

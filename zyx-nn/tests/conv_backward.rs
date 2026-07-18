@@ -25,10 +25,7 @@ fn conv_bn_backward_1() -> Result<(), ZyxError> {
     let x = Tensor::randn([128, 3, 32, 32], DType::F32)?;
     let y = Tensor::randint([128], 0i32, 10)?;
 
-    let mut params: Vec<&Tensor> = conv.iter().collect();
-    params.extend(bn.iter());
-    params.extend(linear.iter());
-    let tape = Tape::new(params)?;
+    let tape = Tape::new([&conv.weight, &linear.weight, linear.bias.as_ref().unwrap()])?;
     let h = conv.forward(&x)?;
     let h = bn.forward(h)?;
     let h = h.relu();
@@ -37,9 +34,7 @@ fn conv_bn_backward_1() -> Result<(), ZyxError> {
     let logits = linear.forward(h)?;
     let loss = logits.cross_entropy(y, ReduceOp::Mean)?;
 
-    let params = vec![&conv.weight, &linear.weight, linear.bias.as_ref().unwrap()];
-    let _grads = tape.gradient(&loss, params.into_iter());
-    Tensor::realize_all()?;
+    let _grads = tape.gradient(&loss, [&conv.weight, &linear.weight, linear.bias.as_ref().unwrap()]);
     Ok(())
 }
 
@@ -55,6 +50,5 @@ fn conv_weight_backward() -> Result<(), ZyxError> {
     let loss = h.sum_all();
 
     let _grads = tape.gradient(&loss, [&conv.weight].into_iter());
-    Tensor::realize_all()?;
     Ok(())
 }
