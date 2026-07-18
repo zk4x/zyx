@@ -10,21 +10,6 @@
 [![maintenance](https://img.shields.io/badge/maintenance-active-green.svg)](https://github.com/zk4x/zyx)
 [![good first issues](https://img.shields.io/github/issues-raw/zk4x/zyx/good%20first%20issue.svg)](https://github.com/zk4x/zyx/labels/good%20first%20issue)
 
-## Table of Contents
-
-- [Features](#features)
-- [🐍 Python Bindings](#python-bindings)
-- [Crates](#crates)
-- [Installation](#installation)
-- [Hello World](#hello-world)
-- [Basic Neural Network](#basic-neural-network)
-- [Custom Kernels](#custom-kernels)
-- [Architecture](#architecture)
-- [Why zyx is Different](#why-zyx-is-different)
-- [Backends](#backends)
-- [Status & License](#status--license)
-- [For Devs](#for-devs)
-
 ## TLDR
 
 - **Eager-ish Execution** — tensor operations fuse into kernels as you write them; when fusion is no longer possible, the kernel executes. For one off computations.
