@@ -19,7 +19,6 @@
 - [Hello World](#hello-world)
 - [Basic Neural Network](#basic-neural-network)
 - [Custom Kernels](#custom-kernels)
-- [Advanced Examples](#advanced-examples)
 - [Architecture](#architecture)
 - [Why zyx is Different](#why-zyx-is-different)
 - [Backends](#backends)
