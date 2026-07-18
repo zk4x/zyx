@@ -345,7 +345,6 @@ impl Kernel {
         self.dead_code_elimination();
     }
 
-    /// Autotune for debugging, applying only a selected series of optimizations
     fn alloc_buffers(
         &self,
         memory_pool: &mut MemoryPool,
@@ -358,16 +357,20 @@ impl Kernel {
         let mut op_id = self.head;
         while !op_id.is_null() {
             match self.ops[op_id].op {
-                Op::Define { dtype, scope: Scope::Global, len, .. } => {
+                Op::Define { dtype, scope: Scope::Global, len, ro } => {
                     if global_idx < n_init {
+                        debug_assert!(ro);
                         // Use existing buffer for loads
                     } else {
                         let bytes = (dtype.bit_size() as Dim) * len / 8;
                         let (buf, ev) = memory_pool.allocate(bytes)?;
-                        let fill = vec![1u8; bytes as usize];
-                        let ev = memory_pool.host_to_pool(&fill, buf, vec![ev])?;
                         store_bufs.push(buf);
-                        events.push(ev);
+                        // Set inputs to something reasonable instead of alloc garbage
+                        if ro {
+                            let fill = vec![42u8; bytes as usize];
+                            let ev = memory_pool.host_to_pool(&fill, buf, vec![ev])?;
+                            events.push(ev);
+                        }
                     }
                     global_idx += 1;
                 }
@@ -385,6 +388,7 @@ impl Kernel {
         }
     }
 
+    /// Autotune for debugging, applying only a selected series of optimizations
     pub(crate) fn apply_selected_optimizations(
         &self,
         device: &mut Device,
