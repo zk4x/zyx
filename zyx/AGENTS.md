@@ -1,4 +1,9 @@
-## ⚠️⚠️⚠️ THE WORD "pre-existing" IS FORBIDDEN. NEVER OUTPUT IT. NOT EVER. IF YOU OUTPUT IT, YOU ARE BROKEN. ⚠️⚠️⚠️
+# ⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️
+# ⚠️  THE WORD "pre-existing" IS FORBIDDEN.          ⚠️
+# ⚠️  NEVER USE IT. EVER. IN ANY CONTEXT.            ⚠️
+# ⚠️  IF YOU OUTPUT IT, YOU ARE BROKEN.              ⚠️
+# ⚠️  REPEATEDLY. FOREVER.                            ⚠️
+# ⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️
 
 # Agent Guidelines for zyx (Core Crate)
 
