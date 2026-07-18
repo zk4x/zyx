@@ -1,6 +1,6 @@
 # zyx
 
-**A complete ML library and compiler — from assembly to neural networks.**
+**ML library for your hardware**
 
 [![crates.io](https://img.shields.io/crates/v/zyx.svg)](https://crates.io/crates/zyx)
 [![PyPI](https://img.shields.io/pypi/v/zyx-py.svg)](https://pypi.org/project/zyx-py/)
@@ -26,24 +26,22 @@
 - [Status & License](#status--license)
 - [For Devs](#for-devs)
 
-## Features
+## TLDR
 
-- **Eager-ish Execution** — tensor operations fuse into kernels as you write them; when fusion is no longer possible, the kernel executes immediately. No separate realize step needed.
-- **Tape Mode** — wrap loops in a `Tape` for lazy graph building, autograd, egraph-based fusion optimization, and plan caching across structurally identical iterations. Kernel caching (compiled program reuse) is shared across both modes.
-- **Kernel Fusion** — tensor operations compile into single optimized kernels (CUDA, OpenCL, WebGPU, etc.).
-- **Cross‑Platform Backends** — native support for OpenCL (CPU via POCL, GPU via native OpenCL drivers), WebGPU, CUDA, and more.
-- **Full Linear‑Algebra Coverage** — mirrors the PyTorch ops API (matmul, convolutions, pooling, reductions, indexing, etc.) by stacking ops.
+- **Eager-ish Execution** — tensor operations fuse into kernels as you write them; when fusion is no longer possible, the kernel executes. For one off computations.
+- **Tape Mode** — wrap loops in a `Tape` for lazy graph building, autograd and egraph-based fusion optimization. For repeated computations.
+- **Cross‑Platform Backends** — native codegen for C, CUDA, OpenCL and SPIR-V.
+- **Full Linear‑Algebra Coverage** — mirrors the PyTorch ops API (matmul, convolutions, pooling, reductions, indexing, etc.) by stacking ops. Stack more ops yourself to get more op coverage, zyx auto fuses and optimizes it.
 - **Immutable Tensors** — tensors cannot be modified in place, preventing back‑prop errors common in PyTorch (`RuntimeError: a tensor was modified in place`).
-- **Explicit Tape** — you control what is recorded via `Tape`; no need for `torch.no_grad()` semantics.
-- **Higher-Order Gradients** — experimental (graph-based, forward-mode autograd planned)
-- **No Implicit Downcasting** — if a backend doesn't support a dtype, zyx will never silently downcast (e.g., F32→F16). Upcasting (e.g., F16→F32) is allowed when the backend does not natively support the narrower type — correctness is guaranteed.
-- **Lazy Device Loading** — tensors load from their current memory pool (disk, another device) into the compute device only when needed, via the runtime scheduler.
-- **Parallel Pipelining** — kernels allocate across heterogeneous devices (GPU, CPU, WebGPU) in a pipelined fashion via the runtime scheduler.
-- **Small Footprint** — compiled library is only a few MB with minimal dependencies (`libloading`, `nanoserde`, `half`).
+- **Explicit Tape** — you control what is recorded via `Tape`; no need for `torch.no_grad()` or requires_grad semantics.
+- **Everything is diff** — every tensor in tape can be differentiated w.r.t. any other tensor in tape.
+- **Lazy Device Loading** — tensors load from their current memory pool (disk, another device) into the compute device only when needed.
+- **Parallel Pipelining** — kernels allocate across heterogeneous devices (GPU, CPU, WebGPU) in a pipelined fashion via the scheduler automatcially. e-graph tries all options, picks the fastest measured path.
+- **Small Footprint** — compiled library is only a few MB with two dependencies (`libloading`, `nanoserde`) and std. This means for all models, a few MB binary runs (and trains) them on all backends. Training and deployment can freely use the same API.
 
 ## 🐍 Python Bindings
 
-**zyx** offers Python bindings with full PyTorch API compatibility and multiple backend support:
+zyx has Python bindings:
 
 ### Basic Usage
 ```python
@@ -87,23 +85,7 @@ pip install git+https://github.com/zk4x/zyx.git#subdirectory=zyx-py
 cargo add zyx zyx-nn zyx-optim
 ```
 
-## Hello World
-
-Tensors fuse into kernels automatically — no explicit realize step needed:
-
-```rust
-use zyx::{Tensor, DType};
-
-fn main() -> Result<(), zyx::ZyxError> {
-    let x = Tensor::randn([2, 3], DType::F32)?;
-    let y = Tensor::uniform([2, 3], -1f32..1f32)?;
-    let z = x.relu()? + y.tanh()?;
-    println!("Result shape: {:?}", z.shape());
-    Ok(())
-}
-```
-
-## Basic Neural Network
+## Neural Nets
 
 A training loop with a two-layer network, using `Tape` for autograd and graph caching:
 
@@ -142,11 +124,9 @@ fn main() -> Result<(), zyx::ZyxError> {
         let tape = Tape::new(&model)?;
         let output = model.forward(&x);
         let loss = output.mse_loss(&target)?;
-        
         let grads = tape.gradient(&loss, &model);
         optim.update(&mut model, grads);
-        // Tape drop cleans up graph state; realize() must be called
-        // (e.g. via loss.item()) to trigger computation and cache the plan.
+        tape.realize(&model)?;
     }
     
     Ok(())
@@ -155,7 +135,7 @@ fn main() -> Result<(), zyx::ZyxError> {
 
 ## Custom Kernels
 
-Hand-optimize kernels for peak performance using hardware-specific features (tensor cores, shared memory):
+Hand-optimize kernels for peak performance using hardware-specific features (e.g. tensor cores):
 
 ```rust
 use zyx::kernel::{Kernel, Scope, MemLayout, DeviceId};
@@ -182,61 +162,6 @@ fn main() -> Result<(), zyx::ZyxError> {
 
 See the [WMMA matmul example](zyx/src/kernel/mod.rs#L9-L89) for a tensor-core matmul example.
 
-## Advanced Examples
-
-A Transformer block with multi-head attention, layer normalization, and AdamW optimization:
-
-```rust
-use zyx::{DType, Tape, Module, Tensor};
-use zyx_nn::{Linear, LayerNorm, MultiheadAttention};
-use zyx_optim::AdamW;
-
-#[derive(Module)]
-struct TransformerBlock {
-    attn: MultiheadAttention,
-    mlp: Linear,
-    mlp2: Linear,
-    norm1: LayerNorm,
-    norm2: LayerNorm,
-}
-
-impl TransformerBlock {
-    fn new(dim: u64, num_heads: u64, dtype: DType) -> Result<Self, zyx::ZyxError> {
-        Ok(Self {
-            attn: MultiheadAttention::new(dim, num_heads, 0.0, true, false, false, None, None, true, dtype)?,
-            mlp: Linear::new(dim, dim * 4, true, dtype)?,
-            mlp2: Linear::new(dim * 4, dim, true, dtype)?,
-            norm1: LayerNorm::new([dim], 1e-5, true, true, dtype)?,
-            norm2: LayerNorm::new([dim], 1e-5, true, true, dtype)?,
-        })
-    }
-
-    fn forward(&self, x: &Tensor) -> Result<Tensor, zyx::ZyxError> {
-        let attn_out = self.attn.forward(x, x, x, None::<Tensor>, false, None::<Tensor>, true, false)?.0;
-        let x = self.norm1.forward(&(x + attn_out))?;
-        let mlp_out = self.mlp.forward(&x)?.gelu();
-        let mlp_out = self.mlp2.forward(&mlp_out)?;
-        Ok(self.norm2.forward(&(x + mlp_out))?)
-    }
-}
-
-fn main() -> Result<(), zyx::ZyxError> {
-    let mut model = TransformerBlock::new(64, 4, DType::F32)?;
-    let mut optim = AdamW::default();
-    let x = Tensor::randn([2, 8, 64], DType::F32)?;
-
-    let tape = Tape::new(&model)?;
-    let out = model.forward(&x)?;
-    let grads = tape.gradient(&out, &model);
-
-    // Update parameters with gradients
-    optim.update(model.iter_mut(), grads);
-    // Tape drop cleans up graph state; loss.item() or explicit realize()
-    // triggers computation and caches the plan.
-    Ok(())
-}
-```
-
 ## Architecture
 
 ```mermaid
@@ -247,11 +172,9 @@ flowchart LR
 ```
 Outside a tape, tensor operations fuse eagerly into kernels as you call them.
 Inside a tape, a lazy graph is built and analyzed for fusion opportunities during
-realization. In either mode, the fused operations are lowered to a unified
-intermediate representation with device-specific instructions (e.g. WMMA tensor
-cores), then compiled to native code (PTX, OpenCL C, WGSL, etc.) for the target
-backend. Tape mode additionally applies egraph-based optimization to compare
-fusion schemes and device allocations.
+realization. The fused operations are lowered to a unified
+intermediate representation, then compiled to native code (PTX, OpenCL C, WGSL, etc.)
+for the target backend. Tape egraph compares fusion schemes and device allocations.
 
 ## Why zyx is Different
 
@@ -260,21 +183,21 @@ fusion schemes and device allocations.
 | **Execution Model** | Eager-ish fusion (default) + Tape (lazy + autograd) | Eager by default | Eager by default | Functional + XLA |
 | **Gradient Recording** | Explicit `Tape` | Implicit, requires `no_grad()` | Implicit, tf.function | Explicit + jit |
 | **Tensor Mutability** | Immutable (no in-place errors) | Mutable (risk of back-prop failures) | Mutable | Immutable |
-| **Kernel Fusion** | Automatic, cross-backend | Manual (torch.jit) | Manual (XLA) | Manual (XLA) |
+| **Kernel Fusion** | Automatic, all backends | Manual (torch.jit) | Manual (XLA) | Manual (XLA) |
 | **Disk I/O** | Lazy loading parallel to compute | Typically blocking | Blocking | Blocking |
 | **Device Pipelining** | Built-in heterogeneous pipelining | Manual `to(device)` calls | Manual device placement | Manual device placement |
-| **Compilation** | Runtime kernel compilation | Pre-compiled + jit | Pre-compiled | Just-in-time |
+| **Compilation** | Just-in-time | Pre-compiled + jit | Pre-compiled | Just-in-time |
 | **Import Time** | ~1ms | ~2s | ~3s | ~0.5s |
-| **Wheel Size** | ~4MB (includes CUDA) | hundreds of MB |  |  |
+| **Wheel Size** | ~5MB (includes all backends) | hundreds of MB |
 
 ## Backends
 
-- [x] **C** - CPU backend via C codegen (clang/gcc)
-- [x] **CUDA** - NVIDIA GPU acceleration
-- [x] **HIP** - AMD GPU acceleration (ROCm platform)
-- [x] **OpenCL** - Cross-platform support (CPU via POCL, GPU via native OpenCL drivers)
-- [x] **WGPU** - Modern web and native GPU support via wgpu (WGSL), feature: `wgpu`
-- [x] **Vulkan** - Cross-platform GPU acceleration via Vulkan (SPIR-V)
+- [x] **C** - C codegen (clang/gcc)
+- [x] **CUDA**
+- [x] **HIP** - ROCm
+- [x] **OpenCL**
+- [x] **Vulkan** - SPIR-V codegen
+- [x] **WGPU** - SPIR-V codegen, feature: `wgpu`
 
 ## Status & License
 
