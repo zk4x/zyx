@@ -411,14 +411,16 @@ impl Runtime {
                 None => {
                     let shape: Vec<Dim> = self.shape(tid).into();
                     let dtype = self.dtype(tid);
-                    let shape_id = self.push_shape(shape);
+                    let one_shape = self.push_shape(vec![1]);
+                    let full_shape_id = self.push_shape(shape);
                     let (_, zero_cid) =
-                        self.graph.as_mut().unwrap().push(Node::Const(Constant::new(0u8).cast(dtype)), shape_id, dtype);
-                    let nid = self.graph.as_ref().unwrap().classes[zero_cid].nodes[0];
+                        self.graph.as_mut().unwrap().push(Node::Const(Constant::new(0u8).cast(dtype)), one_shape, dtype);
+                    let (nid, cid) =
+                        self.graph.as_mut().unwrap().push(Node::Expand { x: zero_cid, shape: full_shape_id }, full_shape_id, dtype);
                     self.tensors.push(TensorData {
-                        shape_id,
+                        shape_id: full_shape_id,
                         dtype,
-                        state: TensorState::Graph { node_id: nid, class_id: zero_cid, rc: 1 },
+                        state: TensorState::Graph { node_id: nid, class_id: cid, rc: 1 },
                     })
                 }
             };

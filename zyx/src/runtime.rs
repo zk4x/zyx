@@ -1297,6 +1297,10 @@ impl Runtime {
 
         debug_assert!(outputs.is_empty(), "all outputs must be stored before materialize");
 
+        if stores.is_empty() {
+            self.kernels.remove(kid);
+        }
+
         debug_assert!(
             loads.iter().all(|&tid| {
                 self.buffer_map.contains_key(&tid)
