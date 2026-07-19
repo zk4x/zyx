@@ -4,7 +4,7 @@
 
 [![crates.io](https://badgen.net/crates/v/zyx)](https://crates.io/crates/zyx)
 [![PyPI](https://badgen.net/pypi/v/zyx-py)](https://pypi.org/project/zyx-py/)
-[![docs.rs](https://img.shields.io/badge/docs-zyx-blue)](https://docs.rs/zyx)
+[![docs.rs](https://badgen.net/badge/docs.rs/zyx/blue)](https://docs.rs/zyx)
 [![build status](https://github.com/zk4x/zyx/workflows/Build%20and%20Publish%20Wheels/badge.svg)](https://github.com/zk4x/zyx/actions/workflows/build-wheels.yml)
 [![license](https://img.shields.io/badge/License-LGPL%20v3-blue.svg)](https://github.com/zk4x/zyx/blob/main/LICENSE)
 [![maintenance](https://img.shields.io/badge/maintenance-active-green.svg)](https://github.com/zk4x/zyx)
