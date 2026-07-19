@@ -35,7 +35,7 @@ use std::collections::BTreeSet;
 use crate::{
     Map, RT, Tensor, ZyxError,
     backend::{BufferId, Device},
-    graph::{ClassId, ExecPlan, Graph},
+    graph::{ClassId, ExecPlan, Graph, GraphId},
     kernel::{DeviceId, Kernel, Op},
     runtime::{KernelData, ShapeId, TensorState},
     shape::Dim,
@@ -50,7 +50,9 @@ use crate::{
 /// All alive tensors are realized when the tape is dropped.
 /// The Merkle hash cache avoids recompilation on structurally identical iterations.
 #[cfg_attr(feature = "py", pyo3::pyclass)]
-pub struct Tape {}
+pub struct Tape {
+    graph_id: GraphId,
+}
 
 impl Tape {
     /// Create a tape scope, promoting the given tensors to graph mode.
@@ -66,19 +68,15 @@ impl Tape {
     pub fn new<'a>(params: impl IntoIterator<Item = &'a Tensor>) -> Result<Tape, ZyxError> {
         let mut rt = RT.lock();
 
-        if rt.graph.is_some() {
-            rt.graph.as_mut().unwrap().rc += 1;
-        } else {
-            let mut graph = Graph::new();
-            graph.rc = 1;
-            rt.graph = Some(graph);
-        }
+        let graph_id = GraphId(rt.next_graph_id);
+        rt.next_graph_id += 1;
+        rt.graphs.insert(graph_id, Graph::new());
 
         for p in params {
-            rt.promote_to_graph(p.id)?;
+            rt.promote_to_graph(p.id, graph_id)?;
         }
 
-        Ok(Tape {})
+        Ok(Tape { graph_id })
     }
 
     /// Create a tape scope without promoting any tensors yet.
@@ -91,7 +89,7 @@ impl Tape {
     /// All ops on this tensor from now on will be tracked in the graph.
     pub fn add(&self, tensor: &Tensor) -> Result<(), ZyxError> {
         let mut rt = RT.lock();
-        rt.promote_to_graph(tensor.id)?;
+        rt.promote_to_graph(tensor.id, self.graph_id)?;
         Ok(())
     }
 
@@ -99,7 +97,7 @@ impl Tape {
     pub fn extend<'a>(&self, params: impl IntoIterator<Item = &'a Tensor>) -> Result<(), ZyxError> {
         let mut rt = RT.lock();
         for p in params {
-            rt.promote_to_graph(p.id)?;
+            rt.promote_to_graph(p.id, self.graph_id)?;
         }
         Ok(())
     }
@@ -112,7 +110,7 @@ impl Tape {
     pub fn gradient<'a>(&self, target: &Tensor, sources: impl IntoIterator<Item = &'a Tensor>) -> Vec<Tensor> {
         let sources: Vec<TensorId> = sources.into_iter().map(Tensor::id).collect();
         let mut rt = RT.lock();
-        let grads: Map<TensorId, TensorId> = rt.gradient(target.id(), sources.iter().copied().collect());
+        let grads: Map<TensorId, TensorId> = rt.gradient(target.id(), sources.iter().copied().collect(), self.graph_id);
         sources
             .into_iter()
             .map(|x: TensorId| {
@@ -134,6 +132,7 @@ impl Tape {
     /// all output tensors become realized (buffers allocated).
     pub fn realize<'a>(self, tensors: impl IntoIterator<Item = &'a Tensor>) -> Result<(), ZyxError> {
         let mut rt = RT.lock();
+        let graph_id = self.graph_id;
 
         let output_pairs: Vec<(TensorId, ClassId)> = tensors
             .into_iter()
@@ -146,12 +145,12 @@ impl Tape {
         let output_tids: Vec<TensorId> = output_pairs.iter().map(|(tid, _)| *tid).collect();
         let output_classes: Vec<ClassId> = output_pairs.iter().map(|(_, cid)| *cid).collect();
 
-        debug_assert!(rt.graph.is_some());
+        debug_assert!(rt.graphs.contains_key(&graph_id));
 
         let output_set: BTreeSet<ClassId> = output_classes.iter().copied().collect();
-        let cache_key = rt.graph.as_ref().unwrap().cache_key(&output_set);
+        let cache_key = rt.graphs[&graph_id].cache_key(&output_set);
         if rt.plan_cache.contains_key(&cache_key) {
-            return rt.execute_plan(cache_key, &output_tids, &output_classes);
+            return rt.execute_plan(cache_key, &output_tids, &output_classes, graph_id);
         }
 
         // TODO pattern match cublas, cblas, etc. kernels
@@ -159,29 +158,29 @@ impl Tape {
         // Fills missing places with zyx custom kernels
         // SAFETY: graph and shapes are separate fields of Runtime, no aliasing, rust is stupid
         let shapes_ptr: *const Slab<ShapeId, Vec<Dim>> = &rt.shapes;
-        rt.graph.as_mut().unwrap().fill_remaining(&output_set, unsafe { &*shapes_ptr });
+        rt.graphs.get_mut(&graph_id).unwrap().fill_remaining(&output_set, unsafe { &*shapes_ptr });
 
         // Autotunes custom zyx kernels for all devices and adds kernel nodes for all of them
-        rt.autotune_all_kernels()?;
+        rt.autotune_graph_kernels(graph_id)?;
 
-        rt.graph.as_ref().unwrap().debug_print(&rt.shapes);
+        rt.graphs[&graph_id].debug_print(&rt.shapes);
 
         // After all kernels nodes are added, this adds movement ops so extract can pick fastest path
         let devices_ptr: *const Slab<DeviceId, Device> = &rt.devices;
         let buffer_map_ptr: *const Map<TensorId, BufferId> = &rt.buffer_map;
-        rt.graph.as_mut().unwrap().add_memory_ops(unsafe { &*devices_ptr }, unsafe { &*buffer_map_ptr });
+        rt.graphs.get_mut(&graph_id).unwrap().add_memory_ops(unsafe { &*devices_ptr }, unsafe { &*buffer_map_ptr });
 
-        rt.graph.as_ref().unwrap().debug_print(&rt.shapes);
+        rt.graphs[&graph_id].debug_print(&rt.shapes);
 
-        let nodes = rt.graph.as_ref().unwrap().extract(&output_set);
+        let nodes = rt.graphs[&graph_id].extract(&output_set);
 
-        let plan = ExecPlan::new(rt.graph.as_ref().unwrap(), &nodes, &output_set, &rt.devices, &rt.shapes);
+        let plan = ExecPlan::new(&rt.graphs[&graph_id], &nodes, &output_set, &rt.devices, &rt.shapes);
 
         plan.debug();
 
         rt.plan_cache.insert(cache_key, plan);
 
-        rt.execute_plan(cache_key, &output_tids, &output_classes)?;
+        rt.execute_plan(cache_key, &output_tids, &output_classes, graph_id)?;
 
         Ok(())
     }
@@ -197,20 +196,17 @@ impl Tape {
 impl Drop for Tape {
     fn drop(&mut self) {
         let mut rt = RT.lock();
-        let graph = &mut rt.graph;
-        let Some(graph) = graph else { unreachable!() };
-        graph.rc -= 1;
-        if graph.rc > 0 {
-            return;
-        }
-        rt.graph = None;
+        rt.graphs.remove(&self.graph_id);
 
         let tids: Vec<TensorId> = rt.tensors.iter().map(|(id, _)| id).collect();
         for tid in tids {
-            let rc = match &rt.tensors[tid].state {
-                TensorState::Graph { rc, .. } => *rc,
-                _ => continue,
+            let (rc, is_my_graph) = match &rt.tensors[tid].state {
+                TensorState::Graph { rc, graph_id, .. } => (*rc, *graph_id == self.graph_id),
+                _ => (0, false),
             };
+            if !is_my_graph {
+                continue;
+            }
             if rc == 0 {
                 if let Some(buf_id) = rt.buffer_map.remove(&tid) {
                     let keys: Vec<BTreeSet<BufferId>> = rt.events.keys().filter(|k| k.contains(&buf_id)).cloned().collect();

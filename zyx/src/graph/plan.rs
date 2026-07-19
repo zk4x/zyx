@@ -3,7 +3,7 @@ use std::collections::BTreeSet;
 use crate::{
     Map, Set, ZyxError,
     backend::{BufferId, Device, DeviceId, Event, PoolId, ProgramId},
-    graph::{ClassId, Graph, Node, NodeId},
+    graph::{ClassId, Graph, GraphId, Node, NodeId},
     runtime::{Runtime, ShapeId},
     shape::Dim,
     slab::Slab,
@@ -148,11 +148,12 @@ impl Runtime {
         plan_cache_key: u64,
         output_tids: &[TensorId],
         output_classes: &[ClassId],
+        graph_id: GraphId,
     ) -> Result<(), ZyxError> {
         let plan = self.plan_cache.get(&plan_cache_key).unwrap();
         let mut class_buf: Map<ClassId, BufferId> = Map::default();
 
-        let graph = self.graph.as_ref().unwrap();
+        let graph = self.graphs.get(&graph_id).unwrap();
         for &cid in &plan.leaf_classes {
             let tid = graph.leaf_map[&cid];
             if !self.buffer_map.contains_key(&tid) {

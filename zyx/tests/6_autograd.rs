@@ -803,13 +803,13 @@ fn grad_overlapping_realize_cross_tape() -> Result<(), ZyxError> {
     let tape1 = Tape::new([&x])?;
     let z1 = x.reciprocal();
 
+    tape1.realize([&z1])?;
+
     let y = Tensor::from([1f32, 2., 3.]);
     let tape2 = Tape::new([&y])?;
     let z2 = y.ln();
 
     let z3 = z1.clone() + z2.clone();
-
-    tape1.realize([&z1])?;
 
     tape2.realize([&z2, &z3])?;
 

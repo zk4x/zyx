@@ -1,7 +1,7 @@
 use crate::{
     Map, Set,
     dtype::Constant,
-    graph::{ClassId, Graph, Node},
+    graph::{ClassId, Graph, GraphId, Node},
     kernel::{BOp, UOp},
     runtime::{Runtime, TensorData, TensorState},
     shape::{Dim, UAxis},
@@ -10,7 +10,7 @@ use crate::{
 use std::collections::BTreeSet;
 
 impl Runtime {
-    pub(crate) fn gradient(&mut self, target: TensorId, sources: Set<TensorId>) -> Map<TensorId, TensorId> {
+    pub(crate) fn gradient(&mut self, target: TensorId, sources: Set<TensorId>, graph_id: GraphId) -> Map<TensorId, TensorId> {
         let target_class = match self.tensors[target].state {
             TensorState::Graph { class_id, .. } => class_id,
             TensorState::Eager { .. } => panic!("gradient on non-graph tensor"),
@@ -24,7 +24,7 @@ impl Runtime {
             .collect();
         let scalar_shape = self.push_shape(vec![1 as Dim]);
 
-        let graph = self.graph.as_mut().unwrap();
+        let graph = self.graphs.get_mut(&graph_id).unwrap();
         let shapes = &mut self.shapes;
 
         let output_set: BTreeSet<ClassId> = [target_class].into();
@@ -390,6 +390,7 @@ impl Runtime {
         }
 
         grads.retain(|k, _| source_classes.contains(k));
+        drop(graph);
 
         let mut res = Map::default();
         for tid in sources {
@@ -399,13 +400,15 @@ impl Runtime {
             };
             let grad_tid = match grads.get(&class_id) {
                 Some(&gcid) => {
-                    let shape_id = self.graph.as_ref().unwrap().classes[gcid].shape;
-                    let dtype = self.graph.as_ref().unwrap().classes[gcid].dtype;
-                    let nid = self.graph.as_ref().unwrap().classes[gcid].nodes[0];
+                    let graph = self.graphs.get(&graph_id).unwrap();
+                    let shape_id = graph.classes[gcid].shape;
+                    let dtype = graph.classes[gcid].dtype;
+                    let nid = graph.classes[gcid].nodes[0];
+                    drop(graph);
                     self.tensors.push(TensorData {
                         shape_id,
                         dtype,
-                        state: TensorState::Graph { node_id: nid, class_id: gcid, rc: 1 },
+                        state: TensorState::Graph { node_id: nid, class_id: gcid, rc: 1, graph_id },
                     })
                 }
                 None => {
@@ -413,14 +416,15 @@ impl Runtime {
                     let dtype = self.dtype(tid);
                     let one_shape = self.push_shape(vec![1]);
                     let full_shape_id = self.push_shape(shape);
+                    let graph = self.graphs.get_mut(&graph_id).unwrap();
                     let (_, zero_cid) =
-                        self.graph.as_mut().unwrap().push(Node::Const(Constant::new(0u8).cast(dtype)), one_shape, dtype);
+                        graph.push(Node::Const(Constant::new(0u8).cast(dtype)), one_shape, dtype);
                     let (nid, cid) =
-                        self.graph.as_mut().unwrap().push(Node::Expand { x: zero_cid, shape: full_shape_id }, full_shape_id, dtype);
+                        graph.push(Node::Expand { x: zero_cid, shape: full_shape_id }, full_shape_id, dtype);
                     self.tensors.push(TensorData {
                         shape_id: full_shape_id,
                         dtype,
-                        state: TensorState::Graph { node_id: nid, class_id: cid, rc: 1 },
+                        state: TensorState::Graph { node_id: nid, class_id: cid, rc: 1, graph_id },
                     })
                 }
             };
