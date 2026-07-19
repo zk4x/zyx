@@ -651,13 +651,17 @@ impl MemoryPool {
         event_wait_list: Vec<Event>,
     ) -> Result<Event, BackendError> {
         let event = match self {
-            MemoryPool::Dummy(dummy_memory_pool) => todo!(),
-            MemoryPool::Disk(disk_memory_pool) => todo!(),
-            MemoryPool::Host(memory_pool) => todo!(),
+            MemoryPool::Dummy(_) => todo!(),
+            MemoryPool::Disk(_) => todo!(),
+            MemoryPool::Host(_) => todo!(),
             MemoryPool::CUDA(memory_pool) => memory_pool.pool_to_pool(src_pool, src, dst, event_wait_list)?,
             MemoryPool::OpenCL(memory_pool) => memory_pool.pool_to_pool(src_pool, src, dst, event_wait_list)?,
-            MemoryPool::HIP(hipmemory_pool) => todo!(),
-            MemoryPool::Vulkan(vulkan_memory_pool) => vulkan_memory_pool.pool_to_pool(src_pool, src, dst, event_wait_list)?,
+            MemoryPool::HIP(_) => todo!(),
+            MemoryPool::Vulkan(memory_pool) => memory_pool.pool_to_pool(src_pool, src, dst, event_wait_list)?,
+            #[cfg(feature = "tenstorrent")]
+            MemoryPool::TT(_) => todo!(),
+            #[cfg(feature = "wgpu")]
+            MemoryPool::WGPU(_) => todo!(),
         };
         Ok(event)
     }
