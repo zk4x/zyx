@@ -154,8 +154,6 @@ impl Tape {
             return rt.execute_plan(cache_key, &output_tids, &output_classes);
         }
 
-        rt.graph.as_ref().unwrap().debug_print(&rt.shapes);
-
         // TODO pattern match cublas, cblas, etc. kernels
 
         // Fills missing places with zyx custom kernels
@@ -165,6 +163,8 @@ impl Tape {
 
         // Autotunes custom zyx kernels for all devices and adds kernel nodes for all of them
         rt.autotune_all_kernels()?;
+
+        rt.graph.as_ref().unwrap().debug_print(&rt.shapes);
 
         // After all kernels nodes are added, this adds movement ops so extract can pick fastest path
         let devices_ptr: *const Slab<DeviceId, Device> = &rt.devices;

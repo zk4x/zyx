@@ -27,7 +27,7 @@ use nanoserde::DeJson;
 use crate::{
     DType, DebugMask, Map, Scalar, Set, ZyxError,
     backend::{
-        AutotuneConfig, BufferId, Config, Device, DeviceInfo, DeviceProgramId, Event, MemoryPool, OpCapability, PoolBufferId,
+        AutotuneConfig, BufferId, Config, Device, DeviceInfo, DeviceProgramId, Event, MemoryPool, OpCapability, PoolBufferId, ProgramId,
         PoolId,
     },
     dtype::Constant,
@@ -140,6 +140,7 @@ pub struct Runtime {
     optimizations: Map<(KernelId, DeviceInfoId), OptSeq>,
     device_infos: Map<DeviceInfo, DeviceInfoId>,
     programs: Map<KernelId, DeviceProgramId>,
+    timings: Map<ProgramId, u64>,
     pub devices: Slab<DeviceId, Device>,
     // Pool 0 is always host, pool 1 is disk if disk is present
     pub pools: Slab<PoolId, MemoryPool>,
@@ -167,6 +168,7 @@ impl Runtime {
             devices: Slab::new(),
             pools: Slab::new(),
             programs: Map::with_hasher(BuildHasherDefault::new()),
+            timings: Map::with_hasher(BuildHasherDefault::new()),
             config_dir: None,
             optimizations: Map::with_hasher(BuildHasherDefault::new()),
             buffer_map: Map::with_hasher(BuildHasherDefault::new()),
@@ -1224,7 +1226,9 @@ impl Runtime {
     ) -> Result<(DeviceProgramId, u64), ZyxError> {
         let kernel_id = if let Some(&cached_kid) = self.kernel_map.get(&kernel) {
             if let Some(&program_id) = self.programs.get(&cached_kid) {
-                return Ok((program_id, 0));
+                let pid = ProgramId { device: kernel.device_id, program: program_id };
+                let timing = self.timings.get(&pid).copied().unwrap_or(10_000_000_000);
+                return Ok((program_id, timing));
             }
 
             let dev_info = self.devices[kernel.device_id].info().clone();
@@ -1285,6 +1289,7 @@ impl Runtime {
 
         self.programs.insert(kernel_id, program_id);
         self.optimizations.insert((kernel_id, dev_info_id), opts);
+        self.timings.insert(ProgramId { device: kernel.device_id, program: program_id }, timing);
 
         Ok((program_id, timing))
     }
