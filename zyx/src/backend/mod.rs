@@ -661,7 +661,7 @@ impl MemoryPool {
             #[cfg(feature = "tenstorrent")]
             MemoryPool::TT(_) => todo!(),
             #[cfg(feature = "wgpu")]
-            MemoryPool::WGPU(_) => todo!(),
+            MemoryPool::WGPU(memory_pool) => memory_pool.pool_to_pool(src_pool, src, dst, event_wait_list)?,
         };
         Ok(event)
     }

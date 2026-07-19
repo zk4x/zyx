@@ -359,7 +359,19 @@ impl WGPUMemoryPool {
         Ok(())
     }
 
-    #[allow(clippy::unused_self)]
+    pub fn pool_to_pool(
+        &mut self,
+        src_pool: &mut MemoryPool,
+        src: PoolBufferId,
+        dst: PoolBufferId,
+        event_wait_list: Vec<Event>,
+    ) -> Result<Event, BackendError> {
+        match src_pool {
+            MemoryPool::Host(src_pool) => self.host_to_pool(src_pool.get_buffer(src), dst, event_wait_list),
+            _ => todo!("pool_to_pool from {:?} to WGPU", std::mem::discriminant(src_pool)),
+        }
+    }
+
     pub fn release_events(&mut self, events: Vec<Event>) {
         drop(events);
     }
