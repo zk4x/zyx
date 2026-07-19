@@ -390,7 +390,6 @@ impl Runtime {
         }
 
         grads.retain(|k, _| source_classes.contains(k));
-        drop(graph);
 
         let mut res = Map::default();
         for tid in sources {
@@ -403,7 +402,6 @@ impl Runtime {
                     let graph = &self.graphs[graph_id];
                     let shape_id = graph.classes[gcid].shape;
                     let dtype = graph.classes[gcid].dtype;
-                    drop(graph);
                     self.tensors.push(TensorData {
                         shape_id,
                         dtype,

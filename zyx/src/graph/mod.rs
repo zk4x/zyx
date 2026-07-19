@@ -592,10 +592,6 @@ impl Graph {
 }
 
 impl Runtime {
-    pub fn autotune_all_kernels(&mut self) -> Result<(), ZyxError> {
-        Ok(())
-    }
-
     pub fn autotune_graph_kernels(&mut self, graph_id: GraphId) -> Result<(), ZyxError> {
         let graph = &self.graphs[graph_id];
         let kernel_data: Vec<(NodeId, Kernel)> = {
@@ -611,7 +607,7 @@ impl Runtime {
             }
             v
         };
-        drop(graph);
+        let _ = graph;
 
         for (nid, kernel) in &kernel_data {
             let (flop, read, write) = kernel.flop_mem_rw();
@@ -622,7 +618,7 @@ impl Runtime {
                 unreachable!()
             };
             let (inputs, outputs, class_of) = (inputs.clone(), outputs.clone(), node.class_of);
-            drop(graph);
+            let _ = graph;
             for (i, &dev_id) in device_ids.iter().enumerate() {
                 let pool_id = self.devices[dev_id].memory_pool_id();
                 let mut kernel = kernel.clone();
