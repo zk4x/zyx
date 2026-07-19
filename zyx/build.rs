@@ -12,8 +12,7 @@ fn main() {
             "\n\n\
              TT_METAL_ROOT is not set.\n\
              To build the Tenstorrent backend, point TT_METAL_ROOT at your tt-metal checkout:\n\
-               export TT_METAL_ROOT=$HOME/Dev/cpp/tt-metal\n\
-             or wherever you cloned tt-metal.\n\
+               export TT_METAL_ROOT=$HOME/path-to-tt-metal\n\
              \n\
              Without it, the C++ runtime binary (zyx-tt-runtime) cannot be compiled.\n"
         );
