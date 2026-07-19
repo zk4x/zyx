@@ -16,7 +16,7 @@ use std::collections::BTreeSet;
 
 use crate::{
     DType, Map, Set, ZyxError,
-    backend::ProgramId,
+    backend::{BufferId, Device, ProgramId},
     dtype::Constant,
     kernel::{BOp, DeviceId, Kernel, UOp},
     runtime::{Runtime, ShapeId},
@@ -484,17 +484,22 @@ impl Graph {
     /// Debug assert that. Then for each input, if that input comes from kernel on different device
     /// or if it's in buffer_map on different device, add EGraph::ToDevice node that moves it
     /// to the device of the Node::Kernel.
-    pub fn add_memory_ops(&mut self) {
+    pub fn add_memory_ops(
+        &mut self,
+        devices: &Slab<DeviceId, Device>,
+        buffer_map: &Map<TensorId, BufferId>,
+    ) {
         let class_ids: Vec<ClassId> = self.classes.ids().collect();
         for cid in class_ids {
             let node_ids: Vec<NodeId> = self.classes[cid].nodes.iter().copied().collect();
             for &nid in &node_ids {
-                let (device, inputs) = match &self.nodes[nid].node {
+                let (device_id, inputs) = match &self.nodes[nid].node {
                     Node::Kernel { program_id, inputs, .. } if program_id.device.0 != u32::MAX => {
                         (program_id.device, inputs.clone())
                     }
                     _ => continue,
                 };
+                let dev_pool = devices[device_id].memory_pool_id();
 
                 let mut new_inputs: Option<Box<[ClassId]>> = None;
                 for (i, &input_cid) in inputs.iter().enumerate() {
@@ -503,7 +508,7 @@ impl Graph {
                     for &inid in &self.classes[input_cid].nodes {
                         if let Node::Kernel { program_id, .. } = &self.nodes[inid].node {
                             from_kernel = true;
-                            if program_id.device == device {
+                            if program_id.device == device_id {
                                 same_device = true;
                                 break;
                             }
@@ -513,7 +518,7 @@ impl Graph {
                         if !same_device {
                             let new_inputs = new_inputs.get_or_insert_with(|| inputs.clone());
                             let (_, to_cid) = self.push(
-                                Node::ToDevice { x: input_cid, device, time: 0 },
+                                Node::ToDevice { x: input_cid, device: device_id, time: 0 },
                                 self.classes[input_cid].shape,
                                 self.classes[input_cid].dtype,
                             );
@@ -524,6 +529,17 @@ impl Graph {
                             self.classes[input_cid].nodes.iter().any(|&inid| matches!(&self.nodes[inid].node, Node::Leaf { .. })),
                             "input must be from a kernel or a realized tensor"
                         );
+                        let tid = self.leaf_map[&input_cid];
+                        let leaf_pool = buffer_map[&tid].pool;
+                        if leaf_pool != dev_pool {
+                            let new_inputs = new_inputs.get_or_insert_with(|| inputs.clone());
+                            let (_, to_cid) = self.push(
+                                Node::ToDevice { x: input_cid, device: device_id, time: 0 },
+                                self.classes[input_cid].shape,
+                                self.classes[input_cid].dtype,
+                            );
+                            new_inputs[i] = to_cid;
+                        }
                     }
                 }
                 if let Some(new_inputs) = new_inputs {

@@ -34,7 +34,7 @@ use std::collections::BTreeSet;
 
 use crate::{
     Map, RT, Tensor, ZyxError,
-    backend::BufferId,
+    backend::{BufferId, Device},
     graph::{ClassId, ExecPlan, Graph},
     kernel::{DeviceId, Kernel, Op},
     runtime::{KernelData, ShapeId, TensorState},
@@ -167,7 +167,9 @@ impl Tape {
         rt.autotune_all_kernels()?;
 
         // After all kernels nodes are added, this adds movement ops so extract can pick fastest path
-        rt.graph.as_mut().unwrap().add_memory_ops();
+        let devices_ptr: *const Slab<DeviceId, Device> = &rt.devices;
+        let buffer_map_ptr: *const Map<TensorId, BufferId> = &rt.buffer_map;
+        rt.graph.as_mut().unwrap().add_memory_ops(unsafe { &*devices_ptr }, unsafe { &*buffer_map_ptr });
 
         rt.graph.as_ref().unwrap().debug_print(&rt.shapes);
 
