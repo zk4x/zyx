@@ -723,6 +723,14 @@ impl CUDAMemoryPool {
     }
 
     #[allow(clippy::needless_pass_by_ref_mut)]
+    pub fn pool_to_pool(&mut self, src_pool: &mut MemoryPool, src: PoolBufferId, dst: PoolBufferId, event_wait_list: Vec<Event>) -> Result<Event, BackendError> {
+        match src_pool {
+            MemoryPool::Host(src_pool) => self.host_to_pool(src_pool.get_buffer(src), dst, event_wait_list),
+            _ => todo!(),
+        }
+    }
+
+    #[allow(clippy::needless_pass_by_ref_mut)]
     pub fn sync_events(&mut self, events: Vec<Event>) -> Result<(), BackendError> {
         let (reply, reply_rx) = channel();
         self.tx.send(CUDACommand::SyncEvents { events, reply }).unwrap();

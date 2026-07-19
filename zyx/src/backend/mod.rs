@@ -643,8 +643,23 @@ impl MemoryPool {
     }
 
     /// Copy data from src to dst pool
-    pub fn pool_to_pool(&mut self, src_pool: &mut MemoryPool, src: PoolBufferId, dst: PoolBufferId, event_wait_list: Vec<Event>) -> Result<Event, BackendError> {
-        todo!()
+    pub fn pool_to_pool(
+        &mut self,
+        src_pool: &mut MemoryPool,
+        src: PoolBufferId,
+        dst: PoolBufferId,
+        event_wait_list: Vec<Event>,
+    ) -> Result<Event, BackendError> {
+        let event = match self {
+            MemoryPool::Dummy(dummy_memory_pool) => todo!(),
+            MemoryPool::Disk(disk_memory_pool) => todo!(),
+            MemoryPool::Host(memory_pool) => todo!(),
+            MemoryPool::CUDA(memory_pool) => memory_pool.pool_to_pool(src_pool, src, dst, event_wait_list)?,
+            MemoryPool::OpenCL(memory_pool) => todo!(),
+            MemoryPool::HIP(hipmemory_pool) => todo!(),
+            MemoryPool::Vulkan(vulkan_memory_pool) => todo!(),
+        };
+        Ok(event)
     }
 
     /// Wait for GPU events to complete, then drop them. Blocking.

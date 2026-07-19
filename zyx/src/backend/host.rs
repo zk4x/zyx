@@ -108,10 +108,9 @@ impl HostMemoryPool {
         let _ = events;
     }
 
-    /// Get an immutable raw pointer to the buffer's data
-    /*pub fn buffer_ptr(&self, id: PoolBufferId) -> *const u8 {
-        self.buffers[id].as_ptr()
-    }*/
+    pub fn get_buffer(&self, id: PoolBufferId) -> &[u8] {
+        &self.buffers[id]
+    }
 
     /// Get a mutable raw pointer to the buffer's data
     pub fn buffer_ptr_mut(&mut self, id: PoolBufferId) -> *mut u8 {
