@@ -502,6 +502,7 @@ impl Graph {
                 };
                 let dev_pool = devices[device_id].memory_pool_id();
 
+                let class_of = self.nodes[nid].class_of;
                 let mut new_inputs: Option<Box<[ClassId]>> = None;
                 for (i, &input_cid) in inputs.iter().enumerate() {
                     let mut same_device = false;
@@ -517,13 +518,15 @@ impl Graph {
                     }
                     if from_kernel {
                         if !same_device {
-                            let new_inputs = new_inputs.get_or_insert_with(|| inputs.clone());
                             let (_, to_cid) = self.push(
                                 Node::ToDevice { x: input_cid, device: device_id, time: 0 },
                                 self.classes[input_cid].shape,
                                 self.classes[input_cid].dtype,
                             );
-                            new_inputs[i] = to_cid;
+                            if to_cid != class_of {
+                                let new_inputs = new_inputs.get_or_insert_with(|| inputs.clone());
+                                new_inputs[i] = to_cid;
+                            }
                         }
                     } else {
                         let already_on_device = self.classes[input_cid].nodes.iter().any(|&inid|
@@ -536,13 +539,15 @@ impl Graph {
                             let tid = self.leaf_map[&input_cid];
                             let leaf_pool = buffer_map[&tid].pool;
                             if leaf_pool != dev_pool {
-                                let new_inputs = new_inputs.get_or_insert_with(|| inputs.clone());
                                 let (_, to_cid) = self.push(
                                     Node::ToDevice { x: input_cid, device: device_id, time: 0 },
                                     self.classes[input_cid].shape,
                                     self.classes[input_cid].dtype,
                                 );
-                                new_inputs[i] = to_cid;
+                                if to_cid != cid && to_cid != class_of {
+                                    let new_inputs = new_inputs.get_or_insert_with(|| inputs.clone());
+                                    new_inputs[i] = to_cid;
+                                }
                             }
                         }
                     }
