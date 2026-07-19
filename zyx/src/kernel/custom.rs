@@ -168,13 +168,11 @@ impl CompiledKernel {
                 event_wait_list.push(copy_ev);
                 dev_buf_id
             } else {
-                input_bufs.push(buf_id.buffer);
-                all_bufs.insert(buf_id);
                 let keys: Vec<BTreeSet<BufferId>> = rt.events.keys().filter(|k| k.contains(&buf_id)).cloned().collect();
                 for key in keys {
                     event_wait_list.push(rt.events.remove(&key).unwrap());
                 }
-                continue;
+                buf_id
             };
             input_bufs.push(dev_buf_id.buffer);
             all_bufs.insert(dev_buf_id);
