@@ -11,6 +11,7 @@ Zyx has 3 goals + a bonus goal:
 1. Be correct
 2. Run everywhere
 3. Run fast
+
 Bonus: be pleasant to use while at that
 
 ML won't get better without new hardware and existing libraries are ill-suited to support emerging hardware.
