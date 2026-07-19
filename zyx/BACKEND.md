@@ -1,5 +1,9 @@
 # This is the manual on adding new backends to zyx
 
+It's rather short for now. Probably the best is to read code for some existing backends. Unlike some other
+platforms, zyx tries to accomodate backends as much as possible, so even a crazy situation of your backend
+having only one available kernel is supported.
+
 ## Initialization
 
 In initialization functions backends needs to return any number of memory pools and devices.
@@ -20,11 +24,6 @@ zyx moves data through CPU. Afaik there is no faster way.
 
 Each device has a number of associated queues. Devices compile IR kernels into machine code.
 
-## Queues
-
-Queues are responsible for dispatching compiled kernels and they need to have the ability to synchronize
-- block all running programs till completion.
-
 ## Programs
 
 Programs (kernels) are blocks of machine code running on devices. Programs are compiled from IR.
@@ -43,3 +42,4 @@ compilation error. Zyx can then try running this kernel on different device or i
 This is pretty much all that is needed to add new backends to zyx. If you have any problems adding support
 for your device, please do not hesitate to create an issue on (github)[github.com/zk4x/zyx], we're happy to assist you.
 Hardware support is the second primary goal of zyx (first one is correctness, obviously).
+
