@@ -434,6 +434,9 @@ pub(super) fn initialize_device(
                                     _ = unsafe { (cuEventDestroy)(event) }.check(ErrorStatus::MemoryCopyP2H);
                                 }
                             }
+                            if !buffers.contains_key(buffer_id) {
+                                continue;
+                            }
                             let buffer = &mut buffers[buffer_id];
                             //_ = unsafe { (self.cuMemFreeAsync)(buffer.ptr, self.stream) }.check(ErrorStatus::MemoryDeallocation);
                             _ = unsafe { (cuMemFree)(buffer.ptr) }.check(ErrorStatus::MemoryDeallocation);
