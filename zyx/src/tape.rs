@@ -68,9 +68,7 @@ impl Tape {
     pub fn new<'a>(params: impl IntoIterator<Item = &'a Tensor>) -> Result<Tape, ZyxError> {
         let mut rt = RT.lock();
 
-        let graph_id = GraphId(rt.next_graph_id);
-        rt.next_graph_id += 1;
-        rt.graphs.insert(graph_id, Graph::new());
+        let graph_id = rt.graphs.push(Graph::new());
 
         for p in params {
             rt.promote_to_graph(p.id, graph_id)?;
@@ -145,10 +143,10 @@ impl Tape {
         let output_tids: Vec<TensorId> = output_pairs.iter().map(|(tid, _)| *tid).collect();
         let output_classes: Vec<ClassId> = output_pairs.iter().map(|(_, cid)| *cid).collect();
 
-        debug_assert!(rt.graphs.contains_key(&graph_id));
+        debug_assert!(rt.graphs.contains_key(graph_id));
 
         let output_set: BTreeSet<ClassId> = output_classes.iter().copied().collect();
-        let cache_key = rt.graphs[&graph_id].cache_key(&output_set);
+        let cache_key = rt.graphs[graph_id].cache_key(&output_set);
         if rt.plan_cache.contains_key(&cache_key) {
             return rt.execute_plan(cache_key, &output_tids, &output_classes, graph_id);
         }
@@ -158,23 +156,23 @@ impl Tape {
         // Fills missing places with zyx custom kernels
         // SAFETY: graph and shapes are separate fields of Runtime, no aliasing, rust is stupid
         let shapes_ptr: *const Slab<ShapeId, Vec<Dim>> = &rt.shapes;
-        rt.graphs.get_mut(&graph_id).unwrap().fill_remaining(&output_set, unsafe { &*shapes_ptr });
+        rt.graphs[graph_id].fill_remaining(&output_set, unsafe { &*shapes_ptr });
 
         // Autotunes custom zyx kernels for all devices and adds kernel nodes for all of them
         rt.autotune_graph_kernels(graph_id)?;
 
-        rt.graphs[&graph_id].debug_print(&rt.shapes);
+        rt.graphs[graph_id].debug_print(&rt.shapes);
 
         // After all kernels nodes are added, this adds movement ops so extract can pick fastest path
         let devices_ptr: *const Slab<DeviceId, Device> = &rt.devices;
         let buffer_map_ptr: *const Map<TensorId, BufferId> = &rt.buffer_map;
-        rt.graphs.get_mut(&graph_id).unwrap().add_memory_ops(unsafe { &*devices_ptr }, unsafe { &*buffer_map_ptr });
+        rt.graphs[graph_id].add_memory_ops(unsafe { &*devices_ptr }, unsafe { &*buffer_map_ptr });
 
-        rt.graphs[&graph_id].debug_print(&rt.shapes);
+        rt.graphs[graph_id].debug_print(&rt.shapes);
 
-        let nodes = rt.graphs[&graph_id].extract(&output_set);
+        let nodes = rt.graphs[graph_id].extract(&output_set);
 
-        let plan = ExecPlan::new(&rt.graphs[&graph_id], &nodes, &output_set, &rt.devices, &rt.shapes);
+        let plan = ExecPlan::new(&rt.graphs[graph_id], &nodes, &output_set, &rt.devices, &rt.shapes);
 
         plan.debug();
 
@@ -196,7 +194,7 @@ impl Tape {
 impl Drop for Tape {
     fn drop(&mut self) {
         let mut rt = RT.lock();
-        rt.graphs.remove(&self.graph_id);
+        rt.graphs.remove(self.graph_id);
 
         let tids: Vec<TensorId> = rt.tensors.iter().map(|(id, _)| id).collect();
         for tid in tids {

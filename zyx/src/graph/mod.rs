@@ -53,8 +53,27 @@ impl SlabId for NodeId {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct GraphId(pub u32);
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct GraphId(pub u16);
+
+impl From<usize> for GraphId {
+    fn from(v: usize) -> Self {
+        Self(v as u16)
+    }
+}
+impl From<GraphId> for usize {
+    fn from(v: GraphId) -> usize {
+        v.0 as usize
+    }
+}
+
+impl SlabId for GraphId {
+    const ZERO: Self = Self(0);
+    const NULL: Self = Self(u16::MAX);
+    fn inc(&mut self) {
+        self.0 += 1;
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct ClassId(pub u32);
@@ -277,7 +296,6 @@ pub struct Graph {
     pub(crate) ekernels: Slab<EKernelId, EKernelData>,
     pub(crate) kernel_map: Map<NodeId, EKernelId>,
     pub(crate) leaf_map: Map<ClassId, TensorId>,
-    pub(crate) rc: u32,
     max_leaf_id: u32,
 }
 
@@ -308,7 +326,6 @@ impl Graph {
             ekernels: Slab::new(),
             kernel_map: Map::default(),
             leaf_map: Map::default(),
-            rc: 0,
             max_leaf_id: 0,
         }
     }
@@ -370,81 +387,6 @@ impl Graph {
         }
         order.reverse();
         order
-    }
-
-    pub fn build_topo(&self, outputs: &BTreeSet<ClassId>, sources: &Set<ClassId>) -> Vec<ClassId> {
-        let mut stack: Vec<ClassId> = outputs.iter().copied().collect();
-        let mut rcs: Map<ClassId, u32> = Map::default();
-        while let Some(cid) = stack.pop() {
-            rcs.entry(cid).and_modify(|rc| *rc += 1).or_insert_with(|| {
-                for nid in &self.classes[cid].nodes {
-                    let node = &self.nodes[*nid].node;
-                    if matches!(
-                        node,
-                        Node::Binary {
-                            bop: BOp::Cmpgt
-                                | BOp::Cmplt
-                                | BOp::Eq
-                                | BOp::NotEq
-                                | BOp::Or
-                                | BOp::And
-                                | BOp::BitAnd
-                                | BOp::BitOr
-                                | BOp::BitXor
-                                | BOp::BitShiftLeft
-                                | BOp::BitShiftRight,
-                            ..
-                        }
-                    ) {
-                        continue;
-                    }
-                    for p in node.class_params() {
-                        if !stack.contains(&p) {
-                            stack.push(p);
-                        }
-                    }
-                }
-                1
-            });
-        }
-
-        let mut order = Vec::new();
-        let mut internal_rcs: Map<ClassId, u32> = Map::default();
-        let mut stack: Vec<ClassId> = outputs.iter().copied().collect();
-        while let Some(cid) = stack.pop() {
-            if let Some(&rc) = rcs.get(&cid) {
-                if rc == *internal_rcs.entry(cid).and_modify(|c| *c += 1).or_insert(1) {
-                    order.push(cid);
-                    for nid in &self.classes[cid].nodes {
-                        for p in self.nodes[*nid].node.class_params() {
-                            if !stack.contains(&p) {
-                                stack.push(p);
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        let mut topo = Vec::new();
-        let mut req_grad = sources.clone();
-        let mut visited: Set<ClassId> = Set::default();
-        for cid in order.into_iter().rev() {
-            for nid in &self.classes[cid].nodes {
-                for p in self.nodes[*nid].node.class_params() {
-                    if req_grad.contains(&p) && visited.insert(cid) {
-                        req_grad.insert(cid);
-                        topo.push(cid);
-                        break;
-                    }
-                }
-                if visited.contains(&cid) {
-                    break;
-                }
-            }
-        }
-        topo.reverse();
-        topo
     }
 
     pub fn debug_print(&self, shapes: &Slab<ShapeId, Vec<Dim>>) {
@@ -655,7 +597,7 @@ impl Runtime {
     }
 
     pub fn autotune_graph_kernels(&mut self, graph_id: GraphId) -> Result<(), ZyxError> {
-        let graph = self.graphs.get(&graph_id).unwrap();
+        let graph = &self.graphs[graph_id];
         let kernel_data: Vec<(NodeId, Kernel)> = {
             let mut v = Vec::new();
             for cid in graph.classes.ids() {
@@ -674,7 +616,7 @@ impl Runtime {
         for (nid, kernel) in &kernel_data {
             let (flop, read, write) = kernel.flop_mem_rw();
             let device_ids: Vec<DeviceId> = self.devices.ids().collect();
-            let graph = self.graphs.get(&graph_id).unwrap();
+            let graph = &self.graphs[graph_id];
             let node = &graph.nodes[*nid];
             let Node::Kernel { ref inputs, ref outputs, .. } = node.node else {
                 unreachable!()
@@ -687,7 +629,7 @@ impl Runtime {
                 kernel.device_id = dev_id;
                 let (dev_prog, timing) = self.get_or_autotune(kernel, pool_id, flop, read, write, None)?;
                 let prog = ProgramId { device: dev_id, program: dev_prog };
-                let graph = self.graphs.get_mut(&graph_id).unwrap();
+                let graph = &mut self.graphs[graph_id];
                 if i == 0 {
                     if let Node::Kernel { program_id, time, .. } = &mut graph.nodes[*nid].node {
                         *program_id = prog;

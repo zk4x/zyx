@@ -153,7 +153,7 @@ impl Runtime {
         let plan = self.plan_cache.get(&plan_cache_key).unwrap();
         let mut class_buf: Map<ClassId, BufferId> = Map::default();
 
-        let graph = self.graphs.get(&graph_id).unwrap();
+        let graph = &self.graphs[graph_id];
         for &cid in &plan.leaf_classes {
             let tid = graph.leaf_map[&cid];
             if !self.buffer_map.contains_key(&tid) {

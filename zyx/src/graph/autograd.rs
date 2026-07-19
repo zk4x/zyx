@@ -24,7 +24,7 @@ impl Runtime {
             .collect();
         let scalar_shape = self.push_shape(vec![1 as Dim]);
 
-        let graph = self.graphs.get_mut(&graph_id).unwrap();
+        let graph = &mut self.graphs[graph_id];
         let shapes = &mut self.shapes;
 
         let output_set: BTreeSet<ClassId> = [target_class].into();
@@ -400,15 +400,14 @@ impl Runtime {
             };
             let grad_tid = match grads.get(&class_id) {
                 Some(&gcid) => {
-                    let graph = self.graphs.get(&graph_id).unwrap();
+                    let graph = &self.graphs[graph_id];
                     let shape_id = graph.classes[gcid].shape;
                     let dtype = graph.classes[gcid].dtype;
-                    let nid = graph.classes[gcid].nodes[0];
                     drop(graph);
                     self.tensors.push(TensorData {
                         shape_id,
                         dtype,
-                        state: TensorState::Graph { node_id: nid, class_id: gcid, rc: 1, graph_id },
+                        state: TensorState::Graph { class_id: gcid, rc: 1, graph_id },
                     })
                 }
                 None => {
@@ -416,21 +415,98 @@ impl Runtime {
                     let dtype = self.dtype(tid);
                     let one_shape = self.push_shape(vec![1]);
                     let full_shape_id = self.push_shape(shape);
-                    let graph = self.graphs.get_mut(&graph_id).unwrap();
+let graph = &mut self.graphs[graph_id];
                     let (_, zero_cid) =
                         graph.push(Node::Const(Constant::new(0u8).cast(dtype)), one_shape, dtype);
-                    let (nid, cid) =
+                    let (_, cid) =
                         graph.push(Node::Expand { x: zero_cid, shape: full_shape_id }, full_shape_id, dtype);
                     self.tensors.push(TensorData {
                         shape_id: full_shape_id,
                         dtype,
-                        state: TensorState::Graph { node_id: nid, class_id: cid, rc: 1, graph_id },
+                        state: TensorState::Graph { class_id: cid, rc: 1, graph_id },
                     })
                 }
             };
             res.insert(tid, grad_tid);
         }
         res
+    }
+}
+
+impl Graph {
+    pub fn build_topo(&self, outputs: &BTreeSet<ClassId>, sources: &Set<ClassId>) -> Vec<ClassId> {
+        let mut stack: Vec<ClassId> = outputs.iter().copied().collect();
+        let mut rcs: Map<ClassId, u32> = Map::default();
+        while let Some(cid) = stack.pop() {
+            rcs.entry(cid).and_modify(|rc| *rc += 1).or_insert_with(|| {
+                for nid in &self.classes[cid].nodes {
+                    let node = &self.nodes[*nid].node;
+                    if matches!(
+                        node,
+                        Node::Binary {
+                            bop: BOp::Cmpgt
+                                | BOp::Cmplt
+                                | BOp::Eq
+                                | BOp::NotEq
+                                | BOp::Or
+                                | BOp::And
+                                | BOp::BitAnd
+                                | BOp::BitOr
+                                | BOp::BitXor
+                                | BOp::BitShiftLeft
+                                | BOp::BitShiftRight,
+                            ..
+                        }
+                    ) {
+                        continue;
+                    }
+                    for p in node.class_params() {
+                        if !stack.contains(&p) {
+                            stack.push(p);
+                        }
+                    }
+                }
+                1
+            });
+        }
+
+        let mut order = Vec::new();
+        let mut internal_rcs: Map<ClassId, u32> = Map::default();
+        let mut stack: Vec<ClassId> = outputs.iter().copied().collect();
+        while let Some(cid) = stack.pop() {
+            if let Some(&rc) = rcs.get(&cid) {
+                if rc == *internal_rcs.entry(cid).and_modify(|c| *c += 1).or_insert(1) {
+                    order.push(cid);
+                    for nid in &self.classes[cid].nodes {
+                        for p in self.nodes[*nid].node.class_params() {
+                            if !stack.contains(&p) {
+                                stack.push(p);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        let mut topo = Vec::new();
+        let mut req_grad = sources.clone();
+        let mut visited: Set<ClassId> = Set::default();
+        for cid in order.into_iter().rev() {
+            for nid in &self.classes[cid].nodes {
+                for p in self.nodes[*nid].node.class_params() {
+                    if req_grad.contains(&p) && visited.insert(cid) {
+                        req_grad.insert(cid);
+                        topo.push(cid);
+                        break;
+                    }
+                }
+                if visited.contains(&cid) {
+                    break;
+                }
+            }
+        }
+        topo.reverse();
+        topo
     }
 }
 

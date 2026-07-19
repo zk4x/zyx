@@ -33,7 +33,7 @@ use crate::{
     dtype::Constant,
     error::{BackendError, ErrorStatus},
     graph::ExecPlan,
-    graph::{ClassId, Graph, GraphId, Node, NodeId},
+    graph::{ClassId, Graph, GraphId, Node},
     kernel::{BOp, DeviceId, Kernel, MoveOp, Op, OpId, UOp, autotune::OptSeq},
     rng::Rng,
     shape::{Dim, UAxis},
@@ -112,8 +112,6 @@ pub enum TensorState {
         pending_store: bool,
     },
     Graph {
-        #[allow(unused)]
-        node_id: NodeId,
         class_id: ClassId,
         rc: u32,
         graph_id: GraphId,
@@ -132,8 +130,7 @@ pub(crate) struct KernelData {
 }
 
 pub struct Runtime {
-    pub graphs: Map<GraphId, Graph>,
-    pub next_graph_id: u32,
+    pub graphs: Slab<GraphId, Graph>,
     shape_map: Map<Vec<Dim>, ShapeId>,
     pub shapes: Slab<ShapeId, Vec<Dim>>,
     pub tensors: Slab<TensorId, TensorData>,
@@ -160,8 +157,7 @@ pub struct Runtime {
 impl Runtime {
     pub const fn new() -> Self {
         Runtime {
-            graphs: Map::with_hasher(BuildHasherDefault::new()),
-            next_graph_id: 0,
+            graphs: Slab::new(),
             shape_map: Map::with_hasher(BuildHasherDefault::new()),
             shapes: Slab::new(),
             tensors: Slab::new(),
@@ -226,7 +222,7 @@ impl Runtime {
             TensorState::Eager { kernel_id, pending_store, .. } => (*kernel_id, *pending_store),
             TensorState::Graph { rc, graph_id, .. } => {
                 *rc -= 1;
-                if *rc == 0 && !self.graphs.contains_key(graph_id) {
+                if *rc == 0 && !self.graphs.contains_key(*graph_id) {
                     assert!(!self.buffer_map.contains_key(&x));
                     self.tensors.remove(x);
                 }
@@ -378,7 +374,7 @@ impl Runtime {
 
         debug_assert!(self.buffer_map.contains_key(&tid));
 
-        let (node_id, class_id) = self.graphs.get_mut(&graph_id).unwrap().push_leaf(dtype, shape_id);
+        let (_, class_id) = self.graphs[graph_id].push_leaf(dtype, shape_id);
 
         let TensorState::Eager { kernel_id, .. } = self.tensors[tid].state else {
             unreachable!()
@@ -387,8 +383,8 @@ impl Runtime {
         let rc = self.kernels[kernel_id].outputs.len() as u32;
         self.kernels.remove(kernel_id);
 
-        self.tensors[tid].state = TensorState::Graph { node_id, class_id, rc, graph_id };
-        self.graphs.get_mut(&graph_id).unwrap().leaf_map.insert(class_id, tid);
+        self.tensors[tid].state = TensorState::Graph { class_id, rc, graph_id };
+        self.graphs[graph_id].leaf_map.insert(class_id, tid);
         Ok(class_id)
     }
 
@@ -398,9 +394,9 @@ impl Runtime {
         let shape_id = self.tensors[x].shape_id;
         match self.tensors[x].state {
             TensorState::Graph { class_id, graph_id, .. } => {
-                let (node_id, class_id) = self.graphs.get_mut(&graph_id).unwrap().push(Node::Cast { x: class_id, dtype }, shape_id, dtype);
+                let (_, class_id) = self.graphs[graph_id].push(Node::Cast { x: class_id, dtype }, shape_id, dtype);
                 let tid =
-                    self.tensors.push(TensorData { shape_id, dtype, state: TensorState::Graph { node_id, class_id, rc: 1, graph_id } });
+                    self.tensors.push(TensorData { shape_id, dtype, state: TensorState::Graph { class_id, rc: 1, graph_id } });
                 #[cfg(feature = "debug_tensor_op")]
                 println!("  -> tid={tid}, nid={node_id:?}, cid={class_id:?}");
                 tid
@@ -426,9 +422,9 @@ impl Runtime {
         let shape_id = self.tensors[x].shape_id;
         match self.tensors[x].state {
             TensorState::Graph { class_id, graph_id, .. } => {
-                let (node_id, class_id) = self.graphs.get_mut(&graph_id).unwrap().push(Node::Cast { x: class_id, dtype }, shape_id, dtype);
+                let (_, class_id) = self.graphs[graph_id].push(Node::Cast { x: class_id, dtype }, shape_id, dtype);
                 let tid =
-                    self.tensors.push(TensorData { shape_id, dtype, state: TensorState::Graph { node_id, class_id, rc: 1, graph_id } });
+                    self.tensors.push(TensorData { shape_id, dtype, state: TensorState::Graph { class_id, rc: 1, graph_id } });
                 #[cfg(feature = "debug_tensor_op")]
                 println!("  -> tid={tid}, nid={node_id:?}, cid={class_id:?}");
                 tid
@@ -455,9 +451,9 @@ impl Runtime {
         let dtype = self.tensors[x].dtype;
         match self.tensors[x].state {
             TensorState::Graph { class_id, graph_id, .. } => {
-                let (node_id, class_id) = self.graphs.get_mut(&graph_id).unwrap().push(Node::Unary { x: class_id, uop }, shape_id, dtype);
+                let (_, class_id) = self.graphs[graph_id].push(Node::Unary { x: class_id, uop }, shape_id, dtype);
                 let tid =
-                    self.tensors.push(TensorData { shape_id, dtype, state: TensorState::Graph { node_id, class_id, rc: 1, graph_id } });
+                    self.tensors.push(TensorData { shape_id, dtype, state: TensorState::Graph { class_id, rc: 1, graph_id } });
                 #[cfg(feature = "debug_tensor_op")]
                 println!("  -> tid={tid}, nid={node_id:?}, cid={class_id:?}");
                 tid
@@ -512,9 +508,9 @@ impl Runtime {
             let TensorState::Graph { class_id: y, .. } = self.tensors[y].state else {
                 unreachable!()
             };
-            let (node_id, class_id) = self.graphs.get_mut(&graph_id).unwrap().push(Node::Binary { x, y, bop }, shape_id, dtype);
+            let (_, class_id) = self.graphs[graph_id].push(Node::Binary { x, y, bop }, shape_id, dtype);
 
-            let tid = self.tensors.push(TensorData { shape_id, dtype, state: TensorState::Graph { node_id, class_id, rc: 1, graph_id } });
+            let tid = self.tensors.push(TensorData { shape_id, dtype, state: TensorState::Graph { class_id, rc: 1, graph_id } });
             #[cfg(feature = "debug_tensor_op")]
             println!("  -> tid={tid}, nid={node_id:?}, cid={class_id:?}");
             Ok(tid)
@@ -617,12 +613,12 @@ impl Runtime {
         let TensorState::Graph { class_id, graph_id, .. } = self.tensors[x].state else {
             todo!("eager to_device")
         };
-        let graph = self.graphs.get_mut(&graph_id).unwrap();
+        let graph = &mut self.graphs[graph_id];
         let shape_id = self.tensors[x].shape_id;
         let dtype = self.tensors[x].dtype;
         // TODO measure actual time by running a test copy
-        let (node_id, cid) = graph.push(Node::ToDevice { x: class_id, device: device_id, time: 0 }, shape_id, dtype);
-        let tid = self.tensors.push(TensorData { shape_id, dtype, state: TensorState::Graph { node_id, class_id: cid, rc: 1, graph_id } });
+        let (_, cid) = graph.push(Node::ToDevice { x: class_id, device: device_id, time: 0 }, shape_id, dtype);
+        let tid = self.tensors.push(TensorData { shape_id, dtype, state: TensorState::Graph { class_id: cid, rc: 1, graph_id } });
         #[cfg(feature = "debug_tensor_op")]
         println!("  -> tid={tid}, nid={node_id:?}, cid={cid:?}");
         Ok(tid)
@@ -639,13 +635,13 @@ impl Runtime {
 
         match self.tensors[x].state {
             TensorState::Graph { class_id, graph_id, .. } => {
-                let (node_id, class_id) = self.graphs.get_mut(&graph_id).unwrap().push(
+                let (_, class_id) = self.graphs[graph_id].push(
                     Node::Reduce { x: class_id, bop: rop, axes: axes.into_boxed_slice() },
                     shape_id,
                     dtype,
                 );
                 let tid =
-                    self.tensors.push(TensorData { shape_id, dtype, state: TensorState::Graph { node_id, class_id, rc: 1, graph_id } });
+                    self.tensors.push(TensorData { shape_id, dtype, state: TensorState::Graph { class_id, rc: 1, graph_id } });
                 #[cfg(feature = "debug_tensor_op")]
                 println!("  -> tid={tid}, nid={node_id:?}, cid={class_id:?}");
                 Ok(tid)
@@ -715,10 +711,10 @@ impl Runtime {
 
         match self.tensors[x].state {
             TensorState::Graph { class_id, graph_id, .. } => {
-                let (node_id, class_id) =
-                    self.graphs.get_mut(&graph_id).unwrap().push(Node::Reshape { x: class_id, shape: shape_id }, shape_id, dtype);
+                let (_, class_id) =
+                    self.graphs[graph_id].push(Node::Reshape { x: class_id, shape: shape_id }, shape_id, dtype);
                 let tid =
-                    self.tensors.push(TensorData { shape_id, dtype, state: TensorState::Graph { node_id, class_id, rc: 1, graph_id } });
+                    self.tensors.push(TensorData { shape_id, dtype, state: TensorState::Graph { class_id, rc: 1, graph_id } });
                 #[cfg(feature = "debug_tensor_op")]
                 println!("  -> tid={tid}, nid={node_id:?}, cid={class_id:?}");
                 tid
@@ -790,10 +786,10 @@ impl Runtime {
 
         match self.tensors[x].state {
             TensorState::Graph { class_id, graph_id, .. } => {
-                let (node_id, class_id) =
-                    self.graphs.get_mut(&graph_id).unwrap().push(Node::Expand { x: class_id, shape: shape_id }, shape_id, dtype);
+                let (_, class_id) =
+                    self.graphs[graph_id].push(Node::Expand { x: class_id, shape: shape_id }, shape_id, dtype);
                 let tid =
-                    self.tensors.push(TensorData { shape_id, dtype, state: TensorState::Graph { node_id, class_id, rc: 1, graph_id } });
+                    self.tensors.push(TensorData { shape_id, dtype, state: TensorState::Graph { class_id, rc: 1, graph_id } });
                 #[cfg(feature = "debug_tensor_op")]
                 println!("  -> tid={tid}, nid={node_id:?}, cid={class_id:?}");
                 Ok(tid)
@@ -843,13 +839,13 @@ impl Runtime {
 
         match self.tensors[x].state {
             TensorState::Graph { class_id, graph_id, .. } => {
-                let (node_id, class_id) = self.graphs.get_mut(&graph_id).unwrap().push(
+                let (_, class_id) = self.graphs[graph_id].push(
                     Node::Permute { x: class_id, axes: axes.into_boxed_slice() },
                     shape_id,
                     dtype,
                 );
                 let tid =
-                    self.tensors.push(TensorData { shape_id, dtype, state: TensorState::Graph { node_id, class_id, rc: 1, graph_id } });
+                    self.tensors.push(TensorData { shape_id, dtype, state: TensorState::Graph { class_id, rc: 1, graph_id } });
                 #[cfg(feature = "debug_tensor_op")]
                 println!("  -> tid={tid}, nid={node_id:?}, cid={class_id:?}");
                 tid
@@ -887,13 +883,13 @@ impl Runtime {
 
         match self.tensors[x].state {
             TensorState::Graph { class_id, graph_id, .. } => {
-                let (node_id, class_id) = self.graphs.get_mut(&graph_id).unwrap().push(
+                let (_, class_id) = self.graphs[graph_id].push(
                     Node::PadZeros { x: class_id, padding: padding.into_boxed_slice() },
                     shape_id,
                     dtype,
                 );
                 let tid =
-                    self.tensors.push(TensorData { shape_id, dtype, state: TensorState::Graph { node_id, class_id, rc: 1, graph_id } });
+                    self.tensors.push(TensorData { shape_id, dtype, state: TensorState::Graph { class_id, rc: 1, graph_id } });
                 #[cfg(feature = "debug_tensor_op")]
                 println!("  -> tid={tid}, nid={node_id:?}, cid={class_id:?}");
                 tid
