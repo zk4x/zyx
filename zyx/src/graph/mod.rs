@@ -494,7 +494,8 @@ impl Graph {
             let node_ids: Vec<NodeId> = self.classes[cid].nodes.iter().copied().collect();
             for &nid in &node_ids {
                 let (device_id, inputs) = match &self.nodes[nid].node {
-                    Node::Kernel { program_id, inputs, .. } if program_id.device.0 != u32::MAX => {
+                    Node::Kernel { program_id, inputs, .. } => {
+                        debug_assert_ne!(program_id.device, DeviceId::NULL);
                         (program_id.device, inputs.clone())
                     }
                     _ => continue,
@@ -525,20 +526,24 @@ impl Graph {
                             new_inputs[i] = to_cid;
                         }
                     } else {
-                        debug_assert!(
-                            self.classes[input_cid].nodes.iter().any(|&inid| matches!(&self.nodes[inid].node, Node::Leaf { .. })),
-                            "input must be from a kernel or a realized tensor"
-                        );
-                        let tid = self.leaf_map[&input_cid];
-                        let leaf_pool = buffer_map[&tid].pool;
-                        if leaf_pool != dev_pool {
-                            let new_inputs = new_inputs.get_or_insert_with(|| inputs.clone());
-                            let (_, to_cid) = self.push(
-                                Node::ToDevice { x: input_cid, device: device_id, time: 0 },
-                                self.classes[input_cid].shape,
-                                self.classes[input_cid].dtype,
+                        let already_on_device = self.classes[input_cid].nodes.iter().any(|&inid|
+                            matches!(&self.nodes[inid].node, Node::ToDevice { device: d, .. } if *d == device_id));
+                        if !already_on_device {
+                            debug_assert!(
+                                self.classes[input_cid].nodes.iter().any(|&inid| matches!(&self.nodes[inid].node, Node::Leaf { .. })),
+                                "input must be from a kernel or a realized tensor"
                             );
-                            new_inputs[i] = to_cid;
+                            let tid = self.leaf_map[&input_cid];
+                            let leaf_pool = buffer_map[&tid].pool;
+                            if leaf_pool != dev_pool {
+                                let new_inputs = new_inputs.get_or_insert_with(|| inputs.clone());
+                                let (_, to_cid) = self.push(
+                                    Node::ToDevice { x: input_cid, device: device_id, time: 0 },
+                                    self.classes[input_cid].shape,
+                                    self.classes[input_cid].dtype,
+                                );
+                                new_inputs[i] = to_cid;
+                            }
                         }
                     }
                 }
