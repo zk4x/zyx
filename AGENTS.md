@@ -429,7 +429,7 @@ When investigating a crash (segfault, signal, etc.):
 
 **Every user message: before writing ANY tool call, check if the message contains a `?`.**
 
-**If YES → you may use grep and read tools, but do NOT use bash, edit, or write tools. You may read files and search for patterns to answer the question, but not execute commands or modify files.**
+**If YES → answer the question concisely and stop. Do NOT edit/write files. You may still use any tools (bash, grep, read, etc.) to gather information needed to answer well. Just don't modify files.**
 
 **If NO → proceed normally.**
 
