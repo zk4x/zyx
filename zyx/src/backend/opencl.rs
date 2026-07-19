@@ -478,9 +478,11 @@ pub(super) fn initialize_device(
                                 }
                                 .check(ErrorStatus::Deinitialization);
                             }
-                            let _ = unsafe { clReleaseMemObject(buffer.buffer) }.check(ErrorStatus::Deinitialization);
-                            free_bytes_atomic.fetch_add(buffer.bytes, Ordering::SeqCst);
-                            buffers.remove(buffer_id);
+                            if buffers.contains_key(buffer_id) {
+                                let _ = unsafe { clReleaseMemObject(buffer.buffer) }.check(ErrorStatus::Deinitialization);
+                                free_bytes_atomic.fetch_add(buffer.bytes, Ordering::SeqCst);
+                                buffers.remove(buffer_id);
+                            }
                         }
                         Command::HostToPool { src, bytes, dst, event_wait_list, reply } => {
                             let dst = &buffers[dst];
