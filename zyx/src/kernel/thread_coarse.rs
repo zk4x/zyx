@@ -77,7 +77,7 @@ impl Kernel {
             if let Op::Index { len, scope, .. } = self.ops[op_id].op {
                 if scope == Scope::Global {
                     for f in [32, 16, 8, 4] {
-                        let f = f as u64;
+                        //println!("len={len} f={f}");
                         if len.is_multiple_of(f) {
                             factors.push((op_id, f));
                         }

@@ -405,7 +405,7 @@ impl Kernel {
         kernel.run_always_on_optimizations();
 
         let (opt, _) = kernel.opt_thread_coarse();
-        opt.apply(&mut kernel, 1);
+        opt.apply(&mut kernel, 0);
         kernel.run_always_on_optimizations();
 
         kernel.vectorize_loads(&[32]);
