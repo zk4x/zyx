@@ -655,7 +655,7 @@ impl MemoryPool {
             MemoryPool::Disk(disk_memory_pool) => todo!(),
             MemoryPool::Host(memory_pool) => todo!(),
             MemoryPool::CUDA(memory_pool) => memory_pool.pool_to_pool(src_pool, src, dst, event_wait_list)?,
-            MemoryPool::OpenCL(memory_pool) => todo!(),
+            MemoryPool::OpenCL(memory_pool) => memory_pool.pool_to_pool(src_pool, src, dst, event_wait_list)?,
             MemoryPool::HIP(hipmemory_pool) => todo!(),
             MemoryPool::Vulkan(vulkan_memory_pool) => todo!(),
         };

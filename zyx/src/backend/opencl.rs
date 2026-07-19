@@ -742,6 +742,13 @@ impl OpenCLMemoryPool {
         reply_rx.recv().unwrap().map(Event::OpenCL)
     }
 
+    pub fn pool_to_pool(&mut self, src_pool: &mut MemoryPool, src: PoolBufferId, dst: PoolBufferId, event_wait_list: Vec<Event>) -> Result<Event, BackendError> {
+        match src_pool {
+            MemoryPool::Host(src_pool) => self.host_to_pool(src_pool.get_buffer(src), dst, event_wait_list),
+            _ => todo!(),
+        }
+    }
+
     pub fn pool_to_host(&mut self, src: PoolBufferId, dst: &mut [u8], event_wait_list: Vec<Event>) -> Result<(), BackendError> {
         let event_wait_list = event_wait_list
             .into_iter()
