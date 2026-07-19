@@ -657,7 +657,7 @@ impl MemoryPool {
             MemoryPool::CUDA(memory_pool) => memory_pool.pool_to_pool(src_pool, src, dst, event_wait_list)?,
             MemoryPool::OpenCL(memory_pool) => memory_pool.pool_to_pool(src_pool, src, dst, event_wait_list)?,
             MemoryPool::HIP(hipmemory_pool) => todo!(),
-            MemoryPool::Vulkan(vulkan_memory_pool) => todo!(),
+            MemoryPool::Vulkan(vulkan_memory_pool) => vulkan_memory_pool.pool_to_pool(src_pool, src, dst, event_wait_list)?,
         };
         Ok(event)
     }

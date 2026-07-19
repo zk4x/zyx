@@ -438,6 +438,18 @@ impl VulkanMemoryPool {
         self.tx.send(VulkanCommand::HostToPool { src: src.as_ptr(), bytes: src.len(), dst, event_wait_list, reply }).unwrap();
         rx.recv().unwrap()
     }
+    pub(super) fn pool_to_pool(
+        &mut self,
+        src_pool: &mut MemoryPool,
+        src: PoolBufferId,
+        dst: PoolBufferId,
+        event_wait_list: Vec<Event>,
+    ) -> Result<Event, BackendError> {
+        match src_pool {
+            MemoryPool::Host(src_pool) => self.host_to_pool(src_pool.get_buffer(src), dst, event_wait_list),
+            _ => todo!(),
+        }
+    }
     pub(super) fn pool_to_host(
         &mut self,
         src: PoolBufferId,
