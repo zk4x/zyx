@@ -152,12 +152,32 @@ impl CompiledKernel {
         let mut event_wait_list = Vec::new();
         for input in inputs {
             let buf_id = rt.buffer_map[&input.id];
-            input_bufs.push(buf_id.buffer);
-            all_bufs.insert(buf_id);
-            let keys: Vec<BTreeSet<BufferId>> = rt.events.keys().filter(|k| k.contains(&buf_id)).cloned().collect();
-            for key in keys {
-                event_wait_list.push(rt.events.remove(&key).unwrap());
-            }
+            let dev_buf_id = if buf_id.pool != pool_id {
+                let mut pool_events = Vec::new();
+                let keys: Vec<BTreeSet<BufferId>> = rt.events.keys().filter(|k| k.contains(&buf_id)).cloned().collect();
+                for key in keys {
+                    pool_events.push(rt.events.remove(&key).unwrap());
+                }
+                let dtype = rt.tensors[input.id].dtype;
+                let bytes = (rt.shape(input.id).iter().product::<Dim>() * dtype.bit_size() as Dim + 7) / 8;
+                let (dev_buf, alloc_ev) = rt.pools[pool_id].allocate(bytes)?;
+                pool_events.push(alloc_ev);
+                let dev_buf_id = BufferId { pool: pool_id, buffer: dev_buf };
+                let src_pool_ptr: *mut MemoryPool = &mut rt.pools[buf_id.pool];
+                let copy_ev = rt.pools[pool_id].pool_to_pool(unsafe { &mut *src_pool_ptr }, buf_id.buffer, dev_buf_id.buffer, pool_events)?;
+                event_wait_list.push(copy_ev);
+                dev_buf_id
+            } else {
+                input_bufs.push(buf_id.buffer);
+                all_bufs.insert(buf_id);
+                let keys: Vec<BTreeSet<BufferId>> = rt.events.keys().filter(|k| k.contains(&buf_id)).cloned().collect();
+                for key in keys {
+                    event_wait_list.push(rt.events.remove(&key).unwrap());
+                }
+                continue;
+            };
+            input_bufs.push(dev_buf_id.buffer);
+            all_bufs.insert(dev_buf_id);
         }
 
         let mut output_bufs = Vec::new();

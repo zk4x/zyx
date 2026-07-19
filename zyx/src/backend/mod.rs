@@ -642,6 +642,11 @@ impl MemoryPool {
         }
     }
 
+    /// Copy data from src to dst pool
+    pub fn pool_to_pool(&mut self, src_pool: &mut MemoryPool, src: PoolBufferId, dst: PoolBufferId, event_wait_list: Vec<Event>) -> Result<Event, BackendError> {
+        todo!()
+    }
+
     /// Wait for GPU events to complete, then drop them. Blocking.
     /// Used after host_to_pool or test-launch to ensure data is fully transferred.
     pub fn sync_events(&mut self, events: Vec<Event>) -> Result<(), BackendError> {
