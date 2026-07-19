@@ -54,7 +54,7 @@ use std::hash::{Hash, Hasher};
 /// config time and apply time, so OpIds remain valid through apply.
 type OptConfigFn = fn(&Kernel, &DeviceInfo) -> (Optimization, usize);
 
-const AVAILABLE_OPTIMIZATIONS: [OptConfigFn; 7] = [
+const AVAILABLE_OPTIMIZATIONS: [OptConfigFn; 8] = [
     |k, _| Kernel::opt_reassociate_commutative(k),
     Kernel::opt_split_global_to_local,
     |k, _| Kernel::opt_thread_coarse(k),
@@ -62,7 +62,7 @@ const AVAILABLE_OPTIMIZATIONS: [OptConfigFn; 7] = [
     Kernel::opt_local_reduce,
     |k, _| Kernel::opt_split_loop(k),
     //|k, _| Kernel::opt_pad_index(k),
-    //Kernel::opt_vectorize,
+    Kernel::opt_vectorize,
     |k, _| Kernel::opt_merge_nested_loops(k),
 ];
 
