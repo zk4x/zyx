@@ -174,7 +174,7 @@ pub(super) fn initialize_device(
             warp_size: 32,
             supported_dtype_ops,
             has_native_exp2: true,
-            has_vector_ops: true,
+            supported_vec_lens: vec![2, 3, 4],
         },
         memory_pool_id: PoolId::from(usize::from(memory_pools.len()) - 1),
         programs: Slab::new(),

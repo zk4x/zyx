@@ -278,7 +278,7 @@ pub(super) fn initialize_device(
                 warp_size: 64,
                 supported_dtype_ops: [OpCapability::all(); DType::N_DTYPES],
                 has_native_exp2: true,
-                has_vector_ops: true,
+                supported_vec_lens: vec![2, 4],
             },
             streams,
             programs: Slab::new(),
@@ -322,7 +322,7 @@ pub(super) fn initialize_device(
                 .unwrap(),
             supported_dtype_ops: [OpCapability::all(); DType::N_DTYPES],
             has_native_exp2: true,
-            has_vector_ops: true,
+            supported_vec_lens: vec![2, 4],
         };
         devices.push(Device::HIP(dev));
         //queues,
