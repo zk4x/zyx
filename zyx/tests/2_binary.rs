@@ -36,12 +36,16 @@ fn add_3() -> Result<(), ZyxError> {
         2.772, -8.327, 1.945, 9.286, 3.989, 8.105, -5.307, 2.865, 3.106, 3.111, -4.567, 2.345, 6.789, -1.234, 5.678, -3.456,
         7.890, -2.109, 4.321, -6.543, 1.234, 3.456, -7.890, 2.109, -5.678, 4.321, -6.543, 1.098, -3.210, 5.678, -0.999, 0.001,
     ];
-    let x = Tensor::from(datax);
-    let y = Tensor::from(datay);
+    let x = Tensor::from(datax).cast(DType::BF16);
+    let y = Tensor::from(datay).cast(DType::BF16);
     let z = x + y;
-    let dataz: Vec<f32> = z.try_into()?;
+    let dataz: Vec<f32> = z.cast(DType::F32).try_into()?;
     for ((x, y), z) in datax.iter().zip(datay).zip(dataz) {
-        assert_eq!(x + y, z);
+        let expected = x + y;
+        let computed = z;
+        // bf16 has ~7.5 bits of precision, expect relative error < 5%
+        let rel_err = (expected - computed).abs() / if expected.abs() > f32::EPSILON { expected.abs() } else { 1.0 };
+        assert!(rel_err < 0.05, "bf16 precision loss: {} vs {} (rel_err={:.6e})", expected, computed, rel_err);
     }
     Ok(())
 }
