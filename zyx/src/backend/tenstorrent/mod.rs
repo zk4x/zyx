@@ -974,9 +974,9 @@ impl TTDevice {
 
     pub fn compile(&mut self, kernel: &Kernel, debug_asm: bool) -> Result<DeviceProgramId, BackendError> {
         let hash = format!("{:016x}", kernel.get_hash());
-        let (_source, n_inputs, n_outputs, dtype) = generate_compute_kernel(kernel)?;
+        let (source, n_inputs, n_outputs, dtype) = generate_compute_kernel(kernel)?;
         if debug_asm {
-            eprintln!("[tenstorrent] compile hash={hash} n_inputs={n_inputs} n_outputs={n_outputs}");
+            eprintln!("[tenstorrent] === kernel source ===\n{source}\n=== end kernel source ===");
         }
         // Cache file written by the C++ runtime on first use; we just track metadata.
         let prog_id = self.programs.push(TTProgram { hash, n_inputs, n_outputs, dtype });
