@@ -14,6 +14,7 @@
 #include <cstdint>
 #include <cstdlib>
 #include <iostream>
+#include <sstream>
 #include <string>
 #include <vector>
 
@@ -27,7 +28,21 @@ using namespace tt::tt_metal;
 using namespace tt::tt_metal::distributed;
 
 constexpr uint32_t TILE_ELEMS = tt::constants::TILE_WIDTH * tt::constants::TILE_HEIGHT; // 1024
-constexpr uint32_t TILE_BYTES = sizeof(bfloat16) * TILE_ELEMS;                           // 2048
+constexpr uint32_t TILE_BYTES_BF16 = sizeof(bfloat16) * TILE_ELEMS;                      // 2048
+
+// ---------------------------------------------------------------------------
+// Helper: parse DataFormat from integer (matches Rust DataFormat enum)
+// ---------------------------------------------------------------------------
+
+static DataFormat int_to_data_format(uint32_t df) {
+    switch (df) {
+        case 0: return DataFormat::Float32;
+        case 1: return DataFormat::Float16;
+        case 2: return DataFormat::Float16_b;
+        case 3: return DataFormat::Bfp8;
+        default: return DataFormat::Float32;
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Cache directory resolution (XDG convention, like zyx C backend)
@@ -91,6 +106,12 @@ static uint64_t extract_u64(const string& json, const string& key) {
     return stoull(json.substr(start), &end);
 }
 
+// Extract NOC address from "srcN" key (e.g. src0, src1)
+static uint64_t extract_src_noc(const string& json, uint32_t idx) {
+    string key = "src" + to_string(idx);
+    return extract_u64(json, key);
+}
+
 // ---------------------------------------------------------------------------
 // Main IPC loop
 // ---------------------------------------------------------------------------
@@ -147,47 +168,70 @@ int main() {
             }
 
             string hash = extract_str(line, "hash");
+            uint32_t n_inputs = extract_u32(line, "n_inputs");
+            uint32_t n_outputs = extract_u32(line, "n_outputs");
             uint32_t n_tiles = extract_u32(line, "n_tiles");
-            uint64_t src_noc = extract_u64(line, "src_noc");
-            uint64_t dst_noc = extract_u64(line, "dst_noc");
+            uint32_t data_format = extract_u32(line, "data_format");
+            uint32_t tile_bytes = extract_u32(line, "tile_bytes");
+
+            (void)n_outputs; // only single output supported for now
 
             if (hash.empty()) {
                 cout << R"({"status":"error","msg":"missing hash"})" << endl;
                 continue;
             }
+            if (n_inputs == 0) n_inputs = 1;
             if (n_tiles == 0) n_tiles = 1;
 
             try {
-                // --- Create program (fresh each run; JIT build cache avoids recompilation) ---
+                // --- Create program ---
                 Program program = CreateProgram();
                 CoreCoord core = {0, 0};
 
-                // Circular buffers (input = c_0, output = c_16)
-                CreateCircularBuffer(program, core,
-                    CircularBufferConfig(2 * TILE_BYTES, {{CBIndex::c_0, DataFormat::Float16_b}})
-                        .set_page_size(CBIndex::c_0, TILE_BYTES));
-                CreateCircularBuffer(program, core,
-                    CircularBufferConfig(2 * TILE_BYTES, {{CBIndex::c_16, DataFormat::Float16_b}})
-                        .set_page_size(CBIndex::c_16, TILE_BYTES));
+                // Collect all src NOC addresses
+                vector<uint64_t> src_nocs;
+                for (uint32_t i = 0; i < n_inputs; i++) {
+                    uint64_t noc = extract_src_noc(line, i);
+                    src_nocs.push_back(noc);
+                }
+                uint64_t dst_noc = extract_u64(line, "dst0");
 
-                // Reader kernel (static) — reads from src_noc DRAM → CB
-                string reader_path = kernel_dir + "/reader.cpp";
+                DataFormat df = int_to_data_format(data_format);
                 vector<uint32_t> empty_args;
-                KernelHandle reader_id = CreateKernel(program, reader_path, core,
+
+                // --- Create circular buffers ---
+                // Input CBs c_0 .. c_{n_inputs-1}
+                for (uint32_t i = 0; i < n_inputs; i++) {
+                    uint32_t cb_idx = static_cast<uint32_t>(CBIndex::c_0) + i;
+                    CreateCircularBuffer(program, core,
+                        CircularBufferConfig(2 * tile_bytes, {{static_cast<uint8_t>(cb_idx), df}})
+                            .set_page_size(static_cast<uint8_t>(cb_idx), tile_bytes));
+                }
+                // Output CB c_16
+                CreateCircularBuffer(program, core,
+                    CircularBufferConfig(2 * tile_bytes, {{CBIndex::c_16, df}})
+                        .set_page_size(CBIndex::c_16, tile_bytes));
+
+                // --- Combined data mover kernel (reads inputs, writes output) on NOC 0 ---
+                // Args: n_srcs, then for each input, (src_noc_low, src_noc_high), then (dst_noc_low, dst_noc_high), then n_tiles
+                vector<uint32_t> dm_args;
+                dm_args.push_back(n_inputs);
+                for (auto noc : src_nocs) {
+                    dm_args.push_back(static_cast<uint32_t>(noc & 0xFFFFFFFF));
+                    dm_args.push_back(static_cast<uint32_t>(noc >> 32));
+                }
+                dm_args.push_back(static_cast<uint32_t>(dst_noc & 0xFFFFFFFF));
+                dm_args.push_back(static_cast<uint32_t>(dst_noc >> 32));
+                dm_args.push_back(n_tiles);
+
+                string dm_path = kernel_dir + "/data_mover.cpp";
+                KernelHandle dm_id = CreateKernel(program, dm_path, core,
                     DataMovementConfig{
                         .processor = DataMovementProcessor::RISCV_1,
                         .noc = NOC::RISCV_1_default,
                         .compile_args = empty_args});
 
-                // Writer kernel (static) — writes from CB → dst_noc DRAM
-                string writer_path = kernel_dir + "/writer.cpp";
-                KernelHandle writer_id = CreateKernel(program, writer_path, core,
-                    DataMovementConfig{
-                        .processor = DataMovementProcessor::RISCV_0,
-                        .noc = NOC::RISCV_0_default,
-                        .compile_args = empty_args});
-
-                // Compute kernel (generated per hash)
+                // --- Compute kernel (generated per hash) ---
                 string compute_path = cache_dir + "/" + hash + ".cpp";
                 KernelHandle compute_id = CreateKernel(program, compute_path, core,
                     ComputeConfig{
@@ -195,17 +239,7 @@ int main() {
                         .math_approx_mode = false});
 
                 // --- Set runtime args ---
-                // Reader: (src_noc_low, src_noc_high, n_tiles)
-                SetRuntimeArgs(program, reader_id, core, {
-                    (uint32_t)(src_noc & 0xFFFFFFFF),
-                    (uint32_t)(src_noc >> 32),
-                    n_tiles});
-                // Writer: (dst_noc_low, dst_noc_high, n_tiles)
-                SetRuntimeArgs(program, writer_id, core, {
-                    (uint32_t)(dst_noc & 0xFFFFFFFF),
-                    (uint32_t)(dst_noc >> 32),
-                    n_tiles});
-                // Compute: (n_tiles)
+                SetRuntimeArgs(program, dm_id, core, dm_args);
                 SetRuntimeArgs(program, compute_id, core, {n_tiles});
 
                 // --- Enqueue and run ---

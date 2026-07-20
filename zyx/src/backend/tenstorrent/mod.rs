@@ -330,9 +330,9 @@
 
 use super::{Device, DeviceId, DeviceInfo, DeviceProgramId, Event, Kernel, MemoryPool, OpCapability, PoolBufferId, PoolId};
 use crate::{
-    DType,
+    DType, Map,
     error::{BackendError, ErrorStatus},
-    kernel::{Op, UOp},
+    kernel::{BOp, MemLayout, Op, OpId, Scope, UOp},
     shape::Dim,
     slab::Slab,
 };
@@ -362,6 +362,9 @@ const fn ioctl_code(nr: u32) -> u64 {
 
 const TENSTORRENT_IOCTL_GET_DEVICE_INFO: u64 = ioctl_code(0);
 const TENSTORRENT_IOCTL_ALLOCATE_DMA_BUF: u64 = ioctl_code(3);
+
+/// Flag: allocate buffer with NOC DMA access (reader/writer kernels can access via NOC)
+const TENSTORRENT_ALLOCATE_DMA_BUF_NOC_DMA: u8 = 2;
 
 /// Linux page size (used for DMA buf alignment)
 const PAGE_SIZE: u32 = 4096;
@@ -678,7 +681,7 @@ impl TTMemoryPool {
             inn: TTAllocateDmaBufIn {
                 requested_size: page_aligned,
                 buf_index,
-                flags: 1, // NOC DMA enabled — device reader/writer kernels access this buffer via NOC
+                flags: TENSTORRENT_ALLOCATE_DMA_BUF_NOC_DMA,
                 reserved0: [0; 2],
                 reserved1: [0; 2],
             },
@@ -721,6 +724,11 @@ impl TTMemoryPool {
 
         let buf = TTBuffer { file: buf_file, mmap_ptr, size: actual_size, noc_address: alloc.out.noc_address, buf_index };
 
+        if std::env::var("ZYX_DEBUG").as_deref().unwrap_or("0").parse::<u8>().unwrap_or(0) & 1 != 0 {
+            eprintln!("[tenstorrent] DMA buf #{buf_index}: size={actual_size} noc=0x{:016x} mmap_offset=0x{:x}",
+                alloc.out.noc_address, alloc.out.mapping_offset);
+        }
+
         let id = self.buffers.push(buf);
         Ok((id, Event::TT(TTEvent)))
     }
@@ -743,6 +751,7 @@ impl TTMemoryPool {
         let len = src.len().min(buf.size as usize);
         unsafe {
             ptr::copy_nonoverlapping(src.as_ptr(), buf.mmap_ptr, len);
+            core::arch::asm!("sfence", options(nostack));
         }
         Ok(Event::TT(TTEvent))
     }
@@ -951,8 +960,12 @@ impl RuntimeProcess {
         })
     }
 
-    fn run(&mut self, hash: &str, n_tiles: u32, src_noc: u64, dst_noc: u64) -> Result<(), BackendError> {
-        let cmd = format!(r#"{{"cmd":"run","hash":"{hash}","n_tiles":{n_tiles},"src_noc":{src_noc},"dst_noc":{dst_noc}}}"#);
+    fn run(&mut self, hash: &str, n_inputs: usize, n_outputs: usize, data_format: u32, tile_bytes: u32, n_tiles: u32, src_nocs: &[u64], dst_noc: u64) -> Result<(), BackendError> {
+        let mut cmd = format!(r#"{{"cmd":"run","hash":"{hash}","n_inputs":{n_inputs},"n_outputs":{n_outputs},"n_tiles":{n_tiles},"data_format":{data_format},"tile_bytes":{tile_bytes},"dst0":{dst_noc}"#);
+        for (i, noc) in src_nocs.iter().enumerate() {
+            cmd.push_str(&format!(r#","src{i}":{noc}"#));
+        }
+        cmd.push('}');
         self.send(&cmd)?;
         let resp = self.recv_with_timeout(self.timeout_ms)?;
         if resp.contains("\"error\"") {
@@ -999,6 +1012,9 @@ fn extract_json_str(json: &str, key: &str) -> Option<String> {
 #[derive(Debug)]
 struct TTProgram {
     hash: String,
+    n_inputs: usize,
+    n_outputs: usize,
+    dtype: DType,
 }
 
 // ---------------------------------------------------------------------------
@@ -1056,26 +1072,21 @@ impl TTDevice {
             }
         }
 
-        // Check disk cache
-        let compute_path = self.cache_dir.join(format!("{hash}.cpp"));
-        if !compute_path.exists() {
-            if debug_asm {
-                eprintln!("[tenstorrent] generating {hash}.cpp");
-            }
-            let source = generate_compute_kernel(kernel)?;
-            fs::create_dir_all(&self.cache_dir).map_err(|e| BackendError {
-                status: ErrorStatus::KernelCompilation,
-                context: format!("create cache dir: {e}").into(),
-            })?;
-            fs::write(&compute_path, &source).map_err(|e| BackendError {
-                status: ErrorStatus::KernelCompilation,
-                context: format!("write {hash}.cpp: {e}").into(),
-            })?;
-        } else if debug_asm {
-            eprintln!("[tenstorrent] using cached {hash}.cpp");
+        let (source, n_inputs, n_outputs, dtype) = generate_compute_kernel(kernel)?;
+        if debug_asm {
+            eprintln!("[tenstorrent] compute kernel:\n{source}");
         }
+        let compute_path = self.cache_dir.join(format!("{hash}.cpp"));
+        fs::create_dir_all(&self.cache_dir).map_err(|e| BackendError {
+            status: ErrorStatus::KernelCompilation,
+            context: format!("create cache dir: {e}").into(),
+        })?;
+        fs::write(&compute_path, &source).map_err(|e| BackendError {
+            status: ErrorStatus::KernelCompilation,
+            context: format!("write {hash}.cpp: {e}").into(),
+        })?;
 
-        let prog_id = self.programs.push(TTProgram { hash });
+        let prog_id = self.programs.push(TTProgram { hash, n_inputs, n_outputs, dtype });
         Ok(prog_id)
     }
 
@@ -1104,33 +1115,36 @@ impl TTDevice {
             .as_mut()
             .ok_or_else(|| BackendError { status: ErrorStatus::KernelLaunch, context: "runtime not initialized".into() })?;
 
-        // args: first half are inputs, second half are outputs
-        // The scheduler convention is: loads first, then stores
-        let n_inputs = args.len() / 2;
-        if n_inputs == 0 || args.len() < 2 {
+        // Get NOC addresses for all input buffers and the first output buffer
+        let n_inputs = prog.n_inputs;
+        let n_outputs = prog.n_outputs;
+
+        if args.len() < n_inputs + n_outputs {
             return Err(BackendError {
                 status: ErrorStatus::KernelLaunch,
-                context: format!("expected at least 2 buffers, got {}", args.len()).into(),
+                context: format!("expected {} buffers, got {}", n_inputs + n_outputs, args.len()).into(),
             });
         }
 
-        // Use first input buffer and first output buffer
-        let src_buf = args[0];
+        let mut src_nocs: Vec<u64> = Vec::with_capacity(n_inputs);
+        for i in 0..n_inputs {
+            let noc = memory_pool
+                .noc_address(args[i])
+                .map_err(|e| BackendError { status: ErrorStatus::KernelLaunch, context: format!("src{i} noc address: {e}").into() })?;
+            src_nocs.push(noc);
+        }
         let dst_buf = args[n_inputs];
-
-        let src_noc = memory_pool
-            .noc_address(src_buf)
-            .map_err(|e| BackendError { status: ErrorStatus::KernelLaunch, context: format!("src noc address: {e}").into() })?;
         let dst_noc = memory_pool
             .noc_address(dst_buf)
             .map_err(|e| BackendError { status: ErrorStatus::KernelLaunch, context: format!("dst noc address: {e}").into() })?;
 
-        // Count tiles from buffer size (round up to tile boundary)
+        // Count tiles from first input buffer size (round up to tile boundary)
         let src_bytes = memory_pool
-            .buffer_size(src_buf)
+            .buffer_size(args[0])
             .map_err(|e| BackendError { status: ErrorStatus::KernelLaunch, context: format!("src buffer size: {e}").into() })?;
-        let tile_bytes: u64 = 2048; // TILE_ELEMS * sizeof(bfloat16) = 1024 * 2
-        let n_tiles = ((src_bytes + tile_bytes - 1) / tile_bytes) as u32;
+        let data_format = dtype_to_data_format(prog.dtype);
+        let tile_bytes = dtype_to_tile_bytes(prog.dtype) as u32;
+        let n_tiles = ((src_bytes + tile_bytes as u64 - 1) / tile_bytes as u64) as u32;
         if n_tiles == 0 {
             return Err(BackendError { status: ErrorStatus::KernelLaunch, context: "empty buffer".into() });
         }
@@ -1139,7 +1153,7 @@ impl TTDevice {
         let kernel_timeout_ms = 60000;
         rt.set_timeout(kernel_timeout_ms);
 
-        rt.run(&prog.hash, n_tiles, src_noc, dst_noc)
+        rt.run(&prog.hash, n_inputs, n_outputs, data_format, tile_bytes, n_tiles, &src_nocs, dst_noc)
             .map_err(|e| BackendError { status: ErrorStatus::KernelLaunch, context: format!("runtime run: {e}").into() })?;
 
         // Reset timeout to default
@@ -1157,6 +1171,45 @@ struct SfpuInfo {
     header: &'static str,
     init_fn: &'static str,
     tile_fn: &'static str,
+}
+
+fn dtype_to_data_format(dtype: DType) -> u32 {
+    match dtype {
+        DType::F32 => 0,        // DataFormat::Float32
+        DType::F16 => 1,        // DataFormat::Float16
+        DType::BF16 => 2,       // DataFormat::Float16_b
+        _ => 0,                 // default Float32
+    }
+}
+
+fn dtype_to_tile_bytes(dtype: DType) -> u64 {
+    let tile_elems: u64 = 1024; // TILE_WIDTH * TILE_HEIGHT
+    match dtype {
+        DType::F32 => 4 * tile_elems,   // 4096
+        DType::F16 | DType::BF16 => 2 * tile_elems, // 2048
+        _ => 4 * tile_elems,
+    }
+}
+
+fn bop_to_binary_sfpu(bop: BOp) -> Result<(&'static str, &'static str, &'static str), BackendError> {
+    match bop {
+        BOp::Add => Ok(("add_binary_tile", "add_binary_tile_init", "api/compute/eltwise_binary_sfpu.h")),
+        BOp::Sub => Ok(("sub_binary_tile", "sub_binary_tile_init", "api/compute/eltwise_binary_sfpu.h")),
+        BOp::Mul => Ok(("mul_binary_tile", "mul_binary_tile_init", "api/compute/eltwise_binary_sfpu.h")),
+        BOp::Div => Ok(("div_binary_tile", "div_binary_tile_init", "api/compute/eltwise_binary_sfpu.h")),
+        BOp::Pow => Ok(("power_binary_tile", "power_binary_tile_init", "api/compute/eltwise_binary_sfpu.h")),
+        BOp::Eq => Ok(("eq_binary_tile", "eq_binary_tile_init", "api/compute/eltwise_binary_sfpu.h")),
+        BOp::NotEq => Ok(("ne_binary_tile", "ne_binary_tile_init", "api/compute/eltwise_binary_sfpu.h")),
+        BOp::Cmplt => Ok(("lt_binary_tile", "lt_binary_tile_init", "api/compute/eltwise_binary_sfpu.h")),
+        BOp::Max => Err(BackendError {
+            status: ErrorStatus::KernelCompilation,
+            context: "Max binary op not yet supported for Tenstorrent (add an IR optimization pass)".into(),
+        }),
+        _ => Err(BackendError {
+            status: ErrorStatus::KernelCompilation,
+            context: format!("unsupported binary op {bop:?} for Tenstorrent (add an IR optimization pass)").into(),
+        }),
+    }
 }
 
 fn uop_to_sfpu(uop: UOp) -> Result<SfpuInfo, BackendError> {
@@ -1193,54 +1246,137 @@ fn uop_to_sfpu(uop: UOp) -> Result<SfpuInfo, BackendError> {
     }
 }
 
-fn generate_compute_kernel(kernel: &Kernel) -> Result<String, BackendError> {
-    // Walk the IR to find the first supported unary op
-    let mut uop = None;
+fn generate_compute_kernel(kernel: &Kernel) -> Result<(String, usize, usize, DType), BackendError> {
+    let mut n_inputs: usize = 0;
+    let mut n_outputs: usize = 0;
+    let mut wait_body = String::new();
+    let mut math_body = String::new();
+    let mut pack_body = String::new();
+    let mut pop_body = String::new();
+    let mut includes = vec!["api/compute/cb_api.h", "api/compute/tile_move_copy.h"];
+
+    // First pass: count inputs and outputs
     let mut op_id = kernel.head;
     while !op_id.is_null() {
         match kernel.at(op_id) {
-            Op::Unary { uop: op, .. } => {
-                uop = Some(*op);
-                break;
+            Op::Define { scope: Scope::Global, ro, .. } => {
+                if *ro { n_inputs += 1; } else { n_outputs += 1; }
             }
             _ => {}
         }
         op_id = kernel.next_op(op_id);
     }
 
-    let sfpu = uop_to_sfpu(uop.ok_or_else(|| BackendError {
-        status: ErrorStatus::KernelCompilation,
-        context: "no unary op found in kernel".into(),
-    })?)?;
+    let mut var_cb: Map<OpId, u32> = Map::default();
+    let mut var_dst: Map<OpId, u32> = Map::default();
+    let mut used_cbs: Vec<u32> = Vec::new();
+    let mut next_cb: u32 = 0;
+    let mut next_dst: u32 = 0;
+    let mut bop_init: Option<String> = None;
+    let mut uop_init: Option<String> = None;
+    let mut use_binary = false;
+    let mut use_unary = false;
+    let mut result_dtype = DType::F32;
 
-    Ok(format!(
-        r####"#include <cstdint>
-#include "api/compute/cb_api.h"
-#include "api/compute/tile_move_copy.h"
-#include "api/compute/eltwise_unary/eltwise_unary.h"
-#include "{header}"
+    op_id = kernel.head;
+    while !op_id.is_null() {
+        match kernel.at(op_id) {
+            Op::Load { src, layout: MemLayout::Vector(_vec_len), .. } => {
+                let cb_idx = if var_cb.contains_key(src) { var_cb[src] } else {
+                    let idx = next_cb;
+                    var_cb.insert(*src, idx);
+                    used_cbs.push(idx);
+                    next_cb += 1;
+                    idx
+                };
+                var_cb.insert(op_id, cb_idx);
+                let dst = next_dst;
+                var_dst.insert(op_id, dst);
+                next_dst += 1;
+                _ = writeln!(wait_body, "        cb_wait_front(tt::CBIndex::c_{cb_idx}, 1);");
+                _ = writeln!(math_body, "        copy_tile(tt::CBIndex::c_{cb_idx}, 0, {dst});");
+            }
+            Op::Store { x, layout: MemLayout::Vector(_vec_len), .. } => {
+                result_dtype = kernel.dtype(*x);
+                let dst = var_dst.get(x).copied().unwrap_or(0);
+                _ = writeln!(pack_body, "        cb_reserve_back(tt::CBIndex::c_16, 1);");
+                _ = writeln!(pack_body, "        pack_tile({dst}, tt::CBIndex::c_16);");
+                _ = writeln!(pack_body, "        cb_push_back(tt::CBIndex::c_16, 1);");
+            }
+            Op::Unary { uop, x } => {
+                use_unary = true;
+                let dst = var_dst.get(x).copied().unwrap_or(0);
+                var_dst.insert(op_id, dst);
+                let sfpu = uop_to_sfpu(*uop)?;
+                includes.push(sfpu.header);
+                if uop_init.is_none() {
+                    uop_init = Some(sfpu.init_fn.to_string());
+                }
+                _ = writeln!(math_body, "        {}({});", sfpu.tile_fn, dst);
+            }
+            Op::Binary { x, y, bop } => {
+                use_binary = true;
+                let (tile_fn, tile_init_fn, header) = bop_to_binary_sfpu(*bop)?;
+                includes.push(header);
+                if bop_init.is_none() {
+                    bop_init = Some(tile_init_fn.to_string());
+                }
+                let src0_dst = var_dst.get(x).copied().unwrap_or(0);
+                let src1_dst = var_dst.get(y).copied().unwrap_or(0);
+                let dst = next_dst;
+                next_dst += 1;
+                var_dst.insert(op_id, dst);
+                _ = writeln!(math_body, "        {tile_fn}({src0_dst}, {src1_dst}, {dst});");
+            }
+            _ => {}
+        }
+        op_id = kernel.next_op(op_id);
+    }
 
-void kernel_main() {{
-    uint32_t n_tiles = get_arg_val<uint32_t>(0);
-    unary_op_init_common(tt::CBIndex::c_0, tt::CBIndex::c_16);
-    {init_fn}();
-    for (uint32_t i = 0; i < n_tiles; i++) {{
-        tile_regs_acquire();
-        cb_wait_front(tt::CBIndex::c_0, 1);
-        copy_tile(tt::CBIndex::c_0, 0, 0);
-        {tile_fn}(0);
-        cb_pop_front(tt::CBIndex::c_0, 1);
-        tile_regs_commit();
-        tile_regs_wait();
-        cb_reserve_back(tt::CBIndex::c_16, 1);
-        pack_tile(0, tt::CBIndex::c_16);
-        cb_push_back(tt::CBIndex::c_16, 1);
-        tile_regs_release();
-    }}
-}}
-"####,
-        header = sfpu.header,
-        init_fn = sfpu.init_fn,
-        tile_fn = sfpu.tile_fn,
-    ))
+    // Pop inputs after pack, before release
+    for &cb in &used_cbs {
+        _ = writeln!(pop_body, "        cb_pop_front(tt::CBIndex::c_{cb}, 1);");
+    }
+
+    // Init block
+    let mut init_block = String::new();
+    if use_binary {
+        let icb0 = 0;
+        _ = writeln!(init_block, "    unary_op_init_common(tt::CBIndex::c_{icb0}, tt::CBIndex::c_16);");
+        if let Some(ref init) = bop_init {
+            _ = writeln!(init_block, "    {}();", init);
+        }
+    }
+    if use_unary {
+        let icb = 0;
+        _ = writeln!(init_block, "    unary_op_init_common(tt::CBIndex::c_{icb}, tt::CBIndex::c_16);");
+        if let Some(ref init) = uop_init {
+            _ = writeln!(init_block, "    {}();", init);
+        }
+    }
+
+    includes.sort();
+    includes.dedup();
+    let include_lines: String = includes.iter().map(|h| format!("#include \"{h}\"\n")).collect();
+
+    use std::fmt::Write;
+    let mut source = String::new();
+    _ = writeln!(source, "#include <cstdint>");
+    _ = write!(source, "{include_lines}");
+    _ = writeln!(source);
+    _ = writeln!(source, "void kernel_main() {{");
+    _ = writeln!(source, "    uint32_t n_tiles = get_arg_val<uint32_t>(0);");
+    _ = write!(source, "{init_block}");
+    _ = writeln!(source, "    for (uint32_t i = 0; i < n_tiles; i++) {{");
+    _ = write!(source, "{wait_body}");
+    _ = writeln!(source, "        tile_regs_acquire();");
+    _ = write!(source, "{math_body}");
+    _ = writeln!(source, "        tile_regs_commit();");
+    _ = writeln!(source, "        tile_regs_wait();");
+    _ = write!(source, "{pack_body}");
+    _ = write!(source, "{pop_body}");
+    _ = writeln!(source, "        tile_regs_release();");
+    _ = writeln!(source, "    }}");
+    _ = writeln!(source, "}}");
+    Ok((source, n_inputs, n_outputs, result_dtype))
 }
