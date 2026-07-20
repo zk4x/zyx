@@ -18,42 +18,68 @@ pub struct bf16(pub u16);
 pub struct f16(pub u16);
 
 impl bf16 {
+    /// zero
     pub const ZERO: Self = Self(0);
+    /// one
     pub const ONE: Self = Self(0x3f80);
+    /// min
     pub const MIN: Self = Self(0xff7f);
+    /// max
     pub const MAX: Self = Self(0x7f7f);
+    /// min positive
     pub const MIN_POSITIVE: Self = Self(0x0080);
 
+    /// to f32
     pub fn to_f32(self) -> f32 {
         f32::from_bits((self.0 as u32) << 16)
     }
+
+    /// to f64
     pub fn to_f64(self) -> f64 {
         self.to_f32() as f64
     }
+
+    /// from f32
     pub fn from_f32(x: f32) -> Self {
         Self((x.to_bits() >> 16) as u16)
     }
+
+    /// from f64
     pub fn from_f64(x: f64) -> Self {
         Self::from_f32(x as f32)
     }
+
+    /// to le bytes
     pub const fn to_le_bytes(self) -> [u8; 2] {
         self.0.to_le_bytes()
     }
+
+    /// from le bytes
     pub fn from_le_bytes(bytes: [u8; 2]) -> Self {
         Self(u16::from_le_bytes(bytes))
     }
+
+    /// to bits
     pub fn to_bits(self) -> u16 {
         self.0
     }
+
+    /// is nan
     pub fn is_nan(self) -> bool {
         self.0 & 0x7fff > 0x7f80
     }
+
+    /// is infinite
     pub fn is_infinite(self) -> bool {
         self.0 & 0x7fff == 0x7f80
     }
+
+    /// abs
     pub fn abs(self) -> Self {
         Self(self.0 & 0x7fff)
     }
+
+    /// max
     pub fn max(self, other: Self) -> Self {
         if self.to_f32() >= other.to_f32() { self } else { other }
     }
@@ -114,12 +140,18 @@ impl Rem for bf16 {
 }
 
 impl f16 {
+    /// zero
     pub const ZERO: Self = Self(0x0000);
+    /// one
     pub const ONE: Self = Self(0x3c00);
+    /// min
     pub const MIN: Self = Self(0xfbff);
+    /// max
     pub const MAX: Self = Self(0x7bff);
+    /// epsilon
     pub const EPSILON: Self = Self(0x1400);
 
+    /// to f32
     pub fn to_f32(self) -> f32 {
         let bits = self.0;
         let sign = if (bits >> 15) != 0 { -1.0f32 } else { 1.0f32 };
@@ -139,9 +171,13 @@ impl f16 {
         }
         sign * 2.0f32.powi(exp as i32 - 15) * (1.0 + mant / 1024.0)
     }
+
+    /// to f64
     pub fn to_f64(self) -> f64 {
         self.to_f32() as f64
     }
+
+    /// from f32
     pub fn from_f32(x: f32) -> Self {
         if x.is_nan() {
             return Self(0x7e00);
@@ -164,33 +200,53 @@ impl f16 {
         let mant = x / 2.0f32.powi(exp);
         Self(sign | (((exp + 15) as u16) << 10) | ((mant - 1.0) * 1024.0 + 0.5) as u16 & 0x3ff)
     }
+
+    /// from f64
     pub fn from_f64(x: f64) -> Self {
         Self::from_f32(x as f32)
     }
+
+    /// to le bytes
     pub const fn to_le_bytes(self) -> [u8; 2] {
         self.0.to_le_bytes()
     }
+
+    /// from le bytes
     pub fn from_le_bytes(bytes: [u8; 2]) -> Self {
         Self(u16::from_le_bytes(bytes))
     }
+
+    /// to bits
     pub fn to_bits(self) -> u16 {
         self.0
     }
+
+    /// from bits
     pub fn from_bits(bits: u16) -> Self {
         Self(bits)
     }
+
+    /// is nan
     pub fn is_nan(self) -> bool {
         self.0 & 0x7c00 == 0x7c00 && self.0 & 0x03ff != 0
     }
+
+    /// is infinite
     pub fn is_infinite(self) -> bool {
         self.0 & 0x7fff == 0x7c00
     }
+
+    /// abs
     pub fn abs(self) -> Self {
         Self(self.0 & 0x7fff)
     }
+
+    /// max
     pub fn max(self, other: Self) -> Self {
         if self.to_f32() >= other.to_f32() { self } else { other }
     }
+
+    /// min
     pub fn min(self, other: Self) -> Self {
         if self.to_f32() <= other.to_f32() { self } else { other }
     }
