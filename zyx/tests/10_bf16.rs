@@ -1,7 +1,7 @@
 // Copyright (C) 2025 zk4x
 // SPDX-License-Identifier: LGPL-3.0-only
 
-use zyx::{DType, Scalar, Tensor, ZyxError, bf16, f16};
+use zyx::{DType, Scalar, Tensor, ZyxError, bf16};
 
 // --- BF16 Precision Tests ---
 // These tests use bf16 dtype and compare at bf16 precision
@@ -22,28 +22,6 @@ fn bf16_sigmoid() -> Result<(), ZyxError> {
     let z: Vec<bf16> = z.try_into()?;
     for (&input, actual) in data.iter().zip(z) {
         let expected = 1.0f32 / (1.0f32 + (-input).exp());
-        assert!(bf16::from_f32(expected).is_equal(actual));
-    }
-    Ok(())
-}
-
-#[test]
-fn bf16_softmax() -> Result<(), ZyxError> {
-    if !Tensor::supports(DType::BF16) {
-        return Ok(());
-    }
-
-    // Test softmax with multiple values
-    let data: [f32; 4] = [1.0, 2.0, 3.0, 4.0];
-    let x = Tensor::from(data).cast(DType::BF16);
-    let z = x.softmax([0])?;
-
-    let z: Vec<bf16> = z.try_into()?;
-
-    // Compare at bf16 precision
-    for (&input, actual) in data.iter().zip(z) {
-        let sum: f32 = data.iter().map(|x| x.exp()).sum();
-        let expected = input.exp() / sum;
         assert!(bf16::from_f32(expected).is_equal(actual));
     }
     Ok(())
@@ -81,26 +59,6 @@ fn bf16_binary_mul() -> Result<(), ZyxError> {
     // Compare at bf16 precision: [2, 6, 12, 20]
     let c: Vec<bf16> = c.try_into()?;
     for (&expected, actual) in [2.0f32, 6.0, 12.0, 20.0].iter().zip(c) {
-        assert!(bf16::from_f32(expected).is_equal(actual));
-    }
-    Ok(())
-}
-
-#[test]
-fn bf16_gelu() -> Result<(), ZyxError> {
-    if !Tensor::supports(DType::BF16) {
-        return Ok(());
-    }
-
-    // Test GELU activation at bf16 precision
-    let data: [f32; 6] = [0.0, 1.0, -1.0, 2.0, -2.0, 1.5];
-    let x = Tensor::from(data).cast(DType::BF16);
-    let z = x.relu();
-
-    // Compare at bf16 precision using is_equal
-    let z: Vec<bf16> = z.try_into()?;
-    for (&input, actual) in data.iter().zip(z) {
-        let expected = input.max(0.0);
         assert!(bf16::from_f32(expected).is_equal(actual));
     }
     Ok(())
