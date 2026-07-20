@@ -271,7 +271,7 @@ impl Kernel {
             match *self.at(op_id) {
                 Op::Store { dst, x, index, layout } => {
                     if layout != MemLayout::Scalar {
-                        todo!()
+                        continue;
                     }
                     if dst == define_id {
                         self.remove_op(op_id);
@@ -311,7 +311,7 @@ impl Kernel {
     ///
     /// This method removes loops that don't contain any stores,
     /// reducing instruction count and improving performance.
-    pub(crate) fn delete_empty_loops(&mut self) {
+    pub(crate) fn delete_zero_len_loops(&mut self) {
         #[cfg(feature = "time")]
         let _timer = crate::Timer::new("delete_empty_loops");
 

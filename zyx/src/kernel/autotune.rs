@@ -335,7 +335,8 @@ impl Kernel {
         self.move_constants_to_beginning();
         self.loop_invariant_code_motion();
         self.fold_accs();
-        self.delete_empty_loops();
+        self.delete_zero_len_indices();
+        self.delete_zero_len_loops();
         self.unfold_pows();
         self.algebraic_simplification();
         self.simplify_accumulating_loop();
@@ -482,7 +483,7 @@ impl Kernel {
 
         // Initial seed
         let mut kernel = self.clone();
-        kernel.eliminate_zero_len_index();
+        kernel.delete_zero_len_indices();
         kernel.renumber_indices();
         kernel.run_always_on_optimizations();
         kernel.run_always_on_optimizations();

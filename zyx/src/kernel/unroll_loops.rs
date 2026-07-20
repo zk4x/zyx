@@ -45,7 +45,7 @@ impl Kernel {
     ///
     /// This method removes index operations with length 1,
     /// which can be optimized away.
-    pub(crate) fn eliminate_zero_len_index(&mut self) {
+    pub(crate) fn delete_zero_len_indices(&mut self) {
         #[cfg(feature = "time")]
         let _timer = crate::Timer::new("eliminate zero index");
         for node in self.ops.values_mut() {

@@ -1847,7 +1847,7 @@ impl Kernel {
                     }
                 }
                 Op::Const(c) => {
-                    indices.insert(OpId::NULL, (0, c.as_dim().unwrap() * scale));
+                    indices.entry(OpId::NULL).and_modify(|(_, v)| *v += c.as_dim().unwrap() * scale).or_insert((0, c.as_dim().unwrap() * scale));
                 }
                 _ => {}
             }

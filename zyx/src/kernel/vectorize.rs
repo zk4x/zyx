@@ -81,7 +81,7 @@ impl Kernel {
                 let mut offset_order: Vec<Dim> = Vec::new();
                 let vec_len = loads.len() as Dim;
                 for (base_idx, (_, vl)) in self.get_strides(loads[0].index) {
-                    if vl != vec_len {
+                    if !(vl == vec_len || (base_idx.is_null() && vl == 0)) {
                         continue;
                     }
                     let mut offsets: Set<Dim> = (0..vec_len).collect();
@@ -89,14 +89,24 @@ impl Kernel {
 
                     if loads[1..].iter().all(|x| {
                         let strides = self.get_strides(x.index);
-                        strides.iter().any(|(&idx, (_, st))| idx == base_idx && *st == vec_len)
-                            && strides.iter().any(|(&idx, (_, st))| {
+                        if base_idx.is_null() {
+                            strides.iter().any(|(&idx, (_, st))| {
                                 let found = idx.is_null() && offsets.remove(st);
                                 if found {
                                     offset_order.push(*st);
                                 }
                                 found
                             })
+                        } else {
+                            strides.iter().any(|(&idx, (_, st))| idx == base_idx && *st == vec_len)
+                                && strides.iter().any(|(&idx, (_, st))| {
+                                    let found = idx.is_null() && offsets.remove(st);
+                                    if found {
+                                        offset_order.push(*st);
+                                    }
+                                    found
+                                })
+                        }
                     }) {
                         if offsets.remove(&0) {
                             base_index = Some(base_idx);
@@ -166,7 +176,7 @@ impl Kernel {
                 let mut offset_order: Vec<Dim> = Vec::new();
                 let vec_len = stores.len() as Dim;
                 for (base_idx, (_, vl)) in self.get_strides(stores[0].index) {
-                    if vl != vec_len {
+                    if !(vl == vec_len || (base_idx.is_null() && vl == 0)) {
                         continue;
                     }
                     let mut offsets: Set<Dim> = (0..vec_len).collect();
@@ -174,14 +184,24 @@ impl Kernel {
 
                     if stores[1..].iter().all(|x| {
                         let strides = self.get_strides(x.index);
-                        strides.iter().any(|(&idx, (_, st))| idx == base_idx && *st == vec_len)
-                            && strides.iter().any(|(&idx, (_, st))| {
+                        if base_idx.is_null() {
+                            strides.iter().any(|(&idx, (_, st))| {
                                 let found = idx.is_null() && offsets.remove(st);
                                 if found {
                                     offset_order.push(*st);
                                 }
                                 found
                             })
+                        } else {
+                            strides.iter().any(|(&idx, (_, st))| idx == base_idx && *st == vec_len)
+                                && strides.iter().any(|(&idx, (_, st))| {
+                                    let found = idx.is_null() && offsets.remove(st);
+                                    if found {
+                                        offset_order.push(*st);
+                                    }
+                                    found
+                                })
+                        }
                     }) {
                         if offsets.remove(&0) {
                             base_index = Some(base_idx);
