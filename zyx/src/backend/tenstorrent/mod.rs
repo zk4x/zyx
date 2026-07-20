@@ -349,79 +349,6 @@ use std::{
 };
 
 // ---------------------------------------------------------------------------
-// Kernel driver ioctl interface (from tenstorrent-2.8.0 DKMS ioctl.h)
-// ---------------------------------------------------------------------------
-
-const TENSTORRENT_IOCTL_MAGIC: u8 = 0xFA;
-
-// Helper: ioctl code = (_IOC_TYPE << 8) | nr  (simplified; kernel _IOWR also encodes struct size)
-const fn ioctl_code(nr: u32) -> u64 {
-    const BASE: u64 = TENSTORRENT_IOCTL_MAGIC as u64;
-    (BASE << 8) | (nr as u64)
-}
-
-const TENSTORRENT_IOCTL_GET_DEVICE_INFO: u64 = ioctl_code(0);
-const TENSTORRENT_IOCTL_ALLOCATE_DMA_BUF: u64 = ioctl_code(3);
-
-/// Flag: allocate buffer with NOC DMA access (reader/writer kernels can access via NOC)
-const TENSTORRENT_ALLOCATE_DMA_BUF_NOC_DMA: u8 = 2;
-
-/// Linux page size (used for DMA buf alignment)
-const PAGE_SIZE: u32 = 4096;
-
-#[derive(Debug, Clone, Copy, Default)]
-#[repr(C)]
-struct TTGetDeviceInfo {
-    output_size_bytes: u32,     // in.output_size_bytes (offset 0)
-    out_output_size_bytes: u32, // out.output_size_bytes (offset 4 — required by kernel ABI)
-    vendor_id: u16,
-    device_id: u16,
-    subsystem_vendor_id: u16,
-    subsystem_id: u16,
-    bus_dev_fn: u16,
-    max_dma_buf_size_log2: u16,
-    pci_domain: u16,
-    reserved: u16,
-}
-
-#[derive(Debug, Clone, Copy, Default)]
-#[repr(C)]
-struct TTAllocateDmaBufIn {
-    requested_size: u32,
-    buf_index: u8,
-    flags: u8,
-    reserved0: [u8; 2],
-    reserved1: [u64; 2],
-}
-
-#[derive(Debug, Clone, Copy, Default)]
-#[repr(C)]
-struct TTAllocateDmaBufOut {
-    physical_address: u64,
-    mapping_offset: u64,
-    size: u32,
-    reserved0: u32,
-    noc_address: u64,
-    reserved1: u64,
-}
-
-#[derive(Debug, Clone, Copy, Default)]
-#[repr(C)]
-struct TTAllocateDmaBuf {
-    inn: TTAllocateDmaBufIn,
-    out: TTAllocateDmaBufOut,
-}
-
-// ---------------------------------------------------------------------------
-// ioctl syscall wrapper
-// ---------------------------------------------------------------------------
-
-unsafe fn ioctl_ptr<T>(fd: i32, request: u64, arg: *mut T) -> i32 {
-    // SAFETY: caller must ensure fd is valid and arg points to a properly-sized struct
-    unsafe { libc::ioctl(fd, request as libc::c_ulong, arg as *mut libc::c_void) }
-}
-
-// ---------------------------------------------------------------------------
 // DRAM size lookup
 // ---------------------------------------------------------------------------
 
@@ -477,53 +404,27 @@ pub struct TTConfig {
 }
 
 // ---------------------------------------------------------------------------
-// Per-buffer tracking
+// Per-buffer tracking: index into C++ runtime's vector<MeshBuffer>
 // ---------------------------------------------------------------------------
 
+#[derive(Debug)]
 struct TTBuffer {
-    file: File,
-    mmap_ptr: *mut u8,
-    size: u32,
-    noc_address: u64,
-    buf_index: u8,
-}
-
-impl std::fmt::Debug for TTBuffer {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("TTBuffer")
-            .field("file", &self.file)
-            .field("mmap_ptr", &self.mmap_ptr)
-            .field("size", &self.size)
-            .field("noc_address", &self.noc_address)
-            .field("buf_index", &self.buf_index)
-            .finish()
-    }
-}
-
-impl Drop for TTBuffer {
-    fn drop(&mut self) {
-        if !self.mmap_ptr.is_null() {
-            unsafe {
-                libc::munmap(self.mmap_ptr as *mut libc::c_void, self.size as usize);
-            }
-        }
-    }
+    dev_index: u32,
+    size: u64,
 }
 
 unsafe impl Send for TTBuffer {}
 unsafe impl Sync for TTBuffer {}
 
 // ---------------------------------------------------------------------------
-// Memory pool
+// Memory pool — device DRAM buffers managed by C++ runtime.
+// TTBuffer is just a handle (u32 index) into the runtime's buffer list.
+// Data transfer (host_to_pool / pool_to_host) creates temp shared memory
+// regions and sends IPC commands via launch().
 // ---------------------------------------------------------------------------
 
 #[derive(Debug)]
 pub struct TTMemoryPool {
-    device_file: Option<File>,
-    #[allow(unused)]
-    total_bytes: Dim,
-    free_bytes: Dim,
-    next_buf_index: AtomicU8,
     buffers: Slab<PoolBufferId, TTBuffer>,
 }
 
@@ -545,49 +446,12 @@ pub(super) fn initialize_device(
         return Ok(());
     }
 
-    let device_file = File::options().read(true).write(true).open("/dev/tenstorrent/0").map_err(|e| BackendError {
-        status: ErrorStatus::Initialization,
-        context: format!("open /dev/tenstorrent/0: {e}").into(),
-    })?;
-
-    let fd = device_file.as_raw_fd();
-
-    // Query device info
-    // output_size_bytes must be >= sizeof(out struct). The kernel copies min(in.size, sizeof(out))
-    // bytes. The out struct starts at offset 4 (after in.output_size_bytes).
-    let out_size = size_of::<TTGetDeviceInfo>() as u32 - 4;
-    let mut info = TTGetDeviceInfo { output_size_bytes: out_size, ..Default::default() };
-    unsafe {
-        let ret = ioctl_ptr(fd, TENSTORRENT_IOCTL_GET_DEVICE_INFO, &mut info);
-        if ret != 0 {
-            return Err(BackendError {
-                status: ErrorStatus::Initialization,
-                context: format!("TENSTORRENT_IOCTL_GET_DEVICE_INFO: {ret}").into(),
-            });
-        }
-    }
-
-    let total_bytes = dram_size_for_subsystem_id(info.subsystem_id)?;
-
     if debug_dev {
-        let card_name =
-            DRAM_SIZE_TABLE.iter().find(|&&(id, _, _)| id == info.subsystem_id).map(|&(_, name, _)| name).unwrap_or("?");
-        println!(
-            "[tenstorrent] vendor=0x{:04x} device=0x{:04x} subsys=0x{:04x} card={card_name} (subven=0x{:04x})",
-            info.vendor_id, info.device_id, info.subsystem_id, info.subsystem_vendor_id
-        );
-        println!("[tenstorrent] total_dram={} MB", total_bytes / (1024 * 1024));
-        println!("[tenstorrent] max_dma_buf_size_log2={}", info.max_dma_buf_size_log2);
+        println!("[tenstorrent] device initialized");
     }
 
     let pool_id = memory_pools.len();
-    let pool = MemoryPool::TT(TTMemoryPool {
-        device_file: Some(device_file),
-        total_bytes,
-        free_bytes: total_bytes,
-        next_buf_index: AtomicU8::new(0),
-        buffers: Slab::new(),
-    });
+    let pool = MemoryPool::TT(TTMemoryPool { buffers: Slab::new() });
     memory_pools.push(pool);
 
     // Compute config dir from XDG convention (same as cache_dir but without /cache/tt)
@@ -640,95 +504,18 @@ pub(super) fn initialize_device(
 }
 
 impl TTMemoryPool {
-    pub fn deinitialize(&mut self) {
-        // buffers are dropped → munmap + fd close for each
-        // device_file is dropped → fd close
-    }
+    pub fn deinitialize(&mut self) {}
 
     pub fn free_bytes(&self) -> Dim {
-        self.free_bytes
+        Dim::from(u64::MAX)
     }
 
     pub fn allocate(&mut self, bytes: Dim) -> Result<(PoolBufferId, Event), BackendError> {
-        let bytes32: u32 = u32::try_from(bytes).map_err(|_| BackendError {
+        let bytes_u64 = u64::try_from(bytes).map_err(|_| BackendError {
             status: ErrorStatus::MemoryAllocation,
-            context: "allocation size exceeds 4 GiB".into(),
+            context: "allocation size exceeds 64-bit".into(),
         })?;
-
-        if self.device_file.is_none() {
-            return Err(BackendError { status: ErrorStatus::MemoryAllocation, context: "device not opened".into() });
-        }
-
-        // Round up to page boundary (kernel requires page-aligned size)
-        let page_aligned = bytes32.next_multiple_of(PAGE_SIZE);
-
-        if self.free_bytes < page_aligned as Dim {
-            return Err(BackendError { status: ErrorStatus::MemoryAllocation, context: "OOM on tenstorrent device".into() });
-        }
-
-        let buf_index = self.next_buf_index.fetch_add(1, Ordering::Relaxed);
-
-        // Open a new fd per buffer (workaround: ioctl_free_dma_buf returns -EINVAL;
-        // closing the fd triggers kernel cleanup of the DMA buffer)
-        let buf_file = File::options().read(true).write(true).open("/dev/tenstorrent/0").map_err(|e| BackendError {
-            status: ErrorStatus::MemoryAllocation,
-            context: format!("open /dev/tenstorrent/0 for buffer {buf_index}: {e}").into(),
-        })?;
-
-        let buf_fd = buf_file.as_raw_fd();
-
-        let mut alloc = TTAllocateDmaBuf {
-            inn: TTAllocateDmaBufIn {
-                requested_size: page_aligned,
-                buf_index,
-                flags: TENSTORRENT_ALLOCATE_DMA_BUF_NOC_DMA,
-                reserved0: [0; 2],
-                reserved1: [0; 2],
-            },
-            out: TTAllocateDmaBufOut::default(),
-        };
-
-        unsafe {
-            let ret = ioctl_ptr(buf_fd, TENSTORRENT_IOCTL_ALLOCATE_DMA_BUF, &mut alloc);
-            if ret != 0 {
-                return Err(BackendError {
-                    status: ErrorStatus::MemoryAllocation,
-                    context: format!("TENSTORRENT_IOCTL_ALLOCATE_DMA_BUF: {ret}").into(),
-                });
-            }
-        }
-
-        let actual_size = alloc.out.size;
-
-        // mmap the buffer for direct CPU access to GDDR6 via PCIe BAR
-        let mmap_ptr = unsafe {
-            let ptr = libc::mmap(
-                ptr::null_mut(),
-                actual_size as usize,
-                libc::PROT_READ | libc::PROT_WRITE,
-                libc::MAP_SHARED,
-                buf_fd,
-                alloc.out.mapping_offset as i64,
-            );
-            if ptr == libc::MAP_FAILED {
-                // buf_file dropped here → fd close → kernel frees DMA buf
-                return Err(BackendError {
-                    status: ErrorStatus::MemoryAllocation,
-                    context: format!("mmap DMA buffer (size={actual_size}, offset=0x{:x})", alloc.out.mapping_offset).into(),
-                });
-            }
-            ptr as *mut u8
-        };
-
-        self.free_bytes -= actual_size as Dim;
-
-        let buf = TTBuffer { file: buf_file, mmap_ptr, size: actual_size, noc_address: alloc.out.noc_address, buf_index };
-
-        if std::env::var("ZYX_DEBUG").as_deref().unwrap_or("0").parse::<u8>().unwrap_or(0) & 1 != 0 {
-            eprintln!("[tenstorrent] DMA buf #{buf_index}: size={actual_size} noc=0x{:016x} mmap_offset=0x{:x}",
-                alloc.out.noc_address, alloc.out.mapping_offset);
-        }
-
+        let buf = TTBuffer { dev_index: u32::MAX, size: bytes_u64 };
         let id = self.buffers.push(buf);
         Ok((id, Event::TT(TTEvent)))
     }
@@ -736,37 +523,16 @@ impl TTMemoryPool {
     pub fn deallocate(&mut self, buffer_id: PoolBufferId, event_wait_list: Vec<Event>) {
         let _ = event_wait_list;
         if self.buffers.contains_key(buffer_id) {
-            let buf = unsafe { self.buffers.remove_and_return(buffer_id) };
-            self.free_bytes += buf.size as Dim;
-            // TTBuffer::drop handles munmap, then File::drop closes fd → kernel frees GDDR6
+            unsafe { self.buffers.remove_and_return(buffer_id) };
         }
     }
 
-    pub fn host_to_pool(&mut self, src: &[u8], dst: PoolBufferId, event_wait_list: Vec<Event>) -> Result<Event, BackendError> {
-        let _ = event_wait_list;
-        let buf = self
-            .buffers
-            .get_mut(dst)
-            .ok_or_else(|| BackendError { status: ErrorStatus::MemoryCopyH2P, context: "invalid buffer id".into() })?;
-        let len = src.len().min(buf.size as usize);
-        unsafe {
-            ptr::copy_nonoverlapping(src.as_ptr(), buf.mmap_ptr, len);
-            core::arch::asm!("sfence", options(nostack));
-        }
-        Ok(Event::TT(TTEvent))
+    pub fn host_to_pool(&mut self, _src: &[u8], _dst: PoolBufferId, _event_wait_list: Vec<Event>) -> Result<Event, BackendError> {
+        panic!("TTMemoryPool::host_to_pool must go through launch()")
     }
 
-    pub fn pool_to_host(&mut self, src: PoolBufferId, dst: &mut [u8], event_wait_list: Vec<Event>) -> Result<(), BackendError> {
-        let _ = event_wait_list;
-        let buf = self
-            .buffers
-            .get_mut(src)
-            .ok_or_else(|| BackendError { status: ErrorStatus::MemoryCopyP2H, context: "invalid buffer id".into() })?;
-        let len = dst.len().min(buf.size as usize);
-        unsafe {
-            ptr::copy_nonoverlapping(buf.mmap_ptr, dst.as_mut_ptr(), len);
-        }
-        Ok(())
+    pub fn pool_to_host(&mut self, _src: PoolBufferId, _dst: &mut [u8], _event_wait_list: Vec<Event>) -> Result<(), BackendError> {
+        panic!("TTMemoryPool::pool_to_host must go through launch()")
     }
 
     pub fn sync_events(&mut self, events: Vec<Event>) -> Result<(), BackendError> {
@@ -780,17 +546,9 @@ impl TTMemoryPool {
         let _ = events;
     }
 
-    pub fn noc_address(&self, buffer_id: PoolBufferId) -> Result<u64, BackendError> {
-        if self.buffers.contains_key(buffer_id) {
-            Ok(self.buffers[buffer_id].noc_address)
-        } else {
-            Err(BackendError { status: ErrorStatus::MemoryAllocation, context: "invalid buffer id".into() })
-        }
-    }
-
     pub fn buffer_size(&self, buffer_id: PoolBufferId) -> Result<u64, BackendError> {
         if self.buffers.contains_key(buffer_id) {
-            Ok(self.buffers[buffer_id].size as u64)
+            Ok(self.buffers[buffer_id].size)
         } else {
             Err(BackendError { status: ErrorStatus::MemoryAllocation, context: "invalid buffer id".into() })
         }
