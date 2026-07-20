@@ -617,14 +617,14 @@ pub(super) fn initialize_device(
             max_global_work_dims: vec![Dim::from(u32::MAX); 3],
             max_local_threads: 1024,
             max_local_work_dims: vec![1, 1024, 1],
-            preferred_vector_size: 16,
+            preferred_vector_size: 32,
             local_mem_size: 1_500_000, // 1.5 MB L1 per Tensix core
             max_register_bytes: 128,
             tensor_cores: true,
             warp_size: 1, // Tensix has no SIMT warps
             supported_dtype_ops: [OpCapability::all(); DType::N_DTYPES],
             has_native_exp2: false,
-            supported_vec_lens: vec![2, 4, 8, 16],
+            supported_vec_lens: vec![32],
         },
         memory_pool_id: pool_id,
         runtime: None,
