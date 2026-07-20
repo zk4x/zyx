@@ -584,7 +584,9 @@ impl TTMemoryPool {
             status: ErrorStatus::MemoryAllocation,
             context: "runtime not initialized".into(),
         })?;
-        let dev_index = rt.lock().unwrap().alloc_buf(bytes_u64)?;
+        // Hardcode tile_bytes=4096 (Float32) for now — f32 is the common case.
+        let tile_bytes: u64 = 4096;
+        let dev_index = rt.lock().unwrap().alloc_buf(bytes_u64, tile_bytes)?;
         let buf = TTBuffer { dev_index, size: bytes_u64 };
         let id = self.buffers.push(buf);
         Ok((id, Event::TT(TTEvent)))
@@ -726,6 +728,7 @@ impl RuntimeProcess {
     }
 
     fn send(&mut self, json: &str) -> Result<(), BackendError> {
+        eprintln!("[RUST_SEND] {}", &json[..json.len().min(200)]);
         self.stdin
             .write_all(json.as_bytes())
             .map_err(|e| BackendError { status: ErrorStatus::KernelLaunch, context: format!("tt-runtime write: {e}").into() })?;
@@ -792,6 +795,7 @@ impl RuntimeProcess {
                         let trimmed = line.trim().to_string();
                         // Skip non-JSON lines (UMD log messages leaking to stdout)
                         if trimmed.starts_with('{') {
+                            eprintln!("[RUST_RECV] {trimmed}");
                             return Ok(trimmed);
                         }
                         // Log line — keep reading
@@ -827,8 +831,8 @@ impl RuntimeProcess {
         })
     }
 
-    fn alloc_buf(&mut self, size: u64) -> Result<u32, BackendError> {
-        let cmd = format!(r#"{{"cmd":"alloc_buf","size":{size}}}"#);
+    fn alloc_buf(&mut self, size: u64, tile_bytes: u64) -> Result<u32, BackendError> {
+        let cmd = format!(r#"{{"cmd":"alloc_buf","size":{size},"tile_bytes":{tile_bytes}}}"#);
         self.send(&cmd)?;
         let resp = self.recv_with_timeout(self.timeout_ms)?;
         if resp.contains("\"error\"") {

@@ -33,8 +33,7 @@ using namespace tt;
 using namespace tt::tt_metal;
 using namespace tt::tt_metal::distributed;
 
-constexpr uint32_t TILE_ELEMS = tt::constants::TILE_WIDTH * tt::constants::TILE_HEIGHT;
-constexpr uint32_t TILE_BYTES_BF16 = sizeof(bfloat16) * TILE_ELEMS;
+
 
 // ---------------------------------------------------------------------------
 // Helper: parse DataFormat from integer (matches Rust DataFormat enum)
@@ -159,8 +158,9 @@ int main() {
         setenv("TT_METAL_RUNTIME_ROOT", TT_METAL_ROOT_DEFAULT, 0);
     }
 
-    ios::sync_with_stdio(false);
-    cin.tie(nullptr);
+    // Keep default sync for pipe compatibility with Rust BufWriter
+    // ios::sync_with_stdio(false);
+    // cin.tie(nullptr);
 
     string kernel_dir;
     string cache_dir;
@@ -213,7 +213,8 @@ int main() {
             }
 
             try {
-                uint32_t tile_bytes = TILE_BYTES_BF16;
+                uint32_t tile_bytes = extract_u32(line, "tile_bytes");
+                if (tile_bytes == 0) tile_bytes = 4096;
                 uint32_t n_tiles = (size + tile_bytes - 1) / tile_bytes;
                 if (n_tiles == 0) n_tiles = 1;
 
@@ -224,6 +225,7 @@ int main() {
 
                 auto buf = MeshBuffer::create(buf_config, dram_config, mesh_device.get());
                 uint32_t idx = buffers.size();
+                cerr << "[TT_ALLOC] idx=" << idx << " size=" << size << " page=" << tile_bytes << " addr=" << buf->address() << " actual_sz=" << buf->size() << endl;
                 buffers.push_back(move(buf));
                 cout << R"({"status":"ok","index":")" << idx << R"("})" << endl;
             } catch (const exception& e) {
@@ -257,15 +259,14 @@ int main() {
                 shm.open_read(shm_path);
 
                 uint64_t buf_bytes = buffers[idx]->size();
-                uint64_t num_bf16 = buf_bytes / sizeof(bfloat16);
-                vector<bfloat16> data(num_bf16, 0);
+                uint64_t num_float = buf_bytes / sizeof(float);
+                vector<float> data(num_float, 0);
                 uint64_t copy_sz = min(size, shm.size);
                 memcpy(data.data(), shm.ptr, copy_sz);
                 shm.close();
 
                 EnqueueWriteMeshBuffer(*cq, buffers[idx], data, false);
-                Finish(*cq);
-
+                // Skip Finish here — let the workload Finish drain everything
                 // Unlink the temp shm (Rust side already did munmap)
                 shm_unlink(shm_path.c_str());
 
@@ -288,10 +289,11 @@ int main() {
             }
 
             try {
-                vector<bfloat16> result;
+                vector<float> result;
                 EnqueueReadMeshBuffer(*cq, result, buffers[idx], true);
+                // blocking=true already does Finish internally
 
-                uint64_t copy_sz = min(size, result.size() * sizeof(bfloat16));
+                uint64_t copy_sz = min(size, result.size() * sizeof(float));
 
                 TempShm shm;
                 shm.open_write(shm_path, copy_sz);
@@ -347,7 +349,10 @@ int main() {
             }
 
             try {
-                DataFormat df = int_to_data_format(data_format);
+                // Use f32 format (matches Rust f32 data)
+                (void)data_format;
+                DataFormat df = DataFormat::Float32;
+                tile_bytes = sizeof(float) * tt::constants::TILE_WIDTH * tt::constants::TILE_HEIGHT;
 
                 Program program = CreateProgram();
                 CoreCoord core = {0, 0};
@@ -386,44 +391,36 @@ int main() {
                         .noc = NOC::RISCV_1_default,
                         .compile_args = writer_args});
 
-                // Compute kernel — cached per-hash or fall back to tiles_add.cpp
-                string compute_path = cache_dir + "/" + hash + ".cpp";
-                if (access(compute_path.c_str(), F_OK) != 0) {
-                    compute_path = kernel_dir + "/tiles_add.cpp";
-                }
-                auto compute = CreateKernel(program, compute_path, core,
+                // Always use tiles_add.cpp for now (no per-hash kernel cache)
+                auto compute = CreateKernel(program, kernel_dir + "/tiles_add.cpp", core,
                     ComputeConfig{.math_fidelity = MathFidelity::HiFi4});
 
-                // Set runtime args — pass NOC addresses + n_tiles
+                // Set runtime args — pass DRAM addresses + n_tiles
+                cerr << "[TT] setting rt args n_tiles=" << n_tiles << endl;
                 {
                     vector<uint32_t> reader_rt_args;
                     for (uint32_t i = 0; i < n_inputs; i++) {
-                        reader_rt_args.push_back((uint32_t)buffers[src_indices[i]]->address());
+                        uint64_t a = buffers[src_indices[i]]->address();
+                        cerr << "[TT]  src" << i << " idx=" << src_indices[i] << " addr=" << a << " sz=" << buffers[src_indices[i]]->size() << endl;
+                        reader_rt_args.push_back((uint32_t)a);
                     }
                     reader_rt_args.push_back(n_tiles);
                     SetRuntimeArgs(program, reader, core, reader_rt_args);
                 }
-                SetRuntimeArgs(program, writer, core,
-                    {(uint32_t)buffers[dst_index]->address(), n_tiles});
+                {
+                    uint64_t a = buffers[dst_index]->address();
+                    cerr << "[TT]  dst idx=" << dst_index << " addr=" << a << " sz=" << buffers[dst_index]->size() << endl;
+                    SetRuntimeArgs(program, writer, core, {(uint32_t)a, n_tiles});
+                }
                 SetRuntimeArgs(program, compute, core, {n_tiles});
 
-                // Enqueue and run
-                cerr << "[TT_RUN] hash=" << hash << " n_tiles=" << n_tiles << " n_inputs=" << n_inputs << endl;
-                for (uint32_t i = 0; i < n_inputs; i++) {
-                    auto b = buffers[src_indices[i]];
-                    cerr << "[TT_RUN]  src" << i << " idx=" << src_indices[i]
-                         << " addr=" << b->address() << " sz=" << b->size() << endl;
-                }
-                {
-                    auto b = buffers[dst_index];
-                    cerr << "[TT_RUN]  dst idx=" << dst_index
-                         << " addr=" << b->address() << " sz=" << b->size() << endl;
-                }
+                cerr << "[TT] before add_program" << endl;
                 workload.add_program(device_range, move(program));
+                cerr << "[TT] before EnqueueMeshWorkload" << endl;
                 EnqueueMeshWorkload(*cq, workload, false);
-                cerr << "[TT_RUN] before Finish" << endl;
+                cerr << "[TT] before Finish" << endl;
                 Finish(*cq);
-                cerr << "[TT_RUN] after Finish" << endl;
+                cerr << "[TT] after Finish" << endl;
 
                 cout << R"({"status":"ok"})" << endl;
 
