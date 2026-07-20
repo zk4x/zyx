@@ -84,7 +84,7 @@ type Map<K, V> = std::collections::HashMap<K, V, std::hash::BuildHasherDefault<c
 pub use dtype::DType;
 pub use error::ZyxError;
 pub use module::Module;
-pub use scalar::{Float, Scalar};
+pub use scalar::{Float, Scalar, bf16, f16};
 pub use shape::IntoShape;
 pub use tape::Tape;
 pub use tensor::ReduceOp;

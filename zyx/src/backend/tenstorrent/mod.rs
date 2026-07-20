@@ -1,6 +1,8 @@
 // Copyright (C) 2025 zk4x
 // SPDX-License-Identifier: LGPL-3.0-only
 
+#![allow(unused)]
+
 //! Tenstorrent backend for zyx.
 //!
 //! # Architecture Overview
@@ -489,10 +491,7 @@ pub(super) fn initialize_device(
     let runtime = spawn_runtime(&runtime_path, &kernel_dir, &cache_dir)?;
 
     let pool_id = memory_pools.len();
-    let pool = MemoryPool::TT(TTMemoryPool {
-        buffers: Slab::new(),
-        runtime: Some(runtime.clone()),
-    });
+    let pool = MemoryPool::TT(TTMemoryPool { buffers: Slab::new(), runtime: Some(runtime.clone()) });
     memory_pools.push(pool);
 
     let _device_id = devices.len();
@@ -523,15 +522,10 @@ pub(super) fn initialize_device(
 
 fn create_temp_shm(size: u64) -> Result<(CString, *mut u8, u64), BackendError> {
     let pid = std::process::id();
-    let ns = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_nanos();
+    let ns = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_nanos();
     let name = format!("/zyx-tt-{pid:x}-{ns:x}");
-    let cname = CString::new(name.clone()).map_err(|_| BackendError {
-        status: ErrorStatus::MemoryAllocation,
-        context: "invalid shm path".into(),
-    })?;
+    let cname = CString::new(name.clone())
+        .map_err(|_| BackendError { status: ErrorStatus::MemoryAllocation, context: "invalid shm path".into() })?;
 
     let fd = unsafe { libc::shm_open(cname.as_ptr(), libc::O_CREAT | libc::O_RDWR | libc::O_EXCL, 0o600) };
     if fd < 0 {
@@ -544,20 +538,15 @@ fn create_temp_shm(size: u64) -> Result<(CString, *mut u8, u64), BackendError> {
     if unsafe { libc::ftruncate(fd, size as i64) } < 0 {
         unsafe { libc::close(fd) };
         let _ = unsafe { libc::shm_unlink(cname.as_ptr()) };
-        return Err(BackendError {
-            status: ErrorStatus::MemoryAllocation,
-            context: "ftruncate shm".into(),
-        });
+        return Err(BackendError { status: ErrorStatus::MemoryAllocation, context: "ftruncate shm".into() });
     }
 
-    let ptr = unsafe { libc::mmap(std::ptr::null_mut(), size as usize, libc::PROT_READ | libc::PROT_WRITE, libc::MAP_SHARED, fd, 0) };
+    let ptr =
+        unsafe { libc::mmap(std::ptr::null_mut(), size as usize, libc::PROT_READ | libc::PROT_WRITE, libc::MAP_SHARED, fd, 0) };
     if ptr == libc::MAP_FAILED {
         unsafe { libc::close(fd) };
         let _ = unsafe { libc::shm_unlink(cname.as_ptr()) };
-        return Err(BackendError {
-            status: ErrorStatus::MemoryAllocation,
-            context: "mmap shm".into(),
-        });
+        return Err(BackendError { status: ErrorStatus::MemoryAllocation, context: "mmap shm".into() });
     }
 
     unsafe { libc::close(fd) };
@@ -580,10 +569,10 @@ impl TTMemoryPool {
             status: ErrorStatus::MemoryAllocation,
             context: "allocation size exceeds 64-bit".into(),
         })?;
-        let rt = self.runtime.as_ref().ok_or_else(|| BackendError {
-            status: ErrorStatus::MemoryAllocation,
-            context: "runtime not initialized".into(),
-        })?;
+        let rt = self
+            .runtime
+            .as_ref()
+            .ok_or_else(|| BackendError { status: ErrorStatus::MemoryAllocation, context: "runtime not initialized".into() })?;
         // Hardcode tile_bytes=4096 (Float32) for now — f32 is the common case.
         let tile_bytes: u64 = 4096;
         let dev_index = rt.lock().unwrap().alloc_buf(bytes_u64, tile_bytes)?;
@@ -604,10 +593,10 @@ impl TTMemoryPool {
 
     pub fn host_to_pool(&mut self, src: &[u8], dst: PoolBufferId, event_wait_list: Vec<Event>) -> Result<Event, BackendError> {
         let _ = event_wait_list;
-        let rt = self.runtime.as_ref().ok_or_else(|| BackendError {
-            status: ErrorStatus::MemoryCopyH2P,
-            context: "runtime not initialized".into(),
-        })?;
+        let rt = self
+            .runtime
+            .as_ref()
+            .ok_or_else(|| BackendError { status: ErrorStatus::MemoryCopyH2P, context: "runtime not initialized".into() })?;
         let buf = self
             .buffers
             .get_mut(dst)
@@ -626,10 +615,10 @@ impl TTMemoryPool {
 
     pub fn pool_to_host(&mut self, src: PoolBufferId, dst: &mut [u8], event_wait_list: Vec<Event>) -> Result<(), BackendError> {
         let _ = event_wait_list;
-        let rt = self.runtime.as_ref().ok_or_else(|| BackendError {
-            status: ErrorStatus::MemoryCopyP2H,
-            context: "runtime not initialized".into(),
-        })?;
+        let rt = self
+            .runtime
+            .as_ref()
+            .ok_or_else(|| BackendError { status: ErrorStatus::MemoryCopyP2H, context: "runtime not initialized".into() })?;
         let buf = self
             .buffers
             .get_mut(src)
@@ -707,12 +696,7 @@ impl RuntimeProcess {
             .take()
             .ok_or_else(|| BackendError { status: ErrorStatus::Initialization, context: "tt-runtime: no stdout".into() })?;
 
-        let mut rt = RuntimeProcess {
-            stdin: BufWriter::new(stdin),
-            stdout: BufReader::new(stdout),
-            child,
-            timeout_ms: 30000,
-        };
+        let mut rt = RuntimeProcess { stdin: BufWriter::new(stdin), stdout: BufReader::new(stdout), child, timeout_ms: 30000 };
 
         let init_json = format!(r#"{{"cmd":"init","kernel_dir":"{kernel_dir}","cache_dir":"{cache_dir}"}}"#);
         rt.send(&init_json)?;
@@ -736,10 +720,9 @@ impl RuntimeProcess {
             status: ErrorStatus::KernelLaunch,
             context: format!("tt-runtime write nl: {e}").into(),
         })?;
-        self.stdin.flush().map_err(|e| BackendError {
-            status: ErrorStatus::KernelLaunch,
-            context: format!("tt-runtime flush: {e}").into(),
-        })?;
+        self.stdin
+            .flush()
+            .map_err(|e| BackendError { status: ErrorStatus::KernelLaunch, context: format!("tt-runtime flush: {e}").into() })?;
         Ok(())
     }
 
@@ -859,10 +842,7 @@ impl RuntimeProcess {
         let resp = self.recv_with_timeout(self.timeout_ms)?;
         if resp.contains("\"error\"") {
             let msg = extract_json_str(&resp, "msg").unwrap_or_else(|| "unknown".into());
-            return Err(BackendError {
-                status: ErrorStatus::MemoryAllocation,
-                context: format!("free_buf error: {msg}").into(),
-            });
+            return Err(BackendError { status: ErrorStatus::MemoryAllocation, context: format!("free_buf error: {msg}").into() });
         }
         Ok(())
     }
@@ -873,10 +853,7 @@ impl RuntimeProcess {
         let resp = self.recv_with_timeout(self.timeout_ms)?;
         if resp.contains("\"error\"") {
             let msg = extract_json_str(&resp, "msg").unwrap_or_else(|| "unknown".into());
-            return Err(BackendError {
-                status: ErrorStatus::MemoryCopyH2P,
-                context: format!("write_buf error: {msg}").into(),
-            });
+            return Err(BackendError { status: ErrorStatus::MemoryCopyH2P, context: format!("write_buf error: {msg}").into() });
         }
         Ok(())
     }
@@ -887,15 +864,20 @@ impl RuntimeProcess {
         let resp = self.recv_with_timeout(self.timeout_ms)?;
         if resp.contains("\"error\"") {
             let msg = extract_json_str(&resp, "msg").unwrap_or_else(|| "unknown".into());
-            return Err(BackendError {
-                status: ErrorStatus::MemoryCopyP2H,
-                context: format!("read_buf error: {msg}").into(),
-            });
+            return Err(BackendError { status: ErrorStatus::MemoryCopyP2H, context: format!("read_buf error: {msg}").into() });
         }
         Ok(())
     }
 
-    fn run(&mut self, hash: &str, n_tiles: u32, src_indices: &[u32], dst_index: u32, data_format: u32, tile_bytes: u32) -> Result<(), BackendError> {
+    fn run(
+        &mut self,
+        hash: &str,
+        n_tiles: u32,
+        src_indices: &[u32],
+        dst_index: u32,
+        data_format: u32,
+        tile_bytes: u32,
+    ) -> Result<(), BackendError> {
         let n_inputs = src_indices.len();
         let n_outputs = 1;
         let mut cmd = format!(
@@ -1038,9 +1020,10 @@ impl TTDevice {
 
         let mut src_indices: Vec<u32> = Vec::with_capacity(n_inputs);
         for i in 0..n_inputs {
-            let idx = memory_pool
-                .dev_index(args[i])
-                .map_err(|e| BackendError { status: ErrorStatus::KernelLaunch, context: format!("src{i} dev_index: {e}").into() })?;
+            let idx = memory_pool.dev_index(args[i]).map_err(|e| BackendError {
+                status: ErrorStatus::KernelLaunch,
+                context: format!("src{i} dev_index: {e}").into(),
+            })?;
             src_indices.push(idx);
         }
         let dst_buf = args[n_inputs];
@@ -1077,17 +1060,17 @@ struct SfpuInfo {
 
 fn dtype_to_data_format(dtype: DType) -> u32 {
     match dtype {
-        DType::F32 => 0,        // DataFormat::Float32
-        DType::F16 => 1,        // DataFormat::Float16
-        DType::BF16 => 2,       // DataFormat::Float16_b
-        _ => 0,                 // default Float32
+        DType::F32 => 0,  // DataFormat::Float32
+        DType::F16 => 1,  // DataFormat::Float16
+        DType::BF16 => 2, // DataFormat::Float16_b
+        _ => 0,           // default Float32
     }
 }
 
 fn dtype_to_tile_bytes(dtype: DType) -> u64 {
     let tile_elems: u64 = 1024; // TILE_WIDTH * TILE_HEIGHT
     match dtype {
-        DType::F32 => 4 * tile_elems,   // 4096
+        DType::F32 => 4 * tile_elems,               // 4096
         DType::F16 | DType::BF16 => 2 * tile_elems, // 2048
         _ => 4 * tile_elems,
     }
@@ -1106,15 +1089,55 @@ struct BinaryApi {
 fn bop_to_binary_api(bop: BOp) -> Result<BinaryApi, BackendError> {
     match bop {
         // Traditional binary API (eltwise_binary.h) — reads directly from CBs
-        BOp::Add => Ok(BinaryApi { tile_fn: "add_tiles", tile_init_fn: "add_tiles_init", header: "api/compute/eltwise_binary.h", uses_cbs: true }),
-        BOp::Sub => Ok(BinaryApi { tile_fn: "sub_tiles", tile_init_fn: "sub_tiles_init", header: "api/compute/eltwise_binary.h", uses_cbs: true }),
-        BOp::Mul => Ok(BinaryApi { tile_fn: "mul_tiles", tile_init_fn: "mul_tiles_init", header: "api/compute/eltwise_binary.h", uses_cbs: true }),
+        BOp::Add => Ok(BinaryApi {
+            tile_fn: "add_tiles",
+            tile_init_fn: "add_tiles_init",
+            header: "api/compute/eltwise_binary.h",
+            uses_cbs: true,
+        }),
+        BOp::Sub => Ok(BinaryApi {
+            tile_fn: "sub_tiles",
+            tile_init_fn: "sub_tiles_init",
+            header: "api/compute/eltwise_binary.h",
+            uses_cbs: true,
+        }),
+        BOp::Mul => Ok(BinaryApi {
+            tile_fn: "mul_tiles",
+            tile_init_fn: "mul_tiles_init",
+            header: "api/compute/eltwise_binary.h",
+            uses_cbs: true,
+        }),
         // SFPU binary API (eltwise_binary_sfpu.h) — operates on DST regs
-        BOp::Div => Ok(BinaryApi { tile_fn: "div_binary_tile", tile_init_fn: "div_binary_tile_init", header: "api/compute/eltwise_binary_sfpu.h", uses_cbs: false }),
-        BOp::Pow => Ok(BinaryApi { tile_fn: "power_binary_tile", tile_init_fn: "power_binary_tile_init", header: "api/compute/eltwise_binary_sfpu.h", uses_cbs: false }),
-        BOp::Eq => Ok(BinaryApi { tile_fn: "eq_binary_tile", tile_init_fn: "eq_binary_tile_init", header: "api/compute/eltwise_binary_sfpu.h", uses_cbs: false }),
-        BOp::NotEq => Ok(BinaryApi { tile_fn: "ne_binary_tile", tile_init_fn: "ne_binary_tile_init", header: "api/compute/eltwise_binary_sfpu.h", uses_cbs: false }),
-        BOp::Cmplt => Ok(BinaryApi { tile_fn: "lt_binary_tile", tile_init_fn: "lt_binary_tile_init", header: "api/compute/eltwise_binary_sfpu.h", uses_cbs: false }),
+        BOp::Div => Ok(BinaryApi {
+            tile_fn: "div_binary_tile",
+            tile_init_fn: "div_binary_tile_init",
+            header: "api/compute/eltwise_binary_sfpu.h",
+            uses_cbs: false,
+        }),
+        BOp::Pow => Ok(BinaryApi {
+            tile_fn: "power_binary_tile",
+            tile_init_fn: "power_binary_tile_init",
+            header: "api/compute/eltwise_binary_sfpu.h",
+            uses_cbs: false,
+        }),
+        BOp::Eq => Ok(BinaryApi {
+            tile_fn: "eq_binary_tile",
+            tile_init_fn: "eq_binary_tile_init",
+            header: "api/compute/eltwise_binary_sfpu.h",
+            uses_cbs: false,
+        }),
+        BOp::NotEq => Ok(BinaryApi {
+            tile_fn: "ne_binary_tile",
+            tile_init_fn: "ne_binary_tile_init",
+            header: "api/compute/eltwise_binary_sfpu.h",
+            uses_cbs: false,
+        }),
+        BOp::Cmplt => Ok(BinaryApi {
+            tile_fn: "lt_binary_tile",
+            tile_init_fn: "lt_binary_tile_init",
+            header: "api/compute/eltwise_binary_sfpu.h",
+            uses_cbs: false,
+        }),
         BOp::Max => Err(BackendError {
             status: ErrorStatus::KernelCompilation,
             context: "Max binary op not yet supported for Tenstorrent (add an IR optimization pass)".into(),
@@ -1168,7 +1191,11 @@ fn generate_compute_kernel(kernel: &Kernel) -> Result<(String, usize, usize, DTy
     while !op_id.is_null() {
         match kernel.at(op_id) {
             Op::Define { scope: Scope::Global, ro, .. } => {
-                if *ro { n_inputs += 1; } else { n_outputs += 1; }
+                if *ro {
+                    n_inputs += 1;
+                } else {
+                    n_outputs += 1;
+                }
             }
             _ => {}
         }
