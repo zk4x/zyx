@@ -2,18 +2,18 @@
 // SPDX-License-Identifier: LGPL-3.0-only
 
 // Long-lived C++ runtime process for zyx Tenstorrent backend.
-// Reads JSON commands from stdin, executes kernels on tt-metal hardware,
-// writes JSON responses to stdout.
+// Reads JSON commands from stdin, manages persistent DRAM buffers,
+// executes kernels on tt-metal hardware, writes JSON responses to stdout.
 //
-// Tensor data is transferred via a shared memory region (shm_open) whose
-// path is received during init. Input/output offsets within this region
-// are passed in the run command.
+// Tensor data is transferred via temporary shared memory regions
+// (shm_open + unlink per transfer), created by the Rust side.
 
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
 #include <fcntl.h>
 #include <iostream>
+#include <memory>
 #include <sstream>
 #include <string>
 #include <sys/mman.h>
@@ -33,8 +33,8 @@ using namespace tt;
 using namespace tt::tt_metal;
 using namespace tt::tt_metal::distributed;
 
-constexpr uint32_t TILE_ELEMS = tt::constants::TILE_WIDTH * tt::constants::TILE_HEIGHT; // 1024
-constexpr uint32_t TILE_BYTES_BF16 = sizeof(bfloat16) * TILE_ELEMS;                      // 2048
+constexpr uint32_t TILE_ELEMS = tt::constants::TILE_WIDTH * tt::constants::TILE_HEIGHT;
+constexpr uint32_t TILE_BYTES_BF16 = sizeof(bfloat16) * TILE_ELEMS;
 
 // ---------------------------------------------------------------------------
 // Helper: parse DataFormat from integer (matches Rust DataFormat enum)
@@ -51,7 +51,7 @@ static DataFormat int_to_data_format(uint32_t df) {
 }
 
 // ---------------------------------------------------------------------------
-// Cache directory resolution (XDG convention, like zyx C backend)
+// Cache directory resolution (XDG convention)
 // ---------------------------------------------------------------------------
 
 static string default_cache_dir() {
@@ -113,39 +113,42 @@ static uint64_t extract_u64(const string& json, const string& key) {
 }
 
 // ---------------------------------------------------------------------------
-// Shared memory state
+// Temporary shared memory: open by path, mmap, read/write, close, unlink
 // ---------------------------------------------------------------------------
 
-struct ShmState {
+struct TempShm {
     int fd = -1;
     void* ptr = nullptr;
     size_t size = 0;
-} g_shm;
 
-static void shm_init(const string& path) {
-    if (g_shm.fd >= 0) close(g_shm.fd);
-    g_shm.fd = shm_open(path.c_str(), O_RDWR, 0);
-    if (g_shm.fd < 0) {
-        throw runtime_error("shm_open " + path + " failed");
-    }
-    struct stat st;
-    fstat(g_shm.fd, &st);
-    g_shm.size = st.st_size;
-    g_shm.ptr = mmap(nullptr, g_shm.size, PROT_READ | PROT_WRITE, MAP_SHARED, g_shm.fd, 0);
-    if (g_shm.ptr == MAP_FAILED) {
-        close(g_shm.fd);
-        g_shm.fd = -1;
-        throw runtime_error("mmap shm failed");
-    }
-}
+    ~TempShm() { close(); }
 
-static void shm_close() {
-    if (g_shm.ptr && g_shm.ptr != MAP_FAILED) munmap(g_shm.ptr, g_shm.size);
-    if (g_shm.fd >= 0) close(g_shm.fd);
-    g_shm.ptr = nullptr;
-    g_shm.fd = -1;
-    g_shm.size = 0;
-}
+    void open_read(const string& path) {
+        close();
+        fd = shm_open(path.c_str(), O_RDWR, 0);
+        if (fd < 0) throw runtime_error("shm_open " + path + " failed (read)");
+        struct stat st;
+        fstat(fd, &st);
+        size = st.st_size;
+        ptr = mmap(nullptr, size, PROT_READ, MAP_SHARED, fd, 0);
+        if (ptr == MAP_FAILED) { close(); throw runtime_error("mmap shm read failed"); }
+    }
+
+    void open_write(const string& path, uint64_t sz) {
+        close();
+        fd = shm_open(path.c_str(), O_RDWR, 0);
+        if (fd < 0) throw runtime_error("shm_open " + path + " failed (write)");
+        size = sz;
+        ptr = mmap(nullptr, size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+        if (ptr == MAP_FAILED) { close(); throw runtime_error("mmap shm write failed"); }
+    }
+
+    void close() {
+        if (ptr && ptr != MAP_FAILED) munmap(ptr, size);
+        if (fd >= 0) ::close(fd);
+        fd = -1; ptr = nullptr; size = 0;
+    }
+};
 
 // ---------------------------------------------------------------------------
 // Main IPC loop
@@ -163,6 +166,9 @@ int main() {
     string cache_dir;
     shared_ptr<MeshDevice> mesh_device = nullptr;
     MeshCommandQueue* cq = nullptr;
+
+    // Persistent DRAM buffers — indexed by position in this vector
+    vector<shared_ptr<MeshBuffer>> buffers;
 
     string line;
     while (getline(cin, line)) {
@@ -183,15 +189,119 @@ int main() {
                 (void)system(mkdir_cmd.c_str());
             }
 
-            // Open shared memory
-            string shm_path = extract_str(line, "shm_path");
             try {
-                shm_init(shm_path);
                 mesh_device = MeshDevice::create_unit_mesh(0);
                 cq = &mesh_device->mesh_command_queue();
                 cout << R"({"status":"ready"})" << endl;
             } catch (const exception& e) {
                 cerr << "init error: " << e.what() << endl;
+                cout << R"({"status":"error","msg":")" << e.what() << R"("})" << endl;
+            }
+        }
+
+        // ---- alloc_buf ----
+        else if (cmd == "alloc_buf") {
+            if (!mesh_device.get()) {
+                cout << R"({"status":"error","msg":"not initialized"})" << endl;
+                continue;
+            }
+
+            uint64_t size = extract_u64(line, "size");
+            if (size == 0) {
+                cout << R"({"status":"error","msg":"alloc_buf: zero size"})" << endl;
+                continue;
+            }
+
+            try {
+                uint32_t tile_bytes = TILE_BYTES_BF16;
+                uint32_t n_tiles = (size + tile_bytes - 1) / tile_bytes;
+                if (n_tiles == 0) n_tiles = 1;
+
+                DeviceLocalBufferConfig dram_config{};
+                dram_config.page_size = tile_bytes;
+                dram_config.buffer_type = BufferType::DRAM;
+                ReplicatedBufferConfig buf_config{.size = (uint64_t)n_tiles * tile_bytes};
+
+                auto buf = MeshBuffer::create(buf_config, dram_config, mesh_device.get());
+                uint32_t idx = buffers.size();
+                buffers.push_back(move(buf));
+                cout << R"({"status":"ok","index":")" << idx << R"("})" << endl;
+            } catch (const exception& e) {
+                cerr << "alloc_buf error: " << e.what() << endl;
+                cout << R"({"status":"error","msg":")" << e.what() << R"("})" << endl;
+            }
+        }
+
+        // ---- free_buf ----
+        else if (cmd == "free_buf") {
+            uint32_t idx = extract_u32(line, "index");
+            if (idx < buffers.size() && buffers[idx]) {
+                buffers[idx].reset();
+            }
+            cout << R"({"status":"ok"})" << endl;
+        }
+
+        // ---- write_buf ----
+        else if (cmd == "write_buf") {
+            uint32_t idx = extract_u32(line, "index");
+            string shm_path = extract_str(line, "shm_path");
+            uint64_t size = extract_u64(line, "size");
+
+            if (idx >= buffers.size() || !buffers[idx]) {
+                cout << R"({"status":"error","msg":"write_buf: invalid index ")" << idx << R"("})" << endl;
+                continue;
+            }
+
+            try {
+                TempShm shm;
+                shm.open_read(shm_path);
+
+                uint64_t buf_bytes = buffers[idx]->size();
+                uint64_t num_bf16 = buf_bytes / sizeof(bfloat16);
+                vector<bfloat16> data(num_bf16, 0);
+                uint64_t copy_sz = min(size, shm.size);
+                memcpy(data.data(), shm.ptr, copy_sz);
+                shm.close();
+
+                EnqueueWriteMeshBuffer(*cq, buffers[idx], data, false);
+                Finish(*cq);
+
+                // Unlink the temp shm (Rust side already did munmap)
+                shm_unlink(shm_path.c_str());
+
+                cout << R"({"status":"ok"})" << endl;
+            } catch (const exception& e) {
+                cerr << "write_buf error: " << e.what() << endl;
+                cout << R"({"status":"error","msg":")" << e.what() << R"("})" << endl;
+            }
+        }
+
+        // ---- read_buf ----
+        else if (cmd == "read_buf") {
+            uint32_t idx = extract_u32(line, "index");
+            string shm_path = extract_str(line, "shm_path");
+            uint64_t size = extract_u64(line, "size");
+
+            if (idx >= buffers.size() || !buffers[idx]) {
+                cout << R"({"status":"error","msg":"read_buf: invalid index ")" << idx << R"("})" << endl;
+                continue;
+            }
+
+            try {
+                vector<bfloat16> result;
+                EnqueueReadMeshBuffer(*cq, result, buffers[idx], true);
+
+                uint64_t copy_sz = min(size, result.size() * sizeof(bfloat16));
+
+                TempShm shm;
+                shm.open_write(shm_path, copy_sz);
+                memcpy(shm.ptr, result.data(), copy_sz);
+                shm.close();
+
+                // Rust side will munmap + shm_unlink after reading
+                cout << R"({"status":"ok"})" << endl;
+            } catch (const exception& e) {
+                cerr << "read_buf error: " << e.what() << endl;
                 cout << R"({"status":"error","msg":")" << e.what() << R"("})" << endl;
             }
         }
@@ -209,18 +319,14 @@ int main() {
             uint32_t n_tiles = extract_u32(line, "n_tiles");
             uint32_t data_format = extract_u32(line, "data_format");
             uint32_t tile_bytes = extract_u32(line, "tile_bytes");
-
-            // Parse input offsets/sizes: in_ofs0, in_sz0, in_ofs1, in_sz1, ...
-            vector<uint64_t> in_offsets(n_inputs);
-            vector<uint64_t> in_sizes(n_inputs);
-            for (uint32_t i = 0; i < n_inputs; i++) {
-                in_offsets[i] = extract_u64(line, "in_ofs" + to_string(i));
-                in_sizes[i] = extract_u64(line, "in_sz" + to_string(i));
-            }
-            uint64_t out_offset = extract_u64(line, "out_ofs");
-            uint64_t out_size = extract_u64(line, "out_sz");
-
             (void)n_outputs;
+
+            // Parse buffer indices: src0, src1, ..., dst0
+            vector<uint32_t> src_indices(n_inputs);
+            for (uint32_t i = 0; i < n_inputs; i++) {
+                src_indices[i] = extract_u32(line, "src" + to_string(i));
+            }
+            uint32_t dst_index = extract_u32(line, "dst0");
 
             if (hash.empty()) {
                 cout << R"({"status":"error","msg":"missing hash"})" << endl;
@@ -228,34 +334,21 @@ int main() {
             }
             if (n_tiles == 0) n_tiles = 1;
 
+            // Validate indices
+            for (uint32_t i = 0; i < n_inputs; i++) {
+                if (src_indices[i] >= buffers.size() || !buffers[src_indices[i]]) {
+                    cout << R"({"status":"error","msg":"run: invalid src index )" << src_indices[i] << R"("})" << endl;
+                    continue;
+                }
+            }
+            if (dst_index >= buffers.size() || !buffers[dst_index]) {
+                cout << R"({"status":"error","msg":"run: invalid dst index )" << dst_index << R"("})" << endl;
+                continue;
+            }
+
             try {
-                // --- Allocate DRAM buffers ---
                 DataFormat df = int_to_data_format(data_format);
 
-                DeviceLocalBufferConfig dram_config{};
-                dram_config.page_size = tile_bytes;
-                dram_config.buffer_type = BufferType::DRAM;
-                ReplicatedBufferConfig buf_config{.size = (uint64_t)n_tiles * tile_bytes};
-
-                auto src0_buf = MeshBuffer::create(buf_config, dram_config, mesh_device.get());
-                auto src1_buf = n_inputs > 1 ? MeshBuffer::create(buf_config, dram_config, mesh_device.get()) : nullptr;
-                auto dst_buf  = MeshBuffer::create(buf_config, dram_config, mesh_device.get());
-
-                // --- Copy input data from shared memory → host vectors → DRAM ---
-                auto vec_from_shm = [&](uint64_t ofs, uint64_t sz) {
-                    vector<bfloat16> v(sz / sizeof(bfloat16));
-                    memcpy(v.data(), (uint8_t*)g_shm.ptr + ofs, sz);
-                    return v;
-                };
-
-                vector<bfloat16> a_data = vec_from_shm(in_offsets[0], in_sizes[0]);
-                EnqueueWriteMeshBuffer(*cq, src0_buf, a_data, false);
-                if (n_inputs > 1) {
-                    vector<bfloat16> b_data = vec_from_shm(in_offsets[1], in_sizes[1]);
-                    EnqueueWriteMeshBuffer(*cq, *src1_buf, b_data, false);
-                }
-
-                // --- Create program ---
                 Program program = CreateProgram();
                 CoreCoord core = {0, 0};
                 MeshWorkload workload;
@@ -268,57 +361,69 @@ int main() {
                         CircularBufferConfig(tiles_per_cb * tile_bytes, {{idx, df}})
                             .set_page_size(idx, tile_bytes));
                 };
-                mk_cb(CBIndex::c_0);
-                if (n_inputs > 1) mk_cb(CBIndex::c_1);
+                for (uint32_t i = 0; i < n_inputs; i++) {
+                    mk_cb(static_cast<CBIndex>(static_cast<uint32_t>(CBIndex::c_0) + i));
+                }
                 mk_cb(CBIndex::c_16);
 
-                // Reader kernel (read_tiles.cpp)
+                // Reader kernel — one TensorAccessor per input
                 vector<uint32_t> reader_args;
-                TensorAccessorArgs(*src0_buf).append_to(reader_args);
-                if (src1_buf) TensorAccessorArgs(*src1_buf).append_to(reader_args);
-
+                for (uint32_t i = 0; i < n_inputs; i++) {
+                    TensorAccessorArgs(*buffers[src_indices[i]]).append_to(reader_args);
+                }
                 auto reader = CreateKernel(program, kernel_dir + "/read_tiles.cpp", core,
                     DataMovementConfig{
                         .processor = DataMovementProcessor::RISCV_0,
                         .noc = NOC::RISCV_0_default,
                         .compile_args = reader_args});
 
-                // Writer kernel (write_tile.cpp)
+                // Writer kernel
                 vector<uint32_t> writer_args;
-                TensorAccessorArgs(*dst_buf).append_to(writer_args);
+                TensorAccessorArgs(*buffers[dst_index]).append_to(writer_args);
                 auto writer = CreateKernel(program, kernel_dir + "/write_tile.cpp", core,
                     DataMovementConfig{
                         .processor = DataMovementProcessor::RISCV_1,
                         .noc = NOC::RISCV_1_default,
                         .compile_args = writer_args});
 
-                // Compute kernel (tiles_add.cpp or cached per-hash kernel)
+                // Compute kernel — cached per-hash or fall back to tiles_add.cpp
                 string compute_path = cache_dir + "/" + hash + ".cpp";
-                // If cached kernel doesn't exist, fall back to tiles_add.cpp
                 if (access(compute_path.c_str(), F_OK) != 0) {
                     compute_path = kernel_dir + "/tiles_add.cpp";
                 }
                 auto compute = CreateKernel(program, compute_path, core,
                     ComputeConfig{.math_fidelity = MathFidelity::HiFi4});
 
-                // Set runtime args
-                if (n_inputs > 1) {
-                    SetRuntimeArgs(program, reader, core, {(uint32_t)src0_buf->address(), (uint32_t)src1_buf->address(), n_tiles});
-                } else {
-                    SetRuntimeArgs(program, reader, core, {(uint32_t)src0_buf->address(), 0, n_tiles});
+                // Set runtime args — pass NOC addresses + n_tiles
+                {
+                    vector<uint32_t> reader_rt_args;
+                    for (uint32_t i = 0; i < n_inputs; i++) {
+                        reader_rt_args.push_back((uint32_t)buffers[src_indices[i]]->address());
+                    }
+                    reader_rt_args.push_back(n_tiles);
+                    SetRuntimeArgs(program, reader, core, reader_rt_args);
                 }
-                SetRuntimeArgs(program, writer, core, {(uint32_t)dst_buf->address(), n_tiles});
+                SetRuntimeArgs(program, writer, core,
+                    {(uint32_t)buffers[dst_index]->address(), n_tiles});
                 SetRuntimeArgs(program, compute, core, {n_tiles});
 
-                // --- Enqueue and run ---
+                // Enqueue and run
+                cerr << "[TT_RUN] hash=" << hash << " n_tiles=" << n_tiles << " n_inputs=" << n_inputs << endl;
+                for (uint32_t i = 0; i < n_inputs; i++) {
+                    auto b = buffers[src_indices[i]];
+                    cerr << "[TT_RUN]  src" << i << " idx=" << src_indices[i]
+                         << " addr=" << b->address() << " sz=" << b->size() << endl;
+                }
+                {
+                    auto b = buffers[dst_index];
+                    cerr << "[TT_RUN]  dst idx=" << dst_index
+                         << " addr=" << b->address() << " sz=" << b->size() << endl;
+                }
                 workload.add_program(device_range, move(program));
                 EnqueueMeshWorkload(*cq, workload, false);
+                cerr << "[TT_RUN] before Finish" << endl;
                 Finish(*cq);
-
-                // --- Read result back to shared memory ---
-                vector<bfloat16> result;
-                EnqueueReadMeshBuffer(*cq, result, dst_buf, true);
-                memcpy((uint8_t*)g_shm.ptr + out_offset, result.data(), out_size);
+                cerr << "[TT_RUN] after Finish" << endl;
 
                 cout << R"({"status":"ok"})" << endl;
 
@@ -330,8 +435,8 @@ int main() {
 
         // ---- exit ----
         else if (cmd == "exit") {
+            buffers.clear();
             if (mesh_device.get()) mesh_device->close();
-            shm_close();
             cout << R"({"status":"bye"})" << endl;
             break;
         }

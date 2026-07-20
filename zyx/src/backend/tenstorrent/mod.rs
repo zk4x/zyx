@@ -338,14 +338,14 @@ use crate::{
 };
 use nanoserde::DeJson;
 use std::{
+    ffi::CString,
     fs,
-    fs::File,
     io::{BufRead, BufReader, BufWriter, Write},
     os::unix::io::AsRawFd,
     path::PathBuf,
     process::{Child, ChildStdin, ChildStdout, Command},
     ptr,
-    sync::atomic::{AtomicU8, Ordering},
+    sync::{Arc, Mutex},
 };
 
 // ---------------------------------------------------------------------------
@@ -418,18 +418,30 @@ unsafe impl Sync for TTBuffer {}
 
 // ---------------------------------------------------------------------------
 // Memory pool — device DRAM buffers managed by C++ runtime.
-// TTBuffer is just a handle (u32 index) into the runtime's buffer list.
-// Data transfer (host_to_pool / pool_to_host) creates temp shared memory
-// regions and sends IPC commands via launch().
+// TTBuffer is a handle (u32 dev_index) into the runtime's buffer list.
+// The pool shares the runtime IPC channel with TTDevice via Arc<Mutex>.
 // ---------------------------------------------------------------------------
 
 #[derive(Debug)]
 pub struct TTMemoryPool {
     buffers: Slab<PoolBufferId, TTBuffer>,
+    runtime: Option<Arc<Mutex<RuntimeProcess>>>,
 }
 
 #[derive(Debug, Clone)]
 pub struct TTEvent;
+
+fn spawn_runtime(
+    runtime_path: &PathBuf,
+    kernel_dir: &PathBuf,
+    cache_dir: &PathBuf,
+) -> Result<Arc<Mutex<RuntimeProcess>>, BackendError> {
+    let rp = runtime_path.to_string_lossy();
+    let kd = kernel_dir.to_string_lossy();
+    let cd = cache_dir.to_string_lossy();
+    let rt = RuntimeProcess::new(&rp, &kd, &cd)?;
+    Ok(Arc::new(Mutex::new(rt)))
+}
 
 pub(super) fn initialize_device(
     config: &TTConfig,
@@ -450,11 +462,7 @@ pub(super) fn initialize_device(
         println!("[tenstorrent] device initialized");
     }
 
-    let pool_id = memory_pools.len();
-    let pool = MemoryPool::TT(TTMemoryPool { buffers: Slab::new() });
-    memory_pools.push(pool);
-
-    // Compute config dir from XDG convention (same as cache_dir but without /cache/tt)
+    // Compute config dir from XDG convention
     let config_base = std::env::var_os("XDG_CONFIG_HOME")
         .and_then(|p| {
             let p = PathBuf::from(p);
@@ -477,6 +485,16 @@ pub(super) fn initialize_device(
     // Paths provided by build.rs
     let kernel_dir = PathBuf::from(env!("ZYX_TT_KERNEL_DIR"));
 
+    // Spawn the runtime eagerly — both pool and device need it
+    let runtime = spawn_runtime(&runtime_path, &kernel_dir, &cache_dir)?;
+
+    let pool_id = memory_pools.len();
+    let pool = MemoryPool::TT(TTMemoryPool {
+        buffers: Slab::new(),
+        runtime: Some(runtime.clone()),
+    });
+    memory_pools.push(pool);
+
     let _device_id = devices.len();
     devices.push(Device::TT(TTDevice {
         device_info: DeviceInfo {
@@ -494,7 +512,7 @@ pub(super) fn initialize_device(
             supported_vec_lens: vec![32],
         },
         memory_pool_id: pool_id,
-        runtime: None,
+        runtime: Some(runtime),
         kernel_dir,
         cache_dir,
         runtime_path,
@@ -503,19 +521,71 @@ pub(super) fn initialize_device(
     Ok(())
 }
 
+fn create_temp_shm(size: u64) -> Result<(CString, *mut u8, u64), BackendError> {
+    let pid = std::process::id();
+    let ns = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    let name = format!("/zyx-tt-{pid:x}-{ns:x}");
+    let cname = CString::new(name.clone()).map_err(|_| BackendError {
+        status: ErrorStatus::MemoryAllocation,
+        context: "invalid shm path".into(),
+    })?;
+
+    let fd = unsafe { libc::shm_open(cname.as_ptr(), libc::O_CREAT | libc::O_RDWR | libc::O_EXCL, 0o600) };
+    if fd < 0 {
+        return Err(BackendError {
+            status: ErrorStatus::MemoryAllocation,
+            context: format!("shm_open errno={}", std::io::Error::last_os_error()).into(),
+        });
+    }
+
+    if unsafe { libc::ftruncate(fd, size as i64) } < 0 {
+        unsafe { libc::close(fd) };
+        let _ = unsafe { libc::shm_unlink(cname.as_ptr()) };
+        return Err(BackendError {
+            status: ErrorStatus::MemoryAllocation,
+            context: "ftruncate shm".into(),
+        });
+    }
+
+    let ptr = unsafe { libc::mmap(std::ptr::null_mut(), size as usize, libc::PROT_READ | libc::PROT_WRITE, libc::MAP_SHARED, fd, 0) };
+    if ptr == libc::MAP_FAILED {
+        unsafe { libc::close(fd) };
+        let _ = unsafe { libc::shm_unlink(cname.as_ptr()) };
+        return Err(BackendError {
+            status: ErrorStatus::MemoryAllocation,
+            context: "mmap shm".into(),
+        });
+    }
+
+    unsafe { libc::close(fd) };
+    Ok((cname, ptr as *mut u8, size))
+}
+
 impl TTMemoryPool {
-    pub fn deinitialize(&mut self) {}
+    pub fn deinitialize(&mut self) {
+        if let Some(rt) = self.runtime.take() {
+            let _ = rt.lock().unwrap().exit();
+        }
+    }
 
     pub fn free_bytes(&self) -> Dim {
         Dim::from(u64::MAX)
     }
 
     pub fn allocate(&mut self, bytes: Dim) -> Result<(PoolBufferId, Event), BackendError> {
-        let bytes_u64 = u64::try_from(bytes).map_err(|_| BackendError {
+        let bytes_u64: u64 = u64::try_from(bytes).map_err(|_| BackendError {
             status: ErrorStatus::MemoryAllocation,
             context: "allocation size exceeds 64-bit".into(),
         })?;
-        let buf = TTBuffer { dev_index: u32::MAX, size: bytes_u64 };
+        let rt = self.runtime.as_ref().ok_or_else(|| BackendError {
+            status: ErrorStatus::MemoryAllocation,
+            context: "runtime not initialized".into(),
+        })?;
+        let dev_index = rt.lock().unwrap().alloc_buf(bytes_u64)?;
+        let buf = TTBuffer { dev_index, size: bytes_u64 };
         let id = self.buffers.push(buf);
         Ok((id, Event::TT(TTEvent)))
     }
@@ -523,16 +593,55 @@ impl TTMemoryPool {
     pub fn deallocate(&mut self, buffer_id: PoolBufferId, event_wait_list: Vec<Event>) {
         let _ = event_wait_list;
         if self.buffers.contains_key(buffer_id) {
-            unsafe { self.buffers.remove_and_return(buffer_id) };
+            let buf = unsafe { self.buffers.remove_and_return(buffer_id) };
+            if let Some(rt) = &self.runtime {
+                let _ = rt.lock().unwrap().free_buf(buf.dev_index);
+            }
         }
     }
 
-    pub fn host_to_pool(&mut self, _src: &[u8], _dst: PoolBufferId, _event_wait_list: Vec<Event>) -> Result<Event, BackendError> {
-        panic!("TTMemoryPool::host_to_pool must go through launch()")
+    pub fn host_to_pool(&mut self, src: &[u8], dst: PoolBufferId, event_wait_list: Vec<Event>) -> Result<Event, BackendError> {
+        let _ = event_wait_list;
+        let rt = self.runtime.as_ref().ok_or_else(|| BackendError {
+            status: ErrorStatus::MemoryCopyH2P,
+            context: "runtime not initialized".into(),
+        })?;
+        let buf = self
+            .buffers
+            .get_mut(dst)
+            .ok_or_else(|| BackendError { status: ErrorStatus::MemoryCopyH2P, context: "invalid buffer id".into() })?;
+        let len = src.len().min(buf.size as usize);
+        let (cname, shm_ptr, _) = create_temp_shm(len as u64)?;
+        let shm_path = cname.to_str().unwrap_or("/none");
+        unsafe { std::ptr::copy_nonoverlapping(src.as_ptr(), shm_ptr, len) };
+        rt.lock().unwrap().write_buf(buf.dev_index, shm_path, len as u64)?;
+        unsafe {
+            libc::munmap(shm_ptr as *mut libc::c_void, len as usize);
+            libc::shm_unlink(cname.as_ptr());
+        }
+        Ok(Event::TT(TTEvent))
     }
 
-    pub fn pool_to_host(&mut self, _src: PoolBufferId, _dst: &mut [u8], _event_wait_list: Vec<Event>) -> Result<(), BackendError> {
-        panic!("TTMemoryPool::pool_to_host must go through launch()")
+    pub fn pool_to_host(&mut self, src: PoolBufferId, dst: &mut [u8], event_wait_list: Vec<Event>) -> Result<(), BackendError> {
+        let _ = event_wait_list;
+        let rt = self.runtime.as_ref().ok_or_else(|| BackendError {
+            status: ErrorStatus::MemoryCopyP2H,
+            context: "runtime not initialized".into(),
+        })?;
+        let buf = self
+            .buffers
+            .get_mut(src)
+            .ok_or_else(|| BackendError { status: ErrorStatus::MemoryCopyP2H, context: "invalid buffer id".into() })?;
+        let len = dst.len().min(buf.size as usize);
+        let (cname, shm_ptr, _) = create_temp_shm(len as u64)?;
+        let shm_path = cname.to_str().unwrap_or("/none");
+        rt.lock().unwrap().read_buf(buf.dev_index, shm_path, len as u64)?;
+        unsafe {
+            std::ptr::copy_nonoverlapping(shm_ptr, dst.as_mut_ptr(), len);
+            libc::munmap(shm_ptr as *mut libc::c_void, len as usize);
+            libc::shm_unlink(cname.as_ptr());
+        }
+        Ok(())
     }
 
     pub fn sync_events(&mut self, events: Vec<Event>) -> Result<(), BackendError> {
@@ -549,6 +658,14 @@ impl TTMemoryPool {
     pub fn buffer_size(&self, buffer_id: PoolBufferId) -> Result<u64, BackendError> {
         if self.buffers.contains_key(buffer_id) {
             Ok(self.buffers[buffer_id].size)
+        } else {
+            Err(BackendError { status: ErrorStatus::MemoryAllocation, context: "invalid buffer id".into() })
+        }
+    }
+
+    pub fn dev_index(&self, buffer_id: PoolBufferId) -> Result<u32, BackendError> {
+        if self.buffers.contains_key(buffer_id) {
+            Ok(self.buffers[buffer_id].dev_index)
         } else {
             Err(BackendError { status: ErrorStatus::MemoryAllocation, context: "invalid buffer id".into() })
         }
@@ -592,10 +709,9 @@ impl RuntimeProcess {
             stdin: BufWriter::new(stdin),
             stdout: BufReader::new(stdout),
             child,
-            timeout_ms: 30000, // 30 second default timeout
+            timeout_ms: 30000,
         };
 
-        // Send init
         let init_json = format!(r#"{{"cmd":"init","kernel_dir":"{kernel_dir}","cache_dir":"{cache_dir}"}}"#);
         rt.send(&init_json)?;
         let resp = rt.recv_with_timeout(rt.timeout_ms)?;
@@ -617,14 +733,14 @@ impl RuntimeProcess {
             status: ErrorStatus::KernelLaunch,
             context: format!("tt-runtime write nl: {e}").into(),
         })?;
-        self.stdin
-            .flush()
-            .map_err(|e| BackendError { status: ErrorStatus::KernelLaunch, context: format!("tt-runtime flush: {e}").into() })?;
+        self.stdin.flush().map_err(|e| BackendError {
+            status: ErrorStatus::KernelLaunch,
+            context: format!("tt-runtime flush: {e}").into(),
+        })?;
         Ok(())
     }
 
     fn poll_read(&mut self, timeout_ms: u64) -> Result<bool, BackendError> {
-        // Check if child is still alive first
         match self.child.try_wait() {
             Ok(Some(status)) => {
                 return Err(BackendError {
@@ -638,7 +754,7 @@ impl RuntimeProcess {
                     context: format!("tt-runtime wait error: {e}").into(),
                 });
             }
-            Ok(None) => {} // still running
+            Ok(None) => {}
         }
 
         let fd = std::os::unix::io::AsRawFd::as_raw_fd(self.stdout.get_mut());
@@ -650,49 +766,43 @@ impl RuntimeProcess {
         match ret {
             -1 => {
                 let err = std::io::Error::last_os_error();
-                return Err(BackendError { status: ErrorStatus::KernelLaunch, context: format!("poll error: {err}").into() });
+                Err(BackendError { status: ErrorStatus::KernelLaunch, context: format!("poll error: {err}").into() })
             }
-            0 => Ok(false),                              // timeout
-            _ => Ok(pollfd.revents & libc::POLLIN != 0), // data available or error
+            0 => Ok(false),
+            _ => Ok(pollfd.revents & libc::POLLIN != 0),
         }
     }
 
     fn recv_with_timeout(&mut self, timeout_ms: u64) -> Result<String, BackendError> {
-        // Use poll-based timeout to prevent blocking indefinitely
         let mut attempts = 0;
         let max_attempts = 3;
         let poll_timeout = timeout_ms / max_attempts;
 
         while attempts < max_attempts {
             if self.poll_read(poll_timeout)? {
-                // Data available, try to read
                 let mut line = String::new();
                 match self.stdout.read_line(&mut line) {
                     Ok(0) => {
-                        // EOF, process exited
                         return Err(BackendError {
                             status: ErrorStatus::KernelLaunch,
                             context: "tt-runtime closed stdout".into(),
                         });
                     }
                     Ok(_) => {
-                        return Ok(line.trim().to_string());
-                    }
-                    Err(e) => {
-                        // Read error
-                        if attempts == max_attempts - 1 {
-                            return Err(BackendError {
-                                status: ErrorStatus::KernelLaunch,
-                                context: format!("tt-runtime read error: {e}").into(),
-                            });
+                        let trimmed = line.trim().to_string();
+                        // Skip non-JSON lines (UMD log messages leaking to stdout)
+                        if trimmed.starts_with('{') {
+                            return Ok(trimmed);
                         }
+                        // Log line — keep reading
+                        continue;
+                    }
+                    Err(_) => {
                         attempts += 1;
                         continue;
                     }
                 }
             }
-
-            // Poll timed out, check if child is still alive
             match self.child.try_wait() {
                 Ok(Some(status)) => {
                     return Err(BackendError {
@@ -711,17 +821,84 @@ impl RuntimeProcess {
                 }
             }
         }
-
         Err(BackendError {
             status: ErrorStatus::KernelLaunch,
             context: format!("tt-runtime read timeout after {}ms", timeout_ms).into(),
         })
     }
 
-    fn run(&mut self, hash: &str, n_inputs: usize, n_outputs: usize, data_format: u32, tile_bytes: u32, n_tiles: u32, src_nocs: &[u64], dst_noc: u64) -> Result<(), BackendError> {
-        let mut cmd = format!(r#"{{"cmd":"run","hash":"{hash}","n_inputs":{n_inputs},"n_outputs":{n_outputs},"n_tiles":{n_tiles},"data_format":{data_format},"tile_bytes":{tile_bytes},"dst0":{dst_noc}"#);
-        for (i, noc) in src_nocs.iter().enumerate() {
-            cmd.push_str(&format!(r#","src{i}":{noc}"#));
+    fn alloc_buf(&mut self, size: u64) -> Result<u32, BackendError> {
+        let cmd = format!(r#"{{"cmd":"alloc_buf","size":{size}}}"#);
+        self.send(&cmd)?;
+        let resp = self.recv_with_timeout(self.timeout_ms)?;
+        if resp.contains("\"error\"") {
+            let msg = extract_json_str(&resp, "msg").unwrap_or_else(|| "unknown".into());
+            return Err(BackendError {
+                status: ErrorStatus::MemoryAllocation,
+                context: format!("alloc_buf error: {msg}").into(),
+            });
+        }
+        let idx_str = extract_json_str(&resp, "index").ok_or_else(|| BackendError {
+            status: ErrorStatus::MemoryAllocation,
+            context: "alloc_buf: no index in response".into(),
+        })?;
+        let idx: u32 = idx_str.parse().map_err(|_| BackendError {
+            status: ErrorStatus::MemoryAllocation,
+            context: format!("alloc_buf: invalid index '{idx_str}'").into(),
+        })?;
+        Ok(idx)
+    }
+
+    fn free_buf(&mut self, dev_index: u32) -> Result<(), BackendError> {
+        let cmd = format!(r#"{{"cmd":"free_buf","index":{dev_index}}}"#);
+        self.send(&cmd)?;
+        let resp = self.recv_with_timeout(self.timeout_ms)?;
+        if resp.contains("\"error\"") {
+            let msg = extract_json_str(&resp, "msg").unwrap_or_else(|| "unknown".into());
+            return Err(BackendError {
+                status: ErrorStatus::MemoryAllocation,
+                context: format!("free_buf error: {msg}").into(),
+            });
+        }
+        Ok(())
+    }
+
+    fn write_buf(&mut self, dev_index: u32, shm_path: &str, size: u64) -> Result<(), BackendError> {
+        let cmd = format!(r#"{{"cmd":"write_buf","index":{dev_index},"shm_path":"{shm_path}","size":{size}}}"#);
+        self.send(&cmd)?;
+        let resp = self.recv_with_timeout(self.timeout_ms)?;
+        if resp.contains("\"error\"") {
+            let msg = extract_json_str(&resp, "msg").unwrap_or_else(|| "unknown".into());
+            return Err(BackendError {
+                status: ErrorStatus::MemoryCopyH2P,
+                context: format!("write_buf error: {msg}").into(),
+            });
+        }
+        Ok(())
+    }
+
+    fn read_buf(&mut self, dev_index: u32, shm_path: &str, size: u64) -> Result<(), BackendError> {
+        let cmd = format!(r#"{{"cmd":"read_buf","index":{dev_index},"shm_path":"{shm_path}","size":{size}}}"#);
+        self.send(&cmd)?;
+        let resp = self.recv_with_timeout(self.timeout_ms)?;
+        if resp.contains("\"error\"") {
+            let msg = extract_json_str(&resp, "msg").unwrap_or_else(|| "unknown".into());
+            return Err(BackendError {
+                status: ErrorStatus::MemoryCopyP2H,
+                context: format!("read_buf error: {msg}").into(),
+            });
+        }
+        Ok(())
+    }
+
+    fn run(&mut self, hash: &str, n_tiles: u32, src_indices: &[u32], dst_index: u32, data_format: u32, tile_bytes: u32) -> Result<(), BackendError> {
+        let n_inputs = src_indices.len();
+        let n_outputs = 1;
+        let mut cmd = format!(
+            r#"{{"cmd":"run","hash":"{hash}","n_inputs":{n_inputs},"n_outputs":{n_outputs},"n_tiles":{n_tiles},"data_format":{data_format},"tile_bytes":{tile_bytes},"dst0":{dst_index}"#
+        );
+        for (i, idx) in src_indices.iter().enumerate() {
+            cmd.push_str(&format!(r#","src{i}":{idx}"#));
         }
         cmd.push('}');
         self.send(&cmd)?;
@@ -757,7 +934,7 @@ impl RuntimeProcess {
 
 fn extract_json_str(json: &str, key: &str) -> Option<String> {
     let k = json.find(&format!("\"{key}\""))?;
-    let after_colon = &json[k + key.len() + 4..]; // skip past "key":
+    let after_colon = &json[k + key.len() + 3..]; // skip past "key":
     let start = after_colon.find('"')? + 1;
     let end = after_colon[start..].find('"')?;
     Some(after_colon[start..start + end].to_string())
@@ -783,7 +960,7 @@ struct TTProgram {
 pub struct TTDevice {
     device_info: DeviceInfo,
     memory_pool_id: PoolId,
-    runtime: Option<RuntimeProcess>,
+    runtime: Option<Arc<Mutex<RuntimeProcess>>>,
     kernel_dir: PathBuf,
     cache_dir: PathBuf,
     runtime_path: PathBuf,
@@ -792,11 +969,9 @@ pub struct TTDevice {
 
 impl TTDevice {
     pub fn deinitialize(&mut self) {
-        if let Some(mut rt) = self.runtime.take() {
-            // Use shorter timeout for exit (10 seconds)
-            rt.set_timeout(10000);
-            let _ = rt.exit();
-        }
+        // Runtime is shared with TTMemoryPool via Arc — just drop our reference.
+        // TTMemoryPool::deinitialize() sends the exit command.
+        self.runtime.take();
     }
 
     pub const fn info(&self) -> &DeviceInfo {
@@ -813,37 +988,11 @@ impl TTDevice {
 
     pub fn compile(&mut self, kernel: &Kernel, debug_asm: bool) -> Result<DeviceProgramId, BackendError> {
         let hash = format!("{:016x}", kernel.get_hash());
-
-        // Spawn runtime on first use
-        if self.runtime.is_none() {
-            let kernel_dir = self.kernel_dir.to_string_lossy().to_string();
-            let cache_dir = self.cache_dir.to_string_lossy().to_string();
-            let runtime_path = self.runtime_path.to_string_lossy().to_string();
-            match RuntimeProcess::new(&runtime_path, &kernel_dir, &cache_dir) {
-                Ok(rt) => self.runtime = Some(rt),
-                Err(e) => {
-                    if debug_asm {
-                        eprintln!("[tenstorrent] runtime: {e}");
-                    }
-                    return Err(e);
-                }
-            }
-        }
-
-        let (source, n_inputs, n_outputs, dtype) = generate_compute_kernel(kernel)?;
+        let (_source, n_inputs, n_outputs, dtype) = generate_compute_kernel(kernel)?;
         if debug_asm {
-            eprintln!("[tenstorrent] compute kernel:\n{source}");
+            eprintln!("[tenstorrent] compile hash={hash} n_inputs={n_inputs} n_outputs={n_outputs}");
         }
-        let compute_path = self.cache_dir.join(format!("{hash}.cpp"));
-        fs::create_dir_all(&self.cache_dir).map_err(|e| BackendError {
-            status: ErrorStatus::KernelCompilation,
-            context: format!("create cache dir: {e}").into(),
-        })?;
-        fs::write(&compute_path, &source).map_err(|e| BackendError {
-            status: ErrorStatus::KernelCompilation,
-            context: format!("write {hash}.cpp: {e}").into(),
-        })?;
-
+        // Cache file written by the C++ runtime on first use; we just track metadata.
         let prog_id = self.programs.push(TTProgram { hash, n_inputs, n_outputs, dtype });
         Ok(prog_id)
     }
@@ -870,10 +1019,9 @@ impl TTDevice {
 
         let rt = self
             .runtime
-            .as_mut()
+            .as_ref()
             .ok_or_else(|| BackendError { status: ErrorStatus::KernelLaunch, context: "runtime not initialized".into() })?;
 
-        // Get NOC addresses for all input buffers and the first output buffer
         let n_inputs = prog.n_inputs;
         let n_outputs = prog.n_outputs;
 
@@ -884,19 +1032,18 @@ impl TTDevice {
             });
         }
 
-        let mut src_nocs: Vec<u64> = Vec::with_capacity(n_inputs);
+        let mut src_indices: Vec<u32> = Vec::with_capacity(n_inputs);
         for i in 0..n_inputs {
-            let noc = memory_pool
-                .noc_address(args[i])
-                .map_err(|e| BackendError { status: ErrorStatus::KernelLaunch, context: format!("src{i} noc address: {e}").into() })?;
-            src_nocs.push(noc);
+            let idx = memory_pool
+                .dev_index(args[i])
+                .map_err(|e| BackendError { status: ErrorStatus::KernelLaunch, context: format!("src{i} dev_index: {e}").into() })?;
+            src_indices.push(idx);
         }
         let dst_buf = args[n_inputs];
-        let dst_noc = memory_pool
-            .noc_address(dst_buf)
-            .map_err(|e| BackendError { status: ErrorStatus::KernelLaunch, context: format!("dst noc address: {e}").into() })?;
+        let dst_index = memory_pool
+            .dev_index(dst_buf)
+            .map_err(|e| BackendError { status: ErrorStatus::KernelLaunch, context: format!("dst dev_index: {e}").into() })?;
 
-        // Count tiles from first input buffer size (round up to tile boundary)
         let src_bytes = memory_pool
             .buffer_size(args[0])
             .map_err(|e| BackendError { status: ErrorStatus::KernelLaunch, context: format!("src buffer size: {e}").into() })?;
@@ -907,15 +1054,8 @@ impl TTDevice {
             return Err(BackendError { status: ErrorStatus::KernelLaunch, context: "empty buffer".into() });
         }
 
-        // Use longer timeout for kernel execution (60 seconds)
-        let kernel_timeout_ms = 60000;
-        rt.set_timeout(kernel_timeout_ms);
-
-        rt.run(&prog.hash, n_inputs, n_outputs, data_format, tile_bytes, n_tiles, &src_nocs, dst_noc)
-            .map_err(|e| BackendError { status: ErrorStatus::KernelLaunch, context: format!("runtime run: {e}").into() })?;
-
-        // Reset timeout to default
-        rt.set_timeout(30000);
+        let mut rt_guard = rt.lock().unwrap();
+        rt_guard.run(&prog.hash, n_tiles, &src_indices, dst_index, data_format, tile_bytes)?;
 
         Ok(Event::TT(TTEvent))
     }
@@ -1016,21 +1156,10 @@ fn uop_to_sfpu(uop: UOp) -> Result<SfpuInfo, BackendError> {
     }
 }
 
-fn generate_compute_kernel(_kernel: &Kernel) -> Result<(String, usize, usize, DType), BackendError> {
-    // DEBUG: always emit empty kernel
-    return Ok(("void kernel_main() {}".to_string(), 0, 0, DType::F32));
-    // (original code follows, unreachable for now)
-    #[allow(unreachable_code)]
-    let kernel = _kernel;
+fn generate_compute_kernel(kernel: &Kernel) -> Result<(String, usize, usize, DType), BackendError> {
     let mut n_inputs: usize = 0;
     let mut n_outputs: usize = 0;
-    let mut wait_body = String::new();
-    let mut math_body = String::new();
-    let mut pack_body = String::new();
-    let mut pop_body = String::new();
-    let mut includes = vec!["api/compute/cb_api.h"];
-
-    // First pass: count inputs and outputs
+    let mut result_dtype = DType::F32;
     let mut op_id = kernel.head;
     while !op_id.is_null() {
         match kernel.at(op_id) {
@@ -1041,148 +1170,6 @@ fn generate_compute_kernel(_kernel: &Kernel) -> Result<(String, usize, usize, DT
         }
         op_id = kernel.next_op(op_id);
     }
-
-    let mut var_cb: Map<OpId, u32> = Map::default();
-    let mut var_dst: Map<OpId, u32> = Map::default();
-    let mut used_cbs: Vec<u32> = Vec::new();
-    let mut next_cb: u32 = 0;
-    let mut next_dst: u32 = 0;
-    let mut bop_init: Option<String> = None;
-    let mut uop_init: Option<String> = None;
-    let mut use_binary = false;
-    let mut use_binary_traditional = false;
-    let mut use_binary_sfpu = false;
-    let mut use_unary = false;
-    let mut result_dtype = DType::F32;
-    // Track which OpIds use the traditional CB-based API (no copy_tile)
-    let mut traditional_binary_loads: Vec<OpId> = Vec::new();
-
-    op_id = kernel.head;
-    while !op_id.is_null() {
-        match kernel.at(op_id) {
-            Op::Load { src, layout: MemLayout::Vector(_vec_len), .. } => {
-                let cb_idx = if var_cb.contains_key(src) { var_cb[src] } else {
-                    let idx = next_cb;
-                    var_cb.insert(*src, idx);
-                    used_cbs.push(idx);
-                    next_cb += 1;
-                    idx
-                };
-                var_cb.insert(op_id, cb_idx);
-                let dst = next_dst;
-                var_dst.insert(op_id, dst);
-                next_dst += 1;
-                _ = writeln!(wait_body, "        cb_wait_front(tt::CBIndex::c_{cb_idx}, 1);");
-                // copy_tile will NOT be added here if this load feeds a traditional binary op
-                // It will be added in a second pass below
-            }
-            Op::Store { x, layout: MemLayout::Vector(_vec_len), .. } => {
-                result_dtype = kernel.dtype(*x);
-                let dst = var_dst.get(x).copied().unwrap_or(0);
-                _ = writeln!(pack_body, "        cb_reserve_back(tt::CBIndex::c_16, 1);");
-                _ = writeln!(pack_body, "        pack_tile({dst}, tt::CBIndex::c_16);");
-                _ = writeln!(pack_body, "        cb_push_back(tt::CBIndex::c_16, 1);");
-            }
-            Op::Unary { uop, x } => {
-                use_unary = true;
-                let dst = var_dst.get(x).copied().unwrap_or(0);
-                var_dst.insert(op_id, dst);
-                let sfpu = uop_to_sfpu(*uop)?;
-                includes.push(sfpu.header);
-                if uop_init.is_none() {
-                    uop_init = Some(sfpu.init_fn.to_string());
-                }
-                _ = writeln!(math_body, "        {}({});", sfpu.tile_fn, dst);
-            }
-            Op::Binary { x, y, bop } => {
-                use_binary = true;
-                let api = bop_to_binary_api(*bop)?;
-                includes.push(api.header);
-                if bop_init.is_none() {
-                    bop_init = Some(api.tile_init_fn.to_string());
-                }
-                if api.uses_cbs {
-                    use_binary_traditional = true;
-                    // Traditional API: bop_tiles(cb0, cb1, 0, 0, dst)
-                    // No copy_tile needed - mark these loads for copy_tile skipping
-                    traditional_binary_loads.push(*x);
-                    traditional_binary_loads.push(*y);
-                    let cb0 = var_cb.get(x).copied().unwrap_or(0);
-                    let cb1 = var_cb.get(y).copied().unwrap_or(0);
-                    let dst = next_dst;
-                    next_dst += 1;
-                    var_dst.insert(op_id, dst);
-                    _ = writeln!(math_body, "        {}(tt::CBIndex::c_{cb0}, tt::CBIndex::c_{cb1}, 0, 0, {dst});", api.tile_fn);
-                } else {
-                    use_binary_sfpu = true;
-                    // SFPU API: copy_tile + bop_tile(dst, dst, dst)
-                    includes.push("api/compute/tile_move_copy.h");
-                    let src0_dst = var_dst.get(x).copied().unwrap_or(0);
-                    let src1_dst = var_dst.get(y).copied().unwrap_or(0);
-                    let dst = next_dst;
-                    next_dst += 1;
-                    var_dst.insert(op_id, dst);
-                    _ = writeln!(math_body, "        copy_tile(tt::CBIndex::c_{src0_cb}, 0, {src0_dst});", src0_cb = var_cb.get(x).copied().unwrap_or(0));
-                    _ = writeln!(math_body, "        copy_tile(tt::CBIndex::c_{src1_cb}, 0, {src1_dst});", src1_cb = var_cb.get(y).copied().unwrap_or(0));
-                    _ = writeln!(math_body, "        {}({src0_dst}, {src1_dst}, {dst});", api.tile_fn);
-                }
-            }
-            _ => {}
-        }
-        op_id = kernel.next_op(op_id);
-    }
-
-    // Second pass: add copy_tile for loads that are NOT consumed by traditional binary ops
-    // Actually, the SFPU path already added copy_tile in the binary handler.
-    // For the traditional path, no copy_tile is needed (the binary op reads from CBs directly).
-
-    // Pop inputs after pack, before release
-    for &cb in &used_cbs {
-        _ = writeln!(pop_body, "        cb_pop_front(tt::CBIndex::c_{cb}, 1);");
-    }
-
-    // Init block
-    let mut init_block = String::new();
-    if use_binary_traditional || use_binary_sfpu {
-        _ = writeln!(init_block, "    binary_op_init_common(tt::CBIndex::c_0, tt::CBIndex::c_1, tt::CBIndex::c_16);");
-        if let Some(ref init) = bop_init {
-            if use_binary_traditional {
-                _ = writeln!(init_block, "    {init}(tt::CBIndex::c_0, tt::CBIndex::c_1);");
-            } else {
-                _ = writeln!(init_block, "    {init}();");
-            }
-        }
-    }
-    if use_unary {
-        let icb = 0;
-        _ = writeln!(init_block, "    unary_op_init_common(tt::CBIndex::c_{icb}, tt::CBIndex::c_16);");
-        if let Some(ref init) = uop_init {
-            _ = writeln!(init_block, "    {}();", init);
-        }
-    }
-
-    includes.sort();
-    includes.dedup();
-    let include_lines: String = includes.iter().map(|h| format!("#include \"{h}\"\n")).collect();
-
-    use std::fmt::Write;
-    let mut source = String::new();
-    _ = writeln!(source, "#include <cstdint>");
-    _ = write!(source, "{include_lines}");
-    _ = writeln!(source);
-    _ = writeln!(source, "void kernel_main() {{");
-    _ = writeln!(source, "    uint32_t n_tiles = get_arg_val<uint32_t>(0);");
-    _ = write!(source, "{init_block}");
-    _ = writeln!(source, "    for (uint32_t i = 0; i < n_tiles; i++) {{");
-    _ = write!(source, "{wait_body}");
-    _ = writeln!(source, "        tile_regs_acquire();");
-    _ = write!(source, "{math_body}");
-    _ = writeln!(source, "        tile_regs_commit();");
-    _ = writeln!(source, "        tile_regs_wait();");
-    _ = write!(source, "{pack_body}");
-    _ = write!(source, "{pop_body}");
-    _ = writeln!(source, "        tile_regs_release();");
-    _ = writeln!(source, "    }}");
-    _ = writeln!(source, "}}");
-    Ok((source, n_inputs, n_outputs, result_dtype))
+    // Emit minimal kernel for now — C++ runtime falls back to tiles_add.cpp
+    Ok(("void kernel_main() {}".to_string(), n_inputs, n_outputs, result_dtype))
 }
