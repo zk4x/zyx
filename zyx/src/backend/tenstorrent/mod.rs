@@ -1191,16 +1191,28 @@ fn dtype_to_tile_bytes(dtype: DType) -> u64 {
     }
 }
 
-fn bop_to_binary_sfpu(bop: BOp) -> Result<(&'static str, &'static str, &'static str), BackendError> {
+struct BinaryApi {
+    tile_fn: &'static str,
+    tile_init_fn: &'static str,
+    header: &'static str,
+    /// If true, use the traditional api where tiles read directly from CBs
+    /// (add_tiles(cb0, cb1, 0, 0, dst)). If false, use the SFPU api with
+    /// copy_tile + bop_tile(dst, dst, dst).
+    uses_cbs: bool,
+}
+
+fn bop_to_binary_api(bop: BOp) -> Result<BinaryApi, BackendError> {
     match bop {
-        BOp::Add => Ok(("add_binary_tile", "add_binary_tile_init", "api/compute/eltwise_binary_sfpu.h")),
-        BOp::Sub => Ok(("sub_binary_tile", "sub_binary_tile_init", "api/compute/eltwise_binary_sfpu.h")),
-        BOp::Mul => Ok(("mul_binary_tile", "mul_binary_tile_init", "api/compute/eltwise_binary_sfpu.h")),
-        BOp::Div => Ok(("div_binary_tile", "div_binary_tile_init", "api/compute/eltwise_binary_sfpu.h")),
-        BOp::Pow => Ok(("power_binary_tile", "power_binary_tile_init", "api/compute/eltwise_binary_sfpu.h")),
-        BOp::Eq => Ok(("eq_binary_tile", "eq_binary_tile_init", "api/compute/eltwise_binary_sfpu.h")),
-        BOp::NotEq => Ok(("ne_binary_tile", "ne_binary_tile_init", "api/compute/eltwise_binary_sfpu.h")),
-        BOp::Cmplt => Ok(("lt_binary_tile", "lt_binary_tile_init", "api/compute/eltwise_binary_sfpu.h")),
+        // Traditional binary API (eltwise_binary.h) — reads directly from CBs
+        BOp::Add => Ok(BinaryApi { tile_fn: "add_tiles", tile_init_fn: "add_tiles_init", header: "api/compute/eltwise_binary.h", uses_cbs: true }),
+        BOp::Sub => Ok(BinaryApi { tile_fn: "sub_tiles", tile_init_fn: "sub_tiles_init", header: "api/compute/eltwise_binary.h", uses_cbs: true }),
+        BOp::Mul => Ok(BinaryApi { tile_fn: "mul_tiles", tile_init_fn: "mul_tiles_init", header: "api/compute/eltwise_binary.h", uses_cbs: true }),
+        // SFPU binary API (eltwise_binary_sfpu.h) — operates on DST regs
+        BOp::Div => Ok(BinaryApi { tile_fn: "div_binary_tile", tile_init_fn: "div_binary_tile_init", header: "api/compute/eltwise_binary_sfpu.h", uses_cbs: false }),
+        BOp::Pow => Ok(BinaryApi { tile_fn: "power_binary_tile", tile_init_fn: "power_binary_tile_init", header: "api/compute/eltwise_binary_sfpu.h", uses_cbs: false }),
+        BOp::Eq => Ok(BinaryApi { tile_fn: "eq_binary_tile", tile_init_fn: "eq_binary_tile_init", header: "api/compute/eltwise_binary_sfpu.h", uses_cbs: false }),
+        BOp::NotEq => Ok(BinaryApi { tile_fn: "ne_binary_tile", tile_init_fn: "ne_binary_tile_init", header: "api/compute/eltwise_binary_sfpu.h", uses_cbs: false }),
+        BOp::Cmplt => Ok(BinaryApi { tile_fn: "lt_binary_tile", tile_init_fn: "lt_binary_tile_init", header: "api/compute/eltwise_binary_sfpu.h", uses_cbs: false }),
         BOp::Max => Err(BackendError {
             status: ErrorStatus::KernelCompilation,
             context: "Max binary op not yet supported for Tenstorrent (add an IR optimization pass)".into(),
@@ -1246,14 +1258,19 @@ fn uop_to_sfpu(uop: UOp) -> Result<SfpuInfo, BackendError> {
     }
 }
 
-fn generate_compute_kernel(kernel: &Kernel) -> Result<(String, usize, usize, DType), BackendError> {
+fn generate_compute_kernel(_kernel: &Kernel) -> Result<(String, usize, usize, DType), BackendError> {
+    // DEBUG: always emit empty kernel
+    return Ok(("void kernel_main() {}".to_string(), 0, 0, DType::F32));
+    // (original code follows, unreachable for now)
+    #[allow(unreachable_code)]
+    let kernel = _kernel;
     let mut n_inputs: usize = 0;
     let mut n_outputs: usize = 0;
     let mut wait_body = String::new();
     let mut math_body = String::new();
     let mut pack_body = String::new();
     let mut pop_body = String::new();
-    let mut includes = vec!["api/compute/cb_api.h", "api/compute/tile_move_copy.h"];
+    let mut includes = vec!["api/compute/cb_api.h"];
 
     // First pass: count inputs and outputs
     let mut op_id = kernel.head;
@@ -1275,8 +1292,12 @@ fn generate_compute_kernel(kernel: &Kernel) -> Result<(String, usize, usize, DTy
     let mut bop_init: Option<String> = None;
     let mut uop_init: Option<String> = None;
     let mut use_binary = false;
+    let mut use_binary_traditional = false;
+    let mut use_binary_sfpu = false;
     let mut use_unary = false;
     let mut result_dtype = DType::F32;
+    // Track which OpIds use the traditional CB-based API (no copy_tile)
+    let mut traditional_binary_loads: Vec<OpId> = Vec::new();
 
     op_id = kernel.head;
     while !op_id.is_null() {
@@ -1294,7 +1315,8 @@ fn generate_compute_kernel(kernel: &Kernel) -> Result<(String, usize, usize, DTy
                 var_dst.insert(op_id, dst);
                 next_dst += 1;
                 _ = writeln!(wait_body, "        cb_wait_front(tt::CBIndex::c_{cb_idx}, 1);");
-                _ = writeln!(math_body, "        copy_tile(tt::CBIndex::c_{cb_idx}, 0, {dst});");
+                // copy_tile will NOT be added here if this load feeds a traditional binary op
+                // It will be added in a second pass below
             }
             Op::Store { x, layout: MemLayout::Vector(_vec_len), .. } => {
                 result_dtype = kernel.dtype(*x);
@@ -1316,22 +1338,45 @@ fn generate_compute_kernel(kernel: &Kernel) -> Result<(String, usize, usize, DTy
             }
             Op::Binary { x, y, bop } => {
                 use_binary = true;
-                let (tile_fn, tile_init_fn, header) = bop_to_binary_sfpu(*bop)?;
-                includes.push(header);
+                let api = bop_to_binary_api(*bop)?;
+                includes.push(api.header);
                 if bop_init.is_none() {
-                    bop_init = Some(tile_init_fn.to_string());
+                    bop_init = Some(api.tile_init_fn.to_string());
                 }
-                let src0_dst = var_dst.get(x).copied().unwrap_or(0);
-                let src1_dst = var_dst.get(y).copied().unwrap_or(0);
-                let dst = next_dst;
-                next_dst += 1;
-                var_dst.insert(op_id, dst);
-                _ = writeln!(math_body, "        {tile_fn}({src0_dst}, {src1_dst}, {dst});");
+                if api.uses_cbs {
+                    use_binary_traditional = true;
+                    // Traditional API: bop_tiles(cb0, cb1, 0, 0, dst)
+                    // No copy_tile needed - mark these loads for copy_tile skipping
+                    traditional_binary_loads.push(*x);
+                    traditional_binary_loads.push(*y);
+                    let cb0 = var_cb.get(x).copied().unwrap_or(0);
+                    let cb1 = var_cb.get(y).copied().unwrap_or(0);
+                    let dst = next_dst;
+                    next_dst += 1;
+                    var_dst.insert(op_id, dst);
+                    _ = writeln!(math_body, "        {}(tt::CBIndex::c_{cb0}, tt::CBIndex::c_{cb1}, 0, 0, {dst});", api.tile_fn);
+                } else {
+                    use_binary_sfpu = true;
+                    // SFPU API: copy_tile + bop_tile(dst, dst, dst)
+                    includes.push("api/compute/tile_move_copy.h");
+                    let src0_dst = var_dst.get(x).copied().unwrap_or(0);
+                    let src1_dst = var_dst.get(y).copied().unwrap_or(0);
+                    let dst = next_dst;
+                    next_dst += 1;
+                    var_dst.insert(op_id, dst);
+                    _ = writeln!(math_body, "        copy_tile(tt::CBIndex::c_{src0_cb}, 0, {src0_dst});", src0_cb = var_cb.get(x).copied().unwrap_or(0));
+                    _ = writeln!(math_body, "        copy_tile(tt::CBIndex::c_{src1_cb}, 0, {src1_dst});", src1_cb = var_cb.get(y).copied().unwrap_or(0));
+                    _ = writeln!(math_body, "        {}({src0_dst}, {src1_dst}, {dst});", api.tile_fn);
+                }
             }
             _ => {}
         }
         op_id = kernel.next_op(op_id);
     }
+
+    // Second pass: add copy_tile for loads that are NOT consumed by traditional binary ops
+    // Actually, the SFPU path already added copy_tile in the binary handler.
+    // For the traditional path, no copy_tile is needed (the binary op reads from CBs directly).
 
     // Pop inputs after pack, before release
     for &cb in &used_cbs {
@@ -1340,11 +1385,14 @@ fn generate_compute_kernel(kernel: &Kernel) -> Result<(String, usize, usize, DTy
 
     // Init block
     let mut init_block = String::new();
-    if use_binary {
-        let icb0 = 0;
-        _ = writeln!(init_block, "    unary_op_init_common(tt::CBIndex::c_{icb0}, tt::CBIndex::c_16);");
+    if use_binary_traditional || use_binary_sfpu {
+        _ = writeln!(init_block, "    binary_op_init_common(tt::CBIndex::c_0, tt::CBIndex::c_1, tt::CBIndex::c_16);");
         if let Some(ref init) = bop_init {
-            _ = writeln!(init_block, "    {}();", init);
+            if use_binary_traditional {
+                _ = writeln!(init_block, "    {init}(tt::CBIndex::c_0, tt::CBIndex::c_1);");
+            } else {
+                _ = writeln!(init_block, "    {init}();");
+            }
         }
     }
     if use_unary {

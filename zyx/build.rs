@@ -51,6 +51,11 @@ fn main() {
     // Compile-time default for TT_METAL_ROOT (used by runtime.cpp for setenv)
     cmd.arg(format!("-DTT_METAL_ROOT_DEFAULT=\"{tt_metal_root}\""));
 
+    // Kernel source directory (absolute path, used by runtime.cpp for CreateKernel)
+    let kernel_dir =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src").join("backend").join("tenstorrent").join("kernels");
+    cmd.arg(format!("-DKERNEL_DIR=\"{}\"", kernel_dir.display()));
+
     // Source file
     let src_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src").join("backend").join("tenstorrent");
     cmd.arg(src_dir.join("runtime.cpp"));
