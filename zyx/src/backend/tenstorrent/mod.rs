@@ -366,29 +366,6 @@ use std::{
 /// - https://docs.tenstorrent.com/aibs/blackhole/specifications.html
 /// - tt-umd `board_upi_map` and `expected_dram_harvested_units_map`
 /// - tt-metal `blackhole_140_arch.yaml` (dram_bank_size: 4278190080 ≈ 4 GB)
-const DRAM_SIZE_TABLE: &[(u16, &str, u64)] = &[
-    (0x0036, "p100", 28u64 * 1024 * 1024 * 1024),
-    (0x0040, "p150a", 32u64 * 1024 * 1024 * 1024),
-    (0x0041, "p150b", 32u64 * 1024 * 1024 * 1024),
-    (0x0042, "p150c", 32u64 * 1024 * 1024 * 1024),
-    (0x0043, "p100a", 28u64 * 1024 * 1024 * 1024),
-    (0x0044, "p300b", 64u64 * 1024 * 1024 * 1024),
-    (0x0045, "p300a", 64u64 * 1024 * 1024 * 1024),
-    (0x0046, "p300c", 64u64 * 1024 * 1024 * 1024),
-];
-
-fn dram_size_for_subsystem_id(subsystem_id: u16) -> Result<Dim, BackendError> {
-    for &(id, _name, size) in DRAM_SIZE_TABLE {
-        if id == subsystem_id {
-            return Ok(size as Dim);
-        }
-    }
-    Err(BackendError {
-        status: ErrorStatus::Initialization,
-        context: format!("unknown Tenstorrent board (subsystem_id=0x{subsystem_id:04x}, card_type=?), please report this to zyx with `lspci -nn | grep 1e52` output").into(),
-    })
-}
-
 // ---------------------------------------------------------------------------
 // Config
 // ---------------------------------------------------------------------------
@@ -425,18 +402,6 @@ pub struct TTMemoryPool {
 
 #[derive(Debug, Clone)]
 pub struct TTEvent;
-
-fn spawn_runtime(
-    runtime_path: &PathBuf,
-    kernel_dir: &PathBuf,
-    cache_dir: &PathBuf,
-) -> Result<Arc<Mutex<RuntimeProcess>>, BackendError> {
-    let rp = runtime_path.to_string_lossy();
-    let kd = kernel_dir.to_string_lossy();
-    let cd = cache_dir.to_string_lossy();
-    let rt = RuntimeProcess::new(&rp, &kd, &cd)?;
-    Ok(Arc::new(Mutex::new(rt)))
-}
 
 pub(super) fn initialize_device(
     config: &TTConfig,
@@ -481,7 +446,11 @@ pub(super) fn initialize_device(
     let kernel_dir = PathBuf::from(env!("ZYX_TT_KERNEL_DIR"));
 
     // Spawn the runtime eagerly — both pool and device need it
-    let runtime = spawn_runtime(&runtime_path, &kernel_dir, &cache_dir)?;
+    let runtime = Arc::new(Mutex::new(RuntimeProcess::new(
+        &runtime_path.to_string_lossy(),
+        &kernel_dir.to_string_lossy(),
+        &cache_dir.to_string_lossy(),
+    )?));
 
     let pool_id = memory_pools.len();
     let pool = MemoryPool::TT(TTMemoryPool { buffers: Slab::new(), runtime: runtime.clone() });
@@ -505,9 +474,6 @@ pub(super) fn initialize_device(
         },
         memory_pool_id: pool_id,
         runtime,
-        kernel_dir,
-        cache_dir,
-        runtime_path,
         programs: Slab::new(),
     }));
     Ok(())
@@ -924,10 +890,6 @@ impl RuntimeProcess {
         self.child.wait().ok();
         Ok(())
     }
-
-    fn set_timeout(&mut self, timeout_ms: u64) {
-        self.timeout_ms = timeout_ms;
-    }
 }
 
 fn extract_json_str(json: &str, key: &str) -> Option<String> {
@@ -961,9 +923,6 @@ pub struct TTDevice {
     device_info: DeviceInfo,
     memory_pool_id: PoolId,
     runtime: Arc<Mutex<RuntimeProcess>>,
-    kernel_dir: PathBuf,
-    cache_dir: PathBuf,
-    runtime_path: PathBuf,
     programs: Slab<DeviceProgramId, TTProgram>,
 }
 
@@ -984,13 +943,183 @@ impl TTDevice {
 
     pub fn compile(&mut self, kernel: &Kernel, debug_asm: bool) -> Result<DeviceProgramId, BackendError> {
         let hash = format!("{:016x}", kernel.get_hash());
-        let (compute_source, n_inputs, n_outputs, dtype) = generate_compute_kernel(kernel)?;
-        let reader_source = generate_reader_kernel(n_inputs);
+
+        let mut n_inputs: usize = 0;
+        let mut n_outputs: usize = 0;
+        let mut op_id = kernel.head;
+        while !op_id.is_null() {
+            match kernel.at(op_id) {
+                Op::Load { layout: MemLayout::Tile { .. }, .. } => n_inputs += 1,
+                Op::Store { layout: MemLayout::Tile { .. }, .. } => n_outputs += 1,
+                _ => {}
+            }
+            op_id = kernel.next_op(op_id);
+        }
+
+        let mut op_id = kernel.head;
+        let mut unary_op = None;
+        let mut binary_op = None;
+        while !op_id.is_null() {
+            if let Op::Store { x, layout: MemLayout::Tile { .. }, .. } = kernel.at(op_id) {
+                let compute = *x;
+                let mut scan = kernel.head;
+                while !scan.is_null() {
+                    if scan == compute {
+                        match kernel.at(scan) {
+                            Op::Unary { uop, .. } => {
+                                if uop_to_sfpu(*uop).is_ok() {
+                                    unary_op = Some(*uop);
+                                }
+                            }
+                            Op::Binary { bop, .. } => {
+                                if bop_to_binary_api(*bop).is_ok() {
+                                    binary_op = Some(*bop);
+                                }
+                            }
+                            _ => {}
+                        }
+                        break;
+                    }
+                    scan = kernel.next_op(scan);
+                }
+                break;
+            }
+            op_id = kernel.next_op(op_id);
+        }
+
+        let mut compute_source = String::new();
+        compute_source.push_str("#include <cstdint>\n");
+        compute_source.push_str("#include \"api/compute/common.h\"\n");
+        compute_source.push_str("#include \"api/compute/tile_move_copy.h\"\n");
+        compute_source.push_str("#include \"api/compute/eltwise_unary/eltwise_unary.h\"\n");
+
+        match (unary_op, binary_op) {
+            (Some(uop), None) => {
+                let info = uop_to_sfpu(uop)?;
+                compute_source.push_str(&format!("#include \"{}\"\n", info.header));
+                compute_source.push_str("#include \"api/compute/compute_kernel_api.h\"\n\n");
+                write!(compute_source, "void kernel_main() {{\n").unwrap();
+                write!(compute_source, "    uint32_t n_tiles = get_arg_val<uint32_t>(0);\n").unwrap();
+                for i in 0..n_inputs {
+                    write!(compute_source, "    constexpr auto cb_in{i} = tt::CBIndex::c_{i};\n").unwrap();
+                }
+                write!(compute_source, "    constexpr auto cb_out0 = tt::CBIndex::c_16;\n").unwrap();
+                write!(compute_source, "    constexpr uint32_t dst_reg = 0;\n\n").unwrap();
+                write!(compute_source, "    unary_op_init_common(cb_in0, cb_out0);\n").unwrap();
+                write!(compute_source, "    {}();\n", info.init_fn).unwrap();
+                write!(compute_source, "\n").unwrap();
+                write!(compute_source, "    for (uint32_t i = 0; i < n_tiles; i++) {{\n").unwrap();
+                for i in 0..n_inputs {
+                    write!(compute_source, "        cb_wait_front(cb_in{i}, 1);\n").unwrap();
+                }
+                write!(compute_source, "        tile_regs_acquire();\n").unwrap();
+                write!(compute_source, "        copy_tile(cb_in0, 0, dst_reg);\n").unwrap();
+                write!(compute_source, "        {}(dst_reg);\n", info.tile_fn).unwrap();
+                write!(compute_source, "        tile_regs_commit();\n").unwrap();
+                write!(compute_source, "        tile_regs_wait();\n").unwrap();
+                write!(compute_source, "        cb_reserve_back(cb_out0, 1);\n").unwrap();
+                write!(compute_source, "        pack_tile(dst_reg, cb_out0);\n").unwrap();
+                write!(compute_source, "        cb_push_back(cb_out0, 1);\n").unwrap();
+                for i in 0..n_inputs {
+                    write!(compute_source, "        cb_pop_front(cb_in{i}, 1);\n").unwrap();
+                }
+                write!(compute_source, "        tile_regs_release();\n").unwrap();
+                write!(compute_source, "    }}\n").unwrap();
+                write!(compute_source, "}}\n").unwrap();
+            }
+            (None, Some(bop)) => {
+                let info = bop_to_binary_api(bop)?;
+                compute_source.push_str(&format!("#include \"{}\"\n", info.header));
+                compute_source.push_str("#include \"api/compute/compute_kernel_api.h\"\n\n");
+                write!(compute_source, "void kernel_main() {{\n").unwrap();
+                write!(compute_source, "    uint32_t n_tiles = get_arg_val<uint32_t>(0);\n").unwrap();
+                for i in 0..n_inputs {
+                    write!(compute_source, "    constexpr auto cb_in{i} = tt::CBIndex::c_{i};\n").unwrap();
+                }
+                write!(compute_source, "    constexpr auto cb_out0 = tt::CBIndex::c_16;\n").unwrap();
+                write!(compute_source, "    constexpr uint32_t dst_reg = 0;\n\n").unwrap();
+                if info.uses_cbs {
+                    write!(compute_source, "    binary_op_init_common(cb_in0, cb_in1, cb_out0);\n").unwrap();
+                }
+                write!(compute_source, "    {}();\n", info.tile_init_fn).unwrap();
+                write!(compute_source, "\n").unwrap();
+                write!(compute_source, "    for (uint32_t i = 0; i < n_tiles; i++) {{\n").unwrap();
+                for i in 0..n_inputs {
+                    write!(compute_source, "        cb_wait_front(cb_in{i}, 1);\n").unwrap();
+                }
+                write!(compute_source, "        tile_regs_acquire();\n").unwrap();
+                if info.uses_cbs {
+                    write!(compute_source, "        {}(cb_in0, cb_in1, 0, 0, dst_reg);\n", info.tile_fn).unwrap();
+                } else {
+                    write!(compute_source, "        copy_tile(cb_in0, 0, dst_reg);\n").unwrap();
+                    write!(compute_source, "        {}(dst_reg, dst_reg, dst_reg);\n", info.tile_fn).unwrap();
+                }
+                write!(compute_source, "        tile_regs_commit();\n").unwrap();
+                write!(compute_source, "        tile_regs_wait();\n").unwrap();
+                write!(compute_source, "        cb_reserve_back(cb_out0, 1);\n").unwrap();
+                write!(compute_source, "        pack_tile(dst_reg, cb_out0);\n").unwrap();
+                write!(compute_source, "        cb_push_back(cb_out0, 1);\n").unwrap();
+                for i in 0..n_inputs {
+                    write!(compute_source, "        cb_pop_front(cb_in{i}, 1);\n").unwrap();
+                }
+                write!(compute_source, "        tile_regs_release();\n").unwrap();
+                write!(compute_source, "    }}\n").unwrap();
+                write!(compute_source, "}}\n").unwrap();
+            }
+            _ => {
+                return Err(BackendError {
+                    status: ErrorStatus::KernelCompilation,
+                    context: format!("no supported unary or binary op found in kernel (inputs={n_inputs}, outputs={n_outputs})")
+                        .into(),
+                });
+            }
+        }
+
+        let mut result_dtype = DType::F32;
+        let mut op_id = kernel.head;
+        while !op_id.is_null() {
+            if let Op::Store { dst, layout: MemLayout::Tile { .. }, .. } = kernel.at(op_id) {
+                if let Op::Define { dtype, .. } = kernel.at(*dst) {
+                    result_dtype = *dtype;
+                    break;
+                }
+            }
+            op_id = kernel.next_op(op_id);
+        }
+
+        let reader_source = if n_inputs == 0 {
+            "#include <cstdint>\nvoid kernel_main() {}".to_string()
+        } else {
+            let mut code = String::new();
+            write!(code, "#include <cstdint>\n#include \"api/dataflow/dataflow_api.h\"\n\nvoid kernel_main() {{\n").unwrap();
+            write!(code, "    uint32_t n_tiles = get_arg_val<uint32_t>({});\n", n_inputs * 2).unwrap();
+            write!(code, "\n").unwrap();
+            write!(code, "    for (uint32_t s = 0; s < {}; s++) {{\n", n_inputs).unwrap();
+            write!(code, "        uint32_t src_noc_low = get_arg_val<uint32_t>(s * 2);\n").unwrap();
+            write!(code, "        uint32_t src_noc_high = get_arg_val<uint32_t>(s * 2 + 1);\n").unwrap();
+            write!(code, "        uint64_t src_noc_addr = (uint64_t)src_noc_high << 32 | src_noc_low;\n").unwrap();
+            write!(code, "        uint32_t cb_id = tt::CBIndex::c_0 + s;\n").unwrap();
+            write!(code, "        uint32_t tile_bytes = get_tile_size(cb_id);\n").unwrap();
+            write!(code, "\n").unwrap();
+            write!(code, "        for (uint32_t i = 0; i < n_tiles; i++) {{\n").unwrap();
+            write!(code, "            cb_reserve_back(cb_id, 1);\n").unwrap();
+            write!(code, "            uint32_t l1_addr = get_write_ptr(cb_id);\n").unwrap();
+            write!(code, "            uint64_t noc_addr = src_noc_addr + i * tile_bytes;\n").unwrap();
+            write!(code, "            noc_async_read(noc_addr, l1_addr, tile_bytes);\n").unwrap();
+            write!(code, "            noc_async_read_barrier();\n").unwrap();
+            write!(code, "            cb_push_back(cb_id, 1);\n").unwrap();
+            write!(code, "        }}\n").unwrap();
+            write!(code, "    }}\n").unwrap();
+            write!(code, "}}\n").unwrap();
+            code
+        };
+
         if debug_asm {
             eprintln!("[tenstorrent] === reader kernel ===\n{reader_source}\n=== end reader ===");
             eprintln!("[tenstorrent] === compute kernel ===\n{compute_source}\n=== end compute ===");
         }
-        let prog_id = self.programs.push(TTProgram { hash, reader_source, compute_source, n_inputs, n_outputs, dtype });
+        let prog_id =
+            self.programs.push(TTProgram { hash, reader_source, compute_source, n_inputs, n_outputs, dtype: result_dtype });
         Ok(prog_id)
     }
 
@@ -1042,8 +1171,20 @@ impl TTDevice {
         let src_bytes = memory_pool
             .buffer_size(args[0])
             .map_err(|e| BackendError { status: ErrorStatus::KernelLaunch, context: format!("src buffer size: {e}").into() })?;
-        let data_format = dtype_to_data_format(prog.dtype);
-        let tile_bytes = dtype_to_tile_bytes(prog.dtype) as u32;
+        let data_format: u32 = match prog.dtype {
+            DType::F32 => 0,
+            DType::F16 => 1,
+            DType::BF16 => 2,
+            _ => 0,
+        };
+        let tile_bytes: u32 = {
+            let te = 1024u64;
+            (match prog.dtype {
+                DType::F32 => 4 * te,
+                DType::F16 | DType::BF16 => 2 * te,
+                _ => 4 * te,
+            }) as u32
+        };
         let n_tiles = ((src_bytes + tile_bytes as u64 - 1) / tile_bytes as u64) as u32;
         if n_tiles == 0 {
             return Err(BackendError { status: ErrorStatus::KernelLaunch, context: "empty buffer".into() });
@@ -1073,24 +1214,6 @@ struct SfpuInfo {
     header: &'static str,
     init_fn: &'static str,
     tile_fn: &'static str,
-}
-
-fn dtype_to_data_format(dtype: DType) -> u32 {
-    match dtype {
-        DType::F32 => 0,  // DataFormat::Float32
-        DType::F16 => 1,  // DataFormat::Float16
-        DType::BF16 => 2, // DataFormat::Float16_b
-        _ => 0,           // default Float32
-    }
-}
-
-fn dtype_to_tile_bytes(dtype: DType) -> u64 {
-    let tile_elems: u64 = 1024; // TILE_WIDTH * TILE_HEIGHT
-    match dtype {
-        DType::F32 => 4 * tile_elems,               // 4096
-        DType::F16 | DType::BF16 => 2 * tile_elems, // 2048
-        _ => 4 * tile_elems,
-    }
 }
 
 struct BinaryApi {
@@ -1198,186 +1321,4 @@ fn uop_to_sfpu(uop: UOp) -> Result<SfpuInfo, BackendError> {
             context: format!("unsupported unary op {uop:?} for Tenstorrent (add an IR optimization pass)").into(),
         }),
     }
-}
-
-fn generate_compute_kernel(kernel: &Kernel) -> Result<(String, usize, usize, DType), BackendError> {
-    let mut n_inputs: usize = 0;
-    let mut n_outputs: usize = 0;
-    // Count Tile loads = inputs, Tile stores = outputs
-    let mut op_id = kernel.head;
-    while !op_id.is_null() {
-        match kernel.at(op_id) {
-            Op::Load { layout: MemLayout::Tile { .. }, .. } => n_inputs += 1,
-            Op::Store { layout: MemLayout::Tile { .. }, .. } => n_outputs += 1,
-            _ => {}
-        }
-        op_id = kernel.next_op(op_id);
-    }
-
-    // Find the compute op by tracing backward from Tile stores.
-    // The compute op is the op whose result feeds directly into a Tile Store's value.
-    let mut op_id = kernel.head;
-    let mut unary_op = None;
-    let mut binary_op = None;
-    while !op_id.is_null() {
-        if let Op::Store { x, layout: MemLayout::Tile { .. }, .. } = kernel.at(op_id) {
-            let compute = *x;
-            // Walk forward from head to find the op that produces `compute`
-            let mut scan = kernel.head;
-            while !scan.is_null() {
-                if scan == compute {
-                    match kernel.at(scan) {
-                        Op::Unary { uop, .. } => {
-                            if uop_to_sfpu(*uop).is_ok() {
-                                unary_op = Some(*uop);
-                            }
-                        }
-                        Op::Binary { bop, .. } => {
-                            if bop_to_binary_api(*bop).is_ok() {
-                                binary_op = Some(*bop);
-                            }
-                        }
-                        _ => {}
-                    }
-                    break;
-                }
-                scan = kernel.next_op(scan);
-            }
-            break;
-        }
-        op_id = kernel.next_op(op_id);
-    }
-
-    let mut code = String::new();
-    code.push_str("#include <cstdint>\n");
-    code.push_str("#include \"api/compute/common.h\"\n");
-    code.push_str("#include \"api/compute/tile_move_copy.h\"\n");
-    code.push_str("#include \"api/compute/eltwise_unary/eltwise_unary.h\"\n");
-
-    match (unary_op, binary_op) {
-        (Some(uop), None) => {
-            let info = uop_to_sfpu(uop)?;
-            code.push_str(&format!("#include \"{}\"\n", info.header));
-            code.push_str("#include \"api/compute/compute_kernel_api.h\"\n\n");
-            write!(code, "void kernel_main() {{\n").unwrap();
-            write!(code, "    uint32_t n_tiles = get_arg_val<uint32_t>(0);\n").unwrap();
-            for i in 0..n_inputs {
-                write!(code, "    constexpr auto cb_in{i} = tt::CBIndex::c_{i};\n").unwrap();
-            }
-            write!(code, "    constexpr auto cb_out0 = tt::CBIndex::c_16;\n").unwrap();
-            write!(code, "    constexpr uint32_t dst_reg = 0;\n\n").unwrap();
-            write!(code, "    unary_op_init_common(cb_in0, cb_out0);\n").unwrap();
-            write!(code, "    {}();\n", info.init_fn).unwrap();
-            write!(code, "\n").unwrap();
-            write!(code, "    for (uint32_t i = 0; i < n_tiles; i++) {{\n").unwrap();
-            for i in 0..n_inputs {
-                write!(code, "        cb_wait_front(cb_in{i}, 1);\n").unwrap();
-            }
-            write!(code, "        tile_regs_acquire();\n").unwrap();
-            write!(code, "        copy_tile(cb_in0, 0, dst_reg);\n").unwrap();
-            write!(code, "        {}(dst_reg);\n", info.tile_fn).unwrap();
-            write!(code, "        tile_regs_commit();\n").unwrap();
-            write!(code, "        tile_regs_wait();\n").unwrap();
-            write!(code, "        cb_reserve_back(cb_out0, 1);\n").unwrap();
-            write!(code, "        pack_tile(dst_reg, cb_out0);\n").unwrap();
-            write!(code, "        cb_push_back(cb_out0, 1);\n").unwrap();
-            for i in 0..n_inputs {
-                write!(code, "        cb_pop_front(cb_in{i}, 1);\n").unwrap();
-            }
-            write!(code, "        tile_regs_release();\n").unwrap();
-            write!(code, "    }}\n").unwrap();
-            write!(code, "}}\n").unwrap();
-        }
-        (None, Some(bop)) => {
-            let info = bop_to_binary_api(bop)?;
-            code.push_str(&format!("#include \"{}\"\n", info.header));
-            code.push_str("#include \"api/compute/compute_kernel_api.h\"\n\n");
-            write!(code, "void kernel_main() {{\n").unwrap();
-            write!(code, "    uint32_t n_tiles = get_arg_val<uint32_t>(0);\n").unwrap();
-            for i in 0..n_inputs {
-                write!(code, "    constexpr auto cb_in{i} = tt::CBIndex::c_{i};\n").unwrap();
-            }
-            write!(code, "    constexpr auto cb_out0 = tt::CBIndex::c_16;\n").unwrap();
-            write!(code, "    constexpr uint32_t dst_reg = 0;\n\n").unwrap();
-            if info.uses_cbs {
-                write!(code, "    binary_op_init_common(cb_in0, cb_in1, cb_out0);\n").unwrap();
-            }
-            write!(code, "    {}();\n", info.tile_init_fn).unwrap();
-            write!(code, "\n").unwrap();
-            write!(code, "    for (uint32_t i = 0; i < n_tiles; i++) {{\n").unwrap();
-            for i in 0..n_inputs {
-                write!(code, "        cb_wait_front(cb_in{i}, 1);\n").unwrap();
-            }
-            write!(code, "        tile_regs_acquire();\n").unwrap();
-            if info.uses_cbs {
-                write!(code, "        {}(cb_in0, cb_in1, 0, 0, dst_reg);\n", info.tile_fn).unwrap();
-            } else {
-                write!(code, "        copy_tile(cb_in0, 0, dst_reg);\n").unwrap();
-                write!(code, "        {}(dst_reg, dst_reg, dst_reg);\n", info.tile_fn).unwrap();
-            }
-            write!(code, "        tile_regs_commit();\n").unwrap();
-            write!(code, "        tile_regs_wait();\n").unwrap();
-            write!(code, "        cb_reserve_back(cb_out0, 1);\n").unwrap();
-            write!(code, "        pack_tile(dst_reg, cb_out0);\n").unwrap();
-            write!(code, "        cb_push_back(cb_out0, 1);\n").unwrap();
-            for i in 0..n_inputs {
-                write!(code, "        cb_pop_front(cb_in{i}, 1);\n").unwrap();
-            }
-            write!(code, "        tile_regs_release();\n").unwrap();
-            write!(code, "    }}\n").unwrap();
-            write!(code, "}}\n").unwrap();
-        }
-        _ => {
-            return Err(BackendError {
-                status: ErrorStatus::KernelCompilation,
-                context: format!("no supported unary or binary op found in kernel (inputs={n_inputs}, outputs={n_outputs})")
-                    .into(),
-            });
-        }
-    }
-
-    // Find the dtype from the Tile store's destination global define
-    let mut result_dtype = DType::F32; // default
-    let mut op_id = kernel.head;
-    while !op_id.is_null() {
-        if let Op::Store { dst, layout: MemLayout::Tile { .. }, .. } = kernel.at(op_id) {
-            if let Op::Define { dtype, .. } = kernel.at(*dst) {
-                result_dtype = *dtype;
-                break;
-            }
-        }
-        op_id = kernel.next_op(op_id);
-    }
-
-    Ok((code, n_inputs, n_outputs, result_dtype))
-}
-
-fn generate_reader_kernel(n_inputs: usize) -> String {
-    if n_inputs == 0 {
-        return "#include <cstdint>\nvoid kernel_main() {}".to_string();
-    }
-    let mut code = String::new();
-    write!(code, "#include <cstdint>\n").unwrap();
-    write!(code, "#include \"api/dataflow/dataflow_api.h\"\n").unwrap();
-    write!(code, "\nvoid kernel_main() {{\n").unwrap();
-    write!(code, "    uint32_t n_tiles = get_arg_val<uint32_t>({});\n", n_inputs * 2).unwrap();
-    write!(code, "\n").unwrap();
-    write!(code, "    for (uint32_t s = 0; s < {}; s++) {{\n", n_inputs).unwrap();
-    write!(code, "        uint32_t src_noc_low = get_arg_val<uint32_t>(s * 2);\n").unwrap();
-    write!(code, "        uint32_t src_noc_high = get_arg_val<uint32_t>(s * 2 + 1);\n").unwrap();
-    write!(code, "        uint64_t src_noc_addr = (uint64_t)src_noc_high << 32 | src_noc_low;\n").unwrap();
-    write!(code, "        uint32_t cb_id = tt::CBIndex::c_0 + s;\n").unwrap();
-    write!(code, "        uint32_t tile_bytes = get_tile_size(cb_id);\n").unwrap();
-    write!(code, "\n").unwrap();
-    write!(code, "        for (uint32_t i = 0; i < n_tiles; i++) {{\n").unwrap();
-    write!(code, "            cb_reserve_back(cb_id, 1);\n").unwrap();
-    write!(code, "            uint32_t l1_addr = get_write_ptr(cb_id);\n").unwrap();
-    write!(code, "            uint64_t noc_addr = src_noc_addr + i * tile_bytes;\n").unwrap();
-    write!(code, "            noc_async_read(noc_addr, l1_addr, tile_bytes);\n").unwrap();
-    write!(code, "            noc_async_read_barrier();\n").unwrap();
-    write!(code, "            cb_push_back(cb_id, 1);\n").unwrap();
-    write!(code, "        }}\n").unwrap();
-    write!(code, "    }}\n").unwrap();
-    write!(code, "}}\n").unwrap();
-    code
 }
