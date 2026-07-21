@@ -1,0 +1,26 @@
+[
+  {
+    "arguments": [
+      "/usr/bin/g++",
+      "-c",
+      "-std=c++20",
+      "-Wall",
+      "-Wextra",
+      "-O3",
+      "-Wno-deprecated-declarations",
+      "-I/home/x/Dev/cpp/tt-metal/tt_metal/include",
+      "-I/home/x/Dev/cpp/tt-metal/build_Release/include",
+      "-I/home/x/Dev/cpp/tt-metal/tt_metal/api/tt-metalium",
+      "-I/home/x/Dev/cpp/tt-metal/src",
+      "-I/home/x/Dev/cpp/tt-metal/.cpmcache/spdlog/b1c2586bb5c35a7929362e87f62433eb68206873/include",
+      "-DTT_METAL_ROOT_DEFAULT=\"/home/x/Dev/cpp/tt-metal\"",
+      "-DKERNEL_DIR=\"/home/x/Dev/rust/zyx/zyx/src/backend/tenstorrent/kernels\"",
+      "-o",
+      "/home/x/.config/zyx/zyx-tt-runtime",
+      "/home/x/Dev/rust/zyx/zyx/src/backend/tenstorrent/runtime.cpp"
+    ],
+    "directory": "/home/x/Dev/rust/zyx/zyx",
+    "file": "/home/x/Dev/rust/zyx/zyx/src/backend/tenstorrent/runtime.cpp",
+    "output": "/home/x/.config/zyx/zyx-tt-runtime"
+  }
+]
