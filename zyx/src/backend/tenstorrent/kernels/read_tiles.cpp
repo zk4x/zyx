@@ -1,39 +1,40 @@
-// SPDX-FileCopyrightText: © 2025 Tenstorrent USA, Inc.
-//
-// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileCopyrightText: (c) 2025 zk4x
+// SPDX-License-Identifier: LGPL-3.0-only
 
 #include <cstdint>
 
-#include "api/dataflow/noc.h"
-#include "api/dataflow/circular_buffer.h"
-#include "api/tensor/noc_traits.h"
+#include "api/dataflow/dataflow_api.h"
 
 void kernel_main() {
-    uint32_t in0_addr = get_arg_val<uint32_t>(0);
-    uint32_t in1_addr = get_arg_val<uint32_t>(1);
+    uint32_t src0_addr = get_arg_val<uint32_t>(0);
+    uint32_t src1_addr = get_arg_val<uint32_t>(1);
     uint32_t n_tiles = get_arg_val<uint32_t>(2);
 
-    constexpr uint32_t cb_in0 = tt::CBIndex::c_0;
-    constexpr uint32_t cb_in1 = tt::CBIndex::c_1;
-
-    const uint32_t tile_size_bytes = get_tile_size(cb_in0);
-
+    constexpr auto cb_in0 = tt::CBIndex::c_0;
+    constexpr auto cb_in1 = tt::CBIndex::c_1;
     constexpr auto in0_args = TensorAccessorArgs<0>();
-    const auto in0 = TensorAccessor(in0_args, in0_addr);
     constexpr auto in1_args = TensorAccessorArgs<in0_args.next_compile_time_args_offset()>();
-    const auto in1 = TensorAccessor(in1_args, in1_addr);
+    const uint32_t src0_tile_bytes = get_tile_size(cb_in0);
+    const uint32_t src1_tile_bytes = get_tile_size(cb_in1);
+    const auto a = TensorAccessor(in0_args, src0_addr, src0_tile_bytes);
+    const auto b = TensorAccessor(in1_args, src1_addr, src1_tile_bytes);
 
-    Noc noc;
-    CircularBuffer cb_in0_buf(cb_in0);
-    CircularBuffer cb_in1_buf(cb_in1);
+    constexpr uint32_t cb_intermed0 = tt::CBIndex::c_24;
+    constexpr uint32_t cb_intermed1 = tt::CBIndex::c_25;
 
     for (uint32_t i = 0; i < n_tiles; i++) {
-        cb_in0_buf.reserve_back(1);
-        cb_in1_buf.reserve_back(1);
-        noc.async_read(in0, cb_in0_buf, tile_size_bytes, {.page_id = i}, {.offset_bytes = 0});
-        noc.async_read(in1, cb_in1_buf, tile_size_bytes, {.page_id = i}, {.offset_bytes = 0});
-        noc.async_read_barrier();
-        cb_in0_buf.push_back(1);
-        cb_in1_buf.push_back(1);
+        // Read src0 into cb_in0
+        cb_reserve_back(cb_in0, 1);
+        uint32_t l1_addr0 = get_write_ptr(cb_in0);
+        noc_async_read_tile(i, a, l1_addr0);
+        noc_async_read_barrier();
+        cb_push_back(cb_in0, 1);
+
+        // Read src1 into cb_in1
+        cb_reserve_back(cb_in1, 1);
+        uint32_t l1_addr1 = get_write_ptr(cb_in1);
+        noc_async_read_tile(i, b, l1_addr1);
+        noc_async_read_barrier();
+        cb_push_back(cb_in1, 1);
     }
 }

@@ -179,8 +179,6 @@ int main() {
         vector<uint32_t> input_tile_bytes;
         vector<uint32_t> output_formats;
         vector<uint32_t> output_tile_bytes;
-        vector<uint32_t> reader_compile_args;
-        vector<uint32_t> writer_compile_args;
     };
     vector<ProgramConfig> program_cache;
 
@@ -356,19 +354,7 @@ int main() {
                 string compute_source(compute_source_len, '\0');
                 cin.read(&compute_source[0], compute_source_len);
 
-                // Build compile-time args for reader and writer from TensorAccessorArgs
-                vector<uint32_t> reader_compile_args;
-                for (uint32_t i = 0; i < n_inputs; i++) {
-                    auto ta = TensorAccessorArgs::create_dram_interleaved();
-                    ta.append_to(reader_compile_args);
-                }
-                vector<uint32_t> writer_compile_args;
-                for (uint32_t i = 0; i < n_outputs; i++) {
-                    auto ta = TensorAccessorArgs::create_dram_interleaved();
-                    ta.append_to(writer_compile_args);
-                }
-
-                // Store sources, CB config, and compile args for later use at run time
+                // Store sources and CB config for later use at run time
                 ProgramConfig cfg;
                 cfg.reader_source = move(reader_source);
                 cfg.compute_source = move(compute_source);
@@ -376,8 +362,6 @@ int main() {
                 cfg.input_tile_bytes = move(input_tile_bytes);
                 cfg.output_formats = move(output_formats);
                 cfg.output_tile_bytes = move(output_tile_bytes);
-                cfg.reader_compile_args = move(reader_compile_args);
-                cfg.writer_compile_args = move(writer_compile_args);
                 // Store at the given ID (must fit exactly, no gaps)
                 if (id >= program_cache.size()) {
                     program_cache.resize(id + 1);
@@ -463,17 +447,28 @@ int main() {
                           cfg.output_formats[i], cfg.output_tile_bytes[i]);
                 }
 
-                // Create kernels from cached sources (no IPC needed)
+                cerr << "[TT] creating TensorAccessorArgs from buffers" << endl;
+                // Build compile-time args from actual buffer pointers (like the guide)
+                vector<uint32_t> reader_compile_args;
+                for (uint32_t i = 0; i < n_inputs; i++) {
+                    TensorAccessorArgs(*buffers[src_indices[i]]).append_to(reader_compile_args);
+                }
+                vector<uint32_t> writer_compile_args;
+                TensorAccessorArgs(*buffers[dst_index]).append_to(writer_compile_args);
+
+                cerr << "[TT] creating reader kernel" << endl;
                 auto reader = CreateKernelFromString(program, cfg.reader_source, core,
                     DataMovementConfig{
                         .processor = DataMovementProcessor::RISCV_0,
                         .noc = NOC::RISCV_0_default,
-                        .compile_args = cfg.reader_compile_args});
+                        .compile_args = reader_compile_args});
+                cerr << "[TT] creating writer kernel" << endl;
                 auto writer = CreateKernel(program, kernel_dir + "/write_tile.cpp", core,
                     DataMovementConfig{
                         .processor = DataMovementProcessor::RISCV_1,
                         .noc = NOC::RISCV_1_default,
-                        .compile_args = cfg.writer_compile_args});
+                        .compile_args = writer_compile_args});
+                cerr << "[TT] creating compute kernel" << endl;
                 auto compute = CreateKernelFromString(program, cfg.compute_source, core,
                     ComputeConfig{.math_fidelity = MathFidelity::HiFi4});
 
@@ -501,8 +496,10 @@ int main() {
 
                 cerr << "[TT] before add_program" << endl;
                 workload.add_program(device_range, move(program));
+                cerr << "[TT] after add_program" << endl;
                 cerr << "[TT] before EnqueueMeshWorkload" << endl;
                 EnqueueMeshWorkload(*cq, workload, false);
+                cerr << "[TT] after EnqueueMeshWorkload" << endl;
                 cerr << "[TT] before Finish" << endl;
                 Finish(*cq);
                 cerr << "[TT] after Finish" << endl;

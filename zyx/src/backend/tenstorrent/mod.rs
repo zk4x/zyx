@@ -1072,14 +1072,14 @@ impl TTDevice {
                 write!(compute_source, "        copy_tile(cb_in0, 0, dst_reg);\n").unwrap();
                 write!(compute_source, "        {}(dst_reg);\n", info.tile_fn).unwrap();
                 write!(compute_source, "        tile_regs_commit();\n").unwrap();
-                write!(compute_source, "        tile_regs_wait();\n").unwrap();
-                write!(compute_source, "        cb_reserve_back(cb_out0, 1);\n").unwrap();
-                write!(compute_source, "        pack_tile(dst_reg, cb_out0);\n").unwrap();
-                write!(compute_source, "        cb_push_back(cb_out0, 1);\n").unwrap();
                 for i in 0..n_inputs {
                     write!(compute_source, "        cb_pop_front(cb_in{i}, 1);\n").unwrap();
                 }
+                write!(compute_source, "        cb_reserve_back(cb_out0, 1);\n").unwrap();
+                write!(compute_source, "        tile_regs_wait();\n").unwrap();
+                write!(compute_source, "        pack_tile(dst_reg, cb_out0);\n").unwrap();
                 write!(compute_source, "        tile_regs_release();\n").unwrap();
+                write!(compute_source, "        cb_push_back(cb_out0, 1);\n").unwrap();
                 write!(compute_source, "    }}\n").unwrap();
                 write!(compute_source, "}}\n").unwrap();
             }
@@ -1111,14 +1111,14 @@ impl TTDevice {
                     write!(compute_source, "        {}(dst_reg, dst_reg, dst_reg);\n", info.tile_fn).unwrap();
                 }
                 write!(compute_source, "        tile_regs_commit();\n").unwrap();
-                write!(compute_source, "        tile_regs_wait();\n").unwrap();
-                write!(compute_source, "        cb_reserve_back(cb_out0, 1);\n").unwrap();
-                write!(compute_source, "        pack_tile(dst_reg, cb_out0);\n").unwrap();
-                write!(compute_source, "        cb_push_back(cb_out0, 1);\n").unwrap();
                 for i in 0..n_inputs {
                     write!(compute_source, "        cb_pop_front(cb_in{i}, 1);\n").unwrap();
                 }
+                write!(compute_source, "        cb_reserve_back(cb_out0, 1);\n").unwrap();
+                write!(compute_source, "        tile_regs_wait();\n").unwrap();
+                write!(compute_source, "        pack_tile(dst_reg, cb_out0);\n").unwrap();
                 write!(compute_source, "        tile_regs_release();\n").unwrap();
+                write!(compute_source, "        cb_push_back(cb_out0, 1);\n").unwrap();
                 write!(compute_source, "    }}\n").unwrap();
                 write!(compute_source, "}}\n").unwrap();
             }
