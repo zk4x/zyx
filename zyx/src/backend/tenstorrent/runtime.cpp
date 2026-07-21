@@ -170,6 +170,17 @@ int main() {
     // Persistent DRAM buffers — indexed by position in this vector
     vector<shared_ptr<MeshBuffer>> buffers;
 
+    // Compiled program configs cached by sequential ID (matching Rust's DeviceProgramId)
+    struct ProgramConfig {
+        string reader_source;
+        string compute_source;
+        vector<uint32_t> input_formats;
+        vector<uint32_t> input_tile_bytes;
+        vector<uint32_t> output_formats;
+        vector<uint32_t> output_tile_bytes;
+    };
+    vector<ProgramConfig> program_cache;
+
     string line;
     while (getline(cin, line)) {
         line = trim(line);
@@ -307,6 +318,62 @@ int main() {
             }
         }
 
+        // ---- compile_program ----
+        else if (cmd == "compile_program") {
+            if (!mesh_device.get()) {
+                cout << R"({"status":"error","msg":"not initialized"})" << endl;
+                continue;
+            }
+
+            uint32_t id = extract_u32(line, "id");
+            uint32_t n_inputs = extract_u32(line, "n_inputs");
+            uint32_t n_outputs = extract_u32(line, "n_outputs");
+
+            try {
+                // Parse per-buffer formats and tile bytes
+                vector<uint32_t> input_formats(n_inputs);
+                vector<uint32_t> input_tile_bytes(n_inputs);
+                for (uint32_t i = 0; i < n_inputs; i++) {
+                    input_formats[i] = extract_u32(line, "fmt_i" + to_string(i));
+                    input_tile_bytes[i] = extract_u32(line, "tb_i" + to_string(i));
+                }
+                vector<uint32_t> output_formats(n_outputs);
+                vector<uint32_t> output_tile_bytes(n_outputs);
+                for (uint32_t i = 0; i < n_outputs; i++) {
+                    output_formats[i] = extract_u32(line, "fmt_o" + to_string(i));
+                    output_tile_bytes[i] = extract_u32(line, "tb_o" + to_string(i));
+                }
+
+                // Read reader + compute sources sent as raw bytes after JSON line
+                uint32_t reader_source_len = extract_u32(line, "reader_source_len");
+                string reader_source(reader_source_len, '\0');
+                cin.read(&reader_source[0], reader_source_len);
+                uint32_t compute_source_len = extract_u32(line, "compute_source_len");
+                string compute_source(compute_source_len, '\0');
+                cin.read(&compute_source[0], compute_source_len);
+
+                // Store sources and CB config for later use at run time
+                ProgramConfig cfg;
+                cfg.reader_source = move(reader_source);
+                cfg.compute_source = move(compute_source);
+                cfg.input_formats = move(input_formats);
+                cfg.input_tile_bytes = move(input_tile_bytes);
+                cfg.output_formats = move(output_formats);
+                cfg.output_tile_bytes = move(output_tile_bytes);
+                // Store at the given ID (must fit exactly, no gaps)
+                if (id >= program_cache.size()) {
+                    program_cache.resize(id + 1);
+                }
+                program_cache[id] = move(cfg);
+
+                cout << R"({"status":"ok"})" << endl;
+
+            } catch (const exception& e) {
+                cerr << "compile_program error: " << e.what() << endl;
+                cout << R"({"status":"error","msg":")" << e.what() << R"("})" << endl;
+            }
+        }
+
         // ---- run ----
         else if (cmd == "run") {
             if (!mesh_device.get()) {
@@ -314,37 +381,20 @@ int main() {
                 continue;
             }
 
-            string hash = extract_str(line, "hash");
-            uint32_t n_inputs = extract_u32(line, "n_inputs");
-            uint32_t n_outputs = extract_u32(line, "n_outputs");
+            uint32_t id = extract_u32(line, "id");
             uint32_t n_tiles = extract_u32(line, "n_tiles");
-            (void)n_outputs;
-
-            // Parse per-buffer formats and tile bytes
-            vector<uint32_t> input_formats(n_inputs);
-            vector<uint32_t> input_tile_bytes(n_inputs);
-            for (uint32_t i = 0; i < n_inputs; i++) {
-                input_formats[i] = extract_u32(line, "fmt_i" + to_string(i));
-                input_tile_bytes[i] = extract_u32(line, "tb_i" + to_string(i));
-            }
-            vector<uint32_t> output_formats(n_outputs);
-            vector<uint32_t> output_tile_bytes(n_outputs);
-            for (uint32_t i = 0; i < n_outputs; i++) {
-                output_formats[i] = extract_u32(line, "fmt_o" + to_string(i));
-                output_tile_bytes[i] = extract_u32(line, "tb_o" + to_string(i));
-            }
 
             // Parse buffer indices: src0, src1, ..., dst0
-            vector<uint32_t> src_indices(n_inputs);
-            for (uint32_t i = 0; i < n_inputs; i++) {
-                src_indices[i] = extract_u32(line, "src" + to_string(i));
+            vector<uint32_t> src_indices;
+            for (uint32_t i = 0; ; i++) {
+                string key = "src" + to_string(i);
+                auto k = line.find("\"" + key + "\"");
+                if (k == string::npos) break;
+                src_indices.push_back(extract_u32(line, key));
             }
+            uint32_t n_inputs = src_indices.size();
             uint32_t dst_index = extract_u32(line, "dst0");
 
-            if (hash.empty()) {
-                cout << R"({"status":"error","msg":"missing hash"})" << endl;
-                continue;
-            }
             if (n_tiles == 0) n_tiles = 1;
 
             // Validate indices
@@ -359,18 +409,25 @@ int main() {
                 continue;
             }
 
+            // Look up cached program config by sequential ID
+            if (id >= program_cache.size()) {
+                cout << R"({"status":"error","msg":"program not found for id )" << id << R"("})" << endl;
+                continue;
+            }
+            auto& cfg = program_cache[id];
+
             try {
                 Program program = CreateProgram();
                 CoreCoord core = {0, 0};
                 MeshWorkload workload;
                 MeshCoordinateRange device_range(mesh_device->shape());
 
-                // Circular buffers — one per input with its format, plus output CB 16
+                // Circular buffers from cached config
                 constexpr uint32_t tiles_per_cb = 2;
                 auto mk_cb = [&](CBIndex idx, uint32_t fmt, uint32_t tb) {
                     DataFormat df;
                     switch (fmt) {
-                        case 0: throw runtime_error("Float32 not supported for compute (SFPU) — use BF16 (Float16_b) instead"); break;
+                        case 0: throw runtime_error("Float32 not supported for compute (SFPU)"); break;
                         case 1: df = DataFormat::Float16; break;
                         case 2: df = DataFormat::Float16_b; break;
                         default: throw runtime_error("unsupported data_format " + to_string(fmt)); break;
@@ -379,34 +436,25 @@ int main() {
                         CircularBufferConfig(tiles_per_cb * tb, {{idx, df}})
                             .set_page_size(idx, tb));
                 };
-                for (uint32_t i = 0; i < n_inputs; i++) {
+                for (uint32_t i = 0; i < cfg.input_formats.size(); i++) {
                     mk_cb(static_cast<CBIndex>(static_cast<uint32_t>(CBIndex::c_0) + i),
-                          input_formats[i], input_tile_bytes[i]);
+                          cfg.input_formats[i], cfg.input_tile_bytes[i]);
                 }
-                mk_cb(CBIndex::c_16, output_formats[0], output_tile_bytes[0]);
+                for (uint32_t i = 0; i < cfg.output_formats.size(); i++) {
+                    mk_cb(static_cast<CBIndex>(static_cast<uint32_t>(CBIndex::c_16) + i),
+                          cfg.output_formats[i], cfg.output_tile_bytes[i]);
+                }
 
-                // Read reader kernel source sent as raw bytes after JSON line
-                uint32_t reader_source_len = extract_u32(line, "reader_source_len");
-                string reader_source(reader_source_len, '\0');
-                cin.read(&reader_source[0], reader_source_len);
-
-                // Reader kernel — simple dataflow with noc_async_read
-                auto reader = CreateKernelFromString(program, reader_source, core,
+                // Create kernels from cached sources (no IPC needed)
+                auto reader = CreateKernelFromString(program, cfg.reader_source, core,
                     DataMovementConfig{
                         .processor = DataMovementProcessor::RISCV_0,
                         .noc = NOC::RISCV_0_default});
-
-                // Writer kernel — simple dataflow with noc_async_write
                 auto writer = CreateKernel(program, kernel_dir + "/write_tile.cpp", core,
                     DataMovementConfig{
                         .processor = DataMovementProcessor::RISCV_1,
                         .noc = NOC::RISCV_1_default});
-
-                // Read compute kernel source sent as raw bytes after JSON line
-                uint32_t compute_source_len = extract_u32(line, "compute_source_len");
-                string compute_source(compute_source_len, '\0');
-                cin.read(&compute_source[0], compute_source_len);
-                auto compute = CreateKernelFromString(program, compute_source, core,
+                auto compute = CreateKernelFromString(program, cfg.compute_source, core,
                     ComputeConfig{.math_fidelity = MathFidelity::HiFi4});
 
                 // Set runtime args — (low, high) NOC address pairs + n_tiles

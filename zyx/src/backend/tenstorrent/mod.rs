@@ -835,30 +835,23 @@ impl RuntimeProcess {
         Ok(())
     }
 
-    fn run(
+    fn compile_program(
         &mut self,
-        hash: &str,
+        id: u32,
         reader_source: &str,
         compute_source: &str,
-        n_tiles: u32,
-        src_indices: &[u32],
-        dst_index: u32,
         input_formats: &[u32],
         input_tile_bytes: &[u32],
         output_formats: &[u32],
         output_tile_bytes: &[u32],
     ) -> Result<(), BackendError> {
-        let n_inputs = src_indices.len();
-        let n_outputs = 1;
+        let n_inputs = input_formats.len();
+        let n_outputs = output_formats.len();
         let reader_source_len = reader_source.len();
         let compute_source_len = compute_source.len();
         let mut cmd = format!(
-            r#"{{"cmd":"run","hash":"{hash}","reader_source_len":{reader_source_len},"compute_source_len":{compute_source_len},"n_inputs":{n_inputs},"n_outputs":{n_outputs},"n_tiles":{n_tiles}"#
+            r#"{{"cmd":"compile_program","id":{id},"reader_source_len":{reader_source_len},"compute_source_len":{compute_source_len},"n_inputs":{n_inputs},"n_outputs":{n_outputs}"#
         );
-        for (i, idx) in src_indices.iter().enumerate() {
-            cmd.push_str(&format!(r#","src{i}":{idx}"#));
-        }
-        cmd.push_str(&format!(r#","dst0":{dst_index}"#));
         for (i, fmt) in input_formats.iter().enumerate() {
             cmd.push_str(&format!(r#","fmt_i{i}":{fmt}"#));
         }
@@ -873,19 +866,44 @@ impl RuntimeProcess {
         }
         cmd.push('}');
         self.send(&cmd)?;
-        // Send raw reader source bytes
         self.stdin.write_all(reader_source.as_bytes()).map_err(|e| BackendError {
-            status: ErrorStatus::KernelLaunch,
+            status: ErrorStatus::KernelCompilation,
             context: format!("tt-runtime write reader: {e}").into(),
         })?;
-        // Send raw compute source bytes
         self.stdin.write_all(compute_source.as_bytes()).map_err(|e| BackendError {
-            status: ErrorStatus::KernelLaunch,
+            status: ErrorStatus::KernelCompilation,
             context: format!("tt-runtime write compute: {e}").into(),
         })?;
         self.stdin
             .flush()
-            .map_err(|e| BackendError { status: ErrorStatus::KernelLaunch, context: format!("tt-runtime flush: {e}").into() })?;
+            .map_err(|e| BackendError { status: ErrorStatus::KernelCompilation, context: format!("tt-runtime flush: {e}").into() })?;
+        let resp = self.recv_with_timeout(self.timeout_ms)?;
+        if resp.contains("\"error\"") {
+            let msg = extract_json_str(&resp, "msg").unwrap_or_else(|| "unknown".into());
+            return Err(BackendError {
+                status: ErrorStatus::KernelCompilation,
+                context: format!("tt-runtime compile error: {msg}").into(),
+            });
+        }
+        Ok(())
+    }
+
+    fn run(
+        &mut self,
+        id: u32,
+        n_tiles: u32,
+        src_indices: &[u32],
+        dst_index: u32,
+    ) -> Result<(), BackendError> {
+        let mut cmd = format!(
+            r#"{{"cmd":"run","id":{id},"n_tiles":{n_tiles}"#
+        );
+        for (i, idx) in src_indices.iter().enumerate() {
+            cmd.push_str(&format!(r#","src{i}":{idx}"#));
+        }
+        cmd.push_str(&format!(r#","dst0":{dst_index}"#));
+        cmd.push('}');
+        self.send(&cmd)?;
         let resp = self.recv_with_timeout(self.timeout_ms)?;
         if resp.contains("\"error\"") {
             let msg = extract_json_str(&resp, "msg").unwrap_or_else(|| "unknown".into());
@@ -926,9 +944,6 @@ fn extract_json_str(json: &str, key: &str) -> Option<String> {
 
 #[derive(Debug)]
 struct TTProgram {
-    hash: String,
-    reader_source: String,
-    compute_source: String,
     input_dtypes: Vec<DType>,
     output_dtypes: Vec<DType>,
 }
@@ -961,7 +976,6 @@ impl TTDevice {
     }
 
     pub fn compile(&mut self, kernel: &Kernel, debug_asm: bool) -> Result<DeviceProgramId, BackendError> {
-        let hash = format!("{:016x}", kernel.get_hash());
 
         let mut n_inputs: usize = 0;
         let mut n_outputs: usize = 0;
@@ -1137,8 +1151,36 @@ impl TTDevice {
             eprintln!("[tenstorrent] === reader kernel ===\n{reader_source}\n=== end reader ===");
             eprintln!("[tenstorrent] === compute kernel ===\n{compute_source}\n=== end compute ===");
         }
-        let prog_id =
-            self.programs.push(TTProgram { hash, reader_source, compute_source, input_dtypes, output_dtypes });
+
+        fn dtype_to_format(dt: DType) -> u32 {
+            match dt {
+                DType::F32 => 0,
+                DType::F16 => 1,
+                DType::BF16 => 2,
+                _ => 0,
+            }
+        }
+        fn dtype_to_tile_bytes(dt: DType) -> u32 {
+            let te = 1024u64;
+            match dt {
+                DType::F32 => (4 * te) as u32,
+                DType::F16 | DType::BF16 => (2 * te) as u32,
+                _ => (4 * te) as u32,
+            }
+        }
+        let input_formats: Vec<u32> = input_dtypes.iter().map(|d| dtype_to_format(*d)).collect();
+        let input_tile_bytes: Vec<u32> = input_dtypes.iter().map(|d| dtype_to_tile_bytes(*d)).collect();
+        let output_formats: Vec<u32> = output_dtypes.iter().map(|d| dtype_to_format(*d)).collect();
+        let output_tile_bytes: Vec<u32> = output_dtypes.iter().map(|d| dtype_to_tile_bytes(*d)).collect();
+
+        let prog_id = self.programs.push(TTProgram { input_dtypes, output_dtypes });
+
+        {
+            let mut rt_guard = self.runtime.lock().unwrap();
+            rt_guard.compile_program(prog_id.0, &reader_source, &compute_source,
+                &input_formats, &input_tile_bytes, &output_formats, &output_tile_bytes)?;
+        }
+
         Ok(prog_id)
     }
 
@@ -1203,40 +1245,8 @@ impl TTDevice {
             return Err(BackendError { status: ErrorStatus::KernelLaunch, context: "empty buffer".into() });
         }
 
-        fn dtype_to_format(dt: DType) -> u32 {
-            match dt {
-                DType::F32 => 0,
-                DType::F16 => 1,
-                DType::BF16 => 2,
-                _ => 0,
-            }
-        }
-        fn dtype_to_tile_bytes(dt: DType) -> u32 {
-            let te = 1024u64;
-            match dt {
-                DType::F32 => (4 * te) as u32,
-                DType::F16 | DType::BF16 => (2 * te) as u32,
-                _ => (4 * te) as u32,
-            }
-        }
-        let input_formats: Vec<u32> = prog.input_dtypes.iter().map(|d| dtype_to_format(*d)).collect();
-        let input_tile_bytes: Vec<u32> = prog.input_dtypes.iter().map(|d| dtype_to_tile_bytes(*d)).collect();
-        let output_formats: Vec<u32> = prog.output_dtypes.iter().map(|d| dtype_to_format(*d)).collect();
-        let output_tile_bytes: Vec<u32> = prog.output_dtypes.iter().map(|d| dtype_to_tile_bytes(*d)).collect();
-
         let mut rt_guard = rt.lock().unwrap();
-        rt_guard.run(
-            &prog.hash,
-            &prog.reader_source,
-            &prog.compute_source,
-            n_tiles,
-            &src_indices,
-            dst_index,
-            &input_formats,
-            &input_tile_bytes,
-            &output_formats,
-            &output_tile_bytes,
-        )?;
+        rt_guard.run(program_id.0, n_tiles, &src_indices, dst_index)?;
 
         Ok(Event::TT(TTEvent))
     }
