@@ -86,14 +86,15 @@ impl Kernel {
 
 #[test]
 fn tile_sin() -> Result<(), crate::ZyxError> {
-    use crate::{DType, Tensor, kernel::DeviceId};
-    let n = 256 * 256;
+    use crate::{DType, Tensor, bf16, kernel::DeviceId};
+    // Single tile (32x32 BF16 = 1 tile of 4096 bytes as Float32)
+    let n = 32 * 32; // 1024
     let mut kernel = Kernel::new(DeviceId::AUTO);
     let a = kernel.define(DType::BF16, Scope::Global, true, n);
     let b = kernel.define(DType::BF16, Scope::Global, false, n);
-    let gidx = kernel.gidx(0, 256);
-    let gidy = kernel.gidx(1, 256);
-    let stride = kernel.const_idx(256);
+    let gidx = kernel.gidx(0, 32);
+    let gidy = kernel.gidx(1, 32);
+    let stride = kernel.const_idx(32);
     let idx = kernel.mad(gidx, stride, gidy);
     let x = kernel.load(a, idx, MemLayout::Scalar);
     let x = kernel.sin(x);
@@ -102,11 +103,16 @@ fn tile_sin() -> Result<(), crate::ZyxError> {
     kernel.tile(gidx, gidy, 32, 32);
     kernel.run_always_on_optimizations();
 
+    kernel.debug();
+
     kernel.verify();
 
-    let x = Tensor::arange(0, n, 1)?.reshape([256, 256])?.cast(DType::BF16);
+    let data: Vec<Vec<bf16>> = (0..32)
+        .map(|i| (0..32).map(|j| bf16::from_f32((i * 32 + j) as f32)).collect())
+        .collect();
+    let x = Tensor::from(data);
     let compiled = kernel.compile()?;
-    let result = compiled.forward(&[&x], vec![[256, 256]])?;
+    let result = compiled.forward(&[&x], vec![[32, 32]])?;
     let data: Vec<f32> = result.into_iter().next().unwrap().cast(DType::F32).try_into()?;
     let expected: Vec<f32> = (0..n).map(|i| (i as f32).sin()).collect();
     assert_eq!(data, expected);

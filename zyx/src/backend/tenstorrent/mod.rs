@@ -1,8 +1,6 @@
 // Copyright (C) 2025 zk4x
 // SPDX-License-Identifier: LGPL-3.0-only
 
-#![allow(unused)]
-
 //! Tenstorrent backend for zyx.
 //!
 //! # Architecture Overview
@@ -332,21 +330,19 @@
 
 use super::{Device, DeviceId, DeviceInfo, DeviceProgramId, Event, Kernel, MemoryPool, OpCapability, PoolBufferId, PoolId};
 use crate::{
-    DType, Map,
+    DType,
     error::{BackendError, ErrorStatus},
-    kernel::{BOp, MemLayout, Op, OpId, Scope, UOp},
+    kernel::{BOp, MemLayout, Op, UOp},
     shape::Dim,
     slab::Slab,
 };
 use nanoserde::DeJson;
 use std::{
     ffi::CString,
-    fs,
-    io::{BufRead, BufReader, BufWriter, Write},
-    os::unix::io::AsRawFd,
+    fmt::Write,
+    io::{BufRead, BufReader, BufWriter, Write as IoWrite},
     path::PathBuf,
     process::{Child, ChildStdin, ChildStdout, Command},
-    ptr,
     sync::{Arc, Mutex},
 };
 
@@ -415,9 +411,6 @@ struct TTBuffer {
     size: u64,
 }
 
-unsafe impl Send for TTBuffer {}
-unsafe impl Sync for TTBuffer {}
-
 // ---------------------------------------------------------------------------
 // Memory pool — device DRAM buffers managed by C++ runtime.
 // TTBuffer is a handle (u32 dev_index) into the runtime's buffer list.
@@ -427,7 +420,7 @@ unsafe impl Sync for TTBuffer {}
 #[derive(Debug)]
 pub struct TTMemoryPool {
     buffers: Slab<PoolBufferId, TTBuffer>,
-    runtime: Option<Arc<Mutex<RuntimeProcess>>>,
+    runtime: Arc<Mutex<RuntimeProcess>>,
 }
 
 #[derive(Debug, Clone)]
@@ -491,7 +484,7 @@ pub(super) fn initialize_device(
     let runtime = spawn_runtime(&runtime_path, &kernel_dir, &cache_dir)?;
 
     let pool_id = memory_pools.len();
-    let pool = MemoryPool::TT(TTMemoryPool { buffers: Slab::new(), runtime: Some(runtime.clone()) });
+    let pool = MemoryPool::TT(TTMemoryPool { buffers: Slab::new(), runtime: runtime.clone() });
     memory_pools.push(pool);
 
     let _device_id = devices.len();
@@ -511,7 +504,7 @@ pub(super) fn initialize_device(
             supported_vec_lens: vec![32],
         },
         memory_pool_id: pool_id,
-        runtime: Some(runtime),
+        runtime,
         kernel_dir,
         cache_dir,
         runtime_path,
@@ -555,9 +548,7 @@ fn create_temp_shm(size: u64) -> Result<(CString, *mut u8, u64), BackendError> {
 
 impl TTMemoryPool {
     pub fn deinitialize(&mut self) {
-        if let Some(rt) = self.runtime.take() {
-            let _ = rt.lock().unwrap().exit();
-        }
+        let _ = self.runtime.lock().unwrap().exit();
     }
 
     pub fn free_bytes(&self) -> Dim {
@@ -569,12 +560,8 @@ impl TTMemoryPool {
             status: ErrorStatus::MemoryAllocation,
             context: "allocation size exceeds 64-bit".into(),
         })?;
-        let rt = self
-            .runtime
-            .as_ref()
-            .ok_or_else(|| BackendError { status: ErrorStatus::MemoryAllocation, context: "runtime not initialized".into() })?;
-        // Hardcode tile_bytes=4096 (Float32) for now — f32 is the common case.
-        let tile_bytes: u64 = 4096;
+        let rt = &self.runtime;
+        let tile_bytes: u64 = 2048;
         let dev_index = rt.lock().unwrap().alloc_buf(bytes_u64, tile_bytes)?;
         let buf = TTBuffer { dev_index, size: bytes_u64 };
         let id = self.buffers.push(buf);
@@ -585,18 +572,13 @@ impl TTMemoryPool {
         let _ = event_wait_list;
         if self.buffers.contains_key(buffer_id) {
             let buf = unsafe { self.buffers.remove_and_return(buffer_id) };
-            if let Some(rt) = &self.runtime {
-                let _ = rt.lock().unwrap().free_buf(buf.dev_index);
-            }
+            let _ = self.runtime.lock().unwrap().free_buf(buf.dev_index);
         }
     }
 
     pub fn host_to_pool(&mut self, src: &[u8], dst: PoolBufferId, event_wait_list: Vec<Event>) -> Result<Event, BackendError> {
         let _ = event_wait_list;
-        let rt = self
-            .runtime
-            .as_ref()
-            .ok_or_else(|| BackendError { status: ErrorStatus::MemoryCopyH2P, context: "runtime not initialized".into() })?;
+        let rt = &self.runtime;
         let buf = self
             .buffers
             .get_mut(dst)
@@ -615,10 +597,7 @@ impl TTMemoryPool {
 
     pub fn pool_to_host(&mut self, src: PoolBufferId, dst: &mut [u8], event_wait_list: Vec<Event>) -> Result<(), BackendError> {
         let _ = event_wait_list;
-        let rt = self
-            .runtime
-            .as_ref()
-            .ok_or_else(|| BackendError { status: ErrorStatus::MemoryCopyP2H, context: "runtime not initialized".into() })?;
+        let rt = &self.runtime;
         let buf = self
             .buffers
             .get_mut(src)
@@ -633,6 +612,22 @@ impl TTMemoryPool {
             libc::shm_unlink(cname.as_ptr());
         }
         Ok(())
+    }
+
+    pub fn pool_to_pool(
+        &mut self,
+        src_pool: &mut MemoryPool,
+        src: PoolBufferId,
+        dst: PoolBufferId,
+        event_wait_list: Vec<Event>,
+    ) -> Result<Event, BackendError> {
+        match src_pool {
+            MemoryPool::Host(host_pool) => {
+                let data = host_pool.get_buffer(src);
+                self.host_to_pool(data, dst, event_wait_list)
+            }
+            _ => todo!(),
+        }
     }
 
     pub fn sync_events(&mut self, events: Vec<Event>) -> Result<(), BackendError> {
@@ -872,7 +867,8 @@ impl RuntimeProcess {
     fn run(
         &mut self,
         hash: &str,
-        source: &str,
+        reader_source: &str,
+        compute_source: &str,
         n_tiles: u32,
         src_indices: &[u32],
         dst_index: u32,
@@ -881,22 +877,29 @@ impl RuntimeProcess {
     ) -> Result<(), BackendError> {
         let n_inputs = src_indices.len();
         let n_outputs = 1;
-        let source_len = source.len();
+        let reader_source_len = reader_source.len();
+        let compute_source_len = compute_source.len();
         let mut cmd = format!(
-            r#"{{"cmd":"run","hash":"{hash}","source_len":{source_len},"n_inputs":{n_inputs},"n_outputs":{n_outputs},"n_tiles":{n_tiles},"data_format":{data_format},"tile_bytes":{tile_bytes},"dst0":{dst_index}"#
+            r#"{{"cmd":"run","hash":"{hash}","reader_source_len":{reader_source_len},"compute_source_len":{compute_source_len},"n_inputs":{n_inputs},"n_outputs":{n_outputs},"n_tiles":{n_tiles},"data_format":{data_format},"tile_bytes":{tile_bytes},"dst0":{dst_index}"#
         );
         for (i, idx) in src_indices.iter().enumerate() {
             cmd.push_str(&format!(r#","src{i}":{idx}"#));
         }
         cmd.push('}');
         self.send(&cmd)?;
-        // Send raw kernel source bytes (not JSON-escaped)
-        self.stdin
-            .write_all(source.as_bytes())
-            .map_err(|e| BackendError { status: ErrorStatus::KernelLaunch, context: format!("tt-runtime write source: {e}").into() })?;
+        // Send raw reader source bytes
+        self.stdin.write_all(reader_source.as_bytes()).map_err(|e| BackendError {
+            status: ErrorStatus::KernelLaunch,
+            context: format!("tt-runtime write reader: {e}").into(),
+        })?;
+        // Send raw compute source bytes
+        self.stdin.write_all(compute_source.as_bytes()).map_err(|e| BackendError {
+            status: ErrorStatus::KernelLaunch,
+            context: format!("tt-runtime write compute: {e}").into(),
+        })?;
         self.stdin
             .flush()
-            .map_err(|e| BackendError { status: ErrorStatus::KernelLaunch, context: format!("tt-runtime flush source: {e}").into() })?;
+            .map_err(|e| BackendError { status: ErrorStatus::KernelLaunch, context: format!("tt-runtime flush: {e}").into() })?;
         let resp = self.recv_with_timeout(self.timeout_ms)?;
         if resp.contains("\"error\"") {
             let msg = extract_json_str(&resp, "msg").unwrap_or_else(|| "unknown".into());
@@ -942,7 +945,8 @@ fn extract_json_str(json: &str, key: &str) -> Option<String> {
 #[derive(Debug)]
 struct TTProgram {
     hash: String,
-    source: String,
+    reader_source: String,
+    compute_source: String,
     n_inputs: usize,
     n_outputs: usize,
     dtype: DType,
@@ -956,7 +960,7 @@ struct TTProgram {
 pub struct TTDevice {
     device_info: DeviceInfo,
     memory_pool_id: PoolId,
-    runtime: Option<Arc<Mutex<RuntimeProcess>>>,
+    runtime: Arc<Mutex<RuntimeProcess>>,
     kernel_dir: PathBuf,
     cache_dir: PathBuf,
     runtime_path: PathBuf,
@@ -964,11 +968,7 @@ pub struct TTDevice {
 }
 
 impl TTDevice {
-    pub fn deinitialize(&mut self) {
-        // Runtime is shared with TTMemoryPool via Arc — just drop our reference.
-        // TTMemoryPool::deinitialize() sends the exit command.
-        self.runtime.take();
-    }
+    pub fn deinitialize(&mut self) {}
 
     pub const fn info(&self) -> &DeviceInfo {
         &self.device_info
@@ -984,12 +984,13 @@ impl TTDevice {
 
     pub fn compile(&mut self, kernel: &Kernel, debug_asm: bool) -> Result<DeviceProgramId, BackendError> {
         let hash = format!("{:016x}", kernel.get_hash());
-        let (source, n_inputs, n_outputs, dtype) = generate_compute_kernel(kernel)?;
+        let (compute_source, n_inputs, n_outputs, dtype) = generate_compute_kernel(kernel)?;
+        let reader_source = generate_reader_kernel(n_inputs);
         if debug_asm {
-            eprintln!("[tenstorrent] === kernel source ===\n{source}\n=== end kernel source ===");
+            eprintln!("[tenstorrent] === reader kernel ===\n{reader_source}\n=== end reader ===");
+            eprintln!("[tenstorrent] === compute kernel ===\n{compute_source}\n=== end compute ===");
         }
-        // Cache file written by the C++ runtime on first use; we just track metadata.
-        let prog_id = self.programs.push(TTProgram { hash, source, n_inputs, n_outputs, dtype });
+        let prog_id = self.programs.push(TTProgram { hash, reader_source, compute_source, n_inputs, n_outputs, dtype });
         Ok(prog_id)
     }
 
@@ -1013,10 +1014,7 @@ impl TTDevice {
             return Err(BackendError { status: ErrorStatus::KernelLaunch, context: "invalid program id".into() });
         };
 
-        let rt = self
-            .runtime
-            .as_ref()
-            .ok_or_else(|| BackendError { status: ErrorStatus::KernelLaunch, context: "runtime not initialized".into() })?;
+        let rt = &self.runtime;
 
         let n_inputs = prog.n_inputs;
         let n_outputs = prog.n_outputs;
@@ -1052,7 +1050,16 @@ impl TTDevice {
         }
 
         let mut rt_guard = rt.lock().unwrap();
-        rt_guard.run(&prog.hash, &prog.source, n_tiles, &src_indices, dst_index, data_format, tile_bytes)?;
+        rt_guard.run(
+            &prog.hash,
+            &prog.reader_source,
+            &prog.compute_source,
+            n_tiles,
+            &src_indices,
+            dst_index,
+            data_format,
+            tile_bytes,
+        )?;
 
         Ok(Event::TT(TTEvent))
     }
@@ -1196,21 +1203,181 @@ fn uop_to_sfpu(uop: UOp) -> Result<SfpuInfo, BackendError> {
 fn generate_compute_kernel(kernel: &Kernel) -> Result<(String, usize, usize, DType), BackendError> {
     let mut n_inputs: usize = 0;
     let mut n_outputs: usize = 0;
-    let mut result_dtype = DType::F32;
+    // Count Tile loads = inputs, Tile stores = outputs
     let mut op_id = kernel.head;
     while !op_id.is_null() {
         match kernel.at(op_id) {
-            Op::Define { scope: Scope::Global, ro, .. } => {
-                if *ro {
-                    n_inputs += 1;
-                } else {
-                    n_outputs += 1;
-                }
-            }
+            Op::Load { layout: MemLayout::Tile { .. }, .. } => n_inputs += 1,
+            Op::Store { layout: MemLayout::Tile { .. }, .. } => n_outputs += 1,
             _ => {}
         }
         op_id = kernel.next_op(op_id);
     }
-    // Emit minimal kernel for now — C++ runtime falls back to tiles_add.cpp
-    Ok(("void kernel_main() {}".to_string(), n_inputs, n_outputs, result_dtype))
+
+    // Find the compute op by tracing backward from Tile stores.
+    // The compute op is the op whose result feeds directly into a Tile Store's value.
+    let mut op_id = kernel.head;
+    let mut unary_op = None;
+    let mut binary_op = None;
+    while !op_id.is_null() {
+        if let Op::Store { x, layout: MemLayout::Tile { .. }, .. } = kernel.at(op_id) {
+            let compute = *x;
+            // Walk forward from head to find the op that produces `compute`
+            let mut scan = kernel.head;
+            while !scan.is_null() {
+                if scan == compute {
+                    match kernel.at(scan) {
+                        Op::Unary { uop, .. } => {
+                            if uop_to_sfpu(*uop).is_ok() {
+                                unary_op = Some(*uop);
+                            }
+                        }
+                        Op::Binary { bop, .. } => {
+                            if bop_to_binary_api(*bop).is_ok() {
+                                binary_op = Some(*bop);
+                            }
+                        }
+                        _ => {}
+                    }
+                    break;
+                }
+                scan = kernel.next_op(scan);
+            }
+            break;
+        }
+        op_id = kernel.next_op(op_id);
+    }
+
+    let mut code = String::new();
+    code.push_str("#include <cstdint>\n");
+    code.push_str("#include \"api/compute/common.h\"\n");
+    code.push_str("#include \"api/compute/tile_move_copy.h\"\n");
+    code.push_str("#include \"api/compute/eltwise_unary/eltwise_unary.h\"\n");
+
+    match (unary_op, binary_op) {
+        (Some(uop), None) => {
+            let info = uop_to_sfpu(uop)?;
+            code.push_str(&format!("#include \"{}\"\n", info.header));
+            code.push_str("#include \"api/compute/compute_kernel_api.h\"\n\n");
+            write!(code, "void kernel_main() {{\n").unwrap();
+            write!(code, "    uint32_t n_tiles = get_arg_val<uint32_t>(0);\n").unwrap();
+            for i in 0..n_inputs {
+                write!(code, "    constexpr auto cb_in{i} = tt::CBIndex::c_{i};\n").unwrap();
+            }
+            write!(code, "    constexpr auto cb_out0 = tt::CBIndex::c_16;\n").unwrap();
+            write!(code, "    constexpr uint32_t dst_reg = 0;\n\n").unwrap();
+            write!(code, "    unary_op_init_common(cb_in0, cb_out0);\n").unwrap();
+            write!(code, "    {}();\n", info.init_fn).unwrap();
+            write!(code, "\n").unwrap();
+            write!(code, "    for (uint32_t i = 0; i < n_tiles; i++) {{\n").unwrap();
+            for i in 0..n_inputs {
+                write!(code, "        cb_wait_front(cb_in{i}, 1);\n").unwrap();
+            }
+            write!(code, "        tile_regs_acquire();\n").unwrap();
+            write!(code, "        copy_tile(cb_in0, 0, dst_reg);\n").unwrap();
+            write!(code, "        {}(dst_reg);\n", info.tile_fn).unwrap();
+            write!(code, "        tile_regs_commit();\n").unwrap();
+            write!(code, "        tile_regs_wait();\n").unwrap();
+            write!(code, "        cb_reserve_back(cb_out0, 1);\n").unwrap();
+            write!(code, "        pack_tile(dst_reg, cb_out0);\n").unwrap();
+            write!(code, "        cb_push_back(cb_out0, 1);\n").unwrap();
+            for i in 0..n_inputs {
+                write!(code, "        cb_pop_front(cb_in{i}, 1);\n").unwrap();
+            }
+            write!(code, "        tile_regs_release();\n").unwrap();
+            write!(code, "    }}\n").unwrap();
+            write!(code, "}}\n").unwrap();
+        }
+        (None, Some(bop)) => {
+            let info = bop_to_binary_api(bop)?;
+            code.push_str(&format!("#include \"{}\"\n", info.header));
+            code.push_str("#include \"api/compute/compute_kernel_api.h\"\n\n");
+            write!(code, "void kernel_main() {{\n").unwrap();
+            write!(code, "    uint32_t n_tiles = get_arg_val<uint32_t>(0);\n").unwrap();
+            for i in 0..n_inputs {
+                write!(code, "    constexpr auto cb_in{i} = tt::CBIndex::c_{i};\n").unwrap();
+            }
+            write!(code, "    constexpr auto cb_out0 = tt::CBIndex::c_16;\n").unwrap();
+            write!(code, "    constexpr uint32_t dst_reg = 0;\n\n").unwrap();
+            if info.uses_cbs {
+                write!(code, "    binary_op_init_common(cb_in0, cb_in1, cb_out0);\n").unwrap();
+            }
+            write!(code, "    {}();\n", info.tile_init_fn).unwrap();
+            write!(code, "\n").unwrap();
+            write!(code, "    for (uint32_t i = 0; i < n_tiles; i++) {{\n").unwrap();
+            for i in 0..n_inputs {
+                write!(code, "        cb_wait_front(cb_in{i}, 1);\n").unwrap();
+            }
+            write!(code, "        tile_regs_acquire();\n").unwrap();
+            if info.uses_cbs {
+                write!(code, "        {}(cb_in0, cb_in1, 0, 0, dst_reg);\n", info.tile_fn).unwrap();
+            } else {
+                write!(code, "        copy_tile(cb_in0, 0, dst_reg);\n").unwrap();
+                write!(code, "        {}(dst_reg, dst_reg, dst_reg);\n", info.tile_fn).unwrap();
+            }
+            write!(code, "        tile_regs_commit();\n").unwrap();
+            write!(code, "        tile_regs_wait();\n").unwrap();
+            write!(code, "        cb_reserve_back(cb_out0, 1);\n").unwrap();
+            write!(code, "        pack_tile(dst_reg, cb_out0);\n").unwrap();
+            write!(code, "        cb_push_back(cb_out0, 1);\n").unwrap();
+            for i in 0..n_inputs {
+                write!(code, "        cb_pop_front(cb_in{i}, 1);\n").unwrap();
+            }
+            write!(code, "        tile_regs_release();\n").unwrap();
+            write!(code, "    }}\n").unwrap();
+            write!(code, "}}\n").unwrap();
+        }
+        _ => {
+            return Err(BackendError {
+                status: ErrorStatus::KernelCompilation,
+                context: format!("no supported unary or binary op found in kernel (inputs={n_inputs}, outputs={n_outputs})")
+                    .into(),
+            });
+        }
+    }
+
+    // Find the dtype from the Tile store's destination global define
+    let mut result_dtype = DType::F32; // default
+    let mut op_id = kernel.head;
+    while !op_id.is_null() {
+        if let Op::Store { dst, layout: MemLayout::Tile { .. }, .. } = kernel.at(op_id) {
+            if let Op::Define { dtype, .. } = kernel.at(*dst) {
+                result_dtype = *dtype;
+                break;
+            }
+        }
+        op_id = kernel.next_op(op_id);
+    }
+
+    Ok((code, n_inputs, n_outputs, result_dtype))
+}
+
+fn generate_reader_kernel(n_inputs: usize) -> String {
+    if n_inputs == 0 {
+        return "#include <cstdint>\nvoid kernel_main() {}".to_string();
+    }
+    let mut code = String::new();
+    write!(code, "#include <cstdint>\n").unwrap();
+    write!(code, "#include \"api/dataflow/dataflow_api.h\"\n").unwrap();
+    write!(code, "\nvoid kernel_main() {{\n").unwrap();
+    write!(code, "    uint32_t n_tiles = get_arg_val<uint32_t>({});\n", n_inputs * 2).unwrap();
+    write!(code, "\n").unwrap();
+    write!(code, "    for (uint32_t s = 0; s < {}; s++) {{\n", n_inputs).unwrap();
+    write!(code, "        uint32_t src_noc_low = get_arg_val<uint32_t>(s * 2);\n").unwrap();
+    write!(code, "        uint32_t src_noc_high = get_arg_val<uint32_t>(s * 2 + 1);\n").unwrap();
+    write!(code, "        uint64_t src_noc_addr = (uint64_t)src_noc_high << 32 | src_noc_low;\n").unwrap();
+    write!(code, "        uint32_t cb_id = tt::CBIndex::c_0 + s;\n").unwrap();
+    write!(code, "        uint32_t tile_bytes = get_tile_size(cb_id);\n").unwrap();
+    write!(code, "\n").unwrap();
+    write!(code, "        for (uint32_t i = 0; i < n_tiles; i++) {{\n").unwrap();
+    write!(code, "            cb_reserve_back(cb_id, 1);\n").unwrap();
+    write!(code, "            uint32_t l1_addr = get_write_ptr(cb_id);\n").unwrap();
+    write!(code, "            uint64_t noc_addr = src_noc_addr + i * tile_bytes;\n").unwrap();
+    write!(code, "            noc_async_read(noc_addr, l1_addr, tile_bytes);\n").unwrap();
+    write!(code, "            noc_async_read_barrier();\n").unwrap();
+    write!(code, "            cb_push_back(cb_id, 1);\n").unwrap();
+    write!(code, "        }}\n").unwrap();
+    write!(code, "    }}\n").unwrap();
+    write!(code, "}}\n").unwrap();
+    code
 }

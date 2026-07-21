@@ -38,7 +38,8 @@ impl Kernel {
             (true, true) => {
                 panic!("unfold_movement_ops: cannot have both explicit gidx and LoadView/StoreView/Move ops");
             }
-            (false, _) => {}
+            (false, true) => {}
+            (false, false) => return,
         }
 
         // Apply movement ops on views

@@ -659,7 +659,7 @@ impl MemoryPool {
             MemoryPool::HIP(_) => todo!(),
             MemoryPool::Vulkan(memory_pool) => memory_pool.pool_to_pool(src_pool, src, dst, event_wait_list)?,
             #[cfg(feature = "tenstorrent")]
-            MemoryPool::TT(_) => todo!(),
+            MemoryPool::TT(memory_pool) => memory_pool.pool_to_pool(src_pool, src, dst, event_wait_list)?,
             #[cfg(feature = "wgpu")]
             MemoryPool::WGPU(memory_pool) => memory_pool.pool_to_pool(src_pool, src, dst, event_wait_list)?,
         };

@@ -259,14 +259,13 @@ int main() {
                 shm.open_read(shm_path);
 
                 uint64_t buf_bytes = buffers[idx]->size();
-                uint64_t num_float = buf_bytes / sizeof(float);
-                vector<float> data(num_float, 0);
+                vector<uint8_t> data(buf_bytes, 0);
                 uint64_t copy_sz = min(size, shm.size);
                 memcpy(data.data(), shm.ptr, copy_sz);
                 shm.close();
 
                 EnqueueWriteMeshBuffer(*cq, buffers[idx], data, false);
-                // Skip Finish here — let the workload Finish drain everything
+                Finish(*cq);
                 // Unlink the temp shm (Rust side already did munmap)
                 shm_unlink(shm_path.c_str());
 
@@ -289,11 +288,11 @@ int main() {
             }
 
             try {
-                vector<float> result;
+                vector<uint8_t> result;
                 EnqueueReadMeshBuffer(*cq, result, buffers[idx], true);
                 // blocking=true already does Finish internally
 
-                uint64_t copy_sz = min(size, result.size() * sizeof(float));
+                uint64_t copy_sz = min(size, result.size());
 
                 TempShm shm;
                 shm.open_write(shm_path, copy_sz);
@@ -349,10 +348,13 @@ int main() {
             }
 
             try {
-                // Use f32 format (matches Rust f32 data)
-                (void)data_format;
-                DataFormat df = DataFormat::Float32;
-                tile_bytes = sizeof(float) * tt::constants::TILE_WIDTH * tt::constants::TILE_HEIGHT;
+                DataFormat df;
+                switch (data_format) {
+                    case 0: throw runtime_error("Float32 not supported for compute (SFPU) — use BF16 (Float16_b) instead"); break;
+                    case 1: df = DataFormat::Float16; break;
+                    case 2: df = DataFormat::Float16_b; break;
+                    default: throw runtime_error("unsupported data_format " + to_string(data_format)); break;
+                }
 
                 Program program = CreateProgram();
                 CoreCoord core = {0, 0};
@@ -371,41 +373,39 @@ int main() {
                 }
                 mk_cb(CBIndex::c_16);
 
-                // Reader kernel — one TensorAccessor per input
-                vector<uint32_t> reader_args;
-                for (uint32_t i = 0; i < n_inputs; i++) {
-                    TensorAccessorArgs(*buffers[src_indices[i]]).append_to(reader_args);
-                }
-                auto reader = CreateKernel(program, kernel_dir + "/read_tiles.cpp", core,
+                // Read reader kernel source sent as raw bytes after JSON line
+                uint32_t reader_source_len = extract_u32(line, "reader_source_len");
+                string reader_source(reader_source_len, '\0');
+                cin.read(&reader_source[0], reader_source_len);
+
+                // Reader kernel — simple dataflow with noc_async_read
+                auto reader = CreateKernelFromString(program, reader_source, core,
                     DataMovementConfig{
                         .processor = DataMovementProcessor::RISCV_0,
-                        .noc = NOC::RISCV_0_default,
-                        .compile_args = reader_args});
+                        .noc = NOC::RISCV_0_default});
 
-                // Writer kernel
-                vector<uint32_t> writer_args;
-                TensorAccessorArgs(*buffers[dst_index]).append_to(writer_args);
+                // Writer kernel — simple dataflow with noc_async_write
                 auto writer = CreateKernel(program, kernel_dir + "/write_tile.cpp", core,
                     DataMovementConfig{
                         .processor = DataMovementProcessor::RISCV_1,
-                        .noc = NOC::RISCV_1_default,
-                        .compile_args = writer_args});
+                        .noc = NOC::RISCV_1_default});
 
-                // Read kernel source sent as raw bytes after JSON line
-                uint32_t source_len = extract_u32(line, "source_len");
-                string compute_source(source_len, '\0');
-                cin.read(&compute_source[0], source_len);
+                // Read compute kernel source sent as raw bytes after JSON line
+                uint32_t compute_source_len = extract_u32(line, "compute_source_len");
+                string compute_source(compute_source_len, '\0');
+                cin.read(&compute_source[0], compute_source_len);
                 auto compute = CreateKernelFromString(program, compute_source, core,
                     ComputeConfig{.math_fidelity = MathFidelity::HiFi4});
 
-                // Set runtime args — pass DRAM addresses + n_tiles
+                // Set runtime args — (low, high) NOC address pairs + n_tiles
                 cerr << "[TT] setting rt args n_tiles=" << n_tiles << endl;
                 {
                     vector<uint32_t> reader_rt_args;
                     for (uint32_t i = 0; i < n_inputs; i++) {
                         uint64_t a = buffers[src_indices[i]]->address();
                         cerr << "[TT]  src" << i << " idx=" << src_indices[i] << " addr=" << a << " sz=" << buffers[src_indices[i]]->size() << endl;
-                        reader_rt_args.push_back((uint32_t)a);
+                        reader_rt_args.push_back((uint32_t)(a & 0xFFFFFFFF));
+                        reader_rt_args.push_back((uint32_t)(a >> 32));
                     }
                     reader_rt_args.push_back(n_tiles);
                     SetRuntimeArgs(program, reader, core, reader_rt_args);
@@ -413,7 +413,11 @@ int main() {
                 {
                     uint64_t a = buffers[dst_index]->address();
                     cerr << "[TT]  dst idx=" << dst_index << " addr=" << a << " sz=" << buffers[dst_index]->size() << endl;
-                    SetRuntimeArgs(program, writer, core, {(uint32_t)a, n_tiles});
+                    SetRuntimeArgs(program, writer, core, {
+                        (uint32_t)(a & 0xFFFFFFFF),
+                        (uint32_t)(a >> 32),
+                        n_tiles
+                    });
                 }
                 SetRuntimeArgs(program, compute, core, {n_tiles});
 
