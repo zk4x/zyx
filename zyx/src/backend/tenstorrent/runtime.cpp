@@ -318,9 +318,21 @@ int main() {
             uint32_t n_inputs = extract_u32(line, "n_inputs");
             uint32_t n_outputs = extract_u32(line, "n_outputs");
             uint32_t n_tiles = extract_u32(line, "n_tiles");
-            uint32_t data_format = extract_u32(line, "data_format");
-            uint32_t tile_bytes = extract_u32(line, "tile_bytes");
             (void)n_outputs;
+
+            // Parse per-buffer formats and tile bytes
+            vector<uint32_t> input_formats(n_inputs);
+            vector<uint32_t> input_tile_bytes(n_inputs);
+            for (uint32_t i = 0; i < n_inputs; i++) {
+                input_formats[i] = extract_u32(line, "fmt_i" + to_string(i));
+                input_tile_bytes[i] = extract_u32(line, "tb_i" + to_string(i));
+            }
+            vector<uint32_t> output_formats(n_outputs);
+            vector<uint32_t> output_tile_bytes(n_outputs);
+            for (uint32_t i = 0; i < n_outputs; i++) {
+                output_formats[i] = extract_u32(line, "fmt_o" + to_string(i));
+                output_tile_bytes[i] = extract_u32(line, "tb_o" + to_string(i));
+            }
 
             // Parse buffer indices: src0, src1, ..., dst0
             vector<uint32_t> src_indices(n_inputs);
@@ -348,30 +360,30 @@ int main() {
             }
 
             try {
-                DataFormat df;
-                switch (data_format) {
-                    case 0: throw runtime_error("Float32 not supported for compute (SFPU) — use BF16 (Float16_b) instead"); break;
-                    case 1: df = DataFormat::Float16; break;
-                    case 2: df = DataFormat::Float16_b; break;
-                    default: throw runtime_error("unsupported data_format " + to_string(data_format)); break;
-                }
-
                 Program program = CreateProgram();
                 CoreCoord core = {0, 0};
                 MeshWorkload workload;
                 MeshCoordinateRange device_range(mesh_device->shape());
 
-                // Circular buffers
+                // Circular buffers — one per input with its format, plus output CB 16
                 constexpr uint32_t tiles_per_cb = 2;
-                auto mk_cb = [&](CBIndex idx) {
+                auto mk_cb = [&](CBIndex idx, uint32_t fmt, uint32_t tb) {
+                    DataFormat df;
+                    switch (fmt) {
+                        case 0: throw runtime_error("Float32 not supported for compute (SFPU) — use BF16 (Float16_b) instead"); break;
+                        case 1: df = DataFormat::Float16; break;
+                        case 2: df = DataFormat::Float16_b; break;
+                        default: throw runtime_error("unsupported data_format " + to_string(fmt)); break;
+                    }
                     CreateCircularBuffer(program, core,
-                        CircularBufferConfig(tiles_per_cb * tile_bytes, {{idx, df}})
-                            .set_page_size(idx, tile_bytes));
+                        CircularBufferConfig(tiles_per_cb * tb, {{idx, df}})
+                            .set_page_size(idx, tb));
                 };
                 for (uint32_t i = 0; i < n_inputs; i++) {
-                    mk_cb(static_cast<CBIndex>(static_cast<uint32_t>(CBIndex::c_0) + i));
+                    mk_cb(static_cast<CBIndex>(static_cast<uint32_t>(CBIndex::c_0) + i),
+                          input_formats[i], input_tile_bytes[i]);
                 }
-                mk_cb(CBIndex::c_16);
+                mk_cb(CBIndex::c_16, output_formats[0], output_tile_bytes[0]);
 
                 // Read reader kernel source sent as raw bytes after JSON line
                 uint32_t reader_source_len = extract_u32(line, "reader_source_len");

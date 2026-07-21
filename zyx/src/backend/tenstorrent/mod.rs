@@ -366,6 +366,7 @@ use std::{
 /// - https://docs.tenstorrent.com/aibs/blackhole/specifications.html
 /// - tt-umd `board_upi_map` and `expected_dram_harvested_units_map`
 /// - tt-metal `blackhole_140_arch.yaml` (dram_bank_size: 4278190080 ≈ 4 GB)
+const MAX_DRAM_BYTES: u64 = 64u64 * 1024 * 1024 * 1024; // p300: 64 GB
 // ---------------------------------------------------------------------------
 // Config
 // ---------------------------------------------------------------------------
@@ -398,6 +399,7 @@ struct TTBuffer {
 pub struct TTMemoryPool {
     buffers: Slab<PoolBufferId, TTBuffer>,
     runtime: Arc<Mutex<RuntimeProcess>>,
+    free_bytes: Dim,
 }
 
 #[derive(Debug, Clone)]
@@ -453,7 +455,7 @@ pub(super) fn initialize_device(
     )?));
 
     let pool_id = memory_pools.len();
-    let pool = MemoryPool::TT(TTMemoryPool { buffers: Slab::new(), runtime: runtime.clone() });
+    let pool = MemoryPool::TT(TTMemoryPool { buffers: Slab::new(), runtime: runtime.clone(), free_bytes: Dim::from(MAX_DRAM_BYTES) });
     memory_pools.push(pool);
 
     let _device_id = devices.len();
@@ -518,7 +520,7 @@ impl TTMemoryPool {
     }
 
     pub fn free_bytes(&self) -> Dim {
-        Dim::from(u64::MAX)
+        self.free_bytes
     }
 
     pub fn allocate(&mut self, bytes: Dim) -> Result<(PoolBufferId, Event), BackendError> {
@@ -526,6 +528,9 @@ impl TTMemoryPool {
             status: ErrorStatus::MemoryAllocation,
             context: "allocation size exceeds 64-bit".into(),
         })?;
+        if bytes > self.free_bytes {
+            return Err(BackendError { status: ErrorStatus::MemoryAllocation, context: "out of device memory".into() });
+        }
         let rt = &self.runtime;
         let tile_bytes: u64 = 2048;
         let dev_index = rt.lock().unwrap().alloc_buf(bytes_u64, tile_bytes)?;
@@ -838,18 +843,33 @@ impl RuntimeProcess {
         n_tiles: u32,
         src_indices: &[u32],
         dst_index: u32,
-        data_format: u32,
-        tile_bytes: u32,
+        input_formats: &[u32],
+        input_tile_bytes: &[u32],
+        output_formats: &[u32],
+        output_tile_bytes: &[u32],
     ) -> Result<(), BackendError> {
         let n_inputs = src_indices.len();
         let n_outputs = 1;
         let reader_source_len = reader_source.len();
         let compute_source_len = compute_source.len();
         let mut cmd = format!(
-            r#"{{"cmd":"run","hash":"{hash}","reader_source_len":{reader_source_len},"compute_source_len":{compute_source_len},"n_inputs":{n_inputs},"n_outputs":{n_outputs},"n_tiles":{n_tiles},"data_format":{data_format},"tile_bytes":{tile_bytes},"dst0":{dst_index}"#
+            r#"{{"cmd":"run","hash":"{hash}","reader_source_len":{reader_source_len},"compute_source_len":{compute_source_len},"n_inputs":{n_inputs},"n_outputs":{n_outputs},"n_tiles":{n_tiles}"#
         );
         for (i, idx) in src_indices.iter().enumerate() {
             cmd.push_str(&format!(r#","src{i}":{idx}"#));
+        }
+        cmd.push_str(&format!(r#","dst0":{dst_index}"#));
+        for (i, fmt) in input_formats.iter().enumerate() {
+            cmd.push_str(&format!(r#","fmt_i{i}":{fmt}"#));
+        }
+        for (i, tb) in input_tile_bytes.iter().enumerate() {
+            cmd.push_str(&format!(r#","tb_i{i}":{tb}"#));
+        }
+        for (i, fmt) in output_formats.iter().enumerate() {
+            cmd.push_str(&format!(r#","fmt_o{i}":{fmt}"#));
+        }
+        for (i, tb) in output_tile_bytes.iter().enumerate() {
+            cmd.push_str(&format!(r#","tb_o{i}":{tb}"#));
         }
         cmd.push('}');
         self.send(&cmd)?;
@@ -909,9 +929,8 @@ struct TTProgram {
     hash: String,
     reader_source: String,
     compute_source: String,
-    n_inputs: usize,
-    n_outputs: usize,
-    dtype: DType,
+    input_dtypes: Vec<DType>,
+    output_dtypes: Vec<DType>,
 }
 
 // ---------------------------------------------------------------------------
@@ -946,11 +965,23 @@ impl TTDevice {
 
         let mut n_inputs: usize = 0;
         let mut n_outputs: usize = 0;
+        let mut input_dtypes: Vec<DType> = Vec::new();
+        let mut output_dtypes: Vec<DType> = Vec::new();
         let mut op_id = kernel.head;
         while !op_id.is_null() {
             match kernel.at(op_id) {
-                Op::Load { layout: MemLayout::Tile { .. }, .. } => n_inputs += 1,
-                Op::Store { layout: MemLayout::Tile { .. }, .. } => n_outputs += 1,
+                Op::Load { src, layout: MemLayout::Tile { .. }, .. } => {
+                    if let Op::Define { dtype, .. } = kernel.at(*src) {
+                        input_dtypes.push(*dtype);
+                    }
+                    n_inputs += 1;
+                }
+                Op::Store { dst, layout: MemLayout::Tile { .. }, .. } => {
+                    if let Op::Define { dtype, .. } = kernel.at(*dst) {
+                        output_dtypes.push(*dtype);
+                    }
+                    n_outputs += 1;
+                }
                 _ => {}
             }
             op_id = kernel.next_op(op_id);
@@ -1075,18 +1106,6 @@ impl TTDevice {
             }
         }
 
-        let mut result_dtype = DType::F32;
-        let mut op_id = kernel.head;
-        while !op_id.is_null() {
-            if let Op::Store { dst, layout: MemLayout::Tile { .. }, .. } = kernel.at(op_id) {
-                if let Op::Define { dtype, .. } = kernel.at(*dst) {
-                    result_dtype = *dtype;
-                    break;
-                }
-            }
-            op_id = kernel.next_op(op_id);
-        }
-
         let reader_source = if n_inputs == 0 {
             "#include <cstdint>\nvoid kernel_main() {}".to_string()
         } else {
@@ -1119,7 +1138,7 @@ impl TTDevice {
             eprintln!("[tenstorrent] === compute kernel ===\n{compute_source}\n=== end compute ===");
         }
         let prog_id =
-            self.programs.push(TTProgram { hash, reader_source, compute_source, n_inputs, n_outputs, dtype: result_dtype });
+            self.programs.push(TTProgram { hash, reader_source, compute_source, input_dtypes, output_dtypes });
         Ok(prog_id)
     }
 
@@ -1145,8 +1164,8 @@ impl TTDevice {
 
         let rt = &self.runtime;
 
-        let n_inputs = prog.n_inputs;
-        let n_outputs = prog.n_outputs;
+        let n_inputs = prog.input_dtypes.len();
+        let n_outputs = prog.output_dtypes.len();
 
         if args.len() < n_inputs + n_outputs {
             return Err(BackendError {
@@ -1171,24 +1190,39 @@ impl TTDevice {
         let src_bytes = memory_pool
             .buffer_size(args[0])
             .map_err(|e| BackendError { status: ErrorStatus::KernelLaunch, context: format!("src buffer size: {e}").into() })?;
-        let data_format: u32 = match prog.dtype {
-            DType::F32 => 0,
-            DType::F16 => 1,
-            DType::BF16 => 2,
-            _ => 0,
-        };
-        let tile_bytes: u32 = {
+        let first_tile_bytes: u32 = {
             let te = 1024u64;
-            (match prog.dtype {
+            (match prog.input_dtypes.first().copied().unwrap_or(DType::F32) {
                 DType::F32 => 4 * te,
                 DType::F16 | DType::BF16 => 2 * te,
                 _ => 4 * te,
             }) as u32
         };
-        let n_tiles = ((src_bytes + tile_bytes as u64 - 1) / tile_bytes as u64) as u32;
+        let n_tiles = ((src_bytes + first_tile_bytes as u64 - 1) / first_tile_bytes as u64) as u32;
         if n_tiles == 0 {
             return Err(BackendError { status: ErrorStatus::KernelLaunch, context: "empty buffer".into() });
         }
+
+        fn dtype_to_format(dt: DType) -> u32 {
+            match dt {
+                DType::F32 => 0,
+                DType::F16 => 1,
+                DType::BF16 => 2,
+                _ => 0,
+            }
+        }
+        fn dtype_to_tile_bytes(dt: DType) -> u32 {
+            let te = 1024u64;
+            match dt {
+                DType::F32 => (4 * te) as u32,
+                DType::F16 | DType::BF16 => (2 * te) as u32,
+                _ => (4 * te) as u32,
+            }
+        }
+        let input_formats: Vec<u32> = prog.input_dtypes.iter().map(|d| dtype_to_format(*d)).collect();
+        let input_tile_bytes: Vec<u32> = prog.input_dtypes.iter().map(|d| dtype_to_tile_bytes(*d)).collect();
+        let output_formats: Vec<u32> = prog.output_dtypes.iter().map(|d| dtype_to_format(*d)).collect();
+        let output_tile_bytes: Vec<u32> = prog.output_dtypes.iter().map(|d| dtype_to_tile_bytes(*d)).collect();
 
         let mut rt_guard = rt.lock().unwrap();
         rt_guard.run(
@@ -1198,8 +1232,10 @@ impl TTDevice {
             n_tiles,
             &src_indices,
             dst_index,
-            data_format,
-            tile_bytes,
+            &input_formats,
+            &input_tile_bytes,
+            &output_formats,
+            &output_tile_bytes,
         )?;
 
         Ok(Event::TT(TTEvent))
