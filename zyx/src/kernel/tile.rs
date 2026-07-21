@@ -1,54 +1,96 @@
 use crate::{
-    DType, ZyxError,
-    kernel::{DeviceId, Kernel, MemLayout, Op, OpId, Scope},
+    Map,
+    dtype::Constant,
+    kernel::{BOp, Kernel, MemLayout, Op, OpId, Scope},
     shape::Dim,
 };
 
 impl Kernel {
+    /// Tile the iteration space by `factorx` × `factory`.
+    ///
+    /// Rescales `gidx` and `gidy` from element indices to tile indices,
+    /// and upgrades global loads/stores to `MemLayout::Tile`.
     pub fn tile(&mut self, gidx: OpId, gidy: OpId, factorx: Dim, factory: Dim) {
-        let Op::Index { len: lenx, scope: Scope::Global, .. } = self.ops[gidx].op else {
+        let Op::Index { len: lenx, scope: Scope::Global, axis: axisx } = self.ops[gidx].op else {
             return;
         };
-        let Op::Index { len: leny, scope: Scope::Global, .. } = self.ops[gidy].op else {
+        let Op::Index { len: leny, scope: Scope::Global, axis: axisy } = self.ops[gidy].op else {
             return;
         };
         if !lenx.is_multiple_of(factorx) || !leny.is_multiple_of(factory) {
             return;
         }
 
+        let orig_lenx = lenx;
+
+        // 1. Rescale gidx and gidy to tile indices
+        self.ops[gidx].op = Op::Index { len: lenx / factorx, scope: Scope::Global, axis: axisx };
+        self.ops[gidy].op = Op::Index { len: leny / factory, scope: Scope::Global, axis: axisy };
+
+        // 2. Insert scaled = gidx * factorx after gidx
+        let factorx_const = self.insert_after(gidx, Op::Const(Constant::idx(factorx)));
+        let scaled_gidx = self.insert_after(factorx_const, Op::Binary { x: gidx, y: factorx_const, bop: BOp::Mul });
+
+        // 3. Insert scaled = gidy * factory after gidy
+        let factory_const = self.insert_after(gidy, Op::Const(Constant::idx(factory)));
+        let scaled_gidy = self.insert_after(factory_const, Op::Binary { x: gidy, y: factory_const, bop: BOp::Mul });
+
+        // 4. Remap all consumers of gidx → scaled_gidx, gidy → scaled_gidy
+        let mut remap = Map::default();
+        remap.insert(gidx, scaled_gidx);
+        remap.insert(gidy, scaled_gidy);
+
+        let mut op_id = self.head;
+        while !op_id.is_null() {
+            if op_id == scaled_gidx || op_id == scaled_gidy || op_id == factorx_const || op_id == factory_const {
+                op_id = self.next_op(op_id);
+                continue;
+            }
+            self.ops[op_id].op.remap_params(&remap);
+            op_id = self.next_op(op_id);
+        }
+
+        // 5. Tile loads/stores to global buffers
         let mut op_id = self.head;
         while !op_id.is_null() {
             match self.ops[op_id].op {
-                Op::Cast { x, dtype } => todo!(),
-                Op::Unary { x, uop } => todo!(),
-                Op::Binary { x, y, bop } => todo!(),
-                Op::Const(constant) => todo!(),
-                Op::Define { dtype, scope, ro, len } => todo!(),
-                Op::Store { dst, x, index, layout } => todo!(),
-                Op::Load { src, index, layout } => todo!(),
-                Op::Index { len, scope, axis } => todo!(),
-                Op::Loop { len } => todo!(),
-                Op::EndLoop => todo!(),
-                Op::Mad { x, y, z } => todo!(),
-                Op::Wmma { dims, layout, dtype, a, b, c } => todo!(),
-                Op::Vectorize { ref ops } => todo!(),
-                Op::Devectorize { vec, idx } => todo!(),
-                Op::Barrier { scope } => todo!(),
-                Op::If { condition } => todo!(),
-                Op::EndIf => todo!(),
-                Op::StoreView { src, dtype } => todo!(),
-                Op::Reduce { x, rop, n_axes } => todo!(),
-                _ => todo!(),
+                Op::Load { src, index, layout } => {
+                    if layout == MemLayout::Scalar {
+                        if let Op::Define { scope: Scope::Global, .. } = self.ops[src].op {
+                            self.ops[op_id].op = Op::Load {
+                                src,
+                                index,
+                                layout: MemLayout::Tile { x: factorx as u16, y: factory as u16, stride: orig_lenx as u32 },
+                            };
+                        }
+                    }
+                }
+                Op::Store { dst, x, index, layout } => {
+                    if layout == MemLayout::Scalar {
+                        if let Op::Define { scope: Scope::Global, .. } = self.ops[dst].op {
+                            self.ops[op_id].op = Op::Store {
+                                dst,
+                                x,
+                                index,
+                                layout: MemLayout::Tile { x: factorx as u16, y: factory as u16, stride: orig_lenx as u32 },
+                            };
+                        }
+                    }
+                }
+                _ => {}
             }
+            op_id = self.next_op(op_id);
         }
     }
 }
 
 #[test]
-fn tile_sin() -> Result<(), ZyxError> {
+fn tile_sin() -> Result<(), crate::ZyxError> {
+    use crate::{DType, Tensor, kernel::DeviceId};
+    let n = 256 * 256;
     let mut kernel = Kernel::new(DeviceId::AUTO);
-    let a = kernel.define(DType::BF16, Scope::Global, false, 1024);
-    let b = kernel.define(DType::BF16, Scope::Global, false, 1024);
+    let a = kernel.define(DType::BF16, Scope::Global, true, n);
+    let b = kernel.define(DType::BF16, Scope::Global, false, n);
     let gidx = kernel.gidx(0, 256);
     let gidy = kernel.gidx(1, 256);
     let stride = kernel.const_idx(256);
@@ -57,15 +99,16 @@ fn tile_sin() -> Result<(), ZyxError> {
     let x = kernel.sin(x);
     kernel.store(b, x, idx, MemLayout::Scalar);
 
-    kernel.debug();
-
     kernel.tile(gidx, gidy, 32, 32);
-
-    kernel.debug();
+    kernel.run_always_on_optimizations();
 
     kernel.verify();
 
-    //let _compiled = kernel.compile()?;
-    //compiled.forward();
+    let x = Tensor::arange(0, n, 1)?.reshape([256, 256])?.cast(DType::BF16);
+    let compiled = kernel.compile()?;
+    let result = compiled.forward(&[&x], vec![[256, 256]])?;
+    let data: Vec<f32> = result.into_iter().next().unwrap().cast(DType::F32).try_into()?;
+    let expected: Vec<f32> = (0..n).map(|i| (i as f32).sin()).collect();
+    assert_eq!(data, expected);
     Ok(())
 }
