@@ -391,8 +391,11 @@ int main() {
                         .noc = NOC::RISCV_1_default,
                         .compile_args = writer_args});
 
-                // Always use tiles_add.cpp for now (no per-hash kernel cache)
-                auto compute = CreateKernel(program, kernel_dir + "/tiles_add.cpp", core,
+                // Read kernel source sent as raw bytes after JSON line
+                uint32_t source_len = extract_u32(line, "source_len");
+                string compute_source(source_len, '\0');
+                cin.read(&compute_source[0], source_len);
+                auto compute = CreateKernelFromString(program, compute_source, core,
                     ComputeConfig{.math_fidelity = MathFidelity::HiFi4});
 
                 // Set runtime args — pass DRAM addresses + n_tiles

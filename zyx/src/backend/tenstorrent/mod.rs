@@ -872,6 +872,7 @@ impl RuntimeProcess {
     fn run(
         &mut self,
         hash: &str,
+        source: &str,
         n_tiles: u32,
         src_indices: &[u32],
         dst_index: u32,
@@ -880,14 +881,22 @@ impl RuntimeProcess {
     ) -> Result<(), BackendError> {
         let n_inputs = src_indices.len();
         let n_outputs = 1;
+        let source_len = source.len();
         let mut cmd = format!(
-            r#"{{"cmd":"run","hash":"{hash}","n_inputs":{n_inputs},"n_outputs":{n_outputs},"n_tiles":{n_tiles},"data_format":{data_format},"tile_bytes":{tile_bytes},"dst0":{dst_index}"#
+            r#"{{"cmd":"run","hash":"{hash}","source_len":{source_len},"n_inputs":{n_inputs},"n_outputs":{n_outputs},"n_tiles":{n_tiles},"data_format":{data_format},"tile_bytes":{tile_bytes},"dst0":{dst_index}"#
         );
         for (i, idx) in src_indices.iter().enumerate() {
             cmd.push_str(&format!(r#","src{i}":{idx}"#));
         }
         cmd.push('}');
         self.send(&cmd)?;
+        // Send raw kernel source bytes (not JSON-escaped)
+        self.stdin
+            .write_all(source.as_bytes())
+            .map_err(|e| BackendError { status: ErrorStatus::KernelLaunch, context: format!("tt-runtime write source: {e}").into() })?;
+        self.stdin
+            .flush()
+            .map_err(|e| BackendError { status: ErrorStatus::KernelLaunch, context: format!("tt-runtime flush source: {e}").into() })?;
         let resp = self.recv_with_timeout(self.timeout_ms)?;
         if resp.contains("\"error\"") {
             let msg = extract_json_str(&resp, "msg").unwrap_or_else(|| "unknown".into());
@@ -933,6 +942,7 @@ fn extract_json_str(json: &str, key: &str) -> Option<String> {
 #[derive(Debug)]
 struct TTProgram {
     hash: String,
+    source: String,
     n_inputs: usize,
     n_outputs: usize,
     dtype: DType,
@@ -979,7 +989,7 @@ impl TTDevice {
             eprintln!("[tenstorrent] === kernel source ===\n{source}\n=== end kernel source ===");
         }
         // Cache file written by the C++ runtime on first use; we just track metadata.
-        let prog_id = self.programs.push(TTProgram { hash, n_inputs, n_outputs, dtype });
+        let prog_id = self.programs.push(TTProgram { hash, source, n_inputs, n_outputs, dtype });
         Ok(prog_id)
     }
 
@@ -1042,7 +1052,7 @@ impl TTDevice {
         }
 
         let mut rt_guard = rt.lock().unwrap();
-        rt_guard.run(&prog.hash, n_tiles, &src_indices, dst_index, data_format, tile_bytes)?;
+        rt_guard.run(&prog.hash, &prog.source, n_tiles, &src_indices, dst_index, data_format, tile_bytes)?;
 
         Ok(Event::TT(TTEvent))
     }
