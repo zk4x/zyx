@@ -1,18 +1,22 @@
-/*use crate::{
-    kernel::{Kernel, Op, OpId, Scope},
+use crate::{
+    DType, ZyxError,
+    kernel::{DeviceId, Kernel, MemLayout, Op, OpId, Scope},
     shape::Dim,
 };
 
 impl Kernel {
-    pub fn tile(&mut self, gidx: OpId, factor: Dim) {
-        let Op::Index { len, scope: Scope::Global, axis } = self.ops[gidx].op else { return };
-        if !len.is_multiple_of(factor) {
+    pub fn tile(&mut self, gidx: OpId, gidy: OpId, factorx: Dim, factory: Dim) {
+        let Op::Index { len: lenx, scope: Scope::Global, .. } = self.ops[gidx].op else {
+            return;
+        };
+        let Op::Index { len: leny, scope: Scope::Global, .. } = self.ops[gidy].op else {
+            return;
+        };
+        if !lenx.is_multiple_of(factorx) || !leny.is_multiple_of(factory) {
             return;
         }
 
-        self.thread_coarse(gidx, factor);
-
-        /*let mut op_id = self.head;
+        let mut op_id = self.head;
         while !op_id.is_null() {
             match self.ops[op_id].op {
                 Op::Cast { x, dtype } => todo!(),
@@ -36,6 +40,32 @@ impl Kernel {
                 Op::Reduce { x, rop, n_axes } => todo!(),
                 _ => todo!(),
             }
-        }*/
+        }
     }
-}*/
+}
+
+#[test]
+fn tile_sin() -> Result<(), ZyxError> {
+    let mut kernel = Kernel::new(DeviceId::AUTO);
+    let a = kernel.define(DType::BF16, Scope::Global, false, 1024);
+    let b = kernel.define(DType::BF16, Scope::Global, false, 1024);
+    let gidx = kernel.gidx(0, 256);
+    let gidy = kernel.gidx(1, 256);
+    let stride = kernel.const_idx(256);
+    let idx = kernel.mad(gidx, stride, gidy);
+    let x = kernel.load(a, idx, MemLayout::Scalar);
+    let x = kernel.sin(x);
+    kernel.store(b, x, idx, MemLayout::Scalar);
+
+    kernel.debug();
+
+    kernel.tile(gidx, gidy, 32, 32);
+
+    kernel.debug();
+
+    kernel.verify();
+
+    //let _compiled = kernel.compile()?;
+    //compiled.forward();
+    Ok(())
+}
