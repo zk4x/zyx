@@ -179,6 +179,8 @@ int main() {
         vector<uint32_t> input_tile_bytes;
         vector<uint32_t> output_formats;
         vector<uint32_t> output_tile_bytes;
+        vector<uint32_t> reader_compile_args;
+        vector<uint32_t> writer_compile_args;
     };
     vector<ProgramConfig> program_cache;
 
@@ -354,7 +356,19 @@ int main() {
                 string compute_source(compute_source_len, '\0');
                 cin.read(&compute_source[0], compute_source_len);
 
-                // Store sources and CB config for later use at run time
+                // Build compile-time args for reader and writer from TensorAccessorArgs
+                vector<uint32_t> reader_compile_args;
+                for (uint32_t i = 0; i < n_inputs; i++) {
+                    auto ta = TensorAccessorArgs::create_dram_interleaved();
+                    ta.append_to(reader_compile_args);
+                }
+                vector<uint32_t> writer_compile_args;
+                for (uint32_t i = 0; i < n_outputs; i++) {
+                    auto ta = TensorAccessorArgs::create_dram_interleaved();
+                    ta.append_to(writer_compile_args);
+                }
+
+                // Store sources, CB config, and compile args for later use at run time
                 ProgramConfig cfg;
                 cfg.reader_source = move(reader_source);
                 cfg.compute_source = move(compute_source);
@@ -362,6 +376,8 @@ int main() {
                 cfg.input_tile_bytes = move(input_tile_bytes);
                 cfg.output_formats = move(output_formats);
                 cfg.output_tile_bytes = move(output_tile_bytes);
+                cfg.reader_compile_args = move(reader_compile_args);
+                cfg.writer_compile_args = move(writer_compile_args);
                 // Store at the given ID (must fit exactly, no gaps)
                 if (id >= program_cache.size()) {
                     program_cache.resize(id + 1);
@@ -451,23 +467,24 @@ int main() {
                 auto reader = CreateKernelFromString(program, cfg.reader_source, core,
                     DataMovementConfig{
                         .processor = DataMovementProcessor::RISCV_0,
-                        .noc = NOC::RISCV_0_default});
+                        .noc = NOC::RISCV_0_default,
+                        .compile_args = cfg.reader_compile_args});
                 auto writer = CreateKernel(program, kernel_dir + "/write_tile.cpp", core,
                     DataMovementConfig{
                         .processor = DataMovementProcessor::RISCV_1,
-                        .noc = NOC::RISCV_1_default});
+                        .noc = NOC::RISCV_1_default,
+                        .compile_args = cfg.writer_compile_args});
                 auto compute = CreateKernelFromString(program, cfg.compute_source, core,
                     ComputeConfig{.math_fidelity = MathFidelity::HiFi4});
 
-                // Set runtime args — (low, high) NOC address pairs + n_tiles
+                // Set runtime args — buffer addresses as bank_base_address + n_tiles
                 cerr << "[TT] setting rt args n_tiles=" << n_tiles << endl;
                 {
                     vector<uint32_t> reader_rt_args;
                     for (uint32_t i = 0; i < n_inputs; i++) {
                         uint64_t a = buffers[src_indices[i]]->address();
                         cerr << "[TT]  src" << i << " idx=" << src_indices[i] << " addr=" << a << " sz=" << buffers[src_indices[i]]->size() << endl;
-                        reader_rt_args.push_back((uint32_t)(a & 0xFFFFFFFF));
-                        reader_rt_args.push_back((uint32_t)(a >> 32));
+                        reader_rt_args.push_back(static_cast<uint32_t>(a));
                     }
                     reader_rt_args.push_back(n_tiles);
                     SetRuntimeArgs(program, reader, core, reader_rt_args);
@@ -476,8 +493,7 @@ int main() {
                     uint64_t a = buffers[dst_index]->address();
                     cerr << "[TT]  dst idx=" << dst_index << " addr=" << a << " sz=" << buffers[dst_index]->size() << endl;
                     SetRuntimeArgs(program, writer, core, {
-                        (uint32_t)(a & 0xFFFFFFFF),
-                        (uint32_t)(a >> 32),
+                        static_cast<uint32_t>(a),
                         n_tiles
                     });
                 }

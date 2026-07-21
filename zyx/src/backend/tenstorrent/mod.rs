@@ -1136,23 +1136,30 @@ impl TTDevice {
         } else {
             let mut code = String::new();
             write!(code, "#include <cstdint>\n#include \"api/dataflow/dataflow_api.h\"\n\nvoid kernel_main() {{\n").unwrap();
-            write!(code, "    uint32_t n_tiles = get_arg_val<uint32_t>({});\n", n_inputs * 2).unwrap();
+            for s in 0..n_inputs {
+                write!(code, "    uint32_t src{}_addr = get_arg_val<uint32_t>({});\n", s, s).unwrap();
+            }
+            write!(code, "    uint32_t n_tiles = get_arg_val<uint32_t>({});\n", n_inputs).unwrap();
             write!(code, "\n").unwrap();
-            write!(code, "    for (uint32_t s = 0; s < {}; s++) {{\n", n_inputs).unwrap();
-            write!(code, "        uint32_t src_noc_low = get_arg_val<uint32_t>(s * 2);\n").unwrap();
-            write!(code, "        uint32_t src_noc_high = get_arg_val<uint32_t>(s * 2 + 1);\n").unwrap();
-            write!(code, "        uint64_t src_noc_addr = (uint64_t)src_noc_high << 32 | src_noc_low;\n").unwrap();
-            write!(code, "        uint32_t cb_id = tt::CBIndex::c_0 + s;\n").unwrap();
-            write!(code, "        uint32_t tile_bytes = get_tile_size(cb_id);\n").unwrap();
-            write!(code, "\n").unwrap();
-            write!(code, "        for (uint32_t i = 0; i < n_tiles; i++) {{\n").unwrap();
-            write!(code, "            cb_reserve_back(cb_id, 1);\n").unwrap();
-            write!(code, "            uint32_t l1_addr = get_write_ptr(cb_id);\n").unwrap();
-            write!(code, "            uint64_t noc_addr = src_noc_addr + i * tile_bytes;\n").unwrap();
-            write!(code, "            noc_async_read(noc_addr, l1_addr, tile_bytes);\n").unwrap();
-            write!(code, "            noc_async_read_barrier();\n").unwrap();
-            write!(code, "            cb_push_back(cb_id, 1);\n").unwrap();
-            write!(code, "        }}\n").unwrap();
+            for s in 0..n_inputs {
+                let offset = s * 2;
+                write!(code, "    constexpr auto args_{} = TensorAccessorArgs<{}>();\n", s, offset).unwrap();
+                write!(code, "    constexpr auto cb_{} = tt::CBIndex::c_{};\n", s, s).unwrap();
+                write!(code, "    const uint32_t tile_bytes_{} = get_tile_size(cb_{});\n", s, s).unwrap();
+                write!(code, "    const auto a_{} = TensorAccessor(args_{}, src{}_addr, tile_bytes_{});\n", s, s, s, s).unwrap();
+                write!(code, "\n").unwrap();
+            }
+            write!(code, "    for (uint32_t i = 0; i < n_tiles; i++) {{\n").unwrap();
+            for s in 0..n_inputs {
+                write!(code, "        cb_reserve_back(cb_{}, 1);\n", s).unwrap();
+            }
+            for s in 0..n_inputs {
+                write!(code, "        noc_async_read_tile(i, a_{}, get_write_ptr(cb_{}));\n", s, s).unwrap();
+            }
+            write!(code, "        noc_async_read_barrier();\n").unwrap();
+            for s in 0..n_inputs {
+                write!(code, "        cb_push_back(cb_{}, 1);\n", s).unwrap();
+            }
             write!(code, "    }}\n").unwrap();
             write!(code, "}}\n").unwrap();
             code
