@@ -154,6 +154,7 @@ struct TempShm {
 // ---------------------------------------------------------------------------
 
 int main() {
+    cerr << "[TT_CPP] runtime started" << endl;
     if (!getenv("TT_METAL_RUNTIME_ROOT")) {
         setenv("TT_METAL_RUNTIME_ROOT", TT_METAL_ROOT_DEFAULT, 0);
     }
@@ -201,6 +202,7 @@ int main() {
             }
 
             try {
+                cerr << "[TT_CPP] calling create_unit_mesh(0)" << endl;
                 mesh_device = MeshDevice::create_unit_mesh(0);
                 cq = &mesh_device->mesh_command_queue();
                 cout << R"({"status":"ready"})" << endl;

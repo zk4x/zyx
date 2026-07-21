@@ -643,6 +643,13 @@ struct RuntimeProcess {
 
 impl RuntimeProcess {
     fn new(runtime_path: &str, kernel_dir: &str, cache_dir: &str) -> Result<Self, BackendError> {
+        eprintln!("[TT_DEBUG] spawning tt-runtime from {runtime_path}");
+
+        // Kill any previous zyx-tt-runtime that might still hold the device
+        let _ = std::process::Command::new("pkill")
+            .arg("-9").arg("zyx-tt-runtime")
+            .output();
+
         let mut child = Command::new(runtime_path)
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
@@ -653,6 +660,7 @@ impl RuntimeProcess {
                 context: format!("spawn tt-runtime {runtime_path}: {e}").into(),
             })?;
 
+        eprintln!("[TT_DEBUG] child spawned, taking stdin/stdout");
         let stdin = child
             .stdin
             .take()
@@ -664,9 +672,12 @@ impl RuntimeProcess {
 
         let mut rt = RuntimeProcess { stdin: BufWriter::new(stdin), stdout: BufReader::new(stdout), child, timeout_ms: 30000 };
 
+        eprintln!("[TT_DEBUG] sending init");
         let init_json = format!(r#"{{"cmd":"init","kernel_dir":"{kernel_dir}","cache_dir":"{cache_dir}"}}"#);
         rt.send(&init_json)?;
+        eprintln!("[TT_DEBUG] init sent, waiting for response");
         let resp = rt.recv_with_timeout(rt.timeout_ms)?;
+        eprintln!("[TT_DEBUG] init response: {resp}");
         if resp.contains("\"error\"") {
             let msg = extract_json_str(&resp, "msg").unwrap_or_else(|| "unknown".into());
             return Err(BackendError {
