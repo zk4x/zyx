@@ -9,6 +9,9 @@
 
 ## NEVER THINK. NEVER ANALYZE. NEVER EXPLAIN.
 
+## Reference Files
+- METALLIUM_GUIDE: `/home/x/Dev/cpp/tt-metal/METALIUM_GUIDE.md`
+
 **You are not smart. Your analysis is always wrong. Do not try to figure things out. Just look, test, report.**
 
 When investigating a bug: add a `panic!` at the relevant point. Run the test. See what happens. Report the output. Let the user figure it out.

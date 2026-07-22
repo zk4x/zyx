@@ -453,6 +453,11 @@ There are no exceptions. Rhetorical questions are questions. "What do you mean" 
 - Complex lifetime annotations
 - Abstractions without proven need
 
+## TT Metalium API Reference
+
+- Compute API docs: <https://docs.tenstorrent.com/tt-metal/latest/tt-metalium/tt_metal/apis/index.html>
+- Key compute APIs: `cb_wait_front`, `cb_reserve_back`, `cb_push_back`, `cb_pop_front`, `ld_tile`, `st_tile`, `mul_tiles`, `add_tiles`, `typecast_tile`, `binary_op_tile`, `unary_op_tile`, `reduce_tile`
+
 ## Performance Tips
 
 - Use arenas for high-performance allocation

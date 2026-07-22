@@ -375,6 +375,9 @@ impl Kernel {
                     }
                     global_idx += 1;
                 }
+                Op::Define { .. } => {
+                    // Skip non-Global defines (e.g. local buffer defines from tile_local)
+                }
                 _ => break,
             }
             op_id = self.next_op(op_id);
@@ -407,8 +410,6 @@ impl Kernel {
 
         kernel.tile_local();
         kernel.verify();
-
-        kernel.debug();
 
         /*let (opt, _) = kernel.opt_pad_index();
         opt.apply(&mut kernel, 0);

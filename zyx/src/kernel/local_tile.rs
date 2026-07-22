@@ -2,14 +2,16 @@
 // SPDX-License-Identifier: LGPL-3.0-only
 
 use crate::{
-    Map, Set,
+    DType, Map, Set,
     dtype::Constant,
     kernel::{Kernel, MemLayout, Op, OpId, Scope},
     shape::Dim,
 };
 
-const TILE_WIDTH: Dim = 32;
-const TILE_T: MemLayout = MemLayout::Tile { x: 32, y: 1, stride: 32 };
+const TILE_WIDTH: u16 = 32;
+const TILE_H: u16 = 32;
+const TILE_NELT: Dim = (TILE_WIDTH as Dim) * (TILE_H as Dim); // 1024 — TT tiles are 32×32
+const TILE_T: MemLayout = MemLayout::Tile { x: TILE_WIDTH, y: TILE_H, stride: TILE_WIDTH as u32 };
 
 impl Kernel {
     /// Create local memory tiles for small 1D global indices.
@@ -22,7 +24,7 @@ impl Kernel {
         let Some((gidx, _orig_len)) = self.find_small_gidx() else {
             return;
         };
-        let padded = round_up(_orig_len, TILE_WIDTH);
+        let padded = TILE_NELT;
 
         // Collect global scalar loads and stores using this gidx
         let mut load_ids: Vec<(OpId, OpId)> = Vec::new(); // (load_op, src_def)
@@ -49,12 +51,13 @@ impl Kernel {
             return;
         }
 
-        // Allocate local buffers for inputs: one per load, typed as load's result dtype
+        // Allocate local buffers for inputs: trace through cast chain to find compute dtype.
         // Insert at head so defines precede all references (dtypes computation walks sequentially).
         let head = self.head;
         let mut in_locals: Map<OpId, OpId> = Map::default();
         for &(lid, _src) in &load_ids {
-            let dt = self.dtype(lid);
+            let dt = self.resolve_compute_dtype(lid);
+            assert!(dt == DType::BF16, "resolve_compute_dtype for lid={lid:?} returned {dt:?}, expected BF16");
             let local = self.insert_before(head, Op::Define { dtype: dt, scope: Scope::Local, ro: false, len: padded });
             in_locals.insert(lid, local);
         }
@@ -135,7 +138,7 @@ impl Kernel {
         let mut op_id = self.head;
         while !op_id.is_null() {
             if let Op::Index { len, scope: Scope::Global, axis: 0 } = self.at(op_id) {
-                if *len < TILE_WIDTH && *len > 0 {
+                if *len < TILE_WIDTH as Dim && *len > 0 {
                     return Some((op_id, *len));
                 }
             }
@@ -146,6 +149,22 @@ impl Kernel {
 
     fn is_global_def(&self, id: OpId) -> bool {
         matches!(self.at(id), Op::Define { scope: Scope::Global, .. })
+    }
+
+    /// Trace forward from a load through cast ops to find the compute dtype.
+    fn resolve_compute_dtype(&self, load_id: OpId) -> DType {
+        let mut cur = self.next_op(load_id);
+        let mut prev = load_id;
+        while !cur.is_null() {
+            match self.at(cur) {
+                Op::Cast { x, dtype } if *x == prev => {
+                    prev = cur;
+                    cur = self.next_op(cur);
+                }
+                _ => break,
+            }
+        }
+        self.dtype(prev)
     }
 
     /// Recursively clone a compute op and all its inputs as tile ops.
@@ -175,8 +194,4 @@ impl Kernel {
         tile_map.insert(op_id, tile);
         tile
     }
-}
-
-fn round_up(n: Dim, multiple: Dim) -> Dim {
-    (n + multiple - 1) / multiple * multiple
 }
