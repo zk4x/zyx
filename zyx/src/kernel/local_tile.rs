@@ -4,27 +4,30 @@
 use crate::{
     DType, Map, Set,
     dtype::Constant,
-    kernel::{Kernel, MemLayout, Op, OpId, Scope},
+    kernel::{BOp, Kernel, MemLayout, Op, OpId, Scope},
     shape::Dim,
 };
 
-const TILE_WIDTH: u16 = 32;
-const TILE_H: u16 = 32;
-const TILE_NELT: Dim = (TILE_WIDTH as Dim) * (TILE_H as Dim); // 1024 — TT tiles are 32×32
-const TILE_T: MemLayout = MemLayout::Tile { x: TILE_WIDTH, y: TILE_H, stride: TILE_WIDTH as u32 };
+const TILE_NELT: Dim = 1024; // TT tiles are 32×32 = 1024 elements
+const TILE_T: MemLayout = MemLayout::Tile { x: 32, y: 32, stride: 32 };
 
 impl Kernel {
-    /// Create local memory tiles for small 1D global indices.
+    /// Tile 1D global indices: divide gidx by tile size and wrap access in a loop.
     ///
     /// Restructures the kernel into three phases:
-    /// 1. Scalar global→local (reader)  — store global data to local buffers
-    /// 2. Tile compute                  — load tiles, compute, store tiles
-    /// 3. Scalar local→global (writer)  — load scalar from local, store to global
-    pub(crate) fn tile_local(&mut self) {
-        let Some((gidx, _orig_len)) = self.find_small_gidx() else {
+    /// 1. Scalar global→local loop (reader)  — copy elements into local tile buffer
+    /// 2. Tile compute                       — load tiles, compute, store tiles
+    /// 3. Scalar local→global loop (writer)  — copy results back
+    pub(crate) fn tenstorrent_tile(&mut self) {
+        let Some((gidx, orig_len)) = self.find_gidx() else {
             return;
         };
-        let padded = TILE_NELT;
+
+        // Divide gidx length by tile size to make it a tile index
+        let n_tiles = (orig_len + TILE_NELT - 1) / TILE_NELT;
+        if let Op::Index { len, .. } = &mut self.ops[gidx].op {
+            *len = n_tiles;
+        }
 
         // Collect global scalar loads and stores using this gidx
         let mut load_ids: Vec<(OpId, OpId)> = Vec::new(); // (load_op, src_def)
@@ -51,15 +54,24 @@ impl Kernel {
             return;
         }
 
+        // Find the last global define to insert local defines after it
+        let mut last_global = self.head;
+        let mut scan = self.head;
+        while !scan.is_null() {
+            if matches!(self.at(scan), Op::Define { scope: Scope::Global, .. }) {
+                last_global = scan;
+            }
+            scan = self.next_op(scan);
+        }
+
         // Allocate local buffers for inputs: trace through cast chain to find compute dtype.
-        // Insert at head so defines precede all references (dtypes computation walks sequentially).
-        let head = self.head;
+        let mut insert_point = last_global;
         let mut in_locals: Map<OpId, OpId> = Map::default();
         for &(lid, _src) in &load_ids {
             let dt = self.resolve_compute_dtype(lid);
-            assert!(dt == DType::BF16, "resolve_compute_dtype for lid={lid:?} returned {dt:?}, expected BF16");
-            let local = self.insert_before(head, Op::Define { dtype: dt, scope: Scope::Local, ro: false, len: padded });
+            let local = self.insert_after(insert_point, Op::Define { dtype: dt, scope: Scope::Local, ro: false, len: TILE_NELT });
             in_locals.insert(lid, local);
+            insert_point = local;
         }
 
         // Allocate local buffers for outputs: one per store, typed as store value dtype
@@ -70,33 +82,41 @@ impl Kernel {
                 _ => unreachable!(),
             };
             let dt = self.dtype(x);
-            let local = self.insert_before(head, Op::Define { dtype: dt, scope: Scope::Local, ro: false, len: padded });
+            let local = self.insert_after(insert_point, Op::Define { dtype: dt, scope: Scope::Local, ro: false, len: TILE_NELT });
             out_locals.insert(sid, local);
+            insert_point = local;
         }
 
-        // ── Phase 1: Scalar global → local ──
+        // ── Phase 1: Scalar global → local loop ──
+        // for i in 0..TILE_NELT:
+        //     local[i] = global[gidx * TILE_NELT + i]
+        let first_load = load_ids[0].0;
+        let loop_p1 = self.insert_after(first_load, Op::Loop { len: orig_len });
+        let const_nelt = self.insert_after(loop_p1, Op::Const(Constant::idx(TILE_NELT as u64)));
+        let scaled = self.insert_after(const_nelt, Op::Binary { x: gidx, y: const_nelt, bop: BOp::Mul });
+        let elem_idx = self.insert_after(scaled, Op::Binary { x: scaled, y: loop_p1, bop: BOp::Add });
+        let mut loop_end = elem_idx;
         for &(lid, _src) in &load_ids {
             let local = in_locals[&lid];
-            // Use a duplicate scalar load so the phase 1 store does NOT depend on `lid`
-            // (which will be remapped to a tile load in phase 2).
             let dup = self.insert_after(
-                lid,
+                loop_end,
                 Op::Load {
                     src: match self.at(lid) {
                         Op::Load { src, .. } => *src,
                         _ => unreachable!(),
                     },
-                    index: gidx,
+                    index: elem_idx,
                     layout: MemLayout::Scalar,
                 },
             );
-            self.insert_after(dup, Op::Store { dst: local, x: dup, index: gidx, layout: MemLayout::Scalar });
+            loop_end = self.insert_after(dup, Op::Store { dst: local, x: dup, index: loop_p1, layout: MemLayout::Scalar });
         }
+        self.insert_after(loop_end, Op::EndLoop);
 
         // ── Phase 2: Tile compute (inserted before each original global store) ──
         let first_sid = store_ids[0].0;
 
-        // Barrier separating phase 1 and phase 2 (insert before first store = leftmost)
+        // Barrier separating phase 1 and phase 2
         self.insert_before(first_sid, Op::Barrier);
 
         // Tile loads (shared across all stores)
@@ -123,22 +143,30 @@ impl Kernel {
             // Barrier separating phase 2 and phase 3
             self.insert_before(sid, Op::Barrier);
 
-            // ── Phase 3: Scalar local → global ──
-            let ll = self.insert_before(sid, Op::Load { src: out_local, index: gidx, layout: MemLayout::Scalar });
+            // ── Phase 3: Scalar local → global loop ──
+            // for i in 0..TILE_NELT:
+            //     global[gidx * TILE_NELT + i] = local[i]
+            let loop_p3 = self.insert_before(sid, Op::Loop { len: orig_len });
+            let const_nelt3 = self.insert_after(loop_p3, Op::Const(Constant::idx(TILE_NELT as u64)));
+            let scaled3 = self.insert_after(const_nelt3, Op::Binary { x: gidx, y: const_nelt3, bop: BOp::Mul });
+            let elem_idx3 = self.insert_after(scaled3, Op::Binary { x: scaled3, y: loop_p3, bop: BOp::Add });
+            let ll = self.insert_after(elem_idx3, Op::Load { src: out_local, index: loop_p3, layout: MemLayout::Scalar });
+            let store_p3 = self.insert_after(ll, Op::Store { dst: _dst, x: ll, index: elem_idx3, layout: MemLayout::Scalar });
+            self.insert_after(store_p3, Op::EndLoop);
 
-            // Replace the original store with the phase 3 global store
+            // Remove the original store
             let target = &mut self.ops[sid].op;
-            *target = Op::Store { dst: _dst, x: ll, index: gidx, layout: MemLayout::Scalar };
+            *target = Op::Barrier;
         }
     }
 
     // ── helpers ──
 
-    fn find_small_gidx(&self) -> Option<(OpId, Dim)> {
+    fn find_gidx(&self) -> Option<(OpId, Dim)> {
         let mut op_id = self.head;
         while !op_id.is_null() {
             if let Op::Index { len, scope: Scope::Global, axis: 0 } = self.at(op_id) {
-                if *len < TILE_WIDTH as Dim && *len > 0 {
+                if *len < TILE_NELT && *len > 0 {
                     return Some((op_id, *len));
                 }
             }

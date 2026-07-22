@@ -5,7 +5,7 @@ use std::ops::RangeInclusive;
 
 use crate::{
     DType, Map, Set,
-    kernel::{BOp, IDX_T, Kernel, Op, OpId},
+    kernel::{BOp, IDX_T, Kernel, Op, OpId, Scope},
     shape::Dim,
 };
 
@@ -19,6 +19,58 @@ impl Kernel {
         if !cfg!(debug_assertions) {
             return;
         }
+
+        // Verify define ordering: Global RO → Global RW → Local RO → Local RW → everything else.
+        {
+            #[derive(PartialEq, Eq)]
+            enum Phase { GlobalRo, GlobalRw, LocalRo, LocalRw, Done }
+            let mut phase = Phase::GlobalRo;
+            let mut scan = self.head;
+            while !scan.is_null() {
+                match self.at(scan) {
+                    Op::Define { scope: Scope::Global, ro: true, .. } => {
+                        if phase != Phase::GlobalRo {
+                            println!("Global read-only defines must come first.");
+                            self.debug();
+                            panic!();
+                        }
+                    }
+                    Op::Define { scope: Scope::Global, ro: false, .. } => {
+                        if phase == Phase::GlobalRo { phase = Phase::GlobalRw; }
+                        if phase != Phase::GlobalRw {
+                            println!("Global read-write defines must come before local defines.");
+                            self.debug();
+                            panic!();
+                        }
+                    }
+                    Op::Define { scope: Scope::Local, ro: true, .. } => {
+                        if phase == Phase::GlobalRo || phase == Phase::GlobalRw { phase = Phase::LocalRo; }
+                        if phase != Phase::LocalRo {
+                            println!("Local read-only defines must come after all global defines.");
+                            self.debug();
+                            panic!();
+                        }
+                    }
+                    Op::Define { scope: Scope::Local, ro: false, .. } => {
+                        if phase == Phase::GlobalRo || phase == Phase::GlobalRw || phase == Phase::LocalRo {
+                            phase = Phase::LocalRw;
+                        }
+                        if phase != Phase::LocalRw {
+                            println!("Local read-write defines must come after local read-only defines.");
+                            self.debug();
+                            panic!();
+                        }
+                    }
+                    _ => {
+                        if phase != Phase::Done {
+                            phase = Phase::Done;
+                        }
+                    }
+                }
+                scan = self.next_op(scan);
+            }
+        }
+
         let mut stack = Vec::new();
         stack.push(Set::default());
         let check = |op_id, x: OpId, stack: &[Set<OpId>]| {

@@ -408,7 +408,7 @@ impl Kernel {
         kernel.run_always_on_optimizations();
         kernel.run_always_on_optimizations();
 
-        kernel.tile_local();
+        kernel.tenstorrent_tile();
         kernel.verify();
 
         /*let (opt, _) = kernel.opt_pad_index();
@@ -427,6 +427,7 @@ impl Kernel {
         kernel.run_always_on_optimizations();
 
         kernel.debug();
+        panic!();
 
         let args = kernel.alloc_buffers(memory_pool, None)?;
         let (program_id, timing) =
