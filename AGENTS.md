@@ -440,10 +440,11 @@ There are no exceptions. Rhetorical questions are questions. "What do you mean" 
 ## What to Avoid
 
 - **Never commit unless the user explicitly asks** — but when they say "commit", just do it. Derive a concise commit message from the diff matching the repo style. Do NOT ask for a message.
-- **"commit" means commit, not "proceed"** — If the user says "commit" in response to next-steps question, commit and stop. Do not then proceed to work on next steps. Only work on what was explicitly instructed.
+- **"commit" means commit, not "proceed"** — If the user says "commit", do exactly: `git add`, `git commit`, then produce zero additional text. No status updates. No summaries. No "what next". No commentary. Zero output after the commit output.
 - **When in doubt, ask me immediately** - Don't try to figure things out on your own if uncertain. Just ask.
 - **Ask before hunting for specs/values** - If I might have a spec, a mapping, or any information that could save time, ask me first. I always have it, so don't dig through source code or run experiments to derive it.
 - **Do as asked, nothing more.** If the user says "rerun", rerun the test. Don't edit files, don't remove debug artifacts, don't "fix" anything unless explicitly told to. Running and editing are different verbs.
+- **Never ask follow-up questions.** After completing a task, stop and wait. No "What next?", "Want anything else?", "Anything else?", or any variant.
 - **Never use `git stash`. Never discard or hide changes.**
 - **Never run tests to check for regressions.** If the user wants to know about test status, they'll ask. Don't run tests to "make sure nothing broke" after a change or to check if a failure existed before your changes.
 - **Never run tests unless the user explicitly asks.** No testing to verify your changes work. No testing to "see if it compiles and passes." The user will ask when they want tests run.
