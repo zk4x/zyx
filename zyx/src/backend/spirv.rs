@@ -1524,18 +1524,10 @@ pub fn compile(kernel: &Kernel, debug_asm: bool) -> Result<(Vec<u32>, Vec<Dim>, 
                     asm.emit(OpLabel, &[merge]);
                 }
 
-                &Op::Barrier { scope } => match scope {
-                    Scope::Local => {
-                        let scope_id = const_pool[&Constant::U32(SCOPE_WORKGROUP)];
-                        let sem_id = const_pool[&Constant::U32(SEM_ACQUIRE_RELEASE | SEM_WORKGROUP_MEMORY)];
-                        asm.emit(OpControlBarrier, &[scope_id, scope_id, sem_id]);
-                    }
-                    _ => {
-                        return Err(BackendError {
-                            status: ErrorStatus::KernelCompilation,
-                            context: "SPIR-V: unsupported barrier scope".into(),
-                        });
-                    }
+                &Op::Barrier => {
+                    let scope_id = const_pool[&Constant::U32(SCOPE_WORKGROUP)];
+                    let sem_id = const_pool[&Constant::U32(SEM_ACQUIRE_RELEASE | SEM_WORKGROUP_MEMORY)];
+                    asm.emit(OpControlBarrier, &[scope_id, scope_id, sem_id]);
                 },
             }
             op_id = kernel.next_op(op_id);

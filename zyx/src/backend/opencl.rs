@@ -1173,11 +1173,7 @@ impl OpenCLDevice {
                     indent.pop();
                     _ = writeln!(source, "{indent}}}");
                 }
-                Op::Barrier { scope } => match scope {
-                    Scope::Global => _ = writeln!(source, "{indent}barrier(CLK_GLOBAL_MEM_FENCE);"),
-                    Scope::Local => _ = writeln!(source, "{indent}barrier(CLK_LOCAL_MEM_FENCE);"),
-                    Scope::Register => unreachable!(),
-                },
+                Op::Barrier => _ = writeln!(source, "{indent}barrier(CLK_LOCAL_MEM_FENCE);"),
             }
             op_id = kernel.next_op(op_id);
         }

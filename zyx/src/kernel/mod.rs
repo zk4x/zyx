@@ -483,10 +483,15 @@ pub(crate) enum Op {
         scope: Scope,
         axis: u32,
     },
+    // Control flow
     Loop {
         len: Dim,
     },
     EndLoop,
+    If {
+        condition: OpId, // must be boolean variable
+    },
+    EndIf,
     // fused multiply add
     Mad {
         x: OpId,
@@ -510,13 +515,7 @@ pub(crate) enum Op {
         vec: OpId,
         idx: usize,
     }, // select a single value from a vector
-    Barrier {
-        scope: Scope,
-    },
-    If {
-        condition: OpId, // must be boolean variable
-    },
-    EndIf,
+    Barrier,
 
     // ops that exist only in kernelizer, basically they can be eventually removed.
     // TODO Get rid of the view, use whatever ops that are needed directly
@@ -618,10 +617,7 @@ impl SerBin for Op {
                 vec.ser_bin(output);
                 idx.ser_bin(output);
             }
-            Op::Barrier { scope } => {
-                output.push(14);
-                scope.ser_bin(output);
-            }
+            Op::Barrier => output.push(14),
             Op::If { condition } => {
                 output.push(15);
                 condition.ser_bin(output);
@@ -736,10 +732,7 @@ impl DeBin for Op {
                 let idx = usize::de_bin(offset, bytes)?;
                 Ok(Op::Devectorize { vec, idx })
             }
-            14 => {
-                let scope = Scope::de_bin(offset, bytes)?;
-                Ok(Op::Barrier { scope })
-            }
+            14 => Ok(Op::Barrier),
             15 => {
                 let condition = OpId::de_bin(offset, bytes)?;
                 Ok(Op::If { condition })
@@ -1089,7 +1082,11 @@ impl Kernel {
         {
             let mut sorted = axes.clone();
             sorted.sort();
-            debug_assert!(sorted.iter().copied().eq(0..in_shape.len() as UAxis), "permute: axes not a valid permutation: {axes:?} for rank {}", in_shape.len());
+            debug_assert!(
+                sorted.iter().copied().eq(0..in_shape.len() as UAxis),
+                "permute: axes not a valid permutation: {axes:?} for rank {}",
+                in_shape.len()
+            );
         }
         let shape = crate::shape::permute(&in_shape, &axes);
         self.push_back(Op::Move { x, mop: Box::new(MoveOp::Permute { axes, shape }) })
@@ -1099,7 +1096,13 @@ impl Kernel {
     pub fn reshape(&mut self, x: OpId, shape: &[Dim]) -> OpId {
         let shape = shape.to_vec();
         let in_shape = self.shape_of(x);
-        debug_assert_eq!(shape.iter().product::<Dim>(), in_shape.iter().product::<Dim>(), "reshape: element count mismatch: {:?} -> {:?}", in_shape, shape);
+        debug_assert_eq!(
+            shape.iter().product::<Dim>(),
+            in_shape.iter().product::<Dim>(),
+            "reshape: element count mismatch: {:?} -> {:?}",
+            in_shape,
+            shape
+        );
         self.push_back(Op::Move { x, mop: Box::new(MoveOp::Reshape { shape }) })
     }
 
@@ -1110,7 +1113,10 @@ impl Kernel {
         debug_assert!(
             in_shape.len() <= shape.len(),
             "expand: input rank {} > target rank {}: {:?} -> {:?}",
-            in_shape.len(), shape.len(), in_shape, shape
+            in_shape.len(),
+            shape.len(),
+            in_shape,
+            shape
         );
         for (old, new) in in_shape.iter().copied().rev().zip(shape.iter().copied().rev()) {
             debug_assert!(old == new || old == 1, "expand: incompatible dims: {old} vs {new} in {:?} -> {:?}", in_shape, shape);
@@ -1390,13 +1396,9 @@ impl Kernel {
     }
 
     /// Local thread barrier.
-    pub fn local_barrier(&mut self) {
-        self.push_back(Op::Barrier { scope: Scope::Local });
-    }
-
-    /// Global thread barrier.
-    pub fn global_barrier(&mut self) {
-        self.push_back(Op::Barrier { scope: Scope::Global });
+    /// Thread barrier (synchronization point).
+    pub fn barrier(&mut self) {
+        self.push_back(Op::Barrier);
     }
 
     /// Begin conditional block.
@@ -1847,7 +1849,10 @@ impl Kernel {
                     }
                 }
                 Op::Const(c) => {
-                    indices.entry(OpId::NULL).and_modify(|(_, v)| *v += c.as_dim().unwrap() * scale).or_insert((0, c.as_dim().unwrap() * scale));
+                    indices
+                        .entry(OpId::NULL)
+                        .and_modify(|(_, v)| *v += c.as_dim().unwrap() * scale)
+                        .or_insert((0, c.as_dim().unwrap() * scale));
                 }
                 _ => {}
             }

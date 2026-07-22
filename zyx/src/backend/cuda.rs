@@ -1582,11 +1582,7 @@ impl CUDADevice {
                     indent.pop();
                     _ = writeln!(source, "{indent}}}");
                 }
-                Op::Barrier { scope } => match scope {
-                    Scope::Global => _ = writeln!(source, "{indent}__threadfence();"),
-                    Scope::Local => _ = writeln!(source, "{indent}__syncthreads();;"),
-                    Scope::Register => unreachable!(),
-                },
+                Op::Barrier => _ = writeln!(source, "{indent}__syncthreads();"),
             }
             op_id = kernel.next_op(op_id);
         }

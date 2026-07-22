@@ -314,8 +314,8 @@ impl Kernel {
                         }
                     }
                 }
-                Op::Barrier { scope } => {
-                    println!("{indent}barrier {scope}");
+                Op::Barrier => {
+                    println!("{indent}barrier");
                 }
             }
             op_id = self.ops[op_id].next;

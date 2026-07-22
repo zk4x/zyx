@@ -185,7 +185,7 @@ impl Kernel {
         self.insert_before(acc_load_id, Op::Store { dst: loc_acc, x, index: lidx, layout: MemLayout::Scalar });
 
         // Sync memory
-        self.insert_before(acc_load_id, Op::Barrier { scope: Scope::Local });
+        self.insert_before(acc_load_id, Op::Barrier);
 
         // Tree reduce: each step threads with lidx < active_threads load tree_branch elements and sum them
         // For factor=32, tree_branch 4:
@@ -221,7 +221,7 @@ impl Kernel {
             self.insert_before(acc_load_id, Op::Store { dst: loc_acc, x: bop_id, index: lidx, layout: MemLayout::Scalar });
 
             self.insert_before(acc_load_id, Op::EndIf);
-            self.insert_before(acc_load_id, Op::Barrier { scope: Scope::Local });
+            self.insert_before(acc_load_id, Op::Barrier);
 
             stride = active_threads;
         }
