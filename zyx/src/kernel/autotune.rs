@@ -405,14 +405,16 @@ impl Kernel {
         kernel.run_always_on_optimizations();
         kernel.run_always_on_optimizations();
 
-        let (opt, _) = kernel.opt_thread_coarse();
+        kernel.tile_local();
+
+        /*let (opt, _) = kernel.opt_pad_index();
         opt.apply(&mut kernel, 0);
         kernel.run_always_on_optimizations();
 
         kernel.vectorize_loads(&[32]);
         kernel.vectorize_stores(&[32]);
         kernel.vectorize_ops_backward(&[32]);
-        kernel.vectorize_ops_forward(&[32]);
+        kernel.vectorize_ops_forward(&[32]);*/
 
         kernel.run_always_on_optimizations();
         kernel.run_always_on_optimizations();
@@ -467,7 +469,7 @@ impl Kernel {
         debug: DebugMask,
         init_buffers: Option<&[PoolBufferId]>,
     ) -> Result<(DeviceProgramId, OptSeq, u64), BackendError> {
-        if false {
+        if true {
             return self.apply_selected_optimizations(device, memory_pool, config, flop, read_bytes, write_bytes, debug);
         }
 
