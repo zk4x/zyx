@@ -39,7 +39,37 @@ use std::{
 /// - https://docs.tenstorrent.com/aibs/blackhole/specifications.html
 /// - tt-umd `board_upi_map` and `expected_dram_harvested_units_map`
 /// - tt-metal `blackhole_140_arch.yaml` (dram_bank_size: 4278190080 ≈ 4 GB)
-const MAX_DRAM_BYTES: u64 = 64u64 * 1024 * 1024 * 1024; // p300: 64 GB
+const DRAM_SIZE_TABLE: &[(u16, &str, u64)] = &[
+    (0x0036, "p100", 28u64 * 1024 * 1024 * 1024),
+    (0x0040, "p150a", 32u64 * 1024 * 1024 * 1024),
+    (0x0041, "p150b", 32u64 * 1024 * 1024 * 1024),
+    (0x0042, "p150c", 32u64 * 1024 * 1024 * 1024),
+    (0x0043, "p100a", 28u64 * 1024 * 1024 * 1024),
+    (0x0044, "p300b", 64u64 * 1024 * 1024 * 1024),
+    (0x0045, "p300a", 64u64 * 1024 * 1024 * 1024),
+    (0x0046, "p300c", 64u64 * 1024 * 1024 * 1024),
+];
+
+fn detect_dram_bytes() -> u64 {
+    let pci_devices = std::path::Path::new("/sys/bus/pci/devices");
+    if let Ok(entries) = std::fs::read_dir(pci_devices) {
+        for entry in entries.flatten() {
+            let vendor_path = entry.path().join("vendor");
+            let vendor = std::fs::read_to_string(&vendor_path).unwrap_or_default();
+            if vendor.trim() == "0x1e52" {
+                let subsys = std::fs::read_to_string(entry.path().join("subsystem_device")).unwrap_or_default();
+                if let Ok(id) = u16::from_str_radix(subsys.trim().trim_start_matches("0x"), 16) {
+                    for &(sid, _name, size) in DRAM_SIZE_TABLE {
+                        if sid == id {
+                            return size;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    64u64 * 1024 * 1024 * 1024
+}
 // ---------------------------------------------------------------------------
 // Config
 // ---------------------------------------------------------------------------
@@ -93,8 +123,10 @@ pub(super) fn initialize_device(
         return Ok(());
     }
 
+    let dram_bytes = detect_dram_bytes();
     if debug_dev {
         println!("[tenstorrent] device initialized");
+        println!("[tenstorrent] device total memory: {} MB", dram_bytes / (1024 * 1024));
     }
 
     // Compute config dir from XDG convention
@@ -129,7 +161,7 @@ pub(super) fn initialize_device(
 
     let pool_id = memory_pools.len();
     let pool =
-        MemoryPool::TT(TTMemoryPool { buffers: Slab::new(), runtime: runtime.clone(), free_bytes: Dim::from(MAX_DRAM_BYTES) });
+        MemoryPool::TT(TTMemoryPool { buffers: Slab::new(), runtime: runtime.clone(), free_bytes: Dim::from(dram_bytes) });
     memory_pools.push(pool);
 
     let _device_id = devices.len();
