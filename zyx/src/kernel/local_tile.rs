@@ -154,9 +154,8 @@ impl Kernel {
             let store_p3 = self.insert_after(ll, Op::Store { dst: _dst, x: ll, index: elem_idx3, layout: MemLayout::Scalar });
             self.insert_after(store_p3, Op::EndLoop);
 
-            // Remove the original store
-            let target = &mut self.ops[sid].op;
-            *target = Op::Barrier;
+            // Remove the original store (replaced by phase 3)
+            self.remove_op(sid);
         }
     }
 
