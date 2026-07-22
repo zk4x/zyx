@@ -20,3 +20,4 @@ zyx/tests/__temp_test.rs
 zyx-bench/__pycache__/
 zyx-bench/bench_output.txt
 zyx-bench/bench_data.csv
+.cache/
