@@ -8,11 +8,13 @@
 // Tensor data is transferred via temporary shared memory regions
 // (shm_open + unlink per transfer), created by the Rust side.
 
+#include "tt-metalium/base_types.hpp"
 #include "tt-metalium/kernel_types.hpp"
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
 #include <fcntl.h>
+#include <filesystem>
 #include <iostream>
 #include <memory>
 #include <string>
@@ -514,8 +516,15 @@ int main() {
         cerr << "[TT] creating compute kernel" << endl;
         auto compute = CreateKernelFromString(
             program, cfg.compute_source, core,
-            ComputeConfig{.math_fidelity = MathFidelity::HiFi4
-        });
+            ComputeConfig{
+                .math_fidelity = MathFidelity::HiFi4,
+                .unpack_to_dest_mode = vector<tt::tt_metal::UnpackToDestMode>(),
+                .compile_args = vector<uint32_t>(),
+                .defines = map<string, string>(),
+                .named_compile_args = unordered_map<string, uint32_t>(),
+                .compiler_include_paths = vector<filesystem::path>(),
+            }
+        );
 
         // Set runtime args — buffer addresses as bank_base_address + n_tiles
         cerr << "[TT] setting rt args n_tiles=" << n_tiles << endl;
