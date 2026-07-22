@@ -448,6 +448,9 @@ There are no exceptions. Rhetorical questions are questions. "What do you mean" 
 - **Never run tests to check for regressions.** If the user wants to know about test status, they'll ask. Don't run tests to "make sure nothing broke" after a change or to check if a failure existed before your changes.
 - **Never run tests unless the user explicitly asks.** No testing to verify your changes work. No testing to "see if it compiles and passes." The user will ask when they want tests run.
 **THE PHRASE "PRE-EXISTING" IS FORBIDDEN. NEVER USE IT. EVER. IN ANY CONTEXT. IF YOU USE IT, YOU WILL BE CORRECTED. REPEATEDLY. FOREVER.**
+- **Never say "Builds clean" or anything similar.** If asked to build, build silently. No commentary on the result.
+- **Never dump git stats/diffs verbatim in conversation.** Show the user what matters, not the raw output.
+- **Never add commentary about what you just did.** Do the thing, then stop. No "Done.", "Applied.", "X lines changed.", etc.
 - **Never blame test failures on anything other than yourself.** If a test fails, it's your fault — find and fix it.
 - **Never touch `~/.config/zyx/config.json`** — never read, write, create, modify, or delete it. If a test needs a specific backend, ask the user to configure it. Do not even look at this file.
 - Inheritance (use composition/enums)
