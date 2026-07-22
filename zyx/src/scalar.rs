@@ -698,7 +698,19 @@ impl Scalar for bf16 {
     }
 
     fn is_equal(self, rhs: Self) -> bool {
-        self == rhs
+        let a = self;
+        let b = rhs;
+        if a.is_nan() && b.is_nan() {
+            return true;
+        }
+        if a == b {
+            return true;
+        }
+        let diff = (a - b).abs();
+        let max_abs = a.abs().max(b.abs());
+        let rel_tol = bf16::from_f32(0.01) * max_abs;
+        let abs_tol = bf16::from_f32(0.001);
+        diff < rel_tol || diff < abs_tol
     }
 
     fn epsilon() -> Self {

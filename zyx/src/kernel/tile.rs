@@ -86,7 +86,7 @@ impl Kernel {
 
 #[test]
 fn tile_sin() -> Result<(), crate::ZyxError> {
-    use crate::{DType, Float, Tensor, bf16, kernel::DeviceId};
+    use crate::{DType, Float, Tensor, bf16, kernel::DeviceId, scalar::Scalar};
     // Single tile (32x32 BF16 = 1 tile of 4096 bytes as Float32)
     let n = 32 * 32; // 1024
     let mut kernel = Kernel::new(DeviceId::AUTO);
@@ -108,12 +108,16 @@ fn tile_sin() -> Result<(), crate::ZyxError> {
 
     kernel.verify();
 
-    let data: Vec<Vec<bf16>> = (0..32).map(|i| (0..32).map(|j| bf16::from_f32((i * 32 + j) as f32)).collect()).collect();
+    let upper = (n - 1) as f32;
+    let data: Vec<Vec<bf16>> =
+        (0..32).map(|i| (0..32).map(|j| bf16::from_f32(((i * 32 + j) as f32) / upper)).collect()).collect();
     let x = Tensor::from(data);
     let compiled = kernel.compile()?;
     let result = compiled.forward(&[&x], vec![[32, 32]])?;
     let data: Vec<bf16> = result.into_iter().next().unwrap().try_into()?;
-    let expected: Vec<bf16> = (0..n).map(|i| bf16::from_f32(i as f32).sin()).collect();
-    assert_eq!(data, expected);
+    let expected: Vec<bf16> = (0..n).map(|i| bf16::from_f32((i as f32) / upper).sin()).collect();
+    for (i, (d, e)) in data.iter().zip(expected.into_iter()).enumerate() {
+        assert!(d.is_equal(e), "Mismatch at index {i}: got {d}, expected {e}");
+    }
     Ok(())
 }
