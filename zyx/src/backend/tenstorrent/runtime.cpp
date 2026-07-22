@@ -8,13 +8,11 @@
 // Tensor data is transferred via temporary shared memory regions
 // (shm_open + unlink per transfer), created by the Rust side.
 
-#include "tt-metalium/base_types.hpp"
 #include "tt-metalium/kernel_types.hpp"
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
 #include <fcntl.h>
-#include <filesystem>
 #include <iostream>
 #include <memory>
 #include <string>
@@ -167,7 +165,6 @@ struct TempShm {
 struct ProgramConfig {
   string reader_source;
   string compute_source;
-  string writer_source;
   vector<uint32_t> input_formats;
   vector<uint32_t> input_tile_bytes;
   vector<uint32_t> output_formats;
@@ -365,22 +362,18 @@ int main() {
           output_tile_bytes[i] = extract_u32(line, "tb_o" + to_string(i));
         }
 
-        // Read reader + compute + writer sources sent as raw bytes after JSON line
+        // Read reader + compute sources sent as raw bytes after JSON line
         uint32_t reader_source_len = extract_u32(line, "reader_source_len");
         string reader_source(reader_source_len, '\0');
         cin.read(&reader_source[0], reader_source_len);
         uint32_t compute_source_len = extract_u32(line, "compute_source_len");
         string compute_source(compute_source_len, '\0');
         cin.read(&compute_source[0], compute_source_len);
-        uint32_t writer_source_len = extract_u32(line, "writer_source_len");
-        string writer_source(writer_source_len, '\0');
-        cin.read(&writer_source[0], writer_source_len);
 
         // Store sources and CB config for later use at run time
         ProgramConfig cfg;
         cfg.reader_source = reader_source;
         cfg.compute_source = compute_source;
-        cfg.writer_source = writer_source;
         cfg.input_formats = input_formats;
         cfg.input_tile_bytes = input_tile_bytes;
         cfg.output_formats = output_formats;
@@ -408,7 +401,6 @@ int main() {
 
       uint32_t id = extract_u32(line, "id");
       uint32_t n_tiles = extract_u32(line, "n_tiles");
-      uint32_t n_elems = extract_u32(line, "n_elems");
 
       // Parse buffer indices: src0, src1, ..., dst0
       vector<uint32_t> src_indices;
@@ -459,7 +451,7 @@ int main() {
           DataFormat df;
           switch (fmt) {
           case 0:
-            df = DataFormat::Float32;
+            throw runtime_error("Float32 not supported for compute (SFPU)");
             break;
           case 1:
             df = DataFormat::Float16;
@@ -485,45 +477,48 @@ int main() {
                 cfg.output_formats[i], cfg.output_tile_bytes[i]);
         }
 
+        cerr << "[TT] creating TensorAccessorArgs from buffers" << endl;
+        // Build compile-time args from actual buffer pointers (like the guide)
+        vector<uint32_t> reader_compile_args;
+        for (uint32_t i = 0; i < n_inputs; i++) {
+          TensorAccessorArgs(*buffers[src_indices[i]])
+              .append_to(reader_compile_args);
+        }
+        vector<uint32_t> writer_compile_args;
+        TensorAccessorArgs(*buffers[dst_index]).append_to(writer_compile_args);
+
         cerr << "[TT] creating reader kernel" << endl;
         auto reader = CreateKernelFromString(
             program, cfg.reader_source, core,
             DataMovementConfig{
                 .processor = DataMovementProcessor::RISCV_0,
                 .noc = NOC::RISCV_0_default,
-                .compile_args = vector<uint32_t>(),
+                .compile_args = reader_compile_args,
                 .defines = map<string, string>(),
                 .named_compile_args = unordered_map<string, uint32_t>(),
                 .opt_level = KernelBuildOptLevel::O2,
                 .compiler_include_paths = vector<filesystem::path>(),
             });
         cerr << "[TT] creating writer kernel" << endl;
-        auto writer = CreateKernelFromString(
-            program, cfg.writer_source, core,
-            DataMovementConfig{
-                .processor = DataMovementProcessor::RISCV_1,
-                .noc = NOC::RISCV_1_default,
-                .compile_args = vector<uint32_t>(),
-                .defines = map<string, string>(),
-                .named_compile_args = unordered_map<string, uint32_t>(),
-                .opt_level = KernelBuildOptLevel::O2,
-                .compiler_include_paths = vector<filesystem::path>(),
-            });
+        auto writer =
+            CreateKernel(program, kernel_dir + "/write_tile.cpp", core,
+                         DataMovementConfig{
+                             .processor = DataMovementProcessor::RISCV_1,
+                             .noc = NOC::RISCV_1_default,
+                             .compile_args = writer_compile_args,
+                             .defines = map<string, string>(),
+                             .named_compile_args = unordered_map<string, uint32_t>(),
+                             .opt_level = KernelBuildOptLevel::O2,
+                             .compiler_include_paths = vector<filesystem::path>(),
+                         });
         cerr << "[TT] creating compute kernel" << endl;
         auto compute = CreateKernelFromString(
             program, cfg.compute_source, core,
-            ComputeConfig{
-                .math_fidelity = MathFidelity::HiFi4,
-                .unpack_to_dest_mode = vector<tt::tt_metal::UnpackToDestMode>(),
-                .compile_args = vector<uint32_t>(),
-                .defines = map<string, string>(),
-                .named_compile_args = unordered_map<string, uint32_t>(),
-                .compiler_include_paths = vector<filesystem::path>(),
-            }
-        );
+            ComputeConfig{.math_fidelity = MathFidelity::HiFi4
+        });
 
-        // Set runtime args — NOC addresses + n_elems
-        cerr << "[TT] setting rt args n_tiles=" << n_tiles << " n_elems=" << n_elems << endl;
+        // Set runtime args — buffer addresses as bank_base_address + n_tiles
+        cerr << "[TT] setting rt args n_tiles=" << n_tiles << endl;
         {
           vector<uint32_t> reader_rt_args;
           for (uint32_t i = 0; i < n_inputs; i++) {
@@ -533,6 +528,7 @@ int main() {
                  << endl;
             reader_rt_args.push_back(static_cast<uint32_t>(a));
           }
+          reader_rt_args.push_back(n_tiles);
           SetRuntimeArgs(program, reader, core, reader_rt_args);
         }
         {
@@ -540,7 +536,7 @@ int main() {
           cerr << "[TT]  dst idx=" << dst_index << " addr=" << a
                << " sz=" << buffers[dst_index]->size() << endl;
           SetRuntimeArgs(program, writer, core,
-                         {static_cast<uint32_t>(a)});
+                         {static_cast<uint32_t>(a), n_tiles});
         }
         SetRuntimeArgs(program, compute, core, {n_tiles});
 
