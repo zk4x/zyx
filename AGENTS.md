@@ -440,6 +440,7 @@ There are no exceptions. Rhetorical questions are questions. "What do you mean" 
 ## What to Avoid
 
 - **Never commit unless the user explicitly asks** — but when they say "commit", just do it. Derive a concise commit message from the diff matching the repo style. Do NOT ask for a message.
+- **"commit" means commit, not "proceed"** — If the user says "commit" in response to next-steps question, commit and stop. Do not then proceed to work on next steps. Only work on what was explicitly instructed.
 - **When in doubt, ask me immediately** - Don't try to figure things out on your own if uncertain. Just ask.
 - **Ask before hunting for specs/values** - If I might have a spec, a mapping, or any information that could save time, ask me first. I always have it, so don't dig through source code or run experiments to derive it.
 - **Never use `git stash`. Never discard or hide changes.**
