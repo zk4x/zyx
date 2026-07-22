@@ -48,6 +48,10 @@ Wait for the user's next instruction between steps. Do not proactively read more
 - **Write ops** (edit, delete, write files): If even the slightest uncertainty, immediately stop and ask.
 - **Commit**: Never commit unless the user says the word "commit". When the user says "commit", derive a concise commit message from the diff matching the repo style and commit. Do NOT ask for a message. When the user says something unrelated, do NOT commit.
 
+## Never Undo Your Own Changes
+
+Do not revert, checkout, stash, or otherwise discard your own code changes for any reason. The only way to undo your work is if the user explicitly says "revert" or "undo." If you hit build errors from your changes, fix the specific errors — never throw out the work.
+
 This document is your single source of truth. If it doesn't contain the answer, ask. Don't search.
 
 **When the user tells you something about the system (e.g., "OpenCL crashes, CUDA doesn't"), trust them.** Do NOT run tests or commands to verify what they said. Use their information to narrow down the problem, not to double-check it.
