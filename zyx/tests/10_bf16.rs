@@ -72,7 +72,7 @@ fn bf16_add() -> Result<(), ZyxError> {
 
     // Test addition at bf16 precision
     let a = Tensor::from([1.0f32, 2.0, 3.0]).cast(DType::BF16);
-    let b = Tensor::from([4.0, 5.0, 6.0]).cast(DType::BF16);
+    let b = Tensor::from([4.0f32, 5.0, 6.0]).cast(DType::BF16);
     let c = a + b;
 
     // Compare at bf16 precision: [5, 7, 9]
