@@ -112,7 +112,7 @@ impl Kernel {
         (Optimization::PadIndex { factors }, n_configs)
     }
 
-    fn depends_on(&self, expr: OpId, target: OpId, visited: &mut Set<OpId>) -> bool {
+    pub(crate) fn depends_on(&self, expr: OpId, target: OpId, visited: &mut Set<OpId>) -> bool {
         if expr == target || !visited.insert(expr) {
             return expr == target;
         }

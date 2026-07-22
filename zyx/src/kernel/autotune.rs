@@ -406,6 +406,9 @@ impl Kernel {
         kernel.run_always_on_optimizations();
 
         kernel.tile_local();
+        kernel.verify();
+
+        kernel.debug();
 
         /*let (opt, _) = kernel.opt_pad_index();
         opt.apply(&mut kernel, 0);
