@@ -3,9 +3,9 @@
 
 use super::{Device, DeviceId, DeviceInfo, DeviceProgramId, Event, Kernel, MemoryPool, OpCapability, PoolBufferId, PoolId};
 use crate::{
-    DType,
+    DType, Map,
     error::{BackendError, ErrorStatus},
-    kernel::{BOp, MemLayout, Op, UOp},
+    kernel::{BOp, MemLayout, Op, Scope, UOp},
     shape::Dim,
     slab::Slab,
 };
@@ -160,14 +160,13 @@ pub(super) fn initialize_device(
     )?));
 
     let pool_id = memory_pools.len();
-    let pool =
-        MemoryPool::TT(TTMemoryPool { buffers: Slab::new(), runtime: runtime.clone(), free_bytes: Dim::from(dram_bytes) });
+    let pool = MemoryPool::TT(TTMemoryPool { buffers: Slab::new(), runtime: runtime.clone(), free_bytes: Dim::from(dram_bytes) });
     memory_pools.push(pool);
 
     let _device_id = devices.len();
     devices.push(Device::TT(TTDevice {
         device_info: DeviceInfo {
-            compute: 200_000_000_000_000, // ~200 TFLOPS FP32
+            compute: 200_000_000_000_000, // ~200 TFLOPS BF16
             max_global_work_dims: vec![Dim::from(u32::MAX); 3],
             max_local_threads: 1024,
             max_local_work_dims: vec![1, 1024, 1],
@@ -681,6 +680,114 @@ impl TTDevice {
 
     pub const fn free_compute(&self) -> u128 {
         self.device_info.compute
+    }
+
+    #[allow(unused_must_use)]
+    pub fn compile2(&mut self, kernel: &Kernel, debug_asm: bool) -> Result<DeviceProgramId, BackendError> {
+        let mut input_dtypes: Vec<DType> = Vec::new();
+        let mut output_dtypes: Vec<DType> = Vec::new();
+
+        let mut indent = String::new();
+
+        // Generate reader kernel source
+        let mut reader = String::new();
+        writeln!(reader, "#include <cstint>");
+        writeln!(reader, "#include \"api/dataflow/dataflow_api.h\"");
+        writeln!(reader, "void kernel_main() {{");
+        write!(indent, "  ");
+        writeln!(reader, "{indent}Noc noc;");
+        {
+            let mut cb_map = Map::default();
+            let mut max_cb = 0;
+            let mut n_tensors = 0;
+            let mut op_id = kernel.head;
+            while !op_id.is_null() {
+                match kernel.ops[op_id].op {
+                    Op::Define { dtype, scope, ro, len: _ } => match scope {
+                        Scope::Global => {
+                            let tile_bytes = (1024 * dtype.bit_size() as u32) / 8;
+                            match ro {
+                                true => input_dtypes.push(dtype),
+                                false => output_dtypes.push(dtype),
+                            }
+                            writeln!(reader, "{indent}uint32_t src{op_id} = get_arg_val<uint32_t>({op_id});");
+                            writeln!(reader, "{indent}auto args{op_id} = TensorAccessorArgs<{}>({op_id});", n_tensors * 2);
+                            writeln!(reader, "{indent}auto p{op_id} = TensorAccessor(args{op_id}, src{op_id}, {tile_bytes});");
+                            n_tensors += 1;
+                        }
+                        Scope::Local => {
+                            cb_map.insert(op_id, max_cb);
+                            writeln!(reader, "{indent}uint32_t cb{max_cb} = CircularBuffer(tt::CBIndex::c_{max_cb});");
+                            max_cb += 1;
+                        }
+                        Scope::Register => todo!(),
+                    },
+                    Op::Loop { len } => todo!(),
+                    Op::Store { dst, x, index: st_idx, layout: st_layout } => {
+                        let Op::Load { src, index: ld_idx, layout: ld_layout } = kernel.ops[x].op else {
+                            panic!("tenstorrent supports only global to local loads in reader kernels with no ops inbetween")
+                        };
+                        let Op::Define { dtype: src_dtype, scope: Scope::Global, ro: _, len: _ } = kernel.ops[src].op else {
+                            unreachable!()
+                        };
+                        let Op::Define { dtype: dst_dtype, scope: Scope::Local, ro: _, len: _ } = kernel.ops[dst].op else {
+                            unreachable!()
+                        };
+
+                        let tile_bytes = (1024 * dst_dtype.bit_size() as u32) / 8;
+
+                        match (ld_layout, st_layout) {
+                            (MemLayout::Scalar, MemLayout::Scalar) => {
+                                let p_id = src;
+                                let cb_id = cb_map[&dst];
+                                // Poll to reserve one CB tile
+                                writeln!(reader, "{indent}cb{cb_id}.reserve_back(1)");
+                                writeln!(reader, "noc.async_read(p{p_id}, cb{cb_id}, {tile_bytes}, {{.offset_bytes=0}}, {{}});");
+                            }
+                            _ => todo!(),
+                        }
+                    }
+                    // Barrier means reader kernel is over
+                    Op::Barrier => break,
+                    _ => unreachable!(),
+                }
+                op_id = kernel.next_op(op_id);
+            }
+            writeln!(reader, "noc.async_read_barrier();");
+            for (_, cb_id) in cb_map {
+                writeln!(reader, "cb{cb_id}.push_back(1);");
+            }
+        }
+
+        // Generate compute kernel source
+        let mut compute = String::new();
+        {
+            let mut op_id = kernel.head;
+            while !op_id.is_null() {
+                match kernel.ops[op_id].op {
+                    Op::Cast { x, dtype } => {
+                        writeln!(compute, "");
+                    }
+                    // Barrier means compute kernel is over
+                    Op::Barrier => break,
+                    _ => unreachable!(),
+                }
+                op_id = kernel.next_op(op_id);
+            }
+        }
+
+        // Generate writer kernel source
+        let mut writer = String::new();
+
+        let prog_id = self.programs.push(TTProgram { input_dtypes, output_dtypes });
+
+        {
+            //let mut rt_guard = self.runtime.lock().unwrap();
+            //rt_guard.compile_program( )?;
+            todo!();
+        }
+
+        Ok(prog_id)
     }
 
     pub fn compile(&mut self, kernel: &Kernel, debug_asm: bool) -> Result<DeviceProgramId, BackendError> {
