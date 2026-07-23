@@ -732,9 +732,12 @@ impl TTDevice {
                         let Op::Load { src, index: ld_idx, layout: ld_layout } = kernel.ops[x].op else {
                             panic!("tenstorrent supports only global to local loads in reader kernels with no ops inbetween")
                         };
-                        let Op::Define { scope: Scope::Global, .. } = kernel.ops[src].op else {
+                        let Op::Define { scope: Scope::Global, ro, .. } = kernel.ops[src].op else {
                             unreachable!()
                         };
+                        if !ro {
+                            continue;
+                        }
                         let Op::Define { dtype, scope: Scope::Local, .. } = kernel.ops[dst].op else {
                             unreachable!()
                         };
