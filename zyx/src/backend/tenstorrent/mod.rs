@@ -699,12 +699,13 @@ impl TTDevice {
         writeln!(reader, "void kernel_main() {{");
         indent += "  ";
         writeln!(reader, "{indent}Noc noc;");
+        let mut op_id = kernel.head;
         {
             const PAGE_SIZE: u32 = 4096;
             let mut cb_map = Map::default();
+            let mut cb_written: Vec<bool> = Vec::new();
             let mut max_cb = 0;
             let mut n_tensors = 0;
-            let mut op_id = kernel.head;
             while !op_id.is_null() {
                 match kernel.ops[op_id].op {
                     Op::Define { dtype, scope, ro, len: _ } => match scope {
@@ -722,6 +723,7 @@ impl TTDevice {
                         }
                         Scope::Local => {
                             cb_map.insert(op_id, max_cb);
+                            cb_written.push(false);
                             writeln!(reader, "{indent}CircularBuffer cb{max_cb}(tt::CBIndex::c_{max_cb});");
                             max_cb += 1;
                         }
@@ -752,6 +754,7 @@ impl TTDevice {
                                     reader,
                                     "{indent}noc.async_read(p{src}, cb{cb_id}, {elem_size},\n{indent}  {{ .page_id = (r{ld_idx}*{elem_size})/{PAGE_SIZE}, .offset_bytes = (r{ld_idx}*{elem_size})%{PAGE_SIZE} }},\n{indent}  {{ .offset_bytes = r{st_idx}*{elem_size} }});"
                                 );
+                                cb_written[cb_id] = true;
                             }
                             _ => todo!(),
                         }
@@ -778,8 +781,10 @@ impl TTDevice {
                 op_id = kernel.next_op(op_id);
             }
             writeln!(reader, "{indent}noc.async_read_barrier();");
-            for (_, cb_id) in cb_map {
-                writeln!(reader, "{indent}cb{cb_id}.push_back(1);");
+            for (cb_id, written) in cb_written.iter().enumerate() {
+                if *written {
+                    writeln!(reader, "{indent}cb{cb_id}.push_back(1);");
+                }
             }
             writeln!(reader, "}}");
         }
@@ -790,7 +795,6 @@ impl TTDevice {
         // Generate compute kernel source
         let mut compute = String::new();
         {
-            let mut op_id = kernel.head;
             while !op_id.is_null() {
                 match kernel.ops[op_id].op {
                     Op::Cast { x, dtype } => {
