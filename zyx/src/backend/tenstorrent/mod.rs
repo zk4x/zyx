@@ -683,7 +683,7 @@ impl TTDevice {
     }
 
     #[allow(unused_must_use)]
-    pub fn compile2(&mut self, kernel: &Kernel, debug_asm: bool) -> Result<DeviceProgramId, BackendError> {
+    pub fn compile(&mut self, kernel: &Kernel, debug_asm: bool) -> Result<DeviceProgramId, BackendError> {
         let mut input_dtypes: Vec<DType> = Vec::new();
         let mut output_dtypes: Vec<DType> = Vec::new();
 
@@ -727,6 +727,7 @@ impl TTDevice {
                         }
                         Scope::Register => todo!(),
                     },
+                    Op::Load { .. } => {}
                     Op::Store { dst, x, index: st_idx, layout: st_layout } => {
                         let Op::Load { src, index: ld_idx, layout: ld_layout } = kernel.ops[x].op else {
                             panic!("tenstorrent supports only global to local loads in reader kernels with no ops inbetween")
@@ -765,16 +766,15 @@ impl TTDevice {
                         indent.pop();
                         writeln!(reader, "{indent}}}");
                     }
-                    Op::Const(_) => {
-                        //writeln!(reader, "{indent}{} r{op_id} = {};", val.dtype(), val.tt());
-                        todo!()
+                    Op::Const(val) => {
+                        writeln!(reader, "{indent}{} r{op_id} = {};", val.dtype(), val.c_code());
                     }
                     Op::Index { scope: Scope::Global, axis, .. } => {
                         writeln!(reader, "{indent}uint32_t r{op_id} = gidx{axis};");
                     }
                     // Barrier means reader kernel is over
                     Op::Barrier => break,
-                    _ => unreachable!(),
+                    ref op => unreachable!("{op:?}"),
                 }
                 op_id = kernel.next_op(op_id);
             }
@@ -782,6 +782,10 @@ impl TTDevice {
             for (_, cb_id) in cb_map {
                 writeln!(reader, "{indent}cb{cb_id}.push_back(1);");
             }
+            writeln!(reader, "}}");
+        }
+        if debug_asm {
+            println!("[tenstorrent] reader:\n{reader}");
         }
 
         // Generate compute kernel source
@@ -810,228 +814,6 @@ impl TTDevice {
             //let mut rt_guard = self.runtime.lock().unwrap();
             //rt_guard.compile_program( )?;
             todo!();
-        }
-
-        Ok(prog_id)
-    }
-
-    pub fn compile(&mut self, kernel: &Kernel, debug_asm: bool) -> Result<DeviceProgramId, BackendError> {
-        let mut n_inputs: usize = 0;
-        let mut n_outputs: usize = 0;
-        let mut input_dtypes: Vec<DType> = Vec::new();
-        let mut output_dtypes: Vec<DType> = Vec::new();
-        let mut op_id = kernel.head;
-        while !op_id.is_null() {
-            match kernel.at(op_id) {
-                Op::Load { src, layout: MemLayout::Tile { .. }, .. } => {
-                    if let Op::Define { dtype, .. } = kernel.at(*src) {
-                        input_dtypes.push(*dtype);
-                    }
-                    n_inputs += 1;
-                }
-                Op::Store { dst, layout: MemLayout::Tile { .. }, .. } => {
-                    if let Op::Define { dtype, .. } = kernel.at(*dst) {
-                        output_dtypes.push(*dtype);
-                    }
-                    n_outputs += 1;
-                }
-                _ => {}
-            }
-            op_id = kernel.next_op(op_id);
-        }
-
-        let mut op_id = kernel.head;
-        let mut unary_op = None;
-        let mut binary_op = None;
-        while !op_id.is_null() {
-            if let Op::Store { x, layout: MemLayout::Tile { .. }, .. } = kernel.at(op_id) {
-                let compute = *x;
-                let mut scan = kernel.head;
-                while !scan.is_null() {
-                    if scan == compute {
-                        match kernel.at(scan) {
-                            Op::Unary { uop, .. } => {
-                                if uop_to_sfpu(*uop).is_ok() {
-                                    unary_op = Some(*uop);
-                                }
-                            }
-                            Op::Binary { bop, .. } => {
-                                if bop_to_binary_api(*bop).is_ok() {
-                                    binary_op = Some(*bop);
-                                }
-                            }
-                            _ => {}
-                        }
-                        break;
-                    }
-                    scan = kernel.next_op(scan);
-                }
-                break;
-            }
-            op_id = kernel.next_op(op_id);
-        }
-
-        let mut compute_source = String::new();
-        compute_source.push_str("#include <cstdint>\n");
-        compute_source.push_str("#include \"api/compute/common.h\"\n");
-        compute_source.push_str("#include \"api/compute/tile_move_copy.h\"\n");
-        compute_source.push_str("#include \"api/compute/eltwise_unary/eltwise_unary.h\"\n");
-
-        match (unary_op, binary_op) {
-            (Some(uop), None) => {
-                let info = uop_to_sfpu(uop)?;
-                compute_source.push_str(&format!("#include \"{}\"\n", info.header));
-                compute_source.push_str("#include \"api/compute/compute_kernel_api.h\"\n\n");
-                write!(compute_source, "void kernel_main() {{\n").unwrap();
-                write!(compute_source, "    uint32_t n_tiles = get_arg_val<uint32_t>(0);\n").unwrap();
-                for i in 0..n_inputs {
-                    write!(compute_source, "    constexpr auto cb_in{i} = tt::CBIndex::c_{i};\n").unwrap();
-                }
-                write!(compute_source, "    constexpr auto cb_out0 = tt::CBIndex::c_16;\n").unwrap();
-                write!(compute_source, "    constexpr uint32_t dst_reg = 0;\n\n").unwrap();
-                write!(compute_source, "    unary_op_init_common(cb_in0, cb_out0);\n").unwrap();
-                write!(compute_source, "    {}();\n", info.init_fn).unwrap();
-                write!(compute_source, "\n").unwrap();
-                write!(compute_source, "    for (uint32_t i = 0; i < n_tiles; i++) {{\n").unwrap();
-                for i in 0..n_inputs {
-                    write!(compute_source, "        cb_wait_front(cb_in{i}, 1);\n").unwrap();
-                }
-                write!(compute_source, "        tile_regs_acquire();\n").unwrap();
-                write!(compute_source, "        copy_tile(cb_in0, 0, dst_reg);\n").unwrap();
-                write!(compute_source, "        {}(dst_reg);\n", info.tile_fn).unwrap();
-                write!(compute_source, "        tile_regs_commit();\n").unwrap();
-                for i in 0..n_inputs {
-                    write!(compute_source, "        cb_pop_front(cb_in{i}, 1);\n").unwrap();
-                }
-                write!(compute_source, "        cb_reserve_back(cb_out0, 1);\n").unwrap();
-                write!(compute_source, "        tile_regs_wait();\n").unwrap();
-                write!(compute_source, "        pack_tile(dst_reg, cb_out0);\n").unwrap();
-                write!(compute_source, "        tile_regs_release();\n").unwrap();
-                write!(compute_source, "        cb_push_back(cb_out0, 1);\n").unwrap();
-                write!(compute_source, "    }}\n").unwrap();
-                write!(compute_source, "}}\n").unwrap();
-            }
-            (None, Some(bop)) => {
-                let info = bop_to_binary_api(bop)?;
-                compute_source.push_str(&format!("#include \"{}\"\n", info.header));
-                compute_source.push_str("#include \"api/compute/compute_kernel_api.h\"\n\n");
-                write!(compute_source, "void kernel_main() {{\n").unwrap();
-                write!(compute_source, "    uint32_t n_tiles = get_arg_val<uint32_t>(0);\n").unwrap();
-                for i in 0..n_inputs {
-                    write!(compute_source, "    constexpr auto cb_in{i} = tt::CBIndex::c_{i};\n").unwrap();
-                }
-                write!(compute_source, "    constexpr auto cb_out0 = tt::CBIndex::c_16;\n").unwrap();
-                write!(compute_source, "    constexpr uint32_t dst_reg = 0;\n\n").unwrap();
-                if info.uses_cbs {
-                    write!(compute_source, "    binary_op_init_common(cb_in0, cb_in1, cb_out0);\n").unwrap();
-                }
-                write!(compute_source, "    {}();\n", info.tile_init_fn).unwrap();
-                write!(compute_source, "\n").unwrap();
-                write!(compute_source, "    for (uint32_t i = 0; i < n_tiles; i++) {{\n").unwrap();
-                for i in 0..n_inputs {
-                    write!(compute_source, "        cb_wait_front(cb_in{i}, 1);\n").unwrap();
-                }
-                write!(compute_source, "        tile_regs_acquire();\n").unwrap();
-                if info.uses_cbs {
-                    write!(compute_source, "        {}(cb_in0, cb_in1, 0, 0, dst_reg);\n", info.tile_fn).unwrap();
-                } else {
-                    write!(compute_source, "        copy_tile(cb_in0, 0, dst_reg);\n").unwrap();
-                    write!(compute_source, "        {}(dst_reg, dst_reg, dst_reg);\n", info.tile_fn).unwrap();
-                }
-                write!(compute_source, "        tile_regs_commit();\n").unwrap();
-                for i in 0..n_inputs {
-                    write!(compute_source, "        cb_pop_front(cb_in{i}, 1);\n").unwrap();
-                }
-                write!(compute_source, "        cb_reserve_back(cb_out0, 1);\n").unwrap();
-                write!(compute_source, "        tile_regs_wait();\n").unwrap();
-                write!(compute_source, "        pack_tile(dst_reg, cb_out0);\n").unwrap();
-                write!(compute_source, "        tile_regs_release();\n").unwrap();
-                write!(compute_source, "        cb_push_back(cb_out0, 1);\n").unwrap();
-                write!(compute_source, "    }}\n").unwrap();
-                write!(compute_source, "}}\n").unwrap();
-            }
-            _ => {
-                return Err(BackendError {
-                    status: ErrorStatus::KernelCompilation,
-                    context: format!("no supported unary or binary op found in kernel (inputs={n_inputs}, outputs={n_outputs})")
-                        .into(),
-                });
-            }
-        }
-
-        let reader_source = if n_inputs == 0 {
-            "#include <cstdint>\nvoid kernel_main() {}".to_string()
-        } else {
-            let mut code = String::new();
-            write!(code, "#include <cstdint>\n#include \"api/dataflow/dataflow_api.h\"\n\nvoid kernel_main() {{\n").unwrap();
-            for s in 0..n_inputs {
-                write!(code, "    uint32_t src{}_addr = get_arg_val<uint32_t>({});\n", s, s).unwrap();
-            }
-            write!(code, "    uint32_t n_tiles = get_arg_val<uint32_t>({});\n", n_inputs).unwrap();
-            write!(code, "\n").unwrap();
-            for s in 0..n_inputs {
-                let offset = s * 2;
-                write!(code, "    constexpr auto args_{} = TensorAccessorArgs<{}>();\n", s, offset).unwrap();
-                write!(code, "    constexpr auto cb_{} = tt::CBIndex::c_{};\n", s, s).unwrap();
-                write!(code, "    const uint32_t tile_bytes_{} = get_tile_size(cb_{});\n", s, s).unwrap();
-                write!(code, "    const auto a_{} = TensorAccessor(args_{}, src{}_addr, tile_bytes_{});\n", s, s, s, s).unwrap();
-                write!(code, "\n").unwrap();
-            }
-            write!(code, "    for (uint32_t i = 0; i < n_tiles; i++) {{\n").unwrap();
-            for s in 0..n_inputs {
-                write!(code, "        cb_reserve_back(cb_{}, 1);\n", s).unwrap();
-            }
-            for s in 0..n_inputs {
-                write!(code, "        noc_async_read_tile(i, a_{}, get_write_ptr(cb_{}));\n", s, s).unwrap();
-            }
-            write!(code, "        noc_async_read_barrier();\n").unwrap();
-            for s in 0..n_inputs {
-                write!(code, "        cb_push_back(cb_{}, 1);\n", s).unwrap();
-            }
-            write!(code, "    }}\n").unwrap();
-            write!(code, "}}\n").unwrap();
-            code
-        };
-
-        if debug_asm {
-            eprintln!("[tenstorrent] === reader kernel ===\n{reader_source}\n=== end reader ===");
-            eprintln!("[tenstorrent] === compute kernel ===\n{compute_source}\n=== end compute ===");
-        }
-
-        fn dtype_to_format(dt: DType) -> u32 {
-            match dt {
-                DType::F32 => 0,
-                DType::F16 => 1,
-                DType::BF16 => 2,
-                _ => 0,
-            }
-        }
-        fn dtype_to_tile_bytes(dt: DType) -> u32 {
-            let te = 1024u64;
-            match dt {
-                DType::F32 => (4 * te) as u32,
-                DType::F16 | DType::BF16 => (2 * te) as u32,
-                _ => (4 * te) as u32,
-            }
-        }
-        let input_formats: Vec<u32> = input_dtypes.iter().map(|d| dtype_to_format(*d)).collect();
-        let input_tile_bytes: Vec<u32> = input_dtypes.iter().map(|d| dtype_to_tile_bytes(*d)).collect();
-        let output_formats: Vec<u32> = output_dtypes.iter().map(|d| dtype_to_format(*d)).collect();
-        let output_tile_bytes: Vec<u32> = output_dtypes.iter().map(|d| dtype_to_tile_bytes(*d)).collect();
-
-        let prog_id = self.programs.push(TTProgram { input_dtypes, output_dtypes });
-
-        {
-            let mut rt_guard = self.runtime.lock().unwrap();
-            rt_guard.compile_program(
-                prog_id.0,
-                &reader_source,
-                &compute_source,
-                &input_formats,
-                &input_tile_bytes,
-                &output_formats,
-                &output_tile_bytes,
-            )?;
         }
 
         Ok(prog_id)
@@ -1102,122 +884,5 @@ impl TTDevice {
         rt_guard.run(program_id.0, n_tiles, &src_indices, dst_index)?;
 
         Ok(Event::TT(TTEvent))
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Compute kernel code generation
-// ---------------------------------------------------------------------------
-
-struct SfpuInfo {
-    header: &'static str,
-    init_fn: &'static str,
-    tile_fn: &'static str,
-}
-
-struct BinaryApi {
-    tile_fn: &'static str,
-    tile_init_fn: &'static str,
-    header: &'static str,
-    /// If true, use the traditional api where tiles read directly from CBs
-    /// (add_tiles(cb0, cb1, 0, 0, dst)). If false, use the SFPU api with
-    /// copy_tile + bop_tile(dst, dst, dst).
-    uses_cbs: bool,
-}
-
-fn bop_to_binary_api(bop: BOp) -> Result<BinaryApi, BackendError> {
-    match bop {
-        // Traditional binary API (eltwise_binary.h) — reads directly from CBs
-        BOp::Add => Ok(BinaryApi {
-            tile_fn: "add_tiles",
-            tile_init_fn: "add_tiles_init",
-            header: "api/compute/eltwise_binary.h",
-            uses_cbs: true,
-        }),
-        BOp::Sub => Ok(BinaryApi {
-            tile_fn: "sub_tiles",
-            tile_init_fn: "sub_tiles_init",
-            header: "api/compute/eltwise_binary.h",
-            uses_cbs: true,
-        }),
-        BOp::Mul => Ok(BinaryApi {
-            tile_fn: "mul_tiles",
-            tile_init_fn: "mul_tiles_init",
-            header: "api/compute/eltwise_binary.h",
-            uses_cbs: true,
-        }),
-        // SFPU binary API (eltwise_binary_sfpu.h) — operates on DST regs
-        BOp::Div => Ok(BinaryApi {
-            tile_fn: "div_binary_tile",
-            tile_init_fn: "div_binary_tile_init",
-            header: "api/compute/eltwise_binary_sfpu.h",
-            uses_cbs: false,
-        }),
-        BOp::Pow => Ok(BinaryApi {
-            tile_fn: "power_binary_tile",
-            tile_init_fn: "power_binary_tile_init",
-            header: "api/compute/eltwise_binary_sfpu.h",
-            uses_cbs: false,
-        }),
-        BOp::Eq => Ok(BinaryApi {
-            tile_fn: "eq_binary_tile",
-            tile_init_fn: "eq_binary_tile_init",
-            header: "api/compute/eltwise_binary_sfpu.h",
-            uses_cbs: false,
-        }),
-        BOp::NotEq => Ok(BinaryApi {
-            tile_fn: "ne_binary_tile",
-            tile_init_fn: "ne_binary_tile_init",
-            header: "api/compute/eltwise_binary_sfpu.h",
-            uses_cbs: false,
-        }),
-        BOp::Cmplt => Ok(BinaryApi {
-            tile_fn: "lt_binary_tile",
-            tile_init_fn: "lt_binary_tile_init",
-            header: "api/compute/eltwise_binary_sfpu.h",
-            uses_cbs: false,
-        }),
-        BOp::Max => Err(BackendError {
-            status: ErrorStatus::KernelCompilation,
-            context: "Max binary op not yet supported for Tenstorrent (add an IR optimization pass)".into(),
-        }),
-        _ => Err(BackendError {
-            status: ErrorStatus::KernelCompilation,
-            context: format!("unsupported binary op {bop:?} for Tenstorrent (add an IR optimization pass)").into(),
-        }),
-    }
-}
-
-fn uop_to_sfpu(uop: UOp) -> Result<SfpuInfo, BackendError> {
-    match uop {
-        UOp::Exp => Ok(SfpuInfo { header: "api/compute/eltwise_unary/exp.h", init_fn: "exp_tile_init", tile_fn: "exp_tile" }),
-        // Exp2 is not available in tt-metal SFPU (no exp2_tile). An IR
-        // optimization pass must convert Exp2 → Exp + multiply by ln(2)
-        // before the kernel reaches this backend.
-        UOp::Reciprocal => {
-            Ok(SfpuInfo { header: "api/compute/eltwise_unary/recip.h", init_fn: "recip_tile_init", tile_fn: "recip_tile" })
-        }
-        UOp::Sqrt => Ok(SfpuInfo { header: "api/compute/eltwise_unary/sqrt.h", init_fn: "sqrt_tile_init", tile_fn: "sqrt_tile" }),
-        UOp::Sin => {
-            Ok(SfpuInfo { header: "api/compute/eltwise_unary/trigonometry.h", init_fn: "sin_tile_init", tile_fn: "sin_tile" })
-        }
-        UOp::Cos => {
-            Ok(SfpuInfo { header: "api/compute/eltwise_unary/trigonometry.h", init_fn: "cos_tile_init", tile_fn: "cos_tile" })
-        }
-        UOp::Neg => Ok(SfpuInfo {
-            header: "api/compute/eltwise_unary/negative.h",
-            init_fn: "negative_tile_init",
-            tile_fn: "negative_tile",
-        }),
-        UOp::Floor => {
-            Ok(SfpuInfo { header: "api/compute/eltwise_unary/rounding.h", init_fn: "floor_tile_init", tile_fn: "floor_tile" })
-        }
-        UOp::Trunc => {
-            Ok(SfpuInfo { header: "api/compute/eltwise_unary/rounding.h", init_fn: "trunc_tile_init", tile_fn: "trunc_tile" })
-        }
-        _ => Err(BackendError {
-            status: ErrorStatus::KernelCompilation,
-            context: format!("unsupported unary op {uop:?} for Tenstorrent (add an IR optimization pass)").into(),
-        }),
     }
 }

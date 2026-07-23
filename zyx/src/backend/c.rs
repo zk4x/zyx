@@ -822,7 +822,7 @@ impl DType {
 }
 
 impl Constant {
-    fn c_code(self) -> String {
+    pub fn c_code(self) -> String {
         match self {
             Self::F32(x) => format!("{:.16}f", f32::from_le_bytes(x)),
             Self::F64(x) => format!("{:.16}", f64::from_le_bytes(x)),
