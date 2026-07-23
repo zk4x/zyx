@@ -747,14 +747,10 @@ impl TTDevice {
 
                         match (ld_layout, st_layout) {
                             (MemLayout::Scalar, MemLayout::Scalar) => {
-                                writeln!(reader, "{indent}uint32_t byte_offset = r{ld_idx} * {elem_size};");
-                                writeln!(reader, "{indent}uint32_t page_id = byte_offset / PAGE_SIZE;");
-                                writeln!(reader, "{indent}uint32_t off = byte_offset % PAGE_SIZE;");
-                                writeln!(reader, "{indent}uint32_t l1_off = r{st_idx} * {elem_size};");
                                 writeln!(reader, "{indent}cb{cb_id}.reserve_back(1);");
                                 writeln!(
                                     reader,
-                                    "{indent}noc.async_read(p{src}, cb{cb_id}, {elem_size}, {{.page_id = page_id, .offset_bytes = off}}, {{.offset_bytes = l1_off}});"
+                                    "{indent}noc.async_read(p{src}, cb{cb_id}, {elem_size},\n{indent}  {{ .page_id = (r{ld_idx}*{elem_size})/{PAGE_SIZE}, .offset_bytes = (r{ld_idx}*{elem_size})%{PAGE_SIZE} }},\n{indent}  {{ .offset_bytes = r{st_idx}*{elem_size} }});"
                                 );
                             }
                             _ => todo!(),

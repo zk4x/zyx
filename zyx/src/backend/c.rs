@@ -828,7 +828,7 @@ impl Constant {
             Self::F64(x) => format!("{:.16}", f64::from_le_bytes(x)),
             Self::U8(x) => format!("{x}"),
             Self::U16(x) => format!("{x}"),
-            Self::U32(x) => format!("{x}u"),
+            Self::U32(x) => format!("{x}"),
             Self::U64(x) => format!("{}ul", u64::from_le_bytes(x)),
             Self::I8(x) => format!("{x}"),
             Self::I16(x) => format!("{x}"),
