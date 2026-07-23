@@ -699,10 +699,35 @@ impl TTDevice {
         writeln!(reader, "void kernel_main() {{");
         indent += "  ";
         writeln!(reader, "{indent}Noc noc;");
+        let mut input_cb_map = Map::default();
+        let mut output_cb_map = Map::default();
+
+        {
+            let mut max_cb = 0;
+            let mut op_id = kernel.head;
+            while !op_id.is_null() {
+                if let Op::Store { dst, x, .. } = kernel.ops[op_id].op {
+                    if let Op::Define { scope: Scope::Local, .. } = kernel.ops[dst].op {
+                        if let Op::Load { src, .. } = kernel.ops[x].op {
+                            if let Op::Define { ro: true, .. } = kernel.ops[src].op {
+                                input_cb_map.insert(op_id, max_cb);
+                                max_cb += 1;
+                            } else {
+                                unreachable!()
+                            }
+                        } else {
+                            output_cb_map.insert(op_id, max_cb);
+                            max_cb += 1;
+                        }
+                    }
+                }
+                op_id = kernel.next_op(op_id);
+            }
+        }
+
         let mut op_id = kernel.head;
         {
             const PAGE_SIZE: u32 = 4096;
-            let mut cb_map = Map::default();
             let mut cb_written: Vec<bool> = Vec::new();
             let mut max_cb = 0;
             let mut n_tensors = 0;
@@ -722,7 +747,7 @@ impl TTDevice {
                             n_tensors += 1;
                         }
                         Scope::Local => {
-                            cb_map.insert(op_id, max_cb);
+                            input_cb_map.insert(op_id, max_cb);
                             cb_written.push(false);
                             writeln!(reader, "{indent}CircularBuffer cb{max_cb}(tt::CBIndex::c_{max_cb});");
                             max_cb += 1;
@@ -745,7 +770,7 @@ impl TTDevice {
                         };
 
                         let elem_size = dtype.bit_size() as u32 / 8;
-                        let cb_id = cb_map[&dst];
+                        let cb_id = input_cb_map[&dst];
 
                         match (ld_layout, st_layout) {
                             (MemLayout::Scalar, MemLayout::Scalar) => {
