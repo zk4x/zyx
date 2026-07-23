@@ -5,7 +5,7 @@ use super::{Device, DeviceId, DeviceInfo, DeviceProgramId, Event, Kernel, Memory
 use crate::{
     DType, Map,
     error::{BackendError, ErrorStatus},
-    kernel::{BOp, MemLayout, Op, Scope, UOp},
+    kernel::{BOp, MemLayout, Op, OpId, Scope, UOp},
     shape::Dim,
     slab::Slab,
 };
@@ -807,24 +807,148 @@ impl TTDevice {
             }
             writeln!(reader, "}}");
         }
+        // Advance past the barrier into the compute section
+        op_id = kernel.next_op(op_id);
+
         if debug_asm {
             println!("[tenstorrent] reader:\n{reader}");
         }
 
         // Generate compute kernel source
         let mut compute = String::new();
+        writeln!(compute, "#include <cstdint>");
+        writeln!(compute, "#include \"api/compute/compute_kernel_api.h\"");
+        writeln!(compute, "#include \"api/compute/eltwise_binary.h\"");
+        writeln!(compute, "#include \"api/compute/tile_move_copy.h\"");
+        writeln!(compute, "#include \"api/dataflow/circular_buffer.h\"");
+        writeln!(compute, "void kernel_main() {{");
+        let mut indent = String::from("  ");
         {
+            let mut cb_ids: Vec<u32> = input_cb_map.values().copied().collect();
+            for cb_id in output_cb_map.values() {
+                if !cb_ids.contains(cb_id) {
+                    cb_ids.push(*cb_id);
+                }
+            }
+            cb_ids.sort();
+            for cb_id in &cb_ids {
+                writeln!(compute, "{indent}CircularBuffer cb{cb_id}(tt::CBIndex::c_{cb_id});");
+            }
+
+            let input_ids: Vec<u32> = input_cb_map.values().copied().collect();
+            let output_ids: Vec<u32> = output_cb_map.values().copied().collect();
+            if !input_ids.is_empty() && !output_ids.is_empty() {
+                let in0 = input_ids[0];
+                let in1 = input_ids.get(1).copied().unwrap_or(in0);
+                let out0 = output_ids[0];
+                writeln!(compute, "{indent}binary_op_init_common({in0}, {in1}, {out0});");
+            }
+
+            // Emit init headers for ops we might encounter
+            let mut has_typecast = false;
+            let mut has_sin = false;
+            let mut has_binary = false;
+            let mut dst_slots: Map<OpId, u32> = Map::default();
+            let mut next_slot = 0u32;
+
+            // First pass: check which ops are present and collect CB info
+            let mut scan = op_id;
+            while !scan.is_null() {
+                match kernel.ops[scan].op {
+                    Op::Cast { .. } => has_typecast = true,
+                    Op::Unary { uop: UOp::Sin, .. } => has_sin = true,
+                    Op::Binary { bop: BOp::Add, .. } => has_binary = true,
+                    Op::Store { .. } => {}
+                    Op::Barrier => break,
+                    _ => {}
+                }
+                scan = kernel.next_op(scan);
+            }
+
+            // Emit init calls based on scanned ops
+            if has_typecast {
+                writeln!(compute, "{indent}typecast_tile_init<tt::DataFormat::Float32, tt::DataFormat::Float16_b>();");
+            }
+            if has_sin {
+                writeln!(compute, "{indent}sin_tile_init();");
+            }
+            if has_binary {
+                writeln!(compute, "{indent}add_binary_tile_init();");
+            }
+
+            // Collect all unique input CBs from Load ops
+            let mut load_input_cbs: Vec<u32> = Vec::new();
+            let mut pre_scan = op_id;
+            while !pre_scan.is_null() {
+                match kernel.ops[pre_scan].op {
+                    Op::Load { src, layout: MemLayout::Tile { .. }, .. } => {
+                        if let Some(&cb_id) = input_cb_map.get(&src) {
+                            if !load_input_cbs.contains(&cb_id) {
+                                load_input_cbs.push(cb_id);
+                            }
+                        }
+                    }
+                    Op::Barrier => break,
+                    _ => {}
+                }
+                pre_scan = kernel.next_op(pre_scan);
+            }
+            // Emit wait_front for all input CBs, then acquire
+            for &cb_id in &load_input_cbs {
+                writeln!(compute, "{indent}cb{cb_id}.wait_front(1);");
+            }
+            writeln!(compute, "{indent}tile_regs_acquire();");
+
             while !op_id.is_null() {
                 match kernel.ops[op_id].op {
-                    Op::Cast { x, dtype } => {
-                        writeln!(compute, "");
+                    Op::Load { src, index: _, layout: MemLayout::Tile { .. } } => {
+                        if let Some(&cb_id) = input_cb_map.get(&src) {
+                            let slot = next_slot;
+                            next_slot += 1;
+                            dst_slots.insert(op_id, slot);
+                            writeln!(compute, "{indent}copy_tile({cb_id}, 0, {slot});");
+                        }
                     }
-                    // Barrier means compute kernel is over
+                    Op::Cast { x, dtype: DType::BF16 } => {
+                        let slot = dst_slots[&x];
+                        dst_slots.insert(op_id, slot);
+                        writeln!(compute, "{indent}typecast_tile<tt::DataFormat::Float32, tt::DataFormat::Float16_b>({slot});");
+                    }
+                    Op::Unary { x, uop: UOp::Sin } => {
+                        let slot = dst_slots[&x];
+                        dst_slots.insert(op_id, slot);
+                        writeln!(compute, "{indent}sin_tile({slot});");
+                    }
+                    Op::Binary { x, y, bop: BOp::Add } => {
+                        let slot_x = dst_slots[&x];
+                        let slot_y = dst_slots[&y];
+                        dst_slots.insert(op_id, slot_x);
+                        writeln!(compute, "{indent}add_binary_tile({slot_x}, {slot_y}, {slot_x});");
+                    }
+                    Op::Store { dst, x, index: _, layout: MemLayout::Tile { .. } } => {
+                        if let Some(&cb_id) = output_cb_map.get(&dst) {
+                            let slot = dst_slots[&x];
+                            writeln!(compute, "{indent}tile_regs_commit();");
+                            for &loaded_cb in &load_input_cbs {
+                                writeln!(compute, "{indent}cb{loaded_cb}.pop_front(1);");
+                            }
+                            writeln!(compute, "{indent}cb{cb_id}.reserve_back(1);");
+                            writeln!(compute, "{indent}tile_regs_wait();");
+                            writeln!(compute, "{indent}pack_tile({slot}, {cb_id});");
+                            writeln!(compute, "{indent}tile_regs_release();");
+                            writeln!(compute, "{indent}cb{cb_id}.push_back(1);");
+                        }
+                    }
                     Op::Barrier => break,
-                    _ => unreachable!(),
+                    _ => {}
                 }
                 op_id = kernel.next_op(op_id);
             }
+            writeln!(compute, "}}");
+        }
+
+        if debug_asm {
+            println!("[tenstorrent] compute:\n{compute}");
         }
 
         // Generate writer kernel source
