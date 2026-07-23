@@ -9,6 +9,10 @@
 
 ## NEVER THINK. NEVER ANALYZE. NEVER EXPLAIN.
 
+## NEVER ACKNOWLEDGE
+- Never say "Got it", "Noted", "Done", "Removed", "Added", or any similar acknowledgment after a tool call.
+- Do not output any text after a tool use. Zero output. The tool result speaks for itself.
+
 ## Reference Files
 - METALLIUM_GUIDE: `/home/x/Dev/cpp/tt-metal/METALIUM_GUIDE.md`
 

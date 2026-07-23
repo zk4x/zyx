@@ -801,17 +801,17 @@ fn emit_binary_op(source: &mut String, indent: &str, reg: usize, lane: usize, x:
 }
 
 impl DType {
-    const fn c_type(self) -> &'static str {
+    pub(crate) const fn c_type(self) -> &'static str {
         match self {
             Self::F64 => "double",
-            Self::U8 | Self::Bool => "unsigned char",
-            Self::U16 => "unsigned short",
-            Self::U32 => "unsigned int",
-            Self::U64 => "unsigned long",
-            Self::I8 => "signed char",
-            Self::I16 => "short",
-            Self::I32 => "int",
-            Self::I64 => "long",
+            Self::U8 | Self::Bool => "uint8_t",
+            Self::U16 => "uint16_t",
+            Self::U32 => "uint32_t",
+            Self::U64 => "uint64_t",
+            Self::I8 => "int8_t",
+            Self::I16 => "int16_t",
+            Self::I32 => "int32_t",
+            Self::I64 => "int64_t",
             Self::F32 | Self::F16 | Self::BF16 => "float",
         }
     }

@@ -770,7 +770,7 @@ impl TTDevice {
                         writeln!(reader, "{indent}}}");
                     }
                     Op::Const(val) => {
-                        writeln!(reader, "{indent}{} r{op_id} = {};", val.dtype(), val.c_code());
+                        writeln!(reader, "{indent}{} r{op_id} = {};", val.dtype().c_type(), val.c_code());
                     }
                     Op::Index { scope: Scope::Global, axis, .. } => {
                         writeln!(reader, "{indent}uint32_t r{op_id} = gidx{axis};");
