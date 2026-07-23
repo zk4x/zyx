@@ -728,8 +728,6 @@ impl TTDevice {
         let mut op_id = kernel.head;
         {
             const PAGE_SIZE: u32 = 4096;
-            let mut cb_written: Vec<bool> = Vec::new();
-            let mut max_cb = 0;
             let mut n_tensors = 0;
             while !op_id.is_null() {
                 match kernel.ops[op_id].op {
@@ -747,10 +745,9 @@ impl TTDevice {
                             n_tensors += 1;
                         }
                         Scope::Local => {
-                            input_cb_map.insert(op_id, max_cb);
-                            cb_written.push(false);
-                            writeln!(reader, "{indent}CircularBuffer cb{max_cb}(tt::CBIndex::c_{max_cb});");
-                            max_cb += 1;
+                            if let Some(cb_id) = input_cb_map.get(&op_id) {
+                                writeln!(reader, "{indent}CircularBuffer cb{cb_id}(tt::CBIndex::c_{cb_id});");
+                            }
                         }
                         Scope::Register => todo!(),
                     },
@@ -770,18 +767,17 @@ impl TTDevice {
                         };
 
                         let elem_size = dtype.bit_size() as u32 / 8;
-                        let cb_id = input_cb_map[&dst];
-
-                        match (ld_layout, st_layout) {
-                            (MemLayout::Scalar, MemLayout::Scalar) => {
-                                writeln!(reader, "{indent}cb{cb_id}.reserve_back(1);");
-                                writeln!(
-                                    reader,
-                                    "{indent}noc.async_read(p{src}, cb{cb_id}, {elem_size},\n{indent}  {{ .page_id = (r{ld_idx}*{elem_size})/{PAGE_SIZE}, .offset_bytes = (r{ld_idx}*{elem_size})%{PAGE_SIZE} }},\n{indent}  {{ .offset_bytes = r{st_idx}*{elem_size} }});"
-                                );
-                                cb_written[cb_id] = true;
+                        if let Some(cb_id) = input_cb_map.get(&dst) {
+                            match (ld_layout, st_layout) {
+                                (MemLayout::Scalar, MemLayout::Scalar) => {
+                                    writeln!(reader, "{indent}cb{cb_id}.reserve_back(1);");
+                                    writeln!(
+                                        reader,
+                                        "{indent}noc.async_read(p{src}, cb{cb_id}, {elem_size},\n{indent}  {{ .page_id = (r{ld_idx}*{elem_size})/{PAGE_SIZE}, .offset_bytes = (r{ld_idx}*{elem_size})%{PAGE_SIZE} }},\n{indent}  {{ .offset_bytes = r{st_idx}*{elem_size} }});"
+                                    );
+                                }
+                                _ => todo!(),
                             }
-                            _ => todo!(),
                         }
                     }
                     Op::Loop { len } => {
@@ -806,10 +802,8 @@ impl TTDevice {
                 op_id = kernel.next_op(op_id);
             }
             writeln!(reader, "{indent}noc.async_read_barrier();");
-            for (cb_id, written) in cb_written.iter().enumerate() {
-                if *written {
-                    writeln!(reader, "{indent}cb{cb_id}.push_back(1);");
-                }
+            for cb_id in input_cb_map.values() {
+                writeln!(reader, "{indent}cb{cb_id}.push_back(1);");
             }
             writeln!(reader, "}}");
         }
