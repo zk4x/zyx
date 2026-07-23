@@ -250,7 +250,7 @@ int main() {
             MeshBuffer::create(buf_config, dram_config, mesh_device.get());
         uint32_t idx = buffers.size();
         cerr << "[TT_ALLOC] idx=" << idx << " size=" << size
-             << " page=" << tile_bytes << " addr=" << buf->address()
+             << " page=" << PAGE_SIZE << " addr=" << buf->address()
              << " actual_sz=" << buf->size() << endl;
         buffers.push_back(buf);
         cout << R"({"status":"ok","index":")" << idx << R"("})" << endl;
