@@ -739,16 +739,18 @@ impl TTDevice {
                         };
 
                         let elem_size = dtype.bit_size() as u32 / 8;
+                        let cb_id = cb_map[&dst];
 
                         match (ld_layout, st_layout) {
                             (MemLayout::Scalar, MemLayout::Scalar) => {
-                                let p_id = src;
-                                let cb_id = cb_map[&dst];
-                                // Poll to reserve one CB tile
+                                writeln!(reader, "{indent}uint32_t byte_offset = r{ld_idx} * {elem_size};");
+                                writeln!(reader, "{indent}uint32_t page_id = byte_offset / PAGE_SIZE;");
+                                writeln!(reader, "{indent}uint32_t off = byte_offset % PAGE_SIZE;");
+                                writeln!(reader, "{indent}uint32_t l1_off = r{st_idx} * {elem_size};");
                                 writeln!(reader, "{indent}cb{cb_id}.reserve_back(1);");
                                 writeln!(
                                     reader,
-                                    "noc.async_read(p{p_id}, cb{cb_id}, {elem_size}, {{.page_id = 0}}, {{.offset_bytes = 0}});"
+                                    "{indent}noc.async_read(p{src}, cb{cb_id}, {elem_size}, {{.page_id = page_id, .offset_bytes = off}}, {{.offset_bytes = l1_off}});"
                                 );
                             }
                             _ => todo!(),
@@ -762,6 +764,13 @@ impl TTDevice {
                         indent.pop();
                         indent.pop();
                         writeln!(reader, "{indent}}}");
+                    }
+                    Op::Const(_) => {
+                        //writeln!(reader, "{indent}{} r{op_id} = {};", val.dtype(), val.tt());
+                        todo!()
+                    }
+                    Op::Index { scope: Scope::Global, axis, .. } => {
+                        writeln!(reader, "{indent}uint32_t r{op_id} = gidx{axis};");
                     }
                     // Barrier means reader kernel is over
                     Op::Barrier => break,
