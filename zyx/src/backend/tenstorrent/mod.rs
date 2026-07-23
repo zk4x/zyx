@@ -710,13 +710,13 @@ impl TTDevice {
                     if let Op::Define { scope: Scope::Local, .. } = kernel.ops[dst].op {
                         if let Op::Load { src, .. } = kernel.ops[x].op {
                             if let Op::Define { ro: true, .. } = kernel.ops[src].op {
-                                input_cb_map.insert(op_id, max_cb);
+                                input_cb_map.insert(dst, max_cb);
                                 max_cb += 1;
                             } else {
                                 unreachable!()
                             }
                         } else {
-                            output_cb_map.insert(op_id, max_cb);
+                            output_cb_map.insert(dst, max_cb);
                             max_cb += 1;
                         }
                     }
