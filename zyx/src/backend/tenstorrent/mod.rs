@@ -697,7 +697,7 @@ impl TTDevice {
         writeln!(reader, "#include \"api/dataflow/circular_buffer.h\"");
         writeln!(reader, "#include \"api/tensor/noc_traits.h\"");
         writeln!(reader, "void kernel_main() {{");
-        write!(indent, "  ");
+        indent += "  ";
         writeln!(reader, "{indent}Noc noc;");
         {
             const PAGE_SIZE: u32 = 4096;
@@ -727,7 +727,6 @@ impl TTDevice {
                         }
                         Scope::Register => todo!(),
                     },
-                    Op::Loop { len } => todo!(),
                     Op::Store { dst, x, index: st_idx, layout: st_layout } => {
                         let Op::Load { src, index: ld_idx, layout: ld_layout } = kernel.ops[x].op else {
                             panic!("tenstorrent supports only global to local loads in reader kernels with no ops inbetween")
@@ -754,6 +753,15 @@ impl TTDevice {
                             }
                             _ => todo!(),
                         }
+                    }
+                    Op::Loop { len } => {
+                        writeln!(reader, "{indent}for (uint32_t r{op_id} = 0; r{op_id} < {len}; r{op_id}++) {{");
+                        indent += "  ";
+                    }
+                    Op::EndLoop => {
+                        indent.pop();
+                        indent.pop();
+                        writeln!(reader, "{indent}}}");
                     }
                     // Barrier means reader kernel is over
                     Op::Barrier => break,
