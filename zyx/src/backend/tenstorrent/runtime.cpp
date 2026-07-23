@@ -33,6 +33,8 @@ using namespace tt;
 using namespace tt::tt_metal;
 using namespace tt::tt_metal::distributed;
 
+constexpr uint32_t PAGE_SIZE = 4096;
+
 // ---------------------------------------------------------------------------
 // Cache directory resolution (XDG convention)
 // ---------------------------------------------------------------------------
@@ -234,18 +236,15 @@ int main() {
       }
 
       try {
-        uint32_t tile_bytes = extract_u32(line, "tile_bytes");
-        if (tile_bytes == 0)
-          tile_bytes = 4096;
-        uint32_t n_tiles = (size + tile_bytes - 1) / tile_bytes;
-        if (n_tiles == 0)
-          n_tiles = 1;
+        uint32_t n_pages = (size + PAGE_SIZE - 1) / PAGE_SIZE;
+        if (n_pages == 0)
+          n_pages = 1;
 
         DeviceLocalBufferConfig dram_config{};
-        dram_config.page_size = tile_bytes;
+        dram_config.page_size = PAGE_SIZE;
         dram_config.buffer_type = BufferType::DRAM;
         ReplicatedBufferConfig buf_config{.size =
-                                              (uint64_t)n_tiles * tile_bytes};
+                                              (uint64_t)n_pages * PAGE_SIZE};
 
         auto buf =
             MeshBuffer::create(buf_config, dram_config, mesh_device.get());

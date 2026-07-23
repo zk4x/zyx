@@ -691,12 +691,16 @@ impl TTDevice {
 
         // Generate reader kernel source
         let mut reader = String::new();
-        writeln!(reader, "#include <cstint>");
+        writeln!(reader, "#include <cstdint>");
         writeln!(reader, "#include \"api/dataflow/dataflow_api.h\"");
+        writeln!(reader, "#include \"api/dataflow/noc.h\"");
+        writeln!(reader, "#include \"api/dataflow/circular_buffer.h\"");
+        writeln!(reader, "#include \"api/tensor/noc_traits.h\"");
         writeln!(reader, "void kernel_main() {{");
         write!(indent, "  ");
         writeln!(reader, "{indent}Noc noc;");
         {
+            const PAGE_SIZE: u32 = 4096;
             let mut cb_map = Map::default();
             let mut max_cb = 0;
             let mut n_tensors = 0;
@@ -705,19 +709,20 @@ impl TTDevice {
                 match kernel.ops[op_id].op {
                     Op::Define { dtype, scope, ro, len: _ } => match scope {
                         Scope::Global => {
-                            let tile_bytes = (1024 * dtype.bit_size() as u32) / 8;
                             match ro {
                                 true => input_dtypes.push(dtype),
                                 false => output_dtypes.push(dtype),
                             }
                             writeln!(reader, "{indent}uint32_t src{op_id} = get_arg_val<uint32_t>({op_id});");
-                            writeln!(reader, "{indent}auto args{op_id} = TensorAccessorArgs<{}>({op_id});", n_tensors * 2);
-                            writeln!(reader, "{indent}auto p{op_id} = TensorAccessor(args{op_id}, src{op_id}, {tile_bytes});");
+                            if ro {
+                                writeln!(reader, "{indent}auto args{op_id} = TensorAccessorArgs<{}>({op_id});", n_tensors * 2);
+                                writeln!(reader, "{indent}auto p{op_id} = TensorAccessor(args{op_id}, src{op_id}, {PAGE_SIZE});");
+                            }
                             n_tensors += 1;
                         }
                         Scope::Local => {
                             cb_map.insert(op_id, max_cb);
-                            writeln!(reader, "{indent}uint32_t cb{max_cb} = CircularBuffer(tt::CBIndex::c_{max_cb});");
+                            writeln!(reader, "{indent}CircularBuffer cb{max_cb}(tt::CBIndex::c_{max_cb});");
                             max_cb += 1;
                         }
                         Scope::Register => todo!(),
@@ -727,22 +732,25 @@ impl TTDevice {
                         let Op::Load { src, index: ld_idx, layout: ld_layout } = kernel.ops[x].op else {
                             panic!("tenstorrent supports only global to local loads in reader kernels with no ops inbetween")
                         };
-                        let Op::Define { dtype: src_dtype, scope: Scope::Global, ro: _, len: _ } = kernel.ops[src].op else {
+                        let Op::Define { scope: Scope::Global, .. } = kernel.ops[src].op else {
                             unreachable!()
                         };
-                        let Op::Define { dtype: dst_dtype, scope: Scope::Local, ro: _, len: _ } = kernel.ops[dst].op else {
+                        let Op::Define { dtype, scope: Scope::Local, .. } = kernel.ops[dst].op else {
                             unreachable!()
                         };
 
-                        let tile_bytes = (1024 * dst_dtype.bit_size() as u32) / 8;
+                        let elem_size = dtype.bit_size() as u32 / 8;
 
                         match (ld_layout, st_layout) {
                             (MemLayout::Scalar, MemLayout::Scalar) => {
                                 let p_id = src;
                                 let cb_id = cb_map[&dst];
                                 // Poll to reserve one CB tile
-                                writeln!(reader, "{indent}cb{cb_id}.reserve_back(1)");
-                                writeln!(reader, "noc.async_read(p{p_id}, cb{cb_id}, {tile_bytes}, {{.offset_bytes=0}}, {{}});");
+                                writeln!(reader, "{indent}cb{cb_id}.reserve_back(1);");
+                                writeln!(
+                                    reader,
+                                    "noc.async_read(p{p_id}, cb{cb_id}, {elem_size}, {{.page_id = 0}}, {{.offset_bytes = 0}});"
+                                );
                             }
                             _ => todo!(),
                         }
@@ -753,9 +761,9 @@ impl TTDevice {
                 }
                 op_id = kernel.next_op(op_id);
             }
-            writeln!(reader, "noc.async_read_barrier();");
+            writeln!(reader, "{indent}noc.async_read_barrier();");
             for (_, cb_id) in cb_map {
-                writeln!(reader, "cb{cb_id}.push_back(1);");
+                writeln!(reader, "{indent}cb{cb_id}.push_back(1);");
             }
         }
 
