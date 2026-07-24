@@ -953,6 +953,97 @@ impl TTDevice {
 
         // Generate writer kernel source
         let mut writer = String::new();
+        // Advance past the second barrier into the writer section
+        op_id = kernel.next_op(op_id);
+
+        const PAGE_SIZE: u32 = 4096;
+        writeln!(writer, "#include <cstdint>");
+        writeln!(writer, "#include \"api/dataflow/dataflow_api.h\"");
+        writeln!(writer, "#include \"api/dataflow/noc.h\"");
+        writeln!(writer, "#include \"api/dataflow/circular_buffer.h\"");
+        writeln!(writer, "#include \"api/tensor/noc_traits.h\"");
+        writeln!(writer, "void kernel_main() {{");
+        writeln!(writer, "{indent}Noc noc(1);");
+
+        for cb_id in output_cb_map.values() {
+            writeln!(writer, "{indent}CircularBuffer cb{cb_id}(tt::CBIndex::c_{cb_id});");
+        }
+
+        // Emit TensorAccessor for each output global (ro=false) in IR order
+        let mut out_global_count = 0u32;
+        {
+            let mut scan = kernel.head;
+            while !scan.is_null() {
+                if let Op::Define { scope: Scope::Global, ro: false, .. } = kernel.ops[scan].op {
+                    writeln!(
+                        writer,
+                        "{indent}uint32_t out{scan} = get_arg_val<uint32_t>({out_global_count});"
+                    );
+                    writeln!(
+                        writer,
+                        "{indent}auto args_out{scan} = TensorAccessorArgs<{}>({out_global_count});",
+                        out_global_count * 2
+                    );
+                    writeln!(
+                        writer,
+                        "{indent}auto p_out{scan} = TensorAccessor(args_out{scan}, out{scan}, {PAGE_SIZE});"
+                    );
+                    out_global_count += 1;
+                }
+                scan = kernel.next_op(scan);
+            }
+        }
+
+        while !op_id.is_null() {
+            match kernel.ops[op_id].op {
+                Op::Store { dst, x, index: st_idx, layout } => {
+                    // If storing a Load-from-local value to global → writer CB→DRAM
+                    if let Op::Load { src, .. } = kernel.ops[x].op {
+                        if let Some(&cb_id) = output_cb_map.get(&src) {
+                            let Op::Define { dtype, .. } = kernel.ops[dst].op else {
+                                unreachable!()
+                            };
+                            let elem_size = dtype.bit_size() as u32 / 8;
+                            writeln!(writer, "{indent}cb{cb_id}.wait_front(1);");
+                            writeln!(
+                                writer,
+                                "{indent}noc.async_write(\n{indent}  use<CircularBuffer::AddrSelector::READ_PTR>(cb{cb_id}), p_out{dst}, {elem_size},\n{indent}  {{}},\n{indent}  {{ .page_id = (r{st_idx}*{elem_size})/{PAGE_SIZE}, .offset_bytes = (r{st_idx}*{elem_size})%{PAGE_SIZE} }});"
+                            );
+                            writeln!(writer, "{indent}noc.async_write_barrier();");
+                            writeln!(writer, "{indent}cb{cb_id}.pop_front(1);");
+                        }
+                    }
+                    // If storing a compute result to local → compute writing to output CB,
+                    // handled by compute kernel, skip in writer.
+                }
+                Op::Load { src, .. } => {
+                    // Load from CB in writer section — handled implicitly by the Store that consumes it
+                }
+                Op::Const(val) => {
+                    writeln!(writer, "{indent}{} r{op_id} = {};", val.dtype().c_type(), val.c_code());
+                }
+                Op::Index { scope: Scope::Global, axis, .. } => {
+                    writeln!(writer, "{indent}uint32_t r{op_id} = gidx{axis};");
+                }
+                Op::Loop { len } => {
+                    writeln!(writer, "{indent}for (uint32_t r{op_id} = 0; r{op_id} < {len}; r{op_id}++) {{");
+                    indent += "  ";
+                }
+                Op::EndLoop => {
+                    indent.pop();
+                    indent.pop();
+                    writeln!(writer, "{indent}}}");
+                }
+                Op::Barrier => break,
+                _ => {}
+            }
+            op_id = kernel.next_op(op_id);
+        }
+        writeln!(writer, "}}");
+
+        if debug_asm {
+            println!("[tenstorrent] writer:\n{writer}");
+        }
 
         let prog_id = self.programs.push(TTProgram { input_dtypes, output_dtypes });
 
