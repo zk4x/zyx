@@ -497,11 +497,12 @@ int main() {
             DataMovementConfig{
                 .processor = DataMovementProcessor::RISCV_0,
                 .noc = NOC::RISCV_0_default,
+                .noc_mode = NOC_MODE::DM_DEDICATED_NOC,
                 .compile_args = reader_compile_args,
-                .defines = map<string, string>(),
-                .named_compile_args = unordered_map<string, uint32_t>(),
+                .defines = {},
+                .named_compile_args = {},
                 .opt_level = KernelBuildOptLevel::O2,
-                .compiler_include_paths = vector<filesystem::path>(),
+                .compiler_include_paths = {},
             });
         cerr << "[TT] creating writer kernel" << endl;
         auto writer = CreateKernelFromString(
@@ -509,17 +510,29 @@ int main() {
             DataMovementConfig{
                 .processor = DataMovementProcessor::RISCV_1,
                 .noc = NOC::RISCV_1_default,
+                .noc_mode = NOC_MODE::DM_DEDICATED_NOC,
                 .compile_args = writer_compile_args,
-                .defines = map<string, string>(),
-                .named_compile_args = unordered_map<string, uint32_t>(),
+                .defines = {},
+                .named_compile_args = {},
                 .opt_level = KernelBuildOptLevel::O2,
-                .compiler_include_paths = vector<filesystem::path>(),
+                .compiler_include_paths = {},
             });
         cerr << "[TT] creating compute kernel" << endl;
         auto compute = CreateKernelFromString(
             program, cfg.compute_source, core,
-            ComputeConfig{.math_fidelity = MathFidelity::HiFi4
-        });
+            ComputeConfig{
+                .math_fidelity = MathFidelity::HiFi4,
+                .fp32_dest_acc_en = false,
+                .dst_full_sync_en = false,
+                .unpack_to_dest_mode = {},
+                .bfp8_pack_precise = false,
+                .math_approx_mode = false,
+                .compile_args = {},
+                .defines = {},
+                .named_compile_args = {},
+                .opt_level = KernelBuildOptLevel::O3,
+                .compiler_include_paths = {},
+            });
 
         // Set runtime args — buffer addresses
         cerr << "[TT] setting rt args n_tiles=" << n_tiles << endl;

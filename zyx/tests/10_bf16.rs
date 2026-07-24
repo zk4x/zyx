@@ -71,9 +71,11 @@ fn bf16_add1() -> Result<(), ZyxError> {
     }
 
     // Test addition at bf16 precision
-    let a = Tensor::from([bf16::from_f32(1.0), bf16::from_f32(2.0), bf16::from_f32(3.0)]);
-    let b = Tensor::from([bf16::from_f32(4.0), bf16::from_f32(5.0), bf16::from_f32(6.0)]);
-    let c = a + b.sin();
+    let c = {
+        let a = Tensor::from([bf16::from_f32(1.0), bf16::from_f32(2.0), bf16::from_f32(3.0)]);
+        let b = Tensor::from([bf16::from_f32(4.0), bf16::from_f32(5.0), bf16::from_f32(6.0)]);
+        a + b.sin()
+    };
 
     // Compare at bf16 precision: [5, 7, 9]
     let c: Vec<bf16> = c.try_into()?;
