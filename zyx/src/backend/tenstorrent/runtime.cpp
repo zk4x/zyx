@@ -554,6 +554,9 @@ int main() {
           }
           SetRuntimeArgs(program, writer, core, writer_rt_args);
         }
+        {
+          SetRuntimeArgs(program, compute, core, {});
+        }
         cerr << "[TT] before add_program" << endl;
         workload.add_program(device_range, std::move(program));
         cerr << "[TT] after add_program" << endl;

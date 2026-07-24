@@ -195,9 +195,7 @@ impl Runtime {
 
     /// Returns operation capabilities for a dtype across all devices.
     pub fn supports_dtype(&mut self, dtype: DType) -> OpCapability {
-        if self.initialize_devices().is_err() {
-            return OpCapability::none();
-        }
+        self.initialize_devices().expect("initialize_devices");
         let mut caps = OpCapability::none();
         for (_id, dev) in self.devices.iter() {
             caps.0 |= dev.info().supports_dtype(dtype).0;

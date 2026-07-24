@@ -824,9 +824,9 @@ impl TTDevice {
         writeln!(compute, "#include <cstdint>");
         writeln!(compute, "#include \"api/compute/common.h\"");
         writeln!(compute, "#include \"api/compute/compute_kernel_api.h\"");
-        writeln!(compute, "#include \"api/compute/eltwise_binary.h\"");
         writeln!(compute, "#include \"api/compute/eltwise_binary_sfpu.h\"");
         writeln!(compute, "#include \"api/compute/tile_move_copy.h\"");
+        writeln!(compute, "#include \"api/compute/eltwise_unary/eltwise_unary.h\"");
         writeln!(compute, "#include \"api/compute/eltwise_unary/typecast.h\"");
         writeln!(compute, "#include \"api/compute/eltwise_unary/trigonometry.h\"");
         writeln!(compute, "#include \"api/dataflow/circular_buffer.h\"");
@@ -848,9 +848,9 @@ impl TTDevice {
             let output_ids: Vec<u32> = output_cb_map.values().copied().collect();
             if !input_ids.is_empty() && !output_ids.is_empty() {
                 let in0 = input_ids[0];
-                let in1 = input_ids.get(1).copied().unwrap_or(in0);
+                let _in1 = input_ids.get(1).copied().unwrap_or(in0);
                 let out0 = output_ids[0];
-                writeln!(compute, "{indent}binary_op_init_common({in0}, {in1}, {out0});");
+                writeln!(compute, "{indent}init_sfpu({in0}, {out0});");
             }
 
             // Emit init headers for ops we might encounter
@@ -963,14 +963,16 @@ impl TTDevice {
             }
 
             writeln!(compute, "{indent}tile_regs_commit();");
+            writeln!(compute, "{indent}tile_regs_wait();");
+            for &(slot, cb_id) in &output_stores {
+                writeln!(compute, "{indent}cb{cb_id}.reserve_back(1);");
+                writeln!(compute, "{indent}pack_tile({slot}, {cb_id});");
+            }
             for &loaded_cb in &load_input_cbs {
                 writeln!(compute, "{indent}cb{loaded_cb}.pop_front(1);");
             }
-            for &(slot, cb_id) in &output_stores {
-                writeln!(compute, "{indent}cb{cb_id}.reserve_back(1);");
-                writeln!(compute, "{indent}tile_regs_wait();");
-                writeln!(compute, "{indent}pack_tile({slot}, {cb_id});");
-                writeln!(compute, "{indent}tile_regs_release();");
+            writeln!(compute, "{indent}tile_regs_release();");
+            for &(_, cb_id) in &output_stores {
                 writeln!(compute, "{indent}cb{cb_id}.push_back(1);");
             }
             writeln!(compute, "}}");
