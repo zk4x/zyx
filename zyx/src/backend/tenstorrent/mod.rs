@@ -848,17 +848,19 @@ impl TTDevice {
             let mut has_typecast = false;
             let mut has_sin = false;
             let mut has_binary = false;
-            let mut dst_slots: Map<OpId, u32> = Map::default();
+            let (_dtypes, rcs) = kernel.compute_dtypes_and_rcs();
+            let mut dst_slots: Map<OpId, Vec<u32>> = Map::default();
+            let mut consumer_count: Map<OpId, u32> = Map::default();
             let mut next_slot = 0u32;
+            let mut output_stores: Vec<(u32, u32)> = Vec::new();
 
-            // First pass: check which ops are present and collect CB info
+            // First pass: collect init headers from ops
             let mut scan = op_id;
             while !scan.is_null() {
                 match kernel.ops[scan].op {
                     Op::Cast { .. } => has_typecast = true,
                     Op::Unary { uop: UOp::Sin, .. } => has_sin = true,
                     Op::Binary { bop: BOp::Add, .. } => has_binary = true,
-                    Op::Store { .. } => {}
                     Op::Barrier => break,
                     _ => {}
                 }
@@ -893,7 +895,6 @@ impl TTDevice {
                 }
                 pre_scan = kernel.next_op(pre_scan);
             }
-            // Emit wait_front for all input CBs, then acquire
             for &cb_id in &load_input_cbs {
                 writeln!(compute, "{indent}cb{cb_id}.wait_front(1);");
             }
@@ -903,46 +904,65 @@ impl TTDevice {
                 match kernel.ops[op_id].op {
                     Op::Load { src, index: _, layout: MemLayout::Tile { .. } } => {
                         if let Some(&cb_id) = input_cb_map.get(&src) {
-                            let slot = next_slot;
-                            next_slot += 1;
-                            dst_slots.insert(op_id, slot);
-                            writeln!(compute, "{indent}copy_tile({cb_id}, 0, {slot});");
+                            let n = rcs.get(&op_id).copied().unwrap_or(1).max(1) as usize;
+                            let mut slots = Vec::with_capacity(n);
+                            for _ in 0..n {
+                                let slot = next_slot;
+                                next_slot += 1;
+                                slots.push(slot);
+                                writeln!(compute, "{indent}copy_tile({cb_id}, 0, {slot});");
+                            }
+                            dst_slots.insert(op_id, slots);
                         }
                     }
                     Op::Cast { x, dtype: DType::BF16 } => {
-                        let slot = dst_slots[&x];
-                        dst_slots.insert(op_id, slot);
+                        let idx = consumer_count.entry(x).or_insert(0);
+                        let slot = dst_slots[&x][*idx as usize];
+                        *idx += 1;
+                        dst_slots.insert(op_id, vec![slot]);
                         writeln!(compute, "{indent}typecast_tile<tt::DataFormat::Float32, tt::DataFormat::Float16_b>({slot});");
                     }
                     Op::Unary { x, uop: UOp::Sin } => {
-                        let slot = dst_slots[&x];
-                        dst_slots.insert(op_id, slot);
+                        let idx = consumer_count.entry(x).or_insert(0);
+                        let slot = dst_slots[&x][*idx as usize];
+                        *idx += 1;
+                        dst_slots.insert(op_id, vec![slot]);
                         writeln!(compute, "{indent}sin_tile({slot});");
                     }
                     Op::Binary { x, y, bop: BOp::Add } => {
-                        let slot_x = dst_slots[&x];
-                        let slot_y = dst_slots[&y];
-                        dst_slots.insert(op_id, slot_x);
+                        let x_idx = consumer_count.entry(x).or_insert(0);
+                        let slot_x = dst_slots[&x][*x_idx as usize];
+                        *x_idx += 1;
+                        let y_idx = consumer_count.entry(y).or_insert(0);
+                        let slot_y = dst_slots[&y][*y_idx as usize];
+                        *y_idx += 1;
+                        dst_slots.insert(op_id, vec![slot_x]);
                         writeln!(compute, "{indent}add_binary_tile({slot_x}, {slot_y}, {slot_x});");
                     }
                     Op::Store { dst, x, index: _, layout: MemLayout::Tile { .. } } => {
                         if let Some(&cb_id) = output_cb_map.get(&dst) {
-                            let slot = dst_slots[&x];
-                            writeln!(compute, "{indent}tile_regs_commit();");
-                            for &loaded_cb in &load_input_cbs {
-                                writeln!(compute, "{indent}cb{loaded_cb}.pop_front(1);");
-                            }
-                            writeln!(compute, "{indent}cb{cb_id}.reserve_back(1);");
-                            writeln!(compute, "{indent}tile_regs_wait();");
-                            writeln!(compute, "{indent}pack_tile({slot}, {cb_id});");
-                            writeln!(compute, "{indent}tile_regs_release();");
-                            writeln!(compute, "{indent}cb{cb_id}.push_back(1);");
+                            let idx = consumer_count.entry(x).or_insert(0);
+                            let slot = dst_slots[&x][*idx as usize];
+                            *idx += 1;
+                            output_stores.push((slot, cb_id));
                         }
                     }
                     Op::Barrier => break,
                     _ => {}
                 }
                 op_id = kernel.next_op(op_id);
+            }
+
+            writeln!(compute, "{indent}tile_regs_commit();");
+            for &loaded_cb in &load_input_cbs {
+                writeln!(compute, "{indent}cb{loaded_cb}.pop_front(1);");
+            }
+            for &(slot, cb_id) in &output_stores {
+                writeln!(compute, "{indent}cb{cb_id}.reserve_back(1);");
+                writeln!(compute, "{indent}tile_regs_wait();");
+                writeln!(compute, "{indent}pack_tile({slot}, {cb_id});");
+                writeln!(compute, "{indent}tile_regs_release();");
+                writeln!(compute, "{indent}cb{cb_id}.push_back(1);");
             }
             writeln!(compute, "}}");
         }
