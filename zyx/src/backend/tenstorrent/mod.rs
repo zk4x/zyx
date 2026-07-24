@@ -1066,7 +1066,6 @@ impl TTDevice {
                                 writer,
                                 "{indent}noc.async_write(use<CircularBuffer::AddrSelector::READ_PTR>(cb{cb_id}),\n{indent}  p_out{dst}, {elem_size}, {{}},\n{indent}  {{ .page_id = (r{st_idx}*{elem_size})/{PAGE_SIZE}, .offset_bytes = (r{st_idx}*{elem_size})%{PAGE_SIZE} }});"
                             );
-                            writeln!(writer, "{indent}noc.async_write_barrier();");
                             if loop_depth == 0 {
                                 writeln!(writer, "{indent}cb{cb_id}.pop_front(1);");
                             }
@@ -1099,6 +1098,7 @@ impl TTDevice {
                     indent.pop();
                     writeln!(writer, "{indent}}}");
                     if loop_depth == 1 {
+                        writeln!(writer, "{indent}noc.async_write_barrier();");
                         for cb_id in &writer_loop_cbs {
                             writeln!(writer, "{indent}cb{cb_id}.pop_front(1);");
                         }
