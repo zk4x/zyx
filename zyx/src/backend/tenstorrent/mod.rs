@@ -554,29 +554,18 @@ impl RuntimeProcess {
         id: u32,
         reader_source: &str,
         compute_source: &str,
-        input_formats: &[u32],
-        input_tile_bytes: &[u32],
-        output_formats: &[u32],
-        output_tile_bytes: &[u32],
+        writer_source: &str,
+        cb_config: &[(u32, u32, u32)],
     ) -> Result<(), BackendError> {
-        let n_inputs = input_formats.len();
-        let n_outputs = output_formats.len();
         let reader_source_len = reader_source.len();
         let compute_source_len = compute_source.len();
+        let writer_source_len = writer_source.len();
+        let n_cbs = cb_config.len();
         let mut cmd = format!(
-            r#"{{"cmd":"compile_program","id":{id},"reader_source_len":{reader_source_len},"compute_source_len":{compute_source_len},"n_inputs":{n_inputs},"n_outputs":{n_outputs}"#
+            r#"{{"cmd":"compile_program","id":{id},"reader_source_len":{reader_source_len},"compute_source_len":{compute_source_len},"writer_source_len":{writer_source_len},"n_cbs":{n_cbs}"#
         );
-        for (i, fmt) in input_formats.iter().enumerate() {
-            cmd.push_str(&format!(r#","fmt_i{i}":{fmt}"#));
-        }
-        for (i, tb) in input_tile_bytes.iter().enumerate() {
-            cmd.push_str(&format!(r#","tb_i{i}":{tb}"#));
-        }
-        for (i, fmt) in output_formats.iter().enumerate() {
-            cmd.push_str(&format!(r#","fmt_o{i}":{fmt}"#));
-        }
-        for (i, tb) in output_tile_bytes.iter().enumerate() {
-            cmd.push_str(&format!(r#","tb_o{i}":{tb}"#));
+        for (i, (idx, fmt, tb)) in cb_config.iter().enumerate() {
+            cmd.push_str(&format!(r#","cb_idx{i}":{idx},"cb_fmt{i}":{fmt},"cb_tb{i}":{tb}"#));
         }
         cmd.push('}');
         self.send(&cmd)?;
@@ -587,6 +576,10 @@ impl RuntimeProcess {
         self.stdin.write_all(compute_source.as_bytes()).map_err(|e| BackendError {
             status: ErrorStatus::KernelCompilation,
             context: format!("tt-runtime write compute: {e}").into(),
+        })?;
+        self.stdin.write_all(writer_source.as_bytes()).map_err(|e| BackendError {
+            status: ErrorStatus::KernelCompilation,
+            context: format!("tt-runtime write writer: {e}").into(),
         })?;
         self.stdin.flush().map_err(|e| BackendError {
             status: ErrorStatus::KernelCompilation,
@@ -603,12 +596,14 @@ impl RuntimeProcess {
         Ok(())
     }
 
-    fn run(&mut self, id: u32, n_tiles: u32, src_indices: &[u32], dst_index: u32) -> Result<(), BackendError> {
+    fn run(&mut self, id: u32, n_tiles: u32, src_indices: &[u32], dst_indices: &[u32]) -> Result<(), BackendError> {
         let mut cmd = format!(r#"{{"cmd":"run","id":{id},"n_tiles":{n_tiles}"#);
         for (i, idx) in src_indices.iter().enumerate() {
             cmd.push_str(&format!(r#","src{i}":{idx}"#));
         }
-        cmd.push_str(&format!(r#","dst0":{dst_index}"#));
+        for (i, idx) in dst_indices.iter().enumerate() {
+            cmd.push_str(&format!(r#","dst{i}":{idx}"#));
+        }
         cmd.push('}');
         self.send(&cmd)?;
         let resp = self.recv_with_timeout(self.timeout_ms)?;
@@ -728,21 +723,21 @@ impl TTDevice {
         let mut op_id = kernel.head;
         {
             const PAGE_SIZE: u32 = 4096;
-            let mut n_tensors = 0;
+            let mut input_arg_idx = 0u32;
+            let mut loop_depth = 0u32;
             while !op_id.is_null() {
                 match kernel.ops[op_id].op {
-                    Op::Define { dtype, scope, ro, len: _ } => match scope {
+                    Op::Define { dtype, scope, ro, .. } => match scope {
                         Scope::Global => {
-                            match ro {
-                                true => input_dtypes.push(dtype),
-                                false => output_dtypes.push(dtype),
-                            }
-                            writeln!(reader, "{indent}uint32_t src{op_id} = get_arg_val<uint32_t>({op_id});");
                             if ro {
-                                writeln!(reader, "{indent}auto args{op_id} = TensorAccessorArgs<{}>({op_id});", n_tensors * 2);
+                                input_dtypes.push(dtype);
+                                writeln!(reader, "{indent}uint32_t src{op_id} = get_arg_val<uint32_t>({input_arg_idx});");
+                                writeln!(reader, "{indent}auto args{op_id} = TensorAccessorArgs<{}>({input_arg_idx});", input_arg_idx * 2);
                                 writeln!(reader, "{indent}auto p{op_id} = TensorAccessor(args{op_id}, src{op_id}, {PAGE_SIZE});");
+                                input_arg_idx += 1;
+                            } else {
+                                output_dtypes.push(dtype);
                             }
-                            n_tensors += 1;
                         }
                         Scope::Local => {
                             if let Some(cb_id) = input_cb_map.get(&op_id) {
@@ -770,7 +765,9 @@ impl TTDevice {
                         if let Some(cb_id) = input_cb_map.get(&dst) {
                             match (ld_layout, st_layout) {
                                 (MemLayout::Scalar, MemLayout::Scalar) => {
-                                    writeln!(reader, "{indent}cb{cb_id}.reserve_back(1);");
+                                    if loop_depth == 0 {
+                                        writeln!(reader, "{indent}cb{cb_id}.reserve_back(1);");
+                                    }
                                     writeln!(
                                         reader,
                                         "{indent}noc.async_read(p{src}, cb{cb_id}, {elem_size},\n{indent}  {{ .page_id = (r{ld_idx}*{elem_size})/{PAGE_SIZE}, .offset_bytes = (r{ld_idx}*{elem_size})%{PAGE_SIZE} }},\n{indent}  {{ .offset_bytes = r{st_idx}*{elem_size} }});"
@@ -781,13 +778,21 @@ impl TTDevice {
                         }
                     }
                     Op::Loop { len } => {
+                        if loop_depth == 0 {
+                            // Reserve CB space before the loop — enough for one tile per CB
+                            for cb_id in input_cb_map.values() {
+                                writeln!(reader, "{indent}cb{cb_id}.reserve_back(1);");
+                            }
+                        }
                         writeln!(reader, "{indent}for (uint32_t r{op_id} = 0; r{op_id} < {len}; r{op_id}++) {{");
                         indent += "  ";
+                        loop_depth += 1;
                     }
                     Op::EndLoop => {
                         indent.pop();
                         indent.pop();
                         writeln!(reader, "{indent}}}");
+                        loop_depth -= 1;
                     }
                     Op::Const(val) => {
                         writeln!(reader, "{indent}{} r{op_id} = {};", val.dtype().c_type(), val.c_code());
@@ -817,9 +822,13 @@ impl TTDevice {
         // Generate compute kernel source
         let mut compute = String::new();
         writeln!(compute, "#include <cstdint>");
+        writeln!(compute, "#include \"api/compute/common.h\"");
         writeln!(compute, "#include \"api/compute/compute_kernel_api.h\"");
         writeln!(compute, "#include \"api/compute/eltwise_binary.h\"");
+        writeln!(compute, "#include \"api/compute/eltwise_binary_sfpu.h\"");
         writeln!(compute, "#include \"api/compute/tile_move_copy.h\"");
+        writeln!(compute, "#include \"api/compute/eltwise_unary/typecast.h\"");
+        writeln!(compute, "#include \"api/compute/eltwise_unary/trigonometry.h\"");
         writeln!(compute, "#include \"api/dataflow/circular_buffer.h\"");
         writeln!(compute, "void kernel_main() {{");
         let mut indent = String::from("  ");
@@ -869,7 +878,7 @@ impl TTDevice {
 
             // Emit init calls based on scanned ops
             if has_typecast {
-                writeln!(compute, "{indent}typecast_tile_init<tt::DataFormat::Float32, tt::DataFormat::Float16_b>();");
+                writeln!(compute, "{indent}typecast_tile_init<0, 5>();");
             }
             if has_sin {
                 writeln!(compute, "{indent}sin_tile_init();");
@@ -920,7 +929,7 @@ impl TTDevice {
                         let slot = dst_slots[&x][*idx as usize];
                         *idx += 1;
                         dst_slots.insert(op_id, vec![slot]);
-                        writeln!(compute, "{indent}typecast_tile<tt::DataFormat::Float32, tt::DataFormat::Float16_b>({slot});");
+                        writeln!(compute, "{indent}typecast_tile<0, 5>({slot});");
                     }
                     Op::Unary { x, uop: UOp::Sin } => {
                         let idx = consumer_count.entry(x).or_insert(0);
@@ -1059,12 +1068,49 @@ impl TTDevice {
             println!("[tenstorrent] writer:\n{writer}");
         }
 
-        let prog_id = self.programs.push(TTProgram { input_dtypes, output_dtypes });
+        let prog_id = self.programs.push(TTProgram { input_dtypes: input_dtypes.clone(), output_dtypes: output_dtypes.clone() });
 
         {
-            //let mut rt_guard = self.runtime.lock().unwrap();
-            //rt_guard.compile_program( )?;
-            todo!();
+            let mut cb_config = Vec::with_capacity(input_cb_map.len() + output_cb_map.len());
+            let dtype_to_tt_fmt = |dt: DType| -> u32 {
+                match dt {
+                    DType::F32 => 0,
+                    DType::F16 => 1,
+                    DType::BF16 => 2,
+                    _ => 0,
+                }
+            };
+            let tile_bytes_of = |dt: DType| -> u32 {
+                let te = 1024u64;
+                (match dt {
+                    DType::F32 => 4 * te,
+                    DType::F16 | DType::BF16 => 2 * te,
+                    _ => 4 * te,
+                }) as u32
+            };
+
+            let mut cb_ids: Vec<u32> = input_cb_map.values().copied().collect();
+            for cb_id in output_cb_map.values() {
+                if !cb_ids.contains(cb_id) {
+                    cb_ids.push(*cb_id);
+                }
+            }
+            cb_ids.sort();
+            for cb_id in &cb_ids {
+                // Find the local define for this CB to get its dtype
+                let local_op = input_cb_map.iter().find(|(_, v)| *v == cb_id).or_else(|| {
+                    output_cb_map.iter().find(|(_, v)| *v == cb_id)
+                }).map(|(op, _)| *op);
+                let dt = local_op.and_then(|op| {
+                    if let Op::Define { dtype, .. } = &kernel.ops[op].op { Some(*dtype) } else { None }
+                }).unwrap_or(DType::BF16);
+                let fmt = dtype_to_tt_fmt(dt);
+                let tb = tile_bytes_of(dt);
+                cb_config.push((*cb_id, fmt, tb));
+            }
+
+            let mut rt_guard = self.runtime.lock().unwrap();
+            rt_guard.compile_program(prog_id.0, &reader, &compute, &writer, &cb_config)?;
         }
 
         Ok(prog_id)
@@ -1110,10 +1156,14 @@ impl TTDevice {
             })?;
             src_indices.push(idx);
         }
-        let dst_buf = args[n_inputs];
-        let dst_index = memory_pool
-            .dev_index(dst_buf)
-            .map_err(|e| BackendError { status: ErrorStatus::KernelLaunch, context: format!("dst dev_index: {e}").into() })?;
+        let mut dst_indices: Vec<u32> = Vec::with_capacity(n_outputs);
+        for i in 0..n_outputs {
+            let idx = memory_pool.dev_index(args[n_inputs + i]).map_err(|e| BackendError {
+                status: ErrorStatus::KernelLaunch,
+                context: format!("dst{i} dev_index: {e}").into(),
+            })?;
+            dst_indices.push(idx);
+        }
 
         let src_bytes = memory_pool
             .buffer_size(args[0])
@@ -1132,7 +1182,7 @@ impl TTDevice {
         }
 
         let mut rt_guard = rt.lock().unwrap();
-        rt_guard.run(program_id.0, n_tiles, &src_indices, dst_index)?;
+        rt_guard.run(program_id.0, n_tiles, &src_indices, &dst_indices)?;
 
         Ok(Event::TT(TTEvent))
     }

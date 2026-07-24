@@ -167,10 +167,10 @@ struct TempShm {
 struct ProgramConfig {
   string reader_source;
   string compute_source;
-  vector<uint32_t> input_formats;
-  vector<uint32_t> input_tile_bytes;
-  vector<uint32_t> output_formats;
-  vector<uint32_t> output_tile_bytes;
+  string writer_source;
+  vector<uint32_t> cb_indices;
+  vector<uint32_t> cb_formats;
+  vector<uint32_t> cb_tile_bytes;
 };
 
 int main() {
@@ -343,41 +343,37 @@ int main() {
       }
 
       uint32_t id = extract_u32(line, "id");
-      uint32_t n_inputs = extract_u32(line, "n_inputs");
-      uint32_t n_outputs = extract_u32(line, "n_outputs");
+      uint32_t n_cbs = extract_u32(line, "n_cbs");
 
       try {
-        // Parse per-buffer formats and tile bytes
-        vector<uint32_t> input_formats(n_inputs);
-        vector<uint32_t> input_tile_bytes(n_inputs);
-        for (uint32_t i = 0; i < n_inputs; i++) {
-          input_formats[i] = extract_u32(line, "fmt_i" + to_string(i));
-          input_tile_bytes[i] = extract_u32(line, "tb_i" + to_string(i));
-        }
-        vector<uint32_t> output_formats(n_outputs);
-        vector<uint32_t> output_tile_bytes(n_outputs);
-        for (uint32_t i = 0; i < n_outputs; i++) {
-          output_formats[i] = extract_u32(line, "fmt_o" + to_string(i));
-          output_tile_bytes[i] = extract_u32(line, "tb_o" + to_string(i));
+        vector<uint32_t> cb_indices(n_cbs);
+        vector<uint32_t> cb_formats(n_cbs);
+        vector<uint32_t> cb_tile_bytes(n_cbs);
+        for (uint32_t i = 0; i < n_cbs; i++) {
+          cb_indices[i] = extract_u32(line, "cb_idx" + to_string(i));
+          cb_formats[i] = extract_u32(line, "cb_fmt" + to_string(i));
+          cb_tile_bytes[i] = extract_u32(line, "cb_tb" + to_string(i));
         }
 
-        // Read reader + compute sources sent as raw bytes after JSON line
+        // Read reader + compute + writer sources sent as raw bytes after JSON line
         uint32_t reader_source_len = extract_u32(line, "reader_source_len");
         string reader_source(reader_source_len, '\0');
         cin.read(&reader_source[0], reader_source_len);
         uint32_t compute_source_len = extract_u32(line, "compute_source_len");
         string compute_source(compute_source_len, '\0');
         cin.read(&compute_source[0], compute_source_len);
+        uint32_t writer_source_len = extract_u32(line, "writer_source_len");
+        string writer_source(writer_source_len, '\0');
+        cin.read(&writer_source[0], writer_source_len);
 
-        // Store sources and CB config for later use at run time
         ProgramConfig cfg;
         cfg.reader_source = reader_source;
         cfg.compute_source = compute_source;
-        cfg.input_formats = input_formats;
-        cfg.input_tile_bytes = input_tile_bytes;
-        cfg.output_formats = output_formats;
-        cfg.output_tile_bytes = output_tile_bytes;
-        // Store at the given ID (must fit exactly, no gaps)
+        cfg.writer_source = writer_source;
+        cfg.cb_indices = cb_indices;
+        cfg.cb_formats = cb_formats;
+        cfg.cb_tile_bytes = cb_tile_bytes;
+
         if (id >= program_cache.size()) {
           program_cache.resize(id + 1);
         }
@@ -401,7 +397,7 @@ int main() {
       uint32_t id = extract_u32(line, "id");
       uint32_t n_tiles = extract_u32(line, "n_tiles");
 
-      // Parse buffer indices: src0, src1, ..., dst0
+      // Parse buffer indices: src0, src1, ..., dst0, dst1, ...
       vector<uint32_t> src_indices;
       for (uint32_t i = 0;; i++) {
         string key = "src" + to_string(i);
@@ -410,8 +406,16 @@ int main() {
           break;
         src_indices.push_back(extract_u32(line, key));
       }
+      vector<uint32_t> dst_indices;
+      for (uint32_t i = 0;; i++) {
+        string key = "dst" + to_string(i);
+        auto k = line.find("\"" + key + "\"");
+        if (k == string::npos)
+          break;
+        dst_indices.push_back(extract_u32(line, key));
+      }
       uint32_t n_inputs = src_indices.size();
-      uint32_t dst_index = extract_u32(line, "dst0");
+      uint32_t n_outputs = dst_indices.size();
 
       if (n_tiles == 0)
         n_tiles = 1;
@@ -424,10 +428,12 @@ int main() {
           continue;
         }
       }
-      if (dst_index >= buffers.size() || !buffers[dst_index]) {
-        cout << R"({"status":"error","msg":"run: invalid dst index )"
-             << dst_index << R"("})" << endl;
-        continue;
+      for (uint32_t i = 0; i < n_outputs; i++) {
+        if (dst_indices[i] >= buffers.size() || !buffers[dst_indices[i]]) {
+          cout << R"({"status":"error","msg":"run: invalid dst index )"
+               << dst_indices[i] << R"("})" << endl;
+          continue;
+        }
       }
 
       // Look up cached program config by sequential ID
@@ -450,7 +456,7 @@ int main() {
           DataFormat df;
           switch (fmt) {
           case 0:
-            throw runtime_error("Float32 not supported for compute (SFPU)");
+            df = DataFormat::Float32;
             break;
           case 1:
             df = DataFormat::Float16;
@@ -467,24 +473,23 @@ int main() {
               CircularBufferConfig(tiles_per_cb * tb, {{idx, df}})
                   .set_page_size(idx, tb));
         };
-        for (uint32_t i = 0; i < cfg.input_formats.size(); i++) {
-          mk_cb(static_cast<CBIndex>(static_cast<uint32_t>(CBIndex::c_0) + i),
-                cfg.input_formats[i], cfg.input_tile_bytes[i]);
-        }
-        for (uint32_t i = 0; i < cfg.output_formats.size(); i++) {
-          mk_cb(static_cast<CBIndex>(static_cast<uint32_t>(CBIndex::c_16) + i),
-                cfg.output_formats[i], cfg.output_tile_bytes[i]);
+        for (uint32_t i = 0; i < cfg.cb_indices.size(); i++) {
+          mk_cb(static_cast<CBIndex>(cfg.cb_indices[i]),
+                cfg.cb_formats[i], cfg.cb_tile_bytes[i]);
         }
 
         cerr << "[TT] creating TensorAccessorArgs from buffers" << endl;
-        // Build compile-time args from actual buffer pointers (like the guide)
+        // Build compile-time args from actual buffer pointers
         vector<uint32_t> reader_compile_args;
         for (uint32_t i = 0; i < n_inputs; i++) {
           TensorAccessorArgs(*buffers[src_indices[i]])
               .append_to(reader_compile_args);
         }
         vector<uint32_t> writer_compile_args;
-        TensorAccessorArgs(*buffers[dst_index]).append_to(writer_compile_args);
+        for (uint32_t i = 0; i < n_outputs; i++) {
+          TensorAccessorArgs(*buffers[dst_indices[i]])
+              .append_to(writer_compile_args);
+        }
 
         cerr << "[TT] creating reader kernel" << endl;
         auto reader = CreateKernelFromString(
@@ -499,24 +504,24 @@ int main() {
                 .compiler_include_paths = vector<filesystem::path>(),
             });
         cerr << "[TT] creating writer kernel" << endl;
-        auto writer =
-            CreateKernel(program, kernel_dir + "/write_tile.cpp", core,
-                         DataMovementConfig{
-                             .processor = DataMovementProcessor::RISCV_1,
-                             .noc = NOC::RISCV_1_default,
-                             .compile_args = writer_compile_args,
-                             .defines = map<string, string>(),
-                             .named_compile_args = unordered_map<string, uint32_t>(),
-                             .opt_level = KernelBuildOptLevel::O2,
-                             .compiler_include_paths = vector<filesystem::path>(),
-                         });
+        auto writer = CreateKernelFromString(
+            program, cfg.writer_source, core,
+            DataMovementConfig{
+                .processor = DataMovementProcessor::RISCV_1,
+                .noc = NOC::RISCV_1_default,
+                .compile_args = writer_compile_args,
+                .defines = map<string, string>(),
+                .named_compile_args = unordered_map<string, uint32_t>(),
+                .opt_level = KernelBuildOptLevel::O2,
+                .compiler_include_paths = vector<filesystem::path>(),
+            });
         cerr << "[TT] creating compute kernel" << endl;
         auto compute = CreateKernelFromString(
             program, cfg.compute_source, core,
             ComputeConfig{.math_fidelity = MathFidelity::HiFi4
         });
 
-        // Set runtime args — buffer addresses as bank_base_address + n_tiles
+        // Set runtime args — buffer addresses
         cerr << "[TT] setting rt args n_tiles=" << n_tiles << endl;
         {
           vector<uint32_t> reader_rt_args;
@@ -527,15 +532,18 @@ int main() {
                  << endl;
             reader_rt_args.push_back(static_cast<uint32_t>(a));
           }
-          reader_rt_args.push_back(n_tiles);
           SetRuntimeArgs(program, reader, core, reader_rt_args);
         }
         {
-          uint64_t a = buffers[dst_index]->address();
-          cerr << "[TT]  dst idx=" << dst_index << " addr=" << a
-               << " sz=" << buffers[dst_index]->size() << endl;
-          SetRuntimeArgs(program, writer, core,
-                         {static_cast<uint32_t>(a), n_tiles});
+          vector<uint32_t> writer_rt_args;
+          for (uint32_t i = 0; i < n_outputs; i++) {
+            uint64_t a = buffers[dst_indices[i]]->address();
+            cerr << "[TT]  dst" << i << " idx=" << dst_indices[i]
+                 << " addr=" << a << " sz=" << buffers[dst_indices[i]]->size()
+                 << endl;
+            writer_rt_args.push_back(static_cast<uint32_t>(a));
+          }
+          SetRuntimeArgs(program, writer, core, writer_rt_args);
         }
         SetRuntimeArgs(program, compute, core, {n_tiles});
 
