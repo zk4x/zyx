@@ -975,19 +975,13 @@ impl TTDevice {
             let mut scan = kernel.head;
             while !scan.is_null() {
                 if let Op::Define { scope: Scope::Global, ro: false, .. } = kernel.ops[scan].op {
-                    writeln!(
-                        writer,
-                        "{indent}uint32_t out{scan} = get_arg_val<uint32_t>({out_global_count});"
-                    );
+                    writeln!(writer, "{indent}uint32_t out{scan} = get_arg_val<uint32_t>({out_global_count});");
                     writeln!(
                         writer,
                         "{indent}auto args_out{scan} = TensorAccessorArgs<{}>({out_global_count});",
                         out_global_count * 2
                     );
-                    writeln!(
-                        writer,
-                        "{indent}auto p_out{scan} = TensorAccessor(args_out{scan}, out{scan}, {PAGE_SIZE});"
-                    );
+                    writeln!(writer, "{indent}auto p_out{scan} = TensorAccessor(args_out{scan}, out{scan}, {PAGE_SIZE});");
                     out_global_count += 1;
                 }
                 scan = kernel.next_op(scan);
@@ -1007,7 +1001,7 @@ impl TTDevice {
                             writeln!(writer, "{indent}cb{cb_id}.wait_front(1);");
                             writeln!(
                                 writer,
-                                "{indent}noc.async_write(\n{indent}  use<CircularBuffer::AddrSelector::READ_PTR>(cb{cb_id}), p_out{dst}, {elem_size},\n{indent}  {{}},\n{indent}  {{ .page_id = (r{st_idx}*{elem_size})/{PAGE_SIZE}, .offset_bytes = (r{st_idx}*{elem_size})%{PAGE_SIZE} }});"
+                                "{indent}noc.async_write(use<CircularBuffer::AddrSelector::READ_PTR>(cb{cb_id}),\n{indent}  p_out{dst}, {elem_size}, {{}},\n{indent}  {{ .page_id = (r{st_idx}*{elem_size})/{PAGE_SIZE}, .offset_bytes = (r{st_idx}*{elem_size})%{PAGE_SIZE} }});"
                             );
                             writeln!(writer, "{indent}noc.async_write_barrier();");
                             writeln!(writer, "{indent}cb{cb_id}.pop_front(1);");

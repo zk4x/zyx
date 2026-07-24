@@ -128,35 +128,38 @@ impl Kernel {
             tile_map.insert(lid, tl);
         }
 
+        // ── Phase 2: Tile compute ──
+        // Insert tile compute + tile stores for all outputs before first_sid
         for &(sid, _dst) in &store_ids {
             let x = match self.at(sid) {
                 Op::Store { x, .. } => *x,
                 _ => unreachable!(),
             };
             let out_local = out_locals[&sid];
-            // Fresh tile_map per store (only load mappings, not compute)
             let mut store_tile_map = tile_map.clone();
-            let tile_result = self.clone_compute_tile(x, &mut store_tile_map, sid);
-            // Don't need to merge store_tile_map back into tile_map
-            self.insert_before(sid, Op::Store { dst: out_local, x: tile_result, index: c0, layout: TILE_T });
+            let tile_result = self.clone_compute_tile(x, &mut store_tile_map, first_sid);
+            self.insert_before(first_sid, Op::Store { dst: out_local, x: tile_result, index: c0, layout: TILE_T });
+        }
 
-            // Barrier separating phase 2 and phase 3
-            self.insert_before(sid, Op::Barrier);
+        // Single barrier separating phase 2 and phase 3
+        let barrier = self.insert_before(first_sid, Op::Barrier);
 
-            // ── Phase 3: Scalar local → global loop ──
-            // for i in 0..TILE_NELT:
-            //     global[gidx * TILE_NELT + i] = local[i]
-            let loop_p3 = self.insert_before(sid, Op::Loop { len: orig_len });
-            let const_nelt3 = self.insert_after(loop_p3, Op::Const(Constant::idx(TILE_NELT as u64)));
-            let scaled3 = self.insert_after(const_nelt3, Op::Binary { x: gidx, y: const_nelt3, bop: BOp::Mul });
-            let elem_idx3 = self.insert_after(scaled3, Op::Binary { x: scaled3, y: loop_p3, bop: BOp::Add });
-            let ll = self.insert_after(elem_idx3, Op::Load { src: out_local, index: loop_p3, layout: MemLayout::Scalar });
-            let store_p3 = self.insert_after(ll, Op::Store { dst: _dst, x: ll, index: elem_idx3, layout: MemLayout::Scalar });
-            self.insert_after(store_p3, Op::EndLoop);
-
-            // Remove the original store (replaced by phase 3)
+        // ── Phase 3: Single scalar local → global loop for all outputs ──
+        // for i in 0..TILE_NELT:
+        //     for each output:
+        //         global[gidx * TILE_NELT + i] = out_local[i]
+        let loop_p3 = self.insert_after(barrier, Op::Loop { len: orig_len });
+        let const_nelt3 = self.insert_after(loop_p3, Op::Const(Constant::idx(TILE_NELT as u64)));
+        let scaled3 = self.insert_after(const_nelt3, Op::Binary { x: gidx, y: const_nelt3, bop: BOp::Mul });
+        let elem_idx3 = self.insert_after(scaled3, Op::Binary { x: scaled3, y: loop_p3, bop: BOp::Add });
+        let mut body_last = elem_idx3;
+        for &(sid, _dst) in &store_ids {
+            let out_local = out_locals[&sid];
+            body_last = self.insert_after(body_last, Op::Load { src: out_local, index: loop_p3, layout: MemLayout::Scalar });
+            body_last = self.insert_after(body_last, Op::Store { dst: _dst, x: body_last, index: elem_idx3, layout: MemLayout::Scalar });
             self.remove_op(sid);
         }
+        self.insert_after(body_last, Op::EndLoop);
     }
 
     // ── helpers ──
