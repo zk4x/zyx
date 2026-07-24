@@ -111,17 +111,16 @@ fn bf16_add3() -> Result<(), ZyxError> {
         return Ok(());
     }
 
-    // Test addition at bf16 precision
-    let c = {
-        let a = Tensor::from([bf16::from_f32(1.0), bf16::from_f32(2.0), bf16::from_f32(3.0)]).cast(DType::F32).cast(DType::BF16);
-        let b = Tensor::from([bf16::from_f32(4.0), bf16::from_f32(5.0), bf16::from_f32(6.0)]);
-        a + b.sin()
-    };
+    // Test mixed-precision: cast bf16→f32, compute in f32, cast back
+    let a = Tensor::from([bf16::from_f32(1.0), bf16::from_f32(2.0), bf16::from_f32(3.0)]);
+    let b = Tensor::from([bf16::from_f32(4.0), bf16::from_f32(5.0), bf16::from_f32(6.0)]);
+    let c = a.cast(DType::F32) + b.sin().cast(DType::F32);
+    let c = c.cast(DType::BF16);
 
     let expected = [1.0f32 + 4.0f32.sin(), 2.0 + 5.0f32.sin(), 3.0 + 6.0f32.sin()];
     let c: Vec<bf16> = c.try_into()?;
     for (i, (&exp, &actual)) in expected.iter().zip(c.iter()).enumerate() {
-        assert!(bf16::from_f32(exp).is_equal(actual), "bf16_add1[{i}]: expected={}, actual={}", exp, actual.to_f32());
+        assert!(bf16::from_f32(exp).is_equal(actual), "bf16_add3[{i}]: expected={}, actual={}", exp, actual.to_f32());
     }
     Ok(())
 }

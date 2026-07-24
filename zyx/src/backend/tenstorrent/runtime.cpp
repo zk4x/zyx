@@ -518,7 +518,7 @@ int main() {
             program, cfg.compute_source, core,
             ComputeConfig{
                 .math_fidelity = MathFidelity::HiFi4,
-                .fp32_dest_acc_en = false,
+                .fp32_dest_acc_en = true,
                 .dst_full_sync_en = false,
                 .unpack_to_dest_mode = {},
                 .bfp8_pack_precise = false,

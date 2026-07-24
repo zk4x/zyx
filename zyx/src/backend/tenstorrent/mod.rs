@@ -861,11 +861,12 @@ impl TTDevice {
             let mut next_slot = 0u32;
             let mut output_stores: Vec<(u32, u32)> = Vec::new();
 
+
             // First pass: collect init headers from ops
             let mut scan = op_id;
             while !scan.is_null() {
                 match kernel.ops[scan].op {
-                    Op::Cast { .. } => {} // copy_tile already converts f32→bf16 in bf16 DST mode
+                    Op::Cast { .. } => {}
                     Op::Unary { uop: UOp::Sin, .. } => has_sin = true,
                     Op::Binary { bop: BOp::Add, .. } => has_binary = true,
                     Op::Barrier => break,
@@ -919,17 +920,19 @@ impl TTDevice {
                             dst_slots.insert(op_id, slots);
                         }
                     }
-                    Op::Cast { x, dtype: DType::BF16 } => {
+                    Op::Cast { x, dtype: DType::BF16 | DType::F16 | DType::F32 } => {
                         let idx = consumer_count.entry(x).or_insert(0);
                         let slot = dst_slots[&x][*idx as usize];
                         *idx += 1;
-                        dst_slots.insert(op_id, vec![slot]);
+                        let n = rcs.get(&op_id).copied().unwrap_or(1).max(1) as usize;
+                        dst_slots.insert(op_id, vec![slot; n]);
                     }
                     Op::Unary { x, uop: UOp::Sin } => {
                         let idx = consumer_count.entry(x).or_insert(0);
                         let slot = dst_slots[&x][*idx as usize];
                         *idx += 1;
-                        dst_slots.insert(op_id, vec![slot]);
+                        let n = rcs.get(&op_id).copied().unwrap_or(1).max(1) as usize;
+                        dst_slots.insert(op_id, vec![slot; n]);
                         writeln!(compute, "{indent}sin_tile({slot});");
                     }
                     Op::Binary { x, y, bop: BOp::Add } => {
@@ -939,7 +942,8 @@ impl TTDevice {
                         let y_idx = consumer_count.entry(y).or_insert(0);
                         let slot_y = dst_slots[&y][*y_idx as usize];
                         *y_idx += 1;
-                        dst_slots.insert(op_id, vec![slot_x]);
+                        let n = rcs.get(&op_id).copied().unwrap_or(1).max(1) as usize;
+                        dst_slots.insert(op_id, vec![slot_x; n]);
                         writeln!(compute, "{indent}add_binary_tile({slot_x}, {slot_y}, {slot_x});");
                     }
                     Op::Store { dst, x, index: _, layout: MemLayout::Tile { .. } } => {
