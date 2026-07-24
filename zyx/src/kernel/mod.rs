@@ -117,7 +117,6 @@ mod fuse;
 mod instr_sched;
 mod licm;
 mod local_reduce;
-mod local_tile;
 mod log2_to_ln;
 mod merge_loops;
 mod mma;
@@ -125,6 +124,7 @@ mod pad_index;
 /// Cost prediction for kernel selection.
 mod predict_cost;
 mod split_loops;
+mod tenstorrent;
 mod thread_coarse;
 mod tile;
 mod unfold;
