@@ -395,7 +395,6 @@ int main() {
       }
 
       uint32_t id = extract_u32(line, "id");
-      uint32_t n_tiles = extract_u32(line, "n_tiles");
 
       // Parse buffer indices: src0, src1, ..., dst0, dst1, ...
       vector<uint32_t> src_indices;
@@ -416,9 +415,6 @@ int main() {
       }
       uint32_t n_inputs = src_indices.size();
       uint32_t n_outputs = dst_indices.size();
-
-      if (n_tiles == 0)
-        n_tiles = 1;
 
       // Validate indices
       for (uint32_t i = 0; i < n_inputs; i++) {
@@ -535,7 +531,7 @@ int main() {
             });
 
         // Set runtime args — buffer addresses
-        cerr << "[TT] setting rt args n_tiles=" << n_tiles << endl;
+        cerr << "[TT] setting rt args" << endl;
         {
           vector<uint32_t> reader_rt_args;
           for (uint32_t i = 0; i < n_inputs; i++) {
@@ -558,8 +554,6 @@ int main() {
           }
           SetRuntimeArgs(program, writer, core, writer_rt_args);
         }
-        SetRuntimeArgs(program, compute, core, {n_tiles});
-
         cerr << "[TT] before add_program" << endl;
         workload.add_program(device_range, std::move(program));
         cerr << "[TT] after add_program" << endl;

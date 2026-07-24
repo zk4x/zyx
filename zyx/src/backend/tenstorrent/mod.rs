@@ -596,8 +596,8 @@ impl RuntimeProcess {
         Ok(())
     }
 
-    fn run(&mut self, id: u32, n_tiles: u32, src_indices: &[u32], dst_indices: &[u32]) -> Result<(), BackendError> {
-        let mut cmd = format!(r#"{{"cmd":"run","id":{id},"n_tiles":{n_tiles}"#);
+    fn run(&mut self, id: u32, src_indices: &[u32], dst_indices: &[u32]) -> Result<(), BackendError> {
+        let mut cmd = format!(r#"{{"cmd":"run","id":{id}"#);
         for (i, idx) in src_indices.iter().enumerate() {
             cmd.push_str(&format!(r#","src{i}":{idx}"#));
         }
@@ -1213,24 +1213,8 @@ impl TTDevice {
             dst_indices.push(idx);
         }
 
-        let src_bytes = memory_pool
-            .buffer_size(args[0])
-            .map_err(|e| BackendError { status: ErrorStatus::KernelLaunch, context: format!("src buffer size: {e}").into() })?;
-        let first_tile_bytes: u32 = {
-            let te = 1024u64;
-            (match prog.input_dtypes.first().copied().unwrap_or(DType::F32) {
-                DType::F32 => 4 * te,
-                DType::F16 | DType::BF16 => 2 * te,
-                _ => 4 * te,
-            }) as u32
-        };
-        let n_tiles = ((src_bytes + first_tile_bytes as u64 - 1) / first_tile_bytes as u64) as u32;
-        if n_tiles == 0 {
-            return Err(BackendError { status: ErrorStatus::KernelLaunch, context: "empty buffer".into() });
-        }
-
         let mut rt_guard = rt.lock().unwrap();
-        rt_guard.run(program_id.0, n_tiles, &src_indices, &dst_indices)?;
+        rt_guard.run(program_id.0, &src_indices, &dst_indices)?;
 
         Ok(Event::TT(TTEvent))
     }
