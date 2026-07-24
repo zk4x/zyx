@@ -1017,6 +1017,38 @@ impl TTDevice {
             }
         }
 
+        let mut writer_loop_cbs: Vec<u32> = output_cb_map.values().copied().collect();
+        writer_loop_cbs.sort();
+        // scan the writer section to collect output CBs used inside the loop
+        {
+            let mut scan = op_id;
+            let mut depth = 0u32;
+            let mut in_loop_cbs: Vec<u32> = Vec::new();
+            while !scan.is_null() {
+                match kernel.ops[scan].op {
+                    Op::Loop { .. } => depth += 1,
+                    Op::EndLoop => depth -= 1,
+                    Op::Store { x, .. } if depth > 0 => {
+                        if let Op::Load { src, .. } = kernel.ops[x].op {
+                            if let Some(&cb_id) = output_cb_map.get(&src) {
+                                if !in_loop_cbs.contains(&cb_id) {
+                                    in_loop_cbs.push(cb_id);
+                                }
+                            }
+                        }
+                    }
+                    Op::Barrier if depth == 0 => break,
+                    _ => {}
+                }
+                scan = kernel.next_op(scan);
+            }
+            if !in_loop_cbs.is_empty() {
+                writer_loop_cbs = in_loop_cbs;
+                writer_loop_cbs.sort();
+            }
+        }
+
+        let mut loop_depth = 0u32;
         while !op_id.is_null() {
             match kernel.ops[op_id].op {
                 Op::Store { dst, x, index: st_idx, layout } => {
@@ -1027,13 +1059,17 @@ impl TTDevice {
                                 unreachable!()
                             };
                             let elem_size = dtype.bit_size() as u32 / 8;
-                            writeln!(writer, "{indent}cb{cb_id}.wait_front(1);");
+                            if loop_depth == 0 {
+                                writeln!(writer, "{indent}cb{cb_id}.wait_front(1);");
+                            }
                             writeln!(
                                 writer,
                                 "{indent}noc.async_write(use<CircularBuffer::AddrSelector::READ_PTR>(cb{cb_id}),\n{indent}  p_out{dst}, {elem_size}, {{}},\n{indent}  {{ .page_id = (r{st_idx}*{elem_size})/{PAGE_SIZE}, .offset_bytes = (r{st_idx}*{elem_size})%{PAGE_SIZE} }});"
                             );
                             writeln!(writer, "{indent}noc.async_write_barrier();");
-                            writeln!(writer, "{indent}cb{cb_id}.pop_front(1);");
+                            if loop_depth == 0 {
+                                writeln!(writer, "{indent}cb{cb_id}.pop_front(1);");
+                            }
                         }
                     }
                     // If storing a compute result to local → compute writing to output CB,
@@ -1049,13 +1085,25 @@ impl TTDevice {
                     writeln!(writer, "{indent}uint32_t r{op_id} = gidx{axis};");
                 }
                 Op::Loop { len } => {
+                    if loop_depth == 0 {
+                        for cb_id in &writer_loop_cbs {
+                            writeln!(writer, "{indent}cb{cb_id}.wait_front(1);");
+                        }
+                    }
                     writeln!(writer, "{indent}for (uint32_t r{op_id} = 0; r{op_id} < {len}; r{op_id}++) {{");
                     indent += "  ";
+                    loop_depth += 1;
                 }
                 Op::EndLoop => {
                     indent.pop();
                     indent.pop();
                     writeln!(writer, "{indent}}}");
+                    if loop_depth == 1 {
+                        for cb_id in &writer_loop_cbs {
+                            writeln!(writer, "{indent}cb{cb_id}.pop_front(1);");
+                        }
+                    }
+                    loop_depth -= 1;
                 }
                 Op::Barrier => break,
                 _ => {}

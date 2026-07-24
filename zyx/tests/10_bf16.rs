@@ -65,7 +65,26 @@ fn bf16_binary_mul() -> Result<(), ZyxError> {
 }
 
 #[test]
-fn bf16_add() -> Result<(), ZyxError> {
+fn bf16_add1() -> Result<(), ZyxError> {
+    if !Tensor::supports(DType::BF16) {
+        return Ok(());
+    }
+
+    // Test addition at bf16 precision
+    let a = Tensor::from([bf16::from_f32(1.0), bf16::from_f32(2.0), bf16::from_f32(3.0)]);
+    let b = Tensor::from([bf16::from_f32(4.0), bf16::from_f32(5.0), bf16::from_f32(6.0)]);
+    let c = a + b.sin();
+
+    // Compare at bf16 precision: [5, 7, 9]
+    let c: Vec<bf16> = c.try_into()?;
+    for (&expected, actual) in [5.0f32, 7.0, 9.0].iter().zip(c) {
+        assert!(bf16::from_f32(expected).is_equal(actual));
+    }
+    Ok(())
+}
+
+#[test]
+fn bf16_add2() -> Result<(), ZyxError> {
     if !Tensor::supports(DType::BF16) {
         return Ok(());
     }
