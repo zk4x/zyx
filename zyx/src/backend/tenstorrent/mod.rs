@@ -827,7 +827,6 @@ impl TTDevice {
         writeln!(compute, "#include \"api/compute/eltwise_binary_sfpu.h\"");
         writeln!(compute, "#include \"api/compute/tile_move_copy.h\"");
         writeln!(compute, "#include \"api/compute/eltwise_unary/eltwise_unary.h\"");
-        writeln!(compute, "#include \"api/compute/eltwise_unary/typecast.h\"");
         writeln!(compute, "#include \"api/compute/eltwise_unary/trigonometry.h\"");
         writeln!(compute, "#include \"api/dataflow/circular_buffer.h\"");
         writeln!(compute, "void kernel_main() {{");
@@ -854,7 +853,6 @@ impl TTDevice {
             }
 
             // Emit init headers for ops we might encounter
-            let mut has_typecast = false;
             let mut has_sin = false;
             let mut has_binary = false;
             let (_dtypes, rcs) = kernel.compute_dtypes_and_rcs();
@@ -867,7 +865,7 @@ impl TTDevice {
             let mut scan = op_id;
             while !scan.is_null() {
                 match kernel.ops[scan].op {
-                    Op::Cast { .. } => has_typecast = true,
+                    Op::Cast { .. } => {} // copy_tile already converts f32→bf16 in bf16 DST mode
                     Op::Unary { uop: UOp::Sin, .. } => has_sin = true,
                     Op::Binary { bop: BOp::Add, .. } => has_binary = true,
                     Op::Barrier => break,
@@ -877,9 +875,6 @@ impl TTDevice {
             }
 
             // Emit init calls based on scanned ops
-            if has_typecast {
-                writeln!(compute, "{indent}typecast_tile_init<0, 5>();");
-            }
             if has_sin {
                 writeln!(compute, "{indent}sin_tile_init();");
             }
@@ -929,7 +924,6 @@ impl TTDevice {
                         let slot = dst_slots[&x][*idx as usize];
                         *idx += 1;
                         dst_slots.insert(op_id, vec![slot]);
-                        writeln!(compute, "{indent}typecast_tile<0, 5>({slot});");
                     }
                     Op::Unary { x, uop: UOp::Sin } => {
                         let idx = consumer_count.entry(x).or_insert(0);

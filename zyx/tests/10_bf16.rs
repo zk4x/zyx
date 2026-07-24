@@ -91,15 +91,16 @@ fn bf16_add2() -> Result<(), ZyxError> {
         return Ok(());
     }
 
-    // Test addition at bf16 precision
-    let a = Tensor::from([1.0f32, 2.0, 3.0]).cast(DType::BF16);
-    let b = Tensor::from([4.0f32, 5.0, 6.0]).cast(DType::BF16);
-    let c = a + b.sin();
+    let c = {
+        let a = Tensor::from([1.0f32, 2.0, 3.0]).cast(DType::BF16);
+        let b = Tensor::from([4.0f32, 5.0, 6.0]).cast(DType::BF16);
+        a + b.sin()
+    };
 
-    // Compare at bf16 precision: [5, 7, 9]
+    let expected = [1.0f32 + 4.0f32.sin(), 2.0 + 5.0f32.sin(), 3.0 + 6.0f32.sin()];
     let c: Vec<bf16> = c.try_into()?;
-    for (&expected, actual) in [5.0f32, 7.0, 9.0].iter().zip(c) {
-        assert!(bf16::from_f32(expected).is_equal(actual));
+    for (i, (&exp, &actual)) in expected.iter().zip(c.iter()).enumerate() {
+        assert!(bf16::from_f32(exp).is_equal(actual), "bf16_add2[{i}]: expected={}, actual={}", exp, actual.to_f32());
     }
     Ok(())
 }
