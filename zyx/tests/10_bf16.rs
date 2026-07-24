@@ -77,10 +77,10 @@ fn bf16_add1() -> Result<(), ZyxError> {
         a + b.sin()
     };
 
-    // Compare at bf16 precision: [5, 7, 9]
+    let expected = [1.0f32 + 4.0f32.sin(), 2.0 + 5.0f32.sin(), 3.0 + 6.0f32.sin()];
     let c: Vec<bf16> = c.try_into()?;
-    for (&expected, actual) in [5.0f32, 7.0, 9.0].iter().zip(c) {
-        assert!(bf16::from_f32(expected).is_equal(actual));
+    for (i, (&exp, &actual)) in expected.iter().zip(c.iter()).enumerate() {
+        assert!(bf16::from_f32(exp).is_equal(actual), "bf16_add1[{i}]: expected={}, actual={}", exp, actual.to_f32());
     }
     Ok(())
 }
