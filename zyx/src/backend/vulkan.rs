@@ -73,6 +73,7 @@ const VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO: u32 = 42;
 const VK_STRUCTURE_TYPE_FENCE_CREATE_INFO: u32 = 8;
 const VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2: u32 = 1000059000;
 const VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_FLOAT16_INT8_FEATURES: u32 = 1000082000;
+const VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_BFLOAT16_FEATURES_KHR: u32 = 1000141000;
 
 const VK_BUFFER_USAGE_STORAGE_BUFFER_BIT: u32 = 0x0080;
 const VK_BUFFER_USAGE_TRANSFER_DST_BIT: u32 = 0x0002;
@@ -346,6 +347,14 @@ struct VkPhysicalDeviceShaderFloat16Int8Features {
     pNext: *mut std::ffi::c_void,
     shaderFloat16: u32,
     shaderInt8: u32,
+}
+#[repr(C)]
+struct VkPhysicalDeviceShaderBfloat16FeaturesKHR {
+    sType: u32,
+    pNext: *mut std::ffi::c_void,
+    shaderBFloat16Type: u32,
+    shaderBFloat16DotProduct: u32,
+    shaderBFloat16CooperativeMatrix: u32,
 }
 
 // ── Config ───────────────────────────────────────────────────────────────────
@@ -725,6 +734,7 @@ pub(super) fn initialize_device(
             println!("[vulkan] {name}");
         }
 
+        let has_shader_bf16;
         let has_shader_float16 = if vkGetPhysicalDeviceFeatures2 as usize != 0 {
             let mut float16_features = VkPhysicalDeviceShaderFloat16Int8Features {
                 sType: VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_FLOAT16_INT8_FEATURES,
@@ -732,14 +742,23 @@ pub(super) fn initialize_device(
                 shaderFloat16: 0,
                 shaderInt8: 0,
             };
+            let mut bf16_features = VkPhysicalDeviceShaderBfloat16FeaturesKHR {
+                sType: VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_BFLOAT16_FEATURES_KHR,
+                pNext: &mut float16_features as *mut VkPhysicalDeviceShaderFloat16Int8Features as *mut std::ffi::c_void,
+                shaderBFloat16Type: 0,
+                shaderBFloat16DotProduct: 0,
+                shaderBFloat16CooperativeMatrix: 0,
+            };
             let mut features2 = VkPhysicalDeviceFeatures2 {
                 sType: VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2,
-                pNext: &mut float16_features as *mut VkPhysicalDeviceShaderFloat16Int8Features as *mut std::ffi::c_void,
+                pNext: &mut bf16_features as *mut VkPhysicalDeviceShaderBfloat16FeaturesKHR as *mut std::ffi::c_void,
                 features: [0u32; 55],
             };
             unsafe { vkGetPhysicalDeviceFeatures2(gpu, &mut features2) };
+            has_shader_bf16 = bf16_features.shaderBFloat16Type != 0;
             float16_features.shaderFloat16 != 0
         } else {
+            has_shader_bf16 = false;
             false
         };
 
@@ -1533,9 +1552,11 @@ pub(super) fn initialize_device(
                         | OpCapability::SIN
                         | OpCapability::COS
                         | OpCapability::POW);
+                    if !has_shader_bf16 {
+                        all[DType::BF16 as usize] = OpCapability::none();
+                    }
                     if !has_shader_float16 {
                         all[DType::F16 as usize] = OpCapability::none();
-                        all[DType::BF16 as usize] = OpCapability::none();
                     }
                     all
                 },
