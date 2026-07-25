@@ -1339,14 +1339,11 @@ fn query_device_info(
         },
         supported_dtype_ops: [OpCapability::all(); DType::N_DTYPES],
     };
+    dev_info.supported_dtype_ops[DType::BF16 as usize] = OpCapability::none();
     if let Ok(extensions) = get_device_data(device, clGetDeviceInfo, CL_DEVICE_EXTENSIONS) {
         let has_fp16 = extensions.split(|&b| b == b' ').any(|token| token == b"cl_khr_fp16");
         if !has_fp16 {
             dev_info.supported_dtype_ops[DType::F16 as usize] = OpCapability::none();
-        }
-        let has_bf16 = extensions.split(|&b| b == b' ').any(|token| token == b"cl_intel_bfloat16_conversions");
-        if !has_bf16 {
-            dev_info.supported_dtype_ops[DType::BF16 as usize] = OpCapability::none();
         }
         let has_tensor = extensions.split(|&b| b == b' ').any(|token| token == b"cl_intel_subgroup_matrix_multiply_accumulate");
         if has_tensor {
