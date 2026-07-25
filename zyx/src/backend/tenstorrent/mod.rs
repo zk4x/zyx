@@ -1048,6 +1048,9 @@ impl TTDevice {
         while !op_id.is_null() {
             match kernel.ops[op_id].op {
                 Op::Store { dst, x, index: st_idx, layout } => {
+                    if layout != MemLayout::Scalar {
+                        todo!("add support for non-scalar stores back to DRAM")
+                    }
                     // If storing a Load-from-local value to global → writer CB→DRAM
                     if let Op::Load { src, .. } = kernel.ops[x].op {
                         if let Some(&cb_id) = output_cb_map.get(&src) {
@@ -1070,7 +1073,7 @@ impl TTDevice {
                     // If storing a compute result to local → compute writing to output CB,
                     // handled by compute kernel, skip in writer.
                 }
-                Op::Load { src, .. } => {
+                Op::Load { .. } => {
                     // Load from CB in writer section — handled implicitly by the Store that consumes it
                 }
                 Op::Const(val) => {
