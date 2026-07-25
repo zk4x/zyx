@@ -145,3 +145,24 @@ fn bf16_add4() -> Result<(), ZyxError> {
     }
     Ok(())
 }
+
+#[test]
+fn bf16_add5() -> Result<(), ZyxError> {
+    if !Tensor::supports(DType::BF16) {
+        return Ok(());
+    }
+
+    let n = 1500u32;
+    let a_data: Vec<bf16> = (0..n).map(|i| bf16::from_f32(i as f32)).collect();
+    let b_data: Vec<bf16> = (0..n).map(|i| bf16::from_f32((n - 1 - i) as f32)).collect();
+    let a = Tensor::from(a_data);
+    let b = Tensor::from(b_data);
+    let c = a + b.sin();
+
+    let c: Vec<bf16> = c.try_into()?;
+    for (i, actual) in c.iter().enumerate() {
+        let exp = i as f32 + (n as f32 - 1.0 - i as f32).sin();
+        assert!(bf16::from_f32(exp).is_equal(*actual), "bf16_add5[{i}]: expected={}, actual={}", exp, actual.to_f32());
+    }
+    Ok(())
+}

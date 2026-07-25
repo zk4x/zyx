@@ -168,7 +168,7 @@ impl Kernel {
         let mut op_id = self.head;
         while !op_id.is_null() {
             if let Op::Index { len, scope: Scope::Global, axis: 0 } = self.at(op_id) {
-                if *len < TILE_NELT && *len > 0 {
+                if *len > 0 {
                     return Some((op_id, *len));
                 }
             }
