@@ -946,6 +946,7 @@ pub(super) fn initialize_device(
             ld!("vkGetBufferMemoryRequirements");
         let vkWaitForFences: unsafe extern "system" fn(VkDevice, u32, *const VkFence, u32, u64) -> VkResult =
             ld!("vkWaitForFences");
+        let vkDeviceWaitIdle: unsafe extern "system" fn(VkDevice) -> VkResult = ld!("vkDeviceWaitIdle");
         let vkAllocateDescriptorSets: unsafe extern "system" fn(
             VkDevice,
             *const VkDescriptorSetAllocateInfo,
@@ -1173,6 +1174,12 @@ pub(super) fn initialize_device(
                                         vkDestroyFence(device, ev.fence, std::ptr::null());
                                     }
                                 }
+                                if !ev.cmd.is_null() {
+                                    unsafe { vkFreeCommandBuffers(device, cmd_pool, 1, &ev.cmd) };
+                                }
+                                if !ev.desc_set.is_null() {
+                                    unsafe { vkFreeDescriptorSets(device, desc_pool, 1, &ev.desc_set) };
+                                }
                             }
                             let &(_, _, ptr, _) = &buffers[dst];
                             unsafe { std::ptr::copy_nonoverlapping(src, ptr, bytes) };
@@ -1189,6 +1196,12 @@ pub(super) fn initialize_device(
                                         let _ = vkWaitForFences(device, 1, &ev.fence, 1, u64::MAX);
                                         vkDestroyFence(device, ev.fence, std::ptr::null());
                                     }
+                                }
+                                if !ev.cmd.is_null() {
+                                    unsafe { vkFreeCommandBuffers(device, cmd_pool, 1, &ev.cmd) };
+                                }
+                                if !ev.desc_set.is_null() {
+                                    unsafe { vkFreeDescriptorSets(device, desc_pool, 1, &ev.desc_set) };
                                 }
                             }
                             let &(_, _, ptr, _) = &buffers[src];
@@ -1339,6 +1352,12 @@ pub(super) fn initialize_device(
                                         let _ = vkWaitForFences(device, 1, &ev.fence, 1, u64::MAX);
                                         vkDestroyFence(device, ev.fence, std::ptr::null());
                                     }
+                                }
+                                if !ev.cmd.is_null() {
+                                    unsafe { vkFreeCommandBuffers(device, cmd_pool, 1, &ev.cmd) };
+                                }
+                                if !ev.desc_set.is_null() {
+                                    unsafe { vkFreeDescriptorSets(device, desc_pool, 1, &ev.desc_set) };
                                 }
                             }
 
@@ -1525,7 +1544,10 @@ pub(super) fn initialize_device(
                             for event in events {
                                 if let Event::Vulkan(ev) = event {
                                     if !ev.fence.is_null() {
-                                        unsafe { vkDestroyFence(device, ev.fence, std::ptr::null()) };
+                                        unsafe {
+                                            let _ = vkWaitForFences(device, 1, &ev.fence, 1, u64::MAX);
+                                            vkDestroyFence(device, ev.fence, std::ptr::null());
+                                        }
                                     }
                                     if !ev.cmd.is_null() {
                                         unsafe { vkFreeCommandBuffers(device, cmd_pool, 1, &ev.cmd) };
@@ -1538,6 +1560,9 @@ pub(super) fn initialize_device(
                         }
                     }
                 }
+
+                // Idle device before destroying any resources
+                unsafe { let _ = vkDeviceWaitIdle(device); };
 
                 // Cleanup all resources
                 for id in buffers.ids().collect::<Vec<_>>() {
@@ -1592,9 +1617,11 @@ pub(super) fn initialize_device(
                         | OpCapability::SIN
                         | OpCapability::COS
                         | OpCapability::POW);
-                    if !has_shader_bf16 {
-                        all[DType::BF16 as usize] = OpCapability::none();
-                    }
+                    // Vulkan BF16 storage requires VK_KHR_shader_bfloat16, but
+                    // Turing/NVIDIA driver crashes on BF16 compute even if the
+                    // feature is advertised. Disable until SPIR-V codegen inserts
+                    // F32 conversions around arithmetic (like CUDA does).
+                    all[DType::BF16 as usize] = OpCapability::none();
                     if !has_shader_float16 {
                         all[DType::F16 as usize] = OpCapability::none();
                     }
