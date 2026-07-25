@@ -125,6 +125,7 @@ mod pad_index;
 /// Cost prediction for kernel selection.
 mod predict_cost;
 mod split_loops;
+#[cfg(feature = "tenstorrent")]
 mod tenstorrent;
 mod thread_coarse;
 mod tile;

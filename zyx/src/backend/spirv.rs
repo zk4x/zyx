@@ -347,9 +347,14 @@ fn emit_type(asm: &mut Asm, cache: &mut Map<DType, u32>, dt: DType) -> u32 {
             asm.emit_type(OpTypeInt, i, &[64, 1]);
             i
         }
-        DType::F16 | DType::BF16 => {
+        DType::F16 => {
             let i = asm.id();
             asm.emit_type(OpTypeFloat, i, &[16]);
+            i
+        }
+        DType::BF16 => {
+            let i = asm.id();
+            asm.emit_type(OpTypeFloat, i, &[16, 0]);
             i
         }
         DType::F32 => {
@@ -411,10 +416,27 @@ pub fn compile(kernel: &Kernel, debug_asm: bool) -> Result<(Vec<u32>, Vec<Dim>, 
         found
     };
 
+    // Pre-scan: does this kernel use BF16?
+    let needs_bf16 = {
+        let mut op_id = kernel.head;
+        let mut found = false;
+        while !op_id.is_null() {
+            if let Op::Define { dtype: DType::BF16, .. } = kernel.at(op_id) {
+                found = true;
+                break;
+            }
+            op_id = kernel.next_op(op_id);
+        }
+        found
+    };
+
     // Required SPIR-V instructions
     asm.emit(OpCapability, &[1]); // Shader capability
     if needs_u8 {
         asm.emit(OpCapability, &[44]); // StorageUniform8BitAccess (for bool buffers)
+    }
+    if needs_bf16 {
+        asm.emit(OpCapability, &[5116]); // BFloat16TypeKHR (BF16 encoding)
     }
     let glsl_id = asm.id();
     let glsl_name = b"GLSL.std.450\x00";
@@ -481,9 +503,14 @@ pub fn compile(kernel: &Kernel, debug_asm: bool) -> Result<(Vec<u32>, Vec<Dim>, 
                 entries.push((OpTypeInt, i, vec![64, 1]));
                 i
             }
-            DType::F16 | DType::BF16 => {
+            DType::F16 => {
                 let i = asm.id();
                 entries.push((OpTypeFloat, i, vec![16]));
+                i
+            }
+            DType::BF16 => {
+                let i = asm.id();
+                entries.push((OpTypeFloat, i, vec![16, 0]));
                 i
             }
             DType::F32 => {

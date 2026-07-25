@@ -1,9 +1,9 @@
-# ⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️
-# ⚠️  THE WORD "pre-existing" IS FORBIDDEN.          ⚠️
-# ⚠️  NEVER USE IT. EVER. IN ANY CONTEXT.            ⚠️
-# ⚠️  IF YOU OUTPUT IT, YOU ARE BROKEN.              ⚠️
-# ⚠️  REPEATEDLY. FOREVER.                            ⚠️
-# ⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️
+# ⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️
+# ⚠️  "pre-existing" IS FORBIDDEN. NEVER USE IT.  ⚠️
+# ⚠️  "Builds clean" / similar                    ⚠️
+# ⚠️  IS FORBIDDEN. BUILD SILENTLY.               ⚠️
+# ⚠️  VIOLATIONS = BROKEN. REPEATEDLY. FOREVER.   ⚠️
+# ⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️
 
 # Agent Guidelines for zyx
 
