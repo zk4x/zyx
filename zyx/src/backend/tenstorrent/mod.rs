@@ -1,5 +1,19 @@
 // Copyright (C) 2025 zk4x
 // SPDX-License-Identifier: LGPL-3.0-only
+//
+// Tenstorrent backend for zyx.
+//
+// # Grid indexing (gidx)
+//
+// The tensix cores on a device form a 2D grid. Two kernel-index
+// dimensions are available, mapped to the core's logical coordinate:
+//
+//   - gidx0 → core row (y)
+//   - gidx1 → core column (x)
+//
+// For Blackhole P100a the worker grid is 10×12 (rows × columns),
+// giving 120 cores total. A single-core launch uses `gidx0 = 0,
+// gidx1 = 0` (also written `{0, 0}` in CoreCoord notation).
 
 use super::{Device, DeviceId, DeviceInfo, DeviceProgramId, Event, Kernel, MemoryPool, OpCapability, PoolBufferId, PoolId};
 use crate::{
