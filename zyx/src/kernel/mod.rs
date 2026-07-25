@@ -209,11 +209,11 @@ pub struct Kernel {
 /// Execution scope for kernel indices.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, SerBin, DeBin)]
 pub enum Scope {
-    /// Global memory scope (shared across all threads).
+    /// Global memory scope (DRAM).
     Global,
-    /// Local memory scope (per-thread or per-block).
+    /// Local memory scope (SRAM).
     Local,
-    /// Register scope (per-thread fast storage).
+    /// Register scope (registers).
     Register,
 }
 
