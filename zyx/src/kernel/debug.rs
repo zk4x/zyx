@@ -20,7 +20,7 @@
 ///
 /// ```text
 /// ZYX_DEBUG=8 cargo run  # Print IR during kernel compilation
-/// ZYX_DEBUG=16 cargo run # Print generated CUDA assembly
+/// ZYX_DEBUG=16 cargo run # Print generated assembly
 /// ```
 use crate::kernel::{BOp, IDX_T, MoveOp, Scope, UOp};
 use crate::slab::SlabId;
@@ -49,7 +49,7 @@ impl Kernel {
     ///
     /// ```text
     /// ZYX_DEBUG=8 cargo run  # Print IR during kernel compilation
-    /// ZYX_DEBUG=16 cargo run # Print generated CUDA assembly
+    /// ZYX_DEBUG=16 cargo run # Print generated assembly
     /// ```
     pub fn debug(&self) {
         let remap_ids = false;

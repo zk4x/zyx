@@ -290,7 +290,7 @@ Every optimization must produce correct IR that calculates the same result as th
 
 ### Workflow for Fixing a Kernel Optimization Pass
 
-1. **Identify the problematic kernel** — Run with `ZYX_DEBUG=16` to see generated CUDA, look for O(N²) loops that should have been folded.
+1. **Identify the problematic kernel** — Run with `ZYX_DEBUG=16` to see generated assembly, look for O(N²) loops that should have been folded.
 
 2. **Capture the IR** — Run with `ZYX_DEBUG=8` (IR dump, no GPU execution) to see the kernel IR. Use `timeout 10` to capture output quickly before a GPU hang:
    ```bash
