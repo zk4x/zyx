@@ -773,6 +773,17 @@ impl TTDevice {
                             }
                         }
                     }
+                    Op::Binary { x, y, bop } => {
+                        let dt = kernel.dtype(op_id);
+                        let _ = match bop {
+                            BOp::Add => writeln!(reader, "{indent}{} r{op_id} = r{x} + r{y};", dt.c_type()),
+                            BOp::Sub => writeln!(reader, "{indent}{} r{op_id} = r{x} - r{y};", dt.c_type()),
+                            BOp::Mul => writeln!(reader, "{indent}{} r{op_id} = r{x} * r{y};", dt.c_type()),
+                            BOp::Max => writeln!(reader, "{indent}{} r{op_id} = r{x} > r{y} ? r{x} : r{y};", dt.c_type()),
+                            BOp::BitShiftLeft => writeln!(reader, "{indent}{} r{op_id} = r{x} << r{y};", dt.c_type()),
+                            _ => unreachable!("{bop:?}"),
+                        };
+                    }
                     Op::Loop { len } => {
                         if loop_depth == 0 {
                             // Reserve CB space before the loop — enough for one tile per CB
@@ -780,8 +791,7 @@ impl TTDevice {
                                 writeln!(reader, "{indent}cb{cb_id}.reserve_back(1);");
                             }
                         }
-                        let len = kernel.loop_len_dim(len);
-                        writeln!(reader, "{indent}for (uint32_t r{op_id} = 0; r{op_id} < {len}; r{op_id}++) {{");
+                        writeln!(reader, "{indent}for (uint32_t r{op_id} = 0; r{op_id} < r{len}; r{op_id}++) {{");
                         indent += "  ";
                         loop_depth += 1;
                     }
@@ -1082,14 +1092,24 @@ impl TTDevice {
                 Op::Index { scope: Scope::Global, axis, .. } => {
                     writeln!(writer, "{indent}uint32_t r{op_id} = gidx{axis};");
                 }
+                Op::Binary { x, y, bop } => {
+                    let dt = kernel.dtype(op_id);
+                    let _ = match bop {
+                        BOp::Add => writeln!(writer, "{indent}{} r{op_id} = r{x} + r{y};", dt.c_type()),
+                        BOp::Sub => writeln!(writer, "{indent}{} r{op_id} = r{x} - r{y};", dt.c_type()),
+                        BOp::Mul => writeln!(writer, "{indent}{} r{op_id} = r{x} * r{y};", dt.c_type()),
+                        BOp::Max => writeln!(writer, "{indent}{} r{op_id} = r{x} > r{y} ? r{x} : r{y};", dt.c_type()),
+                        BOp::BitShiftLeft => writeln!(writer, "{indent}{} r{op_id} = r{x} << r{y};", dt.c_type()),
+                        _ => unreachable!("{bop:?}"),
+                    };
+                }
                 Op::Loop { len } => {
                     if loop_depth == 0 {
                         for cb_id in &writer_loop_cbs {
                             writeln!(writer, "{indent}cb{cb_id}.wait_front(1);");
                         }
                     }
-                    let len = kernel.loop_len_dim(len);
-                    writeln!(writer, "{indent}for (uint32_t r{op_id} = 0; r{op_id} < {len}; r{op_id}++) {{");
+                    writeln!(writer, "{indent}for (uint32_t r{op_id} = 0; r{op_id} < r{len}; r{op_id}++) {{");
                     indent += "  ";
                     loop_depth += 1;
                 }

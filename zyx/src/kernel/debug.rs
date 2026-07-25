@@ -203,17 +203,17 @@ impl Kernel {
                         BOp::NotEq => ("", " != ", ""),
                         BOp::Eq => ("", " == ", ""),
                     };
-                    let x = id_map.get(&x).copied().unwrap_or(OpId::NULL);
-                    let y = id_map.get(&y).copied().unwrap_or(OpId::NULL);
+                    let x_r = id_map.get(&x).copied().unwrap_or(OpId::NULL);
+                    let y_r = id_map.get(&y).copied().unwrap_or(OpId::NULL);
                     let x = if let Op::Const(c) = self.ops[x].op {
                         format!("{c}")
                     } else {
-                        format!("r{x}")
+                        format!("r{x_r}")
                     };
                     let y = if let Op::Const(c) = self.ops[y].op {
                         format!("{c}")
                     } else {
-                        format!("r{y}")
+                        format!("r{y_r}")
                     };
                     if let Some((lb, ub)) = bounds.get(&op_id) {
                         println!("{indent}r{out_id}{grey}: {dtype}{reset} = {op1}{x}{op2}{y}{op3}    // {lb}..={ub}");
