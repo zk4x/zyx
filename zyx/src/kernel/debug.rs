@@ -52,7 +52,7 @@ impl Kernel {
     /// ZYX_DEBUG=16 cargo run # Print generated assembly
     /// ```
     pub fn debug(&self) {
-        let remap_ids = false;
+        let remap_ids = true;
         //println!("\nloads={:?}", self.loads);
         //println!("stores={:?}", self.stores);
         //println!("outputs={:?}", self.outputs);

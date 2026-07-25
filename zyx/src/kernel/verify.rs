@@ -23,7 +23,13 @@ impl Kernel {
         // Verify define ordering: Global RO → Global RW → Local RO → Local RW → everything else.
         {
             #[derive(PartialEq, Eq)]
-            enum Phase { GlobalRo, GlobalRw, LocalRo, LocalRw, Done }
+            enum Phase {
+                GlobalRo,
+                GlobalRw,
+                LocalRo,
+                LocalRw,
+                Done,
+            }
             let mut phase = Phase::GlobalRo;
             let mut scan = self.head;
             while !scan.is_null() {
@@ -36,7 +42,9 @@ impl Kernel {
                         }
                     }
                     Op::Define { scope: Scope::Global, ro: false, .. } => {
-                        if phase == Phase::GlobalRo { phase = Phase::GlobalRw; }
+                        if phase == Phase::GlobalRo {
+                            phase = Phase::GlobalRw;
+                        }
                         if phase != Phase::GlobalRw {
                             println!("Global read-write defines must come before local defines.");
                             self.debug();
@@ -44,7 +52,9 @@ impl Kernel {
                         }
                     }
                     Op::Define { scope: Scope::Local, ro: true, .. } => {
-                        if phase == Phase::GlobalRo || phase == Phase::GlobalRw { phase = Phase::LocalRo; }
+                        if phase == Phase::GlobalRo || phase == Phase::GlobalRw {
+                            phase = Phase::LocalRo;
+                        }
                         if phase != Phase::LocalRo {
                             println!("Local read-only defines must come after all global defines.");
                             self.debug();
@@ -312,7 +322,7 @@ impl Kernel {
                     }
                 }
                 Op::Define { .. } => {}
-                Op::Cast { .. } | Op::Binary { .. } | Op::Mad { .. } => {
+                Op::Loop { .. } | Op::Unary { .. } | Op::Cast { .. } | Op::Binary { .. } | Op::Mad { .. } => {
                     let b = bounds_stack.last_mut().unwrap();
                     self.rederive_bounds(b, op_id);
                 }
@@ -378,13 +388,6 @@ impl Kernel {
                 Op::Index { len, .. } => {
                     let b = bounds_stack.last_mut().unwrap();
                     b.insert(op_id, (0, len - 1));
-                }
-                Op::Loop { len } => {
-                    let b = bounds_stack.last_mut().unwrap();
-                    let loop_len = self.loop_len_dim(len);
-                    if loop_len > 0 {
-                        b.insert(op_id, (0, loop_len - 1));
-                    }
                 }
                 Op::Vectorize { ref ops } => {
                     let b = bounds_stack.last_mut().unwrap();
@@ -566,6 +569,11 @@ impl Kernel {
                 };
                 prev.insert(op_id, range);
             }
+            Op::Loop { len } => {
+                if let Some(&(_, upper)) = prev.get(&len) {
+                    prev.insert(op_id, (0, upper.saturating_sub(1)));
+                }
+            }
             Op::Mad { x, y, z } => {
                 let Some(&(xl, xu)) = prev.get(&x) else { return };
                 let Some(&(yl, yu)) = prev.get(&y) else { return };
@@ -579,6 +587,7 @@ impl Kernel {
 
 impl Kernel {
     const fn get_bounds(_op_id: OpId) -> Option<RangeInclusive<Dim>> {
+        // TODO
         None
     }
 }
