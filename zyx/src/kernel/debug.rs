@@ -255,7 +255,8 @@ impl Kernel {
                 }
                 Op::Loop { len } => {
                     has_loops = true;
-                    dtypes.insert(op_id, IDX_T);
+                    let dtype = dtypes[&len];
+                    dtypes.insert(op_id, dtype);
                     if let Some((l, u)) = bounds.get(&op_id) {
                         println!("{indent}{bold}for{reset} r{out_id} in 0..r{len} {{    // {l}..={}", u);
                     } else {
