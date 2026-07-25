@@ -43,7 +43,8 @@
 //! let zero_acc = kernel.vectorize(vec![zf, zf, zf, zf]);
 //! kernel.store(acc, zero_acc, c0, MemLayout::Vector(4));
 //!
-//! let k_loop = kernel.loop_(kernel.const_idx(k / 8));
+//! let k_div_8 = kernel.const_idx(k / 8);
+//! let k_loop = kernel.loop_(k_div_8);
 //! let k_off = kernel.mul(k_loop, c8);
 //!
 //! let a_base = kernel.mad(a_row, k_const, k_off);
