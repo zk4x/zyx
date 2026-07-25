@@ -1617,10 +1617,11 @@ pub(super) fn initialize_device(
                         | OpCapability::SIN
                         | OpCapability::COS
                         | OpCapability::POW);
-                    // Vulkan BF16 storage requires VK_KHR_shader_bfloat16, but
-                    // Turing/NVIDIA driver crashes on BF16 compute even if the
-                    // feature is advertised. Disable until SPIR-V codegen inserts
-                    // F32 conversions around arithmetic (like CUDA does).
+                    // Turing/NVIDIA driver crashes on BF16 compute even when
+                    // VK_KHR_shader_bfloat16 is enabled. CUDA implicitly handles
+                    // BF16->F32 promotion in its math library, but SPIR-V codegen
+                    // would need explicit OpFConvert around GLSL.std.450 ops.
+                    // Disable until that's implemented.
                     all[DType::BF16 as usize] = OpCapability::none();
                     if !has_shader_float16 {
                         all[DType::F16 as usize] = OpCapability::none();
