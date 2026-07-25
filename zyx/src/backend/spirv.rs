@@ -765,7 +765,6 @@ pub fn compile(kernel: &Kernel, debug_asm: bool) -> Result<(Vec<u32>, Vec<Dim>, 
                 }
                 &Op::Loop { len } => {
                     let len = kernel.loop_len_dim(len);
-                    let len_u64 = len as u64;
                     for &val in &[0u32, 1, len as u32] {
                         let key = match IDX_T {
                             DType::U32 => Constant::U32(val),
@@ -1531,7 +1530,7 @@ pub fn compile(kernel: &Kernel, debug_asm: bool) -> Result<(Vec<u32>, Vec<Dim>, 
                     let scope_id = const_pool[&Constant::U32(SCOPE_WORKGROUP)];
                     let sem_id = const_pool[&Constant::U32(SEM_ACQUIRE_RELEASE | SEM_WORKGROUP_MEMORY)];
                     asm.emit(OpControlBarrier, &[scope_id, scope_id, sem_id]);
-                },
+                }
             }
             op_id = kernel.next_op(op_id);
         }

@@ -411,6 +411,7 @@ impl Kernel {
         kernel.run_always_on_optimizations();
         kernel.run_always_on_optimizations();
 
+        #[cfg(feature = "tenstorrent")]
         if let Device::TT(_) = device {
             kernel.tenstorrent_tile();
         }

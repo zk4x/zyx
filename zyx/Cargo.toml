@@ -54,7 +54,7 @@ crate-type = ["lib"]
 
 [features]
 default = [
-    "tenstorrent",
+    #"tenstorrent",
     #"wgpu",
     #"py",
     #"time",
@@ -92,7 +92,7 @@ codegen-units = 16       # Parallelize LLVM codegen for faster debug builds.
 #rpath = false           # Sets the rpath linking option.
 
 [profile.test]
-opt-level = 0
+opt-level = 1
 debug = true
 strip = false
 debug-assertions = true

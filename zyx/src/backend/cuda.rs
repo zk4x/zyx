@@ -1562,6 +1562,7 @@ impl CUDADevice {
                 }
                 &Op::Loop { len, .. } => {
                     indices.insert(op_id, loop_id);
+                    let len = kernel.loop_len_dim(len);
                     _ = writeln!(source, "{indent}for (unsigned int idx{loop_id} = 0; idx{loop_id} < {len}; ++idx{loop_id}) {{");
                     indent += "  ";
                     loop_id += 1;

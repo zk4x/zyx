@@ -169,18 +169,33 @@ impl Kernel {
 
         // ***** IMPLEMENTATION ***** //
 
-        // Add local index
-        let lidx = self.insert_before(reg_acc, Op::Index { len: factor, scope: Scope::Local, axis: laxis });
+        // Find the last global define to insert local memory after it
+        let mut last_global = None;
+        let mut op_id = self.head;
+        while !op_id.is_null() {
+            if matches!(self.ops[op_id].op, Op::Define { scope: Scope::Global, .. }) {
+                last_global = Some(op_id);
+            }
+            op_id = self.next_op(op_id);
+        }
+
+        // Insert local memory definitions right after the last global define
+        let insert_at = match last_global {
+            Some(g) => {
+                let n = self.next_op(g);
+                if n.is_null() { self.tail } else { n }
+            }
+            None => self.head,
+        };
+        let loc_acc =
+            self.insert_before(insert_at, Op::Define { dtype: acc_dtype, scope: Scope::Local, ro: false, len: factor });
+        let lidx = self.insert_before(insert_at, Op::Index { len: factor, scope: Scope::Local, axis: laxis });
 
         // Divide reduce loop by factor
         let factor_const = self.insert_before(loop_start, Op::Const(Constant::idx(factor as u64)));
         let new_len = self.insert_const_idx_before(loop_start, loop_len / factor);
         let ridx = self.insert_before(loop_start, Op::Loop { len: new_len });
         self.ops[loop_start].op = Op::Mad { x: ridx, y: factor_const, z: lidx };
-
-        // Add local accumulator
-        let loc_acc =
-            self.insert_before(acc_load_id, Op::Define { dtype: acc_dtype, scope: Scope::Local, ro: false, len: factor });
 
         // Store to local accumulator
         let const_zero = self.insert_before(acc_load_id, Op::Const(Constant::idx(0)));

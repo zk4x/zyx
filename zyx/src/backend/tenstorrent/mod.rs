@@ -317,14 +317,6 @@ impl TTMemoryPool {
         let _ = events;
     }
 
-    pub fn buffer_size(&self, buffer_id: PoolBufferId) -> Result<u64, BackendError> {
-        if self.buffers.contains_key(buffer_id) {
-            Ok(self.buffers[buffer_id].size)
-        } else {
-            Err(BackendError { status: ErrorStatus::MemoryAllocation, context: "invalid buffer id".into() })
-        }
-    }
-
     pub fn dev_index(&self, buffer_id: PoolBufferId) -> Result<u32, BackendError> {
         if self.buffers.contains_key(buffer_id) {
             Ok(self.buffers[buffer_id].dev_index)
@@ -732,7 +724,11 @@ impl TTDevice {
                             if ro {
                                 input_dtypes.push(dtype);
                                 writeln!(reader, "{indent}uint32_t src{op_id} = get_arg_val<uint32_t>({input_arg_idx});");
-                                writeln!(reader, "{indent}auto args{op_id} = TensorAccessorArgs<{}>({input_arg_idx});", input_arg_idx * 2);
+                                writeln!(
+                                    reader,
+                                    "{indent}auto args{op_id} = TensorAccessorArgs<{}>({input_arg_idx});",
+                                    input_arg_idx * 2
+                                );
                                 writeln!(reader, "{indent}auto p{op_id} = TensorAccessor(args{op_id}, src{op_id}, {PAGE_SIZE});");
                                 input_arg_idx += 1;
                             } else {
@@ -784,6 +780,7 @@ impl TTDevice {
                                 writeln!(reader, "{indent}cb{cb_id}.reserve_back(1);");
                             }
                         }
+                        let len = kernel.loop_len_dim(len);
                         writeln!(reader, "{indent}for (uint32_t r{op_id} = 0; r{op_id} < {len}; r{op_id}++) {{");
                         indent += "  ";
                         loop_depth += 1;
@@ -860,7 +857,6 @@ impl TTDevice {
             let mut consumer_count: Map<OpId, u32> = Map::default();
             let mut next_slot = 0u32;
             let mut output_stores: Vec<(u32, u32)> = Vec::new();
-
 
             // First pass: collect init headers from ops
             let mut scan = op_id;
@@ -1089,6 +1085,7 @@ impl TTDevice {
                             writeln!(writer, "{indent}cb{cb_id}.wait_front(1);");
                         }
                     }
+                    let len = kernel.loop_len_dim(len);
                     writeln!(writer, "{indent}for (uint32_t r{op_id} = 0; r{op_id} < {len}; r{op_id}++) {{");
                     indent += "  ";
                     loop_depth += 1;
@@ -1146,12 +1143,20 @@ impl TTDevice {
             cb_ids.sort();
             for cb_id in &cb_ids {
                 // Find the local define for this CB to get its dtype
-                let local_op = input_cb_map.iter().find(|(_, v)| *v == cb_id).or_else(|| {
-                    output_cb_map.iter().find(|(_, v)| *v == cb_id)
-                }).map(|(op, _)| *op);
-                let dt = local_op.and_then(|op| {
-                    if let Op::Define { dtype, .. } = &kernel.ops[op].op { Some(*dtype) } else { None }
-                }).unwrap_or(DType::BF16);
+                let local_op = input_cb_map
+                    .iter()
+                    .find(|(_, v)| *v == cb_id)
+                    .or_else(|| output_cb_map.iter().find(|(_, v)| *v == cb_id))
+                    .map(|(op, _)| *op);
+                let dt = local_op
+                    .and_then(|op| {
+                        if let Op::Define { dtype, .. } = &kernel.ops[op].op {
+                            Some(*dtype)
+                        } else {
+                            None
+                        }
+                    })
+                    .unwrap_or(DType::BF16);
                 let fmt = dtype_to_tt_fmt(dt);
                 let tb = tile_bytes_of(dt);
                 cb_config.push((*cb_id, fmt, tb));

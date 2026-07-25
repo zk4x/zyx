@@ -253,10 +253,14 @@ impl Kernel {
                     };
                     println!("{indent}r{out_id}{grey}: {IDX_T}{reset} = {blue}{scope}idx{axis}{reset}    // 0..={ub}");
                 }
-                Op::Loop { len: len_id } => {
+                Op::Loop { len } => {
                     has_loops = true;
                     dtypes.insert(op_id, IDX_T);
-                    println!("{indent}{bold}for{reset} r{out_id} in 0..{} {{", self.loop_len_dim(len_id));
+                    if let Some((l, u)) = bounds.get(&op_id) {
+                        println!("{indent}{bold}for{reset} r{out_id} in 0..r{len} {{    // {l}..={}", u);
+                    } else {
+                        println!("{indent}{bold}for{reset} r{out_id} in 0..r{len} {{");
+                    }
                     indent += "  ";
                 }
                 Op::If { condition } => {
