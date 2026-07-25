@@ -602,8 +602,8 @@ impl RuntimeProcess {
         Ok(())
     }
 
-    fn run(&mut self, id: u32, src_indices: &[u32], dst_indices: &[u32]) -> Result<(), BackendError> {
-        let mut cmd = format!(r#"{{"cmd":"run","id":{id}"#);
+    fn run(&mut self, id: u32, src_indices: &[u32], dst_indices: &[u32], grid_dims: [u32; 2]) -> Result<(), BackendError> {
+        let mut cmd = format!(r#"{{"cmd":"run","id":{id},"gd0":{gd0},"gd1":{gd1}"#, gd0 = grid_dims[0], gd1 = grid_dims[1]);
         for (i, idx) in src_indices.iter().enumerate() {
             cmd.push_str(&format!(r#","src{i}":{idx}"#));
         }
@@ -654,6 +654,9 @@ fn extract_json_str(json: &str, key: &str) -> Option<String> {
 struct TTProgram {
     input_dtypes: Vec<DType>,
     output_dtypes: Vec<DType>,
+    /// Grid dimensions for gidx0 (rows) and gidx1 (cols).  
+    /// Each dimension defaults to 1 if no corresponding gidx is used.
+    grid_dims: [u32; 2],
 }
 
 // ---------------------------------------------------------------------------
@@ -1177,7 +1180,21 @@ impl TTDevice {
             println!("[tenstorrent] writer:\n{writer}");
         }
 
-        let prog_id = self.programs.push(TTProgram { input_dtypes: input_dtypes.clone(), output_dtypes: output_dtypes.clone() });
+        // Scan kernel for global index dimensions
+        let mut grid_dims = [1u32, 1u32];
+        {
+            let mut scan = kernel.head;
+            while !scan.is_null() {
+                if let Op::Index { len, scope: Scope::Global, axis } = &kernel.ops[scan].op {
+                    if (*axis as usize) < 2 {
+                        grid_dims[*axis as usize] = *len as u32;
+                    }
+                }
+                scan = kernel.next_op(scan);
+            }
+        }
+
+        let prog_id = self.programs.push(TTProgram { input_dtypes: input_dtypes.clone(), output_dtypes: output_dtypes.clone(), grid_dims });
 
         {
             let mut cb_config = Vec::with_capacity(input_cb_map.len() + output_cb_map.len());
@@ -1283,7 +1300,7 @@ impl TTDevice {
         }
 
         let mut rt_guard = rt.lock().unwrap();
-        rt_guard.run(program_id.0, &src_indices, &dst_indices)?;
+        rt_guard.run(program_id.0, &src_indices, &dst_indices, prog.grid_dims)?;
 
         Ok(Event::TT(TTEvent))
     }
