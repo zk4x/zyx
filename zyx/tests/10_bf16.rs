@@ -168,3 +168,46 @@ fn bf16_add5() -> Result<(), ZyxError> {
     }
     Ok(())
 }
+
+#[test]
+fn bf16_matmul_1() -> Result<(), ZyxError> {
+    if !Tensor::supports(DType::BF16) {
+        return Ok(());
+    }
+
+    // Simple 17x16 × 16x19 matmul
+    let m = 17;
+    let k = 16;
+    let n = 19;
+
+    let x_data: Vec<Vec<bf16>> = (0..m).map(|i| (0..k).map(|j| bf16::from_f32((i as f32 + j as f32) % 10.0)).collect()).collect();
+    let y_data: Vec<Vec<bf16>> = (0..k).map(|i| (0..n).map(|j| bf16::from_f32((i as f32 - j as f32) % 10.0)).collect()).collect();
+
+    let x = Tensor::from(x_data.clone());
+    let y = Tensor::from(y_data.clone());
+
+    let z = x.dot(y)?;
+
+    // Reference matmul (CPU, naive)
+    let mut expected = vec![vec![bf16::from_f32(0.0); n]; m];
+    for i in 0..m {
+        for kk in 0..k {
+            for j in 0..n {
+                let val = x_data[i][kk].to_f32() * y_data[kk][j].to_f32();
+                expected[i][j] = bf16::from_f32(expected[i][j].to_f32() + val);
+            }
+        }
+    }
+    let z: Vec<bf16> = z.try_into()?;
+    let expected: Vec<bf16> = expected.into_iter().flatten().collect();
+
+    for (actual, exp) in z.iter().zip(expected.iter()) {
+        assert!(
+            bf16::from_f32(exp.to_f32()).is_equal(*actual),
+            "bf16_matmul_1: expected={}, actual={}",
+            exp.to_f32(),
+            actual.to_f32()
+        );
+    }
+    Ok(())
+}
