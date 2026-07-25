@@ -734,6 +734,7 @@ pub(super) fn initialize_device(
             println!("[vulkan] {name}");
         }
 
+        let bf16_device_features;
         let has_shader_bf16;
         let has_shader_float16 = if vkGetPhysicalDeviceFeatures2 as usize != 0 {
             let mut float16_features = VkPhysicalDeviceShaderFloat16Int8Features {
@@ -756,9 +757,33 @@ pub(super) fn initialize_device(
             };
             unsafe { vkGetPhysicalDeviceFeatures2(gpu, &mut features2) };
             has_shader_bf16 = bf16_features.shaderBFloat16Type != 0;
+            bf16_device_features = if has_shader_bf16 {
+                VkPhysicalDeviceShaderBfloat16FeaturesKHR {
+                    sType: VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_BFLOAT16_FEATURES_KHR,
+                    pNext: std::ptr::null_mut(),
+                    shaderBFloat16Type: 1,
+                    shaderBFloat16DotProduct: 0,
+                    shaderBFloat16CooperativeMatrix: 0,
+                }
+            } else {
+                VkPhysicalDeviceShaderBfloat16FeaturesKHR {
+                    sType: VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_BFLOAT16_FEATURES_KHR,
+                    pNext: std::ptr::null_mut(),
+                    shaderBFloat16Type: 0,
+                    shaderBFloat16DotProduct: 0,
+                    shaderBFloat16CooperativeMatrix: 0,
+                }
+            };
             float16_features.shaderFloat16 != 0
         } else {
             has_shader_bf16 = false;
+            bf16_device_features = VkPhysicalDeviceShaderBfloat16FeaturesKHR {
+                sType: VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_BFLOAT16_FEATURES_KHR,
+                pNext: std::ptr::null_mut(),
+                shaderBFloat16Type: 0,
+                shaderBFloat16DotProduct: 0,
+                shaderBFloat16CooperativeMatrix: 0,
+            };
             false
         };
 
@@ -775,16 +800,31 @@ pub(super) fn initialize_device(
             queueCount: 1,
             pQueuePriorities: priority.as_ptr(),
         };
+
+        let ext_names: Vec<Vec<u8>> = {
+            let mut exts = Vec::new();
+            if has_shader_bf16 {
+                exts.push(b"VK_KHR_shader_bfloat16\0".to_vec());
+            }
+            exts
+        };
+        let ext_ptrs: Vec<*const i8> = ext_names.iter().map(|s| s.as_ptr() as *const i8).collect();
+
+        let dci_pnext: *mut std::ffi::c_void = if has_shader_bf16 {
+            &bf16_device_features as *const VkPhysicalDeviceShaderBfloat16FeaturesKHR as *mut std::ffi::c_void
+        } else {
+            std::ptr::null_mut()
+        };
         let dci = VkDeviceCreateInfo {
             sType: VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO,
-            pNext: std::ptr::null(),
+            pNext: dci_pnext,
             flags: 0,
             queueCreateInfoCount: 1,
             pQueueCreateInfos: &qci,
             enabledLayerCount: 0,
             ppEnabledLayerNames: std::ptr::null(),
-            enabledExtensionCount: 0,
-            ppEnabledExtensionNames: std::ptr::null(),
+            enabledExtensionCount: ext_ptrs.len() as u32,
+            ppEnabledExtensionNames: ext_ptrs.as_ptr(),
             pEnabledFeatures: std::ptr::null(),
         };
         let mut device = std::ptr::null_mut();
