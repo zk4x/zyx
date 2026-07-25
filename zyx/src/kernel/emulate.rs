@@ -153,7 +153,7 @@ impl Kernel {
                         Scope::Register => todo!(),
                     },
                 ),
-                Op::Loop { len, axis } => {
+                Op::Loop { len } => {
                     let dtype = IDX_T;
                     //(format!("r{op_id}: {IDX_T} = gidx{axis}"), dtype, vec![; n_threads])
                     todo!()

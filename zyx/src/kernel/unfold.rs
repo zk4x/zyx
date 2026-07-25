@@ -229,7 +229,8 @@ impl Kernel {
 
             // Add Loops for the reduce
             for &dim in &self.reduce_dims(reduce_op_id)[..n_axes] {
-                self.insert_before(loop_start, Op::Loop { len: dim });
+                let len = self.insert_const_idx_before(loop_start, dim);
+                self.insert_before(loop_start, Op::Loop { len });
             }
 
             // Add reduction operation, load from acc, accumulate, store to acc
@@ -478,7 +479,8 @@ impl Kernel {
                                 strides.push((len, st, ax_id));
                                 st *= len;
                             }
-                            Op::Loop { len, .. } => {
+                            Op::Loop { len: len_id, .. } => {
+                                let len = self.loop_len_dim(len_id);
                                 strides.push((len, st, ax_id));
                                 st *= len;
                             }

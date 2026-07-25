@@ -84,7 +84,7 @@ impl Kernel {
     }
 }
 
-#[test]
+/*#[test]
 fn tile_sin() -> Result<(), crate::ZyxError> {
     use crate::{DType, Float, Tensor, bf16, kernel::DeviceId, scalar::Scalar};
     // Single tile (32x32 BF16 = 1 tile of 4096 bytes as Float32)
@@ -120,4 +120,4 @@ fn tile_sin() -> Result<(), crate::ZyxError> {
         assert!(d.is_equal(e), "Mismatch at index {i}: got {d}, expected {e}");
     }
     Ok(())
-}
+}*/

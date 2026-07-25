@@ -57,7 +57,8 @@ impl Kernel {
         let mut factors = Vec::new();
         let mut op_id = self.head;
         while !op_id.is_null() {
-            if let Op::Loop { len } = self.ops[op_id].op {
+            if let Op::Loop { len: len_id } = self.ops[op_id].op {
+                let len = self.loop_len_dim(len_id);
                 if len >= 16 {
                     for &factor in &candidates {
                         if len.is_multiple_of(factor) && len / factor >= 4 && remaining_threads >= factor {
@@ -88,11 +89,12 @@ impl Kernel {
     pub(crate) fn local_reduce(&mut self, loop_start: OpId, factor: u64, tree_branch: u64) {
         #[cfg(feature = "time")]
         let _timer = crate::Timer::new("tiled_reduce");
-        let loop_len = if let Op::Loop { len } = self.at(loop_start) {
+        let loop_len_id = if let Op::Loop { len } = self.at(loop_start) {
             *len
         } else {
             return;
         };
+        let loop_len = self.loop_len_dim(loop_len_id);
 
         // Get new free axis for the local dimension
         let laxis = self
@@ -172,7 +174,8 @@ impl Kernel {
 
         // Divide reduce loop by factor
         let factor_const = self.insert_before(loop_start, Op::Const(Constant::idx(factor as u64)));
-        let ridx = self.insert_before(loop_start, Op::Loop { len: loop_len / factor });
+        let new_len = self.insert_const_idx_before(loop_start, loop_len / factor);
+        let ridx = self.insert_before(loop_start, Op::Loop { len: new_len });
         self.ops[loop_start].op = Op::Mad { x: ridx, y: factor_const, z: lidx };
 
         // Add local accumulator

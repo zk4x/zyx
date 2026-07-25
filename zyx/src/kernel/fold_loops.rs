@@ -353,9 +353,10 @@ impl Kernel {
         accumulated_value_id: OpId,
         after_loop_load_id: OpId,
     ) -> bool {
-        let &Op::Loop { len: loop_len } = self.at(loop_id) else {
+        let &Op::Loop { len: loop_len_id } = self.at(loop_id) else {
             return false;
         };
+        let loop_len = self.loop_len_dim(loop_len_id);
         let &Op::Define { dtype, scope: Scope::Register, ro: false, len: 1 } = self.at(acc_id) else {
             return false;
         };
@@ -561,7 +562,8 @@ mod tests {
         let zf = k.const_val(0.0f32);
         k.store(acc, zf, zi, MemLayout::Scalar);
 
-        let loop_id = k.loop_(loop_len as u64);
+        let lc = k.const_idx(loop_len as u64);
+        let loop_id = k.loop_(lc);
 
         // Some computation before load(acc) — e.g. loading source
         let _source = k.const_val(42.0f32); // simplified: no tensor load
@@ -594,7 +596,8 @@ mod tests {
         let zf = k.const_val(0.0f32);
         k.store(acc, zf, zi, MemLayout::Scalar);
 
-        let loop_id = k.loop_(loop_len as u64);
+        let lc = k.const_idx(loop_len as u64);
+        let loop_id = k.loop_(lc);
 
         let index_val = k.const_idx(5u32);
         let eq = k.binary(loop_id, index_val, BOp::Eq);
@@ -651,7 +654,8 @@ mod tests {
         let r92 = k.binary(r123, r5, BOp::Add);
         let r71 = k.binary(r37, r110, BOp::Mul);
 
-        let loop_id = k.loop_(5);
+        let c5 = k.const_idx(5u32);
+        let loop_id = k.loop_(c5);
 
         let r20 = k.cast(loop_id, DType::I32);
         let r96 = k.load(r95, r92, MemLayout::Scalar);
@@ -735,11 +739,14 @@ mod tests {
         let r135 = k.binary(r2, r84, BOp::BitShiftLeft);
         let r136 = k.binary(r131, r97, BOp::BitShiftLeft);
 
-        let outer_loop = k.loop_(6250);
+        let c6250 = k.const_idx(6250u32);
+        let one = k.const_idx(1u32);
+        let c8 = k.const_idx(8u32);
+        let outer_loop = k.loop_(c6250);
 
         let r53 = k.binary(outer_loop, r10, BOp::BitShiftLeft);
 
-        let inner_loop = k.loop_(8);
+        let inner_loop = k.loop_(c8);
 
         let r35 = k.binary(r53, inner_loop, BOp::Add);
         let r20 = k.cast(r35, DType::I32);
@@ -772,7 +779,7 @@ mod tests {
 
         k.simplify_accumulating_loop();
 
-        assert_eq!(k.at(outer_loop), &Op::Loop { len: 1 }, "outer loop should be zeroed");
-        assert_eq!(k.at(inner_loop), &Op::Loop { len: 1 }, "inner loop should be zeroed");
+        assert_eq!(k.at(outer_loop), &Op::Loop { len: one }, "outer loop should be zeroed");
+        assert_eq!(k.at(inner_loop), &Op::Loop { len: one }, "inner loop should be zeroed");
     }
 }

@@ -496,13 +496,14 @@ impl Kernel {
                     Scope::Local => lws[axis as usize] = len,
                     Scope::Register => {}
                 },
-                Op::Loop { len } => {
+                &Op::Loop { len: len_id } => {
+                    let len = self.loop_len_dim(len_id);
                     wi_ops += loop_mult * 3;
                     if !indexing_ops.contains(&op_id) {
                         wi_compute_ops += loop_mult * 3;
                     }
-                    loop_mult *= *len as u64;
-                    latest_loop_lengths.push(*len as u64);
+                    loop_mult *= len;
+                    latest_loop_lengths.push(len);
                     let depth = latest_loop_lengths.len() as u64;
                     if depth > max_loop_depth {
                         max_loop_depth = depth;

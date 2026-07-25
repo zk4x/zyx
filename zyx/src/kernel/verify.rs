@@ -375,9 +375,16 @@ impl Kernel {
                 Op::EndIf => {
                     bounds_stack.pop();
                 }
-                Op::Index { len, .. } | Op::Loop { len } => {
+                Op::Index { len, .. } => {
                     let b = bounds_stack.last_mut().unwrap();
-                    b.insert(op_id, (0, len as Dim - 1));
+                    b.insert(op_id, (0, len - 1));
+                }
+                Op::Loop { len } => {
+                    let b = bounds_stack.last_mut().unwrap();
+                    let loop_len = self.loop_len_dim(len);
+                    if loop_len > 0 {
+                        b.insert(op_id, (0, loop_len - 1));
+                    }
                 }
                 Op::Vectorize { ref ops } => {
                     let b = bounds_stack.last_mut().unwrap();

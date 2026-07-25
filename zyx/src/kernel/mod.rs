@@ -43,7 +43,7 @@
 //! let zero_acc = kernel.vectorize(vec![zf, zf, zf, zf]);
 //! kernel.store(acc, zero_acc, c0, MemLayout::Vector(4));
 //!
-//! let k_loop = kernel.loop_(k / 8);
+//! let k_loop = kernel.loop_(kernel.const_idx(k / 8));
 //! let k_off = kernel.mul(k_loop, c8);
 //!
 //! let a_base = kernel.mad(a_row, k_const, k_off);
@@ -485,7 +485,7 @@ pub(crate) enum Op {
     },
     // Control flow
     Loop {
-        len: Dim,
+        len: OpId,
     },
     EndLoop,
     If {
@@ -704,7 +704,7 @@ impl DeBin for Op {
                 Ok(Op::Index { len, scope, axis })
             }
             8 => {
-                let len = Dim::de_bin(offset, bytes)?;
+                let len = OpId::de_bin(offset, bytes)?;
                 Ok(Op::Loop { len })
             }
             9 => Ok(Op::EndLoop),
@@ -777,12 +777,12 @@ impl Op {
             | Op::Const { .. }
             | Op::Define { .. }
             | Op::Index { .. }
-            | Op::Loop { .. }
             | Op::EndLoop
             | Op::Barrier { .. }
             | Op::EndIf => {
                 vec![]
             }
+            &Op::Loop { len, .. } => vec![len],
             &Op::Move { x, .. } => vec![x],
             &Op::StoreView { src, .. } => vec![src],
             Op::Reduce { x, .. } => vec![*x],
@@ -808,10 +808,10 @@ impl Op {
             | Op::Const { .. }
             | Op::Define { .. }
             | Op::Index { .. }
-            | Op::Loop { .. }
             | Op::EndLoop
             | Op::EndIf
             | Op::Barrier { .. } => vec![],
+            Op::Loop { len, .. } => vec![len],
             Op::StoreView { src, .. } => vec![src],
             Op::Move { x, .. } => vec![x],
             Op::Reduce { x, .. } => vec![x],
@@ -1203,7 +1203,7 @@ impl Kernel {
     }
 
     /// Begin a loop.
-    pub fn loop_(&mut self, len: Dim) -> OpId {
+    pub fn loop_(&mut self, len: OpId) -> OpId {
         self.push_back(Op::Loop { len })
     }
 
@@ -1457,6 +1457,10 @@ impl Kernel {
             self.ops[prev].next = op_id;
         }
         op_id
+    }
+
+    pub(crate) fn insert_const_idx_before(&mut self, before_id: OpId, val: impl crate::scalar::Scalar) -> OpId {
+        self.insert_before(before_id, Op::Const(Constant::idx(val)))
     }
 
     pub(crate) fn insert_after(&mut self, after_id: OpId, op: Op) -> OpId {
@@ -1781,13 +1785,15 @@ impl Kernel {
                 Op::Binary { x, y, bop } => {
                     if bop == BOp::Add {
                         if let Op::Loop { len, .. } = self.ops[x].op {
-                            indices.insert(x, (len, 1));
+                            let d = self.loop_len_dim(len);
+                            indices.insert(x, (d, 1));
                             params.push((y, scale));
                         } else if let Op::Index { len, .. } = self.ops[x].op {
                             indices.insert(x, (len, 1));
                             params.push((y, scale));
                         } else if let Op::Loop { len, .. } = self.ops[y].op {
-                            indices.insert(y, (len, 1));
+                            let d = self.loop_len_dim(len);
+                            indices.insert(y, (d, 1));
                             params.push((x, scale));
                         } else if let Op::Index { len, .. } = self.ops[y].op {
                             indices.insert(y, (len, 1));
@@ -1799,21 +1805,37 @@ impl Kernel {
                     }
                     if bop == BOp::Mul {
                         match (&self.ops[x].op, &self.ops[y].op) {
-                            (Op::Loop { len, .. }, Op::Const(c)) | (Op::Index { len, .. }, Op::Const(c)) => {
+                            (Op::Loop { len, .. }, Op::Const(c)) => {
+                                let d = self.loop_len_dim(*len);
+                                indices.insert(x, (d, c.as_dim().unwrap() * scale));
+                            }
+                            (Op::Index { len, .. }, Op::Const(c)) => {
                                 indices.insert(x, (*len, c.as_dim().unwrap() * scale));
                             }
-                            (Op::Const(c), Op::Loop { len, .. }) | (Op::Const(c), Op::Index { len, .. }) => {
+                            (Op::Const(c), Op::Loop { len, .. }) => {
+                                let d = self.loop_len_dim(*len);
+                                indices.insert(y, (d, c.as_dim().unwrap() * scale));
+                            }
+                            (Op::Const(c), Op::Index { len, .. }) => {
                                 indices.insert(y, (*len, c.as_dim().unwrap() * scale));
                             }
-                            _ => {} //op => println!("op={op:?}"),
+                            _ => {}
                         }
                     }
                     if bop == BOp::BitShiftLeft {
                         match (&self.ops[x].op, &self.ops[y].op) {
-                            (Op::Loop { len, .. }, Op::Const(c)) | (Op::Index { len, .. }, Op::Const(c)) => {
+                            (Op::Loop { len, .. }, Op::Const(c)) => {
+                                let d = self.loop_len_dim(*len);
+                                indices.insert(x, (d, (1u64 << c.as_dim().unwrap()) * scale));
+                            }
+                            (Op::Index { len, .. }, Op::Const(c)) => {
                                 indices.insert(x, (*len, (1u64 << c.as_dim().unwrap()) * scale));
                             }
-                            (Op::Const(c), Op::Loop { len, .. }) | (Op::Const(c), Op::Index { len, .. }) => {
+                            (Op::Const(c), Op::Loop { len, .. }) => {
+                                let d = self.loop_len_dim(*len);
+                                indices.insert(y, (d, (1u64 << c.as_dim().unwrap()) * scale));
+                            }
+                            (Op::Const(c), Op::Index { len, .. }) => {
                                 indices.insert(y, (*len, (1u64 << c.as_dim().unwrap()) * scale));
                             }
                             _ => {
@@ -1825,25 +1847,29 @@ impl Kernel {
                     }
                 }
                 Op::Mad { x, y, z } => {
-                    if let Some(len) = match &self.ops[z].op {
-                        Op::Loop { len, .. } | Op::Index { len, .. } => Some(*len),
-                        _ => None,
-                    } {
-                        indices.insert(z, (len, 1));
-                    } else {
-                        params.push((z, scale));
+                    match &self.ops[z].op {
+                        Op::Loop { len, .. } => {
+                            indices.insert(z, (self.loop_len_dim(*len), 1));
+                        }
+                        Op::Index { len, .. } => {
+                            indices.insert(z, (*len, 1));
+                        }
+                        _ => {
+                            params.push((z, scale));
+                        }
                     }
                     match (&self.ops[x].op, &self.ops[y].op) {
-                        (Op::Loop { len: dim, .. }, Op::Const(c))
-                        | (Op::Index { len: dim, .. }, Op::Const(c))
-                        | (Op::Const(c), Op::Loop { len: dim, .. })
-                        | (Op::Const(c), Op::Index { len: dim, .. }) => {
-                            let target = if matches!(self.ops[x].op, Op::Loop { .. } | Op::Index { .. }) {
-                                x
-                            } else {
-                                y
-                            };
-                            indices.insert(target, (*dim, c.as_dim().unwrap() * scale));
+                        (Op::Loop { len, .. }, Op::Const(c)) => {
+                            indices.insert(x, (self.loop_len_dim(*len), c.as_dim().unwrap() * scale));
+                        }
+                        (Op::Index { len: dim, .. }, Op::Const(c)) => {
+                            indices.insert(x, (*dim, c.as_dim().unwrap() * scale));
+                        }
+                        (Op::Const(c), Op::Loop { len, .. }) => {
+                            indices.insert(y, (self.loop_len_dim(*len), c.as_dim().unwrap() * scale));
+                        }
+                        (Op::Const(c), Op::Index { len: dim, .. }) => {
+                            indices.insert(y, (*dim, c.as_dim().unwrap() * scale));
                         }
                         _ => {}
                     }
@@ -1859,6 +1885,16 @@ impl Kernel {
         }
 
         indices
+    }
+
+    /// Get the dimension value from a loop's length OpId.
+    /// Returns 0 if the OpId doesn't point to a Const with a valid dimension.
+    pub(crate) fn loop_len_dim(&self, loop_id: OpId) -> Dim {
+        if let Op::Const(c) = &self.ops[loop_id].op {
+            c.as_dim().unwrap_or(0)
+        } else {
+            0
+        }
     }
 
     /// Remap slab indices from x to y

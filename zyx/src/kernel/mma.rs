@@ -93,10 +93,10 @@ impl Kernel {
                 }
                 Store { .. } => {
                     if let Some(&k_loop_id) = loop_ids.last() {
-                        let Loop { len, .. } = self.ops[k_loop_id].op else {
+                        let Loop { len: len_id, .. } = self.ops[k_loop_id].op else {
                             unreachable!()
                         };
-                        if len == 8 {
+                        if self.loop_len_dim(len_id) == 8 {
                             if let Some(store_info) = self.mma_store_info(op_id, k_loop_id) {
                                 stores.last_mut().unwrap().push(store_info);
                             }

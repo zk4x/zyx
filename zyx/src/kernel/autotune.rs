@@ -269,10 +269,13 @@ impl Optimization {
             }
             Optimization::SplitLoop { factors } => {
                 let (op_id, factor) = factors[config];
-                let Op::Loop { len } = kernel.ops[op_id].op else {
+                let Op::Loop { len: len_id } = kernel.ops[op_id].op else {
                     unreachable!()
                 };
-                kernel.split_dim(op_id, vec![Op::Loop { len: len / factor }, Op::Loop { len: factor }]);
+                let len = kernel.loop_len_dim(len_id);
+                let len1 = kernel.const_idx(len / factor);
+                let len2 = kernel.const_idx(factor);
+                kernel.split_dim(op_id, vec![Op::Loop { len: len1 }, Op::Loop { len: len2 }]);
             }
             Optimization::PadIndex { factors } => {
                 if factors.is_empty() {
@@ -408,7 +411,9 @@ impl Kernel {
         kernel.run_always_on_optimizations();
         kernel.run_always_on_optimizations();
 
-        kernel.tenstorrent_tile();
+        if let Device::TT(_) = device {
+            kernel.tenstorrent_tile();
+        }
         kernel.verify();
 
         /*let (opt, _) = kernel.opt_pad_index();
@@ -473,7 +478,7 @@ impl Kernel {
         debug: DebugMask,
         init_buffers: Option<&[PoolBufferId]>,
     ) -> Result<(DeviceProgramId, OptSeq, u64), BackendError> {
-        if true {
+        if false {
             return self.apply_selected_optimizations(device, memory_pool, config, flop, read_bytes, write_bytes, debug);
         }
 

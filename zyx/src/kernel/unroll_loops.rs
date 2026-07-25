@@ -66,9 +66,9 @@ impl Kernel {
         let mut deleted = Vec::new();
         while !op_id.is_null() {
             let next = self.next_op(op_id);
-            if let Op::Loop { len, .. } = self.ops[op_id].op {
+            if let Op::Loop { len: len_id, .. } = self.ops[op_id].op {
                 depth += 1;
-                if len == 1 {
+                if self.loop_len_dim(len_id) == 1 {
                     self.ops[op_id].op = Op::Const(Constant::idx(0));
                     deleted.push(depth);
                 }
@@ -92,7 +92,8 @@ impl Kernel {
             if self.ops[op_id].op == Op::EndLoop {
                 endloop_ids.push(op_id);
             }
-            if let Op::Loop { len, .. } = self.ops[op_id].op {
+            if let Op::Loop { len: len_id, .. } = self.ops[op_id].op {
+                let len = self.loop_len_dim(len_id);
                 let _ = endloop_ids.pop().unwrap();
                 if len as usize <= unroll_dim as usize
                     && self.ops.len().0 as usize + (self.n_ops_in_loop(op_id) * (len as usize - 1)) < 5_000
@@ -140,7 +141,8 @@ impl Kernel {
                     endloop_ids.push(op_id);
                     constant_loops.push(true);
                 }
-                Op::Loop { len, .. } => {
+                Op::Loop { len: len_id, .. } => {
+                    let len = self.loop_len_dim(len_id);
                     endloop_ids.pop().unwrap();
                     let is_const = constant_loops.pop().unwrap();
                     if !is_const {
@@ -181,7 +183,8 @@ impl Kernel {
     /// Unrolls the loop at `loop_id` to reduce loop overhead and
     /// enable better instruction scheduling and vectorization.
     pub fn unroll_loop(&mut self, loop_id: OpId) {
-        let Op::Loop { len } = self.ops[loop_id].op else { return };
+        let Op::Loop { len: len_id } = self.ops[loop_id].op else { return };
+        let len = self.loop_len_dim(len_id);
         //println!("UNROLL len={} limit={}", len, len > 64);
         if len == 0 || len > 64 {
             return;
@@ -208,7 +211,7 @@ impl Kernel {
         self.ops[loop_id].op = Op::Const(Constant::idx(0));
         let last_loop_op = self.prev_op(endloop_id);
 
-        for idx in 1..len {
+        for idx in 1..len as u64 {
             let mut new_ops_map = Map::default();
             let idx_op = self.insert_before(endloop_id, Op::Const(Constant::idx(idx)));
             new_ops_map.insert(loop_id, idx_op);
@@ -263,7 +266,8 @@ impl Kernel {
     pub fn unroll_tree_reduce(&mut self, loop_id: OpId, factor: Dim) {
         #[cfg(feature = "time")]
         let _timer = crate::Timer::new("unroll_tree_reduce");
-        let Op::Loop { len } = self.ops[loop_id].op else { return };
+        let Op::Loop { len: len_id } = self.ops[loop_id].op else { return };
+        let len = self.loop_len_dim(len_id);
         if factor < 2 || !len.is_multiple_of(factor) {
             return;
         }
@@ -331,7 +335,8 @@ impl Kernel {
 
         let mut map = Map::default();
 
-        let new_loop = self.insert_before(loop_id, Op::Loop { len: len / factor });
+        let new_len = self.const_idx(len / factor);
+        let new_loop = self.insert_before(loop_id, Op::Loop { len: new_len });
         let mut op_id = self.next_op(loop_id);
         let stride = self.insert_before(loop_id, Op::Const(Constant::idx(factor)));
         self.ops[loop_id].op = Op::Binary { x: new_loop, y: stride, bop: BOp::Mul };

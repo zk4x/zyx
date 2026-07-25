@@ -88,14 +88,19 @@ impl Kernel {
         }
 
         // ── Phase 1: Scalar global → local loop ──
-        // for i in 0..TILE_NELT:
-        //     local[i] = global[gidx * TILE_NELT + i]
+        // Compute loop bound = min(orig_len - gidx * TILE_NELT, TILE_NELT)
+        // = remaining + nelt - max(remaining, nelt)
         let first_load = load_ids[0].0;
-        let loop_p1 = self.insert_after(first_load, Op::Loop { len: orig_len });
-        let const_nelt = self.insert_after(loop_p1, Op::Const(Constant::idx(TILE_NELT as u64)));
-        let scaled = self.insert_after(const_nelt, Op::Binary { x: gidx, y: const_nelt, bop: BOp::Mul });
-        let elem_idx = self.insert_after(scaled, Op::Binary { x: scaled, y: loop_p1, bop: BOp::Add });
-        let mut loop_end = elem_idx;
+        let p1_nelt = self.insert_after(first_load, Op::Const(Constant::idx(TILE_NELT as u64)));
+        let p1_orig = self.insert_after(p1_nelt, Op::Const(Constant::idx(orig_len as u64)));
+        let p1_scaled = self.insert_after(p1_orig, Op::Binary { x: gidx, y: p1_nelt, bop: BOp::Mul });
+        let p1_remaining = self.insert_after(p1_scaled, Op::Binary { x: p1_orig, y: p1_scaled, bop: BOp::Sub });
+        let p1_maxed = self.insert_after(p1_remaining, Op::Binary { x: p1_remaining, y: p1_nelt, bop: BOp::Max });
+        let p1_sum = self.insert_after(p1_maxed, Op::Binary { x: p1_remaining, y: p1_nelt, bop: BOp::Add });
+        let p1_loop_len = self.insert_after(p1_sum, Op::Binary { x: p1_sum, y: p1_maxed, bop: BOp::Sub });
+        let loop_p1 = self.insert_after(p1_loop_len, Op::Loop { len: p1_loop_len });
+        let p1_elem_idx = self.insert_after(loop_p1, Op::Binary { x: p1_scaled, y: loop_p1, bop: BOp::Add });
+        let mut loop_end = p1_elem_idx;
         for &(lid, _src) in &load_ids {
             let local = in_locals[&lid];
             let dup = self.insert_after(
@@ -105,7 +110,7 @@ impl Kernel {
                         Op::Load { src, .. } => *src,
                         _ => unreachable!(),
                     },
-                    index: elem_idx,
+                    index: p1_elem_idx,
                     layout: MemLayout::Scalar,
                 },
             );
@@ -145,18 +150,22 @@ impl Kernel {
         let barrier = self.insert_before(first_sid, Op::Barrier);
 
         // ── Phase 3: Single scalar local → global loop for all outputs ──
-        // for i in 0..TILE_NELT:
-        //     for each output:
-        //         global[gidx * TILE_NELT + i] = out_local[i]
-        let loop_p3 = self.insert_after(barrier, Op::Loop { len: orig_len });
-        let const_nelt3 = self.insert_after(loop_p3, Op::Const(Constant::idx(TILE_NELT as u64)));
-        let scaled3 = self.insert_after(const_nelt3, Op::Binary { x: gidx, y: const_nelt3, bop: BOp::Mul });
-        let elem_idx3 = self.insert_after(scaled3, Op::Binary { x: scaled3, y: loop_p3, bop: BOp::Add });
-        let mut body_last = elem_idx3;
+        // Compute loop bound = min(orig_len - gidx * TILE_NELT, TILE_NELT)
+        // = remaining + nelt - max(remaining, nelt)
+        let p3_nelt = self.insert_after(barrier, Op::Const(Constant::idx(TILE_NELT as u64)));
+        let p3_orig = self.insert_after(p3_nelt, Op::Const(Constant::idx(orig_len as u64)));
+        let p3_scaled = self.insert_after(p3_orig, Op::Binary { x: gidx, y: p3_nelt, bop: BOp::Mul });
+        let p3_remaining = self.insert_after(p3_scaled, Op::Binary { x: p3_orig, y: p3_scaled, bop: BOp::Sub });
+        let p3_maxed = self.insert_after(p3_remaining, Op::Binary { x: p3_remaining, y: p3_nelt, bop: BOp::Max });
+        let p3_sum = self.insert_after(p3_maxed, Op::Binary { x: p3_remaining, y: p3_nelt, bop: BOp::Add });
+        let p3_loop_len = self.insert_after(p3_sum, Op::Binary { x: p3_sum, y: p3_maxed, bop: BOp::Sub });
+        let loop_p3 = self.insert_after(p3_loop_len, Op::Loop { len: p3_loop_len });
+        let p3_elem_idx = self.insert_after(loop_p3, Op::Binary { x: p3_scaled, y: loop_p3, bop: BOp::Add });
+        let mut body_last = p3_elem_idx;
         for &(sid, _dst) in &store_ids {
             let out_local = out_locals[&sid];
             body_last = self.insert_after(body_last, Op::Load { src: out_local, index: loop_p3, layout: MemLayout::Scalar });
-            body_last = self.insert_after(body_last, Op::Store { dst: _dst, x: body_last, index: elem_idx3, layout: MemLayout::Scalar });
+            body_last = self.insert_after(body_last, Op::Store { dst: _dst, x: body_last, index: p3_elem_idx, layout: MemLayout::Scalar });
             self.remove_op(sid);
         }
         self.insert_after(body_last, Op::EndLoop);

@@ -30,6 +30,7 @@ fn wmma_matmul() -> Result<(), ZyxError> {
     let [c0, c1, c2, c4, c8, c16] = kernel.const_idxs([0u32, 1, 2, 4, 8, 16]);
     let n_const = kernel.const_idx(n);
     let k_const = kernel.const_idx(k);
+    let k_div_8 = kernel.const_idx(k / 8);
 
     // wid >> 2  -> row index within tile (0..7)
     let row_in_tile = kernel.div(wid, c4);
@@ -49,7 +50,7 @@ fn wmma_matmul() -> Result<(), ZyxError> {
     kernel.store(acc, zero_acc, c0, MemLayout::Vector(4));
 
     // K loop (k/8 iterations)
-    let k_loop = kernel.loop_(k / 8);
+    let k_loop = kernel.loop_(k_div_8);
     let k_off = kernel.mul(k_loop, c8);
 
     // Load A fragment: 4 f16 per thread (m16 × k8)

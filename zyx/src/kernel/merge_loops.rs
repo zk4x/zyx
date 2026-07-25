@@ -63,14 +63,15 @@ impl Kernel {
 
         let mut total_len: u64 = 1;
         for &id in loop_ids {
-            if let Op::Loop { len } = self.ops[id].op {
-                total_len *= len;
+            if let Op::Loop { len: len_id } = self.ops[id].op {
+                total_len *= self.loop_len_dim(len_id);
             }
         }
 
         // Replace original loops with merged loop, removing inner EndLoops
         let anchor = loop_ids[0];
-        let mut x = self.insert_before(anchor, Op::Loop { len: total_len });
+        let merged_len = self.insert_const_idx_before(anchor, total_len);
+        let mut x = self.insert_before(anchor, Op::Loop { len: merged_len });
 
         // Single pass: remove inner EndLoops (keep only the last one)
         let mut op_id = self.next_op(anchor);
@@ -97,9 +98,10 @@ impl Kernel {
         // Insert all new ops before the anchor so all definitions
         // precede all uses (avoids backward-reference verification errors).
         for i in (0..loop_ids.len()).rev() {
-            let Op::Loop { len } = self.ops[loop_ids[i]].op else {
+            let Op::Loop { len: len_id } = self.ops[loop_ids[i]].op else {
                 unreachable!()
             };
+            let len = self.loop_len_dim(len_id);
             let y = self.insert_before(anchor, Op::Const(Constant::idx(len)));
             self.ops[loop_ids[i]].op = Op::Binary { x, y, bop: BOp::Mod };
             x = self.insert_before(anchor, Op::Binary { x, y, bop: BOp::Div });

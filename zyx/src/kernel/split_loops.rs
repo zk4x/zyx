@@ -84,7 +84,8 @@ impl Kernel {
         let mut factors = Vec::new();
         let mut op_id = self.head;
         while !op_id.is_null() {
-            if let Op::Loop { len } = self.ops[op_id].op {
+            if let Op::Loop { len: len_id } = self.ops[op_id].op {
+                let len = self.loop_len_dim(len_id);
                 if len >= 16 {
                     for &factor in &candidates {
                         if len.is_multiple_of(factor as u64) {
@@ -111,12 +112,14 @@ impl Kernel {
             let mut dim = 1;
             for op in splits.iter() {
                 match op {
-                    Op::Loop { len, .. } | Op::Index { len, .. } => dim *= len,
+                    Op::Loop { len, .. } => dim *= self.loop_len_dim(*len),
+                    Op::Index { len, .. } => dim *= len,
                     _ => unreachable!("split can be only index or loop"),
                 }
             }
             match self.ops[dim_id].op {
-                Op::Index { len, .. } | Op::Loop { len, .. } => debug_assert_eq!(len, dim),
+                Op::Index { len, .. } => debug_assert_eq!(len, dim),
+                Op::Loop { len, .. } => debug_assert_eq!(self.loop_len_dim(len), dim),
                 _ => {}
             }
         }
@@ -137,7 +140,8 @@ impl Kernel {
         for op in splits.iter().rev() {
             strides.push(st);
             match op {
-                Op::Loop { len, .. } | Op::Index { len, .. } => st *= len,
+                Op::Loop { len, .. } => st *= self.loop_len_dim(*len),
+                Op::Index { len, .. } => st *= len,
                 _ => unreachable!(),
             }
         }

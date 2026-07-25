@@ -764,6 +764,8 @@ pub fn compile(kernel: &Kernel, debug_asm: bool) -> Result<(Vec<u32>, Vec<Dim>, 
                     }
                 }
                 &Op::Loop { len } => {
+                    let len = kernel.loop_len_dim(len);
+                    let len_u64 = len as u64;
                     for &val in &[0u32, 1, len as u32] {
                         let key = match IDX_T {
                             DType::U32 => Constant::U32(val),
@@ -1453,6 +1455,7 @@ pub fn compile(kernel: &Kernel, debug_asm: bool) -> Result<(Vec<u32>, Vec<Dim>, 
                     let continue_lbl = asm.id();
                     let merge = asm.id();
                     let idx_type = emit_type(&mut asm, &mut type_cache, IDX_T);
+                    let len = kernel.loop_len_dim(len) as u64;
 
                     // Pre-header: allocate counter var and store 0, then branch to header
                     let counter_ptr_type = push_ptr_type(&mut asm, &mut ptr_cache, &mut type_entries, SC_FUNCTION, idx_type);

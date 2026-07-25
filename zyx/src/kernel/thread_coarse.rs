@@ -257,7 +257,8 @@ impl Kernel {
 
         let mut op_id = self.head;
         while !op_id.is_null() {
-            if let Op::Loop { len } = self.ops[op_id].op {
+            if let Op::Loop { len: len_id } = self.ops[op_id].op {
+                let len = self.loop_len_dim(len_id);
                 if len >= 16 {
                     let applicable: Vec<u64> =
                         candidates.iter().copied().filter(|&f| len.is_multiple_of(f) && len / f >= 4).collect();
