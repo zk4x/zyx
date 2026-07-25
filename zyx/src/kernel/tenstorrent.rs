@@ -151,14 +151,18 @@ impl Kernel {
 
         // ── Phase 3: Single scalar local → global loop for all outputs ──
         // Compute loop bound = min(orig_len - gidx * TILE_NELT, TILE_NELT)
-        // = remaining + nelt - max(remaining, nelt)
+        // Uses: N - max(gidx*1024 + N - orig_len, 0)  [= N - max(overhang, 0)]
+        // gidx*1024 = gidx*1025 - gidx  (avoids constant-fold to shift → CSE match with Phase 1)
         let p3_nelt = self.insert_after(barrier, Op::Const(Constant::idx(TILE_NELT as u64)));
         let p3_orig = self.insert_after(p3_nelt, Op::Const(Constant::idx(orig_len as u64)));
-        let p3_scaled = self.insert_after(p3_orig, Op::Binary { x: gidx, y: p3_nelt, bop: BOp::Mul });
-        let p3_remaining = self.insert_after(p3_scaled, Op::Binary { x: p3_orig, y: p3_scaled, bop: BOp::Sub });
-        let p3_maxed = self.insert_after(p3_remaining, Op::Binary { x: p3_remaining, y: p3_nelt, bop: BOp::Max });
-        let p3_sum = self.insert_after(p3_maxed, Op::Binary { x: p3_remaining, y: p3_nelt, bop: BOp::Add });
-        let p3_loop_len = self.insert_after(p3_sum, Op::Binary { x: p3_sum, y: p3_maxed, bop: BOp::Sub });
+        let p3_1025 = self.insert_after(p3_orig, Op::Const(Constant::idx(1025u64)));
+        let p3_zero = self.insert_after(p3_1025, Op::Const(Constant::idx(0u64)));
+        let p3_scaled_extra = self.insert_after(p3_zero, Op::Binary { x: gidx, y: p3_1025, bop: BOp::Mul });
+        let p3_scaled = self.insert_after(p3_scaled_extra, Op::Binary { x: p3_scaled_extra, y: gidx, bop: BOp::Sub });
+        let p3_over = self.insert_after(p3_scaled, Op::Binary { x: p3_scaled, y: p3_nelt, bop: BOp::Add });
+        let p3_over = self.insert_after(p3_over, Op::Binary { x: p3_over, y: p3_orig, bop: BOp::Sub });
+        let p3_over_maxed = self.insert_after(p3_over, Op::Binary { x: p3_over, y: p3_zero, bop: BOp::Max });
+        let p3_loop_len = self.insert_after(p3_over_maxed, Op::Binary { x: p3_nelt, y: p3_over_maxed, bop: BOp::Sub });
         let loop_p3 = self.insert_after(p3_loop_len, Op::Loop { len: p3_loop_len });
         let p3_elem_idx = self.insert_after(loop_p3, Op::Binary { x: p3_scaled, y: loop_p3, bop: BOp::Add });
         let mut body_last = p3_elem_idx;

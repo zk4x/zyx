@@ -530,7 +530,7 @@ int main() {
                 .compiler_include_paths = {},
             });
 
-        // Set runtime args — buffer addresses
+        // Set runtime args — buffer addresses + core index
         cerr << "[TT] setting rt args" << endl;
         {
           vector<uint32_t> reader_rt_args;
@@ -541,6 +541,8 @@ int main() {
                  << endl;
             reader_rt_args.push_back(static_cast<uint32_t>(a));
           }
+          // Core index for gidx0 — axis after buffer args
+          reader_rt_args.push_back(0);
           SetRuntimeArgs(program, reader, core, reader_rt_args);
         }
         {
@@ -552,6 +554,8 @@ int main() {
                  << endl;
             writer_rt_args.push_back(static_cast<uint32_t>(a));
           }
+          // Core index for gidx0 — axis after buffer args
+          writer_rt_args.push_back(0);
           SetRuntimeArgs(program, writer, core, writer_rt_args);
         }
         {

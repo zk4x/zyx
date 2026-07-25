@@ -805,7 +805,7 @@ impl TTDevice {
                         writeln!(reader, "{indent}{} r{op_id} = {};", val.dtype().c_type(), val.c_code());
                     }
                     Op::Index { scope: Scope::Global, axis, .. } => {
-                        writeln!(reader, "{indent}uint32_t r{op_id} = gidx{axis};");
+                        writeln!(reader, "{indent}uint32_t r{op_id} = get_arg_val<uint32_t>({});", input_dtypes.len() + axis as usize);
                     }
                     // Barrier means reader kernel is over
                     Op::Barrier => break,
@@ -1054,6 +1054,33 @@ impl TTDevice {
             }
         }
 
+        // Pre-scan: emit any Index/Const ops referenced by writer-section ops
+        // but located before the barriers (moved there by move_constants_to_beginning)
+        {
+            let mut emitted: Vec<OpId> = Vec::new();
+            let mut scan = op_id;
+            while !scan.is_null() {
+                if let Op::Barrier = kernel.ops[scan].op { break; }
+                let mut work: Vec<OpId> = kernel.ops[scan].op.parameters().collect();
+                while let Some(param) = work.pop() {
+                    if emitted.contains(&param) { continue; }
+                    emitted.push(param);
+                    match &kernel.ops[param].op {
+                        Op::Index { scope: Scope::Global, axis, .. } => {
+                            writeln!(writer, "{indent}uint32_t r{param} = get_arg_val<uint32_t>({});", output_dtypes.len() + *axis as usize);
+                        }
+                        Op::Const(val) => {
+                            writeln!(writer, "{indent}{} r{param} = {};", val.dtype().c_type(), val.c_code());
+                        }
+                        _ => {}
+                    }
+                    // Walk parameters of this dependency too (e.g. Binary referencing Const)
+                    work.extend(kernel.ops[param].op.parameters());
+                }
+                scan = kernel.next_op(scan);
+            }
+        }
+
         let mut loop_depth = 0u32;
         while !op_id.is_null() {
             match kernel.ops[op_id].op {
@@ -1090,7 +1117,7 @@ impl TTDevice {
                     writeln!(writer, "{indent}{} r{op_id} = {};", val.dtype().c_type(), val.c_code());
                 }
                 Op::Index { scope: Scope::Global, axis, .. } => {
-                    writeln!(writer, "{indent}uint32_t r{op_id} = gidx{axis};");
+                    writeln!(writer, "{indent}uint32_t r{op_id} = get_arg_val<uint32_t>({});", output_dtypes.len() + axis as usize);
                 }
                 Op::Binary { x, y, bop } => {
                     let dt = kernel.dtype(op_id);
