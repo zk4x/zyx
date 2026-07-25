@@ -1618,9 +1618,8 @@ pub(super) fn initialize_device(
                         | OpCapability::COS
                         | OpCapability::POW);
                     // Turing/NVIDIA driver crashes on BF16 compute even when
-                    // VK_KHR_shader_bfloat16 is enabled. CUDA implicitly handles
-                    // BF16->F32 promotion in its math library, but SPIR-V codegen
-                    // would need explicit OpFConvert around GLSL.std.450 ops.
+                    // VK_KHR_shader_bfloat16 is enabled. SPIR-V codegen would
+                    // need explicit OpFConvert around GLSL.std.450 intrinsics.
                     // Disable until that's implemented.
                     all[DType::BF16 as usize] = OpCapability::none();
                     if !has_shader_float16 {
