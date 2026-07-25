@@ -440,15 +440,29 @@ int main() {
       }
       auto &cfg = program_cache[id];
 
+      uint32_t gidx0_sz = extract_u32(line, "gd0");
+      uint32_t gidx1_sz = extract_u32(line, "gd1");
+
       try {
         Program program = CreateProgram();
-        CoreCoord core = {0, 0};
         MeshWorkload workload;
         MeshCoordinateRange device_range(mesh_device->shape());
 
+        // Build compile-time args from actual buffer pointers
+        vector<uint32_t> reader_compile_args;
+        for (uint32_t i = 0; i < n_inputs; i++) {
+          TensorAccessorArgs(*buffers[src_indices[i]])
+              .append_to(reader_compile_args);
+        }
+        vector<uint32_t> writer_compile_args;
+        for (uint32_t i = 0; i < n_outputs; i++) {
+          TensorAccessorArgs(*buffers[dst_indices[i]])
+              .append_to(writer_compile_args);
+        }
+
         // Circular buffers from cached config
         constexpr uint32_t tiles_per_cb = 2;
-        auto mk_cb = [&](CBIndex idx, uint32_t fmt, uint32_t tb) {
+        auto mk_cb_per_core = [&](auto &prog, uint32_t cb_idx, uint32_t fmt, uint32_t tb, CoreCoord core) {
           DataFormat df;
           switch (fmt) {
           case 0:
@@ -465,102 +479,99 @@ int main() {
             break;
           }
           CreateCircularBuffer(
-              program, core,
-              CircularBufferConfig(tiles_per_cb * tb, {{idx, df}})
-                  .set_page_size(idx, tb));
+              prog, core,
+              CircularBufferConfig(tiles_per_cb * tb, {{cb_idx, df}})
+                  .set_page_size(cb_idx, tb));
         };
-        for (uint32_t i = 0; i < cfg.cb_indices.size(); i++) {
-          mk_cb(static_cast<CBIndex>(cfg.cb_indices[i]),
-                cfg.cb_formats[i], cfg.cb_tile_bytes[i]);
-        }
 
-        cerr << "[TT] creating TensorAccessorArgs from buffers" << endl;
-        // Build compile-time args from actual buffer pointers
-        vector<uint32_t> reader_compile_args;
-        for (uint32_t i = 0; i < n_inputs; i++) {
-          TensorAccessorArgs(*buffers[src_indices[i]])
-              .append_to(reader_compile_args);
-        }
-        vector<uint32_t> writer_compile_args;
-        for (uint32_t i = 0; i < n_outputs; i++) {
-          TensorAccessorArgs(*buffers[dst_indices[i]])
-              .append_to(writer_compile_args);
-        }
+        for (uint32_t row = 0; row < gidx0_sz; row++) {
+          for (uint32_t col = 0; col < gidx1_sz; col++) {
+            CoreCoord core = {col, row};
 
-        cerr << "[TT] creating reader kernel" << endl;
-        auto reader = CreateKernelFromString(
-            program, cfg.reader_source, core,
-            DataMovementConfig{
-                .processor = DataMovementProcessor::RISCV_0,
-                .noc = NOC::RISCV_0_default,
-                .noc_mode = NOC_MODE::DM_DEDICATED_NOC,
-                .compile_args = reader_compile_args,
-                .defines = {},
-                .named_compile_args = {},
-                .opt_level = KernelBuildOptLevel::O2,
-                .compiler_include_paths = {},
-            });
-        cerr << "[TT] creating writer kernel" << endl;
-        auto writer = CreateKernelFromString(
-            program, cfg.writer_source, core,
-            DataMovementConfig{
-                .processor = DataMovementProcessor::RISCV_1,
-                .noc = NOC::RISCV_1_default,
-                .noc_mode = NOC_MODE::DM_DEDICATED_NOC,
-                .compile_args = writer_compile_args,
-                .defines = {},
-                .named_compile_args = {},
-                .opt_level = KernelBuildOptLevel::O2,
-                .compiler_include_paths = {},
-            });
-        cerr << "[TT] creating compute kernel" << endl;
-        auto compute = CreateKernelFromString(
-            program, cfg.compute_source, core,
-            ComputeConfig{
-                .math_fidelity = MathFidelity::HiFi4,
-                .fp32_dest_acc_en = true,
-                .dst_full_sync_en = false,
-                .unpack_to_dest_mode = {},
-                .bfp8_pack_precise = false,
-                .math_approx_mode = false,
-                .compile_args = {},
-                .defines = {},
-                .named_compile_args = {},
-                .opt_level = KernelBuildOptLevel::O3,
-                .compiler_include_paths = {},
-            });
+            // Create CBs for this core
+            for (uint32_t i = 0; i < cfg.cb_indices.size(); i++) {
+              mk_cb_per_core(program,
+                static_cast<CBIndex>(cfg.cb_indices[i]),
+                cfg.cb_formats[i], cfg.cb_tile_bytes[i], core);
+            }
 
-        // Set runtime args — buffer addresses + core index
-        cerr << "[TT] setting rt args" << endl;
-        {
-          vector<uint32_t> reader_rt_args;
-          for (uint32_t i = 0; i < n_inputs; i++) {
-            uint64_t a = buffers[src_indices[i]]->address();
-            cerr << "[TT]  src" << i << " idx=" << src_indices[i]
-                 << " addr=" << a << " sz=" << buffers[src_indices[i]]->size()
-                 << endl;
-            reader_rt_args.push_back(static_cast<uint32_t>(a));
+            cerr << "[TT] creating reader kernel on core {" << col << "," << row << "}" << endl;
+            auto reader = CreateKernelFromString(
+                program, cfg.reader_source, core,
+                DataMovementConfig{
+                    .processor = DataMovementProcessor::RISCV_0,
+                    .noc = NOC::RISCV_0_default,
+                    .noc_mode = NOC_MODE::DM_DEDICATED_NOC,
+                    .compile_args = reader_compile_args,
+                    .defines = {},
+                    .named_compile_args = {},
+                    .opt_level = KernelBuildOptLevel::O2,
+                    .compiler_include_paths = {},
+                });
+
+            cerr << "[TT] creating writer kernel on core {" << col << "," << row << "}" << endl;
+            auto writer = CreateKernelFromString(
+                program, cfg.writer_source, core,
+                DataMovementConfig{
+                    .processor = DataMovementProcessor::RISCV_1,
+                    .noc = NOC::RISCV_1_default,
+                    .noc_mode = NOC_MODE::DM_DEDICATED_NOC,
+                    .compile_args = writer_compile_args,
+                    .defines = {},
+                    .named_compile_args = {},
+                    .opt_level = KernelBuildOptLevel::O2,
+                    .compiler_include_paths = {},
+                });
+
+            cerr << "[TT] creating compute kernel on core {" << col << "," << row << "}" << endl;
+            auto compute = CreateKernelFromString(
+                program, cfg.compute_source, core,
+                ComputeConfig{
+                    .math_fidelity = MathFidelity::HiFi4,
+                    .fp32_dest_acc_en = true,
+                    .dst_full_sync_en = false,
+                    .unpack_to_dest_mode = {},
+                    .bfp8_pack_precise = false,
+                    .math_approx_mode = false,
+                    .compile_args = {},
+                    .defines = {},
+                    .named_compile_args = {},
+                    .opt_level = KernelBuildOptLevel::O3,
+                    .compiler_include_paths = {},
+                });
+
+            // Set runtime args — buffer addresses + gidx values
+            cerr << "[TT] setting rt args on core {" << col << "," << row << "}" << endl;
+            {
+              vector<uint32_t> reader_rt_args;
+              for (uint32_t i = 0; i < n_inputs; i++) {
+                uint64_t a = buffers[src_indices[i]]->address();
+                reader_rt_args.push_back(static_cast<uint32_t>(a));
+              }
+              // gidx0 (row) — axis after buffer args
+              reader_rt_args.push_back(row);
+              // gidx1 (col) — axis after gidx0
+              reader_rt_args.push_back(col);
+              SetRuntimeArgs(program, reader, core, reader_rt_args);
+            }
+            {
+              vector<uint32_t> writer_rt_args;
+              for (uint32_t i = 0; i < n_outputs; i++) {
+                uint64_t a = buffers[dst_indices[i]]->address();
+                writer_rt_args.push_back(static_cast<uint32_t>(a));
+              }
+              // gidx0 (row) — axis after buffer args
+              writer_rt_args.push_back(row);
+              // gidx1 (col) — axis after gidx0
+              writer_rt_args.push_back(col);
+              SetRuntimeArgs(program, writer, core, writer_rt_args);
+            }
+            {
+              SetRuntimeArgs(program, compute, core, {});
+            }
           }
-          // Core index for gidx0 — axis after buffer args
-          reader_rt_args.push_back(0);
-          SetRuntimeArgs(program, reader, core, reader_rt_args);
         }
-        {
-          vector<uint32_t> writer_rt_args;
-          for (uint32_t i = 0; i < n_outputs; i++) {
-            uint64_t a = buffers[dst_indices[i]]->address();
-            cerr << "[TT]  dst" << i << " idx=" << dst_indices[i]
-                 << " addr=" << a << " sz=" << buffers[dst_indices[i]]->size()
-                 << endl;
-            writer_rt_args.push_back(static_cast<uint32_t>(a));
-          }
-          // Core index for gidx0 — axis after buffer args
-          writer_rt_args.push_back(0);
-          SetRuntimeArgs(program, writer, core, writer_rt_args);
-        }
-        {
-          SetRuntimeArgs(program, compute, core, {});
-        }
+
         cerr << "[TT] before add_program" << endl;
         workload.add_program(device_range, std::move(program));
         cerr << "[TT] after add_program" << endl;
