@@ -42,7 +42,7 @@ impl Kernel {
         }
 
         // 1. Extend the index length
-        let Op::Index { len, .. } = &mut self.ops[gidx_id].op else {
+        let Op::GroupIndex { len, .. } = &mut self.ops[gidx_id].op else {
             panic!("pad_index: op is not an Index");
         };
         *len = current_len + pad_len;
@@ -101,7 +101,7 @@ impl Kernel {
         let mut factors = Vec::new();
         let mut op_id = self.head;
         while !op_id.is_null() {
-            if let Op::Index { len, scope: Scope::Global, .. } = self.ops[op_id].op {
+            if let Op::GroupIndex { len, .. } = self.ops[op_id].op {
                 if len % 32 != 0 {
                     factors.push((op_id, 32));
                 }
@@ -117,7 +117,9 @@ impl Kernel {
             return expr == target;
         }
         match self.at(expr) {
-            Op::Const(_) | Op::Index { .. } | Op::Define { .. } | Op::Loop { .. } | Op::EndLoop => false,
+            Op::Const(_) | Op::GroupIndex { .. } | Op::LocalIndex { .. } | Op::Define { .. } | Op::Loop { .. } | Op::EndLoop => {
+                false
+            }
             op => op.parameters().any(|p| self.depends_on(p, target, visited)),
         }
     }

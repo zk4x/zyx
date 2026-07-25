@@ -744,7 +744,13 @@ impl OpenCLMemoryPool {
         reply_rx.recv().unwrap().map(Event::OpenCL)
     }
 
-    pub fn pool_to_pool(&mut self, src_pool: &mut MemoryPool, src: PoolBufferId, dst: PoolBufferId, event_wait_list: Vec<Event>) -> Result<Event, BackendError> {
+    pub fn pool_to_pool(
+        &mut self,
+        src_pool: &mut MemoryPool,
+        src: PoolBufferId,
+        dst: PoolBufferId,
+        event_wait_list: Vec<Event>,
+    ) -> Result<Event, BackendError> {
         match src_pool {
             MemoryPool::Host(src_pool) => self.host_to_pool(src_pool.get_buffer(src), dst, event_wait_list),
             _ => todo!(),
@@ -855,17 +861,10 @@ impl OpenCLDevice {
         let mut lws = vec![1; 3];
         let mut op_id = kernel.head;
         while !op_id.is_null() {
-            let op = kernel.at(op_id);
-            if let &Op::Index { len: dim, scope, axis } = op {
-                match scope {
-                    Scope::Global => {
-                        gws[axis as usize] = dim;
-                    }
-                    Scope::Local => {
-                        lws[axis as usize] = dim;
-                    }
-                    Scope::Register => {}
-                }
+            match kernel.ops[op_id].op {
+                Op::GroupIndex { len, axis } => gws[axis as usize] = len,
+                Op::LocalIndex { len, axis } => lws[axis as usize] = len,
+                _ => {}
             }
             op_id = kernel.next_op(op_id);
         }
@@ -905,15 +904,14 @@ impl OpenCLDevice {
 
         let mut op_id = kernel.head;
         while !op_id.is_null() {
-            let op = kernel.at(op_id);
-            match op {
+            match kernel.ops[op_id].op {
                 Op::ConstView { .. } | Op::LoadView { .. } | Op::StoreView { .. } | Op::Reduce { .. } | Op::Move { .. } => {
                     unreachable!()
                 }
-                &Op::Const(x) => {
+                Op::Const(x) => {
                     constants.insert(op_id, x);
                 }
-                &Op::Define { dtype, scope, ro, len } => {
+                Op::Define { dtype, scope, ro, len } => {
                     if scope == Scope::Register {
                         _ = writeln!(
                             source,
@@ -930,7 +928,7 @@ impl OpenCLDevice {
                         );
                     }
                 }
-                &Op::Load { src, index, layout } => {
+                Op::Load { src, index, layout } => {
                     if let Some(&rc) = rcs.get(&op_id) {
                         let dtype = dtypes[&op_id];
                         let idx = get_var(index, &constants, &indices, &reg_map, &mut registers, loop_id);
@@ -948,7 +946,7 @@ impl OpenCLDevice {
                         }
                     }
                 }
-                &Op::Store { dst, x: src, index, layout } => {
+                Op::Store { dst, x: src, index, layout } => {
                     let idx = get_var(index, &constants, &indices, &reg_map, &mut registers, loop_id);
                     let x = get_var(src, &constants, &indices, &reg_map, &mut registers, loop_id);
                     match layout {
@@ -960,7 +958,7 @@ impl OpenCLDevice {
                         MemLayout::Tile { .. } => todo!(),
                     }
                 }
-                &Op::Cast { x: xop, dtype } => {
+                Op::Cast { x: xop, dtype } => {
                     let layout = dtypes[&xop].1;
                     let x = get_var(xop, &constants, &indices, &reg_map, &mut registers, loop_id);
                     let reg = new_reg(op_id, &mut reg_map, &mut registers, (dtype, layout), rcs[&op_id], loop_id);
@@ -974,7 +972,7 @@ impl OpenCLDevice {
                         _ => _ = writeln!(source, "{indent}r{reg} = ({}){x};", dtype.ocl()),
                     }
                 }
-                &Op::Unary { x, uop } => {
+                Op::Unary { x, uop } => {
                     let dtype = dtypes[&x];
                     let x = get_var(x, &constants, &indices, &reg_map, &mut registers, loop_id);
                     let reg = new_reg(op_id, &mut reg_map, &mut registers, dtype, rcs[&op_id], loop_id);
@@ -1037,7 +1035,7 @@ impl OpenCLDevice {
                         MemLayout::Tile { .. } => unreachable!(),
                     }
                 }
-                Op::Vectorize { ops } => {
+                Op::Vectorize { ref ops } => {
                     let dtype = dtypes[&op_id];
                     let mut vars = String::new();
                     for &x in ops {
@@ -1054,7 +1052,7 @@ impl OpenCLDevice {
                     };
                     _ = writeln!(source, "{indent}r{reg} = ({})({vars});", dtype.0.ocl_vec_type(vlen));
                 }
-                &Op::Devectorize { vec, idx } => {
+                Op::Devectorize { vec, idx } => {
                     let dtype = dtypes[&op_id];
                     let vec = get_var(vec, &constants, &indices, &reg_map, &mut registers, loop_id);
                     let reg = new_reg(op_id, &mut reg_map, &mut registers, dtype, rcs[&op_id], loop_id);
@@ -1066,7 +1064,7 @@ impl OpenCLDevice {
                         context: "OpenCL: WMMA not supported".into(),
                     });
                 }
-                &Op::Binary { x, y, bop } => {
+                Op::Binary { x, y, bop } => {
                     let dtype = dtypes[&op_id];
                     let x = get_var(x, &constants, &indices, &reg_map, &mut registers, loop_id);
                     let y = get_var(y, &constants, &indices, &reg_map, &mut registers, loop_id);
@@ -1122,7 +1120,7 @@ impl OpenCLDevice {
                         MemLayout::Tile { .. } => unreachable!(),
                     }
                 }
-                &Op::Mad { x, y, z } => {
+                Op::Mad { x, y, z } => {
                     let dtype = dtypes[&op_id];
                     let x = get_var(x, &constants, &indices, &reg_map, &mut registers, loop_id);
                     let y = get_var(y, &constants, &indices, &reg_map, &mut registers, loop_id);
@@ -1138,20 +1136,17 @@ impl OpenCLDevice {
                         _ => _ = writeln!(source, "{indent}r{reg} = {x} * {y} + {z};"),
                     }
                 }
-                &Op::Index { len: dim, scope, axis } => {
+                Op::GroupIndex { len, axis } => {
                     indices.insert(op_id, loop_id);
-                    match scope {
-                        Scope::Global => {
-                            _ = writeln!(source, "{indent}unsigned int idx{loop_id} = get_group_id({axis}); // 0..={}", dim - 1);
-                        }
-                        Scope::Local => {
-                            _ = writeln!(source, "{indent}unsigned int idx{loop_id} = get_local_id({axis}); // 0..={}", dim - 1);
-                        }
-                        Scope::Register => {}
-                    }
+                    _ = writeln!(source, "{indent}unsigned int idx{loop_id} = get_group_id({axis}); // 0..={}", len - 1);
                     loop_id += 1;
                 }
-                &Op::Loop { len, .. } => {
+                Op::LocalIndex { len, axis } => {
+                    indices.insert(op_id, loop_id);
+                    _ = writeln!(source, "{indent}unsigned int idx{loop_id} = get_local_id({axis}); // 0..={}", len - 1);
+                    loop_id += 1;
+                }
+                Op::Loop { len, .. } => {
                     indices.insert(op_id, loop_id);
                     let len = kernel.loop_len_dim(len);
                     _ = writeln!(source, "{indent}for (unsigned int idx{loop_id} = 0; idx{loop_id} < {len}; ++idx{loop_id}) {{");
@@ -1164,7 +1159,7 @@ impl OpenCLDevice {
                     _ = writeln!(source, "{indent}}}");
                     loop_id -= 1;
                 }
-                &Op::If { condition } => {
+                Op::If { condition } => {
                     let condition = get_var(condition, &constants, &indices, &reg_map, &mut registers, loop_id);
                     _ = writeln!(source, "{indent}if ({condition}) {{");
                     indent += "  ";

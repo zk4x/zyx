@@ -46,7 +46,8 @@ impl Kernel {
                 | Op::Const(_)
                 | Op::Define { .. }
                 | Op::Load { .. }
-                | Op::Index { .. }
+                | Op::GroupIndex { .. }
+                | Op::LocalIndex { .. }
                 | Op::Loop { .. }
                 | Op::EndLoop => {}
                 Op::Vectorize { ref ops } => {
@@ -540,7 +541,7 @@ impl Kernel {
         let mut start = self.prev_op(start);
         while !op_id.is_null() {
             let next = self.next_op(op_id);
-            if let Op::Index { .. } = self.at(op_id) {
+            if let Op::GroupIndex { .. } | Op::LocalIndex { .. } = self.at(op_id) {
                 self.move_op_after(op_id, start);
                 start = op_id;
             }

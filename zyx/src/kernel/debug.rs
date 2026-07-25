@@ -22,7 +22,7 @@
 /// ZYX_DEBUG=8 cargo run  # Print IR during kernel compilation
 /// ZYX_DEBUG=16 cargo run # Print generated assembly
 /// ```
-use crate::kernel::{BOp, IDX_T, MoveOp, Scope, UOp};
+use crate::kernel::{BOp, IDX_T, MoveOp, UOp};
 use crate::slab::SlabId;
 use crate::{BLUE, BOLD, CYAN, GREEN, GREY, MAGENTA, ORANGE, RED, RESET, YELLOW};
 use crate::{
@@ -243,15 +243,15 @@ impl Kernel {
                         "{indent}r{out_id}{grey}: {cdtype}{reset} = {orange}wmma{reset}.{dims:?}.{layout:?}.{dtype:?}(c={c}, a={a}, b={b})",
                     );
                 }
-                Op::Index { len, scope, axis } => {
+                Op::GroupIndex { len, axis } => {
                     dtypes.insert(op_id, IDX_T);
                     let ub = len - 1;
-                    let scope = match scope {
-                        Scope::Global => "g",
-                        Scope::Local => "l",
-                        Scope::Register => unreachable!(),
-                    };
-                    println!("{indent}r{out_id}{grey}: {IDX_T}{reset} = {blue}{scope}idx{axis}{reset}    // 0..={ub}");
+                    println!("{indent}r{out_id}{grey}: {IDX_T}{reset} = {blue}group_index({axis}){reset}    // 0..={ub}");
+                }
+                Op::LocalIndex { len, axis } => {
+                    dtypes.insert(op_id, IDX_T);
+                    let ub = len - 1;
+                    println!("{indent}r{out_id}{grey}: {IDX_T}{reset} = {blue}local_index({axis}){reset}    // 0..={ub}");
                 }
                 Op::Loop { len } => {
                     has_loops = true;

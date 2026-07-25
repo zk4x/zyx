@@ -25,7 +25,7 @@ impl Kernel {
 
         // Divide gidx length by tile size to make it a tile index
         let n_tiles = (orig_len + TILE_NELT - 1) / TILE_NELT;
-        if let Op::Index { len, .. } = &mut self.ops[gidx].op {
+        if let Op::GroupIndex { len, .. } = &mut self.ops[gidx].op {
             *len = n_tiles;
         }
 
@@ -183,7 +183,7 @@ impl Kernel {
     fn find_gidx(&self) -> Option<(OpId, Dim)> {
         let mut op_id = self.head;
         while !op_id.is_null() {
-            if let Op::Index { len, scope: Scope::Global, axis: 0 } = self.at(op_id) {
+            if let Op::GroupIndex { len, axis: 0 } = self.at(op_id) {
                 if *len > 0 {
                     return Some((op_id, *len));
                 }

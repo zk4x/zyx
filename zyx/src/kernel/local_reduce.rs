@@ -26,7 +26,7 @@ impl Kernel {
         let _timer = crate::Timer::new("opt_tiled_reduce");
         // Let's not tile reduce kernel with barriers for now
         // Don't apply tiled reduce if there's already a barrier or local index
-        if self.ops.values().any(|node| matches!(node.op, Op::Barrier { .. } | Op::Index { scope: Scope::Local, .. })) {
+        if self.ops.values().any(|node| matches!(node.op, Op::Barrier { .. } | Op::LocalIndex { .. })) {
             return (Optimization::TiledReduce { factors: Vec::new() }, 0);
         }
         // Only apply tiled reduce if there's exactly one loop in the kernel
@@ -37,7 +37,7 @@ impl Kernel {
 
         let mut local_axis_sizes: crate::Map<u32, u64> = crate::Map::default();
         for op in self.ops.values() {
-            if let Op::Index { scope: Scope::Local, axis, len } = op.op {
+            if let Op::LocalIndex { axis, len } = op.op {
                 if let Some(&existing) = local_axis_sizes.get(&axis) {
                     debug_assert_eq!(existing, len);
                 } else {
@@ -101,7 +101,7 @@ impl Kernel {
             .ops
             .values()
             .filter_map(|node| {
-                if let Op::Index { scope: Scope::Local, axis, .. } = node.op {
+                if let Op::LocalIndex { axis, .. } = node.op {
                     Some(axis + 1)
                 } else {
                     None
@@ -187,9 +187,8 @@ impl Kernel {
             }
             None => self.head,
         };
-        let loc_acc =
-            self.insert_before(insert_at, Op::Define { dtype: acc_dtype, scope: Scope::Local, ro: false, len: factor });
-        let lidx = self.insert_before(insert_at, Op::Index { len: factor, scope: Scope::Local, axis: laxis });
+        let loc_acc = self.insert_before(insert_at, Op::Define { dtype: acc_dtype, scope: Scope::Local, ro: false, len: factor });
+        let lidx = self.insert_before(insert_at, Op::LocalIndex { len: factor, axis: laxis });
 
         // Divide reduce loop by factor
         let factor_const = self.insert_before(loop_start, Op::Const(Constant::idx(factor as u64)));

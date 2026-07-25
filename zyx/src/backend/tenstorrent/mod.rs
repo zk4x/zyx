@@ -654,7 +654,7 @@ fn extract_json_str(json: &str, key: &str) -> Option<String> {
 struct TTProgram {
     input_dtypes: Vec<DType>,
     output_dtypes: Vec<DType>,
-    /// Grid dimensions for gidx0 (rows) and gidx1 (cols).  
+    /// Grid dimensions for gidx0 (rows) and gidx1 (cols).
     /// Each dimension defaults to 1 if no corresponding gidx is used.
     grid_dims: [u32; 2],
 }
@@ -821,8 +821,12 @@ impl TTDevice {
                     Op::Const(val) => {
                         writeln!(reader, "{indent}{} r{op_id} = {};", val.dtype().c_type(), val.c_code());
                     }
-                    Op::Index { scope: Scope::Global, axis, .. } => {
-                        writeln!(reader, "{indent}uint32_t r{op_id} = get_arg_val<uint32_t>({});", input_dtypes.len() + axis as usize);
+                    Op::GroupIndex { axis, .. } => {
+                        writeln!(
+                            reader,
+                            "{indent}uint32_t r{op_id} = get_arg_val<uint32_t>({});",
+                            input_dtypes.len() + axis as usize
+                        );
                     }
                     // Barrier means reader kernel is over
                     Op::Barrier => break,
@@ -1077,14 +1081,22 @@ impl TTDevice {
             let mut emitted: Vec<OpId> = Vec::new();
             let mut scan = op_id;
             while !scan.is_null() {
-                if let Op::Barrier = kernel.ops[scan].op { break; }
+                if let Op::Barrier = kernel.ops[scan].op {
+                    break;
+                }
                 let mut work: Vec<OpId> = kernel.ops[scan].op.parameters().collect();
                 while let Some(param) = work.pop() {
-                    if emitted.contains(&param) { continue; }
+                    if emitted.contains(&param) {
+                        continue;
+                    }
                     emitted.push(param);
                     match &kernel.ops[param].op {
-                        Op::Index { scope: Scope::Global, axis, .. } => {
-                            writeln!(writer, "{indent}uint32_t r{param} = get_arg_val<uint32_t>({});", output_dtypes.len() + *axis as usize);
+                        Op::GroupIndex { axis, .. } => {
+                            writeln!(
+                                writer,
+                                "{indent}uint32_t r{param} = get_arg_val<uint32_t>({});",
+                                output_dtypes.len() + *axis as usize
+                            );
                         }
                         Op::Const(val) => {
                             writeln!(writer, "{indent}{} r{param} = {};", val.dtype().c_type(), val.c_code());
@@ -1133,8 +1145,12 @@ impl TTDevice {
                 Op::Const(val) => {
                     writeln!(writer, "{indent}{} r{op_id} = {};", val.dtype().c_type(), val.c_code());
                 }
-                Op::Index { scope: Scope::Global, axis, .. } => {
-                    writeln!(writer, "{indent}uint32_t r{op_id} = get_arg_val<uint32_t>({});", output_dtypes.len() + axis as usize);
+                Op::GroupIndex { axis, .. } => {
+                    writeln!(
+                        writer,
+                        "{indent}uint32_t r{op_id} = get_arg_val<uint32_t>({});",
+                        output_dtypes.len() + axis as usize
+                    );
                 }
                 Op::Binary { x, y, bop } => {
                     let dt = kernel.dtype(op_id);
@@ -1185,7 +1201,7 @@ impl TTDevice {
         {
             let mut scan = kernel.head;
             while !scan.is_null() {
-                if let Op::Index { len, scope: Scope::Global, axis } = &kernel.ops[scan].op {
+                if let Op::GroupIndex { len, axis } = &kernel.ops[scan].op {
                     if (*axis as usize) < 2 {
                         grid_dims[*axis as usize] = *len as u32;
                     }
@@ -1194,7 +1210,8 @@ impl TTDevice {
             }
         }
 
-        let prog_id = self.programs.push(TTProgram { input_dtypes: input_dtypes.clone(), output_dtypes: output_dtypes.clone(), grid_dims });
+        let prog_id =
+            self.programs.push(TTProgram { input_dtypes: input_dtypes.clone(), output_dtypes: output_dtypes.clone(), grid_dims });
 
         {
             let mut cb_config = Vec::with_capacity(input_cb_map.len() + output_cb_map.len());

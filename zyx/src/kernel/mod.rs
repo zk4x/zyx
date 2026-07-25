@@ -22,9 +22,9 @@
 //! let b_buf = kernel.define(DType::F16, Scope::Global, true, k * n);
 //! let c_buf = kernel.define(DType::F32, Scope::Global, false, m * n);
 //!
-//! let gidx = kernel.gidx(0, m / 16);
-//! let gidy = kernel.gidx(1, n / 8);
-//! let wid = kernel.lidx(0, 32);
+//! let gidx = kernel.global_index(0, m / 16);
+//! let gidy = kernel.global_index(1, n / 8);
+//! let wid = kernel.local_index(0, 32);
 //!
 //! let [c0, c1, c2, c4, c8, c16] = kernel.const_idxs([0u32, 1, 2, 4, 8, 16]);
 //! let n_const = kernel.const_idx(n);
@@ -99,6 +99,7 @@ use crate::{
     slab::{Slab, SlabId},
 };
 use nanoserde::{DeBin, SerBin};
+use std::collections::BTreeMap;
 use std::{fmt::Display, hash::BuildHasherDefault, hash::Hash};
 
 pub use custom::CompiledKernel;
@@ -161,7 +162,7 @@ pub(crate) const IDX_T: DType = DType::U32;
 /// let mut kernel = Kernel::new(DeviceId::AUTO);
 /// let n = 256;
 /// let inp = kernel.define(DType::F32, Scope::Global, true, n);
-/// let gidx = kernel.gidx(0, n);
+/// let gidx = kernel.global_index(0, n);
 /// let loaded = kernel.load(inp, gidx, MemLayout::Scalar);
 /// let s = kernel.sin(loaded);
 /// let c = kernel.cos(loaded);
@@ -181,7 +182,7 @@ pub(crate) const IDX_T: DType = DType::U32;
 /// let mut kernel = Kernel::new(DeviceId::AUTO);
 /// let n = 4;
 /// let inp = kernel.define(DType::F32, Scope::Global, true, n);
-/// let gidx = kernel.gidx(0, n);
+/// let gidx = kernel.global_index(0, n);
 /// let loaded = kernel.load(inp, gidx, MemLayout::Scalar);
 /// let result = kernel.mad(loaded, loaded, loaded); // x*x + x
 /// let out = kernel.define(DType::F32, Scope::Global, false, n);
@@ -480,11 +481,15 @@ pub(crate) enum Op {
         index: OpId,
         layout: MemLayout,
     },
-    Index {
+    GroupIndex {
         len: Dim,
-        scope: Scope,
         axis: u32,
     },
+    LocalIndex {
+        len: Dim,
+        axis: u32,
+    },
+    // TODO add WarpIndex
     // Control flow
     Loop {
         len: OpId,
@@ -584,25 +589,29 @@ impl SerBin for Op {
                 index.ser_bin(output);
                 layout.ser_bin(output);
             }
-            Op::Index { len, scope, axis } => {
+            Op::GroupIndex { len, axis } => {
                 output.push(7);
                 len.ser_bin(output);
-                scope.ser_bin(output);
+                axis.ser_bin(output);
+            }
+            Op::LocalIndex { len, axis } => {
+                output.push(8);
+                len.ser_bin(output);
                 axis.ser_bin(output);
             }
             Op::Loop { len } => {
-                output.push(8);
+                output.push(9);
                 len.ser_bin(output);
             }
-            Op::EndLoop => output.push(9),
+            Op::EndLoop => output.push(10),
             Op::Mad { x, y, z } => {
-                output.push(10);
+                output.push(11);
                 x.ser_bin(output);
                 y.ser_bin(output);
                 z.ser_bin(output);
             }
             Op::Wmma { dims, layout, dtype, a, b, c } => {
-                output.push(11);
+                output.push(12);
                 dims.ser_bin(output);
                 layout.ser_bin(output);
                 dtype.ser_bin(output);
@@ -611,40 +620,40 @@ impl SerBin for Op {
                 c.ser_bin(output);
             }
             Op::Vectorize { ops } => {
-                output.push(12);
+                output.push(13);
                 ops.ser_bin(output);
             }
             Op::Devectorize { vec, idx } => {
-                output.push(13);
+                output.push(14);
                 vec.ser_bin(output);
                 idx.ser_bin(output);
             }
-            Op::Barrier => output.push(14),
+            Op::Barrier => output.push(15),
             Op::If { condition } => {
-                output.push(15);
+                output.push(16);
                 condition.ser_bin(output);
             }
-            Op::EndIf => output.push(16),
+            Op::EndIf => output.push(17),
             Op::ConstView(t) => {
-                output.push(17);
-                t.ser_bin(output);
-            }
-            Op::LoadView(t) => {
                 output.push(18);
                 t.ser_bin(output);
             }
-            Op::StoreView { src, dtype } => {
+            Op::LoadView(t) => {
                 output.push(19);
+                t.ser_bin(output);
+            }
+            Op::StoreView { src, dtype } => {
+                output.push(20);
                 src.ser_bin(output);
                 dtype.ser_bin(output);
             }
             Op::Move { x, mop } => {
-                output.push(20);
+                output.push(21);
                 x.ser_bin(output);
                 mop.ser_bin(output);
             }
             Op::Reduce { x, rop, n_axes } => {
-                output.push(21);
+                output.push(22);
                 x.ser_bin(output);
                 rop.ser_bin(output);
                 n_axes.ser_bin(output);
@@ -701,22 +710,26 @@ impl DeBin for Op {
             }
             7 => {
                 let len = Dim::de_bin(offset, bytes)?;
-                let scope = Scope::de_bin(offset, bytes)?;
                 let axis = u32::de_bin(offset, bytes)?;
-                Ok(Op::Index { len, scope, axis })
+                Ok(Op::GroupIndex { len, axis })
             }
             8 => {
+                let len = Dim::de_bin(offset, bytes)?;
+                let axis = u32::de_bin(offset, bytes)?;
+                Ok(Op::LocalIndex { len, axis })
+            }
+            9 => {
                 let len = OpId::de_bin(offset, bytes)?;
                 Ok(Op::Loop { len })
             }
-            9 => Ok(Op::EndLoop),
-            10 => {
+            10 => Ok(Op::EndLoop),
+            11 => {
                 let x = OpId::de_bin(offset, bytes)?;
                 let y = OpId::de_bin(offset, bytes)?;
                 let z = OpId::de_bin(offset, bytes)?;
                 Ok(Op::Mad { x, y, z })
             }
-            11 => {
+            12 => {
                 let dims = MMADims::de_bin(offset, bytes)?;
                 let layout = MMALayout::de_bin(offset, bytes)?;
                 let dtype = MMADType::de_bin(offset, bytes)?;
@@ -725,40 +738,40 @@ impl DeBin for Op {
                 let c = OpId::de_bin(offset, bytes)?;
                 Ok(Op::Wmma { dims, layout, dtype, a, b, c })
             }
-            12 => {
+            13 => {
                 let ops = Vec::<OpId>::de_bin(offset, bytes)?;
                 Ok(Op::Vectorize { ops })
             }
-            13 => {
+            14 => {
                 let vec = OpId::de_bin(offset, bytes)?;
                 let idx = usize::de_bin(offset, bytes)?;
                 Ok(Op::Devectorize { vec, idx })
             }
-            14 => Ok(Op::Barrier),
-            15 => {
+            15 => Ok(Op::Barrier),
+            16 => {
                 let condition = OpId::de_bin(offset, bytes)?;
                 Ok(Op::If { condition })
             }
-            16 => Ok(Op::EndIf),
-            17 => {
+            17 => Ok(Op::EndIf),
+            18 => {
                 let t = Box::<(Constant, View)>::de_bin(offset, bytes)?;
                 Ok(Op::ConstView(t))
             }
-            18 => {
+            19 => {
                 let t = Box::<(DType, View)>::de_bin(offset, bytes)?;
                 Ok(Op::LoadView(t))
             }
-            19 => {
+            20 => {
                 let src = OpId::de_bin(offset, bytes)?;
                 let dtype = DType::de_bin(offset, bytes)?;
                 Ok(Op::StoreView { src, dtype })
             }
-            20 => {
+            21 => {
                 let x = OpId::de_bin(offset, bytes)?;
                 let mop = Box::<MoveOp>::de_bin(offset, bytes)?;
                 Ok(Op::Move { x, mop })
             }
-            21 => {
+            22 => {
                 let x = OpId::de_bin(offset, bytes)?;
                 let rop = BOp::de_bin(offset, bytes)?;
                 let n_axes = UAxis::de_bin(offset, bytes)?;
@@ -778,7 +791,8 @@ impl Op {
             | Op::LoadView { .. }
             | Op::Const { .. }
             | Op::Define { .. }
-            | Op::Index { .. }
+            | Op::GroupIndex { .. }
+            | Op::LocalIndex { .. }
             | Op::EndLoop
             | Op::Barrier { .. }
             | Op::EndIf => {
@@ -809,7 +823,8 @@ impl Op {
             | Op::LoadView { .. }
             | Op::Const { .. }
             | Op::Define { .. }
-            | Op::Index { .. }
+            | Op::GroupIndex { .. }
+            | Op::LocalIndex { .. }
             | Op::EndLoop
             | Op::EndIf
             | Op::Barrier { .. } => vec![],
@@ -947,7 +962,7 @@ impl Kernel {
     /// let mut kernel = Kernel::new(DeviceId::AUTO);
     /// let n = 4;
     /// let inp = kernel.define(DType::F32, Scope::Global, true, n);
-    /// let gidx = kernel.gidx(0, n);
+    /// let gidx = kernel.global_index(0, n);
     /// let loaded = kernel.load(inp, gidx, MemLayout::Scalar);
     /// let doubled = kernel.add(loaded, loaded);
     /// let out = kernel.define(DType::F32, Scope::Global, false, n);
@@ -1030,7 +1045,7 @@ impl Kernel {
                     *rcs.entry(y).or_insert(0) += 1;
                     *rcs.entry(z).or_insert(0) += 1;
                 }
-                Op::Index { .. } | Op::Loop { .. } => {
+                Op::GroupIndex { .. } | Op::LocalIndex { .. } | Op::Loop { .. } => {
                     dtypes.insert(op_id, (IDX_T, MemLayout::Scalar));
                 }
                 &Op::If { condition } => {
@@ -1049,7 +1064,8 @@ impl Kernel {
             Op::Const(c) => c.dtype(),
             Op::Define { dtype, .. } => *dtype,
             Op::Cast { dtype, .. } => *dtype,
-            Op::Index { .. } => IDX_T,
+            Op::GroupIndex { .. } => IDX_T,
+            Op::LocalIndex { .. } => IDX_T,
             Op::Load { src, .. } => self.dtype(*src),
             Op::Unary { x, .. } => self.dtype(*x),
             Op::Binary { x, .. } => self.dtype(*x),
@@ -1185,13 +1201,13 @@ impl Kernel {
     }
 
     /// Global thread index.
-    pub fn gidx(&mut self, axis: u32, len: Dim) -> OpId {
-        self.push_back(Op::Index { len, scope: Scope::Global, axis })
+    pub fn global_index(&mut self, axis: u32, len: Dim) -> OpId {
+        self.push_back(Op::GroupIndex { len, axis })
     }
 
     /// Local thread index.
-    pub fn lidx(&mut self, axis: u32, len: Dim) -> OpId {
-        self.push_back(Op::Index { len, scope: Scope::Local, axis })
+    pub fn local_index(&mut self, axis: u32, len: Dim) -> OpId {
+        self.push_back(Op::LocalIndex { len, axis })
     }
 
     /// Store `x` to `dst` at `index`.
@@ -1685,7 +1701,8 @@ impl Kernel {
                 | Op::Const(_)
                 | Op::Define { .. }
                 | Op::Load { .. }
-                | Op::Index { .. }
+                | Op::GroupIndex { .. }
+                | Op::LocalIndex { .. }
                 | Op::Loop { .. }
                 | Op::EndLoop => todo!(),
             };
@@ -1708,13 +1725,13 @@ impl Kernel {
 
     /// Shape of the kernel output.
     pub fn shape(&self) -> Vec<Dim> {
-        if self.ops.values().any(|x| matches!(x.op, Op::Index { .. })) {
+        if self.ops.values().any(|x| matches!(x.op, Op::GroupIndex { .. } | Op::LocalIndex { .. })) {
             let mut indices: Vec<(Dim, u32)> = self
                 .ops
                 .values()
                 .filter_map(|x| {
                     // TODO include both global and local, order by axis
-                    if let Op::Index { len: dim, axis, .. } = x.op {
+                    if let Op::GroupIndex { len: dim, axis, .. } = x.op {
                         Some((dim, axis))
                     } else {
                         None
@@ -1790,14 +1807,20 @@ impl Kernel {
                             let d = self.loop_len_dim(len);
                             indices.insert(x, (d, 1));
                             params.push((y, scale));
-                        } else if let Op::Index { len, .. } = self.ops[x].op {
+                        } else if let Op::GroupIndex { len, .. } = self.ops[x].op {
+                            indices.insert(x, (len, 1));
+                            params.push((y, scale));
+                        } else if let Op::LocalIndex { len, .. } = self.ops[x].op {
                             indices.insert(x, (len, 1));
                             params.push((y, scale));
                         } else if let Op::Loop { len, .. } = self.ops[y].op {
                             let d = self.loop_len_dim(len);
                             indices.insert(y, (d, 1));
                             params.push((x, scale));
-                        } else if let Op::Index { len, .. } = self.ops[y].op {
+                        } else if let Op::GroupIndex { len, .. } = self.ops[y].op {
+                            indices.insert(y, (len, 1));
+                            params.push((x, scale));
+                        } else if let Op::LocalIndex { len, .. } = self.ops[y].op {
                             indices.insert(y, (len, 1));
                             params.push((x, scale));
                         } else {
@@ -1811,14 +1834,14 @@ impl Kernel {
                                 let d = self.loop_len_dim(*len);
                                 indices.insert(x, (d, c.as_dim().unwrap() * scale));
                             }
-                            (Op::Index { len, .. }, Op::Const(c)) => {
-                                indices.insert(x, (*len, c.as_dim().unwrap() * scale));
-                            }
                             (Op::Const(c), Op::Loop { len, .. }) => {
                                 let d = self.loop_len_dim(*len);
                                 indices.insert(y, (d, c.as_dim().unwrap() * scale));
                             }
-                            (Op::Const(c), Op::Index { len, .. }) => {
+                            (Op::GroupIndex { len, .. } | Op::LocalIndex { len, .. }, Op::Const(c)) => {
+                                indices.insert(x, (*len, c.as_dim().unwrap() * scale));
+                            }
+                            (Op::Const(c), Op::GroupIndex { len, .. } | Op::LocalIndex { len, .. }) => {
                                 indices.insert(y, (*len, c.as_dim().unwrap() * scale));
                             }
                             _ => {}
@@ -1830,15 +1853,15 @@ impl Kernel {
                                 let d = self.loop_len_dim(*len);
                                 indices.insert(x, (d, (1u64 << c.as_dim().unwrap()) * scale));
                             }
-                            (Op::Index { len, .. }, Op::Const(c)) => {
+                            (Op::GroupIndex { len, .. } | Op::LocalIndex { len, .. }, Op::Const(c)) => {
                                 indices.insert(x, (*len, (1u64 << c.as_dim().unwrap()) * scale));
+                            }
+                            (Op::Const(c), Op::GroupIndex { len, .. } | Op::LocalIndex { len, .. }) => {
+                                indices.insert(y, (*len, (1u64 << c.as_dim().unwrap()) * scale));
                             }
                             (Op::Const(c), Op::Loop { len, .. }) => {
                                 let d = self.loop_len_dim(*len);
                                 indices.insert(y, (d, (1u64 << c.as_dim().unwrap()) * scale));
-                            }
-                            (Op::Const(c), Op::Index { len, .. }) => {
-                                indices.insert(y, (*len, (1u64 << c.as_dim().unwrap()) * scale));
                             }
                             _ => {
                                 if let Op::Const(c) = self.ops[y].op {
@@ -1853,7 +1876,7 @@ impl Kernel {
                         Op::Loop { len, .. } => {
                             indices.insert(z, (self.loop_len_dim(*len), 1));
                         }
-                        Op::Index { len, .. } => {
+                        Op::GroupIndex { len, .. } | Op::LocalIndex { len, .. } => {
                             indices.insert(z, (*len, 1));
                         }
                         _ => {
@@ -1864,14 +1887,14 @@ impl Kernel {
                         (Op::Loop { len, .. }, Op::Const(c)) => {
                             indices.insert(x, (self.loop_len_dim(*len), c.as_dim().unwrap() * scale));
                         }
-                        (Op::Index { len: dim, .. }, Op::Const(c)) => {
-                            indices.insert(x, (*dim, c.as_dim().unwrap() * scale));
+                        (Op::GroupIndex { len, .. } | Op::LocalIndex { len, .. }, Op::Const(c)) => {
+                            indices.insert(x, (*len, c.as_dim().unwrap() * scale));
                         }
                         (Op::Const(c), Op::Loop { len, .. }) => {
                             indices.insert(y, (self.loop_len_dim(*len), c.as_dim().unwrap() * scale));
                         }
-                        (Op::Const(c), Op::Index { len: dim, .. }) => {
-                            indices.insert(y, (*dim, c.as_dim().unwrap() * scale));
+                        (Op::Const(c), Op::GroupIndex { len, .. } | Op::LocalIndex { len, .. }) => {
+                            indices.insert(y, (*len, c.as_dim().unwrap() * scale));
                         }
                         _ => {}
                     }
@@ -2011,10 +2034,8 @@ impl Kernel {
     pub(crate) fn get_global_indices(&self) -> std::collections::BTreeMap<u32, OpId> {
         let mut indices = std::collections::BTreeMap::new();
         for (op_id, op_node) in self.ops.iter() {
-            if let Op::Index { scope, axis, .. } = op_node.op {
-                if scope == Scope::Global {
-                    indices.insert(axis, op_id);
-                }
+            if let Op::GroupIndex { axis, .. } = op_node.op {
+                indices.insert(axis, op_id);
             }
         }
         indices
@@ -2022,23 +2043,29 @@ impl Kernel {
 
     /// Renumber indices to be in order.
     pub(crate) fn renumber_indices(&mut self) {
-        let mut indices = std::collections::BTreeMap::new();
-        indices.insert(Scope::Global, std::collections::BTreeMap::new());
-        indices.insert(Scope::Local, std::collections::BTreeMap::new());
+        let mut global_indices = BTreeMap::default();
+        let mut local_indices = BTreeMap::default();
         for (op_id, op_node) in self.ops.iter() {
-            if let Op::Index { scope, axis, .. } = op_node.op {
-                indices.get_mut(&scope).unwrap().insert(axis, op_id);
-            }
+            match op_node.op {
+                Op::GroupIndex { axis, .. } => global_indices.insert(axis, op_id),
+                Op::LocalIndex { axis, .. } => local_indices.insert(axis, op_id),
+                _ => None,
+            };
         }
-        for (_, scoped_indices) in indices {
-            let mut ax = 0;
-            for &idx_id in scoped_indices.values() {
-                let Op::Index { axis, .. } = &mut self.ops[idx_id].op else {
-                    unreachable!()
-                };
-                *axis = ax;
-                ax += 1;
-            }
+        let mut ax = 0;
+        for &idx_id in global_indices.values() {
+            let Op::GroupIndex { axis, .. } = &mut self.ops[idx_id].op else {
+                unreachable!()
+            };
+            *axis = ax;
+            ax += 1;
+        }
+        for &idx_id in local_indices.values() {
+            let Op::LocalIndex { axis, .. } = &mut self.ops[idx_id].op else {
+                unreachable!()
+            };
+            *axis = ax;
+            ax += 1;
         }
     }
 }

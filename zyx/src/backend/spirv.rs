@@ -825,12 +825,18 @@ pub fn compile(kernel: &Kernel, debug_asm: bool) -> Result<(Vec<u32>, Vec<Dim>, 
                 _ => {}
             }
             // Track work sizes from Index ops
-            if let &Op::Index { len, scope, axis } = kernel.at(op_id) {
-                match scope {
-                    Scope::Global if axis < 3 => gws[axis as usize] = gws[axis as usize].max(len),
-                    Scope::Local if axis < 3 => lws[axis as usize] = lws[axis as usize].max(len),
-                    _ => {}
+            match kernel.ops[op_id].op {
+                Op::GroupIndex { len, axis } => {
+                    if axis < 3 {
+                        gws[axis as usize] = gws[axis as usize].max(len);
+                    }
                 }
+                Op::LocalIndex { len, axis } => {
+                    if axis < 3 {
+                        lws[axis as usize] = lws[axis as usize].max(len);
+                    }
+                }
+                _ => {}
             }
             op_id = kernel.next_op(op_id);
         }
@@ -850,11 +856,9 @@ pub fn compile(kernel: &Kernel, debug_asm: bool) -> Result<(Vec<u32>, Vec<Dim>, 
         let mut op_id = kernel.head;
         let mut found = false;
         while !op_id.is_null() {
-            if let &Op::Index { scope, .. } = kernel.at(op_id) {
-                if matches!(scope, Scope::Global | Scope::Local) {
-                    found = true;
-                    break;
-                }
+            if let &Op::GroupIndex { .. } | Op::LocalIndex { .. } = kernel.at(op_id) {
+                found = true;
+                break;
             }
             op_id = kernel.next_op(op_id);
         }
@@ -1435,46 +1439,40 @@ pub fn compile(kernel: &Kernel, debug_asm: bool) -> Result<(Vec<u32>, Vec<Dim>, 
                     spv_values.insert(op_id, rid);
                 }
 
-                &Op::Index { len: _, scope, axis } => {
+                &Op::GroupIndex { axis, .. } => {
                     let result_type = emit_type(&mut asm, &mut type_cache, IDX_T);
-                    match scope {
-                        Scope::Global => {
-                            let loaded = asm.id();
-                            asm.emit_typed(OpLoad, vec3_id, loaded, &[wg_id_var]);
-                            let elem = asm.id();
-                            asm.emit_typed(OpCompositeExtract, u32_id, elem, &[loaded, axis]);
-                            if IDX_T == DType::U32 {
-                                spv_values.insert(op_id, elem);
-                            } else {
-                                let widened = asm.id();
-                                let op = match IDX_T {
-                                    DType::U64 => OpUConvert,
-                                    _ => unreachable!(),
-                                };
-                                asm.emit_typed(op, result_type, widened, &[elem]);
-                                spv_values.insert(op_id, widened);
-                            }
-                        }
-                        Scope::Local => {
-                            let loaded = asm.id();
-                            asm.emit_typed(OpLoad, vec3_id, loaded, &[local_inv_var]);
-                            let elem = asm.id();
-                            asm.emit_typed(OpCompositeExtract, u32_id, elem, &[loaded, axis]);
-                            if IDX_T == DType::U32 {
-                                spv_values.insert(op_id, elem);
-                            } else {
-                                let widened = asm.id();
-                                let op = match IDX_T {
-                                    DType::U64 => OpUConvert,
-                                    _ => unreachable!(),
-                                };
-                                asm.emit_typed(op, result_type, widened, &[elem]);
-                                spv_values.insert(op_id, widened);
-                            }
-                        }
-                        Scope::Register => {
-                            // Should not happen as register indices come from loops
-                        }
+                    let loaded = asm.id();
+                    asm.emit_typed(OpLoad, vec3_id, loaded, &[wg_id_var]);
+                    let elem = asm.id();
+                    asm.emit_typed(OpCompositeExtract, u32_id, elem, &[loaded, axis]);
+                    if IDX_T == DType::U32 {
+                        spv_values.insert(op_id, elem);
+                    } else {
+                        let widened = asm.id();
+                        let op = match IDX_T {
+                            DType::U64 => OpUConvert,
+                            _ => unreachable!(),
+                        };
+                        asm.emit_typed(op, result_type, widened, &[elem]);
+                        spv_values.insert(op_id, widened);
+                    }
+                }
+                &Op::LocalIndex { axis, .. } => {
+                    let result_type = emit_type(&mut asm, &mut type_cache, IDX_T);
+                    let loaded = asm.id();
+                    asm.emit_typed(OpLoad, vec3_id, loaded, &[local_inv_var]);
+                    let elem = asm.id();
+                    asm.emit_typed(OpCompositeExtract, u32_id, elem, &[loaded, axis]);
+                    if IDX_T == DType::U32 {
+                        spv_values.insert(op_id, elem);
+                    } else {
+                        let widened = asm.id();
+                        let op = match IDX_T {
+                            DType::U64 => OpUConvert,
+                            _ => unreachable!(),
+                        };
+                        asm.emit_typed(op, result_type, widened, &[elem]);
+                        spv_values.insert(op_id, widened);
                     }
                 }
 

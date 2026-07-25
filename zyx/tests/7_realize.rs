@@ -23,9 +23,9 @@ fn wmma_matmul() -> Result<(), ZyxError> {
     let b_buf = kernel.define(DType::F16, Scope::Global, true, k * n);
     let c_buf = kernel.define(DType::F32, Scope::Global, false, m * n);
 
-    let gidx = kernel.gidx(0, m / 16);
-    let gidy = kernel.gidx(1, n / 8);
-    let wid = kernel.lidx(0, 32);
+    let gidx = kernel.global_index(0, m / 16);
+    let gidy = kernel.global_index(1, n / 8);
+    let wid = kernel.local_index(0, 32);
 
     let [c0, c1, c2, c4, c8, c16] = kernel.const_idxs([0u32, 1, 2, 4, 8, 16]);
     let n_const = kernel.const_idx(n);

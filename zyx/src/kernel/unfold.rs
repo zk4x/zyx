@@ -30,7 +30,7 @@ impl Kernel {
     /// It cannot be applied if both explicit global indices and view moves
     /// are present in the kernel.
     pub fn unfold_movement_ops(&mut self) {
-        let has_gidx = self.ops.values().any(|n| matches!(n.op, Op::Index { scope: Scope::Global, .. }));
+        let has_gidx = self.ops.values().any(|n| matches!(n.op, Op::GroupIndex { .. }));
         let has_view_moves = self.ops.values().any(|n| matches!(n.op, Op::LoadView(_) | Op::StoreView { .. } | Op::Move { .. }));
 
         match (has_gidx, has_view_moves) {
@@ -66,7 +66,7 @@ impl Kernel {
         let mut axis = shape.len() as u32;
         for len in shape.into_iter().rev() {
             axis -= 1;
-            self.insert_before(self.head, Op::Index { len, scope: Scope::Global, axis });
+            self.insert_before(self.head, Op::GroupIndex { len, axis });
         }
 
         self.verify();
@@ -474,8 +474,7 @@ impl Kernel {
                     let mut strides = Vec::new();
                     for (_, &ax_id) in axes.iter().rev() {
                         match self.ops[ax_id].op {
-                            Op::Index { len, scope, .. } => {
-                                debug_assert_eq!(scope, Scope::Global);
+                            Op::GroupIndex { len, .. } => {
                                 strides.push((len, st, ax_id));
                                 st *= len;
                             }
@@ -502,7 +501,7 @@ impl Kernel {
                     let dst = self.insert_before(start, Op::Define { dtype, scope: Scope::Global, ro: false, len });
                     self.ops[op_id].op = Op::Store { dst, x: src, index, layout: MemLayout::Scalar };
                 }
-                Op::Index { axis, .. } => {
+                Op::GroupIndex { axis, .. } => {
                     axes.insert(axis, op_id);
                 }
                 Op::Loop { .. } => {

@@ -212,16 +212,14 @@ impl CDevice {
         {
             let mut op_id = kernel.head;
             while !op_id.is_null() {
-                let op = kernel.at(op_id);
-                match op {
-                    &Op::Index { len: dim, scope, axis } => {
-                        if scope == Scope::Global {
-                            gws[axis as usize] = dim.max(1u64);
-                        }
+                match kernel.ops[op_id].op {
+                    Op::GroupIndex { len: dim, axis } => {
+                        gws[axis as usize] = dim.max(1u64);
                         indices.insert(op_id, loop_id);
                         loop_id = loop_id.checked_add(1).expect("C: too many loops (>255)");
                     }
-                    &Op::Define { dtype, scope, .. } if scope == Scope::Global => {
+                    Op::LocalIndex { .. } => unreachable!(),
+                    Op::Define { dtype, scope, .. } if scope == Scope::Global => {
                         if matches!(dtype, DType::F16 | DType::BF16) {
                             _ = writeln!(global_cast, "  unsigned short* p{op_id} = (unsigned short*)args[{n_global_defines}];");
                         } else {
@@ -249,29 +247,18 @@ impl CDevice {
         loop_id = 0;
         let mut op_id = kernel.head;
         while !op_id.is_null() {
-            let op = kernel.at(op_id);
-            match op {
-                &Op::Index { len, scope, .. } => {
-                    match scope {
-                        Scope::Global | Scope::Local => {
-                            if index_loop_depth == 0 && scope == Scope::Global && gws[0] > 1 && self.has_openmp {
-                                _ = writeln!(source, "{indent}#pragma omp parallel for");
-                            }
-                            _ = writeln!(
-                                source,
-                                "{indent}for (unsigned int idx{loop_id} = 0; idx{loop_id} < {len}; ++idx{loop_id}) {{"
-                            );
-                            indent += "  ";
-                            index_loop_depth += 1;
-                        }
-                        Scope::Register => {
-                            // Register-scope index: just declare the variable for completeness
-                            _ = writeln!(source, "{indent}unsigned int idx{loop_id} = 0;");
-                        }
+            match kernel.ops[op_id].op {
+                Op::GroupIndex { len, .. } => {
+                    if index_loop_depth == 0 && gws[0] > 1 && self.has_openmp {
+                        _ = writeln!(source, "{indent}#pragma omp parallel for");
                     }
+                    _ = writeln!(source, "{indent}for (unsigned int idx{loop_id} = 0; idx{loop_id} < {len}; ++idx{loop_id}) {{");
+                    indent += "  ";
+                    index_loop_depth += 1;
                     loop_id += 1;
                 }
-                &Op::Loop { len, .. } => {
+                Op::LocalIndex { .. } => unreachable!(),
+                Op::Loop { len, .. } => {
                     indices.insert(op_id, loop_id);
                     let len = kernel.loop_len_dim(len);
                     _ = writeln!(source, "{indent}for (unsigned int idx{loop_id} = 0; idx{loop_id} < {len}; ++idx{loop_id}) {{");
@@ -287,10 +274,10 @@ impl CDevice {
                     _ = writeln!(source, "{indent}}}");
                     loop_id -= 1;
                 }
-                &Op::Const(x) => {
+                Op::Const(x) => {
                     constants.insert(op_id, x);
                 }
-                &Op::Load { src, index, layout } => {
+                Op::Load { src, index, layout } => {
                     if let Some(&rc) = rcs.get(&op_id) {
                         let dtype = dtypes[&op_id];
                         let idx = get_var(index, &constants, &indices, &reg_map, &mut registers, loop_id);
@@ -335,7 +322,7 @@ impl CDevice {
                         }
                     }
                 }
-                &Op::Store { dst, x: src, index, layout } => {
+                Op::Store { dst, x: src, index, layout } => {
                     let idx = get_var(index, &constants, &indices, &reg_map, &mut registers, loop_id);
                     let x = get_var(src, &constants, &indices, &reg_map, &mut registers, loop_id);
                     match layout {
@@ -374,7 +361,7 @@ impl CDevice {
                         MemLayout::Tile { .. } => todo!(),
                     }
                 }
-                &Op::Cast { x, dtype } => {
+                Op::Cast { x, dtype } => {
                     let vlen = dtypes[&x].1;
                     let x = get_var(x, &constants, &indices, &reg_map, &mut registers, loop_id);
                     let reg = new_reg(op_id, &mut reg_map, &mut registers, (dtype, vlen), rcs[&op_id], loop_id);
@@ -387,7 +374,7 @@ impl CDevice {
                         _ => _ = writeln!(source, "{indent}r{reg} = ({}){x};", dtype.c_type()),
                     }
                 }
-                &Op::Unary { x, uop } => {
+                Op::Unary { x, uop } => {
                     let dtype = dtypes[&x];
                     let x = get_var(x, &constants, &indices, &reg_map, &mut registers, loop_id);
                     let reg = new_reg(op_id, &mut reg_map, &mut registers, dtype, rcs[&op_id], loop_id);
@@ -431,7 +418,7 @@ impl CDevice {
                         },
                     }
                 }
-                Op::Vectorize { ops } => {
+                Op::Vectorize { ref ops } => {
                     let dtype = dtypes[&op_id];
                     let mut vars = String::new();
                     for &x in ops {
@@ -448,19 +435,19 @@ impl CDevice {
                     };
                     _ = writeln!(source, "{indent}r{reg} = ({}){{{}}};", dtype.0.vec_type_name(vlen), vars);
                 }
-                &Op::Wmma { .. } => {
+                Op::Wmma { .. } => {
                     return Err(BackendError {
                         status: ErrorStatus::KernelCompilation,
                         context: "C: WMMA not supported (requires cross-thread sharing)".into(),
                     });
                 }
-                &Op::Devectorize { vec, idx } => {
+                Op::Devectorize { vec, idx } => {
                     let dtype = dtypes[&op_id];
                     let vec = get_var(vec, &constants, &indices, &reg_map, &mut registers, loop_id);
                     let reg = new_reg(op_id, &mut reg_map, &mut registers, dtype, rcs[&op_id], loop_id);
                     _ = writeln!(source, "{indent}r{reg} = {vec}.s{idx};");
                 }
-                &Op::Binary { x, y, bop } => {
+                Op::Binary { x, y, bop } => {
                     let dtype = dtypes[&op_id];
                     let x = get_var(x, &constants, &indices, &reg_map, &mut registers, loop_id);
                     let y = get_var(y, &constants, &indices, &reg_map, &mut registers, loop_id);
@@ -476,7 +463,7 @@ impl CDevice {
                         _ => emit_binary_op(&mut source, &indent, reg, usize::MAX, &x, &y, bop),
                     }
                 }
-                &Op::Mad { x, y, z } => {
+                Op::Mad { x, y, z } => {
                     let dtype = dtypes[&op_id];
                     let x = get_var(x, &constants, &indices, &reg_map, &mut registers, loop_id);
                     let y = get_var(y, &constants, &indices, &reg_map, &mut registers, loop_id);
@@ -484,7 +471,7 @@ impl CDevice {
                     let reg = new_reg(op_id, &mut reg_map, &mut registers, dtype, rcs[&op_id], loop_id);
                     _ = writeln!(source, "{indent}r{reg} = {x} * {y} + {z};");
                 }
-                &Op::If { condition } => {
+                Op::If { condition } => {
                     let condition = get_var(condition, &constants, &indices, &reg_map, &mut registers, loop_id);
                     _ = writeln!(source, "{indent}if ({condition}) {{");
                     indent += "  ";
@@ -497,7 +484,7 @@ impl CDevice {
                     }
                     _ = writeln!(source, "{indent}}}");
                 }
-                &Op::Define { dtype, scope, ro, len } => {
+                Op::Define { dtype, scope, ro, len } => {
                     if matches!(scope, Scope::Register | Scope::Local) {
                         _ = writeln!(
                             source,

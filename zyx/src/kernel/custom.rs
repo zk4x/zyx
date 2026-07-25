@@ -57,7 +57,7 @@ impl Kernel {
     /// let mut kernel = Kernel::new(DeviceId::AUTO);
     /// let n = 4;
     /// let inp = kernel.define(DType::F32, Scope::Global, true, n);
-    /// let gidx = kernel.gidx(0, n);
+    /// let gidx = kernel.global_index(0, n);
     /// let loaded = kernel.load(inp, gidx, MemLayout::Scalar);
     /// let doubled = kernel.add(loaded, loaded);
     /// let out = kernel.define(DType::F32, Scope::Global, false, n);
@@ -164,7 +164,12 @@ impl CompiledKernel {
                 pool_events.push(alloc_ev);
                 let dev_buf_id = BufferId { pool: pool_id, buffer: dev_buf };
                 let src_pool_ptr: *mut MemoryPool = &mut rt.pools[buf_id.pool];
-                let copy_ev = rt.pools[pool_id].pool_to_pool(unsafe { &mut *src_pool_ptr }, buf_id.buffer, dev_buf_id.buffer, pool_events)?;
+                let copy_ev = rt.pools[pool_id].pool_to_pool(
+                    unsafe { &mut *src_pool_ptr },
+                    buf_id.buffer,
+                    dev_buf_id.buffer,
+                    pool_events,
+                )?;
                 event_wait_list.push(copy_ev);
                 dev_buf_id
             } else {

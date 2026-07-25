@@ -530,7 +530,7 @@ mod tests {
         let mut k = Kernel::new(DeviceId::AUTO);
         let src = k.define(DType::F32, Scope::Global, true, 16);
         let dst = k.define(DType::F32, Scope::Global, false, 16);
-        let g0 = k.gidx(0, 4);
+        let g0 = k.global_index(0, 4);
         let two = k.const_idx(2u32);
         let offset = k.binary(g0, two, BOp::BitShiftLeft);
         let vec_load = k.load(src, offset, MemLayout::Vector(2));
@@ -554,7 +554,7 @@ mod tests {
         let mut k = Kernel::new(DeviceId::AUTO);
         let src = k.define(DType::F32, Scope::Global, true, 16);
         let dst = k.define(DType::F32, Scope::Global, false, 16);
-        let g0 = k.gidx(0, 4);
+        let g0 = k.global_index(0, 4);
         let two = k.const_idx(2u32);
         let offset = k.binary(g0, two, BOp::BitShiftLeft);
         let vec_load = k.load(src, offset, MemLayout::Vector(4));
@@ -606,7 +606,7 @@ mod tests {
         let mut k = Kernel::new(DeviceId::AUTO);
         let src = k.define(DType::F32, Scope::Global, true, 16);
         let dst = k.define(DType::F32, Scope::Global, false, 16);
-        let g0 = k.gidx(0, 4);
+        let g0 = k.global_index(0, 4);
         let two = k.const_idx(2u32);
         let offset = k.binary(g0, two, BOp::BitShiftLeft);
         let vec_load = k.load(src, offset, MemLayout::Vector(4));
@@ -658,7 +658,7 @@ mod tests {
         let mut k = Kernel::new(DeviceId::AUTO);
         let src = k.define(DType::F32, Scope::Global, true, 16);
         let dst = k.define(DType::F32, Scope::Global, false, 16);
-        let g0 = k.gidx(0, 4);
+        let g0 = k.global_index(0, 4);
         let two = k.const_idx(2u32);
         let offset = k.binary(g0, two, BOp::BitShiftLeft);
         let vec_load = k.load(src, offset, MemLayout::Vector(2));
@@ -698,7 +698,7 @@ mod tests {
         let mut k = Kernel::new(DeviceId::AUTO);
         let src = k.define(DType::F32, Scope::Global, true, 16);
         let dst = k.define(DType::F32, Scope::Global, false, 16);
-        let g0 = k.gidx(0, 4);
+        let g0 = k.global_index(0, 4);
         let two = k.const_idx(2u32);
         let offset = k.binary(g0, two, BOp::BitShiftLeft);
         let vec_load = k.load(src, offset, MemLayout::Vector(2));
@@ -723,7 +723,7 @@ mod tests {
 
         let src = k.define(DType::F32, Scope::Global, true, 16);
         let dst = k.define(DType::F32, Scope::Global, false, 16);
-        let g0 = k.gidx(0, 4);
+        let g0 = k.global_index(0, 4);
         let two = k.const_idx(2u32);
         let offset = k.binary(g0, two, BOp::BitShiftLeft);
         let vec_load = k.load(src, offset, MemLayout::Vector(4));

@@ -11,10 +11,10 @@ impl Kernel {
     /// Rescales `gidx` and `gidy` from element indices to tile indices,
     /// and upgrades global loads/stores to `MemLayout::Tile`.
     pub fn tile(&mut self, gidx: OpId, gidy: OpId, factorx: Dim, factory: Dim) {
-        let Op::Index { len: lenx, scope: Scope::Global, axis: axisx } = self.ops[gidx].op else {
+        let Op::GroupIndex { len: lenx, axis: axisx } = self.ops[gidx].op else {
             return;
         };
-        let Op::Index { len: leny, scope: Scope::Global, axis: axisy } = self.ops[gidy].op else {
+        let Op::GroupIndex { len: leny, axis: axisy } = self.ops[gidy].op else {
             return;
         };
         if !lenx.is_multiple_of(factorx) || !leny.is_multiple_of(factory) {
@@ -24,8 +24,8 @@ impl Kernel {
         let orig_lenx = lenx;
 
         // 1. Rescale gidx and gidy to tile indices
-        self.ops[gidx].op = Op::Index { len: lenx / factorx, scope: Scope::Global, axis: axisx };
-        self.ops[gidy].op = Op::Index { len: leny / factory, scope: Scope::Global, axis: axisy };
+        self.ops[gidx].op = Op::GroupIndex { len: lenx / factorx, axis: axisx };
+        self.ops[gidy].op = Op::GroupIndex { len: leny / factory, axis: axisy };
 
         // 2. Insert scaled = gidx * factorx after gidx
         let factorx_const = self.insert_after(gidx, Op::Const(Constant::idx(factorx)));

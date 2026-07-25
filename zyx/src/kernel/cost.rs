@@ -146,7 +146,7 @@ impl Kernel {
                         *rcs.entry(y).or_insert(0) += 1;
                         *rcs.entry(z).or_insert(0) += 1;
                     }
-                    Op::Index { .. } | Op::Loop { .. } => {
+                    Op::GroupIndex { .. } | Op::LocalIndex { .. } | Op::Loop { .. } => {
                         dtypes.insert(op_id, (DType::U32, MemLayout::Scalar));
                     }
                     &Op::If { condition } => {
@@ -202,7 +202,8 @@ impl Kernel {
                 | Op::Devectorize { .. }
                 | Op::Define { .. }
                 | Op::Const(_)
-                | Op::Index { .. } => true,
+                | Op::GroupIndex { .. }
+                | Op::LocalIndex { .. } => true,
                 Op::Store { .. } | Op::EndLoop | Op::Barrier { .. } | Op::If { .. } | Op::EndIf => false,
                 Op::ConstView(_) => todo!(),
                 Op::LoadView(_) => todo!(),
@@ -233,7 +234,7 @@ impl Kernel {
             }
 
             // Is this indexing or compute?
-            if (matches!(op, Op::Index { .. } | Op::Loop { .. })
+            if (matches!(op, Op::GroupIndex { .. } | Op::LocalIndex { .. } | Op::Loop { .. })
                 || (op.parameters().count() > 0 && op.parameters().all(|p| indexing_ops.contains(&p))))
             {
                 indexing_ops.insert(op_id);
@@ -289,7 +290,7 @@ impl Kernel {
                                     if oid.is_null() || *st == 0 {
                                         return None;
                                     }
-                                    if matches!(self.ops[*oid].op, Op::Index { scope: Scope::Local, .. }) {
+                                    if matches!(self.ops[*oid].op, Op::LocalIndex { .. }) {
                                         Some(*st)
                                     } else {
                                         None
@@ -300,7 +301,7 @@ impl Kernel {
                                         if oid.is_null() || *st == 0 {
                                             return None;
                                         }
-                                        if matches!(self.ops[*oid].op, Op::Index { scope: Scope::Global, .. }) {
+                                        if matches!(self.ops[*oid].op, Op::GroupIndex { .. }) {
                                             Some(*st)
                                         } else {
                                             None
@@ -322,7 +323,7 @@ impl Kernel {
                             if let Some(st) = stride {
                                 glb_load_lidx_stride_weighted += st * n_bits;
                                 glb_load_lidx_stride_weight += n_bits;
-                            } else if let Op::Index { .. } = self.ops[index].op {
+                            } else if let Op::GroupIndex { .. } | Op::LocalIndex { .. } = self.ops[index].op {
                                 glb_load_lidx_stride_weighted += 1 * n_bits;
                                 glb_load_lidx_stride_weight += n_bits;
                             }
@@ -337,7 +338,7 @@ impl Kernel {
                                     if oid.is_null() || *st == 0 {
                                         return None;
                                     }
-                                    if matches!(self.ops[*oid].op, Op::Index { scope: Scope::Local, .. }) {
+                                    if matches!(self.ops[*oid].op, Op::LocalIndex { .. }) {
                                         Some(*st)
                                     } else {
                                         None
@@ -348,7 +349,7 @@ impl Kernel {
                                         if oid.is_null() || *st == 0 {
                                             return None;
                                         }
-                                        if matches!(self.ops[*oid].op, Op::Index { scope: Scope::Global, .. }) {
+                                        if matches!(self.ops[*oid].op, Op::GroupIndex { .. }) {
                                             Some(*st)
                                         } else {
                                             None
@@ -370,7 +371,7 @@ impl Kernel {
                             if let Some(st) = stride {
                                 loc_load_lidx_stride_weighted += st * n_bits;
                                 loc_load_lidx_stride_weight += n_bits;
-                            } else if let Op::Index { .. } = self.ops[index].op {
+                            } else if let Op::GroupIndex { .. } | Op::LocalIndex { .. } = self.ops[index].op {
                                 loc_load_lidx_stride_weighted += 1 * n_bits;
                                 loc_load_lidx_stride_weight += n_bits;
                             }
@@ -400,7 +401,7 @@ impl Kernel {
                                     if oid.is_null() || *st == 0 {
                                         return None;
                                     }
-                                    if matches!(self.ops[*oid].op, Op::Index { scope: Scope::Local, .. }) {
+                                    if matches!(self.ops[*oid].op, Op::LocalIndex { .. }) {
                                         Some(*st)
                                     } else {
                                         None
@@ -411,7 +412,7 @@ impl Kernel {
                                         if oid.is_null() || *st == 0 {
                                             return None;
                                         }
-                                        if matches!(self.ops[*oid].op, Op::Index { scope: Scope::Global, .. }) {
+                                        if matches!(self.ops[*oid].op, Op::GroupIndex { .. }) {
                                             Some(*st)
                                         } else {
                                             None
@@ -433,7 +434,7 @@ impl Kernel {
                             if let Some(st) = stride {
                                 glb_store_lidx_stride_weighted += st * n_bits;
                                 glb_store_lidx_stride_weight += n_bits;
-                            } else if let Op::Index { .. } = self.ops[index].op {
+                            } else if let Op::GroupIndex { .. } | Op::LocalIndex { .. } = self.ops[index].op {
                                 glb_store_lidx_stride_weighted += 1 * n_bits;
                                 glb_store_lidx_stride_weight += n_bits;
                             }
@@ -448,7 +449,7 @@ impl Kernel {
                                     if oid.is_null() || *st == 0 {
                                         return None;
                                     }
-                                    if matches!(self.ops[*oid].op, Op::Index { scope: Scope::Local, .. }) {
+                                    if matches!(self.ops[*oid].op, Op::LocalIndex { .. }) {
                                         Some(*st)
                                     } else {
                                         None
@@ -459,7 +460,7 @@ impl Kernel {
                                         if oid.is_null() || *st == 0 {
                                             return None;
                                         }
-                                        if matches!(self.ops[*oid].op, Op::Index { scope: Scope::Global, .. }) {
+                                        if matches!(self.ops[*oid].op, Op::GroupIndex { .. }) {
                                             Some(*st)
                                         } else {
                                             None
@@ -481,7 +482,7 @@ impl Kernel {
                             if let Some(st) = stride {
                                 loc_store_lidx_stride_weighted += st * n_bits;
                                 loc_store_lidx_stride_weight += n_bits;
-                            } else if let Op::Index { .. } = self.ops[index].op {
+                            } else if let Op::GroupIndex { .. } | Op::LocalIndex { .. } = self.ops[index].op {
                                 loc_store_lidx_stride_weighted += 1 * n_bits;
                                 loc_store_lidx_stride_weight += n_bits;
                             }
@@ -491,11 +492,8 @@ impl Kernel {
                         }
                     }
                 }
-                &Op::Index { len, scope, axis } => match scope {
-                    Scope::Global => gws[axis as usize] = len,
-                    Scope::Local => lws[axis as usize] = len,
-                    Scope::Register => {}
-                },
+                &Op::GroupIndex { len, axis } => gws[axis as usize] = len,
+                &Op::LocalIndex { len, axis } => lws[axis as usize] = len,
                 &Op::Loop { len: len_id } => {
                     let len = self.loop_len_dim(len_id);
                     wi_ops += loop_mult * 3;

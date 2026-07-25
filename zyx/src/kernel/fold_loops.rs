@@ -415,7 +415,7 @@ impl Kernel {
     /// For example, if accumulating `i` (the loop index directly):
     ///   a=1, b=1, c=n, `mul_const`=1, gidx is the loop index variable
     fn trace_to_linear_comparison(&self, accumulated_value_id: OpId, loop_id: OpId) -> Option<(u64, u64, u64, u64, OpId)> {
-        if let Op::Index { scope: Scope::Global, .. } = self.at(accumulated_value_id) {
+        if let Op::GroupIndex { .. } = self.at(accumulated_value_id) {
             return None;
         }
 
@@ -646,8 +646,8 @@ mod tests {
         let r26 = k.const_val(0i32);
         let r31 = k.const_val(5i32);
         let r110 = k.const_val(5u32);
-        let r37 = k.gidx(0, 3);
-        let r5 = k.gidx(1, 3);
+        let r37 = k.global_index(0, 3);
+        let r5 = k.global_index(1, 3);
         let r1 = k.define(DType::U16, Scope::Register, false, 1);
         k.store(r1, r22, r7, MemLayout::Scalar);
         let r123 = k.binary(r37, r74, BOp::Mul);
@@ -721,11 +721,11 @@ mod tests {
         let r84 = k.const_idx(5u32);
         let r97 = k.const_idx(10u32);
         let r10 = k.const_idx(3u32);
-        let r16 = k.gidx(0, 75000);
-        let r92 = k.lidx(0, 2);
-        let r2 = k.lidx(1, 32);
-        let r78 = k.gidx(2, 4);
-        let r27 = k.lidx(2, 8);
+        let r16 = k.global_index(0, 75000);
+        let r92 = k.local_index(0, 2);
+        let r2 = k.local_index(1, 32);
+        let r78 = k.global_index(2, 4);
+        let r27 = k.local_index(2, 8);
         let r50 = k.binary(r16, r16, BOp::Add);
         let r129 = k.binary(r50, r92, BOp::Add);
         let r104 = k.binary(r78, r10, BOp::BitShiftLeft);

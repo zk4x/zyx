@@ -49,7 +49,7 @@ impl Kernel {
         #[cfg(feature = "time")]
         let _timer = crate::Timer::new("eliminate zero index");
         for node in self.ops.values_mut() {
-            if let Op::Index { len, .. } = node.op {
+            if let Op::GroupIndex { len, .. } | Op::LocalIndex { len, .. } = node.op {
                 if len == 1 {
                     node.op = Op::Const(Constant::idx(0));
                 }
@@ -183,7 +183,9 @@ impl Kernel {
     /// Unrolls the loop at `loop_id` to reduce loop overhead and
     /// enable better instruction scheduling and vectorization.
     pub fn unroll_loop(&mut self, loop_id: OpId) {
-        let Op::Loop { len: len_id } = self.ops[loop_id].op else { return };
+        let Op::Loop { len: len_id } = self.ops[loop_id].op else {
+            return;
+        };
         let len = self.loop_len_dim(len_id);
         //println!("UNROLL len={} limit={}", len, len > 64);
         if len == 0 || len > 64 {
@@ -266,7 +268,9 @@ impl Kernel {
     pub fn unroll_tree_reduce(&mut self, loop_id: OpId, factor: Dim) {
         #[cfg(feature = "time")]
         let _timer = crate::Timer::new("unroll_tree_reduce");
-        let Op::Loop { len: len_id } = self.ops[loop_id].op else { return };
+        let Op::Loop { len: len_id } = self.ops[loop_id].op else {
+            return;
+        };
         let len = self.loop_len_dim(len_id);
         if factor < 2 || !len.is_multiple_of(factor) {
             return;

@@ -211,25 +211,20 @@ impl Kernel {
                     check(op_id, index, &stack);
                     dtypes.insert(op_id, dtypes[&src]);
                 }
-                Op::Index { axis, scope, .. } => {
-                    match scope {
-                        super::Scope::Global => {
-                            if !gids.insert(axis) {
-                                println!("index={op_id} is using global axis={axis} for the second time");
-                                self.debug();
-                                panic!();
-                            }
-                        }
-                        super::Scope::Local => {
-                            if !lids.insert(axis) {
-                                println!("index={op_id} is using local axis={axis} for the second time");
-                                self.debug();
-                                panic!();
-                            }
-                        }
-                        super::Scope::Register => unreachable!(),
+                Op::GroupIndex { axis, .. } => {
+                    if !gids.insert(axis) {
+                        println!("index={op_id} is using global axis={axis} for the second time");
+                        self.debug();
+                        panic!();
                     }
-
+                    dtypes.insert(op_id, IDX_T);
+                }
+                Op::LocalIndex { axis, .. } => {
+                    if !lids.insert(axis) {
+                        println!("index={op_id} is using local axis={axis} for the second time");
+                        self.debug();
+                        panic!();
+                    }
                     dtypes.insert(op_id, IDX_T);
                 }
                 Op::Loop { .. } => {
@@ -385,7 +380,11 @@ impl Kernel {
                 Op::EndIf => {
                     bounds_stack.pop();
                 }
-                Op::Index { len, .. } => {
+                Op::GroupIndex { len, .. } => {
+                    let b = bounds_stack.last_mut().unwrap();
+                    b.insert(op_id, (0, len - 1));
+                }
+                Op::LocalIndex { len, .. } => {
                     let b = bounds_stack.last_mut().unwrap();
                     b.insert(op_id, (0, len - 1));
                 }

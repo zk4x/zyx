@@ -17,14 +17,15 @@ use std::collections::BTreeMap;
 use super::autotune::Optimization;
 use crate::{
     dtype::Constant,
-    kernel::{BOp, Kernel, Op, OpId, Scope},
+    kernel::{BOp, Kernel, Op, OpId},
 };
 
 impl Kernel {
     /// Get last op in the given loop scope
     pub(crate) fn get_last_dim_op(&self, loop_id: OpId) -> OpId {
         match self.ops[loop_id].op {
-            Op::Index { .. } => return self.tail,
+            Op::GroupIndex { .. } => return self.tail,
+            Op::LocalIndex { .. } => return self.tail,
             Op::Loop { .. } => {}
             _ => unreachable!(),
         }
@@ -116,10 +117,9 @@ impl Kernel {
         let mut op_id = self.head;
         while axes.len() != loops.len() {
             if loops.contains(&op_id) {
-                let Op::Index { len, scope, axis } = self.ops[op_id].op else {
+                let Op::GroupIndex { len, axis } = self.ops[op_id].op else {
                     unreachable!()
                 };
-                debug_assert_eq!(scope, Scope::Global);
                 acc *= len;
                 axes.insert(axis, (op_id, len));
                 if first_id.is_none() {
@@ -129,10 +129,10 @@ impl Kernel {
             op_id = self.next_op(op_id);
         }
 
-        let Op::Index { scope, axis, .. } = self.ops[first_id.unwrap()].op else {
+        let Op::GroupIndex { axis, .. } = self.ops[first_id.unwrap()].op else {
             unreachable!()
         };
-        let mut x = self.insert_before(first_id.unwrap(), Op::Index { len: acc, scope, axis });
+        let mut x = self.insert_before(first_id.unwrap(), Op::GroupIndex { len: acc, axis });
 
         for (.., (loop_id, len)) in axes {
             let y = self.insert_before(loop_id, Op::Const(Constant::idx(len as u64)));

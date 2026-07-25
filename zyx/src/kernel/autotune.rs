@@ -37,6 +37,7 @@
 #![allow(clippy::derived_hash_with_manual_eq)]
 
 use crate::backend::{AutotuneConfig, Device, DeviceInfo, DeviceProgramId, MemoryPool, PoolBufferId};
+use crate::dtype::Constant;
 use crate::error::{BackendError, ErrorStatus};
 use crate::hashers::AHasher;
 use crate::kernel::cost::Cost;
@@ -237,16 +238,15 @@ impl Optimization {
                 #[cfg(feature = "time")]
                 let _timer = crate::Timer::new("SplitGlobalToLocal");
                 let (op_id, factor) = factors[config];
-                let Op::Index { len, scope, axis } = kernel.ops[op_id].op else {
+                let Op::GroupIndex { len, axis } = kernel.ops[op_id].op else {
                     unreachable!()
                 };
-                debug_assert_eq!(scope, Scope::Global);
                 let factor: Dim = factor;
                 kernel.split_dim(
                     op_id,
                     vec![
-                        Op::Index { len: len / factor, scope: Scope::Global, axis },
-                        Op::Index { len: factor, scope: Scope::Local, axis },
+                        Op::GroupIndex { len: len / factor, axis },
+                        Op::LocalIndex { len: factor, axis },
                     ],
                 );
             }
@@ -282,12 +282,12 @@ impl Optimization {
                     return;
                 }
                 let (gidx_id, pad_to) = factors[config];
-                let Op::Index { len: current_len, .. } = kernel.ops[gidx_id].op else {
+                let Op::GroupIndex { len: current_len, .. } = kernel.ops[gidx_id].op else {
                     unreachable!()
                 };
                 let pad_len = (pad_to - current_len % pad_to) % pad_to;
                 if pad_len > 0 {
-                    kernel.pad_index(gidx_id, current_len, pad_len, crate::dtype::Constant::idx(0));
+                    kernel.pad_index(gidx_id, current_len, pad_len, Constant::idx(0));
                 }
             }
             Optimization::Vectorize { supported_lens, vectorize_ops } => {

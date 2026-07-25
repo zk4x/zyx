@@ -726,7 +726,13 @@ impl CUDAMemoryPool {
     }
 
     #[allow(clippy::needless_pass_by_ref_mut)]
-    pub fn pool_to_pool(&mut self, src_pool: &mut MemoryPool, src: PoolBufferId, dst: PoolBufferId, event_wait_list: Vec<Event>) -> Result<Event, BackendError> {
+    pub fn pool_to_pool(
+        &mut self,
+        src_pool: &mut MemoryPool,
+        src: PoolBufferId,
+        dst: PoolBufferId,
+        event_wait_list: Vec<Event>,
+    ) -> Result<Event, BackendError> {
         match src_pool {
             MemoryPool::Host(src_pool) => self.host_to_pool(src_pool.get_buffer(src), dst, event_wait_list),
             _ => todo!(),
@@ -1240,17 +1246,10 @@ impl CUDADevice {
         let mut lws = vec![1; 3];
         let mut op_id = kernel.head;
         while !op_id.is_null() {
-            let op = kernel.at(op_id);
-            if let &Op::Index { len: dim, scope, axis } = op {
-                match scope {
-                    Scope::Global => {
-                        gws[axis as usize] = dim;
-                    }
-                    Scope::Local => {
-                        lws[axis as usize] = dim;
-                    }
-                    Scope::Register => {}
-                }
+            match kernel.ops[op_id].op {
+                Op::GroupIndex { len, axis } => gws[axis as usize] = len,
+                Op::LocalIndex { len, axis } => gws[axis as usize] = len,
+                _ => {}
             }
             op_id = kernel.next_op(op_id);
         }
@@ -1293,16 +1292,15 @@ impl CUDADevice {
 
         let mut op_id = kernel.head;
         while !op_id.is_null() {
-            let op = kernel.at(op_id);
             //println!("{i} -> {op:?}");
-            match op {
+            match kernel.ops[op_id].op {
                 Op::Move { .. } | Op::ConstView { .. } | Op::LoadView { .. } | Op::StoreView { .. } | Op::Reduce { .. } => {
                     unreachable!()
                 }
-                &Op::Const(x) => {
+                Op::Const(x) => {
                     constants.insert(op_id, x);
                 }
-                &Op::Define { dtype, scope, ro, len } => {
+                Op::Define { dtype, scope, ro, len } => {
                     if scope == Scope::Register {
                         _ = writeln!(source, "{indent}{}{} p{op_id}[{len}];", if ro { "const " } else { "" }, dtype.cu(),);
                         acc_bytes += u64::from(dtype.bit_size() / 8) * len;
@@ -1315,7 +1313,7 @@ impl CUDADevice {
                         );
                     }
                 }
-                &Op::Load { src, index, layout } => {
+                Op::Load { src, index, layout } => {
                     if let Some(&rc) = rcs.get(&op_id) {
                         let dtype = dtypes[&op_id];
                         let idx = get_var(index, &constants, &indices, &reg_map, &mut registers, loop_id);
@@ -1335,7 +1333,7 @@ impl CUDADevice {
                         }
                     }
                 }
-                &Op::Store { dst, x: src, index, layout } => {
+                Op::Store { dst, x: src, index, layout } => {
                     let idx = get_var(index, &constants, &indices, &reg_map, &mut registers, loop_id);
                     let x = get_var(src, &constants, &indices, &reg_map, &mut registers, loop_id);
                     let dtype = dtypes[&src].0.cu();
@@ -1348,7 +1346,7 @@ impl CUDADevice {
                         MemLayout::Tile { x, y, stride } => todo!(),
                     }
                 }
-                &Op::Wmma { dims, layout, dtype, c, a, b } => {
+                Op::Wmma { dims, layout, dtype, c, a, b } => {
                     helper_funcs += r#"__device__ float4 wmma_m16n8k8_row_col_f32_f16_f16_f32(half4 a, half2 b, float4 c) {
   int *a_pk = (int *)(&a), *b_pk = (int *)(&b), *c_pk = (int *)(&c);
   asm("mma.sync.aligned.m16n8k8.row.col.f32.f16.f16.f32"
@@ -1365,7 +1363,7 @@ impl CUDADevice {
                     let reg = new_reg(op_id, &mut reg_map, &mut registers, dtypes[&op_id], rcs[&op_id], loop_id);
                     _ = writeln!(source, "{indent}r{reg} = wmma_m16n8k8_row_col_f32_f16_f16_f32({a}, {b}, {c});");
                 }
-                &Op::Cast { x, dtype } => {
+                Op::Cast { x, dtype } => {
                     let x_var = get_var(x, &constants, &indices, &reg_map, &mut registers, loop_id);
                     let mem_layout = dtypes[&x].1;
                     let reg = new_reg(op_id, &mut reg_map, &mut registers, (dtype, mem_layout), rcs[&op_id], loop_id);
@@ -1383,7 +1381,7 @@ impl CUDADevice {
                         }
                     }
                 }
-                &Op::Unary { x, uop } => {
+                Op::Unary { x, uop } => {
                     let dtype = dtypes[&x];
                     let x = get_var(x, &constants, &indices, &reg_map, &mut registers, loop_id);
                     let reg = new_reg(op_id, &mut reg_map, &mut registers, dtype, rcs[&op_id], loop_id);
@@ -1446,7 +1444,7 @@ impl CUDADevice {
                         MemLayout::Tile { .. } => unreachable!(),
                     }
                 }
-                &Op::Binary { x, y, bop } => {
+                Op::Binary { x, y, bop } => {
                     let dtype = dtypes[&op_id];
                     let x = get_var(x, &constants, &indices, &reg_map, &mut registers, loop_id);
                     let y = get_var(y, &constants, &indices, &reg_map, &mut registers, loop_id);
@@ -1502,7 +1500,7 @@ impl CUDADevice {
                         MemLayout::Tile { .. } => unreachable!(),
                     }
                 }
-                Op::Vectorize { ops } => {
+                Op::Vectorize { ref ops } => {
                     let dtype = dtypes[&op_id];
                     let mut vars = String::new();
                     for &x in ops {
@@ -1515,13 +1513,13 @@ impl CUDADevice {
                     //let dtype = dtypes[&op_id];
                     _ = writeln!(source, "{indent}r{reg} = {{{vars}}};"); //, dtype.0.cu(), dtype.1);
                 }
-                &Op::Devectorize { vec, idx } => {
+                Op::Devectorize { vec, idx } => {
                     let dtype = dtypes[&op_id];
                     let x = get_var(vec, &constants, &indices, &reg_map, &mut registers, loop_id);
                     let reg = new_reg(op_id, &mut reg_map, &mut registers, dtype, rcs[&op_id], loop_id);
                     _ = writeln!(source, "{indent}r{reg} = {x}.{};", VEC_COMPONENTS[idx]); //, dtype.0.cu(), dtype.1);
                 }
-                &Op::Mad { x, y, z } => {
+                Op::Mad { x, y, z } => {
                     let dtype = dtypes[&op_id];
                     let x = get_var(x, &constants, &indices, &reg_map, &mut registers, loop_id);
                     let y = get_var(y, &constants, &indices, &reg_map, &mut registers, loop_id);
@@ -1537,30 +1535,27 @@ impl CUDADevice {
                         _ => _ = writeln!(source, "{indent}r{reg} = {x} * {y} + {z};"),
                     }
                 }
-                &Op::Index { len: dim, scope, axis } => {
+                Op::GroupIndex { len, axis } => {
                     indices.insert(op_id, loop_id);
-                    match scope {
-                        Scope::Global => {
-                            _ = writeln!(
-                                source,
-                                "{indent}unsigned int idx{loop_id} = blockIdx.{}; // 0..={}",
-                                ["x", "y", "z"][axis as usize],
-                                dim - 1
-                            );
-                        }
-                        Scope::Local => {
-                            _ = writeln!(
-                                source,
-                                "{indent}unsigned int idx{loop_id} = threadIdx.{}; // 0..={}",
-                                ["x", "y", "z"][(axis) as usize],
-                                dim - 1
-                            );
-                        }
-                        Scope::Register => {}
-                    }
+                    _ = writeln!(
+                        source,
+                        "{indent}unsigned int idx{loop_id} = blockIdx.{}; // 0..={}",
+                        ["x", "y", "z"][axis as usize],
+                        len - 1
+                    );
                     loop_id += 1;
                 }
-                &Op::Loop { len, .. } => {
+                Op::LocalIndex { len, axis } => {
+                    indices.insert(op_id, loop_id);
+                    _ = writeln!(
+                        source,
+                        "{indent}unsigned int idx{loop_id} = threadIdx.{}; // 0..={}",
+                        ["x", "y", "z"][(axis) as usize],
+                        len - 1
+                    );
+                    loop_id += 1;
+                }
+                Op::Loop { len, .. } => {
                     indices.insert(op_id, loop_id);
                     let len = kernel.loop_len_dim(len);
                     _ = writeln!(source, "{indent}for (unsigned int idx{loop_id} = 0; idx{loop_id} < {len}; ++idx{loop_id}) {{");
@@ -1573,7 +1568,7 @@ impl CUDADevice {
                     _ = writeln!(source, "{indent}}}");
                     loop_id -= 1;
                 }
-                &Op::If { condition } => {
+                Op::If { condition } => {
                     let condition = get_var(condition, &constants, &indices, &reg_map, &mut registers, loop_id);
                     _ = writeln!(source, "{indent}if ({condition}) {{");
                     indent += "  ";
