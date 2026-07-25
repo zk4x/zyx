@@ -1544,10 +1544,7 @@ pub(super) fn initialize_device(
                             for event in events {
                                 if let Event::Vulkan(ev) = event {
                                     if !ev.fence.is_null() {
-                                        unsafe {
-                                            let _ = vkWaitForFences(device, 1, &ev.fence, 1, u64::MAX);
-                                            vkDestroyFence(device, ev.fence, std::ptr::null());
-                                        }
+                                        unsafe { vkDestroyFence(device, ev.fence, std::ptr::null()) };
                                     }
                                     if !ev.cmd.is_null() {
                                         unsafe { vkFreeCommandBuffers(device, cmd_pool, 1, &ev.cmd) };
