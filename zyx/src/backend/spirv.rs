@@ -574,6 +574,9 @@ pub fn compile(kernel: &Kernel, debug_asm: bool) -> Result<(Vec<u32>, Vec<Dim>, 
     // === SPIR-V state ===
     let mut type_cache: Map<DType, u32> = Map::with_capacity_and_hasher(16, BuildHasherDefault::new());
     let mut vec_type_cache: Map<(u32, u16), u32> = Map::with_capacity_and_hasher(4, BuildHasherDefault::new());
+    // Deferred type declarations: (opcode, result_id, operands) where each
+    // operand is a raw SPIR-V word (width, signedness, fp_encoding, etc.).
+    // Batch-emitted before the function body so all types pre-declared.
     let mut type_entries: Vec<(OpCode, u32, Vec<u32>)> = Vec::with_capacity(32);
     let mut const_entries: Vec<(u32, u32, Vec<u32>)> = Vec::with_capacity(16);
     let mut len_const_ids: std::collections::HashSet<u32> = std::collections::HashSet::new(); // constant IDs used as array lengths
