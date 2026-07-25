@@ -165,10 +165,13 @@ impl Kernel {
         for &(sid, _dst) in &store_ids {
             let out_local = out_locals[&sid];
             body_last = self.insert_after(body_last, Op::Load { src: out_local, index: loop_p3, layout: MemLayout::Scalar });
-            body_last = self.insert_after(body_last, Op::Store { dst: _dst, x: body_last, index: p3_elem_idx, layout: MemLayout::Scalar });
+            body_last = self
+                .insert_after(body_last, Op::Store { dst: _dst, x: body_last, index: p3_elem_idx, layout: MemLayout::Scalar });
             self.remove_op(sid);
         }
         self.insert_after(body_last, Op::EndLoop);
+
+        self.verify();
     }
 
     // ── helpers ──
