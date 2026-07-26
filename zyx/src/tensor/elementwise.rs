@@ -135,7 +135,7 @@ impl Tensor {
     ///         as `e^input_element`.
     #[must_use]
     pub fn exp(&self) -> Tensor {
-        let c: Tensor = core::f32::consts::E.log2().into();
+        let c: Tensor = core::f32::consts::LOG2_E.into();
         (self * c.cast(self.dtype())).exp2()
     }
 

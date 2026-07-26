@@ -7,14 +7,13 @@
 //! to `exp(x)`, which allows backends like Tenstorrent to use their
 //! native `exp_tile` instead of the unsupported `exp2_tile`.
 
+use std::f64::consts::{LN_2, LOG2_E};
+
 use crate::scalar::{bf16, f16};
 use crate::{
     dtype::Constant,
     kernel::{BOp, Kernel, Op, OpId, UOp},
 };
-
-const LOG2_E: f64 = std::f64::consts::LOG2_E;
-const LN_2: f64 = std::f64::consts::LN_2;
 
 fn constant_is_ln_2(c: &Constant) -> bool {
     let val = match *c {
@@ -65,18 +64,6 @@ impl Kernel {
         }
     }
 
-    /// Exp to exp2
-    pub fn exp_to_exp2(&mut self) {
-        let mut op_id = self.head;
-        while !op_id.is_null() {
-            let next = self.next_op(op_id);
-            if let &Op::Unary { x, uop: UOp::Exp } = self.at(op_id) {
-                todo!()
-            }
-            op_id = next;
-        }
-    }
-
     /// Finds `log2(x) * ln(2)` and replaces it with `ln(x)`.
     ///
     /// This recognizes the pattern produced by `tensor.ln()` which is
@@ -104,13 +91,35 @@ impl Kernel {
         }
     }
 
+    /// Exp to exp2
+    /// Converts `exp(x * ln(e))` to `exp2(x)`
+    /// This allows backends with native `exp2` but not `exp` to use exp2 instead
+    pub fn exp_to_exp2(&mut self) {
+        let mut op_id = self.head;
+        while !op_id.is_null() {
+            let next = self.next_op(op_id);
+            if let &Op::Unary { x, uop: UOp::Exp } = self.at(op_id) {
+                let dtype = self.dtype(x);
+                let y = self.insert_before(op_id, Op::Const(Constant::F64(LOG2_E.to_le_bytes()).cast(dtype)));
+                let x = self.insert_before(op_id, Op::Unary { x, uop: UOp::Exp2 });
+                self.ops[op_id].op = Op::Binary { x, y, bop: BOp::Mul };
+            }
+            op_id = next;
+        }
+    }
+
     /// Ln to log2
+    /// Converts `ln(x)` to `log2(x) * ln(2)`
+    /// This allows backends with native `log2` but not `ln` to use log2 instead
     pub fn ln_to_log2(&mut self) {
         let mut op_id = self.head;
         while !op_id.is_null() {
             let next = self.next_op(op_id);
             if let &Op::Unary { x, uop: UOp::Ln } = self.at(op_id) {
-                todo!()
+                let dtype = self.dtype(x);
+                let y = self.insert_before(op_id, Op::Const(Constant::F64(LN_2.to_le_bytes()).cast(dtype)));
+                let x = self.insert_before(op_id, Op::Unary { x, uop: UOp::Log2 });
+                self.ops[op_id].op = Op::Binary { x, y, bop: BOp::Mul };
             }
             op_id = next;
         }
