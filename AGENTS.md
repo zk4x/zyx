@@ -61,7 +61,7 @@ Zyx is ALL about the graph. The graph is the core.
 - **Dynamic**: Graph dynamically grows and shrinks at runtime
 - **One graph for everything**: Autograd uses the same graph
 - Other libraries use 2 graphs (one for laziness, one for autograd), zyx uses ONE
-- **Super lean**: Only 16 bytes per tensor. 10k virtual tensors = ~160kB + shape metadata
+- **Super lean**: Tensor handles are `u32` (4 bytes). 10k tensor handles = ~40kB.
 - **Few ops**: Graph has only ~10 ops (Const, Leaf, Expand, Permute, Reshape, Pad, Reduce, Cast, Unary, Binary)
 
 ## Core Principles

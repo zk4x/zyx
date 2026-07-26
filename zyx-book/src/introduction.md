@@ -56,6 +56,6 @@ Zyx uses **one graph** for both. This means:
 - The autograd system doesn't need its own graph infrastructure — it reuses the same nodes
 - Kernel fusion works across operation boundaries without special handling
 - The implementation is debuggable (one graph to inspect, not two)
-- Memory overhead is minimal: each graph node is ~16 bytes
+- Memory overhead is minimal: tensor handles are `u32` (4 bytes)
 
 The trade-off in tape mode is that evaluation is lazy — you must call `realize()` to trigger computation (dropping the tape only cleans up graph state — no computation is performed). But this laziness enables optimizations that eager execution cannot: egraph exploration of fusion variants, device allocation search, and plan caching across structurally identical iterations. Outside a tape, optimization is lighter-weight (greedy fusion only), which is appropriate for one-off ops. Kernel caching (compiled program reuse) is shared across both modes.

@@ -46,7 +46,7 @@ The graph opset was taken from tinygrad, with changes to make it even smaller. T
 | `Unary` | Element-wise: relu, exp, sin, etc. |
 | `Binary` | Element-wise: add, mul, etc. |
 
-Each node is ~16 bytes, plus a 4-byte reference count and slab metadata overhead. Still small enough that 10,000 nodes cost ~200 KB.
+Tensor handles are `u32` (4 bytes) into the slab. Still small enough that 10,000 handles cost ~40 kB.
 
 The graph is stored in a `Slab` — a dense array with free-list tracking. `TensorId` is a `u32` index into this slab, making tensor handles 4 bytes.
 

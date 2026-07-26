@@ -61,4 +61,4 @@ A cost model selects the cheapest extraction from each equivalence class for ker
 
 ## Graph Size
 
-The graph is designed to stay small. Each node is ~16 bytes, and a training iteration with 10,000 operations costs ~200 KB. When the tape is dropped, the graph shrinks back to baseline.
+The graph is designed to stay small. Tensor handles are `u32` (4 bytes), so 10,000 handles cost ~40 kB. When the tape is dropped, the graph shrinks back to baseline.

@@ -11,10 +11,10 @@
     - [ ] fix load calculation, probably using Atomic usize
   - [ ] vulkan
     - [x] initialization
-    - [ ] memory management
+    - [x] memory management
     - [x] spirv compiler (to spirv binary)
-      - [] replace opcodes and other things with enums instead of constants
-    - [ ] kernel launch
+      - [ ] replace opcodes and other things with enums instead of constants
+    - [x] kernel launch
   - [x] wgpu
     - [ ] fix load calculation, probably using Atomic usize
     - [x] spirv compiler
@@ -26,11 +26,8 @@
   - [x] fix event handling
   - [x] node deallocation after realization
   - [x] clean up completed transfer events to free host staging buffers early
-  - [ ] static graphs - unfortunately necessary for very high performance networks to achieve hundreds of millions of tensor ops/second
-- [x] autograd
-  - [x] fix t6 test
-  - [x] proper backprop, since now we don't quite need to calculate requires_grad_nodes, those are now in gradient_tape
-  - [x] fix realize function with gradient tape
+  - [ ] static graphs - unfortunately necessary for very high performance networks to achieve hundreds of millions of tensor ops/second - just add replay method for tape
+  - [ ] add contiguous op - it calls add_store and forces kernel fusion split, in egraph this works the same
 - [ ] dtype
   - [ ] quantized dtypes
   - [x] optional implicit dtype casts
@@ -42,37 +39,11 @@
   - [x] reshaped view to ir
   - [x] axis merging
   - [x] axes reshape
-- [ ] tensor
-  - [x] gather
-  - [x] scatter
-  - [ ] solve
-  - [ ] inverse of matrix
-  - [ ] pinverse
-  - [ ] eigvalsh
-  - [ ] singular value decomposition
-  - [ ] instance norm
-  - [x] interpolate
-  - [ ] upsample
-  - [ ] downsample
-  - [x] erf
-  - [ ] erfinv
-  - [ ] lgamma (log gamma)
-  - [ ] i0 (modified Bessel function)
-  - [x] trunc
-  - [x] frac
-  - [x] ceil
-  - [x] round
-  - [ ] nll loss
-  - [x] bce loss
-  - [x] huber loss
-  - [x] smooth l1 loss
-  - [ ] ctc loss
-  - [ ] triplet margin loss
-  - [ ] frobenius norm
-  - [ ] spectral norm
-  - [x] tril
-  - [x] triu
-- [ ] kernelizer
+- [ ] graph
+  - [x] autograd
+    - [x] fix t6 test
+    - [x] proper backprop, since now we don't quite need to calculate requires_grad_nodes, those are now in gradient_tape
+    - [x] fix realize function with gradient tape
   - [x] all dim reduce
   - [x] cache Map<(Kernel, Optimizations), Program> instead of Map<IRKernel, Program>
   - [x] improve reshape node
@@ -82,8 +53,6 @@
   - [x] improve permute node (should never store)
   - [x] improve pad node (should almost never store)
   - [x] pad could also work even with kernels that store stuff, just pad the store view
-  - [ ] binary op improved fusion (with dependent loads and stores)/ full fusion
-  - [ ] improve heuristics for cost based duplication and splitting for both movement and reduce ops separately
   - [x] cost model needs to account for
     - [x] tensor reuse (known thanks to reference counts)
     - [x] shared memory pressure (loads + stores)
@@ -91,6 +60,8 @@
     - [x] global memory pressure (loads + stores)
   - [x] expand reduce bug
   - [x] fix is expandable conditions
+  - [ ] binary op improved fusion (with dependent loads and stores)/ full fusion
+  - [ ] improve heuristics for cost based duplication and splitting for both movement and reduce ops separately in the egraph
   - [ ] tests for fusion, test will create it's own graph and check how the fused kernel looks
     - [x] softmax fusion test (eventually should be single kernel)
     - [ ] just asserts that various graphs fuse into single kernel
@@ -151,6 +122,36 @@
   - [ ] multi step reduce (with multiple accumulators)
   - [ ] streaming dual reduce ops (e.g. streaming softmax)
   - [x] optimizer with search
+- [ ] tensor
+  - [x] gather
+  - [x] scatter
+  - [ ] solve
+  - [ ] inverse of matrix
+  - [ ] pinverse
+  - [ ] eigvalsh
+  - [ ] singular value decomposition
+  - [ ] instance norm
+  - [x] interpolate
+  - [ ] upsample
+  - [ ] downsample
+  - [x] erf
+  - [ ] erfinv
+  - [ ] lgamma (log gamma)
+  - [ ] i0 (modified Bessel function)
+  - [x] trunc
+  - [x] frac
+  - [x] ceil
+  - [x] round
+  - [ ] nll loss
+  - [x] bce loss
+  - [x] huber loss
+  - [x] smooth l1 loss
+  - [ ] ctc loss
+  - [ ] triplet margin loss
+  - [ ] frobenius norm
+  - [ ] spectral norm
+  - [x] tril
+  - [x] triu
 
 - [ ] testing
   - [ ] fuzzy tester
@@ -199,6 +200,3 @@
   - [x] nn ops: softmax, log_softmax, cross_entropy, conv2d
   - [x] indexing: slice, index_select, gather, scatter
    - [x] gather, index_select, one_hot, argmax, argmax_axis, conv
-
-- [ ] known bugs
-  - [ ] `println!` to stdout under `cargo test --nocapture` hangs after several calls — deterministic, cumulative. Root cause is in Rust std's `Stdout` wrapper (`ReentrantMutex<RefCell<LineWriter<File>>>`). Raw `write(1, ...)` syscall works fine. Workaround: use `eprintln!` (stderr). Only manifests with `--nocapture` (pipe mode).
