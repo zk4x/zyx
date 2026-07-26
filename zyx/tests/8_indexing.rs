@@ -359,7 +359,7 @@ fn scatter_1d() -> Result<(), ZyxError> {
 fn scatter_nonzero_self() -> Result<(), ZyxError> {
     let x = Tensor::from([[10, 10, 10], [10, 10, 10]]);
     let src = Tensor::from([[1, 2, 3]]);
-    let indices = Tensor::from([[0u8, 1, 2]]);
+    let indices = Tensor::from([[0u16, 1, 2]]);
     let result = x.scatter(1, &indices, &src)?;
     assert_eq!(result, [[11, 12, 13], [10, 10, 10]]);
     Ok(())
@@ -381,7 +381,7 @@ fn scatter_negative_indices() -> Result<(), ZyxError> {
 fn scatter_3d() -> Result<(), ZyxError> {
     let x = Tensor::zeros([2, 3, 4], zyx::DType::I32);
     let src = Tensor::from([[[1, 2]], [[3, 4]]]);
-    let indices = Tensor::from([[[0u8, 3]], [[1, 2]]]);
+    let indices = Tensor::from([[[0u64, 3]], [[1, 2]]]);
     let result = x.scatter(2, &indices, &src)?;
     assert_eq!(
         result,

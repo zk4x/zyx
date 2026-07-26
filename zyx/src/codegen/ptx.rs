@@ -103,7 +103,7 @@ impl Compiler {
                 if dtype == DType::F32 {
                     "div.approx"
                 } else if dtype == DType::F64 {
-                    "div"
+                    "div.rn"
                 } else {
                     "div"
                 }
@@ -148,10 +148,10 @@ impl Compiler {
                     context: format!("PTX: lg2.approx is only available for f32, not {dtype:?}").into(),
                 }),
             },
-            UOp::Reciprocal => Ok("rcp.approx"),
+            UOp::Reciprocal => Ok("rcp.ftz.approx"),
             UOp::Sqrt => match dtype {
                 DType::F32 => Ok("sqrt.approx"),
-                DType::F64 => Ok("sqrt"),
+                DType::F64 => Ok("sqrt.rn"),
                 _ => Err(BackendError {
                     status: ErrorStatus::KernelCompilation,
                     context: format!("PTX: sqrt not available for {dtype:?}").into(),
@@ -633,17 +633,10 @@ impl Kernel {
                 Op::Barrier => {
                     _ = writeln!(comp.body, "{}bar.sync 1;", comp.indent);
                 }
-                Op::ConstView { .. }
-                | Op::LoadView { .. }
-                | Op::StoreView { .. }
-                | Op::Move { .. }
-                | Op::Reduce { .. }
-                | Op::Wmma { .. }
-                | Op::Vectorize { .. }
-                | Op::Devectorize { .. } => {
+                ref op => {
                     return Err(BackendError {
                         status: ErrorStatus::KernelCompilation,
-                        context: "PTX: unexpected kernel op (should be unfolded)".into(),
+                        context: format!("PTX: unexpected kernel op={op:?} (should be unfolded)").into(),
                     });
                 }
             }

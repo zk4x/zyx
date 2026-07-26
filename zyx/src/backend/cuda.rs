@@ -639,7 +639,7 @@ pub(super) fn initialize_device(
                 warp_size: 32,
                 dtype_capability: [DTypeCapability::none(); DType::N_DTYPES],
                 has_native_exp2: true,
-                supported_vec_lens: vec![2, 4],
+                supported_vec_lens: vec![],
             },
             memory_pool_id: PoolId::from(usize::from(memory_pools.len()) - 1),
             compute_capability: [major, minor],
@@ -682,7 +682,7 @@ pub(super) fn initialize_device(
                 capability
             },
             has_native_exp2: true,
-            supported_vec_lens: vec![2, 4],
+            supported_vec_lens: vec![],
         };
         devices.push(Device::CUDA(dev));
     }
