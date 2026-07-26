@@ -180,23 +180,13 @@ impl Kernel {
             scopes: Map::default(),
         };
 
-        let mut gws = Vec::new();
-        let mut lws = Vec::new();
+        let mut gws = vec![1; 3];
+        let mut lws = vec![1; 3];
         let mut op_id = self.head;
         while !op_id.is_null() {
-            match self.at(op_id) {
-                Op::GroupIndex { len, axis } => {
-                    if *axis as usize >= gws.len() {
-                        gws.resize(*axis as usize + 1, 1);
-                    }
-                    gws[*axis as usize] = *len;
-                }
-                Op::LocalIndex { len, axis } => {
-                    if *axis as usize >= lws.len() {
-                        lws.resize(*axis as usize + 1, 1);
-                    }
-                    lws[*axis as usize] = *len;
-                }
+            match self.ops[op_id].op {
+                Op::GroupIndex { len, axis } => gws[axis as usize] = len,
+                Op::LocalIndex { len, axis } => lws[axis as usize] = len,
                 _ => {}
             }
             op_id = self.next_op(op_id);
@@ -214,10 +204,8 @@ impl Kernel {
         _ = writeln!(comp.header, ".version {0}.{1}\n.target sm_{0}{1}\n.address_size 64\n.visible .entry {name}(", cc[0], cc[1]);
         let mut op_id = self.head;
         while !op_id.is_null() {
-            if let Op::Define { scope, .. } = self.at(op_id) {
-                if *scope == Scope::Global {
-                    writeln!(comp.header, "{}.param .u64 g{op_id},", comp.indent).unwrap();
-                }
+            if matches!(self.ops[op_id].op, Op::Define { scope: Scope::Global, .. }) {
+                writeln!(comp.header, "{}.param .u64 g{op_id},", comp.indent).unwrap();
             }
             op_id = self.next_op(op_id);
         }
@@ -229,14 +217,12 @@ impl Kernel {
         let mut label = 0;
 
         let (dtypes, rcs) = self.compute_dtypes_and_rcs();
-        let mut global_axis: u8 = 0;
-        let mut local_axis: u8 = 0;
         let mut loop_id: u8 = 0;
         let mut op_id = self.head;
         while !op_id.is_null() {
-            match self.at(op_id) {
+            match self.ops[op_id].op {
                 Op::Define { dtype, scope, len, .. } => {
-                    comp.scopes.insert(op_id, *scope);
+                    comp.scopes.insert(op_id, scope);
                     match scope {
                         Scope::Global => {
                             _ = writeln!(comp.body, "{}ld.param.u64 %p{op_id}, [g{op_id}];", comp.indent);
@@ -253,58 +239,36 @@ impl Kernel {
                         }
                     }
                 }
-                Op::GroupIndex { .. } => {
+                Op::GroupIndex { axis, .. } => {
                     let reg = comp.new_var(op_id, IDX_T, rcs[&op_id]);
                     _ = writeln!(
                         comp.body,
                         "{}{}.u32 %r{reg}, %ctaid.{};",
                         comp.indent,
                         if IDX_T == DType::U64 { "cvt.u64" } else { "mov" },
-                        match global_axis {
-                            0 => "x",
-                            1 => "y",
-                            2 => "z",
-                            _ => {
-                                return Err(BackendError {
-                                    status: ErrorStatus::KernelCompilation,
-                                    context: "PTX: too many global loops (max 3)".into(),
-                                });
-                            }
-                        }
+                        ["x", "y", "z"][axis as usize],
                     );
-                    global_axis += 1;
                 }
-                Op::LocalIndex { .. } => {
+                Op::LocalIndex { axis, .. } => {
                     let reg = comp.new_var(op_id, IDX_T, rcs[&op_id]);
                     _ = writeln!(
                         comp.body,
                         "{}{}.u32 %r{reg}, %tid.{};",
                         comp.indent,
                         if IDX_T == DType::U64 { "cvt.u64" } else { "mov" },
-                        match local_axis {
-                            0 => "x",
-                            1 => "y",
-                            2 => "z",
-                            _ => {
-                                return Err(BackendError {
-                                    status: ErrorStatus::KernelCompilation,
-                                    context: "PTX: too many local loops (max 3)".into(),
-                                });
-                            }
-                        }
+                        ["x", "y", "z"][axis as usize],
                     );
-                    local_axis += 1;
                 }
-                Op::Const(constant) => {
+                Op::Const(ref constant) => {
                     let reg = comp.new_var(op_id, constant.dtype(), u32::MAX);
                     _ = writeln!(comp.body, "{}mov.{} %r{reg}, {};", comp.indent, constant.dtype().ptx(), constant.ptx());
                 }
                 Op::Load { src, index, .. } => {
                     let dtype = dtypes[&src].0;
-                    match comp.get_scope(*src) {
+                    match comp.get_scope(src) {
                         Scope::Global => {
                             let byte_shift = (dtype.bit_size() / 8).ilog2();
-                            let idx = comp.get_var(*index);
+                            let idx = comp.get_var(index);
                             let offset = comp.new_reg(DType::U64, 1);
                             let reg = comp.new_var(op_id, dtype, rcs[&op_id]);
                             if IDX_T == DType::U64 {
@@ -321,22 +285,22 @@ impl Kernel {
                         }
                         Scope::Local => todo!(),
                         Scope::Register => {
-                            let idx = comp.get_var(*index);
+                            let idx = comp.get_var(index);
                             let reg = comp.new_var(op_id, dtype, rcs[&op_id]);
                             _ = writeln!(comp.body, "{}ld.local.{} %r{reg}, [%p{src} + %r{idx}];", comp.indent, dtype.ptx());
                         }
                     }
                 }
                 Op::Store { dst, x, index, .. } => {
-                    let dtype = dtypes[x].0;
+                    let dtype = dtypes[&x].0;
                     let byte_shift = (dtype.bit_size() / 8).ilog2();
                     let offset = comp.new_reg(DType::U64, 1);
-                    match comp.get_scope(*dst) {
+                    match comp.get_scope(dst) {
                         Scope::Global => {
                             if dtype == DType::Bool {
                                 let gstu = comp.new_reg(DType::U32, 1);
-                                let idx = comp.get_var(*index);
-                                let x = comp.get_var(*x);
+                                let idx = comp.get_var(index);
+                                let x = comp.get_var(x);
                                 _ = writeln!(comp.body, "{}selp.u32 %r{gstu}, 1, 0, %r{x};", comp.indent);
                                 if IDX_T == DType::U64 {
                                     if offset != idx {
@@ -349,8 +313,8 @@ impl Kernel {
                                 _ = writeln!(comp.body, "{}st.global.u8 [%address], %r{gstu};", comp.indent);
                                 comp.release_reg(gstu);
                             } else {
-                                let idx = comp.get_var(*index);
-                                let x = comp.get_var(*x);
+                                let idx = comp.get_var(index);
+                                let x = comp.get_var(x);
                                 if IDX_T == DType::U64 {
                                     if offset != idx {
                                         _ = writeln!(comp.body, "{}mov.u64 %r{offset}, %r{idx};", comp.indent);
@@ -365,8 +329,8 @@ impl Kernel {
                         }
                         Scope::Local => todo!(),
                         Scope::Register => {
-                            let idx = comp.get_var(*index);
-                            let x = comp.get_var(*x);
+                            let idx = comp.get_var(index);
+                            let x = comp.get_var(x);
                             _ = writeln!(comp.body, "{}st.local.{} [%p{dst} + %r{idx}], %r{x};", comp.indent, dtype.ptx());
                         }
                     }
@@ -374,9 +338,9 @@ impl Kernel {
                 }
                 Op::Cast { x, dtype } => {
                     let xdtype = dtypes[&x].0;
-                    let x = comp.get_var(*x);
-                    let reg = comp.new_var(op_id, *dtype, rcs[&op_id]);
-                    match (*dtype, xdtype) {
+                    let x = comp.get_var(x);
+                    let reg = comp.new_var(op_id, dtype, rcs[&op_id]);
+                    match (dtype, xdtype) {
                         (DType::Bool, _) => {
                             if dtype.is_float() {
                                 _ = writeln!(comp.body, "{}setp.ne.{} %r{reg}, %r{x}, 0.0;", comp.indent, xdtype.ptx());
@@ -385,9 +349,9 @@ impl Kernel {
                             }
                         }
                         (_, DType::Bool) => {
-                            if *dtype == DType::F64 {
+                            if dtype == DType::F64 {
                                 _ = writeln!(comp.body, "{}selp.{} %r{reg}, 1.0, 0.0, %r{x};", comp.indent, dtype.ptx());
-                            } else if *dtype == DType::F32 {
+                            } else if dtype == DType::F32 {
                                 let a = comp.new_reg(DType::F32, 0);
                                 let b = comp.new_reg(DType::F32, 0);
                                 _ = writeln!(comp.body, "{}selp.{} %r{reg}, %r{a}, %r{b}, %r{x};", comp.indent, dtype.ptx());
@@ -405,28 +369,28 @@ impl Kernel {
                 }
                 Op::Unary { x, uop } => {
                     let dtype = dtypes[&x].0;
-                    let x = comp.get_var(*x);
+                    let x = comp.get_var(x);
                     let reg = comp.new_var(op_id, dtype, rcs[&op_id]);
-                    _ = writeln!(comp.body, "{}{}.{} %r{reg}, %r{x};", comp.indent, comp.uop_to_ptx(*uop)?, dtype.ptx());
+                    _ = writeln!(comp.body, "{}{}.{} %r{reg}, %r{x};", comp.indent, comp.uop_to_ptx(uop)?, dtype.ptx());
                 }
                 Op::Binary { x, y, bop } => {
                     let dtype = dtypes[&op_id].0;
-                    let xr = comp.get_var(*x);
-                    let yr = comp.get_var(*y);
+                    let xr = comp.get_var(x);
+                    let yr = comp.get_var(y);
                     let reg = comp.new_var(op_id, dtype, rcs[&op_id]);
                     _ = writeln!(
                         comp.body,
                         "{}{}.{} %r{reg}, %r{xr}, %r{yr};",
                         comp.indent,
-                        comp.bop_to_ptx(*bop, dtype),
-                        dtypes[x].0.ptx(),
+                        comp.bop_to_ptx(bop, dtype),
+                        dtypes[&x].0.ptx(),
                     );
                 }
                 Op::Mad { x, y, z, .. } => {
                     let dtype = dtypes[&op_id].0;
-                    let xr = comp.get_var(*x);
-                    let yr = comp.get_var(*y);
-                    let zr = comp.get_var(*z);
+                    let xr = comp.get_var(x);
+                    let yr = comp.get_var(y);
+                    let zr = comp.get_var(z);
                     let reg = comp.new_var(op_id, dtype, rcs[&op_id]);
                     let mul = comp.new_reg(dtype, 1);
                     _ = writeln!(
@@ -446,7 +410,7 @@ impl Kernel {
                     comp.release_reg(mul);
                 }
                 Op::Loop { len } => {
-                    let dim = self.loop_len_dim(*len);
+                    let dim = self.loop_len_dim(len);
                     let loop_idx = comp.new_var(op_id, IDX_T, rcs[&op_id]);
                     let loop_pred = comp.new_reg(DType::Bool, 2);
                     comp.loops.push((dim, loop_pred, loop_idx));
@@ -498,10 +462,8 @@ impl Kernel {
 
         let mut op_id = self.head;
         while !op_id.is_null() {
-            if let Op::Define { scope, .. } = self.at(op_id) {
-                if *scope == Scope::Global {
-                    _ = writeln!(comp.header, "{}.reg .s64 %p{op_id};", comp.indent);
-                }
+            if matches!(self.ops[op_id].op, Op::Define { scope: Scope::Global, .. }) {
+                _ = writeln!(comp.header, "{}.reg .s64 %p{op_id};", comp.indent);
             }
             op_id = self.next_op(op_id);
         }
