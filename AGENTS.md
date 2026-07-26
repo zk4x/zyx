@@ -23,13 +23,13 @@ cargo build -p zyx --release
 cargo fmt
 
 # Test (always run from zyx/zyx subdirectory!)
-cd zyx && AGENT=1 cargo test
-cd zyx && AGENT=1 cargo test relu_1          # single test
-cd zyx && AGENT=1 cargo test --test 1_unary  # test file
-cd zyx && AGENT=1 cargo test -- --nocapture  # with output
+cd zyx/zyx && AGENT=1 cargo test
+cd zyx/zyx && AGENT=1 cargo test relu_1          # single test
+cd zyx/zyx && AGENT=1 cargo test --test 1_unary  # test file
+cd zyx/zyx && AGENT=1 cargo test -- --nocapture  # with output
 
 # Doc tests
-cd zyx && AGENT=1 cargo test --doc
+cd zyx/zyx && AGENT=1 cargo test --doc
 ```
 
 ## Python
@@ -50,7 +50,8 @@ cd zyx && AGENT=1 cargo test --doc
 ├── zyx-optim/     # Optimization algorithms
 ├── zyx-onnx/      # ONNX support
 ├── zyx-fuzzy/     # Fuzzy logic
-└── zyx-examples/  # Example code
+├── zyx-book/      # Book documentation
+├── zyx-bench/     # Benchmarks
 ```
 
 ## The Graph
@@ -60,9 +61,10 @@ Zyx is ALL about the graph. The graph is the core.
 - **Lazy**: Puts ops into graph, no calculations until `Tensor::realize`
 - **Dynamic**: Graph dynamically grows and shrinks at runtime
 - **One graph for everything**: Autograd uses the same graph
+- **Lazy**: Puts ops into graph, no calculations until `Tensor::realize`
 - Other libraries use 2 graphs (one for laziness, one for autograd), zyx uses ONE
-- **Super lean**: Tensor handles are `u32` (4 bytes). 10k tensor handles = ~40kB.
-- **Few ops**: Graph has only ~10 ops (Const, Leaf, Expand, Permute, Reshape, Pad, Reduce, Cast, Unary, Binary)
+- **Super lean**: TensorId is `u32` (4 bytes). 10k tensor handles = ~40kB.
+- **Few ops**: Graph has ~10 high-level categories (Unary, Binary, Movement, Reduction, etc.), with UOp (13 variants), BOp (19 variants), and MoveOp (4 variants) for detailed operations.
 
 ## Core Principles
 
@@ -240,45 +242,20 @@ The autotune system explores optimization sequences by:
 5. Repeat by combining with existing optimization sequences
 6. Select the best configuration based on actual timing
 
-### Debugging with apply_selected_optimizations
-
-To debug optimization issues, use the `apply_selected_optimizations` function which launches a kernel:
-
-```rust
-// In autotune.rs, find this line and change to true:
-if true {  // was: if false
-    return self.apply_selected_optimizations(...)
-}
-```
-
-Then customize the optimizations applied in that function:
-
-```rust
-kernel.fuse_mad();
-kernel.unfuse_mad();
-
-// Apply in specific order to test
-let (split_opt, n_split) = kernel.opt_split_loop();
-if n_split > 0 {
-    split_opt.apply(&mut kernel, 0);
-}
-// ... more optimizations
-kernel.run_always_on_optimizations();
-```
-
 ### Available Optimizations
 
-The autotune system uses 7 optimizations (defined in `zyx/src/kernel/autotune.rs`):
+The autotune system uses 8 optimizations (defined in `zyx/src/kernel/autotune.rs`):
 
 ```rust
-const AVAILABLE_OPTIMIZATIONS: [OptConfigFn; 7] = [
-    Kernel::opt_reassociate_commutative,  // reassociate + group operations
-    Kernel::opt_split_global_to_local,   // parallelize reduce loops
-    Kernel::opt_upcast,                   // upcast for vectorization
-    Kernel::opt_register_tiling,         // tile for registers
-    Kernel::opt_tiled_reduce,             // tiled parallel reduction
-    Kernel::opt_split_loop,              // split large loops
-    Kernel::opt_licm,                     // loop-invariant code motion
+const AVAILABLE_OPTIMIZATIONS: [OptConfigFn; 8] = [
+    |k, _| Kernel::opt_reassociate_commutative(k),
+    Kernel::opt_split_global_to_local,
+    |k, _| Kernel::opt_thread_coarse(k),
+    |k, _| Kernel::opt_register_blocking(k),
+    Kernel::opt_local_reduce,
+    |k, _| Kernel::opt_split_loop(k),
+    Kernel::opt_vectorize,
+    |k, _| Kernel::opt_merge_nested_loops(k),
 ];
 ```
 
@@ -376,10 +353,10 @@ pub fn run_always_on_optimizations(&mut self) {
     self.constant_folding();
     self.move_constants_to_beginning();
     self.loop_invariant_code_motion();
-    self.common_subexpression_elimination();
     self.fold_accs();
     self.delete_empty_loops();
     self.dead_code_elimination();
+    // Note: common_subexpression_elimination runs after the above, not in this list
 }
 ```
 
