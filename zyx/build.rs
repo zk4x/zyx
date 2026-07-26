@@ -57,8 +57,8 @@ fn main() {
     cmd.arg(format!("-DKERNEL_DIR=\"{}\"", kernel_dir.display()));
 
     // Source file
-    let src_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src").join("backend").join("tenstorrent");
-    cmd.arg(src_dir.join("runtime.cpp"));
+    let src_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src").join("backend");
+    cmd.arg(src_dir.join("tt_runtime.cpp"));
 
     // Link flags
     cmd.arg(format!("-L{}", lib_dir.display()));
