@@ -149,7 +149,7 @@ fn grad_pow_2() -> Result<(), ZyxError> {
 
 #[test]
 fn grad_pow_3() -> Result<(), ZyxError> {
-    if !Tensor::dtype_capability(DType::F64).pow() {
+    if !Tensor::dtype_capability(DType::F64).log2() {
         return Ok(());
     }
     // Use non-round numbers to expose log2 -> ln approximation errors

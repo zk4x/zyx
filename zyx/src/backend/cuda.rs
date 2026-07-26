@@ -677,6 +677,8 @@ pub(super) fn initialize_device(
                 }
                 capability[DType::F16 as usize] =
                     capability[DType::F16 as usize].exclude(DTypeCapability::LOG2 | DTypeCapability::SIN | DTypeCapability::SQRT);
+                capability[DType::F64 as usize] =
+                    capability[DType::F64 as usize].exclude(DTypeCapability::LOG2 | DTypeCapability::SIN | DTypeCapability::SQRT);
                 capability
             },
             has_native_exp2: true,
