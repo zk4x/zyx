@@ -637,7 +637,13 @@ pub(super) fn initialize_device(
                 preferred_vector_size: 16,
                 tensor_cores: major >= 7,
                 warp_size: 32,
-                supported_dtype_ops: [OpCapability::all(); DType::N_DTYPES],
+                supported_dtype_ops: {
+                    let mut ops = [OpCapability::all(); DType::N_DTYPES];
+                    if major < 8 {
+                        ops[DType::BF16 as usize] = OpCapability::none();
+                    }
+                    ops
+                },
                 has_native_exp2: true,
                 supported_vec_lens: vec![2, 4],
             },
@@ -670,7 +676,13 @@ pub(super) fn initialize_device(
             preferred_vector_size: 16,
             tensor_cores: major >= 7,
             warp_size: 32,
-            supported_dtype_ops: [OpCapability::all(); DType::N_DTYPES],
+            supported_dtype_ops: {
+                let mut ops = [OpCapability::all(); DType::N_DTYPES];
+                if major < 8 {
+                    ops[DType::BF16 as usize] = OpCapability::none();
+                }
+                ops
+            },
             has_native_exp2: true,
             supported_vec_lens: vec![2, 4],
         };

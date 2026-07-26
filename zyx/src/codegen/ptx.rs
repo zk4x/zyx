@@ -17,7 +17,7 @@ use std::fmt::Write;
 impl DType {
     fn ptx(&self) -> &'static str {
         match self {
-            Self::BF16 => todo!("BF16 PTX codegen is WIP"),
+            Self::BF16 => "bf16",
             Self::F16 => "f16",
             Self::F32 => "f32",
             Self::F64 => "f64",
