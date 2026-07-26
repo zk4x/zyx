@@ -61,7 +61,7 @@ impl Constant {
 
 struct Compiler {
     var_map: Map<OpId, u16>,
-    loops: Vec<(Dim, u16, u16)>,
+    loops: Vec<(u16, u16, u16)>,
     header: String,
     body: String,
     indent: String,
@@ -410,10 +410,10 @@ impl Kernel {
                     comp.release_reg(mul);
                 }
                 Op::Loop { len } => {
-                    let dim = self.loop_len_dim(len);
+                    let len = comp.get_var(len);
                     let loop_idx = comp.new_var(op_id, IDX_T, rcs[&op_id]);
                     let loop_pred = comp.new_reg(DType::Bool, 2);
-                    comp.loops.push((dim, loop_pred, loop_idx));
+                    comp.loops.push((len, loop_pred, loop_idx));
                     _ = writeln!(comp.body, "{}mov.{} %r{loop_idx}, 0;", comp.indent, IDX_T.ptx());
                     _ = writeln!(comp.body, "{}LOOP_{label}:", comp.indent);
                     loop_id_label_map.insert(loop_id, label);
@@ -423,14 +423,13 @@ impl Kernel {
                 }
                 Op::EndLoop => {
                     loop_id -= 1;
-                    if let Some((dim, loop_pred, loop_idx)) = comp.loops.pop() {
+                    if let Some((len, loop_pred, loop_idx)) = comp.loops.pop() {
                         _ = writeln!(comp.body, "{}add.{} %r{loop_idx}, %r{loop_idx}, 1;", comp.indent, IDX_T.ptx());
                         writeln!(
                             comp.body,
-                            "{}setp.lt.{} %r{loop_pred}, %r{loop_idx}, {};",
+                            "{}setp.lt.{} %r{loop_pred}, %r{loop_idx}, %r{len};",
                             comp.indent,
                             IDX_T.ptx(),
-                            Constant::idx(dim as u64).ptx()
                         )
                         .unwrap();
                         _ = writeln!(comp.body, "{}@%r{loop_pred} bra LOOP_{};", comp.indent, loop_id_label_map[&loop_id]);
