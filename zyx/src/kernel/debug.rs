@@ -257,6 +257,7 @@ impl Kernel {
                     has_loops = true;
                     let dtype = dtypes[&len];
                     dtypes.insert(op_id, dtype);
+                    let len = id_map.get(&len).copied().unwrap_or(OpId::NULL);
                     if let Some((l, u)) = bounds.get(&op_id) {
                         println!("{indent}{bold}for{reset} r{out_id} in 0..r{len} {{    // {l}..={}", u);
                     } else {

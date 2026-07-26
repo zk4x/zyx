@@ -78,11 +78,13 @@ impl Constant {
 struct Compiler {
     var_map: Map<OpId, u16>,
     loops: Vec<(u16, u16, u16)>,
+    if_labels: Vec<u16>,
+    scopes: Map<OpId, Scope>,
     header: String,
     body: String,
     indent: String,
-    registers: Vec<(DType, u32)>,
-    scopes: Map<OpId, Scope>,
+    registers: Vec<(DType, u32, u8)>,
+    loop_level: u8,
 }
 
 impl Compiler {
@@ -116,8 +118,8 @@ impl Compiler {
             BOp::BitXor => "xor",
             BOp::BitOr => "or",
             BOp::BitAnd => "and",
-            BOp::BitShiftLeft => "shl.b32",
-            BOp::BitShiftRight => "shr.b32",
+            BOp::BitShiftLeft => "shl",
+            BOp::BitShiftRight => "shr",
             BOp::NotEq => "setp.ne",
             BOp::Eq => "setp.eq",
         }
@@ -191,13 +193,14 @@ impl Compiler {
 
     fn new_reg(&mut self, dtype: DType, rc: u32) -> u16 {
         for (i, reg) in self.registers.iter_mut().enumerate() {
-            if reg.1 == 0 && reg.0 == dtype {
+            if reg.1 == 0 && reg.0 == dtype && self.loop_level <= reg.2 {
                 reg.1 = rc;
+                reg.2 = self.loop_level;
                 return i as u16;
             }
         }
         let i = self.registers.len();
-        self.registers.push((dtype, rc));
+        self.registers.push((dtype, rc, self.loop_level));
         i as u16
     }
 
@@ -209,7 +212,9 @@ impl Compiler {
 
     fn get_var(&mut self, x: OpId) -> u16 {
         let r = self.var_map[&x];
-        self.registers[r as usize].1 -= 1;
+        if self.loop_level == self.registers[r as usize].2 {
+            self.registers[r as usize].1 -= 1;
+        }
         r
     }
 
@@ -229,10 +234,12 @@ impl Kernel {
         let mut comp = Compiler {
             var_map: Map::default(),
             loops: Vec::new(),
+            if_labels: Vec::new(),
             header: String::new(),
             body: String::new(),
             indent: "  ".to_string(),
             registers: Vec::new(),
+            loop_level: 0,
             scopes: Map::default(),
         };
 
@@ -283,7 +290,15 @@ impl Kernel {
                         Scope::Global => {
                             _ = writeln!(comp.body, "{}ld.param.u64 %p{op_id}, [g{op_id}];", comp.indent);
                         }
-                        Scope::Local => todo!(),
+                        Scope::Local => {
+                            _ = writeln!(
+                                comp.body,
+                                "{}.shared .align {} .{} __ld{op_id}[{len}];",
+                                comp.indent,
+                                dtype.bit_size() / 8,
+                                dtype.ptx()
+                            );
+                        }
                         Scope::Register => {
                             _ = writeln!(
                                 comp.body,
@@ -346,7 +361,22 @@ impl Kernel {
                                 _ = writeln!(comp.body, "{}ld.global.{} %r{reg}, [%address];", comp.indent, dtype.mem_ptx());
                             }
                         }
-                        Scope::Local => todo!(),
+                        Scope::Local => {
+                            let idx = comp.get_var(index);
+                            let reg = comp.new_var(op_id, dtype, rcs[&op_id]);
+                            let byte_shift = (dtype.bit_size() / 8).ilog2();
+                            _ = writeln!(comp.body, "{}mov.u64 %address, __ld{src};", comp.indent);
+                            let t = comp.new_reg(DType::U64, 1);
+                            if IDX_T == DType::U64 {
+                                _ = writeln!(comp.body, "{}shl.b64 %r{t}, %r{idx}, {byte_shift};", comp.indent);
+                            } else {
+                                _ = writeln!(comp.body, "{}cvt.u64.u32 %r{t}, %r{idx};", comp.indent);
+                                _ = writeln!(comp.body, "{}shl.b64 %r{t}, %r{t}, {byte_shift};", comp.indent);
+                            }
+                            _ = writeln!(comp.body, "{}add.u64 %address, %address, %r{t};", comp.indent);
+                            comp.release_reg(t);
+                            _ = writeln!(comp.body, "{}ld.shared.{} %r{reg}, [%address];", comp.indent, dtype.mem_ptx());
+                        }
                         Scope::Register => {
                             let idx = comp.get_var(index);
                             let reg = comp.new_var(op_id, dtype, rcs[&op_id]);
@@ -408,7 +438,22 @@ impl Kernel {
                                 }
                             }
                         }
-                        Scope::Local => todo!(),
+                        Scope::Local => {
+                            let idx = comp.get_var(index);
+                            let x = comp.get_var(x);
+                            let byte_shift = (dtype.bit_size() / 8).ilog2();
+                            _ = writeln!(comp.body, "{}mov.u64 %address, __ld{dst};", comp.indent);
+                            let t = comp.new_reg(DType::U64, 1);
+                            if IDX_T == DType::U64 {
+                                _ = writeln!(comp.body, "{}shl.b64 %r{t}, %r{idx}, {byte_shift};", comp.indent);
+                            } else {
+                                _ = writeln!(comp.body, "{}cvt.u64.u32 %r{t}, %r{idx};", comp.indent);
+                                _ = writeln!(comp.body, "{}shl.b64 %r{t}, %r{t}, {byte_shift};", comp.indent);
+                            }
+                            _ = writeln!(comp.body, "{}add.u64 %address, %address, %r{t};", comp.indent);
+                            comp.release_reg(t);
+                            _ = writeln!(comp.body, "{}st.shared.{} [%address], %r{x};", comp.indent, dtype.mem_ptx());
+                        }
                         Scope::Register => {
                             let idx = comp.get_var(index);
                             let x = comp.get_var(x);
@@ -501,12 +546,21 @@ impl Kernel {
                     let xr = comp.get_var(x);
                     let yr = comp.get_var(y);
                     let reg = comp.new_var(op_id, dtype, rcs[&op_id]);
+                    let type_ext = if matches!(bop, BOp::BitShiftLeft | BOp::BitShiftRight) {
+                        match dtypes[&x].0.bit_size() {
+                            32 => "b32",
+                            64 => "b64",
+                            _ => return Err(BackendError { status: ErrorStatus::KernelCompilation, context: format!("PTX: unsupported shift bit size {}", dtypes[&x].0.bit_size()).into() }),
+                        }
+                    } else {
+                        dtypes[&x].0.ptx()
+                    };
                     _ = writeln!(
                         comp.body,
                         "{}{}.{} %r{reg}, %r{xr}, %r{yr};",
                         comp.indent,
                         comp.bop_to_ptx(bop, dtype),
-                        dtypes[&x].0.ptx(),
+                        type_ext,
                     );
                 }
                 Op::Mad { x, y, z, .. } => {
@@ -533,8 +587,9 @@ impl Kernel {
                     comp.release_reg(mul);
                 }
                 Op::Loop { len } => {
+                    comp.loop_level += 1;
                     let len = comp.get_var(len);
-                    let loop_idx = comp.new_var(op_id, IDX_T, rcs[&op_id]);
+                    let loop_idx = comp.new_var(op_id, IDX_T, rcs.get(&op_id).copied().unwrap_or(0) + 1);
                     let loop_pred = comp.new_reg(DType::Bool, 2);
                     comp.loops.push((len, loop_pred, loop_idx));
                     _ = writeln!(comp.body, "{}mov.{} %r{loop_idx}, 0;", comp.indent, IDX_T.ptx());
@@ -554,6 +609,25 @@ impl Kernel {
                         comp.indent.pop();
                         comp.indent.pop();
                     }
+                    comp.loop_level -= 1;
+                }
+                Op::If { condition } => {
+                    let cond = comp.get_var(condition);
+                    let endif_label = label as u16;
+                    label += 1;
+                    comp.if_labels.push(endif_label);
+                    _ = writeln!(comp.body, "{}@!%r{cond} bra ENDIF_{endif_label};", comp.indent);
+                    comp.indent += "  ";
+                }
+                Op::EndIf => {
+                    comp.indent.pop();
+                    comp.indent.pop();
+                    if let Some(endif_label) = comp.if_labels.pop() {
+                        _ = writeln!(comp.body, "{}ENDIF_{endif_label}:", comp.indent);
+                    }
+                }
+                Op::Barrier => {
+                    _ = writeln!(comp.body, "{}bar.sync 0;", comp.indent);
                 }
                 Op::ConstView { .. }
                 | Op::LoadView { .. }
@@ -562,10 +636,7 @@ impl Kernel {
                 | Op::Reduce { .. }
                 | Op::Wmma { .. }
                 | Op::Vectorize { .. }
-                | Op::Devectorize { .. }
-                | Op::If { .. }
-                | Op::EndIf
-                | Op::Barrier { .. } => {
+                | Op::Devectorize { .. } => {
                     return Err(BackendError {
                         status: ErrorStatus::KernelCompilation,
                         context: "PTX: unexpected kernel op (should be unfolded)".into(),
@@ -586,7 +657,7 @@ impl Kernel {
         }
 
         _ = writeln!(comp.header, "{}.reg .u64 %address;", comp.indent);
-        for (reg_id, (dtype, _)) in comp.registers.iter().enumerate() {
+        for (reg_id, (dtype, _, _)) in comp.registers.iter().enumerate() {
             _ = writeln!(comp.header, "{}.reg .{} %r{reg_id};", comp.indent, dtype.reg_ptx());
         }
 

@@ -3356,19 +3356,22 @@ impl<T: Scalar, const D0: usize, const D1: usize, const D2: usize, const D3: usi
 
 impl PartialEq<f32> for Tensor {
     fn eq(&self, other: &f32) -> bool {
-        self.clone().try_into().is_ok_and(|data| Scalar::is_equal(data, *other))
+        let data: f32 = self.clone().try_into().unwrap();
+        Scalar::is_equal(data, *other)
     }
 }
 
 impl PartialEq<f64> for Tensor {
     fn eq(&self, other: &f64) -> bool {
-        self.clone().try_into().is_ok_and(|data| Scalar::is_equal(data, *other))
+        let data: f64 = self.clone().try_into().unwrap();
+        Scalar::is_equal(data, *other)
     }
 }
 
 impl PartialEq<i32> for Tensor {
     fn eq(&self, other: &i32) -> bool {
-        self.clone().try_into().is_ok_and(|data| Scalar::is_equal(data, *other))
+        let data: i32 = self.clone().try_into().unwrap();
+        Scalar::is_equal(data, *other)
     }
 }
 
@@ -3377,16 +3380,19 @@ impl<T: Scalar> PartialEq<Vec<T>> for Tensor {
         if self.shape() != [other.len() as Dim] {
             return false;
         }
-        if let Ok(data) = self.clone().try_into() {
-            let data: Vec<T> = data;
-            for (x, y) in data.into_iter().zip(other) {
-                if !Scalar::is_equal(x, *y) {
-                    return false;
+        match self.clone().try_into() {
+            Ok(data) => {
+                let data: Vec<T> = data;
+                for (x, y) in data.into_iter().zip(other) {
+                    if !Scalar::is_equal(x, *y) {
+                        return false;
+                    }
                 }
+                true
             }
-            true
-        } else {
-            false
+            Err(e) => {
+                panic!("{e}");
+            }
         }
     }
 }
@@ -3396,16 +3402,19 @@ impl<T: Scalar> PartialEq<Vec<Vec<T>>> for Tensor {
         if self.shape() != [other.len() as Dim, other[0].len() as Dim] {
             return false;
         }
-        if let Ok(data) = self.clone().try_into() {
-            let data: Vec<T> = data;
-            for (x, y) in data.into_iter().zip(other.iter().flatten()) {
-                if !Scalar::is_equal(x, *y) {
-                    return false;
+        match self.clone().try_into() {
+            Ok(data) => {
+                let data: Vec<T> = data;
+                for (x, y) in data.into_iter().zip(other.iter().flatten()) {
+                    if !Scalar::is_equal(x, *y) {
+                        return false;
+                    }
                 }
+                true
             }
-            true
-        } else {
-            false
+            Err(e) => {
+                panic!("{e}");
+            }
         }
     }
 }
@@ -3415,16 +3424,19 @@ impl<T: Scalar> PartialEq<Vec<Vec<Vec<T>>>> for Tensor {
         if self.shape() != [other.len() as Dim, other[0].len() as Dim, other[0][0].len() as Dim] {
             return false;
         }
-        if let Ok(data) = self.clone().try_into() {
-            let data: Vec<T> = data;
-            for (x, y) in data.into_iter().zip(other.iter().flatten().flatten()) {
-                if !Scalar::is_equal(x, *y) {
-                    return false;
+        match self.clone().try_into() {
+            Ok(data) => {
+                let data: Vec<T> = data;
+                for (x, y) in data.into_iter().zip(other.iter().flatten().flatten()) {
+                    if !Scalar::is_equal(x, *y) {
+                        return false;
+                    }
                 }
+                true
             }
-            true
-        } else {
-            false
+            Err(e) => {
+                panic!("{e}");
+            }
         }
     }
 }
@@ -3434,16 +3446,19 @@ impl<T: Scalar, const D0: usize> PartialEq<[T; D0]> for Tensor {
         if self.shape() != [D0 as Dim] {
             return false;
         }
-        if let Ok(data) = self.clone().try_into() {
-            let data: [T; D0] = data;
-            for (x, y) in data.into_iter().zip(other) {
-                if !Scalar::is_equal(x, *y) {
-                    return false;
+        match self.clone().try_into() {
+            Ok(data) => {
+                let data: [T; D0] = data;
+                for (x, y) in data.into_iter().zip(other) {
+                    if !Scalar::is_equal(x, *y) {
+                        return false;
+                    }
                 }
+                true
             }
-            true
-        } else {
-            false
+            Err(e) => {
+                panic!("{e}");
+            }
         }
     }
 }
@@ -3453,16 +3468,19 @@ impl<T: Scalar, const D0: usize, const D1: usize> PartialEq<[[T; D1]; D0]> for T
         if self.shape() != [D0 as Dim, D1 as Dim] {
             return false;
         }
-        if let Ok(data) = self.clone().try_into() {
-            let data: [[T; D1]; D0] = data;
-            for (x, y) in data.into_iter().flatten().zip(other.iter().flatten()) {
-                if !Scalar::is_equal(x, *y) {
-                    return false;
+        match self.clone().try_into() {
+            Ok(data) => {
+                let data: [[T; D1]; D0] = data;
+                for (x, y) in data.into_iter().flatten().zip(other.iter().flatten()) {
+                    if !Scalar::is_equal(x, *y) {
+                        return false;
+                    }
                 }
+                true
             }
-            true
-        } else {
-            false
+            Err(e) => {
+                panic!("{e}");
+            }
         }
     }
 }
@@ -3472,16 +3490,19 @@ impl<T: Scalar, const D0: usize, const D1: usize, const D2: usize> PartialEq<[[[
         if self.shape() != [D0 as Dim, D1 as Dim, D2 as Dim] {
             return false;
         }
-        if let Ok(data) = self.clone().try_into() {
-            let data: [[[T; D2]; D1]; D0] = data;
-            for (x, y) in data.into_iter().flatten().flatten().zip(other.iter().flatten().flatten()) {
-                if !Scalar::is_equal(x, *y) {
-                    return false;
+        match self.clone().try_into() {
+            Ok(data) => {
+                let data: [[[T; D2]; D1]; D0] = data;
+                for (x, y) in data.into_iter().flatten().flatten().zip(other.iter().flatten().flatten()) {
+                    if !Scalar::is_equal(x, *y) {
+                        return false;
+                    }
                 }
+                true
             }
-            true
-        } else {
-            false
+            Err(e) => {
+                panic!("{e}");
+            }
         }
     }
 }
@@ -3493,16 +3514,19 @@ impl<T: Scalar, const D0: usize, const D1: usize, const D2: usize, const D3: usi
         if self.shape() != [D0 as Dim, D1 as Dim, D2 as Dim, D3 as Dim] {
             return false;
         }
-        if let Ok(data) = self.clone().try_into() {
-            let data: [[[[T; D3]; D2]; D1]; D0] = data;
-            for (x, y) in data.into_iter().flatten().flatten().flatten().zip(other.iter().flatten().flatten().flatten()) {
-                if !Scalar::is_equal(x, *y) {
-                    return false;
+        match self.clone().try_into() {
+            Ok(data) => {
+                let data: [[[[T; D3]; D2]; D1]; D0] = data;
+                for (x, y) in data.into_iter().flatten().flatten().flatten().zip(other.iter().flatten().flatten().flatten()) {
+                    if !Scalar::is_equal(x, *y) {
+                        return false;
+                    }
                 }
+                true
             }
-            true
-        } else {
-            false
+            Err(e) => {
+                panic!("{e}");
+            }
         }
     }
 }
@@ -3514,18 +3538,26 @@ impl<T: Scalar, const D0: usize, const D1: usize, const D2: usize, const D3: usi
         if self.shape() != [D0 as Dim, D1 as Dim, D2 as Dim, D3 as Dim, D4 as Dim] {
             return false;
         }
-        if let Ok(data) = self.clone().try_into() {
-            let data: [[[[[T; D4]; D3]; D2]; D1]; D0] = data;
-            for (x, y) in
-                data.into_iter().flatten().flatten().flatten().flatten().zip(other.iter().flatten().flatten().flatten().flatten())
-            {
-                if !Scalar::is_equal(x, *y) {
-                    return false;
+        match self.clone().try_into() {
+            Ok(data) => {
+                let data: [[[[[T; D4]; D3]; D2]; D1]; D0] = data;
+                for (x, y) in data
+                    .into_iter()
+                    .flatten()
+                    .flatten()
+                    .flatten()
+                    .flatten()
+                    .zip(other.iter().flatten().flatten().flatten().flatten())
+                {
+                    if !Scalar::is_equal(x, *y) {
+                        return false;
+                    }
                 }
+                true
             }
-            true
-        } else {
-            false
+            Err(e) => {
+                panic!("{e}");
+            }
         }
     }
 }
