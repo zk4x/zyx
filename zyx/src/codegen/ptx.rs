@@ -32,6 +32,22 @@ impl DType {
             Self::U64 => "u64",
         }
     }
+
+    fn mem_ptx(&self) -> &'static str {
+        match self {
+            Self::BF16 | Self::F16 => "b16",
+            Self::Bool => "u8",
+            _ => self.ptx(),
+        }
+    }
+
+    fn reg_ptx(&self) -> &'static str {
+        match self {
+            Self::BF16 | Self::F16 => "b16",
+            Self::Bool => "pred",
+            _ => self.ptx(),
+        }
+    }
 }
 
 impl Constant {
@@ -75,17 +91,19 @@ impl Compiler {
             BOp::Add => "add",
             BOp::Sub => "sub",
             BOp::Mul => {
-                if matches!(dtype, DType::F32 | DType::F64) {
+                if dtype.is_float() {
                     "mul"
                 } else {
                     "mul.lo"
                 }
             }
             BOp::Div => {
-                if matches!(dtype, DType::F32 | DType::F64) {
+                if dtype == DType::F32 {
                     "div.approx"
-                } else {
+                } else if dtype == DType::F64 {
                     "div"
+                } else {
+                    "div.full"
                 }
             }
             BOp::Pow => todo!(),
@@ -105,7 +123,7 @@ impl Compiler {
         }
     }
 
-    fn uop_to_ptx(&self, uop: UOp) -> Result<&'static str, BackendError> {
+    fn uop_to_ptx(&self, uop: UOp, dtype: DType) -> Result<&'static str, BackendError> {
         match uop {
             UOp::Neg => Ok("neg"),
             UOp::BitNot => Ok("not"),
@@ -113,14 +131,52 @@ impl Compiler {
                 status: ErrorStatus::KernelCompilation,
                 context: "PTX: UOp::Exp should be converted to Exp2 + mul by ln2(e) before reaching PTX backend".into(),
             }),
-            UOp::Exp2 => Ok("ex2.approx"),
-            UOp::Log2 => Ok("lg2.approx"),
+            UOp::Exp2 => match dtype {
+                DType::F32 => Ok("ex2.approx"),
+                DType::F16 => Ok("ex2.approx"),
+                _ => Err(BackendError {
+                    status: ErrorStatus::KernelCompilation,
+                    context: format!("PTX: ex2.approx is only available for f32/f16, not {dtype:?}").into(),
+                }),
+            },
+            UOp::Log2 => match dtype {
+                DType::F32 => Ok("lg2.approx"),
+                _ => Err(BackendError {
+                    status: ErrorStatus::KernelCompilation,
+                    context: format!("PTX: lg2.approx is only available for f32, not {dtype:?}").into(),
+                }),
+            },
             UOp::Reciprocal => Ok("rcp.approx"),
-            UOp::Sqrt => Ok("sqrt.approx"),
-            UOp::Sin => Ok("sin.approx"),
-            UOp::Cos => Ok("cos.approx"),
-            UOp::Floor => Ok("floor.approx"),
-            UOp::Trunc => Ok("trunc.approx"),
+            UOp::Sqrt => match dtype {
+                DType::F32 => Ok("sqrt.approx"),
+                DType::F64 => Ok("sqrt"),
+                _ => Err(BackendError {
+                    status: ErrorStatus::KernelCompilation,
+                    context: format!("PTX: sqrt not available for {dtype:?}").into(),
+                }),
+            },
+            UOp::Sin => match dtype {
+                DType::F32 => Ok("sin.approx"),
+                _ => Err(BackendError {
+                    status: ErrorStatus::KernelCompilation,
+                    context: format!("PTX: sin.approx is only available for f32, not {dtype:?}").into(),
+                }),
+            },
+            UOp::Cos => match dtype {
+                DType::F32 => Ok("cos.approx"),
+                _ => Err(BackendError {
+                    status: ErrorStatus::KernelCompilation,
+                    context: format!("PTX: cos.approx is only available for f32, not {dtype:?}").into(),
+                }),
+            },
+            UOp::Floor => Err(BackendError {
+                status: ErrorStatus::KernelCompilation,
+                context: "PTX: UOp::Floor must use cvt.rmi, not a separate instruction".into(),
+            }),
+            UOp::Trunc => Err(BackendError {
+                status: ErrorStatus::KernelCompilation,
+                context: "PTX: UOp::Trunc must use cvt.rzi, not a separate instruction".into(),
+            }),
             UOp::Ln => Err(BackendError {
                 status: ErrorStatus::KernelCompilation,
                 context: "PTX: UOp::Ln should be converted to Log2 + mul by ln(2) before reaching PTX backend".into(),
@@ -231,7 +287,7 @@ impl Kernel {
                         Scope::Register => {
                             _ = writeln!(
                                 comp.body,
-                                "{}.local .align {} .{} %p{op_id}[{len}];",
+                                "{}.local .align {} .{} __ld{op_id}[{len}];",
                                 comp.indent,
                                 dtype.bit_size() / 8,
                                 dtype.ptx()
@@ -281,13 +337,31 @@ impl Kernel {
                             _ = writeln!(comp.body, "{}shl.b64 %r{offset}, %r{offset}, {byte_shift};", comp.indent);
                             _ = writeln!(comp.body, "{}add.u64 %address, %p{src}, %r{offset};", comp.indent);
                             comp.release_reg(offset);
-                            _ = writeln!(comp.body, "{}ld.global.{} %r{reg}, [%address];", comp.indent, dtype.ptx());
+                            if matches!(dtype, DType::F16 | DType::BF16) {
+                                let tmp = comp.new_reg(DType::U16, 1);
+                                _ = writeln!(comp.body, "{}ld.global.b16 %r{tmp}, [%address];", comp.indent);
+                                _ = writeln!(comp.body, "{}mov.b16 %r{reg}, %r{tmp};", comp.indent);
+                                comp.release_reg(tmp);
+                            } else {
+                                _ = writeln!(comp.body, "{}ld.global.{} %r{reg}, [%address];", comp.indent, dtype.mem_ptx());
+                            }
                         }
                         Scope::Local => todo!(),
                         Scope::Register => {
                             let idx = comp.get_var(index);
                             let reg = comp.new_var(op_id, dtype, rcs[&op_id]);
-                            _ = writeln!(comp.body, "{}ld.local.{} %r{reg}, [%p{src} + %r{idx}];", comp.indent, dtype.ptx());
+                            let byte_shift = (dtype.bit_size() / 8).ilog2();
+                            _ = writeln!(comp.body, "{}mov.u64 %address, __ld{src};", comp.indent);
+                            let t = comp.new_reg(DType::U64, 1);
+                            if IDX_T == DType::U64 {
+                                _ = writeln!(comp.body, "{}shl.b64 %r{t}, %r{idx}, {byte_shift};", comp.indent);
+                            } else {
+                                _ = writeln!(comp.body, "{}cvt.u64.u32 %r{t}, %r{idx};", comp.indent);
+                                _ = writeln!(comp.body, "{}shl.b64 %r{t}, %r{t}, {byte_shift};", comp.indent);
+                            }
+                            _ = writeln!(comp.body, "{}add.u64 %address, %address, %r{t};", comp.indent);
+                            comp.release_reg(t);
+                            _ = writeln!(comp.body, "{}ld.local.{} %r{reg}, [%address];", comp.indent, dtype.mem_ptx());
                         }
                     }
                 }
@@ -324,14 +398,32 @@ impl Kernel {
                                 }
                                 _ = writeln!(comp.body, "{}shl.b64 %r{offset}, %r{offset}, {byte_shift};", comp.indent);
                                 _ = writeln!(comp.body, "{}add.u64 %address, %p{dst}, %r{offset};", comp.indent);
-                                _ = writeln!(comp.body, "{}st.global.{} [%address], %r{x};", comp.indent, dtype.ptx());
+                                if matches!(dtype, DType::F16 | DType::BF16) {
+                                    let tmp = comp.new_reg(DType::U16, 1);
+                                    _ = writeln!(comp.body, "{}mov.b16 %r{tmp}, %r{x};", comp.indent);
+                                    _ = writeln!(comp.body, "{}st.global.b16 [%address], %r{tmp};", comp.indent);
+                                    comp.release_reg(tmp);
+                                } else {
+                                    _ = writeln!(comp.body, "{}st.global.{} [%address], %r{x};", comp.indent, dtype.mem_ptx());
+                                }
                             }
                         }
                         Scope::Local => todo!(),
                         Scope::Register => {
                             let idx = comp.get_var(index);
                             let x = comp.get_var(x);
-                            _ = writeln!(comp.body, "{}st.local.{} [%p{dst} + %r{idx}], %r{x};", comp.indent, dtype.ptx());
+                            let byte_shift = (dtype.bit_size() / 8).ilog2();
+                            _ = writeln!(comp.body, "{}mov.u64 %address, __ld{dst};", comp.indent);
+                            let t = comp.new_reg(DType::U64, 1);
+                            if IDX_T == DType::U64 {
+                                _ = writeln!(comp.body, "{}shl.b64 %r{t}, %r{idx}, {byte_shift};", comp.indent);
+                            } else {
+                                _ = writeln!(comp.body, "{}cvt.u64.u32 %r{t}, %r{idx};", comp.indent);
+                                _ = writeln!(comp.body, "{}shl.b64 %r{t}, %r{t}, {byte_shift};", comp.indent);
+                            }
+                            _ = writeln!(comp.body, "{}add.u64 %address, %address, %r{t};", comp.indent);
+                            comp.release_reg(t);
+                            _ = writeln!(comp.body, "{}st.local.{} [%address], %r{x};", comp.indent, dtype.mem_ptx());
                         }
                     }
                     comp.release_reg(offset);
@@ -352,9 +444,11 @@ impl Kernel {
                             if dtype == DType::F64 {
                                 _ = writeln!(comp.body, "{}selp.{} %r{reg}, 1.0, 0.0, %r{x};", comp.indent, dtype.ptx());
                             } else if dtype == DType::F32 {
-                                let a = comp.new_reg(DType::F32, 0);
-                                let b = comp.new_reg(DType::F32, 0);
-                                _ = writeln!(comp.body, "{}selp.{} %r{reg}, %r{a}, %r{b}, %r{x};", comp.indent, dtype.ptx());
+                                _ = writeln!(comp.body, "{}selp.{} %r{reg}, 1.0, 0.0, %r{x};", comp.indent, dtype.ptx());
+                            } else if dtype == DType::F16 {
+                                _ = writeln!(comp.body, "{}selp.b16 %r{reg}, 0x3C00, 0, %r{x};", comp.indent);
+                            } else if dtype == DType::BF16 {
+                                _ = writeln!(comp.body, "{}selp.b16 %r{reg}, 0x3F80, 0, %r{x};", comp.indent);
                             } else {
                                 _ = writeln!(comp.body, "{}selp.{} %r{reg}, 1, 0, %r{x};", comp.indent, dtype.ptx());
                             }
@@ -362,8 +456,25 @@ impl Kernel {
                         (DType::I32, DType::F32) => {
                             _ = writeln!(comp.body, "{}cvt.rni.{}.{} %r{reg}, %r{x};", comp.indent, dtype.ptx(), xdtype.ptx());
                         }
-                        (_, _) => {
+                        _ if dtype == xdtype => {
+                            if reg != x {
+                                _ = writeln!(comp.body, "{}mov.{} %r{reg}, %r{x};", comp.indent, dtype.ptx());
+                            }
+                        }
+                        (_, _) if xdtype.is_float() && dtype.is_float() && dtype.bit_size() > xdtype.bit_size() => {
+                            _ = writeln!(comp.body, "{}cvt.{}.{} %r{reg}, %r{x};", comp.indent, dtype.ptx(), xdtype.ptx());
+                        }
+                        (_, _) if xdtype.is_float() && !dtype.is_float() => {
+                            _ = writeln!(comp.body, "{}cvt.rni.{}.{} %r{reg}, %r{x};", comp.indent, dtype.ptx(), xdtype.ptx());
+                        }
+                        (_, _) if !xdtype.is_float() && dtype.is_float() => {
                             _ = writeln!(comp.body, "{}cvt.rn.{}.{} %r{reg}, %r{x};", comp.indent, dtype.ptx(), xdtype.ptx());
+                        }
+                        (_, _) if xdtype.is_float() && dtype.is_float() => {
+                            _ = writeln!(comp.body, "{}cvt.rn.{}.{} %r{reg}, %r{x};", comp.indent, dtype.ptx(), xdtype.ptx());
+                        }
+                        (_, _) => {
+                            _ = writeln!(comp.body, "{}cvt.{}.{} %r{reg}, %r{x};", comp.indent, dtype.ptx(), xdtype.ptx());
                         }
                     }
                 }
@@ -371,7 +482,19 @@ impl Kernel {
                     let dtype = dtypes[&x].0;
                     let x = comp.get_var(x);
                     let reg = comp.new_var(op_id, dtype, rcs[&op_id]);
-                    _ = writeln!(comp.body, "{}{}.{} %r{reg}, %r{x};", comp.indent, comp.uop_to_ptx(uop)?, dtype.ptx());
+                    match uop {
+                        UOp::Floor => _ = writeln!(comp.body, "{}cvt.rmi.{t}.{t} %r{reg}, %r{x};", comp.indent, t = dtype.ptx()),
+                        UOp::Trunc => _ = writeln!(comp.body, "{}cvt.rzi.{t}.{t} %r{reg}, %r{x};", comp.indent, t = dtype.ptx()),
+                        _ => {
+                            _ = writeln!(
+                                comp.body,
+                                "{}{}.{} %r{reg}, %r{x};",
+                                comp.indent,
+                                comp.uop_to_ptx(uop, dtype)?,
+                                dtype.ptx()
+                            )
+                        }
+                    }
                 }
                 Op::Binary { x, y, bop } => {
                     let dtype = dtypes[&op_id].0;
@@ -425,13 +548,8 @@ impl Kernel {
                     loop_id -= 1;
                     if let Some((len, loop_pred, loop_idx)) = comp.loops.pop() {
                         _ = writeln!(comp.body, "{}add.{} %r{loop_idx}, %r{loop_idx}, 1;", comp.indent, IDX_T.ptx());
-                        writeln!(
-                            comp.body,
-                            "{}setp.lt.{} %r{loop_pred}, %r{loop_idx}, %r{len};",
-                            comp.indent,
-                            IDX_T.ptx(),
-                        )
-                        .unwrap();
+                        writeln!(comp.body, "{}setp.lt.{} %r{loop_pred}, %r{loop_idx}, %r{len};", comp.indent, IDX_T.ptx(),)
+                            .unwrap();
                         _ = writeln!(comp.body, "{}@%r{loop_pred} bra LOOP_{};", comp.indent, loop_id_label_map[&loop_id]);
                         comp.indent.pop();
                         comp.indent.pop();
@@ -469,7 +587,7 @@ impl Kernel {
 
         _ = writeln!(comp.header, "{}.reg .u64 %address;", comp.indent);
         for (reg_id, (dtype, _)) in comp.registers.iter().enumerate() {
-            _ = writeln!(comp.header, "{}.reg .{} %r{reg_id};", comp.indent, dtype.ptx());
+            _ = writeln!(comp.header, "{}.reg .{} %r{reg_id};", comp.indent, dtype.reg_ptx());
         }
 
         comp.header.push_str(&comp.body);

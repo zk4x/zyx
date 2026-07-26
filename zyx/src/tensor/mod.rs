@@ -923,10 +923,10 @@ impl Tensor {
         let quadratic_mask = abs_diff.cmplt(delta_tensor.clone()).unwrap();
 
         // Quadratic loss: 0.5 * diff²
-        let quadratic_loss = 0.5 * diff.clone() * diff;
+        let quadratic_loss = 0.5f32 * diff.clone() * diff;
 
         // Linear loss: delta * |diff| - 0.5 * delta²
-        let linear_loss = delta_tensor.clone() * abs_diff - 0.5 * delta_tensor.clone() * delta_tensor;
+        let linear_loss = delta_tensor.clone() * abs_diff - 0.5f32 * delta_tensor.clone() * delta_tensor;
 
         // Combine: use quadratic_loss where |diff| ≤ delta, linear_loss otherwise
         let result = quadratic_mask.clone() * quadratic_loss + quadratic_mask.not() * linear_loss;

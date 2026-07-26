@@ -1258,8 +1258,8 @@ impl CUDADevice {
         kernel: &Kernel,
         debug_asm: bool,
     ) -> Result<(Vec<Dim>, Vec<Dim>, Box<str>, Vec<u8>), BackendError> {
-        let (ptx, name, gws, lws) = kernel.generate_ptx(self.compute_capability, &self.dev_info, debug_asm)?;
-
+        let (mut ptx, name, gws, lws) = kernel.generate_ptx(self.compute_capability, &self.dev_info, debug_asm)?;
+        ptx.push(0);
         let mut name = String::from(name.as_ref());
         name += "\0";
         Ok((gws, lws, name.into_boxed_str(), ptx))

@@ -135,7 +135,7 @@ impl Tensor {
     ///         as `e^input_element`.
     #[must_use]
     pub fn exp(&self) -> Tensor {
-        let c: Tensor = std::f64::consts::E.log2().into();
+        let c: Tensor = core::f32::consts::E.log2().into();
         (self * c.cast(self.dtype())).exp2()
     }
 
@@ -202,7 +202,7 @@ impl Tensor {
     #[must_use]
     pub fn ln(&self) -> Tensor {
         let x = self.float_cast().unwrap();
-        let c: Tensor = (1f64 / std::f64::consts::E.log2()).into();
+        let c: Tensor = (1f32 / core::f32::consts::E.log2()).into();
         x.log2() * c.cast(x.dtype())
     }
 
@@ -300,7 +300,7 @@ impl Tensor {
     #[must_use]
     pub fn selu(&self) -> Tensor {
         let dtype = self.dtype();
-        (1.050_700_987_355_480_5f64 * (self.relu() - (1.673_263_242_354_377_3f64 * (Tensor::ones(1, dtype) - self.exp())).relu()))
+        (1.050_700_987_355_480_5f32 * (self.relu() - (1.673_263_242_354_377_3f32 * (Tensor::ones(1, dtype) - self.exp())).relu()))
             .cast(dtype)
     }
 
@@ -580,7 +580,7 @@ impl Tensor {
     /// Panics if applied on non-float dtype while implicit casting is disabled.
     #[must_use]
     pub fn deg2rad(&self) -> Tensor {
-        (self * (std::f64::consts::PI / 180.0)).cast(self.dtype())
+        (self * (core::f32::consts::PI / 180.0)).cast(self.dtype())
     }
 
     /// Returns a boolean tensor where elements are close within a tolerance.
@@ -630,7 +630,7 @@ impl Tensor {
     /// Panics if applied on non-float dtype while implicit casting is disabled.
     #[must_use]
     pub fn rad2deg(&self) -> Tensor {
-        (self * (180.0 / std::f64::consts::PI)).cast(self.dtype())
+        (self * (180.0 / core::f32::consts::PI)).cast(self.dtype())
     }
 
     /// Bitnot

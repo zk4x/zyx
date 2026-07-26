@@ -187,13 +187,10 @@ fn square_1() -> Result<(), ZyxError> {
 
 #[test]
 fn huber_loss_1() -> Result<(), ZyxError> {
-    if !Tensor::supports(DType::F64) {
-        return Ok(());
-    }
     // Test basic huber loss functionality
-    let predictions = Tensor::from([1.0f32, 2.0, 3.0]);
-    let targets = Tensor::from([1.0, 2.0, 3.0]); // Perfect match
-    let loss = predictions.huber_loss(&targets, 1.0);
+    let predictions = Tensor::from([1.0f32, 2.0f32, 3.0f32]);
+    let targets = Tensor::from([1.0f32, 2.0f32, 3.0f32]); // Perfect match
+    let loss = predictions.huber_loss(&targets, 1.0f32);
 
     // Loss should be zero when predictions match targets exactly
     assert!(loss.item::<f32>().abs() < 1e-6);
@@ -206,7 +203,7 @@ fn huber_loss_2() -> Result<(), ZyxError> {
     // Test huber loss with small differences (quadratic region)
     let predictions = Tensor::from([1.0f32]);
     let targets = Tensor::from([1.5]); // Difference = 0.5 < delta (1.0)
-    let loss = predictions.huber_loss(&targets, 1.0);
+    let loss = predictions.huber_loss(&targets, 1.0f32);
 
     // Should be quadratic: 0.5 * (1.0 - 1.5)² = 0.5 * 0.25 = 0.125
     let expected_loss = 0.125f32;
@@ -219,8 +216,8 @@ fn huber_loss_2() -> Result<(), ZyxError> {
 fn huber_loss_3() -> Result<(), ZyxError> {
     // Test huber loss with large differences (linear region)
     let predictions = Tensor::from([1.0f32]);
-    let targets = Tensor::from([3.0]); // Difference = 2.0 > delta (1.0)
-    let loss = predictions.huber_loss(&targets, 1.0);
+    let targets = Tensor::from([3.0f32]); // Difference = 2.0 > delta (1.0)
+    let loss = predictions.huber_loss(&targets, 1.0f32);
 
     // Should be linear: 1.0 * |1.0 - 3.0| - 0.5 * 1.0² = 2.0 - 0.5 = 1.5
     let expected_loss = 1.5f32;
@@ -231,18 +228,15 @@ fn huber_loss_3() -> Result<(), ZyxError> {
 
 #[test]
 fn huber_loss_4() -> Result<(), ZyxError> {
-    if !Tensor::supports(DType::F64) {
-        return Ok(());
-    }
     // Test huber loss with different delta values
-    let predictions = Tensor::from([1.0f32, 1.0, 1.0]);
-    let targets = Tensor::from([2.0, 3.0, 4.0]);
+    let predictions = Tensor::from([1.0f32, 1.0f32, 1.0f32]);
+    let targets = Tensor::from([2.0f32, 3.0f32, 4.0f32]);
 
     // With delta = 1.0: first two are quadratic, third is linear
-    let loss_delta_1 = predictions.huber_loss(&targets, 1.0);
+    let loss_delta_1 = predictions.huber_loss(&targets, 1.0f32);
 
     // With delta = 2.0: all are quadratic
-    let loss_delta_2 = predictions.huber_loss(&targets, 2.0);
+    let loss_delta_2 = predictions.huber_loss(&targets, 2.0f32);
 
     // Loss with smaller delta should be larger for large differences
     let loss1_val = loss_delta_1.item::<f32>();
@@ -367,12 +361,9 @@ fn ceil_3() -> Result<(), ZyxError> {
 
 #[test]
 fn smooth_l1_loss_1() -> Result<(), ZyxError> {
-    if !Tensor::supports(DType::F64) {
-        return Ok(());
-    }
     // Test Smooth L1 loss with small differences (should use quadratic region)
-    let predictions = Tensor::from([1.0f32, 2.0, 3.0]);
-    let targets = Tensor::from([1.1, 2.2, 2.9]); // Small differences < 1.0
+    let predictions = Tensor::from([1.0f32, 2.0f32, 3.0f32]);
+    let targets = Tensor::from([1.1f32, 2.2f32, 2.9f32]); // Small differences < 1.0
     let loss = predictions.smooth_l1_loss(&targets);
 
     // Expected: 0.5 * (0.1)² + 0.5 * (0.2)² + 0.5 * (0.1)² = 0.005 + 0.02 + 0.005 = 0.03
@@ -385,12 +376,9 @@ fn smooth_l1_loss_1() -> Result<(), ZyxError> {
 
 #[test]
 fn smooth_l1_loss_2() -> Result<(), ZyxError> {
-    if !Tensor::supports(DType::F64) {
-        return Ok(());
-    }
     // Test Smooth L1 loss with large differences (should use linear region)
-    let predictions = Tensor::from([1.0f32, 2.0, 3.0]);
-    let targets = Tensor::from([3.0, 5.0, 1.5]); // Large differences > 1.0
+    let predictions = Tensor::from([1.0f32, 2.0f32, 3.0f32]);
+    let targets = Tensor::from([3.0f32, 5.0f32, 1.5f32]); // Large differences > 1.0
     let loss = predictions.smooth_l1_loss(&targets);
 
     // Expected: |1-3|-0.5 + |2-5|-0.5 + |3-1.5|-0.5 = 1.5 + 2.5 + 1.0 = 5.0
@@ -403,12 +391,9 @@ fn smooth_l1_loss_2() -> Result<(), ZyxError> {
 
 #[test]
 fn smooth_l1_loss_3() -> Result<(), ZyxError> {
-    if !Tensor::supports(DType::F64) {
-        return Ok(());
-    }
     // Test Smooth L1 loss with mixed differences
-    let predictions = Tensor::from([1.0f32, 2.0, 3.0, 4.0]);
-    let targets = Tensor::from([1.5, 2.8, 1.2, 6.0]); // Mixed differences
+    let predictions = Tensor::from([1.0f32, 2.0f32, 3.0f32, 4.0f32]);
+    let targets = Tensor::from([1.5f32, 2.8f32, 1.2f32, 6.0f32]); // Mixed differences
     let loss = predictions.smooth_l1_loss(&targets);
 
     // Expected: 0.5*(0.5)² + |2-2.8|-0.5 + 0.5*(1.8)² + |4-6|-0.5
@@ -651,12 +636,8 @@ fn bf16_log2() -> Result<(), ZyxError> {
 
 #[test]
 fn f64_sin() -> Result<(), ZyxError> {
-    if !Tensor::supports(DType::F64).sin() {
-        return Ok(());
-    }
-    let data: [f64; 5] = [0.0, 0.5, 1.0, -1.0, 3.14159];
-    let z: Vec<f64> = Tensor::from(data).sin().try_into()?;
-    println!("{z:?}");
+    let data: [f32; 5] = [0.0, 0.5, 1.0, -1.0, 3.14159];
+    let z: Vec<f32> = Tensor::from(data).sin().try_into()?;
     for (x, y) in data.iter().zip(z) {
         assert!(x.sin().is_equal(y));
     }
@@ -665,11 +646,8 @@ fn f64_sin() -> Result<(), ZyxError> {
 
 #[test]
 fn f64_cos() -> Result<(), ZyxError> {
-    if !Tensor::supports(DType::F64).cos() {
-        return Ok(());
-    }
-    let data: [f64; 5] = [0.0, 0.5, 1.0, -1.0, 3.14159];
-    let z: Vec<f64> = Tensor::from(data).cos().try_into()?;
+    let data: [f32; 5] = [0.0, 0.5, 1.0, -1.0, 3.14159];
+    let z: Vec<f32> = Tensor::from(data).cos().try_into()?;
     for (x, y) in data.iter().zip(z) {
         assert!(x.cos().is_equal(y));
     }
@@ -678,11 +656,8 @@ fn f64_cos() -> Result<(), ZyxError> {
 
 #[test]
 fn f64_sqrt() -> Result<(), ZyxError> {
-    if !Tensor::supports(DType::F64).sqrt() {
-        return Ok(());
-    }
-    let data: [f64; 4] = [0.0, 1.0, 4.0, 9.0];
-    let z: Vec<f64> = Tensor::from(data).sqrt().try_into()?;
+    let data: [f32; 4] = [0.0, 1.0, 4.0, 9.0];
+    let z: Vec<f32> = Tensor::from(data).sqrt().try_into()?;
     for (x, y) in data.iter().zip(z) {
         assert!(x.sqrt().is_equal(y));
     }
@@ -691,11 +666,8 @@ fn f64_sqrt() -> Result<(), ZyxError> {
 
 #[test]
 fn f64_exp() -> Result<(), ZyxError> {
-    if !Tensor::supports(DType::F64).exp() {
-        return Ok(());
-    }
-    let data: [f64; 5] = [-2.0, -1.0, 0.0, 1.0, 2.0];
-    let z: Vec<f64> = Tensor::from(data).exp().try_into()?;
+    let data: [f32; 5] = [-2.0, -1.0, 0.0, 1.0, 2.0];
+    let z: Vec<f32> = Tensor::from(data).exp().try_into()?;
     for (x, y) in data.iter().zip(z) {
         assert!(x.exp().is_equal(y));
     }
@@ -704,11 +676,8 @@ fn f64_exp() -> Result<(), ZyxError> {
 
 #[test]
 fn f64_exp2() -> Result<(), ZyxError> {
-    if !Tensor::supports(DType::F64).exp2() {
-        return Ok(());
-    }
-    let data: [f64; 5] = [-2.0, -1.0, 0.0, 1.0, 2.0];
-    let z: Vec<f64> = Tensor::from(data).exp2().try_into()?;
+    let data: [f32; 5] = [-2.0, -1.0, 0.0, 1.0, 2.0];
+    let z: Vec<f32> = Tensor::from(data).exp2().try_into()?;
     for (x, y) in data.iter().zip(z) {
         assert!(x.exp2().is_equal(y));
     }
@@ -717,11 +686,8 @@ fn f64_exp2() -> Result<(), ZyxError> {
 
 #[test]
 fn f64_ln() -> Result<(), ZyxError> {
-    if !Tensor::supports(DType::F64).ln() {
-        return Ok(());
-    }
-    let data: [f64; 4] = [0.5, 1.0, 2.0, 4.0];
-    let z: Vec<f64> = Tensor::from(data).ln().try_into()?;
+    let data: [f32; 4] = [0.5, 1.0, 2.0, 4.0];
+    let z: Vec<f32> = Tensor::from(data).ln().try_into()?;
     for (x, y) in data.iter().zip(z) {
         assert!(x.ln().is_equal(y));
     }
@@ -730,11 +696,8 @@ fn f64_ln() -> Result<(), ZyxError> {
 
 #[test]
 fn f64_log2() -> Result<(), ZyxError> {
-    if !Tensor::supports(DType::F64).log2() {
-        return Ok(());
-    }
-    let data: [f64; 4] = [0.5, 1.0, 2.0, 4.0];
-    let z: Vec<f64> = Tensor::from(data).log2().try_into()?;
+    let data: [f32; 4] = [0.5, 1.0, 2.0, 4.0];
+    let z: Vec<f32> = Tensor::from(data).log2().try_into()?;
     for (x, y) in data.iter().zip(z) {
         assert!(x.log2().is_equal(y));
     }

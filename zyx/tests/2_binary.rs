@@ -139,12 +139,9 @@ fn cmplt() -> Result<(), ZyxError> {
 }
 
 #[test]
-fn pow_neg_f64() -> Result<(), ZyxError> {
-    if !Tensor::supports(DType::F64).pow() {
-        return Ok(());
-    }
-    let x = Tensor::from([-1.5f64, 2.0, 0.5]);
-    let y = Tensor::from([2.0f64, 2.0, 0.5]);
+fn pow_neg_f32() -> Result<(), ZyxError> {
+    let x = Tensor::from([-1.5f32, 2.0, 0.5]);
+    let y = Tensor::from([2.0f32, 2.0, 0.5]);
     let z = x.pow(y)?;
     println!("{z}");
     Ok(())

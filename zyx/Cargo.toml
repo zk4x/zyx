@@ -93,7 +93,7 @@ codegen-units = 16       # Parallelize LLVM codegen for faster debug builds.
 
 [profile.test]
 opt-level = 1
-debug = true
+debug = false
 strip = false
 debug-assertions = true
 overflow-checks = true
