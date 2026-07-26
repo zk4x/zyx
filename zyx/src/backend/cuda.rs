@@ -769,7 +769,8 @@ impl CUDADevice {
 
     #[allow(clippy::needless_pass_by_ref_mut)]
     pub fn compile(&mut self, kernel: &Kernel, debug_asm: bool) -> Result<DeviceProgramId, BackendError> {
-        let (gws, lws, name, ptx) = self.compile_cuda(kernel, debug_asm)?;
+        //let (gws, lws, name, ptx) = self.compile_cuda(kernel, debug_asm)?;
+        let (gws, lws, name, ptx) = self.compile_ptx(kernel, debug_asm)?;
         let (reply, reply_rx) = channel();
         self.tx.send(CUDACommand::Compile { gws, lws, name, ptx, reply }).unwrap();
         reply_rx.recv().unwrap()
@@ -1123,6 +1124,7 @@ impl CUDAStatus {
 }
 
 impl CUDADevice {
+    #[allow(unused)]
     pub fn compile_cuda(
         &mut self,
         kernel: &Kernel,
@@ -1237,6 +1239,18 @@ impl CUDADevice {
 
         name += "\0";
         Ok((gws, lws, name.into_boxed_str(), ptx_vec))
+    }
+
+    pub fn compile_ptx(
+        &mut self,
+        kernel: &Kernel,
+        debug_asm: bool,
+    ) -> Result<(Vec<Dim>, Vec<Dim>, Box<str>, Vec<u8>), BackendError> {
+        let (ptx, name, gws, lws) = kernel.generate_ptx(self.compute_capability, &self.dev_info, debug_asm)?;
+
+        let mut name = String::from(name.as_ref());
+        name += "\0";
+        Ok((gws, lws, name.into_boxed_str(), ptx))
     }
 }
 
