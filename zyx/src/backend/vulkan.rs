@@ -1221,7 +1221,13 @@ pub(super) fn initialize_device(
                                 op_id = kernel.next_op(op_id);
                             }
 
-                            let spirv = kernel.generate_spirv(debug_asm);
+                            let spirv = match kernel.generate_spirv(debug_asm) {
+                                Ok(spirv) => spirv,
+                                Err(e) => {
+                                    let _ = reply.send(Err(e));
+                                    continue;
+                                }
+                            };
 
                             let shader_ci = VkShaderModuleCreateInfo {
                                 sType: VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
@@ -1565,7 +1571,9 @@ pub(super) fn initialize_device(
                 }
 
                 // Idle device before destroying any resources
-                unsafe { let _ = vkDeviceWaitIdle(device); };
+                unsafe {
+                    let _ = vkDeviceWaitIdle(device);
+                };
 
                 // Cleanup all resources
                 for id in buffers.ids().collect::<Vec<_>>() {

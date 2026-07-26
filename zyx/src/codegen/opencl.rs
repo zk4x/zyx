@@ -5,6 +5,7 @@ use crate::{
     DType, Map,
     backend::DeviceInfo,
     dtype::Constant,
+    error::{BackendError, ErrorStatus},
     kernel::{BOp, Kernel, MemLayout, Op, OpId, Scope, UOp},
     scalar::{bf16, f16},
 };
@@ -15,7 +16,7 @@ const VEC_COMPONENTS: [&str; 16] = [
 ];
 
 impl Kernel {
-    pub fn generate_opencl(&self, _device_info: &DeviceInfo, name: &str) -> String {
+    pub fn generate_opencl(&self, _device_info: &DeviceInfo, name: &str) -> Result<String, BackendError> {
         let mut global_args = String::new();
         let mut op_id = self.head;
         while !op_id.is_null() {
@@ -49,7 +50,7 @@ impl Kernel {
         while !op_id.is_null() {
             match self.ops[op_id].op {
                 Op::ConstView { .. } | Op::LoadView { .. } | Op::StoreView { .. } | Op::Reduce { .. } | Op::Move { .. } => {
-                    unreachable!()
+                    return Err(BackendError { status: ErrorStatus::KernelCompilation, context: "OpenCL codegen: unexpected kernel op (should be unfolded)".into() });
                 }
                 Op::Const(x) => {
                     constants.insert(op_id, x);
@@ -74,8 +75,8 @@ impl Kernel {
                 Op::Load { src, index, layout } => {
                     if let Some(&rc) = rcs.get(&op_id) {
                         let dtype = dtypes[&op_id];
-                        let idx = get_var(index, &constants, &indices, &reg_map, &mut registers, loop_id);
-                        let reg = new_reg(op_id, &mut reg_map, &mut registers, dtype, rc, loop_id);
+                        let idx = get_var(index, &constants, &indices, &reg_map, &mut registers, loop_id)?;
+                        let reg = new_reg(op_id, &mut reg_map, &mut registers, dtype, rcs[&op_id], loop_id);
                         match layout {
                             MemLayout::Scalar => _ = writeln!(source, "{indent}r{reg} = p{src}[{idx}];"),
                             MemLayout::Vector(len) => {
@@ -90,8 +91,8 @@ impl Kernel {
                     }
                 }
                 Op::Store { dst, x: src, index, layout } => {
-                    let idx = get_var(index, &constants, &indices, &reg_map, &mut registers, loop_id);
-                    let x = get_var(src, &constants, &indices, &reg_map, &mut registers, loop_id);
+                    let idx = get_var(index, &constants, &indices, &reg_map, &mut registers, loop_id)?;
+                    let x = get_var(src, &constants, &indices, &reg_map, &mut registers, loop_id)?;
                     match layout {
                         MemLayout::Scalar => _ = writeln!(source, "{indent}p{dst}[{idx}] = {x};"),
                         MemLayout::Vector(len) => {
@@ -103,7 +104,7 @@ impl Kernel {
                 }
                 Op::Cast { x: xop, dtype } => {
                     let layout = dtypes[&xop].1;
-                    let x = get_var(xop, &constants, &indices, &reg_map, &mut registers, loop_id);
+                    let x = get_var(xop, &constants, &indices, &reg_map, &mut registers, loop_id)?;
                     let reg = new_reg(op_id, &mut reg_map, &mut registers, (dtype, layout), rcs[&op_id], loop_id);
                     match layout {
                         MemLayout::Vector(len) => {
@@ -117,7 +118,7 @@ impl Kernel {
                 }
                 Op::Unary { x, uop } => {
                     let dtype = dtypes[&x];
-                    let x = get_var(x, &constants, &indices, &reg_map, &mut registers, loop_id);
+                    let x = get_var(x, &constants, &indices, &reg_map, &mut registers, loop_id)?;
                     let reg = new_reg(op_id, &mut reg_map, &mut registers, dtype, rcs[&op_id], loop_id);
                     match dtype.1 {
                         MemLayout::Vector(len) => {
@@ -126,9 +127,7 @@ impl Kernel {
                                 _ = match uop {
                                     UOp::BitNot => writeln!(source, "{indent}r{reg}.{c} = ~{x}.{c};"),
                                     UOp::Neg => writeln!(source, "{indent}r{reg}.{c} = -{x}.{c};"),
-                                    UOp::Exp => unreachable!(
-                                        "internal bug: UOp::Exp should be converted to Exp2 + mul by ln2(e) by IR pass before reaching OpenCL backend"
-                                    ),
+                                    UOp::Exp => return Err(BackendError { status: ErrorStatus::KernelCompilation, context: "OpenCL codegen: UOp::Exp should be converted to Exp2 + mul by ln2(e) before reaching OpenCL backend".into() }),
                                     UOp::Exp2 => {
                                         if dtype.0 == DType::F16 {
                                             writeln!(source, "{indent}r{reg}.{c} = (half)exp2((float){x}.{c});")
@@ -153,9 +152,7 @@ impl Kernel {
                         MemLayout::Scalar => match uop {
                             UOp::BitNot => _ = writeln!(source, "{indent}r{reg} = ~{x};"),
                             UOp::Neg => _ = writeln!(source, "{indent}r{reg} = -{x};"),
-                            UOp::Exp => unreachable!(
-                                "internal bug: UOp::Exp should be converted to Exp2 + mul by ln2(e) by IR pass before reaching OpenCL backend"
-                            ),
+                            UOp::Exp => return Err(BackendError { status: ErrorStatus::KernelCompilation, context: "OpenCL codegen: UOp::Exp should be converted to Exp2 + mul by ln2(e) before reaching OpenCL backend".into() }),
                             UOp::Exp2 => {
                                 if dtype.0 == DType::F16 {
                                     _ = writeln!(source, "{indent}r{reg} = (half)exp2((float){x});");
@@ -175,14 +172,14 @@ impl Kernel {
                             UOp::Ln => _ = writeln!(source, "{indent}r{reg} = log({x});"),
                             UOp::Abs => _ = writeln!(source, "{indent}r{reg} = fabs({x});"),
                         },
-                        MemLayout::Tile { .. } => unreachable!(),
+                        MemLayout::Tile { .. } => return Err(BackendError { status: ErrorStatus::KernelCompilation, context: "OpenCL codegen: Tile layout not supported for Binary".into() }),
                     }
                 }
                 Op::Vectorize { ref ops } => {
                     let dtype = dtypes[&op_id];
                     let mut vars = String::new();
                     for &x in ops {
-                        let x = get_var(x, &constants, &indices, &reg_map, &mut registers, loop_id);
+                        let x = get_var(x, &constants, &indices, &reg_map, &mut registers, loop_id)?;
                         _ = write!(vars, "{x}, ");
                     }
                     vars.pop();
@@ -191,13 +188,13 @@ impl Kernel {
                     let dtype = dtypes[&op_id];
                     let vlen = match dtype.1 {
                         MemLayout::Vector(len) => len,
-                        _ => unreachable!(),
+                        _ => return Err(BackendError { status: ErrorStatus::KernelCompilation, context: "OpenCL codegen: Vectorize requires Vector layout".into() }),
                     };
                     _ = writeln!(source, "{indent}r{reg} = ({})({vars});", dtype.0.ocl_vec_type(vlen));
                 }
                 Op::Devectorize { vec, idx } => {
                     let dtype = dtypes[&op_id];
-                    let vec = get_var(vec, &constants, &indices, &reg_map, &mut registers, loop_id);
+                    let vec = get_var(vec, &constants, &indices, &reg_map, &mut registers, loop_id)?;
                     let reg = new_reg(op_id, &mut reg_map, &mut registers, dtype, rcs[&op_id], loop_id);
                     _ = writeln!(source, "{indent}r{reg} = {vec}.{};", VEC_COMPONENTS[idx]);
                 }
@@ -206,8 +203,8 @@ impl Kernel {
                 }
                 Op::Binary { x, y, bop } => {
                     let dtype = dtypes[&op_id];
-                    let x = get_var(x, &constants, &indices, &reg_map, &mut registers, loop_id);
-                    let y = get_var(y, &constants, &indices, &reg_map, &mut registers, loop_id);
+                    let x = get_var(x, &constants, &indices, &reg_map, &mut registers, loop_id)?;
+                    let y = get_var(y, &constants, &indices, &reg_map, &mut registers, loop_id)?;
                     let reg = new_reg(op_id, &mut reg_map, &mut registers, dtype, rcs[&op_id], loop_id);
                     match dtype.1 {
                         MemLayout::Vector(len) => {
@@ -257,14 +254,14 @@ impl Kernel {
                                 BOp::Eq => writeln!(source, "{indent}r{reg} = {x} == {y};"),
                             }
                         }
-                        MemLayout::Tile { .. } => unreachable!(),
+                        MemLayout::Tile { .. } => return Err(BackendError { status: ErrorStatus::KernelCompilation, context: "OpenCL codegen: Tile layout not supported for Binary".into() }),
                     }
                 }
                 Op::Mad { x, y, z } => {
                     let dtype = dtypes[&op_id];
-                    let x = get_var(x, &constants, &indices, &reg_map, &mut registers, loop_id);
-                    let y = get_var(y, &constants, &indices, &reg_map, &mut registers, loop_id);
-                    let z = get_var(z, &constants, &indices, &reg_map, &mut registers, loop_id);
+                    let x = get_var(x, &constants, &indices, &reg_map, &mut registers, loop_id)?;
+                    let y = get_var(y, &constants, &indices, &reg_map, &mut registers, loop_id)?;
+                    let z = get_var(z, &constants, &indices, &reg_map, &mut registers, loop_id)?;
                     let reg = new_reg(op_id, &mut reg_map, &mut registers, dtype, rcs[&op_id], loop_id);
                     match dtype.1 {
                         MemLayout::Vector(len) => {
@@ -300,7 +297,7 @@ impl Kernel {
                     loop_id -= 1;
                 }
                 Op::If { condition } => {
-                    let condition = get_var(condition, &constants, &indices, &reg_map, &mut registers, loop_id);
+                    let condition = get_var(condition, &constants, &indices, &reg_map, &mut registers, loop_id)?;
                     _ = writeln!(source, "{indent}if ({condition}) {{");
                     indent += "  ";
                 }
@@ -323,7 +320,7 @@ impl Kernel {
                 match dt.1 {
                     MemLayout::Scalar => dt.0.ocl().to_string(),
                     MemLayout::Vector(len) => dt.0.ocl_vec_type(len),
-                    MemLayout::Tile { .. } => unreachable!(),
+                    MemLayout::Tile { .. } => return Err(BackendError { status: ErrorStatus::KernelCompilation, context: "OpenCL codegen: Tile layout not supported in register declarations".into() }),
                 }
             );
             let mut i = 1;
@@ -337,7 +334,7 @@ impl Kernel {
                         match dt.1 {
                             MemLayout::Scalar => dt.0.ocl().to_string(),
                             MemLayout::Vector(len) => dt.0.ocl_vec_type(len),
-                            MemLayout::Tile { .. } => unreachable!(),
+                            MemLayout::Tile { .. } => return Err(BackendError { status: ErrorStatus::KernelCompilation, context: "OpenCL codegen: Tile layout not supported in register declarations".into() }),
                         }
                     );
                 }
@@ -355,7 +352,7 @@ impl Kernel {
             pragma += "#pragma OPENCL EXTENSION cl_khr_fp64 : enable\n";
         }
 
-        format!("{pragma}__kernel void {name}(\n{global_args}) {{\n{reg_str}{source}}}\n")
+        Ok(format!("{pragma}__kernel void {name}(\n{global_args}) {{\n{reg_str}{source}}}\n"))
     }
 }
 
@@ -388,18 +385,18 @@ fn get_var(
     reg_map: &Map<OpId, usize>,
     registers: &mut [((DType, MemLayout), u32, u8)],
     loop_level: u8,
-) -> String {
+) -> Result<String, BackendError> {
     if let Some(c) = constants.get(&op_id) {
-        c.ocl()
+        Ok(c.ocl())
     } else if let Some(id) = indices.get(&op_id) {
-        format!("idx{id}")
+        Ok(format!("idx{id}"))
     } else if let Some(reg) = reg_map.get(&op_id) {
         if registers[*reg].2 == loop_level {
             registers[*reg].1 -= 1;
         }
-        format!("r{reg}")
+        Ok(format!("r{reg}"))
     } else {
-        unreachable!()
+        Err(BackendError { status: ErrorStatus::KernelCompilation, context: format!("OpenCL codegen: variable {op_id} not found").into() })
     }
 }
 

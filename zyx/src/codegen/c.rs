@@ -5,13 +5,14 @@ use crate::{
     DType, Map,
     backend::DeviceInfo,
     dtype::Constant,
+    error::{BackendError, ErrorStatus},
     kernel::{BOp, Kernel, MemLayout, Op, OpId, Scope, UOp},
     scalar::{bf16, f16},
 };
 use std::{fmt::Write, hash::BuildHasherDefault};
 
 impl Kernel {
-    pub fn generate_c(&self, device_info: &DeviceInfo, has_openmp: bool, name: &str) -> String {
+    pub fn generate_c(&self, device_info: &DeviceInfo, has_openmp: bool, name: &str) -> Result<String, BackendError> {
         let (dtypes, rcs) = self.compute_dtypes_and_rcs();
 
         let mut gws = [1u64; 3];
@@ -32,7 +33,12 @@ impl Kernel {
                         indices.insert(op_id, loop_id);
                         loop_id = loop_id.checked_add(1).expect("C: too many loops (>255)");
                     }
-                    Op::LocalIndex { .. } => unreachable!(),
+                    Op::LocalIndex { .. } => {
+                        return Err(BackendError {
+                            status: ErrorStatus::KernelCompilation,
+                            context: "C codegen: LocalIndex should not appear outside loop".into(),
+                        });
+                    }
                     Op::Define { dtype, scope, .. } if scope == Scope::Global => {
                         if matches!(dtype, DType::F16 | DType::BF16) {
                             _ = writeln!(global_cast, "  unsigned short* p{op_id} = (unsigned short*)args[{n_global_defines}];");
@@ -65,7 +71,12 @@ impl Kernel {
                     index_loop_depth += 1;
                     loop_id += 1;
                 }
-                Op::LocalIndex { .. } => unreachable!(),
+                Op::LocalIndex { .. } => {
+                    return Err(BackendError {
+                        status: ErrorStatus::KernelCompilation,
+                        context: "C codegen: LocalIndex not expected".into(),
+                    });
+                }
                 Op::Loop { len, .. } => {
                     indices.insert(op_id, loop_id);
                     let len = self.loop_len_dim(len);
@@ -88,7 +99,7 @@ impl Kernel {
                 Op::Load { src, index, layout } => {
                     if let Some(&rc) = rcs.get(&op_id) {
                         let dtype = dtypes[&op_id];
-                        let idx = get_var(index, &constants, &indices, &reg_map, &mut registers, loop_id);
+                        let idx = get_var(index, &constants, &indices, &reg_map, &mut registers, loop_id)?;
                         let reg = new_reg(op_id, &mut reg_map, &mut registers, dtype, rc, loop_id);
                         match layout {
                             MemLayout::Scalar => match dtypes[&src].0 {
@@ -126,13 +137,18 @@ impl Kernel {
                                     }
                                 }
                             },
-                            MemLayout::Tile { .. } => todo!(),
+                            MemLayout::Tile { .. } => {
+                                return Err(BackendError {
+                                    status: ErrorStatus::KernelCompilation,
+                                    context: "C codegen: Tile layout not supported for Load".into(),
+                                });
+                            }
                         }
                     }
                 }
                 Op::Store { dst, x: src, index, layout } => {
-                    let idx = get_var(index, &constants, &indices, &reg_map, &mut registers, loop_id);
-                    let x = get_var(src, &constants, &indices, &reg_map, &mut registers, loop_id);
+                    let idx = get_var(index, &constants, &indices, &reg_map, &mut registers, loop_id)?;
+                    let x = get_var(src, &constants, &indices, &reg_map, &mut registers, loop_id)?;
                     match layout {
                         MemLayout::Scalar => match dtypes[&dst].0 {
                             DType::F16 => {
@@ -166,12 +182,17 @@ impl Kernel {
                                 }
                             }
                         },
-                        MemLayout::Tile { .. } => todo!(),
+                        MemLayout::Tile { .. } => {
+                            return Err(BackendError {
+                                status: ErrorStatus::KernelCompilation,
+                                context: "C codegen: Tile layout not supported for Store".into(),
+                            });
+                        }
                     }
                 }
                 Op::Cast { x, dtype } => {
                     let vlen = dtypes[&x].1;
-                    let x = get_var(x, &constants, &indices, &reg_map, &mut registers, loop_id);
+                    let x = get_var(x, &constants, &indices, &reg_map, &mut registers, loop_id)?;
                     let reg = new_reg(op_id, &mut reg_map, &mut registers, (dtype, vlen), rcs[&op_id], loop_id);
                     match vlen {
                         MemLayout::Vector(n) => {
@@ -184,7 +205,7 @@ impl Kernel {
                 }
                 Op::Unary { x, uop } => {
                     let dtype = dtypes[&x];
-                    let x = get_var(x, &constants, &indices, &reg_map, &mut registers, loop_id);
+                    let x = get_var(x, &constants, &indices, &reg_map, &mut registers, loop_id)?;
                     let reg = new_reg(op_id, &mut reg_map, &mut registers, dtype, rcs[&op_id], loop_id);
                     match dtype.1 {
                         MemLayout::Vector(n) => {
@@ -230,7 +251,7 @@ impl Kernel {
                     let dtype = dtypes[&op_id];
                     let mut vars = String::new();
                     for &x in ops {
-                        let x = get_var(x, &constants, &indices, &reg_map, &mut registers, loop_id);
+                        let x = get_var(x, &constants, &indices, &reg_map, &mut registers, loop_id)?;
                         _ = write!(vars, "{x}, ");
                     }
                     vars.pop();
@@ -239,23 +260,31 @@ impl Kernel {
                     let dtype = dtypes[&op_id];
                     let vlen = match dtype.1 {
                         MemLayout::Vector(n) => n,
-                        _ => unreachable!(),
+                        _ => {
+                            return Err(BackendError {
+                                status: ErrorStatus::KernelCompilation,
+                                context: "C codegen: Vectorize requires Vector layout".into(),
+                            });
+                        }
                     };
                     _ = writeln!(source, "{indent}r{reg} = ({}){{{}}};", dtype.0.vec_type_name(vlen), vars);
                 }
                 Op::Wmma { .. } => {
-                    panic!("C codegen does not support WMMA");
+                    return Err(BackendError {
+                        status: ErrorStatus::KernelCompilation,
+                        context: "C codegen does not support WMMA".into(),
+                    });
                 }
                 Op::Devectorize { vec, idx } => {
                     let dtype = dtypes[&op_id];
-                    let vec = get_var(vec, &constants, &indices, &reg_map, &mut registers, loop_id);
+                    let vec = get_var(vec, &constants, &indices, &reg_map, &mut registers, loop_id)?;
                     let reg = new_reg(op_id, &mut reg_map, &mut registers, dtype, rcs[&op_id], loop_id);
                     _ = writeln!(source, "{indent}r{reg} = {vec}.s{idx};");
                 }
                 Op::Binary { x, y, bop } => {
                     let dtype = dtypes[&op_id];
-                    let x = get_var(x, &constants, &indices, &reg_map, &mut registers, loop_id);
-                    let y = get_var(y, &constants, &indices, &reg_map, &mut registers, loop_id);
+                    let x = get_var(x, &constants, &indices, &reg_map, &mut registers, loop_id)?;
+                    let y = get_var(y, &constants, &indices, &reg_map, &mut registers, loop_id)?;
                     let reg = new_reg(op_id, &mut reg_map, &mut registers, dtype, rcs[&op_id], loop_id);
                     match dtype.1 {
                         MemLayout::Vector(n) => {
@@ -270,14 +299,14 @@ impl Kernel {
                 }
                 Op::Mad { x, y, z } => {
                     let dtype = dtypes[&op_id];
-                    let x = get_var(x, &constants, &indices, &reg_map, &mut registers, loop_id);
-                    let y = get_var(y, &constants, &indices, &reg_map, &mut registers, loop_id);
-                    let z = get_var(z, &constants, &indices, &reg_map, &mut registers, loop_id);
+                    let x = get_var(x, &constants, &indices, &reg_map, &mut registers, loop_id)?;
+                    let y = get_var(y, &constants, &indices, &reg_map, &mut registers, loop_id)?;
+                    let z = get_var(z, &constants, &indices, &reg_map, &mut registers, loop_id)?;
                     let reg = new_reg(op_id, &mut reg_map, &mut registers, dtype, rcs[&op_id], loop_id);
                     _ = writeln!(source, "{indent}r{reg} = {x} * {y} + {z};");
                 }
                 Op::If { condition } => {
-                    let condition = get_var(condition, &constants, &indices, &reg_map, &mut registers, loop_id);
+                    let condition = get_var(condition, &constants, &indices, &reg_map, &mut registers, loop_id)?;
                     _ = writeln!(source, "{indent}if ({condition}) {{");
                     indent += "  ";
                 }
@@ -301,7 +330,10 @@ impl Kernel {
                 }
                 Op::Barrier { .. } => {}
                 Op::ConstView { .. } | Op::LoadView { .. } | Op::StoreView { .. } | Op::Move { .. } | Op::Reduce { .. } => {
-                    unreachable!("Op::ConstView/LoadView/StoreView/Move/Reduce should not appear in the C codegen")
+                    return Err(BackendError {
+                        status: ErrorStatus::KernelCompilation,
+                        context: "C codegen: ConstView/LoadView/StoreView/Move/Reduce should not appear".into(),
+                    });
                 }
             }
             op_id = self.next_op(op_id);
@@ -327,7 +359,11 @@ impl Kernel {
                 match dt.1 {
                     MemLayout::Scalar => dt.0.c_type().into(),
                     MemLayout::Vector(len) => dt.0.vec_type_name(len),
-                    MemLayout::Tile { .. } => unreachable!(),
+                    MemLayout::Tile { .. } =>
+                        return Err(BackendError {
+                            status: ErrorStatus::KernelCompilation,
+                            context: "C codegen: Tile layout not supported in register declarations".into()
+                        }),
                 }
             );
             let mut i = 1;
@@ -341,7 +377,11 @@ impl Kernel {
                         match dt.1 {
                             MemLayout::Scalar => dt.0.c_type().into(),
                             MemLayout::Vector(len) => dt.0.vec_type_name(len),
-                            MemLayout::Tile { .. } => unreachable!(),
+                            MemLayout::Tile { .. } =>
+                                return Err(BackendError {
+                                    status: ErrorStatus::KernelCompilation,
+                                    context: "C codegen: Tile layout not supported in register declarations".into()
+                                }),
                         }
                     );
                 }
@@ -413,7 +453,7 @@ static inline unsigned short f32tobf16(float v) {
         } else {
             String::new()
         };
-        format!(
+        Ok(format!(
             "#include <math.h>\n#include <stdint.h>\n#include <string.h>\n\
              {omp_include}\
              {vec_types}\
@@ -423,7 +463,7 @@ static inline unsigned short f32tobf16(float v) {
              {global_cast}\
              {reg_str}\
              {source}}}\n"
-        )
+        ))
     }
 }
 
@@ -456,18 +496,18 @@ fn get_var(
     reg_map: &Map<OpId, usize>,
     registers: &mut [((DType, MemLayout), u32, u8)],
     loop_level: u8,
-) -> String {
+) -> Result<String, BackendError> {
     if let Some(c) = constants.get(&op_id) {
-        c.c_code()
+        Ok(c.c_code())
     } else if let Some(&id) = indices.get(&op_id) {
-        format!("idx{id}")
+        Ok(format!("idx{id}"))
     } else if let Some(&reg) = reg_map.get(&op_id) {
         if registers[reg].2 == loop_level {
             registers[reg].1 -= 1;
         }
-        format!("r{reg}")
+        Ok(format!("r{reg}"))
     } else {
-        unreachable!()
+        Err(BackendError { status: ErrorStatus::KernelCompilation, context: format!("C codegen: variable {op_id} not found in constants, indices, or registers").into() })
     }
 }
 

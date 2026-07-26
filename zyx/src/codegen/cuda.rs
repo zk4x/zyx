@@ -5,6 +5,7 @@ use crate::{
     DType, Map,
     backend::DeviceInfo,
     dtype::Constant,
+    error::{BackendError, ErrorStatus},
     kernel::{BOp, Kernel, MemLayout, Op, OpId, Scope, UOp},
     scalar::{bf16, f16},
 };
@@ -15,7 +16,7 @@ const VEC_COMPONENTS: [&str; 16] = [
 ];
 
 impl Kernel {
-    pub fn generate_cuda(&self, _device_info: &DeviceInfo, name: &str) -> String {
+    pub fn generate_cuda(&self, _device_info: &DeviceInfo, name: &str) -> Result<String, BackendError> {
         use std::fmt::Write;
 
         let mut gws = vec![1; 3];
@@ -64,7 +65,7 @@ impl Kernel {
         while !op_id.is_null() {
             match self.ops[op_id].op {
                 Op::Move { .. } | Op::ConstView { .. } | Op::LoadView { .. } | Op::StoreView { .. } | Op::Reduce { .. } => {
-                    unreachable!()
+                    return Err(BackendError { status: ErrorStatus::KernelCompilation, context: "CUDA codegen: unexpected kernel op (should be unfolded)".into() });
                 }
                 Op::Const(x) => {
                     constants.insert(op_id, x);
@@ -84,8 +85,8 @@ impl Kernel {
                 Op::Load { src, index, layout } => {
                     if let Some(&rc) = rcs.get(&op_id) {
                         let dtype = dtypes[&op_id];
-                        let idx = get_var(index, &constants, &indices, &reg_map, &mut registers, loop_id);
-                        let reg = new_reg(op_id, &mut reg_map, &mut registers, dtype, rc, loop_id);
+                        let idx = get_var(index, &constants, &indices, &reg_map, &mut registers, loop_id)?;
+                        let reg = new_reg(op_id, &mut reg_map, &mut registers, dtype, rcs[&op_id], loop_id);
                         match layout {
                             MemLayout::Scalar => _ = writeln!(source, "{indent}r{reg} = p{src}[{idx}];"),
                             MemLayout::Vector(len) => {
@@ -100,8 +101,8 @@ impl Kernel {
                     }
                 }
                 Op::Store { dst, x: src, index, layout } => {
-                    let idx = get_var(index, &constants, &indices, &reg_map, &mut registers, loop_id);
-                    let x = get_var(src, &constants, &indices, &reg_map, &mut registers, loop_id);
+                    let idx = get_var(index, &constants, &indices, &reg_map, &mut registers, loop_id)?;
+                    let x = get_var(src, &constants, &indices, &reg_map, &mut registers, loop_id)?;
                     let cu_type = dtypes[&src].0.cu();
                     match layout {
                         MemLayout::Scalar => _ = writeln!(source, "{indent}p{dst}[{idx}] = {x};"),
@@ -123,14 +124,14 @@ impl Kernel {
   return c;
 }
 "#;
-                    let a = get_var(a, &constants, &indices, &reg_map, &mut registers, loop_id);
-                    let b = get_var(b, &constants, &indices, &reg_map, &mut registers, loop_id);
-                    let c = get_var(c, &constants, &indices, &reg_map, &mut registers, loop_id);
+                    let a = get_var(a, &constants, &indices, &reg_map, &mut registers, loop_id)?;
+                    let b = get_var(b, &constants, &indices, &reg_map, &mut registers, loop_id)?;
+                    let c = get_var(c, &constants, &indices, &reg_map, &mut registers, loop_id)?;
                     let reg = new_reg(op_id, &mut reg_map, &mut registers, dtypes[&op_id], rcs[&op_id], loop_id);
                     _ = writeln!(source, "{indent}r{reg} = wmma_m16n8k8_row_col_f32_f16_f16_f32({a}, {b}, {c});");
                 }
                 Op::Cast { x, dtype } => {
-                    let x_var = get_var(x, &constants, &indices, &reg_map, &mut registers, loop_id);
+                    let x_var = get_var(x, &constants, &indices, &reg_map, &mut registers, loop_id)?;
                     let mem_layout = dtypes[&x].1;
                     let reg = new_reg(op_id, &mut reg_map, &mut registers, (dtype, mem_layout), rcs[&op_id], loop_id);
                     if dtype == DType::BF16 {
@@ -149,7 +150,7 @@ impl Kernel {
                 }
                 Op::Unary { x, uop } => {
                     let dtype = dtypes[&x];
-                    let x = get_var(x, &constants, &indices, &reg_map, &mut registers, loop_id);
+                    let x = get_var(x, &constants, &indices, &reg_map, &mut registers, loop_id)?;
                     let reg = new_reg(op_id, &mut reg_map, &mut registers, dtype, rcs[&op_id], loop_id);
                     match dtype.1 {
                         MemLayout::Vector(len) => {
@@ -158,9 +159,7 @@ impl Kernel {
                                 _ = match uop {
                                     UOp::BitNot => writeln!(source, "{indent}r{reg}.{c} = ~{x}.{c};"),
                                     UOp::Neg => writeln!(source, "{indent}r{reg}.{c} = -{x}.{c};"),
-                                    UOp::Exp => unreachable!(
-                                        "internal bug: UOp::Exp should be converted to Exp2 + mul by ln2(e) by IR pass before reaching CUDA backend"
-                                    ),
+                                    UOp::Exp => return Err(BackendError { status: ErrorStatus::KernelCompilation, context: "CUDA codegen: UOp::Exp should be converted to Exp2 + mul by ln2(e) before reaching CUDA backend".into() }),
                                     UOp::Exp2 => {
                                         if dtype.0 == DType::F16 {
                                             writeln!(source, "{indent}r{reg}.{c} = (half)exp2((float){x}.{c});")
@@ -185,9 +184,7 @@ impl Kernel {
                         MemLayout::Scalar => match uop {
                             UOp::BitNot => _ = writeln!(source, "{indent}r{reg} = ~{x};"),
                             UOp::Neg => _ = writeln!(source, "{indent}r{reg} = -{x};"),
-                            UOp::Exp => unreachable!(
-                                "internal bug: UOp::Exp should be converted to Exp2 + mul by ln2(e) by IR pass before reaching CUDA backend"
-                            ),
+                            UOp::Exp => return Err(BackendError { status: ErrorStatus::KernelCompilation, context: "CUDA codegen: UOp::Exp should be converted to Exp2 + mul by ln2(e) before reaching CUDA backend".into() }),
                             UOp::Exp2 => {
                                 if dtype.0 == DType::F16 {
                                     _ = writeln!(source, "{indent}r{reg} = (half)exp2((float){x});");
@@ -207,13 +204,13 @@ impl Kernel {
                             UOp::Ln => _ = writeln!(source, "{indent}r{reg} = log({x});"),
                             UOp::Abs => _ = writeln!(source, "{indent}r{reg} = fabsf({x});"),
                         },
-                        MemLayout::Tile { .. } => unreachable!(),
+                        MemLayout::Tile { .. } => return Err(BackendError { status: ErrorStatus::KernelCompilation, context: "CUDA codegen: Tile layout not supported for Unary".into() }),
                     }
                 }
                 Op::Binary { x, y, bop } => {
                     let dtype = dtypes[&op_id];
-                    let x = get_var(x, &constants, &indices, &reg_map, &mut registers, loop_id);
-                    let y = get_var(y, &constants, &indices, &reg_map, &mut registers, loop_id);
+                    let x = get_var(x, &constants, &indices, &reg_map, &mut registers, loop_id)?;
+                    let y = get_var(y, &constants, &indices, &reg_map, &mut registers, loop_id)?;
                     let reg = new_reg(op_id, &mut reg_map, &mut registers, dtype, rcs[&op_id], loop_id);
                     match dtype.1 {
                         MemLayout::Vector(len) => {
@@ -263,14 +260,14 @@ impl Kernel {
                                 BOp::Eq => writeln!(source, "{indent}r{reg} = {x} == {y};"),
                             }
                         }
-                        MemLayout::Tile { .. } => unreachable!(),
+                        MemLayout::Tile { .. } => return Err(BackendError { status: ErrorStatus::KernelCompilation, context: "CUDA codegen: Tile layout not supported for Binary".into() }),
                     }
                 }
                 Op::Vectorize { ref ops } => {
                     let dtype = dtypes[&op_id];
                     let mut vars = String::new();
                     for &x in ops {
-                        let x = get_var(x, &constants, &indices, &reg_map, &mut registers, loop_id);
+                        let x = get_var(x, &constants, &indices, &reg_map, &mut registers, loop_id)?;
                         _ = write!(vars, "{x}, ");
                     }
                     vars.pop();
@@ -280,15 +277,15 @@ impl Kernel {
                 }
                 Op::Devectorize { vec, idx } => {
                     let dtype = dtypes[&op_id];
-                    let x = get_var(vec, &constants, &indices, &reg_map, &mut registers, loop_id);
+                    let x = get_var(vec, &constants, &indices, &reg_map, &mut registers, loop_id)?;
                     let reg = new_reg(op_id, &mut reg_map, &mut registers, dtype, rcs[&op_id], loop_id);
                     _ = writeln!(source, "{indent}r{reg} = {x}.{};", VEC_COMPONENTS[idx]);
                 }
                 Op::Mad { x, y, z } => {
                     let dtype = dtypes[&op_id];
-                    let x = get_var(x, &constants, &indices, &reg_map, &mut registers, loop_id);
-                    let y = get_var(y, &constants, &indices, &reg_map, &mut registers, loop_id);
-                    let z = get_var(z, &constants, &indices, &reg_map, &mut registers, loop_id);
+                    let x = get_var(x, &constants, &indices, &reg_map, &mut registers, loop_id)?;
+                    let y = get_var(y, &constants, &indices, &reg_map, &mut registers, loop_id)?;
+                    let z = get_var(z, &constants, &indices, &reg_map, &mut registers, loop_id)?;
                     let reg = new_reg(op_id, &mut reg_map, &mut registers, dtype, rcs[&op_id], loop_id);
                     match dtype.1 {
                         MemLayout::Vector(len) => {
@@ -334,7 +331,7 @@ impl Kernel {
                     loop_id -= 1;
                 }
                 Op::If { condition } => {
-                    let condition = get_var(condition, &constants, &indices, &reg_map, &mut registers, loop_id);
+                    let condition = get_var(condition, &constants, &indices, &reg_map, &mut registers, loop_id)?;
                     _ = writeln!(source, "{indent}if ({condition}) {{");
                     indent += "  ";
                 }
@@ -358,31 +355,31 @@ impl Kernel {
                 match dt.1 {
                     MemLayout::Scalar => dt.0.cu().to_string(),
                     MemLayout::Vector(len) => dt.0.cu_vec_type(len),
-                    MemLayout::Tile { .. } => unreachable!(),
-                }
-            );
-            let mut i = 1;
-            for (dt, _, _) in registers {
-                if dt == prev_dt {
-                    _ = write!(reg_str, ", r{i}");
-                } else {
-                    _ = write!(
-                        reg_str,
-                        ";\n{indent}{} r{i}",
-                        match dt.1 {
-                            MemLayout::Scalar => dt.0.cu().to_string(),
-                            MemLayout::Vector(len) => dt.0.cu_vec_type(len),
-                            MemLayout::Tile { .. } => unreachable!(),
-                        }
-                    );
-                }
-                prev_dt = dt;
-                i += 1;
+                MemLayout::Tile { .. } => return Err(BackendError { status: ErrorStatus::KernelCompilation, context: "CUDA codegen: Tile layout not supported in register declarations".into() }),
             }
-            _ = writeln!(reg_str, ";");
+        );
+        let mut i = 1;
+        for (dt, _, _) in registers {
+            if dt == prev_dt {
+                _ = write!(reg_str, ", r{i}");
+            } else {
+                _ = write!(
+                    reg_str,
+                    ";\n{indent}{} r{i}",
+                    match dt.1 {
+                        MemLayout::Scalar => dt.0.cu().to_string(),
+                        MemLayout::Vector(len) => dt.0.cu_vec_type(len),
+                        MemLayout::Tile { .. } => return Err(BackendError { status: ErrorStatus::KernelCompilation, context: "CUDA codegen: Tile layout not supported in register declarations".into() }),
+                    }
+                );
+            }
+            prev_dt = dt;
+            i += 1;
         }
+        _ = writeln!(reg_str, ";");
+    }
 
-        let mut pragma = String::new();
+    let mut pragma = String::new();
         if dtypes.values().any(|&x| x.0 == DType::F16) {
             pragma += "#include <cuda_fp16.h>\n";
             pragma += "struct __align__(8) half4 { half x, y, z, w; };\n";
@@ -391,7 +388,7 @@ impl Kernel {
             pragma += "#include <cuda_bf16.h>\n";
         }
 
-        format!("{pragma}{helper_funcs}extern \"C\"\n__global__ void {name}(\n{global_args}) {{\n{reg_str}{source}}}\n\t\0")
+        Ok(format!("{pragma}{helper_funcs}extern \"C\"\n__global__ void {name}(\n{global_args}) {{\n{reg_str}{source}}}\n\t\0"))
     }
 }
 
@@ -424,18 +421,18 @@ fn get_var(
     reg_map: &Map<OpId, usize>,
     registers: &mut [((DType, MemLayout), u32, u8)],
     loop_level: u8,
-) -> String {
+) -> Result<String, BackendError> {
     if let Some(c) = constants.get(&op_id) {
-        c.cu()
+        Ok(c.cu())
     } else if let Some(id) = indices.get(&op_id) {
-        format!("idx{id}")
+        Ok(format!("idx{id}"))
     } else if let Some(reg) = reg_map.get(&op_id) {
         if loop_level == registers[*reg].2 {
             registers[*reg].1 -= 1;
         }
-        format!("r{reg}")
+        Ok(format!("r{reg}"))
     } else {
-        unreachable!("op_id={op_id}")
+        Err(BackendError { status: ErrorStatus::KernelCompilation, context: format!("CUDA codegen: variable {op_id} not found").into() })
     }
 }
 

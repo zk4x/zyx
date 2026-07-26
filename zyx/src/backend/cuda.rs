@@ -1151,7 +1151,7 @@ impl CUDADevice {
             lws.iter().map(ToString::to_string).collect::<Vec<_>>().join("_"),
         );
 
-        let source = kernel.generate_cuda(&self.dev_info, &name);
+        let source = kernel.generate_cuda(&self.dev_info, &name)?;
 
         if debug_asm {
             println!();

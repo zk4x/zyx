@@ -406,7 +406,7 @@ impl WGPUDevice {
             op_id = kernel.next_op(op_id);
         }
 
-        let spirv_words = kernel.generate_spirv(debug_asm);
+        let spirv_words = kernel.generate_spirv(debug_asm)?;
 
         let shader_module = self.device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: None,

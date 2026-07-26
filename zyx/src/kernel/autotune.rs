@@ -479,7 +479,7 @@ impl Kernel {
         debug: DebugMask,
         init_buffers: Option<&[PoolBufferId]>,
     ) -> Result<(DeviceProgramId, OptSeq, u64), BackendError> {
-        if true {
+        if false {
             return self.apply_selected_optimizations(device, memory_pool, config, flop, read_bytes, write_bytes, debug);
         }
 

@@ -207,7 +207,7 @@ impl CDevice {
         let c_path = tmp_dir.join(format!("{name}.c"));
         let so_path = tmp_dir.join(format!("{name}.so"));
 
-        let full_source = kernel.generate_c(&self.device_info, self.has_openmp, &name);
+        let full_source = kernel.generate_c(&self.device_info, self.has_openmp, &name)?;
         std::fs::write(&c_path, &full_source).map_err(|e| BackendError {
             status: ErrorStatus::KernelCompilation,
             context: format!("Failed to write C source: {e}").into(),

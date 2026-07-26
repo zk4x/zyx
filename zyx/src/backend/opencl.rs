@@ -828,7 +828,7 @@ impl OpenCLDevice {
             lws.iter().map(ToString::to_string).collect::<Vec<_>>().join("_"),
         );
 
-        let source = kernel.generate_opencl(&self.dev_info, &name);
+        let source = kernel.generate_opencl(&self.dev_info, &name)?;
         if debug_asm {
             println!();
             println!("{source}");

@@ -7,6 +7,7 @@
 use crate::{
     DType, Map,
     dtype::Constant,
+    error::{BackendError, ErrorStatus},
     kernel::{BOp, IDX_T, Kernel, MemLayout, Op, OpId, Scope, UOp},
 };
 use std::hash::BuildHasherDefault;
@@ -389,7 +390,7 @@ fn elem_stride(dt: DType) -> usize {
 }
 
 impl Kernel {
-    pub fn generate_spirv(&self, debug_asm: bool) -> Vec<u32> {
+    pub fn generate_spirv(&self, debug_asm: bool) -> Result<Vec<u32>, BackendError> {
         use OpCode::*;
         let dtypes = compute_dtypes(self);
         let mut asm = Asm::new();
@@ -799,7 +800,7 @@ impl Kernel {
                                 DType::U32 => Constant::U32(val),
                                 DType::I32 => Constant::I32(val as i32),
                                 DType::U64 => Constant::U64((val as u64).to_le_bytes()),
-                                _ => unreachable!(),
+                                dt => return Err(BackendError { status: ErrorStatus::KernelCompilation, context: format!("SPIR-V: unexpected index type {dt:?} for const value").into() }),
                             };
                             if !const_pool.contains_key(&key) {
                                 let tid = type_cache[&IDX_T];
@@ -989,7 +990,7 @@ impl Kernel {
                     | Op::Move { .. }
                     | Op::Reduce { .. }
                     | Op::Wmma { .. } => {
-                        unreachable!("SPIR-V: unexpected kernel op (should be unfolded)");
+                        return Err(BackendError { status: ErrorStatus::KernelCompilation, context: "SPIR-V: unexpected kernel op (should be unfolded)".into() });
                     }
 
                     Op::Vectorize { ops } => {
@@ -1053,7 +1054,7 @@ impl Kernel {
                             let elem_ptr = push_ptr_type(&mut asm, &mut ptr_cache, &mut type_entries, SC_FUNCTION, scalar_type);
                             (var_id, elem_ptr, false, false)
                         } else {
-                            unreachable!("SPIR-V: Load from unknown variable");
+                            return Err(BackendError { status: ErrorStatus::KernelCompilation, context: "SPIR-V: Load from unknown variable".into() });
                         };
 
                         if is_vec && !is_bool_src {
@@ -1061,7 +1062,7 @@ impl Kernel {
                             let mut scalars = Vec::new();
                             let vec_len = match layout {
                                 MemLayout::Vector(n) => n as usize,
-                                _ => unreachable!(),
+                                _ => return Err(BackendError { status: ErrorStatus::KernelCompilation, context: "SPIR-V: expected Vector layout for vectorized op".into() }),
                             };
                             for i in 0..vec_len {
                                 let off_const = const_pool[&Constant::U32(i as u32)];
@@ -1124,7 +1125,7 @@ impl Kernel {
                                 let elem_ptr = push_ptr_type(&mut asm, &mut ptr_cache, &mut type_entries, SC_FUNCTION, val_type);
                                 (var_id, elem_ptr, false, false)
                             } else {
-                                unreachable!("SPIR-V: Store to unknown variable");
+                                return Err(BackendError { status: ErrorStatus::KernelCompilation, context: "SPIR-V: Store to unknown variable".into() });
                             };
 
                         let val_type = emit_type(&mut asm, &mut type_cache, dtypes[&x].0);
@@ -1238,7 +1239,7 @@ impl Kernel {
                             let (zero_cid, _) = cast_u32_consts[&op_id];
                             asm.emit_typed(OpINotEqual, result_type, rid, &[src_id, zero_cid]);
                         } else {
-                            let op = cast_op(src_type, dst_type);
+                            let op = cast_op(src_type, dst_type)?;
                             asm.emit_typed(op, result_type, rid, &[src_id]);
                         }
                         spv_values.insert(op_id, rid);
@@ -1440,10 +1441,7 @@ impl Kernel {
                             spv_values.insert(op_id, elem);
                         } else {
                             let widened = asm.id();
-                            let op = match IDX_T {
-                                DType::U64 => OpUConvert,
-                                _ => unreachable!(),
-                            };
+                            let op = OpUConvert;
                             asm.emit_typed(op, result_type, widened, &[elem]);
                             spv_values.insert(op_id, widened);
                         }
@@ -1458,10 +1456,7 @@ impl Kernel {
                             spv_values.insert(op_id, elem);
                         } else {
                             let widened = asm.id();
-                            let op = match IDX_T {
-                                DType::U64 => OpUConvert,
-                                _ => unreachable!(),
-                            };
+                            let op = OpUConvert;
                             asm.emit_typed(op, result_type, widened, &[elem]);
                             spv_values.insert(op_id, widened);
                         }
@@ -1571,14 +1566,14 @@ impl Kernel {
             let _ = std::fs::write(&path, &bytes);
         }
 
-        asm.words
+        Ok(asm.words)
     }
 }
 
-fn cast_op(src: DType, dst: DType) -> OpCode {
+fn cast_op(src: DType, dst: DType) -> Result<OpCode, BackendError> {
     use DType::*;
     use OpCode::*;
-    match (src, dst) {
+    Ok(match (src, dst) {
         (BF16, F32) | (F16, F32) | (F32, F64) | (F16, F64) | (BF16, F64) | (F32, F16) | (F64, F16) | (F64, F32) => OpFConvert,
         (I8, I32)
         | (I16, I32)
@@ -1606,25 +1601,23 @@ fn cast_op(src: DType, dst: DType) -> OpCode {
         (U32, F32) | (U64, F32) | (U32, F64) | (U64, F64) | (U32, F16) | (U64, F16) => OpConvertUToF,
         (Bool, I32) | (Bool, U32) | (I32, Bool) | (U32, Bool) => OpBitcast,
         _ if src == DType::Bool || dst == DType::Bool => {
-            // Bool conversions should be handled via OpSelect/OpINotEqual upstream
-            unreachable!("Bool cast not handled upstream: {src:?} -> {dst:?}")
+            return Err(BackendError {
+                status: ErrorStatus::KernelCompilation,
+                context: format!("Bool cast not handled upstream: {src:?} -> {dst:?}").into(),
+            })
         }
         _ => {
-            // Fallback: if same bit width, use bitcast
             if bit_size(src) == bit_size(dst) {
                 OpBitcast
+            } else if dst.is_float() {
+                OpFConvert
+            } else if dst.is_int() {
+                OpSConvert
             } else {
-                // Try via FConvert/SConvert/UConvert
-                if dst.is_float() {
-                    OpFConvert
-                } else if dst.is_int() {
-                    OpSConvert
-                } else {
-                    OpUConvert
-                }
+                OpUConvert
             }
         }
-    }
+    })
 }
 
 fn const_to_words(c: &Constant) -> Vec<u32> {
