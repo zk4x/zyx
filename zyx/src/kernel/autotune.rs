@@ -504,6 +504,9 @@ impl Kernel {
         if !device.info().has_native_exp2 {
             kernel.exp2_to_exp();
             kernel.log2_to_ln();
+        } else {
+            kernel.exp_to_exp2();
+            kernel.ln_to_log2();
         }
 
         let avail_configs = AVAILABLE_OPTIMIZATIONS.map(|config_fn| config_fn(&kernel, device.info()));
