@@ -54,7 +54,7 @@ fn grad_exp2() -> Result<(), ZyxError> {
 
 #[test]
 fn grad_reciprocal_2() -> Result<(), ZyxError> {
-    if !Tensor::supports(DType::F64) {
+    if !Tensor::dtype_capability(DType::F64).any() {
         return Ok(());
     }
     // Input tensor
@@ -82,7 +82,7 @@ fn grad_reciprocal_2() -> Result<(), ZyxError> {
 
 #[test]
 fn grad_floor() -> Result<(), ZyxError> {
-    if !Tensor::supports(DType::F64) {
+    if !Tensor::dtype_capability(DType::F64).any() {
         return Ok(());
     }
     let x = Tensor::from([0.5, 1.5, -0.5, -1.5, 0.1, 0.9, -0.1, -0.9, 2.3, -2.3]);
@@ -97,7 +97,7 @@ fn grad_floor() -> Result<(), ZyxError> {
 
 #[test]
 fn grad_trunc() -> Result<(), ZyxError> {
-    if !Tensor::supports(DType::F64) {
+    if !Tensor::dtype_capability(DType::F64).any() {
         return Ok(());
     }
     let x = Tensor::from([0.5, 1.5, -0.5, -1.5, 0.1, 0.9, -0.1, -0.9, 2.3, -2.3]);
@@ -149,7 +149,7 @@ fn grad_pow_2() -> Result<(), ZyxError> {
 
 #[test]
 fn grad_pow_3() -> Result<(), ZyxError> {
-    if !Tensor::supports(DType::F64).pow() {
+    if !Tensor::dtype_capability(DType::F64).pow() {
         return Ok(());
     }
     // Use non-round numbers to expose log2 -> ln approximation errors

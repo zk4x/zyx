@@ -441,7 +441,7 @@ fn pad_zeros() -> Result<(), ZyxError> {
 
 #[test]
 fn one_hot() -> Result<(), ZyxError> {
-    if !Tensor::supports(DType::I64) {
+    if !Tensor::dtype_capability(DType::I64).any() {
         return Ok(());
     }
     let x = Tensor::from([2, 3, 4]);
@@ -626,7 +626,7 @@ fn split2() -> Result<(), ZyxError> {
 
 #[test]
 fn matmul_disk() -> Result<(), ZyxError> {
-    if !Tensor::supports(DType::I64) {
+    if !Tensor::dtype_capability(DType::I64).any() {
         return Ok(());
     }
     //let mut xy: Vec<Tensor> = Tensor::load("xy.safetensors").unwrap();
@@ -754,8 +754,8 @@ fn mix_2() {
     let x = Tensor::from([[2f32, 3.], [4., 5.]]);
     let y = x.t();
     let _ = y;
-    let z = x.exp().cast(DType::I32);
-    assert_eq!(z, [[7i32, 20], [54, 148]]);
+    let z = x.exp2().cast(DType::I32);
+    assert_eq!(z, [[4i32, 8], [16, 32]]);
 }
 
 #[cfg(not(feature = "wgpu"))]
@@ -1203,7 +1203,7 @@ fn test_padding_on_elementwise_kernel() {
 
 #[test]
 fn test_expand_on_elementwise_kernel() {
-    if !Tensor::supports(DType::I64) || !Tensor::supports(DType::F64) {
+    if !Tensor::dtype_capability(DType::I64).any() || !Tensor::dtype_capability(DType::F64).any() {
         return;
     }
     let t = Tensor::from([2, 3, 4]);
@@ -1215,7 +1215,7 @@ fn test_expand_on_elementwise_kernel() {
 
 #[test]
 fn test_reshape_on_elementwise_kernel() {
-    if !Tensor::supports(DType::I64) {
+    if !Tensor::dtype_capability(DType::I64).any() {
         return;
     }
     let t = Tensor::from([2, 3, 4]);

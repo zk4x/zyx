@@ -28,7 +28,7 @@ fn add_2() -> Result<(), ZyxError> {
 
 #[test]
 fn add_3() -> Result<(), ZyxError> {
-    if !Tensor::supports(DType::BF16) {
+    if !Tensor::dtype_capability(DType::BF16).any() {
         return Ok(());
     }
     let datax: [f32; 32] = [

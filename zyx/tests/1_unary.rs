@@ -408,7 +408,7 @@ fn smooth_l1_loss_3() -> Result<(), ZyxError> {
 
 #[test]
 fn interpolate_1() -> Result<(), ZyxError> {
-    if !Tensor::supports(DType::F64) {
+    if !Tensor::dtype_capability(DType::F64).any() {
         return Ok(());
     }
     // Test basic linear interpolation
@@ -424,7 +424,7 @@ fn interpolate_1() -> Result<(), ZyxError> {
 
 #[test]
 fn interpolate_2() -> Result<(), ZyxError> {
-    if !Tensor::supports(DType::F64) {
+    if !Tensor::dtype_capability(DType::F64).any() {
         return Ok(());
     }
     // Test interpolation with weight 0.0 (should return input)
@@ -440,7 +440,7 @@ fn interpolate_2() -> Result<(), ZyxError> {
 
 #[test]
 fn interpolate_3() -> Result<(), ZyxError> {
-    if !Tensor::supports(DType::F64) {
+    if !Tensor::dtype_capability(DType::F64).any() {
         return Ok(());
     }
     // Test interpolation with weight 1.0 (should return target)
@@ -456,7 +456,7 @@ fn interpolate_3() -> Result<(), ZyxError> {
 
 #[test]
 fn interpolate_4() -> Result<(), ZyxError> {
-    if !Tensor::supports(DType::F64) {
+    if !Tensor::dtype_capability(DType::F64).any() {
         return Ok(());
     }
     // Test interpolation with custom weight
@@ -492,7 +492,7 @@ fn tanh_2() -> Result<(), ZyxError> {
 
 #[test]
 fn f16_relu() -> Result<(), ZyxError> {
-    if !Tensor::supports(DType::F16) {
+    if !Tensor::dtype_capability(DType::F16).any() {
         return Ok(());
     }
     let data: [f32; 6] = [-3.0, -1.0, 0.0, 1.0, 2.0, 5.0];
@@ -507,7 +507,7 @@ fn f16_relu() -> Result<(), ZyxError> {
 
 #[test]
 fn f16_neg() -> Result<(), ZyxError> {
-    if !Tensor::supports(DType::F16) {
+    if !Tensor::dtype_capability(DType::F16).any() {
         return Ok(());
     }
     let data: [f32; 6] = [-3.0, -1.0, 0.0, 1.0, 2.0, 5.0];
@@ -521,7 +521,7 @@ fn f16_neg() -> Result<(), ZyxError> {
 
 #[test]
 fn f16_exp2() -> Result<(), ZyxError> {
-    if !Tensor::supports(DType::F16) {
+    if !Tensor::dtype_capability(DType::F16).any() {
         return Ok(());
     }
     let data: [f32; 5] = [-2.0, -1.0, 0.0, 1.0, 2.0];
@@ -535,7 +535,7 @@ fn f16_exp2() -> Result<(), ZyxError> {
 
 #[test]
 fn f16_log2() -> Result<(), ZyxError> {
-    if !Tensor::supports(DType::F16) {
+    if !Tensor::dtype_capability(DType::F16).log2() {
         return Ok(());
     }
     let data: [f32; 5] = [0.5, 1.0, 2.0, 4.0, 8.0];
@@ -549,7 +549,7 @@ fn f16_log2() -> Result<(), ZyxError> {
 
 #[test]
 fn f16_sqrt() -> Result<(), ZyxError> {
-    if !Tensor::supports(DType::F16) {
+    if !Tensor::dtype_capability(DType::F16).sqrt() {
         return Ok(());
     }
     let data: [f32; 4] = [0.0, 1.0, 4.0, 9.0];
@@ -563,7 +563,7 @@ fn f16_sqrt() -> Result<(), ZyxError> {
 
 #[test]
 fn f16_sin() -> Result<(), ZyxError> {
-    if !Tensor::supports(DType::F16) {
+    if !Tensor::dtype_capability(DType::F16).sin() {
         return Ok(());
     }
     let data: [f32; 5] = [0.0, 0.5, 1.0, 1.5, 3.14159];
@@ -579,7 +579,7 @@ fn f16_sin() -> Result<(), ZyxError> {
 
 #[test]
 fn bf16_relu() -> Result<(), ZyxError> {
-    if !Tensor::supports(DType::BF16) {
+    if !Tensor::dtype_capability(DType::BF16).any() {
         return Ok(());
     }
     let data: [f32; 6] = [-3.0, -1.0, 0.0, 1.0, 2.0, 5.0];
@@ -594,7 +594,7 @@ fn bf16_relu() -> Result<(), ZyxError> {
 
 #[test]
 fn bf16_neg() -> Result<(), ZyxError> {
-    if !Tensor::supports(DType::BF16) {
+    if !Tensor::dtype_capability(DType::BF16).any() {
         return Ok(());
     }
     let data: [f32; 6] = [-3.0, -1.0, 0.0, 1.0, 2.0, 5.0];
@@ -608,7 +608,7 @@ fn bf16_neg() -> Result<(), ZyxError> {
 
 #[test]
 fn bf16_exp2() -> Result<(), ZyxError> {
-    if !Tensor::supports(DType::BF16) {
+    if !Tensor::dtype_capability(DType::BF16).any() {
         return Ok(());
     }
     let data: [f32; 5] = [-2.0, -1.0, 0.0, 1.0, 2.0];
@@ -622,7 +622,7 @@ fn bf16_exp2() -> Result<(), ZyxError> {
 
 #[test]
 fn bf16_log2() -> Result<(), ZyxError> {
-    if !Tensor::supports(DType::BF16) {
+    if !Tensor::dtype_capability(DType::BF16).any() {
         return Ok(());
     }
     let data: [f32; 5] = [0.5, 1.0, 2.0, 4.0, 8.0];

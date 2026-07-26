@@ -105,7 +105,7 @@ impl Compiler {
                 } else if dtype == DType::F64 {
                     "div"
                 } else {
-                    "div.full"
+                    "div"
                 }
             }
             BOp::Pow => todo!(),

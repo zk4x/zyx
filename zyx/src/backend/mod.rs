@@ -365,28 +365,29 @@ pub struct Config {
 
 /// Per-dtype capability bitmask — one bit per unary/binary operation.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, SerBin, DeBin)]
-pub struct OpCapability(pub u32);
+pub struct DTypeCapability(u32);
+
+impl DTypeCapability {
+    pub const ZERO: Self = Self(0);
+}
 
 macro_rules! op_cap {
-    ($name:ident, $bit:expr) => {
-        pub const $name: u32 = 1 << $bit;
-    };
     ($name:ident, $bit:expr, $method:ident) => {
-        pub const $name: u32 = 1 << $bit;
+        pub const $name: Self = Self(1 << $bit);
         pub fn $method(&self) -> bool {
-            self.0 & Self::$name != 0
+            self.0 & Self::$name.0 != 0
         }
     };
 }
 
-impl std::ops::Not for OpCapability {
-    type Output = bool;
-    fn not(self) -> bool {
-        self.0 == 0
+impl std::ops::BitOr for DTypeCapability {
+    type Output = Self;
+    fn bitor(self, rhs: Self) -> Self::Output {
+        Self(self.0 | rhs.0)
     }
 }
 
-impl OpCapability {
+impl DTypeCapability {
     op_cap!(NEG, 0, neg);
     op_cap!(BITNOT, 1, bitnot);
     op_cap!(EXP, 2, exp);
@@ -419,14 +420,34 @@ impl OpCapability {
     op_cap!(NOTEQ, 29, noteq);
     op_cap!(EQ, 30, eq);
 
+    #[must_use]
     pub const fn all() -> Self {
         Self(u32::MAX)
     }
+
+    #[must_use]
     pub const fn none() -> Self {
         Self(0)
     }
-    pub fn exists(&self) -> bool {
+
+    #[must_use]
+    pub fn any(&self) -> bool {
         self.0 != 0
+    }
+
+    #[must_use]
+    pub fn invert(&self) -> Self {
+        Self(!self.0)
+    }
+
+    #[must_use]
+    pub fn exclude(&self, capability: DTypeCapability) -> Self {
+        Self(self.0 & !capability.0)
+    }
+
+    #[must_use]
+    pub fn include(&self, capability: DTypeCapability) -> Self {
+        Self(self.0 | capability.0)
     }
 }
 
@@ -452,7 +473,7 @@ pub struct DeviceInfo {
     /// Warp size
     pub warp_size: u16,
     /// Per-dtype operation capabilities
-    pub supported_dtype_ops: [OpCapability; DType::N_DTYPES],
+    pub dtype_capability: [DTypeCapability; DType::N_DTYPES],
     /// Whether the device has a native exp2 instruction
     pub has_native_exp2: bool,
     /// Supported vector lengths for loads/stores/compute
@@ -461,8 +482,8 @@ pub struct DeviceInfo {
 
 impl DeviceInfo {
     /// Returns operation capabilities for a dtype (none() if dtype is unsupported)
-    pub const fn supports_dtype(&self, dtype: DType) -> OpCapability {
-        self.supported_dtype_ops[dtype as usize]
+    pub const fn supports_dtype(&self, dtype: DType) -> DTypeCapability {
+        self.dtype_capability[dtype as usize]
     }
 }
 

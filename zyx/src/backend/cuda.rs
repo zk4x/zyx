@@ -58,7 +58,7 @@ macro_rules! send_or_continue {
     };
 }
 
-use super::{Device, DeviceId, DeviceInfo, DeviceProgramId, Event, MemoryPool, OpCapability, PoolBufferId, PoolId};
+use super::{DTypeCapability, Device, DeviceId, DeviceInfo, DeviceProgramId, Event, MemoryPool, PoolBufferId, PoolId};
 
 /// CUDA configuration
 #[allow(clippy::question_mark)]
@@ -637,13 +637,7 @@ pub(super) fn initialize_device(
                 preferred_vector_size: 16,
                 tensor_cores: major >= 7,
                 warp_size: 32,
-                supported_dtype_ops: {
-                    let mut ops = [OpCapability::all(); DType::N_DTYPES];
-                    if major < 8 {
-                        ops[DType::BF16 as usize] = OpCapability::none();
-                    }
-                    ops
-                },
+                dtype_capability: [DTypeCapability::none(); DType::N_DTYPES],
                 has_native_exp2: true,
                 supported_vec_lens: vec![2, 4],
             },
@@ -676,12 +670,14 @@ pub(super) fn initialize_device(
             preferred_vector_size: 16,
             tensor_cores: major >= 7,
             warp_size: 32,
-            supported_dtype_ops: {
-                let mut ops = [OpCapability::all(); DType::N_DTYPES];
+            dtype_capability: {
+                let mut capability = [DTypeCapability::all(); DType::N_DTYPES];
                 if major < 8 {
-                    ops[DType::BF16 as usize] = OpCapability::none();
+                    capability[DType::BF16 as usize] = DTypeCapability::none();
                 }
-                ops
+                capability[DType::F16 as usize] =
+                    capability[DType::F16 as usize].exclude(DTypeCapability::LOG2 | DTypeCapability::SIN | DTypeCapability::SQRT);
+                capability
             },
             has_native_exp2: true,
             supported_vec_lens: vec![2, 4],

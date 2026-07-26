@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: LGPL-3.0-only
 
 use super::{
-    Device, DeviceId, DeviceInfo, DeviceProgramId, Event, MemoryPool, OpCapability, PoolBufferId, PoolId, opencl::OpenCLEvent,
+    DTypeCapability, Device, DeviceId, DeviceInfo, DeviceProgramId, Event, MemoryPool, PoolBufferId, PoolId, opencl::OpenCLEvent,
 };
 use crate::{
     DType,
@@ -60,7 +60,7 @@ pub(super) fn initialize_device(
             max_register_bytes: 128,
             tensor_cores: true,
             warp_size: 32,
-            supported_dtype_ops: [OpCapability::all(); DType::N_DTYPES],
+            dtype_capability: [DTypeCapability::all(); DType::N_DTYPES],
             has_native_exp2: true,
             supported_vec_lens: vec![2, 4, 8, 16],
         },

@@ -686,7 +686,7 @@ mod tests {
     /// appears BEFORE indices_id, so replace_gather_loop misses it.
     #[test]
     fn test_gather_source_before_indices() {
-        if !crate::Tensor::supports(crate::DType::U16) {
+        if !crate::Tensor::dtype_capability(crate::DType::U16).any() {
             return;
         }
         let (mut k, loop_id) = make_gather_kernel_with_source_before_indices();

@@ -27,8 +27,8 @@ use nanoserde::DeJson;
 use crate::{
     DType, DebugMask, Map, Scalar, Set, ZyxError,
     backend::{
-        AutotuneConfig, BufferId, Config, Device, DeviceInfo, DeviceProgramId, Event, MemoryPool, OpCapability, PoolBufferId, ProgramId,
-        PoolId,
+        AutotuneConfig, BufferId, Config, DTypeCapability, Device, DeviceInfo, DeviceProgramId, Event, MemoryPool, PoolBufferId,
+        PoolId, ProgramId,
     },
     dtype::Constant,
     error::{BackendError, ErrorStatus},
@@ -194,11 +194,11 @@ impl Runtime {
     }
 
     /// Returns operation capabilities for a dtype across all devices.
-    pub fn supports_dtype(&mut self, dtype: DType) -> OpCapability {
+    pub fn supports_dtype(&mut self, dtype: DType) -> DTypeCapability {
         self.initialize_devices().expect("initialize_devices");
-        let mut caps = OpCapability::none();
+        let mut caps = DTypeCapability::none();
         for (_id, dev) in self.devices.iter() {
-            caps.0 |= dev.info().supports_dtype(dtype).0;
+            caps = caps.include(dev.info().supports_dtype(dtype));
         }
         caps
     }
@@ -709,8 +709,7 @@ impl Runtime {
 
         match self.tensors[x].state {
             TensorState::Graph { class_id, graph_id, .. } => {
-                let (_, class_id) =
-                    self.graphs[graph_id].push(Node::Reshape { x: class_id, shape: shape_id }, shape_id, dtype);
+                let (_, class_id) = self.graphs[graph_id].push(Node::Reshape { x: class_id, shape: shape_id }, shape_id, dtype);
                 let tid =
                     self.tensors.push(TensorData { shape_id, dtype, state: TensorState::Graph { class_id, rc: 1, graph_id } });
                 #[cfg(feature = "debug_tensor_op")]
@@ -784,8 +783,7 @@ impl Runtime {
 
         match self.tensors[x].state {
             TensorState::Graph { class_id, graph_id, .. } => {
-                let (_, class_id) =
-                    self.graphs[graph_id].push(Node::Expand { x: class_id, shape: shape_id }, shape_id, dtype);
+                let (_, class_id) = self.graphs[graph_id].push(Node::Expand { x: class_id, shape: shape_id }, shape_id, dtype);
                 let tid =
                     self.tensors.push(TensorData { shape_id, dtype, state: TensorState::Graph { class_id, rc: 1, graph_id } });
                 #[cfg(feature = "debug_tensor_op")]
@@ -837,11 +835,8 @@ impl Runtime {
 
         match self.tensors[x].state {
             TensorState::Graph { class_id, graph_id, .. } => {
-                let (_, class_id) = self.graphs[graph_id].push(
-                    Node::Permute { x: class_id, axes: axes.into_boxed_slice() },
-                    shape_id,
-                    dtype,
-                );
+                let (_, class_id) =
+                    self.graphs[graph_id].push(Node::Permute { x: class_id, axes: axes.into_boxed_slice() }, shape_id, dtype);
                 let tid =
                     self.tensors.push(TensorData { shape_id, dtype, state: TensorState::Graph { class_id, rc: 1, graph_id } });
                 #[cfg(feature = "debug_tensor_op")]

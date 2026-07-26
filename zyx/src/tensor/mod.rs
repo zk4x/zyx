@@ -7,7 +7,7 @@
 
 #![allow(clippy::fallible_impl_from)]
 
-use crate::backend::OpCapability;
+use crate::backend::DTypeCapability;
 use crate::dtype::{Constant, DType};
 use crate::error::ZyxError;
 use crate::kernel::{BOp, UOp};
@@ -216,7 +216,7 @@ impl Tensor {
 
     /// Returns true if the device supports the given dtype.
     #[must_use]
-    pub fn supports(dtype: DType) -> OpCapability {
+    pub fn dtype_capability(dtype: DType) -> DTypeCapability {
         RT.lock().supports_dtype(dtype)
     }
 

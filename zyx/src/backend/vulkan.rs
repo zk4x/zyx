@@ -24,7 +24,7 @@ use crate::{
     slab::Slab,
 };
 
-use super::{DeviceInfo, DeviceProgramId, Event, MemoryPool, OpCapability, PoolBufferId, PoolId};
+use super::{DTypeCapability, DeviceInfo, DeviceProgramId, Event, MemoryPool, PoolBufferId, PoolId};
 
 // ── Vulkan FFI types ─────────────────────────────────────────────────────────
 
@@ -1618,23 +1618,25 @@ pub(super) fn initialize_device(
                 max_register_bytes: 1024,
                 tensor_cores: false,
                 warp_size: 32,
-                supported_dtype_ops: {
-                    let mut all = [OpCapability::all(); DType::N_DTYPES];
+                dtype_capability: {
+                    let mut all = [DTypeCapability::all(); DType::N_DTYPES];
                     // Vulkan/SPIR-V f64 transcendentals crash or produce garbage
-                    all[DType::F64 as usize].0 &= !(OpCapability::EXP
-                        | OpCapability::EXP2
-                        | OpCapability::LN
-                        | OpCapability::LOG2
-                        | OpCapability::SIN
-                        | OpCapability::COS
-                        | OpCapability::POW);
+                    all[DType::F64 as usize] = all[DType::F64 as usize].exclude(
+                        DTypeCapability::EXP
+                            | DTypeCapability::EXP2
+                            | DTypeCapability::LN
+                            | DTypeCapability::LOG2
+                            | DTypeCapability::SIN
+                            | DTypeCapability::COS
+                            | DTypeCapability::POW,
+                    );
                     // Turing/NVIDIA driver crashes on BF16 compute even when
                     // VK_KHR_shader_bfloat16 is enabled. SPIR-V codegen would
                     // need explicit OpFConvert around GLSL.std.450 intrinsics.
                     // Disable until that's implemented.
-                    all[DType::BF16 as usize] = OpCapability::none();
+                    all[DType::BF16 as usize] = DTypeCapability::none();
                     if !has_shader_float16 {
-                        all[DType::F16 as usize] = OpCapability::none();
+                        all[DType::F16 as usize] = DTypeCapability::none();
                     }
                     all
                 },

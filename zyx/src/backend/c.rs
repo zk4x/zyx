@@ -10,7 +10,7 @@
 #![allow(clippy::unused_self)]
 
 use super::{
-    Device, DeviceId, DeviceInfo, DeviceProgramId, Event, MemoryPool, OpCapability, PoolBufferId, PoolId, host::HostMemoryPool,
+    DTypeCapability, Device, DeviceId, DeviceInfo, DeviceProgramId, Event, MemoryPool, PoolBufferId, PoolId, host::HostMemoryPool,
 };
 use crate::DType;
 use crate::error::{BackendError, ErrorStatus};
@@ -126,7 +126,7 @@ pub(super) fn initialize_device(
             max_register_bytes: 1000,
             tensor_cores: false,
             warp_size: 1,
-            supported_dtype_ops: [OpCapability::all(); DType::N_DTYPES],
+            dtype_capability: [DTypeCapability::all(); DType::N_DTYPES],
             has_native_exp2: false,
             supported_vec_lens: vec![2, 4, 8, 16],
         },

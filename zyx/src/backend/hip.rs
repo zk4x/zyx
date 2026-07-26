@@ -9,7 +9,7 @@
 #![allow(non_camel_case_types)]
 #![allow(unused)]
 
-use super::{Device, DeviceInfo, MemoryPool, OpCapability};
+use super::{DTypeCapability, Device, DeviceInfo, MemoryPool};
 use crate::DType;
 use crate::backend::{DeviceId, DeviceProgramId, Event, PoolBufferId, PoolId};
 use crate::dtype::Constant;
@@ -276,7 +276,7 @@ pub(super) fn initialize_device(
                 preferred_vector_size: 16,
                 tensor_cores: major >= 7,
                 warp_size: 64,
-                supported_dtype_ops: [OpCapability::all(); DType::N_DTYPES],
+                dtype_capability: [DTypeCapability::all(); DType::N_DTYPES],
                 has_native_exp2: true,
                 supported_vec_lens: vec![2, 4],
             },
@@ -320,7 +320,7 @@ pub(super) fn initialize_device(
                 .unwrap()
                 .try_into()
                 .unwrap(),
-            supported_dtype_ops: [OpCapability::all(); DType::N_DTYPES],
+            dtype_capability: [DTypeCapability::all(); DType::N_DTYPES],
             has_native_exp2: true,
             supported_vec_lens: vec![2, 4],
         };

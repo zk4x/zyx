@@ -9,7 +9,7 @@ use zyx::{DType, Scalar, Tensor, ZyxError, bf16};
 
 #[test]
 fn bf16_sigmoid() -> Result<(), ZyxError> {
-    if !Tensor::supports(DType::BF16) {
+    if !Tensor::dtype_capability(DType::BF16).any() {
         return Ok(());
     }
 
@@ -29,7 +29,7 @@ fn bf16_sigmoid() -> Result<(), ZyxError> {
 
 #[test]
 fn bf16_mean() -> Result<(), ZyxError> {
-    if !Tensor::supports(DType::BF16) {
+    if !Tensor::dtype_capability(DType::BF16).any() {
         return Ok(());
     }
 
@@ -47,7 +47,7 @@ fn bf16_mean() -> Result<(), ZyxError> {
 
 #[test]
 fn bf16_binary_mul() -> Result<(), ZyxError> {
-    if !Tensor::supports(DType::BF16) {
+    if !Tensor::dtype_capability(DType::BF16).any() {
         return Ok(());
     }
 
@@ -66,7 +66,7 @@ fn bf16_binary_mul() -> Result<(), ZyxError> {
 
 #[test]
 fn bf16_add1() -> Result<(), ZyxError> {
-    if !Tensor::supports(DType::BF16) {
+    if !Tensor::dtype_capability(DType::BF16).any() {
         return Ok(());
     }
 
@@ -87,7 +87,7 @@ fn bf16_add1() -> Result<(), ZyxError> {
 
 #[test]
 fn bf16_add2() -> Result<(), ZyxError> {
-    if !Tensor::supports(DType::BF16) {
+    if !Tensor::dtype_capability(DType::BF16).any() {
         return Ok(());
     }
 
@@ -107,7 +107,7 @@ fn bf16_add2() -> Result<(), ZyxError> {
 
 #[test]
 fn bf16_add3() -> Result<(), ZyxError> {
-    if !Tensor::supports(DType::BF16) {
+    if !Tensor::dtype_capability(DType::BF16).any() {
         return Ok(());
     }
 
@@ -127,7 +127,7 @@ fn bf16_add3() -> Result<(), ZyxError> {
 
 #[test]
 fn bf16_add4() -> Result<(), ZyxError> {
-    if !Tensor::supports(DType::BF16) {
+    if !Tensor::dtype_capability(DType::BF16).any() {
         return Ok(());
     }
 
@@ -148,7 +148,7 @@ fn bf16_add4() -> Result<(), ZyxError> {
 
 #[test]
 fn bf16_add5() -> Result<(), ZyxError> {
-    if !Tensor::supports(DType::BF16) {
+    if !Tensor::dtype_capability(DType::BF16).any() {
         return Ok(());
     }
 
@@ -171,7 +171,7 @@ fn bf16_add5() -> Result<(), ZyxError> {
 
 #[test]
 fn bf16_matmul_1() -> Result<(), ZyxError> {
-    if !Tensor::supports(DType::BF16) {
+    if !Tensor::dtype_capability(DType::BF16).any() {
         return Ok(());
     }
 

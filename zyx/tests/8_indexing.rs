@@ -5,7 +5,7 @@ use zyx::{DType, Tensor, ZyxError};
 
 #[test]
 fn b_arange() -> Result<(), ZyxError> {
-    if !Tensor::supports(DType::I64) {
+    if !Tensor::dtype_capability(DType::I64).any() {
         return Ok(());
     }
     let x = Tensor::arange(0i64, 10000, 1i64)?;
@@ -582,7 +582,7 @@ fn cumsum_large_tensor() -> Result<(), ZyxError> {
 
 #[test]
 fn arange_large_range() -> Result<(), ZyxError> {
-    if !Tensor::supports(DType::I64) {
+    if !Tensor::dtype_capability(DType::I64).any() {
         return Ok(());
     }
     let x = Tensor::arange(0i64, 1000, 1i64)?;
