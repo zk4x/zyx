@@ -1258,7 +1258,7 @@ impl CUDADevice {
         kernel: &Kernel,
         debug_asm: bool,
     ) -> Result<(Vec<Dim>, Vec<Dim>, Box<str>, Vec<u8>), BackendError> {
-        let (mut ptx, name, gws, lws) = kernel.generate_ptx(self.compute_capability, &self.dev_info, debug_asm)?;
+        let (mut ptx, name, gws, lws) = kernel.generate_ptx(self.compute_capability, &self.dev_info)?;
         if debug_asm {
             eprintln!("{}", std::str::from_utf8(&ptx).unwrap_or("<invalid utf8>"));
         }

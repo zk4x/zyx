@@ -229,7 +229,6 @@ impl Kernel {
         &self,
         cc: [i32; 2],
         _dev_info: &DeviceInfo,
-        debug: bool,
     ) -> Result<(Vec<u8>, Box<str>, Vec<Dim>, Vec<Dim>), BackendError> {
         let mut comp = Compiler {
             var_map: Map::default(),
@@ -550,7 +549,12 @@ impl Kernel {
                         match dtypes[&x].0.bit_size() {
                             32 => "b32",
                             64 => "b64",
-                            _ => return Err(BackendError { status: ErrorStatus::KernelCompilation, context: format!("PTX: unsupported shift bit size {}", dtypes[&x].0.bit_size()).into() }),
+                            _ => {
+                                return Err(BackendError {
+                                    status: ErrorStatus::KernelCompilation,
+                                    context: format!("PTX: unsupported shift bit size {}", dtypes[&x].0.bit_size()).into(),
+                                });
+                            }
                         }
                     } else {
                         dtypes[&x].0.ptx()
@@ -627,7 +631,7 @@ impl Kernel {
                     }
                 }
                 Op::Barrier => {
-                    _ = writeln!(comp.body, "{}bar.sync 0;", comp.indent);
+                    _ = writeln!(comp.body, "{}bar.sync 1;", comp.indent);
                 }
                 Op::ConstView { .. }
                 | Op::LoadView { .. }
@@ -663,9 +667,6 @@ impl Kernel {
 
         comp.header.push_str(&comp.body);
 
-        if debug {
-            println!("{}", comp.header);
-        }
         Ok((comp.header.into_bytes(), name, gws, lws))
     }
 }
