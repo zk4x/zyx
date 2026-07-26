@@ -1209,13 +1209,19 @@ pub(super) fn initialize_device(
                             let _ = reply.send(Ok(()));
                         }
                         VulkanCommand::Compile { kernel, debug_asm, reply } => {
-                            let (spirv, gws, lws) = send_or_continue!(
-                                crate::backend::spirv::compile(&kernel, debug_asm).map_err(|e| BackendError {
-                                    status: ErrorStatus::KernelCompilation,
-                                    context: format!("SPIR-V: {e}").into()
-                                }),
-                                reply
-                            );
+                            let mut gws = vec![Dim::from(1u64); 3];
+                            let mut lws = vec![Dim::from(1u64); 3];
+                            let mut op_id = kernel.head;
+                            while !op_id.is_null() {
+                                match kernel.ops[op_id].op {
+                                    crate::kernel::Op::GroupIndex { len, axis } => gws[axis as usize] = len,
+                                    crate::kernel::Op::LocalIndex { len, axis } => lws[axis as usize] = len,
+                                    _ => {}
+                                }
+                                op_id = kernel.next_op(op_id);
+                            }
+
+                            let spirv = kernel.generate_spirv(debug_asm);
 
                             let shader_ci = VkShaderModuleCreateInfo {
                                 sType: VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,

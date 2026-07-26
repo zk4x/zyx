@@ -59,6 +59,7 @@
 use crate::runtime::Runtime;
 
 mod backend;
+mod codegen;
 mod dtype;
 mod error;
 mod graph;

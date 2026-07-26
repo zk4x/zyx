@@ -41,7 +41,6 @@ mod dummy;
 mod hip;
 mod host;
 mod opencl;
-mod spirv;
 #[cfg(feature = "tenstorrent")]
 mod tenstorrent;
 mod vulkan;

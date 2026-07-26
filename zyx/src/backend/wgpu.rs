@@ -1,7 +1,7 @@
 // Copyright (C) 2025 zk4x
 // SPDX-License-Identifier: LGPL-3.0-only
 
-use super::{BackendError, Device, DeviceId, DeviceInfo, ErrorStatus, Event, MemoryPool, OpCapability, PoolId, spirv};
+use super::{BackendError, Device, DeviceId, DeviceInfo, ErrorStatus, Event, MemoryPool, OpCapability, PoolId};
 use crate::{
     DType,
     backend::{DeviceProgramId, PoolBufferId},
@@ -394,7 +394,19 @@ impl WGPUDevice {
     }
 
     pub fn compile(&mut self, kernel: &Kernel, debug_asm: bool) -> Result<DeviceProgramId, BackendError> {
-        let (spirv_words, gws, lws) = spirv::compile(kernel, debug_asm)?;
+        let mut gws = vec![Dim::from(1u64); 3];
+        let mut lws = vec![Dim::from(1u64); 3];
+        let mut op_id = kernel.head;
+        while !op_id.is_null() {
+            match kernel.ops[op_id].op {
+                crate::kernel::Op::GroupIndex { len, axis } => gws[axis as usize] = len,
+                crate::kernel::Op::LocalIndex { len, axis } => lws[axis as usize] = len,
+                _ => {}
+            }
+            op_id = kernel.next_op(op_id);
+        }
+
+        let spirv_words = kernel.generate_spirv(debug_asm);
 
         let shader_module = self.device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: None,
