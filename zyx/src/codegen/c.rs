@@ -12,6 +12,7 @@ use crate::{
 use std::{fmt::Write, hash::BuildHasherDefault};
 
 impl Kernel {
+    /// Compile kernel to C source code.
     pub fn generate_c(&self, device_info: &DeviceInfo, has_openmp: bool, name: &str) -> Result<String, BackendError> {
         let (dtypes, rcs) = self.compute_dtypes_and_rcs();
 

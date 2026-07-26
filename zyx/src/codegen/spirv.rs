@@ -390,6 +390,7 @@ fn elem_stride(dt: DType) -> usize {
 }
 
 impl Kernel {
+    /// Compile kernel to SPIR-V binary.
     pub fn generate_spirv(&self, debug_asm: bool) -> Result<Vec<u32>, BackendError> {
         use OpCode::*;
         let dtypes = compute_dtypes(self);

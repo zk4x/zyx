@@ -16,6 +16,7 @@ const VEC_COMPONENTS: [&str; 16] = [
 ];
 
 impl Kernel {
+    /// Compile kernel to OpenCL C source code.
     pub fn generate_opencl(&self, _device_info: &DeviceInfo, name: &str) -> Result<String, BackendError> {
         let mut global_args = String::new();
         let mut op_id = self.head;
@@ -50,7 +51,10 @@ impl Kernel {
         while !op_id.is_null() {
             match self.ops[op_id].op {
                 Op::ConstView { .. } | Op::LoadView { .. } | Op::StoreView { .. } | Op::Reduce { .. } | Op::Move { .. } => {
-                    return Err(BackendError { status: ErrorStatus::KernelCompilation, context: "OpenCL codegen: unexpected kernel op (should be unfolded)".into() });
+                    return Err(BackendError {
+                        status: ErrorStatus::KernelCompilation,
+                        context: "OpenCL codegen: unexpected kernel op (should be unfolded)".into(),
+                    });
                 }
                 Op::Const(x) => {
                     constants.insert(op_id, x);
@@ -73,7 +77,7 @@ impl Kernel {
                     }
                 }
                 Op::Load { src, index, layout } => {
-                    if let Some(&rc) = rcs.get(&op_id) {
+                    if rcs.contains_key(&op_id) {
                         let dtype = dtypes[&op_id];
                         let idx = get_var(index, &constants, &indices, &reg_map, &mut registers, loop_id)?;
                         let reg = new_reg(op_id, &mut reg_map, &mut registers, dtype, rcs[&op_id], loop_id);
@@ -188,7 +192,12 @@ impl Kernel {
                     let dtype = dtypes[&op_id];
                     let vlen = match dtype.1 {
                         MemLayout::Vector(len) => len,
-                        _ => return Err(BackendError { status: ErrorStatus::KernelCompilation, context: "OpenCL codegen: Vectorize requires Vector layout".into() }),
+                        _ => {
+                            return Err(BackendError {
+                                status: ErrorStatus::KernelCompilation,
+                                context: "OpenCL codegen: Vectorize requires Vector layout".into(),
+                            });
+                        }
                     };
                     _ = writeln!(source, "{indent}r{reg} = ({})({vars});", dtype.0.ocl_vec_type(vlen));
                 }
@@ -254,7 +263,12 @@ impl Kernel {
                                 BOp::Eq => writeln!(source, "{indent}r{reg} = {x} == {y};"),
                             }
                         }
-                        MemLayout::Tile { .. } => return Err(BackendError { status: ErrorStatus::KernelCompilation, context: "OpenCL codegen: Tile layout not supported for Binary".into() }),
+                        MemLayout::Tile { .. } => {
+                            return Err(BackendError {
+                                status: ErrorStatus::KernelCompilation,
+                                context: "OpenCL codegen: Tile layout not supported for Binary".into(),
+                            });
+                        }
                     }
                 }
                 Op::Mad { x, y, z } => {
@@ -320,7 +334,11 @@ impl Kernel {
                 match dt.1 {
                     MemLayout::Scalar => dt.0.ocl().to_string(),
                     MemLayout::Vector(len) => dt.0.ocl_vec_type(len),
-                    MemLayout::Tile { .. } => return Err(BackendError { status: ErrorStatus::KernelCompilation, context: "OpenCL codegen: Tile layout not supported in register declarations".into() }),
+                    MemLayout::Tile { .. } =>
+                        return Err(BackendError {
+                            status: ErrorStatus::KernelCompilation,
+                            context: "OpenCL codegen: Tile layout not supported in register declarations".into()
+                        }),
                 }
             );
             let mut i = 1;
@@ -334,7 +352,11 @@ impl Kernel {
                         match dt.1 {
                             MemLayout::Scalar => dt.0.ocl().to_string(),
                             MemLayout::Vector(len) => dt.0.ocl_vec_type(len),
-                            MemLayout::Tile { .. } => return Err(BackendError { status: ErrorStatus::KernelCompilation, context: "OpenCL codegen: Tile layout not supported in register declarations".into() }),
+                            MemLayout::Tile { .. } =>
+                                return Err(BackendError {
+                                    status: ErrorStatus::KernelCompilation,
+                                    context: "OpenCL codegen: Tile layout not supported in register declarations".into()
+                                }),
                         }
                     );
                 }
@@ -396,7 +418,10 @@ fn get_var(
         }
         Ok(format!("r{reg}"))
     } else {
-        Err(BackendError { status: ErrorStatus::KernelCompilation, context: format!("OpenCL codegen: variable {op_id} not found").into() })
+        Err(BackendError {
+            status: ErrorStatus::KernelCompilation,
+            context: format!("OpenCL codegen: variable {op_id} not found").into(),
+        })
     }
 }
 

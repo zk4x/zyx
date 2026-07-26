@@ -16,6 +16,7 @@ const VEC_COMPONENTS: [&str; 16] = [
 ];
 
 impl Kernel {
+    /// Compile kernel to CUDA C++ source code.
     pub fn generate_cuda(&self, _device_info: &DeviceInfo, name: &str) -> Result<String, BackendError> {
         use std::fmt::Write;
 
@@ -83,7 +84,7 @@ impl Kernel {
                     }
                 }
                 Op::Load { src, index, layout } => {
-                    if let Some(&rc) = rcs.get(&op_id) {
+                    if rcs.contains_key(&op_id) {
                         let dtype = dtypes[&op_id];
                         let idx = get_var(index, &constants, &indices, &reg_map, &mut registers, loop_id)?;
                         let reg = new_reg(op_id, &mut reg_map, &mut registers, dtype, rcs[&op_id], loop_id);
@@ -96,24 +97,23 @@ impl Kernel {
                                     dtype.0.cu_vec_type(len)
                                 )
                             }
-                            MemLayout::Tile { x, y, stride } => todo!(),
+                            MemLayout::Tile { .. } => todo!(),
                         }
                     }
                 }
                 Op::Store { dst, x: src, index, layout } => {
                     let idx = get_var(index, &constants, &indices, &reg_map, &mut registers, loop_id)?;
                     let x = get_var(src, &constants, &indices, &reg_map, &mut registers, loop_id)?;
-                    let cu_type = dtypes[&src].0.cu();
                     match layout {
                         MemLayout::Scalar => _ = writeln!(source, "{indent}p{dst}[{idx}] = {x};"),
                         MemLayout::Vector(len) => {
                             let vec_type = dtypes[&src].0.cu_vec_type(len);
                             _ = writeln!(source, "{indent}*reinterpret_cast<{vec_type}*>(&p{dst}[{idx}]) = {x};",);
                         }
-                        MemLayout::Tile { x, y, stride } => todo!(),
+                        MemLayout::Tile { .. } => todo!(),
                     }
                 }
-                Op::Wmma { dims, layout, dtype, c, a, b } => {
+                Op::Wmma { c, a, b, .. } => {
                     helper_funcs += r#"__device__ float4 wmma_m16n8k8_row_col_f32_f16_f16_f32(half4 a, half2 b, float4 c) {
   int *a_pk = (int *)(&a), *b_pk = (int *)(&b), *c_pk = (int *)(&c);
   asm("mma.sync.aligned.m16n8k8.row.col.f32.f16.f16.f32"
