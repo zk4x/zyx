@@ -408,8 +408,6 @@ impl Kernel {
     ) -> Result<(DeviceProgramId, OptSeq, u64), BackendError> {
         let mut kernel = self.clone();
 
-        kernel.debug();
-
         kernel.run_always_on_optimizations();
         kernel.run_always_on_optimizations();
 
@@ -421,6 +419,10 @@ impl Kernel {
 
         kernel.opt_tenstorrent_pad();
         kernel.opt_tenstorrent_local();
+        kernel.run_always_on_optimizations();
+        kernel.debug();
+        kernel.opt_tenstorrent_group();
+        kernel.debug();
 
         /*kernel.vectorize_loads(&[32]);
         kernel.vectorize_stores(&[32]);
@@ -433,7 +435,7 @@ impl Kernel {
         kernel.run_always_on_optimizations();
         kernel.run_always_on_optimizations();
 
-        kernel.debug();
+        todo!();
 
         let args = kernel.alloc_buffers(memory_pool, None)?;
         let (program_id, timing) =

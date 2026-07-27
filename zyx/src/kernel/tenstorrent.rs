@@ -8,6 +8,18 @@ use crate::{
     shape::Dim,
 };
 
+fn gather_deps(kernel: &Kernel, seeds: &[OpId]) -> Set<OpId> {
+    let mut visited = Set::default();
+    let mut stack: Vec<OpId> = seeds.iter().copied().collect();
+    while let Some(id) = stack.pop() {
+        if !visited.insert(id) {
+            continue;
+        }
+        stack.extend(kernel.ops[id].op.parameters());
+    }
+    visited
+}
+
 fn round_up(len: Dim, multiple: Dim) -> Dim {
     let rem = len % multiple;
     if rem == 0 { 0 } else { multiple - rem }
@@ -234,5 +246,67 @@ impl Kernel {
                 self.insert_after(insert_point, Op::Store { dst, x: scalar_load, index: store_idx, layout: MemLayout::Scalar });
             insert_point = global_store;
         }
+    }
+
+    pub(crate) fn opt_tenstorrent_group(&mut self) {
+        let mut barriers = Vec::new();
+        let mut op_id = self.head;
+        while !op_id.is_null() {
+            if let Op::Barrier = self.at(op_id) {
+                barriers.push(op_id);
+            }
+            op_id = self.next_op(op_id);
+        }
+        if barriers.len() != 2 {
+            return;
+        }
+        let barrier1 = barriers[0];
+        let barrier2 = barriers[1];
+
+        let mut stores1 = Vec::new();
+        let mut stores2 = Vec::new();
+        let mut stores3 = Vec::new();
+        let mut phase = 0u8;
+        let mut op_id = self.head;
+        while !op_id.is_null() {
+            if op_id == barrier1 {
+                phase = 1;
+            } else if op_id == barrier2 {
+                phase = 2;
+            } else if let Op::Store { .. } = self.at(op_id) {
+                match phase {
+                    0 => stores1.push(op_id),
+                    1 => stores2.push(op_id),
+                    2 => stores3.push(op_id),
+                    _ => unreachable!(),
+                }
+            }
+            op_id = self.next_op(op_id);
+        }
+
+        let set1 = gather_deps(self, &stores1);
+        let set2 = gather_deps(self, &stores2);
+
+        let is_sticky = |k: &Kernel, id: OpId| -> bool { matches!(k.ops[id].op, Op::Define { .. } | Op::Const(_) | Op::Barrier) };
+
+        let mut order_rev = Vec::new();
+        let mut op_id = self.tail;
+        while !op_id.is_null() {
+            order_rev.push(op_id);
+            op_id = self.prev_op(op_id);
+        }
+
+        for op_id in order_rev {
+            if is_sticky(self, op_id) {
+                continue;
+            }
+            if !set1.contains(&op_id) && !set2.contains(&op_id) {
+                self.move_op_after(op_id, barrier2);
+            } else if !set1.contains(&op_id) {
+                self.move_op_after(op_id, barrier1);
+            }
+        }
+
+        self.verify();
     }
 }
