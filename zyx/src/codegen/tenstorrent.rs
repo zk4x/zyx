@@ -44,13 +44,13 @@ impl Kernel {
         let mut indent = String::from("  ");
         writeln!(reader, "{indent}Noc noc;");
 
-        let mut op_id = kernel.head;
+        let mut op_id = self.head;
         {
             const PAGE_SIZE: u32 = 4096;
             let mut input_arg_idx = 0u32;
             let mut loop_depth = 0u32;
             while !op_id.is_null() {
-                match kernel.ops[op_id].op {
+                match self.ops[op_id].op {
                     Op::Define { dtype: _, scope, ro, .. } => match scope {
                         Scope::Global => {
                             if ro {
@@ -73,16 +73,16 @@ impl Kernel {
                     },
                     Op::Load { .. } => {}
                     Op::Store { dst, x, index: st_idx, layout: st_layout } => {
-                        let Op::Load { src, index: ld_idx, layout: ld_layout } = kernel.ops[x].op else {
+                        let Op::Load { src, index: ld_idx, layout: ld_layout } = self.ops[x].op else {
                             panic!("tenstorrent supports only global to local loads in reader kernels with no ops inbetween")
                         };
-                        let Op::Define { scope: Scope::Global, ro, .. } = kernel.ops[src].op else {
+                        let Op::Define { scope: Scope::Global, ro, .. } = self.ops[src].op else {
                             unreachable!()
                         };
                         if !ro {
                             continue;
                         }
-                        let Op::Define { dtype, scope: Scope::Local, .. } = kernel.ops[dst].op else {
+                        let Op::Define { dtype, scope: Scope::Local, .. } = self.ops[dst].op else {
                             unreachable!()
                         };
 
@@ -103,7 +103,7 @@ impl Kernel {
                         }
                     }
                     Op::Binary { x, y, bop } => {
-                        let dt = kernel.dtype(op_id);
+                        let dt = self.dtype(op_id);
                         let _ = match bop {
                             BOp::Add => writeln!(reader, "{indent}{} r{op_id} = r{x} + r{y};", dt.c_type()),
                             BOp::Sub => writeln!(reader, "{indent}{} r{op_id} = r{x} - r{y};", dt.c_type()),
@@ -149,7 +149,7 @@ impl Kernel {
                     }
                     ref op => todo!("{op:?}"),
                 }
-                op_id = kernel.next_op(op_id);
+                op_id = self.next_op(op_id);
             }
             writeln!(reader, "{indent}noc.async_read_barrier();");
             for cb_id in input_cb_map.values() {
@@ -157,7 +157,7 @@ impl Kernel {
             }
             writeln!(reader, "}}");
         }
-        op_id = kernel.next_op(op_id);
+        op_id = self.next_op(op_id);
 
         if debug_asm {
             println!("[tenstorrent] reader:\n{reader}");
@@ -198,7 +198,7 @@ impl Kernel {
 
             let mut has_sin = false;
             let mut has_binary = false;
-            let (_dtypes, rcs) = kernel.compute_dtypes_and_rcs();
+            let (_dtypes, rcs) = self.compute_dtypes_and_rcs();
             let mut dst_slots: Map<OpId, Vec<u32>> = Map::default();
             let mut consumer_count: Map<OpId, u32> = Map::default();
             let mut next_slot = 0u32;
@@ -210,13 +210,13 @@ impl Kernel {
                     let mut stores = Vec::new();
                     let mut scan = op_id;
                     while !scan.is_null() {
-                        if let Op::Barrier = kernel.ops[scan].op {
+                        if let Op::Barrier = self.ops[scan].op {
                             break;
                         }
-                        if let Op::Store { .. } = kernel.ops[scan].op {
+                        if let Op::Store { .. } = self.ops[scan].op {
                             stores.push(scan);
                         }
-                        scan = kernel.next_op(scan);
+                        scan = self.next_op(scan);
                     }
                     stores
                 };
@@ -227,14 +227,14 @@ impl Kernel {
                         if !deps.insert(id) {
                             continue;
                         }
-                        stack.extend(kernel.ops[id].op.parameters());
+                        stack.extend(self.ops[id].op.parameters());
                     }
                     deps
                 };
-                let mut scan = kernel.head;
+                let mut scan = self.head;
                 while scan != op_id {
                     if compute_deps.contains(&scan) {
-                        match &kernel.ops[scan].op {
+                        match &self.ops[scan].op {
                             Op::GroupIndex { axis, .. } => {
                                 writeln!(
                                     compute,
@@ -246,7 +246,7 @@ impl Kernel {
                                 writeln!(compute, "{indent}{} r{scan} = {};", val.dtype().c_type(), val.c_code());
                             }
                             Op::Binary { x, y, bop } => {
-                                let dt = kernel.dtype(scan);
+                                let dt = self.dtype(scan);
                                 let _ = match bop {
                                     BOp::Add => writeln!(compute, "{indent}{} r{scan} = r{x} + r{y};", dt.c_type()),
                                     BOp::Sub => writeln!(compute, "{indent}{} r{scan} = r{x} - r{y};", dt.c_type()),
@@ -262,21 +262,21 @@ impl Kernel {
                             _ => {}
                         }
                     }
-                    scan = kernel.next_op(scan);
+                    scan = self.next_op(scan);
                 }
             }
 
             // First pass: collect init headers from ops
             let mut scan = op_id;
             while !scan.is_null() {
-                match kernel.ops[scan].op {
+                match self.ops[scan].op {
                     Op::Cast { .. } => {}
                     Op::Unary { uop: UOp::Sin, .. } => has_sin = true,
                     Op::Binary { bop: BOp::Add, .. } => has_binary = true,
                     Op::Barrier => break,
                     _ => {}
                 }
-                scan = kernel.next_op(scan);
+                scan = self.next_op(scan);
             }
 
             if has_sin {
@@ -289,7 +289,7 @@ impl Kernel {
             let mut load_input_cbs: Vec<u32> = Vec::new();
             let mut pre_scan = op_id;
             while !pre_scan.is_null() {
-                match kernel.ops[pre_scan].op {
+                match self.ops[pre_scan].op {
                     Op::Load { src, layout: MemLayout::Tile { .. }, .. } => {
                         if let Some(&cb_id) = input_cb_map.get(&src) {
                             if !load_input_cbs.contains(&cb_id) {
@@ -300,7 +300,7 @@ impl Kernel {
                     Op::Barrier => break,
                     _ => {}
                 }
-                pre_scan = kernel.next_op(pre_scan);
+                pre_scan = self.next_op(pre_scan);
             }
             for &cb_id in &load_input_cbs {
                 writeln!(compute, "{indent}cb{cb_id}.wait_front(1);");
@@ -308,7 +308,7 @@ impl Kernel {
             writeln!(compute, "{indent}tile_regs_acquire();");
 
             while !op_id.is_null() {
-                match kernel.ops[op_id].op {
+                match self.ops[op_id].op {
                     Op::Load { src, index: _, layout: MemLayout::Tile { .. } } => {
                         if let Some(&cb_id) = input_cb_map.get(&src) {
                             let n = rcs.get(&op_id).copied().unwrap_or(1).max(1) as usize;
@@ -359,7 +359,7 @@ impl Kernel {
                     Op::Barrier => break,
                     ref op => todo!("{op:?}"),
                 }
-                op_id = kernel.next_op(op_id);
+                op_id = self.next_op(op_id);
             }
             writeln!(compute, "{indent}tile_regs_commit();");
             writeln!(compute, "{indent}tile_regs_wait();");
@@ -383,7 +383,7 @@ impl Kernel {
 
         // Generate writer kernel source
         let mut writer = String::new();
-        op_id = kernel.next_op(op_id);
+        op_id = self.next_op(op_id);
 
         const PAGE_SIZE: u32 = 4096;
         writeln!(writer, "#include <cstdint>");
@@ -400,9 +400,9 @@ impl Kernel {
 
         let mut out_global_count = 0u32;
         {
-            let mut scan = kernel.head;
+            let mut scan = self.head;
             while !scan.is_null() {
-                if let Op::Define { scope: Scope::Global, ro: false, .. } = kernel.ops[scan].op {
+                if let Op::Define { scope: Scope::Global, ro: false, .. } = self.ops[scan].op {
                     writeln!(writer, "{indent}uint32_t out{scan} = get_arg_val<uint32_t>({out_global_count});");
                     writeln!(
                         writer,
@@ -412,7 +412,7 @@ impl Kernel {
                     writeln!(writer, "{indent}auto p_out{scan} = TensorAccessor(args_out{scan}, out{scan}, {PAGE_SIZE});");
                     out_global_count += 1;
                 }
-                scan = kernel.next_op(scan);
+                scan = self.next_op(scan);
             }
         }
 
@@ -423,11 +423,11 @@ impl Kernel {
             let mut depth = 0u32;
             let mut in_loop_cbs: Vec<u32> = Vec::new();
             while !scan.is_null() {
-                match kernel.ops[scan].op {
+                match self.ops[scan].op {
                     Op::Loop { .. } => depth += 1,
                     Op::EndLoop => depth -= 1,
                     Op::Store { x, .. } if depth > 0 => {
-                        if let Op::Load { src, .. } = kernel.ops[x].op {
+                        if let Op::Load { src, .. } = self.ops[x].op {
                             if let Some(&cb_id) = output_cb_map.get(&src) {
                                 if !in_loop_cbs.contains(&cb_id) {
                                     in_loop_cbs.push(cb_id);
@@ -438,7 +438,7 @@ impl Kernel {
                     Op::Barrier if depth == 0 => break,
                     _ => {}
                 }
-                scan = kernel.next_op(scan);
+                scan = self.next_op(scan);
             }
             if !in_loop_cbs.is_empty() {
                 writer_loop_cbs = in_loop_cbs;
@@ -452,13 +452,13 @@ impl Kernel {
                 let mut stores = Vec::new();
                 let mut scan = op_id;
                 while !scan.is_null() {
-                    if let Op::Barrier = kernel.ops[scan].op {
+                    if let Op::Barrier = self.ops[scan].op {
                         break;
                     }
-                    if let Op::Store { .. } = kernel.ops[scan].op {
+                    if let Op::Store { .. } = self.ops[scan].op {
                         stores.push(scan);
                     }
-                    scan = kernel.next_op(scan);
+                    scan = self.next_op(scan);
                 }
                 stores
             };
@@ -469,15 +469,15 @@ impl Kernel {
                     if !deps.insert(id) {
                         continue;
                     }
-                    stack.extend(kernel.ops[id].op.parameters());
+                    stack.extend(self.ops[id].op.parameters());
                 }
                 deps
             };
 
-            let mut scan = kernel.head;
+            let mut scan = self.head;
             while scan != op_id {
                 if writer_deps.contains(&scan) {
-                    match &kernel.ops[scan].op {
+                    match &self.ops[scan].op {
                         Op::GroupIndex { axis, .. } => {
                             writeln!(writer, "{indent}uint32_t r{scan} = get_arg_val<uint32_t>({});", n_outputs + *axis as usize);
                         }
@@ -485,7 +485,7 @@ impl Kernel {
                             writeln!(writer, "{indent}{} r{scan} = {};", val.dtype().c_type(), val.c_code());
                         }
                         Op::Binary { x, y, bop } => {
-                            let dt = kernel.dtype(scan);
+                            let dt = self.dtype(scan);
                             let _ = match bop {
                                 BOp::Add => writeln!(writer, "{indent}{} r{scan} = r{x} + r{y};", dt.c_type()),
                                 BOp::Sub => writeln!(writer, "{indent}{} r{scan} = r{x} - r{y};", dt.c_type()),
@@ -502,20 +502,20 @@ impl Kernel {
                         _ => {}
                     }
                 }
-                scan = kernel.next_op(scan);
+                scan = self.next_op(scan);
             }
         }
 
         let mut loop_depth = 0u32;
         while !op_id.is_null() {
-            match kernel.ops[op_id].op {
+            match self.ops[op_id].op {
                 Op::Store { dst, x, index: st_idx, layout } => {
                     if layout != MemLayout::Scalar {
                         todo!("add support for non-scalar stores back to DRAM")
                     }
-                    if let Op::Load { src, .. } = kernel.ops[x].op {
+                    if let Op::Load { src, .. } = self.ops[x].op {
                         if let Some(&cb_id) = output_cb_map.get(&src) {
-                            let Op::Define { dtype, .. } = kernel.ops[dst].op else {
+                            let Op::Define { dtype, .. } = self.ops[dst].op else {
                                 unreachable!()
                             };
                             let elem_size = dtype.bit_size() as u32 / 8;
@@ -543,7 +543,7 @@ impl Kernel {
                     writeln!(writer, "{indent}{} r{op_id} = r{x};", dtype.c_type());
                 }
                 Op::Binary { x, y, bop } => {
-                    let dt = kernel.dtype(op_id);
+                    let dt = self.dtype(op_id);
                     let _ = match bop {
                         BOp::Add => writeln!(writer, "{indent}{} r{op_id} = r{x} + r{y};", dt.c_type()),
                         BOp::Sub => writeln!(writer, "{indent}{} r{op_id} = r{x} - r{y};", dt.c_type()),
@@ -579,7 +579,7 @@ impl Kernel {
                 Op::Barrier => break,
                 ref op => todo!("{op:?}"),
             }
-            op_id = kernel.next_op(op_id);
+            op_id = self.next_op(op_id);
         }
         writeln!(writer, "}}");
 

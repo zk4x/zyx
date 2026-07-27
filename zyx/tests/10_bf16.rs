@@ -152,7 +152,7 @@ fn bf16_add5() -> Result<(), ZyxError> {
         return Ok(());
     }
 
-    let n = 2048;
+    let n = 2048u32;
     let a_data: Vec<bf16> = (0..n).map(|i| bf16::from_f32((i % 5) as f32)).collect();
     let b_data: Vec<bf16> = (0..n).map(|i| bf16::from_f32(((n - 1 - i) % 5) as f32)).collect();
     let a = Tensor::from(a_data);
