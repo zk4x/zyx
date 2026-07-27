@@ -37,7 +37,6 @@
 #![allow(clippy::derived_hash_with_manual_eq)]
 
 use crate::backend::{AutotuneConfig, Device, DeviceInfo, DeviceProgramId, MemoryPool, PoolBufferId};
-use crate::dtype::Constant;
 use crate::error::{BackendError, ErrorStatus};
 use crate::hashers::AHasher;
 use crate::kernel::cost::Cost;
@@ -287,7 +286,7 @@ impl Optimization {
                 };
                 let pad_len = (pad_to - current_len % pad_to) % pad_to;
                 if pad_len > 0 {
-                    kernel.pad_index(gidx_id, current_len, pad_len, Constant::idx(0));
+                    kernel.pad_index(gidx_id, pad_len);
                 }
             }
             Optimization::Vectorize { supported_lens, vectorize_ops } => {
@@ -408,18 +407,18 @@ impl Kernel {
     ) -> Result<(DeviceProgramId, OptSeq, u64), BackendError> {
         let mut kernel = self.clone();
 
+        kernel.debug();
+
         kernel.run_always_on_optimizations();
         kernel.run_always_on_optimizations();
 
-        #[cfg(feature = "tenstorrent")]
+        /*#[cfg(feature = "tenstorrent")]
         if let Device::TT(_) = device {
             kernel.tenstorrent_tile();
         }
-        kernel.verify();
+        kernel.verify();*/
 
-        let (opt, _) = kernel.opt_pad_index();
-        opt.apply(&mut kernel, 0);
-        kernel.run_always_on_optimizations();
+        kernel.opt_tenstorrent_pad();
 
         /*kernel.vectorize_loads(&[32]);
         kernel.vectorize_stores(&[32]);
@@ -433,6 +432,7 @@ impl Kernel {
         kernel.run_always_on_optimizations();
 
         kernel.debug();
+        todo!();
 
         let args = kernel.alloc_buffers(memory_pool, None)?;
         let (program_id, timing) =

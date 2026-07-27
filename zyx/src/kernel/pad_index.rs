@@ -36,7 +36,7 @@ impl Kernel {
     ///
     /// # Panics
     /// - If `gidx_id` is not an `Op::Index` node.
-    pub(crate) fn pad_index(&mut self, gidx_id: OpId, current_len: Dim, pad_len: Dim, _pad_value: Constant) {
+    pub(crate) fn pad_index(&mut self, gidx_id: OpId, pad_len: Dim) {
         if pad_len == 0 {
             return;
         }
@@ -45,6 +45,7 @@ impl Kernel {
         let Op::GroupIndex { len, .. } = &mut self.ops[gidx_id].op else {
             panic!("pad_index: op is not an Index");
         };
+        let current_len = *len;
         *len = current_len + pad_len;
 
         // 2. Create limit constant for comparison
