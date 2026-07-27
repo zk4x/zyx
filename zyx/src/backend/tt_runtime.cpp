@@ -462,96 +462,88 @@ int main() {
 
         // Circular buffers from cached config
         constexpr uint32_t tiles_per_cb = 2;
-        auto mk_cb_per_core = [&](auto &prog, uint32_t cb_idx, uint32_t fmt, uint32_t tb, CoreCoord core) {
+
+        // Build CoreRangeSet covering all cores
+        CoreCoord start_core{0, 0};
+        CoreCoord end_core{gidx1_sz - 1, gidx0_sz - 1};
+        CoreRangeSet all_cores(CoreRange(start_core, end_core));
+
+        // Create CBs on all cores at once (standard TT pattern)
+        for (uint32_t i = 0; i < cfg.cb_indices.size(); i++) {
           DataFormat df;
-          switch (fmt) {
-          case 0:
-            df = DataFormat::Float32;
-            break;
-          case 1:
-            df = DataFormat::Float16;
-            break;
-          case 2:
-            df = DataFormat::Float16_b;
-            break;
-          default:
-            throw runtime_error("unsupported data_format " + to_string(fmt));
-            break;
+          switch (cfg.cb_formats[i]) {
+          case 0: df = DataFormat::Float32; break;
+          case 1: df = DataFormat::Float16; break;
+          case 2: df = DataFormat::Float16_b; break;
+          default: throw runtime_error("unsupported data_format " + to_string(cfg.cb_formats[i]));
           }
           CreateCircularBuffer(
-              prog, core,
-              CircularBufferConfig(tiles_per_cb * tb, {{cb_idx, df}})
-                  .set_page_size(cb_idx, tb));
-        };
+              program, all_cores,
+              CircularBufferConfig(tiles_per_cb * cfg.cb_tile_bytes[i], {{static_cast<CBIndex>(cfg.cb_indices[i]), df}})
+                  .set_page_size(static_cast<CBIndex>(cfg.cb_indices[i]), cfg.cb_tile_bytes[i]));
+        }
 
+        // Create ONE reader kernel on all cores (standard TT SPMD pattern)
+        cerr << "[TT] creating reader kernel on cores [0,0.." << (gidx1_sz-1) << "," << (gidx0_sz-1) << "]" << endl;
+        auto reader = CreateKernelFromString(
+            program, cfg.reader_source, all_cores,
+            DataMovementConfig{
+                .processor = DataMovementProcessor::RISCV_0,
+                .noc = NOC::RISCV_0_default,
+                .noc_mode = NOC_MODE::DM_DEDICATED_NOC,
+                .compile_args = reader_compile_args,
+                .defines = {},
+                .named_compile_args = {},
+                .opt_level = KernelBuildOptLevel::O2,
+                .compiler_include_paths = {},
+            });
+
+        // Create ONE writer kernel on all cores
+        cerr << "[TT] creating writer kernel on cores [0,0.." << (gidx1_sz-1) << "," << (gidx0_sz-1) << "]" << endl;
+        auto writer = CreateKernelFromString(
+            program, cfg.writer_source, all_cores,
+            DataMovementConfig{
+                .processor = DataMovementProcessor::RISCV_1,
+                .noc = NOC::RISCV_1_default,
+                .noc_mode = NOC_MODE::DM_DEDICATED_NOC,
+                .compile_args = writer_compile_args,
+                .defines = {},
+                .named_compile_args = {},
+                .opt_level = KernelBuildOptLevel::O2,
+                .compiler_include_paths = {},
+            });
+
+        // Create ONE compute kernel on all cores
+        cerr << "[TT] creating compute kernel on cores [0,0.." << (gidx1_sz-1) << "," << (gidx0_sz-1) << "]" << endl;
+        auto compute = CreateKernelFromString(
+            program, cfg.compute_source, all_cores,
+            ComputeConfig{
+                .math_fidelity = MathFidelity::HiFi4,
+                .fp32_dest_acc_en = true,
+                .dst_full_sync_en = false,
+                .unpack_to_dest_mode = {},
+                .bfp8_pack_precise = false,
+                .math_approx_mode = false,
+                .compile_args = {},
+                .defines = {},
+                .named_compile_args = {},
+                .opt_level = KernelBuildOptLevel::O3,
+                .compiler_include_paths = {},
+            });
+
+        // Set per-core runtime args using the single kernel handle
         for (uint32_t row = 0; row < gidx0_sz; row++) {
           for (uint32_t col = 0; col < gidx1_sz; col++) {
             CoreCoord core = {col, row};
-
-            // Create CBs for this core
-            for (uint32_t i = 0; i < cfg.cb_indices.size(); i++) {
-              mk_cb_per_core(program,
-                static_cast<CBIndex>(cfg.cb_indices[i]),
-                cfg.cb_formats[i], cfg.cb_tile_bytes[i], core);
-            }
-
-            cerr << "[TT] creating reader kernel on core {" << col << "," << row << "}" << endl;
-            auto reader = CreateKernelFromString(
-                program, cfg.reader_source, core,
-                DataMovementConfig{
-                    .processor = DataMovementProcessor::RISCV_0,
-                    .noc = NOC::RISCV_0_default,
-                    .noc_mode = NOC_MODE::DM_DEDICATED_NOC,
-                    .compile_args = reader_compile_args,
-                    .defines = {},
-                    .named_compile_args = {},
-                    .opt_level = KernelBuildOptLevel::O2,
-                    .compiler_include_paths = {},
-                });
-
-            cerr << "[TT] creating writer kernel on core {" << col << "," << row << "}" << endl;
-            auto writer = CreateKernelFromString(
-                program, cfg.writer_source, core,
-                DataMovementConfig{
-                    .processor = DataMovementProcessor::RISCV_1,
-                    .noc = NOC::RISCV_1_default,
-                    .noc_mode = NOC_MODE::DM_DEDICATED_NOC,
-                    .compile_args = writer_compile_args,
-                    .defines = {},
-                    .named_compile_args = {},
-                    .opt_level = KernelBuildOptLevel::O2,
-                    .compiler_include_paths = {},
-                });
-
-            cerr << "[TT] creating compute kernel on core {" << col << "," << row << "}" << endl;
-            auto compute = CreateKernelFromString(
-                program, cfg.compute_source, core,
-                ComputeConfig{
-                    .math_fidelity = MathFidelity::HiFi4,
-                    .fp32_dest_acc_en = true,
-                    .dst_full_sync_en = false,
-                    .unpack_to_dest_mode = {},
-                    .bfp8_pack_precise = false,
-                    .math_approx_mode = false,
-                    .compile_args = {},
-                    .defines = {},
-                    .named_compile_args = {},
-                    .opt_level = KernelBuildOptLevel::O3,
-                    .compiler_include_paths = {},
-                });
-
-            // Set runtime args — buffer addresses + gidx values
-            cerr << "[TT] setting rt args on core {" << col << "," << row << "}" << endl;
             {
               vector<uint32_t> reader_rt_args;
               for (uint32_t i = 0; i < n_inputs; i++) {
                 uint64_t a = buffers[src_indices[i]]->address();
                 reader_rt_args.push_back(static_cast<uint32_t>(a));
               }
-              // gidx0 (row) — axis after buffer args
               reader_rt_args.push_back(row);
-              // gidx1 (col) — axis after gidx0
               reader_rt_args.push_back(col);
+              cerr << "[TT_RT] reader core={" << col << "," << row << "} gidx0=" << row << " gidx1=" << col << endl;
               SetRuntimeArgs(program, reader, core, reader_rt_args);
             }
             {
@@ -560,10 +552,9 @@ int main() {
                 uint64_t a = buffers[dst_indices[i]]->address();
                 writer_rt_args.push_back(static_cast<uint32_t>(a));
               }
-              // gidx0 (row) — axis after buffer args
               writer_rt_args.push_back(row);
-              // gidx1 (col) — axis after gidx0
               writer_rt_args.push_back(col);
+              cerr << "[TT_RT] writer core={" << col << "," << row << "} gidx0=" << row << " gidx1=" << col << endl;
               SetRuntimeArgs(program, writer, core, writer_rt_args);
             }
             {
