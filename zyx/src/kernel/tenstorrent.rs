@@ -84,6 +84,8 @@ impl Kernel {
             }
             _ => {}
         }
+
+        self.verify();
     }
 
     pub(crate) fn opt_tenstorrent_local(&mut self) {
@@ -246,6 +248,8 @@ impl Kernel {
                 self.insert_after(insert_point, Op::Store { dst, x: scalar_load, index: store_idx, layout: MemLayout::Scalar });
             insert_point = global_store;
         }
+
+        self.verify();
     }
 
     pub(crate) fn opt_tenstorrent_group(&mut self) {
@@ -308,5 +312,67 @@ impl Kernel {
         }
 
         self.verify();
+    }
+
+    pub(crate) fn opt_tenstorrent_loop_local(&mut self) {
+        let mut lidxs: Vec<(u32, OpId, u32)> = Vec::new();
+        let mut op_id = self.head;
+        while !op_id.is_null() {
+            if let Op::LocalIndex { len, axis } = self.at(op_id) {
+                lidxs.push((*axis, op_id, *len as u32));
+            }
+            op_id = self.next_op(op_id);
+        }
+        if lidxs.is_empty() {
+            return;
+        }
+        lidxs.sort_by_key(|&(axis, _, _)| axis);
+
+        let mut barriers = Vec::new();
+        let mut op_id = self.head;
+        while !op_id.is_null() {
+            if let Op::Barrier = self.at(op_id) {
+                barriers.push(op_id);
+            }
+            op_id = self.next_op(op_id);
+        }
+        if barriers.len() != 2 {
+            return;
+        }
+        let barrier1 = barriers[0];
+        let barrier2 = barriers[1];
+
+        let const_32 = self.insert_before(barrier1, Op::Const(Constant::idx(32u32)));
+
+        for &(_axis, _id, _len) in lidxs.iter().rev() {
+            self.insert_before(barrier1, Op::EndLoop);
+        }
+
+        let mut new_loops = Vec::new();
+        let mut insert_after = barrier2;
+        for &(_axis, _id, _len) in &lidxs {
+            let loop_op = self.insert_after(insert_after, Op::Loop { len: const_32 });
+            new_loops.push(loop_op);
+            insert_after = loop_op;
+        }
+
+        let mut replace_map: Map<OpId, OpId> = Map::default();
+        for ((_axis, old_id, _len), new_loop) in lidxs.iter().zip(new_loops.iter()) {
+            replace_map.insert(*old_id, *new_loop);
+        }
+
+        let mut op_id = self.next_op(barrier2);
+        while !op_id.is_null() {
+            for param in self.ops[op_id].op.parameters_mut() {
+                if let Some(&new_id) = replace_map.get(param) {
+                    *param = new_id;
+                }
+            }
+            op_id = self.next_op(op_id);
+        }
+
+        for &(_axis, _id, _len) in lidxs.iter().rev() {
+            self.push_back(Op::EndLoop);
+        }
     }
 }

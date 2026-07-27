@@ -414,14 +414,13 @@ impl Kernel {
         /*#[cfg(feature = "tenstorrent")]
         if let Device::TT(_) = device {
             kernel.tenstorrent_tile();
-        }
-        kernel.verify();*/
+        }*/
 
         kernel.opt_tenstorrent_pad();
         kernel.opt_tenstorrent_local();
-        kernel.run_always_on_optimizations();
-        kernel.debug();
         kernel.opt_tenstorrent_group();
+        kernel.run_always_on_optimizations();
+        kernel.opt_tenstorrent_loop_local();
         kernel.debug();
 
         /*kernel.vectorize_loads(&[32]);
@@ -434,6 +433,7 @@ impl Kernel {
         kernel.fuse_mad();
         kernel.run_always_on_optimizations();
         kernel.run_always_on_optimizations();
+        kernel.debug();
 
         todo!();
 
