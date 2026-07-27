@@ -430,8 +430,6 @@ impl Kernel {
         kernel.run_always_on_optimizations();
         kernel.debug();
 
-        todo!();
-
         let args = kernel.alloc_buffers(memory_pool, None)?;
         let (program_id, timing) =
             kernel.launch_with_timings(&args, device, memory_pool, debug, flop, read_bytes, write_bytes, self.get_hash())?;

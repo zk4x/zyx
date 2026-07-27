@@ -1078,7 +1078,8 @@ impl Kernel {
             Op::LoadView(b) => b.0,
             Op::Move { x, .. } => self.dtype(*x),
             Op::Reduce { x, .. } => self.dtype(*x),
-            Op::Barrier { .. } | Op::If { .. } | Op::EndIf | Op::EndLoop | Op::Loop { .. } => {
+            Op::EndLoop | Op::Loop { .. } => IDX_T,
+            Op::Barrier { .. } | Op::If { .. } | Op::EndIf => {
                 panic!("operation has no dtype")
             }
         }

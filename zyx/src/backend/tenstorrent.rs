@@ -728,7 +728,6 @@ impl TTDevice {
             const PAGE_SIZE: u32 = 4096;
             let mut input_arg_idx = 0u32;
             let mut loop_depth = 0u32;
-            let mut local_loop_depth = 0u32;
             while !op_id.is_null() {
                 match kernel.ops[op_id].op {
                     Op::Define { dtype, scope, ro, .. } => match scope {
@@ -793,6 +792,7 @@ impl TTDevice {
                             BOp::Mul => writeln!(reader, "{indent}{} r{op_id} = r{x} * r{y};", dt.c_type()),
                             BOp::Max => writeln!(reader, "{indent}{} r{op_id} = r{x} > r{y} ? r{x} : r{y};", dt.c_type()),
                             BOp::BitShiftLeft => writeln!(reader, "{indent}{} r{op_id} = r{x} << r{y};", dt.c_type()),
+                            BOp::Cmplt => writeln!(reader, "{indent}{} r{op_id} = r{x} < r{y};", dt.c_type()),
                             _ => unreachable!("{bop:?}"),
                         };
                     }
@@ -823,22 +823,14 @@ impl TTDevice {
                             input_dtypes.len() + axis as usize
                         );
                     }
-                    Op::LocalIndex { len, .. } => {
-                        writeln!(reader, "{indent}for (uint32_t r{op_id} = 0; r{op_id} < {len}; r{op_id}++) {{");
-                        indent += "  ";
-                        local_loop_depth += 1;
-                    }
                     // Barrier means reader kernel is over
                     Op::Barrier => {
-                        while local_loop_depth > 0 {
-                            indent.pop();
-                            indent.pop();
-                            writeln!(reader, "{indent}}}");
-                            local_loop_depth -= 1;
-                        }
                         break;
                     }
-                    ref op => unreachable!("{op:?}"),
+                    Op::LocalIndex { .. } => {
+                        unreachable!("tenstorrent does not have local threads; local indices should have been converted to loops by the opt_tenstorrent_tile optimization pass")
+                    }
+                    ref op => todo!("{op:?}"),
                 }
                 op_id = kernel.next_op(op_id);
             }
@@ -990,11 +982,10 @@ impl TTDevice {
                         }
                     }
                     Op::Barrier => break,
-                    _ => {}
+                    ref op => todo!("{op:?}"),
                 }
                 op_id = kernel.next_op(op_id);
             }
-
             writeln!(compute, "{indent}tile_regs_commit();");
             writeln!(compute, "{indent}tile_regs_wait();");
             for &(slot, cb_id) in &output_stores {
@@ -1160,6 +1151,9 @@ impl TTDevice {
                         output_dtypes.len() + axis as usize
                     );
                 }
+                Op::Cast { x, dtype } => {
+                    writeln!(writer, "{indent}{} r{op_id} = r{x};", dtype.c_type());
+                }
                 Op::Binary { x, y, bop } => {
                     let dt = kernel.dtype(op_id);
                     let _ = match bop {
@@ -1168,6 +1162,7 @@ impl TTDevice {
                         BOp::Mul => writeln!(writer, "{indent}{} r{op_id} = r{x} * r{y};", dt.c_type()),
                         BOp::Max => writeln!(writer, "{indent}{} r{op_id} = r{x} > r{y} ? r{x} : r{y};", dt.c_type()),
                         BOp::BitShiftLeft => writeln!(writer, "{indent}{} r{op_id} = r{x} << r{y};", dt.c_type()),
+                        BOp::Cmplt => writeln!(writer, "{indent}{} r{op_id} = r{x} < r{y};", dt.c_type()),
                         _ => unreachable!("{bop:?}"),
                     };
                 }
@@ -1194,8 +1189,8 @@ impl TTDevice {
                     loop_depth -= 1;
                 }
                 Op::Barrier => break,
-                _ => {}
-            }
+                    ref op => todo!("{op:?}"),
+                }
             op_id = kernel.next_op(op_id);
         }
         writeln!(writer, "}}");
