@@ -14,6 +14,7 @@ categories = ["computer-vision", "science"]
 rust-version = "1.88.0"
 include = [
     "src/**",
+    "build.rs",
     "tests/1_unary.rs",
     "tests/2_binary.rs",
     "tests/3_movement.rs",

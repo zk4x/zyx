@@ -15,6 +15,8 @@ Quick reference for coding agents working in the zyx repository.
 # Build
 cargo build -p zyx
 cargo build -p zyx --release
+# Tenstorrent backend
+TT_METAL_ROOT=~/Dev/cpp/tt-metal cargo build -p zyx --features tenstorrent
 
 # Lint (do NOT run - shows many unrelated issues)
 # cargo clippy -p zyx --all-features -- -D warnings
