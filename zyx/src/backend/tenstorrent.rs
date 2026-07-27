@@ -728,6 +728,7 @@ impl TTDevice {
             const PAGE_SIZE: u32 = 4096;
             let mut input_arg_idx = 0u32;
             let mut loop_depth = 0u32;
+            let mut local_loop_depth = 0u32;
             while !op_id.is_null() {
                 match kernel.ops[op_id].op {
                     Op::Define { dtype, scope, ro, .. } => match scope {
@@ -822,8 +823,21 @@ impl TTDevice {
                             input_dtypes.len() + axis as usize
                         );
                     }
+                    Op::LocalIndex { len, .. } => {
+                        writeln!(reader, "{indent}for (uint32_t r{op_id} = 0; r{op_id} < {len}; r{op_id}++) {{");
+                        indent += "  ";
+                        local_loop_depth += 1;
+                    }
                     // Barrier means reader kernel is over
-                    Op::Barrier => break,
+                    Op::Barrier => {
+                        while local_loop_depth > 0 {
+                            indent.pop();
+                            indent.pop();
+                            writeln!(reader, "{indent}}}");
+                            local_loop_depth -= 1;
+                        }
+                        break;
+                    }
                     ref op => unreachable!("{op:?}"),
                 }
                 op_id = kernel.next_op(op_id);

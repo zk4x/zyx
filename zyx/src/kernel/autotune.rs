@@ -434,7 +434,6 @@ impl Kernel {
         kernel.run_always_on_optimizations();
 
         kernel.debug();
-        todo!();
 
         let args = kernel.alloc_buffers(memory_pool, None)?;
         let (program_id, timing) =
