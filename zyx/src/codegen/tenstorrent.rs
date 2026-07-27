@@ -40,6 +40,7 @@ impl Kernel {
         writeln!(reader, "#include \"api/dataflow/noc.h\"");
         writeln!(reader, "#include \"api/dataflow/circular_buffer.h\"");
         writeln!(reader, "#include \"api/tensor/noc_traits.h\"");
+        writeln!(reader, "#include \"api/debug/device_print.h\"");
         writeln!(reader, "void kernel_main() {{");
         let mut indent = String::from("  ");
         writeln!(reader, "{indent}Noc noc;");
@@ -135,6 +136,7 @@ impl Kernel {
                     }
                     Op::GroupIndex { axis, .. } => {
                         writeln!(reader, "{indent}uint32_t r{op_id} = get_arg_val<uint32_t>({});", n_inputs + axis as usize);
+                        writeln!(reader, "{indent}DEVICE_PRINT(\"r{op_id}=gidx{axis}={{}}\\n\", r{op_id});");
                     }
                     Op::Barrier => {
                         break;
@@ -173,6 +175,7 @@ impl Kernel {
         writeln!(compute, "#include \"api/compute/eltwise_unary/eltwise_unary.h\"");
         writeln!(compute, "#include \"api/compute/eltwise_unary/trigonometry.h\"");
         writeln!(compute, "#include \"api/dataflow/circular_buffer.h\"");
+        writeln!(compute, "#include \"api/debug/device_print.h\"");
         writeln!(compute, "void kernel_main() {{");
         let mut indent = String::from("  ");
         {
@@ -241,6 +244,7 @@ impl Kernel {
                                     "{indent}uint32_t r{scan} = get_arg_val<uint32_t>({});",
                                     n_outputs + *axis as usize
                                 );
+                                writeln!(compute, "{indent}DPRINT << \"compute r{scan}=gidx{axis}=\" << r{scan} << ENDL();");
                             }
                             Op::Const(val) => {
                                 writeln!(compute, "{indent}{} r{scan} = {};", val.dtype().c_type(), val.c_code());
@@ -391,6 +395,7 @@ impl Kernel {
         writeln!(writer, "#include \"api/dataflow/noc.h\"");
         writeln!(writer, "#include \"api/dataflow/circular_buffer.h\"");
         writeln!(writer, "#include \"api/tensor/noc_traits.h\"");
+        writeln!(writer, "#include \"api/debug/dprint.h\"");
         writeln!(writer, "void kernel_main() {{");
         writeln!(writer, "{indent}Noc noc(1);");
 
@@ -480,6 +485,7 @@ impl Kernel {
                     match &self.ops[scan].op {
                         Op::GroupIndex { axis, .. } => {
                             writeln!(writer, "{indent}uint32_t r{scan} = get_arg_val<uint32_t>({});", n_outputs + *axis as usize);
+                            writeln!(writer, "{indent}DPRINT << \"writer r{scan}=gidx{axis}=\" << r{scan} << ENDL();");
                         }
                         Op::Const(val) => {
                             writeln!(writer, "{indent}{} r{scan} = {};", val.dtype().c_type(), val.c_code());
