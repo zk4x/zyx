@@ -163,8 +163,12 @@ impl Kernel {
         for &(_, src) in &global_loads {
             if processed.insert(src) {
                 let local = src_to_local[&src];
-                let global_load = self.insert_before(first_load, Op::Load { src, index: combined_idx, layout: MemLayout::Scalar });
-                self.insert_before(first_load, Op::Store { dst: local, x: global_load, index: combined_idx, layout: MemLayout::Scalar });
+                let global_load =
+                    self.insert_before(first_load, Op::Load { src, index: combined_idx, layout: MemLayout::Scalar });
+                self.insert_before(
+                    first_load,
+                    Op::Store { dst: local, x: global_load, index: combined_idx, layout: MemLayout::Scalar },
+                );
             }
         }
         self.insert_before(first_load, Op::Barrier);
@@ -211,7 +215,8 @@ impl Kernel {
         let mut processed_dst: Set<OpId> = Set::default();
         for &(store_op, dst, val, _) in &global_stores {
             let local = dst_to_local[&dst];
-            self.ops[store_op].op = Op::Store { dst: local, x: val, index: zero, layout: MemLayout::Tile { x: 32, y: 32, stride: 32 } };
+            self.ops[store_op].op =
+                Op::Store { dst: local, x: val, index: zero, layout: MemLayout::Tile { x: 32, y: 32, stride: 32 } };
         }
 
         // Step 12: Insert barrier after the last store, then scalar loads + global stores
@@ -225,7 +230,8 @@ impl Kernel {
             let scalar_load =
                 self.insert_after(insert_point, Op::Load { src: local, index: store_idx, layout: MemLayout::Scalar });
             insert_point = scalar_load;
-            let global_store = self.insert_after(insert_point, Op::Store { dst, x: scalar_load, index: store_idx, layout: MemLayout::Scalar });
+            let global_store =
+                self.insert_after(insert_point, Op::Store { dst, x: scalar_load, index: store_idx, layout: MemLayout::Scalar });
             insert_point = global_store;
         }
     }
