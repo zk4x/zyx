@@ -75,13 +75,15 @@ impl Kernel {
     }
 
     pub(crate) fn opt_tenstorrent_local(&mut self) {
-        // Step 1: Split each GroupIndex into GroupIndex(len/32) + LocalIndex(32)
+        // Step 1: Split each GroupIndex into GroupIndex(len/32) + Loop(32)
         let mut op_id = self.head;
         while !op_id.is_null() {
-            if let Op::GroupIndex { len, axis } = self.at(op_id) {
-                if *len % 32 == 0 && *len >= 32 {
-                    let f1 = *len / 32;
-                    self.split_dim(op_id, vec![Op::GroupIndex { len: f1, axis: *axis }, Op::LocalIndex { len: 32, axis: *axis }]);
+            if let Op::GroupIndex { len, axis } = self.ops[op_id].op {
+                if len % 32 == 0 && len >= 32 {
+                    let f1 = len / 32;
+                    self.split_dim(op_id, vec![Op::GroupIndex { len: f1, axis }, Op::LocalIndex { len, axis }]);
+                } else {
+                    return;
                 }
             }
             op_id = self.next_op(op_id);
@@ -150,12 +152,8 @@ impl Kernel {
             if src_to_local.contains_key(&src) {
                 continue;
             }
-            let local = self.insert_after(last_global, Op::Define {
-                dtype: self.dtype(src),
-                scope: Scope::Local,
-                ro: false,
-                len: 1024,
-            });
+            let local =
+                self.insert_after(last_global, Op::Define { dtype: self.dtype(src), scope: Scope::Local, ro: false, len: 1024 });
             last_global = local;
             src_to_local.insert(src, local);
         }
@@ -167,7 +165,10 @@ impl Kernel {
 
             if processed.insert(src) {
                 let global_load = self.insert_before(load_op, Op::Load { src, index: combined_idx, layout: MemLayout::Scalar });
-                self.insert_before(load_op, Op::Store { dst: local, x: global_load, index: combined_idx, layout: MemLayout::Scalar });
+                self.insert_before(
+                    load_op,
+                    Op::Store { dst: local, x: global_load, index: combined_idx, layout: MemLayout::Scalar },
+                );
             }
 
             self.ops[load_op].op = Op::Load { src: local, index: zero, layout: MemLayout::Tile { x: 32, y: 32, stride: 32 } };

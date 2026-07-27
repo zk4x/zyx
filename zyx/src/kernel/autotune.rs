@@ -419,6 +419,7 @@ impl Kernel {
         kernel.verify();*/
 
         kernel.opt_tenstorrent_pad();
+        kernel.opt_tenstorrent_local();
 
         /*kernel.vectorize_loads(&[32]);
         kernel.vectorize_stores(&[32]);
