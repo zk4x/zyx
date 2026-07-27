@@ -641,9 +641,9 @@ fn grad_sin_1() -> Result<(), ZyxError> {
     let mut grads = tape.gradient(&y, [&x]);
     let x_grad = grads.pop().unwrap();
 
-    let expected: Vec<_> = data.iter().map(|&x| x.cos()).collect();
-
     tape.realize([&x_grad])?;
+
+    let expected: Vec<_> = data.iter().map(|&x| x.cos()).collect();
 
     assert_eq!(x_grad, expected);
     Ok(())
