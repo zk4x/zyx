@@ -214,7 +214,7 @@ impl Kernel {
             self.ops[store_op].op = Op::Store { dst: local, x: val, index: zero, layout: MemLayout::Tile { x: 32, y: 32, stride: 32 } };
         }
 
-        // Step 12: Insert barrier after the last store, then tiled loads + global stores
+        // Step 12: Insert barrier after the last store, then scalar loads + global stores
         let barrier = self.insert_after(global_stores.last().unwrap().0, Op::Barrier);
         let mut insert_point = barrier;
         for &(_, dst, _, store_idx) in &global_stores {
@@ -222,10 +222,10 @@ impl Kernel {
                 continue;
             }
             let local = dst_to_local[&dst];
-            let tiled_load =
-                self.insert_after(insert_point, Op::Load { src: local, index: zero, layout: MemLayout::Tile { x: 32, y: 32, stride: 32 } });
-            insert_point = tiled_load;
-            let global_store = self.insert_after(insert_point, Op::Store { dst, x: tiled_load, index: store_idx, layout: MemLayout::Scalar });
+            let scalar_load =
+                self.insert_after(insert_point, Op::Load { src: local, index: store_idx, layout: MemLayout::Scalar });
+            insert_point = scalar_load;
+            let global_store = self.insert_after(insert_point, Op::Store { dst, x: scalar_load, index: store_idx, layout: MemLayout::Scalar });
             insert_point = global_store;
         }
     }
