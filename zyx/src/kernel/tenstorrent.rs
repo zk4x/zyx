@@ -174,5 +174,59 @@ impl Kernel {
             let local = src_to_local[&src];
             self.ops[load_op].op = Op::Load { src: local, index: zero, layout: MemLayout::Tile { x: 32, y: 32, stride: 32 } };
         }
+
+        // Step 9: Find all scalar stores to global defines
+        let global_stores: Vec<(OpId, OpId, OpId, OpId)> = {
+            let mut stores = Vec::new();
+            let mut op_id = self.head;
+            while !op_id.is_null() {
+                if let Op::Store { dst, x, index, layout: MemLayout::Scalar } = self.at(op_id) {
+                    if matches!(self.at(*dst), Op::Define { scope: Scope::Global, .. }) {
+                        stores.push((op_id, *dst, *x, *index));
+                    }
+                }
+                op_id = self.next_op(op_id);
+            }
+            stores
+        };
+
+        if global_stores.is_empty() {
+            return;
+        }
+
+        // Step 10: Allocate local buffers for each unique global destination
+        let mut dst_to_local: Map<OpId, OpId> = Map::default();
+        let mut last_local = last_global;
+        for &(_, dst, _, _) in &global_stores {
+            if dst_to_local.contains_key(&dst) {
+                continue;
+            }
+            let local =
+                self.insert_after(last_local, Op::Define { dtype: self.dtype(dst), scope: Scope::Local, ro: false, len: 1024 });
+            last_local = local;
+            dst_to_local.insert(dst, local);
+        }
+
+        // Step 11: Replace each global store with a store to local at combined_idx
+        let mut processed_dst: Set<OpId> = Set::default();
+        for &(store_op, dst, val, _) in &global_stores {
+            let local = dst_to_local[&dst];
+            self.ops[store_op].op = Op::Store { dst: local, x: val, index: zero, layout: MemLayout::Tile { x: 32, y: 32, stride: 32 } };
+        }
+
+        // Step 12: Insert barrier after the last store, then tiled loads + global stores
+        let barrier = self.insert_after(global_stores.last().unwrap().0, Op::Barrier);
+        let mut insert_point = barrier;
+        for &(_, dst, _, store_idx) in &global_stores {
+            if !processed_dst.insert(dst) {
+                continue;
+            }
+            let local = dst_to_local[&dst];
+            let tiled_load =
+                self.insert_after(insert_point, Op::Load { src: local, index: zero, layout: MemLayout::Tile { x: 32, y: 32, stride: 32 } });
+            insert_point = tiled_load;
+            let global_store = self.insert_after(insert_point, Op::Store { dst, x: tiled_load, index: store_idx, layout: MemLayout::Scalar });
+            insert_point = global_store;
+        }
     }
 }
