@@ -365,8 +365,10 @@ impl Kernel {
                         debug_assert!(ro);
                         // Use existing buffer for loads
                     } else {
-                        let bytes = (dtype.bit_size() as Dim) * len / 8;
-                        let (buf, ev) = memory_pool.allocate(bytes)?;
+                        let bytes = (dtype.bit_size() as Dim * len) / 8;
+                        // One more for trash element
+                        let bytes_alloc = (dtype.bit_size() as Dim * (len + 1)) / 8;
+                        let (buf, ev) = memory_pool.allocate(bytes_alloc)?;
                         store_bufs.push(buf);
                         // Set inputs to something reasonable instead of alloc garbage
                         if ro {

@@ -28,9 +28,11 @@ fn round_up(len: Dim, multiple: Dim) -> Dim {
 impl Kernel {
     pub(crate) fn opt_tenstorrent_tile(&mut self) {
         self.tenstorrent_pad();
+        /*self.debug();
+        panic!();
         self.tenstorrent_local();
         self.tenstorrent_group();
-        self.tenstorrent_loop_local();
+        self.tenstorrent_loop_local();*/
     }
 
     fn tenstorrent_pad(&mut self) {
@@ -102,7 +104,7 @@ impl Kernel {
             if let Op::GroupIndex { len, axis } = self.ops[op_id].op {
                 if len % 32 == 0 && len >= 32 {
                     let f1 = len / 32;
-                    self.split_dim(op_id, vec![Op::GroupIndex { len: f1, axis }, Op::LocalIndex { len, axis }]);
+                    self.split_dim(op_id, vec![Op::GroupIndex { len: f1, axis }, Op::LocalIndex { len: 32, axis }]);
                 } else {
                     return;
                 }

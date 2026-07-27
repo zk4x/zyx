@@ -1418,6 +1418,7 @@ impl Runtime {
         }
         for &tid in &stores {
             let bytes = (self.shape(tid).iter().product::<Dim>() as usize * self.dtype(tid).bit_size() as usize + 7) / 8;
+            // Add one trash element
             let alloc_bytes = bytes as Dim + Dim::from(self.dtype(tid).bit_size() / 8);
             let (buf, event) = self.pools[pool_id].allocate(alloc_bytes)?;
             let global_id = BufferId { pool: pool_id, buffer: buf };
