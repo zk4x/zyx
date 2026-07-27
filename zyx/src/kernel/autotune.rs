@@ -395,6 +395,7 @@ impl Kernel {
     }
 
     /// Autotune for debugging, applying only a selected series of optimizations
+    #[allow(unused)]
     pub(crate) fn apply_selected_optimizations(
         &self,
         device: &mut Device,

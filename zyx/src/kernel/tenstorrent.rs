@@ -158,19 +158,20 @@ impl Kernel {
             src_to_local.insert(src, local);
         }
 
-        // Step 7: For each load, insert global→local store (once per src) and switch to tiled local load
+        // Step 7: Insert all global→local stores before the first load, then a barrier
         let mut processed: Set<OpId> = Set::default();
+        for &(_, src) in &global_loads {
+            if processed.insert(src) {
+                let local = src_to_local[&src];
+                let global_load = self.insert_before(first_load, Op::Load { src, index: combined_idx, layout: MemLayout::Scalar });
+                self.insert_before(first_load, Op::Store { dst: local, x: global_load, index: combined_idx, layout: MemLayout::Scalar });
+            }
+        }
+        self.insert_before(first_load, Op::Barrier);
+
+        // Step 8: Replace all original loads with tiled loads from local
         for &(load_op, src) in &global_loads {
             let local = src_to_local[&src];
-
-            if processed.insert(src) {
-                let global_load = self.insert_before(load_op, Op::Load { src, index: combined_idx, layout: MemLayout::Scalar });
-                self.insert_before(
-                    load_op,
-                    Op::Store { dst: local, x: global_load, index: combined_idx, layout: MemLayout::Scalar },
-                );
-            }
-
             self.ops[load_op].op = Op::Load { src: local, index: zero, layout: MemLayout::Tile { x: 32, y: 32, stride: 32 } };
         }
     }
