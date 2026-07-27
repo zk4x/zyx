@@ -69,11 +69,9 @@ impl Kernel {
                 } else {
                     unreachable!()
                 };
-                let f1 = (new_len as f64).sqrt() as Dim;
-                let f1 = (2..=f1).rev().find(|&f| new_len % f == 0).unwrap_or(1);
-                if f1 <= 1 || f1 == new_len {
-                    return;
-                }
+                let sqrt = (new_len as f64).sqrt() as Dim;
+                let f1 = (32..=sqrt).rev().find(|&f| f % 32 == 0 && new_len % f == 0);
+                let Some(f1) = f1 else { return; };
                 let f2 = new_len / f1;
                 self.split_dim(id, vec![Op::GroupIndex { len: f1, axis: 0 }, Op::GroupIndex { len: f2, axis: 1 }]);
             }
