@@ -17,7 +17,7 @@
 
 use super::{Device, DeviceId, DeviceInfo, DeviceProgramId, Event, Kernel, MemoryPool, PoolBufferId, PoolId};
 use crate::{
-    DType, Map,
+    DType, Map, Set,
     backend::DTypeCapability,
     error::{BackendError, ErrorStatus},
     kernel::{BOp, MemLayout, Op, OpId, Scope, UOp},
@@ -892,6 +892,68 @@ impl TTDevice {
             let mut next_slot = 0u32;
             let mut output_stores: Vec<(u32, u32)> = Vec::new();
 
+            // Emit scalar deps of compute stores in kernel order
+            {
+                let compute_stores: Vec<OpId> = {
+                    let mut stores = Vec::new();
+                    let mut scan = op_id;
+                    while !scan.is_null() {
+                        if let Op::Barrier = kernel.ops[scan].op {
+                            break;
+                        }
+                        if let Op::Store { .. } = kernel.ops[scan].op {
+                            stores.push(scan);
+                        }
+                        scan = kernel.next_op(scan);
+                    }
+                    stores
+                };
+                let compute_deps = {
+                    let mut deps = Set::default();
+                    let mut stack: Vec<OpId> = compute_stores.iter().copied().collect();
+                    while let Some(id) = stack.pop() {
+                        if !deps.insert(id) {
+                            continue;
+                        }
+                        stack.extend(kernel.ops[id].op.parameters());
+                    }
+                    deps
+                };
+                let mut scan = kernel.head;
+                while scan != op_id {
+                    if compute_deps.contains(&scan) {
+                        match &kernel.ops[scan].op {
+                            Op::GroupIndex { axis, .. } => {
+                                writeln!(
+                                    compute,
+                                    "{indent}uint32_t r{scan} = get_arg_val<uint32_t>({});",
+                                    output_dtypes.len() + *axis as usize
+                                );
+                            }
+                            Op::Const(val) => {
+                                writeln!(compute, "{indent}{} r{scan} = {};", val.dtype().c_type(), val.c_code());
+                            }
+                            Op::Binary { x, y, bop } => {
+                                let dt = kernel.dtype(scan);
+                                let _ = match bop {
+                                    BOp::Add => writeln!(compute, "{indent}{} r{scan} = r{x} + r{y};", dt.c_type()),
+                                    BOp::Sub => writeln!(compute, "{indent}{} r{scan} = r{x} - r{y};", dt.c_type()),
+                                    BOp::Mul => writeln!(compute, "{indent}{} r{scan} = r{x} * r{y};", dt.c_type()),
+                                    BOp::BitShiftLeft => writeln!(compute, "{indent}{} r{scan} = r{x} << r{y};", dt.c_type()),
+                                    BOp::Cmplt => writeln!(compute, "{indent}{} r{scan} = r{x} < r{y};", dt.c_type()),
+                                    _ => unreachable!("{bop:?}"),
+                                };
+                            }
+                            Op::Cast { x, dtype } => {
+                                writeln!(compute, "{indent}{} r{scan} = r{x};", dtype.c_type());
+                            }
+                            _ => {}
+                        }
+                    }
+                    scan = kernel.next_op(scan);
+                }
+            }
+
             // First pass: collect init headers from ops
             let mut scan = op_id;
             while !scan.is_null() {
@@ -1077,36 +1139,65 @@ impl TTDevice {
             }
         }
 
-        // Pre-scan: emit any Index/Const ops referenced by writer-section ops
-        // but located before the barriers (moved there by move_constants_to_beginning)
+        // Gather transitive deps of all writer stores and emit them in kernel order
         {
-            let mut emitted: Vec<OpId> = Vec::new();
-            let mut scan = op_id;
-            while !scan.is_null() {
-                if let Op::Barrier = kernel.ops[scan].op {
-                    break;
+            let writer_stores: Vec<OpId> = {
+                let mut stores = Vec::new();
+                let mut scan = op_id;
+                while !scan.is_null() {
+                    if let Op::Barrier = kernel.ops[scan].op {
+                        break;
+                    }
+                    if let Op::Store { .. } = kernel.ops[scan].op {
+                        stores.push(scan);
+                    }
+                    scan = kernel.next_op(scan);
                 }
-                let mut work: Vec<OpId> = kernel.ops[scan].op.parameters().collect();
-                while let Some(param) = work.pop() {
-                    if emitted.contains(&param) {
+                stores
+            };
+            let writer_deps = {
+                let mut deps = Set::default();
+                let mut stack: Vec<OpId> = writer_stores.iter().copied().collect();
+                while let Some(id) = stack.pop() {
+                    if !deps.insert(id) {
                         continue;
                     }
-                    emitted.push(param);
-                    match &kernel.ops[param].op {
+                    stack.extend(kernel.ops[id].op.parameters());
+                }
+                deps
+            };
+
+            let mut scan = kernel.head;
+            while scan != op_id {
+                if writer_deps.contains(&scan) {
+                    match &kernel.ops[scan].op {
                         Op::GroupIndex { axis, .. } => {
                             writeln!(
                                 writer,
-                                "{indent}uint32_t r{param} = get_arg_val<uint32_t>({});",
+                                "{indent}uint32_t r{scan} = get_arg_val<uint32_t>({});",
                                 output_dtypes.len() + *axis as usize
                             );
                         }
                         Op::Const(val) => {
-                            writeln!(writer, "{indent}{} r{param} = {};", val.dtype().c_type(), val.c_code());
+                            writeln!(writer, "{indent}{} r{scan} = {};", val.dtype().c_type(), val.c_code());
+                        }
+                        Op::Binary { x, y, bop } => {
+                            let dt = kernel.dtype(scan);
+                            let _ = match bop {
+                                BOp::Add => writeln!(writer, "{indent}{} r{scan} = r{x} + r{y};", dt.c_type()),
+                                BOp::Sub => writeln!(writer, "{indent}{} r{scan} = r{x} - r{y};", dt.c_type()),
+                                BOp::Mul => writeln!(writer, "{indent}{} r{scan} = r{x} * r{y};", dt.c_type()),
+                                BOp::Max => writeln!(writer, "{indent}{} r{scan} = r{x} > r{y} ? r{x} : r{y};", dt.c_type()),
+                                BOp::BitShiftLeft => writeln!(writer, "{indent}{} r{scan} = r{x} << r{y};", dt.c_type()),
+                                BOp::Cmplt => writeln!(writer, "{indent}{} r{scan} = r{x} < r{y};", dt.c_type()),
+                                _ => unreachable!("{bop:?}"),
+                            };
+                        }
+                        Op::Cast { x, dtype } => {
+                            writeln!(writer, "{indent}{} r{scan} = r{x};", dtype.c_type());
                         }
                         _ => {}
                     }
-                    // Walk parameters of this dependency too (e.g. Binary referencing Const)
-                    work.extend(kernel.ops[param].op.parameters());
                 }
                 scan = kernel.next_op(scan);
             }
