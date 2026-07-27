@@ -18,6 +18,7 @@
 use super::{Device, DeviceId, DeviceInfo, DeviceProgramId, Event, Kernel, MemoryPool, OpCapability, PoolBufferId, PoolId};
 use crate::{
     DType, Map,
+    backend::DTypeCapability,
     error::{BackendError, ErrorStatus},
     kernel::{BOp, MemLayout, Op, OpId, Scope, UOp},
     shape::Dim,
@@ -189,7 +190,7 @@ pub(super) fn initialize_device(
             max_register_bytes: 128,
             tensor_cores: true,
             warp_size: 1, // Tensix has no SIMT warps
-            supported_dtype_ops: [OpCapability::all(); DType::N_DTYPES],
+            supported_dtype_ops: [DTypeCapability::all(); DType::N_DTYPES],
             has_native_exp2: false,
             supported_vec_lens: vec![32],
         },
