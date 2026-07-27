@@ -416,13 +416,7 @@ impl Kernel {
             kernel.tenstorrent_tile();
         }*/
 
-        kernel.opt_tenstorrent_pad();
-        kernel.opt_tenstorrent_local();
-        kernel.opt_tenstorrent_group();
-        kernel.run_always_on_optimizations();
-        kernel.debug();
-        kernel.opt_tenstorrent_loop_local();
-        kernel.debug();
+        kernel.opt_tenstorrent_tile();
 
         /*kernel.vectorize_loads(&[32]);
         kernel.vectorize_stores(&[32]);

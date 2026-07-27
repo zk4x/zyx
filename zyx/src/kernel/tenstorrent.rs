@@ -26,7 +26,14 @@ fn round_up(len: Dim, multiple: Dim) -> Dim {
 }
 
 impl Kernel {
-    pub(crate) fn opt_tenstorrent_pad(&mut self) {
+    pub(crate) fn opt_tenstorrent_tile(&mut self) {
+        self.tenstorrent_pad();
+        self.tenstorrent_local();
+        self.tenstorrent_group();
+        self.tenstorrent_loop_local();
+    }
+
+    fn tenstorrent_pad(&mut self) {
         let mut gidxs: Vec<(OpId, u32, Dim)> = Vec::new();
         let mut op_id = self.head;
         while !op_id.is_null() {
@@ -88,7 +95,7 @@ impl Kernel {
         self.verify();
     }
 
-    pub(crate) fn opt_tenstorrent_local(&mut self) {
+    fn tenstorrent_local(&mut self) {
         // Step 1: Split each GroupIndex into GroupIndex(len/32) + Loop(32)
         let mut op_id = self.head;
         while !op_id.is_null() {
@@ -252,7 +259,7 @@ impl Kernel {
         self.verify();
     }
 
-    pub(crate) fn opt_tenstorrent_group(&mut self) {
+    fn tenstorrent_group(&mut self) {
         let mut barriers = Vec::new();
         let mut op_id = self.head;
         while !op_id.is_null() {
@@ -314,7 +321,7 @@ impl Kernel {
         self.verify();
     }
 
-    pub(crate) fn opt_tenstorrent_loop_local(&mut self) {
+    fn tenstorrent_loop_local(&mut self) {
         let mut lidxs: Vec<(u32, OpId, u32)> = Vec::new();
         let mut op_id = self.head;
         while !op_id.is_null() {
@@ -379,6 +386,8 @@ impl Kernel {
         for &(_axis, _id, _len) in lidxs.iter().rev() {
             self.push_back(Op::EndLoop);
         }
+
+        self.loop_invariant_code_motion();
 
         self.verify();
     }
