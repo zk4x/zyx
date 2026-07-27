@@ -72,4 +72,17 @@ impl Kernel {
             _ => {}
         }
     }
+
+    pub(crate) fn opt_tenstorrent_local(&mut self) {
+        let mut op_id = self.head;
+        while !op_id.is_null() {
+            if let Op::GroupIndex { len, axis } = self.at(op_id) {
+                if *len % 32 == 0 && *len >= 32 {
+                    let f1 = *len / 32;
+                    self.split_dim(op_id, vec![Op::GroupIndex { len: f1, axis: *axis }, Op::LocalIndex { len: 32, axis: *axis }]);
+                }
+            }
+            op_id = self.next_op(op_id);
+        }
+    }
 }
