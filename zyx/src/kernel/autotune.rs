@@ -420,6 +420,7 @@ impl Kernel {
         kernel.opt_tenstorrent_local();
         kernel.opt_tenstorrent_group();
         kernel.run_always_on_optimizations();
+        kernel.debug();
         kernel.opt_tenstorrent_loop_local();
         kernel.debug();
 

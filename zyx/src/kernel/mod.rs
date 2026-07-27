@@ -126,7 +126,6 @@ mod predict_cost;
 mod split_loops;
 mod tenstorrent;
 mod thread_coarse;
-mod tile;
 mod transforms;
 mod unfold;
 mod unroll_loops;

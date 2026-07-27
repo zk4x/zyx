@@ -342,7 +342,12 @@ impl Kernel {
         let barrier1 = barriers[0];
         let barrier2 = barriers[1];
 
-        let const_32 = self.insert_before(barrier1, Op::Const(Constant::idx(32u32)));
+        let first_lidx = lidxs.first().unwrap().1;
+        let const_32 = self.insert_before(first_lidx, Op::Const(Constant::idx(32u32)));
+
+        for &(_axis, id, _len) in &lidxs {
+            self.ops[id].op = Op::Loop { len: const_32 };
+        }
 
         for &(_axis, _id, _len) in lidxs.iter().rev() {
             self.insert_before(barrier1, Op::EndLoop);
@@ -374,5 +379,7 @@ impl Kernel {
         for &(_axis, _id, _len) in lidxs.iter().rev() {
             self.push_back(Op::EndLoop);
         }
+
+        self.verify();
     }
 }
