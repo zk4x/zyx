@@ -135,12 +135,12 @@ fn bf16_add4() -> Result<(), ZyxError> {
 }
 
 #[test]
-fn bf16_add5() -> Result<(), ZyxError> {
+fn bf16_add5_1core() -> Result<(), ZyxError> {
     if !Tensor::dtype_capability(DType::BF16).any() {
         return Ok(());
     }
 
-    let n = 2048;
+    let n = 1024;
     let a_data: Vec<bf16> = (0..n).map(|i| bf16::from_f32(i as f32 / 256.)).collect();
     let b_data: Vec<bf16> = (0..n).map(|i| bf16::from_f32(i as f32 / 256.)).collect();
     let a = Tensor::from(a_data);
@@ -150,7 +150,28 @@ fn bf16_add5() -> Result<(), ZyxError> {
     let c: Vec<bf16> = c.try_into()?;
     for (i, actual) in c.iter().enumerate() {
         let exp = 2.0 * i as f32 / 256.0;
-        eprintln!("[{i}] exp={exp}, actual={}", actual.to_f32());
+        assert!(bf16::from_f32(exp).is_equal(*actual), "bf16_add5_1core[{i}]: exp={exp}, actual={}", actual.to_f32(),);
+    }
+    Ok(())
+}
+
+#[test]
+fn bf16_add5() -> Result<(), ZyxError> {
+    if !Tensor::dtype_capability(DType::BF16).any() {
+        return Ok(());
+    }
+
+    let n = 2096;
+    let a_data: Vec<bf16> = (0..n).map(|i| bf16::from_f32(i as f32 / 256.)).collect();
+    let b_data: Vec<bf16> = (0..n).map(|i| bf16::from_f32(i as f32 / 256.)).collect();
+    let a = Tensor::from(a_data);
+    let b = Tensor::from(b_data);
+    let c = a + b;
+
+    let c: Vec<bf16> = c.try_into()?;
+    for (i, actual) in c.iter().enumerate() {
+        let exp = 2.0 * i as f32 / 256.0;
+        assert!(bf16::from_f32(exp).is_equal(*actual), "bf16_add5[{i}]: exp={exp}, actual={}", actual.to_f32(),);
     }
     Ok(())
 }

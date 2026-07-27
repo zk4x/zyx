@@ -519,7 +519,7 @@ impl Kernel {
                     if layout != MemLayout::Scalar {
                         todo!("add support for non-scalar stores back to DRAM")
                     }
-                    if let Op::Load { src, .. } = self.ops[x].op {
+                    if let Op::Load { src, index: ld_idx, .. } = self.ops[x].op {
                         if let Some(&cb_id) = output_cb_map.get(&src) {
                             let Op::Define { dtype, .. } = self.ops[dst].op else {
                                 unreachable!()
@@ -530,7 +530,7 @@ impl Kernel {
                             }
                             writeln!(
                                 writer,
-                                "{indent}noc.async_write(use<CircularBuffer::AddrSelector::READ_PTR>(cb{cb_id}),\n{indent}  p_out{dst}, {elem_size}, {{ .offset_bytes = r{st_idx}*{elem_size} }},\n{indent}  {{ .page_id = (r{st_idx}*{elem_size})/{PAGE_SIZE}, .offset_bytes = (r{st_idx}*{elem_size})%{PAGE_SIZE} }});"
+                                "{indent}noc.async_write(use<CircularBuffer::AddrSelector::READ_PTR>(cb{cb_id}),\n{indent}  p_out{dst}, {elem_size}, {{ .offset_bytes = r{ld_idx}*{elem_size} }},\n{indent}  {{ .page_id = (r{st_idx}*{elem_size})/{PAGE_SIZE}, .offset_bytes = (r{st_idx}*{elem_size})%{PAGE_SIZE} }});"
                             );
                             if loop_depth == 0 {
                                 writeln!(writer, "{indent}cb{cb_id}.pop_front(1);");
