@@ -2,8 +2,9 @@
 // SPDX-License-Identifier: LGPL-3.0-only
 
 use crate::{
+    Map, Set,
     dtype::Constant,
-    kernel::{Kernel, Op, OpId},
+    kernel::{BOp, Kernel, MemLayout, Op, OpId, Scope},
     shape::Dim,
 };
 
@@ -74,6 +75,7 @@ impl Kernel {
     }
 
     pub(crate) fn opt_tenstorrent_local(&mut self) {
+        // Step 1: Split each GroupIndex into GroupIndex(len/32) + LocalIndex(32)
         let mut op_id = self.head;
         while !op_id.is_null() {
             if let Op::GroupIndex { len, axis } = self.at(op_id) {
@@ -83,6 +85,92 @@ impl Kernel {
                 }
             }
             op_id = self.next_op(op_id);
+        }
+
+        // Step 2: Verify exactly 2 local indices of len 32 (axes 0 and 1)
+        let mut lidxs = Vec::new();
+        let mut op_id = self.head;
+        while !op_id.is_null() {
+            if let Op::LocalIndex { len, axis } = self.at(op_id) {
+                if *len != 32 {
+                    return;
+                }
+                lidxs.push((*axis, op_id));
+            }
+            op_id = self.next_op(op_id);
+        }
+        if lidxs.len() != 2 {
+            return;
+        }
+        lidxs.sort();
+        if lidxs[0].0 != 0 || lidxs[1].0 != 1 {
+            return;
+        }
+        let (lidx0, lidx1) = (lidxs[0].1, lidxs[1].1);
+
+        // Step 3: Find all scalar loads from global defines
+        let global_loads: Vec<(OpId, OpId)> = {
+            let mut loads = Vec::new();
+            let mut op_id = self.head;
+            while !op_id.is_null() {
+                if let Op::Load { src, layout: MemLayout::Scalar, .. } = self.at(op_id) {
+                    if matches!(self.at(*src), Op::Define { scope: Scope::Global, .. }) {
+                        loads.push((op_id, *src));
+                    }
+                }
+                op_id = self.next_op(op_id);
+            }
+            loads
+        };
+
+        if global_loads.is_empty() {
+            return;
+        }
+
+        // Step 4: Insert constant/index computation before the first load
+        let first_load = global_loads[0].0;
+        let const_32 = self.insert_before(first_load, Op::Const(Constant::idx(32u32)));
+        let scaled = self.insert_before(first_load, Op::Binary { x: lidx0, y: const_32, bop: BOp::Mul });
+        let combined_idx = self.insert_before(first_load, Op::Binary { x: scaled, y: lidx1, bop: BOp::Add });
+        let zero = self.insert_before(first_load, Op::Const(Constant::idx(0u32)));
+
+        // Step 5: Find the last global define to insert locals after it
+        let mut last_global = self.head;
+        let mut scan = self.head;
+        while !scan.is_null() {
+            if matches!(self.at(scan), Op::Define { scope: Scope::Global, .. }) {
+                last_global = scan;
+            }
+            scan = self.next_op(scan);
+        }
+
+        // Step 6: Allocate local buffers for each unique global source
+        let mut src_to_local: Map<OpId, OpId> = Map::default();
+        for &(_, src) in &global_loads {
+            if src_to_local.contains_key(&src) {
+                continue;
+            }
+            let local = self.insert_after(last_global, Op::Define {
+                dtype: self.dtype(src),
+                scope: Scope::Local,
+                ro: false,
+                len: 1024,
+            });
+            last_global = local;
+            src_to_local.insert(src, local);
+        }
+
+        // Step 7: For each load, insert global→local store (once per src) and switch to tiled local load
+        let mut processed: Set<OpId> = Set::default();
+        for &(load_op, src) in &global_loads {
+            let local = src_to_local[&src];
+
+            if processed.insert(src) {
+                let global_load = self.insert_before(load_op, Op::Load { src, index: combined_idx, layout: MemLayout::Scalar });
+                self.insert_before(load_op, Op::Store { dst: local, x: global_load, index: combined_idx, layout: MemLayout::Scalar });
+            }
+
+            self.ops[load_op].op = Op::Load { src: local, index: zero, layout: MemLayout::Tile { x: 32, y: 32, stride: 32 } };
         }
     }
 }
