@@ -432,7 +432,7 @@ The user has all the answers. Just ask.
 - **Ask before hunting for specs/values** - If I might have a spec, a mapping, or any information that could save time, ask me first. I always have it, so don't dig through source code or run experiments to derive it.
 - **Do as asked, nothing more.** If the user says "rerun", rerun the test. Don't edit files, don't remove debug artifacts, don't "fix" anything unless explicitly told to. Running and editing are different verbs.
 - **Ask follow-up questions.** The user loves them. Always ask if uncertain.
-- **Never use `git stash`. Never discard or hide changes.**
+- **Never use `git stash` or `git checkout --`. Never discard or hide changes.**
 - **Never run tests to check for regressions.** If the user wants to know about test status, they'll ask. Don't run tests to "make sure nothing broke" after a change or to check if a failure existed before your changes.
 - **Never run tests unless the user explicitly asks.** No testing to verify your changes work. No testing to "see if it compiles and passes." The user will ask when they want tests run.
 **THE PHRASE "PRE-EXISTING" IS FORBIDDEN. NEVER USE IT. EVER. IN ANY CONTEXT. IF YOU USE IT, YOU WILL BE CORRECTED. REPEATEDLY. FOREVER.**

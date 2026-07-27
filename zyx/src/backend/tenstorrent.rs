@@ -15,7 +15,7 @@
 // giving 120 cores total. A single-core launch uses `gidx0 = 0,
 // gidx1 = 0` (also written `{0, 0}` in CoreCoord notation).
 
-use super::{Device, DeviceId, DeviceInfo, DeviceProgramId, Event, Kernel, MemoryPool, OpCapability, PoolBufferId, PoolId};
+use super::{Device, DeviceId, DeviceInfo, DeviceProgramId, Event, Kernel, MemoryPool, PoolBufferId, PoolId};
 use crate::{
     DType, Map,
     backend::DTypeCapability,
@@ -164,15 +164,8 @@ pub(super) fn initialize_device(
         });
     }
 
-    // Paths provided by build.rs
-    let kernel_dir = PathBuf::from(env!("ZYX_TT_KERNEL_DIR"));
-
     // Spawn the runtime eagerly — both pool and device need it
-    let runtime = Arc::new(Mutex::new(RuntimeProcess::new(
-        &runtime_path.to_string_lossy(),
-        &kernel_dir.to_string_lossy(),
-        &cache_dir.to_string_lossy(),
-    )?));
+    let runtime = Arc::new(Mutex::new(RuntimeProcess::new(&runtime_path.to_string_lossy(), &cache_dir.to_string_lossy())?));
 
     let pool_id = memory_pools.len();
     let pool = MemoryPool::TT(TTMemoryPool { buffers: Slab::new(), runtime: runtime.clone(), free_bytes: Dim::from(dram_bytes) });
@@ -190,7 +183,7 @@ pub(super) fn initialize_device(
             max_register_bytes: 128,
             tensor_cores: true,
             warp_size: 1, // Tensix has no SIMT warps
-            supported_dtype_ops: [DTypeCapability::all(); DType::N_DTYPES],
+            dtype_capability: [DTypeCapability::all(); DType::N_DTYPES],
             has_native_exp2: false,
             supported_vec_lens: vec![32],
         },
@@ -354,7 +347,7 @@ struct RuntimeProcess {
 }
 
 impl RuntimeProcess {
-    fn new(runtime_path: &str, kernel_dir: &str, cache_dir: &str) -> Result<Self, BackendError> {
+    fn new(runtime_path: &str, cache_dir: &str) -> Result<Self, BackendError> {
         eprintln!("[TT_DEBUG] spawning tt-runtime from {runtime_path}");
 
         // Kill any previous zyx-tt-runtime that might still hold the device
@@ -383,7 +376,7 @@ impl RuntimeProcess {
         let mut rt = RuntimeProcess { stdin: BufWriter::new(stdin), stdout: BufReader::new(stdout), child, timeout_ms: 30000 };
 
         eprintln!("[TT_DEBUG] sending init");
-        let init_json = format!(r#"{{"cmd":"init","kernel_dir":"{kernel_dir}","cache_dir":"{cache_dir}"}}"#);
+        let init_json = format!(r#"{{"cmd":"init","cache_dir":"{cache_dir}"}}"#);
         rt.send(&init_json)?;
         eprintln!("[TT_DEBUG] init sent, waiting for response");
         let resp = rt.recv_with_timeout(rt.timeout_ms)?;
