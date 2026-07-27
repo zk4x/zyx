@@ -827,6 +827,9 @@ impl TTDevice {
                     Op::Barrier => {
                         break;
                     }
+                    Op::Cast { x, dtype } => {
+                        writeln!(reader, "{indent}{} r{op_id} = ({})r{x};", dtype.c_type(), dtype.c_type());
+                    }
                     Op::LocalIndex { .. } => {
                         unreachable!("tenstorrent does not have local threads; local indices should have been converted to loops by the opt_tenstorrent_tile optimization pass")
                     }

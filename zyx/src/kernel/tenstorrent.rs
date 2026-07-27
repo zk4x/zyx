@@ -31,8 +31,6 @@ impl Kernel {
         self.tenstorrent_local();
         self.tenstorrent_group();
         self.tenstorrent_loop_local();
-        self.debug();
-        panic!();
     }
 
     fn tenstorrent_pad(&mut self) {
@@ -255,7 +253,7 @@ impl Kernel {
             }
             let local = dst_to_local[&dst];
             let scalar_load =
-                self.insert_after(insert_point, Op::Load { src: local, index: store_idx, layout: MemLayout::Scalar });
+                self.insert_after(insert_point, Op::Load { src: local, index: combined_idx, layout: MemLayout::Scalar });
             insert_point = scalar_load;
             let global_store =
                 self.insert_after(insert_point, Op::Store { dst, x: scalar_load, index: store_idx, layout: MemLayout::Scalar });
@@ -383,6 +381,67 @@ impl Kernel {
         while !op_id.is_null() {
             for param in self.ops[op_id].op.parameters_mut() {
                 if let Some(&new_id) = replace_map.get(param) {
+                    *param = new_id;
+                }
+            }
+            op_id = self.next_op(op_id);
+        }
+
+        // Clone dependency chain inside write-back loops so per-thread index
+        // computation (which depends on local indices) is re-computed using
+        // the new loop variables instead of stale values from the preload section.
+        let inner_loop = new_loops.last().unwrap();
+        let first_inside = self.next_op(*inner_loop);
+        let mut write_back_ops = Vec::new();
+        let mut op_id = self.next_op(barrier2);
+        while !op_id.is_null() {
+            write_back_ops.push(op_id);
+            op_id = self.next_op(op_id);
+        }
+        let deps = gather_deps(self, &write_back_ops);
+        let mut clone_map = replace_map.clone();
+        let mut deps_sorted: Vec<OpId> = deps.iter().copied().collect();
+        deps_sorted.sort_by_key(|&id| {
+            let mut order = 0u32;
+            let mut scan = self.head;
+            while !scan.is_null() && scan != id {
+                order += 1;
+                scan = self.next_op(scan);
+            }
+            order
+        });
+        let mut insert_point = *inner_loop;
+        for &dep_id in &deps_sorted {
+            let mut inside = false;
+            let mut scan = first_inside;
+            while !scan.is_null() {
+                if scan == dep_id {
+                    inside = true;
+                    break;
+                }
+                scan = self.next_op(scan);
+            }
+            if inside {
+                continue;
+            }
+            if matches!(self.at(dep_id), Op::Define { .. } | Op::Const(_) | Op::GroupIndex { .. } | Op::Barrier | Op::Loop { .. })
+            {
+                continue;
+            }
+            let mut cloned_op = self.at(dep_id).clone();
+            for param in cloned_op.parameters_mut() {
+                if let Some(&new_id) = clone_map.get(param) {
+                    *param = new_id;
+                }
+            }
+            let new_id = self.insert_after(insert_point, cloned_op);
+            insert_point = new_id;
+            clone_map.insert(dep_id, new_id);
+        }
+        let mut op_id = first_inside;
+        while !op_id.is_null() {
+            for param in self.ops[op_id].op.parameters_mut() {
+                if let Some(&new_id) = clone_map.get(param) {
                     *param = new_id;
                 }
             }
