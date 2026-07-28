@@ -16,7 +16,7 @@ use std::sync::{
 use libloading::Library;
 use nanoserde::DeJson;
 
-use crate::kernel::{IndexScope, Op};
+use crate::kernel::{IdxScope, Op};
 use crate::{
     DType,
     error::{BackendError, ErrorStatus},
@@ -1216,9 +1216,9 @@ pub(super) fn initialize_device(
                             while !op_id.is_null() {
                                 match kernel.ops[op_id].op {
                                     Op::Index { len, axis, scope } => match scope {
-                                        IndexScope::Group => gws[axis as usize] = len,
-                                        IndexScope::Local => lws[axis as usize] = len,
-                                        IndexScope::Warp => todo!(),
+                                        IdxScope::Group => gws[axis as usize] = len,
+                                        IdxScope::Local => lws[axis as usize] = len,
+                                        IdxScope::Warp => todo!(),
                                     },
                                     _ => {}
                                 }

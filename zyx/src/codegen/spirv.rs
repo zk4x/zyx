@@ -8,7 +8,7 @@ use crate::{
     DType, Map,
     dtype::Constant,
     error::{BackendError, ErrorStatus},
-    kernel::{BOp, IDX_T, IndexScope, Kernel, MemLayout, MemScope, Op, OpId, UOp},
+    kernel::{BOp, IDX_T, IdxScope, Kernel, MemLayout, MemScope, Op, OpId, UOp},
 };
 use std::hash::BuildHasherDefault;
 
@@ -833,17 +833,17 @@ impl Kernel {
                 // Track work sizes from Index ops
                 match self.ops[op_id].op {
                     Op::Index { len, axis, scope } => match scope {
-                        IndexScope::Group => {
+                        IdxScope::Group => {
                             if axis < 3 {
                                 gws[axis as usize] = gws[axis as usize].max(len);
                             }
                         }
-                        IndexScope::Local => {
+                        IdxScope::Local => {
                             if axis < 3 {
                                 lws[axis as usize] = lws[axis as usize].max(len);
                             }
                         }
-                        IndexScope::Warp => todo!(),
+                        IdxScope::Warp => todo!(),
                     },
                     _ => {}
                 }
@@ -1457,9 +1457,9 @@ impl Kernel {
                         let result_type = emit_type(&mut asm, &mut type_cache, IDX_T);
                         let loaded = asm.id();
                         match scope {
-                            IndexScope::Group => asm.emit_typed(OpLoad, vec3_id, loaded, &[wg_id_var]),
-                            IndexScope::Local => asm.emit_typed(OpLoad, vec3_id, loaded, &[local_inv_var]),
-                            IndexScope::Warp => todo!(),
+                            IdxScope::Group => asm.emit_typed(OpLoad, vec3_id, loaded, &[wg_id_var]),
+                            IdxScope::Local => asm.emit_typed(OpLoad, vec3_id, loaded, &[local_inv_var]),
+                            IdxScope::Warp => todo!(),
                         }
                         let elem = asm.id();
                         asm.emit_typed(OpCompositeExtract, u32_id, elem, &[loaded, axis]);

@@ -30,7 +30,7 @@ use crate::{
     DType, Map,
     backend::DeviceInfo,
     dtype::Constant,
-    kernel::{BOp, IndexScope, Kernel, MMADType, MMADims, MMALayout, MemLayout, MemScope, Op, OpId},
+    kernel::{BOp, IdxScope, Kernel, MMADType, MMADims, MMALayout, MemLayout, MemScope, Op, OpId},
     shape::Dim,
 };
 
@@ -300,7 +300,7 @@ impl Kernel {
         let mut local_loops = Vec::new();
         let mut op_id = self.head;
         while !op_id.is_null() {
-            if let Op::Index { len: dim, axis, scope: IndexScope::Local } = self.ops[op_id].op {
+            if let Op::Index { len: dim, axis, scope: IdxScope::Local } = self.ops[op_id].op {
                 local_dims.push(dim);
                 local_loops.push(op_id);
             }
@@ -318,8 +318,7 @@ impl Kernel {
             return false;
         }
 
-        let warp_loop =
-            self.insert_before(local_loops[0], Op::Index { len: local_dims[0] * n, axis: 0, scope: IndexScope::Warp });
+        let warp_loop = self.insert_before(local_loops[0], Op::Index { len: local_dims[0] * n, axis: 0, scope: IdxScope::Warp });
         let y = self.insert_before(warp_loop, Op::Const(Constant::idx(n as u64)));
         self.ops[local_loops[0]].op = Op::Binary { x: warp_loop, y, bop: BOp::Div };
         let y = self.insert_before(warp_loop, Op::Const(Constant::idx(n as u64)));

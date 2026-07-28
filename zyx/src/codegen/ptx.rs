@@ -8,7 +8,7 @@ use crate::{
     backend::DeviceInfo,
     dtype::Constant,
     error::{BackendError, ErrorStatus},
-    kernel::{BOp, IDX_T, IndexScope, Kernel, MemScope, Op, OpId, UOp},
+    kernel::{BOp, IDX_T, IdxScope, Kernel, MemScope, Op, OpId, UOp},
     scalar::{bf16, f16},
     shape::Dim,
 };
@@ -248,9 +248,9 @@ impl Kernel {
         while !op_id.is_null() {
             match self.ops[op_id].op {
                 Op::Index { len, axis, scope } => match scope {
-                    IndexScope::Group => gws[axis as usize] = len,
-                    IndexScope::Local => lws[axis as usize] = len,
-                    IndexScope::Warp => todo!(),
+                    IdxScope::Group => gws[axis as usize] = len,
+                    IdxScope::Local => lws[axis as usize] = len,
+                    IdxScope::Warp => todo!(),
                 },
                 _ => {}
             }
@@ -320,9 +320,9 @@ impl Kernel {
                         comp.indent,
                         if IDX_T == DType::U64 { "cvt.u64" } else { "mov" },
                         match scope {
-                            IndexScope::Group => "cta",
-                            IndexScope::Local => "t",
-                            IndexScope::Warp => todo!(),
+                            IdxScope::Group => "cta",
+                            IdxScope::Local => "t",
+                            IdxScope::Warp => todo!(),
                         },
                         ["x", "y", "z"][axis as usize],
                     );

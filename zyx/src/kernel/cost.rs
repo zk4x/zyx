@@ -19,7 +19,7 @@
 use crate::{
     DType, Map, Set,
     backend::DeviceInfo,
-    kernel::{IDX_T, IndexScope, Kernel, MemLayout, MemScope, Op, OpId},
+    kernel::{IDX_T, IdxScope, Kernel, MemLayout, MemScope, Op, OpId},
 };
 use nanoserde::{DeBin, SerBin};
 
@@ -444,9 +444,9 @@ impl Kernel {
                     }
                 }
                 &Op::Index { len, axis, scope } => match scope {
-                    IndexScope::Group => gws[axis as usize] = len,
-                    IndexScope::Local => lws[axis as usize] = len,
-                    IndexScope::Warp => todo!(),
+                    IdxScope::Group => gws[axis as usize] = len,
+                    IdxScope::Local => lws[axis as usize] = len,
+                    IdxScope::Warp => todo!(),
                 },
                 &Op::Loop { len: len_id } => {
                     let len = self.loop_len_dim(len_id);

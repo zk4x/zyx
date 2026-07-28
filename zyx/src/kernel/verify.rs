@@ -5,7 +5,7 @@ use std::ops::RangeInclusive;
 
 use crate::{
     DType, Map, Set,
-    kernel::{BOp, IDX_T, IndexScope, Kernel, MemScope, Op, OpId},
+    kernel::{BOp, IDX_T, IdxScope, Kernel, MemScope, Op, OpId},
     shape::Dim,
 };
 
@@ -213,21 +213,21 @@ impl Kernel {
                 }
                 Op::Index { axis, scope, .. } => {
                     match scope {
-                        IndexScope::Group => {
+                        IdxScope::Group => {
                             if !gids.insert(axis) {
                                 println!("index={op_id} is using {scope} axis={axis} for the second time");
                                 self.debug();
                                 panic!();
                             }
                         }
-                        IndexScope::Local => {
+                        IdxScope::Local => {
                             if !lids.insert(axis) {
                                 println!("index={op_id} is using {scope} axis={axis} for the second time");
                                 self.debug();
                                 panic!();
                             }
                         }
-                        IndexScope::Warp => todo!(),
+                        IdxScope::Warp => todo!(),
                     }
                     dtypes.insert(op_id, IDX_T);
                 }

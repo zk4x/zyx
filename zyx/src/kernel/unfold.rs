@@ -17,7 +17,7 @@ use std::collections::BTreeMap;
 use crate::{
     Set,
     dtype::Constant,
-    kernel::{BOp, IDX_T, IndexScope, Kernel, MemLayout, MemScope, MoveOp, Op, OpId},
+    kernel::{BOp, IDX_T, IdxScope, Kernel, MemLayout, MemScope, MoveOp, Op, OpId},
     shape::{Dim, UAxis},
 };
 
@@ -30,7 +30,7 @@ impl Kernel {
     /// It cannot be applied if both explicit global indices and view moves
     /// are present in the kernel.
     pub fn unfold_movement_ops(&mut self) {
-        let has_gidx = self.ops.values().any(|n| matches!(n.op, Op::Index { scope: IndexScope::Group, .. }));
+        let has_gidx = self.ops.values().any(|n| matches!(n.op, Op::Index { scope: IdxScope::Group, .. }));
         let has_view_moves = self.ops.values().any(|n| matches!(n.op, Op::LoadView(_) | Op::StoreView { .. } | Op::Move { .. }));
 
         match (has_gidx, has_view_moves) {
@@ -66,7 +66,7 @@ impl Kernel {
         let mut axis = shape.len() as u32;
         for len in shape.into_iter().rev() {
             axis -= 1;
-            self.insert_before(self.head, Op::Index { len, axis, scope: IndexScope::Group });
+            self.insert_before(self.head, Op::Index { len, axis, scope: IdxScope::Group });
         }
 
         self.verify();

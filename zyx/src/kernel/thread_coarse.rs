@@ -25,7 +25,7 @@ use super::autotune::Optimization;
 use crate::{
     Map, Set,
     dtype::Constant,
-    kernel::{BOp, IndexScope, Kernel, MemLayout, MemScope, Op, OpId},
+    kernel::{BOp, IdxScope, Kernel, MemLayout, MemScope, Op, OpId},
 };
 
 // ## Coalesced local+upcast access
@@ -74,7 +74,7 @@ impl Kernel {
         let mut factors = Vec::new();
         let mut op_id = self.head;
         while !op_id.is_null() {
-            if let Op::Index { len, scope: IndexScope::Group, .. } = self.ops[op_id].op {
+            if let Op::Index { len, scope: IdxScope::Group, .. } = self.ops[op_id].op {
                 for f in [16, 8, 4] {
                     //println!("len={len} f={f}");
                     if len.is_multiple_of(f) {
@@ -94,7 +94,7 @@ impl Kernel {
     pub fn thread_coarse(&mut self, gidx_id: OpId, factor: u64) {
         #[cfg(feature = "time")]
         let _timer = crate::Timer::new("thread_coarse");
-        let Op::Index { len, axis, scope: IndexScope::Group } = self.ops[gidx_id].op else {
+        let Op::Index { len, axis, scope: IdxScope::Group } = self.ops[gidx_id].op else {
             unreachable!()
         };
         debug_assert!(len.is_multiple_of(factor));
@@ -144,7 +144,7 @@ impl Kernel {
         let mut remaps: Map<OpId, Vec<OpId>> = Map::default();
 
         // Group index now split into multiple indices with constant offsets
-        let x = self.insert_before(gidx_id, Op::Index { len: len / factor, axis, scope: IndexScope::Group });
+        let x = self.insert_before(gidx_id, Op::Index { len: len / factor, axis, scope: IdxScope::Group });
         self.ops[gidx_id].op = Op::Binary { x, y: const_factor, bop: BOp::Mul };
         let mut ids = Vec::with_capacity((factor - 1) as usize);
         let mut id = gidx_id;
@@ -264,7 +264,7 @@ impl Kernel {
                     }
                 }
             }
-            if let Op::Index { len, scope: IndexScope::Group, .. } = self.ops[op_id].op {
+            if let Op::Index { len, scope: IdxScope::Group, .. } = self.ops[op_id].op {
                 if len >= 8 {
                     let applicable: Vec<u64> =
                         candidates.iter().copied().filter(|&f| len.is_multiple_of(f) && len / f >= 4).collect();

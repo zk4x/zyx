@@ -29,7 +29,7 @@
 use crate::{
     Set,
     dtype::{Constant, DType},
-    kernel::{BOp, IDX_T, IndexScope, Kernel, MemLayout, MemScope, Op, OpId},
+    kernel::{BOp, IDX_T, IdxScope, Kernel, MemLayout, MemScope, Op, OpId},
 };
 
 impl Kernel {
@@ -415,7 +415,7 @@ impl Kernel {
     /// For example, if accumulating `i` (the loop index directly):
     ///   a=1, b=1, c=n, `mul_const`=1, gidx is the loop index variable
     fn trace_to_linear_comparison(&self, accumulated_value_id: OpId, loop_id: OpId) -> Option<(u64, u64, u64, u64, OpId)> {
-        if let Op::Index { scope: IndexScope::Group, .. } = self.at(accumulated_value_id) {
+        if let Op::Index { scope: IdxScope::Group, .. } = self.at(accumulated_value_id) {
             return None;
         }
 

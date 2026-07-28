@@ -14,7 +14,7 @@ use super::{
 };
 use crate::DType;
 use crate::error::{BackendError, ErrorStatus};
-use crate::kernel::{IndexScope, Kernel, Op};
+use crate::kernel::{IdxScope, Kernel, Op};
 use crate::shape::Dim;
 use crate::slab::Slab;
 use libloading::{Library, Symbol};
@@ -193,7 +193,7 @@ impl CDevice {
         let mut gws0 = 1u64;
         let mut op_id = kernel.head;
         while !op_id.is_null() {
-            if let Op::Index { len, axis, scope: IndexScope::Group } = kernel.ops[op_id].op {
+            if let Op::Index { len, axis, scope: IdxScope::Group } = kernel.ops[op_id].op {
                 if axis == 0 {
                     gws0 = len.max(1);
                 }

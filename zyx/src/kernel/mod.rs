@@ -12,18 +12,18 @@
 //! Requires CUDA with tensor cores (compute capability ≥ 7.0).
 //!
 //! ```rust
-//! use zyx::kernel::{DeviceId, Kernel, MMADType, MMADims, MMALayout, MemLayout, Scope};
+//! use zyx::kernel::{DeviceId, Kernel, MMADType, MMADims, MMALayout, MemLayout, MemScope};
 //! use zyx::DType;
 //!
 //! let (m, n, k) = (1024, 1024, 1024);
 //! let mut kernel = Kernel::new(DeviceId::AUTO);
 //!
-//! let a_buf = kernel.define(DType::F16, Scope::Global, true, m * k);
-//! let b_buf = kernel.define(DType::F16, Scope::Global, true, k * n);
-//! let c_buf = kernel.define(DType::F32, Scope::Global, false, m * n);
+//! let a_buf = kernel.define(DType::F16, MemScope::Global, true, m * k);
+//! let b_buf = kernel.define(DType::F16, MemScope::Global, true, k * n);
+//! let c_buf = kernel.define(DType::F32, MemScope::Global, false, m * n);
 //!
-//! let gidx = kernel.global_index(0, m / 16);
-//! let gidy = kernel.global_index(1, n / 8);
+//! let gidx = kernel.group_index(0, m / 16);
+//! let gidy = kernel.group_index(1, n / 8);
 //! let wid = kernel.local_index(0, 32);
 //!
 //! let [c0, c1, c2, c4, c8, c16] = kernel.const_idxs([0u32, 1, 2, 4, 8, 16]);
@@ -38,7 +38,7 @@
 //! let b_col = kernel.mad(gidy, c8, row_in_tile);
 //! let tile_base_col = kernel.mul(gidy, c8);
 //!
-//! let acc = kernel.define(DType::F32, Scope::Register, false, 4);
+//! let acc = kernel.define(DType::F32, MemScope::Register, false, 4);
 //! let zf = kernel.const_val(0.0f32);
 //! let zero_acc = kernel.vectorize(vec![zf, zf, zf, zf]);
 //! kernel.store(acc, zero_acc, c0, MemLayout::Vector(4));
@@ -153,18 +153,18 @@ pub(crate) const IDX_T: DType = DType::U32;
 /// Build a kernel that computes `sin(x) + cos(x)` element-wise:
 ///
 /// ```
-/// use zyx::kernel::{Kernel, Scope, MemLayout, DeviceId};
+/// use zyx::kernel::{Kernel, MemScope, MemLayout, DeviceId};
 /// use zyx::DType;
 ///
 /// let mut kernel = Kernel::new(DeviceId::AUTO);
 /// let n = 256;
-/// let inp = kernel.define(DType::F32, Scope::Global, true, n);
-/// let gidx = kernel.global_index(0, n);
+/// let inp = kernel.define(DType::F32, MemScope::Global, true, n);
+/// let gidx = kernel.group_index(0, n);
 /// let loaded = kernel.load(inp, gidx, MemLayout::Scalar);
 /// let s = kernel.sin(loaded);
 /// let c = kernel.cos(loaded);
 /// let result = kernel.add(s, c);
-/// let out = kernel.define(DType::F32, Scope::Global, false, n);
+/// let out = kernel.define(DType::F32, MemScope::Global, false, n);
 /// kernel.store(out, result, gidx, MemLayout::Scalar);
 /// ```
 ///
@@ -173,16 +173,16 @@ pub(crate) const IDX_T: DType = DType::U32;
 /// Build a kernel using fused multiply-add and compile it:
 ///
 /// ```
-/// use zyx::kernel::{Kernel, Scope, MemLayout, DeviceId};
+/// use zyx::kernel::{Kernel, MemScope, MemLayout, DeviceId};
 /// use zyx::{DType, Tensor, ZyxError};
 ///
 /// let mut kernel = Kernel::new(DeviceId::AUTO);
 /// let n = 4;
-/// let inp = kernel.define(DType::F32, Scope::Global, true, n);
-/// let gidx = kernel.global_index(0, n);
+/// let inp = kernel.define(DType::F32, MemScope::Global, true, n);
+/// let gidx = kernel.group_index(0, n);
 /// let loaded = kernel.load(inp, gidx, MemLayout::Scalar);
 /// let result = kernel.mad(loaded, loaded, loaded); // x*x + x
-/// let out = kernel.define(DType::F32, Scope::Global, false, n);
+/// let out = kernel.define(DType::F32, MemScope::Global, false, n);
 /// kernel.store(out, result, gidx, MemLayout::Scalar);
 ///
 /// let compiled = kernel.compile()?;
@@ -217,7 +217,7 @@ pub enum MemScope {
 
 /// Scope of index. Index is like loop, but purely parallel acess
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, SerBin, DeBin)]
-pub enum IndexScope {
+pub enum IdxScope {
     /// Group scope. Represents blocks in cuda, cores in CPU and tenstorrent.
     Group,
     /// Local scope. Represents cuda threads.
@@ -226,12 +226,12 @@ pub enum IndexScope {
     Warp,
 }
 
-impl std::fmt::Display for IndexScope {
+impl std::fmt::Display for IdxScope {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(match self {
-            IndexScope::Group => "group",
-            IndexScope::Local => "local",
-            IndexScope::Warp => "warp",
+            IdxScope::Group => "group",
+            IdxScope::Local => "local",
+            IdxScope::Warp => "warp",
         })
     }
 }
@@ -502,7 +502,7 @@ pub(crate) enum Op {
     Index {
         len: Dim,
         axis: u32,
-        scope: IndexScope,
+        scope: IdxScope,
     },
     // TODO add WarpIndex
     // Control flow
@@ -722,7 +722,7 @@ impl DeBin for Op {
             7 => {
                 let len = Dim::de_bin(offset, bytes)?;
                 let axis = u32::de_bin(offset, bytes)?;
-                let scope = IndexScope::de_bin(offset, bytes)?;
+                let scope = IdxScope::de_bin(offset, bytes)?;
                 Ok(Op::Index { len, axis, scope })
             }
             9 => {
@@ -955,22 +955,22 @@ impl Kernel {
     /// Create a new custom kernel targeting a specific device.
     ///
     /// Two approaches for inputs:
-    /// - **Manual gidx**: `define(dtype, Scope::Global, true, len)` + [`Kernel::gidx`]
+    /// - **Manual gidx**: `define(dtype, MemScope::Global, true, len)` + [`Kernel::gidx`]
     /// - **LoadView**: `push_back(Op::LoadView(...))` — `compile()` adds thread indices.
     ///
     /// # Example
     ///
     /// ```rust
-    /// use zyx::kernel::{Kernel, Scope, MemLayout, DeviceId};
+    /// use zyx::kernel::{Kernel, MemScope, MemLayout, DeviceId};
     /// use zyx::DType;
     ///
     /// let mut kernel = Kernel::new(DeviceId::AUTO);
     /// let n = 4;
-    /// let inp = kernel.define(DType::F32, Scope::Global, true, n);
-    /// let gidx = kernel.global_index(0, n);
+    /// let inp = kernel.define(DType::F32, MemScope::Global, true, n);
+    /// let gidx = kernel.group_index(0, n);
     /// let loaded = kernel.load(inp, gidx, MemLayout::Scalar);
     /// let doubled = kernel.add(loaded, loaded);
-    /// let out = kernel.define(DType::F32, Scope::Global, false, n);
+    /// let out = kernel.define(DType::F32, MemScope::Global, false, n);
     /// kernel.store(out, doubled, gidx, MemLayout::Scalar);
     /// ```
     pub fn new(device_id: DeviceId) -> Self {
@@ -1205,14 +1205,14 @@ impl Kernel {
         self.push_back(Op::Define { dtype, scope, ro, len })
     }
 
-    /// Global thread index.
+    /// Group (block) index.
     pub fn group_index(&mut self, axis: u32, len: Dim) -> OpId {
-        self.push_back(Op::Index { len, axis, scope: IndexScope::Group })
+        self.push_back(Op::Index { len, axis, scope: IdxScope::Group })
     }
 
     /// Local thread index.
     pub fn local_index(&mut self, axis: u32, len: Dim) -> OpId {
-        self.push_back(Op::Index { len, axis, scope: IndexScope::Local })
+        self.push_back(Op::Index { len, axis, scope: IdxScope::Local })
     }
 
     /// Store `x` to `dst` at `index`.
@@ -1608,7 +1608,7 @@ impl Kernel {
 
     /// Sort global defines to the beginning of the operation chain.
     ///
-    /// Moves all `Define` operations with `Scope::Global` to appear at the beginning.
+    /// Moves all `Define` operations with `MemScope::Global` to appear at the beginning.
     pub(crate) fn sort_global_defines(&mut self) {
         let mut insert_after = OpId::NULL;
         let mut op_id = self.head;
@@ -2027,11 +2027,11 @@ impl Kernel {
         (new_kernel, new_root_op, self_loads, new_loads)
     }
 
-    /// Get all global indices used in the kernel.
+    /// Get all group indices used in the kernel.
     pub(crate) fn get_group_indices(&self) -> std::collections::BTreeMap<u32, OpId> {
         let mut indices = std::collections::BTreeMap::new();
         for (op_id, op_node) in self.ops.iter() {
-            if let Op::Index { axis, scope: IndexScope::Group, .. } = op_node.op {
+            if let Op::Index { axis, scope: IdxScope::Group, .. } = op_node.op {
                 indices.insert(axis, op_id);
             }
         }
@@ -2040,25 +2040,25 @@ impl Kernel {
 
     /// Renumber indices to be in order.
     pub(crate) fn renumber_indices(&mut self) {
-        let mut global_indices = BTreeMap::default();
+        let mut group_indices = BTreeMap::default();
         let mut local_indices = BTreeMap::default();
         for (op_id, op_node) in self.ops.iter() {
             match op_node.op {
-                Op::Index { axis, scope: IndexScope::Group, .. } => global_indices.insert(axis, op_id),
-                Op::Index { axis, scope: IndexScope::Local, .. } => local_indices.insert(axis, op_id),
+                Op::Index { axis, scope: IdxScope::Group, .. } => group_indices.insert(axis, op_id),
+                Op::Index { axis, scope: IdxScope::Local, .. } => local_indices.insert(axis, op_id),
                 _ => None,
             };
         }
         let mut ax = 0;
-        for &idx_id in global_indices.values() {
-            let Op::Index { axis, scope: IndexScope::Group, .. } = &mut self.ops[idx_id].op else {
+        for &idx_id in group_indices.values() {
+            let Op::Index { axis, scope: IdxScope::Group, .. } = &mut self.ops[idx_id].op else {
                 unreachable!()
             };
             *axis = ax;
             ax += 1;
         }
         for &idx_id in local_indices.values() {
-            let Op::Index { axis, scope: IndexScope::Local, .. } = &mut self.ops[idx_id].op else {
+            let Op::Index { axis, scope: IdxScope::Local, .. } = &mut self.ops[idx_id].op else {
                 unreachable!()
             };
             *axis = ax;
