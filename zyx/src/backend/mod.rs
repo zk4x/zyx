@@ -229,11 +229,6 @@ pub fn initialize_backends(
             println!("{err}");
         }
     }
-    if let Err(err) = dummy::initialize_device(&device_config.dummy, memory_pools, devices, debug_backends) {
-        if debug_backends {
-            println!("{err}");
-        }
-    }
     if let Err(err) = c::initialize_device(&device_config.c, memory_pools, devices, debug_backends) {
         if debug_backends {
             println!("{err}");
@@ -249,11 +244,6 @@ pub fn initialize_backends(
             println!("{err}");
         }
     }
-    if let Err(err) = opencl::initialize_device(&device_config.opencl, memory_pools, devices, debug_backends) {
-        if debug_backends {
-            println!("{err}");
-        }
-    }
     #[cfg(feature = "tenstorrent")]
     if let Err(err) = tenstorrent::initialize_device(&device_config.tenstorrent, memory_pools, devices, debug_backends) {
         if debug_backends {
@@ -265,8 +255,18 @@ pub fn initialize_backends(
             println!("{err}");
         }
     }
+    if let Err(err) = opencl::initialize_device(&device_config.opencl, memory_pools, devices, debug_backends) {
+        if debug_backends {
+            println!("{err}");
+        }
+    }
     #[cfg(feature = "wgpu")]
     if let Err(err) = wgpu::initialize_device(&device_config.wgpu, memory_pools, devices, debug_backends) {
+        if debug_backends {
+            println!("{err}");
+        }
+    }
+    if let Err(err) = dummy::initialize_device(&device_config.dummy, memory_pools, devices, debug_backends) {
         if debug_backends {
             println!("{err}");
         }

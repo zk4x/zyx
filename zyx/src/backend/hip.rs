@@ -124,7 +124,14 @@ pub(super) fn initialize_device(
     devices: &mut Slab<DeviceId, Device>,
     debug_dev: bool,
 ) -> Result<(), BackendError> {
-    let _ = config;
+    if let Some(device_ids) = &config.device_ids
+        && device_ids.is_empty()
+    {
+        if debug_dev {
+            println!("[HIP] configured out");
+        }
+        return Ok(());
+    }
 
     let hip_paths = [
         "/lib64/libamdhip64.so",

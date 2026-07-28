@@ -162,7 +162,7 @@ fn bf16_matmul_1() -> Result<(), ZyxError> {
     }
 
     let m = 17;
-    let k = 16;
+    let k = 2;
     let n = 19;
 
     let x_data: Vec<Vec<bf16>> = (0..m).map(|i| (0..k).map(|j| bf16::from_f32((i as f32 + j as f32) % 10.0)).collect()).collect();

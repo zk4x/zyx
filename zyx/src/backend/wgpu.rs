@@ -71,7 +71,10 @@ pub(super) fn initialize_device(
     debug_dev: bool,
 ) -> Result<(), BackendError> {
     if !config.enabled {
-        return Err(BackendError { status: super::ErrorStatus::Initialization, context: "[WGPU] configured out.".into() });
+        if debug_dev {
+            println!("[WGPU] configured out");
+        }
+        return Ok(());
     }
 
     let power_preference = PowerPreference::from_env().unwrap_or(wgpu::PowerPreference::HighPerformance);

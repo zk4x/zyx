@@ -55,7 +55,10 @@ pub(super) fn initialize_device(
     debug_dev: bool,
 ) -> Result<(), BackendError> {
     if !config.enabled {
-        return Err(BackendError { status: ErrorStatus::Initialization, context: "[C] backend configured out.".into() });
+        if debug_dev {
+            println!("[C] configured out");
+        }
+        return Ok(());
     }
     if debug_dev {
         println!("[C] initialized");
@@ -69,9 +72,6 @@ pub(super) fn initialize_device(
         });
     }
     let pool_id = PoolId::from(0); // use the first (host) pool
-    if debug_dev {
-        println!("[C] device total memory: {} MB", 10_485_760u64);
-    }
     let compilers = ["clang-11", "clang", "gcc", "cc"];
     let compiler = compilers.iter().find(|c| Command::new(c).arg("--version").output().is_ok()).copied().unwrap_or("cc");
     let has_vector_exts = Command::new(compiler)
