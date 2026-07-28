@@ -101,6 +101,7 @@ impl Graph {
             let nid = self.classes[cid].nodes[0];
             let node = &self.nodes[nid].node;
 
+            println!("cid={} nid={}, {node:?}", cid.0, nid.0);
             match node {
                 Node::Leaf { .. } => unreachable!(),
                 Node::Const(c) => {
