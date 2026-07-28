@@ -183,12 +183,13 @@ impl Tape {
         Ok(())
     }
 
-    /// Materializes ALL graph tensors still alive in the tape scope.
-    /// The tape is consumed — graph mode ends and every tracked tensor
-    /// becomes realized (buffers allocated).
-    pub fn realize_all(self) -> Result<(), ZyxError> {
+    // TOOD unsure if this should even be provided
+    // Materializes ALL graph tensors still alive in the tape scope.
+    // The tape is consumed — graph mode ends and every tracked tensor
+    // becomes realized (buffers allocated).
+    /*pub fn realize_all(self) -> Result<(), ZyxError> {
         todo!()
-    }
+    }*/
 }
 
 impl Drop for Tape {
