@@ -162,7 +162,7 @@ impl Graph {
                 for &ocid in &ek.outputs {
                     *counts.entry(ocid).or_default() += 1;
                 }
-                if !counts.is_empty() && counts.iter().all(|(c, &n)| rcs.get(c).copied().unwrap_or(0) != n) {
+                if !counts.is_empty() && counts.iter().any(|(c, &n)| rcs.get(c).copied().unwrap_or(0) != n) {
                     println!("outputs={:?}", ek.outputs);
                     ek.kernel.debug();
                     panic!("output:rcs invariant violated for kernel after {cid:?}");
