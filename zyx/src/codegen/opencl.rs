@@ -208,7 +208,10 @@ impl Kernel {
                     _ = writeln!(source, "{indent}r{reg} = {vec}.{};", VEC_COMPONENTS[idx]);
                 }
                 Op::Wmma { .. } => {
-                    panic!("OpenCL codegen does not support WMMA");
+                    return Err(BackendError {
+                        status: ErrorStatus::KernelCompilation,
+                        context: "OpenCL codegen does not support WMMA".into(),
+                    });
                 }
                 Op::Binary { x, y, bop } => {
                     let dtype = dtypes[&op_id];

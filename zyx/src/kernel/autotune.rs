@@ -54,14 +54,14 @@ use std::hash::{Hash, Hasher};
 /// config time and apply time, so OpIds remain valid through apply.
 type OptConfigFn = fn(&Kernel, &DeviceInfo) -> (Optimization, usize);
 
-const AVAILABLE_OPTIMIZATIONS: [OptConfigFn; 8] = [
+const AVAILABLE_OPTIMIZATIONS: [OptConfigFn; 9] = [
     |k, _| Kernel::opt_reassociate_commutative(k),
     Kernel::opt_split_global_to_local,
     |k, _| Kernel::opt_thread_coarse(k),
     |k, _| Kernel::opt_register_blocking(k),
     Kernel::opt_local_reduce,
     |k, _| Kernel::opt_split_loop(k),
-    //|k, _| Kernel::opt_pad_index(k),
+    |k, _| Kernel::opt_pad_index(k),
     Kernel::opt_vectorize,
     |k, _| Kernel::opt_merge_nested_loops(k),
 ];
@@ -280,13 +280,13 @@ impl Optimization {
                 if factors.is_empty() {
                     return;
                 }
-                let (gidx_id, pad_to) = factors[config];
-                let Op::Index { len: current_len, scope: IdxScope::Group, .. } = kernel.ops[gidx_id].op else {
+                let (idx_id, pad_to) = factors[config];
+                let Op::Index { len: current_len, .. } = kernel.ops[idx_id].op else {
                     unreachable!()
                 };
                 let pad_len = (pad_to - current_len % pad_to) % pad_to;
                 if pad_len > 0 {
-                    kernel.pad_index(gidx_id, pad_len);
+                    kernel.pad_index(idx_id, pad_len);
                 }
             }
             Optimization::Vectorize { supported_lens, vectorize_ops } => {
