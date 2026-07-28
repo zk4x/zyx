@@ -247,9 +247,9 @@ impl std::hash::Hash for Node {
 }
 
 #[derive(Debug)]
-struct NodeData {
-    node: Node,
-    class_of: ClassId,
+pub(crate) struct NodeData {
+    pub(crate) node: Node,
+    pub(crate) class_of: ClassId,
 }
 
 #[derive(Debug)]
@@ -291,7 +291,7 @@ pub struct EKernelData {
 #[derive(Debug)]
 pub struct Graph {
     hashcons: Map<Node, NodeId>,
-    nodes: Slab<NodeId, NodeData>,
+    pub(crate) nodes: Slab<NodeId, NodeData>,
     pub(crate) classes: Slab<ClassId, EClass>,
     pub(crate) ekernels: Slab<EKernelId, EKernelData>,
     pub(crate) kernel_map: Map<NodeId, EKernelId>,
@@ -475,24 +475,37 @@ impl Graph {
                             .iter()
                             .any(|&inid| matches!(&self.nodes[inid].node, Node::ToDevice { device: d, .. } if *d == device_id));
                         if !already_on_device {
-                            debug_assert!(
-                                self.classes[input_cid]
-                                    .nodes
-                                    .iter()
-                                    .any(|&inid| matches!(&self.nodes[inid].node, Node::Leaf { .. })),
-                                "input must be from a kernel or a realized tensor"
-                            );
-                            let tid = self.leaf_map[&input_cid];
-                            let leaf_pool = buffer_map[&tid].pool;
-                            if leaf_pool != dev_pool {
-                                let (_, to_cid) = self.push(
-                                    Node::ToDevice { x: input_cid, device: device_id, time: 0 },
-                                    self.classes[input_cid].shape,
-                                    self.classes[input_cid].dtype,
-                                );
-                                if to_cid != cid && to_cid != class_of {
-                                    let new_inputs = new_inputs.get_or_insert_with(|| inputs.clone());
-                                    new_inputs[i] = to_cid;
+                            let is_leaf = self.classes[input_cid]
+                                .nodes
+                                .iter()
+                                .any(|&inid| matches!(&self.nodes[inid].node, Node::Leaf { .. }));
+                            if is_leaf {
+                                let tid =
+                                    self.leaf_map.get(&input_cid).copied().unwrap_or_else(|| {
+                                        let leaf_cid = self.classes[input_cid]
+                                            .nodes
+                                            .iter()
+                                            .find_map(|&inid| {
+                                                if matches!(&self.nodes[inid].node, Node::Leaf { .. }) {
+                                                    Some(self.nodes[inid].class_of)
+                                                } else {
+                                                    None
+                                                }
+                                            })
+                                            .expect("already checked is_leaf");
+                                        self.leaf_map[&leaf_cid]
+                                    });
+                                let leaf_pool = buffer_map[&tid].pool;
+                                if leaf_pool != dev_pool {
+                                    let (_, to_cid) = self.push(
+                                        Node::ToDevice { x: input_cid, device: device_id, time: 0 },
+                                        self.classes[input_cid].shape,
+                                        self.classes[input_cid].dtype,
+                                    );
+                                    if to_cid != cid && to_cid != class_of {
+                                        let new_inputs = new_inputs.get_or_insert_with(|| inputs.clone());
+                                        new_inputs[i] = to_cid;
+                                    }
                                 }
                             }
                         }

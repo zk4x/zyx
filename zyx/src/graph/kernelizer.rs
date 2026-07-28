@@ -12,30 +12,24 @@ use crate::{
 };
 
 impl Graph {
-    pub fn fill_remaining(&mut self, outputs: &BTreeSet<ClassId>, shapes: &Slab<ShapeId, Vec<Dim>>) {
+    pub fn fill_remaining(
+        &mut self,
+        outputs: &BTreeSet<ClassId>,
+        shapes: &Slab<ShapeId, Vec<Dim>>,
+        realized_nodes: Set<ClassId>,
+    ) {
         let order = self.topo_sort_classes(outputs);
 
-        // Reference counts: how many times each class appears as a child.
-        // Kernel and ToDevice nodes represent already-compiled results from prior
-        // realize calls — don't count them, they'd inflate rcs for cross-tape graphs.
         let mut rcs: Map<ClassId, u32> = Map::default();
         for &cid in &order {
             for nid in &self.classes[cid].nodes {
-                if matches!(&self.nodes[*nid].node, Node::Kernel { .. } | Node::ToDevice { .. }) {
-                    continue;
-                }
                 for child in self.nodes[*nid].node.class_params() {
                     *rcs.entry(child).or_default() += 1;
                 }
             }
         }
 
-        // All realized (Leaf) classes start in pending_stores.
-        let mut pending_stores: Set<ClassId> = self
-            .classes
-            .ids()
-            .filter(|&cid| self.classes[cid].nodes.iter().any(|&nid| matches!(&self.nodes[nid].node, Node::Leaf { .. })))
-            .collect();
+        let mut pending_stores: Set<ClassId> = realized_nodes;
         let mut visited: Map<ClassId, (EKernelId, OpId)> = Map::default();
 
         for &cid in &order {

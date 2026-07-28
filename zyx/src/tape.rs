@@ -33,9 +33,9 @@
 use std::collections::BTreeSet;
 
 use crate::{
-    Map, RT, Tensor, ZyxError,
+    Map, RT, Set, Tensor, ZyxError,
     backend::{BufferId, Device},
-    graph::{ClassId, ExecPlan, Graph, GraphId},
+    graph::{ClassId, ExecPlan, Graph, GraphId, Node},
     kernel::{DeviceId, Kernel, Op},
     runtime::{KernelData, ShapeId, TensorState},
     shape::Dim,
@@ -153,10 +153,26 @@ impl Tape {
 
         // TODO pattern match cublas, cblas, etc. kernels
 
+        for cid in rt.graphs[graph_id].classes.ids() {
+            let has_leaf = rt.graphs[graph_id].classes[cid]
+                .nodes
+                .iter()
+                .any(|&nid| matches!(&rt.graphs[graph_id].nodes[nid].node, Node::Leaf { .. }));
+            if has_leaf {
+                let &tid = rt.graphs[graph_id].leaf_map.get(&cid).expect("class {cid:?} has Leaf node but not in leaf_map");
+                assert!(rt.buffer_map.contains_key(&tid), "leaf class {cid:?} tid {tid:?} not in buffer_map");
+            } else {
+                assert!(!rt.graphs[graph_id].leaf_map.contains_key(&cid), "class {cid:?} has no Leaf node but is in leaf_map");
+            }
+        }
+
         // Fills missing places with zyx custom kernels
         // SAFETY: graph and shapes are separate fields of Runtime, no aliasing, rust is stupid
         let shapes_ptr: *const Slab<ShapeId, Vec<Dim>> = &rt.shapes;
-        rt.graphs[graph_id].fill_remaining(&output_set, unsafe { &*shapes_ptr });
+
+        let realized_nodes: Set<ClassId> =
+            rt.graphs[graph_id].leaf_map.iter().filter(|(_, tid)| rt.buffer_map.contains_key(tid)).map(|(cid, _)| *cid).collect();
+        rt.graphs[graph_id].fill_remaining(&output_set, unsafe { &*shapes_ptr }, realized_nodes);
 
         // Autotunes custom zyx kernels for all devices and adds kernel nodes for all of them
         rt.autotune_graph_kernels(graph_id)?;

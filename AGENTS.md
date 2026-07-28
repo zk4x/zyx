@@ -447,6 +447,21 @@ The user has all the answers. Just ask.
 - Complex lifetime annotations
 - Abstractions without proven need
 
+## Tape Design
+
+- **`Tape::realize` should take persistent state only**: model parameters + optimizer internal buffers (momentum, etc.). These are the tensors whose values must carry across iterations.
+- **Intermediates (activations, gradients) don't need explicit realization** — they're used within the step and can be dropped.
+- **`realize_all`** is not needed — it would wastefully realize intermediates. Currently commented out.
+- **Auto-promotion of eager tensors to graph** is necessary and correct. When an eager tensor (e.g., optimizer momentum buffer from a previous step) is used in an operation with a graph tensor inside a tape scope, it gets auto-promoted to graph via `promote_to_graph`. This avoids requiring manual `tape.add()` calls for optimizer internals.
+- However, auto-promotion creates a dynamic where the tape has more leaf tensors than were passed to `Tape::new`. This is fine — `realize` handles all leaves as graph inputs.
+- **Training loop pattern**:
+  1. `let tape = Tape::new(&net)?` — promotes model params
+  2. Forward + loss builds graph
+  3. `tape.gradient(&loss, &net)` — computes grads as graph tensors
+  4. `optim.update(&mut net, grads)` — replaces params with new graph tensors, may auto-promote optim buffers
+  5. `tape.realize(net.iter().chain(optim.iter()))?` — realizes persistent state
+  6. Tape drops, realized tensors become eager for next iteration
+
 ## TT Metalium API Reference
 
 - Compute API docs: <https://docs.tenstorrent.com/tt-metal/latest/tt-metalium/tt_metal/apis/index.html>

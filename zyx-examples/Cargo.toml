@@ -17,10 +17,10 @@ maintenance = { status = "experimental" }
 [profile.dev]
 opt-level = 2
 lto = "off"
-debug = false
+debug = true
 strip = false
-debug-assertions = false
-overflow-checks = false
+debug-assertions = true
+overflow-checks = true
 codegen-units = 16
 
 [profile.release]
