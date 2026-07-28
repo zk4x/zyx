@@ -2,7 +2,6 @@ use std::collections::BTreeSet;
 
 use crate::{
     DType, Map, Set,
-    backend::ProgramId,
     graph::{ClassId, EKernelData, EKernelId, Graph, Node, NodeData},
     kernel::{BOp, DeviceId, Kernel, MoveOp, Op, OpId, UOp},
     runtime::ShapeId,
@@ -101,7 +100,7 @@ impl Graph {
             let nid = self.classes[cid].nodes[0];
             let node = &self.nodes[nid].node;
 
-            println!("cid={} nid={}, {node:?}", cid.0, nid.0);
+            println!("cid={} nid={} rc={}, {node:?}", cid.0, nid.0, rcs[&cid]);
             match node {
                 Node::Leaf { .. } => unreachable!(),
                 Node::Const(c) => {
@@ -166,10 +165,11 @@ impl Graph {
                 for &ocid in &ek.outputs {
                     *counts.entry(ocid).or_default() += 1;
                 }
-                debug_assert!(
-                    counts.iter().all(|(c, &n)| rcs.get(c).copied().unwrap_or(0) == n),
-                    "output:rcs invariant violated for kernel after {cid:?}"
-                );
+                if !counts.is_empty() && counts.iter().all(|(c, &n)| rcs.get(c).copied().unwrap_or(0) != n) {
+                    println!("outputs={:?}", ek.outputs);
+                    ek.kernel.debug();
+                    panic!("output:rcs invariant violated for kernel after {cid:?}");
+                }
             }
             debug_assert!(
                 order[..=i].iter().all(|&c| if let Some(&rc) = rcs.get(&c) {
@@ -259,53 +259,18 @@ impl Graph {
         self.ekernels[kid].stores.push(cid);
         visited.remove(&cid);
 
-        let outputs_empty = {
-            let outputs = &mut self.ekernels[kid].outputs;
-            outputs.retain(|&x| x != cid);
-            outputs.is_empty()
-        };
+        // Remove all occurences of x
+        let outputs = &mut self.ekernels[kid].outputs;
+        debug_assert_eq!(rcs[&cid], outputs.iter().filter(|&&x| x == cid).count() as u32 - 1);
+        outputs.retain(|&x| x != cid);
 
-        if rcs.get(&cid).copied().unwrap_or(0) > 0 && pending_stores.contains(&cid) {
+        if let Some(rc) = rcs.get(&cid).copied()
+            && rc > 0
+        {
             let new_kid = self.new_load_kernel(cid, shapes);
             let new_op = self.ekernels[new_kid].kernel.head;
-            let rc = rcs.get(&cid).copied().unwrap_or(0) as usize;
-            for _ in 0..rc {
-                self.ekernels[new_kid].outputs.push(cid);
-            }
+            self.ekernels[new_kid].outputs = vec![cid; rc as usize];
             visited.insert(cid, (new_kid, new_op));
-        }
-
-        if outputs_empty {
-            let reload: Vec<ClassId> = visited
-                .iter()
-                .filter(|&(cid, &(k, _))| k == kid && rcs.get(cid).copied().unwrap_or(0) > 0)
-                .map(|(&cid, _)| cid)
-                .collect();
-            visited.retain(|_, v| v.0 != kid);
-            for &cid in &reload {
-                let rc = rcs.get(&cid).copied().unwrap_or(0) as usize;
-                let new_kid = self.new_load_kernel(cid, shapes);
-                let new_op = self.ekernels[new_kid].kernel.head;
-                for _ in 0..rc {
-                    self.ekernels[new_kid].outputs.push(cid);
-                }
-                visited.insert(cid, (new_kid, new_op));
-            }
-            let ekdata = &self.ekernels[kid];
-            let input_cids: Vec<ClassId> = ekdata.loads.clone();
-            let output_cids: Vec<ClassId> = ekdata.stores.clone();
-
-            let node = Node::Kernel {
-                inputs: input_cids.into_boxed_slice(),
-                outputs: output_cids.clone().into_boxed_slice(),
-                program_id: ProgramId::NULL,
-                time: 0,
-            };
-            let nid = self.nodes.push(NodeData { node, class_of: cid });
-            for &ocid in &output_cids {
-                self.classes[ocid].nodes.push(nid);
-            }
-            self.kernel_map.insert(nid, kid);
         }
     }
 

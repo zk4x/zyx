@@ -294,7 +294,6 @@ pub struct Graph {
     pub(crate) nodes: Slab<NodeId, NodeData>,
     pub(crate) classes: Slab<ClassId, EClass>,
     pub(crate) ekernels: Slab<EKernelId, EKernelData>,
-    pub(crate) kernel_map: Map<NodeId, EKernelId>,
     pub(crate) leaf_map: Map<ClassId, TensorId>,
     max_leaf_id: u32,
 }
@@ -324,7 +323,6 @@ impl Graph {
             nodes: Slab::new(),
             classes: Slab::new(),
             ekernels: Slab::new(),
-            kernel_map: Map::default(),
             leaf_map: Map::default(),
             max_leaf_id: 0,
         }
@@ -480,21 +478,20 @@ impl Graph {
                                 .iter()
                                 .any(|&inid| matches!(&self.nodes[inid].node, Node::Leaf { .. }));
                             if is_leaf {
-                                let tid =
-                                    self.leaf_map.get(&input_cid).copied().unwrap_or_else(|| {
-                                        let leaf_cid = self.classes[input_cid]
-                                            .nodes
-                                            .iter()
-                                            .find_map(|&inid| {
-                                                if matches!(&self.nodes[inid].node, Node::Leaf { .. }) {
-                                                    Some(self.nodes[inid].class_of)
-                                                } else {
-                                                    None
-                                                }
-                                            })
-                                            .expect("already checked is_leaf");
-                                        self.leaf_map[&leaf_cid]
-                                    });
+                                let tid = self.leaf_map.get(&input_cid).copied().unwrap_or_else(|| {
+                                    let leaf_cid = self.classes[input_cid]
+                                        .nodes
+                                        .iter()
+                                        .find_map(|&inid| {
+                                            if matches!(&self.nodes[inid].node, Node::Leaf { .. }) {
+                                                Some(self.nodes[inid].class_of)
+                                            } else {
+                                                None
+                                            }
+                                        })
+                                        .expect("already checked is_leaf");
+                                    self.leaf_map[&leaf_cid]
+                                });
                                 let leaf_pool = buffer_map[&tid].pool;
                                 if leaf_pool != dev_pool {
                                     let (_, to_cid) = self.push(
@@ -518,7 +515,6 @@ impl Graph {
                 }
             }
         }
-
     }
 
     /// Hash of the graph structure (hashcons) and output classes.
@@ -610,7 +606,7 @@ impl Graph {
         for &ocid in outputs {
             let idx = ocid.0 as usize;
             if cost[idx].is_none() {
-                        for &cid in &order {
+                for &cid in &order {
                     if cost[cid.0 as usize].is_none() {
                         eprint!("{cid:?}:[");
                         for &nid in &self.classes[cid].nodes {
@@ -658,22 +654,6 @@ impl Graph {
 
 impl Runtime {
     pub fn autotune_graph_kernels(&mut self, graph_id: GraphId) -> Result<(), ZyxError> {
-        let graph = &self.graphs[graph_id];
-        let kernel_data: Vec<(NodeId, Kernel)> = {
-            let mut v = Vec::new();
-            for cid in graph.classes.ids() {
-                for &nid in &graph.classes[cid].nodes {
-                    if matches!(&graph.nodes[nid].node, Node::Kernel { .. }) {
-                        if let Some(&kid) = graph.kernel_map.get(&nid) {
-                            v.push((nid, graph.ekernels[kid].kernel.clone()));
-                        }
-                    }
-                }
-            }
-            v
-        };
-        let _ = graph;
-
         for (nid, kernel) in &kernel_data {
             let (flop, read, write) = kernel.flop_mem_rw();
             let device_ids: Vec<DeviceId> = self.devices.ids().collect();
@@ -715,7 +695,9 @@ impl Runtime {
             let mut seen: Set<NodeId> = Set::default();
             for cid in self.graphs[graph_id].classes.ids() {
                 for &nid in &self.graphs[graph_id].classes[cid].nodes {
-                    if !seen.insert(nid) { continue; }
+                    if !seen.insert(nid) {
+                        continue;
+                    }
                     if let Node::Kernel { time, .. } = &self.graphs[graph_id].nodes[nid].node {
                         debug_assert!(*time > 0, "Kernel node {nid:?} has zero cost after autotune");
                     }
