@@ -1266,7 +1266,7 @@ impl Runtime {
 
         {
             let device = &mut self.devices[kernel.device_id];
-            let global_indices = kernel.get_global_indices();
+            let global_indices = kernel.get_group_indices();
             let max_global_dims = device.info().max_global_work_dims.len();
             if global_indices.len() > max_global_dims {
                 let n = global_indices.len() + 1 - max_global_dims;

@@ -16,7 +16,7 @@
 use crate::{
     Set,
     dtype::Constant,
-    kernel::{BOp, IDX_T, Kernel, MemLayout, Op, OpId, Scope},
+    kernel::{BOp, IDX_T, Kernel, MemLayout, MemScope, Op, OpId},
     shape::Dim,
 };
 
@@ -42,7 +42,7 @@ impl Kernel {
         }
 
         // 1. Extend the index length
-        let Op::GroupIndex { len, .. } = &mut self.ops[gidx_id].op else {
+        let Op::Index { len, .. } = &mut self.ops[gidx_id].op else {
             panic!("pad_index: op is not an Index");
         };
         let current_len = *len;
@@ -60,7 +60,7 @@ impl Kernel {
             if let Op::Store { dst, x, index: store_idx, layout } = self.ops[op_id].op.clone() {
                 if self.depends_on(store_idx, gidx_id, &mut Set::default()) {
                     let buf_len = match &self.ops[dst].op {
-                        Op::Define { len, scope: Scope::Global, .. } => Some(*len),
+                        Op::Define { len, scope: MemScope::Global, .. } => Some(*len),
                         _ => None,
                     };
                     if let Some(buf_len) = buf_len {
@@ -102,7 +102,7 @@ impl Kernel {
         let mut factors = Vec::new();
         let mut op_id = self.head;
         while !op_id.is_null() {
-            if let Op::GroupIndex { len, .. } = self.ops[op_id].op {
+            if let Op::Index { len, .. } = self.ops[op_id].op {
                 if len % 32 != 0 {
                     factors.push((op_id, 32));
                 }
@@ -118,9 +118,7 @@ impl Kernel {
             return expr == target;
         }
         match self.at(expr) {
-            Op::Const(_) | Op::GroupIndex { .. } | Op::LocalIndex { .. } | Op::Define { .. } | Op::Loop { .. } | Op::EndLoop => {
-                false
-            }
+            Op::Const(_) | Op::Index { .. } | Op::Define { .. } | Op::Loop { .. } | Op::EndLoop => false,
             op => op.parameters().any(|p| self.depends_on(p, target, visited)),
         }
     }

@@ -1,7 +1,7 @@
 // Copyright (C) 2025 zk4x
 // SPDX-License-Identifier: LGPL-3.0-only
 
-use zyx::kernel::{DeviceId, Kernel, MMADType, MMADims, MMALayout, MemLayout, Scope};
+use zyx::kernel::{DeviceId, Kernel, MMADType, MMADims, MMALayout, MemLayout, MemScope};
 use zyx::{DType, ReduceOp, Scalar, Tensor, ZyxError};
 
 /// Tensor-core matmul: C = A @ B where A(M×K, FP16), B(K×N, FP16), C(M×N, FP32).
@@ -19,12 +19,12 @@ fn wmma_matmul() -> Result<(), ZyxError> {
 
     let mut kernel = Kernel::new(DeviceId::AUTO);
 
-    let a_buf = kernel.define(DType::F16, Scope::Global, true, m * k);
-    let b_buf = kernel.define(DType::F16, Scope::Global, true, k * n);
-    let c_buf = kernel.define(DType::F32, Scope::Global, false, m * n);
+    let a_buf = kernel.define(DType::F16, MemScope::Global, true, m * k);
+    let b_buf = kernel.define(DType::F16, MemScope::Global, true, k * n);
+    let c_buf = kernel.define(DType::F32, MemScope::Global, false, m * n);
 
-    let gidx = kernel.global_index(0, m / 16);
-    let gidy = kernel.global_index(1, n / 8);
+    let gidx = kernel.group_index(0, m / 16);
+    let gidy = kernel.group_index(1, n / 8);
     let wid = kernel.local_index(0, 32);
 
     let [c0, c1, c2, c4, c8, c16] = kernel.const_idxs([0u32, 1, 2, 4, 8, 16]);
@@ -44,7 +44,7 @@ fn wmma_matmul() -> Result<(), ZyxError> {
     let tile_base_col = kernel.mul(gidy, c8);
 
     // Accumulator: 4×f32 register
-    let acc = kernel.define(DType::F32, Scope::Register, false, 4);
+    let acc = kernel.define(DType::F32, MemScope::Register, false, 4);
     let zf = kernel.const_val(0.0f32);
     let zero_acc = kernel.vectorize(vec![zf, zf, zf, zf]);
     kernel.store(acc, zero_acc, c0, MemLayout::Vector(4));

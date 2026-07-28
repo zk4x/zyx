@@ -25,7 +25,7 @@ use super::autotune::Optimization;
 use crate::{
     Map, Set,
     dtype::Constant,
-    kernel::{BOp, Kernel, MemLayout, Op, OpId, Scope},
+    kernel::{BOp, IndexScope, Kernel, MemLayout, MemScope, Op, OpId},
 };
 
 // ## Coalesced local+upcast access
@@ -74,7 +74,7 @@ impl Kernel {
         let mut factors = Vec::new();
         let mut op_id = self.head;
         while !op_id.is_null() {
-            if let Op::GroupIndex { len, .. } = self.ops[op_id].op {
+            if let Op::Index { len, scope: IndexScope::Group, .. } = self.ops[op_id].op {
                 for f in [16, 8, 4] {
                     //println!("len={len} f={f}");
                     if len.is_multiple_of(f) {
@@ -94,7 +94,7 @@ impl Kernel {
     pub fn thread_coarse(&mut self, gidx_id: OpId, factor: u64) {
         #[cfg(feature = "time")]
         let _timer = crate::Timer::new("thread_coarse");
-        let Op::GroupIndex { len, axis } = self.ops[gidx_id].op else {
+        let Op::Index { len, axis, scope: IndexScope::Group } = self.ops[gidx_id].op else {
             unreachable!()
         };
         debug_assert!(len.is_multiple_of(factor));
@@ -122,10 +122,7 @@ impl Kernel {
         while !op_id.is_null()
             && matches!(
                 self.ops[op_id].op,
-                Op::Define { scope: Scope::Global | Scope::Local, .. }
-                    | Op::GroupIndex { .. }
-                    | Op::LocalIndex { .. }
-                    | Op::Const(_)
+                Op::Define { scope: MemScope::Global | MemScope::Local, .. } | Op::Index { .. } | Op::Const(_)
             )
         {
             op_id = self.next_op(op_id);
@@ -146,8 +143,8 @@ impl Kernel {
         // For remapping parameters
         let mut remaps: Map<OpId, Vec<OpId>> = Map::default();
 
-        // Global index now split into multiple indices with constant offsets
-        let x = self.insert_before(gidx_id, Op::GroupIndex { len: len / factor, axis });
+        // Group index now split into multiple indices with constant offsets
+        let x = self.insert_before(gidx_id, Op::Index { len: len / factor, axis, scope: IndexScope::Group });
         self.ops[gidx_id].op = Op::Binary { x, y: const_factor, bop: BOp::Mul };
         let mut ids = Vec::with_capacity((factor - 1) as usize);
         let mut id = gidx_id;
@@ -162,17 +159,11 @@ impl Kernel {
         while !op_id.is_null() {
             let next_op_id = self.next_op(op_id);
             match self.ops[op_id].op {
-                Op::Define { dtype, scope: Scope::Register, ro, len } => {
-                    self.ops[op_id].op = Op::Define { dtype, scope: Scope::Register, ro, len: len * factor };
+                Op::Define { dtype, scope: MemScope::Register, ro, len } => {
+                    self.ops[op_id].op = Op::Define { dtype, scope: MemScope::Register, ro, len: len * factor };
                     acc_defines.insert(op_id);
                 }
-                Op::GroupIndex { .. }
-                | Op::LocalIndex { .. }
-                | Op::Loop { .. }
-                | Op::EndLoop
-                | Op::If { .. }
-                | Op::EndIf
-                | Op::Barrier { .. } => {}
+                Op::Index { .. } | Op::Loop { .. } | Op::EndLoop | Op::If { .. } | Op::EndIf | Op::Barrier { .. } => {}
                 Op::Store { dst, x, index, layout } => {
                     let mut ids = Vec::with_capacity((factor - 1) as usize);
                     let mut id = op_id;
@@ -273,7 +264,7 @@ impl Kernel {
                     }
                 }
             }
-            if let Op::GroupIndex { len, .. } = self.ops[op_id].op {
+            if let Op::Index { len, scope: IndexScope::Group, .. } = self.ops[op_id].op {
                 if len >= 8 {
                     let applicable: Vec<u64> =
                         candidates.iter().copied().filter(|&f| len.is_multiple_of(f) && len / f >= 4).collect();

@@ -60,13 +60,9 @@ impl Kernel {
                     loop_dep[&x].max(loop_dep[&y])
                 }
                 Op::Mad { x, y, z } => loop_dep[x].max(loop_dep[y]).max(loop_dep[z]),
-                Op::Barrier { .. }
-                | Op::GroupIndex { .. }
-                | Op::LocalIndex { .. }
-                | Op::Load { .. }
-                | Op::Store { .. }
-                | Op::Const(_)
-                | Op::Define { .. } => loop_depth,
+                Op::Barrier { .. } | Op::Index { .. } | Op::Load { .. } | Op::Store { .. } | Op::Const(_) | Op::Define { .. } => {
+                    loop_depth
+                }
             };
             loop_dep.insert(op_id, depth);
             op_id = self.next_op(op_id);
@@ -112,8 +108,7 @@ impl Kernel {
                 }
                 Op::Unary { x, .. } | Op::Cast { x, .. } => loop_dep[x],
                 Op::Binary { x, y, .. } => loop_dep[x].max(loop_dep[y]),
-                Op::GroupIndex { .. }
-                | Op::LocalIndex { .. }
+                Op::Index { .. }
                 | Op::Barrier { .. }
                 | Op::Load { .. }
                 | Op::Store { .. }

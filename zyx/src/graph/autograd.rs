@@ -413,11 +413,9 @@ impl Runtime {
                     let dtype = self.dtype(tid);
                     let one_shape = self.push_shape(vec![1]);
                     let full_shape_id = self.push_shape(shape);
-let graph = &mut self.graphs[graph_id];
-                    let (_, zero_cid) =
-                        graph.push(Node::Const(Constant::new(0u8).cast(dtype)), one_shape, dtype);
-                    let (_, cid) =
-                        graph.push(Node::Expand { x: zero_cid, shape: full_shape_id }, full_shape_id, dtype);
+                    let graph = &mut self.graphs[graph_id];
+                    let (_, zero_cid) = graph.push(Node::Const(Constant::new(0u8).cast(dtype)), one_shape, dtype);
+                    let (_, cid) = graph.push(Node::Expand { x: zero_cid, shape: full_shape_id }, full_shape_id, dtype);
                     self.tensors.push(TensorData {
                         shape_id: full_shape_id,
                         dtype,

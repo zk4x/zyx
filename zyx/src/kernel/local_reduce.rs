@@ -17,7 +17,7 @@ use super::autotune::Optimization;
 use crate::{
     backend::DeviceInfo,
     dtype::Constant,
-    kernel::{BOp, Kernel, MemLayout, Op, OpId, Scope},
+    kernel::{BOp, IndexScope, Kernel, MemLayout, MemScope, Op, OpId},
 };
 
 impl Kernel {
@@ -26,7 +26,7 @@ impl Kernel {
         let _timer = crate::Timer::new("opt_tiled_reduce");
         // Let's not tile reduce kernel with barriers for now
         // Don't apply tiled reduce if there's already a barrier or local index
-        if self.ops.values().any(|node| matches!(node.op, Op::Barrier { .. } | Op::LocalIndex { .. })) {
+        if self.ops.values().any(|node| matches!(node.op, Op::Barrier { .. } | Op::Index { scope: IndexScope::Local, .. })) {
             return (Optimization::TiledReduce { factors: Vec::new() }, 0);
         }
         // Only apply tiled reduce if there's exactly one loop in the kernel
@@ -37,7 +37,7 @@ impl Kernel {
 
         let mut local_axis_sizes: crate::Map<u32, u64> = crate::Map::default();
         for op in self.ops.values() {
-            if let Op::LocalIndex { axis, len } = op.op {
+            if let Op::Index { axis, len, scope: IndexScope::Local } = op.op {
                 if let Some(&existing) = local_axis_sizes.get(&axis) {
                     debug_assert_eq!(existing, len);
                 } else {
@@ -101,7 +101,7 @@ impl Kernel {
             .ops
             .values()
             .filter_map(|node| {
-                if let Op::LocalIndex { axis, .. } = node.op {
+                if let Op::Index { axis, scope: IndexScope::Local, .. } = node.op {
                     Some(axis + 1)
                 } else {
                     None
@@ -119,7 +119,7 @@ impl Kernel {
         let acc_dtype;
         loop {
             if let Op::Define { dtype, scope, ro, len } = self.ops[op_id].op {
-                if scope != Scope::Register || ro || len != 1 {
+                if scope != MemScope::Register || ro || len != 1 {
                     return;
                 }
                 reg_acc = op_id;
@@ -173,7 +173,7 @@ impl Kernel {
         let mut last_global = None;
         let mut op_id = self.head;
         while !op_id.is_null() {
-            if matches!(self.ops[op_id].op, Op::Define { scope: Scope::Global, .. }) {
+            if matches!(self.ops[op_id].op, Op::Define { scope: MemScope::Global, .. }) {
                 last_global = Some(op_id);
             }
             op_id = self.next_op(op_id);
@@ -187,8 +187,9 @@ impl Kernel {
             }
             None => self.head,
         };
-        let loc_acc = self.insert_before(insert_at, Op::Define { dtype: acc_dtype, scope: Scope::Local, ro: false, len: factor });
-        let lidx = self.insert_before(insert_at, Op::LocalIndex { len: factor, axis: laxis });
+        let loc_acc =
+            self.insert_before(insert_at, Op::Define { dtype: acc_dtype, scope: MemScope::Local, ro: false, len: factor });
+        let lidx = self.insert_before(insert_at, Op::Index { len: factor, axis: laxis, scope: IndexScope::Local });
 
         // Divide reduce loop by factor
         let factor_const = self.insert_before(loop_start, Op::Const(Constant::idx(factor as u64)));

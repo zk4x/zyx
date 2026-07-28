@@ -39,7 +39,7 @@ impl Kernel {
             let next = self.next_op(op_id);
             match &self.ops[op_id].op {
                 Op::Define { .. } => insert_after = op_id,
-                Op::Const(_) | Op::GroupIndex { .. } | Op::LocalIndex { .. } | Op::Loop { .. } => {
+                Op::Const(_) | Op::Index { .. } | Op::Loop { .. } => {
                     index_ops.insert(op_id);
                     if !insert_after.is_null() && insert_after != op_id && !matches!(self.ops[op_id].op, Op::Loop { .. }) {
                         self.move_op_after(op_id, insert_after);

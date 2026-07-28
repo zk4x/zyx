@@ -17,7 +17,7 @@ use std::collections::BTreeMap;
 use crate::{
     Set,
     dtype::Constant,
-    kernel::{BOp, IDX_T, Kernel, MemLayout, MoveOp, Op, OpId, Scope},
+    kernel::{BOp, IDX_T, IndexScope, Kernel, MemLayout, MemScope, MoveOp, Op, OpId},
     shape::{Dim, UAxis},
 };
 
@@ -30,7 +30,7 @@ impl Kernel {
     /// It cannot be applied if both explicit global indices and view moves
     /// are present in the kernel.
     pub fn unfold_movement_ops(&mut self) {
-        let has_gidx = self.ops.values().any(|n| matches!(n.op, Op::GroupIndex { .. }));
+        let has_gidx = self.ops.values().any(|n| matches!(n.op, Op::Index { scope: IndexScope::Group, .. }));
         let has_view_moves = self.ops.values().any(|n| matches!(n.op, Op::LoadView(_) | Op::StoreView { .. } | Op::Move { .. }));
 
         match (has_gidx, has_view_moves) {
@@ -61,12 +61,12 @@ impl Kernel {
             op_id = next_op_id;
         }
 
-        // Add global ids
+        // Add group ids
         let shape = self.shape();
         let mut axis = shape.len() as u32;
         for len in shape.into_iter().rev() {
             axis -= 1;
-            self.insert_before(self.head, Op::GroupIndex { len, axis });
+            self.insert_before(self.head, Op::Index { len, axis, scope: IndexScope::Group });
         }
 
         self.verify();
@@ -219,7 +219,8 @@ impl Kernel {
                 }),
             );
 
-            let acc = self.insert_before(loop_start, Op::Define { dtype: acc_dtype, scope: Scope::Register, ro: false, len: 1 });
+            let acc =
+                self.insert_before(loop_start, Op::Define { dtype: acc_dtype, scope: MemScope::Register, ro: false, len: 1 });
 
             // Zero the accumulator
             self.insert_before(
@@ -461,7 +462,7 @@ impl Kernel {
 
                     let src = self.insert_before(
                         start,
-                        Op::Define { dtype, scope: Scope::Global, ro: true, len: view.original_numel() as u64 },
+                        Op::Define { dtype, scope: MemScope::Global, ro: true, len: view.original_numel() as u64 },
                     );
                     let z = self.new_op(opi, Op::Load { src, index: offset, layout: MemLayout::Scalar });
 
@@ -474,7 +475,7 @@ impl Kernel {
                     let mut strides = Vec::new();
                     for (_, &ax_id) in axes.iter().rev() {
                         match self.ops[ax_id].op {
-                            Op::GroupIndex { len, .. } => {
+                            Op::Index { len, .. } => {
                                 strides.push((len, st, ax_id));
                                 st *= len;
                             }
@@ -498,10 +499,10 @@ impl Kernel {
                         len *= dim;
                     }
 
-                    let dst = self.insert_before(start, Op::Define { dtype, scope: Scope::Global, ro: false, len });
+                    let dst = self.insert_before(start, Op::Define { dtype, scope: MemScope::Global, ro: false, len });
                     self.ops[op_id].op = Op::Store { dst, x: src, index, layout: MemLayout::Scalar };
                 }
-                Op::GroupIndex { axis, .. } => {
+                Op::Index { axis, .. } => {
                     axes.insert(axis, op_id);
                 }
                 Op::Loop { .. } => {

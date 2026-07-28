@@ -13,7 +13,7 @@ use super::{DTypeCapability, Device, DeviceId, DeviceInfo, DeviceProgramId, Even
 use crate::{
     DType,
     error::{BackendError, ErrorStatus},
-    kernel::{Kernel, Op},
+    kernel::{IndexScope, Kernel, Op},
     shape::Dim,
     slab::Slab,
 };
@@ -811,8 +811,11 @@ impl OpenCLDevice {
         let mut op_id = kernel.head;
         while !op_id.is_null() {
             match kernel.ops[op_id].op {
-                Op::GroupIndex { len, axis } => gws[axis as usize] = len,
-                Op::LocalIndex { len, axis } => lws[axis as usize] = len,
+                Op::Index { len, axis, scope } => match scope {
+                    IndexScope::Group => gws[axis as usize] = len,
+                    IndexScope::Local => lws[axis as usize] = len,
+                    IndexScope::Warp => todo!(),
+                },
                 _ => {}
             }
             op_id = kernel.next_op(op_id);

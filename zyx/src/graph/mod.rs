@@ -429,11 +429,7 @@ impl Graph {
     /// Debug assert that. Then for each input, if that input comes from kernel on different device
     /// or if it's in buffer_map on different device, add EGraph::ToDevice node that moves it
     /// to the device of the Node::Kernel.
-    pub fn add_memory_ops(
-        &mut self,
-        devices: &Slab<DeviceId, Device>,
-        buffer_map: &Map<TensorId, BufferId>,
-    ) {
+    pub fn add_memory_ops(&mut self, devices: &Slab<DeviceId, Device>, buffer_map: &Map<TensorId, BufferId>) {
         let class_ids: Vec<ClassId> = self.classes.ids().collect();
         for cid in class_ids {
             let node_ids: Vec<NodeId> = self.classes[cid].nodes.iter().copied().collect();
@@ -474,11 +470,16 @@ impl Graph {
                             }
                         }
                     } else {
-                        let already_on_device = self.classes[input_cid].nodes.iter().any(|&inid|
-                            matches!(&self.nodes[inid].node, Node::ToDevice { device: d, .. } if *d == device_id));
+                        let already_on_device = self.classes[input_cid]
+                            .nodes
+                            .iter()
+                            .any(|&inid| matches!(&self.nodes[inid].node, Node::ToDevice { device: d, .. } if *d == device_id));
                         if !already_on_device {
                             debug_assert!(
-                                self.classes[input_cid].nodes.iter().any(|&inid| matches!(&self.nodes[inid].node, Node::Leaf { .. })),
+                                self.classes[input_cid]
+                                    .nodes
+                                    .iter()
+                                    .any(|&inid| matches!(&self.nodes[inid].node, Node::Leaf { .. })),
                                 "input must be from a kernel or a realized tensor"
                             );
                             let tid = self.leaf_map[&input_cid];
@@ -633,12 +634,7 @@ impl Runtime {
                     }
                 } else {
                     let knid = graph.nodes.push(NodeData {
-                        node: Node::Kernel {
-                            inputs: inputs.clone(),
-                            outputs: outputs.clone(),
-                            program_id: prog,
-                            time: timing,
-                        },
+                        node: Node::Kernel { inputs: inputs.clone(), outputs: outputs.clone(), program_id: prog, time: timing },
                         class_of,
                     });
                     for &ocid in &*outputs {

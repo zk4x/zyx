@@ -4,7 +4,7 @@
 use crate::{
     Map, Set,
     dtype::Constant,
-    kernel::{BOp, Kernel, MemLayout, Op, OpId, Scope},
+    kernel::{BOp, IndexScope, Kernel, MemLayout, MemScope, Op, OpId},
     shape::Dim,
 };
 
@@ -37,12 +37,13 @@ impl Kernel {
         let mut gidxs: Vec<(OpId, u32, Dim)> = Vec::new();
         let mut op_id = self.head;
         while !op_id.is_null() {
-            if let &Op::GroupIndex { len, axis } = self.at(op_id) {
-                gidxs.push((op_id, axis, len));
-            }
-            // Can't run this optimization on kernel that already has local indices
-            if let Op::LocalIndex { .. } = self.at(op_id) {
-                return;
+            if let &Op::Index { len, axis, scope } = self.at(op_id) {
+                if scope == IndexScope::Group {
+                    gidxs.push((op_id, axis, len));
+                } else {
+                    // Can't run this optimization on kernel that already has local indices
+                    continue;
+                }
             }
             op_id = self.next_op(op_id);
         }
@@ -64,16 +65,24 @@ impl Kernel {
                 if pad > 0 {
                     self.pad_index(id, pad);
                 }
-                let new_len = if let Op::GroupIndex { len, .. } = self.at(id) {
+                let new_len = if let Op::Index { len, scope: IndexScope::Group, .. } = self.at(id) {
                     *len
                 } else {
                     unreachable!()
                 };
                 let sqrt = (new_len as f64).sqrt() as Dim;
                 let f1 = (32..=sqrt).rev().find(|&f| f % 32 == 0 && new_len % f == 0);
-                let Some(f1) = f1 else { return; };
+                let Some(f1) = f1 else {
+                    return;
+                };
                 let f2 = new_len / f1;
-                self.split_dim(id, vec![Op::GroupIndex { len: f1, axis: 0 }, Op::GroupIndex { len: f2, axis: 1 }]);
+                self.split_dim(
+                    id,
+                    vec![
+                        Op::Index { len: f1, axis: 0, scope: IndexScope::Group },
+                        Op::Index { len: f2, axis: 1, scope: IndexScope::Group },
+                    ],
+                );
             }
             3 => {
                 let (last_id, _last_axis, last_len) = gidxs[2];
@@ -97,10 +106,16 @@ impl Kernel {
         // Step 1: Split each GroupIndex into GroupIndex(len/32) + Loop(32)
         let mut op_id = self.head;
         while !op_id.is_null() {
-            if let Op::GroupIndex { len, axis } = self.ops[op_id].op {
+            if let Op::Index { len, axis, scope: IndexScope::Group } = self.ops[op_id].op {
                 if len % 32 == 0 && len >= 32 {
                     let f1 = len / 32;
-                    self.split_dim(op_id, vec![Op::GroupIndex { len: f1, axis }, Op::LocalIndex { len: 32, axis }]);
+                    self.split_dim(
+                        op_id,
+                        vec![
+                            Op::Index { len: f1, axis, scope: IndexScope::Group },
+                            Op::Index { len: 32, axis, scope: IndexScope::Local },
+                        ],
+                    );
                 } else {
                     return;
                 }
@@ -112,7 +127,7 @@ impl Kernel {
         let mut lidxs = Vec::new();
         let mut op_id = self.head;
         while !op_id.is_null() {
-            if let Op::LocalIndex { len, axis } = self.at(op_id) {
+            if let Op::Index { len, axis, scope: IndexScope::Local } = self.at(op_id) {
                 if *len != 32 {
                     return;
                 }
@@ -136,7 +151,7 @@ impl Kernel {
             let mut op_id = self.head;
             while !op_id.is_null() {
                 if let Op::Load { src, index, layout: MemLayout::Scalar } = self.at(op_id) {
-                    if matches!(self.at(*src), Op::Define { scope: Scope::Global, .. }) {
+                    if matches!(self.at(*src), Op::Define { scope: MemScope::Global, .. }) {
                         loads.push((op_id, *src, *index));
                     }
                 }
@@ -161,7 +176,7 @@ impl Kernel {
         let mut last_global = self.head;
         let mut scan = self.head;
         while !scan.is_null() {
-            if matches!(self.at(scan), Op::Define { scope: Scope::Global, .. }) {
+            if matches!(self.at(scan), Op::Define { scope: MemScope::Global, .. }) {
                 last_global = scan;
             }
             scan = self.next_op(scan);
@@ -173,8 +188,8 @@ impl Kernel {
             if src_to_local.contains_key(&src) {
                 continue;
             }
-            let local =
-                self.insert_after(last_global, Op::Define { dtype: self.dtype(src), scope: Scope::Local, ro: false, len: 1024 });
+            let local = self
+                .insert_after(last_global, Op::Define { dtype: self.dtype(src), scope: MemScope::Local, ro: false, len: 1024 });
             last_global = local;
             src_to_local.insert(src, local);
         }
@@ -208,7 +223,7 @@ impl Kernel {
             let mut op_id = self.head;
             while !op_id.is_null() {
                 if let Op::Store { dst, x, index, layout: MemLayout::Scalar } = self.at(op_id) {
-                    if matches!(self.at(*dst), Op::Define { scope: Scope::Global, .. }) {
+                    if matches!(self.at(*dst), Op::Define { scope: MemScope::Global, .. }) {
                         stores.push((op_id, *dst, *x, *index));
                     }
                 }
@@ -228,8 +243,8 @@ impl Kernel {
             if dst_to_local.contains_key(&dst) {
                 continue;
             }
-            let local =
-                self.insert_after(last_local, Op::Define { dtype: self.dtype(dst), scope: Scope::Local, ro: false, len: 1024 });
+            let local = self
+                .insert_after(last_local, Op::Define { dtype: self.dtype(dst), scope: MemScope::Local, ro: false, len: 1024 });
             last_local = local;
             dst_to_local.insert(dst, local);
         }
@@ -327,7 +342,7 @@ impl Kernel {
         let mut lidxs: Vec<(u32, OpId, u32)> = Vec::new();
         let mut op_id = self.head;
         while !op_id.is_null() {
-            if let Op::LocalIndex { len, axis } = self.at(op_id) {
+            if let Op::Index { len, axis, scope: IndexScope::Local } = self.at(op_id) {
                 lidxs.push((*axis, op_id, *len as u32));
             }
             op_id = self.next_op(op_id);
@@ -422,8 +437,7 @@ impl Kernel {
             if inside {
                 continue;
             }
-            if matches!(self.at(dep_id), Op::Define { .. } | Op::Const(_) | Op::GroupIndex { .. } | Op::Barrier | Op::Loop { .. })
-            {
+            if matches!(self.at(dep_id), Op::Define { .. } | Op::Const(_) | Op::Index { .. } | Op::Barrier | Op::Loop { .. }) {
                 continue;
             }
             let mut cloned_op = self.at(dep_id).clone();

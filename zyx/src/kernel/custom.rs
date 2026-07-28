@@ -20,7 +20,7 @@ use std::collections::BTreeSet;
 
 use crate::backend::{BufferId, DeviceInfo, MemoryPool, ProgramId};
 use crate::error::BackendError;
-use crate::kernel::{DeviceId, Kernel, Op, OpId, Scope};
+use crate::kernel::{DeviceId, Kernel, MemScope, Op, OpId};
 use crate::runtime::{KernelData, TensorData, TensorState};
 use crate::{DType, IntoShape, Tensor, ZyxError, shape::Dim};
 
@@ -80,7 +80,7 @@ impl Kernel {
         let mut outputs = Vec::new();
         let mut op_id = self.head;
         while !op_id.is_null() {
-            if let Op::Define { dtype, scope: Scope::Global, ro, .. } = self.ops[op_id].op {
+            if let Op::Define { dtype, scope: MemScope::Global, ro, .. } = self.ops[op_id].op {
                 if ro {
                     inputs.push(dtype);
                 } else {

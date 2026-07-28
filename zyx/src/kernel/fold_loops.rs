@@ -29,7 +29,7 @@
 use crate::{
     Set,
     dtype::{Constant, DType},
-    kernel::{BOp, IDX_T, Kernel, MemLayout, Op, OpId, Scope},
+    kernel::{BOp, IDX_T, IndexScope, Kernel, MemLayout, MemScope, Op, OpId},
 };
 
 impl Kernel {
@@ -67,7 +67,7 @@ impl Kernel {
             return false;
         };
         // We only fold register-scoped accumulators; global/local have different semantics
-        if scope != Scope::Register || ro {
+        if scope != MemScope::Register || ro {
             return false;
         }
 
@@ -357,7 +357,7 @@ impl Kernel {
             return false;
         };
         let loop_len = self.loop_len_dim(loop_len_id);
-        let &Op::Define { dtype, scope: Scope::Register, ro: false, len: 1 } = self.at(acc_id) else {
+        let &Op::Define { dtype, scope: MemScope::Register, ro: false, len: 1 } = self.at(acc_id) else {
             return false;
         };
 
@@ -415,7 +415,7 @@ impl Kernel {
     /// For example, if accumulating `i` (the loop index directly):
     ///   a=1, b=1, c=n, `mul_const`=1, gidx is the loop index variable
     fn trace_to_linear_comparison(&self, accumulated_value_id: OpId, loop_id: OpId) -> Option<(u64, u64, u64, u64, OpId)> {
-        if let Op::GroupIndex { .. } = self.at(accumulated_value_id) {
+        if let Op::Index { scope: IndexScope::Group, .. } = self.at(accumulated_value_id) {
             return None;
         }
 
@@ -534,7 +534,7 @@ impl Kernel {
 mod tests {
     use crate::dtype::Constant;
     use crate::dtype::DType;
-    use crate::kernel::{BOp, DeviceId, Kernel, MemLayout, Op, OpId, Scope};
+    use crate::kernel::{BOp, DeviceId, Kernel, MemLayout, MemScope, Op, OpId};
 
     /// Build a kernel matching the REAL index_select IR pattern
     /// where the accumulated value is computed AFTER load(acc).
@@ -556,7 +556,7 @@ mod tests {
     /// identify_accumulate_pattern fails because next_op(load(tmp)) is eq, not Add.
     fn make_interleaved_gather_kernel(loop_len: u32) -> (Kernel, OpId) {
         let mut k = Kernel::new(DeviceId::AUTO);
-        let acc = k.define(DType::F32, Scope::Register, false, 1);
+        let acc = k.define(DType::F32, MemScope::Register, false, 1);
 
         let zi = k.const_idx(0u32);
         let zf = k.const_val(0.0f32);
@@ -590,7 +590,7 @@ mod tests {
     /// Sanity test: the simple pattern (accum value BEFORE load) IS optimized.
     fn make_flat_gather_kernel(loop_len: u32) -> (Kernel, OpId, OpId) {
         let mut k = Kernel::new(DeviceId::AUTO);
-        let acc = k.define(DType::F32, Scope::Register, false, 1);
+        let acc = k.define(DType::F32, MemScope::Register, false, 1);
 
         let zi = k.const_idx(0u32);
         let zf = k.const_val(0.0f32);
@@ -637,18 +637,18 @@ mod tests {
     fn make_gather_kernel_with_source_before_indices() -> (Kernel, OpId) {
         let mut k = Kernel::new(DeviceId::AUTO);
 
-        let r95 = k.define(DType::U16, Scope::Global, true, 9);
-        let r114 = k.define(DType::U16, Scope::Global, true, 15);
-        let r122 = k.define(DType::U16, Scope::Global, false, 9);
+        let r95 = k.define(DType::U16, MemScope::Global, true, 9);
+        let r114 = k.define(DType::U16, MemScope::Global, true, 15);
+        let r122 = k.define(DType::U16, MemScope::Global, false, 9);
         let r7 = k.const_val(0u32);
         let r22 = k.const_val(0u16);
         let r74 = k.const_val(3u32);
         let r26 = k.const_val(0i32);
         let r31 = k.const_val(5i32);
         let r110 = k.const_val(5u32);
-        let r37 = k.global_index(0, 3);
-        let r5 = k.global_index(1, 3);
-        let r1 = k.define(DType::U16, Scope::Register, false, 1);
+        let r37 = k.group_index(0, 3);
+        let r5 = k.group_index(1, 3);
+        let r1 = k.define(DType::U16, MemScope::Register, false, 1);
         k.store(r1, r22, r7, MemLayout::Scalar);
         let r123 = k.binary(r37, r74, BOp::Mul);
         let r92 = k.binary(r123, r5, BOp::Add);
@@ -709,9 +709,9 @@ mod tests {
     fn test_resnet_index_select_ir_not_optimized() {
         let mut k = Kernel::new(DeviceId::AUTO);
 
-        let r93 = k.define(DType::I32, Scope::Global, false, 50000);
-        let r116 = k.define(DType::F32, Scope::Global, false, 153600000);
-        let r128 = k.define(DType::F32, Scope::Global, true, 153600000);
+        let r93 = k.define(DType::I32, MemScope::Global, false, 50000);
+        let r116 = k.define(DType::F32, MemScope::Global, false, 153600000);
+        let r128 = k.define(DType::F32, MemScope::Global, true, 153600000);
         let r130 = k.const_idx(50000u32);
         let r1 = k.const_idx(0u32);
         let r42 = k.const_val(0.0f32);
@@ -721,10 +721,10 @@ mod tests {
         let r84 = k.const_idx(5u32);
         let r97 = k.const_idx(10u32);
         let r10 = k.const_idx(3u32);
-        let r16 = k.global_index(0, 75000);
+        let r16 = k.group_index(0, 75000);
         let r92 = k.local_index(0, 2);
         let r2 = k.local_index(1, 32);
-        let r78 = k.global_index(2, 4);
+        let r78 = k.group_index(2, 4);
         let r27 = k.local_index(2, 8);
         let r50 = k.binary(r16, r16, BOp::Add);
         let r129 = k.binary(r50, r92, BOp::Add);
@@ -733,7 +733,7 @@ mod tests {
         let r22 = k.binary(r129, r130, BOp::Mod);
         let r131 = k.binary(r129, r130, BOp::Div);
 
-        let r3 = k.define(DType::F32, Scope::Register, true, 1);
+        let r3 = k.define(DType::F32, MemScope::Register, true, 1);
         k.store(r3, r42, r1, MemLayout::Scalar);
 
         let r135 = k.binary(r2, r84, BOp::BitShiftLeft);

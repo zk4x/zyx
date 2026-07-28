@@ -6,7 +6,7 @@ use crate::{
     backend::DeviceInfo,
     dtype::Constant,
     error::{BackendError, ErrorStatus},
-    kernel::{BOp, Kernel, MemLayout, Op, OpId, Scope, UOp},
+    kernel::{BOp, IndexScope, Kernel, MemLayout, MemScope, Op, OpId, UOp},
     scalar::{bf16, f16},
 };
 use std::{fmt::Write, hash::BuildHasherDefault};
@@ -29,18 +29,18 @@ impl Kernel {
             let mut op_id = self.head;
             while !op_id.is_null() {
                 match self.ops[op_id].op {
-                    Op::GroupIndex { len: dim, axis } => {
+                    Op::Index { len: dim, axis, scope } => {
+                        if scope != IndexScope::Group {
+                            return Err(BackendError {
+                                status: ErrorStatus::KernelCompilation,
+                                context: "C codegen: C only supports group index".into(),
+                            });
+                        }
                         gws[axis as usize] = dim.max(1u64);
                         indices.insert(op_id, loop_id);
                         loop_id = loop_id.checked_add(1).expect("C: too many loops (>255)");
                     }
-                    Op::LocalIndex { .. } => {
-                        return Err(BackendError {
-                            status: ErrorStatus::KernelCompilation,
-                            context: "C codegen: LocalIndex should not appear outside loop".into(),
-                        });
-                    }
-                    Op::Define { dtype, scope, .. } if scope == Scope::Global => {
+                    Op::Define { dtype, scope, .. } if scope == MemScope::Global => {
                         if matches!(dtype, DType::F16 | DType::BF16) {
                             _ = writeln!(global_cast, "  unsigned short* p{op_id} = (unsigned short*)args[{n_global_defines}];");
                         } else {
@@ -63,7 +63,13 @@ impl Kernel {
         let mut op_id = self.head;
         while !op_id.is_null() {
             match self.ops[op_id].op {
-                Op::GroupIndex { len, .. } => {
+                Op::Index { len, scope, .. } => {
+                    if scope != IndexScope::Group {
+                        return Err(BackendError {
+                            status: ErrorStatus::KernelCompilation,
+                            context: "C codegen: LocalIndex not expected".into(),
+                        });
+                    }
                     if index_loop_depth == 0 && gws[0] > 1 && has_openmp {
                         _ = writeln!(source, "{indent}#pragma omp parallel for");
                     }
@@ -71,12 +77,6 @@ impl Kernel {
                     indent += "  ";
                     index_loop_depth += 1;
                     loop_id += 1;
-                }
-                Op::LocalIndex { .. } => {
-                    return Err(BackendError {
-                        status: ErrorStatus::KernelCompilation,
-                        context: "C codegen: LocalIndex not expected".into(),
-                    });
                 }
                 Op::Loop { len, .. } => {
                     indices.insert(op_id, loop_id);
@@ -320,7 +320,7 @@ impl Kernel {
                     _ = writeln!(source, "{indent}}}");
                 }
                 Op::Define { dtype, scope, ro, len } => {
-                    if matches!(scope, Scope::Register | Scope::Local) {
+                    if matches!(scope, MemScope::Register | MemScope::Local) {
                         _ = writeln!(
                             source,
                             "{indent}{}{} p{op_id}[{len}] __attribute__((aligned));",
@@ -508,7 +508,10 @@ fn get_var(
         }
         Ok(format!("r{reg}"))
     } else {
-        Err(BackendError { status: ErrorStatus::KernelCompilation, context: format!("C codegen: variable {op_id} not found in constants, indices, or registers").into() })
+        Err(BackendError {
+            status: ErrorStatus::KernelCompilation,
+            context: format!("C codegen: variable {op_id} not found in constants, indices, or registers").into(),
+        })
     }
 }
 

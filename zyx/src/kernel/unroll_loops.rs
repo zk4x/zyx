@@ -20,7 +20,7 @@ use crate::kernel::MemLayout;
 use crate::{
     Map, Set,
     dtype::Constant,
-    kernel::{BOp, Kernel, Op, OpId, Scope},
+    kernel::{BOp, Kernel, MemScope, Op, OpId},
     shape::Dim,
 };
 
@@ -49,7 +49,7 @@ impl Kernel {
         #[cfg(feature = "time")]
         let _timer = crate::Timer::new("eliminate zero index");
         for node in self.ops.values_mut() {
-            if let Op::GroupIndex { len, .. } | Op::LocalIndex { len, .. } = node.op {
+            if let Op::Index { len, .. } = node.op {
                 if len == 1 {
                     node.op = Op::Const(Constant::idx(0));
                 }
@@ -160,7 +160,7 @@ impl Kernel {
                     let Op::Define { scope, .. } = self.ops[dst].op else {
                         unreachable!()
                     };
-                    if scope != Scope::Register {
+                    if scope != MemScope::Register {
                         *constant_loops.last_mut().unwrap() = false;
                     }
                 }
@@ -168,7 +168,7 @@ impl Kernel {
                     let Op::Define { scope, .. } = self.ops[src].op else {
                         unreachable!()
                     };
-                    if scope != Scope::Register {
+                    if scope != MemScope::Register {
                         *constant_loops.last_mut().unwrap() = false;
                     }
                 }
@@ -291,7 +291,7 @@ impl Kernel {
             }
             match self.ops[op_id].op {
                 Op::Loop { .. } => return, // nested reduce or no reduce
-                Op::Define { scope: Scope::Register, .. } => {
+                Op::Define { scope: MemScope::Register, .. } => {
                     acc_id = op_id;
                     break;
                 }

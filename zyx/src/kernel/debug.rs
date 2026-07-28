@@ -243,15 +243,10 @@ impl Kernel {
                         "{indent}r{out_id}{grey}: {cdtype}{reset} = {orange}wmma{reset}.{dims:?}.{layout:?}.{dtype:?}(c={c}, a={a}, b={b})",
                     );
                 }
-                Op::GroupIndex { len, axis } => {
+                Op::Index { len, axis, scope } => {
                     dtypes.insert(op_id, IDX_T);
                     let ub = len - 1;
-                    println!("{indent}r{out_id}{grey}: {IDX_T}{reset} = {blue}group_index({axis}){reset}    // 0..={ub}");
-                }
-                Op::LocalIndex { len, axis } => {
-                    dtypes.insert(op_id, IDX_T);
-                    let ub = len - 1;
-                    println!("{indent}r{out_id}{grey}: {IDX_T}{reset} = {blue}local_index({axis}){reset}    // 0..={ub}");
+                    println!("{indent}r{out_id}{grey}: {IDX_T}{reset} = {blue}{scope}_index({axis}){reset}    // 0..={ub}");
                 }
                 Op::Loop { len } => {
                     has_loops = true;

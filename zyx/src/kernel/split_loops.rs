@@ -18,7 +18,7 @@ use super::autotune::Optimization;
 use crate::{
     backend::DeviceInfo,
     dtype::Constant,
-    kernel::{BOp, Kernel, Op, OpId},
+    kernel::{BOp, IndexScope, Kernel, Op, OpId},
 };
 
 impl Kernel {
@@ -37,7 +37,7 @@ impl Kernel {
         }
         let mut local_axis_sizes: crate::Map<u32, u64> = crate::Map::default();
         for op in self.ops.values() {
-            if let Op::LocalIndex { axis, len } = op.op {
+            if let Op::Index { axis, len, scope: IndexScope::Local } = op.op {
                 if let Some(&existing) = local_axis_sizes.get(&axis) {
                     debug_assert_eq!(existing, len);
                 } else {
@@ -55,7 +55,7 @@ impl Kernel {
         let mut op_id = self.head;
         let mut factors = Vec::new();
         while !op_id.is_null() {
-            if let Op::GroupIndex { len, axis } = self.ops[op_id].op {
+            if let Op::Index { len, axis, scope: IndexScope::Group } = self.ops[op_id].op {
                 let mut l_factors: Vec<u64> = vec![64, 32, 16, 8, 4, 2];
                 if !local_axis_sizes.contains_key(&axis) {
                     let max_per_axis = dev_info.max_local_work_dims[axis as usize] as u64;
@@ -113,14 +113,12 @@ impl Kernel {
             for op in splits.iter() {
                 match op {
                     Op::Loop { len, .. } => dim *= self.loop_len_dim(*len),
-                    Op::GroupIndex { len, .. } => dim *= len,
-                    Op::LocalIndex { len, .. } => dim *= len,
+                    Op::Index { len, .. } => dim *= len,
                     _ => unreachable!("split can be only index or loop"),
                 }
             }
             match self.ops[dim_id].op {
-                Op::GroupIndex { len, .. } => debug_assert_eq!(len, dim),
-                Op::LocalIndex { len, .. } => debug_assert_eq!(len, dim),
+                Op::Index { len, .. } => debug_assert_eq!(len, dim),
                 Op::Loop { len, .. } => debug_assert_eq!(self.loop_len_dim(len), dim),
                 _ => {}
             }
@@ -143,8 +141,7 @@ impl Kernel {
             strides.push(st);
             match op {
                 Op::Loop { len, .. } => st *= self.loop_len_dim(*len),
-                Op::GroupIndex { len, .. } => st *= len,
-                Op::LocalIndex { len, .. } => st *= len,
+                Op::Index { len, .. } => st *= len,
                 _ => unreachable!(),
             }
         }

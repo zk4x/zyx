@@ -16,6 +16,7 @@ use std::sync::{
 use libloading::Library;
 use nanoserde::DeJson;
 
+use crate::kernel::{IndexScope, Op};
 use crate::{
     DType,
     error::{BackendError, ErrorStatus},
@@ -1214,8 +1215,11 @@ pub(super) fn initialize_device(
                             let mut op_id = kernel.head;
                             while !op_id.is_null() {
                                 match kernel.ops[op_id].op {
-                                    crate::kernel::Op::GroupIndex { len, axis } => gws[axis as usize] = len,
-                                    crate::kernel::Op::LocalIndex { len, axis } => lws[axis as usize] = len,
+                                    Op::Index { len, axis, scope } => match scope {
+                                        IndexScope::Group => gws[axis as usize] = len,
+                                        IndexScope::Local => lws[axis as usize] = len,
+                                        IndexScope::Warp => todo!(),
+                                    },
                                     _ => {}
                                 }
                                 op_id = kernel.next_op(op_id);
@@ -1253,7 +1257,7 @@ pub(super) fn initialize_device(
                                 let mut op = kernel.head;
                                 while !op.is_null() {
                                     if let crate::kernel::Op::Define { ro: _, scope, .. } = kernel.at(op) {
-                                        if *scope == crate::kernel::Scope::Global {
+                                        if *scope == crate::kernel::MemScope::Global {
                                             n += 1;
                                         }
                                     }

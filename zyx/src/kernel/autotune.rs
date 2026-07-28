@@ -40,7 +40,7 @@ use crate::backend::{AutotuneConfig, Device, DeviceInfo, DeviceProgramId, Memory
 use crate::error::{BackendError, ErrorStatus};
 use crate::hashers::AHasher;
 use crate::kernel::cost::Cost;
-use crate::kernel::{Kernel, Op, OpId, Scope};
+use crate::kernel::{IndexScope, Kernel, MemScope, Op, OpId};
 use crate::rng::Rng;
 use crate::shape::Dim;
 use crate::slab::SlabId;
@@ -237,15 +237,15 @@ impl Optimization {
                 #[cfg(feature = "time")]
                 let _timer = crate::Timer::new("SplitGlobalToLocal");
                 let (op_id, factor) = factors[config];
-                let Op::GroupIndex { len, axis } = kernel.ops[op_id].op else {
+                let Op::Index { len, axis, scope: IndexScope::Group } = kernel.ops[op_id].op else {
                     unreachable!()
                 };
                 let factor: Dim = factor;
                 kernel.split_dim(
                     op_id,
                     vec![
-                        Op::GroupIndex { len: len / factor, axis },
-                        Op::LocalIndex { len: factor, axis },
+                        Op::Index { len: len / factor, axis, scope: IndexScope::Group },
+                        Op::Index { len: factor, axis, scope: IndexScope::Local },
                     ],
                 );
             }
@@ -281,7 +281,7 @@ impl Optimization {
                     return;
                 }
                 let (gidx_id, pad_to) = factors[config];
-                let Op::GroupIndex { len: current_len, .. } = kernel.ops[gidx_id].op else {
+                let Op::Index { len: current_len, scope: IndexScope::Group, .. } = kernel.ops[gidx_id].op else {
                     unreachable!()
                 };
                 let pad_len = (pad_to - current_len % pad_to) % pad_to;
@@ -360,7 +360,7 @@ impl Kernel {
         let mut op_id = self.head;
         while !op_id.is_null() {
             match self.ops[op_id].op {
-                Op::Define { dtype, scope: Scope::Global, len, ro } => {
+                Op::Define { dtype, scope: MemScope::Global, len, ro } => {
                     if global_idx < n_init {
                         debug_assert!(ro);
                         // Use existing buffer for loads

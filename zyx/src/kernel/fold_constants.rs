@@ -18,7 +18,7 @@
 use crate::{
     DType, Map, Set,
     dtype::Constant,
-    kernel::{BOp, IDX_T, Kernel, MemLayout, Op, OpId, Scope, UOp},
+    kernel::{BOp, IDX_T, Kernel, MemLayout, MemScope, Op, OpId, UOp},
 };
 use std::hash::BuildHasherDefault;
 
@@ -46,8 +46,7 @@ impl Kernel {
                 | Op::Const(_)
                 | Op::Define { .. }
                 | Op::Load { .. }
-                | Op::GroupIndex { .. }
-                | Op::LocalIndex { .. }
+                | Op::Index { .. }
                 | Op::Loop { .. }
                 | Op::EndLoop => {}
                 Op::Vectorize { ref ops } => {
@@ -226,7 +225,7 @@ impl Kernel {
         let mut op_id = self.head;
         while !op_id.is_null() {
             match *self.at(op_id) {
-                Op::Define { scope: Scope::Register, .. } => {
+                Op::Define { scope: MemScope::Register, .. } => {
                     defines.insert(op_id, loop_level);
                 }
                 Op::Store { dst, .. } => {
@@ -541,7 +540,7 @@ impl Kernel {
         let mut start = self.prev_op(start);
         while !op_id.is_null() {
             let next = self.next_op(op_id);
-            if let Op::GroupIndex { .. } | Op::LocalIndex { .. } = self.at(op_id) {
+            if let Op::Index { .. } = self.at(op_id) {
                 self.move_op_after(op_id, start);
                 start = op_id;
             }

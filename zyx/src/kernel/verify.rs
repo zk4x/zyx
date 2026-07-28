@@ -5,7 +5,7 @@ use std::ops::RangeInclusive;
 
 use crate::{
     DType, Map, Set,
-    kernel::{BOp, IDX_T, Kernel, Op, OpId, Scope},
+    kernel::{BOp, IDX_T, IndexScope, Kernel, MemScope, Op, OpId},
     shape::Dim,
 };
 
@@ -34,14 +34,14 @@ impl Kernel {
             let mut scan = self.head;
             while !scan.is_null() {
                 match self.at(scan) {
-                    Op::Define { scope: Scope::Global, ro: true, .. } => {
+                    Op::Define { scope: MemScope::Global, ro: true, .. } => {
                         if phase != Phase::GlobalRo {
                             println!("Global read-only defines must come first.");
                             self.debug();
                             panic!();
                         }
                     }
-                    Op::Define { scope: Scope::Global, ro: false, .. } => {
+                    Op::Define { scope: MemScope::Global, ro: false, .. } => {
                         if phase == Phase::GlobalRo {
                             phase = Phase::GlobalRw;
                         }
@@ -51,7 +51,7 @@ impl Kernel {
                             panic!();
                         }
                     }
-                    Op::Define { scope: Scope::Local, ro: true, .. } => {
+                    Op::Define { scope: MemScope::Local, ro: true, .. } => {
                         if phase == Phase::GlobalRo || phase == Phase::GlobalRw {
                             phase = Phase::LocalRo;
                         }
@@ -61,7 +61,7 @@ impl Kernel {
                             panic!();
                         }
                     }
-                    Op::Define { scope: Scope::Local, ro: false, .. } => {
+                    Op::Define { scope: MemScope::Local, ro: false, .. } => {
                         if phase == Phase::GlobalRo || phase == Phase::GlobalRw || phase == Phase::LocalRo {
                             phase = Phase::LocalRw;
                         }
@@ -211,19 +211,23 @@ impl Kernel {
                     check(op_id, index, &stack);
                     dtypes.insert(op_id, dtypes[&src]);
                 }
-                Op::GroupIndex { axis, .. } => {
-                    if !gids.insert(axis) {
-                        println!("index={op_id} is using global axis={axis} for the second time");
-                        self.debug();
-                        panic!();
-                    }
-                    dtypes.insert(op_id, IDX_T);
-                }
-                Op::LocalIndex { axis, .. } => {
-                    if !lids.insert(axis) {
-                        println!("index={op_id} is using local axis={axis} for the second time");
-                        self.debug();
-                        panic!();
+                Op::Index { axis, scope, .. } => {
+                    match scope {
+                        IndexScope::Group => {
+                            if !gids.insert(axis) {
+                                println!("index={op_id} is using {scope} axis={axis} for the second time");
+                                self.debug();
+                                panic!();
+                            }
+                        }
+                        IndexScope::Local => {
+                            if !lids.insert(axis) {
+                                println!("index={op_id} is using {scope} axis={axis} for the second time");
+                                self.debug();
+                                panic!();
+                            }
+                        }
+                        IndexScope::Warp => todo!(),
                     }
                     dtypes.insert(op_id, IDX_T);
                 }
@@ -380,11 +384,7 @@ impl Kernel {
                 Op::EndIf => {
                     bounds_stack.pop();
                 }
-                Op::GroupIndex { len, .. } => {
-                    let b = bounds_stack.last_mut().unwrap();
-                    b.insert(op_id, (0, len - 1));
-                }
-                Op::LocalIndex { len, .. } => {
+                Op::Index { len, .. } => {
                     let b = bounds_stack.last_mut().unwrap();
                     b.insert(op_id, (0, len - 1));
                 }

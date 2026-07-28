@@ -8,7 +8,7 @@ use crate::{
     DType, Map,
     dtype::Constant,
     error::{BackendError, ErrorStatus},
-    kernel::{BOp, IDX_T, Kernel, MemLayout, Op, OpId, Scope, UOp},
+    kernel::{BOp, IDX_T, IndexScope, Kernel, MemLayout, MemScope, Op, OpId, UOp},
 };
 use std::hash::BuildHasherDefault;
 
@@ -408,7 +408,7 @@ impl Kernel {
             let mut op_id = self.head;
             let mut found = false;
             while !op_id.is_null() {
-                if let Op::Define { dtype: DType::Bool, scope: Scope::Global, .. } = self.at(op_id) {
+                if let Op::Define { dtype: DType::Bool, scope: MemScope::Global, .. } = self.at(op_id) {
                     found = true;
                     break;
                 }
@@ -651,7 +651,7 @@ impl Kernel {
                     &Op::Define { dtype, scope, ro, len } => {
                         let st = push_dtype(&mut asm, &mut type_cache, &mut type_entries, dtype);
                         match scope {
-                            Scope::Global => {
+                            MemScope::Global => {
                                 let is_bool = dtype == DType::Bool;
                                 if is_bool {
                                     bool_buffers.insert(op_id);
@@ -687,7 +687,7 @@ impl Kernel {
                                     if is_bool { u8_id.unwrap() } else { st },
                                 );
                             }
-                            Scope::Local => {
+                            MemScope::Local => {
                                 let len_cid = asm.id();
                                 const_entries.push((u32_id, len_cid, vec![len as u32]));
                                 len_const_ids.insert(len_cid);
@@ -701,7 +701,7 @@ impl Kernel {
                                 spv_variables.insert(op_id, var);
                                 push_ptr_type(&mut asm, &mut ptr_cache, &mut type_entries, SC_WORKGROUP, st);
                             }
-                            Scope::Register => {
+                            MemScope::Register => {
                                 let len_cid = asm.id();
                                 const_entries.push((u32_id, len_cid, vec![len as u32]));
                                 len_const_ids.insert(len_cid);
@@ -801,7 +801,12 @@ impl Kernel {
                                 DType::U32 => Constant::U32(val),
                                 DType::I32 => Constant::I32(val as i32),
                                 DType::U64 => Constant::U64((val as u64).to_le_bytes()),
-                                dt => return Err(BackendError { status: ErrorStatus::KernelCompilation, context: format!("SPIR-V: unexpected index type {dt:?} for const value").into() }),
+                                dt => {
+                                    return Err(BackendError {
+                                        status: ErrorStatus::KernelCompilation,
+                                        context: format!("SPIR-V: unexpected index type {dt:?} for const value").into(),
+                                    });
+                                }
                             };
                             if !const_pool.contains_key(&key) {
                                 let tid = type_cache[&IDX_T];
@@ -827,16 +832,19 @@ impl Kernel {
                 }
                 // Track work sizes from Index ops
                 match self.ops[op_id].op {
-                    Op::GroupIndex { len, axis } => {
-                        if axis < 3 {
-                            gws[axis as usize] = gws[axis as usize].max(len);
+                    Op::Index { len, axis, scope } => match scope {
+                        IndexScope::Group => {
+                            if axis < 3 {
+                                gws[axis as usize] = gws[axis as usize].max(len);
+                            }
                         }
-                    }
-                    Op::LocalIndex { len, axis } => {
-                        if axis < 3 {
-                            lws[axis as usize] = lws[axis as usize].max(len);
+                        IndexScope::Local => {
+                            if axis < 3 {
+                                lws[axis as usize] = lws[axis as usize].max(len);
+                            }
                         }
-                    }
+                        IndexScope::Warp => todo!(),
+                    },
                     _ => {}
                 }
                 op_id = self.next_op(op_id);
@@ -857,7 +865,7 @@ impl Kernel {
             let mut op_id = self.head;
             let mut found = false;
             while !op_id.is_null() {
-                if let &Op::GroupIndex { .. } | Op::LocalIndex { .. } = self.at(op_id) {
+                if let &Op::Index { .. } = self.at(op_id) {
                     found = true;
                     break;
                 }
@@ -991,7 +999,10 @@ impl Kernel {
                     | Op::Move { .. }
                     | Op::Reduce { .. }
                     | Op::Wmma { .. } => {
-                        return Err(BackendError { status: ErrorStatus::KernelCompilation, context: "SPIR-V: unexpected kernel op (should be unfolded)".into() });
+                        return Err(BackendError {
+                            status: ErrorStatus::KernelCompilation,
+                            context: "SPIR-V: unexpected kernel op (should be unfolded)".into(),
+                        });
                     }
 
                     Op::Vectorize { ops } => {
@@ -1017,10 +1028,10 @@ impl Kernel {
 
                     &Op::Define { scope, .. } => {
                         match scope {
-                            Scope::Global | Scope::Local => {
+                            MemScope::Global | MemScope::Local => {
                                 // Already declared as module-level variable
                             }
-                            Scope::Register => {
+                            MemScope::Register => {
                                 // Variable was emitted at function entry
                             }
                         }
@@ -1039,7 +1050,7 @@ impl Kernel {
                         let (base_ptr, element_ptr_type, is_storage_buffer, is_bool_src) = if let Some(&var_id) =
                             spv_variables.get(&src)
                         {
-                            let is_local = matches!(self.at(src), &Op::Define { scope: Scope::Local, .. });
+                            let is_local = matches!(self.at(src), &Op::Define { scope: MemScope::Local, .. });
                             let sc = if is_local { SC_WORKGROUP } else { SC_STORAGE_BUFFER };
                             let is_bool_buf = bool_buffers.contains(&src) && !is_local;
                             // For bool storage buffers or vector loads, use scalar storage type
@@ -1055,7 +1066,10 @@ impl Kernel {
                             let elem_ptr = push_ptr_type(&mut asm, &mut ptr_cache, &mut type_entries, SC_FUNCTION, scalar_type);
                             (var_id, elem_ptr, false, false)
                         } else {
-                            return Err(BackendError { status: ErrorStatus::KernelCompilation, context: "SPIR-V: Load from unknown variable".into() });
+                            return Err(BackendError {
+                                status: ErrorStatus::KernelCompilation,
+                                context: "SPIR-V: Load from unknown variable".into(),
+                            });
                         };
 
                         if is_vec && !is_bool_src {
@@ -1063,7 +1077,12 @@ impl Kernel {
                             let mut scalars = Vec::new();
                             let vec_len = match layout {
                                 MemLayout::Vector(n) => n as usize,
-                                _ => return Err(BackendError { status: ErrorStatus::KernelCompilation, context: "SPIR-V: expected Vector layout for vectorized op".into() }),
+                                _ => {
+                                    return Err(BackendError {
+                                        status: ErrorStatus::KernelCompilation,
+                                        context: "SPIR-V: expected Vector layout for vectorized op".into(),
+                                    });
+                                }
                             };
                             for i in 0..vec_len {
                                 let off_const = const_pool[&Constant::U32(i as u32)];
@@ -1114,7 +1133,7 @@ impl Kernel {
 
                         let (base_ptr, element_ptr_type, is_storage_buffer, is_bool_dst) =
                             if let Some(&var_id) = spv_variables.get(&dst) {
-                                let is_local = matches!(self.at(dst), &Op::Define { scope: Scope::Local, .. });
+                                let is_local = matches!(self.at(dst), &Op::Define { scope: MemScope::Local, .. });
                                 let sc = if is_local { SC_WORKGROUP } else { SC_STORAGE_BUFFER };
                                 let is_bool_buf = bool_buffers.contains(&dst) && !is_local;
                                 let val_type = emit_type(&mut asm, &mut type_cache, dtypes[&x].0);
@@ -1126,7 +1145,10 @@ impl Kernel {
                                 let elem_ptr = push_ptr_type(&mut asm, &mut ptr_cache, &mut type_entries, SC_FUNCTION, val_type);
                                 (var_id, elem_ptr, false, false)
                             } else {
-                                return Err(BackendError { status: ErrorStatus::KernelCompilation, context: "SPIR-V: Store to unknown variable".into() });
+                                return Err(BackendError {
+                                    status: ErrorStatus::KernelCompilation,
+                                    context: "SPIR-V: Store to unknown variable".into(),
+                                });
                             };
 
                         let val_type = emit_type(&mut asm, &mut type_cache, dtypes[&x].0);
@@ -1431,11 +1453,14 @@ impl Kernel {
                         }
                         spv_values.insert(op_id, rid);
                     }
-
-                    &Op::GroupIndex { axis, .. } => {
+                    &Op::Index { axis, scope, .. } => {
                         let result_type = emit_type(&mut asm, &mut type_cache, IDX_T);
                         let loaded = asm.id();
-                        asm.emit_typed(OpLoad, vec3_id, loaded, &[wg_id_var]);
+                        match scope {
+                            IndexScope::Group => asm.emit_typed(OpLoad, vec3_id, loaded, &[wg_id_var]),
+                            IndexScope::Local => asm.emit_typed(OpLoad, vec3_id, loaded, &[local_inv_var]),
+                            IndexScope::Warp => todo!(),
+                        }
                         let elem = asm.id();
                         asm.emit_typed(OpCompositeExtract, u32_id, elem, &[loaded, axis]);
                         if IDX_T == DType::U32 {
@@ -1447,22 +1472,6 @@ impl Kernel {
                             spv_values.insert(op_id, widened);
                         }
                     }
-                    &Op::LocalIndex { axis, .. } => {
-                        let result_type = emit_type(&mut asm, &mut type_cache, IDX_T);
-                        let loaded = asm.id();
-                        asm.emit_typed(OpLoad, vec3_id, loaded, &[local_inv_var]);
-                        let elem = asm.id();
-                        asm.emit_typed(OpCompositeExtract, u32_id, elem, &[loaded, axis]);
-                        if IDX_T == DType::U32 {
-                            spv_values.insert(op_id, elem);
-                        } else {
-                            let widened = asm.id();
-                            let op = OpUConvert;
-                            asm.emit_typed(op, result_type, widened, &[elem]);
-                            spv_values.insert(op_id, widened);
-                        }
-                    }
-
                     &Op::Loop { len } => {
                         let header = asm.id();
                         let body = asm.id();
@@ -1605,7 +1614,7 @@ fn cast_op(src: DType, dst: DType) -> Result<OpCode, BackendError> {
             return Err(BackendError {
                 status: ErrorStatus::KernelCompilation,
                 context: format!("Bool cast not handled upstream: {src:?} -> {dst:?}").into(),
-            })
+            });
         }
         _ => {
             if bit_size(src) == bit_size(dst) {

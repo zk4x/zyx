@@ -6,7 +6,7 @@ use crate::{
     backend::DeviceInfo,
     dtype::Constant,
     error::{BackendError, ErrorStatus},
-    kernel::{BOp, Kernel, MemLayout, Op, OpId, Scope, UOp},
+    kernel::{BOp, Kernel, MemLayout, MemScope, Op, OpId, UOp},
     scalar::{bf16, f16},
 };
 use std::{fmt::Write, hash::BuildHasherDefault};
@@ -23,7 +23,7 @@ impl Kernel {
         while !op_id.is_null() {
             let op = self.at(op_id);
             if let &Op::Define { dtype, scope, ro, .. } = op {
-                if scope == Scope::Global {
+                if scope == MemScope::Global {
                     _ = writeln!(global_args, "  __global {}{}* p{op_id},", if ro { "const " } else { "" }, dtype.ocl());
                 }
             } else {
@@ -60,14 +60,14 @@ impl Kernel {
                     constants.insert(op_id, x);
                 }
                 Op::Define { dtype, scope, ro, len } => {
-                    if scope == Scope::Register {
+                    if scope == MemScope::Register {
                         _ = writeln!(
                             source,
                             "{indent}{}{} p{op_id}[{len}] __attribute__ ((aligned));",
                             if ro { "const " } else { "" },
                             dtype.ocl(),
                         );
-                    } else if scope == Scope::Local {
+                    } else if scope == MemScope::Local {
                         _ = writeln!(
                             source,
                             "{indent}__local {}{} p{op_id}[{len}] __attribute__ ((aligned));",
@@ -287,14 +287,9 @@ impl Kernel {
                         _ => _ = writeln!(source, "{indent}r{reg} = {x} * {y} + {z};"),
                     }
                 }
-                Op::GroupIndex { len, axis } => {
+                Op::Index { len, axis, scope } => {
                     indices.insert(op_id, loop_id);
-                    _ = writeln!(source, "{indent}unsigned int idx{loop_id} = get_group_id({axis}); // 0..={}", len - 1);
-                    loop_id += 1;
-                }
-                Op::LocalIndex { len, axis } => {
-                    indices.insert(op_id, loop_id);
-                    _ = writeln!(source, "{indent}unsigned int idx{loop_id} = get_local_id({axis}); // 0..={}", len - 1);
+                    _ = writeln!(source, "{indent}unsigned int idx{loop_id} = get_{scope}_id({axis}); // 0..={}", len - 1);
                     loop_id += 1;
                 }
                 Op::Loop { len, .. } => {

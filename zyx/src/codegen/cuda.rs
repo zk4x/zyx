@@ -6,10 +6,10 @@ use crate::{
     backend::DeviceInfo,
     dtype::Constant,
     error::{BackendError, ErrorStatus},
-    kernel::{BOp, Kernel, MemLayout, Op, OpId, Scope, UOp},
+    kernel::{BOp, IndexScope, Kernel, MemLayout, MemScope, Op, OpId, UOp},
     scalar::{bf16, f16},
 };
-use std::{hash::BuildHasherDefault};
+use std::hash::BuildHasherDefault;
 
 const VEC_COMPONENTS: [&str; 16] = [
     "x", "y", "z", "w", "s0", "s1", "s2", "s3", "s4", "s5", "s6", "s7", "s8", "s9", "sa", "sb",
@@ -25,8 +25,11 @@ impl Kernel {
         let mut op_id = self.head;
         while !op_id.is_null() {
             match self.ops[op_id].op {
-                Op::GroupIndex { len, axis } => gws[axis as usize] = len,
-                Op::LocalIndex { len, axis } => lws[axis as usize] = len,
+                Op::Index { len, axis, scope } => match scope {
+                    IndexScope::Group => gws[axis as usize] = len,
+                    IndexScope::Local => lws[axis as usize] = len,
+                    IndexScope::Warp => todo!(),
+                },
                 _ => {}
             }
             op_id = self.next_op(op_id);
@@ -37,7 +40,7 @@ impl Kernel {
         while !op_id.is_null() {
             let op = &self.ops[op_id].op;
             if let &Op::Define { dtype, scope, ro, .. } = op {
-                if scope == Scope::Global {
+                if scope == MemScope::Global {
                     _ = writeln!(global_args, "  {}{}* p{op_id},", if ro { "const " } else { "" }, dtype.cu());
                 }
             } else {
@@ -66,15 +69,18 @@ impl Kernel {
         while !op_id.is_null() {
             match self.ops[op_id].op {
                 Op::Move { .. } | Op::ConstView { .. } | Op::LoadView { .. } | Op::StoreView { .. } | Op::Reduce { .. } => {
-                    return Err(BackendError { status: ErrorStatus::KernelCompilation, context: "CUDA codegen: unexpected kernel op (should be unfolded)".into() });
+                    return Err(BackendError {
+                        status: ErrorStatus::KernelCompilation,
+                        context: "CUDA codegen: unexpected kernel op (should be unfolded)".into(),
+                    });
                 }
                 Op::Const(x) => {
                     constants.insert(op_id, x);
                 }
                 Op::Define { dtype, scope, ro, len } => {
-                    if scope == Scope::Register {
+                    if scope == MemScope::Register {
                         _ = writeln!(source, "{indent}{}{} p{op_id}[{len}];", if ro { "const " } else { "" }, dtype.cu(),);
-                    } else if scope == Scope::Local {
+                    } else if scope == MemScope::Local {
                         _ = writeln!(
                             source,
                             "{indent}__shared__ {}{} p{op_id}[{len}];",
@@ -260,7 +266,12 @@ impl Kernel {
                                 BOp::Eq => writeln!(source, "{indent}r{reg} = {x} == {y};"),
                             }
                         }
-                        MemLayout::Tile { .. } => return Err(BackendError { status: ErrorStatus::KernelCompilation, context: "CUDA codegen: Tile layout not supported for Binary".into() }),
+                        MemLayout::Tile { .. } => {
+                            return Err(BackendError {
+                                status: ErrorStatus::KernelCompilation,
+                                context: "CUDA codegen: Tile layout not supported for Binary".into(),
+                            });
+                        }
                     }
                 }
                 Op::Vectorize { ref ops } => {
@@ -297,22 +308,17 @@ impl Kernel {
                         _ => _ = writeln!(source, "{indent}r{reg} = {x} * {y} + {z};"),
                     }
                 }
-                Op::GroupIndex { len, axis } => {
+                Op::Index { len, axis, scope } => {
                     indices.insert(op_id, loop_id);
                     _ = writeln!(
                         source,
-                        "{indent}unsigned int idx{loop_id} = blockIdx.{}; // 0..={}",
+                        "{indent}unsigned int idx{loop_id} = {}Idx.{}; // 0..={}",
+                        match scope {
+                            IndexScope::Group => "block",
+                            IndexScope::Local => "thread",
+                            IndexScope::Warp => todo!(),
+                        },
                         ["x", "y", "z"][axis as usize],
-                        len - 1
-                    );
-                    loop_id += 1;
-                }
-                Op::LocalIndex { len, axis } => {
-                    indices.insert(op_id, loop_id);
-                    _ = writeln!(
-                        source,
-                        "{indent}unsigned int idx{loop_id} = threadIdx.{}; // 0..={}",
-                        ["x", "y", "z"][(axis) as usize],
                         len - 1
                     );
                     loop_id += 1;
@@ -355,31 +361,39 @@ impl Kernel {
                 match dt.1 {
                     MemLayout::Scalar => dt.0.cu().to_string(),
                     MemLayout::Vector(len) => dt.0.cu_vec_type(len),
-                MemLayout::Tile { .. } => return Err(BackendError { status: ErrorStatus::KernelCompilation, context: "CUDA codegen: Tile layout not supported in register declarations".into() }),
+                    MemLayout::Tile { .. } =>
+                        return Err(BackendError {
+                            status: ErrorStatus::KernelCompilation,
+                            context: "CUDA codegen: Tile layout not supported in register declarations".into()
+                        }),
+                }
+            );
+            let mut i = 1;
+            for (dt, _, _) in registers {
+                if dt == prev_dt {
+                    _ = write!(reg_str, ", r{i}");
+                } else {
+                    _ = write!(
+                        reg_str,
+                        ";\n{indent}{} r{i}",
+                        match dt.1 {
+                            MemLayout::Scalar => dt.0.cu().to_string(),
+                            MemLayout::Vector(len) => dt.0.cu_vec_type(len),
+                            MemLayout::Tile { .. } =>
+                                return Err(BackendError {
+                                    status: ErrorStatus::KernelCompilation,
+                                    context: "CUDA codegen: Tile layout not supported in register declarations".into()
+                                }),
+                        }
+                    );
+                }
+                prev_dt = dt;
+                i += 1;
             }
-        );
-        let mut i = 1;
-        for (dt, _, _) in registers {
-            if dt == prev_dt {
-                _ = write!(reg_str, ", r{i}");
-            } else {
-                _ = write!(
-                    reg_str,
-                    ";\n{indent}{} r{i}",
-                    match dt.1 {
-                        MemLayout::Scalar => dt.0.cu().to_string(),
-                        MemLayout::Vector(len) => dt.0.cu_vec_type(len),
-                        MemLayout::Tile { .. } => return Err(BackendError { status: ErrorStatus::KernelCompilation, context: "CUDA codegen: Tile layout not supported in register declarations".into() }),
-                    }
-                );
-            }
-            prev_dt = dt;
-            i += 1;
+            _ = writeln!(reg_str, ";");
         }
-        _ = writeln!(reg_str, ";");
-    }
 
-    let mut pragma = String::new();
+        let mut pragma = String::new();
         if dtypes.values().any(|&x| x.0 == DType::F16) {
             pragma += "#include <cuda_fp16.h>\n";
             pragma += "struct __align__(8) half4 { half x, y, z, w; };\n";
@@ -432,7 +446,10 @@ fn get_var(
         }
         Ok(format!("r{reg}"))
     } else {
-        Err(BackendError { status: ErrorStatus::KernelCompilation, context: format!("CUDA codegen: variable {op_id} not found").into() })
+        Err(BackendError {
+            status: ErrorStatus::KernelCompilation,
+            context: format!("CUDA codegen: variable {op_id} not found").into(),
+        })
     }
 }
 

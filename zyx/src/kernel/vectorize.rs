@@ -503,7 +503,7 @@ impl Kernel {
 mod tests {
     use crate::{
         DType,
-        kernel::{BOp, DeviceId, Kernel, MemLayout, Op, Scope, UOp},
+        kernel::{BOp, DeviceId, Kernel, MemLayout, MemScope, Op, UOp},
     };
 
     // Helper to verify c0/c1 were replaced with devecs, find vectorize + vector op
@@ -528,9 +528,9 @@ mod tests {
     #[test]
     fn vectorize_ops_forward_2_lane() {
         let mut k = Kernel::new(DeviceId::AUTO);
-        let src = k.define(DType::F32, Scope::Global, true, 16);
-        let dst = k.define(DType::F32, Scope::Global, false, 16);
-        let g0 = k.global_index(0, 4);
+        let src = k.define(DType::F32, MemScope::Global, true, 16);
+        let dst = k.define(DType::F32, MemScope::Global, false, 16);
+        let g0 = k.group_index(0, 4);
         let two = k.const_idx(2u32);
         let offset = k.binary(g0, two, BOp::BitShiftLeft);
         let vec_load = k.load(src, offset, MemLayout::Vector(2));
@@ -552,9 +552,9 @@ mod tests {
     #[test]
     fn vectorize_ops_forward_4_lane() {
         let mut k = Kernel::new(DeviceId::AUTO);
-        let src = k.define(DType::F32, Scope::Global, true, 16);
-        let dst = k.define(DType::F32, Scope::Global, false, 16);
-        let g0 = k.global_index(0, 4);
+        let src = k.define(DType::F32, MemScope::Global, true, 16);
+        let dst = k.define(DType::F32, MemScope::Global, false, 16);
+        let g0 = k.group_index(0, 4);
         let two = k.const_idx(2u32);
         let offset = k.binary(g0, two, BOp::BitShiftLeft);
         let vec_load = k.load(src, offset, MemLayout::Vector(4));
@@ -604,9 +604,9 @@ mod tests {
         // After first pass: cos(2) is vectorized
         // After second pass: sin(2) is vectorized
         let mut k = Kernel::new(DeviceId::AUTO);
-        let src = k.define(DType::F32, Scope::Global, true, 16);
-        let dst = k.define(DType::F32, Scope::Global, false, 16);
-        let g0 = k.global_index(0, 4);
+        let src = k.define(DType::F32, MemScope::Global, true, 16);
+        let dst = k.define(DType::F32, MemScope::Global, false, 16);
+        let g0 = k.group_index(0, 4);
         let two = k.const_idx(2u32);
         let offset = k.binary(g0, two, BOp::BitShiftLeft);
         let vec_load = k.load(src, offset, MemLayout::Vector(4));
@@ -656,9 +656,9 @@ mod tests {
     #[test]
     fn vectorize_ops_forward_binary() {
         let mut k = Kernel::new(DeviceId::AUTO);
-        let src = k.define(DType::F32, Scope::Global, true, 16);
-        let dst = k.define(DType::F32, Scope::Global, false, 16);
-        let g0 = k.global_index(0, 4);
+        let src = k.define(DType::F32, MemScope::Global, true, 16);
+        let dst = k.define(DType::F32, MemScope::Global, false, 16);
+        let g0 = k.group_index(0, 4);
         let two = k.const_idx(2u32);
         let offset = k.binary(g0, two, BOp::BitShiftLeft);
         let vec_load = k.load(src, offset, MemLayout::Vector(2));
@@ -696,9 +696,9 @@ mod tests {
     fn vectorize_ops_forward_binary_y_pos() {
         // devec in Y position: c + devec(v, i)
         let mut k = Kernel::new(DeviceId::AUTO);
-        let src = k.define(DType::F32, Scope::Global, true, 16);
-        let dst = k.define(DType::F32, Scope::Global, false, 16);
-        let g0 = k.global_index(0, 4);
+        let src = k.define(DType::F32, MemScope::Global, true, 16);
+        let dst = k.define(DType::F32, MemScope::Global, false, 16);
+        let g0 = k.group_index(0, 4);
         let two = k.const_idx(2u32);
         let offset = k.binary(g0, two, BOp::BitShiftLeft);
         let vec_load = k.load(src, offset, MemLayout::Vector(2));
@@ -721,9 +721,9 @@ mod tests {
     fn vectorize_ops_and_constfold_clears_vectorize_devectorize() {
         let mut k = Kernel::new(DeviceId::AUTO);
 
-        let src = k.define(DType::F32, Scope::Global, true, 16);
-        let dst = k.define(DType::F32, Scope::Global, false, 16);
-        let g0 = k.global_index(0, 4);
+        let src = k.define(DType::F32, MemScope::Global, true, 16);
+        let dst = k.define(DType::F32, MemScope::Global, false, 16);
+        let g0 = k.group_index(0, 4);
         let two = k.const_idx(2u32);
         let offset = k.binary(g0, two, BOp::BitShiftLeft);
         let vec_load = k.load(src, offset, MemLayout::Vector(4));
