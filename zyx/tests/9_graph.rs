@@ -1,7 +1,7 @@
 // Copyright (C) 2025 zk4x
 // SPDX-License-Identifier: LGPL-3.0-only
 
-use zyx::{DType, Scalar, Tape, Tensor, ZyxError};
+use zyx::{DType, ReduceOp, Scalar, Tape, Tensor, ZyxError};
 
 #[test]
 fn sin() -> Result<(), ZyxError> {
@@ -116,5 +116,34 @@ fn promote_and_gradient() -> Result<(), ZyxError> {
 
     let result = &e + &gt;
     let _g = tape.gradient(&result, [&gt]);
+    Ok(())
+}
+
+// Reproducer for orphan kernel outputs: forward+backward through a 2-layer
+// net with weight transpose, cross-entropy loss, and SGD update; then realize
+// all params. This pattern triggers fill_remaining's force-seal bug where
+// orphan kernel outputs not in the output_set prevent kernel sealing.
+#[test]
+fn realize_with_orphan_leaf_in_kernel() -> Result<(), ZyxError> {
+    let w1 = Tensor::randn([3, 4], DType::F32)?;
+    let b1 = Tensor::randn([3], DType::F32)?;
+    let w2 = Tensor::randn([2, 3], DType::F32)?;
+    let b2 = Tensor::randn([2], DType::F32)?;
+
+    let tape = Tape::new([&w1, &b1, &w2, &b2])?;
+    let x = Tensor::randn([2, 4], DType::F32)?;
+    let y = Tensor::from([0u32, 1]);
+    let h = (x.dot(&w1.t())? + &b1).relu();
+    let logits = h.dot(&w2.t())? + &b2;
+    let loss = logits.cross_entropy(y, ReduceOp::Mean)?;
+    let grads = tape.gradient(&loss, [&w1, &b1, &w2, &b2]);
+
+    let lr = 0.01;
+    let new_w1 = &w1 - &grads[0] * lr;
+    let new_b1 = &b1 - &grads[1] * lr;
+    let new_w2 = &w2 - &grads[2] * lr;
+    let new_b2 = &b2 - &grads[3] * lr;
+
+    tape.realize([&new_w1, &new_b1, &new_w2, &new_b2])?;
     Ok(())
 }

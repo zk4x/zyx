@@ -1,9 +1,9 @@
 // Copyright (C) 2025 zk4x
 // SPDX-License-Identifier: LGPL-3.0-only
 
-/*use std::collections::HashMap;
+use std::collections::HashMap;
 
-use zyx::{DType, Tape, Tensor, ZyxError};
+use zyx::{DType, ReduceOp, Tape, Tensor, ZyxError};
 
 #[test]
 fn mnist() -> Result<(), ZyxError> {
@@ -17,8 +17,6 @@ fn mnist() -> Result<(), ZyxError> {
     impl MnistNet {
         fn forward(&self, x: &Tensor) -> Tensor {
             let x = x.reshape([0, 784]).unwrap();
-            //println!("x={}", x.reshape([0, 28, 28]).unwrap().slice((0, 15..20, 15..20)).unwrap());
-            //println!("{}", self.l1_weight.slice((0, 0..10)).unwrap());
             let x = x.matmul(&self.l1_weight.t()).unwrap() + &self.l1_bias;
             let x = x.relu();
             let x = x.matmul(&self.l2_weight.t()).unwrap() + &self.l2_bias;
@@ -26,87 +24,40 @@ fn mnist() -> Result<(), ZyxError> {
         }
     }
 
-    let state_dict = Tensor::load("../zyx-examples/models/mnist.safetensors")?;
-
-    let net = MnistNet {
-        l1_weight: state_dict["l1.weight"].clone(),
-        l1_bias: state_dict["l1.bias"].clone(),
-        l2_weight: state_dict["l2.weight"].clone(),
-        l2_bias: state_dict["l2.bias"].clone(),
-    };
-
     let train_dataset: HashMap<String, Tensor> = Tensor::load("../zyx-examples/data/mnist_dataset.safetensors")?;
     let train_x = train_dataset["train_x"].cast(DType::F32) / 255;
     let train_y = train_dataset["train_y"].clone();
-    let test_x = train_dataset["test_x"].cast(DType::F32) / 255;
-    let test_y = train_dataset["test_y"].clone();
 
     let batch_size = 64;
     let num_train = train_x.shape()[0];
 
-    //let mut optim = SGD { learning_rate: 0.01, momentum: 0.6, nesterov: false, ..Default::default() };
+    let net = MnistNet {
+        l1_weight: Tensor::randn([128, 784], DType::F32)?,
+        l1_bias: Tensor::randn([128], DType::F32)?,
+        l2_weight: Tensor::randn([10, 128], DType::F32)?,
+        l2_bias: Tensor::randn([10], DType::F32)?,
+    };
 
-    for epoch in 1..=5 {
-        let mut total_loss = 0f32;
-        let mut iters = 0;
+    for i in (0..num_train as u64).step_by(batch_size) {
+        let end = if i + batch_size as u64 <= num_train as u64 { i + batch_size as u64 } else { num_train as u64 }; 
 
-        for i in (0..num_train).step_by(batch_size) {
-            let end = (i + batch_size).min(num_train);
+        let x = train_x.slice([i..end])?;
+        let y = train_y.slice([i..end])?;
 
-            let x = train_x.slice([i..end])?;
-            let y = train_y.slice([i..end])?;
+        let tape = Tape::new([&net.l1_weight, &net.l1_bias, &net.l2_weight, &net.l2_bias])?;
+        let logits = net.forward(&x);
+        let loss = logits.cross_entropy(y, ReduceOp::Mean)?;
+        let grads = tape.gradient(&loss, [&net.l1_weight, &net.l1_bias, &net.l2_weight, &net.l2_bias, &loss]);
 
-            let tape = Tape::new([&net.l1_weight, &net.l1_bias, &net.l2_weight, &net.l2_bias])?;
-            let logits = net.forward(&x); //.clamp(-100, 100)?;
-            //println!("{:?}, {:?}", logits.shape(), y.shape());
-            println!("{:.4}", logits.slice((0..4, 0..4)).unwrap());
+        // Simulate SGD update
+        let lr = 0.01;
+        let new_w1 = &net.l1_weight - &grads[0] * lr;
+        let new_b1 = &net.l1_bias - &grads[1] * lr;
+        let new_w2 = &net.l2_weight - &grads[2] * lr;
+        let new_b2 = &net.l2_bias - &grads[3] * lr;
 
-            //println!("{}", logits.slice((-5.., ..))?);
-            let loss = logits.cross_entropy(y, ReduceOp::Mean)?;
-            println!("{loss}");
-
-            let grads = tape.gradient(&loss, [&net.l1_weight, &net.l1_bias, &net.l2_weight, &net.l2_bias, &loss]);
-
-            //println!("{}", grads[1].clone());
-            println!("{}", grads[3].clone());
-            println!("{}", grads[4].clone());
-            panic!();
-
-            /*for (i, grad) in grads.iter().enumerate() {
-                println!("{i}, grad shape={:?}", grad.as_ref().unwrap().shape());
-            }*/
-
-            /*optim.update(&mut net, grads);
-
-            Tensor::realize(net.iter().chain(optim.iter()).chain([&loss]))?;
-            total_loss += loss.item::<f32>();
-            println!("Iters={iters}, loss={:.8}\n\n\n\n", loss.item::<f32>());*/
-
-            iters += 1;
-            //std::thread::sleep(std::time::Duration::from_secs(2));
-            panic!();
-        }
-        let correct_losses = [
-            2.302830696105957,
-            2.3023550510406494,
-            2.307710647583008,
-            2.2971067428588867,
-            2.308199405670166,
-            2.3134093284606934,
-            2.302781820297241,
-            2.2912802696228027,
-            2.302485704421997,
-            2.301023483276367,
-        ];
-
-        println!("Epoch {epoch}: loss = {total_loss:.4}");
+        tape.realize([&new_w1, &new_b1, &new_w2, &new_b2, &loss])?;
+        break;
     }
-    panic!();
     Ok(())
-}*/
-
-/*
-
-x=tensor([[ 0.1464, -0.0082, -0.2147, -0.1245,  0.0447,  0.1138,  0.0383,  0.0569,
-         -0.0029,  0.0660]], grad_fn=<AddBackward0>)
-*/
+}
