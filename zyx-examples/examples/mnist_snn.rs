@@ -238,7 +238,7 @@ fn train() -> Result<(), ZyxError> {
 
         let (output, stored) = model.forward_store(&x)?;
         
-        let loss = output.cross_entropy(y, ReduceOp::Mean)?;
+        let loss = output.cross_entropy(y.clone(), ReduceOp::Mean)?;
         let pred = output.argmax_axis(-1)?;
         let correct_t = pred.equal(&y)?.cast(DType::F32).sum_all();
         let loss_val = loss.item::<f32>();

@@ -17,6 +17,11 @@ maintenance = { status = "experimental" }
 [profile.dev]
 opt-level = 2
 lto = "off"
+debug = false
+strip = false
+debug-assertions = false
+overflow-checks = false
+codegen-units = 16
 
 [profile.release]
 opt-level = 3

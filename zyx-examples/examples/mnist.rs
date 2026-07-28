@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: LGPL-3.0-only
 
 use std::{collections::HashMap, time::Instant};
-use zyx::{DType, Tape, Module, ReduceOp, Tensor, ZyxError};
+use zyx::{DType, Module, ReduceOp, Tape, Tensor, ZyxError};
 use zyx_nn::{Linear, Module};
 use zyx_optim::SGD;
 
@@ -65,7 +65,11 @@ fn main() -> Result<(), ZyxError> {
 
         let logits = net.forward(&x);
         let loss = logits.cross_entropy(y, ReduceOp::Mean)?;
-        let grads: Vec<_> = tape.gradient(&loss, &net).into_iter().map(Some).collect::<Vec<_>>();
+        let grads: Vec<_> = tape
+            .gradient(&loss, &net)
+            .into_iter()
+            .map(Some)
+            .collect::<Vec<_>>();
         optim.update(&mut net, grads);
 
         let elapsed_ms = now.elapsed().as_secs_f64() * 1000.0;
@@ -74,7 +78,7 @@ fn main() -> Result<(), ZyxError> {
             count += 1;
         }
 
-        if step.is_multiple_of(500) && step > 0 {
+        if step.is_multiple_of(5) && step > 0 {
             println!(
                 "step {}, loss {:.6}, step_time {:.1}ms",
                 step,
@@ -82,6 +86,8 @@ fn main() -> Result<(), ZyxError> {
                 elapsed_ms
             );
         }
+
+        tape.realize(net.iter().chain(optim.iter()))?;
     }
 
     let avg_ms = total_ms / count as f64;

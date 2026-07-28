@@ -66,7 +66,12 @@ fn main() -> Result<(), ZyxError> {
 
         sum_out = &sum_out + &spike2.matmul(&w3)? + &b3;
 
-        cache.push((spike1.clone(), spike2.clone(), v1_pre.clone(), v2_pre.clone()));
+        cache.push((
+            spike1.clone(),
+            spike2.clone(),
+            v1_pre.clone(),
+            v2_pre.clone(),
+        ));
 
         if t_idx == 0 {
             println!("\n=== Step {t_idx} ===");
@@ -96,11 +101,14 @@ fn main() -> Result<(), ZyxError> {
 
     let output = &sum_out * &inv_t;
 
-    println!("\nFinal output mean: {:.6}", output.mean_all().item::<f32>());
+    println!(
+        "\nFinal output mean: {:.6}",
+        output.mean_all().item::<f32>()
+    );
     let output_data: Vec<f32> = Vec::try_from(output.clone())?;
     println!("Final output[0] = {:?}", &output_data[0..10]);
 
-    let loss = output.cross_entropy(y, ReduceOp::Mean)?;
+    let loss = output.cross_entropy(&y, ReduceOp::Mean)?;
     println!("Loss: {:.6}", loss.item::<f32>());
 
     // Backward
