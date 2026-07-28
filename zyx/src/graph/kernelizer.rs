@@ -2,7 +2,7 @@ use std::collections::BTreeSet;
 
 use crate::{
     DType, Map, Set,
-    graph::{ClassId, EKernelData, EKernelId, Graph, Node, NodeData},
+    graph::{ClassId, EKernelData, EKernelId, Graph, Node},
     kernel::{BOp, DeviceId, Kernel, MoveOp, Op, OpId, UOp},
     runtime::ShapeId,
     shape::{Dim, UAxis},
@@ -394,9 +394,10 @@ impl Graph {
         }
         let kernel = &mut self.ekernels[kid].kernel;
         let result_op = kernel.unary(op_id, uop);
-        let n_consumers = rcs.get(&cid).copied().unwrap_or(0) as usize;
-        for _ in 0..n_consumers {
-            self.ekernels[kid].outputs.push(cid);
+        if let Some(rc) = rcs.get(&cid).copied() {
+            for _ in 0..rc {
+                self.ekernels[kid].outputs.push(cid);
+            }
         }
         visited.insert(cid, (kid, result_op));
     }
@@ -418,9 +419,10 @@ impl Graph {
         }
         let kernel = &mut self.ekernels[kid].kernel;
         let result_op = kernel.cast(op_id, dtype);
-        let n_consumers = rcs.get(&cid).copied().unwrap_or(0) as usize;
-        for _ in 0..n_consumers {
-            self.ekernels[kid].outputs.push(cid);
+        if let Some(rc) = rcs.get(&cid).copied() {
+            for _ in 0..rc {
+                self.ekernels[kid].outputs.push(cid);
+            }
         }
         visited.insert(cid, (kid, result_op));
     }

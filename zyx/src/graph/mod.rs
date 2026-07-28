@@ -280,7 +280,7 @@ impl SlabId for EKernelId {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct EKernelData {
     pub(crate) kernel: Kernel,
     pub(crate) outputs: Vec<ClassId>,
@@ -653,40 +653,37 @@ impl Graph {
 }
 
 impl Runtime {
-    pub fn autotune_graph_kernels(&mut self, graph_id: GraphId) -> Result<(), ZyxError> {
-        for (nid, kernel) in &kernel_data {
-            let (flop, read, write) = kernel.flop_mem_rw();
-            let device_ids: Vec<DeviceId> = self.devices.ids().collect();
-            let graph = &self.graphs[graph_id];
-            let node = &graph.nodes[*nid];
-            let Node::Kernel { ref inputs, ref outputs, .. } = node.node else {
-                unreachable!()
-            };
-            let (inputs, outputs, class_of) = (inputs.clone(), outputs.clone(), node.class_of);
-            let _ = graph;
-            for (i, &dev_id) in device_ids.iter().enumerate() {
+    pub fn autotune_graph_ekernels(&mut self, graph_id: GraphId) -> Result<(), ZyxError> {
+        let device_ids: Vec<DeviceId> = self.devices.ids().collect();
+
+        let ekernels: *const Slab<EKernelId, EKernelData> = &self.graphs[graph_id].ekernels;
+        let ekernels: &Slab<EKernelId, EKernelData> = unsafe { &*ekernels };
+        for ek in ekernels.values() {
+            let (flop, read, write) = ek.kernel.flop_mem_rw();
+            let class_of = ek.outputs.first().copied().unwrap_or(ClassId::NULL);
+
+            for &dev_id in device_ids.iter() {
                 let pool_id = self.devices[dev_id].memory_pool_id();
-                let mut kernel = kernel.clone();
+                let mut kernel = ek.kernel.clone();
                 kernel.device_id = dev_id;
                 let (dev_prog, timing) = self.get_or_autotune(kernel, pool_id, flop, read, write, None)?;
                 let prog = ProgramId { device: dev_id, program: dev_prog };
-                let graph = &mut self.graphs[graph_id];
-                if i == 0 {
-                    if let Node::Kernel { program_id, time, .. } = &mut graph.nodes[*nid].node {
-                        *program_id = prog;
-                        *time = timing;
-                    }
-                } else {
-                    let knid = graph.nodes.push(NodeData {
-                        node: Node::Kernel { inputs: inputs.clone(), outputs: outputs.clone(), program_id: prog, time: timing },
-                        class_of,
-                    });
-                    for &ocid in &*outputs {
-                        graph.classes[ocid].nodes.push(knid);
-                    }
-                    if !outputs.contains(&class_of) {
-                        graph.classes[class_of].nodes.push(knid);
-                    }
+
+                let knid = self.graphs[graph_id].nodes.push(NodeData {
+                    node: Node::Kernel {
+                        inputs: ek.loads.clone().into(),
+                        outputs: ek.stores.clone().into(),
+                        program_id: prog,
+                        time: timing,
+                    },
+                    class_of,
+                });
+
+                for &ocid in &*ek.stores {
+                    self.graphs[graph_id].classes[ocid].nodes.push(knid);
+                }
+                if !ek.stores.contains(&class_of) {
+                    self.graphs[graph_id].classes[class_of].nodes.push(knid);
                 }
             }
         }

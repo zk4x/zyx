@@ -175,7 +175,7 @@ impl Tape {
         rt.graphs[graph_id].fill_remaining(&output_set, unsafe { &*shapes_ptr }, realized_nodes);
 
         // Autotunes custom zyx kernels for all devices and adds kernel nodes for all of them
-        rt.autotune_graph_kernels(graph_id)?;
+        rt.autotune_graph_ekernels(graph_id)?;
 
         rt.graphs[graph_id].debug_print(&rt.shapes);
 
