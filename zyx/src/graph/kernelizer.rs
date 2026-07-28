@@ -25,6 +25,40 @@ impl Graph {
     /// Not every class needs a kernel — only those that lie on output computation paths. Dead graph
     /// regions without kernels are harmless. After this function returns, all classes that *are* on
     /// output paths must be covered by a kernel.
+    ///
+    /// # Reference Counts (rcs)
+    ///
+    /// Before processing, each class's reference count is computed: `rcs[cid]` is the number of
+    /// times `cid` appears as a `class_params` input of another graph node **plus** 1 for each
+    /// user-requested output class. The output classes are "consumed" by extraction — a terminal
+    /// output has rcs = 1 rather than 0.
+    ///
+    /// When a class is produced (its operation is added to a kernel), the producer pushes exactly
+    /// `rcs[cid]` copies of `cid` into the kernel's `outputs` list — one copy per consumer.
+    /// Each consumer later calls [`remove_first_output`] to remove one copy, and decrements
+    /// `rcs[cid]` by 1. When all copies are consumed (`rcs[cid] == 0` and `outputs` contains no
+    /// more instances of `cid`), the class no longer holds the kernel open.
+    ///
+    /// # Storage and Load Kernels
+    ///
+    /// [`add_store`] stores a class's value into a kernel's `stores` list. On store:
+    /// - All instances of the class are removed from the kernel's `outputs` (via `retain`).
+    /// - If `rcs[cid] > 0` after the store (remaining consumers exist), a new **load kernel**
+    ///   is created with `rcs[cid]` copies of `cid` in its `outputs`. This load kernel provides
+    ///   the class's value for all remaining consumers via a reload from storage.
+    /// - The class is removed from `visited`. If a load kernel was created, the class is
+    ///   re-inserted into `visited` pointing to the load kernel.
+    ///
+    /// # Invariants (maintained at all times)
+    ///
+    /// 1. **Output count**: For each class `cid`, the total number of occurrences across all
+    ///    kernels' `outputs` lists equals `rcs[cid]`. A class appears in at most one kernel.
+    /// 2. **Visited residency**: Every class with `rcs[cid] > 0` that has been produced must have
+    ///    exactly one entry in `visited` mapping it to the kernel where its computation lives.
+    ///    [`add_store`] removes the entry and restores it via a load kernel if consumers remain.
+    /// 3. **Sealing safety**: When a kernel is sealed (all output instances exhausted),
+    ///    [`visited.retain`] kills all its visited entries. Every removed class either has
+    ///    `rcs == 0` or already has a fresh visited entry pointing to a load kernel.
     pub fn fill_remaining(
         &mut self,
         outputs: &BTreeSet<ClassId>,
@@ -42,10 +76,15 @@ impl Graph {
             }
         }
 
+        // User-requested outputs are consumers too — extraction needs a producer path for them.
+        for &cid in outputs {
+            *rcs.entry(cid).or_default() += 1;
+        }
+
         let mut pending_stores: Set<ClassId> = realized_nodes;
         let mut visited: Map<ClassId, (EKernelId, OpId)> = Map::default();
 
-        for &cid in &order {
+        for (i, &cid) in order.iter().enumerate() {
             debug_assert!(!visited.contains_key(&cid), "class {cid:?} already visited");
 
             // If this class is in pending_stores (realized), create a load kernel.
@@ -114,28 +153,30 @@ impl Graph {
             }
 
             // Post-processing: store if output or final.
-            if !visited.contains_key(&cid) {
-                continue;
-            }
             if outputs.contains(&cid) {
                 let (kid, op_id) = visited[&cid];
+                *rcs.get_mut(&cid).unwrap() -= 1;
                 self.add_store(cid, kid, op_id, &mut visited, &mut pending_stores, &rcs, shapes);
             }
+
+            for ek in self.ekernels.values() {
+                let mut counts: Map<ClassId, u32> = Map::default();
+                for &ocid in &ek.outputs {
+                    *counts.entry(ocid).or_default() += 1;
+                }
+                debug_assert!(
+                    counts.iter().all(|(c, &n)| rcs.get(c).copied().unwrap_or(0) == n),
+                    "output:rcs invariant violated for kernel after {cid:?}"
+                );
+            }
+            debug_assert!(
+                order[..=i].iter().all(|&c| rcs.get(&c).copied().unwrap_or(0) == 0 || visited.contains_key(&c)),
+                "class with rcs>0 not in visited after {cid:?}"
+            );
         }
 
-        // Force-seal remaining kernels that still have output classes.
-        let kid_list: Vec<EKernelId> = self.ekernels.ids().collect();
-        for &kid in &kid_list {
-            if !self.ekernels.contains_key(kid) {
-                continue;
-            }
-            let remaining: Vec<ClassId> = self.ekernels[kid].outputs.iter().copied().filter(|&c| outputs.contains(&c)).collect();
-            for &cid in &remaining {
-                if let Some(&(_, op_id)) = visited.get(&cid) {
-                    self.add_store(cid, kid, op_id, &mut visited, &mut pending_stores, &rcs, shapes);
-                }
-            }
-        }
+        debug_assert!(rcs.values().all(|&r| r == 0), "all rcs must be zero");
+        debug_assert!(visited.is_empty(), "visited must be empty");
     }
 
     fn new_load_kernel(&mut self, cid: ClassId, shapes: &Slab<ShapeId, Vec<Dim>>) -> EKernelId {
@@ -226,7 +267,18 @@ impl Graph {
         }
 
         if outputs_empty {
-            visited.retain(|_, &mut (k, _)| k != kid);
+            let reload: Vec<ClassId> = visited
+                .iter()
+                .filter(|&(cid, &(k, _))| k == kid && rcs.get(cid).copied().unwrap_or(0) > 0)
+                .map(|(&cid, _)| cid)
+                .collect();
+            visited.retain(|_, v| v.0 != kid);
+            for &cid in &reload {
+                let new_kid = self.new_load_kernel(cid, shapes);
+                let new_op = self.ekernels[new_kid].kernel.head;
+                self.ekernels[new_kid].outputs.push(cid);
+                visited.insert(cid, (new_kid, new_op));
+            }
             let ekdata = &self.ekernels[kid];
             let input_cids: Vec<ClassId> = ekdata.loads.clone();
             let output_cids: Vec<ClassId> = ekdata.stores.clone();
