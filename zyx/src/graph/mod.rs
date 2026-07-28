@@ -518,6 +518,7 @@ impl Graph {
                 }
             }
         }
+
     }
 
     /// Hash of the graph structure (hashcons) and output classes.
@@ -540,7 +541,28 @@ impl Graph {
     }
 
     /// Returns the set of Kernel/ToDevice nodes forming the cheapest valid computation from leaves
-    /// to all outputs. Panics if any output class depends on a non-Kernel/ToDevice node.
+    /// to all outputs.
+    ///
+    /// # Cost model
+    ///
+    /// Only [`Node::Kernel`] and [`Node::ToDevice`] carry real costs (execution time in nanoseconds).
+    /// All other node types (Expand, Reshape, Cast, Binary, Unary, etc.) are structural/fusing
+    /// artifacts — they represent intermediate graph transformations that must be fused into kernels
+    /// by [`fill_remaining`](super::kernelizer::GraphKernelizer::fill_remaining) before extraction.
+    ///
+    /// # Invariant
+    ///
+    /// A path composed exclusively of [`Node::Kernel`] and [`Node::ToDevice`] nodes must exist
+    /// from leaves (the only realized classes) to every output class. Without this path the output
+    /// cannot be computed, because non-Kernel/ToDevice nodes have no associated runtime cost.
+    ///
+    /// Dead graph regions (classes with no kernel path) are harmless as long as they don't appear
+    /// on output computation paths. [`fill_remaining`] is responsible for ensuring every output
+    /// class satisfies this invariant by fusing enough nodes into kernels.
+    ///
+    /// # Panics
+    ///
+    /// Panics if any output class lacks a producer path through Kernel or ToDevice nodes.
     #[must_use]
     pub fn extract(&self, outputs: &BTreeSet<ClassId>) -> Vec<NodeId> {
         let order = self.topo_sort_classes(outputs);
@@ -588,6 +610,35 @@ impl Graph {
         for &ocid in outputs {
             let idx = ocid.0 as usize;
             if cost[idx].is_none() {
+                        for &cid in &order {
+                    if cost[cid.0 as usize].is_none() {
+                        eprint!("{cid:?}:[");
+                        for &nid in &self.classes[cid].nodes {
+                            match &self.nodes[nid].node {
+                                Node::Kernel { inputs, .. } => eprint!("Kernel(inputs={inputs:?}) "),
+                                Node::Leaf { .. } => eprint!("Leaf "),
+                                Node::ToDevice { .. } => eprint!("ToDevice "),
+                                Node::Const(_) => eprint!("Const "),
+                                Node::Expand { .. } => eprint!("Expand "),
+                                Node::Permute { .. } => eprint!("Permute "),
+                                Node::Reshape { .. } => eprint!("Reshape "),
+                                Node::PadZeros { .. } => eprint!("PadZeros "),
+                                Node::Reduce { .. } => eprint!("Reduce "),
+                                Node::Cast { .. } => eprint!("Cast "),
+                                Node::Unary { .. } => eprint!("Unary "),
+                                Node::Binary { .. } => eprint!("Binary "),
+                            }
+                        }
+                        eprintln!("]");
+                        if let Some(producer_nid) = producer[cid.0 as usize] {
+                            if let Node::Kernel { inputs, .. } = &self.nodes[producer_nid].node {
+                                for icid in inputs.iter() {
+                                    eprintln!("  input {icid:?}: cost={:?}", cost[icid.0 as usize]);
+                                }
+                            }
+                        }
+                    }
+                }
                 panic!("class {ocid:?} has no valid producer path through Kernel or ToDevice nodes");
             }
         }
@@ -655,6 +706,18 @@ impl Runtime {
                     }
                     if !outputs.contains(&class_of) {
                         graph.classes[class_of].nodes.push(knid);
+                    }
+                }
+            }
+        }
+
+        if cfg!(debug_assertions) {
+            let mut seen: Set<NodeId> = Set::default();
+            for cid in self.graphs[graph_id].classes.ids() {
+                for &nid in &self.graphs[graph_id].classes[cid].nodes {
+                    if !seen.insert(nid) { continue; }
+                    if let Node::Kernel { time, .. } = &self.graphs[graph_id].nodes[nid].node {
+                        debug_assert!(*time > 0, "Kernel node {nid:?} has zero cost after autotune");
                     }
                 }
             }

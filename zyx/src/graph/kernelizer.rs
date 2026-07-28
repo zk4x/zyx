@@ -12,6 +12,19 @@ use crate::{
 };
 
 impl Graph {
+    /// Fuses remaining non-Kernel nodes into kernels so every output has an all-Kernel path to leaves.
+    ///
+    /// The zyx graph is very granular — a single matmul produces dozens of structural nodes (Expand,
+    /// Reduce, Permute, Cast, etc.). Materializing each as a separate kernel is impossible (e.g.,
+    /// Expand to 2048×2048×2048 would OOM). [`fill_remaining`] uses eager fusion to batch structural
+    /// nodes into larger kernels, ensuring the [`extract`](Graph::extract) invariant holds:
+    ///
+    /// > A path composed exclusively of [`Node::Kernel`] and [`Node::ToDevice`] nodes must exist
+    /// > from leaves (realized classes) to every output.
+    ///
+    /// Not every class needs a kernel — only those that lie on output computation paths. Dead graph
+    /// regions without kernels are harmless. After this function returns, all classes that *are* on
+    /// output paths must be covered by a kernel.
     pub fn fill_remaining(
         &mut self,
         outputs: &BTreeSet<ClassId>,
