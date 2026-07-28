@@ -112,10 +112,10 @@ impl Graph {
                     visited.insert(cid, (kid, result_op));
                 }
                 Node::Unary { x, uop } => {
-                    self.add_unary(cid, *x, *uop, &mut visited, &mut rcs, shapes);
+                    self.add_unary(cid, *x, *uop, &mut visited, &mut rcs);
                 }
                 Node::Cast { x, dtype } => {
-                    self.add_cast(cid, *x, *dtype, &mut visited, &mut rcs, shapes);
+                    self.add_cast(cid, *x, *dtype, &mut visited, &mut rcs);
                 }
                 Node::Binary { x, y, bop } => {
                     self.add_binary(cid, *x, *y, *bop, &mut visited, &mut rcs, &mut pending_stores, shapes);
@@ -141,9 +141,8 @@ impl Graph {
                 }
                 Node::ToDevice { x, .. } => {
                     let x = *x;
-                    let (child_kid, child_op) = self.child_to_kid(x, &mut visited, shapes);
-                    self.add_store(x, child_kid, child_op, &mut visited, &mut pending_stores, &rcs, shapes);
-                    let (kid, op_id) = self.child_to_kid(x, &mut visited, shapes);
+                    let (child_kid, child_op) = visited[&x];
+                    let (kid, op_id) = self.add_store(x, child_kid, child_op, &mut visited, &mut pending_stores, &rcs, shapes);
                     visited.insert(cid, (kid, op_id));
                 }
                 Node::Kernel { .. } => {}
@@ -153,7 +152,7 @@ impl Graph {
             if outputs.contains(&cid) {
                 let (kid, op_id) = visited[&cid];
                 *rcs.get_mut(&cid).unwrap() -= 1;
-                self.add_store(cid, kid, op_id, &mut visited, &mut pending_stores, &rcs, shapes);
+                (_, _) = self.add_store(cid, kid, op_id, &mut visited, &mut pending_stores, &rcs, shapes);
             }
 
             // Highly important invariant checks, DO NOT TOUCH
@@ -221,23 +220,7 @@ impl Graph {
         kid
     }
 
-    fn child_to_kid(
-        &mut self,
-        child: ClassId,
-        visited: &mut Map<ClassId, (EKernelId, OpId)>,
-        shapes: &Slab<ShapeId, Vec<Dim>>,
-    ) -> (EKernelId, OpId) {
-        match visited.get(&child) {
-            Some(&v) => v,
-            None => {
-                let kid = self.new_load_kernel(child, shapes);
-                let op = self.ekernels[kid].kernel.head;
-                visited.insert(child, (kid, op));
-                (kid, op)
-            }
-        }
-    }
-
+    #[must_use]
     fn add_store(
         &mut self,
         cid: ClassId,
@@ -247,8 +230,8 @@ impl Graph {
         pending_stores: &mut Set<ClassId>,
         rcs: &Map<ClassId, u32>,
         shapes: &Slab<ShapeId, Vec<Dim>>,
-    ) {
-        println!("add store is called");
+    ) -> (EKernelId, OpId) {
+        println!("add store cid={cid:?} kid={kid:?} op_id={op_id:?} rc={}", rcs.get(&cid).unwrap());
         debug_assert!(!pending_stores.contains(&cid));
         pending_stores.insert(cid);
 
@@ -259,7 +242,7 @@ impl Graph {
 
         // Remove all occurences of x
         let outputs = &mut self.ekernels[kid].outputs;
-        debug_assert_eq!(rcs[&cid], outputs.iter().filter(|&&x| x == cid).count() as u32 - 1);
+        debug_assert_eq!(rcs[&cid], outputs.iter().filter(|&&x| x == cid).count() as u32);
         outputs.retain(|&x| x != cid);
 
         if let Some(rc) = rcs.get(&cid).copied()
@@ -269,6 +252,9 @@ impl Graph {
             let new_op = self.ekernels[new_kid].kernel.head;
             self.ekernels[new_kid].outputs = vec![cid; rc as usize];
             visited.insert(cid, (new_kid, new_op));
+            (new_kid, new_op)
+        } else {
+            (kid, op_id)
         }
     }
 
@@ -321,18 +307,7 @@ impl Graph {
         // if kernel has stores, store child and create fresh load kernel
         let has_stores = self.ekernels[kid].kernel.contains_stores();
         if has_stores {
-            self.add_store(child, kid, op_id, visited, pending_stores, rcs, shapes);
-            if rcs.get(&child).copied().unwrap_or(0) > 0 {
-                let (nk, no) = visited[&child];
-                kid = nk;
-                op_id = no;
-            } else {
-                let new_kid = self.new_load_kernel(child, shapes);
-                let new_op = self.ekernels[new_kid].kernel.head;
-                visited.insert(child, (new_kid, new_op));
-                kid = new_kid;
-                op_id = new_op;
-            }
+            (kid, op_id) = self.add_store(child, kid, op_id, visited, pending_stores, rcs, shapes);
         }
 
         // if kernel has multiple outputs, duplicate the kernel
@@ -340,30 +315,19 @@ impl Graph {
         if n_outputs > 1 {
             let preceded_by_reduce = self.ekernels[kid].kernel.is_preceded_by_reduce(op_id);
             if preceded_by_reduce {
-                self.add_store(child, kid, op_id, visited, pending_stores, rcs, shapes);
-                if rcs.get(&child).copied().unwrap_or(0) > 0 {
-                    let (nk, no) = visited[&child];
-                    kid = nk;
-                    op_id = no;
-                } else {
-                    let new_kid = self.new_load_kernel(child, shapes);
-                    let new_op = self.ekernels[new_kid].kernel.head;
-                    visited.insert(child, (new_kid, new_op));
-                    kid = new_kid;
-                    op_id = new_op;
-                }
+                (kid, op_id) = self.add_store(child, kid, op_id, visited, pending_stores, rcs, shapes);
             } else {
-                remove_first_output(&mut self.ekernels, kid, child);
-
                 let out_op_ids: Vec<OpId> = self.ekernels[kid].outputs.iter().map(|&cid| visited[&cid].1).collect();
                 let loads = self.ekernels[kid].loads.clone();
                 let (new_kernel, new_op_id, self_loads, new_loads) =
                     self.ekernels[kid].kernel.extract_subkernel(op_id, &out_op_ids, &loads);
                 self.ekernels[kid].loads = self_loads;
 
+                debug_assert_eq!(self.ekernels[kid].outputs.iter().filter(|&&x| x == child).count(), rcs[&child] as usize);
+
                 let new_kid = self.ekernels.push(EKernelData {
                     kernel: new_kernel,
-                    outputs: vec![child],
+                    outputs: vec![child; rcs[&child] as usize],
                     loads: new_loads,
                     stores: Vec::new(),
                 });
@@ -382,9 +346,8 @@ impl Graph {
         uop: UOp,
         visited: &mut Map<ClassId, (EKernelId, OpId)>,
         rcs: &mut Map<ClassId, u32>,
-        shapes: &Slab<ShapeId, Vec<Dim>>,
     ) {
-        let (kid, op_id) = self.child_to_kid(child, visited, shapes);
+        let (kid, op_id) = visited[&child];
         *rcs.get_mut(&child).unwrap() -= 1;
         remove_first_output(&mut self.ekernels, kid, child);
         if rcs.get(&child).copied().unwrap_or(0) == 0 {
@@ -407,9 +370,8 @@ impl Graph {
         dtype: DType,
         visited: &mut Map<ClassId, (EKernelId, OpId)>,
         rcs: &mut Map<ClassId, u32>,
-        shapes: &Slab<ShapeId, Vec<Dim>>,
     ) {
-        let (kid, op_id) = self.child_to_kid(child, visited, shapes);
+        let (kid, op_id) = visited[&child];
         *rcs.get_mut(&child).unwrap() -= 1;
         remove_first_output(&mut self.ekernels, kid, child);
         if rcs.get(&child).copied().unwrap_or(0) == 0 {
@@ -436,8 +398,8 @@ impl Graph {
         pending_stores: &mut Set<ClassId>,
         shapes: &Slab<ShapeId, Vec<Dim>>,
     ) {
-        let (mut kid, mut op_id) = self.child_to_kid(lhs, visited, shapes);
-        let (mut kidy, op_idy) = self.child_to_kid(rhs, visited, shapes);
+        let (mut kid, mut op_id) = visited[&lhs];
+        let (mut kidy, op_idy) = visited[&rhs];
 
         let kid_stores = self.ekernels[kid].kernel.contains_stores();
         let kidy_stores = self.ekernels[kidy].kernel.contains_stores();
@@ -462,23 +424,14 @@ impl Graph {
         } else {
             match (kid_stores, kidy_stores) {
                 (true, true) => {
-                    self.add_store(lhs, kid, op_id, visited, pending_stores, rcs, shapes);
-                    let (nk, no) = self.child_to_kid(lhs, visited, shapes);
-                    (kid, op_id) = (nk, no);
-
-                    self.add_store(rhs, kidy, op_idy, visited, pending_stores, rcs, shapes);
-                    let (nk, _) = self.child_to_kid(rhs, visited, shapes);
-                    (kidy, _) = (nk, nk);
+                    (kid, op_id) = self.add_store(lhs, kid, op_id, visited, pending_stores, rcs, shapes);
+                    (kidy, _) = self.add_store(rhs, kidy, op_idy, visited, pending_stores, rcs, shapes);
                 }
                 (true, false) => {
-                    self.add_store(lhs, kid, op_id, visited, pending_stores, rcs, shapes);
-                    let (nk, no) = self.child_to_kid(lhs, visited, shapes);
-                    (kid, op_id) = (nk, no);
+                    (kid, op_id) = self.add_store(lhs, kid, op_id, visited, pending_stores, rcs, shapes);
                 }
                 (false, true) => {
-                    self.add_store(rhs, kidy, op_idy, visited, pending_stores, rcs, shapes);
-                    let (nk, _) = self.child_to_kid(rhs, visited, shapes);
-                    (kidy, _) = (nk, nk);
+                    (kidy, _) = self.add_store(rhs, kidy, op_idy, visited, pending_stores, rcs, shapes);
                 }
                 (false, false) => {}
             }
@@ -515,9 +468,9 @@ impl Graph {
         shapes: &Slab<ShapeId, Vec<Dim>>,
     ) {
         let n_axes = axes.len() as UAxis;
-        let (mut kid, mut op_id) = self.child_to_kid(child, visited, shapes);
-        *rcs.get_mut(&child).unwrap() -= 1;
+        let (mut kid, mut op_id) = visited[&child];
         (kid, op_id) = self.duplicate_or_store_class(child, kid, op_id, visited, pending_stores, rcs, shapes);
+        *rcs.get_mut(&child).unwrap() -= 1;
         remove_first_output(&mut self.ekernels, kid, child);
         if rcs.get(&child).copied().unwrap_or(0) == 0 {
             visited.remove(&child);
@@ -568,23 +521,12 @@ impl Graph {
         pending_stores: &mut Set<ClassId>,
         shapes: &Slab<ShapeId, Vec<Dim>>,
     ) {
-        let (mut kid, mut op_id) = self.child_to_kid(child, visited, shapes);
-        *rcs.get_mut(&child).unwrap() -= 1;
+        let (mut kid, mut op_id) = visited[&child];
         (kid, op_id) = self.duplicate_or_store_class(child, kid, op_id, visited, pending_stores, rcs, shapes);
         if self.ekernels[kid].kernel.is_preceded_by_compute(op_id) {
-            self.add_store(child, kid, op_id, visited, pending_stores, rcs, shapes);
-            if rcs.get(&child).copied().unwrap_or(0) > 0 {
-                let (nk, no) = visited[&child];
-                kid = nk;
-                op_id = no;
-            } else {
-                let new_kid = self.new_load_kernel(child, shapes);
-                let new_op = self.ekernels[new_kid].kernel.head;
-                visited.insert(child, (new_kid, new_op));
-                kid = new_kid;
-                op_id = new_op;
-            }
+            (kid, op_id) = self.add_store(child, kid, op_id, visited, pending_stores, rcs, shapes);
         }
+        *rcs.get_mut(&child).unwrap() -= 1;
         remove_first_output(&mut self.ekernels, kid, child);
         if rcs.get(&child).copied().unwrap_or(0) == 0 {
             visited.remove(&child);
@@ -609,10 +551,10 @@ impl Graph {
         pending_stores: &mut Set<ClassId>,
         shapes: &Slab<ShapeId, Vec<Dim>>,
     ) {
-        let (mut kid, mut op_id) = self.child_to_kid(child, visited, shapes);
-        *rcs.get_mut(&child).unwrap() -= 1;
+        let (mut kid, mut op_id) = visited[&child];
         (kid, op_id) = self.duplicate_or_store_class(child, kid, op_id, visited, pending_stores, rcs, shapes);
         remove_first_output(&mut self.ekernels, kid, child);
+        *rcs.get_mut(&child).unwrap() -= 1;
         if rcs.get(&child).copied().unwrap_or(0) == 0 {
             visited.remove(&child);
         }
@@ -636,10 +578,10 @@ impl Graph {
         pending_stores: &mut Set<ClassId>,
         shapes: &Slab<ShapeId, Vec<Dim>>,
     ) {
-        let (mut kid, mut op_id) = self.child_to_kid(child, visited, shapes);
-        *rcs.get_mut(&child).unwrap() -= 1;
+        let (mut kid, mut op_id) = visited[&child];
         (kid, op_id) = self.duplicate_or_store_class(child, kid, op_id, visited, pending_stores, rcs, shapes);
         remove_first_output(&mut self.ekernels, kid, child);
+        *rcs.get_mut(&child).unwrap() -= 1;
         if rcs.get(&child).copied().unwrap_or(0) == 0 {
             visited.remove(&child);
         }
@@ -669,14 +611,12 @@ impl Graph {
         let expands = pad_n > child_n;
 
         *rcs.get_mut(&child).unwrap() -= 1;
-        let (mut kid, mut op_id);
+        let (mut kid, mut op_id) = visited[&child];
         if expands {
             if let Some(&(ckid, cop_id)) = visited.get(&child) {
-                self.add_store(child, ckid, cop_id, visited, pending_stores, rcs, shapes);
+                (kid, op_id) = self.add_store(child, ckid, cop_id, visited, pending_stores, rcs, shapes);
             }
-            (kid, op_id) = self.child_to_kid(child, visited, shapes);
         } else {
-            (kid, op_id) = self.child_to_kid(child, visited, shapes);
             (kid, op_id) = self.duplicate_or_store_class(child, kid, op_id, visited, pending_stores, rcs, shapes);
         }
         remove_first_output(&mut self.ekernels, kid, child);
