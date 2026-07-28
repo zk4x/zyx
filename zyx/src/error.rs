@@ -3,6 +3,8 @@
 
 use std::fmt::{Display, Write};
 
+use crate::tensor::TensorId;
+
 /// Enumeration representing the various errors that can occur within the Zyx library.
 #[derive(Debug)]
 pub enum ZyxError {
@@ -61,7 +63,7 @@ impl ZyxError {
     /// Graph tensors must be materialized (via `Tape::realize`) before their
     /// buffers can be accessed. This error indicates the graph was never compiled.
     #[track_caller]
-    pub fn graph_tensor_not_realized(tid: impl std::fmt::Display) -> Self {
+    pub fn graph_tensor_not_realized(tid: TensorId) -> Self {
         let location = std::panic::Location::caller();
         Self::GraphTensorNotRealized(
             format!(
