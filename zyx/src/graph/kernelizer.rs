@@ -55,9 +55,6 @@ impl Graph {
     /// 2. **Visited residency**: Every class with `rcs[cid] > 0` that has been produced must have
     ///    exactly one entry in `visited` mapping it to the kernel where its computation lives.
     ///    [`add_store`] removes the entry and restores it via a load kernel if consumers remain.
-    /// 3. **Sealing safety**: When a kernel is sealed (all output instances exhausted),
-    ///    [`visited.retain`] kills all its visited entries. Every removed class either has
-    ///    `rcs == 0` or already has a fresh visited entry pointing to a load kernel.
     pub fn fill_remaining(
         &mut self,
         outputs: &BTreeSet<ClassId>,
@@ -251,6 +248,7 @@ impl Graph {
         rcs: &Map<ClassId, u32>,
         shapes: &Slab<ShapeId, Vec<Dim>>,
     ) {
+        println!("add store is called");
         debug_assert!(!pending_stores.contains(&cid));
         pending_stores.insert(cid);
 
@@ -444,9 +442,9 @@ impl Graph {
         let kid_stores = self.ekernels[kid].kernel.contains_stores();
         let kidy_stores = self.ekernels[kidy].kernel.contains_stores();
 
+        *rcs.get_mut(&lhs).unwrap() -= 1;
+        *rcs.get_mut(&rhs).unwrap() -= 1;
         if kid == kidy {
-            *rcs.get_mut(&lhs).unwrap() -= 1;
-            *rcs.get_mut(&rhs).unwrap() -= 1;
             remove_first_output(&mut self.ekernels, kid, lhs);
             remove_first_output(&mut self.ekernels, kid, rhs);
             if rcs.get(&lhs).copied().unwrap_or(0) == 0 {
@@ -462,8 +460,6 @@ impl Graph {
             }
             visited.insert(cid, (kid, result_op));
         } else {
-            *rcs.get_mut(&lhs).unwrap() -= 1;
-            *rcs.get_mut(&rhs).unwrap() -= 1;
             match (kid_stores, kidy_stores) {
                 (true, true) => {
                     self.add_store(lhs, kid, op_id, visited, pending_stores, rcs, shapes);
@@ -498,9 +494,10 @@ impl Graph {
                 visited.remove(&rhs);
             }
             let result_op = self.ekernels[kid].kernel.binary(op_id, op_idy, bop);
-            let n_consumers = rcs.get(&cid).copied().unwrap_or(0) as usize;
-            for _ in 0..n_consumers {
-                self.ekernels[kid].outputs.push(cid);
+            if let Some(rc) = rcs.get(&cid).copied() {
+                for _ in 0..rc {
+                    self.ekernels[kid].outputs.push(cid);
+                }
             }
             visited.insert(cid, (kid, result_op));
         }

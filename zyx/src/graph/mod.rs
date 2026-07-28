@@ -660,7 +660,7 @@ impl Runtime {
         let ekernels: &Slab<EKernelId, EKernelData> = unsafe { &*ekernels };
         for ek in ekernels.values() {
             let (flop, read, write) = ek.kernel.flop_mem_rw();
-            let class_of = ek.outputs.first().copied().unwrap_or(ClassId::NULL);
+            let class_of = ek.stores.first().copied().unwrap();
 
             for &dev_id in device_ids.iter() {
                 let pool_id = self.devices[dev_id].memory_pool_id();

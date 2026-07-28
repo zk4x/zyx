@@ -14,7 +14,7 @@ fn main() -> Result<(), ZyxError> {
 
     let mut w = Tensor::rand([3, 2], DType::F16)?;
     let x = Tensor::from([2, 3, 1]).cast(DType::F16);
-    let target = Tensor::from([5, 7]).cast(DType::F16);
+    let _target = Tensor::from([5, 7]).cast(DType::F16);
 
     for _ in 0..100 {
         let tape = Tape::new([&w])?;

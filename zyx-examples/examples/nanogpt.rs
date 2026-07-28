@@ -4,6 +4,8 @@
 // nanoGPT, credit goes to Andrej Karpathy and great minds who invented parts of this model
 // https://github.com/karpathy/nanoGPT
 
+#![allow(unused)]
+
 use zyx::{DType, Tensor, ZyxError};
 use zyx_nn::{CausalSelfAttention, Embedding, LayerNorm, Linear, Module};
 

@@ -123,7 +123,7 @@ fn main() -> Result<(), ZyxError> {
     let mut dw1_acc = Tensor::zeros([784, 256], DType::F32);
 
     for t_idx in (0..t).rev() {
-        let (spike1, spike2, v1_pre, v2_pre) = &cache[t_idx];
+        let (_spike1, _spike2, v1_pre, v2_pre) = &cache[t_idx];
 
         let d_spike2 = d_sum_out.matmul(&w3.t())?;
         let diff2 = v2_pre - &th_t;
