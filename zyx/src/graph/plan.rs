@@ -71,7 +71,8 @@ impl ExecPlan {
             let class = &graph.classes[cid];
             let shape = &shapes[class.shape];
             let numel: Dim = shape.iter().product();
-            (numel * class.dtype.bit_size() as Dim + 7) / 8
+            // Add one trash element
+            ((numel + 1) * class.dtype.bit_size() as Dim + 7) / 8
         };
 
         for &nid in nodes {
