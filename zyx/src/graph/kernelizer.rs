@@ -80,7 +80,7 @@ impl Graph {
             let nid = self.classes[cid].nodes[0];
             let node = &self.nodes[nid].node;
 
-            println!("cid={} nid={} rc={}, {node:?}", cid.0, nid.0, rcs[&cid]);
+            //println!("cid={} nid={} rc={}, {node:?}", cid.0, nid.0, rcs[&cid]);
 
             match node {
                 Node::Leaf { .. } => {
@@ -232,8 +232,8 @@ impl Graph {
         rcs: &Map<ClassId, u32>,
         shapes: &Slab<ShapeId, Vec<Dim>>,
     ) -> (EKernelId, OpId) {
-        println!("add store cid={cid:?} kid={kid:?} op_id={op_id:?} rc={}", rcs.get(&cid).unwrap());
-        println!("outputs={:?}", self.ekernels[kid].outputs);
+        //println!("add store cid={cid:?} kid={kid:?} op_id={op_id:?} rc={}", rcs.get(&cid).unwrap());
+        //println!("outputs={:?}", self.ekernels[kid].outputs);
 
         let dtype = self.classes[cid].dtype;
         self.ekernels[kid].kernel.store_contiguous(op_id, dtype);
@@ -312,7 +312,7 @@ impl Graph {
         let force_store = force_store || self.ekernels[kid].kernel.contains_stores();
 
         // if kernel has multiple outputs, duplicate the kernel
-        println!("n_outputs={}", self.ekernels[kid].outputs.len());
+        //println!("n_outputs={}", self.ekernels[kid].outputs.len());
         if self.ekernels[kid].outputs.len() > 1 || force_store {
             if force_store || self.ekernels[kid].kernel.is_preceded_by_reduce(op_id) {
                 (kid, op_id) = self.add_store(child, kid, op_id, visited, rcs, shapes);
@@ -483,7 +483,7 @@ impl Graph {
         let (mut kid, mut op_id) = visited[&child];
         (kid, op_id) = self.duplicate_or_store_class(child, kid, op_id, visited, rcs, shapes, false);
         *rcs.get_mut(&child).unwrap() -= 1;
-        println!("reduce outputs={:?}", self.ekernels[kid].outputs);
+        //println!("reduce outputs={:?}", self.ekernels[kid].outputs);
         remove_first_output(&mut self.ekernels, kid, child);
         if rcs.get(&child).copied().unwrap_or(0) == 0 {
             visited.remove(&child);
