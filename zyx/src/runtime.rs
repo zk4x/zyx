@@ -1138,12 +1138,10 @@ impl Runtime {
         let preceded_by_reduce = self.kernels[kid].kernel.is_preceded_by_reduce(op_id);
         if contains_stores | preceded_by_reduce {
             self.add_store(x)?;
-            let (new_kid, new_op_id) = match &self.tensors[x].state {
-                TensorState::Eager { kernel_id, op_id, .. } => (*kernel_id, *op_id),
+            (kid, op_id) = match self.tensors[x].state {
+                TensorState::Eager { kernel_id, op_id, .. } => (kernel_id, op_id),
                 _ => unreachable!(),
             };
-            kid = new_kid;
-            op_id = new_op_id;
             // We need to duplicate the new load kernel too, which we do below
         }
 
@@ -1153,8 +1151,8 @@ impl Runtime {
         let out_op_ids: Vec<OpId> = self.kernels[kid]
             .outputs
             .iter()
-            .map(|&tid| match &self.tensors[tid].state {
-                TensorState::Eager { op_id, .. } => *op_id,
+            .map(|&tid| match self.tensors[tid].state {
+                TensorState::Eager { op_id, .. } => op_id,
                 _ => unreachable!(),
             })
             .collect();

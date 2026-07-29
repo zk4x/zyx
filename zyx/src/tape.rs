@@ -33,7 +33,7 @@
 use std::collections::BTreeSet;
 
 use crate::{
-    Map, RT, Set, Tensor, ZyxError,
+    Map, RT, Tensor, ZyxError,
     backend::{BufferId, Device},
     graph::{ClassId, ExecPlan, Graph, GraphId, Node},
     kernel::{DeviceId, Kernel, Op},
@@ -170,14 +170,12 @@ impl Tape {
         // SAFETY: graph and shapes are separate fields of Runtime, no aliasing, rust is stupid
         let shapes_ptr: *const Slab<ShapeId, Vec<Dim>> = &rt.shapes;
 
-        let realized_nodes: Set<ClassId> =
-            rt.graphs[graph_id].leaf_map.iter().filter(|(_, tid)| rt.buffer_map.contains_key(tid)).map(|(cid, _)| *cid).collect();
-        rt.graphs[graph_id].fill_remaining(&output_set, unsafe { &*shapes_ptr }, realized_nodes);
+        // TODO debug assert that all leafs are realized
+        //let realized_nodes: Set<ClassId> = rt.graphs[graph_id].leaf_map.iter().filter(|(_, tid)| rt.buffer_map.contains_key(tid)).map(|(cid, _)| *cid).collect();
+        rt.graphs[graph_id].fill_remaining(&output_set, unsafe { &*shapes_ptr });
 
         // Autotunes custom zyx kernels for all devices and adds kernel nodes for all of them
         rt.autotune_graph_ekernels(graph_id)?;
-
-        rt.graphs[graph_id].debug_print(&rt.shapes);
 
         // After all kernels nodes are added, this adds movement ops so extract can pick fastest path
         let devices_ptr: *const Slab<DeviceId, Device> = &rt.devices;

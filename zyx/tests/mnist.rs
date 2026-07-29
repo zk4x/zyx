@@ -39,7 +39,11 @@ fn mnist() -> Result<(), ZyxError> {
     };
 
     for i in (0..num_train as u64).step_by(batch_size) {
-        let end = if i + batch_size as u64 <= num_train as u64 { i + batch_size as u64 } else { num_train as u64 }; 
+        let end = if i + batch_size as u64 <= num_train as u64 {
+            i + batch_size as u64
+        } else {
+            num_train as u64
+        };
 
         let x = train_x.slice([i..end])?;
         let y = train_y.slice([i..end])?;
