@@ -80,7 +80,7 @@ impl Graph {
             let nid = self.classes[cid].nodes[0];
             let node = &self.nodes[nid].node;
 
-            //println!("cid={} nid={} rc={}, {node:?}", cid.0, nid.0, rcs[&cid]);
+            println!("cid={} nid={} rc={}, {node:?}", cid.0, nid.0, rcs[&cid]);
 
             match node {
                 Node::Leaf { .. } => {
@@ -189,6 +189,11 @@ impl Graph {
                 panic!("encountered empty kernel");
             }
         }
+
+        for kernel in self.ekernels.values() {
+            kernel.kernel.debug();
+        }
+        panic!();
     }
 
     fn new_load_kernel(&mut self, cid: ClassId, shapes: &Slab<ShapeId, Vec<Dim>>, rc: u32) -> (EKernelId, OpId) {
@@ -332,10 +337,10 @@ impl Graph {
                     self.ekernels[kid].kernel.extract_subkernel(op_id, &out_op_ids, &loads);
                 self.ekernels[kid].loads = self_loads;
 
-                /*println!("original:");
+                println!("duplicating original:");
                 self.ekernels[kid].kernel.debug();
-                println!("extracted:");
-                new_kernel.debug();*/
+                println!("duplicating extracted:");
+                new_kernel.debug();
 
                 remove_first_output(&mut self.ekernels, kid, child);
 

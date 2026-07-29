@@ -33,6 +33,32 @@ impl Kernel {
         let has_gidx = self.ops.values().any(|n| matches!(n.op, Op::Index { scope: IdxScope::Group, .. }));
         let has_view_moves = self.ops.values().any(|n| matches!(n.op, Op::LoadView(_) | Op::StoreView { .. } | Op::Move { .. }));
 
+        debug_assert!({
+            let mut live: Set<OpId> = Set::default();
+            let mut stack: Vec<OpId> = Vec::new();
+            let mut op_id = self.head;
+            while !op_id.is_null() {
+                if matches!(self.ops[op_id].op, Op::Store { .. } | Op::StoreView { .. }) {
+                    stack.push(op_id);
+                }
+                op_id = self.next_op(op_id);
+            }
+            while let Some(id) = stack.pop() {
+                if live.insert(id) {
+                    stack.extend(self.ops[id].op.parameters());
+                }
+            }
+            op_id = self.head;
+            while !op_id.is_null() {
+                if !live.contains(&op_id) {
+                    self.debug();
+                    panic!("unfold_movement_ops: dead code detected at op {op_id}");
+                }
+                op_id = self.next_op(op_id);
+            }
+            true
+        });
+
         match (has_gidx, has_view_moves) {
             (true, false) => return,
             (true, true) => {
