@@ -42,24 +42,22 @@ impl Kernel {
             (false, false) => return,
         }
 
+        //self.debug();
         // Apply movement ops on views
         let mut op_id = self.head;
         while !op_id.is_null() {
+            let next = self.next_op(op_id);
             if let Op::Move { x, ref mop } = self.ops[op_id].op {
+                //println!("recursively move op_id={op_id}, {mop:?}");
+                //self.debug();
                 self.recursively_move(x, &mop.clone(), &mut Set::default(), 0);
-            }
-            op_id = self.next_op(op_id);
-        }
-        // Drop movement ops
-        let mut op_id = self.head;
-        while !op_id.is_null() {
-            let next_op_id = self.next_op(op_id);
-            if let Op::Move { x, .. } = self.ops[op_id].op {
+                // Drop movement ops
                 self.remap(op_id, x);
                 self.remove_op(op_id);
             }
-            op_id = next_op_id;
+            op_id = next;
         }
+        //self.debug();
 
         // Add group ids
         let shape = self.shape();
