@@ -84,11 +84,7 @@ impl Graph {
 
             match node {
                 Node::Leaf { .. } => {
-                    let kid = self.new_load_kernel(cid, shapes);
-                    let rc = rcs.get(&cid).copied().unwrap_or(0) as usize;
-                    for _ in 0..rc {
-                        self.ekernels[kid].outputs.push(cid);
-                    }
+                    let kid = self.new_load_kernel(cid, shapes, *rcs.get(&cid).unwrap());
                     visited.insert(cid, (kid, self.ekernels[kid].kernel.head));
                 }
                 Node::Const(c) => {
@@ -195,7 +191,7 @@ impl Graph {
         }
     }
 
-    fn new_load_kernel(&mut self, cid: ClassId, shapes: &Slab<ShapeId, Vec<Dim>>) -> EKernelId {
+    fn new_load_kernel(&mut self, cid: ClassId, shapes: &Slab<ShapeId, Vec<Dim>>, rc: u32) -> EKernelId {
         let mut kernel = Kernel::new(DeviceId::NULL);
         let shape: Vec<Dim> = shapes[self.classes[cid].shape].clone();
         let is_const = self.classes[cid].nodes.iter().any(|&nid| matches!(&self.nodes[nid].node, Node::Const(_)));
@@ -218,7 +214,7 @@ impl Graph {
         }
         let kid = self.ekernels.push(EKernelData {
             kernel,
-            outputs: Vec::new(),
+            outputs: vec![cid; rc as usize],
             loads: if is_const { Vec::new() } else { vec![cid] },
             stores: Vec::new(),
         });
@@ -251,9 +247,8 @@ impl Graph {
         if let Some(rc) = rcs.get(&cid).copied()
             && rc > 0
         {
-            let new_kid = self.new_load_kernel(cid, shapes);
+            let new_kid = self.new_load_kernel(cid, shapes, rc);
             let new_op = self.ekernels[new_kid].kernel.head;
-            self.ekernels[new_kid].outputs = vec![cid; rc as usize];
             visited.insert(cid, (new_kid, new_op));
             (new_kid, new_op)
         } else {
@@ -314,7 +309,11 @@ impl Graph {
         println!("n_outputs={}", self.ekernels[kid].outputs.len());
         if self.ekernels[kid].outputs.len() > 1 || force_store {
             if force_store || self.ekernels[kid].kernel.is_preceded_by_reduce(op_id) {
+                let old_kid = kid;
                 (kid, op_id) = self.add_store(child, kid, op_id, visited, rcs, shapes);
+                if kid != old_kid {
+                    return (kid, op_id);
+                }
             }
 
             let out_op_ids: Vec<OpId> = self.ekernels[kid].outputs.iter().map(|&cid| visited[&cid].1).collect();
