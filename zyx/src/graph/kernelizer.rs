@@ -84,8 +84,8 @@ impl Graph {
 
             match node {
                 Node::Leaf { .. } => {
-                    let kid = self.new_load_kernel(cid, shapes, *rcs.get(&cid).unwrap());
-                    visited.insert(cid, (kid, self.ekernels[kid].kernel.head));
+                    let (kid, op_id) = self.new_load_kernel(cid, shapes, *rcs.get(&cid).unwrap());
+                    visited.insert(cid, (kid, op_id));
                 }
                 Node::Const(c) => {
                     let mut kernel = Kernel::new(DeviceId::AUTO);
@@ -191,7 +191,7 @@ impl Graph {
         }
     }
 
-    fn new_load_kernel(&mut self, cid: ClassId, shapes: &Slab<ShapeId, Vec<Dim>>, rc: u32) -> EKernelId {
+    fn new_load_kernel(&mut self, cid: ClassId, shapes: &Slab<ShapeId, Vec<Dim>>, rc: u32) -> (EKernelId, OpId) {
         let mut kernel = Kernel::new(DeviceId::NULL);
         let shape: Vec<Dim> = shapes[self.classes[cid].shape].clone();
         let is_const = self.classes[cid].nodes.iter().any(|&nid| matches!(&self.nodes[nid].node, Node::Const(_)));
@@ -212,13 +212,14 @@ impl Graph {
         } else {
             kernel.load_contiguous(self.classes[cid].dtype, &shape);
         }
+        let op_id = kernel.head;
         let kid = self.ekernels.push(EKernelData {
             kernel,
             outputs: vec![cid; rc as usize],
             loads: if is_const { Vec::new() } else { vec![cid] },
             stores: Vec::new(),
         });
-        kid
+        (kid, op_id)
     }
 
     #[must_use]
@@ -247,8 +248,7 @@ impl Graph {
         if let Some(rc) = rcs.get(&cid).copied()
             && rc > 0
         {
-            let new_kid = self.new_load_kernel(cid, shapes, rc);
-            let new_op = self.ekernels[new_kid].kernel.head;
+            let (new_kid, new_op) = self.new_load_kernel(cid, shapes, rc);
             visited.insert(cid, (new_kid, new_op));
             (new_kid, new_op)
         } else {
@@ -292,6 +292,10 @@ impl Graph {
         }
     }
 
+    /// Duplicate or store is heuristics that checks if it's better to store and create new load kernel
+    /// or duplicate the original kernel. If force_store is set to true, it always stores.
+    /// The original kernel is left with one fewer child class in it's outputs.
+    /// The new kernel contains this one child class and the new kernel is guaranteed to have only one output.
     fn duplicate_or_store_class(
         &mut self,
         child: ClassId,
@@ -310,32 +314,43 @@ impl Graph {
         if self.ekernels[kid].outputs.len() > 1 || force_store {
             if force_store || self.ekernels[kid].kernel.is_preceded_by_reduce(op_id) {
                 (kid, op_id) = self.add_store(child, kid, op_id, visited, rcs, shapes);
+
+                // After storing, the new kernel can have more than one output. If it does, we have to split into another kernel
+                debug_assert!(self.ekernels[kid].outputs.iter().all(|&x| x == child));
+                if self.ekernels[kid].outputs.len() > 1 {
+                    // Remove from the original kernel
+                    remove_first_output(&mut self.ekernels, kid, child);
+                    // Create another kernel with just one output
+                    (kid, op_id) = self.new_load_kernel(child, shapes, 1);
+                }
+            } else {
+                let out_op_ids: Vec<OpId> = self.ekernels[kid].outputs.iter().map(|&cid| visited[&cid].1).collect();
+                let loads = self.ekernels[kid].loads.clone();
+                let (new_kernel, new_op_id, self_loads, new_loads) =
+                    self.ekernels[kid].kernel.extract_subkernel(op_id, &out_op_ids, &loads);
+                self.ekernels[kid].loads = self_loads;
+
+                /*println!("original:");
+                self.ekernels[kid].kernel.debug();
+                println!("extracted:");
+                new_kernel.debug();*/
+
+                remove_first_output(&mut self.ekernels, kid, child);
+
+                debug_assert_eq!(self.ekernels[kid].outputs.iter().filter(|&&x| x == child).count(), rcs[&child] as usize - 1);
+
+                let new_kid = self.ekernels.push(EKernelData {
+                    kernel: new_kernel,
+                    outputs: vec![child],
+                    loads: new_loads,
+                    stores: Vec::new(),
+                });
+                op_id = new_op_id;
+                kid = new_kid;
             }
-
-            let out_op_ids: Vec<OpId> = self.ekernels[kid].outputs.iter().map(|&cid| visited[&cid].1).collect();
-            let loads = self.ekernels[kid].loads.clone();
-            let (new_kernel, new_op_id, self_loads, new_loads) =
-                self.ekernels[kid].kernel.extract_subkernel(op_id, &out_op_ids, &loads);
-            self.ekernels[kid].loads = self_loads;
-
-            /*println!("original:");
-            self.ekernels[kid].kernel.debug();
-            println!("extracted:");
-            new_kernel.debug();*/
-
-            remove_first_output(&mut self.ekernels, kid, child);
-
-            debug_assert_eq!(self.ekernels[kid].outputs.iter().filter(|&&x| x == child).count(), rcs[&child] as usize - 1);
-
-            let new_kid = self.ekernels.push(EKernelData {
-                kernel: new_kernel,
-                outputs: vec![child],
-                loads: new_loads,
-                stores: Vec::new(),
-            });
-            op_id = new_op_id;
-            kid = new_kid;
         }
+
+        debug_assert_eq!(self.ekernels[kid].outputs.len(), 1);
 
         (kid, op_id)
     }
