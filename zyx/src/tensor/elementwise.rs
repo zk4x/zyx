@@ -135,8 +135,8 @@ impl Tensor {
     ///         as `e^input_element`.
     #[must_use]
     pub fn exp(&self) -> Tensor {
-        let c: Tensor = core::f32::consts::LOG2_E.into();
-        (self * c.cast(self.dtype())).exp2()
+        let x = self.float_cast().unwrap();
+        Tensor { id: RT.lock().unary(x.id, UOp::Exp) }
     }
 
     /// Returns a new tensor with the Gelu activation function applied to each element of self.
@@ -202,8 +202,7 @@ impl Tensor {
     #[must_use]
     pub fn ln(&self) -> Tensor {
         let x = self.float_cast().unwrap();
-        let c: Tensor = (1f32 / core::f32::consts::E.log2()).into();
-        x.log2() * c.cast(x.dtype())
+        Tensor { id: RT.lock().unary(x.id, UOp::Ln) }
     }
 
     /// Compute logarithm with any base

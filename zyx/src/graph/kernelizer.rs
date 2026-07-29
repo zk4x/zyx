@@ -188,7 +188,10 @@ impl Graph {
         debug_assert!(visited.is_empty(), "visited must be empty");
         for kernel in self.ekernels.values() {
             debug_assert!(kernel.outputs.is_empty());
-            debug_assert!(kernel.stores.len() > 0);
+            if kernel.stores.is_empty() {
+                kernel.kernel.debug();
+                panic!("encountered empty kernel");
+            }
         }
     }
 
