@@ -216,10 +216,32 @@ impl Kernel {
                         vec_values[off as usize] = store.x;
                     }
 
-                    let vstore = self.insert_before(stores[0].id, Op::Vectorize { ops: vec_values });
-                    self.ops[stores[0].id].op =
-                        Op::Store { dst, x: vstore, index: stores[0].index, layout: MemLayout::Vector(vec_len as u16) };
-                    for store in &stores[1..] {
+                    // stores is sorted by strides, not by kernel order.
+                    // Find the store from our group that appears last in the linked list.
+                    let store_ids: Set<OpId> = stores.iter().map(|s| s.id).collect();
+                    let mut last_id = stores[0].id;
+                    let mut cur = stores[0].id;
+                    while !cur.is_null() {
+                        if store_ids.contains(&cur) {
+                            last_id = cur;
+                        }
+                        cur = self.next_op(cur);
+                    }
+
+                    // Insert Vectorize after the last store so all values are declared before it.
+                    let vstore =
+                        self.insert_after(last_id, Op::Vectorize { ops: vec_values });
+                    // Insert the vectorized store after the Vectorize and remove all scalar stores.
+                    self.insert_after(
+                        vstore,
+                        Op::Store {
+                            dst,
+                            x: vstore,
+                            index: stores[0].index,
+                            layout: MemLayout::Vector(vec_len as u16),
+                        },
+                    );
+                    for store in &stores {
                         self.remove_op(store.id);
                     }
                 }
@@ -237,6 +259,19 @@ impl Kernel {
             cur = self.next_op(cur);
         }
         false
+    }
+
+    /// Return the op from `candidates` that appears last in the linked list.
+    fn last_in_kernel_order(&self, candidates: &[OpId]) -> OpId {
+        let set: Set<OpId> = candidates.iter().copied().collect();
+        let mut cur = self.tail;
+        while !cur.is_null() {
+            if set.contains(&cur) {
+                return cur;
+            }
+            cur = self.prev_op(cur);
+        }
+        candidates[0]
     }
 
     /// Walk forward, find `unary(devec(v,i))` / `cast(devec(v,i))` patterns
@@ -431,6 +466,9 @@ impl Kernel {
             // Collect sources for each sub-op, then insert new vector ops
             // and remap consumers. Guard: no sub-op is also a source
             // (would create use-before-declaration in the IR).
+            //
+            // Insert new ops after the last operand in kernel order so all
+            // operands are declared before the new Vectorize ops.
             match &self.ops[ops[0]].op {
                 Op::Unary { uop, .. } => {
                     let uop = *uop;
@@ -445,8 +483,9 @@ impl Kernel {
                         }
                     }
                     if !sources.is_empty() && !sources.iter().any(|s| ops.contains(s)) {
-                        let v_src = self.insert_before(ops[0], Op::Vectorize { ops: sources });
-                        let v_op = self.insert_before(ops[0], Op::Unary { x: v_src, uop });
+                        let last = self.last_in_kernel_order(&sources);
+                        let v_src = self.insert_after(last, Op::Vectorize { ops: sources });
+                        let v_op = self.insert_after(v_src, Op::Unary { x: v_src, uop });
                         self.remap(op_id, v_op);
                     }
                 }
@@ -463,8 +502,9 @@ impl Kernel {
                         }
                     }
                     if !sources.is_empty() && !sources.iter().any(|s| ops.contains(s)) {
-                        let v_src = self.insert_before(ops[0], Op::Vectorize { ops: sources });
-                        let v_op = self.insert_before(ops[0], Op::Cast { x: v_src, dtype });
+                        let last = self.last_in_kernel_order(&sources);
+                        let v_src = self.insert_after(last, Op::Vectorize { ops: sources });
+                        let v_op = self.insert_after(v_src, Op::Cast { x: v_src, dtype });
                         self.remap(op_id, v_op);
                     }
                 }
@@ -485,9 +525,11 @@ impl Kernel {
                         }
                     }
                     if !xs.is_empty() && !xs.iter().any(|x| ops.contains(x)) && !ys.iter().any(|y| ops.contains(y)) {
-                        let v_xs = self.insert_before(ops[0], Op::Vectorize { ops: xs });
-                        let v_ys = self.insert_before(ops[0], Op::Vectorize { ops: ys });
-                        let v_op = self.insert_before(ops[0], Op::Binary { x: v_xs, y: v_ys, bop });
+                        let all: Vec<OpId> = xs.iter().chain(ys.iter()).copied().collect();
+                        let last = self.last_in_kernel_order(&all);
+                        let v_xs = self.insert_after(last, Op::Vectorize { ops: xs });
+                        let v_ys = self.insert_after(v_xs, Op::Vectorize { ops: ys });
+                        let v_op = self.insert_after(v_ys, Op::Binary { x: v_xs, y: v_ys, bop });
                         self.remap(op_id, v_op);
                     }
                 }
