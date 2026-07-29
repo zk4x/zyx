@@ -440,6 +440,7 @@ The user has all the answers. Just ask.
 - **Never dump git stats/diffs verbatim in conversation.** Show the user what matters, not the raw output.
 - **Never add commentary about what you just did.** Do the thing, then stop. No "Done.", "Applied.", "X lines changed.", etc.
 - **Never blame test failures on anything other than yourself.** If a test fails, it's your fault — find and fix it.
+- **NEVER fix anything silently.** No silent fixes, no silent cleanups, no silent anything. Every fix must be explicitly requested or explicitly discussed first.
 - **Never touch `~/.config/zyx/config.json`** — never read, write, create, modify, or delete it. If a test needs a specific backend, ask the user to configure it. Do not even look at this file.
 - Inheritance (use composition/enums)
 - `Rc<RefCell<T>>` unless absolutely necessary
