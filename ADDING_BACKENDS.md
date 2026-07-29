@@ -16,8 +16,7 @@ Everything else — optimization, op decomposition, autotuning — is the compil
 
 ## Initialization
 
-Backends return any number of memory pools and devices. Each device can have
-any number of queues.
+Backends return any number of memory pools and devices.
 
 ## Memory pools
 
@@ -27,7 +26,7 @@ Each memory pool must be able to:
 - Copy to another memory pool
 
 For transfers between different backends (e.g., CUDA GPU to Intel GPU),
-zyx routes through CPU memory.
+zyx routes through CPU memory unless special override is provided.
 
 ## Devices
 
@@ -103,7 +102,7 @@ Optimization passes run identically for every backend but tune to the
 hardware's reported constraints. The autotuner searches combinations of
 9 optimizations (reassociation, split global-to-local, thread coarsening,
 register blocking, local reduce, split loop, pad index, vectorize, merge loops)
-and selects the best configuration by timing.
+and selects the best configuration by cost model and timing.
 
 ## Datatypes
 
@@ -135,8 +134,8 @@ the optimization that produced invalid IR is buggy.
 | PTX | 4 days | Direct NVIDIA codegen |
 | Tenstorrent | — | Non-SIMT NPU, 32x32 tile constraints |
 
-Tenstorrent is the most exotic — no local memory, 32x32 tile constraints,
-no real branching. If zyx works there, it will likely work on your hardware.
+Tenstorrent is the most exotic — 32x32 tile constraints,
+no real branching. Since zyx works there, it will likely work on your hardware.
 
 ## Comparison
 
