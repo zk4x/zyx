@@ -309,11 +309,7 @@ impl Graph {
         println!("n_outputs={}", self.ekernels[kid].outputs.len());
         if self.ekernels[kid].outputs.len() > 1 || force_store {
             if force_store || self.ekernels[kid].kernel.is_preceded_by_reduce(op_id) {
-                let old_kid = kid;
                 (kid, op_id) = self.add_store(child, kid, op_id, visited, rcs, shapes);
-                if kid != old_kid {
-                    return (kid, op_id);
-                }
             }
 
             let out_op_ids: Vec<OpId> = self.ekernels[kid].outputs.iter().map(|&cid| visited[&cid].1).collect();
