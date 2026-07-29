@@ -101,8 +101,8 @@ impl Kernel {
             if let &Op::Unary { x, uop: UOp::Exp } = self.at(op_id) {
                 let dtype = self.dtype(x);
                 let y = self.insert_before(op_id, Op::Const(Constant::F64(LOG2_E.to_le_bytes()).cast(dtype)));
-                let x = self.insert_before(op_id, Op::Unary { x, uop: UOp::Exp2 });
-                self.ops[op_id].op = Op::Binary { x, y, bop: BOp::Mul };
+                let z = self.insert_before(op_id, Op::Binary { x, y, bop: BOp::Mul });
+                self.ops[op_id].op = Op::Unary { x: z, uop: UOp::Exp2 };
             }
             op_id = next;
         }
