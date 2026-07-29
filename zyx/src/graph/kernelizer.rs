@@ -296,6 +296,8 @@ impl Graph {
     /// or duplicate the original kernel. If force_store is set to true, it always stores.
     /// The original kernel is left with one fewer child class in it's outputs.
     /// The new kernel contains this one child class and the new kernel is guaranteed to have only one output.
+    /// This is called by functions that HAVE TO have only 1 output, because they are movement or reduce.
+    /// Movement or reduce change the view of the load, that's why they require that the load is duplicated.
     fn duplicate_or_store_class(
         &mut self,
         child: ClassId,
@@ -415,15 +417,15 @@ impl Graph {
         let kid_stores = self.ekernels[kid].kernel.contains_stores();
         let kidy_stores = self.ekernels[kidy].kernel.contains_stores();
 
-        *rcs.get_mut(&lhs).unwrap() -= 1;
-        *rcs.get_mut(&rhs).unwrap() -= 1;
         if kid == kidy {
+            *rcs.get_mut(&lhs).unwrap() -= 1;
+            *rcs.get_mut(&rhs).unwrap() -= 1;
             remove_first_output(&mut self.ekernels, kid, lhs);
             remove_first_output(&mut self.ekernels, kid, rhs);
-            if rcs.get(&lhs).copied().unwrap_or(0) == 0 {
+            if *rcs.get(&lhs).unwrap() == 0 {
                 visited.remove(&lhs);
             }
-            if rcs.get(&rhs).copied().unwrap_or(0) == 0 {
+            if *rcs.get(&rhs).unwrap() == 0 {
                 visited.remove(&rhs);
             }
             let result_op = self.ekernels[kid].kernel.binary(op_id, op_idy, bop);
@@ -432,6 +434,7 @@ impl Graph {
             }
             visited.insert(cid, (kid, result_op));
         } else {
+            // This is highly fragile, manipulate with utmost precision
             match (kid_stores, kidy_stores) {
                 (true, true) => {
                     (kid, op_id) = self.add_store(lhs, kid, op_id, visited, rcs, shapes);
@@ -446,6 +449,8 @@ impl Graph {
                 (false, false) => {}
             }
 
+            *rcs.get_mut(&lhs).unwrap() -= 1;
+            *rcs.get_mut(&rhs).unwrap() -= 1;
             self.merge_kernels(kidy, kid, visited);
             let (_, op_idy) = visited[&rhs];
             remove_first_output(&mut self.ekernels, kid, lhs);
