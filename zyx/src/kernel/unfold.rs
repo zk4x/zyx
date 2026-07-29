@@ -33,6 +33,15 @@ impl Kernel {
         let has_gidx = self.ops.values().any(|n| matches!(n.op, Op::Index { scope: IdxScope::Group, .. }));
         let has_view_moves = self.ops.values().any(|n| matches!(n.op, Op::LoadView(_) | Op::StoreView { .. } | Op::Move { .. }));
 
+        match (has_gidx, has_view_moves) {
+            (true, false) => return,
+            (true, true) => {
+                panic!("unfold_movement_ops: cannot have both explicit gidx and LoadView/StoreView/Move ops");
+            }
+            (false, true) => {}
+            (false, false) => return,
+        }
+
         debug_assert!({
             let mut live: Set<OpId> = Set::default();
             let mut stack: Vec<OpId> = Vec::new();
@@ -58,15 +67,6 @@ impl Kernel {
             }
             true
         });
-
-        match (has_gidx, has_view_moves) {
-            (true, false) => return,
-            (true, true) => {
-                panic!("unfold_movement_ops: cannot have both explicit gidx and LoadView/StoreView/Move ops");
-            }
-            (false, true) => {}
-            (false, false) => return,
-        }
 
         //self.debug();
         // Apply movement ops on views

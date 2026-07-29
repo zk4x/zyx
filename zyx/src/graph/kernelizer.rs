@@ -80,7 +80,7 @@ impl Graph {
             let nid = self.classes[cid].nodes[0];
             let node = &self.nodes[nid].node;
 
-            println!("cid={} nid={} rc={}, {node:?}", cid.0, nid.0, rcs[&cid]);
+            //println!("cid={} nid={} rc={}, {node:?}", cid.0, nid.0, rcs[&cid]);
 
             match node {
                 Node::Leaf { .. } => {
@@ -190,10 +190,10 @@ impl Graph {
             }
         }
 
-        for kernel in self.ekernels.values() {
+        /*for kernel in self.ekernels.values() {
             kernel.kernel.debug();
         }
-        panic!();
+        panic!();*/
     }
 
     fn new_load_kernel(&mut self, cid: ClassId, shapes: &Slab<ShapeId, Vec<Dim>>, rc: u32) -> (EKernelId, OpId) {
@@ -331,18 +331,17 @@ impl Graph {
                     (kid, op_id) = self.new_load_kernel(child, shapes, 1);
                 }
             } else {
+                remove_first_output(&mut self.ekernels, kid, child);
                 let out_op_ids: Vec<OpId> = self.ekernels[kid].outputs.iter().map(|&cid| visited[&cid].1).collect();
                 let loads = self.ekernels[kid].loads.clone();
                 let (new_kernel, new_op_id, self_loads, new_loads) =
                     self.ekernels[kid].kernel.extract_subkernel(op_id, &out_op_ids, &loads);
                 self.ekernels[kid].loads = self_loads;
 
-                println!("duplicating original:");
+                /*println!("duplicating original");
                 self.ekernels[kid].kernel.debug();
-                println!("duplicating extracted:");
-                new_kernel.debug();
-
-                remove_first_output(&mut self.ekernels, kid, child);
+                println!("duplicating extracted");
+                new_kernel.debug();*/
 
                 debug_assert_eq!(self.ekernels[kid].outputs.iter().filter(|&&x| x == child).count(), rcs[&child] as usize - 1);
 
