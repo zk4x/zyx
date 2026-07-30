@@ -482,8 +482,12 @@ impl Runtime {
     }
 
     pub fn promote_to_graph(&mut self, tid: TensorId, graph_id: GraphId) -> Result<ClassId, ZyxError> {
-        if let TensorState::Graph { class_id, .. } = self.tensors[tid].state {
-            return Ok(class_id);
+        if let TensorState::Graph { class_id, graph_id: gid, .. } = self.tensors[tid].state {
+            if graph_id == gid {
+                return Ok(class_id);
+            } else {
+                panic!()
+            }
         }
 
         let (kernel_id, my_op_id) = match self.tensors[tid].state {

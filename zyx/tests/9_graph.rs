@@ -124,7 +124,7 @@ fn promote_and_gradient() -> Result<(), ZyxError> {
 // all params. This pattern triggers fill_remaining's force-seal bug where
 // orphan kernel outputs not in the output_set prevent kernel sealing.
 #[test]
-fn realize_with_orphan_leaf_in_kernel() -> Result<(), ZyxError> {
+fn small_net() -> Result<(), ZyxError> {
     let w1 = Tensor::randn([3, 4], DType::F32)?;
     let b1 = Tensor::randn([3], DType::F32)?;
     let w2 = Tensor::randn([2, 3], DType::F32)?;
