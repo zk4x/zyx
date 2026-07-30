@@ -56,6 +56,11 @@ cargo add zyx zyx-nn zyx-optim
 pip install zyx-py
 ```
 
+## Configuration & Debugging
+
+- [Configuration](zyx/CONFIG.md) - Hardware device selection, autotune settings
+- [Environment Variables](zyx/ENV_VARS.md) - Debug flags
+
 ## Neural Nets
 
 A training loop with a two-layer network, using `Tape` for autograd and optimizations:
@@ -103,6 +108,9 @@ fn main() -> Result<(), zyx::ZyxError> {
     Ok(())
 }
 ```
+
+For more complex examples:
+- [Examples](zyx-examples/) - MNIST, RNN and others
 
 ## Custom Kernels
 
@@ -171,6 +179,16 @@ for the target backend. Tape egraph compares fusion schemes and device allocatio
 - [x] **OpenCL**
 - [x] **Vulkan** - SPIR-V codegen
 - [x] **WGPU** - SPIR-V codegen, feature: `wgpu`
+- [ ] `tenstorrent` - Preliminary support, does not pass full test suite yet, feature `wgpu`
+
+If you'd like to add new backend to zyx, that would be awesome!
+Please read [ADDING_BACKENDS.md](https://github.com/zk4x/zyx/blob/main/ADDING_BACKENDS.md)
+
+## Roadmap
+
+- [ ] full tenstorrent coverage
+- [ ] pattern matching for e-graph AOT kernels
+- [ ] benchmarks + model bring-up
 
 ## Status & License
 
@@ -185,10 +203,7 @@ for the target backend. Tape egraph compares fusion schemes and device allocatio
 - [Contributing](CONTRIBUTING.md) - How to contribute
 - [Adding backends](ADDING_BACKENDS.md) - How to add new backends, information for hardware vendors
 - [Style](STYLE.md) - Zyx code style
-- [Configuration](zyx/CONFIG.md) - Hardware device selection, autotune settings, backend config
-- [Environment Variables](zyx/ENV_VARS.md) - Debug flags
 - [API Reference](https://docs.rs/zyx) - Complete API documentation
-- [Examples](zyx-examples/) - MNIST, RNN and others
 - [Issues](https://github.com/zk4x/zyx/issues) - Bug reports and feature requests
 
 ---
