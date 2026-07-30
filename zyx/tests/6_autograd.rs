@@ -798,7 +798,7 @@ fn grad_cmpgt_source() -> Result<(), ZyxError> {
 }
 
 #[test]
-fn grad_overlapping_realize_cross_tape() -> Result<(), ZyxError> {
+fn grad_2_tapes() -> Result<(), ZyxError> {
     let x = Tensor::from([3f32, 2., 4.]);
     let tape1 = Tape::new([&x])?;
     let z1 = x.reciprocal();

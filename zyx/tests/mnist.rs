@@ -38,30 +38,32 @@ fn mnist() -> Result<(), ZyxError> {
         l2_bias: Tensor::randn([10], DType::F32)?,
     };
 
-    for i in (0..num_train as u64).step_by(batch_size) {
-        let end = if i + batch_size as u64 <= num_train as u64 {
-            i + batch_size as u64
-        } else {
-            num_train as u64
-        };
+    for _ in 0..3 {
+        for i in (0..num_train as u64).step_by(batch_size) {
+            let end = if i + batch_size as u64 <= num_train as u64 {
+                i + batch_size as u64
+            } else {
+                num_train as u64
+            };
 
-        let x = train_x.slice([i..end])?;
-        let y = train_y.slice([i..end])?;
+            let x = train_x.slice([i..end])?;
+            let y = train_y.slice([i..end])?;
 
-        let tape = Tape::new([&net.l1_weight, &net.l1_bias, &net.l2_weight, &net.l2_bias])?;
-        let logits = net.forward(&x);
-        let loss = logits.cross_entropy(y, ReduceOp::Mean)?;
-        let grads = tape.gradient(&loss, [&net.l1_weight, &net.l1_bias, &net.l2_weight, &net.l2_bias, &loss]);
+            let tape = Tape::new([&net.l1_weight, &net.l1_bias, &net.l2_weight, &net.l2_bias])?;
+            let logits = net.forward(&x);
+            let loss = logits.cross_entropy(y, ReduceOp::Mean)?;
+            let grads = tape.gradient(&loss, [&net.l1_weight, &net.l1_bias, &net.l2_weight, &net.l2_bias, &loss]);
 
-        // Simulate SGD update
-        let lr = 0.01f32;
-        let new_w1 = &net.l1_weight - &grads[0] * lr;
-        let new_b1 = &net.l1_bias - &grads[1] * lr;
-        let new_w2 = &net.l2_weight - &grads[2] * lr;
-        let new_b2 = &net.l2_bias - &grads[3] * lr;
+            // Simulate SGD update
+            let lr = 0.01f32;
+            let new_w1 = &net.l1_weight - &grads[0] * lr;
+            let new_b1 = &net.l1_bias - &grads[1] * lr;
+            let new_w2 = &net.l2_weight - &grads[2] * lr;
+            let new_b2 = &net.l2_bias - &grads[3] * lr;
 
-        tape.realize([&new_w1, &new_b1, &new_w2, &new_b2, &loss])?;
-        break;
+            tape.realize([&new_w1, &new_b1, &new_w2, &new_b2, &loss])?;
+            break;
+        }
     }
     Ok(())
 }

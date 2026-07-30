@@ -285,9 +285,9 @@ impl Runtime {
     }
 
     pub fn push_node(&mut self, graph_id: GraphId, node: Node, shape: ShapeId, dtype: DType) -> (NodeId, ClassId) {
-        match &node {
-            Node::Permute { x, axes } => {
-                let in_shape = &self.shapes[self.graphs[graph_id].classes[*x].shape];
+        match node {
+            Node::Permute { x, ref axes } => {
+                let in_shape = &self.shapes[self.graphs[graph_id].classes[x].shape];
                 assert_eq!(
                     axes.len(),
                     in_shape.len(),
@@ -298,8 +298,8 @@ impl Runtime {
                 );
             }
             Node::Reshape { x, shape: out_shape_id } => {
-                let in_shape = &self.shapes[self.graphs[graph_id].classes[*x].shape];
-                let out_shape = &self.shapes[*out_shape_id];
+                let in_shape = &self.shapes[self.graphs[graph_id].classes[x].shape];
+                let out_shape = &self.shapes[out_shape_id];
                 assert_eq!(
                     in_shape.iter().product::<Dim>(),
                     out_shape.iter().product::<Dim>(),
@@ -309,8 +309,8 @@ impl Runtime {
                 );
             }
             Node::Expand { x, shape: out_shape_id } => {
-                let in_shape = &self.shapes[self.graphs[graph_id].classes[*x].shape];
-                let out_shape = &self.shapes[*out_shape_id];
+                let in_shape = &self.shapes[self.graphs[graph_id].classes[x].shape];
+                let out_shape = &self.shapes[out_shape_id];
                 assert!(
                     in_shape.len() <= out_shape.len(),
                     "Expand: input rank {} > output rank {}: {:?} -> {:?}",
@@ -328,8 +328,8 @@ impl Runtime {
                     );
                 }
             }
-            Node::Reduce { x, axes, .. } => {
-                let in_shape = &self.shapes[self.graphs[graph_id].classes[*x].shape];
+            Node::Reduce { x, ref axes, .. } => {
+                let in_shape = &self.shapes[self.graphs[graph_id].classes[x].shape];
                 for &a in axes.iter() {
                     assert!(
                         (a as usize) < in_shape.len(),
@@ -340,8 +340,8 @@ impl Runtime {
                     );
                 }
             }
-            Node::PadZeros { x, padding } => {
-                let in_shape = &self.shapes[self.graphs[graph_id].classes[*x].shape];
+            Node::PadZeros { x, ref padding } => {
+                let in_shape = &self.shapes[self.graphs[graph_id].classes[x].shape];
                 assert_eq!(
                     padding.len(),
                     in_shape.len(),
@@ -365,6 +365,10 @@ impl Runtime {
     }
 
     pub fn push_binary_node(&mut self, graph_id: GraphId, x: ClassId, y: ClassId, bop: BOp) -> ClassId {
+        debug_assert_eq!(
+            self.shapes[self.graphs[graph_id].classes[x].shape],
+            self.shapes[self.graphs[graph_id].classes[y].shape]
+        );
         self.push_node(
             graph_id,
             Node::Binary { x, y, bop },
@@ -676,7 +680,9 @@ impl Runtime {
         }
 
         let class_id = op_to_class[&my_op_id];
-        self.tensors[tid].state = TensorState::Graph { class_id, rc: 1, graph_id };
+        let rc = self.kernels[kernel_id].outputs.iter().filter(|&&o| o == tid).count() as u32;
+        self.kernels[kernel_id].outputs.retain(|&o| o != tid);
+        self.tensors[tid].state = TensorState::Graph { class_id, rc, graph_id };
         Ok(class_id)
     }
 
