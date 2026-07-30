@@ -519,7 +519,7 @@ impl Runtime {
             if relevant.contains(&op_id) {
                 let op = self.kernels[kernel_id].kernel.at(op_id).clone();
                 let class_id = match &op {
-                    Op::LoadView(_) => {
+                    Op::LoadView(view) => {
                         let load_tid = loads[load_idx];
                         if !self.buffer_map.contains_key(&load_tid) {
                             let pending = match &self.tensors[load_tid].state {
@@ -532,7 +532,8 @@ impl Runtime {
                                 self.add_store(otid)?;
                             }
                         }
-                        let shape_id = self.tensors[tid].shape_id;
+                        debug_assert_eq!(view.1.shape(), self.shapes[self.tensors[load_tid].shape_id], "LoadView shape mismatch");
+                        let shape_id = self.tensors[load_tid].shape_id;
                         let dtype = self.tensors[load_tid].dtype;
                         let (_, class_id) = self.push_leaf_node(graph_id, dtype, shape_id);
                         self.graphs[graph_id].leaf_map.insert(class_id, load_tid);
@@ -1011,13 +1012,14 @@ impl Runtime {
                     let mut kernel = Kernel::new(DeviceId::AUTO);
                     let op_id = kernel.load_contiguous(dtype, &shape);
                     let kernel_id =
-                        self.kernels.push(KernelData { outputs: Vec::new(), loads: vec![x], stores: Vec::new(), kernel });
+                        self.kernels.push(KernelData { outputs: Vec::new(), loads: Vec::new(), stores: Vec::new(), kernel });
                     let tid = self.tensors.push(TensorData {
                         shape_id,
                         dtype,
                         state: TensorState::Eager { kernel_id, op_id, pending: KernelId::NULL },
                     });
                     self.kernels[kernel_id].outputs.push(tid);
+                    self.kernels[kernel_id].loads.push(tid);
                     self.buffer_map.insert(tid, buf_id);
                     #[cfg(feature = "debug_tensor_op")]
                     println!("  -> tid={tid} (load kernel, shares buffer with x={x})");
