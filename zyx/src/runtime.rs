@@ -75,11 +75,11 @@ impl From<usize> for DeviceInfoId {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, PartialOrd, Eq, Ord, Hash)]
-pub(crate) struct KernelId(u32);
+pub(crate) struct KernelId(u16);
 
 impl From<usize> for KernelId {
     fn from(value: usize) -> Self {
-        KernelId(value as u32)
+        KernelId(value as u16)
     }
 }
 
@@ -91,7 +91,7 @@ impl From<KernelId> for usize {
 
 impl SlabId for KernelId {
     const ZERO: Self = Self(0);
-    const NULL: Self = Self(u32::MAX);
+    const NULL: Self = Self(u16::MAX);
     fn inc(&mut self) {
         self.0 += 1;
     }
@@ -114,7 +114,7 @@ pub enum TensorState {
         // Because release removes from outputs. But the kernel that has this in outputs
         // is not the one that stores it, it's the one that loads it. So pending_stores just marks
         // there is a kernel that has this in the stores despite not being realized yet.
-        pending_store: bool,
+        pending: KernelId,
     },
     Graph {
         class_id: ClassId,
@@ -222,7 +222,7 @@ impl Runtime {
 
     pub fn release(&mut self, x: TensorId) {
         let (kid, pending) = match &mut self.tensors[x].state {
-            TensorState::Eager { kernel_id, pending_store, .. } => (*kernel_id, *pending_store),
+            TensorState::Eager { kernel_id, pending: pending_store, .. } => (*kernel_id, *pending_store),
             TensorState::Graph { rc, graph_id, .. } => {
                 *rc -= 1;
                 if *rc == 0 && !self.graphs.contains_key(*graph_id) {
@@ -234,7 +234,7 @@ impl Runtime {
         };
         let kd = &mut self.kernels[kid];
         kd.outputs.iter().position(|e| *e == x).map(|i| kd.outputs.remove(i));
-        if !kd.outputs.contains(&x) && !self.buffer_map.contains_key(&x) && !pending {
+        if !kd.outputs.contains(&x) && !self.buffer_map.contains_key(&x) && pending.is_null() {
             self.tensors.remove(x);
         }
         if kd.outputs.is_empty() {
@@ -265,7 +265,7 @@ impl Runtime {
         let tid = self.tensors.push(TensorData {
             shape_id,
             dtype,
-            state: TensorState::Eager { kernel_id, op_id, pending_store: false },
+            state: TensorState::Eager { kernel_id, op_id, pending: KernelId::NULL },
         });
         self.kernels[kernel_id].outputs.push(tid);
         tid
@@ -363,31 +363,160 @@ impl Runtime {
         if let TensorState::Graph { class_id, .. } = self.tensors[tid].state {
             return Ok(class_id);
         }
-        let shape_id = self.tensors[tid].shape_id;
-        let dtype = self.tensors[tid].dtype;
 
-        let kernel_id = match self.tensors[tid].state {
-            TensorState::Eager { kernel_id, .. } => kernel_id,
+        let (kernel_id, my_op_id) = match self.tensors[tid].state {
+            TensorState::Eager { kernel_id, op_id, .. } => (kernel_id, op_id),
             _ => unreachable!(),
         };
-        let unique_outputs: BTreeSet<TensorId> = self.kernels[kernel_id].outputs.iter().copied().collect();
-        for &other in &unique_outputs {
-            self.add_store(other)?;
+        debug_assert!(self.kernels[kernel_id].outputs.contains(&tid));
+
+        let relevant = {
+            let kernel = &self.kernels[kernel_id].kernel;
+            let mut relevant: Set<OpId> = Set::default();
+            let mut stack = vec![my_op_id];
+            while let Some(oid) = stack.pop() {
+                if !relevant.insert(oid) {
+                    continue;
+                }
+                match kernel.at(oid) {
+                    Op::LoadView(_) | Op::ConstView(_) => {}
+                    Op::Unary { x, .. } => stack.push(*x),
+                    Op::Binary { x, y, .. } => {
+                        stack.push(*x);
+                        stack.push(*y);
+                    }
+                    Op::Cast { x, .. } => stack.push(*x),
+                    Op::Reduce { x, .. } => stack.push(*x),
+                    Op::Move { x, .. } => stack.push(*x),
+                    _ => unreachable!(),
+                }
+            }
+            relevant
+        };
+
+        let loads = self.kernels[kernel_id].loads.clone();
+        let mut op_to_class: Map<OpId, ClassId> = Map::default();
+        let mut load_idx = 0;
+        let mut op_id = self.kernels[kernel_id].kernel.head;
+        while !op_id.is_null() {
+            if relevant.contains(&op_id) {
+                let op = self.kernels[kernel_id].kernel.at(op_id).clone();
+                let class_id = match &op {
+                    Op::LoadView(_) => {
+                        let load_tid = loads[load_idx];
+                        if !self.buffer_map.contains_key(&load_tid) {
+                            debug_assert!(matches!(self.tensors[load_tid].state, TensorState::Eager { pending: true, .. }));
+                            let outputs: Vec<TensorId> =
+                                if let TensorState::Eager { kernel_id, .. } = self.tensors[load_tid].state {
+                                    self.kernels[kernel_id].outputs.clone()
+                                } else {
+                                    vec![]
+                                };
+                            for &otid in &outputs {
+                                self.add_store(otid)?;
+                            }
+                        }
+                        let shape_id = self.tensors[load_tid].shape_id;
+                        let dtype = self.tensors[load_tid].dtype;
+                        let (_, class_id) = self.graphs[graph_id].push_leaf(dtype, shape_id);
+                        self.graphs[graph_id].leaf_map.insert(class_id, load_tid);
+                        class_id
+                    }
+                    Op::ConstView(x) => {
+                        let shape = x.1.shape();
+                        let shape_id = self.push_shape(shape);
+                        let (_, class_id) = self.graphs[graph_id].push(Node::Const(x.0), shape_id, x.0.dtype());
+                        class_id
+                    }
+                    Op::Unary { x, uop } => {
+                        let x_class = op_to_class[x];
+                        let shape = self.graphs[graph_id].classes[x_class].shape;
+                        let dtype = self.graphs[graph_id].classes[x_class].dtype;
+                        let (_, class_id) = self.graphs[graph_id].push(Node::Unary { x: x_class, uop: *uop }, shape, dtype);
+                        class_id
+                    }
+                    Op::Binary { x, y, bop } => {
+                        let x_class = op_to_class[x];
+                        let shape = self.graphs[graph_id].classes[x_class].shape;
+                        let dtype = self.graphs[graph_id].classes[x_class].dtype;
+                        let y_class = op_to_class[y];
+                        let (_, class_id) =
+                            self.graphs[graph_id].push(Node::Binary { x: x_class, y: y_class, bop: *bop }, shape, dtype);
+                        class_id
+                    }
+                    Op::Cast { x, dtype } => {
+                        let x_class = op_to_class[x];
+                        let shape = self.graphs[graph_id].classes[x_class].shape;
+                        let (_, class_id) = self.graphs[graph_id].push(Node::Cast { x: x_class, dtype: *dtype }, shape, *dtype);
+                        class_id
+                    }
+                    Op::Reduce { x, rop, n_axes } => {
+                        let x_class = op_to_class[x];
+                        let in_shape = self.shapes[self.graphs[graph_id].classes[x_class].shape].clone();
+                        let out_shape: Vec<Dim> = in_shape[..in_shape.len() - *n_axes as usize].to_vec();
+                        let out_shape_id = self.push_shape(out_shape);
+                        let dtype = self.graphs[graph_id].classes[x_class].dtype;
+                        let axes: Vec<UAxis> = (in_shape.len() - *n_axes as usize..in_shape.len()).collect();
+                        let (_, class_id) = self.graphs[graph_id].push(
+                            Node::Reduce { x: x_class, bop: *rop, axes: axes.into() },
+                            out_shape_id,
+                            dtype,
+                        );
+                        class_id
+                    }
+                    Op::Move { x, mop } => match mop.as_ref() {
+                        MoveOp::Reshape { shape } => {
+                            let x_class = op_to_class[x];
+                            let dtype = self.graphs[graph_id].classes[x_class].dtype;
+                            let shape_id = self.push_shape(shape.clone());
+                            let (_, class_id) =
+                                self.graphs[graph_id].push(Node::Reshape { x: x_class, shape: shape_id }, shape_id, dtype);
+                            class_id
+                        }
+                        MoveOp::Expand { shape } => {
+                            let x_class = op_to_class[x];
+                            let dtype = self.graphs[graph_id].classes[x_class].dtype;
+                            let shape_id = self.push_shape(shape.clone());
+                            let (_, class_id) =
+                                self.graphs[graph_id].push(Node::Expand { x: x_class, shape: shape_id }, shape_id, dtype);
+                            class_id
+                        }
+                        MoveOp::Permute { axes, shape } => {
+                            let x_class = op_to_class[x];
+                            let dtype = self.graphs[graph_id].classes[x_class].dtype;
+                            let shape_id = self.push_shape(shape.clone());
+                            let (_, class_id) = self.graphs[graph_id].push(
+                                Node::Permute { x: x_class, axes: axes.clone().into() },
+                                shape_id,
+                                dtype,
+                            );
+                            class_id
+                        }
+                        MoveOp::Pad { padding, shape } => {
+                            let x_class = op_to_class[x];
+                            let dtype = self.graphs[graph_id].classes[x_class].dtype;
+                            let shape_id = self.push_shape(shape.clone());
+                            let (_, class_id) = self.graphs[graph_id].push(
+                                Node::PadZeros { x: x_class, padding: padding.clone().into() },
+                                shape_id,
+                                dtype,
+                            );
+                            class_id
+                        }
+                    },
+                    _ => unreachable!(),
+                };
+                op_to_class.insert(op_id, class_id);
+            }
+
+            if matches!(self.kernels[kernel_id].kernel.at(op_id), Op::LoadView(_)) {
+                load_idx += 1;
+            }
+            op_id = self.kernels[kernel_id].kernel.next_op(op_id);
         }
 
-        debug_assert!(self.buffer_map.contains_key(&tid));
-
-        let (_, class_id) = self.graphs[graph_id].push_leaf(dtype, shape_id);
-
-        let TensorState::Eager { kernel_id, .. } = self.tensors[tid].state else {
-            unreachable!()
-        };
-        debug_assert!(self.kernels[kernel_id].outputs.iter().all(|&o| o == tid));
-        let rc = self.kernels[kernel_id].outputs.len() as u32;
-        self.kernels.remove(kernel_id);
-
-        self.tensors[tid].state = TensorState::Graph { class_id, rc, graph_id };
-        self.graphs[graph_id].leaf_map.insert(class_id, tid);
+        let class_id = op_to_class[&my_op_id];
+        self.tensors[tid].state = TensorState::Graph { class_id, rc: 1, graph_id };
         Ok(class_id)
     }
 
@@ -407,7 +536,7 @@ impl Runtime {
                 let tid = self.tensors.push(TensorData {
                     shape_id,
                     dtype,
-                    state: TensorState::Eager { kernel_id, op_id, pending_store: false },
+                    state: TensorState::Eager { kernel_id, op_id, pending: KernelId::NULL },
                 });
                 self.kernels[kernel_id].outputs.push(tid);
                 #[cfg(feature = "debug_tensor_op")]
@@ -433,7 +562,7 @@ impl Runtime {
                 let tid = self.tensors.push(TensorData {
                     shape_id,
                     dtype,
-                    state: TensorState::Eager { kernel_id, op_id, pending_store: false },
+                    state: TensorState::Eager { kernel_id, op_id, pending: KernelId::NULL },
                 });
                 self.kernels[kernel_id].outputs.push(tid);
                 #[cfg(feature = "debug_tensor_op")]
@@ -462,7 +591,7 @@ impl Runtime {
                 let tid = self.tensors.push(TensorData {
                     shape_id,
                     dtype,
-                    state: TensorState::Eager { kernel_id, op_id, pending_store: false },
+                    state: TensorState::Eager { kernel_id, op_id, pending: KernelId::NULL },
                 });
                 self.kernels[kernel_id].outputs.push(tid);
                 #[cfg(feature = "debug_tensor_op")]
@@ -596,7 +725,7 @@ impl Runtime {
             let tid = self.tensors.push(TensorData {
                 shape_id,
                 dtype,
-                state: TensorState::Eager { kernel_id, op_id, pending_store: false },
+                state: TensorState::Eager { kernel_id, op_id, pending: KernelId::NULL },
             });
             self.kernels[kernel_id].outputs.push(tid);
 
@@ -675,7 +804,7 @@ impl Runtime {
                 let tid = self.tensors.push(TensorData {
                     shape_id,
                     dtype,
-                    state: TensorState::Eager { kernel_id: kid, op_id, pending_store: false },
+                    state: TensorState::Eager { kernel_id: kid, op_id, pending: KernelId::NULL },
                 });
 
                 debug_assert_eq!(self.kernels[kid].outputs.len(), 0, "input into reduce must have empty outputs");
@@ -728,7 +857,7 @@ impl Runtime {
                     let tid = self.tensors.push(TensorData {
                         shape_id,
                         dtype,
-                        state: TensorState::Eager { kernel_id, op_id, pending_store: false },
+                        state: TensorState::Eager { kernel_id, op_id, pending: KernelId::NULL },
                     });
                     self.kernels[kernel_id].outputs.push(tid);
                     self.buffer_map.insert(tid, buf_id);
@@ -742,7 +871,7 @@ impl Runtime {
                 let tid = self.tensors.push(TensorData {
                     shape_id,
                     dtype,
-                    state: TensorState::Eager { kernel_id: kernel_id_dup, op_id, pending_store: false },
+                    state: TensorState::Eager { kernel_id: kernel_id_dup, op_id, pending: KernelId::NULL },
                 });
 
                 debug_assert_eq!(self.kernels[kernel_id_dup].outputs.len(), 0, "input into reshape must have empty outputs");
@@ -795,7 +924,7 @@ impl Runtime {
                 let tid = self.tensors.push(TensorData {
                     shape_id,
                     dtype,
-                    state: TensorState::Eager { kernel_id, op_id, pending_store: false },
+                    state: TensorState::Eager { kernel_id, op_id, pending: KernelId::NULL },
                 });
 
                 debug_assert_eq!(self.kernels[kernel_id].outputs.len(), 0, "input into expand must have empty outputs");
@@ -847,7 +976,7 @@ impl Runtime {
                 let tid = self.tensors.push(TensorData {
                     shape_id,
                     dtype,
-                    state: TensorState::Eager { kernel_id, op_id, pending_store: false },
+                    state: TensorState::Eager { kernel_id, op_id, pending: KernelId::NULL },
                 });
                 debug_assert_eq!(self.kernels[kernel_id].outputs.len(), 0, "input into permute must have empty outputs");
                 self.kernels[kernel_id].outputs.push(tid);
@@ -892,7 +1021,7 @@ impl Runtime {
                 let tid = self.tensors.push(TensorData {
                     shape_id,
                     dtype,
-                    state: TensorState::Eager { kernel_id, op_id, pending_store: false },
+                    state: TensorState::Eager { kernel_id, op_id, pending: KernelId::NULL },
                 });
                 debug_assert_eq!(self.kernels[kernel_id].outputs.len(), 0, "input into pad must have empty outputs");
                 self.kernels[kernel_id].outputs.push(tid);
@@ -1170,8 +1299,8 @@ impl Runtime {
     }
 
     pub fn add_store(&mut self, x: TensorId) -> Result<(), ZyxError> {
-        let (kid, op_id, pending_store) = match &self.tensors[x].state {
-            TensorState::Eager { kernel_id, op_id, pending_store, .. } => (*kernel_id, *op_id, *pending_store),
+        let (kid, op_id, pending) = match &self.tensors[x].state {
+            TensorState::Eager { kernel_id, op_id, pending: pending_store, .. } => (*kernel_id, *op_id, *pending_store),
             TensorState::Graph { .. } => unreachable!("add_store in graph mode"),
         };
 
@@ -1182,15 +1311,18 @@ impl Runtime {
         debug_assert!(count > 0, "add_store called for tid not in outputs");
 
         // Only add StoreView if x isn't already realized or pending
-        let add_store = !self.buffer_map.contains_key(&x) && !pending_store;
-        if add_store {
+        let add_store = !self.buffer_map.contains_key(&x) && pending.is_null();
+        let pending = if add_store {
             // Invariant: a kernel must never both load and store the same tensor
             debug_assert!(!self.kernels[kid].loads.contains(&x), "kernel {kid:?} both loads and stores tid {x}");
 
             let dtype = self.tensors[x].dtype;
             self.kernels[kid].kernel.store_contiguous(op_id, dtype);
             self.kernels[kid].stores.push(x);
-        }
+            kid
+        } else {
+            pending
+        };
 
         let outputs_empty = self.kernels[kid].outputs.is_empty();
 
@@ -1200,8 +1332,7 @@ impl Runtime {
         let shape = self.shape(x);
         let load_op_id = kernel.load_contiguous(dtype, &shape);
         let load_kid = self.kernels.push(KernelData { outputs: vec![x; count], loads: vec![x], stores: Vec::new(), kernel });
-        self.tensors[x].state =
-            TensorState::Eager { kernel_id: load_kid, op_id: load_op_id, pending_store: pending_store | add_store };
+        self.tensors[x].state = TensorState::Eager { kernel_id: load_kid, op_id: load_op_id, pending };
 
         if outputs_empty {
             self.materialize_kernel(kid)?;
@@ -1328,20 +1459,15 @@ impl Runtime {
         // and materialize them so our loads become available.
         for &load in &loads {
             let pending = match &self.tensors[load].state {
-                TensorState::Eager { pending_store, .. } => *pending_store,
-                _ => false,
+                TensorState::Eager { pending, .. } => *pending,
+                TensorState::Graph { .. } => KernelId::NULL,
             };
-            if !pending {
+            if pending.is_null() {
                 continue;
             }
-            // Find the producer kernel that has a store for this load
-            let producer: Option<KernelId> =
-                self.kernels.iter().find_map(|(id, kd)| if kd.stores.contains(&load) { Some(id) } else { None });
-            if let Some(producer_kid) = producer {
-                let outputs: Set<TensorId> = self.kernels[producer_kid].outputs.iter().copied().collect();
-                for output in outputs {
-                    self.add_store(output)?;
-                }
+            let outputs: Set<TensorId> = self.kernels[pending].outputs.iter().copied().collect();
+            for output in outputs {
+                self.add_store(output)?;
             }
         }
 
@@ -1416,10 +1542,8 @@ impl Runtime {
             let (buf, event) = self.pools[pool_id].allocate(alloc_bytes)?;
             let global_id = BufferId { pool: pool_id, buffer: buf };
             self.buffer_map.insert(tid, global_id);
-            self.tensors[tid].state = match &self.tensors[tid].state {
-                TensorState::Eager { kernel_id, op_id, .. } => {
-                    TensorState::Eager { kernel_id: *kernel_id, op_id: *op_id, pending_store: false }
-                }
+            self.tensors[tid].state = match self.tensors[tid].state {
+                TensorState::Eager { kernel_id, op_id, .. } => TensorState::Eager { kernel_id, op_id, pending: KernelId::NULL },
                 TensorState::Graph { .. } => unreachable!("materialize_kernel with graph tensor"),
             };
             kernel_buffers.insert(global_id);

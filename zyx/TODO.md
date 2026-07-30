@@ -26,6 +26,7 @@
   - [x] fix event handling
   - [x] node deallocation after realization
   - [x] clean up completed transfer events to free host staging buffers early
+  - [ ] when promoting to graph, promote the whole kernel without materializing
   - [ ] static graphs - unfortunately necessary for very high performance networks to achieve hundreds of millions of tensor ops/second - just add replay method for tape
   - [ ] add contiguous op - it calls add_store and forces kernel fusion split, in egraph this works the same
 - [ ] dtype

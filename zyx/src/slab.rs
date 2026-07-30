@@ -21,6 +21,9 @@ pub trait SlabId: std::fmt::Debug + Clone + Copy + PartialEq + Eq + PartialOrd +
     const ZERO: Self;
     const NULL: Self;
     fn inc(&mut self);
+    fn is_null(self) -> bool {
+        self == Self::NULL
+    }
 }
 
 #[derive(Debug)]

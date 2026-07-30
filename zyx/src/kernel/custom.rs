@@ -217,7 +217,7 @@ impl CompiledKernel {
             let id = rt.tensors.push(TensorData {
                 shape_id,
                 dtype,
-                state: TensorState::Eager { kernel_id, op_id: OpId::NULL, pending_store: false },
+                state: TensorState::Eager { kernel_id, op_id: OpId::NULL, pending: false },
             });
             rt.kernels[kernel_id].outputs.push(id);
             rt.buffer_map.insert(id, buf_id);
