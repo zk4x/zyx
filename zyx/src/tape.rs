@@ -33,7 +33,7 @@
 use std::collections::BTreeSet;
 
 use crate::{
-    Map, RT, Tensor, ZyxError,
+    DType, Map, RT, Tensor, ZyxError,
     backend::{BufferId, Device},
     graph::{ClassId, ExecPlan, Graph, GraphId, Node},
     kernel::{DeviceId, Kernel, Op},
@@ -147,8 +147,21 @@ impl Tape {
 
         let output_set: BTreeSet<ClassId> = output_classes.iter().copied().collect();
         let cache_key = rt.graphs[graph_id].cache_key(&output_set);
-        if rt.plan_cache.contains_key(&cache_key) {
-            return rt.execute_plan(cache_key, &output_tids, &output_classes, graph_id);
+
+        if let Some(plan) = rt.plan_cache.get(&cache_key) {
+            let mut class_buf: Map<ClassId, BufferId> = Map::default();
+            for &cid in &plan.leaf_classes {
+                let &tid = rt.graphs[graph_id].leaf_map.get(&cid).unwrap();
+                debug_assert!(rt.buffer_map.contains_key(&tid), "leaf class {cid:?} tid {tid:?} not in buffer_map");
+                class_buf.insert(cid, rt.buffer_map[&tid]);
+            }
+
+            rt.execute_plan(cache_key, &mut class_buf)?;
+            for (&tid, &cid) in output_tids.iter().zip(output_classes.iter()) {
+                rt.buffer_map.insert(tid, class_buf[&cid]);
+            }
+
+            return Ok(());
         }
 
         // TODO pattern match cublas, cblas, etc. kernels
@@ -187,12 +200,21 @@ impl Tape {
         let nodes = rt.graphs[graph_id].extract(&output_set);
 
         let plan = ExecPlan::new(&rt.graphs[graph_id], &nodes, &output_set, &rt.devices, &rt.shapes);
+        //plan.debug();
 
-        plan.debug();
+        let mut class_buf: Map<ClassId, BufferId> = Map::default();
+        for &cid in &plan.leaf_classes {
+            let &tid = rt.graphs[graph_id].leaf_map.get(&cid).unwrap();
+            debug_assert!(rt.buffer_map.contains_key(&tid), "leaf class {cid:?} tid {tid:?} not in buffer_map");
+            class_buf.insert(cid, rt.buffer_map[&tid]);
+        }
 
         rt.plan_cache.insert(cache_key, plan);
 
-        rt.execute_plan(cache_key, &output_tids, &output_classes, graph_id)?;
+        rt.execute_plan(cache_key, &mut class_buf)?;
+        for (&tid, &cid) in output_tids.iter().zip(output_classes.iter()) {
+            rt.buffer_map.insert(tid, class_buf[&cid]);
+        }
 
         Ok(())
     }
@@ -248,5 +270,101 @@ impl Drop for Tape {
                 }
             }
         }
+    }
+}
+
+impl Tape {
+    /// Create frozen tape (fixed control flow, minimum overhead)
+    pub fn freeze<'a>(self, outputs: impl IntoIterator<Item = &'a Tensor>) -> Result<FrozenTape, ZyxError> {
+        let mut rt = RT.lock();
+        let graph_id = self.graph_id;
+
+        let outputs: Vec<(ClassId, Vec<Dim>, DType)> = outputs
+            .into_iter()
+            .map(|t| match rt.tensors[t.id].state {
+                TensorState::Graph { class_id, .. } => (class_id, rt.shape(t.id).into(), rt.dtype(t.id)),
+                _ => unreachable!("non-graph tensor in realize"),
+            })
+            .collect();
+
+        debug_assert!(rt.graphs.contains_key(graph_id));
+
+        let output_set: BTreeSet<ClassId> = outputs.iter().map(|x| x.0).collect();
+        let cache_key = rt.graphs[graph_id].cache_key(&output_set);
+
+        if rt.plan_cache.contains_key(&cache_key) {
+            return Ok(FrozenTape { cache_key, outputs });
+        }
+
+        // TODO pattern match cublas, cblas, etc. kernels
+
+        for cid in rt.graphs[graph_id].classes.ids() {
+            let has_leaf = rt.graphs[graph_id].classes[cid]
+                .nodes
+                .iter()
+                .any(|&nid| matches!(&rt.graphs[graph_id].nodes[nid].node, Node::Leaf { .. }));
+            if has_leaf {
+                let &tid = rt.graphs[graph_id].leaf_map.get(&cid).expect("class {cid:?} has Leaf node but not in leaf_map");
+                assert!(rt.buffer_map.contains_key(&tid), "leaf class {cid:?} tid {tid:?} not in buffer_map");
+            } else {
+                assert!(!rt.graphs[graph_id].leaf_map.contains_key(&cid), "class {cid:?} has no Leaf node but is in leaf_map");
+            }
+        }
+
+        // Fills missing places with zyx custom kernels
+        // SAFETY: graph and shapes are separate fields of Runtime, no aliasing, rust is stupid
+        let shapes_ptr: *const Slab<ShapeId, Vec<Dim>> = &rt.shapes;
+
+        // TODO debug assert that all leafs are realized
+        //let realized_nodes: Set<ClassId> = rt.graphs[graph_id].leaf_map.iter().filter(|(_, tid)| rt.buffer_map.contains_key(tid)).map(|(cid, _)| *cid).collect();
+        rt.graphs[graph_id].fill_remaining(&output_set, unsafe { &*shapes_ptr });
+
+        // Autotunes custom zyx kernels for all devices and adds kernel nodes for all of them
+        rt.autotune_graph_ekernels(graph_id)?;
+
+        // After all kernels nodes are added, this adds movement ops so extract can pick fastest path
+        let devices_ptr: *const Slab<DeviceId, Device> = &rt.devices;
+        let buffer_map_ptr: *const Map<TensorId, BufferId> = &rt.buffer_map;
+        rt.graphs[graph_id].add_memory_ops(unsafe { &*devices_ptr }, unsafe { &*buffer_map_ptr });
+
+        rt.graphs[graph_id].debug_print(&rt.shapes);
+
+        let nodes = rt.graphs[graph_id].extract(&output_set);
+
+        let plan = ExecPlan::new(&rt.graphs[graph_id], &nodes, &output_set, &rt.devices, &rt.shapes);
+        //plan.debug();
+
+        rt.plan_cache.insert(cache_key, plan);
+
+        return Ok(FrozenTape { cache_key, outputs });
+    }
+}
+
+/// Frozen tape for minimal overhead tape replay, no branching
+pub struct FrozenTape {
+    cache_key: u64,
+    outputs: Vec<(ClassId, Vec<Dim>, DType)>,
+}
+
+impl FrozenTape {
+    /// Replay the tape
+    pub fn replay<'a>(&self, inputs: impl IntoIterator<Item = &'a Tensor>) -> Result<Vec<Tensor>, ZyxError> {
+        let mut rt = RT.lock();
+
+        let mut class_buf: Map<ClassId, BufferId> = Map::default();
+        for (tid, &cid) in inputs.into_iter().zip(rt.plan_cache[&self.cache_key].leaf_classes.iter()) {
+            class_buf.insert(cid, rt.buffer_map[&tid.id]);
+        }
+
+        rt.execute_plan(self.cache_key, &mut class_buf)?;
+
+        let output_tids = Vec::new();
+        for (cid, shape, dtype) in self.outputs.iter() {
+            let view = View::contiguous(shape);
+            let tid = rt.new_kernel(Op::LoadView(Box::new((*dtype, view))));
+            rt.buffer_map.insert(tid, class_buf[cid]);
+        }
+
+        Ok(output_tids)
     }
 }

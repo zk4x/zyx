@@ -1657,12 +1657,7 @@ impl Kernel {
         }
 
         // Keep only loads whose corresponding LoadView was not removed
-        loadview_ops
-            .iter()
-            .enumerate()
-            .filter(|&(_, &lv_id)| !to_remove.contains(&lv_id))
-            .map(|(i, _)| loads[i])
-            .collect()
+        loadview_ops.iter().enumerate().filter(|&(_, &lv_id)| !to_remove.contains(&lv_id)).map(|(i, _)| loads[i]).collect()
     }
 
     /// Iterate over all operations in the kernel.

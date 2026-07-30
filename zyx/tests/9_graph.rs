@@ -130,21 +130,23 @@ fn realize_with_orphan_leaf_in_kernel() -> Result<(), ZyxError> {
     let w2 = Tensor::randn([2, 3], DType::F32)?;
     let b2 = Tensor::randn([2], DType::F32)?;
 
-    let tape = Tape::new([&w1, &b1, &w2, &b2])?;
-    let x = Tensor::randn([2, 4], DType::F32)?;
-    let y = Tensor::from([0u32, 1]);
-    let h = (x.dot(&w1.t())? + &b1).relu();
-    let logits = h.dot(&w2.t())? + &b2;
-    let loss = logits.cross_entropy(y, ReduceOp::Mean)?;
-    let grads = tape.gradient(&loss, [&w1, &b1, &w2, &b2]);
+    for _ in 0..3 {
+        let tape = Tape::new([&w1, &b1, &w2, &b2])?;
+        let x = Tensor::randn([2, 4], DType::F32)?;
+        let y = Tensor::from([0u32, 1]);
+        let h = (x.dot(&w1.t())? + &b1).relu();
+        let logits = h.dot(&w2.t())? + &b2;
+        let loss = logits.cross_entropy(y, ReduceOp::Mean)?;
+        let grads = tape.gradient(&loss, [&w1, &b1, &w2, &b2]);
 
-    let lr = 0.01;
-    let new_w1 = &w1 - &grads[0] * lr;
-    let new_b1 = &b1 - &grads[1] * lr;
-    let new_w2 = &w2 - &grads[2] * lr;
-    let new_b2 = &b2 - &grads[3] * lr;
+        let lr = 0.01;
+        let new_w1 = &w1 - &grads[0] * lr;
+        let new_b1 = &b1 - &grads[1] * lr;
+        let new_w2 = &w2 - &grads[2] * lr;
+        let new_b2 = &b2 - &grads[3] * lr;
 
-    tape.realize([&new_w1, &new_b1, &new_w2, &new_b2])?;
+        tape.realize([&new_w1, &new_b1, &new_w2, &new_b2])?;
+    }
     Ok(())
 }
 

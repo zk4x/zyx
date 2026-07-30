@@ -295,6 +295,7 @@ pub struct Graph {
     pub(crate) classes: Slab<ClassId, EClass>,
     pub(crate) ekernels: Slab<EKernelId, EKernelData>,
     pub(crate) leaf_map: Map<ClassId, TensorId>,
+    pub(crate) leaf_classes: Vec<ClassId>,
     pub(crate) max_leaf_id: u32,
 }
 
@@ -324,6 +325,7 @@ impl Graph {
             classes: Slab::new(),
             ekernels: Slab::new(),
             leaf_map: Map::default(),
+            leaf_classes: Vec::new(),
             max_leaf_id: 0,
         }
     }
@@ -424,6 +426,7 @@ impl Graph {
     /// Debug assert that. Then for each input, if that input comes from kernel on different device
     /// or if it's in buffer_map on different device, add EGraph::ToDevice node that moves it
     /// to the device of the Node::Kernel.
+    // TODO Clean up this method, it's a mess
     pub fn add_memory_ops(&mut self, devices: &Slab<DeviceId, Device>, buffer_map: &Map<TensorId, BufferId>) {
         let class_ids: Vec<ClassId> = self.classes.ids().collect();
         for cid in class_ids {

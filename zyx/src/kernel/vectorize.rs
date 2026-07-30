@@ -229,17 +229,11 @@ impl Kernel {
                     }
 
                     // Insert Vectorize after the last store so all values are declared before it.
-                    let vstore =
-                        self.insert_after(last_id, Op::Vectorize { ops: vec_values });
+                    let vstore = self.insert_after(last_id, Op::Vectorize { ops: vec_values });
                     // Insert the vectorized store after the Vectorize and remove all scalar stores.
                     self.insert_after(
                         vstore,
-                        Op::Store {
-                            dst,
-                            x: vstore,
-                            index: stores[0].index,
-                            layout: MemLayout::Vector(vec_len as u16),
-                        },
+                        Op::Store { dst, x: vstore, index: stores[0].index, layout: MemLayout::Vector(vec_len as u16) },
                     );
                     for store in &stores {
                         self.remove_op(store.id);

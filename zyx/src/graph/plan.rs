@@ -3,11 +3,10 @@ use std::collections::BTreeSet;
 use crate::{
     Map, Set, ZyxError,
     backend::{BufferId, Device, DeviceId, Event, PoolId, ProgramId},
-    graph::{ClassId, Graph, GraphId, Node, NodeId},
+    graph::{ClassId, Graph, Node, NodeId},
     runtime::{Runtime, ShapeId},
     shape::Dim,
     slab::Slab,
-    tensor::TensorId,
 };
 
 #[derive(Debug, Clone)]
@@ -35,7 +34,7 @@ pub enum ExecNode {
 #[derive(Debug, Clone)]
 pub struct ExecPlan {
     pub nodes: Vec<ExecNode>,
-    pub leaf_classes: BTreeSet<ClassId>,
+    pub leaf_classes: Vec<ClassId>,
 }
 
 impl ExecPlan {
@@ -62,8 +61,6 @@ impl ExecPlan {
             }
         }
 
-        let reachable: BTreeSet<ClassId> = graph.topo_sort_classes(output_set).into_iter().collect();
-        let leaf_classes: BTreeSet<ClassId> = graph.leaf_map.keys().copied().filter(|c| reachable.contains(c)).collect();
         let mut plan_nodes = Vec::new();
         let mut allocated: Set<ClassId> = Set::default();
 
@@ -92,7 +89,7 @@ impl ExecPlan {
                     for &ic in &**inputs {
                         let c = rc.get_mut(&ic).unwrap();
                         *c -= 1;
-                        if *c == 0 && !leaf_classes.contains(&ic) && !output_set.contains(&ic) {
+                        if *c == 0 && !graph.leaf_map.contains_key(&ic) && !output_set.contains(&ic) {
                             plan_nodes.push(ExecNode::Deallocate { class: ic });
                         }
                     }
@@ -107,7 +104,7 @@ impl ExecPlan {
                     plan_nodes.push(ExecNode::Copy { dst_class: class_of, src_class: *x, bytes: cb });
                     let c = rc.get_mut(x).unwrap();
                     *c -= 1;
-                    if *c == 0 && !leaf_classes.contains(x) && !output_set.contains(x) {
+                    if *c == 0 && !graph.leaf_map.contains_key(x) && !output_set.contains(x) {
                         plan_nodes.push(ExecNode::Deallocate { class: *x });
                     }
                 }
@@ -115,9 +112,10 @@ impl ExecPlan {
             }
         }
 
-        Self { nodes: plan_nodes, leaf_classes }
+        Self { nodes: plan_nodes, leaf_classes: graph.leaf_classes.clone() }
     }
 
+    #[allow(unused)]
     pub fn debug(&self) {
         let line = "─".repeat(60);
         println!("\n{}", line);
@@ -144,31 +142,8 @@ impl ExecPlan {
 }
 
 impl Runtime {
-    pub fn execute_plan(
-        &mut self,
-        plan_cache_key: u64,
-        output_tids: &[TensorId],
-        output_classes: &[ClassId],
-        graph_id: GraphId,
-    ) -> Result<(), ZyxError> {
-        let plan = self.plan_cache.get(&plan_cache_key).unwrap();
-        let mut class_buf: Map<ClassId, BufferId> = Map::default();
-
-        let graph = &self.graphs[graph_id];
-        for &cid in &plan.leaf_classes {
-            let tid = graph.leaf_map[&cid];
-            if !self.buffer_map.contains_key(&tid) {
-                let exists = self.tensors.contains_key(tid);
-                eprintln!("leaf class {cid:?} -> tid {tid:?} has no buffer_map entry (tensor exists={exists})");
-                eprintln!("  all leaf_map entries:");
-                for (&lc, &lt) in &graph.leaf_map {
-                    let has_buf = self.buffer_map.contains_key(&lt);
-                    eprintln!("    {lc:?} -> {lt:?} (buf={has_buf})");
-                }
-                panic!("buffer_map missing for leaf class {cid:?}");
-            }
-            class_buf.insert(cid, self.buffer_map[&tid]);
-        }
+    pub fn execute_plan(&mut self, cache_key: u64, class_buf: &mut Map<ClassId, BufferId>) -> Result<(), ZyxError> {
+        let plan = self.plan_cache.get(&cache_key).unwrap();
 
         for node in &plan.nodes {
             match node {
@@ -207,10 +182,6 @@ impl Runtime {
                     self.pools[buf.pool].deallocate(buf.buffer, wait_list);
                 }
             }
-        }
-
-        for (&tid, &cid) in output_tids.iter().zip(output_classes.iter()) {
-            self.buffer_map.insert(tid, class_buf[&cid]);
         }
 
         Ok(())

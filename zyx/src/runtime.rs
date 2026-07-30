@@ -379,7 +379,12 @@ impl Runtime {
         .1
     }
 
-    fn new_kernel(&mut self, op: Op, shape: Vec<Dim>, dtype: DType) -> TensorId {
+    pub fn new_kernel(&mut self, op: Op) -> TensorId {
+        let (dtype, shape) = match &op {
+            Op::LoadView(x) => (x.0, x.1.shape()),
+            Op::ConstView(x) => (x.0.dtype(), x.1.shape()),
+            _ => unreachable!(),
+        };
         let shape_id = self.push_shape(shape);
         let mut kernel = Kernel::new(DeviceId::AUTO);
         let op_id = kernel.push_back(op);
@@ -396,9 +401,7 @@ impl Runtime {
     pub fn new_constant_tensor(&mut self, value: Constant) -> TensorId {
         #[cfg(feature = "debug_tensor_op")]
         println!("runtime::new_constant_tensor(value={value:?})");
-        let dtype = value.dtype();
-        let op = Op::ConstView(Box::new((value, View::contiguous(&[1]))));
-        let result = self.new_kernel(op, [1].into(), dtype);
+        let result = self.new_kernel(Op::ConstView(Box::new((value, View::contiguous(&[1])))));
         #[cfg(feature = "debug_tensor_op")]
         println!("  -> tid={result}, {:?}", self.tensors[result]);
         result
@@ -407,9 +410,7 @@ impl Runtime {
     pub fn new_full(&mut self, shape: Vec<Dim>, value: Constant) -> TensorId {
         #[cfg(feature = "debug_tensor_op")]
         println!("runtime::new_full(shape={shape:?}, value={value:?})");
-        let dtype = value.dtype();
-        let op = Op::ConstView(Box::new((value, View::contiguous(&[1]))));
-        let x = self.new_kernel(op, [1].into(), dtype);
+        let x = self.new_kernel(Op::ConstView(Box::new((value, View::contiguous(&[1])))));
         let expanded = self.expand(x, shape).unwrap();
         self.release(x);
         #[cfg(feature = "debug_tensor_op")]
@@ -441,7 +442,7 @@ impl Runtime {
 
         let shape = self.push_shape(shape);
         let op = Op::LoadView(Box::new((dtype, View::contiguous(&self.shapes[shape]))));
-        let tid = self.new_kernel(op, self.shapes[shape].clone(), dtype);
+        let tid = self.new_kernel(op);
         let TensorState::Eager { kernel_id, .. } = &self.tensors[tid].state else {
             unreachable!()
         };
@@ -471,8 +472,7 @@ impl Runtime {
         let buffer_id = BufferId { pool: PoolId::DISK, buffer: pool.buffer_from_path(bytes, path, offset_bytes) };
 
         let shape_id = self.push_shape(shape);
-        let op = Op::LoadView(Box::new((dtype, View::contiguous(&self.shapes[shape_id]))));
-        let tid = self.new_kernel(op, self.shapes[shape_id].clone(), dtype);
+        let tid = self.new_kernel(Op::LoadView(Box::new((dtype, View::contiguous(&self.shapes[shape_id])))));
         let TensorState::Eager { kernel_id, .. } = &self.tensors[tid].state else {
             unreachable!()
         };
@@ -542,6 +542,7 @@ impl Runtime {
                         let dtype = self.tensors[load_tid].dtype;
                         let (_, class_id) = self.push_leaf_node(graph_id, dtype, shape_id);
                         self.graphs[graph_id].leaf_map.insert(class_id, load_tid);
+                        self.graphs[graph_id].leaf_classes.push(class_id);
                         class_id
                     }
                     Op::ConstView(x) => {
