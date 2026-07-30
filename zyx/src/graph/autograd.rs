@@ -73,7 +73,7 @@ impl Runtime {
                         accum_grad(self, graph_id, &mut grads, x, g);
                     }
                     UOp::Reciprocal => {
-                        let z_sq = push_binary(self, graph_id, cid, cid, BOp::Mul);
+                        let z_sq = self.push_binary_node(graph_id, cid, cid, BOp::Mul);
                         let neg_z_sq = self
                             .push_node(
                                 graph_id,
@@ -82,7 +82,7 @@ impl Runtime {
                                 self.graphs[graph_id].classes[z_sq].dtype,
                             )
                             .1;
-                        let g = push_binary(self, graph_id, grad, neg_z_sq, BOp::Mul);
+                        let g = self.push_binary_node(graph_id, grad, neg_z_sq, BOp::Mul);
                         accum_grad(self, graph_id, &mut grads, x, g);
                     }
                     UOp::Exp2 => {
@@ -97,8 +97,8 @@ impl Runtime {
                                 self.graphs[graph_id].classes[cid].dtype,
                             )
                             .1;
-                        let z_ln2 = push_binary(self, graph_id, cid, ln2_e, BOp::Mul);
-                        let g = push_binary(self, graph_id, grad, z_ln2, BOp::Mul);
+                        let z_ln2 = self.push_binary_node(graph_id, cid, ln2_e, BOp::Mul);
+                        let g = self.push_binary_node(graph_id, grad, z_ln2, BOp::Mul);
                         accum_grad(self, graph_id, &mut grads, x, g);
                     }
                     UOp::Log2 => {
@@ -113,8 +113,8 @@ impl Runtime {
                                 self.graphs[graph_id].classes[x].dtype,
                             )
                             .1;
-                        let x_ln2 = push_binary(self, graph_id, x, ln2_e, BOp::Mul);
-                        let g = push_binary(self, graph_id, grad, x_ln2, BOp::Div);
+                        let x_ln2 = self.push_binary_node(graph_id, x, ln2_e, BOp::Mul);
+                        let g = self.push_binary_node(graph_id, grad, x_ln2, BOp::Div);
                         accum_grad(self, graph_id, &mut grads, x, g);
                     }
                     UOp::Sqrt => {
@@ -129,8 +129,8 @@ impl Runtime {
                                 self.graphs[graph_id].classes[cid].dtype,
                             )
                             .1;
-                        let z2 = push_binary(self, graph_id, cid, two_e, BOp::Mul);
-                        let g = push_binary(self, graph_id, grad, z2, BOp::Div);
+                        let z2 = self.push_binary_node(graph_id, cid, two_e, BOp::Mul);
+                        let g = self.push_binary_node(graph_id, grad, z2, BOp::Div);
                         accum_grad(self, graph_id, &mut grads, x, g);
                     }
                     UOp::Sin => {
@@ -142,7 +142,7 @@ impl Runtime {
                                 self.graphs[graph_id].classes[x].dtype,
                             )
                             .1;
-                        let g = push_binary(self, graph_id, grad, cos_x, BOp::Mul);
+                        let g = self.push_binary_node(graph_id, grad, cos_x, BOp::Mul);
                         accum_grad(self, graph_id, &mut grads, x, g);
                     }
                     UOp::Cos => {
@@ -162,7 +162,7 @@ impl Runtime {
                                 self.graphs[graph_id].classes[sin_x].dtype,
                             )
                             .1;
-                        let g = push_binary(self, graph_id, grad, neg_sin, BOp::Mul);
+                        let g = self.push_binary_node(graph_id, grad, neg_sin, BOp::Mul);
                         accum_grad(self, graph_id, &mut grads, x, g);
                     }
                     UOp::Exp => {
@@ -174,11 +174,11 @@ impl Runtime {
                                 self.graphs[graph_id].classes[x].dtype,
                             )
                             .1;
-                        let g = push_binary(self, graph_id, grad, exp_x, BOp::Mul);
+                        let g = self.push_binary_node(graph_id, grad, exp_x, BOp::Mul);
                         accum_grad(self, graph_id, &mut grads, x, g);
                     }
                     UOp::Ln => {
-                        let g = push_binary(self, graph_id, grad, x, BOp::Div);
+                        let g = self.push_binary_node(graph_id, grad, x, BOp::Div);
                         accum_grad(self, graph_id, &mut grads, x, g);
                     }
                     UOp::Abs => {
@@ -211,12 +211,12 @@ impl Runtime {
                                 dtype,
                             )
                             .1;
-                        let is_pos = push_binary(self, graph_id, x, zero_e, BOp::Cmpgt);
-                        let is_neg = push_binary(self, graph_id, x, zero_e, BOp::Cmplt);
-                        let sign_pos = push_binary(self, graph_id, is_pos, one_e, BOp::Mul);
-                        let sign_neg = push_binary(self, graph_id, is_neg, neg_one_e, BOp::Mul);
-                        let sign = push_binary(self, graph_id, sign_pos, sign_neg, BOp::Add);
-                        let g = push_binary(self, graph_id, grad, sign, BOp::Mul);
+                        let is_pos = self.push_binary_node(graph_id, x, zero_e, BOp::Cmpgt);
+                        let is_neg = self.push_binary_node(graph_id, x, zero_e, BOp::Cmplt);
+                        let sign_pos = self.push_binary_node(graph_id, is_pos, one_e, BOp::Mul);
+                        let sign_neg = self.push_binary_node(graph_id, is_neg, neg_one_e, BOp::Mul);
+                        let sign = self.push_binary_node(graph_id, sign_pos, sign_neg, BOp::Add);
+                        let g = self.push_binary_node(graph_id, grad, sign, BOp::Mul);
                         accum_grad(self, graph_id, &mut grads, x, g);
                     }
                     UOp::Floor | UOp::Trunc | UOp::BitNot => {}
@@ -239,13 +239,13 @@ impl Runtime {
                         accum_grad(self, graph_id, &mut grads, y, neg_grad);
                     }
                     BOp::Mul => {
-                        let gx = push_binary(self, graph_id, grad, y, BOp::Mul);
+                        let gx = self.push_binary_node(graph_id, grad, y, BOp::Mul);
                         accum_grad(self, graph_id, &mut grads, x, gx);
-                        let gy = push_binary(self, graph_id, grad, x, BOp::Mul);
+                        let gy = self.push_binary_node(graph_id, grad, x, BOp::Mul);
                         accum_grad(self, graph_id, &mut grads, y, gy);
                     }
                     BOp::Div => {
-                        let gx = push_binary(self, graph_id, grad, y, BOp::Div);
+                        let gx = self.push_binary_node(graph_id, grad, y, BOp::Div);
                         accum_grad(self, graph_id, &mut grads, x, gx);
                         let neg_grad = self
                             .push_node(
@@ -255,9 +255,9 @@ impl Runtime {
                                 self.graphs[graph_id].classes[grad].dtype,
                             )
                             .1;
-                        let x_mul = push_binary(self, graph_id, neg_grad, x, BOp::Mul);
-                        let y_sq = push_binary(self, graph_id, y, y, BOp::Mul);
-                        let gy = push_binary(self, graph_id, x_mul, y_sq, BOp::Div);
+                        let x_mul = self.push_binary_node(graph_id, neg_grad, x, BOp::Mul);
+                        let y_sq = self.push_binary_node(graph_id, y, y, BOp::Mul);
+                        let gy = self.push_binary_node(graph_id, x_mul, y_sq, BOp::Div);
                         accum_grad(self, graph_id, &mut grads, y, gy);
                     }
                     BOp::Pow => {
@@ -271,10 +271,10 @@ impl Runtime {
                                 dtype,
                             )
                             .1;
-                        let y_1 = push_binary(self, graph_id, y, one_e, BOp::Sub);
-                        let x_pow_ym1 = push_binary(self, graph_id, x, y_1, BOp::Pow);
-                        let y_mul = push_binary(self, graph_id, y, x_pow_ym1, BOp::Mul);
-                        let gx = push_binary(self, graph_id, grad, y_mul, BOp::Mul);
+                        let y_1 = self.push_binary_node(graph_id, y, one_e, BOp::Sub);
+                        let x_pow_ym1 = self.push_binary_node(graph_id, x, y_1, BOp::Pow);
+                        let y_mul = self.push_binary_node(graph_id, y, x_pow_ym1, BOp::Mul);
+                        let gx = self.push_binary_node(graph_id, grad, y_mul, BOp::Mul);
                         accum_grad(self, graph_id, &mut grads, x, gx);
                         let ln_x = self
                             .push_node(
@@ -284,13 +284,13 @@ impl Runtime {
                                 self.graphs[graph_id].classes[x].dtype,
                             )
                             .1;
-                        let z_lnx = push_binary(self, graph_id, cid, ln_x, BOp::Mul);
-                        let gy = push_binary(self, graph_id, grad, z_lnx, BOp::Mul);
+                        let z_lnx = self.push_binary_node(graph_id, cid, ln_x, BOp::Mul);
+                        let gy = self.push_binary_node(graph_id, grad, z_lnx, BOp::Mul);
                         accum_grad(self, graph_id, &mut grads, y, gy);
                     }
                     BOp::Mod => {
                         accum_grad(self, graph_id, &mut grads, x, grad);
-                        let x_div_y = push_binary(self, graph_id, x, y, BOp::Div);
+                        let x_div_y = self.push_binary_node(graph_id, x, y, BOp::Div);
                         let floored = self
                             .push_node(
                                 graph_id,
@@ -307,13 +307,13 @@ impl Runtime {
                                 self.graphs[graph_id].classes[floored].dtype,
                             )
                             .1;
-                        let gy = push_binary(self, graph_id, neg_floor, grad, BOp::Mul);
+                        let gy = self.push_binary_node(graph_id, neg_floor, grad, BOp::Mul);
                         accum_grad(self, graph_id, &mut grads, y, gy);
                     }
                     BOp::Max => {
                         let dtype = self.graphs[graph_id].classes[x].dtype;
-                        let x_gt_y = push_binary(self, graph_id, x, y, BOp::Cmpgt);
-                        let x_lt_y = push_binary(self, graph_id, x, y, BOp::Cmplt);
+                        let x_gt_y = self.push_binary_node(graph_id, x, y, BOp::Cmpgt);
+                        let x_lt_y = self.push_binary_node(graph_id, x, y, BOp::Cmplt);
                         let x_gt_f = self
                             .push_node(
                                 graph_id,
@@ -330,9 +330,9 @@ impl Runtime {
                                 dtype,
                             )
                             .1;
-                        let gx = push_binary(self, graph_id, grad, x_gt_f, BOp::Mul);
+                        let gx = self.push_binary_node(graph_id, grad, x_gt_f, BOp::Mul);
                         accum_grad(self, graph_id, &mut grads, x, gx);
-                        let gy = push_binary(self, graph_id, grad, x_lt_f, BOp::Mul);
+                        let gy = self.push_binary_node(graph_id, grad, x_lt_f, BOp::Mul);
                         accum_grad(self, graph_id, &mut grads, y, gy);
                     }
                     BOp::Cmplt
@@ -470,7 +470,7 @@ impl Runtime {
                                     self.graphs[graph_id].classes[cid].dtype,
                                 )
                                 .1;
-                            let cmp = push_binary(self, graph_id, x, z_broadcasted, BOp::Cmplt);
+                            let cmp = self.push_binary_node(graph_id, x, z_broadcasted, BOp::Cmplt);
                             let cmp_f = self
                                 .push_node(
                                     graph_id,
@@ -495,7 +495,7 @@ impl Runtime {
                                     self.graphs[graph_id].classes[x].dtype,
                                 )
                                 .1;
-                            let mask = push_binary(self, graph_id, one_e, cmp_f, BOp::Sub);
+                            let mask = self.push_binary_node(graph_id, one_e, cmp_f, BOp::Sub);
 
                             let mut grad_shape_vec: Vec<Dim> = self.shapes[self.graphs[graph_id].classes[grad].shape].clone();
                             for &axis in axes.iter() {
@@ -522,7 +522,7 @@ impl Runtime {
                                 )
                                 .1;
 
-                            let grad_x = push_binary(self, graph_id, mask, grad_e, BOp::Mul);
+                            let grad_x = self.push_binary_node(graph_id, mask, grad_e, BOp::Mul);
                             accum_grad(self, graph_id, &mut grads, x, grad_x);
                         }
                         _ => {}
@@ -651,18 +651,13 @@ impl Graph {
     }
 }
 
-fn push_binary(rt: &mut Runtime, graph_id: GraphId, x: ClassId, y: ClassId, bop: BOp) -> ClassId {
-    rt.push_node(graph_id, Node::Binary { x, y, bop }, rt.graphs[graph_id].classes[x].shape, rt.graphs[graph_id].classes[x].dtype)
-        .1
-}
-
 fn accum_grad(rt: &mut Runtime, graph_id: GraphId, grads: &mut Map<ClassId, ClassId>, nid: ClassId, grad: ClassId) {
     match grads.entry(nid) {
         std::collections::hash_map::Entry::Vacant(e) => {
             e.insert(grad);
         }
         std::collections::hash_map::Entry::Occupied(mut e) => {
-            let sum = push_binary(rt, graph_id, *e.get(), grad, BOp::Add);
+            let sum = rt.push_binary_node(graph_id, *e.get(), grad, BOp::Add);
             e.insert(sum);
         }
     }

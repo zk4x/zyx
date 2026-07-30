@@ -299,7 +299,7 @@ Every optimization must produce correct IR that calculates the same result as th
 | Level | Output | When |
 |-------|--------|------|
 | `1`   | Backend selection | Startup |
-| `2`   | Graph operations | During realize |
+| `2`   | perf | During realize |
 | `4`   | Scheduler decisions | Kernel selection |
 | `8`   | Kernel IR (before GPU) | Kernel compilation |
 | `16`  | Generated CUDA C++ source | Kernel compilation |

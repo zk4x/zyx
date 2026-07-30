@@ -353,7 +353,25 @@ impl Runtime {
             }
             _ => {}
         }
-        self.push_node(graph_id, node, shape, dtype)
+        let g = &mut self.graphs[graph_id];
+        if let Some(&nid) = g.hashcons.get(&node) {
+            return (nid, g.nodes[nid].class_of);
+        }
+        let nid = g.nodes.push(NodeData { node: node.clone(), class_of: ClassId::NULL });
+        let cid = g.classes.push(EClass { nodes: vec![nid], shape, dtype });
+        g.nodes[nid].class_of = cid;
+        g.hashcons.insert(node, nid);
+        (nid, cid)
+    }
+
+    pub fn push_binary_node(&mut self, graph_id: GraphId, x: ClassId, y: ClassId, bop: BOp) -> ClassId {
+        self.push_node(
+            graph_id,
+            Node::Binary { x, y, bop },
+            self.graphs[graph_id].classes[x].shape,
+            self.graphs[graph_id].classes[x].dtype,
+        )
+        .1
     }
 
     fn new_kernel(&mut self, op: Op, shape: Vec<Dim>, dtype: DType) -> TensorId {
@@ -514,7 +532,7 @@ impl Runtime {
                                 self.add_store(otid)?;
                             }
                         }
-                        let shape_id = self.tensors[load_tid].shape_id;
+                        let shape_id = self.tensors[tid].shape_id;
                         let dtype = self.tensors[load_tid].dtype;
                         let (_, class_id) = self.push_leaf_node(graph_id, dtype, shape_id);
                         self.graphs[graph_id].leaf_map.insert(class_id, load_tid);
@@ -535,12 +553,8 @@ impl Runtime {
                     }
                     Op::Binary { x, y, bop } => {
                         let x_class = op_to_class[x];
-                        let shape = self.graphs[graph_id].classes[x_class].shape;
-                        let dtype = self.graphs[graph_id].classes[x_class].dtype;
                         let y_class = op_to_class[y];
-                        let (_, class_id) =
-                            self.push_node(graph_id, Node::Binary { x: x_class, y: y_class, bop: *bop }, shape, dtype);
-                        class_id
+                        self.push_binary_node(graph_id, x_class, y_class, *bop)
                     }
                     Op::Cast { x, dtype } => {
                         let x_class = op_to_class[x];
@@ -781,11 +795,9 @@ impl Runtime {
             let TensorState::Graph { class_id: y, .. } = self.tensors[y].state else {
                 unreachable!()
             };
-            let (_node_id, class_id) = self.push_node(graph_id, Node::Binary { x, y, bop }, shape_id, dtype);
+            let class_id = self.push_binary_node(graph_id, x, y, bop);
 
             let tid = self.tensors.push(TensorData { shape_id, dtype, state: TensorState::Graph { class_id, rc: 1, graph_id } });
-            #[cfg(feature = "debug_tensor_op")]
-            println!("  -> tid={tid}, nid={_node_id:?}, cid={class_id:?}");
             Ok(tid)
         } else {
             let (kid_x, op_id_x) = match &self.tensors[x].state {
