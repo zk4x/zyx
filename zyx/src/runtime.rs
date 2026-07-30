@@ -237,7 +237,8 @@ impl Runtime {
         if !kd.outputs.contains(&x) && !self.buffer_map.contains_key(&x) && pending.is_null() {
             self.tensors.remove(x);
         }
-        if !kd.outputs.contains(&x) {
+        // With custom kernels, op_id is null, so we have to skip this
+        if !kd.outputs.contains(&x) && !op_id.is_null() {
             let out_ops: Vec<OpId> = kd
                 .outputs
                 .iter()
