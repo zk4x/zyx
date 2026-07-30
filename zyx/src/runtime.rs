@@ -371,7 +371,7 @@ impl Runtime {
         Ok(tid)
     }
 
-    pub(crate) fn promote_to_graph(&mut self, tid: TensorId, graph_id: GraphId) -> Result<ClassId, ZyxError> {
+    pub fn promote_to_graph(&mut self, tid: TensorId, graph_id: GraphId) -> Result<ClassId, ZyxError> {
         if let TensorState::Graph { class_id, .. } = self.tensors[tid].state {
             return Ok(class_id);
         }
@@ -464,6 +464,11 @@ impl Runtime {
                     Op::Reduce { x, rop, n_axes } => {
                         let x_class = op_to_class[x];
                         let in_shape = self.shapes[self.graphs[graph_id].classes[x_class].shape].clone();
+                        debug_assert!(
+                            *n_axes as usize <= in_shape.len(),
+                            "Reduce: n_axes {} > input rank {} (shape {:?})",
+                            n_axes, in_shape.len(), in_shape
+                        );
                         let out_shape: Vec<Dim> = in_shape[..in_shape.len() - *n_axes as usize].to_vec();
                         let out_shape_id = self.push_shape(out_shape);
                         let dtype = self.graphs[graph_id].classes[x_class].dtype;
@@ -475,46 +480,75 @@ impl Runtime {
                         );
                         class_id
                     }
-                    Op::Move { x, mop } => match mop.as_ref() {
-                        MoveOp::Reshape { shape } => {
-                            let x_class = op_to_class[x];
-                            let dtype = self.graphs[graph_id].classes[x_class].dtype;
-                            let shape_id = self.push_shape(shape.clone());
-                            let (_, class_id) =
-                                self.graphs[graph_id].push(Node::Reshape { x: x_class, shape: shape_id }, shape_id, dtype);
-                            class_id
+                    Op::Move { x, mop } => {
+                        let x_class = op_to_class[x];
+                        let in_shape = &self.shapes[self.graphs[graph_id].classes[x_class].shape];
+                        match mop.as_ref() {
+                            MoveOp::Reshape { shape } => {
+                                debug_assert_eq!(
+                                    shape.iter().product::<Dim>(),
+                                    in_shape.iter().product::<Dim>(),
+                                    "Reshape: element count mismatch {:?} -> {:?}",
+                                    in_shape, shape
+                                );
+                                let dtype = self.graphs[graph_id].classes[x_class].dtype;
+                                let shape_id = self.push_shape(shape.clone());
+                                let (_, class_id) =
+                                    self.graphs[graph_id].push(Node::Reshape { x: x_class, shape: shape_id }, shape_id, dtype);
+                                class_id
+                            }
+                            MoveOp::Expand { shape } => {
+                                debug_assert!(
+                                    shape.len() >= in_shape.len(),
+                                    "Expand: output rank {} < input rank {}",
+                                    shape.len(), in_shape.len()
+                                );
+                                let shape_id = self.push_shape(shape.clone());
+                                let dtype = self.graphs[graph_id].classes[x_class].dtype;
+                                let (_, class_id) =
+                                    self.graphs[graph_id].push(Node::Expand { x: x_class, shape: shape_id }, shape_id, dtype);
+                                class_id
+                            }
+                            MoveOp::Permute { axes, shape } => {
+                                debug_assert_eq!(
+                                    axes.len(),
+                                    in_shape.len(),
+                                    "Permute: axes length {} != input rank {} (shape {:?})",
+                                    axes.len(), in_shape.len(), in_shape
+                                );
+                                debug_assert_eq!(
+                                    shape.len(),
+                                    in_shape.len(),
+                                    "Permute: output shape rank {} != input rank {} (shape {:?})",
+                                    shape.len(), in_shape.len(), in_shape
+                                );
+                                let dtype = self.graphs[graph_id].classes[x_class].dtype;
+                                let shape_id = self.push_shape(shape.clone());
+                                let (_, class_id) = self.graphs[graph_id].push(
+                                    Node::Permute { x: x_class, axes: axes.clone().into() },
+                                    shape_id,
+                                    dtype,
+                                );
+                                class_id
+                            }
+                            MoveOp::Pad { padding, shape } => {
+                                debug_assert_eq!(
+                                    padding.len(),
+                                    in_shape.len(),
+                                    "Pad: padding length {} != input rank {} (shape {:?})",
+                                    padding.len(), in_shape.len(), in_shape
+                                );
+                                let dtype = self.graphs[graph_id].classes[x_class].dtype;
+                                let shape_id = self.push_shape(shape.clone());
+                                let (_, class_id) = self.graphs[graph_id].push(
+                                    Node::PadZeros { x: x_class, padding: padding.clone().into() },
+                                    shape_id,
+                                    dtype,
+                                );
+                                class_id
+                            }
                         }
-                        MoveOp::Expand { shape } => {
-                            let x_class = op_to_class[x];
-                            let dtype = self.graphs[graph_id].classes[x_class].dtype;
-                            let shape_id = self.push_shape(shape.clone());
-                            let (_, class_id) =
-                                self.graphs[graph_id].push(Node::Expand { x: x_class, shape: shape_id }, shape_id, dtype);
-                            class_id
-                        }
-                        MoveOp::Permute { axes, shape } => {
-                            let x_class = op_to_class[x];
-                            let dtype = self.graphs[graph_id].classes[x_class].dtype;
-                            let shape_id = self.push_shape(shape.clone());
-                            let (_, class_id) = self.graphs[graph_id].push(
-                                Node::Permute { x: x_class, axes: axes.clone().into() },
-                                shape_id,
-                                dtype,
-                            );
-                            class_id
-                        }
-                        MoveOp::Pad { padding, shape } => {
-                            let x_class = op_to_class[x];
-                            let dtype = self.graphs[graph_id].classes[x_class].dtype;
-                            let shape_id = self.push_shape(shape.clone());
-                            let (_, class_id) = self.graphs[graph_id].push(
-                                Node::PadZeros { x: x_class, padding: padding.clone().into() },
-                                shape_id,
-                                dtype,
-                            );
-                            class_id
-                        }
-                    },
+                    }
                     _ => unreachable!(),
                 };
                 op_to_class.insert(op_id, class_id);
