@@ -1567,19 +1567,6 @@ impl Runtime {
         }
 
         // Compile and launch (caches in kernel_map / programs)
-        let debug = self.debug;
-        if debug.sched() {
-            /*println!("tensors: {:?}", self.tensors.ids().collect::<Vec<TensorId>>());
-            println!("loads (tids): {loads:?}");
-            println!("stores (tids): {stores:?}");
-            for (info_kid, info_kd) in self.kernels.iter() {
-                println!(
-                    "  kernel {info_kid:?}: outputs={:?}, loads={:?}, stores={:?}",
-                    info_kd.outputs, info_kd.loads, info_kd.stores
-                );
-            }*/
-            kernel.debug();
-        }
         let (flop, read, write) = kernel.flop_mem_rw();
         let (dev_prog, _timing) = self.get_or_autotune(kernel, pool_id, flop, read, write, Some(&args))?;
 
