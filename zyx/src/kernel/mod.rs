@@ -1601,7 +1601,9 @@ impl Kernel {
 
     /// Remove the transitive dependency chain of `x` that is not needed
     /// by any store or any op in `keep_alive`.
-    pub(crate) fn remove_unused_chain(&mut self, x: OpId, keep_alive: &[OpId]) {
+    /// Removes ops from `x` backwards that are no longer used.
+    /// Returns `true` if `x` itself was removed.
+    pub(crate) fn remove_unused_chain(&mut self, x: OpId, keep_alive: &[OpId]) -> bool {
         let mut chain: Set<OpId> = Set::default();
         let mut stack = vec![x];
         while let Some(op) = stack.pop() {
@@ -1634,6 +1636,7 @@ impl Kernel {
             }
             op_id = next;
         }
+        to_remove.contains(&x)
     }
 
     /// Iterate over all operations in the kernel.
