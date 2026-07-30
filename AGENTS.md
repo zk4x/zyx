@@ -2,6 +2,7 @@
 # ⚠️  "pre-existing" IS FORBIDDEN. NEVER USE IT.  ⚠️
 # ⚠️  "Builds clean" / similar                    ⚠️
 # ⚠️  IS FORBIDDEN. BUILD SILENTLY.               ⚠️
+# ⚠️  "git checkout --" IS FORBIDDEN. NEVER USE.  ⚠️
 # ⚠️  VIOLATIONS = BROKEN. REPEATEDLY. FOREVER.   ⚠️
 # ⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️
 

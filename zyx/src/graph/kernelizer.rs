@@ -80,7 +80,7 @@ impl Graph {
             let nid = self.classes[cid].nodes[0];
             let node = &self.nodes[nid].node;
 
-            //println!("cid={} nid={} rc={}, {node:?}", cid.0, nid.0, rcs[&cid]);
+            println!("cid={} nid={} rc={} shape={:?}, {node:?}", cid.0, nid.0, rcs[&cid], shapes[self.classes[cid].shape]);
 
             match node {
                 Node::Leaf { .. } => {

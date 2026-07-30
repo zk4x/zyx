@@ -290,12 +290,12 @@ pub struct EKernelData {
 
 #[derive(Debug)]
 pub struct Graph {
-    hashcons: Map<Node, NodeId>,
+    pub(crate) hashcons: Map<Node, NodeId>,
     pub(crate) nodes: Slab<NodeId, NodeData>,
     pub(crate) classes: Slab<ClassId, EClass>,
     pub(crate) ekernels: Slab<EKernelId, EKernelData>,
     pub(crate) leaf_map: Map<ClassId, TensorId>,
-    max_leaf_id: u32,
+    pub(crate) max_leaf_id: u32,
 }
 
 impl Node {
@@ -328,21 +328,18 @@ impl Graph {
         }
     }
 
-    pub fn push(&mut self, node: Node, shape: ShapeId, dtype: DType) -> (NodeId, ClassId) {
+    pub fn push_to_device(&mut self, x: ClassId, device: DeviceId, time: u64) -> ClassId {
+        let node = Node::ToDevice { x, device, time };
         if let Some(&nid) = self.hashcons.get(&node) {
-            return (nid, self.nodes[nid].class_of);
+            return self.nodes[nid].class_of;
         }
+        let shape = self.classes[x].shape;
+        let dtype = self.classes[x].dtype;
         let nid = self.nodes.push(NodeData { node: node.clone(), class_of: ClassId::NULL });
         let cid = self.classes.push(EClass { nodes: vec![nid], shape, dtype });
         self.nodes[nid].class_of = cid;
         self.hashcons.insert(node, nid);
-        (nid, cid)
-    }
-
-    pub fn push_leaf(&mut self, dtype: DType, shape: ShapeId) -> (NodeId, ClassId) {
-        let leaf_id = self.max_leaf_id;
-        self.max_leaf_id += 1;
-        self.push(Node::Leaf { dtype, leaf_id }, shape, dtype)
+        cid
     }
 
     pub fn topo_sort_classes(&self, outputs: &BTreeSet<ClassId>) -> Vec<ClassId> {
@@ -457,11 +454,7 @@ impl Graph {
                     }
                     if from_kernel {
                         if !same_device {
-                            let (_, to_cid) = self.push(
-                                Node::ToDevice { x: input_cid, device: device_id, time: 0 },
-                                self.classes[input_cid].shape,
-                                self.classes[input_cid].dtype,
-                            );
+                            let to_cid = self.push_to_device(input_cid, device_id, 0);
                             if to_cid != class_of {
                                 let new_inputs = new_inputs.get_or_insert_with(|| inputs.clone());
                                 new_inputs[i] = to_cid;
@@ -494,11 +487,7 @@ impl Graph {
                                 });
                                 let leaf_pool = buffer_map[&tid].pool;
                                 if leaf_pool != dev_pool {
-                                    let (_, to_cid) = self.push(
-                                        Node::ToDevice { x: input_cid, device: device_id, time: 0 },
-                                        self.classes[input_cid].shape,
-                                        self.classes[input_cid].dtype,
-                                    );
+                                    let to_cid = self.push_to_device(input_cid, device_id, 0);
                                     if to_cid != cid && to_cid != class_of {
                                         let new_inputs = new_inputs.get_or_insert_with(|| inputs.clone());
                                         new_inputs[i] = to_cid;
