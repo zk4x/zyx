@@ -37,9 +37,9 @@ use crate::{
     backend::{BufferId, Device},
     graph::{ClassId, ExecPlan, Graph, GraphId, Node},
     kernel::{DeviceId, Kernel, Op},
-    runtime::{KernelData, ShapeId, TensorState},
+    runtime::{KernelData, KernelId, ShapeId, TensorState},
     shape::Dim,
-    slab::Slab,
+    slab::{Slab, SlabId},
     tensor::TensorId,
     view::View,
 };
@@ -242,7 +242,7 @@ impl Drop for Tape {
                 });
                 let op_id = rt.kernels[kernel_id].kernel.push_back(op);
                 rt.kernels[kernel_id].loads.push(tid);
-                rt.tensors[tid].state = TensorState::Eager { kernel_id, op_id, pending: false };
+                rt.tensors[tid].state = TensorState::Eager { kernel_id, op_id, pending: KernelId::NULL };
                 for _ in 0..rc {
                     rt.kernels[kernel_id].outputs.push(tid);
                 }

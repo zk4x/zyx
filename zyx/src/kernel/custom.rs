@@ -21,7 +21,8 @@ use std::collections::BTreeSet;
 use crate::backend::{BufferId, DeviceInfo, MemoryPool, ProgramId};
 use crate::error::BackendError;
 use crate::kernel::{DeviceId, Kernel, MemScope, Op, OpId};
-use crate::runtime::{KernelData, TensorData, TensorState};
+use crate::runtime::{KernelData, KernelId, TensorData, TensorState};
+use crate::slab::SlabId;
 use crate::{DType, IntoShape, Tensor, ZyxError, shape::Dim};
 
 /// A compiled kernel ready for repeated execution.
@@ -217,7 +218,7 @@ impl CompiledKernel {
             let id = rt.tensors.push(TensorData {
                 shape_id,
                 dtype,
-                state: TensorState::Eager { kernel_id, op_id: OpId::NULL, pending: false },
+                state: TensorState::Eager { kernel_id, op_id: OpId::NULL, pending: KernelId::NULL },
             });
             rt.kernels[kernel_id].outputs.push(id);
             rt.buffer_map.insert(id, buf_id);

@@ -405,13 +405,12 @@ impl Runtime {
                     Op::LoadView(_) => {
                         let load_tid = loads[load_idx];
                         if !self.buffer_map.contains_key(&load_tid) {
-                            debug_assert!(matches!(self.tensors[load_tid].state, TensorState::Eager { pending: true, .. }));
-                            let outputs: Vec<TensorId> =
-                                if let TensorState::Eager { kernel_id, .. } = self.tensors[load_tid].state {
-                                    self.kernels[kernel_id].outputs.clone()
-                                } else {
-                                    vec![]
-                                };
+                            let pending = match &self.tensors[load_tid].state {
+                                TensorState::Eager { pending, .. } => *pending,
+                                TensorState::Graph { .. } => KernelId::NULL,
+                            };
+                            debug_assert!(!pending.is_null());
+                            let outputs: Vec<TensorId> = self.kernels[pending].outputs.clone();
                             for &otid in &outputs {
                                 self.add_store(otid)?;
                             }
