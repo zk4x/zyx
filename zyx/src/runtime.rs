@@ -34,7 +34,7 @@ use crate::{
     error::{BackendError, ErrorStatus},
     graph::ExecPlan,
     graph::{ClassId, Graph, GraphId, Node},
-    kernel::{BOp, DeviceId, Kernel, MoveOp, Op, OpId, UOp, autotune::OptSeq},
+    kernel::{BOp, DeviceId, Kernel, MemScope, MoveOp, Op, OpId, UOp, autotune::OptSeq},
     rng::Rng,
     shape::{Dim, UAxis},
     slab::{Slab, SlabId},
@@ -1409,6 +1409,19 @@ impl Runtime {
             }
             kernel.renumber_indices();
             kernel.verify();
+        }
+
+        #[cfg(debug_assertions)]
+        if let Some(buffers) = init_buffers {
+            let n_ro_global =
+                kernel.ops.values().filter(|op| matches!(&op.op, Op::Define { scope: MemScope::Global, ro: true, .. })).count();
+            assert_eq!(
+                buffers.len(),
+                n_ro_global,
+                "init_buffers len ({}) must match number of global read-only defines ({}) in kernel",
+                buffers.len(),
+                n_ro_global,
+            );
         }
 
         let (program_id, opts, timing) = kernel.autotune_(
