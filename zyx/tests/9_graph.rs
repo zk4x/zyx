@@ -147,3 +147,14 @@ fn realize_with_orphan_leaf_in_kernel() -> Result<(), ZyxError> {
     tape.realize([&new_w1, &new_b1, &new_w2, &new_b2])?;
     Ok(())
 }
+
+#[test]
+fn tape_caching() -> Result<(), ZyxError> {
+    let x = Tensor::from([1.0f32, 2.0, 3.0]);
+    for _ in 0..3 {
+        let tape = Tape::new([&x])?;
+        let z = x.sin();
+        tape.realize([&z])?;
+    }
+    Ok(())
+}

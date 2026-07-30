@@ -285,6 +285,7 @@ impl Runtime {
     }
 
     pub fn push_node(&mut self, graph_id: GraphId, node: Node, shape: ShapeId, dtype: DType) -> (NodeId, ClassId) {
+        //println!("push node to graph_id={graph_id:?}");
         match node {
             Node::Permute { x, ref axes } => {
                 let in_shape = &self.shapes[self.graphs[graph_id].classes[x].shape];
