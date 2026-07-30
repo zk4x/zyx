@@ -221,8 +221,8 @@ impl Runtime {
     }
 
     pub fn release(&mut self, x: TensorId) {
-        let (kid, pending) = match &mut self.tensors[x].state {
-            TensorState::Eager { kernel_id, pending: pending_store, .. } => (*kernel_id, *pending_store),
+        let (kid, op_id, pending) = match &mut self.tensors[x].state {
+            TensorState::Eager { kernel_id, op_id, pending: pending_store, .. } => (*kernel_id, *op_id, *pending_store),
             TensorState::Graph { rc, graph_id, .. } => {
                 *rc -= 1;
                 if *rc == 0 && !self.graphs.contains_key(*graph_id) {
@@ -236,6 +236,17 @@ impl Runtime {
         kd.outputs.iter().position(|e| *e == x).map(|i| kd.outputs.remove(i));
         if !kd.outputs.contains(&x) && !self.buffer_map.contains_key(&x) && pending.is_null() {
             self.tensors.remove(x);
+        }
+        if !kd.outputs.contains(&x) {
+            let out_ops: Vec<OpId> = kd
+                .outputs
+                .iter()
+                .map(|&tid| match self.tensors[tid].state {
+                    TensorState::Eager { op_id, .. } => op_id,
+                    _ => unreachable!(),
+                })
+                .collect();
+            kd.kernel.remove_unused_chain(op_id, &out_ops);
         }
         if kd.outputs.is_empty() {
             if !kd.kernel.contains_stores() {

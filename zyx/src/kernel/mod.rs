@@ -1599,6 +1599,43 @@ impl Kernel {
         self.ops.remove(op_id);
     }
 
+    /// Remove the transitive dependency chain of `x` that is not needed
+    /// by any store or any op in `keep_alive`.
+    pub(crate) fn remove_unused_chain(&mut self, x: OpId, keep_alive: &[OpId]) {
+        let mut chain: Set<OpId> = Set::default();
+        let mut stack = vec![x];
+        while let Some(op) = stack.pop() {
+            if chain.insert(op) {
+                stack.extend(self.ops[op].op.parameters());
+            }
+        }
+
+        let mut live: Set<OpId> = Set::default();
+        stack.extend_from_slice(keep_alive);
+        let mut op_id = self.head;
+        while !op_id.is_null() {
+            if matches!(self.ops[op_id].op, Op::StoreView { .. } | Op::Store { .. }) {
+                stack.push(op_id);
+            }
+            op_id = self.next_op(op_id);
+        }
+        while let Some(op) = stack.pop() {
+            if live.insert(op) {
+                stack.extend(self.ops[op].op.parameters());
+            }
+        }
+
+        let to_remove: Set<OpId> = chain.difference(&live).copied().collect();
+        let mut op_id = self.head;
+        while !op_id.is_null() {
+            let next = self.next_op(op_id);
+            if to_remove.contains(&op_id) {
+                self.remove_op(op_id);
+            }
+            op_id = next;
+        }
+    }
+
     /// Iterate over all operations in the kernel.
     ///
     /// Returns an iterator over all operations without any ordering guarantees.
