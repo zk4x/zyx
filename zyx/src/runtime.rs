@@ -646,7 +646,7 @@ impl Runtime {
                 Ok(tid)
             }
             _ => {
-                let (kid, mut op_id) = self.duplicate_or_store(x)?;
+                let (kid, mut op_id) = self.duplicate_or_store(x, false)?;
 
                 let n = shape.len();
                 let max_axis = *axes.last().unwrap() as usize;
@@ -737,7 +737,7 @@ impl Runtime {
                     return tid;
                 }
 
-                let (kernel_id_dup, op_id_dup) = self.duplicate_or_store(x).unwrap();
+                let (kernel_id_dup, op_id_dup) = self.duplicate_or_store(x, false).unwrap();
                 let op_id = self.kernels[kernel_id_dup].kernel.reshape(op_id_dup, &shape);
                 let tid = self.tensors.push(TensorData {
                     shape_id,
@@ -787,8 +787,9 @@ impl Runtime {
                     self.tensors.push(TensorData { shape_id, dtype, state: TensorState::Graph { class_id, rc: 1, graph_id } });
                 Ok(tid)
             }
-            TensorState::Eager { .. } => {
-                let (kernel_id, op_id) = self.duplicate_or_store(x)?;
+            TensorState::Eager { kernel_id, op_id, .. } => {
+                let force_store = self.kernels[kernel_id].kernel.is_preceded_by_compute(op_id);
+                let (kernel_id, op_id) = self.duplicate_or_store(x, force_store)?;
 
                 let op_id = self.kernels[kernel_id].kernel.expand(op_id, &self.shapes[shape_id]);
                 let tid = self.tensors.push(TensorData {
@@ -839,7 +840,7 @@ impl Runtime {
                 tid
             }
             TensorState::Eager { .. } => {
-                let (kernel_id, op_id) = self.duplicate_or_store(x).unwrap();
+                let (kernel_id, op_id) = self.duplicate_or_store(x, false).unwrap();
                 let op_id = self.kernels[kernel_id]
                     .kernel
                     .push_back(Op::Move { x: op_id, mop: Box::new(MoveOp::Permute { axes: axes.into(), shape: new_shape }) });
@@ -864,8 +865,10 @@ impl Runtime {
         let sh = self.shape(x);
         debug_assert_eq!(padding.len(), sh.len(), "pad_zeros: padding length {} != rank {}", padding.len(), sh.len());
 
+        let child_n: Dim = sh.iter().product();
         let mut new_shape = sh.to_vec();
         crate::shape::pad(&mut new_shape, &padding);
+        let pad_n: Dim = new_shape.iter().product();
         let shape_id = self.push_shape(new_shape.clone());
         let dtype = self.tensors[x].dtype;
 
@@ -880,8 +883,9 @@ impl Runtime {
                     self.tensors.push(TensorData { shape_id, dtype, state: TensorState::Graph { class_id, rc: 1, graph_id } });
                 tid
             }
-            TensorState::Eager { .. } => {
-                let (kernel_id, op_id) = self.duplicate_or_store(x).unwrap();
+            TensorState::Eager { kernel_id, op_id, .. } => {
+                let force_store = pad_n > child_n && self.kernels[kernel_id].kernel.is_preceded_by_compute(op_id);
+                let (kernel_id, op_id) = self.duplicate_or_store(x, force_store).unwrap();
                 let op_id = self.kernels[kernel_id]
                     .kernel
                     .push_back(Op::Move { x: op_id, mop: Box::new(MoveOp::Pad { padding, shape: new_shape }) });
@@ -1128,7 +1132,7 @@ pub fn get_perf(flop: u64, bytes_read: u64, bytes_written: u64, nanos: u64) -> S
 }
 
 impl Runtime {
-    fn duplicate_or_store(&mut self, x: TensorId) -> Result<(KernelId, OpId), ZyxError> {
+    fn duplicate_or_store(&mut self, x: TensorId, force_store: bool) -> Result<(KernelId, OpId), ZyxError> {
         let (mut kid, mut op_id) = match &self.tensors[x].state {
             TensorState::Eager { kernel_id, op_id, .. } => (*kernel_id, *op_id),
             TensorState::Graph { .. } => unreachable!("duplicate_or_store in graph mode"),
@@ -1136,7 +1140,7 @@ impl Runtime {
 
         let contains_stores = self.kernels[kid].kernel.contains_stores();
         let preceded_by_reduce = self.kernels[kid].kernel.is_preceded_by_reduce(op_id);
-        if contains_stores | preceded_by_reduce {
+        if force_store || contains_stores | preceded_by_reduce {
             self.add_store(x)?;
             (kid, op_id) = match self.tensors[x].state {
                 TensorState::Eager { kernel_id, op_id, .. } => (kernel_id, op_id),

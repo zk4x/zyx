@@ -54,7 +54,7 @@ fn mnist() -> Result<(), ZyxError> {
         let grads = tape.gradient(&loss, [&net.l1_weight, &net.l1_bias, &net.l2_weight, &net.l2_bias, &loss]);
 
         // Simulate SGD update
-        let lr = 0.01;
+        let lr = 0.01f32;
         let new_w1 = &net.l1_weight - &grads[0] * lr;
         let new_b1 = &net.l1_bias - &grads[1] * lr;
         let new_w2 = &net.l2_weight - &grads[2] * lr;

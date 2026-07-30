@@ -619,10 +619,10 @@ impl Graph {
         let cid_shape: Vec<Dim> = shapes[self.classes[cid].shape].clone();
         let pad_n: Dim = cid_shape.iter().product();
 
-        // if shape after expand is larger than original
-        let force_store = pad_n > child_n;
-
         let (mut kid, mut op_id) = visited[&child];
+
+        // if shape after expand is larger than original and is compute kernel
+        let force_store = pad_n > child_n && self.ekernels[kid].kernel.is_preceded_by_compute(op_id);
         (kid, op_id) = self.duplicate_or_store_class(child, kid, op_id, visited, rcs, shapes, force_store);
 
         remove_first_output(&mut self.ekernels, kid, child);
