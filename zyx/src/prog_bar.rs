@@ -23,7 +23,7 @@ impl ProgressBar {
         //let n = 5;
         //let k = (self.idx * n) / self.count;
         print!(
-            "\r[{0:1$}/{2}] {message}",
+            "\x1b[2K\r[{0:1$}/{2}] {message}",
             self.idx,
             (self.count as f32).log10() as usize + 1,
             self.count,

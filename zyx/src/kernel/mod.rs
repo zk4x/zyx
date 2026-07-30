@@ -1633,6 +1633,66 @@ impl Kernel {
         }
     }
 
+    pub(crate) fn name(&self) -> String {
+        let mut parts: Vec<&str> = Vec::new();
+        let mut op_id = self.head;
+        while !op_id.is_null() {
+            match self.at(op_id) {
+                Op::Unary { uop, .. } => parts.push(match uop {
+                    UOp::Neg => "neg",
+                    UOp::BitNot => "bitnot",
+                    UOp::Exp => "exp",
+                    UOp::Exp2 => "exp2",
+                    UOp::Ln => "ln",
+                    UOp::Log2 => "log2",
+                    UOp::Reciprocal => "reciprocal",
+                    UOp::Sqrt => "sqrt",
+                    UOp::Sin => "sin",
+                    UOp::Cos => "cos",
+                    UOp::Floor => "floor",
+                    UOp::Trunc => "trunc",
+                    UOp::Abs => "abs",
+                }),
+                Op::Binary { bop, .. } => parts.push(match bop {
+                    BOp::Add => "add",
+                    BOp::Sub => "sub",
+                    BOp::Mul => "mul",
+                    BOp::Div => "div",
+                    BOp::Pow => "pow",
+                    BOp::Mod => "mod",
+                    BOp::Cmplt => "cmplt",
+                    BOp::Cmpgt => "cmpgt",
+                    BOp::Max => "max",
+                    BOp::Or => "or",
+                    BOp::And => "and",
+                    BOp::BitXor => "bitxor",
+                    BOp::BitOr => "bitor",
+                    BOp::BitAnd => "bitand",
+                    BOp::BitShiftLeft => "shl",
+                    BOp::BitShiftRight => "shr",
+                    BOp::NotEq => "neq",
+                    BOp::Eq => "eq",
+                }),
+                Op::Reduce { rop, .. } => parts.push(match rop {
+                    BOp::Add => "sum",
+                    BOp::Max => "max",
+                    BOp::Mul => "prod",
+                    _ => "reduce",
+                }),
+                Op::Mad { .. } => parts.push("mad"),
+                Op::Wmma { .. } => parts.push("wmma"),
+                Op::Cast { .. } => parts.push("cast"),
+                _ => {}
+            }
+            op_id = self.next_op(op_id);
+        }
+        parts.dedup();
+        if parts.is_empty() {
+            return "copy".into();
+        }
+        parts.join("_")
+    }
+
     /// Compute flop and memory statistics for the kernel.
     ///
     /// Returns estimated flops, memory reads, and memory writes.

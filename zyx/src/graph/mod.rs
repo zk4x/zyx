@@ -608,7 +608,7 @@ impl Graph {
             if cost[idx].is_none() {
                 for &cid in &order {
                     if cost[cid.0 as usize].is_none() {
-                        eprint!("{cid:?}:[");
+                        /*eprint!("{cid:?}:[");
                         for &nid in &self.classes[cid].nodes {
                             match &self.nodes[nid].node {
                                 Node::Kernel { inputs, .. } => eprint!("Kernel(inputs={inputs:?}) "),
@@ -625,7 +625,7 @@ impl Graph {
                                 Node::Binary { .. } => eprint!("Binary "),
                             }
                         }
-                        eprintln!("]");
+                        eprintln!("]");*/
                         if let Some(producer_nid) = producer[cid.0 as usize] {
                             if let Node::Kernel { inputs, .. } = &self.nodes[producer_nid].node {
                                 for icid in inputs.iter() {
@@ -666,10 +666,10 @@ impl Runtime {
             let class_of = ek.stores.first().copied().unwrap();
 
             for &dev_id in device_ids.iter() {
-                bar.inc(1, "autotuning kernels");
                 let pool_id = self.devices[dev_id].memory_pool_id();
                 let mut kernel = ek.kernel.clone();
                 kernel.device_id = dev_id;
+                bar.inc(1, &format!("autotune {} on dev={}", kernel.name(), dev_id.0));
                 let (dev_prog, timing) = self.get_or_autotune(kernel, pool_id, flop, read, write, None)?;
                 let prog = ProgramId { device: dev_id, program: dev_prog };
 
