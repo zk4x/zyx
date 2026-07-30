@@ -1178,15 +1178,17 @@ fn dot4() -> Result<(), ZyxError> {
 
 #[test]
 fn cross_entropy() -> Result<(), ZyxError> {
-    let x = Tensor::from([[2, 3, 4], [5, 6, 7]]).cast(DType::F32);
-    let target = Tensor::from([[0, 1, 0], [0, 0, 1]]).cast(DType::F32);
-    let m = &x - x.max_keepdim([1])?;
-    //println!("{}", m);
-    //Tensor::realize([&m])?;
-    let neg_log2_softmax = m.exp().sum_keepdim([1])?.ln() - m;
-    //println!("{}", neg_log2_softmax);
-    //panic!();
-    let ce = neg_log2_softmax * target;
+    let ce = {
+        let x = Tensor::from([[2, 3, 4], [5, 6, 7]]).cast(DType::F32);
+        let target = Tensor::from([[0, 1, 0], [0, 0, 1]]).cast(DType::F32);
+        let m = &x - x.max_keepdim([1])?;
+        //println!("{}", m);
+        //Tensor::realize([&m])?;
+        let neg_log2_softmax = m.exp().sum_keepdim([1])?.ln() - m;
+        //println!("{}", neg_log2_softmax);
+        //panic!();
+        neg_log2_softmax * target
+    };
     //println!("{ce:.6}");
     assert_eq!(ce, [[0.000000f32, 1.407606, 0.000000], [0.000000, 0.000000, 0.407606]]);
     Ok(())
