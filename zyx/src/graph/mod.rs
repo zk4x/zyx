@@ -654,15 +654,19 @@ impl Graph {
 
 impl Runtime {
     pub fn autotune_graph_ekernels(&mut self, graph_id: GraphId) -> Result<(), ZyxError> {
+        println!("Autotuning");
         let device_ids: Vec<DeviceId> = self.devices.ids().collect();
 
         let ekernels: *const Slab<EKernelId, EKernelData> = &self.graphs[graph_id].ekernels;
         let ekernels: &Slab<EKernelId, EKernelData> = unsafe { &*ekernels };
+        let total = ekernels.len().0 as u64 * device_ids.len() as u64;
+        let mut bar = crate::prog_bar::ProgressBar::new(total);
         for ek in ekernels.values() {
             let (flop, read, write) = ek.kernel.flop_mem_rw();
             let class_of = ek.stores.first().copied().unwrap();
 
             for &dev_id in device_ids.iter() {
+                bar.inc(1, "autotuning kernels");
                 let pool_id = self.devices[dev_id].memory_pool_id();
                 let mut kernel = ek.kernel.clone();
                 kernel.device_id = dev_id;
