@@ -246,10 +246,7 @@ impl Runtime {
                     _ => unreachable!(),
                 })
                 .collect();
-            let op_removed = kd.kernel.remove_unused_chain(op_id, &out_ops);
-            if op_removed {
-                kd.loads.retain(|&tid| tid != x);
-            }
+            kd.loads = kd.kernel.remove_unused_chain(op_id, &out_ops, &kd.loads);
         }
         if kd.outputs.is_empty() {
             if !kd.kernel.contains_stores() {

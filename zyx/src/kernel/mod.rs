@@ -1601,9 +1601,15 @@ impl Kernel {
 
     /// Remove the transitive dependency chain of `x` that is not needed
     /// by any store or any op in `keep_alive`.
-    /// Removes ops from `x` backwards that are no longer used.
-    /// Returns `true` if `x` itself was removed.
-    pub(crate) fn remove_unused_chain(&mut self, x: OpId, keep_alive: &[OpId]) -> bool {
+    /// Removes ops from `x` backwards that are no longer needed.
+    /// Returns a filtered version of `loads` with entries for removed LoadViews removed.
+    /// The i-th entry in `loads` corresponds to the i-th LoadView in op order.
+    pub(crate) fn remove_unused_chain(
+        &mut self,
+        x: OpId,
+        keep_alive: &[OpId],
+        loads: &[crate::tensor::TensorId],
+    ) -> Vec<crate::tensor::TensorId> {
         let mut chain: Set<OpId> = Set::default();
         let mut stack = vec![x];
         while let Some(op) = stack.pop() {
@@ -1627,6 +1633,19 @@ impl Kernel {
             }
         }
 
+        // Collect LoadView OpIds in op order (before removal)
+        let loadview_ops: Vec<OpId> = {
+            let mut ops = Vec::new();
+            let mut id = self.head;
+            while !id.is_null() {
+                if matches!(&self.ops[id].op, Op::LoadView(_)) {
+                    ops.push(id);
+                }
+                id = self.next_op(id);
+            }
+            ops
+        };
+
         let to_remove: Set<OpId> = chain.difference(&live).copied().collect();
         let mut op_id = self.head;
         while !op_id.is_null() {
@@ -1636,7 +1655,14 @@ impl Kernel {
             }
             op_id = next;
         }
-        to_remove.contains(&x)
+
+        // Keep only loads whose corresponding LoadView was not removed
+        loadview_ops
+            .iter()
+            .enumerate()
+            .filter(|&(_, &lv_id)| !to_remove.contains(&lv_id))
+            .map(|(i, _)| loads[i])
+            .collect()
     }
 
     /// Iterate over all operations in the kernel.
