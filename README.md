@@ -13,7 +13,7 @@
 
 - **Eager-ish Execution** — tensor operations fuse into kernels as you write them; when fusion is no longer possible, the kernel executes. For one off computations.
 - **Tape Mode** — wrap loops in a `Tape` for lazy graph building, autograd and egraph-based fusion optimization. For repeated computations.
-- **Cross‑Platform Backends** — native codegen for C, CUDA, OpenCL and SPIR-V.
+- **Cross‑Platform Backends** — codegen for C, CUDA, OpenCL and SPIR-V.
 - **Full Linear‑Algebra Coverage** — mirrors the PyTorch ops API (matmul, convolutions, pooling, reductions, indexing, etc.) by stacking ops. Stack more ops yourself to get more op coverage, zyx auto fuses and optimizes it.
 - **Immutable Tensors** — tensors cannot be modified in place, preventing back‑prop errors common in PyTorch (`RuntimeError: a tensor was modified in place`).
 - **Explicit Tape** — you control what is recorded via `Tape`; no need for `torch.no_grad()` or requires_grad semantics.
@@ -106,7 +106,8 @@ fn main() -> Result<(), zyx::ZyxError> {
 
 ## Custom Kernels
 
-Hand-optimize kernels for peak performance using hardware-specific features (e.g. tensor cores):
+Hand-optimize kernels for peak performance using hardware-specific features (e.g. tensor cores) using
+zyx IR:
 
 ```rust
 use zyx::kernel::{Kernel, Scope, MemLayout, DeviceId};
@@ -137,14 +138,16 @@ See the [WMMA matmul example](zyx/src/kernel/mod.rs#L9-L89) for a tensor-core ma
 
 ```mermaid
 flowchart LR
-    A["Tensor Graph"] --> B["Fusion and Device Schedule Search"]
-    B --> C["Unified Kernel IR"]
-    C --> D["Backend Code / Assembly"]
+    A["Tensor E-Graph"] --> B["Fusion and Device Schedule Search"]
+    B --> C["AOT kernels"]
+    B --> D["Unified Kernel IR"]
+    E --> F["IR autotuner with backend specific passes"]
+    F --> G["Backend Code / Assembly"]
 ```
 Outside a tape, tensor operations fuse eagerly into kernels as you call them.
 Inside a tape, a lazy graph is built and analyzed for fusion opportunities during
-realization. The fused operations are lowered to a unified
-intermediate representation, then compiled to native code (OpenCL, CUDA, C, SPIR-V, etc.)
+realization or may pattern match parts of graph into AOT kernels. The fused operations are lowered
+to a unified intermediate representation, then compiled to native code
 for the target backend. Tape egraph compares fusion schemes and device allocations.
 
 ## Why zyx is Different
@@ -179,7 +182,9 @@ for the target backend. Tape egraph compares fusion schemes and device allocatio
 ## For Devs
 
 - [Architecture Book](https://zk4x.github.io/zyx/) - How zyx works under the hood
-- [Contributing](CONTRIBUTING.md) - How to contribute, code style, and PR workflow
+- [Contributing](CONTRIBUTING.md) - How to contribute
+- [Adding backends](ADDING_BACKENDS.md) - How to add new backends, information for hardware vendors
+- [Style](STYLE.md) - Zyx code style
 - [Configuration](zyx/CONFIG.md) - Hardware device selection, autotune settings, backend config
 - [Environment Variables](zyx/ENV_VARS.md) - Debug flags
 - [API Reference](https://docs.rs/zyx) - Complete API documentation

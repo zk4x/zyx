@@ -9,10 +9,10 @@ ML was enabled by new kinds of highly parallel, high performance hardware that d
 
 Zyx has 3 goals + a bonus goal:
 1. Be correct
-2. Run everywhere
+2. Run everywhere (all hardware)
 3. Run fast
 
-Bonus: be pleasant to use while at that
+Bonus: be nice to use while at that
 
 ML won't get better without new hardware and existing libraries are ill-suited to support emerging hardware.
 The primary problem is the requirement to write custom kernels to get the required performance.
@@ -55,6 +55,7 @@ zyx-nn = "*"
 zyx-optim = "*"
 ```
 
+
 ## Syntax
 
 Zyx uses syntax similar to other ML frameworks.
@@ -77,6 +78,7 @@ let bb_grad = tape.gradient(&b_grad, [&b])[0].clone();
 # Ok::<(), zyx::ZyxError>(())
 ```
 
+
 ## Quick Start
 
 No config file needed — all backends try to initialize by default.
@@ -85,65 +87,19 @@ Run `ZYX_DEBUG=1` to see which ones found hardware.
 See [CONFIG.md](CONFIG.md) for device selection, autotune, and advanced options.
 See [ENV_VARS.md](ENV_VARS.md) for debugging with `ZYX_DEBUG`.
 
+
 ## Backends
 
 - [x] `C` — CPU backend via C codegen (clang/gcc)
-- [x] `CUDA` — NVIDIA GPU acceleration
-- [x] `OpenCL` — Cross-platform (CPU via POCL, GPU via native drivers)
-- [x] `Vulkan` — Cross-platform GPU acceleration via Vulkan (SPIR-V)
-- [x] `WGPU` — Modern web and native GPU support via wgpu (WGSL), feature: `wgpu`
+- [x] `CUDA` — NVIDIA GPU acceleration, via PTX codegen
+- [x] `OpenCL`
+- [x] `Vulkan` — via SPIR-V codegen
+- [x] `WGPU` - via SPIR-V codegen, feature: `wgpu`
+- [ ] `tenstorrent` - Preliminary support, does not pass full test suite yet, feature `wgpu`
 
 If you'd like to add new backend to zyx, that would be awesome!
-Please read [BACKEND.md](https://github.com/zk4x/zyx/blob/main/zyx/BACKEND.md)
+Please read [ADDING_BACKENDS.md](https://github.com/zk4x/zyx/blob/main/ADDING_BACKENDS.md)
 
-## Neural network training
-
-```rust ignore
-use zyx::{Tensor, DType, Tape, ZyxError};
-use zyx_nn::{Linear, Module};
-use zyx_optim::SGD;
-
-#[derive(Module)]
-struct TinyNet {
-    l0: Linear,
-    l1: Linear,
-    lr: f32,
-}
-
-impl TinyNet {
-    fn forward(&self, x: &Tensor) -> Tensor {
-        let x = self.l0.forward(x).unwrap().relu();
-        self.l1.forward(x).unwrap().sigmoid()
-    }
-}
-
-let mut net = TinyNet {
-    l0: Linear::new(3, 1024, true, DType::F16)?,
-    l1: Linear::new(1024, 2, true, DType::F16)?,
-    lr: 0.01,
-};
-
-let mut optim = SGD {
-    learning_rate: net.lr,
-    momentum: 0.9,
-    nesterov: true,
-    ..Default::default()
-};
-
-let x = Tensor::from([2, 3, 1]).cast(DType::F16);
-let target = Tensor::from([5, 7]);
-
-for _ in 0..100 {
-    let tape = Tape::new(&net)?;
-    let y = net.forward(&x);
-    let loss = y.mse_loss(&target)?;
-    let grads = tape.gradient(&loss, &net);
-    optim.update(&mut net, grads);
-    tape.realize(net.into_iter().chain(optim.into_iter()))?;
-}
-
-# Ok::<(), zyx::ZyxError>(())
-```
 
 ## Error handling
 
@@ -151,17 +107,20 @@ In case of incorrect user input, zyx returns results. Panics are reserved for OO
 not recoverable. There are minimal exceptions to this rule, such as binary ops, which will panic if they cannot
 be broadcasted to a common shape.
 
+
 ### DTypes
 
-Backends advertise supported dtypes via `supported_dtypes` mask. zyx will never implicitly downcast (e.g., F32→F16)
-when a backend lacks support — the operation fails explicitly. Implicit upcasting (e.g., F16→F32) is permitted
+Backends advertise supported dtypes via `supported_dtypes` mask. zyx does not implicitly downcast (e.g., F32→F16)
+when a backend lacks support — the operation fails explicitly. Implicit upcasting (e.g., F16→F32) is sometimes applied
 when the backend does not natively support the narrower type — correctness is guaranteed, not performance.
+
 
 ## Rust version
 
-Zyx supports rust 1.88+. Zyx also requires std, as it accesses files (like cuda, hip and opencl runtimes),
-env var (for debugging) and also some other stuff that requires filesystem and threads (loading files,
-multithreaded execution, worker threads, etc.).
+Minimum supported rust version is 1.88, works with any newer stable version too. Zyx also requires std,
+as it accesses files (like cuda, hip and opencl runtimes), env vars (for debugging) and also some other
+stuff that requires filesystem and threads (loading files, multithreaded execution, worker threads, etc.).
+
 
 ## Operating systems
 
@@ -170,44 +129,44 @@ If it does not work on your system, or if you are interested in Windows support,
 create a github issue. Basically the only difference between operating systems is specifying
 proper paths to backend runtimes (e.g. libcuda.so).
 
+
 ## Features
 
 - **wgpu** - enables wgpu backend
+- **tenstorrent** - enables tenstorrent backend
 
-## Warning
-
-Zyx uses some unsafe code, due to FFI/hardware access. Zyx brings it's own runtime.
-It is a single global struct behind mutex. Tensors are indices into a graph stored in this runtime.
-It may not be the cleanest approach, but it is the fast and convenient approach.
 
 ## Dependencies
 
 Zyx tries to use 0 dependencies, but we are not reinventing the wheel, so we use nanoserde for config
-parsing, libloading to dynamically load backend dynamic library files (i.e. libcuda.so).
-All dependencies are carefully considered and are used only if deemed absolutely necessary,
-that is only if they do one thing and do it well.
+parsing and libloading to dynamically load backend dynamic library files.
+All dependencies are carefully considered and are used only if deemed absolutely necessary.
 
-Currently zyx is below 30k LOC. OFC runtimes are needed for respective backends (e.g. libcuda.so).
+Currently zyx is below 30k LOC. Runtimes are needed for respective backends (e.g. libcuda.so)
+and also hardware drivers.
 
 Optional dependencies do not have size limits. This is currently only WGPU, which has millions
 of lines of code with it's dependencies.
 
 For more architecture details, there is a [book](https://zk4x.github.io/zyx).
 
+
 ## Code of conduct
 
 Zyx has [code of conduct](CODE_OF_CONDUCT.md) that we humbly borrowed from sqlite.
+
 
 ## Contributing
 
 Please check out [CONTRIBUTING.md](CONTRIBUTING.md)
 
+
 ## Thank you
 
 For contributing to Zyx, finding bugs and using it in your ML models.
+
 
 ## License
 
 Zyx is free software licensed under the GNU Lesser General Public License v3.0 (`LGPLv3`)
 See the LICENSE file for details.
-
