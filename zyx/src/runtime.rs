@@ -43,6 +43,21 @@ use crate::{
     view::View,
 };
 
+/// Loads present in `old` but not in `new`, counting multiplicities.
+fn loads_dropped_by_prune(old: &[TensorId], new: &[TensorId]) -> Vec<TensorId> {
+    let mut dropped = Vec::new();
+    let mut seen: Set<TensorId> = Set::default();
+    for &tid in old {
+        if !seen.insert(tid) {
+            continue;
+        }
+        let old_c = old.iter().filter(|&&t| t == tid).count();
+        let new_c = new.iter().filter(|&&t| t == tid).count();
+        dropped.extend(std::iter::repeat_n(tid, old_c - new_c));
+    }
+    dropped
+}
+
 #[derive(Debug, Copy, Clone, Hash, PartialEq, PartialOrd, Eq, Ord)]
 pub struct ShapeId(u16);
 
@@ -232,12 +247,11 @@ impl Runtime {
     pub fn release(&mut self, x: TensorId) {
         let rc = self.tensors[x].rc - 1;
         self.tensors[x].rc = rc;
-        let (kernel_id, op_id, pending, class_id, graph_id) = (
+        let (kernel_id, op_id, pending, class_id) = (
             self.tensors[x].kernel_id,
             self.tensors[x].op_id,
             self.tensors[x].pending,
             self.tensors[x].class_id,
-            self.tensors[x].graph_id,
         );
 
         // Keep the eager kernel's outputs in sync with rc.
@@ -249,39 +263,111 @@ impl Runtime {
         if !class_id.is_null() {
             // Graph-affiliated tensor (pure graph or "both" while graph alive).
             if rc == 0 {
-                if self.graphs.contains_key(graph_id) {
-                    if !self.graphs[graph_id].is_leaf(class_id) {
-                        debug_assert!(!self.buffer_map.contains_key(&x), "dead non-leaf graph tensor holds a buffer");
-                        self.tensors.remove(x);
-                    }
-                    self.graphs[graph_id].ref_count -= 1;
-                    if self.graphs[graph_id].dead && self.graphs[graph_id].ref_count == 0 {
-                        self.remove_dead_graph(graph_id);
-                    }
-                } else if !self.buffer_map.contains_key(&x) {
-                    self.tensors.remove(x);
-                }
+                self.on_rc_zero(x);
             }
             return;
         }
 
         // Eager tensor path.
-        let kd = &mut self.kernels[kernel_id];
-        if rc == 0 && !self.buffer_map.contains_key(&x) && pending.is_null() {
-            self.tensors.remove(x);
+        // With custom kernels, op_id is null, so we have to skip the chain pruning.
+        let pruned = if !op_id.is_null() {
+            let kd = &mut self.kernels[kernel_id];
+            if kd.outputs.contains(&x) {
+                Vec::new()
+            } else {
+                let out_ops: Vec<OpId> = kd.outputs.iter().map(|&tid| self.tensors[tid].op_id).collect();
+                let old_loads = std::mem::take(&mut kd.loads);
+                let new_loads = kd.kernel.remove_unused_chain(op_id, &out_ops, &old_loads);
+                kd.loads = new_loads.clone();
+                loads_dropped_by_prune(&old_loads, &new_loads)
+            }
+        } else {
+            Vec::new()
+        };
+        for tid in pruned {
+            self.release_load(tid);
         }
-        // With custom kernels, op_id is null, so we have to skip this
-        if !kd.outputs.contains(&x) && !op_id.is_null() {
-            let out_ops: Vec<OpId> = kd.outputs.iter().map(|&tid| self.tensors[tid].op_id).collect();
-            kd.loads = kd.kernel.remove_unused_chain(op_id, &out_ops, &kd.loads);
+
+        // rc == 0 means no handles and no kernel loads reference x anymore.
+        // x is dead: remove it and free its buffer (unless a pending kernel is
+        // still producing it). Loads dropped by the prune above are released
+        // before this so that rc is accurate.
+        if rc == 0 && pending.is_null() {
+            self.on_rc_zero(x);
         }
-        if kd.outputs.is_empty() {
-            if !kd.kernel.contains_stores() {
+
+        if self.kernels[kernel_id].outputs.is_empty() {
+            if !self.kernels[kernel_id].kernel.contains_stores() {
                 //eprintln!("A: kernels.remove({kid:?})");
-                self.kernels.remove(kernel_id);
+                self.remove_dead_eager_kernel(kernel_id);
             } else {
                 self.materialize_kernel(kernel_id).unwrap();
             }
+        }
+    }
+
+    /// A kernel-load reference on `x` was added (loads.push). Kernel loads are
+    /// counted in `rc` so that load tensors and their buffers are freed once
+    /// the last kernel referencing them dies.
+    pub(crate) fn retain_load(&mut self, x: TensorId) {
+        self.tensors[x].rc += 1;
+    }
+
+    /// A kernel-load reference on `x` was dropped (kernel removal or load
+    /// pruning). If this was the last reference, `x` may be removed.
+    fn release_load(&mut self, x: TensorId) {
+        let rc = self.tensors[x].rc - 1;
+        self.tensors[x].rc = rc;
+        if rc == 0 {
+            self.on_rc_zero(x);
+        }
+    }
+
+    /// A tensor's reference count reached zero: no handles and no kernel loads
+    /// reference it. Remove it, freeing its buffer if no other tensor maps to
+    /// the same buffer. Graph-affiliated tensors may be kept by their graph.
+    fn on_rc_zero(&mut self, x: TensorId) {
+        let (pending, class_id, graph_id) = (self.tensors[x].pending, self.tensors[x].class_id, self.tensors[x].graph_id);
+
+        if !class_id.is_null() {
+            // Graph-affiliated tensor (pure graph or "both" while graph alive).
+            if self.graphs.contains_key(graph_id) {
+                if !self.graphs[graph_id].is_leaf(class_id) {
+                    debug_assert!(!self.buffer_map.contains_key(&x), "dead non-leaf graph tensor holds a buffer");
+                    self.tensors.remove(x);
+                }
+                self.graphs[graph_id].ref_count -= 1;
+                if self.graphs[graph_id].dead && self.graphs[graph_id].ref_count == 0 {
+                    self.remove_dead_graph(graph_id);
+                }
+            } else if !self.buffer_map.contains_key(&x) {
+                self.tensors.remove(x);
+            }
+            return;
+        }
+
+        // Eager tensor: no references remain. If a pending kernel is still
+        // producing x, keep it until that kernel materializes.
+        if !pending.is_null() {
+            return;
+        }
+        if let Some(buf_id) = self.buffer_map.remove(&x) {
+            let still_used = self.buffer_map.values().any(|b| b.pool == buf_id.pool && b.buffer == buf_id.buffer);
+            if !still_used {
+                let wait_list = drain_events_for_buf(&mut self.events, buf_id);
+                self.pools[buf_id.pool].deallocate(buf_id.buffer, wait_list);
+            }
+        }
+        self.tensors.remove(x);
+    }
+
+    /// Remove a kernel that has no outputs and no stores, releasing its load
+    /// references.
+    fn remove_dead_eager_kernel(&mut self, kid: KernelId) {
+        let loads = std::mem::take(&mut self.kernels[kid].loads);
+        self.kernels.remove(kid);
+        for tid in loads {
+            self.release_load(tid);
         }
     }
 
@@ -310,20 +396,33 @@ impl Runtime {
         let rc = self.tensors[tid].rc;
         let graph_id = self.tensors[tid].graph_id;
         let old_kernel_id = self.tensors[tid].kernel_id;
-        let old_op_id = self.tensors[tid].op_id;
 
         // Release tid from its old eager kernel (if any): remove it from outputs,
-        // prune the unused chain, and drop the kernel if nothing else uses it.
+        // prune the unused chain (releasing pruned loads), and drop the kernel if
+        // nothing else uses it (releasing its remaining loads).
+        let mut handles = rc as usize;
+        let mut pruned: Vec<TensorId> = Vec::new();
         if !old_kernel_id.is_null() {
-            let kd = &mut self.kernels[old_kernel_id];
-            kd.outputs.retain(|&e| e != tid);
-            if !old_op_id.is_null() {
-                let out_ops: Vec<OpId> = kd.outputs.iter().map(|&t| self.tensors[t].op_id).collect();
-                kd.loads = kd.kernel.remove_unused_chain(old_op_id, &out_ops, &kd.loads);
+            let old_op_id = self.tensors[tid].op_id;
+            let kernel_died = {
+                let kd = &mut self.kernels[old_kernel_id];
+                handles = kd.outputs.iter().filter(|&&e| e == tid).count();
+                kd.outputs.retain(|&e| e != tid);
+                if !old_op_id.is_null() {
+                    let out_ops: Vec<OpId> = kd.outputs.iter().map(|&t| self.tensors[t].op_id).collect();
+                    let old_loads = std::mem::take(&mut kd.loads);
+                    let new_loads = kd.kernel.remove_unused_chain(old_op_id, &out_ops, &old_loads);
+                    kd.loads = new_loads.clone();
+                    pruned = loads_dropped_by_prune(&old_loads, &new_loads);
+                }
+                kd.outputs.is_empty()
+            };
+            for t in pruned {
+                self.release_load(t);
             }
-            if kd.outputs.is_empty() {
-                if !kd.kernel.contains_stores() {
-                    self.kernels.remove(old_kernel_id);
+            if kernel_died {
+                if !self.kernels[old_kernel_id].kernel.contains_stores() {
+                    self.remove_dead_eager_kernel(old_kernel_id);
                 } else {
                     self.materialize_kernel(old_kernel_id).unwrap();
                 }
@@ -336,7 +435,7 @@ impl Runtime {
         let dtype = self.dtype(tid);
         let op = Op::LoadView(Box::new((dtype, View::contiguous(&shape))));
         let kernel_id = self.kernels.push(KernelData {
-            outputs: vec![tid; rc as usize],
+            outputs: vec![tid; handles],
             loads: Vec::new(),
             stores: Vec::new(),
             kernel: Kernel::new(DeviceId::AUTO),
@@ -346,6 +445,7 @@ impl Runtime {
         self.tensors[tid].kernel_id = kernel_id;
         self.tensors[tid].op_id = op_id;
         self.tensors[tid].pending = KernelId::NULL;
+        self.retain_load(tid);
         self.graphs[graph_id].ref_count -= 1;
     }
 
@@ -592,6 +692,7 @@ impl Runtime {
         let op = Op::LoadView(Box::new((dtype, View::contiguous(&self.shapes[shape]))));
         let tid = self.new_eager_tensor(op);
         self.kernels[self.tensors[tid].kernel_id].loads.push(tid);
+        self.retain_load(tid);
 
         self.buffer_map.insert(tid, buffer_id);
 
@@ -619,6 +720,7 @@ impl Runtime {
         let shape_id = self.push_shape(shape);
         let tid = self.new_eager_tensor(Op::LoadView(Box::new((dtype, View::contiguous(&self.shapes[shape_id])))));
         self.kernels[self.tensors[tid].kernel_id].loads.push(tid);
+        self.retain_load(tid);
         self.buffer_map.insert(tid, buffer_id);
         Ok(tid)
     }
@@ -1209,6 +1311,7 @@ impl Runtime {
                 });
                 self.kernels[kernel_id].outputs.push(tid);
                 self.kernels[kernel_id].loads.push(tid);
+                self.retain_load(tid);
                 self.buffer_map.insert(tid, buf_id);
                 #[cfg(feature = "debug_tensor_op")]
                 println!("  -> tid={tid} (load kernel, shares buffer with x={x})");
@@ -1632,16 +1735,37 @@ impl Runtime {
 
         debug_assert!(self.kernels[kid].stores.is_empty(), "duplicated kernel must not have stores");
 
-        let loads = self.kernels[kid].loads.clone();
+        let old_loads = self.kernels[kid].loads.clone();
         let out_op_ids: Vec<OpId> = self.kernels[kid]
             .outputs
             .iter()
             .map(|&tid| self.tensors[tid].op_id)
             .collect();
-        let (kernel, new_op_id, self_loads, loads) = self.kernels[kid].kernel.extract_subkernel(op_id, &out_op_ids, &loads);
-        self.kernels[kid].loads = self_loads;
+        let (kernel, new_op_id, self_loads, new_loads) =
+            self.kernels[kid].kernel.extract_subkernel(op_id, &out_op_ids, &old_loads);
+        self.kernels[kid].loads = self_loads.clone();
 
-        kid = self.kernels.push(KernelData { outputs: Vec::new(), loads, stores: Vec::new(), kernel });
+        // Each kernel-load occurrence carries its own rc reference. The split
+        // may duplicate a load into both kernels (an extra ref) or drop it
+        // (release the ref).
+        let mut seen: Set<TensorId> = Set::default();
+        for &tid in old_loads.iter().chain(self_loads.iter()).chain(new_loads.iter()) {
+            if !seen.insert(tid) {
+                continue;
+            }
+            let old_c = old_loads.iter().filter(|&&t| t == tid).count();
+            let self_c = self_loads.iter().filter(|&&t| t == tid).count();
+            let new_c = self_c + new_loads.iter().filter(|&&t| t == tid).count();
+            let delta = (new_c as i64) - (old_c as i64);
+            for _ in 0..delta {
+                self.retain_load(tid);
+            }
+            for _ in 0..(-delta) {
+                self.release_load(tid);
+            }
+        }
+
+        kid = self.kernels.push(KernelData { outputs: Vec::new(), loads: new_loads, stores: Vec::new(), kernel });
         op_id = new_op_id;
 
         Ok((kid, op_id))
@@ -1684,6 +1808,7 @@ impl Runtime {
         self.tensors[x].kernel_id = load_kid;
         self.tensors[x].op_id = load_op_id;
         self.tensors[x].pending = pending;
+        self.retain_load(x);
 
         if outputs_empty {
             self.materialize_kernel(kid)?;
@@ -1800,14 +1925,15 @@ impl Runtime {
             return Ok(());
         }
 
-        debug_assert!(
-            loads.iter().all(|&tid| {
+        for &tid in &loads {
+            assert!(
                 self.buffer_map.contains_key(&tid)
                     || outputs.contains(&tid)
-                    || self.kernels.values().any(|kd| kd.outputs.contains(&tid) || kd.stores.contains(&tid))
-            }),
-            "load tid must be realized or in kernel's own outputs, or in some other kernel's outputs/stores"
-        );
+                    || self.kernels.values().any(|kd| kd.outputs.contains(&tid) || kd.stores.contains(&tid)),
+                "load tid {tid} not realized, not in outputs, not in any kernel; kernels loading it: {:?}",
+                self.kernels.iter().filter(|(_, kd)| kd.loads.contains(&tid)).map(|(k, _)| k).collect::<Vec<_>>(),
+            );
+        }
 
         // Debug: ensure each store tid is in exactly one kernel's outputs
         // (count may be 0 if add_store removed it and triggered this materialization)
@@ -1928,6 +2054,13 @@ impl Runtime {
 
         let event = self.devices[dev_id].launch(dev_prog, &mut self.pools[pool_id], &args, event_wait_list)?;
         self.events.insert(kernel_buffers, event);
+
+        // The kernel has consumed its loads. Release the load references so
+        // dead load tensors and their buffers are reclaimed. Buffers still in
+        // use keep rc > 0 via other kernels' load references or handles.
+        for &tid in &loads {
+            self.release_load(tid);
+        }
 
         Ok(())
     }

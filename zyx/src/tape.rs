@@ -52,6 +52,7 @@ use crate::{
     DType, Map, RT, Tensor, ZyxError,
     backend::{BufferId, Device},
     graph::{ClassId, ExecPlan, Graph, GraphId, Node},
+    graph::plan::drain_events_for_buf,
     kernel::{DeviceId, Op},
     runtime::ShapeId,
     shape::Dim,
@@ -269,16 +270,18 @@ impl Drop for Tape {
                 continue;
             }
             if rt.tensors[tid].rc == 0 {
-                // Dead leaf. If realized, it is still a load dependency of some
-                // live eager kernel — mirroring the eager world, where a realized
-                // rc==0 load tensor is kept so its buffer survives (kernel loads
-                // reference it). Revert it to eager; sweep non-realized dead leaves.
-                if rt.buffer_map.contains_key(&tid) {
-                    rt.tensors[tid].class_id = ClassId::NULL;
-                    rt.tensors[tid].graph_id = GraphId::NULL;
-                } else {
-                    rt.tensors.remove(tid);
+                // Dead leaf: rc counts both handles and kernel loads, so rc == 0
+                // means nothing references it anymore. Remove it, freeing its
+                // buffer if no other tensor maps to the same buffer.
+                if let Some(buf_id) = rt.buffer_map.remove(&tid) {
+                    let still_used =
+                        rt.buffer_map.values().any(|b| b.pool == buf_id.pool && b.buffer == buf_id.buffer);
+                    if !still_used {
+                        let wait_list = drain_events_for_buf(&mut rt.events, buf_id);
+                        rt.pools[buf_id.pool].deallocate(buf_id.buffer, wait_list);
+                    }
                 }
+                rt.tensors.remove(tid);
             } else {
                 // Alive leaf: back to eager. Keep its kernel_id/op_id so its
                 // value can still be computed; the graph affiliation is what
