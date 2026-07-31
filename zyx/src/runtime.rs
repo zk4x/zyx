@@ -337,6 +337,30 @@ impl Runtime {
         }
     }
 
+    pub(crate) fn debug_assert_pre_realize(&self, graph_id: GraphId) {
+        if cfg!(debug_assertions) {
+            // I2: all leaves realized, in graph state.
+            for &tid in self.graphs[graph_id].leaf_map.values() {
+                debug_assert!(self.buffer_map.contains_key(&tid), "leaf {tid} not realized");
+                debug_assert!(
+                    matches!(self.tensors[tid].state, TensorState::Graph { graph_id: g, .. } if g == graph_id),
+                    "leaf {tid} not in graph state"
+                );
+            }
+            // I2: no non-leaf graph tensor is realized.
+            for (tid, td) in self.tensors.iter() {
+                if let TensorState::Graph { graph_id: g, class_id, .. } = &td.state {
+                    if *g == graph_id && !self.graphs[graph_id].is_leaf(*class_id) {
+                        debug_assert!(
+                            !self.buffer_map.contains_key(&tid),
+                            "non-leaf graph tensor {tid} realized before realize"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
     pub fn push_shape(&mut self, shape: Vec<Dim>) -> ShapeId {
         if let Some(&shape_id) = self.shape_map.get(&shape) {
             shape_id
