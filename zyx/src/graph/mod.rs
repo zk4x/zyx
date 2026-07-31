@@ -295,7 +295,13 @@ pub struct Graph {
     pub(crate) leaf_map: Map<ClassId, TensorId>,
     pub(crate) leaf_classes: Vec<ClassId>,
     pub(crate) max_leaf_id: u32,
+    // Number of alive graph tensors (TensorState::Graph) referencing this graph.
+    // Incremented at every graph-tensor birth, decremented when a tensor dies
+    // (release), is eagerified, or is dropped.
     pub(crate) ref_count: u64,
+    // Tape scope has ended (Tape::drop ran); no new ops may use this graph.
+    // The graph is removed from the slab only when dead && ref_count == 0, which
+    // guarantees no stale tensor ever observes a reused GraphId.
     pub(crate) dead: bool,
 }
 

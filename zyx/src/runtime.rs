@@ -119,7 +119,14 @@ pub enum TensorState {
     },
     Graph {
         class_id: ClassId,
+        // Number of alive Tensor handles referencing this graph tensor. When it
+        // hits 0 the tensor dies: non-leaf tensors are removed (the graph keeps
+        // its class/nodes), leaves stay until the graph is removed (realize reads
+        // leaf_map -> buffer_map[tid]).
         rc: u32,
+        // Graph this tensor belongs to. The graph is kept in the slab until
+        // dead && ref_count == 0, so a stale tensor can never observe a reused
+        // GraphId. Using a tensor whose graph is dead panics in the ops.
         graph_id: GraphId,
     },
 }

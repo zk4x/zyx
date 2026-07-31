@@ -7,21 +7,37 @@
 //! The tape serves two purposes:
 //! 1. **Autograd boundary**: Tensors promoted via [`Tape::new`] are retained for
 //!    backward pass until the tape is dropped.
-//! 2. **Graph caching boundary**: On drop, all alive tensors are realized together.
-//!    Promoted tensors are treated as graph inputs — their buffers change each
-//!    iteration (e.g. model parameters, inputs, targets). Everything computed from
-//!    them inside the scope is static and cached by structural hash across iterations.
+//! 2. **Graph caching boundary**: [`Tape::realize`] realizes the requested output
+//!    tensors. Promoted tensors are treated as graph inputs — their buffers change
+//!    each iteration (e.g. model parameters, inputs, targets). Everything computed
+//!    from them inside the scope is static and cached by structural hash across
+//!    iterations.
 //!
 //! Think of [`Tape::new(&model)`] as setting `requires_grad` on the model's tensors
 //! for the duration of the scope — but it's not only for gradients. The tape also
 //! enables egraph-based fusion optimization, device allocation search, and plan
 //! caching across structurally identical iterations.
 //!
+//! ## Lifecycle and invariants
+//!
+//! - **Graph construction** (`Tape::new` until `realize`/`freeze`): ops only build
+//!   nodes, never compute. The only realized graph tensors are leaves — the tensors
+//!   promoted by `Tape::new` (I2). No other graph tensor may hold a buffer.
+//! - **`realize`/`replay`**: the only places that compute. `realize` eagerifies its
+//!   output tensors; all other buffers belong to leaves or are released (I3, I4).
+//! - **`Drop`**: marks the graph dead, converts alive leaves back to eager, removes
+//!   dead leaves. It performs no computation and no scans (I5).
+//! - **Reference counting**: every alive graph tensor counts toward its
+//!   [`Graph::ref_count`]. The graph stays in the runtime slab until
+//!   `dead && ref_count == 0`, so a stale tensor can never observe a reused
+//!   [`GraphId`]. Using a tensor from a dead graph panics with "tape scope has
+//!   ended".
+//!
 //! ## Caching with Merkle hashes
 //!
 //! Each graph node carries a Merkle hash of its structural subgraph (node kind, dtype,
-//! shape, input hashes — no TensorIds). When the tape realizes all alive tensors on
-//! drop, it uses the output tensors' Merkle hashes as the cache key:
+//! shape, input hashes — no TensorIds). `realize` uses the output tensors' Merkle
+//! hashes as the cache key:
 //!
 //! - **Cache miss** (first pass): compile the subgraph, store the compiled kernel with
 //!   its static leaf→buffer bindings.
