@@ -233,10 +233,13 @@ pub fn eagerify(&mut self, tid: TensorId) {
 For any live graph tensor the graph is guaranteed present, so ops check:
 
 ```rust
-assert!(!self.graphs[graph_id].dropped,
-    "tensor belongs to a tape scope that has ended \
-     (Tape dropped or realized without this tensor being an output)");
+assert!(!self.graphs[graph_id].dead,
+    "tape scope has ended (tensor belongs to a dead tape scope; \
+     Tape dropped or realized without this tensor being an output)");
 ```
+
+The message starts with the `"tape scope has ended"` phrase the §11 tests
+`#[should_panic(expected = "tape scope has ended")]` match against.
 
 Add this check (ideally via one small helper) at every place a graph tensor is
 consumed: `promote_to_graph` (also giving it a proper dead-graph-aware message

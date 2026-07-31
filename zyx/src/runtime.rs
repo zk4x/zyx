@@ -321,7 +321,7 @@ impl Runtime {
     fn assert_graph_alive(&self, graph_id: GraphId) {
         assert!(
             !self.graphs[graph_id].dead,
-            "tensor belongs to a tape scope that has ended (Tape dropped or realized without this tensor being an output)"
+            "tape scope has ended (tensor belongs to a dead tape scope; Tape dropped or realized without this tensor being an output)"
         );
     }
 
@@ -941,7 +941,7 @@ impl Runtime {
                 TensorState::Eager { kernel_id, op_id, .. } => (*kernel_id, *op_id),
                 TensorState::Graph { .. } => {
                     panic!(
-                        "tensor belongs to a tape scope that has ended (Tape dropped or realized without this tensor being an output)"
+                        "tape scope has ended (tensor belongs to a dead tape scope; Tape dropped or realized without this tensor being an output)"
                     );
                 }
             };
@@ -949,7 +949,7 @@ impl Runtime {
                 TensorState::Eager { kernel_id, op_id, .. } => (*kernel_id, *op_id),
                 TensorState::Graph { .. } => {
                     panic!(
-                        "tensor belongs to a tape scope that has ended (Tape dropped or realized without this tensor being an output)"
+                        "tape scope has ended (tensor belongs to a dead tape scope; Tape dropped or realized without this tensor being an output)"
                     );
                 }
             };
