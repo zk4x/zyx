@@ -387,24 +387,22 @@ Notes:
 Add the `dropped` panic (§4.7) at the graph-consumption points. Full `panic!`,
 not `debug_assert!`.
 
-### Step 8 — execute_plan asserts (plan.rs:145)
+### Step 8 — post-execute_plan buffer check (in `realize`)
 
-`ExecPlan` gains `output_classes: Vec<ClassId>` (from `output_set` in
-`ExecPlan::new`, plan.rs:40). At the end of `execute_plan`:
+After `execute_plan` runs in `Tape::realize` (both cache-hit and main paths), add:
 
 ```rust
-debug_assert!(class_buf.keys().all(|c| plan.leaf_classes.contains(c)
-    || plan.output_classes.contains(c)),
-    "execute_plan left buffers for non-input, non-output classes");
-for c in &plan.output_classes {
-    debug_assert!(class_buf.contains_key(c), "output class {c:?} not realized");
-}
+rt.debug_assert_no_stray_buffers(graph_id, &output_tids);
 ```
 
-Note: this will likely surface a pre-existing leak — `ExecPlan::new` only emits
+`Runtime::debug_assert_no_stray_buffers` scans graph tensors in `Graph` state and
+asserts that no non-leaf, non-output tensor holds a buffer (I4 at the tensor
+level). No extra field on `ExecPlan`.
+
+Note: this can surface a pre-existing leak — `ExecPlan::new` only emits
 `Deallocate` for *inputs* whose rc hits 0 (plan.rs:92). A kernel-output class that
 is not consumed by any extracted kernel and not in `output_set` is allocated and
-never deallocated. Fix it when the assert fires (add a `Deallocate` for unconsumed
+never deallocated. Fix it when the check fails (add a `Deallocate` for unconsumed
 kernel outputs, or prune such kernels in `Graph::extract`).
 
 ### Step 9 — invariant debug asserts

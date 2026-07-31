@@ -162,6 +162,7 @@ impl Tape {
                 rt.buffer_map.insert(tid, class_buf[&cid]);
                 rt.eagerify(tid);
             }
+            rt.debug_assert_no_stray_buffers(graph_id, &output_tids);
 
             return Ok(());
         }
@@ -218,6 +219,7 @@ impl Tape {
             rt.buffer_map.insert(tid, class_buf[&cid]);
             rt.eagerify(tid);
         }
+        rt.debug_assert_no_stray_buffers(graph_id, &output_tids);
 
         Ok(())
     }

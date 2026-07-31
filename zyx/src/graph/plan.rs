@@ -35,7 +35,6 @@ pub enum ExecNode {
 pub struct ExecPlan {
     pub nodes: Vec<ExecNode>,
     pub leaf_classes: Vec<ClassId>,
-    pub output_classes: Vec<ClassId>,
 }
 
 impl ExecPlan {
@@ -125,7 +124,6 @@ impl ExecPlan {
         Self {
             nodes: plan_nodes,
             leaf_classes: graph.leaf_classes.clone(),
-            output_classes: output_set.iter().copied().collect(),
         }
     }
 
@@ -196,14 +194,6 @@ impl Runtime {
                     self.pools[buf.pool].deallocate(buf.buffer, wait_list);
                 }
             }
-        }
-
-        debug_assert!(
-            class_buf.keys().all(|c| plan.leaf_classes.contains(c) || plan.output_classes.contains(c)),
-            "execute_plan left buffers for non-input, non-output classes"
-        );
-        for c in &plan.output_classes {
-            debug_assert!(class_buf.contains_key(c), "output class {c:?} not realized");
         }
 
         Ok(())

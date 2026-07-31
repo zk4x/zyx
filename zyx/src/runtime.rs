@@ -321,6 +321,22 @@ impl Runtime {
         );
     }
 
+    pub(crate) fn debug_assert_no_stray_buffers(&self, graph_id: GraphId, outputs: &[TensorId]) {
+        if cfg!(debug_assertions) {
+            let output_set: Set<TensorId> = outputs.iter().copied().collect();
+            for (tid, td) in self.tensors.iter() {
+                if let TensorState::Graph { graph_id: g, class_id, .. } = &td.state {
+                    if *g == graph_id && !output_set.contains(&tid) && !self.graphs[graph_id].is_leaf(*class_id) {
+                        debug_assert!(
+                            !self.buffer_map.contains_key(&tid),
+                            "non-leaf, non-output graph tensor {tid} realized after execute_plan"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
     pub fn push_shape(&mut self, shape: Vec<Dim>) -> ShapeId {
         if let Some(&shape_id) = self.shape_map.get(&shape) {
             shape_id
