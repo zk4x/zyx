@@ -51,12 +51,11 @@ use std::collections::BTreeSet;
 use crate::{
     DType, Map, RT, Tensor, ZyxError,
     backend::{BufferId, Device},
-    graph::plan::drain_events_for_buf,
-    graph::{ClassId, ExecPlan, Graph, GraphId, Node},
+    graph::{ClassId, ExecPlan, Graph, GraphId, Node, plan::drain_events_for_buf},
     kernel::{DeviceId, Op},
-    runtime::{ShapeId, TensorState},
+    runtime::ShapeId,
     shape::Dim,
-    slab::Slab,
+    slab::{Slab, SlabId},
     tensor::TensorId,
     view::View,
 };
@@ -151,9 +150,12 @@ impl Tape {
 
         let output_pairs: Vec<(TensorId, ClassId)> = tensors
             .into_iter()
-            .map(|t| match rt.tensors[t.id].state {
-                TensorState::Graph { class_id, .. } => (t.id, class_id),
-                _ => unreachable!("non-graph tensor in realize"),
+            .map(|t| {
+                if rt.tensors[t.id].class_id.is_null() {
+                    panic!("non-graph tensor in realize")
+                } else {
+                    (t.id, rt.tensors[t.id].class_id)
+                }
             })
             .collect();
 
@@ -255,19 +257,19 @@ impl Drop for Tape {
         let mut rt = RT.lock();
         let graph_id = self.graph_id;
         rt.graphs[graph_id].dead = true;
-        eprintln!(">>> Tape::drop graph={graph_id:?} ref_count={} leaf_map_len={}", rt.graphs[graph_id].ref_count, rt.graphs[graph_id].leaf_map.len());
+        /*eprintln!(
+            ">>> Tape::drop graph={graph_id:?} ref_count={} leaf_map_len={}",
+            rt.graphs[graph_id].ref_count,
+            rt.graphs[graph_id].leaf_map.len()
+        );*/
 
         let leaves: Vec<TensorId> = rt.graphs[graph_id].leaf_map.values().copied().collect();
         for tid in leaves {
-            eprintln!("drop leaf {tid}: state={:?}", rt.tensors.get(tid).map(|t| &t.state));
-            let (rc, gid) = match rt.tensors[tid].state {
-                TensorState::Graph { rc, graph_id, .. } => (rc, graph_id),
-                _ => continue, // already eagerified by realize
-            };
-            if gid != graph_id {
+            //eprintln!("drop leaf {tid}: state={:?}", rt.tensors.get(tid).map(|t| &t.state));
+            if rt.tensors[tid].graph_id != graph_id {
                 continue;
             }
-            if rc == 0 {
+            if rt.tensors[tid].rc == 0 {
                 // Dead leaf (dropped mid-scope): buffer was kept for realize;
                 // ref_count already decremented at its release.
                 if let Some(buf_id) = rt.buffer_map.remove(&tid) {
@@ -294,9 +296,12 @@ impl Tape {
 
         let outputs: Vec<(ClassId, Vec<Dim>, DType)> = outputs
             .into_iter()
-            .map(|t| match rt.tensors[t.id].state {
-                TensorState::Graph { class_id, .. } => (class_id, rt.shape(t.id).into(), rt.dtype(t.id)),
-                _ => unreachable!("non-graph tensor in realize"),
+            .map(|t| {
+                if rt.tensors[t.id].class_id.is_null() {
+                    panic!("non-graph tensor in realize")
+                } else {
+                    (rt.tensors[t.id].class_id, rt.shape(t.id).into(), rt.dtype(t.id))
+                }
             })
             .collect();
 
@@ -375,7 +380,7 @@ impl FrozenTape {
         let mut outputs = Vec::new();
         for (cid, shape, dtype) in self.outputs.iter() {
             let view = View::contiguous(shape);
-            let tid = rt.new_kernel(Op::LoadView(Box::new((*dtype, view))));
+            let tid = rt.new_eager_tensor(Op::LoadView(Box::new((*dtype, view))));
             rt.buffer_map.insert(tid, class_buf[cid]);
             outputs.push(Tensor::from_id(tid));
         }

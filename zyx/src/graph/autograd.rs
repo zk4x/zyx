@@ -3,25 +3,25 @@ use crate::{
     dtype::Constant,
     graph::{ClassId, Graph, GraphId, Node},
     kernel::{BOp, UOp},
-    runtime::{Runtime, TensorState},
+    runtime::Runtime,
     shape::{Dim, UAxis},
+    slab::SlabId,
     tensor::TensorId,
 };
 use std::collections::BTreeSet;
 
 impl Runtime {
     pub(crate) fn gradient(&mut self, target: TensorId, sources: Set<TensorId>, graph_id: GraphId) -> Map<TensorId, TensorId> {
-        let target_class = match self.tensors[target].state {
-            TensorState::Graph { class_id, .. } => class_id,
-            TensorState::Eager { .. } => panic!("gradient on non-graph tensor"),
-        };
-        let source_classes: Set<ClassId> = sources
-            .iter()
-            .filter_map(|tid| match self.tensors[*tid].state {
-                TensorState::Graph { class_id, .. } => Some(class_id),
-                _ => None,
-            })
-            .collect();
+        let target_class = self.tensors[target].class_id;
+        if target_class.is_null() {
+            panic!("gradient on non-graph tensor");
+        }
+        let source_classes: Set<ClassId> = sources.iter().map(|tid| self.tensors[*tid].class_id).collect();
+        for class_id in &source_classes {
+            if class_id.is_null() {
+                panic!("one of the sources is non-graph tensor");
+            }
+        }
         let scalar_shape = self.push_shape(vec![1 as Dim]);
 
         let output_set: BTreeSet<ClassId> = [target_class].into();
@@ -539,11 +539,7 @@ impl Runtime {
 
         let mut res = Map::default();
         for tid in sources {
-            let class_id = match self.tensors[tid].state {
-                TensorState::Graph { class_id, .. } => class_id,
-                _ => continue,
-            };
-            let grad_tid = match grads.get(&class_id) {
+            let grad_tid = match grads.get(&self.tensors[tid].class_id) {
                 Some(&gcid) => {
                     let shape_id = self.graphs[graph_id].classes[gcid].shape;
                     let dtype = self.graphs[graph_id].classes[gcid].dtype;
