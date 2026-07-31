@@ -342,15 +342,16 @@ In `realize`, after the `execute_plan` + `buffer_map.insert` loop, call
 impl Drop for Tape {
     fn drop(&mut self) {
         let mut rt = RT.lock();
-        rt.graphs[self.graph_id].dropped = true;
+        let graph_id = self.graph_id;
+        rt.graphs[graph_id].dead = true;
 
-        let leaves: Vec<TensorId> = rt.graphs[self.graph_id].leaf_tids.iter().copied().collect();
+        let leaves: Vec<TensorId> = rt.graphs[graph_id].leaf_map.values().copied().collect();
         for tid in leaves {
-            let (rc, graph_id) = match rt.tensors[tid].state {
+            let (rc, gid) = match rt.tensors[tid].state {
                 TensorState::Graph { rc, graph_id, .. } => (rc, graph_id),
                 _ => continue, // already eagerified by realize
             };
-            if graph_id != self.graph_id {
+            if gid != graph_id {
                 continue;
             }
             if rc == 0 {
@@ -361,20 +362,25 @@ impl Drop for Tape {
                     rt.pools[buf.pool].deallocate(buf.buffer, wait);
                 }
                 rt.tensors.remove(tid);
-            } else {
+            } else if rt.buffer_map.contains_key(&tid) {
                 rt.eagerify(tid);
             }
         }
 
-        if rt.graphs[self.graph_id].ref_count == 0 {
-            rt.remove_dead_graph(self.graph_id);
+        if rt.graphs[graph_id].ref_count == 0 {
+            rt.remove_dead_graph(graph_id);
         }
     }
 }
 ```
 
-If user-held invalid tensors keep `ref_count > 0`, the dead graph stays; it is
-removed by `release` when the last one dies.
+Notes:
+- Leaves come from `leaf_map.values()` (no `leaf_tids` set; see §4.4).
+- Realized leaves (buffer present) are eagerified; unrealized leaves held by the
+  user stay in `Graph` state (rc>0, no buffer) and keep the dead graph alive until
+  released.
+- If user-held invalid tensors keep `ref_count > 0`, the dead graph stays; it is
+  removed by `release` when the last one dies.
 
 ### Step 7 — invalid-tensor panics
 

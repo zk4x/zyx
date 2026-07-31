@@ -274,10 +274,11 @@ impl Runtime {
         }
     }
 
-    fn remove_dead_graph(&mut self, graph_id: GraphId) {
+    pub(crate) fn remove_dead_graph(&mut self, graph_id: GraphId) {
         let leaf_tids: Vec<TensorId> = self.graphs[graph_id].leaf_map.values().copied().collect();
         for tid in leaf_tids {
-            if let TensorState::Graph { graph_id: gid, .. } = self.tensors[tid].state {
+            let Some(t) = self.tensors.get(tid) else { continue };
+            if let TensorState::Graph { graph_id: gid, .. } = t.state {
                 if gid == graph_id {
                     if let Some(buf_id) = self.buffer_map.remove(&tid) {
                         let wait_list = drain_events_for_buf(&mut self.events, buf_id);

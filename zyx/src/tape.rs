@@ -36,10 +36,11 @@ use crate::{
     DType, Map, RT, Tensor, ZyxError,
     backend::{BufferId, Device},
     graph::{ClassId, ExecPlan, Graph, GraphId, Node},
-    kernel::{DeviceId, Kernel, Op},
-    runtime::{KernelData, KernelId, ShapeId, TensorState},
+    graph::plan::drain_events_for_buf,
+    kernel::{DeviceId, Op},
+    runtime::{ShapeId, TensorState},
     shape::Dim,
-    slab::{Slab, SlabId},
+    slab::Slab,
     tensor::TensorId,
     view::View,
 };
@@ -233,49 +234,33 @@ impl Tape {
 impl Drop for Tape {
     fn drop(&mut self) {
         let mut rt = RT.lock();
-        rt.graphs.remove(self.graph_id);
+        let graph_id = self.graph_id;
+        rt.graphs[graph_id].dead = true;
 
-        // TODO this is wrong, cleanup should only clean up graph.leafs and outputs,
-        // which are accessible in realize and replay methods.
-        // We should also debug assert that no intermediate tensors are kept alive
-        // after graph realize or replay is finished.
-
-        let tids: Vec<TensorId> = rt.tensors.iter().map(|(id, _)| id).collect();
-        for tid in tids {
-            let (rc, is_my_graph) = match &rt.tensors[tid].state {
-                TensorState::Graph { rc, graph_id, .. } => (*rc, *graph_id == self.graph_id),
-                _ => (0, false),
+        let leaves: Vec<TensorId> = rt.graphs[graph_id].leaf_map.values().copied().collect();
+        for tid in leaves {
+            let (rc, gid) = match rt.tensors[tid].state {
+                TensorState::Graph { rc, graph_id, .. } => (rc, graph_id),
+                _ => continue, // already eagerified by realize
             };
-            if !is_my_graph {
+            if gid != graph_id {
                 continue;
             }
             if rc == 0 {
+                // Dead leaf (dropped mid-scope): buffer was kept for realize;
+                // ref_count already decremented at its release.
                 if let Some(buf_id) = rt.buffer_map.remove(&tid) {
-                    let keys: Vec<BTreeSet<BufferId>> = rt.events.keys().filter(|k| k.contains(&buf_id)).cloned().collect();
-                    let mut wait_list = Vec::new();
-                    for key in keys {
-                        wait_list.push(rt.events.remove(&key).unwrap());
-                    }
+                    let wait_list = drain_events_for_buf(&mut rt.events, buf_id);
                     rt.pools[buf_id.pool].deallocate(buf_id.buffer, wait_list);
                 }
                 rt.tensors.remove(tid);
             } else if rt.buffer_map.contains_key(&tid) {
-                let shape: Vec<Dim> = rt.shape(tid).into();
-                let dtype = rt.dtype(tid);
-                let op = Op::LoadView(Box::new((dtype, View::contiguous(&shape))));
-                let kernel_id = rt.kernels.push(KernelData {
-                    outputs: Vec::new(),
-                    loads: Vec::new(),
-                    stores: Vec::new(),
-                    kernel: Kernel::new(DeviceId::AUTO),
-                });
-                let op_id = rt.kernels[kernel_id].kernel.push_back(op);
-                rt.kernels[kernel_id].loads.push(tid);
-                rt.tensors[tid].state = TensorState::Eager { kernel_id, op_id, pending: KernelId::NULL };
-                for _ in 0..rc {
-                    rt.kernels[kernel_id].outputs.push(tid);
-                }
+                rt.eagerify(tid);
             }
+        }
+
+        if rt.graphs[graph_id].ref_count == 0 {
+            rt.remove_dead_graph(graph_id);
         }
     }
 }

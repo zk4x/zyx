@@ -113,13 +113,13 @@ impl<Id: SlabId, T> Slab<Id, T> {
         unsafe { self.values.swap_remove(id.into()).assume_init() }
     }
 
-    /*pub(crate) fn get(&self, id: Id) -> Option<&T> {
-        if Id::try_from(self.values.len()).unwrap() > id && !self.empty.contains(&id) {
-            Some(unsafe { self.values[id as usize].assume_init_ref() })
-        } else {
-            None
+    pub(crate) fn get(&self, id: Id) -> Option<&T> {
+        if !self.contains_key(id) {
+            return None;
         }
-    }*/
+        let idx = id.into();
+        self.values.get(idx).map(|e| unsafe { e.assume_init_ref() })
+    }
 
     /*pub(crate) fn swap(&mut self, x: Id, y: Id) {
         self.values.swap(x as usize, y as usize);
