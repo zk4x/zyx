@@ -346,13 +346,14 @@ impl Runtime {
 
     pub(crate) fn debug_assert_pre_realize(&self, graph_id: GraphId) {
         if cfg!(debug_assertions) {
-            // I2: all leaves realized, in graph state.
+            // I2: all leaves realized. A leaf is either a directly-promoted
+            // realized tensor (Graph state) or the load tensor of a promoted
+            // kernel (Eager state) — both carry a buffer.
             for &tid in self.graphs[graph_id].leaf_map.values() {
                 debug_assert!(self.buffer_map.contains_key(&tid), "leaf {tid} not realized");
-                debug_assert!(
-                    matches!(self.tensors[tid].state, TensorState::Graph { graph_id: g, .. } if g == graph_id),
-                    "leaf {tid} not in graph state"
-                );
+                if let TensorState::Graph { graph_id: g, .. } = self.tensors[tid].state {
+                    debug_assert!(g == graph_id, "leaf {tid} belongs to another graph");
+                }
             }
             // I2: no non-leaf graph tensor is realized.
             for (tid, td) in self.tensors.iter() {
