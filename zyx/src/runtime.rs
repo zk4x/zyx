@@ -494,6 +494,20 @@ impl Runtime {
             TensorState::Eager { kernel_id, op_id, .. } => (kernel_id, op_id),
             _ => unreachable!(),
         };
+
+        // Already realized eager tensors promote to the graph as leaves directly.
+        // Before realize, only leaves may be realized (see TAPE_DESIGN.md, invariant I2).
+        if self.buffer_map.contains_key(&tid) {
+            let (shape_id, dtype) = (self.tensors[tid].shape_id, self.tensors[tid].dtype);
+            let (_, class_id) = self.push_leaf_node(graph_id, dtype, shape_id);
+            self.graphs[graph_id].leaf_map.insert(class_id, tid);
+            self.graphs[graph_id].leaf_classes.push(class_id);
+            let rc = self.kernels[kernel_id].outputs.iter().filter(|&&o| o == tid).count() as u32;
+            self.kernels[kernel_id].outputs.retain(|&o| o != tid);
+            self.tensors[tid].state = TensorState::Graph { class_id, rc, graph_id };
+            return Ok(class_id);
+        }
+
         debug_assert!(self.kernels[kernel_id].outputs.contains(&tid));
 
         let relevant = {
