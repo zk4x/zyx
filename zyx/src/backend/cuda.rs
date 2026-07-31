@@ -424,10 +424,11 @@ pub(super) fn initialize_device(
                             let _ = reply.send(Ok((buffer_id, event)));
                         }
                         CUDACommand::Deallocate { buffer_id, event_wait_list: mut events } => {
-                            let stream = next_stream(&mut streams, cuStreamSynchronize);
                             while let Some(Event::CUDA(CUDAEvent { event })) = events.pop() {
                                 if !event.is_null() {
-                                    _ = unsafe { (cuStreamWaitEvent)(stream, event, 0) }.check(ErrorStatus::MemoryDeallocation);
+                                    // cuMemFree below is a synchronous host call, not ordered
+                                    // behind stream work, so block on the event before freeing.
+                                    _ = unsafe { (cuEventSynchronize)(event) }.check(ErrorStatus::MemoryDeallocation);
                                     _ = unsafe { (cuEventDestroy)(event) }.check(ErrorStatus::MemoryCopyP2H);
                                 }
                             }

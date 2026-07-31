@@ -522,8 +522,13 @@ impl Graph {
         }
     }
 
-    /// Hash of the graph structure (hashcons) and output classes.
-    /// Deterministic across equivalent graphs — used as a cache key for compiled plans.
+    /// Hash of the graph structure (hashcons), output classes, and the shape
+    /// and dtype of every class. Deterministic across equivalent graphs — used
+    /// as a cache key for compiled plans.
+    ///
+    /// Shape and dtype must be part of the key: two graphs with the same node
+    /// structure but different shapes/dtypes (e.g. an `f32[10]` sin vs an
+    /// `f32[3]` sin) would otherwise share a plan with wrong allocation sizes.
     #[must_use]
     pub fn cache_key(&self, outputs: &BTreeSet<ClassId>) -> u64 {
         use std::hash::{Hash, Hasher};
@@ -532,6 +537,12 @@ impl Graph {
         for (node, &id) in &self.hashcons {
             id.hash(&mut hasher);
             node.hash(&mut hasher);
+        }
+
+        for cid in self.classes.ids() {
+            cid.hash(&mut hasher);
+            self.classes[cid].shape.hash(&mut hasher);
+            self.classes[cid].dtype.hash(&mut hasher);
         }
 
         for &cid in outputs {
