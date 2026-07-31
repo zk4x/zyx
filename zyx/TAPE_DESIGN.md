@@ -293,7 +293,6 @@ if self.buffer_map.contains_key(&tid) {
     let (_, class_id) = self.push_leaf_node(graph_id, dtype, shape_id);
     self.graphs[graph_id].leaf_map.insert(class_id, tid);
     self.graphs[graph_id].leaf_classes.push(class_id);
-    self.graphs[graph_id].leaf_tids.insert(tid);   // if using the set, §4.4
 
     let rc = self.kernels[kernel_id].outputs.iter().filter(|&&o| o == tid).count() as u32;
     self.kernels[kernel_id].outputs.retain(|&o| o != tid);
@@ -309,8 +308,9 @@ Also make the "already in a different graph" branch panic clearly, checking
 
 ### Step 1 — Graph fields (graph/mod.rs)
 
-Add `ref_count: u64`, `dropped: bool`, and (recommended) `leaf_tids: Set<TensorId>`
-to `Graph`; initialize in `Graph::new`.
+Add `ref_count: u64` and `dropped: bool` (renamed `dead` in the implementation)
+to `Graph`; initialize in `Graph::new`. Leaves are tracked in the existing
+`leaf_map`/`leaf_classes`, keyed by class — see §4.4.
 
 ### Step 2 — `new_graph_tensor` + migrate the 13 sites
 
@@ -410,26 +410,29 @@ kernel outputs, or prune such kernels in `Graph::extract`).
 At the top of `Tape::realize` and `Tape::freeze`:
 
 ```rust
-// I2: all leaves realized.
-for &tid in rt.graphs[graph_id].leaf_tids.iter() {
+// I2: all leaves realized. A leaf is either a directly-promoted realized
+// tensor (Graph state) or the load tensor of a promoted kernel (Eager
+// state) — both carry a buffer.
+for &tid in rt.graphs[graph_id].leaf_map.values() {
     debug_assert!(rt.buffer_map.contains_key(&tid), "leaf {tid} not realized");
-    debug_assert!(matches!(rt.tensors[tid].state,
-        TensorState::Graph { graph_id: g, .. } if g == graph_id));
+    if let TensorState::Graph { graph_id: g, .. } = rt.tensors[tid].state {
+        debug_assert!(g == graph_id, "leaf {tid} belongs to another graph");
+    }
 }
-// I2: no non-leaf graph tensor is realized. (Debug-only scan, once per step.)
-if cfg!(debug_assertions) {
-    for (tid, td) in rt.tensors.iter() {
-        if let TensorState::Graph { graph_id: g, .. } = td.state {
-            if g == graph_id && !rt.graphs[graph_id].leaf_tids.contains(&tid) {
-                debug_assert!(!rt.buffer_map.contains_key(&tid),
-                    "non-leaf graph tensor {tid} realized before realize");
-            }
+// I2: no non-leaf graph tensor is realized.
+for (tid, td) in rt.tensors.iter() {
+    if let TensorState::Graph { graph_id: g, class_id, .. } = &td.state {
+        if *g == graph_id && !rt.graphs[graph_id].is_leaf(*class_id) {
+            debug_assert!(!rt.buffer_map.contains_key(&tid),
+                "non-leaf graph tensor {tid} realized before realize");
         }
     }
 }
 ```
 
-These fail on today's promoted-realized bug until Step 0 lands.
+The leaf-state check is deliberately loose: leaves reached through a promoted
+kernel's load ops (e.g. `relu = cmpgt(Tensor::from(0f32).cast(dtype)) * self`)
+stay in `TensorState::Eager` — only directly-promoted tensors are `Graph` state.
 
 ### Step 10 — documentation
 
@@ -455,8 +458,8 @@ In `zyx/tests/` (run from `zyx/zyx`):
 
 ## 7. Open questions / risks
 
-- **Dead-leaf sweep correctness** relies on `leaf_tids`/`leaf_map` being complete;
-  the debug asserts in Step 9 guard this.
+- **Dead-leaf sweep correctness** relies on `leaf_map` being complete; the debug
+  asserts in Step 9 guard this.
 - **Missed increment sites** are the main implementation hazard; Step 2 must end
   with a grep audit.
 - **The `dropped` panic in ops** adds one field read per graph op; negligible.

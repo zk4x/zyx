@@ -51,8 +51,8 @@ use std::collections::BTreeSet;
 use crate::{
     DType, Map, RT, Tensor, ZyxError,
     backend::{BufferId, Device},
-    graph::{ClassId, ExecPlan, Graph, GraphId, Node},
     graph::plan::drain_events_for_buf,
+    graph::{ClassId, ExecPlan, Graph, GraphId, Node},
     kernel::{DeviceId, Op},
     runtime::{ShapeId, TensorState},
     shape::Dim,

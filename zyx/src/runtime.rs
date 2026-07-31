@@ -237,10 +237,7 @@ impl Runtime {
                     let (graph_id, class_id) = (*graph_id, *class_id);
                     if self.graphs.contains_key(graph_id) {
                         if !self.graphs[graph_id].is_leaf(class_id) {
-                            debug_assert!(
-                                !self.buffer_map.contains_key(&x),
-                                "dead non-leaf graph tensor holds a buffer"
-                            );
+                            debug_assert!(!self.buffer_map.contains_key(&x), "dead non-leaf graph tensor holds a buffer");
                             self.tensors.remove(x);
                         }
                         self.graphs[graph_id].ref_count -= 1;
@@ -359,10 +356,7 @@ impl Runtime {
             for (tid, td) in self.tensors.iter() {
                 if let TensorState::Graph { graph_id: g, class_id, .. } = &td.state {
                     if *g == graph_id && !self.graphs[graph_id].is_leaf(*class_id) {
-                        debug_assert!(
-                            !self.buffer_map.contains_key(&tid),
-                            "non-leaf graph tensor {tid} realized before realize"
-                        );
+                        debug_assert!(!self.buffer_map.contains_key(&tid), "non-leaf graph tensor {tid} realized before realize");
                     }
                 }
             }
@@ -396,11 +390,7 @@ impl Runtime {
 
     pub(crate) fn new_graph_tensor(&mut self, graph_id: GraphId, class_id: ClassId, shape_id: ShapeId, dtype: DType) -> TensorId {
         self.graphs[graph_id].ref_count += 1;
-        self.tensors.push(TensorData {
-            shape_id,
-            dtype,
-            state: TensorState::Graph { class_id, rc: 1, graph_id },
-        })
+        self.tensors.push(TensorData { shape_id, dtype, state: TensorState::Graph { class_id, rc: 1, graph_id } })
     }
 
     pub fn push_node(&mut self, graph_id: GraphId, node: Node, shape: ShapeId, dtype: DType) -> (NodeId, ClassId) {
@@ -950,13 +940,17 @@ impl Runtime {
             let (kid_x, op_id_x) = match &self.tensors[x].state {
                 TensorState::Eager { kernel_id, op_id, .. } => (*kernel_id, *op_id),
                 TensorState::Graph { .. } => {
-                    panic!("tensor belongs to a tape scope that has ended (Tape dropped or realized without this tensor being an output)");
+                    panic!(
+                        "tensor belongs to a tape scope that has ended (Tape dropped or realized without this tensor being an output)"
+                    );
                 }
             };
             let (kid_y, op_id_y) = match &self.tensors[y].state {
                 TensorState::Eager { kernel_id, op_id, .. } => (*kernel_id, *op_id),
                 TensorState::Graph { .. } => {
-                    panic!("tensor belongs to a tape scope that has ended (Tape dropped or realized without this tensor being an output)");
+                    panic!(
+                        "tensor belongs to a tape scope that has ended (Tape dropped or realized without this tensor being an output)"
+                    );
                 }
             };
             //println!("Binary input kernels: {kid_x:?} and {kid_y:?}");

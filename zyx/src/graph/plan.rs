@@ -121,10 +121,7 @@ impl ExecPlan {
             }
         }
 
-        Self {
-            nodes: plan_nodes,
-            leaf_classes: graph.leaf_classes.clone(),
-        }
+        Self { nodes: plan_nodes, leaf_classes: graph.leaf_classes.clone() }
     }
 
     #[allow(unused)]
