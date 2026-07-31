@@ -423,7 +423,7 @@ impl Runtime {
                             if axes.len() == x_shape_vec.len() {
                                 grad_shape_vec.remove(0);
                             }
-                            let gs = self.shapes.push(grad_shape_vec);
+                            let gs = self.push_shape(grad_shape_vec);
                             let grad_r = self
                                 .push_node(
                                     graph_id,
@@ -453,7 +453,7 @@ impl Runtime {
                             if axes.len() == x_shape_vec.len() {
                                 z_shape_vec.remove(0);
                             }
-                            let zs = self.shapes.push(z_shape_vec);
+                            let zs = self.push_shape(z_shape_vec);
                             let z_reshaped = self
                                 .push_node(
                                     graph_id,
@@ -504,7 +504,7 @@ impl Runtime {
                             if axes.len() == x_shape_vec.len() {
                                 grad_shape_vec.remove(0);
                             }
-                            let gs = self.shapes.push(grad_shape_vec);
+                            let gs = self.push_shape(grad_shape_vec);
                             let grad_r = self
                                 .push_node(
                                     graph_id,
