@@ -255,9 +255,11 @@ impl Drop for Tape {
         let mut rt = RT.lock();
         let graph_id = self.graph_id;
         rt.graphs[graph_id].dead = true;
+        eprintln!(">>> Tape::drop graph={graph_id:?} ref_count={} leaf_map_len={}", rt.graphs[graph_id].ref_count, rt.graphs[graph_id].leaf_map.len());
 
         let leaves: Vec<TensorId> = rt.graphs[graph_id].leaf_map.values().copied().collect();
         for tid in leaves {
+            eprintln!("drop leaf {tid}: state={:?}", rt.tensors.get(tid).map(|t| &t.state));
             let (rc, gid) = match rt.tensors[tid].state {
                 TensorState::Graph { rc, graph_id, .. } => (rc, graph_id),
                 _ => continue, // already eagerified by realize

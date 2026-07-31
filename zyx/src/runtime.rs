@@ -591,6 +591,7 @@ impl Runtime {
     }
 
     pub fn promote_to_graph(&mut self, tid: TensorId, graph_id: GraphId) -> Result<ClassId, ZyxError> {
+        eprintln!("promote tid={tid} to graph={graph_id:?}, state={:?}", self.tensors[tid].state);
         if let TensorState::Graph { class_id, graph_id: gid, .. } = self.tensors[tid].state {
             self.assert_graph_alive(gid);
             if graph_id == gid {
