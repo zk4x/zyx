@@ -314,6 +314,13 @@ impl Runtime {
         self.graphs[graph_id].ref_count -= 1;
     }
 
+    fn assert_graph_alive(&self, graph_id: GraphId) {
+        assert!(
+            !self.graphs[graph_id].dead,
+            "tensor belongs to a tape scope that has ended (Tape dropped or realized without this tensor being an output)"
+        );
+    }
+
     pub fn push_shape(&mut self, shape: Vec<Dim>) -> ShapeId {
         if let Some(&shape_id) = self.shape_map.get(&shape) {
             shape_id
@@ -547,10 +554,11 @@ impl Runtime {
 
     pub fn promote_to_graph(&mut self, tid: TensorId, graph_id: GraphId) -> Result<ClassId, ZyxError> {
         if let TensorState::Graph { class_id, graph_id: gid, .. } = self.tensors[tid].state {
+            self.assert_graph_alive(gid);
             if graph_id == gid {
                 return Ok(class_id);
             } else {
-                panic!()
+                panic!("tensor belongs to a different tape scope");
             }
         }
 
@@ -778,6 +786,7 @@ impl Runtime {
         let shape_id = self.tensors[x].shape_id;
         match self.tensors[x].state {
             TensorState::Graph { class_id, graph_id, .. } => {
+                self.assert_graph_alive(graph_id);
                 let (_, class_id) = self.push_node(graph_id, Node::Cast { x: class_id, dtype }, shape_id, dtype);
                 self.new_graph_tensor(graph_id, class_id, shape_id, dtype)
             }
@@ -802,6 +811,7 @@ impl Runtime {
         let shape_id = self.tensors[x].shape_id;
         match self.tensors[x].state {
             TensorState::Graph { class_id, graph_id, .. } => {
+                self.assert_graph_alive(graph_id);
                 let (_, class_id) = self.push_node(graph_id, Node::Cast { x: class_id, dtype }, shape_id, dtype);
                 self.new_graph_tensor(graph_id, class_id, shape_id, dtype)
             }
@@ -827,6 +837,7 @@ impl Runtime {
         let dtype = self.tensors[x].dtype;
         match self.tensors[x].state {
             TensorState::Graph { class_id, graph_id, .. } => {
+                self.assert_graph_alive(graph_id);
                 let (_node_id, class_id) = self.push_node(graph_id, Node::Unary { x: class_id, uop }, shape_id, dtype);
                 let tid = self.new_graph_tensor(graph_id, class_id, shape_id, dtype);
                 #[cfg(feature = "debug_tensor_op")]
@@ -871,6 +882,7 @@ impl Runtime {
                     _ => unreachable!(),
                 }
             };
+            self.assert_graph_alive(graph_id);
             if !x_is_graph {
                 self.promote_to_graph(x, graph_id)?;
             }
@@ -889,17 +901,15 @@ impl Runtime {
         } else {
             let (kid_x, op_id_x) = match &self.tensors[x].state {
                 TensorState::Eager { kernel_id, op_id, .. } => (*kernel_id, *op_id),
-                TensorState::Graph { rc, .. } if *rc > 0 => {
-                    panic!("tensor was never realized. Did you forget to call tape.realize()?");
+                TensorState::Graph { .. } => {
+                    panic!("tensor belongs to a tape scope that has ended (Tape dropped or realized without this tensor being an output)");
                 }
-                _ => unreachable!("eager binary with graph tensor"),
             };
             let (kid_y, op_id_y) = match &self.tensors[y].state {
                 TensorState::Eager { kernel_id, op_id, .. } => (*kernel_id, *op_id),
-                TensorState::Graph { rc, .. } if *rc > 0 => {
-                    panic!("tensor was never realized. Did you forget to call tape.realize()?");
+                TensorState::Graph { .. } => {
+                    panic!("tensor belongs to a tape scope that has ended (Tape dropped or realized without this tensor being an output)");
                 }
-                _ => unreachable!("eager binary with graph tensor"),
             };
             //println!("Binary input kernels: {kid_x:?} and {kid_y:?}");
 
@@ -985,6 +995,7 @@ impl Runtime {
         let TensorState::Graph { class_id, graph_id, .. } = self.tensors[x].state else {
             todo!("eager to_device")
         };
+        self.assert_graph_alive(graph_id);
         let shape_id = self.tensors[x].shape_id;
         let dtype = self.tensors[x].dtype;
         // TODO measure actual time by running a test copy
@@ -1007,6 +1018,7 @@ impl Runtime {
 
         match self.tensors[x].state {
             TensorState::Graph { class_id, graph_id, .. } => {
+                self.assert_graph_alive(graph_id);
                 let (_node_id, class_id) = self.push_node(
                     graph_id,
                     Node::Reduce { x: class_id, bop: rop, axes: axes.into_boxed_slice() },
@@ -1083,6 +1095,7 @@ impl Runtime {
 
         match self.tensors[x].state {
             TensorState::Graph { class_id, graph_id, .. } => {
+                self.assert_graph_alive(graph_id);
                 let (_, class_id) = self.push_node(graph_id, Node::Reshape { x: class_id, shape: shape_id }, shape_id, dtype);
                 self.new_graph_tensor(graph_id, class_id, shape_id, dtype)
             }
@@ -1154,6 +1167,7 @@ impl Runtime {
 
         match self.tensors[x].state {
             TensorState::Graph { class_id, graph_id, .. } => {
+                self.assert_graph_alive(graph_id);
                 let (_, class_id) = self.push_node(graph_id, Node::Expand { x: class_id, shape: shape_id }, shape_id, dtype);
                 Ok(self.new_graph_tensor(graph_id, class_id, shape_id, dtype))
             }
@@ -1203,6 +1217,7 @@ impl Runtime {
 
         match self.tensors[x].state {
             TensorState::Graph { class_id, graph_id, .. } => {
+                self.assert_graph_alive(graph_id);
                 let (_, class_id) =
                     self.push_node(graph_id, Node::Permute { x: class_id, axes: axes.into_boxed_slice() }, shape_id, dtype);
                 self.new_graph_tensor(graph_id, class_id, shape_id, dtype)
@@ -1242,6 +1257,7 @@ impl Runtime {
 
         match self.tensors[x].state {
             TensorState::Graph { class_id, graph_id, .. } => {
+                self.assert_graph_alive(graph_id);
                 let (_, class_id) = self.push_node(
                     graph_id,
                     Node::PadZeros { x: class_id, padding: padding.into_boxed_slice() },
