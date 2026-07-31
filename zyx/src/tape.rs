@@ -370,13 +370,14 @@ impl FrozenTape {
 
         rt.execute_plan(self.cache_key, &mut class_buf)?;
 
-        let output_tids = Vec::new();
+        let mut outputs = Vec::new();
         for (cid, shape, dtype) in self.outputs.iter() {
             let view = View::contiguous(shape);
             let tid = rt.new_kernel(Op::LoadView(Box::new((*dtype, view))));
             rt.buffer_map.insert(tid, class_buf[cid]);
+            outputs.push(Tensor::from_id(tid));
         }
 
-        Ok(output_tids)
+        Ok(outputs)
     }
 }

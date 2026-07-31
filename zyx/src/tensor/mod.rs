@@ -91,6 +91,12 @@ pub struct Tensor {
     pub(super) id: TensorId,
 }
 
+impl Tensor {
+    pub(crate) fn from_id(id: TensorId) -> Self {
+        Tensor { id }
+    }
+}
+
 impl Clone for Tensor {
     fn clone(&self) -> Self {
         RT.lock().retain(self.id);

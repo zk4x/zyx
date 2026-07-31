@@ -447,9 +447,10 @@ In `zyx/tests/` (run from `zyx/zyx`):
 - `realize` → passed outputs are eager; leaves are eager after drop.
 - Realized eager tensor promoted → becomes a leaf, value preserved, no
   recomputation, invariant asserts pass.
-- Frozen tape: outputs invalid after freeze; `replay` still produces correct
-  results.
-- `execute_plan` leftover-buffer assert does not fire on existing plans (fix the
+- Frozen tape: outputs invalid after freeze (panic on use); `replay` still produces
+  correct results. (`FrozenTape::replay` had a bug — it never collected its output
+  tids — fixed as part of this step.)
+- `execute_plan` leftover-buffer check does not fire on existing plans (fix the
   leak first if it does).
 
 ## 7. Open questions / risks

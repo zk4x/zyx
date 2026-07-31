@@ -228,3 +228,32 @@ fn realized_tensor_promotes_as_leaf() -> Result<(), ZyxError> {
     assert_eq!(data, [1.0, 2.0, 3.0]);
     Ok(())
 }
+
+#[test]
+fn frozen_tape_replay() -> Result<(), ZyxError> {
+    let x = Tensor::from([1.0f32, 2.0, 3.0]);
+    let frozen = {
+        let tape = Tape::new([&x])?;
+        let z = x.relu();
+        tape.freeze([&z])?
+    };
+    let zs = frozen.replay([&x])?;
+    assert_eq!(zs.len(), 1);
+    let z = zs.into_iter().next().unwrap();
+    let data: Vec<f32> = z.try_into()?;
+    assert_eq!(data, [1.0, 2.0, 3.0]);
+    Ok(())
+}
+
+#[test]
+#[should_panic(expected = "tape scope has ended")]
+fn use_frozen_output_panics() {
+    let x = Tensor::from([1.0f32, 2.0, 3.0]);
+    let z;
+    {
+        let tape = Tape::new([&x]).unwrap();
+        z = x.relu();
+        let _frozen = tape.freeze([&z]).unwrap();
+    }
+    let _ = z + 1.0;
+}
