@@ -51,7 +51,7 @@ use std::collections::BTreeSet;
 use crate::{
     DType, Map, RT, Tensor, ZyxError,
     backend::{BufferId, Device},
-    graph::{ClassId, ExecPlan, Graph, GraphId, Node, plan::drain_events_for_buf},
+    graph::{ClassId, ExecPlan, Graph, GraphId, Node},
     kernel::{DeviceId, Op},
     runtime::ShapeId,
     shape::Dim,
@@ -265,19 +265,17 @@ impl Drop for Tape {
 
         let leaves: Vec<TensorId> = rt.graphs[graph_id].leaf_map.values().copied().collect();
         for tid in leaves {
-            //eprintln!("drop leaf {tid}: state={:?}", rt.tensors.get(tid).map(|t| &t.state));
             if rt.tensors[tid].graph_id != graph_id {
                 continue;
             }
-            if rt.tensors[tid].rc == 0 {
-                // Dead leaf (dropped mid-scope): buffer was kept for realize;
-                // ref_count already decremented at its release.
-                if let Some(buf_id) = rt.buffer_map.remove(&tid) {
-                    let wait_list = drain_events_for_buf(&mut rt.events, buf_id);
-                    rt.pools[buf_id.pool].deallocate(buf_id.buffer, wait_list);
-                }
-                rt.tensors.remove(tid);
-            } else if rt.buffer_map.contains_key(&tid) {
+            // Alive realized leaves become eager (self-contained) so the graph
+            // can be swept once nothing references it. Dead leaves (rc == 0) are
+            // kept here: their buffers are still referenced by the eager kernels
+            // of alive promoted tensors (e.g. a randn param whose kernel loads
+            // scope temps). They are swept by remove_dead_graph when ref_count
+            // drops to 0, i.e. when the last tensor of this scope dies or is
+            // re-promoted into a new scope.
+            if rt.tensors[tid].rc > 0 && rt.buffer_map.contains_key(&tid) {
                 rt.eagerify(tid);
             }
         }

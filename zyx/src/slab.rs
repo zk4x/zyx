@@ -113,6 +113,7 @@ impl<Id: SlabId, T> Slab<Id, T> {
         unsafe { self.values.swap_remove(id.into()).assume_init() }
     }
 
+    #[allow(unused)]
     pub(crate) fn get(&self, id: Id) -> Option<&T> {
         if !self.contains_key(id) {
             return None;

@@ -288,6 +288,10 @@ impl Runtime {
     pub(crate) fn remove_dead_graph(&mut self, graph_id: GraphId) {
         let leaf_tids: Vec<TensorId> = self.graphs[graph_id].leaf_map.values().copied().collect();
         for tid in leaf_tids {
+            // Dead leaves may already have been removed by Tape::drop.
+            if !self.tensors.contains_key(tid) {
+                continue;
+            }
             if self.tensors[tid].graph_id == graph_id {
                 if let Some(buf_id) = self.buffer_map.remove(&tid) {
                     let wait_list = drain_events_for_buf(&mut self.events, buf_id);
@@ -705,12 +709,28 @@ impl Runtime {
                                 self.add_store(otid)?;
                             }
                         }
-                        debug_assert_eq!(view.1.shape(), self.shapes[self.tensors[load_tid].shape_id], "LoadView shape mismatch");
-                        let shape_id = self.tensors[load_tid].shape_id;
-                        let dtype = self.tensors[load_tid].dtype;
-                        let (_, class_id) = self.push_leaf_node(graph_id, dtype, shape_id);
-                        self.graphs[graph_id].leaf_map.insert(class_id, load_tid);
-                        self.graphs[graph_id].leaf_classes.push(class_id);
+                        let class_id = if !self.tensors[load_tid].class_id.is_null()
+                            && self.tensors[load_tid].graph_id == graph_id
+                            && !self.graphs[graph_id].dead
+                        {
+                            // load_tid is already a leaf of this graph: reuse its class.
+                            self.tensors[load_tid].class_id
+                        } else {
+                            let shape_id = self.tensors[load_tid].shape_id;
+                            let dtype = self.tensors[load_tid].dtype;
+                            debug_assert_eq!(
+                                view.1.shape(),
+                                self.shapes[shape_id],
+                                "LoadView shape mismatch"
+                            );
+                            let (_, class_id) = self.push_leaf_node(graph_id, dtype, shape_id);
+                            self.graphs[graph_id].leaf_map.insert(class_id, load_tid);
+                            self.graphs[graph_id].leaf_classes.push(class_id);
+                            self.graphs[graph_id].ref_count += 1;
+                            self.tensors[load_tid].class_id = class_id;
+                            self.tensors[load_tid].graph_id = graph_id;
+                            class_id
+                        };
                         class_id
                     }
                     Op::ConstView(x) => {
