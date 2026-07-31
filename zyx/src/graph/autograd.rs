@@ -547,11 +547,7 @@ impl Runtime {
                 Some(&gcid) => {
                     let shape_id = self.graphs[graph_id].classes[gcid].shape;
                     let dtype = self.graphs[graph_id].classes[gcid].dtype;
-                    self.tensors.push(TensorData {
-                        shape_id,
-                        dtype,
-                        state: TensorState::Graph { class_id: gcid, rc: 1, graph_id },
-                    })
+                    self.new_graph_tensor(graph_id, gcid, shape_id, dtype)
                 }
                 None => {
                     let shape: Vec<Dim> = self.shape(tid).into();
@@ -561,11 +557,7 @@ impl Runtime {
                     let (_, zero_cid) = self.push_node(graph_id, Node::Const(Constant::new(0u8).cast(dtype)), one_shape, dtype);
                     let (_, cid) =
                         self.push_node(graph_id, Node::Expand { x: zero_cid, shape: full_shape_id }, full_shape_id, dtype);
-                    self.tensors.push(TensorData {
-                        shape_id: full_shape_id,
-                        dtype,
-                        state: TensorState::Graph { class_id: cid, rc: 1, graph_id },
-                    })
+                    self.new_graph_tensor(graph_id, cid, full_shape_id, dtype)
                 }
             };
             res.insert(tid, grad_tid);

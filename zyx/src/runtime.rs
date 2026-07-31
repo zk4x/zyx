@@ -284,6 +284,15 @@ impl Runtime {
         (nid, cid)
     }
 
+    pub(crate) fn new_graph_tensor(&mut self, graph_id: GraphId, class_id: ClassId, shape_id: ShapeId, dtype: DType) -> TensorId {
+        self.graphs[graph_id].ref_count += 1;
+        self.tensors.push(TensorData {
+            shape_id,
+            dtype,
+            state: TensorState::Graph { class_id, rc: 1, graph_id },
+        })
+    }
+
     pub fn push_node(&mut self, graph_id: GraphId, node: Node, shape: ShapeId, dtype: DType) -> (NodeId, ClassId) {
         //println!("push node to graph_id={graph_id:?}");
         match node {
@@ -504,6 +513,7 @@ impl Runtime {
             self.graphs[graph_id].leaf_classes.push(class_id);
             let rc = self.kernels[kernel_id].outputs.iter().filter(|&&o| o == tid).count() as u32;
             self.kernels[kernel_id].outputs.retain(|&o| o != tid);
+            self.graphs[graph_id].ref_count += 1;
             self.tensors[tid].state = TensorState::Graph { class_id, rc, graph_id };
             return Ok(class_id);
         }
@@ -702,6 +712,7 @@ impl Runtime {
         let class_id = op_to_class[&my_op_id];
         let rc = self.kernels[kernel_id].outputs.iter().filter(|&&o| o == tid).count() as u32;
         self.kernels[kernel_id].outputs.retain(|&o| o != tid);
+        self.graphs[graph_id].ref_count += 1;
         self.tensors[tid].state = TensorState::Graph { class_id, rc, graph_id };
         Ok(class_id)
     }
@@ -713,9 +724,7 @@ impl Runtime {
         match self.tensors[x].state {
             TensorState::Graph { class_id, graph_id, .. } => {
                 let (_, class_id) = self.push_node(graph_id, Node::Cast { x: class_id, dtype }, shape_id, dtype);
-                let tid =
-                    self.tensors.push(TensorData { shape_id, dtype, state: TensorState::Graph { class_id, rc: 1, graph_id } });
-                tid
+                self.new_graph_tensor(graph_id, class_id, shape_id, dtype)
             }
             TensorState::Eager { kernel_id, op_id, .. } => {
                 let op_id = self.kernels[kernel_id].kernel.cast(op_id, dtype);
@@ -739,9 +748,7 @@ impl Runtime {
         match self.tensors[x].state {
             TensorState::Graph { class_id, graph_id, .. } => {
                 let (_, class_id) = self.push_node(graph_id, Node::Cast { x: class_id, dtype }, shape_id, dtype);
-                let tid =
-                    self.tensors.push(TensorData { shape_id, dtype, state: TensorState::Graph { class_id, rc: 1, graph_id } });
-                tid
+                self.new_graph_tensor(graph_id, class_id, shape_id, dtype)
             }
             TensorState::Eager { kernel_id, op_id, .. } => {
                 let op_id = self.kernels[kernel_id].kernel.bitcast(op_id, dtype);
@@ -766,8 +773,7 @@ impl Runtime {
         match self.tensors[x].state {
             TensorState::Graph { class_id, graph_id, .. } => {
                 let (_node_id, class_id) = self.push_node(graph_id, Node::Unary { x: class_id, uop }, shape_id, dtype);
-                let tid =
-                    self.tensors.push(TensorData { shape_id, dtype, state: TensorState::Graph { class_id, rc: 1, graph_id } });
+                let tid = self.new_graph_tensor(graph_id, class_id, shape_id, dtype);
                 #[cfg(feature = "debug_tensor_op")]
                 println!("  -> tid={tid}, nid={_node_id:?}, cid={class_id:?}");
                 tid
@@ -824,8 +830,7 @@ impl Runtime {
             };
             let class_id = self.push_binary_node(graph_id, x, y, bop);
 
-            let tid = self.tensors.push(TensorData { shape_id, dtype, state: TensorState::Graph { class_id, rc: 1, graph_id } });
-            Ok(tid)
+            Ok(self.new_graph_tensor(graph_id, class_id, shape_id, dtype))
         } else {
             let (kid_x, op_id_x) = match &self.tensors[x].state {
                 TensorState::Eager { kernel_id, op_id, .. } => (*kernel_id, *op_id),
@@ -930,7 +935,7 @@ impl Runtime {
         // TODO measure actual time by running a test copy
         let (_node_id, cid) =
             self.push_node(graph_id, Node::ToDevice { x: class_id, device: device_id, time: 0 }, shape_id, dtype);
-        let tid = self.tensors.push(TensorData { shape_id, dtype, state: TensorState::Graph { class_id: cid, rc: 1, graph_id } });
+        let tid = self.new_graph_tensor(graph_id, cid, shape_id, dtype);
         #[cfg(feature = "debug_tensor_op")]
         println!("  -> tid={tid}, nid={_node_id:?}, cid={cid:?}");
         Ok(tid)
@@ -953,8 +958,7 @@ impl Runtime {
                     shape_id,
                     dtype,
                 );
-                let tid =
-                    self.tensors.push(TensorData { shape_id, dtype, state: TensorState::Graph { class_id, rc: 1, graph_id } });
+                let tid = self.new_graph_tensor(graph_id, class_id, shape_id, dtype);
                 #[cfg(feature = "debug_tensor_op")]
                 println!("  -> tid={tid}, nid={_node_id:?}, cid={class_id:?}");
                 Ok(tid)
@@ -1025,9 +1029,7 @@ impl Runtime {
         match self.tensors[x].state {
             TensorState::Graph { class_id, graph_id, .. } => {
                 let (_, class_id) = self.push_node(graph_id, Node::Reshape { x: class_id, shape: shape_id }, shape_id, dtype);
-                let tid =
-                    self.tensors.push(TensorData { shape_id, dtype, state: TensorState::Graph { class_id, rc: 1, graph_id } });
-                tid
+                self.new_graph_tensor(graph_id, class_id, shape_id, dtype)
             }
             TensorState::Eager { .. } => {
                 // If x is realized, create a load kernel with the target shape.
@@ -1098,9 +1100,7 @@ impl Runtime {
         match self.tensors[x].state {
             TensorState::Graph { class_id, graph_id, .. } => {
                 let (_, class_id) = self.push_node(graph_id, Node::Expand { x: class_id, shape: shape_id }, shape_id, dtype);
-                let tid =
-                    self.tensors.push(TensorData { shape_id, dtype, state: TensorState::Graph { class_id, rc: 1, graph_id } });
-                Ok(tid)
+                Ok(self.new_graph_tensor(graph_id, class_id, shape_id, dtype))
             }
             TensorState::Eager { kernel_id, op_id, .. } => {
                 let force_store = self.kernels[kernel_id].kernel.is_preceded_by_compute(op_id);
@@ -1150,9 +1150,7 @@ impl Runtime {
             TensorState::Graph { class_id, graph_id, .. } => {
                 let (_, class_id) =
                     self.push_node(graph_id, Node::Permute { x: class_id, axes: axes.into_boxed_slice() }, shape_id, dtype);
-                let tid =
-                    self.tensors.push(TensorData { shape_id, dtype, state: TensorState::Graph { class_id, rc: 1, graph_id } });
-                tid
+                self.new_graph_tensor(graph_id, class_id, shape_id, dtype)
             }
             TensorState::Eager { .. } => {
                 let (kernel_id, op_id) = self.duplicate_or_store(x, false).unwrap();
@@ -1195,9 +1193,7 @@ impl Runtime {
                     shape_id,
                     dtype,
                 );
-                let tid =
-                    self.tensors.push(TensorData { shape_id, dtype, state: TensorState::Graph { class_id, rc: 1, graph_id } });
-                tid
+                self.new_graph_tensor(graph_id, class_id, shape_id, dtype)
             }
             TensorState::Eager { kernel_id, op_id, .. } => {
                 let force_store = pad_n > child_n && self.kernels[kernel_id].kernel.is_preceded_by_compute(op_id);
