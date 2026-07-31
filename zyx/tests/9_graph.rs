@@ -173,3 +173,58 @@ fn tape_matmul() -> Result<(), ZyxError> {
     }
     Ok(())
 }
+
+#[test]
+fn drop_without_realize_params_eager() -> Result<(), ZyxError> {
+    let x = Tensor::from([1.0f32, 2.0, 3.0]);
+    {
+        let _tape = Tape::new([&x])?;
+        let _z = x.sin();
+    }
+    let y = x + 1.0;
+    let data: Vec<f32> = y.try_into()?;
+    assert_eq!(data, [2.0, 3.0, 4.0]);
+    Ok(())
+}
+
+#[test]
+#[should_panic(expected = "tape scope has ended")]
+fn use_intermediate_after_drop_panics() {
+    let x = Tensor::from([1.0f32, 2.0, 3.0]);
+    let z;
+    {
+        let _tape = Tape::new([&x]).unwrap();
+        z = x.sin();
+    }
+    let _ = z + 1.0;
+}
+
+#[test]
+fn realize_outputs_eager_leaves_eager_after_drop() -> Result<(), ZyxError> {
+    let x = Tensor::from([1.0f32, 2.0, 3.0]);
+    let z;
+    {
+        let tape = Tape::new([&x])?;
+        z = x.sin();
+        tape.realize([&z])?;
+    }
+    let zdata: Vec<f32> = z.try_into()?;
+    for (a, b) in [1.0f32, 2.0, 3.0].iter().zip(zdata) {
+        assert!(a.sin().is_equal(b));
+    }
+    let y = x + 1.0;
+    let data: Vec<f32> = y.try_into()?;
+    assert_eq!(data, [2.0, 3.0, 4.0]);
+    Ok(())
+}
+
+#[test]
+fn realized_tensor_promotes_as_leaf() -> Result<(), ZyxError> {
+    let x = Tensor::from([1.0f32, 2.0, 3.0]);
+    let tape = Tape::new([&x])?;
+    let z = x.relu();
+    tape.realize([&z])?;
+    let data: Vec<f32> = z.try_into()?;
+    assert_eq!(data, [1.0, 2.0, 3.0]);
+    Ok(())
+}
