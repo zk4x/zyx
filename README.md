@@ -58,8 +58,8 @@ pip install zyx-py
 
 ## Configuration & Debugging
 
-- [Configuration](zyx/CONFIG.md) - Hardware device selection, autotune settings
-- [Environment Variables](zyx/ENV_VARS.md) - Debug flags
+- [Configuration](CONFIG.md) - Hardware device selection, autotune settings
+- [Environment Variables](ENV_VARS.md) - Debug flags
 
 ## Neural Nets
 
@@ -179,7 +179,7 @@ for the target backend. Tape egraph compares fusion schemes and device allocatio
 - [x] **OpenCL**
 - [x] **Vulkan** - SPIR-V codegen
 - [x] **WGPU** - SPIR-V codegen, feature: `wgpu`
-- [ ] `tenstorrent` - Preliminary support, does not pass full test suite yet, feature `wgpu`
+- [ ] `tenstorrent` - Preliminary support, does not pass full test suite yet, feature `tenstorrent`
 
 If you'd like to add new backend to zyx, that would be awesome!
 Please read [ADDING_BACKENDS.md](https://github.com/zk4x/zyx/blob/main/ADDING_BACKENDS.md)

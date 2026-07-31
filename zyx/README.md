@@ -95,7 +95,7 @@ See [ENV_VARS.md](ENV_VARS.md) for debugging with `ZYX_DEBUG`.
 - [x] `OpenCL`
 - [x] `Vulkan` — via SPIR-V codegen
 - [x] `WGPU` - via SPIR-V codegen, feature: `wgpu`
-- [ ] `tenstorrent` - Preliminary support, does not pass full test suite yet, feature `wgpu`
+- [ ] `tenstorrent` - Preliminary support, does not pass full test suite yet, feature `tenstorrent`
 
 If you'd like to add new backend to zyx, that would be awesome!
 Please read [ADDING_BACKENDS.md](https://github.com/zk4x/zyx/blob/main/ADDING_BACKENDS.md)

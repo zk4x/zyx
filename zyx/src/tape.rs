@@ -233,6 +233,11 @@ impl Drop for Tape {
         let mut rt = RT.lock();
         rt.graphs.remove(self.graph_id);
 
+        // TODO this is wrong, cleanup should only clean up graph.leafs and outputs,
+        // which are accessible in realize and replay methods.
+        // We should also debug assert that no intermediate tensors are kept alive
+        // after graph realize or replay is finished.
+
         let tids: Vec<TensorId> = rt.tensors.iter().map(|(id, _)| id).collect();
         for tid in tids {
             let (rc, is_my_graph) = match &rt.tensors[tid].state {

@@ -153,16 +153,17 @@ fn small_net() -> Result<(), ZyxError> {
 #[test]
 fn tape_caching() -> Result<(), ZyxError> {
     let x = Tensor::from([1.0f32, 2.0, 3.0]);
-    for _ in 0..3 {
+    let y = Tensor::randn([3, 3], DType::F32)?;
+    for _ in 0..10 {
         let tape = Tape::new([&x])?;
-        let z = x.sin();
+        let z = &x + y.t().sin();
         tape.realize([&z])?;
     }
     Ok(())
 }
 
 #[test]
-fn tape_caching_matmul() -> Result<(), ZyxError> {
+fn tape_matmul() -> Result<(), ZyxError> {
     let x = Tensor::from([[1.0f32, 2.0], [3.0, 4.0], [5.0, 6.0]]);
     let w = Tensor::from([0.5f32, 1.5, 2.5, 3.5]).reshape([2, 2])?.relu();
     for _ in 0..3 {
