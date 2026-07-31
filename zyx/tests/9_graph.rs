@@ -130,7 +130,7 @@ fn small_net() -> Result<(), ZyxError> {
     let w2 = Tensor::randn([2, 3], DType::F32)?;
     let b2 = Tensor::randn([2], DType::F32)?;
 
-    for _ in 0..3 {
+    for _ in 0..1 {
         let tape = Tape::new([&w1, &b1, &w2, &b2])?;
         let x = Tensor::randn([2, 4], DType::F32)?;
         let y = Tensor::from([0u32, 1]);

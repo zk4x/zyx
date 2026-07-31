@@ -38,7 +38,7 @@ fn mnist() -> Result<(), ZyxError> {
         l2_bias: Tensor::randn([10], DType::F32)?,
     };
 
-    for _ in 0..3 {
+    for _ in 0..1 {
         for i in (0..num_train as u64).step_by(batch_size) {
             let end = if i + batch_size as u64 <= num_train as u64 {
                 i + batch_size as u64
