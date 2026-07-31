@@ -33,6 +33,7 @@ use crate::{
     dtype::Constant,
     error::{BackendError, ErrorStatus},
     graph::ExecPlan,
+    graph::plan::drain_events_for_buf,
     graph::{ClassId, EClass, Graph, GraphId, Node, NodeData, NodeId},
     kernel::{BOp, DeviceId, Kernel, MemScope, MoveOp, Op, OpId, UOp, autotune::OptSeq},
     rng::Rng,
@@ -223,11 +224,21 @@ impl Runtime {
     pub fn release(&mut self, x: TensorId) {
         let (kid, op_id, pending) = match &mut self.tensors[x].state {
             TensorState::Eager { kernel_id, op_id, pending: pending_store, .. } => (*kernel_id, *op_id, *pending_store),
-            TensorState::Graph { rc, graph_id, .. } => {
+            TensorState::Graph { rc, graph_id, class_id } => {
                 *rc -= 1;
-                if *rc == 0 && !self.graphs.contains_key(*graph_id) {
-                    assert!(!self.buffer_map.contains_key(&x));
-                    self.tensors.remove(x);
+                if *rc == 0 {
+                    let (graph_id, class_id) = (*graph_id, *class_id);
+                    if self.graphs.contains_key(graph_id) {
+                        if !self.graphs[graph_id].is_leaf(class_id) && !self.buffer_map.contains_key(&x) {
+                            self.tensors.remove(x);
+                        }
+                        self.graphs[graph_id].ref_count -= 1;
+                        if self.graphs[graph_id].dead && self.graphs[graph_id].ref_count == 0 {
+                            self.remove_dead_graph(graph_id);
+                        }
+                    } else if !self.buffer_map.contains_key(&x) {
+                        self.tensors.remove(x);
+                    }
                 }
                 return;
             }
@@ -257,6 +268,22 @@ impl Runtime {
                 self.materialize_kernel(kid).unwrap();
             }
         }
+    }
+
+    fn remove_dead_graph(&mut self, graph_id: GraphId) {
+        let leaf_tids: Vec<TensorId> = self.graphs[graph_id].leaf_map.values().copied().collect();
+        for tid in leaf_tids {
+            if let TensorState::Graph { graph_id: gid, .. } = self.tensors[tid].state {
+                if gid == graph_id {
+                    if let Some(buf_id) = self.buffer_map.remove(&tid) {
+                        let wait_list = drain_events_for_buf(&mut self.events, buf_id);
+                        self.pools[buf_id.pool].deallocate(buf_id.buffer, wait_list);
+                    }
+                    self.tensors.remove(tid);
+                }
+            }
+        }
+        self.graphs.remove(graph_id);
     }
 
     pub fn push_shape(&mut self, shape: Vec<Dim>) -> ShapeId {

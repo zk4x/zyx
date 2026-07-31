@@ -27,9 +27,7 @@ use crate::{
 
 mod autograd;
 mod kernelizer;
-mod plan;
-
-pub use plan::ExecPlan;
+pub(crate) mod plan;pub use plan::ExecPlan;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct NodeId(pub u32);
@@ -335,10 +333,7 @@ impl Graph {
     }
 
     pub fn is_leaf(&self, class_id: ClassId) -> bool {
-        self.classes[class_id]
-            .nodes
-            .iter()
-            .any(|&nid| matches!(&self.nodes[nid].node, Node::Leaf { .. }))
+        self.classes[class_id].nodes.iter().any(|&nid| matches!(&self.nodes[nid].node, Node::Leaf { .. }))
     }
 
     pub fn push_to_device(&mut self, x: ClassId, device: DeviceId, time: u64) -> ClassId {

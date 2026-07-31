@@ -3,7 +3,7 @@ use crate::{
     dtype::Constant,
     graph::{ClassId, Graph, GraphId, Node},
     kernel::{BOp, UOp},
-    runtime::{Runtime, TensorData, TensorState},
+    runtime::{Runtime, TensorState},
     shape::{Dim, UAxis},
     tensor::TensorId,
 };
