@@ -229,7 +229,11 @@ impl Runtime {
                 if *rc == 0 {
                     let (graph_id, class_id) = (*graph_id, *class_id);
                     if self.graphs.contains_key(graph_id) {
-                        if !self.graphs[graph_id].is_leaf(class_id) && !self.buffer_map.contains_key(&x) {
+                        if !self.graphs[graph_id].is_leaf(class_id) {
+                            debug_assert!(
+                                !self.buffer_map.contains_key(&x),
+                                "dead non-leaf graph tensor holds a buffer"
+                            );
                             self.tensors.remove(x);
                         }
                         self.graphs[graph_id].ref_count -= 1;
@@ -284,6 +288,29 @@ impl Runtime {
             }
         }
         self.graphs.remove(graph_id);
+    }
+
+    pub fn eagerify(&mut self, tid: TensorId) {
+        let (rc, graph_id) = match self.tensors[tid].state {
+            TensorState::Graph { rc, graph_id, .. } => (rc, graph_id),
+            _ => return,
+        };
+        let shape: Vec<Dim> = self.shape(tid).into();
+        let dtype = self.dtype(tid);
+        let op = Op::LoadView(Box::new((dtype, View::contiguous(&shape))));
+        let kernel_id = self.kernels.push(KernelData {
+            outputs: Vec::new(),
+            loads: Vec::new(),
+            stores: Vec::new(),
+            kernel: Kernel::new(DeviceId::AUTO),
+        });
+        let op_id = self.kernels[kernel_id].kernel.push_back(op);
+        self.kernels[kernel_id].loads.push(tid);
+        self.tensors[tid].state = TensorState::Eager { kernel_id, op_id, pending: KernelId::NULL };
+        for _ in 0..rc {
+            self.kernels[kernel_id].outputs.push(tid);
+        }
+        self.graphs[graph_id].ref_count -= 1;
     }
 
     pub fn push_shape(&mut self, shape: Vec<Dim>) -> ShapeId {

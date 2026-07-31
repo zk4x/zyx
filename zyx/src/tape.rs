@@ -159,6 +159,7 @@ impl Tape {
             rt.execute_plan(cache_key, &mut class_buf)?;
             for (&tid, &cid) in output_tids.iter().zip(output_classes.iter()) {
                 rt.buffer_map.insert(tid, class_buf[&cid]);
+                rt.eagerify(tid);
             }
 
             return Ok(());
@@ -214,6 +215,7 @@ impl Tape {
         rt.execute_plan(cache_key, &mut class_buf)?;
         for (&tid, &cid) in output_tids.iter().zip(output_classes.iter()) {
             rt.buffer_map.insert(tid, class_buf[&cid]);
+            rt.eagerify(tid);
         }
 
         Ok(())
