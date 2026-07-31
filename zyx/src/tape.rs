@@ -268,15 +268,24 @@ impl Drop for Tape {
             if rt.tensors[tid].graph_id != graph_id {
                 continue;
             }
-            // Alive realized leaves become eager (self-contained) so the graph
-            // can be swept once nothing references it. Dead leaves (rc == 0) are
-            // kept here: their buffers are still referenced by the eager kernels
-            // of alive promoted tensors (e.g. a randn param whose kernel loads
-            // scope temps). They are swept by remove_dead_graph when ref_count
-            // drops to 0, i.e. when the last tensor of this scope dies or is
-            // re-promoted into a new scope.
-            if rt.tensors[tid].rc > 0 && rt.buffer_map.contains_key(&tid) {
-                rt.eagerify(tid);
+            if rt.tensors[tid].rc == 0 {
+                // Dead leaf. If realized, it is still a load dependency of some
+                // live eager kernel — mirroring the eager world, where a realized
+                // rc==0 load tensor is kept so its buffer survives (kernel loads
+                // reference it). Revert it to eager; sweep non-realized dead leaves.
+                if rt.buffer_map.contains_key(&tid) {
+                    rt.tensors[tid].class_id = ClassId::NULL;
+                    rt.tensors[tid].graph_id = GraphId::NULL;
+                } else {
+                    rt.tensors.remove(tid);
+                }
+            } else {
+                // Alive leaf: back to eager. Keep its kernel_id/op_id so its
+                // value can still be computed; the graph affiliation is what
+                // made it a graph tensor, so clearing it reverts the tensor.
+                rt.tensors[tid].class_id = ClassId::NULL;
+                rt.tensors[tid].graph_id = GraphId::NULL;
+                rt.graphs[graph_id].ref_count -= 1;
             }
         }
 
