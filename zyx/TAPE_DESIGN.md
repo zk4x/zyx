@@ -172,9 +172,10 @@ Notes:
 - **Leaf exception.** A dead leaf (param dropped mid-scope) must stay in the slab
   and in `leaf_map`, because `realize`/`freeze` still read `leaf_map` →
   `buffer_map[tid]`. It is swept when the graph is removed.
-- **`is_leaf` check.** O(leaves) via `leaf_map.values()`, or O(1) with a
-  `leaf_tids: Set<TensorId>` maintained on the Graph at promotion. Prefer the set;
-  release is on the hot path.
+- **`is_leaf` check is O(1) via the class.** `TensorState::Graph` carries the
+  `class_id`, and during graph creation each class has exactly one node. So
+  `Graph::is_leaf(class_id)` (checks the node type) is the check; no `leaf_tids`
+  set needed.
 - **The `debug_assert!(!buffer_map.contains_key(&x))` is valid only after** the
   promotion fix (§4.2) and after `realize` eagerifies outputs immediately (§4.5).
   Then no non-leaf graph tensor can ever hold a buffer.

@@ -297,6 +297,8 @@ pub struct Graph {
     pub(crate) leaf_map: Map<ClassId, TensorId>,
     pub(crate) leaf_classes: Vec<ClassId>,
     pub(crate) max_leaf_id: u32,
+    pub(crate) ref_count: u64,
+    pub(crate) dead: bool,
 }
 
 impl Node {
@@ -327,7 +329,16 @@ impl Graph {
             leaf_map: Map::default(),
             leaf_classes: Vec::new(),
             max_leaf_id: 0,
+            ref_count: 0,
+            dead: false,
         }
+    }
+
+    pub fn is_leaf(&self, class_id: ClassId) -> bool {
+        self.classes[class_id]
+            .nodes
+            .iter()
+            .any(|&nid| matches!(&self.nodes[nid].node, Node::Leaf { .. }))
     }
 
     pub fn push_to_device(&mut self, x: ClassId, device: DeviceId, time: u64) -> ClassId {
