@@ -187,8 +187,6 @@ impl Tape {
             return Ok(());
         }
 
-        // TODO pattern match cublas, cblas, etc. kernels
-
         for cid in rt.graphs[graph_id].classes.ids() {
             let has_leaf = rt.graphs[graph_id].classes[cid]
                 .nodes
@@ -205,6 +203,10 @@ impl Tape {
         // Fills missing places with zyx custom kernels
         // SAFETY: graph and shapes are separate fields of Runtime, no aliasing, rust is stupid
         let shapes_ptr: *const Slab<ShapeId, Vec<Dim>> = &rt.shapes;
+
+        // Pattern match specialized AOT kernels (e.g. matmul -> cblas) so they can
+        // compete with the fused zyx kernels in extraction.
+        let _matmuls = rt.match_patterns(graph_id, &output_set, unsafe { &*shapes_ptr });
 
         // TODO debug assert that all leafs are realized
         //let realized_nodes: Set<ClassId> = rt.graphs[graph_id].leaf_map.iter().filter(|(_, tid)| rt.buffer_map.contains_key(tid)).map(|(cid, _)| *cid).collect();

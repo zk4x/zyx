@@ -28,6 +28,7 @@ use crate::{
 mod autograd;
 mod kernelizer;
 pub(crate) mod plan;
+mod patterns;
 pub use plan::ExecPlan;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -259,19 +260,19 @@ pub struct EClass {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct EKernelId(pub u32);
+pub struct JitKernelId(pub u32);
 
-impl From<usize> for EKernelId {
+impl From<usize> for JitKernelId {
     fn from(v: usize) -> Self {
         Self(v as u32)
     }
 }
-impl From<EKernelId> for usize {
-    fn from(v: EKernelId) -> usize {
+impl From<JitKernelId> for usize {
+    fn from(v: JitKernelId) -> usize {
         v.0 as usize
     }
 }
-impl SlabId for EKernelId {
+impl SlabId for JitKernelId {
     const ZERO: Self = Self(0);
     const NULL: Self = Self(u32::MAX);
     fn inc(&mut self) {
@@ -280,7 +281,7 @@ impl SlabId for EKernelId {
 }
 
 #[derive(Debug, Clone)]
-pub struct EKernelData {
+pub struct JitKernelData {
     pub(crate) kernel: Kernel,
     pub(crate) outputs: Vec<ClassId>,
     pub(crate) loads: Vec<ClassId>,
@@ -292,7 +293,7 @@ pub struct Graph {
     pub(crate) hashcons: Map<Node, NodeId>,
     pub(crate) nodes: Slab<NodeId, NodeData>,
     pub(crate) classes: Slab<ClassId, EClass>,
-    pub(crate) ekernels: Slab<EKernelId, EKernelData>,
+    pub(crate) jit_kernels: Slab<JitKernelId, JitKernelData>,
     pub(crate) leaf_map: Map<ClassId, TensorId>,
     pub(crate) leaf_classes: Vec<ClassId>,
     pub(crate) max_leaf_id: u32,
@@ -330,7 +331,7 @@ impl Graph {
             hashcons: Map::default(),
             nodes: Slab::new(),
             classes: Slab::new(),
-            ekernels: Slab::new(),
+            jit_kernels: Slab::new(),
             leaf_map: Map::default(),
             leaf_classes: Vec::new(),
             max_leaf_id: 0,
@@ -673,8 +674,8 @@ impl Runtime {
         println!("Autotuning");
         let device_ids: Vec<DeviceId> = self.devices.ids().collect();
 
-        let ekernels: *const Slab<EKernelId, EKernelData> = &self.graphs[graph_id].ekernels;
-        let ekernels: &Slab<EKernelId, EKernelData> = unsafe { &*ekernels };
+        let ekernels: *const Slab<JitKernelId, JitKernelData> = &self.graphs[graph_id].jit_kernels;
+        let ekernels: &Slab<JitKernelId, JitKernelData> = unsafe { &*ekernels };
         let total = ekernels.len().0 as u64 * device_ids.len() as u64;
         let mut bar = crate::prog_bar::ProgressBar::new(total);
         for ek in ekernels.values() {

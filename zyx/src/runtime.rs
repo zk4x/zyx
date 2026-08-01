@@ -77,7 +77,7 @@ impl SlabId for ShapeId {
     const ZERO: Self = Self(0);
     const NULL: Self = Self(u16::MAX);
     fn inc(&mut self) {
-        todo!()
+        self.0 += 1;
     }
 }
 

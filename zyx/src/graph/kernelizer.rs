@@ -2,7 +2,7 @@ use std::collections::BTreeSet;
 
 use crate::{
     DType, Map,
-    graph::{ClassId, EKernelData, EKernelId, Graph, Node},
+    graph::{ClassId, JitKernelData, JitKernelId, Graph, Node},
     kernel::{BOp, DeviceId, Kernel, MoveOp, Op, OpId, UOp},
     runtime::ShapeId,
     shape::{Dim, UAxis},
@@ -72,7 +72,7 @@ impl Graph {
             *rcs.entry(cid).or_default() += 1;
         }
 
-        let mut visited: Map<ClassId, (EKernelId, OpId)> = Map::default();
+        let mut visited: Map<ClassId, (JitKernelId, OpId)> = Map::default();
 
         for (i, &cid) in order.iter().enumerate() {
             debug_assert!(!visited.contains_key(&cid), "class {cid:?} already visited");
@@ -91,10 +91,10 @@ impl Graph {
                     let mut kernel = Kernel::new(DeviceId::AUTO);
                     let result_op = kernel.push_back(Op::ConstView(Box::new((*c, View::contiguous(&[1])))));
                     let kid =
-                        self.ekernels.push(EKernelData { kernel, outputs: Vec::new(), loads: Vec::new(), stores: Vec::new() });
+                        self.jit_kernels.push(JitKernelData { kernel, outputs: Vec::new(), loads: Vec::new(), stores: Vec::new() });
                     let n_consumers = rcs.get(&cid).copied().unwrap_or(0) as usize;
                     for _ in 0..n_consumers {
-                        self.ekernels[kid].outputs.push(cid);
+                        self.jit_kernels[kid].outputs.push(cid);
                     }
                     visited.insert(cid, (kid, result_op));
                 }
@@ -140,17 +140,17 @@ impl Graph {
                 let (mut kid, op_id) = visited[&cid];
                 (kid, _) = self.add_store(cid, kid, op_id, &mut visited, &rcs, shapes);
                 *rcs.get_mut(&cid).unwrap() -= 1;
-                remove_first_output(&mut self.ekernels, kid, cid);
+                remove_first_output(&mut self.jit_kernels, kid, cid);
                 if rcs[&cid] == 0 {
                     visited.remove(&cid);
                 }
-                if self.ekernels[kid].outputs.is_empty() && self.ekernels[kid].stores.is_empty() {
-                    self.ekernels.remove(kid);
+                if self.jit_kernels[kid].outputs.is_empty() && self.jit_kernels[kid].stores.is_empty() {
+                    self.jit_kernels.remove(kid);
                 }
             }
 
             // Highly important invariant checks, DO NOT TOUCH
-            for ek in self.ekernels.values() {
+            for ek in self.jit_kernels.values() {
                 let mut counts: Map<ClassId, u32> = Map::default();
                 for &ocid in &ek.outputs {
                     *counts.entry(ocid).or_default() += 1;
@@ -182,7 +182,7 @@ impl Graph {
         // Highly important invariant checks, DO NOT TOUCH
         debug_assert!(rcs.values().all(|&r| r == 0), "all rcs must be zero");
         debug_assert!(visited.is_empty(), "visited must be empty");
-        for kernel in self.ekernels.values() {
+        for kernel in self.jit_kernels.values() {
             debug_assert!(kernel.outputs.is_empty());
             if kernel.stores.is_empty() {
                 kernel.kernel.debug();
@@ -196,7 +196,7 @@ impl Graph {
         panic!();*/
     }
 
-    fn new_load_kernel(&mut self, cid: ClassId, shapes: &Slab<ShapeId, Vec<Dim>>, rc: u32) -> (EKernelId, OpId) {
+    fn new_load_kernel(&mut self, cid: ClassId, shapes: &Slab<ShapeId, Vec<Dim>>, rc: u32) -> (JitKernelId, OpId) {
         let mut kernel = Kernel::new(DeviceId::NULL);
         let shape: Vec<Dim> = shapes[self.classes[cid].shape].clone();
         let is_const = self.classes[cid].nodes.iter().any(|&nid| matches!(&self.nodes[nid].node, Node::Const(_)));
@@ -218,7 +218,7 @@ impl Graph {
             kernel.load_contiguous(self.classes[cid].dtype, &shape);
         }
         let op_id = kernel.head;
-        let kid = self.ekernels.push(EKernelData {
+        let kid = self.jit_kernels.push(JitKernelData {
             kernel,
             outputs: vec![cid; rc as usize],
             loads: if is_const { Vec::new() } else { vec![cid] },
@@ -231,22 +231,22 @@ impl Graph {
     fn add_store(
         &mut self,
         cid: ClassId,
-        kid: EKernelId,
+        kid: JitKernelId,
         op_id: OpId,
-        visited: &mut Map<ClassId, (EKernelId, OpId)>,
+        visited: &mut Map<ClassId, (JitKernelId, OpId)>,
         rcs: &Map<ClassId, u32>,
         shapes: &Slab<ShapeId, Vec<Dim>>,
-    ) -> (EKernelId, OpId) {
+    ) -> (JitKernelId, OpId) {
         //println!("add store cid={cid:?} kid={kid:?} op_id={op_id:?} rc={}", rcs.get(&cid).unwrap());
         //println!("outputs={:?}", self.ekernels[kid].outputs);
 
         let dtype = self.classes[cid].dtype;
-        self.ekernels[kid].kernel.store_contiguous(op_id, dtype);
-        self.ekernels[kid].stores.push(cid);
+        self.jit_kernels[kid].kernel.store_contiguous(op_id, dtype);
+        self.jit_kernels[kid].stores.push(cid);
         visited.remove(&cid);
 
         // Remove all occurences of x
-        let outputs = &mut self.ekernels[kid].outputs;
+        let outputs = &mut self.jit_kernels[kid].outputs;
         debug_assert_eq!(rcs[&cid], outputs.iter().filter(|&&x| x == cid).count() as u32);
         outputs.retain(|&x| x != cid);
 
@@ -261,11 +261,11 @@ impl Graph {
         }
     }
 
-    fn merge_kernels(&mut self, src: EKernelId, dst: EKernelId, visited: &mut Map<ClassId, (EKernelId, OpId)>) {
-        let EKernelData { kernel: src_kernel, outputs, loads, stores } = unsafe { self.ekernels.remove_and_return(src) };
+    fn merge_kernels(&mut self, src: JitKernelId, dst: JitKernelId, visited: &mut Map<ClassId, (JitKernelId, OpId)>) {
+        let JitKernelData { kernel: src_kernel, outputs, loads, stores } = unsafe { self.jit_kernels.remove_and_return(src) };
 
         {
-            let dst_data = &mut self.ekernels[dst];
+            let dst_data = &mut self.jit_kernels[dst];
             dst_data.outputs.extend(outputs);
             dst_data.loads.extend(loads);
             dst_data.stores.extend(stores);
@@ -282,7 +282,7 @@ impl Graph {
                     }
                 }
             }
-            let new_id = self.ekernels[dst].kernel.push_back(op);
+            let new_id = self.jit_kernels[dst].kernel.push_back(op);
             op_map.insert(i, new_id);
             i = src_kernel.ops[i].next;
         }
@@ -306,46 +306,46 @@ impl Graph {
     fn duplicate_or_store_class(
         &mut self,
         child: ClassId,
-        mut kid: EKernelId,
+        mut kid: JitKernelId,
         mut op_id: OpId,
-        visited: &mut Map<ClassId, (EKernelId, OpId)>,
+        visited: &mut Map<ClassId, (JitKernelId, OpId)>,
         rcs: &mut Map<ClassId, u32>,
         shapes: &Slab<ShapeId, Vec<Dim>>,
         force_store: bool,
-    ) -> (EKernelId, OpId) {
+    ) -> (JitKernelId, OpId) {
         // if kernel has stores, store child and create fresh load kernel
-        let force_store = force_store || self.ekernels[kid].kernel.contains_stores();
+        let force_store = force_store || self.jit_kernels[kid].kernel.contains_stores();
 
         // if kernel has multiple outputs, duplicate the kernel
         //println!("n_outputs={}", self.ekernels[kid].outputs.len());
-        if self.ekernels[kid].outputs.len() > 1 || force_store {
-            if force_store || self.ekernels[kid].kernel.is_preceded_by_reduce(op_id) {
+        if self.jit_kernels[kid].outputs.len() > 1 || force_store {
+            if force_store || self.jit_kernels[kid].kernel.is_preceded_by_reduce(op_id) {
                 (kid, op_id) = self.add_store(child, kid, op_id, visited, rcs, shapes);
 
                 // After storing, the new kernel can have more than one output. If it does, we have to split into another kernel
-                debug_assert!(self.ekernels[kid].outputs.iter().all(|&x| x == child));
-                if self.ekernels[kid].outputs.len() > 1 {
+                debug_assert!(self.jit_kernels[kid].outputs.iter().all(|&x| x == child));
+                if self.jit_kernels[kid].outputs.len() > 1 {
                     // Remove from the original kernel
-                    remove_first_output(&mut self.ekernels, kid, child);
+                    remove_first_output(&mut self.jit_kernels, kid, child);
                     // Create another kernel with just one output
                     (kid, op_id) = self.new_load_kernel(child, shapes, 1);
                 }
             } else {
-                remove_first_output(&mut self.ekernels, kid, child);
-                let out_op_ids: Vec<OpId> = self.ekernels[kid].outputs.iter().map(|&cid| visited[&cid].1).collect();
-                let loads = self.ekernels[kid].loads.clone();
+                remove_first_output(&mut self.jit_kernels, kid, child);
+                let out_op_ids: Vec<OpId> = self.jit_kernels[kid].outputs.iter().map(|&cid| visited[&cid].1).collect();
+                let loads = self.jit_kernels[kid].loads.clone();
                 let (new_kernel, new_op_id, self_loads, new_loads) =
-                    self.ekernels[kid].kernel.extract_subkernel(op_id, &out_op_ids, &loads);
-                self.ekernels[kid].loads = self_loads;
+                    self.jit_kernels[kid].kernel.extract_subkernel(op_id, &out_op_ids, &loads);
+                self.jit_kernels[kid].loads = self_loads;
 
                 /*println!("duplicating original");
                 self.ekernels[kid].kernel.debug();
                 println!("duplicating extracted");
                 new_kernel.debug();*/
 
-                debug_assert_eq!(self.ekernels[kid].outputs.iter().filter(|&&x| x == child).count(), rcs[&child] as usize - 1);
+                debug_assert_eq!(self.jit_kernels[kid].outputs.iter().filter(|&&x| x == child).count(), rcs[&child] as usize - 1);
 
-                let new_kid = self.ekernels.push(EKernelData {
+                let new_kid = self.jit_kernels.push(JitKernelData {
                     kernel: new_kernel,
                     outputs: vec![child],
                     loads: new_loads,
@@ -356,7 +356,7 @@ impl Graph {
             }
         }
 
-        debug_assert_eq!(self.ekernels[kid].outputs.len(), 1);
+        debug_assert_eq!(self.jit_kernels[kid].outputs.len(), 1);
 
         (kid, op_id)
     }
@@ -366,19 +366,19 @@ impl Graph {
         cid: ClassId,
         child: ClassId,
         uop: UOp,
-        visited: &mut Map<ClassId, (EKernelId, OpId)>,
+        visited: &mut Map<ClassId, (JitKernelId, OpId)>,
         rcs: &mut Map<ClassId, u32>,
     ) {
         let (kid, op_id) = visited[&child];
         *rcs.get_mut(&child).unwrap() -= 1;
-        remove_first_output(&mut self.ekernels, kid, child);
+        remove_first_output(&mut self.jit_kernels, kid, child);
         if rcs.get(&child).copied().unwrap_or(0) == 0 {
             visited.remove(&child);
         }
-        let kernel = &mut self.ekernels[kid].kernel;
+        let kernel = &mut self.jit_kernels[kid].kernel;
         let result_op = kernel.unary(op_id, uop);
         for _ in 0..*rcs.get(&cid).unwrap() {
-            self.ekernels[kid].outputs.push(cid);
+            self.jit_kernels[kid].outputs.push(cid);
         }
         visited.insert(cid, (kid, result_op));
     }
@@ -388,19 +388,19 @@ impl Graph {
         cid: ClassId,
         child: ClassId,
         dtype: DType,
-        visited: &mut Map<ClassId, (EKernelId, OpId)>,
+        visited: &mut Map<ClassId, (JitKernelId, OpId)>,
         rcs: &mut Map<ClassId, u32>,
     ) {
         let (kid, op_id) = visited[&child];
         *rcs.get_mut(&child).unwrap() -= 1;
-        remove_first_output(&mut self.ekernels, kid, child);
+        remove_first_output(&mut self.jit_kernels, kid, child);
         if rcs.get(&child).copied().unwrap_or(0) == 0 {
             visited.remove(&child);
         }
-        let kernel = &mut self.ekernels[kid].kernel;
+        let kernel = &mut self.jit_kernels[kid].kernel;
         let result_op = kernel.cast(op_id, dtype);
         for _ in 0..*rcs.get(&cid).unwrap() {
-            self.ekernels[kid].outputs.push(cid);
+            self.jit_kernels[kid].outputs.push(cid);
         }
         visited.insert(cid, (kid, result_op));
     }
@@ -411,30 +411,30 @@ impl Graph {
         lhs: ClassId,
         rhs: ClassId,
         bop: BOp,
-        visited: &mut Map<ClassId, (EKernelId, OpId)>,
+        visited: &mut Map<ClassId, (JitKernelId, OpId)>,
         rcs: &mut Map<ClassId, u32>,
         shapes: &Slab<ShapeId, Vec<Dim>>,
     ) {
         let (mut kid, mut op_id) = visited[&lhs];
         let (mut kidy, op_idy) = visited[&rhs];
 
-        let kid_stores = self.ekernels[kid].kernel.contains_stores();
-        let kidy_stores = self.ekernels[kidy].kernel.contains_stores();
+        let kid_stores = self.jit_kernels[kid].kernel.contains_stores();
+        let kidy_stores = self.jit_kernels[kidy].kernel.contains_stores();
 
         if kid == kidy {
             *rcs.get_mut(&lhs).unwrap() -= 1;
             *rcs.get_mut(&rhs).unwrap() -= 1;
-            remove_first_output(&mut self.ekernels, kid, lhs);
-            remove_first_output(&mut self.ekernels, kid, rhs);
+            remove_first_output(&mut self.jit_kernels, kid, lhs);
+            remove_first_output(&mut self.jit_kernels, kid, rhs);
             if *rcs.get(&lhs).unwrap() == 0 {
                 visited.remove(&lhs);
             }
             if *rcs.get(&rhs).unwrap() == 0 {
                 visited.remove(&rhs);
             }
-            let result_op = self.ekernels[kid].kernel.binary(op_id, op_idy, bop);
+            let result_op = self.jit_kernels[kid].kernel.binary(op_id, op_idy, bop);
             for _ in 0..*rcs.get(&cid).unwrap() {
-                self.ekernels[kid].outputs.push(cid);
+                self.jit_kernels[kid].outputs.push(cid);
             }
             visited.insert(cid, (kid, result_op));
         } else {
@@ -457,17 +457,17 @@ impl Graph {
             *rcs.get_mut(&rhs).unwrap() -= 1;
             self.merge_kernels(kidy, kid, visited);
             let (_, op_idy) = visited[&rhs];
-            remove_first_output(&mut self.ekernels, kid, lhs);
-            remove_first_output(&mut self.ekernels, kid, rhs);
+            remove_first_output(&mut self.jit_kernels, kid, lhs);
+            remove_first_output(&mut self.jit_kernels, kid, rhs);
             if rcs.get(&lhs).copied().unwrap_or(0) == 0 {
                 visited.remove(&lhs);
             }
             if rcs.get(&rhs).copied().unwrap_or(0) == 0 {
                 visited.remove(&rhs);
             }
-            let result_op = self.ekernels[kid].kernel.binary(op_id, op_idy, bop);
+            let result_op = self.jit_kernels[kid].kernel.binary(op_id, op_idy, bop);
             for _ in 0..*rcs.get(&cid).unwrap() {
-                self.ekernels[kid].outputs.push(cid);
+                self.jit_kernels[kid].outputs.push(cid);
             }
             visited.insert(cid, (kid, result_op));
         }
@@ -479,7 +479,7 @@ impl Graph {
         child: ClassId,
         rop: BOp,
         axes: Vec<UAxis>,
-        visited: &mut Map<ClassId, (EKernelId, OpId)>,
+        visited: &mut Map<ClassId, (JitKernelId, OpId)>,
         rcs: &mut Map<ClassId, u32>,
         shapes: &Slab<ShapeId, Vec<Dim>>,
     ) {
@@ -488,14 +488,14 @@ impl Graph {
         (kid, op_id) = self.duplicate_or_store_class(child, kid, op_id, visited, rcs, shapes, false);
         *rcs.get_mut(&child).unwrap() -= 1;
         //println!("reduce outputs={:?}", self.ekernels[kid].outputs);
-        remove_first_output(&mut self.ekernels, kid, child);
+        remove_first_output(&mut self.jit_kernels, kid, child);
         if rcs.get(&child).copied().unwrap_or(0) == 0 {
             visited.remove(&child);
         }
 
         // Permute so that reduce dimensions are last
         let in_shape: Vec<Dim> = shapes[self.classes[child].shape].clone();
-        let kernel = &mut self.ekernels[kid].kernel;
+        let kernel = &mut self.jit_kernels[kid].kernel;
         let permuted = {
             let n = in_shape.len();
             let max_axis = *axes.last().unwrap() as usize;
@@ -525,7 +525,7 @@ impl Graph {
         }
 
         for _ in 0..*rcs.get(&cid).unwrap() {
-            self.ekernels[kid].outputs.push(cid);
+            self.jit_kernels[kid].outputs.push(cid);
         }
         visited.insert(cid, (kid, result_op));
     }
@@ -535,23 +535,23 @@ impl Graph {
         cid: ClassId,
         child: ClassId,
         _shape: ShapeId,
-        visited: &mut Map<ClassId, (EKernelId, OpId)>,
+        visited: &mut Map<ClassId, (JitKernelId, OpId)>,
         rcs: &mut Map<ClassId, u32>,
         shapes: &Slab<ShapeId, Vec<Dim>>,
     ) {
         let (mut kid, mut op_id) = visited[&child];
-        let force_store = self.ekernels[kid].kernel.is_preceded_by_compute(op_id);
+        let force_store = self.jit_kernels[kid].kernel.is_preceded_by_compute(op_id);
         (kid, op_id) = self.duplicate_or_store_class(child, kid, op_id, visited, rcs, shapes, force_store);
-        remove_first_output(&mut self.ekernels, kid, child);
+        remove_first_output(&mut self.jit_kernels, kid, child);
         *rcs.get_mut(&child).unwrap() -= 1;
         if rcs.get(&child).copied().unwrap_or(0) == 0 {
             visited.remove(&child);
         }
         let shape: Vec<Dim> = shapes[self.classes[cid].shape].clone();
-        let kernel = &mut self.ekernels[kid].kernel;
+        let kernel = &mut self.jit_kernels[kid].kernel;
         let result_op = kernel.push_back(Op::Move { x: op_id, mop: Box::new(MoveOp::Expand { shape }) });
         for _ in 0..*rcs.get(&cid).unwrap() {
-            self.ekernels[kid].outputs.push(cid);
+            self.jit_kernels[kid].outputs.push(cid);
         }
         visited.insert(cid, (kid, result_op));
     }
@@ -561,22 +561,22 @@ impl Graph {
         cid: ClassId,
         child: ClassId,
         axes: Vec<UAxis>,
-        visited: &mut Map<ClassId, (EKernelId, OpId)>,
+        visited: &mut Map<ClassId, (JitKernelId, OpId)>,
         rcs: &mut Map<ClassId, u32>,
         shapes: &Slab<ShapeId, Vec<Dim>>,
     ) {
         let (mut kid, mut op_id) = visited[&child];
         (kid, op_id) = self.duplicate_or_store_class(child, kid, op_id, visited, rcs, shapes, false);
-        remove_first_output(&mut self.ekernels, kid, child);
+        remove_first_output(&mut self.jit_kernels, kid, child);
         *rcs.get_mut(&child).unwrap() -= 1;
         if rcs.get(&child).copied().unwrap_or(0) == 0 {
             visited.remove(&child);
         }
         let shape: Vec<Dim> = shapes[self.classes[cid].shape].clone();
-        let kernel = &mut self.ekernels[kid].kernel;
+        let kernel = &mut self.jit_kernels[kid].kernel;
         let result_op = kernel.push_back(Op::Move { x: op_id, mop: Box::new(MoveOp::Permute { axes, shape }) });
         for _ in 0..*rcs.get(&cid).unwrap() {
-            self.ekernels[kid].outputs.push(cid);
+            self.jit_kernels[kid].outputs.push(cid);
         }
         visited.insert(cid, (kid, result_op));
     }
@@ -586,21 +586,21 @@ impl Graph {
         cid: ClassId,
         child: ClassId,
         shape: Vec<Dim>,
-        visited: &mut Map<ClassId, (EKernelId, OpId)>,
+        visited: &mut Map<ClassId, (JitKernelId, OpId)>,
         rcs: &mut Map<ClassId, u32>,
         shapes: &Slab<ShapeId, Vec<Dim>>,
     ) {
         let (mut kid, mut op_id) = visited[&child];
         (kid, op_id) = self.duplicate_or_store_class(child, kid, op_id, visited, rcs, shapes, false);
-        remove_first_output(&mut self.ekernels, kid, child);
+        remove_first_output(&mut self.jit_kernels, kid, child);
         *rcs.get_mut(&child).unwrap() -= 1;
         if rcs.get(&child).copied().unwrap_or(0) == 0 {
             visited.remove(&child);
         }
-        let kernel = &mut self.ekernels[kid].kernel;
+        let kernel = &mut self.jit_kernels[kid].kernel;
         let result_op = kernel.push_back(Op::Move { x: op_id, mop: Box::new(MoveOp::Reshape { shape }) });
         for _ in 0..*rcs.get(&cid).unwrap() {
-            self.ekernels[kid].outputs.push(cid);
+            self.jit_kernels[kid].outputs.push(cid);
         }
         visited.insert(cid, (kid, result_op));
     }
@@ -610,7 +610,7 @@ impl Graph {
         cid: ClassId,
         child: ClassId,
         padding: Vec<(i64, i64)>,
-        visited: &mut Map<ClassId, (EKernelId, OpId)>,
+        visited: &mut Map<ClassId, (JitKernelId, OpId)>,
         rcs: &mut Map<ClassId, u32>,
         shapes: &Slab<ShapeId, Vec<Dim>>,
     ) {
@@ -622,25 +622,25 @@ impl Graph {
         let (mut kid, mut op_id) = visited[&child];
 
         // if shape after expand is larger than original and is compute kernel
-        let force_store = pad_n > child_n && self.ekernels[kid].kernel.is_preceded_by_compute(op_id);
+        let force_store = pad_n > child_n && self.jit_kernels[kid].kernel.is_preceded_by_compute(op_id);
         (kid, op_id) = self.duplicate_or_store_class(child, kid, op_id, visited, rcs, shapes, force_store);
 
-        remove_first_output(&mut self.ekernels, kid, child);
+        remove_first_output(&mut self.jit_kernels, kid, child);
         *rcs.get_mut(&child).unwrap() -= 1;
         if rcs.get(&child).copied().unwrap_or(0) == 0 {
             visited.remove(&child);
         }
         let shape: Vec<Dim> = cid_shape;
-        let kernel = &mut self.ekernels[kid].kernel;
+        let kernel = &mut self.jit_kernels[kid].kernel;
         let result_op = kernel.push_back(Op::Move { x: op_id, mop: Box::new(MoveOp::Pad { padding, shape }) });
         for _ in 0..*rcs.get(&cid).unwrap() {
-            self.ekernels[kid].outputs.push(cid);
+            self.jit_kernels[kid].outputs.push(cid);
         }
         visited.insert(cid, (kid, result_op));
     }
 }
 
-fn remove_first_output(kernels: &mut Slab<EKernelId, EKernelData>, kid: EKernelId, cid: ClassId) {
+fn remove_first_output(kernels: &mut Slab<JitKernelId, JitKernelData>, kid: JitKernelId, cid: ClassId) {
     if let Some(pos) = kernels[kid].outputs.iter().position(|&x| x == cid) {
         kernels[kid].outputs.remove(pos);
     }
