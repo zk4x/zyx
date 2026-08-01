@@ -27,7 +27,7 @@ Manufactures have tough time writing these high performance kernels, therefore t
 a few ops and don't support general linear algebra.
 
 Zyx approaches these problems from two angles, while maintaining high flexibility (proven by several relatively fast
-rewrites of core components without significant API changes, to accomodate more hardware):
+rewrites of core components without significant API changes, to accommodate more hardware):
 
 ### 1. Supporting all ops
 
@@ -42,7 +42,7 @@ algebra support.
 ### 2. Bringing top performance
 
 As good as the automatic optimizations can be, writing manual kernels will always be faster, that is why
-it is the dominant approach as of now. Zyx acknowledges this and maintains flexibility through it's egraph
+it is the dominant approach as of now. Zyx acknowledges this and maintains flexibility through it's e-graph
 system pattern matching of any subgraph structure into a custom kernel written in language of your choosing
 (or raw binary blobs, cublas, cblas, etc.), as well as writing custom kernels in zyx IR and taking advantage
 of optimization passes zyx provides. Egraph measures their timings, compares with auto-generated zyx kernels
@@ -64,7 +64,7 @@ CUDA, any gpu driver with vulkan support is sufficient.
 - **Explicit Tape** — you control what is recorded via `Tape`; no need for `torch.no_grad()` or requires_grad semantics.
 - **Everything is diff** — every tensor in tape can be differentiated w.r.t. any other tensor in tape.
 - **Lazy Device Loading** — tensors load from their current memory pool (disk, another device) into the compute device only when needed.
-- **Parallel Pipelining** — kernels allocate across heterogeneous devices (GPU, CPU, WebGPU) in a pipelined fashion via the scheduler automatcially. e-graph tries all options, picks the fastest measured path.
+- **Parallel Pipelining** — kernels allocate across heterogeneous devices (GPU, CPU, WebGPU) in a pipelined fashion via the scheduler automatically. e-graph tries all options, picks the fastest measured path.
 - **Small Footprint** — compiled library is only a few MB with two dependencies (`libloading`, `nanoserde`) and std. This means for all models, a few MB binary runs (and trains) them on all backends. Training and deployment can freely use the same API.
 
 
@@ -210,7 +210,7 @@ graph TD
 
 Outside the tape, tensor operations fuse eagerly into kernels as you call them using unified kernel IR.
 Inside a tape, a lazy graph is built and analyzed for fusion opportunities during realization
-or may pattern match parts of graph into AOT kernels. Differe device allocations are also compared.
+or may pattern match parts of graph into AOT kernels. Different device allocations are also compared.
 The fused operations are lowered to a unified kernel IR. Kernel IR is then autotuned and compiled
 to native code for the target backend.
 
