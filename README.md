@@ -248,10 +248,13 @@ Please read [ADDING_BACKENDS.md](https://github.com/zk4x/zyx/blob/main/ADDING_BA
 ## Roadmap
 
 - [ ] full tenstorrent coverage
-- [ ] pattern matching for e-graph AOT kernels
 - [ ] custom backend code/assembly kernels
 - [ ] automatic device sharding search
-- [ ] more benchmarks + more model examples
+- [ ] more backends
+- [ ] more optimization passes
+- [ ] more AOT kernels
+- [ ] more benchmarks
+- [ ] more model examples
 
 
 ## Status & License
