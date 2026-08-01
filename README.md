@@ -56,8 +56,8 @@ CUDA, any gpu driver with vulkan support is sufficient.
 
 ## Features
 
-- **Eager-ish Execution** — tensor operations fuse into kernels as you write them; when fusion is no longer possible, the kernel executes. For one off computations.
-- **Tape Mode** — wrap loop bodies in a `Tape` for lazy graph building, autograd and egraph-based fusion optimization. For repeated computations.
+- **Eager API, Lazy JIT Execution** — tensor operations fuse into kernels as you write them; when fusion is no longer possible, the kernel executes. For one off computations.
+- **Eager API, Tape Mode** — wrap loop bodies in a `Tape` for lazy graph building, autograd and egraph-based fusion optimization. Computation happens when realize is called. For repeated computations.
 - **Cross‑Platform Backends** — codegen for C, CUDA, OpenCL and SPIR-V.
 - **Full Linear‑Algebra Coverage** — mirrors the PyTorch ops API (matmul, convolutions, pooling, reductions, indexing, etc.) by stacking ops. Stack more ops yourself to get more op coverage, zyx auto fuses and optimizes it.
 - **Immutable Tensors** — tensors cannot be modified in place, preventing back‑prop errors common in PyTorch (`RuntimeError: a tensor was modified in place`).
@@ -72,7 +72,7 @@ CUDA, any gpu driver with vulkan support is sufficient.
 
 | Crate | Description |
 |-------|-------------|
-| `zyx` | Core tensor library with eager-ish fusion and tape-based autodiff |
+| `zyx` | Core tensor library with all backends and autodiff |
 | `zyx-nn` | Neural network layers (Linear, Conv2d, Attention, etc.) and `#[derive(Module)]` |
 | `zyx-optim` | Optimizers (SGD, Adam, AdamW, RMSprop) |
 
@@ -222,8 +222,8 @@ Zyx is a library, not a workflow: it doesn't prescribe training loops or data pi
 | Feature | PyTorch | JAX | TVM | tinygrad | candle | burn | luminal | zyx |
 |---|---|---|---|---|---|---|---|---|
 | **Language/front-end** | Python + C++ | Python | Python + C++ | Python | Rust | Rust | Rust | Rust + Python |
-| **Execution model** | eager | lazy (traced) | AOT-compiled | lazy | eager | dynamic graphs | static graphs | eager outside a `Tape`, lazy inside |
-| **Graphs** | eager ops + separate autograd graph | one jaxpr for both | graph → IR | single UOp graph for everything | none (eager) | dynamic execution graph | static DAG | one graph for laziness and autograd |
+| **Execution model** | eager | lazy (traced) | AOT-compiled | lazy | eager | eager API, lazy JIT execution | static graphs | lazy JIT outside a `Tape`, deferred inside |
+| **Graphs** | eager ops + separate autograd graph | one jaxpr for both | graph → IR | single UOp graph for everything | none (eager) | dynamic graph, JIT-fused streams | static DAG | one graph for laziness and autograd |
 | **Autograd** | `requires_grad`/`no_grad` | `grad` transform | n/a | graph-based | built-in | autodiff as a backend decorator | graph-based | `Tape` scoped |
 | **Compiled replay** | — | `jit` | AOT | `TinyJit` | — | — | AOT | `Tape::freeze`/`replay` |
 | **Fusion** | `torch.compile` | XLA | operator fusion | heuristics | manual | automatic kernel fusion | e-graph fusion variants | e-graph fusion variants |
@@ -231,7 +231,7 @@ Zyx is a library, not a workflow: it doesn't prescribe training loops or data pi
 | **Custom kernels** | C++/CUDA ops, Triton | pallas, custom calls | codegen templates | written in UOp IR | embed foreign kernels (flash-attn) | custom kernels | e-graph pattern-matching AOT kernels | written in zyx IR, or e-graph AOT patterns |
 | **Tensor mutability** | mutable | immutable | n/a (compile-time) | immutable | mutable | mutable | n/a (compile-time) | immutable |
 | **Device/memory movement** | manual `.to()` | explicit placement | pipelines across devices/memories | per-op device semantics | manual | manual | compiler-searched ahead of time | pipelines across devices/memories |
-| **Hardware backends** | CPU, CUDA, MPS, ROCm | CPU, GPU, TPU | CPU, GPU, NPU | CPU, CUDA, OpenCL, Metal | CPU, CUDA, WASM | CPU, CUDA, WGPU | CPU, CUDA, Metal, WGPU | C, CUDA, OpenCL, Vulkan, WGPU — one small codegen file per backend |
+| **Hardware backends** | CPU, CUDA, MPS, ROCm, XPU | CPU, GPU, TPU | CPU, GPU, NPU | CPU, CUDA, OpenCL, Metal, HIP, NV, QCOM | CPU, CUDA, Metal, WASM | CPU, CUDA, ROCm, Metal, Vulkan, WebGPU, LibTorch | CPU, CUDA, Metal | C, CUDA, OpenCL, Vulkan, WGPU — one small codegen file per backend |
 | **Data parallelism** | DDP/FSDP | data-parallel sharding | — | multi-GPU sharding | multi-GPU via NCCL (tensor parallel) | DDP | — | manual (automatic in the roadmap) |
 
 ## Backends
