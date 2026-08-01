@@ -175,6 +175,18 @@ fn tape_matmul() -> Result<(), ZyxError> {
 }
 
 #[test]
+fn tape_big_matmul() -> Result<(), ZyxError> {
+    let x = Tensor::randn([256, 392], DType::F32)?;
+    let w = Tensor::randn([392, 296], DType::F32)?;
+    let tape = Tape::new([&x, &w])?;
+    let z = x.dot(&w)?.relu();
+    tape.realize([&z])?;
+    let shape = z.shape();
+    assert_eq!(shape, [256, 296]);
+    Ok(())
+}
+
+#[test]
 fn drop_without_realize_params_eager() -> Result<(), ZyxError> {
     let x = Tensor::from([1.0f32, 2.0, 3.0]);
     {
