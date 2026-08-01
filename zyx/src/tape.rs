@@ -49,7 +49,7 @@
 use std::collections::BTreeSet;
 
 use crate::{
-    DType, Map, RT, Tensor, ZyxError,
+    DType, Map, RT, Set, Tensor, ZyxError,
     backend::{BufferId, Device},
     graph::plan::drain_events_for_buf,
     graph::{ClassId, ExecPlan, Graph, GraphId, Node},
@@ -215,7 +215,8 @@ impl Tape {
 
         // TODO debug assert that all leafs are realized
         //let realized_nodes: Set<ClassId> = rt.graphs[graph_id].leaf_map.iter().filter(|(_, tid)| rt.buffer_map.contains_key(tid)).map(|(cid, _)| *cid).collect();
-        rt.graphs[graph_id].fill_remaining(&output_set, unsafe { &*shapes_ptr });
+        let inputs: Set<ClassId> = rt.graphs[graph_id].leaf_classes.iter().copied().collect();
+        rt.graphs[graph_id].fill_remaining(&inputs, &output_set, unsafe { &*shapes_ptr });
 
         // Autotunes custom zyx kernels for all devices and adds kernel nodes for all of them
         rt.autotune_graph_ekernels(graph_id)?;
@@ -356,7 +357,8 @@ impl Tape {
 
         // TODO debug assert that all leafs are realized
         //let realized_nodes: Set<ClassId> = rt.graphs[graph_id].leaf_map.iter().filter(|(_, tid)| rt.buffer_map.contains_key(tid)).map(|(cid, _)| *cid).collect();
-        rt.graphs[graph_id].fill_remaining(&output_set, unsafe { &*shapes_ptr });
+        let inputs: Set<ClassId> = rt.graphs[graph_id].leaf_classes.iter().copied().collect();
+        rt.graphs[graph_id].fill_remaining(&inputs, &output_set, unsafe { &*shapes_ptr });
 
         // Autotunes custom zyx kernels for all devices and adds kernel nodes for all of them
         rt.autotune_graph_ekernels(graph_id)?;

@@ -1,7 +1,7 @@
 use std::collections::BTreeSet;
 
 use crate::{
-    Map,
+    Map, Set,
     dtype::Constant,
     graph::{ClassId, Graph, JitKernelData, JitKernelId, Node},
     kernel::{DeviceId, Kernel, MoveOp, Op, OpId},
@@ -25,6 +25,13 @@ impl Graph {
     /// Not every class needs a kernel — only those that lie on output computation paths. Dead graph
     /// regions without kernels are harmless. After this function returns, all classes that *are* on
     /// output paths must be covered by a kernel.
+    ///
+    /// # Inputs
+    ///
+    /// Classes in `inputs` are treated as realized boundary values — the kernelizer
+    /// never fuses *into* them, it only loads them (exactly like [`Node::Leaf`]s).
+    /// For the whole graph these are the leaf classes; for a subregion (the gap
+    /// between two AOT kernels) they are the region's boundary inputs.
     ///
     /// # Reference Counts (rcs)
     ///
@@ -56,7 +63,7 @@ impl Graph {
     /// 2. **Visited residency**: Every class with `rcs[cid] > 0` that has been produced must have
     ///    exactly one entry in `visited` mapping it to the kernel where its computation lives.
     ///    [`add_store`] removes the entry and restores it via a load kernel if consumers remain.
-    pub fn fill_remaining(&mut self, outputs: &BTreeSet<ClassId>, shapes: &Slab<ShapeId, Vec<Dim>>) {
+    pub fn fill_remaining(&mut self, inputs: &Set<ClassId>, outputs: &BTreeSet<ClassId>, shapes: &Slab<ShapeId, Vec<Dim>>) {
         let order = self.topo_sort_classes_without_kernels(outputs);
 
         let mut rcs: Map<ClassId, u32> = Map::default();
@@ -84,124 +91,138 @@ impl Graph {
 
             let nid = self.classes[cid].nodes[0];
             //println!("cid={} nid={} rc={} shape={:?}, {node:?}", cid.0, nid.0, rcs[&cid], shapes[self.classes[cid].shape]);
-            match self.nodes[nid].node {
-                Node::Leaf { .. } => {
-                    let (kid, op_id) = self.new_load_kernel(cid, shapes, *rcs.get(&cid).unwrap());
-                    visited.insert(cid, (kid, op_id));
-                }
-                Node::Const(value) => {
-                    let (kid, op_id) = self.new_const_kernel(value, cid, *rcs.get(&cid).unwrap());
-                    visited.insert(cid, (kid, op_id));
-                }
-                Node::Unary { x, uop } => {
-                    let (kid, op_id) = visited[&x];
-                    self.consume(x, kid, &mut visited, &mut rcs);
-                    let result_op = self.jit_kernels[kid].kernel.unary(op_id, uop);
-                    self.push_outputs(kid, cid, *rcs.get(&cid).unwrap());
-                    visited.insert(cid, (kid, result_op));
-                }
-                Node::Cast { x, dtype } => {
-                    let (kid, op_id) = visited[&x];
-                    self.consume(x, kid, &mut visited, &mut rcs);
-                    let result_op = self.jit_kernels[kid].kernel.cast(op_id, dtype);
-                    self.push_outputs(kid, cid, *rcs.get(&cid).unwrap());
-                    visited.insert(cid, (kid, result_op));
-                }
-                Node::Binary { x, y, bop } => {
-                    let (mut kid, mut op_id) = visited[&x];
-                    let (mut kidy, mut op_idy) = visited[&y];
+            if inputs.contains(&cid) {
+                // Boundary input: load the class from storage, same as a leaf.
+                let (kid, op_id) = self.new_load_kernel(cid, shapes, *rcs.get(&cid).unwrap());
+                visited.insert(cid, (kid, op_id));
+            } else {
+                match self.nodes[nid].node {
+                    Node::Leaf { .. } => {
+                        let (kid, op_id) = self.new_load_kernel(cid, shapes, *rcs.get(&cid).unwrap());
+                        visited.insert(cid, (kid, op_id));
+                    }
+                    Node::Const(value) => {
+                        let (kid, op_id) = self.new_const_kernel(value, cid, *rcs.get(&cid).unwrap());
+                        visited.insert(cid, (kid, op_id));
+                    }
+                    Node::Unary { x, uop } => {
+                        let (kid, op_id) = visited[&x];
+                        self.consume(x, kid, &mut visited, &mut rcs);
+                        let result_op = self.jit_kernels[kid].kernel.unary(op_id, uop);
+                        self.push_outputs(kid, cid, *rcs.get(&cid).unwrap());
+                        visited.insert(cid, (kid, result_op));
+                    }
+                    Node::Cast { x, dtype } => {
+                        let (kid, op_id) = visited[&x];
+                        self.consume(x, kid, &mut visited, &mut rcs);
+                        let result_op = self.jit_kernels[kid].kernel.cast(op_id, dtype);
+                        self.push_outputs(kid, cid, *rcs.get(&cid).unwrap());
+                        visited.insert(cid, (kid, result_op));
+                    }
+                    Node::Binary { x, y, bop } => {
+                        let (mut kid, mut op_id) = visited[&x];
+                        let (mut kidy, mut op_idy) = visited[&y];
 
-                    if kid != kidy {
-                        let kid_stores = self.jit_kernels[kid].kernel.contains_stores();
-                        let kidy_stores = self.jit_kernels[kidy].kernel.contains_stores();
-                        match (kid_stores, kidy_stores) {
-                            (true, true) => {
-                                (kid, op_id) = self.add_store(x, kid, op_id, &mut visited, &rcs, shapes);
-                                (kidy, _) = self.add_store(y, kidy, op_idy, &mut visited, &rcs, shapes);
+                        if kid != kidy {
+                            let kid_stores = self.jit_kernels[kid].kernel.contains_stores();
+                            let kidy_stores = self.jit_kernels[kidy].kernel.contains_stores();
+                            match (kid_stores, kidy_stores) {
+                                (true, true) => {
+                                    (kid, op_id) = self.add_store(x, kid, op_id, &mut visited, &rcs, shapes);
+                                    (kidy, _) = self.add_store(y, kidy, op_idy, &mut visited, &rcs, shapes);
+                                }
+                                (true, false) => (kid, op_id) = self.add_store(x, kid, op_id, &mut visited, &rcs, shapes),
+                                (false, true) => (kidy, _) = self.add_store(y, kidy, op_idy, &mut visited, &rcs, shapes),
+                                (false, false) => {}
                             }
-                            (true, false) => (kid, op_id) = self.add_store(x, kid, op_id, &mut visited, &rcs, shapes),
-                            (false, true) => (kidy, _) = self.add_store(y, kidy, op_idy, &mut visited, &rcs, shapes),
-                            (false, false) => {}
+
+                            self.merge_kernels(kidy, kid, &mut visited);
+                            (_, op_idy) = visited[&y];
                         }
 
-                        self.merge_kernels(kidy, kid, &mut visited);
-                        (_, op_idy) = visited[&y];
+                        self.consume(x, kid, &mut visited, &mut rcs);
+                        self.consume(y, kid, &mut visited, &mut rcs);
+                        let result_op = self.jit_kernels[kid].kernel.binary(op_id, op_idy, bop);
+                        self.push_outputs(kid, cid, *rcs.get(&cid).unwrap());
+                        visited.insert(cid, (kid, result_op));
                     }
+                    Node::Reduce { x, bop, ref axes } => {
+                        let axes: Vec<UAxis> = axes.to_vec();
+                        let n_axes: UAxis = axes.len() as UAxis;
+                        let (mut kid, mut op_id) = visited[&x];
+                        (kid, op_id) = self.duplicate_or_store_class(x, kid, op_id, &mut visited, &mut rcs, shapes, false);
+                        self.consume(x, kid, &mut visited, &mut rcs);
 
-                    self.consume(x, kid, &mut visited, &mut rcs);
-                    self.consume(y, kid, &mut visited, &mut rcs);
-                    let result_op = self.jit_kernels[kid].kernel.binary(op_id, op_idy, bop);
-                    self.push_outputs(kid, cid, *rcs.get(&cid).unwrap());
-                    visited.insert(cid, (kid, result_op));
-                }
-                Node::Reduce { x, bop, ref axes } => {
-                    let axes: Vec<UAxis> = axes.to_vec();
-                    let n_axes: UAxis = axes.len() as UAxis;
-                    let (mut kid, mut op_id) = visited[&x];
-                    (kid, op_id) = self.duplicate_or_store_class(x, kid, op_id, &mut visited, &mut rcs, shapes, false);
-                    self.consume(x, kid, &mut visited, &mut rcs);
+                        // Permute so that reduce dimensions are last
+                        let in_shape: Vec<Dim> = shapes[self.classes[x].shape].clone();
+                        let kernel = &mut self.jit_kernels[kid].kernel;
+                        let permuted = {
+                            let n = in_shape.len();
+                            let permute_axes: Vec<UAxis> =
+                                (0..n as UAxis).filter(|&i| !axes.contains(&i)).chain(axes.iter().copied()).collect();
+                            if permute_axes.iter().copied().ne(0..n as UAxis) {
+                                kernel.permute(op_id, &permute_axes)
+                            } else {
+                                op_id
+                            }
+                        };
 
-                    // Permute so that reduce dimensions are last
-                    let in_shape: Vec<Dim> = shapes[self.classes[x].shape].clone();
-                    let kernel = &mut self.jit_kernels[kid].kernel;
-                    let permuted = {
-                        let n = in_shape.len();
-                        let permute_axes: Vec<UAxis> =
-                            (0..n as UAxis).filter(|&i| !axes.contains(&i)).chain(axes.iter().copied()).collect();
-                        if permute_axes.iter().copied().ne(0..n as UAxis) {
-                            kernel.permute(op_id, &permute_axes)
-                        } else {
-                            op_id
+                        let mut result_op = kernel.push_back(Op::Reduce { x: permuted, rop: bop, n_axes });
+
+                        // reshape if only 1 function remains
+                        if in_shape.len() == n_axes as usize {
+                            result_op = kernel.reshape(result_op, &[1]);
                         }
-                    };
 
-                    let mut result_op = kernel.push_back(Op::Reduce { x: permuted, rop: bop, n_axes });
-
-                    // reshape if only 1 function remains
-                    if in_shape.len() == n_axes as usize {
-                        result_op = kernel.reshape(result_op, &[1]);
+                        self.push_outputs(kid, cid, *rcs.get(&cid).unwrap());
+                        visited.insert(cid, (kid, result_op));
                     }
-
-                    self.push_outputs(kid, cid, *rcs.get(&cid).unwrap());
-                    visited.insert(cid, (kid, result_op));
+                    Node::Expand { x, .. } => {
+                        let (kid, op_id) = visited[&x];
+                        let force_store = self.jit_kernels[kid].kernel.is_preceded_by_compute(op_id);
+                        let shape = shapes[self.classes[cid].shape].clone();
+                        self.add_move(cid, x, MoveOp::Expand { shape }, force_store, &mut visited, &mut rcs, shapes);
+                    }
+                    Node::Permute { x, ref axes } => {
+                        let shape = shapes[self.classes[cid].shape].clone();
+                        self.add_move(
+                            cid,
+                            x,
+                            MoveOp::Permute { axes: axes.to_vec(), shape },
+                            false,
+                            &mut visited,
+                            &mut rcs,
+                            shapes,
+                        );
+                    }
+                    Node::Reshape { x, shape } => {
+                        let shape = shapes[shape].clone();
+                        self.add_move(cid, x, MoveOp::Reshape { shape }, false, &mut visited, &mut rcs, shapes);
+                    }
+                    Node::PadZeros { x, ref padding } => {
+                        let (kid, op_id) = visited[&x];
+                        let child_n: Dim = shapes[self.classes[x].shape].iter().product();
+                        let shape = shapes[self.classes[cid].shape].clone();
+                        // if shape after expand is larger than original and is compute kernel
+                        let force_store =
+                            shape.iter().product::<Dim>() > child_n && self.jit_kernels[kid].kernel.is_preceded_by_compute(op_id);
+                        self.add_move(
+                            cid,
+                            x,
+                            MoveOp::Pad { padding: padding.to_vec(), shape },
+                            force_store,
+                            &mut visited,
+                            &mut rcs,
+                            shapes,
+                        );
+                    }
+                    Node::ToDevice { x, .. } => {
+                        let (child_kid, child_op) = visited[&x];
+                        let (kid, op_id) = self.add_store(x, child_kid, child_op, &mut visited, &rcs, shapes);
+                        visited.insert(cid, (kid, op_id));
+                    }
+                    Node::Kernel { .. } => {}
                 }
-                Node::Expand { x, .. } => {
-                    let (kid, op_id) = visited[&x];
-                    let force_store = self.jit_kernels[kid].kernel.is_preceded_by_compute(op_id);
-                    let shape = shapes[self.classes[cid].shape].clone();
-                    self.add_move(cid, x, MoveOp::Expand { shape }, force_store, &mut visited, &mut rcs, shapes);
-                }
-                Node::Permute { x, ref axes } => {
-                    let shape = shapes[self.classes[cid].shape].clone();
-                    self.add_move(cid, x, MoveOp::Permute { axes: axes.to_vec(), shape }, false, &mut visited, &mut rcs, shapes);
-                }
-                Node::Reshape { x, shape } => {
-                    let shape = shapes[shape].clone();
-                    self.add_move(cid, x, MoveOp::Reshape { shape }, false, &mut visited, &mut rcs, shapes);
-                }
-                Node::PadZeros { x, ref padding } => {
-                    let (kid, op_id) = visited[&x];
-                    let child_n: Dim = shapes[self.classes[x].shape].iter().product();
-                    let shape = shapes[self.classes[cid].shape].clone();
-                    // if shape after expand is larger than original and is compute kernel
-                    let force_store =
-                        shape.iter().product::<Dim>() > child_n && self.jit_kernels[kid].kernel.is_preceded_by_compute(op_id);
-                    self.add_move(
-                        cid,
-                        x,
-                        MoveOp::Pad { padding: padding.to_vec(), shape },
-                        force_store,
-                        &mut visited,
-                        &mut rcs,
-                        shapes,
-                    );
-                }
-                Node::ToDevice { x, .. } => {
-                    let (child_kid, child_op) = visited[&x];
-                    let (kid, op_id) = self.add_store(x, child_kid, child_op, &mut visited, &rcs, shapes);
-                    visited.insert(cid, (kid, op_id));
-                }
-                Node::Kernel { .. } => {}
             }
 
             // AOT kernel classes (e.g. a cblas matmul output) are computed by a
