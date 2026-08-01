@@ -198,8 +198,9 @@ See the [WMMA matmul example](zyx/src/kernel/mod.rs#L9-L89) for a tensor-core ma
 ```mermaid
 graph TD
     A["Tensor ops"] --> B["Eager mode"]
-    A --> C["Tape mode (e-graph)"]
+    A --> C["Tape (e-graph)"]
     C --> D["Autograd"]
+    D --> C
     C --> E["AOT kernels, fusion and device schedule search"]
     B --> F["Unified Kernel IR"]
     E --> F
