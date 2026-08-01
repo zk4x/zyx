@@ -19,52 +19,51 @@ Zyx has 3 goals:
 2. Run everywhere (all hardware)
 3. Run fast
 
-And also be nice to use while at that.
+And be nice to use.
 
-ML won't get better without new hardware and existing libraries are ill-suited to support emerging hardware.
+ML won't get better without new hardware; existing libraries may not be the best fit for emerging hardware.
 The primary problem is the requirement to write custom kernels to get the required performance.
-Manufacturers have a tough time writing these high performance kernels, therefore they write kernels for only
+Manufacturers have a tough time writing these high performance kernels; therefore they write kernels for only
 a few ops and don't support general linear algebra.
 
-Zyx approaches these problems from two angles, while maintaining high flexibility (proven by several relatively fast
-rewrites of core components without significant API changes, to accommodate more hardware):
+Zyx approaches these problems from two angles:
 
 ### 1. Supporting all ops
 
-Zyx has linear SSA-ish IR with explicit control flow. This is the hardware unifying interface. Each hardware has
+Zyx has linear SSA-ish IR with explicit control flow. This is the hardware unifying interface. Each piece of hardware has
 add instructions, can repeat instructions (loop), is highly parallel (work sizes), has multiple types of memory
 in a hierarchy (or at least global and registers) and can optionally have vectorization and tiling.
 This is the core of the instruction set. Zyx has a series of optimization passes (selected by autotuner)
 that apply various optimizations for different levels of these characteristics. The lowering layer from IR
-to backends is almost 1:1 mapping. If your hardware can provide this translation, zyx gives you all of linear
-algebra support.
+to backends is an almost 1:1 mapping. If your hardware can provide this translation, the whole stack
+(zyx ops, `zyx-nn`, `zyx-optim`) works on it.
 
 ### 2. Bringing top performance
 
-As good as the automatic optimizations can be, writing manual kernels will always be faster, that is why
-it is the dominant approach as of now. Zyx acknowledges this and maintains flexibility through its e-graph
-system pattern matching of any subgraph structure into a custom kernel written in language of your choosing
+As good as the automatic optimizations can be, writing manual kernels will usually be faster, which is why
+it is the dominant approach as of now. Zyx acknowledges this and its e-graph system pattern matching
+of any subgraph structure into a custom kernel written in a language of your choosing
 (or raw binary blobs, cublas, cblas, etc.), as well as writing custom kernels in zyx IR and taking advantage
-of optimization passes zyx provides. Egraph measures their timings, compares with auto-generated zyx kernels
+of optimization passes zyx provides. The e-graph measures their timings, compares them with auto-generated zyx kernels
 and picks the fastest path through this graph.
 
-The other issue is running on edge and platforms that don't have sufficient resources. Zyx takes only about 5 MB and uses machine
-available drivers to run, such as provided C compiler, provided CUDA runtime, but for example if you don't install
-CUDA, any gpu driver with vulkan support is sufficient.
+The other issue is running on edge platforms that don't have sufficient resources. Zyx takes only about 5 MB and uses
+machine-available drivers to run, such as a provided C compiler or CUDA runtime; for example, if you don't install
+CUDA, any GPU driver with Vulkan support is sufficient.
 
 
 ## Features
 
-- **Eager mode, Lazy JIT Execution** — tensor operations fuse into kernels as you write them; when fusion is no longer possible, the kernel executes. For one off computations.
-- **Tape (e-graph)** — wrap loop bodies in a `Tape` for lazy graph building, autograd and egraph-based fusion optimization. Computation happens when realize is called. For repeated computations.
-- **Cross‑Platform Backends** — codegen for C, CUDA, OpenCL and SPIR-V.
-- **Linear‑Algebra Coverage** — mirrors the PyTorch ops API (matmul, convolutions, pooling, reductions, indexing, etc.) by stacking ops. Stack more ops yourself to get more op coverage, zyx auto fuses and optimizes it.
+- **Eager mode, Lazy JIT Execution** — tensor operations fuse into kernels as you write them; when fusion is no longer possible, the kernel executes. For one-off computations.
+- **Tape (e-graph)** — wrap loop bodies in a `Tape` for lazy graph building, autograd and e-graph-based fusion optimization. Computation happens when realize is called. For repeated computations.
+- **Cross‑Platform Backends** — codegen for C, CUDA, PTX, OpenCL and SPIR-V (Vulkan/WGPU).
+- **Linear‑Algebra Coverage** — mirrors the PyTorch ops API (matmul, convolutions, pooling, reductions, indexing, etc.) by stacking ops. Stack more ops yourself to get more op coverage; zyx auto fuses and optimizes it.
 - **Immutable Tensors** — tensors cannot be modified in place, preventing back‑prop errors common in PyTorch (`RuntimeError: a tensor was modified in place`).
 - **Explicit Tape** — you control what is recorded via `Tape`; no need for `torch.no_grad()` or requires_grad semantics.
-- **Everything is diff** — every tensor in tape can be differentiated w.r.t. any other tensor in tape.
+- **Everything is diff** — every tensor in a tape can be differentiated w.r.t. any other tensor in a tape.
 - **Lazy Device Loading** — tensors load from their current memory pool (disk, another device) into the compute device only when needed.
 - **Parallel Pipelining** — kernels allocate across heterogeneous devices (GPU, CPU, WebGPU) in a pipelined fashion via the scheduler automatically. e-graph tries all options, picks the fastest measured path.
-- **Small Footprint** — compiled library is only a few MB with two dependencies (`libloading`, `nanoserde`) and std. This means for all models, a few MB binary runs (and trains) them on all backends. Training and deployment can freely use the same API.
+- **Small Footprint** — compiled library is only a few MB with two dependencies (`libloading`, `nanoserde`) and std. This means for all models, a few-MB binary runs (and trains) them on all backends. Training and deployment can freely use the same API.
 
 
 ## Crates
@@ -207,9 +206,9 @@ graph TD
     G --> H["Backend Code / Assembly"]
 ```
 
-Outside the tape, tensor operations fuse eagerly into kernels as you call them using unified kernel IR.
+Outside the tape, tensor operations fuse eagerly into kernels as you call them using a unified kernel IR.
 Inside a tape, a lazy graph is built and analyzed for fusion opportunities during realization
-or may pattern match parts of graph into AOT kernels. Different device allocations are also compared.
+or may have parts pattern-matched into AOT kernels. Different device allocations are also compared.
 The fused operations are lowered to a unified kernel IR. Kernel IR is then autotuned and compiled
 to native code for the target backend.
 
@@ -242,7 +241,7 @@ Zyx is a library, not a workflow: it doesn't prescribe training loops or data pi
 - [x] **WGPU** - SPIR-V codegen, feature: `wgpu`
 - [ ] `tenstorrent` - Preliminary support, does not pass full test suite yet, feature `tenstorrent`
 
-If you'd like to add new backend to zyx, that would be awesome!
+If you'd like to add a new backend to zyx, that would be awesome!
 Please read [ADDING_BACKENDS.md](https://github.com/zk4x/zyx/blob/main/ADDING_BACKENDS.md)
 
 
