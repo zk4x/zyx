@@ -705,9 +705,33 @@ impl Graph {
             }
         }
 
+        // Only keep producers that are actually needed to compute the outputs.
+        // A class may have a (cheap) producer selected even though nothing on the
+        // path to an output consumes it — e.g. an AOT cblas matmul whose result
+        // feeds into an op that got fused into a bigger kernel. Such dead kernels
+        // must not be extracted. Walk backward from the outputs through the
+        // selected producers and mark every reachable class as needed.
+        let mut needed: Vec<bool> = vec![false; n];
+        let mut stack: Vec<ClassId> = outputs.iter().copied().collect();
+        while let Some(cid) = stack.pop() {
+            if !needed[cid.0 as usize] {
+                needed[cid.0 as usize] = true;
+                if let Some(nid) = producer[cid.0 as usize] {
+                    match &self.nodes[nid].node {
+                        Node::Kernel { inputs, .. } => stack.extend(inputs.iter().copied()),
+                        Node::ToDevice { x, .. } => stack.push(*x),
+                        _ => {}
+                    }
+                }
+            }
+        }
+
         let mut result = Vec::new();
         let mut seen: Set<NodeId> = Set::default();
         for &cid in &order {
+            if !needed[cid.0 as usize] {
+                continue;
+            }
             if let Some(nid) = producer[cid.0 as usize] {
                 if seen.insert(nid) {
                     result.push(nid);

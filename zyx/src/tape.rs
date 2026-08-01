@@ -232,7 +232,9 @@ impl Tape {
         let nodes = rt.graphs[graph_id].extract(&output_set);
 
         let plan = ExecPlan::new(&rt.graphs[graph_id], &nodes, &output_set, &rt.devices, &rt.shapes);
-        //plan.debug();
+        if rt.debug.egraph() {
+            plan.debug();
+        }
 
         let mut class_buf: Map<ClassId, BufferId> = Map::default();
         for &cid in &plan.leaf_classes {
@@ -372,7 +374,9 @@ impl Tape {
         let nodes = rt.graphs[graph_id].extract(&output_set);
 
         let plan = ExecPlan::new(&rt.graphs[graph_id], &nodes, &output_set, &rt.devices, &rt.shapes);
-        //plan.debug();
+        if rt.debug.egraph() {
+            plan.debug();
+        }
 
         rt.plan_cache.insert(cache_key, plan);
 
