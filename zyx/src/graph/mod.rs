@@ -400,6 +400,55 @@ impl Graph {
         order
     }
 
+    /// Like [`Self::topo_sort_classes`], but ignores [`Node::Kernel`] nodes when
+    /// collecting dependencies. Used when iterating the structural graph — e.g.
+    /// fusing remaining ops into kernels (`fill_remaining`) or pattern-matching
+    /// AOT kernels — where kernel nodes would add spurious input dependencies
+    /// between classes.
+    pub fn topo_sort_classes_without_kernels(&self, outputs: &BTreeSet<ClassId>) -> Vec<ClassId> {
+        let mut rcs: Map<ClassId, u32> = Map::default();
+        let mut stack: Vec<ClassId> = outputs.iter().copied().collect();
+        while let Some(cid) = stack.pop() {
+            rcs.entry(cid).and_modify(|rc| *rc += 1).or_insert_with(|| {
+                let deps = self.deps_without_kernels(cid);
+                stack.extend(deps);
+                1
+            });
+        }
+
+        let mut order = Vec::new();
+        let mut internal_rcs: Map<ClassId, u32> = Map::default();
+        let mut stack: Vec<ClassId> = outputs.iter().copied().collect();
+        while let Some(cid) = stack.pop() {
+            if let Some(&rc) = rcs.get(&cid) {
+                let visited = internal_rcs.entry(cid).and_modify(|c| *c += 1).or_insert(1);
+                if rc == *visited {
+                    order.push(cid);
+                    let deps = self.deps_without_kernels(cid);
+                    stack.extend(deps);
+                }
+            }
+        }
+        order.reverse();
+        order
+    }
+
+    /// Union of `class_params` of all non-Kernel nodes in class `cid`.
+    fn deps_without_kernels(&self, cid: ClassId) -> Vec<ClassId> {
+        let mut deps = Vec::new();
+        for nid in &self.classes[cid].nodes {
+            if matches!(&self.nodes[*nid].node, Node::Kernel { .. }) {
+                continue;
+            }
+            for p in self.nodes[*nid].node.class_params() {
+                if !deps.contains(&p) {
+                    deps.push(p);
+                }
+            }
+        }
+        deps
+    }
+
     pub fn debug_print(&self, shapes: &Slab<ShapeId, Vec<Dim>>) {
         let line = "─".repeat(60);
         println!("\n{}", line);
@@ -683,6 +732,10 @@ impl Runtime {
             let class_of = ek.stores.first().copied().unwrap();
 
             for &dev_id in device_ids.iter() {
+                // AOT-only devices (e.g. cblas) never compile generic zyx kernels
+                if self.devices[dev_id].aot_only() {
+                    continue;
+                }
                 let pool_id = self.devices[dev_id].memory_pool_id();
                 let mut kernel = ek.kernel.clone();
                 kernel.device_id = dev_id;

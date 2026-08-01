@@ -206,7 +206,12 @@ impl Tape {
 
         // Pattern match specialized AOT kernels (e.g. matmul -> cblas) so they can
         // compete with the fused zyx kernels in extraction.
-        let _matmuls = rt.match_patterns(graph_id, &output_set, unsafe { &*shapes_ptr });
+        // SAFETY: devices, graphs and shapes are separate fields of Runtime, no aliasing, rust is stupid
+        let dev_ids: Vec<DeviceId> = rt.devices.ids().collect();
+        let graph_ptr: *mut Graph = &mut rt.graphs[graph_id];
+        for dev_id in dev_ids {
+            rt.devices[dev_id].match_graph(unsafe { &mut *graph_ptr }, &output_set, unsafe { &*shapes_ptr });
+        }
 
         // TODO debug assert that all leafs are realized
         //let realized_nodes: Set<ClassId> = rt.graphs[graph_id].leaf_map.iter().filter(|(_, tid)| rt.buffer_map.contains_key(tid)).map(|(cid, _)| *cid).collect();

@@ -17,11 +17,14 @@ use crate::{
     backend::hip::{HIPDevice, HIPMemoryPool},
     dtype::DType,
     error::{BackendError, ErrorStatus},
+    graph::{ClassId, Graph},
     kernel::Kernel,
+    runtime::ShapeId,
     shape::Dim,
     slab::{Slab, SlabId},
 };
 use c::CDevice;
+use cblas::CblasDevice;
 use cuda::{CUDADevice, CUDAMemoryPool};
 use disk::DiskMemoryPool;
 use dummy::{DummyDevice, DummyMemoryPool};
@@ -33,8 +36,10 @@ use tenstorrent::{TTDevice, TTMemoryPool};
 use vulkan::{VulkanDevice, VulkanMemoryPool};
 #[cfg(feature = "wgpu")]
 use wgpu::{WGPUDevice, WGPUMemoryPool};
+use std::collections::BTreeSet;
 
 mod c;
+mod cblas;
 mod cuda;
 mod disk;
 mod dummy;
@@ -234,6 +239,11 @@ pub fn initialize_backends(
             println!("{err}");
         }
     }
+    if let Err(err) = cblas::initialize_device(&device_config.cblas, memory_pools, devices, debug_backends) {
+        if debug_backends {
+            println!("{err}");
+        }
+    }
     if let Err(err) = cuda::initialize_device(&device_config.cuda, memory_pools, devices, debug_backends) {
         if debug_backends {
             println!("{err}");
@@ -345,6 +355,8 @@ pub struct Config {
     pub autotune: AutotuneConfig,
     /// C/Clang backend configuration
     pub c: c::CConfig,
+    /// CBLAS backend configuration
+    pub cblas: cblas::CblasConfig,
     /// Configuration of dummy device for testing
     pub dummy: dummy::DummyConfig,
     /// CUDA configuration
@@ -728,6 +740,7 @@ impl MemoryPool {
 #[derive(Debug)]
 pub enum Device {
     C(CDevice),
+    Cblas(CblasDevice),
     Dummy(DummyDevice),
     CUDA(CUDADevice),
     OpenCL(OpenCLDevice),
@@ -744,6 +757,7 @@ impl Device {
     pub fn deinitialize(&mut self) {
         match self {
             Device::C(dev) => dev.deinitialize(),
+            Device::Cblas(dev) => dev.deinitialize(),
             Device::Dummy(dev) => dev.deinitialize(),
             Device::CUDA(dev) => dev.deinitialize(),
             Device::OpenCL(dev) => dev.deinitialize(),
@@ -759,6 +773,7 @@ impl Device {
     pub const fn info(&self) -> &DeviceInfo {
         match self {
             Device::C(dev) => dev.info(),
+            Device::Cblas(dev) => dev.info(),
             Device::Dummy(dev) => dev.info(),
             Device::CUDA(dev) => dev.info(),
             Device::OpenCL(dev) => dev.info(),
@@ -774,6 +789,7 @@ impl Device {
     pub const fn memory_pool_id(&self) -> PoolId {
         match self {
             Device::C(dev) => dev.memory_pool_id(),
+            Device::Cblas(dev) => dev.memory_pool_id(),
             Device::Dummy(dev) => dev.memory_pool_id(),
             Device::CUDA(dev) => dev.memory_pool_id(),
             Device::OpenCL(dev) => dev.memory_pool_id(),
@@ -792,6 +808,7 @@ impl Device {
     pub const fn free_compute(&self) -> u128 {
         match self {
             Device::C(dev) => dev.free_compute(),
+            Device::Cblas(dev) => dev.free_compute(),
             Device::Dummy(dev) => dev.free_compute(),
             Device::CUDA(dev) => dev.free_compute(),
             Device::OpenCL(dev) => dev.free_compute(),
@@ -804,12 +821,20 @@ impl Device {
         }
     }
 
+    /// Whether this device only runs AOT (precompiled) kernels and cannot
+    /// compile generic zyx kernels (e.g. the cblas backend). Such devices
+    /// must be skipped by generic kernel autotuning.
+    pub const fn aot_only(&self) -> bool {
+        matches!(self, Self::Cblas(_))
+    }
+
     /// Compile a kernel into a device program. Returns a program ID usable with
     /// `launch` and `release`. The `debug_asm` flag controls whether the backend
     /// prints the compiled assembly/source (for `ZYX_DEBUG=16`).
     pub fn compile(&mut self, kernel: &Kernel, debug_asm: bool) -> Result<DeviceProgramId, BackendError> {
         let name = match self {
             Device::C(_) => "C",
+            Device::Cblas(_) => "cblas",
             Device::Dummy(_) => "dummy",
             Device::CUDA(_) => "CUDA",
             Device::OpenCL(_) => "OPENCL",
@@ -822,6 +847,7 @@ impl Device {
         };
         let result = match self {
             Device::C(dev) => dev.compile(kernel, debug_asm),
+            Device::Cblas(dev) => dev.compile(kernel, debug_asm),
             Device::Dummy(dev) => dev.compile(kernel, debug_asm),
             Device::CUDA(dev) => dev.compile(kernel, debug_asm),
             Device::OpenCL(dev) => dev.compile(kernel, debug_asm),
@@ -845,6 +871,7 @@ impl Device {
     pub fn release(&mut self, program_id: DeviceProgramId) {
         match self {
             Device::C(dev) => dev.release(program_id),
+            Device::Cblas(dev) => dev.release(program_id),
             Device::Dummy(dev) => dev.release(program_id),
             Device::CUDA(dev) => dev.release(program_id),
             Device::OpenCL(dev) => dev.release(program_id),
@@ -854,6 +881,16 @@ impl Device {
             Device::Vulkan(dev) => dev.release(program_id),
             #[cfg(feature = "wgpu")]
             Device::WGPU(dev) => dev.release(program_id),
+        }
+    }
+
+    /// Pattern-matches subgraphs in `graph` (e.g. matmul) and adds `Node::Kernel`s
+    /// backed by this device's AOT kernels so they compete with the fused zyx
+    /// kernels in extraction. No-op for devices without AOT kernels.
+    pub fn match_graph(&mut self, graph: &mut Graph, outputs: &BTreeSet<ClassId>, shapes: &Slab<ShapeId, Vec<Dim>>) {
+        match self {
+            Device::Cblas(dev) => dev.match_graph(graph, outputs, shapes),
+            _ => {}
         }
     }
 
@@ -872,6 +909,10 @@ impl Device {
     ) -> Result<Event, BackendError> {
         match self {
             Device::C(dev) => {
+                let MemoryPool::Host(pool) = memory_pool else { unreachable!() };
+                dev.launch(program_id, pool, args, event_wait_list)
+            }
+            Device::Cblas(dev) => {
                 let MemoryPool::Host(pool) = memory_pool else { unreachable!() };
                 dev.launch(program_id, pool, args, event_wait_list)
             }

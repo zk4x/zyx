@@ -56,11 +56,16 @@ impl Graph {
     ///    exactly one entry in `visited` mapping it to the kernel where its computation lives.
     ///    [`add_store`] removes the entry and restores it via a load kernel if consumers remain.
     pub fn fill_remaining(&mut self, outputs: &BTreeSet<ClassId>, shapes: &Slab<ShapeId, Vec<Dim>>) {
-        let order = self.topo_sort_classes(outputs);
+        let order = self.topo_sort_classes_without_kernels(outputs);
 
         let mut rcs: Map<ClassId, u32> = Map::default();
         for &cid in &order {
             for nid in &self.classes[cid].nodes {
+                // Kernel nodes added by pattern matching (e.g. cblas) are never
+                // consumed here — fill_remaining only processes structural nodes.
+                if matches!(&self.nodes[*nid].node, Node::Kernel { .. }) {
+                    continue;
+                }
                 for child in self.nodes[*nid].node.class_params() {
                     *rcs.entry(child).or_default() += 1;
                 }
