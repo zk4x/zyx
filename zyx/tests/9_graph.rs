@@ -176,8 +176,8 @@ fn tape_matmul() -> Result<(), ZyxError> {
 
 #[test]
 fn tape_big_matmul() -> Result<(), ZyxError> {
-    let x = Tensor::randn([256, 392], DType::F32)?;
-    let w = Tensor::randn([392, 296], DType::F32)?;
+    let x = Tensor::rand([256, 392], DType::F32)?;
+    let w = Tensor::rand([392, 296], DType::F32)?;
     let tape = Tape::new([&x, &w])?;
     let z = x.dot(&w)?.relu();
     tape.realize([&z])?;

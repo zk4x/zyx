@@ -35,7 +35,7 @@ use crate::{
     graph::ExecPlan,
     graph::plan::drain_events_for_buf,
     graph::{ClassId, EClass, Graph, GraphId, Node, NodeData, NodeId},
-    kernel::{BOp, DeviceId, Kernel, MemScope, MoveOp, Op, OpId, UOp, autotune::OptSeq},
+    kernel::{BOp, DeviceId, Kernel, MoveOp, Op, OpId, UOp, autotune::OptSeq},
     rng::Rng,
     shape::{Dim, UAxis},
     slab::{Slab, SlabId},
@@ -1860,7 +1860,7 @@ impl Runtime {
         #[cfg(debug_assertions)]
         if let Some(buffers) = init_buffers {
             let n_ro_global =
-                kernel.ops.values().filter(|op| matches!(&op.op, Op::Define { scope: MemScope::Global, ro: true, .. })).count();
+                kernel.ops.values().filter(|op| matches!(&op.op, Op::Define { scope: crate::kernel::MemScope::Global, ro: true, .. })).count();
             assert_eq!(
                 buffers.len(),
                 n_ro_global,
