@@ -461,8 +461,7 @@ The user has all the answers. Just ask.
 - **Do as asked, nothing more.** If the user says "rerun", rerun the test. Don't edit files, don't remove debug artifacts, don't "fix" anything unless explicitly told to. Running and editing are different verbs.
 - **Ask follow-up questions.** The user loves them. Always ask if uncertain.
 - **Never use `git stash` or `git checkout --`. Never discard or hide changes.**
-- **Never run tests to check for regressions.** If the user wants to know about test status, they'll ask. Don't run tests to "make sure nothing broke" after a change or to check if a failure existed before your changes.
-- **Never run tests unless the user explicitly asks.** No testing to verify your changes work. No testing to "see if it compiles and passes." The user will ask when they want tests run.
+- **Never run tests to check whether something worked before your changes** (e.g. to check if a failure existed before your edits or to "make sure nothing broke" pre-change). Tests run after a change are for validating your change itself.
 **THE PHRASE "PRE-EXISTING" IS FORBIDDEN. NEVER USE IT. EVER. IN ANY CONTEXT. IF YOU USE IT, YOU WILL BE CORRECTED. REPEATEDLY. FOREVER.**
 - **Never say "Builds clean" or anything similar.** If asked to build, build silently. No commentary on the result.
 - **Never dump git stats/diffs verbatim in conversation.** Show the user what matters, not the raw output.

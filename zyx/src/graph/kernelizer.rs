@@ -140,10 +140,24 @@ impl Graph {
                 Node::Kernel { .. } => {}
             }
 
+            // AOT kernel classes (e.g. a cblas matmul output) are computed by a
+            // backend kernel, not by this fused kernel. Materialize the class into
+            // storage and hand off to a fresh load kernel, so downstream ops (e.g.
+            // relu) start from the stored class instead of fusing into this kernel.
+            if self.classes[cid].nodes.iter().any(|&nid| matches!(&self.nodes[nid].node, Node::Kernel { .. })) {
+                let (kid, op_id) = visited[&cid];
+                let _ = self.add_store(cid, kid, op_id, &mut visited, &rcs, shapes);
+            }
+
             // Post-processing: store if final output
             if outputs.contains(&cid) {
                 let (mut kid, op_id) = visited[&cid];
-                (kid, _) = self.add_store(cid, kid, op_id, &mut visited, &rcs, shapes);
+                // AOT kernel classes are already materialized into storage by the
+                // backend kernel — storing the load kernel again would produce a
+                // self-copying kernel.
+                if !self.classes[cid].nodes.iter().any(|&nid| matches!(&self.nodes[nid].node, Node::Kernel { .. })) {
+                    (kid, _) = self.add_store(cid, kid, op_id, &mut visited, &rcs, shapes);
+                }
                 *rcs.get_mut(&cid).unwrap() -= 1;
                 remove_first_output(&mut self.jit_kernels, kid, cid);
                 if rcs[&cid] == 0 {
