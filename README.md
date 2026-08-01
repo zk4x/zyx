@@ -23,7 +23,7 @@ And also be nice to use while at that.
 
 ML won't get better without new hardware and existing libraries are ill-suited to support emerging hardware.
 The primary problem is the requirement to write custom kernels to get the required performance.
-Manufactures have tough time writing these high performance kernels, therefore they write kernels for only
+Manufacturers have a tough time writing these high performance kernels, therefore they write kernels for only
 a few ops and don't support general linear algebra.
 
 Zyx approaches these problems from two angles, while maintaining high flexibility (proven by several relatively fast
@@ -42,24 +42,23 @@ algebra support.
 ### 2. Bringing top performance
 
 As good as the automatic optimizations can be, writing manual kernels will always be faster, that is why
-it is the dominant approach as of now. Zyx acknowledges this and maintains flexibility through it's e-graph
+it is the dominant approach as of now. Zyx acknowledges this and maintains flexibility through its e-graph
 system pattern matching of any subgraph structure into a custom kernel written in language of your choosing
 (or raw binary blobs, cublas, cblas, etc.), as well as writing custom kernels in zyx IR and taking advantage
 of optimization passes zyx provides. Egraph measures their timings, compares with auto-generated zyx kernels
 and picks the fastest path through this graph.
 
-The other issue is running on edge and platforms that don't have sufficient resources. A regular CPU only
-pytorch install is 100+ MB, while with cuda support, it's 2+ GB. Zyx takes only about 5 MB and uses machine
+The other issue is running on edge and platforms that don't have sufficient resources. Zyx takes only about 5 MB and uses machine
 available drivers to run, such as provided C compiler, provided CUDA runtime, but for example if you don't install
 CUDA, any gpu driver with vulkan support is sufficient.
 
 
 ## Features
 
-- **Eager API, Lazy JIT Execution** — tensor operations fuse into kernels as you write them; when fusion is no longer possible, the kernel executes. For one off computations.
-- **Eager API, Tape Mode** — wrap loop bodies in a `Tape` for lazy graph building, autograd and egraph-based fusion optimization. Computation happens when realize is called. For repeated computations.
+- **Eager mode, Lazy JIT Execution** — tensor operations fuse into kernels as you write them; when fusion is no longer possible, the kernel executes. For one off computations.
+- **Tape (e-graph)** — wrap loop bodies in a `Tape` for lazy graph building, autograd and egraph-based fusion optimization. Computation happens when realize is called. For repeated computations.
 - **Cross‑Platform Backends** — codegen for C, CUDA, OpenCL and SPIR-V.
-- **Full Linear‑Algebra Coverage** — mirrors the PyTorch ops API (matmul, convolutions, pooling, reductions, indexing, etc.) by stacking ops. Stack more ops yourself to get more op coverage, zyx auto fuses and optimizes it.
+- **Linear‑Algebra Coverage** — mirrors the PyTorch ops API (matmul, convolutions, pooling, reductions, indexing, etc.) by stacking ops. Stack more ops yourself to get more op coverage, zyx auto fuses and optimizes it.
 - **Immutable Tensors** — tensors cannot be modified in place, preventing back‑prop errors common in PyTorch (`RuntimeError: a tensor was modified in place`).
 - **Explicit Tape** — you control what is recorded via `Tape`; no need for `torch.no_grad()` or requires_grad semantics.
 - **Everything is diff** — every tensor in tape can be differentiated w.r.t. any other tensor in tape.
