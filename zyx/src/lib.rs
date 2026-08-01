@@ -112,9 +112,9 @@ impl DebugMask {
         self.0 % 2 == 1
     }
 
-    /// Is performance debugging enabled?
+    /// Is egraph printing enabled?
     #[must_use]
-    pub const fn perf(&self) -> bool {
+    pub const fn egraph(&self) -> bool {
         (self.0 >> 1) % 2 == 1
     }
 

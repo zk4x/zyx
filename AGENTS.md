@@ -305,8 +305,8 @@ Every optimization must produce correct IR that calculates the same result as th
 
 | Level | Output | When |
 |-------|--------|------|
-| `1`   | Hardware devices and configuration | Startup |
-| `2`   | Graph execution and perf | During realize |
+| `1`   | Hardware devices and configuration + kernel launches (device and program id) | Startup / During realize |
+| `2`   | Egraph print | After realize (graph/extraction) |
 | `4`   | Kernels created by scheduler | Kernel selection |
 | `8`   | Kernel IR | Kernel compilation |
 | `16`  | Generated assembly/code (OpenCL, WGSL, etc.) | Kernel compilation |

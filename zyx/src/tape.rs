@@ -225,7 +225,9 @@ impl Tape {
         let buffer_map_ptr: *const Map<TensorId, BufferId> = &rt.buffer_map;
         rt.graphs[graph_id].add_memory_ops(unsafe { &*devices_ptr }, unsafe { &*buffer_map_ptr });
 
-        rt.graphs[graph_id].debug_print(&rt.shapes);
+        if rt.debug.egraph() {
+            rt.graphs[graph_id].debug_print(&rt.shapes);
+        }
 
         let nodes = rt.graphs[graph_id].extract(&output_set);
 
@@ -363,7 +365,9 @@ impl Tape {
         let buffer_map_ptr: *const Map<TensorId, BufferId> = &rt.buffer_map;
         rt.graphs[graph_id].add_memory_ops(unsafe { &*devices_ptr }, unsafe { &*buffer_map_ptr });
 
-        rt.graphs[graph_id].debug_print(&rt.shapes);
+        if rt.debug.egraph() {
+            rt.graphs[graph_id].debug_print(&rt.shapes);
+        }
 
         let nodes = rt.graphs[graph_id].extract(&output_set);
 

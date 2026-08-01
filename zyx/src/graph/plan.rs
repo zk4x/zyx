@@ -172,6 +172,9 @@ impl Runtime {
                         kernel_bufs.insert(buf);
                     }
                     let wait_list = drain_events_for_bufs(&mut self.events, &kernel_bufs);
+                    if self.debug.dev() {
+                        println!("launching kernel {program_id:?}");
+                    }
                     let event =
                         self.devices[program_id.device].launch(program_id.program, &mut self.pools[pool_id], &args, wait_list)?;
                     self.events.insert(kernel_bufs, event);

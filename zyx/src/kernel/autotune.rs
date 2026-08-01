@@ -718,7 +718,7 @@ impl Kernel {
         let perf = crate::runtime::get_perf(flops, bytes_read, bytes_written, nanos);
         /*self.get_cost(device.info()).debug();
         println!("variant_hash={variant_hash}, {perf}");*/
-        if debug.perf() {
+        if debug.dev() {
             println!("{perf}");
         }
         Ok((program_id, nanos))

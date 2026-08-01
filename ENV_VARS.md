@@ -2,8 +2,8 @@ Set `ZYX_DEBUG` environment variable to enable debugging. It is a bitmask with t
 
 | Value | Flag | Description |
 |-------|------|-------------|
-| 1     | dev  | Print hardware devices and configuration |
-| 2     | perf | Print graph execution characteristics and performance |
+| 1     | dev  | Print hardware devices and configuration + kernel launches (device and program id) |
+| 2     | egraph | Print the egraph after realize (graph/extraction) |
 | 4     | sched | Print kernels created by scheduler |
 | 8     | ir   | Print kernels in intermediate representation |
 | 16    | asm  | Print kernels in native assembly/code (OpenCL, WGSL, etc.) |
