@@ -122,7 +122,7 @@ pub struct TensorData {
     pub pending: KernelId,
     pub class_id: ClassId,
     pub graph_id: GraphId,
-    pub rc: u8,
+    pub rc: u16,
 }
 
 #[derive(Debug)]
@@ -247,12 +247,8 @@ impl Runtime {
     pub fn release(&mut self, x: TensorId) {
         let rc = self.tensors[x].rc - 1;
         self.tensors[x].rc = rc;
-        let (kernel_id, op_id, pending, class_id) = (
-            self.tensors[x].kernel_id,
-            self.tensors[x].op_id,
-            self.tensors[x].pending,
-            self.tensors[x].class_id,
-        );
+        let (kernel_id, op_id, pending, class_id) =
+            (self.tensors[x].kernel_id, self.tensors[x].op_id, self.tensors[x].pending, self.tensors[x].class_id);
 
         // Keep the eager kernel's outputs in sync with rc.
         if !kernel_id.is_null() {
@@ -820,11 +816,7 @@ impl Runtime {
                         } else {
                             let shape_id = self.tensors[load_tid].shape_id;
                             let dtype = self.tensors[load_tid].dtype;
-                            debug_assert_eq!(
-                                view.1.shape(),
-                                self.shapes[shape_id],
-                                "LoadView shape mismatch"
-                            );
+                            debug_assert_eq!(view.1.shape(), self.shapes[shape_id], "LoadView shape mismatch");
                             let (_, class_id) = self.push_leaf_node(graph_id, dtype, shape_id);
                             self.graphs[graph_id].leaf_map.insert(class_id, load_tid);
                             self.graphs[graph_id].leaf_classes.push(class_id);
@@ -1208,12 +1200,8 @@ impl Runtime {
 
         if self.is_graph(x) {
             let (class_id, graph_id) = self.graph_ids(x);
-            let (_node_id, class_id) = self.push_node(
-                graph_id,
-                Node::Reduce { x: class_id, bop: rop, axes: axes.into_boxed_slice() },
-                shape_id,
-                dtype,
-            );
+            let (_node_id, class_id) =
+                self.push_node(graph_id, Node::Reduce { x: class_id, bop: rop, axes: axes.into_boxed_slice() }, shape_id, dtype);
             let tid = self.new_graph_tensor(graph_id, class_id, shape_id, dtype);
             #[cfg(feature = "debug_tensor_op")]
             println!("  -> tid={tid}, nid={_node_id:?}, cid={class_id:?}");
@@ -1462,12 +1450,8 @@ impl Runtime {
 
         if self.is_graph(x) {
             let (class_id, graph_id) = self.graph_ids(x);
-            let (_, class_id) = self.push_node(
-                graph_id,
-                Node::PadZeros { x: class_id, padding: padding.into_boxed_slice() },
-                shape_id,
-                dtype,
-            );
+            let (_, class_id) =
+                self.push_node(graph_id, Node::PadZeros { x: class_id, padding: padding.into_boxed_slice() }, shape_id, dtype);
             self.new_graph_tensor(graph_id, class_id, shape_id, dtype)
         } else {
             let (kernel_id, op_id) = self.eager_ids(x);
@@ -1736,11 +1720,7 @@ impl Runtime {
         debug_assert!(self.kernels[kid].stores.is_empty(), "duplicated kernel must not have stores");
 
         let old_loads = self.kernels[kid].loads.clone();
-        let out_op_ids: Vec<OpId> = self.kernels[kid]
-            .outputs
-            .iter()
-            .map(|&tid| self.tensors[tid].op_id)
-            .collect();
+        let out_op_ids: Vec<OpId> = self.kernels[kid].outputs.iter().map(|&tid| self.tensors[tid].op_id).collect();
         let (kernel, new_op_id, self_loads, new_loads) =
             self.kernels[kid].kernel.extract_subkernel(op_id, &out_op_ids, &old_loads);
         self.kernels[kid].loads = self_loads.clone();

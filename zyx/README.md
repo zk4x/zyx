@@ -3,45 +3,6 @@
 Zyx is a machine learning library that runs on your hardware.
 
 
-# Why is Zyx?
-
-ML was enabled by new kinds of highly parallel, high performance hardware that did not exist before.
-
-Zyx has 3 goals + a bonus goal:
-1. Be correct
-2. Run everywhere (all hardware)
-3. Run fast
-
-Bonus: be nice to use while at that
-
-ML won't get better without new hardware and existing libraries are ill-suited to support emerging hardware.
-The primary problem is the requirement to write custom kernels to get the required performance.
-Manufactures have tough time writing these high performance kernels, therefore they write kernels for only
-a few ops and don't support general linear algebra.
-
-Zyx approaches these problems from two angles, while maintaining high flexibility (proven
-by several relatively fast rewrites of core components without significant API changes):
-
-1. Linear SSA-ish IR with explicit control flow. This is the hardware unifying interface. Each hardware has
-add instructions, can repeat instructions (loop), is highly parallel (work sizes), has multiple types of memory
-in a hierarchy and can optionally have vectorization and tiling. This is the core of the instruction set.
-Zyx has a series of optimization passes (selected by autotuner) that apply various optimizations for different
-levels of these characteristics. The lowering layer from IR to backends is almost 1:1 mapping. If your hardware
-can provide this translation, zyx gives you all of linear algebra support.
-
-2. As good as the automatic optimizations can be, writing manual kernels will always be faster, that is why
-it is the dominant approach as of now. Zyx acknowledges this and maintains flexibility through it's egraph
-system pattern matching of any subgraph structure into a custom kernel written in language of your choosing
-(or raw binary blobs, cublas, cblas, etc.), as well as writing custom kernels in zyx IR and taking advantage
-of optimization passes zyx provides. Egraph measures their timings, compares with auto-generated zyx kernels
-and picks the fastest path through this graph.
-
-The other issue is running on edge and platforms that don't have sufficient resources. A regular CPU only
-pytorch install is 100+ MB, while with cuda support, it's 2+ GB. Zyx takes only about 5 MB and uses machine
-available drivers to run, such as provided C compiler, provided CUDA runtime, but for example if you don't install
-CUDA, any gpu driver with vulkan support is sufficient.
-
-
 ## Install
 
 Zyx comes with autograd and all backends built in — no feature flags needed (with the exception of WGPU).
