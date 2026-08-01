@@ -1859,8 +1859,11 @@ impl Runtime {
 
         #[cfg(debug_assertions)]
         if let Some(buffers) = init_buffers {
-            let n_ro_global =
-                kernel.ops.values().filter(|op| matches!(&op.op, Op::Define { scope: crate::kernel::MemScope::Global, ro: true, .. })).count();
+            let n_ro_global = kernel
+                .ops
+                .values()
+                .filter(|op| matches!(&op.op, Op::Define { scope: crate::kernel::MemScope::Global, ro: true, .. }))
+                .count();
             assert_eq!(
                 buffers.len(),
                 n_ro_global,

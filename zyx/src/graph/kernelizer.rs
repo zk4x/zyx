@@ -4,7 +4,7 @@ use crate::{
     Map,
     dtype::Constant,
     graph::{ClassId, Graph, JitKernelData, JitKernelId, Node},
-    kernel::{BOp, DeviceId, Kernel, MoveOp, Op, OpId},
+    kernel::{DeviceId, Kernel, MoveOp, Op, OpId},
     runtime::ShapeId,
     shape::{Dim, UAxis},
     slab::{Slab, SlabId},
@@ -94,13 +94,77 @@ impl Graph {
                     visited.insert(cid, (kid, op_id));
                 }
                 Node::Unary { x, uop } => {
-                    self.add_op(cid, x, &mut visited, &mut rcs, |k, op| k.unary(op, uop));
+                    let (kid, op_id) = visited[&x];
+                    self.consume(x, kid, &mut visited, &mut rcs);
+                    let result_op = self.jit_kernels[kid].kernel.unary(op_id, uop);
+                    self.push_outputs(kid, cid, *rcs.get(&cid).unwrap());
+                    visited.insert(cid, (kid, result_op));
                 }
                 Node::Cast { x, dtype } => {
-                    self.add_op(cid, x, &mut visited, &mut rcs, |k, op| k.cast(op, dtype));
+                    let (kid, op_id) = visited[&x];
+                    self.consume(x, kid, &mut visited, &mut rcs);
+                    let result_op = self.jit_kernels[kid].kernel.cast(op_id, dtype);
+                    self.push_outputs(kid, cid, *rcs.get(&cid).unwrap());
+                    visited.insert(cid, (kid, result_op));
                 }
-                Node::Binary { x, y, bop } => self.add_binary(cid, x, y, bop, &mut visited, &mut rcs, shapes),
-                Node::Reduce { x, bop, ref axes } => self.add_reduce(cid, x, bop, axes.to_vec(), &mut visited, &mut rcs, shapes),
+                Node::Binary { x, y, bop } => {
+                    let (mut kid, mut op_id) = visited[&x];
+                    let (mut kidy, mut op_idy) = visited[&y];
+
+                    if kid != kidy {
+                        let kid_stores = self.jit_kernels[kid].kernel.contains_stores();
+                        let kidy_stores = self.jit_kernels[kidy].kernel.contains_stores();
+                        match (kid_stores, kidy_stores) {
+                            (true, true) => {
+                                (kid, op_id) = self.add_store(x, kid, op_id, &mut visited, &rcs, shapes);
+                                (kidy, _) = self.add_store(y, kidy, op_idy, &mut visited, &rcs, shapes);
+                            }
+                            (true, false) => (kid, op_id) = self.add_store(x, kid, op_id, &mut visited, &rcs, shapes),
+                            (false, true) => (kidy, _) = self.add_store(y, kidy, op_idy, &mut visited, &rcs, shapes),
+                            (false, false) => {}
+                        }
+
+                        self.merge_kernels(kidy, kid, &mut visited);
+                        (_, op_idy) = visited[&y];
+                    }
+
+                    self.consume(x, kid, &mut visited, &mut rcs);
+                    self.consume(y, kid, &mut visited, &mut rcs);
+                    let result_op = self.jit_kernels[kid].kernel.binary(op_id, op_idy, bop);
+                    self.push_outputs(kid, cid, *rcs.get(&cid).unwrap());
+                    visited.insert(cid, (kid, result_op));
+                }
+                Node::Reduce { x, bop, ref axes } => {
+                    let axes: Vec<UAxis> = axes.to_vec();
+                    let n_axes: UAxis = axes.len() as UAxis;
+                    let (mut kid, mut op_id) = visited[&x];
+                    (kid, op_id) = self.duplicate_or_store_class(x, kid, op_id, &mut visited, &mut rcs, shapes, false);
+                    self.consume(x, kid, &mut visited, &mut rcs);
+
+                    // Permute so that reduce dimensions are last
+                    let in_shape: Vec<Dim> = shapes[self.classes[x].shape].clone();
+                    let kernel = &mut self.jit_kernels[kid].kernel;
+                    let permuted = {
+                        let n = in_shape.len();
+                        let permute_axes: Vec<UAxis> =
+                            (0..n as UAxis).filter(|&i| !axes.contains(&i)).chain(axes.iter().copied()).collect();
+                        if permute_axes.iter().copied().ne(0..n as UAxis) {
+                            kernel.permute(op_id, &permute_axes)
+                        } else {
+                            op_id
+                        }
+                    };
+
+                    let mut result_op = kernel.push_back(Op::Reduce { x: permuted, rop: bop, n_axes });
+
+                    // reshape if only 1 function remains
+                    if in_shape.len() == n_axes as usize {
+                        result_op = kernel.reshape(result_op, &[1]);
+                    }
+
+                    self.push_outputs(kid, cid, *rcs.get(&cid).unwrap());
+                    visited.insert(cid, (kid, result_op));
+                }
                 Node::Expand { x, .. } => {
                     let (kid, op_id) = visited[&x];
                     let force_store = self.jit_kernels[kid].kernel.is_preceded_by_compute(op_id);
@@ -168,44 +232,46 @@ impl Graph {
                 }
             }
 
-            // Highly important invariant checks, DO NOT TOUCH
-            for ek in self.jit_kernels.values() {
-                let mut counts: Map<ClassId, u32> = Map::default();
-                for &ocid in &ek.outputs {
-                    *counts.entry(ocid).or_default() += 1;
-                }
-                if !counts.is_empty() && counts.iter().any(|(c, &n)| *rcs.get(c).unwrap() != n) {
-                    println!("outputs={:?}, counts={counts:?}", ek.outputs);
-                    for (c, n) in counts.iter() {
-                        println!("c={c:?}, rcs={}, n={n}", rcs[c]);
+            if cfg!(debug_assertions) {
+                for ek in self.jit_kernels.values() {
+                    let mut counts: Map<ClassId, u32> = Map::default();
+                    for &ocid in &ek.outputs {
+                        *counts.entry(ocid).or_default() += 1;
                     }
-                    ek.kernel.debug();
-                    panic!("output:rcs invariant violated");
-                }
-            }
-            for c in &order[..=i] {
-                if let Some(&rc) = rcs.get(c) {
-                    if rc == 0 {
-                        if visited.contains_key(c) {
-                            panic!("class={c:?} with rcs=0 in visited");
+                    if !counts.is_empty() && counts.iter().any(|(c, &n)| *rcs.get(c).unwrap() != n) {
+                        println!("outputs={:?}, counts={counts:?}", ek.outputs);
+                        for (c, n) in counts.iter() {
+                            println!("c={c:?}, rcs={}, n={n}", rcs[c]);
                         }
-                    } else {
-                        if !visited.contains_key(c) {
-                            panic!("class={c:?} with rcs>0 not in visited");
+                        ek.kernel.debug();
+                        panic!("output:rcs invariant violated");
+                    }
+                }
+                for c in &order[..=i] {
+                    if let Some(&rc) = rcs.get(c) {
+                        if rc == 0 {
+                            if visited.contains_key(c) {
+                                panic!("class={c:?} with rcs=0 in visited");
+                            }
+                        } else {
+                            if !visited.contains_key(c) {
+                                panic!("class={c:?} with rcs>0 not in visited");
+                            }
                         }
                     }
                 }
             }
         }
 
-        // Highly important invariant checks, DO NOT TOUCH
-        debug_assert!(rcs.values().all(|&r| r == 0), "all rcs must be zero");
-        debug_assert!(visited.is_empty(), "visited must be empty");
-        for kernel in self.jit_kernels.values() {
-            debug_assert!(kernel.outputs.is_empty());
-            if kernel.stores.is_empty() {
-                kernel.kernel.debug();
-                panic!("encountered empty kernel");
+        if cfg!(debug_assertions) {
+            debug_assert!(rcs.values().all(|&r| r == 0), "all rcs must be zero");
+            debug_assert!(visited.is_empty(), "visited must be empty");
+            for kernel in self.jit_kernels.values() {
+                debug_assert!(kernel.outputs.is_empty());
+                if kernel.stores.is_empty() {
+                    kernel.kernel.debug();
+                    panic!("encountered empty kernel");
+                }
             }
         }
 
@@ -394,21 +460,6 @@ impl Graph {
         self.jit_kernels[kid].outputs.extend(std::iter::repeat_n(cid, n as usize));
     }
 
-    fn add_op(
-        &mut self,
-        cid: ClassId,
-        child: ClassId,
-        visited: &mut Map<ClassId, (JitKernelId, OpId)>,
-        rcs: &mut Map<ClassId, u32>,
-        op: impl FnOnce(&mut Kernel, OpId) -> OpId,
-    ) {
-        let (kid, op_id) = visited[&child];
-        self.consume(child, kid, visited, rcs);
-        let result_op = op(&mut self.jit_kernels[kid].kernel, op_id);
-        self.push_outputs(kid, cid, *rcs.get(&cid).unwrap());
-        visited.insert(cid, (kid, result_op));
-    }
-
     fn add_move(
         &mut self,
         cid: ClassId,
@@ -424,84 +475,6 @@ impl Graph {
         self.consume(child, kid, visited, rcs);
         let kernel = &mut self.jit_kernels[kid].kernel;
         let result_op = kernel.push_back(Op::Move { x: op_id, mop: Box::new(mop) });
-        self.push_outputs(kid, cid, *rcs.get(&cid).unwrap());
-        visited.insert(cid, (kid, result_op));
-    }
-
-    fn add_binary(
-        &mut self,
-        cid: ClassId,
-        lhs: ClassId,
-        rhs: ClassId,
-        bop: BOp,
-        visited: &mut Map<ClassId, (JitKernelId, OpId)>,
-        rcs: &mut Map<ClassId, u32>,
-        shapes: &Slab<ShapeId, Vec<Dim>>,
-    ) {
-        let (mut kid, mut op_id) = visited[&lhs];
-        let (mut kidy, mut op_idy) = visited[&rhs];
-
-        let kid_stores = self.jit_kernels[kid].kernel.contains_stores();
-        let kidy_stores = self.jit_kernels[kidy].kernel.contains_stores();
-
-        if kid != kidy {
-            // This is highly fragile, manipulate with utmost precision
-            match (kid_stores, kidy_stores) {
-                (true, true) => {
-                    (kid, op_id) = self.add_store(lhs, kid, op_id, visited, rcs, shapes);
-                    (kidy, _) = self.add_store(rhs, kidy, op_idy, visited, rcs, shapes);
-                }
-                (true, false) => (kid, op_id) = self.add_store(lhs, kid, op_id, visited, rcs, shapes),
-                (false, true) => (kidy, _) = self.add_store(rhs, kidy, op_idy, visited, rcs, shapes),
-                (false, false) => {}
-            }
-
-            self.merge_kernels(kidy, kid, visited);
-            (_, op_idy) = visited[&rhs];
-        }
-
-        self.consume(lhs, kid, visited, rcs);
-        self.consume(rhs, kid, visited, rcs);
-        let result_op = self.jit_kernels[kid].kernel.binary(op_id, op_idy, bop);
-        self.push_outputs(kid, cid, *rcs.get(&cid).unwrap());
-        visited.insert(cid, (kid, result_op));
-    }
-
-    fn add_reduce(
-        &mut self,
-        cid: ClassId,
-        child: ClassId,
-        rop: BOp,
-        axes: Vec<UAxis>,
-        visited: &mut Map<ClassId, (JitKernelId, OpId)>,
-        rcs: &mut Map<ClassId, u32>,
-        shapes: &Slab<ShapeId, Vec<Dim>>,
-    ) {
-        let n_axes: UAxis = axes.len() as UAxis;
-        let (mut kid, mut op_id) = visited[&child];
-        (kid, op_id) = self.duplicate_or_store_class(child, kid, op_id, visited, rcs, shapes, false);
-        self.consume(child, kid, visited, rcs);
-
-        // Permute so that reduce dimensions are last
-        let in_shape: Vec<Dim> = shapes[self.classes[child].shape].clone();
-        let kernel = &mut self.jit_kernels[kid].kernel;
-        let permuted = {
-            let n = in_shape.len();
-            let permute_axes: Vec<UAxis> = (0..n as UAxis).filter(|&i| !axes.contains(&i)).chain(axes.iter().copied()).collect();
-            if permute_axes.iter().copied().ne(0..n as UAxis) {
-                kernel.permute(op_id, &permute_axes)
-            } else {
-                op_id
-            }
-        };
-
-        let mut result_op = kernel.push_back(Op::Reduce { x: permuted, rop, n_axes });
-
-        // reshape if only 1 function remains
-        if in_shape.len() == n_axes as usize {
-            result_op = kernel.reshape(result_op, &[1]);
-        }
-
         self.push_outputs(kid, cid, *rcs.get(&cid).unwrap());
         visited.insert(cid, (kid, result_op));
     }

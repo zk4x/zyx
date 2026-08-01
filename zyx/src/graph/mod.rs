@@ -27,8 +27,8 @@ use crate::{
 
 mod autograd;
 mod kernelizer;
-pub(crate) mod plan;
 mod patterns;
+pub(crate) mod plan;
 pub use plan::ExecPlan;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]

@@ -167,7 +167,8 @@ mod tests {
         let eb = class(&mut graph, &mut shapes, Node::Expand { x: rb, shape: s_mnk }, vec![m, n, k]);
         let mul = class(&mut graph, &mut shapes, Node::Binary { x: ea, y: eb, bop: BOp::Mul }, vec![m, n, k]);
         let cast = class(&mut graph, &mut shapes, Node::Cast { x: mul, dtype: DType::F32 }, vec![m, n, k]);
-        let out = class(&mut graph, &mut shapes, Node::Reduce { x: cast, bop: BOp::Add, axes: vec![2].into_boxed_slice() }, vec![m, n]);
+        let out =
+            class(&mut graph, &mut shapes, Node::Reduce { x: cast, bop: BOp::Add, axes: vec![2].into_boxed_slice() }, vec![m, n]);
         let outputs: BTreeSet<ClassId> = [out].into();
         (graph, shapes, outputs)
     }
@@ -185,7 +186,12 @@ mod tests {
     #[test]
     fn does_not_match_reduce_over_first_axis() {
         let (mut graph, mut shapes, _) = matmul_graph(2, 3, 4);
-        let out = class(&mut graph, &mut shapes, Node::Reduce { x: ClassId::from(6), bop: BOp::Add, axes: vec![0].into_boxed_slice() }, vec![3, 4]);
+        let out = class(
+            &mut graph,
+            &mut shapes,
+            Node::Reduce { x: ClassId::from(6), bop: BOp::Add, axes: vec![0].into_boxed_slice() },
+            vec![3, 4],
+        );
         assert!(graph.match_matmul_class(out, &shapes).is_none());
     }
 }

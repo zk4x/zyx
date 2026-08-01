@@ -214,9 +214,10 @@ impl CblasDevice {
     pub fn match_graph(&mut self, graph: &mut Graph, outputs: &BTreeSet<ClassId>, shapes: &Slab<ShapeId, Vec<Dim>>) {
         let order = graph.topo_sort_classes_without_kernels(outputs);
         for &cid in &order {
-            let Some(mm) = graph.match_matmul_class(cid, shapes) else { continue };
-            let program_id =
-                self.programs.push(CblasProgram { kernel: CblasKernelId::ZERO, m: mm.m, n: mm.n, k: mm.k });
+            let Some(mm) = graph.match_matmul_class(cid, shapes) else {
+                continue;
+            };
+            let program_id = self.programs.push(CblasProgram { kernel: CblasKernelId::ZERO, m: mm.m, n: mm.n, k: mm.k });
             let nid = graph.nodes.push(NodeData {
                 node: Node::Kernel {
                     inputs: Box::new([mm.a, mm.b]),

@@ -31,12 +31,12 @@ use dummy::{DummyDevice, DummyMemoryPool};
 use host::HostMemoryPool;
 use nanoserde::{DeBin, DeJson, SerBin};
 use opencl::{OpenCLDevice, OpenCLMemoryPool};
+use std::collections::BTreeSet;
 #[cfg(feature = "tenstorrent")]
 use tenstorrent::{TTDevice, TTMemoryPool};
 use vulkan::{VulkanDevice, VulkanMemoryPool};
 #[cfg(feature = "wgpu")]
 use wgpu::{WGPUDevice, WGPUMemoryPool};
-use std::collections::BTreeSet;
 
 mod c;
 mod cblas;

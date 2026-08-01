@@ -51,8 +51,8 @@ use std::collections::BTreeSet;
 use crate::{
     DType, Map, RT, Tensor, ZyxError,
     backend::{BufferId, Device},
-    graph::{ClassId, ExecPlan, Graph, GraphId, Node},
     graph::plan::drain_events_for_buf,
+    graph::{ClassId, ExecPlan, Graph, GraphId, Node},
     kernel::{DeviceId, Op},
     runtime::ShapeId,
     shape::Dim,
@@ -285,8 +285,7 @@ impl Drop for Tape {
                 // means nothing references it anymore. Remove it, freeing its
                 // buffer if no other tensor maps to the same buffer.
                 if let Some(buf_id) = rt.buffer_map.remove(&tid) {
-                    let still_used =
-                        rt.buffer_map.values().any(|b| b.pool == buf_id.pool && b.buffer == buf_id.buffer);
+                    let still_used = rt.buffer_map.values().any(|b| b.pool == buf_id.pool && b.buffer == buf_id.buffer);
                     if !still_used {
                         let wait_list = drain_events_for_buf(&mut rt.events, buf_id);
                         rt.pools[buf_id.pool].deallocate(buf_id.buffer, wait_list);
