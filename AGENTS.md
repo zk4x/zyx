@@ -14,26 +14,26 @@ Quick reference for coding agents working in the zyx repository.
 ## Essential Commands
 
 ```bash
-# Build
-cargo build -p zyx
-cargo build -p zyx --release
+# Build (always from the zyx/ subdirectory)
+cd zyx && cargo build
+cd zyx && cargo build --release
 # Tenstorrent backend
-TT_METAL_ROOT=~/Dev/cpp/tt-metal cargo build -p zyx --features tenstorrent
+TT_METAL_ROOT=~/Dev/cpp/tt-metal cargo build --features tenstorrent
 
 # Lint (do NOT run - shows many unrelated issues)
-# cargo clippy -p zyx --all-features -- -D warnings
+# cargo clippy --all-features -- -D warnings
 
 # Format
 cargo fmt
 
-# Test (always run from zyx/zyx subdirectory!)
-cd zyx/zyx && AGENT=1 cargo test
-cd zyx/zyx && AGENT=1 cargo test relu_1          # single test
-cd zyx/zyx && AGENT=1 cargo test --test 1_unary  # test file
-cd zyx/zyx && AGENT=1 cargo test -- --nocapture  # with output
+# Test (always run from the zyx/ subdirectory!)
+cd zyx && AGENT=1 cargo test
+cd zyx && AGENT=1 cargo test relu_1          # single test
+cd zyx && AGENT=1 cargo test --test 1_unary  # test file
+cd zyx && AGENT=1 cargo test -- --nocapture  # with output
 
 # Doc tests
-cd zyx/zyx && AGENT=1 cargo test --doc
+cd zyx && AGENT=1 cargo test --doc
 ```
 
 ## Python
@@ -42,7 +42,7 @@ cd zyx/zyx && AGENT=1 cargo test --doc
 - Install packages with: `python3.12 -m pip install <package>`
 - Run scripts with: `python3.12 <script>.py`
 
-**Note**: This is a workspace with multiple crates (zyx, zyx-nn, zyx-optim, etc.). **Always run commands from the `zyx/zyx` subdirectory** (not the workspace root).
+**Note**: The repo root has no `Cargo.toml` — the crates (zyx, zyx-nn, zyx-optim, etc.) are independent packages, not a cargo workspace. **Always run commands for the core library from the `zyx/` subdirectory** (not the repo root).
 
 ## Project Structure
 
@@ -56,7 +56,13 @@ cd zyx/zyx && AGENT=1 cargo test --doc
 ├── zyx-fuzzy/     # Fuzzy logic
 ├── zyx-book/      # Book documentation
 ├── zyx-bench/     # Benchmarks
+├── zyx-examples/  # Examples
+├── zyx-py/        # Python bindings
+├── docs/          # Generated docs
+├── generated/     # Generated tools (inspector, watcher)
 ```
+
+Root files: `ENV_VARS.md` (debug env vars), `CONFIG.md` (backend config), `ADDING_BACKENDS.md`, `STYLE.md`.
 
 ## The Graph
 
@@ -65,10 +71,9 @@ Zyx is ALL about the graph. The graph is the core.
 - **Lazy**: Puts ops into graph, no calculations until `Tensor::realize`
 - **Dynamic**: Graph dynamically grows and shrinks at runtime
 - **One graph for everything**: Autograd uses the same graph
-- **Lazy**: Puts ops into graph, no calculations until `Tensor::realize`
 - Other libraries use 2 graphs (one for laziness, one for autograd), zyx uses ONE
 - **Super lean**: TensorId is `u32` (4 bytes). 10k tensor handles = ~40kB.
-- **Few ops**: Graph has ~10 high-level categories (Unary, Binary, Movement, Reduction, etc.), with UOp (13 variants), BOp (19 variants), and MoveOp (4 variants) for detailed operations.
+- **Few ops**: Graph has 12 high-level categories (Const, Leaf, Expand, Permute, Reshape, PadZeros, Reduce, Cast, Unary, Binary, ToDevice, Kernel), with UOp (13 variants), BOp (18 variants), and MoveOp (4 variants) for detailed operations.
 
 ## Core Principles
 
@@ -97,7 +102,7 @@ Zyx is ALL about the graph. The graph is the core.
 ### Debugging
 
 - Use `kernel.debug()` to inspect the kernel IR. `AGENT=1` strips ANSI colors, `AGENT=0` preserves them.
-- Set `ZYX_DEBUG` environment variable to enable debug output. See [`zyx/ENV_VARS.md`](./zyx/ENV_VARS.md) for all available options.
+- Set `ZYX_DEBUG` environment variable to enable debug output. See [`ENV_VARS.md`](./ENV_VARS.md) for all available options.
 
 ### IR Debugging
 
@@ -152,7 +157,7 @@ pub fn shape_error(e: Box<str>) -> Self {
 ## Testing
 
 - Tests in `zyx/tests/`
-- Naming: `{number}_{category}.rs` (e.g., `1_unary.rs`)
+- Naming: `{number}_{category}.rs` (e.g., `1_unary.rs`), with a few exceptions (`eager_load.rs`, `mnist.rs`)
 - Return `Result<(), ZyxError>`
 - Use `assert!` and `is_equal()` for floats
 
@@ -176,22 +181,21 @@ zyx runs tests using whatever backends are available. The user controls which ba
 
 ## Clippy Strictness
 
-The project denies these in `lib.rs`:
-- `clippy::all` (all warnings)
-- `clippy::pedantic`
-- `clippy::cast_possible_truncation`
-- `clippy::cast_lossless`
-- `clippy::cast_precision_loss`
-- `clippy::cast_sign_loss`
-- `clippy::perf` (forbidden)
-- `missing_docs`
+The project configures lints in `lib.rs`:
+- `#![deny(clippy::all)]` and `#![deny(clippy::pedantic)]` (all warnings)
+- `#![forbid(clippy::perf)]`
+- `#![deny(clippy::style)]`, `#![deny(clippy::nursery)]`
+- `#![deny(clippy::fn_to_numeric_cast_any)]`, `#![deny(clippy::as_ptr_cast_mut)]`, `#![deny(clippy::missing_const_for_fn)]`, `#![deny(clippy::separated_literal_suffix)]`
+- `#![warn(missing_docs)]` (a warning, not denied)
+
+The cast lints are **allowed**, not denied: `clippy::cast_possible_truncation`, `clippy::cast_lossless`, `clippy::cast_precision_loss`, `clippy::cast_sign_loss`, `clippy::cast_ptr_alignment`, `clippy::cast_possible_wrap`.
 
 Mark allowed exceptions with `#[allow(...)]`.
 
 ## Backend Architecture
 
-- Each backend in a single file under `zyx/src/backend/`
-- Most backends (C, CUDA, HIP, OpenCL) are **always compiled in** — controlled at **runtime** via config file, not cargo features
+- Each backend in a single file under `zyx/src/backend/` (`c`, `cuda`, `hip`, `opencl`, `vulkan`, `disk`, `host`, `dummy`, `tenstorrent`, `wgpu`)
+- Most backends (C, CUDA, HIP, OpenCL, Vulkan, disk, host, dummy) are **always compiled in** — controlled at **runtime** via config file, not cargo features
 - Only WGPU and Tenstorrent require `--features wgpu` / `--features tenstorrent`
 
 ### Switching Backends for Testing
@@ -203,9 +207,10 @@ Backends are selected at runtime via `$HOME/.config/zyx/config.json` (JSON):
 ```
 
 Key rules:
-- **C backend**: off by default → enable with `"c": { "enabled": true }`
+- **C backend**: on by default → disable with `"c": { "enabled": false }`
 - **Dummy backend**: off by default → enable with `"dummy": { "enabled": true }` (fake device, no computation)
 - **CUDA**: on by default → override with `"cuda": { "device_ids": [] }` to disable
+- **HIP**: always tries to initialize (ignores config); only skipped if `libamdhip64.so` is missing
 - **OpenCL**: on by default → disable with `"opencl": { "platform_ids": [] }`
 - **WGPU**: on by default (if compiled with `--features wgpu`) → disable with `"wgpu": { "enabled": false }`
 
@@ -215,8 +220,8 @@ If **all** backends fail, tests produce no output.
 To test with the **C backend only** (no GPU needed):
 ```bash
 # Create ~/.config/zyx/config.json:
-echo '{"c": {"enabled": true}, "cuda": {"device_ids": []}, "opencl": {"platform_ids": []}, "hip": {"device_ids": []}}' > ~/.config/zyx/config.json
-cargo test
+echo '{"c": {"enabled": true}, "cuda": {"device_ids": []}, "opencl": {"platform_ids": []}}' > ~/.config/zyx/config.json
+cd zyx && cargo test
 ```
 
 To reset to defaults, delete the config file:
@@ -224,7 +229,7 @@ To reset to defaults, delete the config file:
 rm ~/.config/zyx/config.json
 ```
 
-Full config reference: [`zyx/CONFIG.md`](./zyx/CONFIG.md)
+Full config reference: [`CONFIG.md`](./CONFIG.md)
 
 ## API Design
 
@@ -248,16 +253,17 @@ The autotune system explores optimization sequences by:
 
 ### Available Optimizations
 
-The autotune system uses 8 optimizations (defined in `zyx/src/kernel/autotune.rs`):
+The autotune system uses 9 optimizations (defined in `zyx/src/kernel/autotune.rs`):
 
 ```rust
-const AVAILABLE_OPTIMIZATIONS: [OptConfigFn; 8] = [
+const AVAILABLE_OPTIMIZATIONS: [OptConfigFn; 9] = [
     |k, _| Kernel::opt_reassociate_commutative(k),
     Kernel::opt_split_global_to_local,
     |k, _| Kernel::opt_thread_coarse(k),
     |k, _| Kernel::opt_register_blocking(k),
     Kernel::opt_local_reduce,
     |k, _| Kernel::opt_split_loop(k),
+    |k, _| Kernel::opt_pad_index(k),
     Kernel::opt_vectorize,
     |k, _| Kernel::opt_merge_nested_loops(k),
 ];
@@ -289,9 +295,9 @@ Every optimization must produce correct IR that calculates the same result as th
 
 7. **Verify the fix with the unit test** — After the fix, the test should assert the pattern IS optimized.
 
-8. **Run ALL tests** — Optimization passes affect ALL kernels. Always run `cargo test -p zyx` after any change:
+8. **Run ALL tests** — Optimization passes affect ALL kernels. Always run `cargo test` after any change:
    ```bash
-   cd zyx/zyx && cargo test
+   cd zyx && cargo test
    ```
    A single failing integration test (e.g., `gather_test`) means the optimization is producing incorrect results.
 
@@ -299,18 +305,23 @@ Every optimization must produce correct IR that calculates the same result as th
 
 | Level | Output | When |
 |-------|--------|------|
-| `1`   | Backend selection | Startup |
-| `2`   | perf | During realize |
-| `4`   | Scheduler decisions | Kernel selection |
-| `8`   | Kernel IR (before GPU) | Kernel compilation |
-| `16`  | Generated CUDA C++ source | Kernel compilation |
-| `32`  | Autotune exploration | During autotune |
+| `1`   | Hardware devices and configuration | Startup |
+| `2`   | Graph execution and perf | During realize |
+| `4`   | Kernels created by scheduler | Kernel selection |
+| `8`   | Kernel IR | Kernel compilation |
+| `16`  | Generated assembly/code (OpenCL, WGSL, etc.) | Kernel compilation |
+| `32`  | Kernel launch and memory movement | Kernel launch |
+| `64`  | Memory allocation/deallocation | During realize |
+| `128` | Kernel compilation | Kernel compilation |
+| `256` | Autotune exploration | During autotune |
+
+Combine flags by summing values (e.g., `ZYX_DEBUG=24` = ir + asm). See [`ENV_VARS.md`](./ENV_VARS.md).
 
 ### Key Techniques
 
 - **IR before GPU**: `ZYX_DEBUG=8` prints IR during compilation, before any GPU kernel executes. Use this to inspect IR without GPU hangs.
-- **Pipeline order matters**: `simplify_accumulating_loop` runs in `run_always_on_optimizations` at line 225, before `split_loops` and other autotune passes. Check the pipeline order in `autotune.rs` before assuming loop structure.
-- **Nested loops appear after splitting**: The `split_loops` pass runs during autotuning, AFTER `run_always_on_optimizations`. The IR at `simplify_accumulating_loop` time has flat loops, not nested ones.
+- **Pipeline order matters**: `simplify_accumulating_loop` runs in `run_always_on_optimizations` at line 344, before `split_loop` and other autotune passes. Check the pipeline order in `autotune.rs` before assuming loop structure.
+- **Nested loops appear after splitting**: The `opt_split_loop` pass runs during autotuning, AFTER `run_always_on_optimizations`. The IR at `simplify_accumulating_loop` time has flat loops, not nested ones.
 - **Interleaved op ordering**: The real kernel IR may have accumulated value computation interleaved BETWEEN `load(acc)` and `Add`, not before the load. Pattern matchers must account for this.
 - **Mad chains**: After unfold, loop index references go through `Mad` instructions that simplify to `loop_id` via constant folding. `check_loop` must trace through Cast, Mad, and Binary chains to find the loop variable.
 - **Unit test isolation**: Write unit tests that construct Kernel IR directly. This isolates the optimization pass from the rest of the pipeline and makes debugging fast.
@@ -322,29 +333,37 @@ Every optimization must produce correct IR that calculates the same result as th
 
 ### Adding an Optimization
 
-1. Define config function (how many variants):
+1. Define config function (how many variants). It returns `(Optimization, usize)` — the `Optimization` to apply and the number of config variants:
 
 ```rust
-pub fn my_opt_config(&self) -> u16 {
-    4 // try 4 variants
+pub fn my_opt_config(&self, _dev_info: &DeviceInfo) -> (Optimization, usize) {
+    (Optimization::MyOpt { factors }, 4) // try 4 variants
 }
 ```
 
-2. Define optimization function:
+2. Define the apply function on `Kernel`:
 
 ```rust
-pub fn my_optimization(&mut self, config: u16) {
-    let tile_size = [16, 32, 64, 128][config as usize];
+pub fn my_optimization(&mut self, config: usize) {
+    let tile_size = [16, 32, 64, 128][config];
     // apply optimization...
 }
 ```
 
-3. Register in `available_opts` array:
+3. Register in `AVAILABLE_OPTIMIZATIONS` array:
 
 ```rust
-let available_opts: [(fn(&Kernel) -> u16, fn(&mut Kernel, u16)); _] = [
-    (Self::opt_no_config, Self::reassociate_commutative),
-    (Self::my_opt_config, Self::my_optimization), // <-- add here
+const AVAILABLE_OPTIMIZATIONS: [OptConfigFn; 10] = [
+    |k, _| Kernel::opt_reassociate_commutative(k),
+    Kernel::opt_split_global_to_local,
+    |k, _| Kernel::opt_thread_coarse(k),
+    |k, _| Kernel::opt_register_blocking(k),
+    Kernel::opt_local_reduce,
+    |k, _| Kernel::opt_split_loop(k),
+    |k, _| Kernel::opt_pad_index(k),
+    Kernel::opt_vectorize,
+    |k, _| Kernel::opt_merge_nested_loops(k),
+    Self::my_opt_config, // <-- add here
 ];
 ```
 
@@ -354,20 +373,27 @@ The `run_always_on_optimizations` method applies optimizations that should alway
 
 ```rust
 pub fn run_always_on_optimizations(&mut self) {
+    self.unroll_len1_loops();
     self.constant_folding();
     self.move_constants_to_beginning();
     self.loop_invariant_code_motion();
     self.fold_accs();
-    self.delete_empty_loops();
+    self.delete_zero_len_indices();
+    self.delete_zero_len_loops();
+    self.unfold_pows();
+    self.algebraic_simplification();
+    self.simplify_accumulating_loop();
+    self.swap_commutative();
+    self.common_subexpression_elimination();
+    self.instruction_schedule();
     self.dead_code_elimination();
-    // Note: common_subexpression_elimination runs after the above, not in this list
 }
 ```
 
 **Important**: Always run `dead_code_elimination` as the last step. This ensures backends never receive ops that are no longer used, which could cause compilation failures (e.g., missing entries in reference count maps).
 
 ### Key Patterns
-- Return `1` from config function if no tunable parameters
+- Return a config count of `1` if no tunable parameters
 - Cost model uses heuristic initially, then actual execution time
 - Use kernel hashing to avoid duplicate exploration
 
@@ -464,6 +490,7 @@ The user has all the answers. Just ask.
   4. `optim.update(&mut net, grads)` — replaces params with new graph tensors, may auto-promote optim buffers
   5. `tape.realize(net.iter().chain(optim.iter()))?` — realizes persistent state
   6. Tape drops, realized tensors become eager for next iteration
+- **`Tape::freeze` / `FrozenTape::replay`** — for fixed control flow, call `let frozen = tape.freeze(&outputs)?` to compile the plan once, then `frozen.replay(&inputs)?` each step with new inputs. Lower overhead than building a fresh tape per step.
 
 ## TT Metalium API Reference
 

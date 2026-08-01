@@ -215,20 +215,24 @@ The fused operations are lowered to a unified kernel IR. Kernel IR is then autot
 to native code for the target backend.
 
 
-## Why zyx is Different
+## How zyx compares
 
-| Feature | zyx | PyTorch | TensorFlow | JAX |
-|---------|-----|---------|------------|-----|
-| **Execution Model** | Eager-ish fusion (default) + Tape (lazy + autograd) | Eager by default | Eager by default | Functional + XLA |
-| **Gradient Recording** | Explicit `Tape` | Implicit, requires `no_grad()` | Implicit, tf.function | Explicit + jit |
-| **Tensor Mutability** | Immutable | Mutable (risk of back-prop failures) | Mutable | Immutable |
-| **Kernel Fusion** | Automatic, all backends | Manual (torch.jit) | Manual (XLA) | Manual (XLA) |
-| **Disk I/O** | Lazy loading parallel to compute | Typically blocking | Blocking | Blocking |
-| **Device Pipelining** | Built-in heterogeneous pipelining | Manual `to(device)` calls | Manual device placement | Manual device placement |
-| **Compilation** | Just-in-time | Pre-compiled + jit | Pre-compiled | Just-in-time |
-| **Import Time** | ~1ms | ~2s | ~3s | ~0.5s |
-| **Wheel Size** | ~5MB (includes all backends) | hundreds of MB |
+Zyx is a library, not a workflow: it doesn't prescribe training loops or data pipelines. The table below compares its design choices feature by feature.
 
+| Feature | PyTorch | JAX | TVM | tinygrad | candle | burn | luminal | zyx |
+|---|---|---|---|---|---|---|---|---|
+| **Language/front-end** | Python + C++ | Python | Python + C++ | Python | Rust | Rust | Rust | Rust + Python |
+| **Execution model** | eager | lazy (traced) | AOT-compiled | lazy | eager | dynamic graphs | static graphs | eager outside a `Tape`, lazy inside |
+| **Graphs** | eager ops + separate autograd graph | one jaxpr for both | graph → IR | single UOp graph for everything | none (eager) | dynamic execution graph | static DAG | one graph for laziness and autograd |
+| **Autograd** | `requires_grad`/`no_grad` | `grad` transform | n/a | graph-based | built-in | autodiff as a backend decorator | graph-based | `Tape` scoped |
+| **Compiled replay** | — | `jit` | AOT | `TinyJit` | — | — | AOT | `Tape::freeze`/`replay` |
+| **Fusion** | `torch.compile` | XLA | operator fusion | heuristics | manual | automatic kernel fusion | e-graph fusion variants | e-graph fusion variants |
+| **Autotuning** | Triton autotune | XLA | explores optimization sequences | over kernel variants | n/a | autotuned kernel selection | via e-graph (egglog) | out-of-order passes, each measured |
+| **Custom kernels** | C++/CUDA ops, Triton | pallas, custom calls | codegen templates | written in UOp IR | embed foreign kernels (flash-attn) | custom kernels | e-graph pattern-matching AOT kernels | written in zyx IR, or e-graph AOT patterns |
+| **Tensor mutability** | mutable | immutable | n/a (compile-time) | immutable | mutable | mutable | n/a (compile-time) | immutable |
+| **Device/memory movement** | manual `.to()` | explicit placement | pipelines across devices/memories | per-op device semantics | manual | manual | compiler-searched ahead of time | pipelines across devices/memories |
+| **Hardware backends** | CPU, CUDA, MPS, ROCm | CPU, GPU, TPU | CPU, GPU, NPU | CPU, CUDA, OpenCL, Metal | CPU, CUDA, WASM | CPU, CUDA, WGPU | CPU, CUDA, Metal, WGPU | C, CUDA, OpenCL, Vulkan, WGPU — one small codegen file per backend |
+| **Data parallelism** | DDP/FSDP | data-parallel sharding | — | multi-GPU sharding | multi-GPU via NCCL (tensor parallel) | DDP | — | manual (automatic in the roadmap) |
 
 ## Backends
 
@@ -248,6 +252,7 @@ Please read [ADDING_BACKENDS.md](https://github.com/zk4x/zyx/blob/main/ADDING_BA
 - [ ] full tenstorrent coverage
 - [ ] pattern matching for e-graph AOT kernels
 - [ ] custom backend code/assembly kernels
+- [ ] automatic device sharding search
 - [ ] more benchmarks + more model examples
 
 
