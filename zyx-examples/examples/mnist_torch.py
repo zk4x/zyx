@@ -23,7 +23,7 @@ def cross_entropy_one_hot(logits, targets):
     return loss.mean()
 
 
-device = torch.device("cpu")
+device = torch.device("cuda")
 
 train_dataset = load_file("data/mnist_dataset.safetensors")
 
@@ -32,18 +32,18 @@ train_y = train_dataset["train_y"].long().to(device)
 test_x = train_dataset["test_x"].float().to(device) / 255.0
 test_y = train_dataset["test_y"].long().to(device)
 
-batch_size = 129
+batch_size = 128
 num_train = train_x.shape[0]
 
 net = MnistNet().to(device)
-#net.compile()
+net.compile()
 
 # net.load_state_dict(torch.load("models/mnist.safetensors"))
 
 optimizer = torch.optim.SGD(
     net.parameters(),
     lr=0.01,
-    momentum=0.6,
+    momentum=0.9,
     nesterov=False,
 )
 
