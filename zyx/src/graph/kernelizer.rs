@@ -62,11 +62,23 @@ impl Graph {
     /// 2. **Visited residency**: Every class with `rcs[cid] > 0` that has been produced must have
     ///    exactly one entry in `visited` mapping it to the kernel where its computation lives.
     ///    [`add_store`] removes the entry and restores it via a load kernel if consumers remain.
-    pub fn kernelize(&mut self, inputs: &Set<ClassId>, outputs: &BTreeSet<ClassId>, shapes: &Slab<ShapeId, Vec<Dim>>) {
-        let order = self.topo_sort_classes_without_kernels(inputs, outputs);
+    pub fn kernelize(
+        &mut self,
+        inputs: &Set<ClassId>,
+        outputs: &BTreeSet<ClassId>,
+        shapes: &Slab<ShapeId, Vec<Dim>>,
+        allowed: Option<&Set<ClassId>>,
+    ) {
+        let order = self.topo_sort_classes_without_kernels(inputs, outputs, allowed);
 
         let mut rcs: Map<ClassId, u32> = Map::default();
         for &cid in &order {
+            // Boundary inputs are loaded, not fused — their structural nodes
+            // (e.g. the matmul form of an AOT kernel output) must not count
+            // children that live outside this region.
+            if inputs.contains(&cid) {
+                continue;
+            }
             for nid in &self.classes[cid].nodes {
                 // Kernel nodes added by pattern matching (e.g. cblas) are never
                 // consumed here — fill_remaining only processes structural nodes.
@@ -237,7 +249,9 @@ impl Graph {
             // backend kernel, not by this fused kernel. Materialize the class into
             // storage and hand off to a fresh load kernel, so downstream ops (e.g.
             // relu) start from the stored class instead of fusing into this kernel.
-            if self.classes[cid].nodes.iter().any(|&nid| matches!(&self.nodes[nid].node, Node::Kernel { .. })) {
+            if !inputs.contains(&cid)
+                && self.classes[cid].nodes.iter().any(|&nid| matches!(&self.nodes[nid].node, Node::Kernel { .. }))
+            {
                 let (kid, op_id) = visited[&cid];
                 let _ = self.add_store(cid, kid, op_id, &mut visited, &rcs, shapes);
             }
@@ -293,6 +307,14 @@ impl Graph {
         }
 
         if cfg!(debug_assertions) {
+            for (c, &r) in rcs.iter() {
+                if r != 0 {
+                    eprintln!("leaked rc: class={c:?} rc={r} inputs={inputs:?}");
+                }
+            }
+            if rcs.values().any(|&r| r != 0) {
+                self.debug_print(shapes);
+            }
             debug_assert!(rcs.values().all(|&r| r == 0), "all rcs must be zero");
             debug_assert!(visited.is_empty(), "visited must be empty");
             for kernel in self.jit_kernels.values() {
@@ -488,6 +510,88 @@ impl Graph {
         let result_op = kernel.push_back(Op::Move { x: op_id, mop: Box::new(mop) });
         self.push_outputs(kid, cid, *rcs.get(&cid).unwrap());
         visited.insert(cid, (kid, result_op));
+    }
+
+    /// Fills the gaps between AOT kernels with fused kernels.
+    ///
+    /// The classes in `active_outputs` are outputs of AOT kernels that are in
+    /// play for this pass. Together with the leaf classes they form producer
+    /// boundaries: the kernelizer never fuses into them, it only loads them.
+    /// Everything else on output paths decomposes into connected structural
+    /// regions, each bounded by producer boundaries on the input side and by
+    /// AOT kernel inputs / final outputs on the output side. Each region is
+    /// kernelized independently, so the gaps between AOT kernels get filled
+    /// while each AOT kernel keeps its own subgraph.
+    pub fn fill_gaps(&mut self, active_outputs: &Set<ClassId>, outputs: &BTreeSet<ClassId>, shapes: &Slab<ShapeId, Vec<Dim>>) {
+        let mut producer_boundaries: Set<ClassId> = self.leaf_classes.iter().copied().collect();
+        producer_boundaries.extend(active_outputs.iter().copied());
+
+        // Classes consumed by active AOT kernels — region outputs that must be
+        // stored so the backend kernel can read them.
+        let mut kernel_inputs: Set<ClassId> = Set::default();
+        for &cid in active_outputs {
+            for nid in &self.classes[cid].nodes {
+                if let Node::Kernel { inputs: kin, .. } = &self.nodes[*nid].node {
+                    kernel_inputs.extend(kin.iter().copied());
+                }
+            }
+        }
+
+        let order = self.topo_sort_classes_without_kernels(&producer_boundaries, outputs, None);
+
+        // Union-find the structural classes into connected regions.
+        let structural: Vec<ClassId> = order.iter().copied().filter(|&c| !producer_boundaries.contains(&c)).collect();
+        let idx: Map<ClassId, usize> = structural.iter().enumerate().map(|(i, &c)| (c, i)).collect();
+        let mut parent: Vec<usize> = (0..structural.len()).collect();
+        fn find(parent: &mut Vec<usize>, mut i: usize) -> usize {
+            while parent[i] != i {
+                parent[i] = parent[parent[i]];
+                i = parent[i];
+            }
+            i
+        }
+        for (i, &cid) in structural.iter().enumerate() {
+            for nid in &self.classes[cid].nodes {
+                for p in self.nodes[*nid].node.class_params() {
+                    if let Some(&j) = idx.get(&p) {
+                        let (a, b) = (find(&mut parent, i), find(&mut parent, j));
+                        parent[a.max(b)] = a.min(b);
+                    }
+                }
+            }
+        }
+        let mut regions: Map<usize, Vec<ClassId>> = Map::default();
+        for (i, &cid) in structural.iter().enumerate() {
+            regions.entry(find(&mut parent, i)).or_default().push(cid);
+        }
+
+        for region_classes in regions.values() {
+            let region: Set<ClassId> = region_classes.iter().copied().collect();
+
+            let mut region_inputs: Set<ClassId> = Set::default();
+            for &cid in &region {
+                for nid in &self.classes[cid].nodes {
+                    for p in self.nodes[*nid].node.class_params() {
+                        if producer_boundaries.contains(&p) {
+                            region_inputs.insert(p);
+                        }
+                    }
+                }
+            }
+
+            let mut region_outputs: BTreeSet<ClassId> = BTreeSet::new();
+            for &cid in &region {
+                if outputs.contains(&cid) || kernel_inputs.contains(&cid) {
+                    region_outputs.insert(cid);
+                }
+            }
+
+            if region_outputs.is_empty() {
+                continue;
+            }
+            let region_allowed: Set<ClassId> = region.union(&region_inputs).copied().collect();
+            self.kernelize(&region_inputs, &region_outputs, shapes, Some(&region_allowed));
+        }
     }
 }
 

@@ -30,6 +30,17 @@ fn matmul(a: &[f32], b: &[f32], m: usize, k: usize, n: usize) -> Vec<f32> {
 }
 
 #[test]
+fn load_survives_drop() -> Result<(), ZyxError> {
+    let x = Tensor::from([2.0f32, 3.0]);
+    let y = x.sin();
+    drop(x);
+    let ydata: Vec<f32> = y.try_into()?;
+    assert!(ydata[0].is_equal(2f32.sin()));
+    assert!(ydata[1].is_equal(3f32.sin()));
+    Ok(())
+}
+
+#[test]
 fn rope_1() -> Result<(), ZyxError> {
     let x = Tensor::from([1, 2, 3, 4, 5, 6, 7, 8]).reshape([2, 4])?;
     let sin_freq = Tensor::from([[2, 3], [3, 1]]);

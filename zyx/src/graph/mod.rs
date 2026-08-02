@@ -16,7 +16,7 @@ use std::collections::BTreeSet;
 
 use crate::{
     DType, Map, Set, ZyxError,
-    backend::{BufferId, Device, ProgramId},
+    backend::{BufferId, Device, PoolId, ProgramId},
     dtype::Constant,
     kernel::{BOp, DeviceId, Kernel, UOp},
     runtime::{Runtime, ShapeId},
@@ -405,13 +405,21 @@ impl Graph {
     /// Used when iterating the structural graph — e.g. fusing remaining ops into
     /// kernels — where kernel nodes would add spurious input dependencies between
     /// classes and boundary classes must not be walked through into other regions.
-    pub fn topo_sort_classes_without_kernels(&self, inputs: &Set<ClassId>, outputs: &BTreeSet<ClassId>) -> Vec<ClassId> {
+    /// When `allowed` is `Some`, the walk never leaves that set, so a
+    /// region-restricted sort stays inside its own region even if
+    /// [`Self::deps_stopping_at`] would follow a boundary kernel's inputs.
+    pub fn topo_sort_classes_without_kernels(
+        &self,
+        inputs: &Set<ClassId>,
+        outputs: &BTreeSet<ClassId>,
+        allowed: Option<&Set<ClassId>>,
+    ) -> Vec<ClassId> {
         let mut rcs: Map<ClassId, u32> = Map::default();
         let mut stack: Vec<ClassId> = outputs.iter().copied().collect();
         while let Some(cid) = stack.pop() {
             rcs.entry(cid).and_modify(|rc| *rc += 1).or_insert_with(|| {
-                let deps = if inputs.contains(&cid) { Vec::new() } else { self.deps_without_kernels(cid) };
-                stack.extend(deps);
+                let deps = self.deps_stopping_at(inputs, cid);
+                stack.extend(deps.into_iter().filter(|d| allowed.is_none_or(|a| a.contains(d))));
                 1
             });
         }
@@ -424,13 +432,34 @@ impl Graph {
                 let visited = internal_rcs.entry(cid).and_modify(|c| *c += 1).or_insert(1);
                 if rc == *visited {
                     order.push(cid);
-                    let deps = if inputs.contains(&cid) { Vec::new() } else { self.deps_without_kernels(cid) };
-                    stack.extend(deps);
+                    let deps = self.deps_stopping_at(inputs, cid);
+                    stack.extend(deps.into_iter().filter(|d| allowed.is_none_or(|a| a.contains(d))));
                 }
             }
         }
         order.reverse();
         order
+    }
+
+    /// Dependencies of a class, stopping at `inputs`: an input class that is a
+    /// kernel output follows only its kernel-node inputs (so classes feeding an
+    /// AOT kernel still get covered), an input leaf has no dependencies, and any
+    /// other class uses its structural dependencies.
+    fn deps_stopping_at(&self, inputs: &Set<ClassId>, cid: ClassId) -> Vec<ClassId> {
+        if !inputs.contains(&cid) {
+            return self.deps_without_kernels(cid);
+        }
+        let mut deps = Vec::new();
+        for nid in &self.classes[cid].nodes {
+            if let Node::Kernel { inputs: kin, .. } = &self.nodes[*nid].node {
+                for &p in kin.iter() {
+                    if !inputs.contains(&p) {
+                        deps.push(p);
+                    }
+                }
+            }
+        }
+        deps
     }
 
     /// Union of `class_params` of all non-Kernel nodes in class `cid`.
@@ -835,8 +864,26 @@ impl Runtime {
             self.devices[dev_id].match_graph(unsafe { &mut *graph_ptr }, output_set, unsafe { &*shapes_ptr });
         }
 
-        let inputs: Set<ClassId> = self.graphs[graph_id].leaf_classes.iter().copied().collect();
-        self.graphs[graph_id].kernelize(&inputs, output_set, unsafe { &*shapes_ptr });
+        // AOT kernel output classes, grouped by the memory pool they run in.
+        let mut pool_kernel_outputs: Map<PoolId, Set<ClassId>> = Map::default();
+        for cid in self.graphs[graph_id].classes.ids() {
+            for nid in &self.graphs[graph_id].classes[cid].nodes {
+                if let Node::Kernel { program_id, .. } = &self.graphs[graph_id].nodes[*nid].node {
+                    let pool = self.devices[program_id.device].memory_pool_id();
+                    pool_kernel_outputs.entry(pool).or_default().insert(cid);
+                }
+            }
+        }
+
+        // Pass 1: fill every gap between all AOT kernels, ignoring devices.
+        let all_kernel_outputs: Set<ClassId> = pool_kernel_outputs.values().flatten().copied().collect();
+        self.graphs[graph_id].fill_gaps(&all_kernel_outputs, output_set, unsafe { &*shapes_ptr });
+
+        // Pass 2: for each memory pool, fill the gaps between only that pool's
+        // kernels — other pools' kernels are ignored, giving single-pool paths.
+        for active_outputs in pool_kernel_outputs.values() {
+            self.graphs[graph_id].fill_gaps(active_outputs, output_set, unsafe { &*shapes_ptr });
+        }
 
         // Autotunes custom zyx kernels for all devices and adds kernel nodes for all of them
         self.autotune_jit_kernels(graph_id)?;
