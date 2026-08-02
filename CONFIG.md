@@ -85,6 +85,7 @@ Compiles kernel IR to C, then compiles with clang and loads via `dlopen`. Uses t
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `device_ids` | `Option<Vec<i32>>` | `null` | Which CUDA devices to use. `null` = all available devices. `[]` (empty) = disable CUDA. `[0, 1]` = use first two devices. |
+| `cudnn` | `bool` | `true` | Whether to use cuDNN for AOT matmul kernels. Set `false` to disable. |
 
 ### `hip` — HIP/AMD backend
 

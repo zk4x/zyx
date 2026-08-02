@@ -866,4 +866,73 @@ mod tests {
         let result = compiled.forward(&[&indices, &arange, &source], vec![[3, 3]]).unwrap().pop().unwrap();
         assert_eq!(result, [[12.0f32, 20.0, 31.0], [11.0, 22.0, 30.0], [10.0, 21.0, 32.0]]);
     }
+
+    /// Reproduce the exact scatter pre-fold IR (ZYX_DUMP_FOLD output from
+    /// `scatter_1d`, /tmp/scatter_dump.txt lines 598-624).
+    ///
+    /// Structure (note: the loop-dependent mask operand is the INDICES load,
+    /// indexed by loop_id; the arange load is loop-invariant at group_index):
+    ///   acc = 0
+    ///   for i in 0..3:
+    ///     idx  = load(indices, i)          // LOOP-DEPENDENT
+    ///     cls  = load(arange, group)       // loop-invariant
+    ///     mask = i32(idx == cls)
+    ///     src  = load(src, i)
+    ///     acc += mask * src
+    ///   out[group] = acc
+    ///
+    /// scatter_1d: x=zeros(10), src=[100,200,300], indices=[0,5,9]
+    /// expected result = [100, 0, 0, 0, 0, 200, 0, 0, 0, 300]
+    fn make_scatter_kernel(dim: u64, num_indices: u64) -> (Kernel, OpId) {
+        let mut k = Kernel::new(DeviceId::AUTO);
+
+        let r29 = k.define(DType::I32, MemScope::Global, true, num_indices);
+        let r38 = k.define(DType::I32, MemScope::Global, true, dim);
+        let r47 = k.define(DType::I32, MemScope::Global, true, num_indices);
+        let r61 = k.define(DType::I32, MemScope::Global, false, dim);
+        let r14 = k.const_idx(0u32);
+        let r1 = k.const_val(0i32);
+        let r10 = k.const_idx(num_indices);
+        let r7 = k.group_index(0, dim);
+
+        let r9 = k.define(DType::I32, MemScope::Register, false, 1);
+        k.store(r9, r1, r14, MemLayout::Scalar);
+
+        let loop_id = k.loop_(r10);
+
+        let r30 = k.load(r29, loop_id, MemLayout::Scalar);
+        let r39 = k.load(r38, r7, MemLayout::Scalar);
+        let r4 = k.binary(r30, r39, BOp::Eq);
+        let r5 = k.cast(r4, DType::I32);
+        let r48 = k.load(r47, loop_id, MemLayout::Scalar);
+        let r8 = k.binary(r5, r48, BOp::Mul);
+        let r11 = k.cast(r8, DType::I32);
+        let r19 = k.load(r9, r14, MemLayout::Scalar);
+        let r20 = k.binary(r11, r19, BOp::Add);
+        k.store(r9, r20, r14, MemLayout::Scalar);
+
+        k.end_loop();
+
+        let r12 = k.load(r9, r14, MemLayout::Scalar);
+        k.store(r61, r12, r7, MemLayout::Scalar);
+
+        (k, loop_id)
+    }
+
+    /// The scatter (one-hot accumulate) loop must fold to the CORRECT scatter
+    /// result. The loop-dependent mask operand is the indices load (NOT the
+    /// arange load), so the gather fold must not misapply and produce src[class].
+    #[test]
+    fn test_scatter_loop_folds_correctly() {
+        let (mut k, _loop_id) = make_scatter_kernel(10, 3);
+        k.simplify_accumulating_loop();
+        k.debug();
+
+        let compiled = k.compile().unwrap();
+        let indices = crate::Tensor::from([0u8, 5, 9]);
+        let arange = crate::Tensor::from([0u8, 1, 2, 3, 4, 5, 6, 7, 8, 9]);
+        let src = crate::Tensor::from([100i32, 200, 300]);
+        let result = compiled.forward(&[&indices, &arange, &src], vec![[10]]).unwrap().pop().unwrap();
+        assert_eq!(result, [100, 0, 0, 0, 0, 200, 0, 0, 0, 300]);
+    }
 }

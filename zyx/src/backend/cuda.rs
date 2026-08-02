@@ -139,6 +139,8 @@ pub struct CUDAConfig {
     /// If set to None, then it will automatically use all CUDA devices,
     /// otherwise it uses only selected devices
     device_ids: Option<Vec<i32>>,
+    /// Whether to use cuDNN for AOT matmul kernels. Defaults to true.
+    cudnn: bool,
 }
 
 #[derive(Debug)]
@@ -393,9 +395,11 @@ pub(super) fn initialize_device(
 
     // Load cuDNN for AOT matmul kernels (optional). Kept alive for the worker
     // threads via an Arc; without it the CUDA backend still works normally.
-    let cudnn = load_cudnn();
+    let cudnn = if config.cudnn { load_cudnn() } else { None };
     if debug_dev && cudnn.is_some() {
         println!("[CUDA] cuDNN graph API loaded");
+    } else if debug_dev && !config.cudnn {
+        println!("[CUDA] cuDNN disabled by config");
     }
 
     let cuInit: unsafe extern "C" fn(c_uint) -> CUDAStatus = *unsafe { cuda.get(b"cuInit\0") }?;
