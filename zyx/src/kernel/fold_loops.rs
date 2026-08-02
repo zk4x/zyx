@@ -323,13 +323,6 @@ impl Kernel {
         if peeled == loop_id {
             return true;
         }
-        // The loop operand may be a load from an arange tensor indexed by the
-        // loop (e.g. `load(arange, loop_id)` has value == loop_id), as in the
-        // index_select/gather mask. The source load's index is loop_id through
-        // arithmetic (r10 + loop_id*784) and is NOT matched by this.
-        if let Op::Load { index, .. } = self.at(peeled) {
-            return self.peel_casts(*index) == loop_id;
-        }
         false
     }
 
@@ -852,12 +845,16 @@ mod tests {
         (k, loop_id)
     }
 
-    /// The mnist gather (index_select) loop must be folded into a direct gather.
+    /// The mnist gather (index_select) loop must NOT be folded. The mask's
+    /// loop-dependent operand is `load(arange_tensor, loop_id)` — a global
+    /// arange BUFFER. From the IR alone it is indistinguishable from arbitrary
+    /// indices data, so the fold must not fire. Only a kernelizer-fused arange
+    /// (mask operand == loop_id directly) would be foldable.
     #[test]
-    fn test_mnist_gather_is_optimized() {
+    fn test_mnist_gather_not_folded() {
         let (mut k, loop_id) = make_mnist_gather_kernel(3);
         k.simplify_accumulating_loop();
-        assert_eq!(k.at(loop_id), &Op::Const(Constant::idx(0)), "loop should fold");
+        assert!(matches!(k.at(loop_id), &Op::Loop { .. }), "loop must NOT be folded");
 
         let compiled = k.compile().unwrap();
         let source = crate::Tensor::from([[10.0f32, 20.0, 30.0], [11.0, 21.0, 31.0], [12.0, 22.0, 32.0]]);
@@ -919,18 +916,20 @@ mod tests {
         (k, loop_id)
     }
 
-    /// The scatter (one-hot accumulate) loop must fold to the CORRECT scatter
-    /// result. The loop-dependent mask operand is the indices load (NOT the
-    /// arange load), so the gather fold must not misapply and produce src[class].
+    /// The scatter (one-hot accumulate) loop must NOT be folded. The loop's
+    /// mask operand `load(indices, loop_id)` is arbitrary indices data (not an
+    /// arange, and indistinguishable from one at the IR level), so the fold
+    /// must not fire — folding would produce `src[group]` for duplicate index
+    /// classes. The loop stays intact and computes the correct scatter.
     #[test]
-    fn test_scatter_loop_folds_correctly() {
-        let (mut k, _loop_id) = make_scatter_kernel(10, 3);
+    fn test_scatter_loop_not_folded() {
+        let (mut k, loop_id) = make_scatter_kernel(10, 3);
         k.simplify_accumulating_loop();
-        k.debug();
+        assert!(matches!(k.at(loop_id), &Op::Loop { .. }), "loop must NOT be folded");
 
         let compiled = k.compile().unwrap();
-        let indices = crate::Tensor::from([0u8, 5, 9]);
-        let arange = crate::Tensor::from([0u8, 1, 2, 3, 4, 5, 6, 7, 8, 9]);
+        let indices = crate::Tensor::from([0i32, 5, 9]);
+        let arange = crate::Tensor::from([0i32, 1, 2, 3, 4, 5, 6, 7, 8, 9]);
         let src = crate::Tensor::from([100i32, 200, 300]);
         let result = compiled.forward(&[&indices, &arange, &src], vec![[10]]).unwrap().pop().unwrap();
         assert_eq!(result, [100, 0, 0, 0, 0, 200, 0, 0, 0, 300]);
