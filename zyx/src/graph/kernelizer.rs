@@ -317,11 +317,22 @@ impl Graph {
             }
             debug_assert!(rcs.values().all(|&r| r == 0), "all rcs must be zero");
             debug_assert!(visited.is_empty(), "visited must be empty");
-            for kernel in self.jit_kernels.values() {
+            for kid in self.jit_kernels.ids() {
+                let kernel = &self.jit_kernels[kid];
                 debug_assert!(kernel.outputs.is_empty());
                 if kernel.stores.is_empty() {
                     kernel.kernel.debug();
                     panic!("encountered empty kernel");
+                }
+                // A kernel must never load a class it also stores — that would
+                // create a self-referential producer path and break extract.
+                for load in &kernel.loads {
+                    debug_assert!(
+                        !kernel.stores.contains(load),
+                        "kernel {kid:?} loads and stores class {load:?}: loads={:?} stores={:?}",
+                        kernel.loads,
+                        kernel.stores,
+                    );
                 }
             }
         }
