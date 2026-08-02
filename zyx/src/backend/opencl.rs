@@ -619,7 +619,7 @@ pub(super) fn initialize_device(
 
                             let queue_id = next_queue(&mut queues[device_idx], clFinish);
                             if !programs.contains_key(program_id) {
-                                println!("[OPENCL] launching program_id={program_id:?}, NOT FOUND, programs={programs:?}");
+                                //println!("[OPENCL] launching program_id={program_id:?}, NOT FOUND, programs={programs:?}");
                                 let _ = reply.send(Err(BackendError {
                                     status: ErrorStatus::KernelLaunch,
                                     context: format!("Invalid program_id={program_id:?}").into(),
@@ -673,7 +673,7 @@ pub(super) fn initialize_device(
                             let _ =
                                 unsafe { clReleaseProgram(programs[program_id].program) }.check(ErrorStatus::Deinitialization);
                             programs.remove(program_id);
-                            println!("[OPENCL] released program_id={program_id:?}'");
+                            //println!("[OPENCL] released program_id={program_id:?}'");
                         }
                         Command::ReleaseEvents { events } => {
                             let events: Vec<*mut c_void> =
@@ -868,7 +868,7 @@ impl OpenCLDevice {
     }
 
     pub fn release(&mut self, program_id: DeviceProgramId) {
-        println!("[OPENCL] release program_id={program_id:?}");
+        //println!("[OPENCL] release program_id={program_id:?}");
         self.tx.send(Command::ReleaseProgram { program_id }).unwrap();
     }
 

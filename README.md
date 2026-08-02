@@ -232,6 +232,7 @@ Zyx is a library, not a workflow: it doesn't prescribe training loops or data pi
 | **Hardware backends** | CPU, CUDA, MPS, ROCm, XPU | CPU, GPU, TPU | CPU, GPU, NPU | CPU, CUDA, OpenCL, Metal, HIP, NV, QCOM | CPU, CUDA, Metal, WASM | CPU, CUDA, ROCm, Metal, Vulkan, WebGPU, LibTorch | CPU, CUDA, Metal | C, CUDA, OpenCL, Vulkan, WGPU — one small codegen file per backend |
 | **Data parallelism** | DDP/FSDP | data-parallel sharding | — | multi-GPU sharding | multi-GPU via NCCL (tensor parallel) | DDP | — | manual (automatic in the roadmap) |
 
+
 ## Backends
 
 - [x] **C** - C codegen (clang/gcc)
@@ -244,6 +245,12 @@ Zyx is a library, not a workflow: it doesn't prescribe training loops or data pi
 If you'd like to add a new backend to zyx, that would be awesome!
 Please read [ADDING_BACKENDS.md](https://github.com/zk4x/zyx/blob/main/ADDING_BACKENDS.md)
 
+
+## Benchmarks
+
+Benchmarks are here in [BENCHMARKS.md](https://github.com/zk4x/zyx/blob/main/BENCHMARKS.md)
+More will be added later. Feel free to try writing models in zyx and creating a PR with your
+your measured results.
 
 ## Roadmap
 
