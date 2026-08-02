@@ -40,6 +40,17 @@ fn matmul() -> Result<(), ZyxError> {
 }
 
 #[test]
+fn matmul_f32() -> Result<(), ZyxError> {
+    let x = Tensor::from([[2f32, 4., 3.], [1., 5., 1.]]);
+    let y = Tensor::from([[2f32, 4.], [3., 1.], [5., 1.]]);
+    let tape = Tape::new([&x, &y])?;
+    let z = x.dot(y)?;
+    tape.realize([&z])?;
+    assert_eq!(z, [[31f32, 15.], [22., 10.]]);
+    Ok(())
+}
+
+#[test]
 fn softmax() -> Result<(), ZyxError> {
     let x = Tensor::from([2f32, 4., 3.]);
     let tape = Tape::new([&x])?;

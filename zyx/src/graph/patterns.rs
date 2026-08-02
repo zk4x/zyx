@@ -13,6 +13,7 @@
 //! fastest path through extraction.
 
 use crate::{
+    dtype::DType,
     graph::{ClassId, Graph, Node},
     kernel::BOp,
     runtime::ShapeId,
@@ -30,6 +31,10 @@ pub(crate) struct MatMul {
     pub(crate) m: Dim,
     pub(crate) n: Dim,
     pub(crate) k: Dim,
+    /// Accumulate (output) dtype.
+    pub(crate) acc_dtype: DType,
+    /// Operand buffer dtype, shared by `a` and `b`.
+    pub(crate) in_dtype: DType,
 }
 
 impl Graph {
@@ -67,7 +72,12 @@ impl Graph {
             return None;
         }
 
-        Some(MatMul { a, b, out: cid, m, n, k })
+        let in_dtype = self.classes[a].dtype;
+        if self.classes[b].dtype != in_dtype {
+            return None;
+        }
+
+        Some(MatMul { a, b, out: cid, m, n, k, acc_dtype: self.classes[cid].dtype, in_dtype })
     }
 
     /// Finds a `Reduce(Add)` over the single trailing axis of a 3D product.

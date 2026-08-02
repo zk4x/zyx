@@ -217,6 +217,13 @@ impl CblasDevice {
             let Some(mm) = graph.match_matmul_class(cid, shapes) else {
                 continue;
             };
+            // Only f32 sgemm is loaded, so skip matmuls of any other dtype. The
+            // a/b buffers are read as f32 and out is written as f32, so both the
+            // operand and accumulate dtypes must be f32.
+            if mm.in_dtype != DType::F32 || mm.acc_dtype != DType::F32 {
+                continue;
+            }
+            println!("[cblas] matched matmul m={}, n={}, k={}", mm.m, mm.n, mm.k);
             let program_id = self.programs.push(CblasProgram { kernel: CblasKernelId::ZERO, m: mm.m, n: mm.n, k: mm.k });
             let nid = graph.nodes.push(NodeData {
                 node: Node::Kernel {
