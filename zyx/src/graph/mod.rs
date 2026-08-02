@@ -638,7 +638,7 @@ impl Graph {
     /// Only [`Node::Kernel`] and [`Node::ToDevice`] carry real costs (execution time in nanoseconds).
     /// All other node types (Expand, Reshape, Cast, Binary, Unary, etc.) are structural/fusing
     /// artifacts — they represent intermediate graph transformations that must be fused into kernels
-    /// by [`fill_remaining`](super::kernelizer::GraphKernelizer::fill_remaining) before extraction.
+    /// by [`kernelize`](self::kernelizer::Graph::kernelize) before extraction.
     ///
     /// # Invariant
     ///
@@ -647,7 +647,7 @@ impl Graph {
     /// cannot be computed, because non-Kernel/ToDevice nodes have no associated runtime cost.
     ///
     /// Dead graph regions (classes with no kernel path) are harmless as long as they don't appear
-    /// on output computation paths. [`fill_remaining`] is responsible for ensuring every output
+    /// on output computation paths. [`kernelize`](self::kernelizer::Graph::kernelize) is responsible for ensuring every output
     /// class satisfies this invariant by fusing enough nodes into kernels.
     ///
     /// # Panics

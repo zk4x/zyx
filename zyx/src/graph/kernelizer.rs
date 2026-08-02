@@ -15,7 +15,7 @@ impl Graph {
     ///
     /// The zyx graph is very granular — a single matmul produces dozens of structural nodes (Expand,
     /// Reduce, Permute, Cast, etc.). Materializing each as a separate kernel is impossible (e.g.,
-    /// Expand to 2048×2048×2048 would OOM). [`fill_remaining`] uses eager fusion to batch structural
+    /// Expand to 2048×2048×2048 would OOM). [`kernelize`] uses eager fusion to batch structural
     /// nodes into larger kernels, ensuring the [`extract`](Graph::extract) invariant holds:
     ///
     /// > A path composed exclusively of [`Node::Kernel`] and [`Node::ToDevice`] nodes must exist
@@ -31,6 +31,13 @@ impl Graph {
     /// never fuses *into* them, it only loads them (exactly like [`Node::Leaf`]s).
     /// For the whole graph these are the leaf classes; for a subregion (the gap
     /// between two AOT kernels) they are the region's boundary inputs.
+    ///
+    /// # Allowed set
+    ///
+    /// If `Some`, traversal is restricted to classes in `allowed` — classes outside
+    /// it are never fused, even if they feed an output. [`fill_gaps`] uses this to
+    /// kernelize each connected structural region in isolation; `None` allows the
+    /// whole graph (leaf classes are always excluded via `inputs`).
     ///
     /// # Reference Counts (rcs)
     ///
@@ -81,7 +88,7 @@ impl Graph {
             }
             for nid in &self.classes[cid].nodes {
                 // Kernel nodes added by pattern matching (e.g. cblas) are never
-                // consumed here — fill_remaining only processes structural nodes.
+                // consumed here — kernelize only processes structural nodes.
                 if matches!(&self.nodes[*nid].node, Node::Kernel { .. }) {
                     continue;
                 }
