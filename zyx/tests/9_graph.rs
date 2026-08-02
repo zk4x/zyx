@@ -119,7 +119,7 @@ fn causal_self_attention() -> Result<(), ZyxError> {
 #[test]
 fn gather() -> Result<(), ZyxError> {
     let x = Tensor::from([10, 20, 30, 40, 50]);
-    let indices = Tensor::from([0u16, 2, 4, 1]);
+    let indices = Tensor::from([0u32, 2, 4, 1]);
     let tape = Tape::new([&x, &indices])?;
     let gathered = x.gather(0, &indices)?;
     tape.realize([&gathered])?;

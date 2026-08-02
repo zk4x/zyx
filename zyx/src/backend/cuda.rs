@@ -983,8 +983,8 @@ impl CUDADevice {
 
     #[allow(clippy::needless_pass_by_ref_mut)]
     pub fn compile(&mut self, kernel: &Kernel, debug_asm: bool) -> Result<DeviceProgramId, BackendError> {
-        //let (gws, lws, name, ptx) = self.compile_cuda(kernel, debug_asm)?;
-        let (gws, lws, name, ptx) = self.compile_ptx(kernel, debug_asm)?;
+        let (gws, lws, name, ptx) = self.compile_cuda(kernel, debug_asm)?;
+        //let (gws, lws, name, ptx) = self.compile_ptx(kernel, debug_asm)?;
         let (reply, reply_rx) = channel();
         self.tx.send(CUDACommand::Compile { gws, lws, name, ptx, reply }).unwrap();
         reply_rx.recv().unwrap()

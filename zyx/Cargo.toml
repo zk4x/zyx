@@ -23,6 +23,9 @@ include = [
     "tests/6_autograd.rs",
     "tests/7_realize.rs",
     "tests/8_indexing.rs",
+    "tests/9_graph.rs",
+    "tests/10_bf16.rs",
+    "tests/mnist.rs",
     "Cargo.toml",
     "README.md"
 ]

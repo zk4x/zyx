@@ -1,11 +1,11 @@
 // Copyright (C) 2025 zk4x
 // SPDX-License-Identifier: LGPL-3.0-only
 
-use super::{BackendError, Device, DeviceId, DeviceInfo, ErrorStatus, Event, MemoryPool, OpCapability, PoolId};
+use super::{BackendError, Device, DeviceId, DeviceInfo, ErrorStatus, Event, MemoryPool, PoolId};
 use crate::{
     DType,
-    backend::{DeviceProgramId, PoolBufferId},
-    kernel::{Kernel, Op, Scope},
+    backend::{DTypeCapability, DeviceProgramId, PoolBufferId},
+    kernel::{IdxScope, Kernel, MemScope, Op},
     shape::Dim,
     slab::Slab,
 };
@@ -138,24 +138,24 @@ pub(super) fn initialize_device(
     memory_pools.push(pool);
     let limits = device.limits();
     let wgpu_features = wgpu_adapter.features();
-    let supported_dtype_ops = {
-        let mut ops = [OpCapability::all(); DType::N_DTYPES];
+    let dtype_capability = {
+        let mut ops = [DTypeCapability::all(); DType::N_DTYPES];
         // Vulkan driver produces incorrect f64 results on some AMD GPUs (RADV).
         // Users who need reliable f64 should use the Vulkan backend directly.
-        ops[DType::F64 as usize] = OpCapability::none();
+        ops[DType::F64 as usize] = DTypeCapability::none();
         if !wgpu_features.contains(wgpu::Features::SHADER_INT64) {
-            ops[DType::I64 as usize] = OpCapability::none();
-            ops[DType::U64 as usize] = OpCapability::none();
+            ops[DType::I64 as usize] = DTypeCapability::none();
+            ops[DType::U64 as usize] = DTypeCapability::none();
         }
         if !wgpu_features.contains(wgpu::Features::SHADER_F16) {
-            ops[DType::F16 as usize] = OpCapability::none();
-            ops[DType::BF16 as usize] = OpCapability::none();
+            ops[DType::F16 as usize] = DTypeCapability::none();
         }
+        ops[DType::BF16 as usize] = DTypeCapability::none();
         // naga validator does not support 8/16-bit integer types at all
-        ops[DType::U8 as usize] = OpCapability::none();
-        ops[DType::I8 as usize] = OpCapability::none();
-        ops[DType::U16 as usize] = OpCapability::none();
-        ops[DType::I16 as usize] = OpCapability::none();
+        ops[DType::U8 as usize] = DTypeCapability::none();
+        ops[DType::I8 as usize] = DTypeCapability::none();
+        ops[DType::U16 as usize] = DTypeCapability::none();
+        ops[DType::I16 as usize] = DTypeCapability::none();
         ops
     };
     devices.push(Device::WGPU(WGPUDevice {
@@ -175,9 +175,9 @@ pub(super) fn initialize_device(
             max_register_bytes: 512,
             tensor_cores: false,
             warp_size: 32,
-            supported_dtype_ops,
             has_native_exp2: true,
             supported_vec_lens: vec![2, 3, 4],
+            dtype_capability,
         },
         memory_pool_id: PoolId::from(usize::from(memory_pools.len()) - 1),
         programs: Slab::new(),
@@ -402,8 +402,11 @@ impl WGPUDevice {
         let mut op_id = kernel.head;
         while !op_id.is_null() {
             match kernel.ops[op_id].op {
-                crate::kernel::Op::GroupIndex { len, axis } => gws[axis as usize] = len,
-                crate::kernel::Op::LocalIndex { len, axis } => lws[axis as usize] = len,
+                Op::Index { len, axis, scope } => match scope {
+                    IdxScope::Group => gws[axis as usize] = len,
+                    IdxScope::Local => lws[axis as usize] = len,
+                    IdxScope::Warp => todo!(),
+                },
                 _ => {}
             }
             op_id = kernel.next_op(op_id);
@@ -431,7 +434,7 @@ impl WGPUDevice {
         let mut op_id = kernel.head;
         while !op_id.is_null() {
             if let &Op::Define { dtype: _, scope, ro, len: _ } = kernel.at(op_id) {
-                if scope == Scope::Global {
+                if scope == MemScope::Global {
                     arg_ro_flags.push(ro);
                 }
             }
