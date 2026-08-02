@@ -67,7 +67,7 @@ impl ZyxError {
         let location = std::panic::Location::caller();
         Self::GraphTensorNotRealized(
             format!(
-                "tensor {tid} must be realized before loading, at {}:{}:{}",
+                "graph tensor {tid} must be realized before loading, at {}:{}:{}",
                 location.file(),
                 location.line(),
                 location.column()

@@ -76,6 +76,17 @@ impl Graph {
         shapes: &Slab<ShapeId, Vec<Dim>>,
         allowed: Option<&Set<ClassId>>,
     ) {
+        // A class can't be both a boundary input and a region output — that
+        // would make a fused kernel load and store the same class.
+        if cfg!(debug_assertions) {
+            for cid in inputs {
+                debug_assert!(
+                    !outputs.contains(cid),
+                    "class {cid:?} is both a kernelize input and output: inputs={inputs:?} outputs={outputs:?}"
+                );
+            }
+        }
+
         let order = self.topo_sort_classes_without_kernels(inputs, outputs, allowed);
 
         let mut rcs: Map<ClassId, u32> = Map::default();
@@ -108,7 +119,10 @@ impl Graph {
             debug_assert!(!visited.contains_key(&cid), "class {cid:?} already visited");
 
             let nid = self.classes[cid].nodes[0];
-            //println!("cid={} nid={} rc={} shape={:?}, {node:?}", cid.0, nid.0, rcs[&cid], shapes[self.classes[cid].shape]);
+            /*println!(
+                "cid={} nid={} rc={} shape={:?}, {:?}",
+                cid.0, nid.0, rcs[&cid], shapes[self.classes[cid].shape], self.nodes[nid].node
+            );*/
             if inputs.contains(&cid) {
                 // Boundary input: load the class from storage, same as a leaf.
                 let (kid, op_id) = self.new_load_kernel(cid, shapes, *rcs.get(&cid).unwrap());
@@ -283,6 +297,22 @@ impl Graph {
             }
 
             if cfg!(debug_assertions) {
+                for kid in self.jit_kernels.ids() {
+                    let kernel = &self.jit_kernels[kid];
+                    // A kernel must never load a class it also stores — that would
+                    // create a self-referential producer path and break extract.
+                    for load in &kernel.loads {
+                        debug_assert!(
+                            !kernel.stores.contains(load),
+                            "kernel {kid:?} loads and stores class {load:?}: loads={:?} stores={:?}",
+                            kernel.loads,
+                            kernel.stores,
+                        );
+                    }
+                }
+            }
+
+            if cfg!(debug_assertions) {
                 for ek in self.jit_kernels.values() {
                     let mut counts: Map<ClassId, u32> = Map::default();
                     for &ocid in &ek.outputs {
@@ -378,9 +408,11 @@ impl Graph {
         //println!("outputs={:?}", self.ekernels[kid].outputs);
 
         let dtype = self.classes[cid].dtype;
-        self.jit_kernels[kid].kernel.store_contiguous(op_id, dtype);
-        self.jit_kernels[kid].stores.push(cid);
-        visited.remove(&cid);
+        if !self.jit_kernels[kid].loads.contains(&cid) {
+            self.jit_kernels[kid].kernel.store_contiguous(op_id, dtype);
+            self.jit_kernels[kid].stores.push(cid);
+            visited.remove(&cid);
+        }
 
         // Remove all occurences of x
         let outputs = &mut self.jit_kernels[kid].outputs;

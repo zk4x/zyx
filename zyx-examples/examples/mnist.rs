@@ -55,7 +55,7 @@ fn main() -> Result<(), ZyxError> {
     println!("Training...");
     let mut total_ms = 0.0f64;
     let mut count = 0u64;
-    for step in 0..7000usize {
+    for step in 0..200usize {
         let now = Instant::now();
         Tensor::set_training(true);
         let tape = Tape::new(&net)?;
@@ -78,6 +78,8 @@ fn main() -> Result<(), ZyxError> {
             count += 1;
         }
 
+        tape.realize(net.iter().chain(optim.iter()).chain([&loss]))?;
+
         if step.is_multiple_of(5) && step > 0 {
             println!(
                 "step {}, loss {:.6}, step_time {:.1}ms",
@@ -86,8 +88,6 @@ fn main() -> Result<(), ZyxError> {
                 elapsed_ms
             );
         }
-
-        tape.realize(net.iter().chain(optim.iter()))?;
     }
 
     let avg_ms = total_ms / count as f64;
