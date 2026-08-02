@@ -983,8 +983,8 @@ impl CUDADevice {
 
     #[allow(clippy::needless_pass_by_ref_mut)]
     pub fn compile(&mut self, kernel: &Kernel, debug_asm: bool) -> Result<DeviceProgramId, BackendError> {
-        //let (gws, lws, name, ptx) = self.compile_cuda(kernel, debug_asm)?;
-        let (gws, lws, name, ptx) = self.compile_ptx(kernel, debug_asm)?;
+        let (gws, lws, name, ptx) = self.compile_cuda(kernel, debug_asm)?;
+        //let (gws, lws, name, ptx) = self.compile_ptx(kernel, debug_asm)?;
         let (reply, reply_rx) = channel();
         self.tx.send(CUDACommand::Compile { gws, lws, name, ptx, reply }).unwrap();
         reply_rx.recv().unwrap()
@@ -1367,8 +1367,7 @@ unsafe fn build_cudnn_op(
     descrs: &mut Vec<cudnnBackendDescriptor_t>,
 ) -> Result<cudnnBackendDescriptor_t, BackendError> {
     unsafe {
-        let uid_of =
-            |uid: &i64| tensors.iter().position(|t| &t.uid == uid).map(|i| tensor_descs[i]).unwrap_or(ptr::null_mut());
+        let uid_of = |uid: &i64| tensors.iter().position(|t| &t.uid == uid).map(|i| tensor_descs[i]).unwrap_or(ptr::null_mut());
         match op {
             CudnnOp::Matmul { a, b, c, compute_dtype } => {
                 let a_desc = uid_of(a);
@@ -1425,7 +1424,10 @@ unsafe fn build_cudnn_op(
                     ) != CUDNN_STATUS_SUCCESS
                     || (cudnn.backend_finalize)(op_desc) != CUDNN_STATUS_SUCCESS
                 {
-                    return Err(BackendError { status: ErrorStatus::KernelCompilation, context: "cuDNN matmul operation".into() });
+                    return Err(BackendError {
+                        status: ErrorStatus::KernelCompilation,
+                        context: "cuDNN matmul operation".into(),
+                    });
                 }
                 descrs.push(op_desc);
                 Ok(op_desc)

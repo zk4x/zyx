@@ -37,11 +37,13 @@
 #![allow(clippy::derived_hash_with_manual_eq)]
 
 use crate::backend::{AutotuneConfig, Device, DeviceInfo, DeviceProgramId, MemoryPool, PoolBufferId};
+use crate::dtype::DType;
 use crate::error::{BackendError, ErrorStatus};
 use crate::hashers::AHasher;
 use crate::kernel::cost::Cost;
 use crate::kernel::{IdxScope, Kernel, MemScope, Op, OpId};
 use crate::rng::Rng;
+use crate::scalar::{bf16, f16};
 use crate::shape::Dim;
 use crate::slab::SlabId;
 use crate::{DebugMask, Set};
@@ -365,14 +367,24 @@ impl Kernel {
                         debug_assert!(ro);
                         // Use existing buffer for loads
                     } else {
-                        let bytes = (dtype.bit_size() as Dim * len) / 8;
                         // One more for trash element
                         let bytes_alloc = (dtype.bit_size() as Dim * (len + 1)) / 8;
                         let (buf, ev) = memory_pool.allocate(bytes_alloc)?;
                         store_bufs.push(buf);
-                        // Set inputs to something reasonable instead of alloc garbage
+                        // Set inputs to something reasonable instead of alloc garbage:
+                        // fill with the value 1 (safe as an index), not byte-wise 42
                         if ro {
-                            let fill = vec![42u8; bytes as usize];
+                            let one: Vec<u8> = match dtype {
+                                DType::BF16 => bf16::ONE.to_le_bytes().to_vec(),
+                                DType::F16 => f16::ONE.to_le_bytes().to_vec(),
+                                DType::F32 => 1f32.to_le_bytes().to_vec(),
+                                DType::F64 => 1f64.to_le_bytes().to_vec(),
+                                DType::U8 | DType::I8 | DType::Bool => vec![1],
+                                DType::U16 | DType::I16 => 1u16.to_le_bytes().to_vec(),
+                                DType::U32 | DType::I32 => 1u32.to_le_bytes().to_vec(),
+                                DType::U64 | DType::I64 => 1u64.to_le_bytes().to_vec(),
+                            };
+                            let fill = one.repeat(len as usize);
                             let ev = memory_pool.host_to_pool(&fill, buf, vec![ev])?;
                             events.push(ev);
                         }

@@ -573,8 +573,11 @@ impl Kernel {
         //if params.is_empty() { return false; }
         //println!("Found reduce at {params:?}");
         // If there is a load (non constant reduce) or multiple reduces, return true
+        let mut seen: Set<OpId> = Set::default();
         while let Some(param) = params.pop() {
-            //println!("param={:?}", self.ops[param].op);
+            if !seen.insert(param) {
+                continue;
+            }
             if matches!(self.ops[param].op, Op::LoadView(_) | Op::Reduce { .. }) {
                 return true;
             }
@@ -586,13 +589,22 @@ impl Kernel {
     #[allow(unused)]
     pub(crate) fn is_preceded_by_compute(&self, x: OpId) -> bool {
         let mut params = vec![x];
+        let mut seen: Set<OpId> = Set::default();
+        let (mut has_compute, mut has_load) = (false, false);
         while let Some(param) = params.pop() {
+            if !seen.insert(param) {
+                continue;
+            }
             match &self.ops[param].op {
-                Op::Binary { .. } | Op::Unary { .. } | Op::Reduce { .. } => return true,
-                Op::LoadView(_) | Op::Const(_) => {}
+                Op::Binary { .. } | Op::Unary { .. } | Op::Reduce { .. } => {
+                    has_compute = true;
+                    params.extend(self.ops[param].op.parameters());
+                }
+                Op::LoadView(_) | Op::Load { .. } => has_load = true,
+                Op::ConstView(_) | Op::Const(_) => {}
                 _ => params.extend(self.ops[param].op.parameters()),
             }
         }
-        false
+        has_compute && has_load
     }
 }

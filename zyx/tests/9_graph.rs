@@ -113,6 +113,20 @@ fn causal_self_attention() -> Result<(), ZyxError> {
 // Reproducer for bug in promote_to_graph: promoting an eager tensor to Graph
 // leaves a stale store entry in the original kernel. When gradient needs the
 // value, materialize_kernel finds the store target in Graph state → panic.
+// Gather through the full pipeline (kernelizer + fold_loops). The kernelizer
+// fuses the arange produced by one_hot_along_dim into constants, making the
+// mask's loop operand analyzable so the gather loop can fold to a direct gather.
+#[test]
+fn gather() -> Result<(), ZyxError> {
+    let x = Tensor::from([10, 20, 30, 40, 50]);
+    let indices = Tensor::from([0u16, 2, 4, 1]);
+    let tape = Tape::new([&x, &indices])?;
+    let gathered = x.gather(0, &indices)?;
+    tape.realize([&gathered])?;
+    assert_eq!(gathered, [10, 30, 50, 20]);
+    Ok(())
+}
+
 #[test]
 fn promote_and_gradient() -> Result<(), ZyxError> {
     let gt = Tensor::randn([2, 4, 1, 1], DType::F32)?;

@@ -666,6 +666,11 @@ impl Runtime {
     pub fn new_host_tensor<T: Scalar>(&mut self, shape: Vec<Dim>, data: Box<[T]>) -> Result<TensorId, ZyxError> {
         #[cfg(feature = "debug_tensor_op")]
         println!("runtime::new_host_tensor(shape={shape:?})");
+
+        if data.len() == 1 && shape.len() <= 1 {
+            return Ok(self.new_constant_tensor(Constant::new(data[0])));
+        }
+
         let dtype = T::dtype();
 
         self.initialize_devices()?;
