@@ -696,7 +696,7 @@ pub(super) fn initialize_device(
                                 }));
                                 continue;
                             };
-                            match unsafe { build_cudnn_matmul_plan(cudnn, &graph, cuMemAlloc) } {
+                            match unsafe { build_cudnn_plan(cudnn, &graph, cuMemAlloc) } {
                                 Ok(plan) => {
                                     let program_id = programs.push(CUDAProgram::Cudnn { plan });
                                     _ = reply.send(Ok(program_id));
@@ -1126,12 +1126,13 @@ fn cudnn_data_type(dtype: DType) -> Option<c_int> {
     })
 }
 
-/// JIT-compiles a cuDNN execution plan for a matmul graph (`c = a @ b`). The
-/// operation graph is built from the generic [`CudnnGraph`], engine heuristics
-/// pick a kernel, and the execution plan is finalized with a fixed shape.
-/// Returns the compiled plan with its workspace allocated.
+/// JIT-compiles a cuDNN execution plan for a generic [`CudnnGraph`] subgraph:
+/// tensor descriptors are built for every tensor, each op is expanded into its
+/// cuDNN op descriptor (via [`build_cudnn_op`]), engine heuristics pick a
+/// kernel, and the execution plan is finalized with fixed shapes. Returns the
+/// compiled plan with its workspace allocated.
 #[allow(clippy::too_many_lines)]
-unsafe fn build_cudnn_matmul_plan(
+unsafe fn build_cudnn_plan(
     cudnn: &CudnnLib,
     graph: &CudnnGraph,
     cuMemAlloc: unsafe extern "C" fn(*mut CUdeviceptr, usize) -> CUDAStatus,
@@ -1205,73 +1206,17 @@ unsafe fn build_cudnn_matmul_plan(
 
         let mut op_descs: Vec<cudnnBackendDescriptor_t> = Vec::new();
         for op in &graph.ops {
-            let CudnnOp::Matmul { a, b, c, compute_dtype } = op;
-            let uid_of =
-                |uid: &i64| graph.tensors.iter().position(|t| &t.uid == uid).map(|i| tensor_descs[i]).unwrap_or(ptr::null_mut());
-            let a_desc = uid_of(a);
-            let b_desc = uid_of(b);
-            let c_desc = uid_of(c);
-            let compute_dtype = cudnn_data_type(*compute_dtype).unwrap_or(CUDNN_DATA_FLOAT);
-
-            // Matmul config descriptor: compute type.
-            let mut mm_cfg = ptr::null_mut();
-            if (cudnn.backend_create_descriptor)(CUDNN_BACKEND_MATMUL_DESCRIPTOR, &raw mut mm_cfg) != CUDNN_STATUS_SUCCESS
-                || (cudnn.backend_set_attribute)(
-                    mm_cfg,
-                    CUDNN_ATTR_MATMUL_COMP_TYPE,
-                    CUDNN_TYPE_DATA_TYPE,
-                    1,
-                    (&raw const compute_dtype).cast(),
-                ) != CUDNN_STATUS_SUCCESS
-                || (cudnn.backend_finalize)(mm_cfg) != CUDNN_STATUS_SUCCESS
-            {
-                for d in descrs.iter().rev() {
-                    let _ = (cudnn.backend_destroy_descriptor)(*d);
+            match unsafe { build_cudnn_op(cudnn, op, &tensor_descs, &graph.tensors, &mut descrs) } {
+                Ok(op_desc) => {
+                    op_descs.push(op_desc);
                 }
-                return Err(BackendError { status: ErrorStatus::KernelCompilation, context: "cuDNN matmul config".into() });
-            }
-            descrs.push(mm_cfg);
-
-            let mut op_desc = ptr::null_mut();
-            if (cudnn.backend_create_descriptor)(CUDNN_BACKEND_OPERATION_MATMUL_DESCRIPTOR, &raw mut op_desc)
-                != CUDNN_STATUS_SUCCESS
-                || (cudnn.backend_set_attribute)(
-                    op_desc,
-                    CUDNN_ATTR_OPERATION_MATMUL_ADESC,
-                    CUDNN_TYPE_BACKEND_DESCRIPTOR,
-                    1,
-                    (&raw const a_desc).cast(),
-                ) != CUDNN_STATUS_SUCCESS
-                || (cudnn.backend_set_attribute)(
-                    op_desc,
-                    CUDNN_ATTR_OPERATION_MATMUL_BDESC,
-                    CUDNN_TYPE_BACKEND_DESCRIPTOR,
-                    1,
-                    (&raw const b_desc).cast(),
-                ) != CUDNN_STATUS_SUCCESS
-                || (cudnn.backend_set_attribute)(
-                    op_desc,
-                    CUDNN_ATTR_OPERATION_MATMUL_CDESC,
-                    CUDNN_TYPE_BACKEND_DESCRIPTOR,
-                    1,
-                    (&raw const c_desc).cast(),
-                ) != CUDNN_STATUS_SUCCESS
-                || (cudnn.backend_set_attribute)(
-                    op_desc,
-                    CUDNN_ATTR_OPERATION_MATMUL_DESC,
-                    CUDNN_TYPE_BACKEND_DESCRIPTOR,
-                    1,
-                    (&raw const mm_cfg).cast(),
-                ) != CUDNN_STATUS_SUCCESS
-                || (cudnn.backend_finalize)(op_desc) != CUDNN_STATUS_SUCCESS
-            {
-                for d in descrs.iter().rev() {
-                    let _ = (cudnn.backend_destroy_descriptor)(*d);
+                Err(e) => {
+                    for d in descrs.iter().rev() {
+                        let _ = (cudnn.backend_destroy_descriptor)(*d);
+                    }
+                    return Err(e);
                 }
-                return Err(BackendError { status: ErrorStatus::KernelCompilation, context: "cuDNN matmul operation".into() });
             }
-            op_descs.push(op_desc);
-            descrs.push(op_desc);
         }
 
         // Operation graph.
@@ -1404,6 +1349,84 @@ unsafe fn build_cudnn_matmul_plan(
         descrs.push(plan);
 
         Ok(CudnnPlan { plan, arg_uids: graph.arg_uids.clone(), workspace, workspace_bytes: workspace_bytes as Dim, descrs })
+    }
+}
+
+/// Builds the cuDNN op descriptor for a single [`CudnnOp`]. All descriptors it
+/// creates are appended to `descrs` so the caller can clean them up on error.
+/// Returns the finalized op descriptor.
+unsafe fn build_cudnn_op(
+    cudnn: &CudnnLib,
+    op: &CudnnOp,
+    tensor_descs: &[cudnnBackendDescriptor_t],
+    tensors: &[CudnnTensor],
+    descrs: &mut Vec<cudnnBackendDescriptor_t>,
+) -> Result<cudnnBackendDescriptor_t, BackendError> {
+    unsafe {
+        let uid_of =
+            |uid: &i64| tensors.iter().position(|t| &t.uid == uid).map(|i| tensor_descs[i]).unwrap_or(ptr::null_mut());
+        match op {
+            CudnnOp::Matmul { a, b, c, compute_dtype } => {
+                let a_desc = uid_of(a);
+                let b_desc = uid_of(b);
+                let c_desc = uid_of(c);
+                let compute_dtype = cudnn_data_type(*compute_dtype).unwrap_or(CUDNN_DATA_FLOAT);
+
+                // Matmul config descriptor: compute type.
+                let mut mm_cfg = ptr::null_mut();
+                if (cudnn.backend_create_descriptor)(CUDNN_BACKEND_MATMUL_DESCRIPTOR, &raw mut mm_cfg) != CUDNN_STATUS_SUCCESS
+                    || (cudnn.backend_set_attribute)(
+                        mm_cfg,
+                        CUDNN_ATTR_MATMUL_COMP_TYPE,
+                        CUDNN_TYPE_DATA_TYPE,
+                        1,
+                        (&raw const compute_dtype).cast(),
+                    ) != CUDNN_STATUS_SUCCESS
+                    || (cudnn.backend_finalize)(mm_cfg) != CUDNN_STATUS_SUCCESS
+                {
+                    return Err(BackendError { status: ErrorStatus::KernelCompilation, context: "cuDNN matmul config".into() });
+                }
+                descrs.push(mm_cfg);
+
+                let mut op_desc = ptr::null_mut();
+                if (cudnn.backend_create_descriptor)(CUDNN_BACKEND_OPERATION_MATMUL_DESCRIPTOR, &raw mut op_desc)
+                    != CUDNN_STATUS_SUCCESS
+                    || (cudnn.backend_set_attribute)(
+                        op_desc,
+                        CUDNN_ATTR_OPERATION_MATMUL_ADESC,
+                        CUDNN_TYPE_BACKEND_DESCRIPTOR,
+                        1,
+                        (&raw const a_desc).cast(),
+                    ) != CUDNN_STATUS_SUCCESS
+                    || (cudnn.backend_set_attribute)(
+                        op_desc,
+                        CUDNN_ATTR_OPERATION_MATMUL_BDESC,
+                        CUDNN_TYPE_BACKEND_DESCRIPTOR,
+                        1,
+                        (&raw const b_desc).cast(),
+                    ) != CUDNN_STATUS_SUCCESS
+                    || (cudnn.backend_set_attribute)(
+                        op_desc,
+                        CUDNN_ATTR_OPERATION_MATMUL_CDESC,
+                        CUDNN_TYPE_BACKEND_DESCRIPTOR,
+                        1,
+                        (&raw const c_desc).cast(),
+                    ) != CUDNN_STATUS_SUCCESS
+                    || (cudnn.backend_set_attribute)(
+                        op_desc,
+                        CUDNN_ATTR_OPERATION_MATMUL_DESC,
+                        CUDNN_TYPE_BACKEND_DESCRIPTOR,
+                        1,
+                        (&raw const mm_cfg).cast(),
+                    ) != CUDNN_STATUS_SUCCESS
+                    || (cudnn.backend_finalize)(op_desc) != CUDNN_STATUS_SUCCESS
+                {
+                    return Err(BackendError { status: ErrorStatus::KernelCompilation, context: "cuDNN matmul operation".into() });
+                }
+                descrs.push(op_desc);
+                Ok(op_desc)
+            }
+        }
     }
 }
 
