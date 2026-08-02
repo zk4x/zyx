@@ -58,30 +58,25 @@ impl Graph {
         })
     }
 
-    /// Unwraps `Expand -> Reshape`, returning the reshaped 2D operand class and
-    /// the 3D reshape shape.
+    /// Finds the source of an `Expand` and its class shape.
     ///
-    /// The reshape may have been folded into the expand source itself (e.g. an
-    /// eager tensor promoted to a graph leaf already at the reshaped shape), in
-    /// which case there is no `Reshape` node and the source class is returned
-    /// as the operand. The 3D shape is always taken from the expand source's
-    /// class shape, so matching does not depend on how the shape was produced.
-    fn reshape_operand(&self, cid: ClassId, shapes: &Slab<ShapeId, Vec<Dim>>) -> Option<(ClassId, Vec<Dim>)> {
-        let r = self.classes[cid].nodes.iter().find_map(|&nid| match &self.nodes[nid].node {
+    /// The shape is read from the source class itself, so matching does not
+    /// depend on how the shape was produced (e.g. a `Reshape` in the canonical
+    /// matmul form, or an eager tensor already at the broadcast shape).
+    fn expand_src(&self, cid: ClassId, shapes: &Slab<ShapeId, Vec<Dim>>) -> Option<(ClassId, Vec<Dim>)> {
+        let x = self.classes[cid].nodes.iter().find_map(|&nid| match &self.nodes[nid].node {
             Node::Expand { x, .. } => Some(*x),
             _ => None,
         })?;
-        let r_shape = shapes[self.classes[r].shape].clone();
-        let operand = self.classes[r].nodes.iter().find_map(|&nid| match &self.nodes[nid].node {
-            Node::Reshape { x, .. } => Some(*x),
-            _ => None,
-        });
-        Some((operand.unwrap_or(r), r_shape))
+        Some((x, shapes[self.classes[x].shape].clone()))
     }
 
-    /// Finds the source of a 2D `Permute [1, 0]` (a `[n, k]` transposed from `[k, n]`).
+    /// Finds the source of a 2D `Permute [1, 0]` (a `[n, k]` transposed from
+    /// `[k, n]`), looking through shape-only wrappers such as the `Reshape` to
+    /// `[1, n, k]` in the broadcast matmul form.
     fn transpose_src(&self, cid: ClassId) -> Option<ClassId> {
         self.classes[cid].nodes.iter().find_map(|&nid| match &self.nodes[nid].node {
+            Node::Reshape { x, .. } => self.transpose_src(*x),
             Node::Permute { x, axes } if axes.len() == 2 && axes[0] == 1 && axes[1] == 0 => Some(*x),
             _ => None,
         })

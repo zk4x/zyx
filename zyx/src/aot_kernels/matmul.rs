@@ -32,34 +32,33 @@ impl Graph {
     /// b [k, n] ─Permute [n, k]─Reshape [1, n, k]─▶ Expand ──▶ Mul [m, n, k] ─Cast─▶ Reduce(Add, last) ─▶ [m, n]
     /// ```
     ///
-    /// The matched operands are the original `a` and `b` classes (the reshape
-    /// input and the transpose source respectively), so a backend kernel can
-    /// consume them directly without any transposition. When the reshape was
-    /// folded into the `a` operand class itself (an eager tensor promoted to a
-    /// leaf at the reshaped shape), that class is returned as `a`.
-    pub(crate) fn match_matmul_class(&self, cid: ClassId, shapes: &Slab<ShapeId, Vec<Dim>>) -> Option<MatMul> {
+    /// The matched operands are the original `a` and `b` classes, consumed
+    /// directly by the backend kernel without any transposition:
+    ///
+    /// - `a` is the expand source itself — `[m, 1, k]` is the same row-major
+    ///   layout as `[m, k]`, whether the reshape is explicit or was folded into
+    ///   a leaf at the broadcast shape.
+    /// - `b` is found by looking through the expand source's `Reshape` for the
+    ///   `Permute [1, 0]` and returning its `[k, n]` source.
+    pub(crate) fn match_matmul(&self, cid: ClassId, shapes: &Slab<ShapeId, Vec<Dim>>) -> Option<MatMul> {
         let out_shape = &shapes[self.classes[cid].shape];
         if out_shape.len() != 2 {
             return None;
         }
         let [m, n] = [out_shape[0], out_shape[1]];
 
-        let (prod_cid, k) = self.reduce_add_last(cid, shapes)?;
-        let (ea, eb) = self.mul_of(prod_cid)?;
+        let (prod, k) = self.reduce_add_last(cid, shapes)?;
+        let (ea, eb) = self.mul_of(prod)?;
 
-        let (a, a3) = self.reshape_operand(ea, shapes)?;
-        let (bt, b3) = self.reshape_operand(eb, shapes)?;
+        let (a, a3) = self.expand_src(ea, shapes)?;
+        let (bt, b3) = self.expand_src(eb, shapes)?;
 
         if a3 != [m, 1, k] || b3 != [1, n, k] {
             return None;
         }
 
         let b = self.transpose_src(bt)?;
-        // The operand is `[m, k]` data. When the reshape was folded into the
-        // operand class itself it appears as `[m, 1, k]`, which is the same
-        // row-major layout as `[m, k]` (the singleton dim adds no stride).
-        let a_shape = &shapes[self.classes[a].shape];
-        if (*a_shape != [m, k] && *a_shape != [m, 1, k]) || shapes[self.classes[b].shape] != [k, n] {
+        if shapes[self.classes[b].shape] != [k, n] {
             return None;
         }
 
@@ -123,7 +122,7 @@ mod tests {
     fn matches_matmul() {
         let (graph, shapes, outputs) = matmul_graph(2, 3, 4);
         let out = outputs.iter().next().copied().unwrap();
-        let mm = graph.match_matmul_class(out, &shapes).unwrap();
+        let mm = graph.match_matmul(out, &shapes).unwrap();
         assert_eq!(mm.m, 2);
         assert_eq!(mm.n, 3);
         assert_eq!(mm.k, 4);
@@ -138,7 +137,7 @@ mod tests {
             Node::Reduce { x: ClassId::from(6), bop: BOp::Add, axes: vec![0].into_boxed_slice() },
             vec![3, 4],
         );
-        assert!(graph.match_matmul_class(out, &shapes).is_none());
+        assert!(graph.match_matmul(out, &shapes).is_none());
     }
 
     /// Matches even when the `a` operand's reshape is folded into the leaf
@@ -159,7 +158,7 @@ mod tests {
         let cast = class(&mut graph, &mut shapes, Node::Cast { x: mul, dtype: DType::F32 }, vec![m, n, k]);
         let out =
             class(&mut graph, &mut shapes, Node::Reduce { x: cast, bop: BOp::Add, axes: vec![2].into_boxed_slice() }, vec![m, n]);
-        let mm = graph.match_matmul_class(out, &shapes).unwrap();
+        let mm = graph.match_matmul(out, &shapes).unwrap();
         assert_eq!(mm.a, folded_a);
         assert_eq!(mm.m, m);
         assert_eq!(mm.n, n);

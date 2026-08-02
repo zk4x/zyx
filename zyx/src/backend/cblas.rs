@@ -214,7 +214,7 @@ impl CblasDevice {
     pub fn match_graph(&mut self, graph: &mut Graph, outputs: &BTreeSet<ClassId>, shapes: &Slab<ShapeId, Vec<Dim>>) {
         let order = graph.topo_sort_classes_without_kernels(&Set::default(), outputs, None);
         for &cid in &order {
-            let Some(mm) = graph.match_matmul_class(cid, shapes) else {
+            let Some(mm) = graph.match_matmul(cid, shapes) else {
                 continue;
             };
             // Only f32 sgemm is loaded, so skip matmuls of any other dtype. The
