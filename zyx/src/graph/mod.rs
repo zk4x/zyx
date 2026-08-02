@@ -802,4 +802,61 @@ impl Runtime {
 
         Ok(())
     }
+
+    /// Compiles the graph into an [`ExecPlan`]: pattern-matches AOT kernels,
+    /// kernelizes the remaining structural nodes, autotunes the fused kernels,
+    /// extracts the cheapest kernel path, and returns the resulting plan.
+    pub(crate) fn compile_graph(&mut self, graph_id: GraphId, output_set: &BTreeSet<ClassId>) -> Result<ExecPlan, ZyxError> {
+        debug_assert!(self.graphs.contains_key(graph_id));
+        self.debug_assert_pre_realize(graph_id);
+
+        for cid in self.graphs[graph_id].classes.ids() {
+            let has_leaf = self.graphs[graph_id].classes[cid]
+                .nodes
+                .iter()
+                .any(|&nid| matches!(&self.graphs[graph_id].nodes[nid].node, Node::Leaf { .. }));
+            if has_leaf {
+                let &tid = self.graphs[graph_id].leaf_map.get(&cid).expect("class {cid:?} has Leaf node but not in leaf_map");
+                assert!(self.buffer_map.contains_key(&tid), "leaf class {cid:?} tid {tid:?} not in buffer_map");
+            } else {
+                assert!(!self.graphs[graph_id].leaf_map.contains_key(&cid), "class {cid:?} has no Leaf node but is in leaf_map");
+            }
+        }
+
+        // SAFETY: graph and shapes are separate fields of Runtime, no aliasing, rust is stupid
+        let shapes_ptr: *const Slab<ShapeId, Vec<Dim>> = &self.shapes;
+
+        // Pattern match specialized AOT kernels (e.g. matmul -> cblas) so they can
+        // compete with the fused zyx kernels in extraction.
+        // SAFETY: devices, graphs and shapes are separate fields of Runtime, no aliasing, rust is stupid
+        let dev_ids: Vec<DeviceId> = self.devices.ids().collect();
+        let graph_ptr: *mut Graph = &mut self.graphs[graph_id];
+        for dev_id in dev_ids {
+            self.devices[dev_id].match_graph(unsafe { &mut *graph_ptr }, output_set, unsafe { &*shapes_ptr });
+        }
+
+        let inputs: Set<ClassId> = self.graphs[graph_id].leaf_classes.iter().copied().collect();
+        self.graphs[graph_id].kernelize(&inputs, output_set, unsafe { &*shapes_ptr });
+
+        // Autotunes custom zyx kernels for all devices and adds kernel nodes for all of them
+        self.autotune_graph_ekernels(graph_id)?;
+
+        // After all kernels nodes are added, this adds movement ops so extract can pick fastest path
+        let devices_ptr: *const Slab<DeviceId, Device> = &self.devices;
+        let buffer_map_ptr: *const Map<TensorId, BufferId> = &self.buffer_map;
+        self.graphs[graph_id].add_memory_ops(unsafe { &*devices_ptr }, unsafe { &*buffer_map_ptr });
+
+        if self.debug.egraph() {
+            self.graphs[graph_id].debug_print(&self.shapes);
+        }
+
+        let nodes = self.graphs[graph_id].extract(output_set);
+
+        let plan = ExecPlan::new(&self.graphs[graph_id], &nodes, output_set, &self.devices, &self.shapes);
+        if self.debug.egraph() {
+            plan.debug();
+        }
+
+        Ok(plan)
+    }
 }

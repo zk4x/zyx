@@ -49,14 +49,13 @@
 use std::collections::BTreeSet;
 
 use crate::{
-    DType, Map, RT, Set, Tensor, ZyxError,
-    backend::{BufferId, Device},
+    DType, Map, RT, Tensor, ZyxError,
+    backend::BufferId,
     graph::plan::drain_events_for_buf,
-    graph::{ClassId, ExecPlan, Graph, GraphId, Node},
-    kernel::{DeviceId, Op},
-    runtime::ShapeId,
+    graph::{ClassId, Graph, GraphId},
+    kernel::Op,
     shape::Dim,
-    slab::{Slab, SlabId},
+    slab::SlabId,
     tensor::TensorId,
     view::View,
 };
@@ -187,55 +186,7 @@ impl Tape {
             return Ok(());
         }
 
-        for cid in rt.graphs[graph_id].classes.ids() {
-            let has_leaf = rt.graphs[graph_id].classes[cid]
-                .nodes
-                .iter()
-                .any(|&nid| matches!(&rt.graphs[graph_id].nodes[nid].node, Node::Leaf { .. }));
-            if has_leaf {
-                let &tid = rt.graphs[graph_id].leaf_map.get(&cid).expect("class {cid:?} has Leaf node but not in leaf_map");
-                assert!(rt.buffer_map.contains_key(&tid), "leaf class {cid:?} tid {tid:?} not in buffer_map");
-            } else {
-                assert!(!rt.graphs[graph_id].leaf_map.contains_key(&cid), "class {cid:?} has no Leaf node but is in leaf_map");
-            }
-        }
-
-        // Fills missing places with zyx custom kernels
-        // SAFETY: graph and shapes are separate fields of Runtime, no aliasing, rust is stupid
-        let shapes_ptr: *const Slab<ShapeId, Vec<Dim>> = &rt.shapes;
-
-        // Pattern match specialized AOT kernels (e.g. matmul -> cblas) so they can
-        // compete with the fused zyx kernels in extraction.
-        // SAFETY: devices, graphs and shapes are separate fields of Runtime, no aliasing, rust is stupid
-        let dev_ids: Vec<DeviceId> = rt.devices.ids().collect();
-        let graph_ptr: *mut Graph = &mut rt.graphs[graph_id];
-        for dev_id in dev_ids {
-            rt.devices[dev_id].match_graph(unsafe { &mut *graph_ptr }, &output_set, unsafe { &*shapes_ptr });
-        }
-
-        // TODO debug assert that all leafs are realized
-        //let realized_nodes: Set<ClassId> = rt.graphs[graph_id].leaf_map.iter().filter(|(_, tid)| rt.buffer_map.contains_key(tid)).map(|(cid, _)| *cid).collect();
-        let inputs: Set<ClassId> = rt.graphs[graph_id].leaf_classes.iter().copied().collect();
-        rt.graphs[graph_id].kernelize(&inputs, &output_set, unsafe { &*shapes_ptr });
-
-        // Autotunes custom zyx kernels for all devices and adds kernel nodes for all of them
-        rt.autotune_graph_ekernels(graph_id)?;
-
-        // After all kernels nodes are added, this adds movement ops so extract can pick fastest path
-        let devices_ptr: *const Slab<DeviceId, Device> = &rt.devices;
-        let buffer_map_ptr: *const Map<TensorId, BufferId> = &rt.buffer_map;
-        rt.graphs[graph_id].add_memory_ops(unsafe { &*devices_ptr }, unsafe { &*buffer_map_ptr });
-
-        if rt.debug.egraph() {
-            rt.graphs[graph_id].debug_print(&rt.shapes);
-        }
-
-        let nodes = rt.graphs[graph_id].extract(&output_set);
-
-        let plan = ExecPlan::new(&rt.graphs[graph_id], &nodes, &output_set, &rt.devices, &rt.shapes);
-        if rt.debug.egraph() {
-            plan.debug();
-        }
+        let plan = rt.compile_graph(graph_id, &output_set)?;
 
         let mut class_buf: Map<ClassId, BufferId> = Map::default();
         for &cid in &plan.leaf_classes {
@@ -336,49 +287,7 @@ impl Tape {
             return Ok(FrozenTape { cache_key, outputs });
         }
 
-        // TODO pattern match cublas, cblas, etc. kernels
-
-        for cid in rt.graphs[graph_id].classes.ids() {
-            let has_leaf = rt.graphs[graph_id].classes[cid]
-                .nodes
-                .iter()
-                .any(|&nid| matches!(&rt.graphs[graph_id].nodes[nid].node, Node::Leaf { .. }));
-            if has_leaf {
-                let &tid = rt.graphs[graph_id].leaf_map.get(&cid).expect("class {cid:?} has Leaf node but not in leaf_map");
-                assert!(rt.buffer_map.contains_key(&tid), "leaf class {cid:?} tid {tid:?} not in buffer_map");
-            } else {
-                assert!(!rt.graphs[graph_id].leaf_map.contains_key(&cid), "class {cid:?} has no Leaf node but is in leaf_map");
-            }
-        }
-
-        // Fills missing places with zyx custom kernels
-        // SAFETY: graph and shapes are separate fields of Runtime, no aliasing, rust is stupid
-        let shapes_ptr: *const Slab<ShapeId, Vec<Dim>> = &rt.shapes;
-
-        // TODO debug assert that all leafs are realized
-        //let realized_nodes: Set<ClassId> = rt.graphs[graph_id].leaf_map.iter().filter(|(_, tid)| rt.buffer_map.contains_key(tid)).map(|(cid, _)| *cid).collect();
-        let inputs: Set<ClassId> = rt.graphs[graph_id].leaf_classes.iter().copied().collect();
-        rt.graphs[graph_id].kernelize(&inputs, &output_set, unsafe { &*shapes_ptr });
-
-        // Autotunes custom zyx kernels for all devices and adds kernel nodes for all of them
-        rt.autotune_graph_ekernels(graph_id)?;
-
-        // After all kernels nodes are added, this adds movement ops so extract can pick fastest path
-        let devices_ptr: *const Slab<DeviceId, Device> = &rt.devices;
-        let buffer_map_ptr: *const Map<TensorId, BufferId> = &rt.buffer_map;
-        rt.graphs[graph_id].add_memory_ops(unsafe { &*devices_ptr }, unsafe { &*buffer_map_ptr });
-
-        if rt.debug.egraph() {
-            rt.graphs[graph_id].debug_print(&rt.shapes);
-        }
-
-        let nodes = rt.graphs[graph_id].extract(&output_set);
-
-        let plan = ExecPlan::new(&rt.graphs[graph_id], &nodes, &output_set, &rt.devices, &rt.shapes);
-        if rt.debug.egraph() {
-            plan.debug();
-        }
-
+        let plan = rt.compile_graph(graph_id, &output_set)?;
         rt.plan_cache.insert(cache_key, plan);
 
         return Ok(FrozenTape { cache_key, outputs });
