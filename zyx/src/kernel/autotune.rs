@@ -418,19 +418,19 @@ impl Kernel {
             kernel.tenstorrent_tile();
         }*/
 
-        kernel.opt_tenstorrent_tile();
+        //kernel.opt_tenstorrent_tile();
 
         /*kernel.vectorize_loads(&[32]);
         kernel.vectorize_stores(&[32]);
         kernel.vectorize_ops_backward(&[32]);
         kernel.vectorize_ops_forward(&[32]);*/
 
-        kernel.run_always_on_optimizations();
+        /*kernel.run_always_on_optimizations();
         kernel.run_always_on_optimizations();
         kernel.fuse_mad();
         kernel.run_always_on_optimizations();
         kernel.run_always_on_optimizations();
-        kernel.debug();
+        kernel.debug();*/
 
         let args = kernel.alloc_buffers(memory_pool, None)?;
         let (program_id, timing) =

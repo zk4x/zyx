@@ -319,7 +319,18 @@ impl Kernel {
 
     /// Check if `op_id` traces back to `loop_id` through Casts
     fn check_loop(&self, op_id: OpId, loop_id: OpId) -> bool {
-        self.peel_casts(op_id) == loop_id
+        let peeled = self.peel_casts(op_id);
+        if peeled == loop_id {
+            return true;
+        }
+        // The loop operand may be a load from an arange tensor indexed by the
+        // loop (e.g. `load(arange, loop_id)` has value == loop_id), as in the
+        // index_select/gather mask. The source load's index is loop_id through
+        // arithmetic (r10 + loop_id*784) and is NOT matched by this.
+        if let Op::Load { index, .. } = self.at(peeled) {
+            return self.peel_casts(*index) == loop_id;
+        }
+        false
     }
 
     /// Peel through consecutive Cast ops to find the inner op
@@ -781,5 +792,78 @@ mod tests {
 
         assert_eq!(k.at(outer_loop), &Op::Loop { len: one }, "outer loop should be zeroed");
         assert_eq!(k.at(inner_loop), &Op::Loop { len: one }, "inner loop should be zeroed");
+    }
+
+    /// Build the exact IR of the mnist gather (index_select) kernel captured via
+    /// ZYX_DUMP_FOLD at simplify_accumulating_loop time (pre-autotune).
+    ///
+    /// Structure:
+    ///   indices = load(indices_tensor, r26)      // loop-invariant
+    ///   arange  = load(arange_tensor, loop_id)   // LOOP-DEPENDENT via Load!
+    ///   mask    = f32(indices == arange)
+    ///   src     = load(source_tensor, r10 + loop_id*784)
+    ///   acc     = acc + f32(mask * src)
+    ///
+    /// The mask's loop operand is a Load indexed by the loop, so check_loop
+    /// (which only peels casts) fails to recognize it → not folded.
+    fn make_mnist_gather_kernel(dim: u64) -> (Kernel, OpId) {
+        let mut k = Kernel::new(DeviceId::AUTO);
+
+        let n: u64 = dim * dim;
+        let r29 = k.define(DType::I32, MemScope::Global, true, n);
+        let r38 = k.define(DType::I32, MemScope::Global, true, dim);
+        let r49 = k.define(DType::F32, MemScope::Global, true, dim * n);
+        let r57 = k.define(DType::F32, MemScope::Global, false, n);
+        let r1 = k.const_idx(0u32);
+        let r8 = k.const_val(0.0f32);
+        let r15 = k.const_idx(dim);
+        let r25 = k.const_idx(dim);
+        let r7 = k.group_index(0, dim);
+        let r10 = k.group_index(1, dim);
+
+        let r3 = k.define(DType::F32, MemScope::Register, false, 1);
+        k.store(r3, r8, r1, MemLayout::Scalar);
+
+        let r58 = k.binary(r7, r25, BOp::Mul);
+        let r26 = k.binary(r58, r10, BOp::Add);
+
+        let loop_id = k.loop_(r15);
+
+        let r30 = k.load(r29, r26, MemLayout::Scalar);
+        let r39 = k.load(r38, loop_id, MemLayout::Scalar);
+        let r4 = k.binary(r30, r39, BOp::Eq);
+        let r5 = k.cast(r4, DType::F32);
+        let r44 = k.binary(loop_id, r25, BOp::Mul);
+        let r46 = k.binary(r10, r44, BOp::Add);
+        let r50 = k.load(r49, r46, MemLayout::Scalar);
+        let r11 = k.binary(r5, r50, BOp::Mul);
+        let r12 = k.cast(r11, DType::F32);
+        let r17 = k.load(r3, r1, MemLayout::Scalar);
+        let r18 = k.binary(r12, r17, BOp::Add);
+        k.store(r3, r18, r1, MemLayout::Scalar);
+
+        k.end_loop();
+
+        let r13 = k.load(r3, r1, MemLayout::Scalar);
+        let r54 = k.binary(r7, r25, BOp::Mul);
+        let r56 = k.binary(r10, r54, BOp::Add);
+        k.store(r57, r13, r56, MemLayout::Scalar);
+
+        (k, loop_id)
+    }
+
+    /// The mnist gather (index_select) loop must be folded into a direct gather.
+    #[test]
+    fn test_mnist_gather_is_optimized() {
+        let (mut k, loop_id) = make_mnist_gather_kernel(3);
+        k.simplify_accumulating_loop();
+        assert_eq!(k.at(loop_id), &Op::Const(Constant::idx(0)), "loop should fold");
+
+        let compiled = k.compile().unwrap();
+        let source = crate::Tensor::from([[10.0f32, 20.0, 30.0], [11.0, 21.0, 31.0], [12.0, 22.0, 32.0]]);
+        let indices = crate::Tensor::from([[2u32, 0, 1], [1, 2, 0], [0, 1, 2]]);
+        let arange = crate::Tensor::from([0u32, 1, 2]);
+        let result = compiled.forward(&[&indices, &arange, &source], vec![[3, 3]]).unwrap().pop().unwrap();
+        assert_eq!(result, [[12.0f32, 20.0, 31.0], [11.0, 22.0, 30.0], [10.0, 21.0, 32.0]]);
     }
 }
