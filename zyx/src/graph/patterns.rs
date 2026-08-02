@@ -49,7 +49,9 @@ impl Graph {
     ///
     /// The matched operands are the original `a` and `b` classes (the reshape
     /// input and the transpose source respectively), so a backend kernel can
-    /// consume them directly without any transposition.
+    /// consume them directly without any transposition. When the reshape was
+    /// folded into the `a` operand class itself (an eager tensor promoted to a
+    /// leaf at the reshaped shape), that class is returned as `a`.
     pub(crate) fn match_matmul_class(&self, cid: ClassId, shapes: &Slab<ShapeId, Vec<Dim>>) -> Option<MatMul> {
         let out_shape = &shapes[self.classes[cid].shape];
         if out_shape.len() != 2 {
@@ -68,7 +70,11 @@ impl Graph {
         }
 
         let b = self.transpose_src(bt)?;
-        if shapes[self.classes[a].shape] != [m, k] || shapes[self.classes[b].shape] != [k, n] {
+        // The operand is `[m, k]` data. When the reshape was folded into the
+        // operand class itself it appears as `[m, 1, k]`, which is the same
+        // row-major layout as `[m, k]` (the singleton dim adds no stride).
+        let a_shape = &shapes[self.classes[a].shape];
+        if (*a_shape != [m, k] && *a_shape != [m, 1, k]) || shapes[self.classes[b].shape] != [k, n] {
             return None;
         }
 
@@ -117,15 +123,23 @@ impl Graph {
 
     /// Unwraps `Expand -> Reshape`, returning the reshaped 2D operand class and
     /// the 3D reshape shape.
+    ///
+    /// The reshape may have been folded into the expand source itself (e.g. an
+    /// eager tensor promoted to a graph leaf already at the reshaped shape), in
+    /// which case there is no `Reshape` node and the source class is returned
+    /// as the operand. The 3D shape is always taken from the expand source's
+    /// class shape, so matching does not depend on how the shape was produced.
     fn reshape_operand(&self, cid: ClassId, shapes: &Slab<ShapeId, Vec<Dim>>) -> Option<(ClassId, Vec<Dim>)> {
         let r = self.classes[cid].nodes.iter().find_map(|&nid| match &self.nodes[nid].node {
             Node::Expand { x, .. } => Some(*x),
             _ => None,
         })?;
-        self.classes[r].nodes.iter().find_map(|&nid| match &self.nodes[nid].node {
-            Node::Reshape { x, shape } => Some((*x, shapes[*shape].clone())),
+        let r_shape = shapes[self.classes[r].shape].clone();
+        let operand = self.classes[r].nodes.iter().find_map(|&nid| match &self.nodes[nid].node {
+            Node::Reshape { x, .. } => Some(*x),
             _ => None,
-        })
+        });
+        Some((operand.unwrap_or(r), r_shape))
     }
 
     /// Finds the source of a 2D `Permute [1, 0]` (a `[n, k]` transposed from `[k, n]`).
@@ -203,5 +217,30 @@ mod tests {
             vec![3, 4],
         );
         assert!(graph.match_matmul_class(out, &shapes).is_none());
+    }
+
+    /// Matches even when the `a` operand's reshape is folded into the leaf
+    /// (e.g. an eager tensor promoted at the reshaped shape) — no `Reshape`
+    /// node on the expand source.
+    #[test]
+    fn matches_matmul_with_folded_a_reshape() {
+        let (mut graph, mut shapes, _) = matmul_graph(2, 3, 4);
+        // Replace the a-side Reshape class (id 3) with a leaf of the same shape.
+        let folded_a = leaf(&mut graph, &mut shapes, vec![2, 1, 4]);
+        let m = 2;
+        let n = 3;
+        let k = 4;
+        let s_mnk = shapes.push(vec![m, n, k]);
+        let ea = class(&mut graph, &mut shapes, Node::Expand { x: folded_a, shape: s_mnk }, vec![m, n, k]);
+        // Rewrite the Mul (id 7) to consume the new Expand instead of the old one.
+        let mul = class(&mut graph, &mut shapes, Node::Binary { x: ea, y: ClassId::from(6), bop: BOp::Mul }, vec![m, n, k]);
+        let cast = class(&mut graph, &mut shapes, Node::Cast { x: mul, dtype: DType::F32 }, vec![m, n, k]);
+        let out =
+            class(&mut graph, &mut shapes, Node::Reduce { x: cast, bop: BOp::Add, axes: vec![2].into_boxed_slice() }, vec![m, n]);
+        let mm = graph.match_matmul_class(out, &shapes).unwrap();
+        assert_eq!(mm.a, folded_a);
+        assert_eq!(mm.m, m);
+        assert_eq!(mm.n, n);
+        assert_eq!(mm.k, k);
     }
 }
