@@ -401,16 +401,16 @@ impl Graph {
     }
 
     /// Like [`Self::topo_sort_classes`], but ignores [`Node::Kernel`] nodes when
-    /// collecting dependencies. Used when iterating the structural graph — e.g.
-    /// fusing remaining ops into kernels (`fill_remaining`) or pattern-matching
-    /// AOT kernels — where kernel nodes would add spurious input dependencies
-    /// between classes.
-    pub fn topo_sort_classes_without_kernels(&self, outputs: &BTreeSet<ClassId>) -> Vec<ClassId> {
+    /// collecting dependencies and stops the walk at the classes in `inputs`.
+    /// Used when iterating the structural graph — e.g. fusing remaining ops into
+    /// kernels — where kernel nodes would add spurious input dependencies between
+    /// classes and boundary classes must not be walked through into other regions.
+    pub fn topo_sort_classes_without_kernels(&self, inputs: &Set<ClassId>, outputs: &BTreeSet<ClassId>) -> Vec<ClassId> {
         let mut rcs: Map<ClassId, u32> = Map::default();
         let mut stack: Vec<ClassId> = outputs.iter().copied().collect();
         while let Some(cid) = stack.pop() {
             rcs.entry(cid).and_modify(|rc| *rc += 1).or_insert_with(|| {
-                let deps = self.deps_without_kernels(cid);
+                let deps = if inputs.contains(&cid) { Vec::new() } else { self.deps_without_kernels(cid) };
                 stack.extend(deps);
                 1
             });
@@ -424,7 +424,7 @@ impl Graph {
                 let visited = internal_rcs.entry(cid).and_modify(|c| *c += 1).or_insert(1);
                 if rc == *visited {
                     order.push(cid);
-                    let deps = self.deps_without_kernels(cid);
+                    let deps = if inputs.contains(&cid) { Vec::new() } else { self.deps_without_kernels(cid) };
                     stack.extend(deps);
                 }
             }

@@ -21,7 +21,7 @@ use super::{
     host::HostEvent,
 };
 use crate::{
-    DType,
+    DType, Set,
     error::{BackendError, ErrorStatus},
     graph::{ClassId, Graph, Node, NodeData},
     kernel::Kernel,
@@ -212,7 +212,7 @@ impl CblasDevice {
     /// by this device's gemm kernels so they compete with the fused zyx kernels in
     /// extraction. `time = 1` makes the AOT gemm win over any fused kernel.
     pub fn match_graph(&mut self, graph: &mut Graph, outputs: &BTreeSet<ClassId>, shapes: &Slab<ShapeId, Vec<Dim>>) {
-        let order = graph.topo_sort_classes_without_kernels(outputs);
+        let order = graph.topo_sort_classes_without_kernels(&Set::default(), outputs);
         for &cid in &order {
             let Some(mm) = graph.match_matmul_class(cid, shapes) else {
                 continue;

@@ -63,7 +63,7 @@ impl Graph {
     ///    exactly one entry in `visited` mapping it to the kernel where its computation lives.
     ///    [`add_store`] removes the entry and restores it via a load kernel if consumers remain.
     pub fn kernelize(&mut self, inputs: &Set<ClassId>, outputs: &BTreeSet<ClassId>, shapes: &Slab<ShapeId, Vec<Dim>>) {
-        let order = self.topo_sort_classes_without_kernels(outputs);
+        let order = self.topo_sort_classes_without_kernels(inputs, outputs);
 
         let mut rcs: Map<ClassId, u32> = Map::default();
         for &cid in &order {
