@@ -2,7 +2,6 @@ use std::collections::BTreeSet;
 
 use crate::{
     Map, Set,
-    dtype::Constant,
     graph::{ClassId, Graph, JitKernelData, JitKernelId, Node},
     kernel::{DeviceId, Kernel, MoveOp, Op, OpId},
     runtime::ShapeId,
@@ -63,7 +62,7 @@ impl Graph {
     /// 2. **Visited residency**: Every class with `rcs[cid] > 0` that has been produced must have
     ///    exactly one entry in `visited` mapping it to the kernel where its computation lives.
     ///    [`add_store`] removes the entry and restores it via a load kernel if consumers remain.
-    pub fn fill_remaining(&mut self, inputs: &Set<ClassId>, outputs: &BTreeSet<ClassId>, shapes: &Slab<ShapeId, Vec<Dim>>) {
+    pub fn kernelize(&mut self, inputs: &Set<ClassId>, outputs: &BTreeSet<ClassId>, shapes: &Slab<ShapeId, Vec<Dim>>) {
         let order = self.topo_sort_classes_without_kernels(outputs);
 
         let mut rcs: Map<ClassId, u32> = Map::default();
@@ -102,7 +101,16 @@ impl Graph {
                         visited.insert(cid, (kid, op_id));
                     }
                     Node::Const(value) => {
-                        let (kid, op_id) = self.new_const_kernel(value, cid, *rcs.get(&cid).unwrap());
+                        let rc = *rcs.get(&cid).unwrap();
+                        let mut kernel = Kernel::new(DeviceId::NULL);
+                        kernel.push_back(Op::ConstView(Box::new((value, View::contiguous(&[1])))));
+                        let op_id = kernel.head;
+                        let kid = self.jit_kernels.push(JitKernelData {
+                            kernel,
+                            outputs: vec![cid; rc as usize],
+                            loads: Vec::new(),
+                            stores: Vec::new(),
+                        });
                         visited.insert(cid, (kid, op_id));
                     }
                     Node::Unary { x, uop } => {
@@ -302,19 +310,6 @@ impl Graph {
         panic!();*/
     }
 
-    fn new_const_kernel(&mut self, value: Constant, cid: ClassId, rc: u32) -> (JitKernelId, OpId) {
-        let mut kernel = Kernel::new(DeviceId::NULL);
-        kernel.push_back(Op::ConstView(Box::new((value, View::contiguous(&[1])))));
-        let op_id = kernel.head;
-        let kid = self.jit_kernels.push(JitKernelData {
-            kernel,
-            outputs: vec![cid; rc as usize],
-            loads: Vec::new(),
-            stores: Vec::new(),
-        });
-        (kid, op_id)
-    }
-
     fn new_load_kernel(&mut self, cid: ClassId, shapes: &Slab<ShapeId, Vec<Dim>>, rc: u32) -> (JitKernelId, OpId) {
         let mut kernel = Kernel::new(DeviceId::NULL);
         let shape: Vec<Dim> = shapes[self.classes[cid].shape].clone();
@@ -439,11 +434,6 @@ impl Graph {
                 let (new_kernel, new_op_id, self_loads, new_loads) =
                     self.jit_kernels[kid].kernel.extract_subkernel(op_id, &out_op_ids, &loads);
                 self.jit_kernels[kid].loads = self_loads;
-
-                /*println!("duplicating original");
-                self.ekernels[kid].kernel.debug();
-                println!("duplicating extracted");
-                new_kernel.debug();*/
 
                 debug_assert_eq!(self.jit_kernels[kid].outputs.iter().filter(|&&x| x == child).count(), rcs[&child] as usize - 1);
 

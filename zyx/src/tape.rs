@@ -216,7 +216,7 @@ impl Tape {
         // TODO debug assert that all leafs are realized
         //let realized_nodes: Set<ClassId> = rt.graphs[graph_id].leaf_map.iter().filter(|(_, tid)| rt.buffer_map.contains_key(tid)).map(|(cid, _)| *cid).collect();
         let inputs: Set<ClassId> = rt.graphs[graph_id].leaf_classes.iter().copied().collect();
-        rt.graphs[graph_id].fill_remaining(&inputs, &output_set, unsafe { &*shapes_ptr });
+        rt.graphs[graph_id].kernelize(&inputs, &output_set, unsafe { &*shapes_ptr });
 
         // Autotunes custom zyx kernels for all devices and adds kernel nodes for all of them
         rt.autotune_graph_ekernels(graph_id)?;
@@ -358,7 +358,7 @@ impl Tape {
         // TODO debug assert that all leafs are realized
         //let realized_nodes: Set<ClassId> = rt.graphs[graph_id].leaf_map.iter().filter(|(_, tid)| rt.buffer_map.contains_key(tid)).map(|(cid, _)| *cid).collect();
         let inputs: Set<ClassId> = rt.graphs[graph_id].leaf_classes.iter().copied().collect();
-        rt.graphs[graph_id].fill_remaining(&inputs, &output_set, unsafe { &*shapes_ptr });
+        rt.graphs[graph_id].kernelize(&inputs, &output_set, unsafe { &*shapes_ptr });
 
         // Autotunes custom zyx kernels for all devices and adds kernel nodes for all of them
         rt.autotune_graph_ekernels(graph_id)?;
