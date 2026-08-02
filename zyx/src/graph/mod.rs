@@ -27,7 +27,6 @@ use crate::{
 
 mod autograd;
 mod kernelizer;
-mod patterns;
 pub(crate) mod plan;
 pub use plan::ExecPlan;
 
