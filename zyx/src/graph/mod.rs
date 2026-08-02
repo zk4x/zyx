@@ -743,15 +743,15 @@ impl Graph {
 }
 
 impl Runtime {
-    pub fn autotune_graph_ekernels(&mut self, graph_id: GraphId) -> Result<(), ZyxError> {
+    pub fn autotune_jit_kernels(&mut self, graph_id: GraphId) -> Result<(), ZyxError> {
         println!("Autotuning");
         let device_ids: Vec<DeviceId> = self.devices.ids().collect();
 
-        let ekernels: *const Slab<JitKernelId, JitKernelData> = &self.graphs[graph_id].jit_kernels;
-        let ekernels: &Slab<JitKernelId, JitKernelData> = unsafe { &*ekernels };
-        let total = ekernels.len().0 as u64 * device_ids.len() as u64;
+        let jit_kernels: *const Slab<JitKernelId, JitKernelData> = &self.graphs[graph_id].jit_kernels;
+        let jit_kernels: &Slab<JitKernelId, JitKernelData> = unsafe { &*jit_kernels };
+        let total = jit_kernels.len().0 as u64 * device_ids.len() as u64;
         let mut bar = crate::prog_bar::ProgressBar::new(total);
-        for ek in ekernels.values() {
+        for ek in jit_kernels.values() {
             let (flop, read, write) = ek.kernel.flop_mem_rw();
             let class_of = ek.stores.first().copied().unwrap();
 
@@ -839,7 +839,7 @@ impl Runtime {
         self.graphs[graph_id].kernelize(&inputs, output_set, unsafe { &*shapes_ptr });
 
         // Autotunes custom zyx kernels for all devices and adds kernel nodes for all of them
-        self.autotune_graph_ekernels(graph_id)?;
+        self.autotune_jit_kernels(graph_id)?;
 
         // After all kernels nodes are added, this adds movement ops so extract can pick fastest path
         let devices_ptr: *const Slab<DeviceId, Device> = &self.devices;
