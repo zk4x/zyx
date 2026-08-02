@@ -890,6 +890,7 @@ impl Device {
     pub fn match_graph(&mut self, graph: &mut Graph, outputs: &BTreeSet<ClassId>, shapes: &Slab<ShapeId, Vec<Dim>>) {
         match self {
             Device::Cblas(dev) => dev.match_graph(graph, outputs, shapes),
+            Device::CUDA(dev) => dev.match_graph(graph, outputs, shapes),
             _ => {}
         }
     }
