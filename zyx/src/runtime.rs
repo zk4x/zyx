@@ -1556,6 +1556,54 @@ impl Runtime {
         Ok(())
     }
 
+    /// Assigns the value of `src` to `dst` in-place using StoreView in the kernel IR.
+    ///
+    /// A StoreView is added to `src`'s kernel that writes into `dst`'s
+    /// existing buffer. Materialization happens naturally when `src`'s
+    /// kernel is released.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ZyxError::DTypeError`] if the dtypes do not match.
+    ///
+    /// Returns [`ZyxError::ShapeError`] if the shapes do not match.
+    ///
+    /// Returns [`ZyxError::GraphTensorNotRealized`] if `dst` is a
+    /// graph tensor that has not been realized yet.
+    pub fn assign(&mut self, dst: TensorId, src: TensorId) -> Result<(), ZyxError> {
+        #[cfg(feature = "debug_tensor_op")]
+        println!("runtime::assign(dst={dst}, src={src})");
+
+        let dst_dtype = self.tensors[dst].dtype;
+        let src_dtype = self.tensors[src].dtype;
+        if dst_dtype != src_dtype {
+            return Err(ZyxError::DTypeError(
+                format!("assign dtype mismatch: dst={dst_dtype}, src={src_dtype}").into(),
+            ));
+        }
+
+        let dst_shape = self.shape(dst);
+        let src_shape = self.shape(src);
+        if dst_shape != src_shape {
+            return Err(ZyxError::shape_error(
+                format!("assign shape mismatch: dst={dst_shape:?}, src={src_shape:?}").into(),
+            ));
+        }
+
+        if self.is_graph(dst) && !self.buffer_map.contains_key(&dst) {
+            return Err(ZyxError::graph_tensor_not_realized(dst));
+        }
+
+        // Add StoreView to src's kernel: src's value will be stored into dst's buffer.
+        let (kid, op_id) = self.eager_ids(src);
+        self.kernels[kid].kernel.store_contiguous(op_id, src_dtype);
+        self.kernels[kid].stores.push(dst);
+
+        // TODO pending needs to be updated, think about it, dst might need to be realized
+
+        Ok(())
+    }
+
     // Initializes all available devices, creating a device for each compute
     // device and a memory pool for each physical memory.
     // Does nothing if devices were already initialized.
@@ -1808,7 +1856,7 @@ impl Runtime {
         flop: u64,
         read: u64,
         write: u64,
-        init_buffers: Option<&[PoolBufferId]>,
+        buffers: &[PoolBufferId],
     ) -> Result<(DeviceProgramId, u64), ZyxError> {
         let kernel_id = if let Some(&cached_kid) = self.kernel_map.get(&kernel) {
             if let Some(&program_id) = self.programs.get(&cached_kid) {
@@ -1863,18 +1911,17 @@ impl Runtime {
         }
 
         #[cfg(debug_assertions)]
-        if let Some(buffers) = init_buffers {
-            let n_ro_global = kernel
+        {
+            let n_global_defines = kernel
                 .ops
                 .values()
-                .filter(|op| matches!(&op.op, Op::Define { scope: crate::kernel::MemScope::Global, ro: true, .. }))
+                .filter(|op| matches!(&op.op, Op::Define { scope: crate::kernel::MemScope::Global, .. }))
                 .count();
-            assert_eq!(
-                buffers.len(),
-                n_ro_global,
-                "init_buffers len ({}) must match number of global read-only defines ({}) in kernel",
-                buffers.len(),
-                n_ro_global,
+            let n_buffers = buffers.iter().filter(|&&b| b != PoolBufferId::NULL).count();
+            assert!(
+                n_buffers <= n_global_defines,
+                "buffers len ({}) must not exceed number of global defines ({}) in kernel",
+                n_buffers, n_global_defines,
             );
         }
 
@@ -1886,7 +1933,7 @@ impl Runtime {
             read,
             write,
             self.debug,
-            init_buffers,
+            buffers,
         )?;
 
         self.programs.insert(kernel_id, program_id);
@@ -2006,41 +2053,42 @@ impl Runtime {
             }
         }
 
-        // Allocate store buffers (one per unique tid)
+        // Collect existing store buffers for already-realized store tensors,
+        // allocate new buffers for the rest.
         let mut kernel_buffers = BTreeSet::new();
-        // All kernel buffers (loads + stores) must be tracked in kernel_buffers
-        // so future operations can find and wait on the kernel's event before
-        // reusing any of these buffers.
         for &tid in &loads {
             kernel_buffers.insert(self.buffer_map[&tid]);
         }
         for &tid in &stores {
-            let bytes = (self.shape(tid).iter().product::<Dim>() as usize * self.dtype(tid).bit_size() as usize + 7) / 8;
-            // Add one trash element
-            let alloc_bytes = bytes as Dim + Dim::from(self.dtype(tid).bit_size() / 8);
-            let (buf, event) = self.pools[pool_id].allocate(alloc_bytes)?;
-            let global_id = BufferId { pool: pool_id, buffer: buf };
-            self.buffer_map.insert(tid, global_id);
-            self.tensors[tid].pending = KernelId::NULL;
-            kernel_buffers.insert(global_id);
-            event_wait_list.push(event);
+            if let Some(&buf_id) = self.buffer_map.get(&tid) {
+                kernel_buffers.insert(buf_id);
+                self.tensors[tid].pending = KernelId::NULL;
+            } else {
+                let bytes = (self.shape(tid).iter().product::<Dim>() as usize * self.dtype(tid).bit_size() as usize + 7) / 8;
+                let alloc_bytes = bytes as Dim + Dim::from(self.dtype(tid).bit_size() / 8);
+                let (buf, event) = self.pools[pool_id].allocate(alloc_bytes)?;
+                let global_id = BufferId { pool: pool_id, buffer: buf };
+                self.buffer_map.insert(tid, global_id);
+                self.tensors[tid].pending = KernelId::NULL;
+                kernel_buffers.insert(global_id);
+                event_wait_list.push(event);
+            }
         }
 
-        // Build args: load buffers first, then store buffers
-        let mut args = Vec::new();
+        // Build buffers: load buffers first, then store buffers
+        let mut buffers: Vec<PoolBufferId> = Vec::new();
         for &tid in &loads {
-            args.push(self.buffer_map[&tid].buffer);
+            buffers.push(self.buffer_map[&tid].buffer);
+        }
+        for &tid in &stores {
+            buffers.push(self.buffer_map[&tid].buffer);
         }
 
         // Compile and launch (caches in kernel_map / programs)
         let (flop, read, write) = kernel.flop_mem_rw();
-        let (dev_prog, _timing) = self.get_or_autotune(kernel, pool_id, flop, read, write, Some(&args))?;
+        let (dev_prog, _timing) = self.get_or_autotune(kernel, pool_id, flop, read, write, &buffers)?;
 
-        for &tid in &stores {
-            args.push(self.buffer_map[&tid].buffer);
-        }
-
-        let event = self.devices[dev_id].launch(dev_prog, &mut self.pools[pool_id], &args, event_wait_list)?;
+        let event = self.devices[dev_id].launch(dev_prog, &mut self.pools[pool_id], &buffers, event_wait_list)?;
         self.events.insert(kernel_buffers, event);
 
         // The kernel has consumed its loads. Release the load references so

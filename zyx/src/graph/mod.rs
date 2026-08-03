@@ -792,7 +792,7 @@ impl Runtime {
                 let mut kernel = ek.kernel.clone();
                 kernel.device_id = dev_id;
                 bar.inc(1, &format!("autotune {} on dev={}", kernel.name(), dev_id.0));
-                let (dev_prog, timing) = self.get_or_autotune(kernel, pool_id, flop, read, write, None)?;
+                let (dev_prog, timing) = self.get_or_autotune(kernel, pool_id, flop, read, write, &[])?;
                 let prog = ProgramId { device: dev_id, program: dev_prog };
 
                 let knid = self.graphs[graph_id].nodes.push(NodeData {

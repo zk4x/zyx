@@ -384,6 +384,25 @@ impl Tensor {
         data[0]
     }
 
+    /// Assigns the value of `src` to this tensor in-place using StoreView.
+    ///
+    /// A StoreView is added to `src`'s kernel that writes into this
+    /// tensor's existing buffer. Materialization happens naturally
+    /// when `src`'s kernel is released.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ZyxError::DTypeError`] if the dtypes do not match.
+    ///
+    /// Returns [`ZyxError::ShapeError`] if the shapes do not match.
+    ///
+    /// Returns [`ZyxError::GraphTensorNotRealized`] if this tensor is a
+    /// graph tensor that has not been realized yet.
+    pub fn assign(&self, src: impl Into<Tensor>) -> Result<(), ZyxError> {
+        let src = src.into();
+        RT.lock().assign(self.id, src.id)
+    }
+
     /// Detaches tensor from graph.
     /// This function returns a new tensor with the same data as the previous one,
     /// but drops it's backpropagation graph. This is usefull for recurrent networks:
