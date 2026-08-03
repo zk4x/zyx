@@ -12,7 +12,6 @@ use std::collections::BTreeMap;
 
 use crate::{
     Set,
-    dtype::Constant,
     kernel::{BOp, IdxScope, Kernel, MemLayout, MemScope, MoveOp, Op, OpId},
     shape::{Dim, UAxis},
 };
@@ -86,20 +85,48 @@ impl Kernel {
                 }
                 Op::Move { x, ref mop } => {
                     let mop = mop.clone();
-                    self.apply_movement_op(&mop, &mut axes);
+                    let mop: &MoveOp = &mop;
+                    let axes: &mut BTreeMap<u32, OpId> = &mut axes;
+                    match mop {
+                        MoveOp::Expand { shape } => self.apply_expand(shape, axes),
+                        MoveOp::Reshape { shape } => self.apply_reshape(shape, axes),
+                        MoveOp::Permute { axes: perm_axes, .. } => self.apply_permute(perm_axes, axes),
+                        MoveOp::Pad { padding, shape } => self.apply_pad(padding, shape, axes),
+                    }
                     self.remap(op_id, x);
                     self.remove_op(op_id);
+                    self.debug();
                 }
                 Op::LoadView(ref x) => {
                     let shape = x.1.shape();
-                    self.unfold_load_view(op_id, x.0, &shape, &axes, start);
+                    let dtype = x.0;
+                    let axes_vec: Vec<OpId> = axes.values().copied().collect();
+                    let mut strides = vec![1u64; shape.len()];
+                    for i in (0..shape.len().saturating_sub(1)).rev() {
+                        strides[i] = strides[i + 1].saturating_mul(shape[i + 1]);
+                    }
+                    println!("strides={strides:?}");
+                    let mut offset = self.insert_const_idx_before(op_id, 0u64);
+                    for (i, &ax_id) in axes_vec.iter().enumerate() {
+                        if i >= shape.len() || shape[i] == 1 {
+                            continue;
+                        }
+                        let stride_c = self.insert_const_idx_before(op_id, strides[i]);
+                        let scaled = self.insert_before(op_id, Op::Binary { x: ax_id, y: stride_c, bop: BOp::Mul });
+                        offset = self.insert_before(op_id, Op::Binary { x: offset, y: scaled, bop: BOp::Add });
+                    }
+                    let src = self.insert_before(
+                        op_id,
+                        Op::Define { dtype, scope: MemScope::Global, ro: true, len: shape.iter().product() },
+                    );
+                    self.ops[op_id].op = Op::Load { src, index: offset, layout: MemLayout::Scalar };
                 }
                 Op::StoreView { src, dtype } => {
                     self.unfold_store_view(op_id, src, dtype, &axes, start);
                 }
                 Op::ConstView(ref x) => {
-                    let shape = x.1.shape();
-                    self.unfold_const_view(op_id, x.0, &shape, &axes);
+                    let value = x.0;
+                    self.ops[op_id].op = Op::Const(value);
                 }
                 _ => {}
             }
@@ -108,15 +135,6 @@ impl Kernel {
 
         self.verify();
         self.unfold_reduces();
-    }
-
-    fn apply_movement_op(&mut self, mop: &MoveOp, axes: &mut BTreeMap<u32, OpId>) {
-        match mop {
-            MoveOp::Reshape { shape } => self.apply_reshape(shape, axes),
-            MoveOp::Expand { shape } => self.apply_expand(shape, axes),
-            MoveOp::Permute { axes: perm_axes, .. } => self.apply_permute(perm_axes, axes),
-            MoveOp::Pad { padding, shape } => self.apply_pad(padding, shape, axes),
-        }
     }
 
     fn apply_reshape(&mut self, shape: &[Dim], axes: &mut BTreeMap<u32, OpId>) {
@@ -212,27 +230,6 @@ impl Kernel {
         self.insert_after(then_part, Op::Binary { x: then_part, y: sel, bop: BOp::Add })
     }
 
-    fn unfold_load_view(&mut self, op_id: OpId, dtype: crate::DType, shape: &[Dim], axes: &BTreeMap<u32, OpId>, start: OpId) {
-        let axes_vec: Vec<OpId> = axes.values().copied().collect();
-        let mut strides = vec![1u64; shape.len()];
-        for i in (0..shape.len().saturating_sub(1)).rev() {
-            strides[i] = strides[i + 1].saturating_mul(shape[i + 1]);
-        }
-
-        let mut offset = self.insert_const_idx_before(op_id, 0u64);
-        for (i, &ax_id) in axes_vec.iter().enumerate() {
-            if i >= shape.len() || shape[i] == 1 {
-                continue;
-            }
-            let stride_c = self.insert_const_idx_before(op_id, strides[i]);
-            let scaled = self.insert_after(ax_id, Op::Binary { x: ax_id, y: stride_c, bop: BOp::Mul });
-            offset = self.insert_after(scaled, Op::Binary { x: offset, y: scaled, bop: BOp::Add });
-        }
-
-        let src = self.insert_before(start, Op::Define { dtype, scope: MemScope::Global, ro: true, len: shape.iter().product() });
-        self.ops[op_id].op = Op::Load { src, index: offset, layout: MemLayout::Scalar };
-    }
-
     fn unfold_store_view(&mut self, op_id: OpId, src: OpId, dtype: crate::DType, axes: &BTreeMap<u32, OpId>, start: OpId) {
         let mut st = 1u64;
         let mut strides = Vec::new();
@@ -261,26 +258,5 @@ impl Kernel {
 
         let dst = self.insert_before(start, Op::Define { dtype, scope: MemScope::Global, ro: false, len });
         self.ops[op_id].op = Op::Store { dst, x: src, index, layout: MemLayout::Scalar };
-    }
-
-    fn unfold_const_view(&mut self, op_id: OpId, value: Constant, shape: &[Dim], axes: &BTreeMap<u32, OpId>) {
-        let axes_vec: Vec<OpId> = axes.values().copied().collect();
-        let mut strides = vec![1u64; shape.len()];
-        for i in (0..shape.len().saturating_sub(1)).rev() {
-            strides[i] = strides[i + 1].saturating_mul(shape[i + 1]);
-        }
-
-        let mut offset = self.insert_const_idx_before(op_id, 0u64);
-        for (i, &ax_id) in axes_vec.iter().enumerate() {
-            if i >= shape.len() || shape[i] == 1 {
-                continue;
-            }
-            let stride_c = self.insert_const_idx_before(op_id, strides[i]);
-            let scaled = self.insert_after(ax_id, Op::Binary { x: ax_id, y: stride_c, bop: BOp::Mul });
-            offset = self.insert_after(scaled, Op::Binary { x: offset, y: scaled, bop: BOp::Add });
-        }
-
-        let z = self.insert_after(op_id, Op::Const(value));
-        self.ops[op_id].op = Op::Binary { x: z, y: offset, bop: BOp::Add };
     }
 }
