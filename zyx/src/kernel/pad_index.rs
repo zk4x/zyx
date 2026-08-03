@@ -97,6 +97,42 @@ impl Kernel {
         }
     }
 
+    pub(crate) fn pad_loop(&mut self) {
+        let mut loop_id = self.head;
+        while !loop_id.is_null() {
+            if let Op::Loop { len } = self.at(loop_id) {
+                let orig_len = self.loop_len_dim(*len);
+                if orig_len > 0 && orig_len < 32 {
+                    let const_32 = self.insert_before(loop_id, Op::Const(Constant::idx(32u32)));
+                    self.ops[loop_id].op = Op::Loop { len: const_32 };
+                    let orig_const = self.insert_before(loop_id, Op::Const(Constant::idx(orig_len)));
+                    let loop_var = loop_id;
+                    let mut scan = self.next_op(loop_id);
+                    while !scan.is_null() {
+                        let next = self.next_op(scan);
+                        if let Op::Load { src, index: ld_idx, layout: MemLayout::Scalar } = self.ops[scan].op.clone() {
+                            if self.depends_on(ld_idx, loop_var, &mut crate::Set::default()) {
+                                let cond = self.insert_before(scan, Op::Binary { x: loop_var, y: orig_const, bop: BOp::Cmplt });
+                                let cast_idx = self.insert_before(scan, Op::Cast { x: cond, dtype: IDX_T });
+                                let safe_idx = self.insert_before(scan, Op::Binary { x: ld_idx, y: cast_idx, bop: BOp::Mul });
+                                let safe_load =
+                                    self.insert_before(scan, Op::Load { src, index: safe_idx, layout: MemLayout::Scalar });
+                                let cast_val = self.insert_before(scan, Op::Cast { x: cond, dtype: self.dtype(src) });
+                                let safe_val = self.insert_before(scan, Op::Binary { x: safe_load, y: cast_val, bop: BOp::Mul });
+                                let _ = self.remap(scan, safe_val);
+                                self.remove_op(scan);
+                            }
+                        }
+                        scan = next;
+                    }
+                }
+                break;
+            }
+            loop_id = self.next_op(loop_id);
+        }
+        self.verify();
+    }
+
     pub(crate) fn opt_pad_index(&self) -> (Optimization, usize) {
         let mut factors = Vec::new();
         let mut op_id = self.head;
