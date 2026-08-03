@@ -59,7 +59,7 @@ impl Constant {
         }
         match self {
             Self::BF16(x) => format!("{}f", f32::from(bf16::from_le_bytes(*x))),
-            Self::F16(x) => format!("__float2half({:.6})", f16::from_le_bytes(*x).to_f32()),
+            Self::F16(x) => format!("0x{:04X}", u16::from_le_bytes(*x)),
             Self::F32(x) => format_precise(f32::from_le_bytes(*x), 9),
             Self::F64(x) => format_precise(f64::from_le_bytes(*x), 18),
             Self::U8(x) => format!("{x}"),
@@ -329,7 +329,12 @@ impl Kernel {
                 }
                 Op::Const(ref constant) => {
                     let reg = comp.new_var(op_id, constant.dtype(), u32::MAX);
-                    _ = writeln!(comp.body, "{}mov.{} %r{reg}, {};", comp.indent, constant.dtype().ptx(), constant.ptx());
+                    let ptx_dtype = if constant.dtype() == DType::F16 || constant.dtype() == DType::BF16 {
+                        "b16"
+                    } else {
+                        constant.dtype().ptx()
+                    };
+                    _ = writeln!(comp.body, "{}mov.{ptx_dtype} %r{reg}, {};", comp.indent, constant.ptx());
                 }
                 Op::Load { src, index, .. } => {
                     let dtype = dtypes[&src].0;
