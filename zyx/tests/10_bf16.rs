@@ -44,7 +44,7 @@ fn bf16_binary_mul() -> Result<(), ZyxError> {
     }
 
     let a = Tensor::from([1.0f32, 2.0, 3.0, 4.0]).cast(DType::BF16);
-    let b = Tensor::from([2.0, 3.0, 4.0, 5.0]).cast(DType::BF16);
+    let b = Tensor::from([2.0f32, 3.0, 4.0, 5.0]).cast(DType::BF16);
     let c = a * b;
 
     let c: Vec<bf16> = c.try_into()?;

@@ -4,6 +4,7 @@
 use crate::{
     DType, Map, Set,
     dtype::Constant,
+    error::{BackendError, ErrorStatus},
     kernel::{BOp, IdxScope, Kernel, MemLayout, MemScope, Op, OpId, UOp},
 };
 use std::fmt::Write;
@@ -19,6 +20,18 @@ fn tt_fill_bits(val: Constant) -> u32 {
         }
         Constant::F32(b) => u32::from_le_bytes(b),
         other => todo!("fill_tile_bitcast for {other}"),
+    }
+}
+
+/// TT Metalium `tt::DataFormat` constant for a zyx dtype, as used by
+/// `typecast_tile`'s template parameters. Only dtypes supported by the
+/// tenstorrent tile path are valid.
+fn tt_dtype_format(dt: DType) -> u32 {
+    match dt {
+        DType::F32 => 0,  // Float32
+        DType::F16 => 1,  // Float16
+        DType::BF16 => 5, // Float16_b
+        other => unreachable!("unsupported dtype {other:?} for tenstorrent tile op"),
     }
 }
 
@@ -77,7 +90,23 @@ impl Kernel {
         n_outputs: usize,
         input_cb_map: &Map<OpId, u32>,
         output_cb_map: &Map<OpId, u32>,
-    ) -> (String, String, String) {
+    ) -> Result<(String, String, String), BackendError> {
+        // f64 is not supported by the tenstorrent tile path. Reject it up front
+        // so downstream codegen never has to reason about f64 tiles.
+        {
+            let mut scan = self.head;
+            while !scan.is_null() {
+                if let Op::Load { src, layout: MemLayout::Tile { .. }, .. } = &self.ops[scan].op {
+                    if self.dtype(*src) == DType::F64 {
+                        return Err(BackendError {
+                            status: ErrorStatus::KernelCompilation,
+                            context: "tenstorrent has no f64 compute units -- f64 is unsupported, use f32 or bf16".into(),
+                        });
+                    }
+                }
+                scan = self.next_op(scan);
+            }
+        }
         // Generate reader kernel source
         let mut reader = String::new();
         writeln!(reader, "#include <cstdint>");
@@ -222,6 +251,7 @@ impl Kernel {
         writeln!(compute, "#include \"api/compute/eltwise_unary/rounding.h\"");
         writeln!(compute, "#include \"api/compute/eltwise_unary/negative.h\"");
         writeln!(compute, "#include \"api/compute/eltwise_unary/bitwise_not.h\"");
+        writeln!(compute, "#include \"api/compute/eltwise_unary/typecast.h\"");
         writeln!(compute, "#include \"api/compute/eltwise_unary/fill.h\"");
         writeln!(compute, "#include \"api/dataflow/circular_buffer.h\"");
         writeln!(compute, "#include \"api/debug/device_print.h\"");
@@ -250,6 +280,7 @@ impl Kernel {
 
             let mut unary_inits: Set<&'static str> = Set::default();
             let mut binary_inits: Set<&'static str> = Set::default();
+            let mut typecast_inits: Set<(u32, u32)> = Set::default();
             let mut has_fill = false;
             let (_dtypes, rcs) = self.compute_dtypes_and_rcs();
             let mut dst_slots: Map<OpId, Vec<u32>> = Map::default();
@@ -327,6 +358,12 @@ impl Kernel {
                     Op::Cast { x, .. } => {
                         if matches!(self.ops[x].op, Op::Const(_)) {
                             has_fill = true;
+                        } else if matches!(self.ops[x].op, Op::Load { layout: MemLayout::Tile { .. }, .. }) {
+                            let in_fmt = tt_dtype_format(self.dtype(x));
+                            let out_fmt = tt_dtype_format(self.dtype(op_id));
+                            if in_fmt != out_fmt {
+                                typecast_inits.insert((in_fmt, out_fmt));
+                            }
                         }
                     }
                     Op::Unary { x, uop } => {
@@ -365,6 +402,9 @@ impl Kernel {
             }
             for init in binary_inits {
                 writeln!(compute, "{indent}{init}");
+            }
+            for (in_fmt, out_fmt) in &typecast_inits {
+                writeln!(compute, "{indent}typecast_tile_init<{in_fmt}, {out_fmt}>();");
             }
 
             let mut load_input_cbs: Vec<u32> = Vec::new();
@@ -426,6 +466,12 @@ impl Kernel {
             while !op_id.is_null() {
                 match self.ops[op_id].op {
                     Op::Load { src, index: _, layout: MemLayout::Tile { .. } } => {
+                        if self.dtype(src) == DType::F64 {
+                            return Err(BackendError {
+                                status: ErrorStatus::KernelCompilation,
+                                context: "tenstorrent has no f64 compute units -- f64 is unsupported, use f32 or bf16".into(),
+                            });
+                        }
                         if let Some(&cb_id) = input_cb_map.get(&src) {
                             let n = rcs.get(&op_id).copied().unwrap_or(1).max(1) as usize;
                             let mut slots = Vec::with_capacity(n);
@@ -449,12 +495,17 @@ impl Kernel {
                         }
                         dst_slots.insert(op_id, slots);
                     }
-                    Op::Cast { x, dtype: DType::BF16 | DType::F16 | DType::F32 } => {
+                    Op::Cast { x, dtype } if matches!(dtype, DType::BF16 | DType::F16 | DType::F32) => {
                         let idx = consumer_count.entry(x).or_insert(0);
                         let slot = dst_slots[&x][*idx as usize];
                         *idx += 1;
                         let n = rcs.get(&op_id).copied().unwrap_or(1).max(1) as usize;
                         dst_slots.insert(op_id, vec![slot; n]);
+                        let in_fmt = tt_dtype_format(self.dtype(x));
+                        let out_fmt = tt_dtype_format(dtype);
+                        if in_fmt != out_fmt {
+                            writeln!(compute, "{indent}typecast_tile<{in_fmt}, {out_fmt}>({slot});");
+                        }
                     }
                     Op::Unary { x, uop } => {
                         let idx = consumer_count.entry(x).or_insert(0);
@@ -749,6 +800,6 @@ impl Kernel {
             println!("[tenstorrent] writer:\n{writer}");
         }
 
-        (reader, compute, writer)
+        Ok((reader, compute, writer))
     }
 }

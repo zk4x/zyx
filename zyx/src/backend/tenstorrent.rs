@@ -717,7 +717,7 @@ impl TTDevice {
         }
 
         let (reader, compute, writer) =
-            kernel.generate_tenstorrent(debug_asm, input_dtypes.len(), output_dtypes.len(), &input_cb_map, &output_cb_map);
+            kernel.generate_tenstorrent(debug_asm, input_dtypes.len(), output_dtypes.len(), &input_cb_map, &output_cb_map)?;
 
         let prog_id = self.programs.push(TTProgram { input_dtypes, output_dtypes, grid_dims });
 
