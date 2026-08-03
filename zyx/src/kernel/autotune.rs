@@ -430,10 +430,6 @@ impl Kernel {
             kernel.opt_tenstorrent_tile();
         }
 
-        kernel.ln_to_log2();
-
-        //kernel.opt_tenstorrent_tile();
-
         kernel.run_always_on_optimizations();
         kernel.run_always_on_optimizations();
         kernel.fuse_mad();
@@ -487,7 +483,7 @@ impl Kernel {
         debug: DebugMask,
         init_buffers: Option<&[PoolBufferId]>,
     ) -> Result<(DeviceProgramId, OptSeq, u64), BackendError> {
-        if false {
+        if true {
             return self.apply_selected_optimizations(device, memory_pool, config, flop, read_bytes, write_bytes, debug);
         }
 

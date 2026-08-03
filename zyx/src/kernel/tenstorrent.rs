@@ -30,7 +30,7 @@ fn round_up(len: Dim, multiple: Dim) -> Dim {
 impl Kernel {
     pub(crate) fn opt_tenstorrent_tile(&mut self) {
         if self.ops.values().any(|node| matches!(node.op, Op::Loop { .. })) {
-            todo!()
+            // TODO
         } else {
             self.tenstorrent_pad();
             self.tenstorrent_local();
