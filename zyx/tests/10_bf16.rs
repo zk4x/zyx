@@ -29,7 +29,8 @@ fn bf16_mean() -> Result<(), ZyxError> {
 
     let data: [f32; 6] = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0];
     let x = Tensor::from(data).cast(DType::BF16);
-    let mean = x.mean([0])?;
+    let y = Tensor::from(data).cast(DType::BF16);
+    let mean = (x.sin() + y).mean([0])?;
 
     let mean_val = mean.item::<bf16>();
     let expected = 3.5f32;

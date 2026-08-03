@@ -68,7 +68,12 @@ impl Kernel {
         let mut op_id = self.head;
         while !op_id.is_null() {
             match self.ops[op_id].op {
-                Op::Move { .. } | Op::ConstView { .. } | Op::LoadView { .. } | Op::StoreView { .. } | Op::Reduce { .. } => {
+                Op::ReduceTile { .. }
+                | Op::Move { .. }
+                | Op::ConstView { .. }
+                | Op::LoadView { .. }
+                | Op::StoreView { .. }
+                | Op::Reduce { .. } => {
                     return Err(BackendError {
                         status: ErrorStatus::KernelCompilation,
                         context: "CUDA codegen: unexpected kernel op (should be unfolded)".into(),

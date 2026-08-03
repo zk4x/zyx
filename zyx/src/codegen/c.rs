@@ -330,7 +330,12 @@ impl Kernel {
                     }
                 }
                 Op::Barrier { .. } => {}
-                Op::ConstView { .. } | Op::LoadView { .. } | Op::StoreView { .. } | Op::Move { .. } | Op::Reduce { .. } => {
+                Op::ReduceTile { .. }
+                | Op::ConstView { .. }
+                | Op::LoadView { .. }
+                | Op::StoreView { .. }
+                | Op::Move { .. }
+                | Op::Reduce { .. } => {
                     return Err(BackendError {
                         status: ErrorStatus::KernelCompilation,
                         context: "C codegen: ConstView/LoadView/StoreView/Move/Reduce should not appear".into(),

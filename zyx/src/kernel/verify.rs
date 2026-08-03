@@ -136,6 +136,10 @@ impl Kernel {
                         }
                     }
                 }
+                Op::ReduceTile { x, .. } => {
+                    check(op_id, x, &stack);
+                    dtypes.insert(op_id, dtypes[&x]);
+                }
                 Op::Unary { x, .. } | Op::Move { x, .. } => {
                     check(op_id, x, &stack);
                     dtypes.insert(op_id, dtypes[&x]);

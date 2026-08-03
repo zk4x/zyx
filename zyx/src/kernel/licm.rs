@@ -35,7 +35,7 @@ impl Kernel {
         let mut op_id = self.head;
         while !op_id.is_null() {
             let depth = match self.at(op_id) {
-                Op::Move { .. } | Op::ConstView { .. } | Op::LoadView { .. } | Op::StoreView { .. } | Op::Reduce { .. } => {
+                Op::Move { .. } | Op::ConstView { .. } | Op::LoadView { .. } | Op::StoreView { .. } | Op::Reduce { .. } | Op::ReduceTile { .. } => {
                     unreachable!()
                 }
                 Op::Devectorize { .. } | Op::Wmma { .. } | Op::Vectorize { .. } => loop_depth,
@@ -86,7 +86,7 @@ impl Kernel {
         let mut op_id = self.head;
         while !op_id.is_null() {
             let depth = match self.at(op_id) {
-                Op::Move { .. } | Op::ConstView { .. } | Op::LoadView { .. } | Op::StoreView { .. } | Op::Reduce { .. } => {
+                Op::Move { .. } | Op::ConstView { .. } | Op::LoadView { .. } | Op::StoreView { .. } | Op::Reduce { .. } | Op::ReduceTile { .. } => {
                     unreachable!()
                 }
                 Op::Vectorize { ops } => {

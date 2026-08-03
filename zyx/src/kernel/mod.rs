@@ -559,6 +559,19 @@ pub(crate) enum Op {
         rop: BOp,
         n_axes: UAxis,
     },
+    /// Hardware reduce_tile: collapses a 32x32 tile accumulator to a scalar.
+    ReduceTile {
+        x: OpId,
+        rop: BOp,
+        kind: TileReduceKind,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, SerBin, DeBin)]
+enum TileReduceKind {
+    Row,
+    Col,
+    Scalar,
 }
 
 impl SerBin for Op {
@@ -668,6 +681,12 @@ impl SerBin for Op {
                 x.ser_bin(output);
                 rop.ser_bin(output);
                 n_axes.ser_bin(output);
+            }
+            Op::ReduceTile { x, rop, kind } => {
+                output.push(23);
+                x.ser_bin(output);
+                rop.ser_bin(output);
+                kind.ser_bin(output);
             }
         }
     }
@@ -784,6 +803,12 @@ impl DeBin for Op {
                 let n_axes = UAxis::de_bin(offset, bytes)?;
                 Ok(Op::Reduce { x, rop, n_axes })
             }
+            23 => {
+                let x = OpId::de_bin(offset, bytes)?;
+                let rop = BOp::de_bin(offset, bytes)?;
+                let kind = TileReduceKind::de_bin(offset, bytes)?;
+                Ok(Op::ReduceTile { x, rop, kind })
+            }
             _ => Err(nanoserde::DeBinErr::new(*offset - 1, 1, bytes.len())),
         }
     }
@@ -808,6 +833,7 @@ impl Op {
             &Op::Move { x, .. } => vec![x],
             &Op::StoreView { src, .. } => vec![src],
             Op::Reduce { x, .. } => vec![*x],
+            Op::ReduceTile { x, .. } => vec![*x],
             &Op::Store { dst, x, index, .. } => vec![dst, x, index],
             Op::Cast { x, .. } => vec![*x],
             Op::Unary { x, .. } => vec![*x],
@@ -837,6 +863,7 @@ impl Op {
             Op::StoreView { src, .. } => vec![src],
             Op::Move { x, .. } => vec![x],
             Op::Reduce { x, .. } => vec![x],
+            Op::ReduceTile { x, .. } => vec![x],
             Op::Store { dst, x, index, .. } => vec![dst, x, index],
             Op::Cast { x, .. } => vec![x],
             Op::Unary { x, .. } => vec![x],
@@ -985,7 +1012,12 @@ impl Kernel {
         let mut op_id = self.head;
         while !op_id.is_null() {
             match &self.ops[op_id].op {
-                Op::ConstView { .. } | Op::StoreView { .. } | Op::LoadView { .. } | Op::Move { .. } | Op::Reduce { .. } => {
+                Op::ConstView { .. }
+                | Op::StoreView { .. }
+                | Op::LoadView { .. }
+                | Op::Move { .. }
+                | Op::Reduce { .. }
+                | Op::ReduceTile { .. } => {
                     unreachable!()
                 }
                 Op::Const(x) => {
@@ -1085,6 +1117,7 @@ impl Kernel {
             Op::LoadView(b) => b.0,
             Op::Move { x, .. } => self.dtype(*x),
             Op::Reduce { x, .. } => self.dtype(*x),
+            Op::ReduceTile { x, .. } => self.dtype(*x),
             Op::EndLoop | Op::Loop { .. } => IDX_T,
             Op::Barrier { .. } | Op::If { .. } | Op::EndIf => {
                 panic!("operation has no dtype")
@@ -1740,6 +1773,12 @@ impl Kernel {
                     BOp::Mul => "prod",
                     _ => "reduce",
                 }),
+                Op::ReduceTile { rop, .. } => parts.push(match rop {
+                    BOp::Add => "reduce_tile_sum",
+                    BOp::Max => "reduce_tile_max",
+                    BOp::Mul => "reduce_tile_prod",
+                    _ => "reduce_tile",
+                }),
                 Op::Mad { .. } => parts.push("mad"),
                 Op::Wmma { .. } => parts.push("wmma"),
                 Op::Cast { .. } => parts.push("cast"),
@@ -1801,6 +1840,11 @@ impl Kernel {
                     let flops = flops as u64;
                     Info { shape, flops, mem_read: 0, mem_write: 0 }
                 }
+                Op::ReduceTile { x, .. } => {
+                    let Info { shape, .. } = stack[x].clone();
+                    let numel: Dim = shape.iter().product();
+                    Info { shape: vec![1], flops: numel - 1, mem_read: 0, mem_write: 0 }
+                }
                 Op::Cast { x, .. } => {
                     let Info { shape, .. } = stack[x].clone();
                     let flops = 0; // Cast is not computation
@@ -1845,7 +1889,7 @@ impl Kernel {
 
     /// Check if the kernel is a reduction kernel.
     pub(crate) fn is_reduce(&self) -> bool {
-        self.ops.values().any(|x| matches!(x.op, Op::Reduce { .. }))
+        self.ops.values().any(|x| matches!(x.op, Op::Reduce { .. } | Op::ReduceTile { .. }))
     }
 
     /// Shape of the kernel output.
@@ -1892,6 +1936,10 @@ impl Kernel {
                 let mut s = self.shape_of(x);
                 s.truncate(s.len() - n_axes);
                 s
+            }
+            Op::ReduceTile { x, .. } => {
+                let _ = self.shape_of(x);
+                vec![1]
             }
             Op::Move { ref mop, .. } => match mop.as_ref() {
                 MoveOp::Reshape { shape, .. }

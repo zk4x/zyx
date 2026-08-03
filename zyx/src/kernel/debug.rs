@@ -117,6 +117,20 @@ impl Kernel {
                         dtypes[&op_id]
                     );
                 }
+                Op::ReduceTile { x, rop, .. } => {
+                    let dtype = dtypes[&x];
+                    dtypes.insert(op_id, dtype);
+                    let x = id_map[&x];
+                    println!(
+                        "{indent}r{out_id}: {dtype}{grey}: {dtype}{reset} = {red}reduce_tile_{}{reset} r{x}",
+                        match rop {
+                            BOp::Add => "sum",
+                            BOp::Max => "max",
+                            BOp::Mul => "prod",
+                            _ => unreachable!(),
+                        },
+                    );
+                }
                 Op::Define { dtype, scope, ro, len, .. } => {
                     dtypes.insert(op_id, dtype);
                     let ro = if ro { "" } else { "mut " };

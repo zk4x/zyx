@@ -37,11 +37,11 @@ impl Kernel {
         let mut op_id = self.head;
         while !op_id.is_null() {
             let next = self.next_op(op_id);
-            match *self.at(op_id) {
+            match self.ops[op_id].op {
                 Op::Move { .. } | Op::ConstView { .. } | Op::LoadView { .. } | Op::StoreView { .. } | Op::Reduce { .. } => {
                     unreachable!("these ops should be unfolded before constant folding")
                 }
-                Op::Wmma { .. } | Op::Barrier { .. } | Op::If { .. } | Op::EndIf => {}
+                Op::ReduceTile { .. } | Op::Wmma { .. } | Op::Barrier { .. } | Op::If { .. } | Op::EndIf => {}
                 Op::Devectorize { .. }
                 | Op::Const(_)
                 | Op::Define { .. }

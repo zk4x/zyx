@@ -137,6 +137,9 @@ impl Kernel {
             &mut Op::Reduce { x, n_axes, .. } => {
                 self.recursively_move(x, move_op, visited, n_reduce_axes + n_axes);
             }
+            &mut Op::ReduceTile { x, .. } => {
+                self.recursively_move(x, move_op, visited, n_reduce_axes);
+            }
             &mut Op::Cast { x, .. } | &mut Op::Unary { x, .. } | &mut Op::Move { x, .. } => {
                 self.recursively_move(x, move_op, visited, n_reduce_axes);
             }

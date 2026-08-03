@@ -50,7 +50,12 @@ impl Kernel {
         let mut op_id = self.head;
         while !op_id.is_null() {
             match self.ops[op_id].op {
-                Op::ConstView { .. } | Op::LoadView { .. } | Op::StoreView { .. } | Op::Reduce { .. } | Op::Move { .. } => {
+                Op::ReduceTile { .. }
+                | Op::ConstView { .. }
+                | Op::LoadView { .. }
+                | Op::StoreView { .. }
+                | Op::Reduce { .. }
+                | Op::Move { .. } => {
                     return Err(BackendError {
                         status: ErrorStatus::KernelCompilation,
                         context: "OpenCL codegen: unexpected kernel op (should be unfolded)".into(),

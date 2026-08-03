@@ -30,41 +30,13 @@ fn round_up(len: Dim, multiple: Dim) -> Dim {
 impl Kernel {
     pub(crate) fn opt_tenstorrent_tile(&mut self) {
         if self.ops.values().any(|node| matches!(node.op, Op::Loop { .. })) {
-            self.tenstorrent_reduce_pad();
-            // orig_len is the reduce dim length before padding to 32
-            self.pad_loop();
+            todo!()
         } else {
             self.tenstorrent_pad();
             self.tenstorrent_local();
             self.tenstorrent_group();
             self.tenstorrent_loop_local();
         }
-    }
-
-    fn tenstorrent_reduce_pad(&mut self) {
-        let mut gidxs: Vec<(OpId, u32, Dim)> = Vec::new();
-        let mut op_id = self.head;
-        while !op_id.is_null() {
-            if let &Op::Index { len, axis, scope } = self.at(op_id) {
-                if scope == IdxScope::Group {
-                    gidxs.push((op_id, axis, len));
-                } else {
-                    return;
-                }
-            }
-            op_id = self.next_op(op_id);
-        }
-        gidxs.sort_by_key(|&(_, axis, _)| axis);
-        gidxs.dedup_by_key(|&mut (_, axis, _)| axis);
-
-        for &(id, _axis, len) in &gidxs {
-            let pad = round_up(len, 32);
-            if pad > 0 {
-                self.pad_index(id, pad);
-            }
-        }
-
-        self.verify();
     }
 
     fn tenstorrent_pad(&mut self) {

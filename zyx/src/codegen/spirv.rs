@@ -992,8 +992,9 @@ impl Kernel {
         {
             let mut op_id = self.head;
             while !op_id.is_null() {
-                match self.at(op_id) {
-                    Op::ConstView { .. }
+                match self.ops[op_id].op {
+                    Op::ReduceTile { .. }
+                    | Op::ConstView { .. }
                     | Op::LoadView { .. }
                     | Op::StoreView { .. }
                     | Op::Move { .. }
@@ -1004,8 +1005,7 @@ impl Kernel {
                             context: "SPIR-V: unexpected kernel op (should be unfolded)".into(),
                         });
                     }
-
-                    Op::Vectorize { ops } => {
+                    Op::Vectorize { ref ops } => {
                         let (dt, layout) = dtypes[&op_id];
                         let result_type =
                             layout_type_id(&mut asm, &mut type_cache, &mut vec_type_cache, &mut type_entries, dt, layout);
@@ -1014,19 +1014,16 @@ impl Kernel {
                         asm.emit_typed(OpCompositeConstruct, result_type, rid, &operands);
                         spv_values.insert(op_id, rid);
                     }
-
                     Op::Devectorize { vec, idx } => {
                         let scalar_type = push_dtype(&mut asm, &mut type_cache, &mut type_entries, dtypes[&op_id].0);
                         let rid = asm.id();
-                        asm.emit_typed(OpCompositeExtract, scalar_type, rid, &[spv_values[&vec], *idx as u32]);
+                        asm.emit_typed(OpCompositeExtract, scalar_type, rid, &[spv_values[&vec], idx as u32]);
                         spv_values.insert(op_id, rid);
                     }
-
                     Op::Const(_) => {
                         // Already emitted in pass 1
                     }
-
-                    &Op::Define { scope, .. } => {
+                    Op::Define { scope, .. } => {
                         match scope {
                             MemScope::Global | MemScope::Local => {
                                 // Already declared as module-level variable
@@ -1036,8 +1033,7 @@ impl Kernel {
                             }
                         }
                     }
-
-                    &Op::Load { src, index, layout } => {
+                    Op::Load { src, index, layout } => {
                         let (load_dt, _) = dtypes[&op_id];
                         let result_type =
                             layout_type_id(&mut asm, &mut type_cache, &mut vec_type_cache, &mut type_entries, load_dt, layout);
@@ -1126,8 +1122,7 @@ impl Kernel {
                             }
                         }
                     }
-
-                    &Op::Store { dst, x, index, layout } => {
+                    Op::Store { dst, x, index, layout } => {
                         let val_id = spv_values[&x];
                         let index_id = spv_values[&index];
 
@@ -1209,8 +1204,7 @@ impl Kernel {
                             }
                         }
                     }
-
-                    &Op::Cast { x, dtype } => {
+                    Op::Cast { x, dtype } => {
                         let src_type = dtypes[&x].0;
                         let src_id = spv_values[&x];
                         let dst_type = dtype;
@@ -1267,8 +1261,7 @@ impl Kernel {
                         }
                         spv_values.insert(op_id, rid);
                     }
-
-                    &Op::Unary { x, uop } => {
+                    Op::Unary { x, uop } => {
                         let src_id = spv_values[&x];
                         let (dt, layout) = dtypes[&x];
                         let result_type =
@@ -1337,8 +1330,7 @@ impl Kernel {
                         }
                         spv_values.insert(op_id, rid);
                     }
-
-                    &Op::Binary { x, y, bop } => {
+                    Op::Binary { x, y, bop } => {
                         let x_id = spv_values[&x];
                         let y_id = spv_values[&y];
                         let dt = dtypes[&x].0;
@@ -1431,7 +1423,7 @@ impl Kernel {
                         spv_values.insert(op_id, rid);
                     }
 
-                    &Op::Mad { x, y, z } => {
+                    Op::Mad { x, y, z } => {
                         let x_id = spv_values[&x];
                         let y_id = spv_values[&y];
                         let z_id = spv_values[&z];
@@ -1453,7 +1445,7 @@ impl Kernel {
                         }
                         spv_values.insert(op_id, rid);
                     }
-                    &Op::Index { axis, scope, .. } => {
+                    Op::Index { axis, scope, .. } => {
                         let result_type = emit_type(&mut asm, &mut type_cache, IDX_T);
                         let loaded = asm.id();
                         match scope {
@@ -1472,7 +1464,7 @@ impl Kernel {
                             spv_values.insert(op_id, widened);
                         }
                     }
-                    &Op::Loop { len } => {
+                    Op::Loop { len } => {
                         let header = asm.id();
                         let body = asm.id();
                         let continue_lbl = asm.id();
@@ -1503,7 +1495,6 @@ impl Kernel {
 
                         loop_stack.push((header, merge, continue_lbl, counter_var, len));
                     }
-
                     Op::EndLoop => {
                         let (header, merge, continue_lbl, counter_var, len) = loop_stack.pop().unwrap();
                         let idx_type = emit_type(&mut asm, &mut type_cache, IDX_T);
@@ -1530,8 +1521,7 @@ impl Kernel {
                         // Merge block
                         asm.emit(OpLabel, &[merge]);
                     }
-
-                    &Op::If { condition } => {
+                    Op::If { condition } => {
                         let cond_id = spv_values[&condition];
                         let true_block = asm.id();
                         let merge = asm.id();
@@ -1543,14 +1533,12 @@ impl Kernel {
                         asm.emit(OpLabel, &[true_block]);
                         if_stack.push(merge);
                     }
-
                     Op::EndIf => {
                         let merge = if_stack.pop().unwrap();
                         asm.emit(OpBranch, &[merge]);
                         asm.emit(OpLabel, &[merge]);
                     }
-
-                    &Op::Barrier => {
+                    Op::Barrier => {
                         let scope_id = const_pool[&Constant::U32(SCOPE_WORKGROUP)];
                         let sem_id = const_pool[&Constant::U32(SEM_ACQUIRE_RELEASE | SEM_WORKGROUP_MEMORY)];
                         asm.emit(OpControlBarrier, &[scope_id, scope_id, sem_id]);

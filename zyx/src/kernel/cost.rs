@@ -149,6 +149,10 @@ impl Kernel {
                     Op::Index { .. } | Op::Loop { .. } => {
                         dtypes.insert(op_id, (DType::U32, MemLayout::Scalar));
                     }
+                    &Op::ReduceTile { x, .. } => {
+                        dtypes.insert(op_id, dtypes[&x]);
+                        *rcs.entry(x).or_insert(0) += 1;
+                    }
                     &Op::If { condition } => {
                         *rcs.entry(condition).or_insert(0) += 1;
                     }
@@ -208,7 +212,7 @@ impl Kernel {
                 Op::LoadView(_) => todo!(),
                 Op::StoreView { .. } => todo!(),
                 Op::Move { .. } => todo!(),
-                Op::Reduce { .. } => todo!(),
+                Op::Reduce { .. } | Op::ReduceTile { .. } => todo!(),
             };
             if produces {
                 if let Some(&rc) = rcs.get(&op_id) {
@@ -267,7 +271,8 @@ impl Kernel {
                 | Op::LoadView(_)
                 | Op::StoreView { .. }
                 | Op::Move { .. }
-                | Op::Reduce { .. } => {}
+                | Op::Reduce { .. }
+                | Op::ReduceTile { .. } => {}
                 &Op::Load { src, index, layout } => {
                     wi_ops += loop_mult;
                     if !indexing_ops.contains(&op_id) {
