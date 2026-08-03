@@ -357,6 +357,12 @@ struct VkPhysicalDeviceShaderBfloat16FeaturesKHR {
     shaderBFloat16DotProduct: u32,
     shaderBFloat16CooperativeMatrix: u32,
 }
+#[repr(C)]
+#[derive(Clone)]
+struct VkExtensionProperties {
+    extensionName: [i8; 256],
+    specVersion: u32,
+}
 
 // ── Config ───────────────────────────────────────────────────────────────────
 
@@ -668,6 +674,12 @@ pub(super) fn initialize_device(
         get_inst_proc!("vkGetPhysicalDeviceMemoryProperties");
     let vkGetPhysicalDeviceFeatures2: unsafe extern "system" fn(VkPhysicalDevice, *mut VkPhysicalDeviceFeatures2) =
         get_inst_proc!("vkGetPhysicalDeviceFeatures2");
+    let vkEnumerateDeviceExtensionProperties: unsafe extern "system" fn(
+        VkPhysicalDevice,
+        *const i8,
+        *mut u32,
+        *mut VkExtensionProperties,
+    ) -> VkResult = get_inst_proc!("vkEnumerateDeviceExtensionProperties");
     let vkCreateDevice: unsafe extern "system" fn(
         VkPhysicalDevice,
         *const VkDeviceCreateInfo,
@@ -735,6 +747,23 @@ pub(super) fn initialize_device(
             println!("[vulkan] {name}");
         }
 
+        // shaderBFloat16Type can be reported as supported even when the
+        // VK_KHR_shader_bfloat16 extension isn't actually available, so gate on
+        // the extension being enumerated explicitly.
+        let ext_supports_bf16 = {
+            let mut count: u32 = 0;
+            unsafe { vkEnumerateDeviceExtensionProperties(gpu, std::ptr::null(), &mut count, std::ptr::null_mut()) };
+            let mut props = vec![unsafe { std::mem::zeroed::<VkExtensionProperties>() }; count as usize];
+            unsafe { vkEnumerateDeviceExtensionProperties(gpu, std::ptr::null(), &mut count, props.as_mut_ptr()) };
+            props.iter().any(|p| {
+                let name = unsafe { CStr::from_ptr(p.extensionName.as_ptr() as *const i8) };
+                name.to_bytes() == b"VK_KHR_shader_bfloat16"
+            })
+        };
+        if debug_dev {
+            println!("[vulkan] {name}: VK_KHR_shader_bfloat16 extension: {ext_supports_bf16}");
+        }
+
         let bf16_device_features;
         let has_shader_bf16;
         let has_shader_float16 = if vkGetPhysicalDeviceFeatures2 as usize != 0 {
@@ -757,7 +786,7 @@ pub(super) fn initialize_device(
                 features: [0u32; 55],
             };
             unsafe { vkGetPhysicalDeviceFeatures2(gpu, &mut features2) };
-            has_shader_bf16 = bf16_features.shaderBFloat16Type != 0;
+            has_shader_bf16 = ext_supports_bf16 && bf16_features.shaderBFloat16Type != 0;
             bf16_device_features = if has_shader_bf16 {
                 VkPhysicalDeviceShaderBfloat16FeaturesKHR {
                     sType: VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_BFLOAT16_FEATURES_KHR,
