@@ -3,7 +3,7 @@
 
 use crate::{
     DType, Map, Set,
-    kernel::{BOp, Kernel, MemLayout, Op, OpId, Scope, UOp},
+    kernel::{BOp, IdxScope, Kernel, MemLayout, MemScope, Op, OpId, UOp},
 };
 use std::fmt::Write;
 
@@ -53,7 +53,7 @@ impl Kernel {
             while !op_id.is_null() {
                 match self.ops[op_id].op {
                     Op::Define { dtype: _, scope, ro, .. } => match scope {
-                        Scope::Global => {
+                        MemScope::Global => {
                             if ro {
                                 writeln!(reader, "{indent}uint32_t src{op_id} = get_arg_val<uint32_t>({input_arg_idx});");
                                 writeln!(
@@ -65,25 +65,22 @@ impl Kernel {
                                 input_arg_idx += 1;
                             }
                         }
-                        Scope::Local => {
+                        MemScope::Local => {
                             if let Some(cb_id) = input_cb_map.get(&op_id) {
                                 writeln!(reader, "{indent}CircularBuffer cb{cb_id}(tt::CBIndex::c_{cb_id});");
                             }
                         }
-                        Scope::Register => todo!(),
+                        MemScope::Register => todo!(),
                     },
                     Op::Load { .. } => {}
                     Op::Store { dst, x, index: st_idx, layout: st_layout } => {
                         let Op::Load { src, index: ld_idx, layout: ld_layout } = self.ops[x].op else {
                             panic!("tenstorrent supports only global to local loads in reader kernels with no ops inbetween")
                         };
-                        let Op::Define { scope: Scope::Global, ro, .. } = self.ops[src].op else {
+                        let Op::Define { scope: MemScope::Global, .. } = self.ops[src].op else {
                             unreachable!()
                         };
-                        if !ro {
-                            continue;
-                        }
-                        let Op::Define { dtype, scope: Scope::Local, .. } = self.ops[dst].op else {
+                        let Op::Define { dtype, scope: MemScope::Local, .. } = self.ops[dst].op else {
                             unreachable!()
                         };
 
@@ -134,7 +131,7 @@ impl Kernel {
                     Op::Const(val) => {
                         writeln!(reader, "{indent}{} r{op_id} = {};", val.dtype().c_type(), val.c_code());
                     }
-                    Op::GroupIndex { axis, .. } => {
+                    Op::Index { axis, scope: IdxScope::Group, .. } => {
                         writeln!(reader, "{indent}uint32_t r{op_id} = get_arg_val<uint32_t>({});", n_inputs + axis as usize);
                         writeln!(reader, "{indent}DEVICE_PRINT(\"r{op_id}=gidx{axis}={{}}\\n\", r{op_id});");
                     }
@@ -144,7 +141,7 @@ impl Kernel {
                     Op::Cast { x, dtype } => {
                         writeln!(reader, "{indent}{} r{op_id} = ({})r{x};", dtype.c_type(), dtype.c_type());
                     }
-                    Op::LocalIndex { .. } => {
+                    Op::Index { scope: IdxScope::Local, .. } => {
                         unreachable!(
                             "tenstorrent does not have local threads; local indices should have been converted to loops by the opt_tenstorrent_tile optimization pass"
                         )
@@ -199,6 +196,7 @@ impl Kernel {
                 writeln!(compute, "{indent}init_sfpu({in0}, {out0});");
             }
 
+            let mut has_exp = false;
             let mut has_sin = false;
             let mut has_binary = false;
             let (_dtypes, rcs) = self.compute_dtypes_and_rcs();
@@ -238,7 +236,7 @@ impl Kernel {
                 while scan != op_id {
                     if compute_deps.contains(&scan) {
                         match &self.ops[scan].op {
-                            Op::GroupIndex { axis, .. } => {
+                            Op::Index { axis, scope: IdxScope::Local, .. } => {
                                 writeln!(
                                     compute,
                                     "{indent}uint32_t r{scan} = get_arg_val<uint32_t>({});",
@@ -275,6 +273,7 @@ impl Kernel {
             while !scan.is_null() {
                 match self.ops[scan].op {
                     Op::Cast { .. } => {}
+                    Op::Unary { uop: UOp::Exp, .. } => has_exp = true,
                     Op::Unary { uop: UOp::Sin, .. } => has_sin = true,
                     Op::Binary { bop: BOp::Add, .. } => has_binary = true,
                     Op::Barrier => break,
@@ -283,6 +282,9 @@ impl Kernel {
                 scan = self.next_op(scan);
             }
 
+            if has_exp {
+                writeln!(compute, "{indent}exp_tile_init();");
+            }
             if has_sin {
                 writeln!(compute, "{indent}sin_tile_init();");
             }
@@ -333,15 +335,29 @@ impl Kernel {
                         let n = rcs.get(&op_id).copied().unwrap_or(1).max(1) as usize;
                         dst_slots.insert(op_id, vec![slot; n]);
                     }
-                    Op::Unary { x, uop: UOp::Sin } => {
+                    Op::Unary { x, uop } => {
                         let idx = consumer_count.entry(x).or_insert(0);
                         let slot = dst_slots[&x][*idx as usize];
                         *idx += 1;
                         let n = rcs.get(&op_id).copied().unwrap_or(1).max(1) as usize;
                         dst_slots.insert(op_id, vec![slot; n]);
-                        writeln!(compute, "{indent}sin_tile({slot});");
+                        match uop {
+                            UOp::Neg => writeln!(compute, "{indent}negative_tile({slot});"),
+                            UOp::BitNot => writeln!(compute, "{indent}bitwise_not_tile({slot});"),
+                            UOp::Exp => writeln!(compute, "{indent}exp_tile({slot});"),
+                            UOp::Exp2 => writeln!(compute, "{indent}exp2_tile({slot});"),
+                            UOp::Ln => unreachable!("should've been changed to log2"),
+                            UOp::Log2 => writeln!(compute, "{indent}log_tile({slot});"),
+                            UOp::Reciprocal => writeln!(compute, "{indent}recip_tile({slot});"),
+                            UOp::Sqrt => writeln!(compute, "{indent}sqrt_tile({slot});"),
+                            UOp::Sin => writeln!(compute, "{indent}sin_tile({slot});"),
+                            UOp::Cos => writeln!(compute, "{indent}cos_tile({slot});"),
+                            UOp::Floor => writeln!(compute, "{indent}floor_tile({slot});"),
+                            UOp::Trunc => writeln!(compute, "{indent}trunc_tile({slot});"),
+                            UOp::Abs => writeln!(compute, "{indent}abs_tile({slot});"),
+                        };
                     }
-                    Op::Binary { x, y, bop: BOp::Add } => {
+                    Op::Binary { x, y, bop } => {
                         let x_idx = consumer_count.entry(x).or_insert(0);
                         let slot_x = dst_slots[&x][*x_idx as usize];
                         *x_idx += 1;
@@ -350,7 +366,26 @@ impl Kernel {
                         *y_idx += 1;
                         let n = rcs.get(&op_id).copied().unwrap_or(1).max(1) as usize;
                         dst_slots.insert(op_id, vec![slot_x; n]);
-                        writeln!(compute, "{indent}add_binary_tile({slot_x}, {slot_y}, {slot_x});");
+                        match bop {
+                            BOp::Add => writeln!(compute, "{indent}add_binary_tile({slot_x}, {slot_y}, {slot_x});"),
+                            BOp::Sub => writeln!(compute, "{indent}sub_binary_tile({slot_x}, {slot_y}, {slot_x});"),
+                            BOp::Mul => writeln!(compute, "{indent}sub_binary_tile({slot_x}, {slot_y}, {slot_x});"),
+                            BOp::Div => writeln!(compute, "{indent}div_binary_tile({slot_x}, {slot_y}, {slot_x});"),
+                            BOp::Pow => todo!(),
+                            BOp::Mod => todo!(),
+                            BOp::Cmplt => todo!(),
+                            BOp::Cmpgt => todo!(),
+                            BOp::Max => todo!(),
+                            BOp::Or => todo!(),
+                            BOp::And => todo!(),
+                            BOp::BitXor => todo!(),
+                            BOp::BitOr => todo!(),
+                            BOp::BitAnd => todo!(),
+                            BOp::BitShiftLeft => todo!(),
+                            BOp::BitShiftRight => todo!(),
+                            BOp::NotEq => todo!(),
+                            BOp::Eq => todo!(),
+                        };
                     }
                     Op::Store { dst, x, index: _, layout: MemLayout::Tile { .. } } => {
                         if let Some(&cb_id) = output_cb_map.get(&dst) {
@@ -407,7 +442,7 @@ impl Kernel {
         {
             let mut scan = self.head;
             while !scan.is_null() {
-                if let Op::Define { scope: Scope::Global, ro: false, .. } = self.ops[scan].op {
+                if let Op::Define { scope: MemScope::Global, ro: false, .. } = self.ops[scan].op {
                     writeln!(writer, "{indent}uint32_t out{scan} = get_arg_val<uint32_t>({out_global_count});");
                     writeln!(
                         writer,
@@ -483,7 +518,7 @@ impl Kernel {
             while scan != op_id {
                 if writer_deps.contains(&scan) {
                     match &self.ops[scan].op {
-                        Op::GroupIndex { axis, .. } => {
+                        Op::Index { axis, scope: IdxScope::Group, .. } => {
                             writeln!(writer, "{indent}uint32_t r{scan} = get_arg_val<uint32_t>({});", n_outputs + *axis as usize);
                             writeln!(writer, "{indent}DPRINT << \"writer r{scan}=gidx{axis}=\" << r{scan} << ENDL();");
                         }
@@ -542,7 +577,7 @@ impl Kernel {
                 Op::Const(val) => {
                     writeln!(writer, "{indent}{} r{op_id} = {};", val.dtype().c_type(), val.c_code());
                 }
-                Op::GroupIndex { axis, .. } => {
+                Op::Index { axis, scope: IdxScope::Group, .. } => {
                     writeln!(writer, "{indent}uint32_t r{op_id} = get_arg_val<uint32_t>({});", n_outputs + axis as usize);
                 }
                 Op::Cast { x, dtype } => {

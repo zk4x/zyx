@@ -425,24 +425,21 @@ impl Kernel {
         kernel.run_always_on_optimizations();
         kernel.run_always_on_optimizations();
 
-        /*#[cfg(feature = "tenstorrent")]
+        #[cfg(feature = "tenstorrent")]
         if let Device::TT(_) = device {
-            kernel.tenstorrent_tile();
-        }*/
+            kernel.opt_tenstorrent_tile();
+        }
+
+        kernel.ln_to_log2();
 
         //kernel.opt_tenstorrent_tile();
 
-        /*kernel.vectorize_loads(&[32]);
-        kernel.vectorize_stores(&[32]);
-        kernel.vectorize_ops_backward(&[32]);
-        kernel.vectorize_ops_forward(&[32]);*/
-
-        /*kernel.run_always_on_optimizations();
+        kernel.run_always_on_optimizations();
         kernel.run_always_on_optimizations();
         kernel.fuse_mad();
         kernel.run_always_on_optimizations();
         kernel.run_always_on_optimizations();
-        kernel.debug();*/
+        kernel.debug();
 
         let args = kernel.alloc_buffers(memory_pool, None)?;
         let (program_id, timing) =
@@ -489,7 +486,7 @@ impl Kernel {
         debug: DebugMask,
         init_buffers: Option<&[PoolBufferId]>,
     ) -> Result<(DeviceProgramId, OptSeq, u64), BackendError> {
-        if false {
+        if true {
             return self.apply_selected_optimizations(device, memory_pool, config, flop, read_bytes, write_bytes, debug);
         }
 

@@ -20,7 +20,7 @@ use crate::{
     DType, Map,
     backend::DTypeCapability,
     error::{BackendError, ErrorStatus},
-    kernel::{Op, OpId, Scope},
+    kernel::{IdxScope, MemScope, Op, OpId},
     shape::Dim,
     slab::Slab,
 };
@@ -692,11 +692,11 @@ impl TTDevice {
             let mut scan = kernel.head;
             while !scan.is_null() {
                 match &kernel.ops[scan].op {
-                    Op::Define { dtype, scope: Scope::Global, ro: true, .. } => input_dtypes.push(*dtype),
-                    Op::Define { dtype, scope: Scope::Global, ro: false, .. } => output_dtypes.push(*dtype),
-                    Op::GroupIndex { len, axis } => grid_dims[*axis as usize] = *len as u32,
+                    Op::Define { dtype, scope: MemScope::Global, ro: true, .. } => input_dtypes.push(*dtype),
+                    Op::Define { dtype, scope: MemScope::Global, ro: false, .. } => output_dtypes.push(*dtype),
+                    Op::Index { len, axis, scope: IdxScope::Group } => grid_dims[*axis as usize] = *len as u32,
                     Op::Store { dst, x, .. } => {
-                        if let Op::Define { scope: Scope::Local, .. } = kernel.ops[*dst].op {
+                        if let Op::Define { scope: MemScope::Local, .. } = kernel.ops[*dst].op {
                             if let Op::Load { src, .. } = kernel.ops[*x].op {
                                 if let Op::Define { ro: true, .. } = kernel.ops[src].op {
                                     input_cb_map.insert(*dst, max_cb);
