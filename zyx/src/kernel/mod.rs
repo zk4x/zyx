@@ -96,7 +96,7 @@ use crate::{
     DType, Map, Set,
     dtype::Constant,
     shape::{Dim, UAxis},
-    slab::{Slab, SlabId},
+    slab::Slab,
 };
 use nanoserde::{DeBin, SerBin};
 use std::collections::BTreeMap;
@@ -105,11 +105,9 @@ use std::{fmt::Display, hash::BuildHasherDefault, hash::Hash};
 pub use custom::CompiledKernel;
 
 mod algebraic;
-/// Autotuning optimizations for kernel compilation.
+mod ops;
 pub(crate) mod autotune;
-/// Cost estimation for kernel selection.
 mod cost;
-/// Custom kernel compilation for GPU-specific operations.
 mod custom;
 mod debug;
 mod fold_constants;
@@ -121,7 +119,6 @@ mod local_reduce;
 mod merge_loops;
 mod mma;
 mod pad_index;
-/// Cost prediction for kernel selection.
 mod predict_cost;
 mod split_loops;
 mod tenstorrent;
@@ -131,6 +128,9 @@ mod unfold;
 mod unroll_loops;
 mod vectorize;
 mod verify;
+
+pub(crate) use ops::{Op, UOp, BOp, OpId, IdxScope, MoveOp, OpNode};
+pub use ops::{MMADType, MMADims, MMALayout};
 
 // TODO later make this dynamic u32 or u64 depending on max range
 /// Type used for indexing into arrays within kernels.
@@ -215,212 +215,6 @@ pub enum MemScope {
     Register,
 }
 
-/// Scope of index. Index is like loop, but purely parallel acess
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, SerBin, DeBin)]
-pub enum IdxScope {
-    /// Group scope. Represents blocks in cuda, cores in CPU and tenstorrent.
-    Group,
-    /// Local scope. Represents cuda threads.
-    Local,
-    /// Warp scope. Represents warps and wavefronts.
-    Warp,
-}
-
-impl std::fmt::Display for IdxScope {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(match self {
-            IdxScope::Group => "group",
-            IdxScope::Local => "local",
-            IdxScope::Warp => "warp",
-        })
-    }
-}
-
-/// Unary operations for element-wise kernel transformations.
-///
-/// These operations are applied to a single input tensor.
-///
-/// # Variants
-#[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone, Copy, Hash)]
-pub(crate) enum UOp {
-    /// Negation: -x
-    Neg,
-    /// Bitwise NOT: ~x
-    BitNot,
-    /// Exponential: e^x
-    Exp,
-    /// Exponential with base 2: 2^x
-    Exp2,
-    /// Natural logarithm: ln(x)
-    Ln,
-    /// Logarithm with base 2: log2(x)
-    Log2,
-    /// Reciprocal: 1/x
-    Reciprocal,
-    /// Square root: sqrt(x)
-    Sqrt,
-    /// Sine: sin(x)
-    Sin,
-    /// Cosine: cos(x)
-    Cos,
-    /// Floor: floor(x)
-    Floor,
-    /// Truncate toward zero: trunc(x)
-    Trunc,
-    /// Absolute value: |x|
-    Abs,
-}
-
-#[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone, Copy, Hash)]
-/// Binary operations for element-wise or reduction kernel operations.
-///
-/// These operations take two input tensors and produce an output.
-///
-/// # Variants
-pub(crate) enum BOp {
-    /// Addition: x + y
-    Add,
-    /// Subtraction: x - y
-    Sub,
-    /// Multiplication: x * y
-    Mul,
-    /// Division: x / y
-    Div,
-    /// Power: x^y
-    Pow,
-    /// Modulo: x % y
-    Mod,
-    /// Compare less than: x < y
-    Cmplt,
-    /// Compare greater than: x > y
-    Cmpgt,
-    /// Maximum: max(x, y)
-    Max,
-    /// Bitwise OR: x | y
-    Or,
-    /// Bitwise AND: x & y
-    And,
-    /// Bitwise XOR: x ^ y
-    BitXor,
-    /// Bitwise OR: x | y
-    BitOr,
-    /// Bitwise AND: x & y
-    BitAnd,
-    /// Left shift: x << y
-    BitShiftLeft,
-    /// Right shift: x >> y
-    BitShiftRight,
-    /// Not equal: x != y
-    NotEq,
-    /// Equal: x == y
-    Eq,
-}
-
-impl BOp {
-    /// Returns true if the binary operation is associative:
-    /// `(a op b) op c == a op (b op c)`.
-    pub const fn is_associative(self) -> bool {
-        use BOp::{Add, And, BitAnd, BitOr, BitShiftLeft, BitShiftRight, BitXor, Max, Mul, Or};
-        matches!(self, Add | Mul | And | Or | BitXor | BitAnd | BitOr | BitShiftLeft | BitShiftRight | Max)
-    }
-
-    /// Returns true if the binary operation is commutative:
-    /// `a op b == b op a`.
-    pub const fn is_commutative(self) -> bool {
-        use BOp::{Add, And, BitAnd, BitOr, BitXor, Max, Mul, Or};
-        matches!(self, Add | Mul | And | Or | BitXor | BitAnd | BitOr | Max)
-    }
-
-    /// Returns true if the operation produces a boolean result.
-    pub const fn returns_bool(self) -> bool {
-        use BOp::{And, Cmpgt, Cmplt, Eq, NotEq, Or};
-        matches!(self, Cmpgt | Cmplt | NotEq | Eq | And | Or)
-    }
-}
-
-/// Movement operations for tensor shape transformations.
-///
-/// These operations change the shape of tensors without changing their data.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub(crate) enum MoveOp {
-    /// Reshape to a new shape.
-    Reshape { shape: Vec<Dim> },
-    /// Expand dimensions.
-    Expand { shape: Vec<Dim> },
-    /// Permute axes.
-    Permute { axes: Vec<UAxis>, shape: Vec<Dim> },
-    /// Pad dimensions.
-    Pad { padding: Vec<(i64, i64)>, shape: Vec<Dim> },
-}
-
-/// Matrix multiply dimensions for tensor core operations.
-///
-/// Represents the shape (m, n, k) for matrix multiplication.
-#[allow(non_camel_case_types)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, SerBin, DeBin)]
-pub enum MMADims {
-    /// 8x8 with k=16
-    m8n8k16,
-    /// 16x8 with k=8
-    m16n8k8,
-    /// 16x8 with k=16
-    m16n8k16,
-}
-
-/// Memory layout for tensor core matrix operands.
-///
-/// Describes how matrix data is stored in memory.
-#[allow(non_camel_case_types)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, SerBin, DeBin)]
-pub enum MMALayout {
-    /// Row-major for both matrices
-    row_row,
-    /// Row-major for A, column-major for B
-    row_col,
-    /// Column-major for A, row-major for B
-    col_row,
-    /// Column-major for both matrices
-    col_col,
-}
-
-/// Data type for matrix multiply operations.
-#[allow(non_camel_case_types)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, SerBin, DeBin)]
-pub enum MMADType {
-    /// FP16 input with FP32 accumulator
-    f16_f16_f16_f32,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub(crate) struct OpNode {
-    pub(crate) prev: OpId,
-    pub(crate) next: OpId, // Use Vec<OpId> instead for egraph
-    pub(crate) op: Op,
-}
-
-impl SerBin for OpNode {
-    fn ser_bin(&self, output: &mut Vec<u8>) {
-        self.prev.ser_bin(output);
-        self.next.ser_bin(output);
-        self.op.ser_bin(output);
-    }
-}
-
-impl DeBin for OpNode {
-    fn de_bin(offset: &mut usize, bytes: &[u8]) -> Result<Self, nanoserde::DeBinErr> {
-        let prev = OpId::de_bin(offset, bytes)?;
-        let next = OpId::de_bin(offset, bytes)?;
-        let op = Op::de_bin(offset, bytes)?;
-        Ok(OpNode { prev, next, op })
-    }
-}
-
-/// Operation ID for kernel operations.
-///
-/// This is a unique identifier for each operation in the kernel IR.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, SerBin, DeBin)]
-pub struct OpId(pub(crate) u32);
-
 /// Memory layout for kernel operations.
 ///
 /// Specifies how data is laid out in memory for efficient access.
@@ -439,379 +233,6 @@ pub enum MemLayout {
         /// Stride between tiles
         stride: u32,
     },
-}
-
-impl MemLayout {
-    /// Get the number of elements in the memory layout.
-    pub(crate) fn n_elements(self) -> Dim {
-        match self {
-            MemLayout::Scalar => 1,
-            MemLayout::Vector(x) => x.into(),
-            MemLayout::Tile { x, y, .. } => x as Dim * y as Dim,
-        }
-    }
-}
-
-impl std::fmt::Display for MemLayout {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            MemLayout::Scalar => f.write_fmt(format_args!("Scalar")),
-            MemLayout::Vector(x) => f.write_fmt(format_args!("Vec({x})")),
-            MemLayout::Tile { x, y, stride } => f.write_fmt(format_args!("Tile({x}x{y} st={stride})")),
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub(crate) enum Op {
-    // ops that exist in both
-    Cast {
-        x: OpId,
-        dtype: DType,
-    },
-    Unary {
-        x: OpId,
-        uop: UOp,
-    },
-    // For binary ops, next of x is y, then next of y is the binary op
-    Binary {
-        x: OpId,
-        y: OpId,
-        bop: BOp,
-    },
-
-    // ops that only exist after unfolding views and reduces
-    Const(Constant),
-    Define {
-        dtype: DType,
-        scope: MemScope,
-        ro: bool,
-        len: Dim,
-    }, // len is 0 for global stores
-    Store {
-        dst: OpId,
-        x: OpId,
-        index: OpId,
-        layout: MemLayout,
-    },
-    Load {
-        src: OpId,
-        index: OpId,
-        layout: MemLayout,
-    },
-    Index {
-        len: Dim,
-        axis: u32,
-        scope: IdxScope,
-    },
-    // TODO add WarpIndex
-    // Control flow
-    Loop {
-        len: OpId,
-    },
-    EndLoop,
-    If {
-        condition: OpId, // must be boolean variable
-    },
-    EndIf,
-    // fused multiply add
-    Mad {
-        x: OpId,
-        y: OpId,
-        z: OpId,
-    },
-    // fused matmul, a, b, c are fragments, each is a vector, c is accumulator, returns new accumulated vector d
-    Wmma {
-        dims: MMADims,
-        layout: MMALayout,
-        dtype: MMADType,
-        a: OpId,
-        b: OpId,
-        c: OpId,
-    },
-    // Vectorization, YAY!
-    Vectorize {
-        ops: Vec<OpId>,
-    },
-    Devectorize {
-        vec: OpId,
-        idx: usize,
-    }, // select a single value from a vector
-    Barrier,
-
-    // ops that exist only in kernelizer, basically they can be eventually removed.
-    // TODO Get rid of the view, use whatever ops that are needed directly
-    // and then use unfold movement ops function to convert it all into indices.
-    // This will make Op smaller and Copy.
-    // TODO Use MovementOp instead for all the movement.
-    ConstView(Box<(Constant, View)>),
-    LoadView(Box<(DType, View)>),
-    StoreView {
-        src: OpId,
-        dtype: DType,
-    },
-    Move {
-        x: OpId,
-        mop: Box<MoveOp>,
-    },
-    Reduce {
-        x: OpId,
-        rop: BOp,
-        n_axes: UAxis,
-    },
-    /// Hardware reduce_tile: collapses a 32x32 tile accumulator to a scalar.
-    ReduceTile {
-        x: OpId,
-        rop: BOp,
-        kind: TileReduceKind,
-    },
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, SerBin, DeBin)]
-enum TileReduceKind {
-    Row,
-    Col,
-    Scalar,
-}
-
-impl SerBin for Op {
-    fn ser_bin(&self, output: &mut Vec<u8>) {
-        match self {
-            Op::Cast { x, dtype } => {
-                output.push(0);
-                x.ser_bin(output);
-                dtype.ser_bin(output);
-            }
-            Op::Unary { x, uop } => {
-                output.push(1);
-                x.ser_bin(output);
-                uop.ser_bin(output);
-            }
-            Op::Binary { x, y, bop } => {
-                output.push(2);
-                x.ser_bin(output);
-                y.ser_bin(output);
-                bop.ser_bin(output);
-            }
-            Op::Const(c) => {
-                output.push(3);
-                c.ser_bin(output);
-            }
-            Op::Define { dtype, scope, ro, len } => {
-                output.push(4);
-                dtype.ser_bin(output);
-                scope.ser_bin(output);
-                output.push(u8::from(*ro));
-                len.ser_bin(output);
-            }
-            Op::Store { dst, x, index, layout } => {
-                output.push(5);
-                dst.ser_bin(output);
-                x.ser_bin(output);
-                index.ser_bin(output);
-                layout.ser_bin(output);
-            }
-            Op::Load { src, index, layout } => {
-                output.push(6);
-                src.ser_bin(output);
-                index.ser_bin(output);
-                layout.ser_bin(output);
-            }
-            Op::Index { len, axis, scope } => {
-                output.push(7);
-                len.ser_bin(output);
-                axis.ser_bin(output);
-                scope.ser_bin(output);
-            }
-            Op::Loop { len } => {
-                output.push(9);
-                len.ser_bin(output);
-            }
-            Op::EndLoop => output.push(10),
-            Op::Mad { x, y, z } => {
-                output.push(11);
-                x.ser_bin(output);
-                y.ser_bin(output);
-                z.ser_bin(output);
-            }
-            Op::Wmma { dims, layout, dtype, a, b, c } => {
-                output.push(12);
-                dims.ser_bin(output);
-                layout.ser_bin(output);
-                dtype.ser_bin(output);
-                a.ser_bin(output);
-                b.ser_bin(output);
-                c.ser_bin(output);
-            }
-            Op::Vectorize { ops } => {
-                output.push(13);
-                ops.ser_bin(output);
-            }
-            Op::Devectorize { vec, idx } => {
-                output.push(14);
-                vec.ser_bin(output);
-                idx.ser_bin(output);
-            }
-            Op::Barrier => output.push(15),
-            Op::If { condition } => {
-                output.push(16);
-                condition.ser_bin(output);
-            }
-            Op::EndIf => output.push(17),
-            Op::ConstView(t) => {
-                output.push(18);
-                t.ser_bin(output);
-            }
-            Op::LoadView(t) => {
-                output.push(19);
-                t.ser_bin(output);
-            }
-            Op::StoreView { src, dtype } => {
-                output.push(20);
-                src.ser_bin(output);
-                dtype.ser_bin(output);
-            }
-            Op::Move { x, mop } => {
-                output.push(21);
-                x.ser_bin(output);
-                mop.ser_bin(output);
-            }
-            Op::Reduce { x, rop, n_axes } => {
-                output.push(22);
-                x.ser_bin(output);
-                rop.ser_bin(output);
-                n_axes.ser_bin(output);
-            }
-            Op::ReduceTile { x, rop, kind } => {
-                output.push(23);
-                x.ser_bin(output);
-                rop.ser_bin(output);
-                kind.ser_bin(output);
-            }
-        }
-    }
-}
-
-impl DeBin for Op {
-    fn de_bin(offset: &mut usize, bytes: &[u8]) -> Result<Self, nanoserde::DeBinErr> {
-        let tag = bytes[*offset];
-        *offset += 1;
-        match tag {
-            0 => {
-                let x = OpId::de_bin(offset, bytes)?;
-                let dtype = DType::de_bin(offset, bytes)?;
-                Ok(Op::Cast { x, dtype })
-            }
-            1 => {
-                let x = OpId::de_bin(offset, bytes)?;
-                let uop = UOp::de_bin(offset, bytes)?;
-                Ok(Op::Unary { x, uop })
-            }
-            2 => {
-                let x = OpId::de_bin(offset, bytes)?;
-                let y = OpId::de_bin(offset, bytes)?;
-                let bop = BOp::de_bin(offset, bytes)?;
-                Ok(Op::Binary { x, y, bop })
-            }
-            3 => {
-                let c = Constant::de_bin(offset, bytes)?;
-                Ok(Op::Const(c))
-            }
-            4 => {
-                let dtype = DType::de_bin(offset, bytes)?;
-                let scope = MemScope::de_bin(offset, bytes)?;
-                let ro = bytes[*offset] != 0;
-                *offset += 1;
-                let len = Dim::de_bin(offset, bytes)?;
-                Ok(Op::Define { dtype, scope, ro, len })
-            }
-            5 => {
-                let dst = OpId::de_bin(offset, bytes)?;
-                let x = OpId::de_bin(offset, bytes)?;
-                let index = OpId::de_bin(offset, bytes)?;
-                let layout = MemLayout::de_bin(offset, bytes)?;
-                Ok(Op::Store { dst, x, index, layout })
-            }
-            6 => {
-                let src = OpId::de_bin(offset, bytes)?;
-                let index = OpId::de_bin(offset, bytes)?;
-                let layout = MemLayout::de_bin(offset, bytes)?;
-                Ok(Op::Load { src, index, layout })
-            }
-            7 => {
-                let len = Dim::de_bin(offset, bytes)?;
-                let axis = u32::de_bin(offset, bytes)?;
-                let scope = IdxScope::de_bin(offset, bytes)?;
-                Ok(Op::Index { len, axis, scope })
-            }
-            9 => {
-                let len = OpId::de_bin(offset, bytes)?;
-                Ok(Op::Loop { len })
-            }
-            10 => Ok(Op::EndLoop),
-            11 => {
-                let x = OpId::de_bin(offset, bytes)?;
-                let y = OpId::de_bin(offset, bytes)?;
-                let z = OpId::de_bin(offset, bytes)?;
-                Ok(Op::Mad { x, y, z })
-            }
-            12 => {
-                let dims = MMADims::de_bin(offset, bytes)?;
-                let layout = MMALayout::de_bin(offset, bytes)?;
-                let dtype = MMADType::de_bin(offset, bytes)?;
-                let a = OpId::de_bin(offset, bytes)?;
-                let b = OpId::de_bin(offset, bytes)?;
-                let c = OpId::de_bin(offset, bytes)?;
-                Ok(Op::Wmma { dims, layout, dtype, a, b, c })
-            }
-            13 => {
-                let ops = Vec::<OpId>::de_bin(offset, bytes)?;
-                Ok(Op::Vectorize { ops })
-            }
-            14 => {
-                let vec = OpId::de_bin(offset, bytes)?;
-                let idx = usize::de_bin(offset, bytes)?;
-                Ok(Op::Devectorize { vec, idx })
-            }
-            15 => Ok(Op::Barrier),
-            16 => {
-                let condition = OpId::de_bin(offset, bytes)?;
-                Ok(Op::If { condition })
-            }
-            17 => Ok(Op::EndIf),
-            18 => {
-                let t = Box::<(Constant, View)>::de_bin(offset, bytes)?;
-                Ok(Op::ConstView(t))
-            }
-            19 => {
-                let t = Box::<(DType, View)>::de_bin(offset, bytes)?;
-                Ok(Op::LoadView(t))
-            }
-            20 => {
-                let src = OpId::de_bin(offset, bytes)?;
-                let dtype = DType::de_bin(offset, bytes)?;
-                Ok(Op::StoreView { src, dtype })
-            }
-            21 => {
-                let x = OpId::de_bin(offset, bytes)?;
-                let mop = Box::<MoveOp>::de_bin(offset, bytes)?;
-                Ok(Op::Move { x, mop })
-            }
-            22 => {
-                let x = OpId::de_bin(offset, bytes)?;
-                let rop = BOp::de_bin(offset, bytes)?;
-                let n_axes = UAxis::de_bin(offset, bytes)?;
-                Ok(Op::Reduce { x, rop, n_axes })
-            }
-            23 => {
-                let x = OpId::de_bin(offset, bytes)?;
-                let rop = BOp::de_bin(offset, bytes)?;
-                let kind = TileReduceKind::de_bin(offset, bytes)?;
-                Ok(Op::ReduceTile { x, rop, kind })
-            }
-            _ => Err(nanoserde::DeBinErr::new(*offset - 1, 1, bytes.len())),
-        }
-    }
 }
 
 impl Op {
@@ -898,42 +319,6 @@ impl Op {
     }
 }
 
-impl OpId {
-    pub(crate) const NULL: Self = Self(u32::MAX);
-
-    /// Check if this OpId is null.
-    pub const fn is_null(self) -> bool {
-        self.0 == u32::MAX
-    }
-}
-
-impl std::fmt::Display for OpId {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        std::fmt::Display::fmt(&self.0, f)
-    }
-}
-
-impl From<usize> for OpId {
-    fn from(value: usize) -> Self {
-        OpId(value as u32)
-    }
-}
-
-impl From<OpId> for usize {
-    fn from(value: OpId) -> usize {
-        value.0 as usize
-    }
-}
-
-impl SlabId for OpId {
-    const ZERO: Self = Self(0);
-    const NULL: Self = Self(u32::MAX);
-
-    fn inc(&mut self) {
-        self.0 += 1;
-    }
-}
-
 impl Display for MemScope {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(match self {
@@ -1011,7 +396,7 @@ impl Kernel {
 
         let mut op_id = self.head;
         while !op_id.is_null() {
-            match &self.ops[op_id].op {
+            match self.ops[op_id].op {
                 Op::ConstView { .. }
                 | Op::StoreView { .. }
                 | Op::LoadView { .. }
@@ -1023,29 +408,29 @@ impl Kernel {
                 Op::Const(x) => {
                     dtypes.insert(op_id, (x.dtype(), MemLayout::Scalar));
                 }
-                &Op::Define { dtype, .. } => {
+                Op::Define { dtype, .. } => {
                     dtypes.insert(op_id, (dtype, MemLayout::Scalar));
                 }
-                &Op::Load { src, index, layout } => {
+                Op::Load { src, index, layout } => {
                     dtypes.insert(op_id, (dtypes[&src].0, layout));
                     *rcs.entry(index).or_insert(0) += 1;
                 }
-                &Op::Store { dst, x, index, layout } => {
+                Op::Store { dst, x, index, layout } => {
                     debug_assert_eq!(dtypes[&x].1, layout);
                     dtypes.insert(op_id, dtypes[&x]);
                     *rcs.entry(dst).or_insert(0) += 1;
                     *rcs.entry(x).or_insert(0) += 1;
                     *rcs.entry(index).or_insert(0) += 1;
                 }
-                &Op::Cast { x, dtype } => {
+                Op::Cast { x, dtype } => {
                     dtypes.insert(op_id, (dtype, dtypes[&x].1));
                     *rcs.entry(x).or_insert(0) += 1;
                 }
-                &Op::Unary { x, .. } => {
+                Op::Unary { x, .. } => {
                     dtypes.insert(op_id, dtypes[&x]);
                     *rcs.entry(x).or_insert(0) += 1;
                 }
-                &Op::Binary { x, y, bop } => {
+                Op::Binary { x, y, bop } => {
                     let dtype = if bop.returns_bool() {
                         (DType::Bool, dtypes[&x].1)
                     } else {
@@ -1055,7 +440,7 @@ impl Kernel {
                     *rcs.entry(x).or_insert(0) += 1;
                     *rcs.entry(y).or_insert(0) += 1;
                 }
-                Op::Vectorize { ops } => {
+                Op::Vectorize { ref ops } => {
                     let dtype = dtypes[&ops[0]];
                     dtypes.insert(op_id, (dtype.0, MemLayout::Vector(ops.len().try_into().unwrap())));
                     for &x in ops {
@@ -1063,20 +448,20 @@ impl Kernel {
                     }
                 }
                 Op::Devectorize { vec, idx: _ } => {
-                    let dtype = dtypes[vec];
+                    let dtype = dtypes[&vec];
                     dtypes.insert(op_id, (dtype.0, MemLayout::Scalar));
-                    *rcs.entry(*vec).or_insert(0) += 1;
+                    *rcs.entry(vec).or_insert(0) += 1;
                 }
                 Op::Wmma { dims: _, layout: _, dtype, a, b, c } => {
                     let out_dtype = match dtype {
                         MMADType::f16_f16_f16_f32 => DType::F32,
                     };
                     dtypes.insert(op_id, (out_dtype, MemLayout::Vector(4)));
-                    *rcs.entry(*a).or_insert(0) += 1;
-                    *rcs.entry(*b).or_insert(0) += 1;
-                    *rcs.entry(*c).or_insert(0) += 1;
+                    *rcs.entry(a).or_insert(0) += 1;
+                    *rcs.entry(b).or_insert(0) += 1;
+                    *rcs.entry(c).or_insert(0) += 1;
                 }
-                &Op::Mad { x, y, z } => {
+                Op::Mad { x, y, z } => {
                     dtypes.insert(op_id, dtypes[&x]);
                     *rcs.entry(x).or_insert(0) += 1;
                     *rcs.entry(y).or_insert(0) += 1;
@@ -1085,7 +470,7 @@ impl Kernel {
                 Op::Index { .. } | Op::Loop { .. } => {
                     dtypes.insert(op_id, (IDX_T, MemLayout::Scalar));
                 }
-                &Op::If { condition } => {
+                Op::If { condition } => {
                     *rcs.entry(condition).or_insert(0) += 1;
                 }
                 Op::Barrier { .. } | Op::EndIf | Op::EndLoop => {}
@@ -1097,27 +482,27 @@ impl Kernel {
 
     /// Resolve the dtype of an operation's result by walking the IR.
     pub(crate) fn dtype(&self, op_id: OpId) -> DType {
-        match &self.ops[op_id].op {
+        match self.ops[op_id].op {
             Op::Const(c) => c.dtype(),
-            Op::Define { dtype, .. } => *dtype,
-            Op::Cast { dtype, .. } => *dtype,
+            Op::Define { dtype, .. } => dtype,
+            Op::Cast { dtype, .. } => dtype,
             Op::Index { .. } => IDX_T,
-            Op::Load { src, .. } => self.dtype(*src),
-            Op::Unary { x, .. } => self.dtype(*x),
-            Op::Binary { x, .. } => self.dtype(*x),
-            Op::Mad { x, .. } => self.dtype(*x),
+            Op::Load { src, .. } => self.dtype(src),
+            Op::Unary { x, .. } => self.dtype(x),
+            Op::Binary { x, .. } => self.dtype(x),
+            Op::Mad { x, .. } => self.dtype(x),
             Op::Wmma { dtype, .. } => match dtype {
                 MMADType::f16_f16_f16_f32 => DType::F32,
             },
-            Op::Vectorize { ops } => self.dtype(ops[0]),
-            Op::Devectorize { vec, .. } => self.dtype(*vec),
-            Op::Store { x, .. } => self.dtype(*x),
-            Op::StoreView { src, .. } => self.dtype(*src),
-            Op::ConstView(b) => b.0.dtype(),
-            Op::LoadView(b) => b.0,
-            Op::Move { x, .. } => self.dtype(*x),
-            Op::Reduce { x, .. } => self.dtype(*x),
-            Op::ReduceTile { x, .. } => self.dtype(*x),
+            Op::Vectorize { ref ops } => self.dtype(ops[0]),
+            Op::Devectorize { vec, .. } => self.dtype(vec),
+            Op::Store { x, .. } => self.dtype(x),
+            Op::StoreView { src, .. } => self.dtype(src),
+            Op::ConstView(ref b) => b.0.dtype(),
+            Op::LoadView(ref b) => b.0,
+            Op::Move { x, .. } => self.dtype(x),
+            Op::Reduce { x, .. } => self.dtype(x),
+            Op::ReduceTile { x, .. } => self.dtype(x),
             Op::EndLoop | Op::Loop { .. } => IDX_T,
             Op::Barrier { .. } | Op::If { .. } | Op::EndIf => {
                 panic!("operation has no dtype")
@@ -2232,168 +1617,6 @@ impl Kernel {
             };
             *axis = ax;
             ax += 1;
-        }
-    }
-}
-
-impl MMADims {
-    /// Decompose MMAD dimensions into m, n, k components.
-    pub const fn decompose_mnk(self) -> (u64, u64, u64) {
-        match self {
-            MMADims::m8n8k16 => (8, 8, 16),
-            MMADims::m16n8k8 => (16, 8, 8),
-            MMADims::m16n8k16 => (16, 8, 16),
-        }
-    }
-}
-
-// Manual SerBin/DeBin implementations for private enums
-
-impl SerBin for UOp {
-    fn ser_bin(&self, output: &mut Vec<u8>) {
-        match self {
-            UOp::Neg => output.push(0),
-            UOp::BitNot => output.push(1),
-            UOp::Exp => output.push(2),
-            UOp::Exp2 => output.push(3),
-            UOp::Ln => output.push(4),
-            UOp::Log2 => output.push(5),
-            UOp::Reciprocal => output.push(6),
-            UOp::Sqrt => output.push(7),
-            UOp::Sin => output.push(8),
-            UOp::Cos => output.push(9),
-            UOp::Floor => output.push(10),
-            UOp::Trunc => output.push(11),
-            UOp::Abs => output.push(12),
-        }
-    }
-}
-
-impl DeBin for UOp {
-    fn de_bin(offset: &mut usize, bytes: &[u8]) -> Result<Self, nanoserde::DeBinErr> {
-        let tag = bytes[*offset];
-        *offset += 1;
-        match tag {
-            0 => Ok(UOp::Neg),
-            1 => Ok(UOp::BitNot),
-            2 => Ok(UOp::Exp),
-            3 => Ok(UOp::Exp2),
-            4 => Ok(UOp::Ln),
-            5 => Ok(UOp::Log2),
-            6 => Ok(UOp::Reciprocal),
-            7 => Ok(UOp::Sqrt),
-            8 => Ok(UOp::Sin),
-            9 => Ok(UOp::Cos),
-            10 => Ok(UOp::Floor),
-            11 => Ok(UOp::Trunc),
-            12 => Ok(UOp::Abs),
-            _ => Err(nanoserde::DeBinErr::new(*offset - 1, 1, bytes.len())),
-        }
-    }
-}
-
-impl SerBin for BOp {
-    fn ser_bin(&self, output: &mut Vec<u8>) {
-        match self {
-            BOp::Add => output.push(0),
-            BOp::Sub => output.push(1),
-            BOp::Mul => output.push(2),
-            BOp::Div => output.push(3),
-            BOp::Pow => output.push(4),
-            BOp::Mod => output.push(5),
-            BOp::Cmplt => output.push(6),
-            BOp::Cmpgt => output.push(7),
-            BOp::Max => output.push(8),
-            BOp::Or => output.push(9),
-            BOp::And => output.push(10),
-            BOp::BitXor => output.push(11),
-            BOp::BitOr => output.push(12),
-            BOp::BitAnd => output.push(13),
-            BOp::BitShiftLeft => output.push(14),
-            BOp::BitShiftRight => output.push(15),
-            BOp::NotEq => output.push(16),
-            BOp::Eq => output.push(17),
-        }
-    }
-}
-
-impl DeBin for BOp {
-    fn de_bin(offset: &mut usize, bytes: &[u8]) -> Result<Self, nanoserde::DeBinErr> {
-        let tag = bytes[*offset];
-        *offset += 1;
-        match tag {
-            0 => Ok(BOp::Add),
-            1 => Ok(BOp::Sub),
-            2 => Ok(BOp::Mul),
-            3 => Ok(BOp::Div),
-            4 => Ok(BOp::Pow),
-            5 => Ok(BOp::Mod),
-            6 => Ok(BOp::Cmplt),
-            7 => Ok(BOp::Cmpgt),
-            8 => Ok(BOp::Max),
-            9 => Ok(BOp::Or),
-            10 => Ok(BOp::And),
-            11 => Ok(BOp::BitXor),
-            12 => Ok(BOp::BitOr),
-            13 => Ok(BOp::BitAnd),
-            14 => Ok(BOp::BitShiftLeft),
-            15 => Ok(BOp::BitShiftRight),
-            16 => Ok(BOp::NotEq),
-            17 => Ok(BOp::Eq),
-            _ => Err(nanoserde::DeBinErr::new(*offset - 1, 1, bytes.len())),
-        }
-    }
-}
-
-impl SerBin for MoveOp {
-    fn ser_bin(&self, output: &mut Vec<u8>) {
-        match self {
-            MoveOp::Reshape { shape } => {
-                output.push(0);
-                shape.ser_bin(output);
-            }
-            MoveOp::Expand { shape } => {
-                output.push(1);
-                shape.ser_bin(output);
-            }
-            MoveOp::Permute { axes, shape } => {
-                output.push(2);
-                axes.ser_bin(output);
-                shape.ser_bin(output);
-            }
-            MoveOp::Pad { padding, shape } => {
-                output.push(3);
-                padding.ser_bin(output);
-                shape.ser_bin(output);
-            }
-        }
-    }
-}
-
-impl DeBin for MoveOp {
-    fn de_bin(offset: &mut usize, bytes: &[u8]) -> Result<Self, nanoserde::DeBinErr> {
-        let tag = bytes[*offset];
-        *offset += 1;
-        match tag {
-            0 => {
-                let shape = Vec::<Dim>::de_bin(offset, bytes)?;
-                Ok(MoveOp::Reshape { shape })
-            }
-            1 => {
-                let shape = Vec::<Dim>::de_bin(offset, bytes)?;
-                Ok(MoveOp::Expand { shape })
-            }
-            2 => {
-                let axes = Vec::<UAxis>::de_bin(offset, bytes)?;
-                let shape = Vec::<Dim>::de_bin(offset, bytes)?;
-                Ok(MoveOp::Permute { axes, shape })
-            }
-            3 => {
-                let padding = Vec::<(i64, i64)>::de_bin(offset, bytes)?;
-                let shape = Vec::<Dim>::de_bin(offset, bytes)?;
-                Ok(MoveOp::Pad { padding, shape })
-            }
-            _ => Err(nanoserde::DeBinErr::new(*offset - 1, 1, bytes.len())),
         }
     }
 }

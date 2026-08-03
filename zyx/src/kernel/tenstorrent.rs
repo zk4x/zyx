@@ -30,13 +30,17 @@ fn round_up(len: Dim, multiple: Dim) -> Dim {
 impl Kernel {
     pub(crate) fn opt_tenstorrent_tile(&mut self) {
         if self.ops.values().any(|node| matches!(node.op, Op::Loop { .. })) {
-            // TODO
+            self.tenstorrent_general_reduce_kernel();
         } else {
-            self.tenstorrent_pad();
-            self.tenstorrent_local();
-            self.tenstorrent_group();
-            self.tenstorrent_loop_local();
+            self.tenstorrent_general_elementwise_kernel();
         }
+    }
+
+    fn tenstorrent_general_elementwise_kernel(&mut self) {
+        self.tenstorrent_pad();
+        self.tenstorrent_local();
+        self.tenstorrent_group();
+        self.tenstorrent_loop_local();
     }
 
     fn tenstorrent_pad(&mut self) {
@@ -109,7 +113,7 @@ impl Kernel {
     }
 
     fn tenstorrent_local(&mut self) {
-        // Step 1: Split each GroupIndex into GroupIndex(len/32) + Loop(32)
+        // Split each GroupIndex into GroupIndex(len/32) + Local(32)
         let mut op_id = self.head;
         while !op_id.is_null() {
             if let Op::Index { len, axis, scope: IdxScope::Group } = self.ops[op_id].op {
@@ -129,7 +133,7 @@ impl Kernel {
             op_id = self.next_op(op_id);
         }
 
-        // Step 2: Verify exactly 2 local indices of len 32 (axes 0 and 1)
+        // Verify exactly 2 local indices of len 32 (axes 0 and 1)
         let mut lidxs = Vec::new();
         let mut op_id = self.head;
         while !op_id.is_null() {
@@ -151,7 +155,7 @@ impl Kernel {
         let lidx0 = lidxs[0].1;
         let lidx1 = lidxs[1].1;
 
-        // Step 3: Find all scalar loads from global defines
+        // Find all scalar loads from global defines
         let global_loads: Vec<(OpId, OpId, OpId)> = {
             let mut loads = Vec::new();
             let mut op_id = self.head;
@@ -170,7 +174,7 @@ impl Kernel {
             return;
         }
 
-        // Step 4: Insert constant/index computation before the first load
+        // Insert constant/index computation before the first load
         let first_load = global_loads[0].0;
         let first_global_idx = global_loads[0].2;
         let const_32 = self.insert_before(first_load, Op::Const(Constant::idx(32u32)));
@@ -178,7 +182,7 @@ impl Kernel {
         let combined_idx = self.insert_before(first_load, Op::Binary { x: scaled, y: lidx1, bop: BOp::Add });
         let zero = self.insert_before(first_load, Op::Const(Constant::idx(0u32)));
 
-        // Step 5: Find the last global define to insert locals after it
+        // Find the last global define to insert locals after it
         let mut last_global = self.head;
         let mut scan = self.head;
         while !scan.is_null() {
@@ -188,7 +192,7 @@ impl Kernel {
             scan = self.next_op(scan);
         }
 
-        // Step 6: Allocate local buffers for each unique global source
+        // Allocate local buffers for each unique global source
         let mut src_to_local: Map<OpId, OpId> = Map::default();
         for &(_, src, _) in &global_loads {
             if src_to_local.contains_key(&src) {
@@ -200,7 +204,7 @@ impl Kernel {
             src_to_local.insert(src, local);
         }
 
-        // Step 7: Insert all global→local stores before the first load, then a barrier.
+        // Insert all global→local stores before the first load, then a barrier.
         // Load from global at the first load's index (all element-wise loads use the same position),
         // store to local at the local tile index (lidx0*32 + lidx1).
         let mut processed: Set<OpId> = Set::default();
@@ -217,13 +221,13 @@ impl Kernel {
         }
         self.insert_before(first_load, Op::Barrier);
 
-        // Step 8: Replace all original loads with tiled loads from local
+        // Replace all original loads with tiled loads from local
         for &(load_op, src, _) in &global_loads {
             let local = src_to_local[&src];
             self.ops[load_op].op = Op::Load { src: local, index: zero, layout: MemLayout::Tile { x: 32, y: 32, stride: 32 } };
         }
 
-        // Step 9: Find all scalar stores to global defines
+        // Find all scalar stores to global defines
         let global_stores: Vec<(OpId, OpId, OpId, OpId)> = {
             let mut stores = Vec::new();
             let mut op_id = self.head;
@@ -242,7 +246,7 @@ impl Kernel {
             return;
         }
 
-        // Step 10: Allocate local buffers for each unique global destination
+        // Allocate local buffers for each unique global destination
         let mut dst_to_local: Map<OpId, OpId> = Map::default();
         let mut last_local = last_global;
         for &(_, dst, _, _) in &global_stores {
@@ -255,7 +259,7 @@ impl Kernel {
             dst_to_local.insert(dst, local);
         }
 
-        // Step 11: Replace each global store with a store to local at combined_idx
+        // Replace each global store with a store to local at combined_idx
         let mut processed_dst: Set<OpId> = Set::default();
         for &(store_op, dst, val, _) in &global_stores {
             let local = dst_to_local[&dst];
@@ -263,7 +267,7 @@ impl Kernel {
                 Op::Store { dst: local, x: val, index: zero, layout: MemLayout::Tile { x: 32, y: 32, stride: 32 } };
         }
 
-        // Step 12: Insert barrier after the last store, then scalar loads + global stores
+        // Insert barrier after the last store, then scalar loads + global stores
         let barrier = self.insert_after(global_stores.last().unwrap().0, Op::Barrier);
         let mut insert_point = barrier;
         for &(_, dst, _, store_idx) in &global_stores {
@@ -473,5 +477,65 @@ impl Kernel {
         self.loop_invariant_code_motion();
 
         self.verify();
+    }
+
+    fn tenstorrent_general_reduce_kernel(&mut self) {
+        self.debug();
+
+        // Find all scalar loads from global defines (but only those inside loop)
+        let global_loads: Vec<(OpId, OpId, OpId)> = {
+            let mut loads = Vec::new();
+            let mut op_id = self.head;
+            while !op_id.is_null() {
+                if let Op::Load { src, index, layout: MemLayout::Scalar } = self.at(op_id) {
+                    if matches!(self.at(*src), Op::Define { scope: MemScope::Global, .. }) {
+                        loads.push((op_id, *src, *index));
+                    }
+                }
+                op_id = self.next_op(op_id);
+            }
+            loads
+        };
+
+        if global_loads.is_empty() {
+            return;
+        }
+
+        // Find the last global define to insert locals after it
+        let mut last_global = self.head;
+        let mut scan = self.head;
+        while !scan.is_null() {
+            if matches!(self.at(scan), Op::Define { scope: MemScope::Global, .. }) {
+                last_global = scan;
+            }
+            scan = self.next_op(scan);
+        }
+
+        let first_load = global_loads[0].0;
+        let first_global_idx = global_loads[0].2;
+        let const_32 = self.insert_before(first_load, Op::Const(Constant::idx(32u32)));
+
+        // Insert loops, 32 and 32 for the reader section
+        let lidx0 = self.insert_before(first_load, Op::Loop { len: const_32 });
+        let lidx1 = self.insert_before(first_load, Op::Loop { len: const_32 });
+
+        self.debug();
+        todo!();
+
+        let scaled = self.insert_after(first_load, Op::Binary { x: lidx0, y: const_32, bop: BOp::Mul });
+        let combined_idx = self.insert_before(first_load, Op::Binary { x: scaled, y: lidx1, bop: BOp::Add });
+        let zero = self.insert_before(first_load, Op::Const(Constant::idx(0u32)));
+
+        // Allocate local buffers for each unique global source
+        let mut src_to_local: Map<OpId, OpId> = Map::default();
+        for &(_, src, _) in &global_loads {
+            if src_to_local.contains_key(&src) {
+                continue;
+            }
+            let local = self
+                .insert_after(last_global, Op::Define { dtype: self.dtype(src), scope: MemScope::Local, ro: false, len: 1024 });
+            last_global = local;
+            src_to_local.insert(src, local);
+        }
     }
 }

@@ -62,7 +62,7 @@ impl Kernel {
     /// Returns true if the loop was successfully folded, false otherwise.
     /// On success, the loop and accumulator are removed and replaced with closed-form ops.
     fn fold_loop(&mut self, acc_id: OpId) -> bool {
-        // Step 1: Check that acc_id is a register define with length 1 (scalar accumulator)
+        // Check that acc_id is a register define with length 1 (scalar accumulator)
         let &Op::Define { dtype: acc_dtype, scope, ro, len: 1 } = self.at(acc_id) else {
             return false;
         };
@@ -71,7 +71,7 @@ impl Kernel {
             return false;
         }
 
-        // Step 2: Find the initial store to the accumulator (acc[0] = init_value)
+        // Find the initial store to the accumulator (acc[0] = init_value)
         let mut store_id = self.next_op(acc_id);
         while !store_id.is_null() {
             if let &Op::Store { dst, index, .. } = self.at(store_id) {
@@ -90,7 +90,7 @@ impl Kernel {
             return false;
         }
 
-        // Step 3: Skip forward until we find the Loop, guarding against other uses of accumulator
+        // Skip forward until we find the Loop, guarding against other uses of accumulator
         // (if accumulator is used elsewhere, we can't fold)
         let mut loop_id = self.next_op(store_id);
         while !loop_id.is_null() {
@@ -107,7 +107,7 @@ impl Kernel {
         }
         let Op::Loop { .. } = self.at(loop_id) else { return false };
 
-        // Step 4: Identify the accumulate pattern inside the loop
+        // Identify the accumulate pattern inside the loop
         // Pattern: load(acc[0]) -> add(value) -> store(acc[0])
         let Some((accumulated_value_id, after_loop_load_id)) = self.identify_accumulate_pattern(acc_id, loop_id) else {
             return false;

@@ -10,4 +10,4 @@ zyx-nn = { version = "*", path = "../zyx-nn" }
 quick-protobuf = "0.8.1"
 
 [build-dependencies]
-#prost-build = "0.12.1"
+prost-build = "0.12.1"

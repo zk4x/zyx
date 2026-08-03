@@ -9,7 +9,7 @@ use crate::{
     dtype::Constant,
     error::{BackendError, ErrorStatus},
     kernel::{BOp, IDX_T, IdxScope, Kernel, MemScope, Op, OpId, UOp},
-    scalar::{bf16, f16},
+    scalar::bf16,
     shape::Dim,
 };
 use std::fmt::Write;

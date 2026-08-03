@@ -97,6 +97,7 @@ impl Kernel {
         }
     }
 
+    #[allow(unused)]
     pub(crate) fn pad_loop(&mut self) {
         let mut loop_id = self.head;
         while !loop_id.is_null() {
