@@ -3,9 +3,54 @@
 
 use crate::{
     DType, Map, Set,
+    dtype::Constant,
     kernel::{BOp, IdxScope, Kernel, MemLayout, MemScope, Op, OpId, UOp},
 };
 use std::fmt::Write;
+
+/// Bit pattern for `fill_tile_bitcast` in the kernel's DST data format.
+/// 16-bit formats (bf16, f16) pack the value into both halves of each 32-bit
+/// DST register, mirroring how the SFPU packs two 16-bit elements per register.
+fn tt_fill_bits(val: Constant) -> u32 {
+    match val {
+        Constant::BF16(b) | Constant::F16(b) => {
+            let v = u16::from_le_bytes(b) as u32;
+            (v << 16) | v
+        }
+        Constant::F32(b) => u32::from_le_bytes(b),
+        other => todo!("fill_tile_bitcast for {other}"),
+    }
+}
+
+/// Init call required before using `uop`'s tile op, if any.
+fn tt_unary_init(uop: UOp) -> Option<&'static str> {
+    match uop {
+        UOp::Neg => Some("negative_tile_init();"),
+        UOp::BitNot => Some("bitwise_not_tile_init();"),
+        UOp::Exp => Some("exp_tile_init();"),
+        UOp::Exp2 => Some("exp2_tile_init();"),
+        UOp::Ln => unreachable!("should've been changed to log2"),
+        UOp::Log2 => Some("log_tile_init();"),
+        UOp::Reciprocal => Some("recip_tile_init();"),
+        UOp::Sqrt => Some("sqrt_tile_init();"),
+        UOp::Sin => Some("sin_tile_init();"),
+        UOp::Cos => Some("cos_tile_init();"),
+        UOp::Floor | UOp::Trunc => Some("rounding_op_tile_init();"),
+        UOp::Abs => Some("abs_tile_init();"),
+    }
+}
+
+/// Init call required before using `bop`'s tile op, if any.
+fn tt_binary_init(bop: BOp) -> Option<&'static str> {
+    match bop {
+        BOp::Add => Some("add_binary_tile_init();"),
+        BOp::Sub => Some("sub_binary_tile_init();"),
+        BOp::Mul => Some("mul_binary_tile_init();"),
+        BOp::Div => Some("div_binary_tile_init();"),
+        // Unsupported binary ops are todo!() in the tile pass anyway
+        _ => None,
+    }
+}
 
 impl Kernel {
     /// Generate TT Metalium reader, compute, and writer C++ kernel sources from zyx IR.
@@ -171,6 +216,13 @@ impl Kernel {
         writeln!(compute, "#include \"api/compute/tile_move_copy.h\"");
         writeln!(compute, "#include \"api/compute/eltwise_unary/eltwise_unary.h\"");
         writeln!(compute, "#include \"api/compute/eltwise_unary/trigonometry.h\"");
+        writeln!(compute, "#include \"api/compute/eltwise_unary/exp.h\"");
+        writeln!(compute, "#include \"api/compute/eltwise_unary/recip.h\"");
+        writeln!(compute, "#include \"api/compute/eltwise_unary/sqrt.h\"");
+        writeln!(compute, "#include \"api/compute/eltwise_unary/rounding.h\"");
+        writeln!(compute, "#include \"api/compute/eltwise_unary/negative.h\"");
+        writeln!(compute, "#include \"api/compute/eltwise_unary/bitwise_not.h\"");
+        writeln!(compute, "#include \"api/compute/eltwise_unary/fill.h\"");
         writeln!(compute, "#include \"api/dataflow/circular_buffer.h\"");
         writeln!(compute, "#include \"api/debug/device_print.h\"");
         writeln!(compute, "void kernel_main() {{");
@@ -196,9 +248,9 @@ impl Kernel {
                 writeln!(compute, "{indent}init_sfpu({in0}, {out0});");
             }
 
-            let mut has_exp = false;
-            let mut has_sin = false;
-            let mut has_binary = false;
+            let mut unary_inits: Set<&'static str> = Set::default();
+            let mut binary_inits: Set<&'static str> = Set::default();
+            let mut has_fill = false;
             let (_dtypes, rcs) = self.compute_dtypes_and_rcs();
             let mut dst_slots: Map<OpId, Vec<u32>> = Map::default();
             let mut consumer_count: Map<OpId, u32> = Map::default();
@@ -206,32 +258,32 @@ impl Kernel {
             let mut output_stores: Vec<(u32, u32)> = Vec::new();
 
             // Emit scalar deps of compute stores in kernel order
+            let compute_stores: Vec<OpId> = {
+                let mut stores = Vec::new();
+                let mut scan = op_id;
+                while !scan.is_null() {
+                    if let Op::Barrier = self.ops[scan].op {
+                        break;
+                    }
+                    if let Op::Store { .. } = self.ops[scan].op {
+                        stores.push(scan);
+                    }
+                    scan = self.next_op(scan);
+                }
+                stores
+            };
+            let compute_deps = {
+                let mut deps = Set::default();
+                let mut stack: Vec<OpId> = compute_stores.iter().copied().collect();
+                while let Some(id) = stack.pop() {
+                    if !deps.insert(id) {
+                        continue;
+                    }
+                    stack.extend(self.ops[id].op.parameters());
+                }
+                deps
+            };
             {
-                let compute_stores: Vec<OpId> = {
-                    let mut stores = Vec::new();
-                    let mut scan = op_id;
-                    while !scan.is_null() {
-                        if let Op::Barrier = self.ops[scan].op {
-                            break;
-                        }
-                        if let Op::Store { .. } = self.ops[scan].op {
-                            stores.push(scan);
-                        }
-                        scan = self.next_op(scan);
-                    }
-                    stores
-                };
-                let compute_deps = {
-                    let mut deps = Set::default();
-                    let mut stack: Vec<OpId> = compute_stores.iter().copied().collect();
-                    while let Some(id) = stack.pop() {
-                        if !deps.insert(id) {
-                            continue;
-                        }
-                        stack.extend(self.ops[id].op.parameters());
-                    }
-                    deps
-                };
                 let mut scan = self.head;
                 while scan != op_id {
                     if compute_deps.contains(&scan) {
@@ -272,24 +324,47 @@ impl Kernel {
             let mut scan = op_id;
             while !scan.is_null() {
                 match self.ops[scan].op {
-                    Op::Cast { .. } => {}
-                    Op::Unary { uop: UOp::Exp, .. } => has_exp = true,
-                    Op::Unary { uop: UOp::Sin, .. } => has_sin = true,
-                    Op::Binary { bop: BOp::Add, .. } => has_binary = true,
+                    Op::Cast { x, .. } => {
+                        if matches!(self.ops[x].op, Op::Const(_)) {
+                            has_fill = true;
+                        }
+                    }
+                    Op::Unary { x, uop } => {
+                        if matches!(self.ops[x].op, Op::Const(_)) {
+                            has_fill = true;
+                        }
+                        if let Some(init) = tt_unary_init(uop) {
+                            unary_inits.insert(init);
+                        }
+                    }
+                    Op::Binary { x, y, bop } => {
+                        if matches!(self.ops[x].op, Op::Const(_)) || matches!(self.ops[y].op, Op::Const(_)) {
+                            has_fill = true;
+                        }
+                        if let Some(init) = tt_binary_init(bop) {
+                            binary_inits.insert(init);
+                        }
+                    }
+                    Op::Store { x, .. } => {
+                        if matches!(self.ops[x].op, Op::Const(_)) {
+                            has_fill = true;
+                        }
+                    }
+                    Op::Const(_) => has_fill = true,
                     Op::Barrier => break,
                     _ => {}
                 }
                 scan = self.next_op(scan);
             }
 
-            if has_exp {
-                writeln!(compute, "{indent}exp_tile_init();");
+            if has_fill {
+                writeln!(compute, "{indent}fill_tile_init();");
             }
-            if has_sin {
-                writeln!(compute, "{indent}sin_tile_init();");
+            for init in unary_inits {
+                writeln!(compute, "{indent}{init}");
             }
-            if has_binary {
-                writeln!(compute, "{indent}add_binary_tile_init();");
+            for init in binary_inits {
+                writeln!(compute, "{indent}{init}");
             }
 
             let mut load_input_cbs: Vec<u32> = Vec::new();
@@ -313,6 +388,41 @@ impl Kernel {
             }
             writeln!(compute, "{indent}tile_regs_acquire();");
 
+            // Materialize constants used as tile operands (defined outside the
+            // compute range) into DST slots before the tile op loop runs
+            {
+                let mut materialize_const = |target: OpId| {
+                    if dst_slots.contains_key(&target) {
+                        return;
+                    }
+                    let Op::Const(val) = self.ops[target].op else {
+                        return;
+                    };
+                    let n = rcs.get(&target).copied().unwrap_or(1).max(1) as usize;
+                    let mut slots = Vec::with_capacity(n);
+                    for _ in 0..n {
+                        let slot = next_slot;
+                        next_slot += 1;
+                        slots.push(slot);
+                        writeln!(compute, "{indent}fill_tile_bitcast({slot}, {});", tt_fill_bits(val));
+                    }
+                    dst_slots.insert(target, slots);
+                };
+                let mut scan = op_id;
+                while !scan.is_null() {
+                    match self.ops[scan].op {
+                        Op::Cast { x, .. } | Op::Unary { x, .. } | Op::Store { x, .. } => materialize_const(x),
+                        Op::Binary { x, y, .. } => {
+                            materialize_const(x);
+                            materialize_const(y);
+                        }
+                        Op::Barrier => break,
+                        _ => {}
+                    }
+                    scan = self.next_op(scan);
+                }
+            }
+
             while !op_id.is_null() {
                 match self.ops[op_id].op {
                     Op::Load { src, index: _, layout: MemLayout::Tile { .. } } => {
@@ -327,6 +437,17 @@ impl Kernel {
                             }
                             dst_slots.insert(op_id, slots);
                         }
+                    }
+                    Op::Const(val) => {
+                        let n = rcs.get(&op_id).copied().unwrap_or(1).max(1) as usize;
+                        let mut slots = Vec::with_capacity(n);
+                        for _ in 0..n {
+                            let slot = next_slot;
+                            next_slot += 1;
+                            slots.push(slot);
+                            writeln!(compute, "{indent}fill_tile_bitcast({slot}, {});", tt_fill_bits(val));
+                        }
+                        dst_slots.insert(op_id, slots);
                     }
                     Op::Cast { x, dtype: DType::BF16 | DType::F16 | DType::F32 } => {
                         let idx = consumer_count.entry(x).or_insert(0);
@@ -369,7 +490,7 @@ impl Kernel {
                         match bop {
                             BOp::Add => writeln!(compute, "{indent}add_binary_tile({slot_x}, {slot_y}, {slot_x});"),
                             BOp::Sub => writeln!(compute, "{indent}sub_binary_tile({slot_x}, {slot_y}, {slot_x});"),
-                            BOp::Mul => writeln!(compute, "{indent}sub_binary_tile({slot_x}, {slot_y}, {slot_x});"),
+                            BOp::Mul => writeln!(compute, "{indent}mul_binary_tile({slot_x}, {slot_y}, {slot_x});"),
                             BOp::Div => writeln!(compute, "{indent}div_binary_tile({slot_x}, {slot_y}, {slot_x});"),
                             BOp::Pow => todo!(),
                             BOp::Mod => todo!(),
