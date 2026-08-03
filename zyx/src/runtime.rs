@@ -1577,17 +1577,13 @@ impl Runtime {
         let dst_dtype = self.tensors[dst].dtype;
         let src_dtype = self.tensors[src].dtype;
         if dst_dtype != src_dtype {
-            return Err(ZyxError::DTypeError(
-                format!("assign dtype mismatch: dst={dst_dtype}, src={src_dtype}").into(),
-            ));
+            return Err(ZyxError::DTypeError(format!("assign dtype mismatch: dst={dst_dtype}, src={src_dtype}").into()));
         }
 
         let dst_shape = self.shape(dst);
         let src_shape = self.shape(src);
         if dst_shape != src_shape {
-            return Err(ZyxError::shape_error(
-                format!("assign shape mismatch: dst={dst_shape:?}, src={src_shape:?}").into(),
-            ));
+            return Err(ZyxError::shape_error(format!("assign shape mismatch: dst={dst_shape:?}, src={src_shape:?}").into()));
         }
 
         if self.is_graph(dst) && !self.buffer_map.contains_key(&dst) {
@@ -1921,7 +1917,8 @@ impl Runtime {
             assert!(
                 n_buffers <= n_global_defines,
                 "buffers len ({}) must not exceed number of global defines ({}) in kernel",
-                n_buffers, n_global_defines,
+                n_buffers,
+                n_global_defines,
             );
         }
 

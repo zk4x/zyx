@@ -105,7 +105,6 @@ use std::{fmt::Display, hash::BuildHasherDefault, hash::Hash};
 pub use custom::CompiledKernel;
 
 mod algebraic;
-mod ops;
 pub(crate) mod autotune;
 mod cost;
 mod custom;
@@ -118,8 +117,10 @@ mod licm;
 mod local_reduce;
 mod merge_loops;
 mod mma;
+mod ops;
 mod pad_index;
 mod predict_cost;
+mod rangeify;
 mod split_loops;
 mod tenstorrent;
 mod thread_coarse;
@@ -129,7 +130,7 @@ mod unroll_loops;
 mod vectorize;
 mod verify;
 
-pub(crate) use ops::{Op, UOp, BOp, OpId, IdxScope, MoveOp, OpNode};
+pub(crate) use ops::{BOp, IdxScope, MoveOp, Op, OpId, OpNode, UOp};
 pub use ops::{MMADType, MMADims, MMALayout};
 
 // TODO later make this dynamic u32 or u64 depending on max range
