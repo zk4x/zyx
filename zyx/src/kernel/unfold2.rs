@@ -141,7 +141,7 @@ impl Kernel {
         }
         self.instruction_schedule();
         self.debug();
-        panic!();
+        //panic!();
 
         self.verify();
         self.unfold_reduces();
