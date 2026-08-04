@@ -153,7 +153,10 @@ impl Kernel {
                 }};
             }
             match self.at(id) {
-                Op::Cast { x, .. } | Op::Unary { x, .. } | Op::Move { x, .. } | Op::Reduce { x, .. }
+                Op::Cast { x, .. }
+                | Op::Unary { x, .. }
+                | Op::Move { x, .. }
+                | Op::Reduce { x, .. }
                 | Op::ReduceTile { x, .. } => add_param!(x),
                 Op::Binary { x, y, .. } => {
                     add_param!(x);
@@ -228,6 +231,43 @@ impl Kernel {
                 prev_structural = i;
             }
         }
+        // Sinking prevention: an operation must never be emitted inside a
+        // loop/if scope it was not already inside. Sinking a definition into a
+        // deeper scope makes it invisible to uses in sibling/enclosing regions
+        // and would undo LICM's hoisting.
+        //
+        // - A definition placed after a loop/if opener that starts after it
+        //   would end up inside that scope, so it must stay before it.
+        // - A definition must stay after any loop/if closer that precedes it,
+        //   so it cannot be pulled backward into an already-closed scope.
+        //
+        // Both edge kinds point forward in the original order, so the original
+        // order remains a valid topological order (no cycles). Hoisting toward
+        // an enclosing scope stays allowed; only sinking is prevented.
+        let mut openers = Vec::with_capacity(structural_positions.len());
+        let mut closers = Vec::with_capacity(structural_positions.len());
+        for &i in &structural_positions {
+            match self.at(rest[i]) {
+                Op::Loop { .. } | Op::If { .. } => openers.push(i),
+                Op::EndLoop | Op::EndIf => closers.push(i),
+                _ => {}
+            }
+        }
+        for i in 0..n {
+            for &j in &openers {
+                if i < j {
+                    edges.push((i, j));
+                    in_degree[j] += 1;
+                }
+            }
+            for &j in &closers {
+                if j < i {
+                    edges.push((j, i));
+                    in_degree[i] += 1;
+                }
+            }
+        }
+
         let barrier_positions: Vec<usize> = (0..n).filter(|&i| barrier[i]).collect();
 
         // Stores never leave the loops/ifs that contain them and never cross
@@ -443,6 +483,40 @@ mod tests {
         let pos = |target: OpId| order.iter().position(|&id| id == target).unwrap();
         assert!(pos(a) < pos(add));
         assert!(pos(b) < pos(add));
+    }
+
+    #[test]
+    fn test_instruction_schedule_never_sinks_across_loops() {
+        let mut k = Kernel::new(DeviceId::AUTO);
+        let src = k.define(DType::F32, MemScope::Global, true, 4);
+        let dst = k.define(DType::F32, MemScope::Global, false, 4);
+        let local = k.define(DType::F32, MemScope::Local, false, 4);
+
+        let c0 = k.const_idx(0u32);
+        let c5 = k.const_idx(5u32);
+        let c4 = k.const_idx(4u32);
+        let invariant = k.bit_shift_left(c0, c5);
+
+        let loop1 = k.loop_(c4);
+        let idx1 = k.add(invariant, loop1);
+        let v1 = k.load(src, idx1, MemLayout::Scalar);
+        k.store(local, v1, idx1, MemLayout::Scalar);
+        k.end_loop();
+
+        k.barrier();
+
+        let loop2 = k.loop_(c4);
+        let idx2 = k.add(invariant, loop2);
+        let v2 = k.load(local, idx2, MemLayout::Scalar);
+        k.store(dst, v2, idx2, MemLayout::Scalar);
+        k.end_loop();
+
+        k.instruction_schedule();
+
+        let order = op_ids_in_order(&k);
+        let pos = |target: OpId| order.iter().position(|&id| id == target).unwrap();
+        assert!(pos(invariant) < pos(loop1), "invariant must not be sunk into the first loop");
+        assert!(pos(invariant) < pos(loop2), "invariant must not be sunk into the second loop");
     }
 
     #[test]
