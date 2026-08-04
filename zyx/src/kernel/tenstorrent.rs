@@ -730,11 +730,7 @@ impl Kernel {
         for &(load_op, src, _) in &global_loads {
             let cb = src_to_cb[&src];
             if let Op::Load { index, .. } = self.at(load_op).clone() {
-                self.ops[load_op].op = Op::Load {
-                    src: cb,
-                    index,
-                    layout: MemLayout::Tile { x: 32, y: 32, stride: 32 },
-                };
+                self.ops[load_op].op = Op::Load { src: cb, index, layout: MemLayout::Tile { x: 32, y: 32, stride: 32 } };
             }
         }
 
@@ -762,19 +758,12 @@ impl Kernel {
         while op_id != endloop_id {
             match self.at(op_id) {
                 Op::Store { dst, x, index, layout } if *dst == accumulator => {
-                    self.ops[op_id].op = Op::Store {
-                        dst: *dst,
-                        x: *x,
-                        index: *index,
-                        layout: MemLayout::Tile { x: 32, y: 32, stride: 32 },
-                    };
+                    self.ops[op_id].op =
+                        Op::Store { dst: *dst, x: *x, index: *index, layout: MemLayout::Tile { x: 32, y: 32, stride: 32 } };
                 }
                 Op::Load { src, index, layout } if *src == accumulator => {
-                    self.ops[op_id].op = Op::Load {
-                        src: *src,
-                        index: *index,
-                        layout: MemLayout::Tile { x: 32, y: 32, stride: 32 },
-                    };
+                    self.ops[op_id].op =
+                        Op::Load { src: *src, index: *index, layout: MemLayout::Tile { x: 32, y: 32, stride: 32 } };
                 }
                 _ => {}
             }
@@ -803,7 +792,7 @@ impl Kernel {
         );
 
         // Remap all uses of the accumulator after the loop to the ReduceTile result
-        let mut op_id = self.next_op(endloop_id);
+        let mut op_id = self.next_op(reduce_tile);
         while !op_id.is_null() {
             for param in self.ops[op_id].op.parameters_mut() {
                 if *param == accumulator {
