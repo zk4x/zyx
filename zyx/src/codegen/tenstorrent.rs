@@ -139,7 +139,8 @@ impl Kernel {
                                 input_arg_idx += 1;
                             }
                         }
-                        MemScope::Local => {
+                        MemScope::Local => unreachable!(),
+                        MemScope::Circular => {
                             if let Some(cb_id) = input_cb_map.get(&op_id) {
                                 writeln!(reader, "{indent}CircularBuffer cb{cb_id}(tt::CBIndex::c_{cb_id});");
                             }

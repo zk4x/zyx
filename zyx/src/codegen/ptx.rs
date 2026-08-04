@@ -289,6 +289,7 @@ impl Kernel {
                 Op::Define { dtype, scope, len, .. } => {
                     comp.scopes.insert(op_id, scope);
                     match scope {
+                        MemScope::Circular => unreachable!(),
                         MemScope::Global => {
                             _ = writeln!(comp.body, "{}ld.param.u64 %p{op_id}, [g{op_id}];", comp.indent);
                         }
@@ -339,6 +340,7 @@ impl Kernel {
                 Op::Load { src, index, .. } => {
                     let dtype = dtypes[&src].0;
                     match comp.get_scope(src) {
+                        MemScope::Circular => unreachable!(),
                         MemScope::Global => {
                             let byte_shift = (dtype.bit_size() / 8).ilog2();
                             let idx = comp.get_var(index);
@@ -402,6 +404,7 @@ impl Kernel {
                     let byte_shift = (dtype.bit_size() / 8).ilog2();
                     let offset = comp.new_reg(DType::U64, 1);
                     match comp.get_scope(dst) {
+                        MemScope::Circular => unreachable!(),
                         MemScope::Global => {
                             if dtype == DType::Bool {
                                 let gstu = comp.new_reg(DType::U32, 1);

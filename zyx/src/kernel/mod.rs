@@ -214,6 +214,8 @@ pub enum MemScope {
     Local,
     /// Register scope (registers).
     Register,
+    /// Circular buffer, SRAM (tenstorrent)
+    Circular,
 }
 
 /// Memory layout for kernel operations.
@@ -330,6 +332,7 @@ impl Display for MemScope {
             MemScope::Global => "global",
             MemScope::Local => "local",
             MemScope::Register => "reg",
+            MemScope::Circular => "cb",
         })
     }
 }
