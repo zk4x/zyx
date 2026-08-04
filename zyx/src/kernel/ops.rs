@@ -7,27 +7,6 @@ use crate::shape::{Dim, UAxis};
 use crate::slab::SlabId;
 use crate::view::View;
 
-impl MemLayout {
-    /// Get the number of elements in the memory layout.
-    pub(crate) fn n_elements(self) -> Dim {
-        match self {
-            MemLayout::Scalar => 1,
-            MemLayout::Vector(x) => x.into(),
-            MemLayout::Tile { x, y, .. } => x as Dim * y as Dim,
-        }
-    }
-}
-
-impl std::fmt::Display for MemLayout {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            MemLayout::Scalar => f.write_fmt(format_args!("Scalar")),
-            MemLayout::Vector(x) => f.write_fmt(format_args!("Vec({x})")),
-            MemLayout::Tile { x, y, stride } => f.write_fmt(format_args!("Tile({x}x{y} st={stride})")),
-        }
-    }
-}
-
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, SerBin, DeBin)]
 pub enum Op {
     // ops that exist in both
@@ -86,15 +65,6 @@ pub enum Op {
         y: OpId,
         z: OpId,
     },
-    // fused matmul, a, b, c are fragments, each is a vector, c is accumulator, returns new accumulated vector d
-    Wmma {
-        dims: MMADims,
-        layout: MMALayout,
-        dtype: MMADType,
-        a: OpId,
-        b: OpId,
-        c: OpId,
-    },
     // Vectorization, YAY!
     Vectorize {
         ops: Vec<OpId>,
@@ -104,6 +74,28 @@ pub enum Op {
         idx: usize,
     }, // select a single value from a vector
     Barrier,
+    // fused matmul, a, b, c are fragments, each is a vector, c is accumulator, returns new accumulated vector d
+    Wmma {
+        dims: MMADims,
+        layout: MMALayout,
+        dtype: MMADType,
+        a: OpId,
+        b: OpId,
+        c: OpId,
+    },
+    /// Hardware reduce_tile: collapses a 32x32 tile accumulator to a scalar.
+    ReduceTile {
+        x: OpId,
+        rop: BOp,
+        kind: TileReduceKind,
+    },
+    MatmulTile {
+        x: OpId,
+        y: OpId,
+    },
+    TransposeTile {
+        x: OpId,
+    },
 
     // ops that exist only in kernelizer, basically they can be eventually removed.
     // TODO Get rid of the view, use whatever ops that are needed directly
@@ -124,12 +116,6 @@ pub enum Op {
         x: OpId,
         rop: BOp,
         n_axes: UAxis,
-    },
-    /// Hardware reduce_tile: collapses a 32x32 tile accumulator to a scalar.
-    ReduceTile {
-        x: OpId,
-        rop: BOp,
-        kind: TileReduceKind,
     },
 }
 
@@ -373,5 +359,26 @@ impl SlabId for OpId {
 
     fn inc(&mut self) {
         self.0 += 1;
+    }
+}
+
+impl MemLayout {
+    /// Get the number of elements in the memory layout.
+    pub(crate) fn n_elements(self) -> Dim {
+        match self {
+            MemLayout::Scalar => 1,
+            MemLayout::Vector(x) => x.into(),
+            MemLayout::Tile { x, y, .. } => x as Dim * y as Dim,
+        }
+    }
+}
+
+impl std::fmt::Display for MemLayout {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            MemLayout::Scalar => f.write_fmt(format_args!("Scalar")),
+            MemLayout::Vector(x) => f.write_fmt(format_args!("Vec({x})")),
+            MemLayout::Tile { x, y, stride } => f.write_fmt(format_args!("Tile({x}x{y} st={stride})")),
+        }
     }
 }
