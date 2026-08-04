@@ -30,20 +30,26 @@ fn round_up(len: Dim, multiple: Dim) -> Dim {
 impl Kernel {
     pub(crate) fn opt_tenstorrent_tile(&mut self) {
         if self.ops.values().any(|node| matches!(node.op, Op::Loop { .. })) {
-            self.tenstorrent_general_reduce_kernel();
+            // TODO row reduce, matmul, transpose tile
+            self.tenstorrent_scalar_reduce();
         } else {
-            self.tenstorrent_general_elementwise_kernel();
+            self.tenstorrent_elementwise();
         }
     }
 
-    fn tenstorrent_general_elementwise_kernel(&mut self) {
-        self.tenstorrent_pad();
+    fn tenstorrent_scalar_reduce(&mut self) {
+        self.tenstorrent_pad_loops();
+        self.tenstorrent_single_scalar_tile();
+    }
+
+    fn tenstorrent_elementwise(&mut self) {
+        self.tenstorrent_pad_gidx();
         self.tenstorrent_local();
         self.tenstorrent_group();
         self.tenstorrent_loop_local();
     }
 
-    fn tenstorrent_pad(&mut self) {
+    fn tenstorrent_pad_gidx(&mut self) {
         let mut gidxs: Vec<(OpId, u32, Dim)> = Vec::new();
         let mut op_id = self.head;
         while !op_id.is_null() {
@@ -109,6 +115,23 @@ impl Kernel {
             _ => {}
         }
 
+        self.verify();
+    }
+
+    /// Pad all loops to length 1024.
+    fn tenstorrent_pad_loops(&mut self) {
+        let loops: Vec<OpId> = self
+            .ops
+            .iter()
+            .filter(|(_, node)| matches!(node.op, Op::Loop { .. }))
+            .map(|(id, _)| id)
+            .collect();
+        for loop_id in loops {
+            let len = self.loop_len_dim(loop_id);
+            if len < 1024 {
+                self.pad_loop(loop_id, 1024 - len);
+            }
+        }
         self.verify();
     }
 
@@ -479,7 +502,8 @@ impl Kernel {
         self.verify();
     }
 
-    fn tenstorrent_general_reduce_kernel(&mut self) {
+    /// This does reduce to single scalar, using ReduceTile scalar (e.g. reduces 1024 elements into element [0, 0])
+    fn tenstorrent_single_scalar_tile(&mut self) {
         self.debug();
 
         // Find all scalar loads from global defines (but only those inside loop)

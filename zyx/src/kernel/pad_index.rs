@@ -98,40 +98,66 @@ impl Kernel {
     }
 
     #[allow(unused)]
-    pub(crate) fn pad_loop(&mut self) {
-        let mut loop_id = self.head;
-        while !loop_id.is_null() {
-            if let Op::Loop { len } = self.at(loop_id) {
-                let orig_len = self.loop_len_dim(*len);
-                if orig_len > 0 && orig_len < 32 {
-                    let const_32 = self.insert_before(loop_id, Op::Const(Constant::idx(32u32)));
-                    self.ops[loop_id].op = Op::Loop { len: const_32 };
-                    let orig_const = self.insert_before(loop_id, Op::Const(Constant::idx(orig_len)));
-                    let loop_var = loop_id;
-                    let mut scan = self.next_op(loop_id);
-                    while !scan.is_null() {
-                        let next = self.next_op(scan);
-                        if let Op::Load { src, index: ld_idx, layout: MemLayout::Scalar } = self.ops[scan].op.clone() {
-                            if self.depends_on(ld_idx, loop_var, &mut crate::Set::default()) {
-                                let cond = self.insert_before(scan, Op::Binary { x: loop_var, y: orig_const, bop: BOp::Cmplt });
-                                let cast_idx = self.insert_before(scan, Op::Cast { x: cond, dtype: IDX_T });
-                                let safe_idx = self.insert_before(scan, Op::Binary { x: ld_idx, y: cast_idx, bop: BOp::Mul });
-                                let safe_load =
-                                    self.insert_before(scan, Op::Load { src, index: safe_idx, layout: MemLayout::Scalar });
-                                let cast_val = self.insert_before(scan, Op::Cast { x: cond, dtype: self.dtype(src) });
-                                let safe_val = self.insert_before(scan, Op::Binary { x: safe_load, y: cast_val, bop: BOp::Mul });
-                                let _ = self.remap(scan, safe_val);
-                                self.remove_op(scan);
-                            }
-                        }
-                        scan = next;
+    pub(crate) fn pad_loop(&mut self, loop_id: OpId, pad_len: Dim) {
+        if pad_len == 0 {
+            return;
+        }
+
+        // 1. Extend the loop length
+        let Op::Loop { len } = &self.ops[loop_id].op else {
+            panic!("pad_loop: op is not a Loop");
+        };
+        let current_len = self.loop_len_dim(*len);
+        let new_len = self.insert_before(loop_id, Op::Const(Constant::idx(current_len + pad_len)));
+        self.ops[loop_id].op = Op::Loop { len: new_len };
+
+        // 2. Create limit constant for comparison
+        let limit = self.insert_before(loop_id, Op::Const(Constant::idx(current_len)));
+
+        // 3. Walk all ops to guard loads and stores depending on this loop
+        let mut op_id = self.head;
+        while !op_id.is_null() {
+            let next = self.next_op(op_id);
+
+            // Redirect OOB stores to trash element at index `buf_len`
+            if let Op::Store { dst, x, index: store_idx, layout } = self.ops[op_id].op.clone() {
+                if self.depends_on(store_idx, loop_id, &mut Set::default()) {
+                    let buf_len = match &self.ops[dst].op {
+                        Op::Define { len, scope: MemScope::Global, .. } => Some(*len),
+                        _ => None,
+                    };
+                    if let Some(buf_len) = buf_len {
+                        let clen = self.insert_before(op_id, Op::Const(Constant::idx(buf_len)));
+                        let cond = self.insert_before(op_id, Op::Binary { x: loop_id, y: limit, bop: BOp::Cmplt });
+                        let cast_cond = self.insert_before(op_id, Op::Cast { x: cond, dtype: IDX_T });
+                        let one = self.insert_before(op_id, Op::Const(Constant::idx(1)));
+                        let not_cond = self.insert_before(op_id, Op::Binary { x: one, y: cast_cond, bop: BOp::Sub });
+                        let idx_term = self.insert_before(op_id, Op::Binary { x: store_idx, y: cast_cond, bop: BOp::Mul });
+                        let lim_term = self.insert_before(op_id, Op::Binary { x: clen, y: not_cond, bop: BOp::Mul });
+                        let safe_idx = self.insert_before(op_id, Op::Binary { x: idx_term, y: lim_term, bop: BOp::Add });
+                        self.ops[op_id].op = Op::Store { dst, x, index: safe_idx, layout };
                     }
                 }
-                break;
             }
-            loop_id = self.next_op(loop_id);
+
+            // Guard loads: redirect OOB reads to element 0 (safe)
+            if let Op::Load { src, index: load_idx, layout } = self.ops[op_id].op.clone() {
+                if layout != MemLayout::Scalar {
+                    op_id = next;
+                    continue;
+                }
+                if self.depends_on(load_idx, loop_id, &mut Set::default()) {
+                    let cond = self.insert_before(op_id, Op::Binary { x: loop_id, y: limit, bop: BOp::Cmplt });
+                    let cast_idx = self.insert_before(op_id, Op::Cast { x: cond, dtype: IDX_T });
+                    let safe_idx = self.insert_before(op_id, Op::Binary { x: load_idx, y: cast_idx, bop: BOp::Mul });
+                    let safe_load = self.insert_before(op_id, Op::Load { src, index: safe_idx, layout });
+                    self.remap(op_id, safe_load);
+                    self.remove_op(op_id);
+                }
+            }
+
+            op_id = next;
         }
-        self.verify();
     }
 
     pub(crate) fn opt_pad_index(&self) -> (Optimization, usize) {
