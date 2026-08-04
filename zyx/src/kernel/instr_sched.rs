@@ -158,6 +158,13 @@ impl Kernel {
                 | Op::Move { x, .. }
                 | Op::Reduce { x, .. }
                 | Op::ReduceTile { x, .. } => add_param!(x),
+                Op::PushTile { dst, x } => {
+                    add_param!(dst);
+                    add_param!(x);
+                }
+                Op::PopTile { src: cb } => {
+                    add_param!(cb);
+                }
                 Op::MatmulTile { x, y } => {
                     add_param!(x);
                     add_param!(y);

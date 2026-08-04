@@ -1002,6 +1002,8 @@ impl Kernel {
                     | Op::Reduce { .. }
                     | Op::Wmma { .. }
                     | Op::MatmulTile { .. }
+                    | Op::PushTile { .. }
+                    | Op::PopTile { .. }
                     | Op::TransposeTile { .. } => {
                         return Err(BackendError {
                             status: ErrorStatus::KernelCompilation,

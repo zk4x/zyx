@@ -41,8 +41,16 @@ impl Kernel {
                 Op::Move { .. } | Op::ConstView { .. } | Op::LoadView { .. } | Op::StoreView { .. } | Op::Reduce { .. } => {
                     unreachable!("these ops should be unfolded before constant folding")
                 }
-                Op::ReduceTile { .. } | Op::Wmma { .. } | Op::Barrier { .. } | Op::If { .. } | Op::EndIf | Op::MatmulTile { .. } | Op::TransposeTile { .. } => {}
-                Op::Devectorize { .. }
+                Op::ReduceTile { .. }
+                | Op::PushTile { .. }
+                | Op::PopTile { .. }
+                | Op::Wmma { .. }
+                | Op::Barrier { .. }
+                | Op::If { .. }
+                | Op::EndIf
+                | Op::MatmulTile { .. }
+                | Op::TransposeTile { .. }
+                | Op::Devectorize { .. }
                 | Op::Const(_)
                 | Op::Define { .. }
                 | Op::Load { .. }

@@ -337,6 +337,8 @@ impl Kernel {
                 | Op::ConstView { .. }
                 | Op::LoadView { .. }
                 | Op::StoreView { .. }
+                | Op::PushTile { .. }
+                | Op::PopTile { .. }
                 | Op::Reduce { .. } => {
                     return Err(BackendError {
                         status: ErrorStatus::KernelCompilation,

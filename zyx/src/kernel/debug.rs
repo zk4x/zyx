@@ -154,6 +154,19 @@ impl Kernel {
                     dtypes.insert(op_id, dtype);
                     println!("{indent}r{out_id}{grey}: {dtype}{reset} = {magenta}{value}{reset}");
                 }
+                Op::PushTile { dst, x } => {
+                    let dtype = dtypes[&x];
+                    dtypes.insert(op_id, dtype);
+                    let dst = id_map.get(&dst).copied().unwrap_or(OpId::NULL);
+                    let x = id_map.get(&x).copied().unwrap_or(OpId::NULL);
+                    println!("{indent}{red}push_tile{reset} cb{dst} = r{x}");
+                }
+                Op::PopTile { src: cb } => {
+                    let dtype = dtypes[&cb];
+                    dtypes.insert(op_id, dtype);
+                    let src = id_map.get(&cb).copied().unwrap_or(OpId::NULL);
+                    println!("{indent}r{out_id}{grey}: {dtype}{reset} = {red}pop_tile{reset} cb{src}");
+                }
                 Op::Load { src, index, layout } => {
                     let dtype = dtypes[&src];
                     dtypes.insert(op_id, dtype);

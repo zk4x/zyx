@@ -83,19 +83,18 @@ impl Kernel {
         {
             let mut op_id = self.head;
             while !op_id.is_null() {
-                let op = self.at(op_id);
-                match op {
+                match self.ops[op_id].op {
                     Op::ConstView { .. } | Op::StoreView { .. } | Op::LoadView { .. } | Op::Move { .. } | Op::Reduce { .. } => {
                         unreachable!()
                     }
-                    Op::Vectorize { ops } => {
+                    Op::Vectorize { ref ops } => {
                         let dtype = dtypes[&ops[0]];
                         dtypes.insert(op_id, (dtype.0, MemLayout::Vector(ops.len().try_into().unwrap())));
                         for &x in ops.iter() {
                             *rcs.entry(x).or_insert(0) += 1;
                         }
                     }
-                    &Op::Devectorize { vec, .. } => {
+                    Op::Devectorize { vec, .. } => {
                         let dtype = dtypes[&vec];
                         dtypes.insert(op_id, (dtype.0, MemLayout::Scalar));
                         *rcs.entry(vec).or_insert(0) += 1;
@@ -104,33 +103,33 @@ impl Kernel {
                         dtypes.insert(op_id, (x.dtype(), MemLayout::Scalar));
                     }
                     Op::Define { dtype, .. } => {
-                        dtypes.insert(op_id, (*dtype, MemLayout::Scalar));
+                        dtypes.insert(op_id, (dtype, MemLayout::Scalar));
                     }
-                    &Op::Wmma { c, a, b, .. } => {
+                    Op::Wmma { c, a, b, .. } => {
                         dtypes.insert(op_id, (DType::F32, MemLayout::Vector(4)));
                         *rcs.entry(a).or_insert(0) += 1;
                         *rcs.entry(b).or_insert(0) += 1;
                         *rcs.entry(c).or_insert(0) += 1;
                     }
-                    &Op::Load { src, index, layout } => {
+                    Op::Load { src, index, layout } => {
                         dtypes.insert(op_id, (dtypes[&src].0, layout));
                         *rcs.entry(index).or_insert(0) += 1;
                     }
-                    &Op::Store { dst, x, index, .. } => {
+                    Op::Store { dst, x, index, .. } => {
                         dtypes.insert(op_id, dtypes[&x]);
                         *rcs.entry(dst).or_insert(0) += 1;
                         *rcs.entry(x).or_insert(0) += 1;
                         *rcs.entry(index).or_insert(0) += 1;
                     }
-                    &Op::Cast { x, dtype } => {
+                    Op::Cast { x, dtype } => {
                         dtypes.insert(op_id, (dtype, dtypes[&x].1));
                         *rcs.entry(x).or_insert(0) += 1;
                     }
-                    &Op::Unary { x, .. } => {
+                    Op::Unary { x, .. } => {
                         dtypes.insert(op_id, dtypes[&x]);
                         *rcs.entry(x).or_insert(0) += 1;
                     }
-                    &Op::Binary { x, y, bop } => {
+                    Op::Binary { x, y, bop } => {
                         let dtype = if bop.returns_bool() {
                             (DType::Bool, dtypes[&x].1)
                         } else {
@@ -140,7 +139,7 @@ impl Kernel {
                         *rcs.entry(x).or_insert(0) += 1;
                         *rcs.entry(y).or_insert(0) += 1;
                     }
-                    &Op::Mad { x, y, z } => {
+                    Op::Mad { x, y, z } => {
                         dtypes.insert(op_id, dtypes[&x]);
                         *rcs.entry(x).or_insert(0) += 1;
                         *rcs.entry(y).or_insert(0) += 1;
@@ -149,23 +148,23 @@ impl Kernel {
                     Op::Index { .. } | Op::Loop { .. } => {
                         dtypes.insert(op_id, (DType::U32, MemLayout::Scalar));
                     }
-                    &Op::ReduceTile { x, .. } => {
+                    Op::ReduceTile { x, .. } => {
                         dtypes.insert(op_id, dtypes[&x]);
                         *rcs.entry(x).or_insert(0) += 1;
                     }
-                    &Op::MatmulTile { x, y } => {
+                    Op::MatmulTile { x, y } => {
                         dtypes.insert(op_id, dtypes[&x]);
                         *rcs.entry(x).or_insert(0) += 1;
                         *rcs.entry(y).or_insert(0) += 1;
                     }
-                    &Op::TransposeTile { x } => {
+                    Op::TransposeTile { x } => {
                         dtypes.insert(op_id, dtypes[&x]);
                         *rcs.entry(x).or_insert(0) += 1;
                     }
-                    &Op::If { condition } => {
+                    Op::If { condition } => {
                         *rcs.entry(condition).or_insert(0) += 1;
                     }
-                    Op::Barrier { .. } | Op::EndIf | Op::EndLoop => {}
+                    Op::PopTile { .. } | Op::PushTile { .. } | Op::Barrier { .. } | Op::EndIf | Op::EndLoop => {}
                 }
                 op_id = self.next_op(op_id);
             }
@@ -199,18 +198,21 @@ impl Kernel {
 
         let mut op_id = self.head;
         while !op_id.is_null() {
-            let op = self.at(op_id);
-
             // Register allocation: allocate if this op produces a value
-            let produces = match op {
-                Op::Define { scope, .. } if *scope == MemScope::Register => true,
+            let produces = match self.ops[op_id].op {
+                Op::Define { scope, .. } if scope == MemScope::Register => true,
                 Op::Load { .. }
                 | Op::Cast { .. }
                 | Op::Unary { .. }
                 | Op::Binary { .. }
                 | Op::Mad { .. }
                 | Op::Vectorize { .. }
+                | Op::PushTile { .. }
+                | Op::PopTile { .. }
                 | Op::Wmma { .. }
+                | Op::ReduceTile { .. }
+                | Op::MatmulTile { .. }
+                | Op::TransposeTile { .. }
                 | Op::Loop { .. }
                 | Op::Devectorize { .. }
                 | Op::Define { .. }
@@ -221,7 +223,7 @@ impl Kernel {
                 Op::LoadView(_) => todo!(),
                 Op::StoreView { .. } => todo!(),
                 Op::Move { .. } => todo!(),
-                Op::Reduce { .. } | Op::ReduceTile { .. } | Op::MatmulTile { .. } | Op::TransposeTile { .. } => todo!(),
+                Op::Reduce { .. } => todo!(),
             };
             if produces {
                 if let Some(&rc) = rcs.get(&op_id) {
@@ -237,13 +239,15 @@ impl Kernel {
             }
 
             // Decrement RC for each operand
-            for param in op.parameters() {
+            for param in self.ops[op_id].op.parameters() {
                 if let Some(&p) = reg_map.get(&param) {
                     if reg_slots[p].0 > 0 {
                         reg_slots[p].0 -= 1;
                     }
                 }
             }
+
+            let op = &self.ops[op_id].op;
 
             // Is this indexing or compute?
             if (matches!(op, Op::Index { .. } | Op::Loop { .. })
@@ -258,7 +262,7 @@ impl Kernel {
             }
 
             // Instruction counting
-            match op {
+            match self.ops[op_id].op {
                 Op::Cast { .. } | Op::Unary { .. } | Op::Binary { .. } => {
                     wi_ops += loop_mult;
                     if !indexing_ops.contains(&op_id) {
@@ -283,8 +287,10 @@ impl Kernel {
                 | Op::Reduce { .. }
                 | Op::ReduceTile { .. }
                 | Op::MatmulTile { .. }
+                | Op::PopTile { .. }
+                | Op::PushTile { .. }
                 | Op::TransposeTile { .. } => {}
-                &Op::Load { src, index, layout } => {
+                Op::Load { src, index, layout } => {
                     wi_ops += loop_mult;
                     if !indexing_ops.contains(&op_id) {
                         wi_compute_ops += loop_mult;
@@ -372,7 +378,7 @@ impl Kernel {
                         }
                     }
                 }
-                &Op::Store { dst, index, layout, .. } => {
+                Op::Store { dst, index, layout, .. } => {
                     wi_ops += loop_mult * 3;
                     if !indexing_ops.contains(&op_id) {
                         wi_compute_ops += loop_mult * 3;
@@ -459,12 +465,12 @@ impl Kernel {
                         }
                     }
                 }
-                &Op::Index { len, axis, scope } => match scope {
+                Op::Index { len, axis, scope } => match scope {
                     IdxScope::Group => gws[axis as usize] = len,
                     IdxScope::Local => lws[axis as usize] = len,
                     IdxScope::Warp => todo!(),
                 },
-                &Op::Loop { len: len_id } => {
+                Op::Loop { len: len_id } => {
                     let len = self.loop_len_dim(len_id);
                     wi_ops += loop_mult * 3;
                     if !indexing_ops.contains(&op_id) {
@@ -480,7 +486,7 @@ impl Kernel {
                 Op::EndLoop => {
                     loop_mult /= latest_loop_lengths.pop().unwrap();
                 }
-                &Op::Wmma { dims, .. } => {
+                Op::Wmma { dims, .. } => {
                     let (m, n, k) = dims.decompose_mnk();
                     let warp = u64::from(dev_info.warp_size);
                     let cost = (m * n * k) / warp;

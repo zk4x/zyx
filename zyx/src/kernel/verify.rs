@@ -100,7 +100,7 @@ impl Kernel {
         let mut prev: OpId;
         let mut dtypes: Map<OpId, DType> = Map::default();
         while !op_id.is_null() {
-            match *self.at(op_id) {
+            match self.ops[op_id].op {
                 Op::ConstView(ref x) => {
                     dtypes.insert(op_id, x.0.dtype());
                 }
@@ -110,6 +110,17 @@ impl Kernel {
                 Op::StoreView { src, .. } => {
                     check(op_id, src, &stack);
                     dtypes.insert(op_id, dtypes[&src]);
+                }
+                Op::PushTile { dst: cb, x } => {
+                    if !defines.contains_key(&cb) {
+                        println!("store={op_id} is trying to store to undefined variable");
+                        self.debug();
+                        panic!();
+                    }
+                    debug_assert_eq!(dtypes[&x], IDX_T);
+                    check(op_id, cb, &stack);
+                    check(op_id, x, &stack);
+                    dtypes.insert(op_id, dtypes[&x]);
                 }
                 Op::Store { dst, x, index, .. } => {
                     if !defines.contains_key(&dst) {
@@ -212,6 +223,15 @@ impl Kernel {
                 Op::Define { dtype, scope, ro, len } => {
                     defines.insert(op_id, (scope, ro, len));
                     dtypes.insert(op_id, dtype);
+                }
+                Op::PopTile { src: cb } => {
+                    if !defines.contains_key(&cb) {
+                        println!("load={op_id} is trying to load from undefined variable");
+                        self.debug();
+                        panic!();
+                    }
+                    check(op_id, cb, &stack);
+                    dtypes.insert(op_id, dtypes[&cb]);
                 }
                 Op::Load { src, index, .. } => {
                     if !defines.contains_key(&src) {

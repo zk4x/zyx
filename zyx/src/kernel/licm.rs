@@ -34,8 +34,13 @@ impl Kernel {
         let mut loop_depth = 0;
         let mut op_id = self.head;
         while !op_id.is_null() {
-            let depth = match self.at(op_id) {
-                Op::Move { .. } | Op::ConstView { .. } | Op::LoadView { .. } | Op::StoreView { .. } | Op::Reduce { .. } | Op::ReduceTile { .. } => {
+            let depth = match self.ops[op_id].op {
+                Op::Move { .. }
+                | Op::ConstView { .. }
+                | Op::LoadView { .. }
+                | Op::StoreView { .. }
+                | Op::Reduce { .. }
+                | Op::ReduceTile { .. } => {
                     unreachable!()
                 }
                 Op::MatmulTile { x, y } => loop_dep[&x].max(loop_dep[&y]),
@@ -49,8 +54,8 @@ impl Kernel {
                     loop_depth -= 1;
                     loop_depth
                 }
-                Op::Unary { x, .. } | Op::Cast { x, .. } => loop_dep[x],
-                &Op::Binary { x, y, bop } => {
+                Op::Unary { x, .. } | Op::Cast { x, .. } => loop_dep[&x],
+                Op::Binary { x, y, bop } => {
                     if bop.is_commutative() && !self.ops[x].op.is_const() {
                         if loop_dep[&x] > loop_dep[&y] || self.ops[y].op.is_const() || self.ops[x].op.is_load() {
                             //println!("Swapping {x}, {y}, loop dep {} > {}: {:?}, {:?}", loop_dep[&x], loop_dep[&y], self.ops[x].op, self.ops[y].op);
@@ -61,10 +66,15 @@ impl Kernel {
                     }
                     loop_dep[&x].max(loop_dep[&y])
                 }
-                Op::Mad { x, y, z } => loop_dep[x].max(loop_dep[y]).max(loop_dep[z]),
-                Op::Barrier { .. } | Op::Index { .. } | Op::Load { .. } | Op::Store { .. } | Op::Const(_) | Op::Define { .. } => {
-                    loop_depth
-                }
+                Op::Mad { x, y, z } => loop_dep[&x].max(loop_dep[&y]).max(loop_dep[&z]),
+                Op::Barrier { .. }
+                | Op::Index { .. }
+                | Op::Load { .. }
+                | Op::Store { .. }
+                | Op::Const(_)
+                | Op::Define { .. }
+                | Op::PushTile { .. }
+                | Op::PopTile { .. } => loop_depth,
             };
             loop_dep.insert(op_id, depth);
             op_id = self.next_op(op_id);
@@ -88,9 +98,10 @@ impl Kernel {
         let mut op_id = self.head;
         while !op_id.is_null() {
             let depth = match self.at(op_id) {
-                Op::Move { .. } | Op::ConstView { .. } | Op::LoadView { .. } | Op::StoreView { .. } | Op::Reduce { .. } | Op::ReduceTile { .. } => {
+                Op::Move { .. } | Op::ConstView { .. } | Op::LoadView { .. } | Op::StoreView { .. } | Op::Reduce { .. } => {
                     unreachable!()
                 }
+                Op::ReduceTile { x, .. } => loop_dep[&x],
                 Op::MatmulTile { x, y } => loop_dep[&x].max(loop_dep[&y]),
                 Op::TransposeTile { x } => loop_dep[&x],
                 Op::Vectorize { ops } => {
@@ -114,6 +125,8 @@ impl Kernel {
                 Op::Binary { x, y, .. } => loop_dep[x].max(loop_dep[y]),
                 Op::Index { .. }
                 | Op::Barrier { .. }
+                | Op::PushTile { .. }
+                | Op::PopTile { .. }
                 | Op::Load { .. }
                 | Op::Store { .. }
                 | Op::Const(_)

@@ -57,6 +57,8 @@ impl Kernel {
                 | Op::LoadView { .. }
                 | Op::StoreView { .. }
                 | Op::Reduce { .. }
+                | Op::PushTile { .. }
+                | Op::PopTile { .. }
                 | Op::Move { .. } => {
                     return Err(BackendError {
                         status: ErrorStatus::KernelCompilation,

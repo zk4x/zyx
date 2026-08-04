@@ -100,7 +100,7 @@ use crate::{
 };
 use nanoserde::{DeBin, SerBin};
 use std::collections::BTreeMap;
-use std::{fmt::Display, hash::BuildHasherDefault, hash::Hash};
+use std::{hash::BuildHasherDefault, hash::Hash};
 
 pub use custom::CompiledKernel;
 
@@ -236,105 +236,6 @@ pub enum MemLayout {
         /// Stride between tiles
         stride: u32,
     },
-}
-
-impl Op {
-    // TODO use custom non allocating iterator instead of allocating a vec
-    #[allow(clippy::match_same_arms)]
-    pub(crate) fn parameters(&self) -> impl DoubleEndedIterator<Item = OpId> {
-        match self {
-            Op::ConstView { .. }
-            | Op::LoadView { .. }
-            | Op::Const { .. }
-            | Op::Define { .. }
-            | Op::Index { .. }
-            | Op::EndLoop
-            | Op::Barrier { .. }
-            | Op::EndIf => {
-                vec![]
-            }
-            &Op::Loop { len, .. } => vec![len],
-            &Op::Move { x, .. } => vec![x],
-            &Op::StoreView { src, .. } => vec![src],
-            Op::Reduce { x, .. } => vec![*x],
-            Op::ReduceTile { x, .. } => vec![*x],
-            &Op::Store { dst, x, index, .. } => vec![dst, x, index],
-            Op::Cast { x, .. } => vec![*x],
-            Op::Unary { x, .. } => vec![*x],
-            &Op::Binary { x, y, .. } => vec![x, y],
-            &Op::Load { src, index, .. } => vec![src, index],
-            &Op::Mad { x, y, z } => vec![x, y, z],
-            Op::Vectorize { ops } => ops.clone(),
-            &Op::Devectorize { vec, .. } => vec![vec],
-            &Op::Wmma { a, b, c, .. } => vec![a, b, c],
-            Op::If { condition } => vec![*condition],
-            Op::MatmulTile { x, y } => vec![*x, *y],
-            Op::TransposeTile { x } => vec![*x],
-        }
-        .into_iter()
-    }
-
-    #[allow(clippy::match_same_arms)]
-    pub(crate) fn parameters_mut(&mut self) -> impl DoubleEndedIterator<Item = &mut OpId> {
-        match self {
-            Op::ConstView { .. }
-            | Op::LoadView { .. }
-            | Op::Const { .. }
-            | Op::Define { .. }
-            | Op::Index { .. }
-            | Op::EndLoop
-            | Op::EndIf
-            | Op::Barrier { .. } => vec![],
-            Op::Loop { len, .. } => vec![len],
-            Op::StoreView { src, .. } => vec![src],
-            Op::Move { x, .. } => vec![x],
-            Op::Reduce { x, .. } => vec![x],
-            Op::ReduceTile { x, .. } => vec![x],
-            Op::Store { dst, x, index, .. } => vec![dst, x, index],
-            Op::Cast { x, .. } => vec![x],
-            Op::Unary { x, .. } => vec![x],
-            Op::Binary { x, y, .. } => vec![x, y],
-            Op::Load { src, index, .. } => vec![src, index],
-            Op::Mad { x, y, z } => vec![x, y, z],
-            Op::Vectorize { ops } => ops.iter_mut().collect(),
-            Op::Devectorize { vec, .. } => vec![vec],
-            Op::Wmma { a, b, c, .. } => vec![a, b, c],
-            Op::If { condition } => vec![condition],
-            Op::MatmulTile { x, y } => vec![x, y],
-            Op::TransposeTile { x } => vec![x],
-        }
-        .into_iter()
-    }
-
-    /// Check if this operation is a constant.
-    pub(crate) const fn is_const(&self) -> bool {
-        matches!(self, Op::Cast { .. })
-    }
-
-    /// Check if this operation is a load.
-    pub(crate) const fn is_load(&self) -> bool {
-        matches!(self, Op::Load { .. })
-    }
-
-    /// Remap parameter IDs according to a mapping.
-    pub(crate) fn remap_params(&mut self, remapping: &Map<OpId, OpId>) {
-        for param in self.parameters_mut() {
-            if let Some(remapped_id) = remapping.get(param) {
-                *param = *remapped_id;
-            }
-        }
-    }
-}
-
-impl Display for MemScope {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(match self {
-            MemScope::Global => "global",
-            MemScope::Local => "local",
-            MemScope::Register => "reg",
-            MemScope::Circular => "cb",
-        })
-    }
 }
 
 impl PartialEq for Kernel {
@@ -478,6 +379,15 @@ impl Kernel {
                     dtypes.insert(op_id, dtypes[&x]);
                     *rcs.entry(x).or_insert(0) += 1;
                 }
+                Op::PushTile { dst: cb, x } => {
+                    dtypes.insert(op_id, dtypes[&x]);
+                    *rcs.entry(cb).or_insert(0) += 1;
+                    *rcs.entry(x).or_insert(0) += 1;
+                }
+                Op::PopTile { src: cb } => {
+                    dtypes.insert(op_id, dtypes[&cb]);
+                    *rcs.entry(cb).or_insert(0) += 1;
+                }
                 Op::Mad { x, y, z } => {
                     dtypes.insert(op_id, dtypes[&x]);
                     *rcs.entry(x).or_insert(0) += 1;
@@ -504,6 +414,7 @@ impl Kernel {
             Op::Define { dtype, .. } => dtype,
             Op::Cast { dtype, .. } => dtype,
             Op::Index { .. } => IDX_T,
+            Op::PopTile { src: cb } => self.dtype(cb),
             Op::Load { src, .. } => self.dtype(src),
             Op::Unary { x, .. } => self.dtype(x),
             Op::Binary { x, .. } => self.dtype(x),
@@ -523,7 +434,7 @@ impl Kernel {
             Op::Reduce { x, .. } => self.dtype(x),
             Op::ReduceTile { x, .. } => self.dtype(x),
             Op::EndLoop | Op::Loop { .. } => IDX_T,
-            Op::Barrier { .. } | Op::If { .. } | Op::EndIf => {
+            Op::PushTile { .. } | Op::Barrier { .. } | Op::If { .. } | Op::EndIf => {
                 panic!("operation has no dtype")
             }
         }
@@ -1249,6 +1160,8 @@ impl Kernel {
                 Op::Wmma { .. }
                 | Op::Vectorize { .. }
                 | Op::Devectorize { .. }
+                | Op::PushTile { .. }
+                | Op::PopTile { .. }
                 | Op::Store { .. }
                 | Op::If { .. }
                 | Op::EndIf
