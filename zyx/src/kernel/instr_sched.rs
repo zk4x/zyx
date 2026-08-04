@@ -12,8 +12,11 @@
 //!   operations which depend on the fewest other operations come first.
 //! - Improving instruction pipeline utilization.
 
+use std::cmp::Reverse;
+use std::collections::BinaryHeap;
+
 use crate::{
-    Map, Set,
+    Map,
     kernel::{Kernel, MemScope, Op, OpId},
 };
 
@@ -53,8 +56,7 @@ impl Kernel {
             op_id = next;
         }
 
-        let pos: Map<OpId, usize> = rest.iter().enumerate().map(|(i, &id)| (id, i)).collect();
-        let sorted_rest = self.schedule_rest(&rest, &pos);
+        let sorted_rest = self.schedule_rest(&rest);
 
         let mut order =
             Vec::with_capacity(global_ro.len() + global_rw.len() + local_ro.len() + local_rw.len() + sorted_rest.len());
@@ -92,106 +94,135 @@ impl Kernel {
     /// - Stores never leave the loops or if blocks that contain them and never
     ///   cross barriers.
     /// - Loads never cross barriers.
+    /// - Control flow and barriers keep their mutual order.
     ///
     /// Everything else is free to move; among the ready operations those that
     /// depend on the fewest other operations are emitted first, with ties
-    /// broken by original position.
-    fn schedule_rest(&self, rest: &[OpId], pos: &Map<OpId, usize>) -> Vec<OpId> {
-        let in_rest: Set<OpId> = rest.iter().copied().collect();
-        let mut dependents: Map<OpId, Vec<OpId>> = Map::default();
-        let mut n_params: Map<OpId, usize> = Map::default();
+    /// broken by original position. Runs in O(n log n + e) where `e` is the
+    /// number of precedence edges.
+    fn schedule_rest(&self, rest: &[OpId]) -> Vec<OpId> {
+        let n = rest.len();
+        let idx: Map<OpId, usize> = rest.iter().enumerate().map(|(i, &id)| (id, i)).collect();
 
-        let mut structural: Vec<OpId> = Vec::new();
-        let mut barriers: Vec<OpId> = Vec::new();
-        let mut stores: Vec<OpId> = Vec::new();
-        let mut loads: Vec<OpId> = Vec::new();
-
-        for &id in rest {
-            let params: Vec<OpId> = self.at(id).parameters().collect();
-            n_params.insert(id, params.len());
-            for p in params {
-                if in_rest.contains(&p) {
-                    dependents.entry(p).or_default().push(id);
-                }
-            }
+        let mut structural = vec![false; n];
+        let mut barrier = vec![false; n];
+        let mut store = vec![false; n];
+        let mut load = vec![false; n];
+        for (i, &id) in rest.iter().enumerate() {
             match self.at(id) {
                 Op::Barrier => {
-                    structural.push(id);
-                    barriers.push(id);
+                    structural[i] = true;
+                    barrier[i] = true;
                 }
-                Op::Loop { .. } | Op::EndLoop | Op::If { .. } | Op::EndIf => structural.push(id),
-                Op::Store { .. } => stores.push(id),
-                Op::Load { .. } => loads.push(id),
+                Op::Loop { .. } | Op::EndLoop | Op::If { .. } | Op::EndIf => structural[i] = true,
+                Op::Store { .. } => store[i] = true,
+                Op::Load { .. } => load[i] = true,
                 _ => {}
             }
         }
 
+        let mut dependents: Vec<Vec<usize>> = vec![Vec::new(); n];
+        let mut in_degree = vec![0usize; n];
+        let mut n_params = vec![0usize; n];
+
+        // Uses must come after their declarations.
+        for (i, &id) in rest.iter().enumerate() {
+            let params: Vec<OpId> = self.at(id).parameters().collect();
+            n_params[i] = params.len();
+            for p in params {
+                if let Some(&j) = idx.get(&p) {
+                    dependents[j].push(i);
+                    in_degree[i] += 1;
+                }
+            }
+        }
+
         // Loads and stores to the same define keep their relative order.
-        let mut by_define: Map<OpId, Vec<OpId>> = Map::default();
-        for &id in rest {
+        let mut by_define: Map<OpId, Vec<usize>> = Map::default();
+        for (i, &id) in rest.iter().enumerate() {
             match self.at(id) {
-                Op::Load { src, .. } => by_define.entry(*src).or_default().push(id),
-                Op::Store { dst, .. } => by_define.entry(*dst).or_default().push(id),
+                Op::Load { src, .. } => by_define.entry(*src).or_default().push(i),
+                Op::Store { dst, .. } => by_define.entry(*dst).or_default().push(i),
                 _ => {}
             }
         }
         for group in by_define.values() {
             for pair in group.windows(2) {
-                dependents.entry(pair[0]).or_default().push(pair[1]);
+                dependents[pair[0]].push(pair[1]);
+                in_degree[pair[1]] += 1;
             }
         }
 
-        // Stores never leave their loop/if and never cross barriers: keep
-        // every store ordered with every structural op.
-        for &store in &stores {
-            for &structural in &structural {
-                if pos[&store] < pos[&structural] {
-                    dependents.entry(store).or_default().push(structural);
+        // Control flow and barriers keep their mutual order.
+        let mut prev_structural = usize::MAX;
+        for i in 0..n {
+            if structural[i] {
+                if prev_structural != usize::MAX {
+                    dependents[prev_structural].push(i);
+                    in_degree[i] += 1;
+                }
+                prev_structural = i;
+            }
+        }
+
+        // Stores never leave the loops/ifs that contain them and never cross
+        // barriers: keep every store ordered with every structural op.
+        for i in 0..n {
+            if !store[i] {
+                continue;
+            }
+            for j in 0..n {
+                if !structural[j] {
+                    continue;
+                }
+                if i < j {
+                    dependents[i].push(j);
+                    in_degree[j] += 1;
                 } else {
-                    dependents.entry(structural).or_default().push(store);
+                    dependents[j].push(i);
+                    in_degree[i] += 1;
                 }
             }
         }
         // Loads never cross barriers.
-        for &load in &loads {
-            for &barrier in &barriers {
-                if pos[&load] < pos[&barrier] {
-                    dependents.entry(load).or_default().push(barrier);
+        for i in 0..n {
+            if !load[i] {
+                continue;
+            }
+            for j in 0..n {
+                if !barrier[j] {
+                    continue;
+                }
+                if i < j {
+                    dependents[i].push(j);
+                    in_degree[j] += 1;
                 } else {
-                    dependents.entry(barrier).or_default().push(load);
+                    dependents[j].push(i);
+                    in_degree[i] += 1;
                 }
             }
         }
 
-        let mut in_degree: Map<OpId, usize> = rest.iter().map(|&id| (id, 0)).collect();
-        for (_, ds) in &dependents {
-            for &d in ds {
-                *in_degree.get_mut(&d).unwrap() += 1;
+        // Stable topological sort: among ready operations, emit the one that
+        // depends on the fewest other operations first, ties broken by
+        // original position.
+        let mut ready: BinaryHeap<Reverse<(usize, usize)>> = BinaryHeap::new();
+        for i in 0..n {
+            if in_degree[i] == 0 {
+                ready.push(Reverse((n_params[i], i)));
             }
         }
-
-        let mut ready: Vec<OpId> = rest.iter().copied().filter(|id| in_degree[id] == 0).collect();
-        let mut result = Vec::with_capacity(rest.len());
-        let mut emitted = 0;
-        while emitted < rest.len() {
-            let next = ready
-                .iter()
-                .min_by_key(|id| (n_params[id], pos[id]))
-                .copied()
-                .expect("cycle in instruction dependencies");
-            ready.retain(|id| *id != next);
-            result.push(next);
-            emitted += 1;
-            if let Some(ds) = dependents.get(&next) {
-                for &d in ds {
-                    let degree = in_degree.get_mut(&d).unwrap();
-                    *degree -= 1;
-                    if *degree == 0 {
-                        ready.push(d);
-                    }
+        let mut result = Vec::with_capacity(n);
+        while let Some(Reverse((_, i))) = ready.pop() {
+            result.push(rest[i]);
+            for &j in &dependents[i] {
+                in_degree[j] -= 1;
+                if in_degree[j] == 0 {
+                    ready.push(Reverse((n_params[j], j)));
                 }
             }
         }
+        debug_assert_eq!(result.len(), n, "cycle in instruction dependencies");
         result
     }
 }
