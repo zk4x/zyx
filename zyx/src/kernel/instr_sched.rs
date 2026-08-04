@@ -369,4 +369,29 @@ mod tests {
         assert!(pos(a) < pos(add));
         assert!(pos(b) < pos(add));
     }
+
+    #[test]
+    fn _bench_instruction_schedule_large_kernel() {
+        let mut k = Kernel::new(DeviceId::AUTO);
+        let a = k.define(DType::F32, MemScope::Global, true, 1024);
+        let b = k.define(DType::F32, MemScope::Global, true, 1024);
+        let out = k.define(DType::F32, MemScope::Global, false, 1024);
+        let gidx = k.group_index(0, 1024);
+        let mut acc = k.load(a, gidx, MemLayout::Scalar);
+        for _ in 0..200 {
+            let x = k.load(b, gidx, MemLayout::Scalar);
+            acc = k.add(acc, x);
+            let two = k.const_val(2.0f32);
+            let y = k.mul(acc, two);
+            acc = k.add(acc, y);
+        }
+        k.store(out, acc, gidx, MemLayout::Scalar);
+
+        let start = std::time::Instant::now();
+        for _ in 0..1000 {
+            k.instruction_schedule();
+        }
+        let elapsed = start.elapsed();
+        println!("1000x schedule on ~800-op kernel: {:?}", elapsed);
+    }
 }
