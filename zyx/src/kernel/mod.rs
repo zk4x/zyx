@@ -120,12 +120,12 @@ mod mma;
 mod ops;
 mod pad_index;
 mod predict_cost;
-mod rangeify;
 mod split_loops;
 mod tenstorrent;
 mod thread_coarse;
 mod transforms;
 mod unfold;
+mod unfold2;
 mod unroll_loops;
 mod vectorize;
 mod verify;
@@ -1086,33 +1086,6 @@ impl Kernel {
         self.ops.iter().map(|(id, node)| (id, &node.op))
     }
 
-    /// Sort global defines to the beginning of the operation chain.
-    ///
-    /// Moves all `Define` operations with `MemScope::Global` to appear at the beginning.
-    pub(crate) fn sort_global_defines(&mut self) {
-        let mut insert_after = OpId::NULL;
-        let mut op_id = self.head;
-        while !op_id.is_null() {
-            if matches!(self.ops[op_id].op, Op::Define { scope: MemScope::Global, .. }) {
-                insert_after = op_id;
-            } else {
-                break;
-            }
-            op_id = self.next_op(op_id);
-        }
-        if insert_after.is_null() || op_id.is_null() {
-            return;
-        }
-        while !op_id.is_null() {
-            let next = self.next_op(op_id);
-            if matches!(self.ops[op_id].op, Op::Define { scope: MemScope::Global, .. }) {
-                self.move_op_after(op_id, insert_after);
-                insert_after = op_id;
-            }
-            op_id = next;
-        }
-    }
-
     pub(crate) fn name(&self) -> String {
         let mut parts: Vec<&str> = Vec::new();
         let mut op_id = self.head;
@@ -1619,5 +1592,53 @@ impl Kernel {
             *axis = ax;
             ax += 1;
         }
+    }
+
+    pub(crate) fn is_preceded_by_reduce(&self, x: OpId) -> bool {
+        //if self.ops.values().filter(|node| matches!(node.op, Op::Reduce { .. })).count() > 1 { return true; }
+        let mut params = vec![x];
+        while let Some(param) = params.pop() {
+            if let &Op::Reduce { x, .. } = self.at(param) {
+                params = vec![x];
+                break;
+            }
+            params.extend(self.ops[param].op.parameters());
+        }
+        //if params.is_empty() { return false; }
+        //println!("Found reduce at {params:?}");
+        // If there is a load (non constant reduce) or multiple reduces, return true
+        let mut seen: Set<OpId> = Set::default();
+        while let Some(param) = params.pop() {
+            if !seen.insert(param) {
+                continue;
+            }
+            if matches!(self.ops[param].op, Op::LoadView(_) | Op::Reduce { .. }) {
+                return true;
+            }
+            params.extend(self.ops[param].op.parameters());
+        }
+        false
+    }
+
+    #[allow(unused)]
+    pub(crate) fn is_preceded_by_compute(&self, x: OpId) -> bool {
+        let mut params = vec![x];
+        let mut seen: Set<OpId> = Set::default();
+        let (mut has_compute, mut has_load) = (false, false);
+        while let Some(param) = params.pop() {
+            if !seen.insert(param) {
+                continue;
+            }
+            match &self.ops[param].op {
+                Op::Binary { .. } | Op::Unary { .. } | Op::Reduce { .. } => {
+                    has_compute = true;
+                    params.extend(self.ops[param].op.parameters());
+                }
+                Op::LoadView(_) | Op::Load { .. } => has_load = true,
+                Op::ConstView(_) | Op::Const(_) => {}
+                _ => params.extend(self.ops[param].op.parameters()),
+            }
+        }
+        has_compute && has_load
     }
 }

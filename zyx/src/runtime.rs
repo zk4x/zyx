@@ -1885,13 +1885,11 @@ impl Runtime {
         let dev_info = self.devices[kernel.device_id].info().clone();
         let dev_info_id = self.get_or_add_dev_info(&dev_info);
 
-        kernel.sort_global_defines();
-
         if self.debug.sched() {
             kernel.debug();
         }
 
-        kernel.unfold_movement_ops();
+        kernel.linearize();
 
         {
             let device = &mut self.devices[kernel.device_id];
