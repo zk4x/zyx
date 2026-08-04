@@ -29,7 +29,7 @@ impl Kernel {
     ///
     /// It cannot be applied if both explicit global indices and view moves
     /// are present in the kernel.
-    pub fn unfold_movement_ops2(&mut self) {
+    pub fn linearize(&mut self) {
         let has_gidx = self.ops.values().any(|n| matches!(n.op, Op::Index { scope: IdxScope::Group, .. }));
         let has_view_moves = self.ops.values().any(|n| matches!(n.op, Op::LoadView(_) | Op::StoreView { .. } | Op::Move { .. }));
 

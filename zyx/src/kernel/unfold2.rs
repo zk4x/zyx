@@ -8,6 +8,8 @@
 //! Movement ops are applied directly to axis indices, and
 //! LoadView/StoreView/ConstView are converted to Load/Store/Const in a single pass.
 
+#![allow(unused)]
+
 use crate::{
     Map, Set,
     kernel::{IdxScope, Kernel, MemLayout, MemScope, MoveOp, Op, OpId},
@@ -18,7 +20,7 @@ impl Kernel {
     ///
     /// Movement ops (Reshape, Expand, Permute, Pad) are applied directly to axis indices,
     /// and LoadView/StoreView/ConstView are converted to Load/Store/Const in a single pass.
-    pub fn linearize(&mut self) {
+    pub fn linearize2(&mut self) {
         let has_gidx = self.ops.values().any(|n| matches!(n.op, Op::Index { scope: IdxScope::Group, .. }));
         let has_view_moves = self.ops.values().any(|n| matches!(n.op, Op::LoadView(_) | Op::StoreView { .. } | Op::Move { .. }));
 
