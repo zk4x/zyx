@@ -696,7 +696,7 @@ impl TTDevice {
                     Op::Define { dtype, scope: MemScope::Global, ro: false, .. } => output_dtypes.push(*dtype),
                     Op::Index { len, axis, scope: IdxScope::Group } => grid_dims[*axis as usize] = *len as u32,
                     Op::Store { dst, x, .. } => {
-                        if let Op::Define { scope: MemScope::Local, .. } = kernel.ops[*dst].op {
+                        if let Op::Define { scope: MemScope::Circular, .. } = kernel.ops[*dst].op {
                             if let Op::Load { src, .. } = kernel.ops[*x].op {
                                 if let Op::Define { ro: true, .. } = kernel.ops[src].op {
                                     input_cb_map.insert(*dst, max_cb);

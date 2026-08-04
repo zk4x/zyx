@@ -347,7 +347,7 @@ impl Kernel {
                         defines_stack.last_mut().unwrap().insert(op_id);
                     }
                 }
-                Op::Store { dst, .. } => {
+                Op::Store { dst, .. } | Op::PushTile { dst, .. } => {
                     for (i, defines_set) in defines_stack.iter().enumerate().take(defines_stack.len() - 1) {
                         if defines_set.contains(dst) {
                             for delete_flag in delete_stack.iter_mut().skip(i + 1) {
@@ -416,6 +416,7 @@ impl Kernel {
                     | Op::Loop { .. }
                     | Op::EndLoop
                     | Op::StoreView { .. }
+                    | Op::PushTile { .. }
             ) {
                 params.push(op_id);
             }

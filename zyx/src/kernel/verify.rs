@@ -51,7 +51,8 @@ impl Kernel {
                             panic!();
                         }
                     }
-                    Op::Define { scope: MemScope::Local, ro: true, .. } => {
+                    Op::Define { scope: MemScope::Local, ro: true, .. }
+                    | Op::Define { scope: MemScope::Circular, ro: true, .. } => {
                         if phase == Phase::GlobalRo || phase == Phase::GlobalRw {
                             phase = Phase::LocalRo;
                         }
@@ -61,7 +62,8 @@ impl Kernel {
                             panic!();
                         }
                     }
-                    Op::Define { scope: MemScope::Local, ro: false, .. } => {
+                    Op::Define { scope: MemScope::Local, ro: false, .. }
+                    | Op::Define { scope: MemScope::Circular, ro: false, .. } => {
                         if phase == Phase::GlobalRo || phase == Phase::GlobalRw || phase == Phase::LocalRo {
                             phase = Phase::LocalRw;
                         }
@@ -117,7 +119,6 @@ impl Kernel {
                         self.debug();
                         panic!();
                     }
-                    debug_assert_eq!(dtypes[&x], IDX_T);
                     check(op_id, cb, &stack);
                     check(op_id, x, &stack);
                     dtypes.insert(op_id, dtypes[&x]);
@@ -234,7 +235,7 @@ impl Kernel {
                     dtypes.insert(op_id, dtypes[&cb]);
                 }
                 Op::Load { src, index, .. } => {
-                    if !defines.contains_key(&src) {
+                    if !defines.contains_key(&src) && !matches!(self.ops[src].op, Op::PopTile { .. }) {
                         println!("load={op_id} is trying to load from undefined variable");
                         self.debug();
                         panic!();

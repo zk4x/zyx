@@ -155,7 +155,7 @@ impl Kernel {
                         let Op::Define { scope: MemScope::Global, .. } = self.ops[src].op else {
                             unreachable!()
                         };
-                        let Op::Define { dtype, scope: MemScope::Local, .. } = self.ops[dst].op else {
+                        let Op::Define { dtype, scope: MemScope::Circular, .. } = self.ops[dst].op else {
                             unreachable!()
                         };
 

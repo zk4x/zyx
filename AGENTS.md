@@ -11,6 +11,12 @@
 
 Quick reference for coding agents working in the zyx repository.
 
+## Know Your Limits
+
+- If you cannot actually solve a task (hardware-specific, deeply subtle, or repeatedly failing), SAY SO plainly up front instead of guessing or producing half-baked advice that wastes the user's time.
+- A direct "I can't solve this" is far better than two days of failed attempts. Don't hedge, don't overpromise, don't keep pushing your own approach after being told it's wrong.
+- When told the user will do it themselves, stop and step back. Only act when asked for a specific edit.
+
 ## Essential Commands
 
 ```bash

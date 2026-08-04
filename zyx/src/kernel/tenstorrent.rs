@@ -199,7 +199,7 @@ impl Kernel {
                 continue;
             }
             let local = self
-                .insert_after(last_global, Op::Define { dtype: self.dtype(src), scope: MemScope::Local, ro: false, len: 1024 });
+                .insert_after(last_global, Op::Define { dtype: self.dtype(src), scope: MemScope::Circular, ro: false, len: 1024 });
             last_global = local;
             src_to_local.insert(src, local);
         }
@@ -254,7 +254,7 @@ impl Kernel {
                 continue;
             }
             let local = self
-                .insert_after(last_local, Op::Define { dtype: self.dtype(dst), scope: MemScope::Local, ro: false, len: 1024 });
+                .insert_after(last_local, Op::Define { dtype: self.dtype(dst), scope: MemScope::Circular, ro: false, len: 1024 });
             last_local = local;
             dst_to_local.insert(dst, local);
         }
