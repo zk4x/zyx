@@ -266,6 +266,8 @@ impl Op {
             &Op::Devectorize { vec, .. } => vec![vec],
             &Op::Wmma { a, b, c, .. } => vec![a, b, c],
             Op::If { condition } => vec![*condition],
+            Op::MatmulTile { x, y } => vec![*x, *y],
+            Op::TransposeTile { x } => vec![*x],
         }
         .into_iter()
     }
@@ -296,6 +298,8 @@ impl Op {
             Op::Devectorize { vec, .. } => vec![vec],
             Op::Wmma { a, b, c, .. } => vec![a, b, c],
             Op::If { condition } => vec![condition],
+            Op::MatmulTile { x, y } => vec![x, y],
+            Op::TransposeTile { x } => vec![x],
         }
         .into_iter()
     }
@@ -462,6 +466,15 @@ impl Kernel {
                     *rcs.entry(b).or_insert(0) += 1;
                     *rcs.entry(c).or_insert(0) += 1;
                 }
+                Op::MatmulTile { x, y } => {
+                    dtypes.insert(op_id, dtypes[&x]);
+                    *rcs.entry(x).or_insert(0) += 1;
+                    *rcs.entry(y).or_insert(0) += 1;
+                }
+                Op::TransposeTile { x } => {
+                    dtypes.insert(op_id, dtypes[&x]);
+                    *rcs.entry(x).or_insert(0) += 1;
+                }
                 Op::Mad { x, y, z } => {
                     dtypes.insert(op_id, dtypes[&x]);
                     *rcs.entry(x).or_insert(0) += 1;
@@ -495,6 +508,8 @@ impl Kernel {
             Op::Wmma { dtype, .. } => match dtype {
                 MMADType::f16_f16_f16_f32 => DType::F32,
             },
+            Op::MatmulTile { x, .. } => self.dtype(x),
+            Op::TransposeTile { x } => self.dtype(x),
             Op::Vectorize { ref ops } => self.dtype(ops[0]),
             Op::Devectorize { vec, .. } => self.dtype(vec),
             Op::Store { x, .. } => self.dtype(x),
@@ -1203,6 +1218,15 @@ impl Kernel {
                     let Info { shape, .. } = stack[x].clone();
                     let numel: Dim = shape.iter().product();
                     Info { shape: vec![1], flops: numel - 1, mem_read: 0, mem_write: 0 }
+                }
+                Op::MatmulTile { x, .. } => {
+                    let Info { shape, .. } = stack[x].clone();
+                    let flops = shape.iter().product::<Dim>() as u64;
+                    Info { shape, flops, mem_read: 0, mem_write: 0 }
+                }
+                Op::TransposeTile { x } => {
+                    let Info { shape, .. } = stack[x].clone();
+                    Info { shape, flops: 0, mem_read: 0, mem_write: 0 }
                 }
                 Op::Cast { x, .. } => {
                     let Info { shape, .. } = stack[x].clone();

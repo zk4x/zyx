@@ -158,6 +158,11 @@ impl Kernel {
                 | Op::Move { x, .. }
                 | Op::Reduce { x, .. }
                 | Op::ReduceTile { x, .. } => add_param!(x),
+                Op::MatmulTile { x, y } => {
+                    add_param!(x);
+                    add_param!(y);
+                }
+                Op::TransposeTile { x } => add_param!(x),
                 Op::Binary { x, y, .. } => {
                     add_param!(x);
                     add_param!(y);

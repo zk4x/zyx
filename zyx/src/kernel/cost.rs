@@ -153,6 +153,15 @@ impl Kernel {
                         dtypes.insert(op_id, dtypes[&x]);
                         *rcs.entry(x).or_insert(0) += 1;
                     }
+                    &Op::MatmulTile { x, y } => {
+                        dtypes.insert(op_id, dtypes[&x]);
+                        *rcs.entry(x).or_insert(0) += 1;
+                        *rcs.entry(y).or_insert(0) += 1;
+                    }
+                    &Op::TransposeTile { x } => {
+                        dtypes.insert(op_id, dtypes[&x]);
+                        *rcs.entry(x).or_insert(0) += 1;
+                    }
                     &Op::If { condition } => {
                         *rcs.entry(condition).or_insert(0) += 1;
                     }
@@ -212,7 +221,7 @@ impl Kernel {
                 Op::LoadView(_) => todo!(),
                 Op::StoreView { .. } => todo!(),
                 Op::Move { .. } => todo!(),
-                Op::Reduce { .. } | Op::ReduceTile { .. } => todo!(),
+                Op::Reduce { .. } | Op::ReduceTile { .. } | Op::MatmulTile { .. } | Op::TransposeTile { .. } => todo!(),
             };
             if produces {
                 if let Some(&rc) = rcs.get(&op_id) {
@@ -272,7 +281,9 @@ impl Kernel {
                 | Op::StoreView { .. }
                 | Op::Move { .. }
                 | Op::Reduce { .. }
-                | Op::ReduceTile { .. } => {}
+                | Op::ReduceTile { .. }
+                | Op::MatmulTile { .. }
+                | Op::TransposeTile { .. } => {}
                 &Op::Load { src, index, layout } => {
                     wi_ops += loop_mult;
                     if !indexing_ops.contains(&op_id) {

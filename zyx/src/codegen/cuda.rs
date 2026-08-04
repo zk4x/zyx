@@ -69,6 +69,8 @@ impl Kernel {
         while !op_id.is_null() {
             match self.ops[op_id].op {
                 Op::ReduceTile { .. }
+                | Op::MatmulTile { .. }
+                | Op::TransposeTile { .. }
                 | Op::Move { .. }
                 | Op::ConstView { .. }
                 | Op::LoadView { .. }

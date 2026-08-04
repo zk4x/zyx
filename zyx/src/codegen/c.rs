@@ -331,10 +331,12 @@ impl Kernel {
                 }
                 Op::Barrier { .. } => {}
                 Op::ReduceTile { .. }
+                | Op::MatmulTile { .. }
+                | Op::TransposeTile { .. }
+                | Op::Move { .. }
                 | Op::ConstView { .. }
                 | Op::LoadView { .. }
                 | Op::StoreView { .. }
-                | Op::Move { .. }
                 | Op::Reduce { .. } => {
                     return Err(BackendError {
                         status: ErrorStatus::KernelCompilation,

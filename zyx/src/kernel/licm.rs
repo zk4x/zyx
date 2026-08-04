@@ -38,6 +38,8 @@ impl Kernel {
                 Op::Move { .. } | Op::ConstView { .. } | Op::LoadView { .. } | Op::StoreView { .. } | Op::Reduce { .. } | Op::ReduceTile { .. } => {
                     unreachable!()
                 }
+                Op::MatmulTile { x, y } => loop_dep[&x].max(loop_dep[&y]),
+                Op::TransposeTile { x } => loop_dep[&x],
                 Op::Devectorize { .. } | Op::Wmma { .. } | Op::Vectorize { .. } => loop_depth,
                 Op::If { .. } | Op::Loop { .. } => {
                     loop_depth += 1;
@@ -89,6 +91,8 @@ impl Kernel {
                 Op::Move { .. } | Op::ConstView { .. } | Op::LoadView { .. } | Op::StoreView { .. } | Op::Reduce { .. } | Op::ReduceTile { .. } => {
                     unreachable!()
                 }
+                Op::MatmulTile { x, y } => loop_dep[&x].max(loop_dep[&y]),
+                Op::TransposeTile { x } => loop_dep[&x],
                 Op::Vectorize { ops } => {
                     let mut max = 0;
                     for op in ops {

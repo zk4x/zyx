@@ -140,6 +140,15 @@ impl Kernel {
                     check(op_id, x, &stack);
                     dtypes.insert(op_id, dtypes[&x]);
                 }
+                Op::MatmulTile { x, y } => {
+                    check(op_id, x, &stack);
+                    check(op_id, y, &stack);
+                    dtypes.insert(op_id, dtypes[&x]);
+                }
+                Op::TransposeTile { x } => {
+                    check(op_id, x, &stack);
+                    dtypes.insert(op_id, dtypes[&x]);
+                }
                 Op::Unary { x, .. } | Op::Move { x, .. } => {
                     check(op_id, x, &stack);
                     dtypes.insert(op_id, dtypes[&x]);

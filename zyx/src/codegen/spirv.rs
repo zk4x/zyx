@@ -999,7 +999,9 @@ impl Kernel {
                     | Op::StoreView { .. }
                     | Op::Move { .. }
                     | Op::Reduce { .. }
-                    | Op::Wmma { .. } => {
+                    | Op::Wmma { .. }
+                    | Op::MatmulTile { .. }
+                    | Op::TransposeTile { .. } => {
                         return Err(BackendError {
                             status: ErrorStatus::KernelCompilation,
                             context: "SPIR-V: unexpected kernel op (should be unfolded)".into(),

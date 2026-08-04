@@ -131,6 +131,19 @@ impl Kernel {
                         },
                     );
                 }
+                Op::MatmulTile { x, y } => {
+                    let dtype = dtypes[&x];
+                    dtypes.insert(op_id, dtype);
+                    let x = id_map[&x];
+                    let y = id_map[&y];
+                    println!("{indent}r{out_id}{grey}: {dtype}{reset} = {red}matmul_tile{reset} r{x}, r{y}");
+                }
+                Op::TransposeTile { x } => {
+                    let dtype = dtypes[&x];
+                    dtypes.insert(op_id, dtype);
+                    let x = id_map[&x];
+                    println!("{indent}r{out_id}{grey}: {dtype}{reset} = {red}transpose_tile{reset} r{x}");
+                }
                 Op::Define { dtype, scope, ro, len, .. } => {
                     dtypes.insert(op_id, dtype);
                     let ro = if ro { "" } else { "mut " };
