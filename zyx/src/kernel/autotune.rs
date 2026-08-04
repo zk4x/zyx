@@ -439,7 +439,7 @@ impl Kernel {
         let (program_id, timing) =
             kernel.launch_with_timings(&args, device, memory_pool, debug, flop, read_bytes, write_bytes, self.get_hash())?;
         kernel.dealloc_buffers(new_bufs, memory_pool);
-            kernel.launch_with_timings(&args, device, memory_pool, debug, flop, read_bytes, write_bytes, self.get_hash())?;
+        kernel.launch_with_timings(&args, device, memory_pool, debug, flop, read_bytes, write_bytes, self.get_hash())?;
         kernel.dealloc_buffers(args, memory_pool);
 
         Ok((program_id, OptSeq { opts: Vec::new(), cost: Cost::default() }, timing))
@@ -482,7 +482,7 @@ impl Kernel {
         debug: DebugMask,
         buffers: &[PoolBufferId],
     ) -> Result<(DeviceProgramId, OptSeq, u64), BackendError> {
-        if false {
+        if true {
             return self.apply_selected_optimizations(device, memory_pool, config, flop, read_bytes, write_bytes, debug);
         }
 
