@@ -98,11 +98,21 @@ impl Kernel {
     ///
     /// Everything else is free to move; among the ready operations those that
     /// depend on the fewest other operations are emitted first, with ties
-    /// broken by original position. Runs in O(n log n + e) where `e` is the
-    /// number of precedence edges.
+    /// broken by original position.
     fn schedule_rest(&self, rest: &[OpId]) -> Vec<OpId> {
         let n = rest.len();
-        let idx: Map<OpId, usize> = rest.iter().enumerate().map(|(i, &id)| (id, i)).collect();
+        if n == 0 {
+            return Vec::new();
+        }
+
+        // OpId → position in rest. OpId is u32 so we can use a Vec. Size to the
+        // full slab range so rest ops can reference defines (or ops removed to
+        // the front) without an out-of-bounds access.
+        let max_id = self.ops.max_id().0 as usize;
+        let mut idx = vec![usize::MAX; max_id + 1];
+        for (i, &id) in rest.iter().enumerate() {
+            idx[id.0 as usize] = i;
+        }
 
         let mut structural = vec![false; n];
         let mut barrier = vec![false; n];
@@ -121,20 +131,72 @@ impl Kernel {
             }
         }
 
-        let mut dependents: Vec<Vec<usize>> = vec![Vec::new(); n];
+        // Precedence edges are collected as `(u, v)` pairs meaning `u` must be
+        // ordered before `v`, then laid out in CSR form to avoid one heap
+        // allocation per operation.
+        let mut edges: Vec<(usize, usize)> = Vec::new();
         let mut in_degree = vec![0usize; n];
         let mut n_params = vec![0usize; n];
 
-        // Uses must come after their declarations.
+        // Uses must come after their declarations. Iterate params directly
+        // without collecting into a Vec.
         for (i, &id) in rest.iter().enumerate() {
-            let params: Vec<OpId> = self.at(id).parameters().collect();
-            n_params[i] = params.len();
-            for p in params {
-                if let Some(&j) = idx.get(&p) {
-                    dependents[j].push(i);
-                    in_degree[i] += 1;
-                }
+            let mut count = 0usize;
+            macro_rules! add_param {
+                ($p:expr) => {{
+                    count += 1;
+                    let j = idx[$p.0 as usize];
+                    if j != usize::MAX {
+                        edges.push((j, i));
+                        in_degree[i] += 1;
+                    }
+                }};
             }
+            match self.at(id) {
+                Op::Cast { x, .. } | Op::Unary { x, .. } | Op::Move { x, .. } | Op::Reduce { x, .. }
+                | Op::ReduceTile { x, .. } => add_param!(x),
+                Op::Binary { x, y, .. } => {
+                    add_param!(x);
+                    add_param!(y);
+                }
+                Op::Const(_)
+                | Op::Define { .. }
+                | Op::Index { .. }
+                | Op::EndLoop
+                | Op::Barrier
+                | Op::EndIf
+                | Op::ConstView(_)
+                | Op::LoadView(_) => {}
+                Op::Store { dst, x, index, .. } => {
+                    add_param!(dst);
+                    add_param!(x);
+                    add_param!(index);
+                }
+                Op::Load { src, index, .. } => {
+                    add_param!(src);
+                    add_param!(index);
+                }
+                Op::Loop { len, .. } => add_param!(len),
+                Op::If { condition } => add_param!(condition),
+                Op::Mad { x, y, z } => {
+                    add_param!(x);
+                    add_param!(y);
+                    add_param!(z);
+                }
+                Op::Wmma { a, b, c, .. } => {
+                    add_param!(a);
+                    add_param!(b);
+                    add_param!(c);
+                }
+                Op::Vectorize { ops } => {
+                    for &p in ops {
+                        add_param!(p);
+                    }
+                }
+                Op::Devectorize { vec, .. } => add_param!(vec),
+                Op::StoreView { src, .. } => add_param!(src),
+            }
+            n_params[i] = count;
         }
 
         // Loads and stores to the same define keep their relative order.
@@ -148,22 +210,25 @@ impl Kernel {
         }
         for group in by_define.values() {
             for pair in group.windows(2) {
-                dependents[pair[0]].push(pair[1]);
+                edges.push((pair[0], pair[1]));
                 in_degree[pair[1]] += 1;
             }
         }
 
         // Control flow and barriers keep their mutual order.
         let mut prev_structural = usize::MAX;
+        let mut structural_positions = Vec::with_capacity(structural.iter().filter(|b| **b).count());
         for i in 0..n {
             if structural[i] {
+                structural_positions.push(i);
                 if prev_structural != usize::MAX {
-                    dependents[prev_structural].push(i);
+                    edges.push((prev_structural, i));
                     in_degree[i] += 1;
                 }
                 prev_structural = i;
             }
         }
+        let barrier_positions: Vec<usize> = (0..n).filter(|&i| barrier[i]).collect();
 
         // Stores never leave the loops/ifs that contain them and never cross
         // barriers: keep every store ordered with every structural op.
@@ -171,15 +236,12 @@ impl Kernel {
             if !store[i] {
                 continue;
             }
-            for j in 0..n {
-                if !structural[j] {
-                    continue;
-                }
+            for &j in &structural_positions {
                 if i < j {
-                    dependents[i].push(j);
+                    edges.push((i, j));
                     in_degree[j] += 1;
                 } else {
-                    dependents[j].push(i);
+                    edges.push((j, i));
                     in_degree[i] += 1;
                 }
             }
@@ -189,18 +251,31 @@ impl Kernel {
             if !load[i] {
                 continue;
             }
-            for j in 0..n {
-                if !barrier[j] {
-                    continue;
-                }
+            for &j in &barrier_positions {
                 if i < j {
-                    dependents[i].push(j);
+                    edges.push((i, j));
                     in_degree[j] += 1;
                 } else {
-                    dependents[j].push(i);
+                    edges.push((j, i));
                     in_degree[i] += 1;
                 }
             }
+        }
+
+        // Lay the collected edges out in CSR form: `offsets[i]..offsets[i+1]`
+        // indexes `targets` with the dependents of operation `i`.
+        let mut offsets = vec![0usize; n + 1];
+        for &(u, _) in &edges {
+            offsets[u + 1] += 1;
+        }
+        for i in 0..n {
+            offsets[i + 1] += offsets[i];
+        }
+        let mut fill: Vec<usize> = offsets[..n].to_vec();
+        let mut targets = vec![0usize; edges.len()];
+        for &(u, v) in &edges {
+            targets[fill[u]] = v;
+            fill[u] += 1;
         }
 
         // Stable topological sort: among ready operations, emit the one that
@@ -215,7 +290,7 @@ impl Kernel {
         let mut result = Vec::with_capacity(n);
         while let Some(Reverse((_, i))) = ready.pop() {
             result.push(rest[i]);
-            for &j in &dependents[i] {
+            for &j in &targets[offsets[i]..offsets[i + 1]] {
                 in_degree[j] -= 1;
                 if in_degree[j] == 0 {
                     ready.push(Reverse((n_params[j], j)));
