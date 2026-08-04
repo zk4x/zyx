@@ -530,6 +530,15 @@ impl Kernel {
     /// only inserts new ops after the last global define.
     ///
     /// Step 2: compute kernel.
+    ///
+    /// Transforms the kernel to use circular buffers and a tiled accumulator:
+    /// 1. Asserts no global loads exist before the loop.
+    /// 2. Divides the loop length constant by 1024 (loop now runs once).
+    /// 3. Redirects global loads to load from the circular buffers instead.
+    /// 4. Converts the scalar accumulator register to a tile of 1024 elements.
+    /// 5. Finds the BOp from the accumulation inside the loop.
+    /// 6. Inserts a ReduceTile (scalar) after the loop to reduce the tile.
+    /// 7. Remaps all uses of the accumulator register after the loop to the ReduceTile result.
     fn tenstorrent_single_scalar_tile(&mut self) {
         self.debug();
 
@@ -547,6 +556,19 @@ impl Kernel {
             found
         };
         debug_assert!(!loop_id.is_null());
+
+        // Debug assert no global loads before the loop
+        let mut op_id = self.head;
+        while op_id != loop_id {
+            debug_assert!(
+                !matches!(
+                    self.at(op_id),
+                    Op::Load { src, .. } if matches!(self.at(*src), Op::Define { scope: MemScope::Global, .. })
+                ),
+                "global loads should have been moved into circular buffers"
+            );
+            op_id = self.next_op(op_id);
+        }
 
         // Find matching EndLoop
         let endloop_id = {
@@ -684,6 +706,84 @@ impl Kernel {
         // Close the two loops
         self.insert_after(insert_point, Op::EndLoop);
         self.insert_after(insert_point, Op::EndLoop);
+
+        // Step 2: compute kernel
+
+        // Divide the loop length constant by 1024
+        let loop_len_id = match self.at(loop_id) {
+            Op::Loop { len } => *len,
+            _ => unreachable!(),
+        };
+        if let Op::Const(c) = &self.ops[loop_len_id].op {
+            let new_val = match c {
+                Constant::U32(v) => Constant::U32(v / 1024),
+                Constant::U64(v) => {
+                    let val = u64::from_le_bytes(*v);
+                    Constant::U64((val / 1024).to_le_bytes())
+                }
+                _ => unreachable!(),
+            };
+            self.ops[loop_len_id].op = Op::Const(new_val);
+        }
+
+        // Edit global loads to load from circular buffers
+        for &(load_op, src, _) in &global_loads {
+            let cb = src_to_cb[&src];
+            if let Op::Load { index, layout, .. } = self.at(load_op).clone() {
+                self.ops[load_op].op = Op::Load { src: cb, index, layout };
+            }
+        }
+
+        // Find the accumulator register Define inside the loop
+        let mut accumulator = OpId::NULL;
+        let mut op_id = self.next_op(loop_id);
+        while op_id != endloop_id {
+            if let Op::Store { dst, .. } = self.at(op_id) {
+                if matches!(self.at(*dst), Op::Define { scope: MemScope::Register, .. }) {
+                    accumulator = *dst;
+                    break;
+                }
+            }
+            op_id = self.next_op(op_id);
+        }
+        debug_assert!(!accumulator.is_null());
+
+        // Convert accumulator to register tile, length 1024
+        if let Op::Define { len, .. } = &mut self.ops[accumulator].op {
+            *len = 1024;
+        }
+
+        // Find the BOp used in the accumulation inside the loop
+        let mut accumulation_bop = BOp::Add;
+        let mut op_id = self.next_op(loop_id);
+        while op_id != endloop_id {
+            if let Op::Store { dst, x, .. } = self.at(op_id) {
+                if *dst == accumulator {
+                    if let Op::Binary { bop, .. } = self.at(*x) {
+                        accumulation_bop = *bop;
+                    }
+                    break;
+                }
+            }
+            op_id = self.next_op(op_id);
+        }
+
+        // Add ReduceTile after the loop
+        let reduce_tile = self.insert_after(
+            endloop_id,
+            Op::ReduceTile { x: accumulator, rop: accumulation_bop, kind: crate::kernel::ops::TileReduceKind::Scalar },
+        );
+
+        // Remap all uses of the accumulator after the loop to the ReduceTile result
+        let mut op_id = self.next_op(endloop_id);
+        while !op_id.is_null() {
+            for param in self.ops[op_id].op.parameters_mut() {
+                if *param == accumulator {
+                    *param = reduce_tile;
+                }
+            }
+            op_id = self.next_op(op_id);
+        }
 
         self.debug();
 
