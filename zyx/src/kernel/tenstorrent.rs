@@ -30,14 +30,18 @@ fn round_up(len: Dim, multiple: Dim) -> Dim {
 impl Kernel {
     pub(crate) fn opt_tenstorrent_tile(&mut self) {
         if self.ops.values().any(|node| matches!(node.op, Op::Loop { .. })) {
-            // TODO row reduce, matmul, transpose tile
-            self.tenstorrent_scalar_reduce();
+            if self.ops.values().filter(|node| matches!(node.op, Op::Loop { .. })).count() == 1 {
+                self.tenstorrent_scalar_reduce_single_loop();
+            } else {
+                // TODO row reduce, matmul, transpose tile
+                todo!();
+            }
         } else {
             self.tenstorrent_elementwise();
         }
     }
 
-    fn tenstorrent_scalar_reduce(&mut self) {
+    fn tenstorrent_scalar_reduce_single_loop(&mut self) {
         self.tenstorrent_pad_loops();
         self.tenstorrent_single_scalar_tile();
     }
@@ -120,16 +124,15 @@ impl Kernel {
 
     /// Pad all loops to length 1024.
     fn tenstorrent_pad_loops(&mut self) {
-        let loops: Vec<OpId> = self
-            .ops
-            .iter()
-            .filter(|(_, node)| matches!(node.op, Op::Loop { .. }))
-            .map(|(id, _)| id)
-            .collect();
+        let loops: Vec<OpId> = self.ops.iter().filter(|(_, node)| matches!(node.op, Op::Loop { .. })).map(|(id, _)| id).collect();
         for loop_id in loops {
-            let len = self.loop_len_dim(loop_id);
-            if len < 1024 {
-                self.pad_loop(loop_id, 1024 - len);
+            let Op::Loop { len: len_id } = self.ops[loop_id].op else {
+                continue;
+            };
+            let len = self.loop_len_dim(len_id);
+            let pad = round_up(len, 1024);
+            if pad > 0 {
+                self.pad_loop(loop_id, pad);
             }
         }
         self.verify();
@@ -221,8 +224,10 @@ impl Kernel {
             if src_to_local.contains_key(&src) {
                 continue;
             }
-            let local = self
-                .insert_after(last_global, Op::Define { dtype: self.dtype(src), scope: MemScope::Circular, ro: false, len: 1024 });
+            let local = self.insert_after(
+                last_global,
+                Op::Define { dtype: self.dtype(src), scope: MemScope::Circular, ro: false, len: 1024 },
+            );
             last_global = local;
             src_to_local.insert(src, local);
         }
@@ -502,30 +507,93 @@ impl Kernel {
         self.verify();
     }
 
-    /// This does reduce to single scalar, using ReduceTile scalar (e.g. reduces 1024 elements into element [0, 0])
+    /// Step 1: reader kernel for single-scalar-tile reduction.
+    ///
+    /// This pass transforms a kernel that reduces a global buffer to a single
+    /// scalar by gathering global scalar loads inside the loop, pre-loading
+    /// them into circular buffers using a tiled two-loop structure, and
+    /// replacing the original global loads with loads from those buffers.
+    ///
+    /// The transformation works as follows:
+    /// 1. Find the single loop in the kernel and all global scalar loads
+    ///    inside its body. Assert that no global loads exist past the loop.
+    /// 2. For each unique global source, define a circular buffer (len=1024)
+    ///    right after the last global define.
+    /// 3. Insert two nested loops of length 32. The original loop index is
+    ///    reconstructed as `mad(outer_loop, 32, inner_loop)`.
+    /// 4. Replay each load's indexing chain, replacing the original loop id
+    ///    with the mad result, and use the rebuilt index to load globals into
+    ///    the circular buffers.
+    /// 5. Close both loops with EndLoop.
+    ///
+    /// The original loop and all computation ops remain untouched; this pass
+    /// only inserts new ops after the last global define.
+    ///
+    /// Step 2: compute kernel.
     fn tenstorrent_single_scalar_tile(&mut self) {
         self.debug();
 
-        // Find all scalar loads from global defines (but only those inside loop)
-        let global_loads: Vec<(OpId, OpId, OpId)> = {
-            let mut loads = Vec::new();
+        // Find the single loop in the kernel
+        let loop_id = {
             let mut op_id = self.head;
+            let mut found = OpId::NULL;
             while !op_id.is_null() {
-                if let Op::Load { src, index, layout: MemLayout::Scalar } = self.at(op_id) {
-                    if matches!(self.at(*src), Op::Define { scope: MemScope::Global, .. }) {
-                        loads.push((op_id, *src, *index));
-                    }
+                if matches!(self.at(op_id), Op::Loop { .. }) {
+                    found = op_id;
+                    break;
                 }
                 op_id = self.next_op(op_id);
             }
-            loads
+            found
+        };
+        debug_assert!(!loop_id.is_null());
+
+        // Find matching EndLoop
+        let endloop_id = {
+            let mut depth = 0;
+            let mut op_id = loop_id;
+            loop {
+                match self.at(op_id) {
+                    Op::Loop { .. } => depth += 1,
+                    Op::EndLoop => {
+                        depth -= 1;
+                        if depth == 0 {
+                            break op_id;
+                        }
+                    }
+                    _ => {}
+                }
+                op_id = self.next_op(op_id);
+            }
         };
 
+        // Gather all global scalar loads inside the loop body
+        let mut global_loads = Vec::new();
+        let mut op_id = self.next_op(loop_id);
+        while op_id != endloop_id {
+            if let Op::Load { src, index, layout: MemLayout::Scalar } = self.at(op_id) {
+                if matches!(self.at(*src), Op::Define { scope: MemScope::Global, .. }) {
+                    global_loads.push((op_id, *src, *index));
+                }
+            }
+            op_id = self.next_op(op_id);
+        }
+
         if global_loads.is_empty() {
+            self.debug();
             return;
         }
 
-        // Find the last global define to insert locals after it
+        // Debug assert no global loads past the loop
+        let mut op_id = self.next_op(endloop_id);
+        while !op_id.is_null() {
+            if let Op::Load { src, .. } = self.at(op_id) {
+                debug_assert!(!matches!(self.at(*src), Op::Define { scope: MemScope::Global, .. }));
+            }
+            op_id = self.next_op(op_id);
+        }
+
+        // Find last global define
         let mut last_global = self.head;
         let mut scan = self.head;
         while !scan.is_null() {
@@ -535,31 +603,90 @@ impl Kernel {
             scan = self.next_op(scan);
         }
 
-        let first_load = global_loads[0].0;
-        let first_global_idx = global_loads[0].2;
-        let const_32 = self.insert_before(first_load, Op::Const(Constant::idx(32u32)));
-
-        // Insert loops, 32 and 32 for the reader section
-        let lidx0 = self.insert_before(first_load, Op::Loop { len: const_32 });
-        let lidx1 = self.insert_before(first_load, Op::Loop { len: const_32 });
-
-        self.debug();
-        todo!();
-
-        let scaled = self.insert_after(first_load, Op::Binary { x: lidx0, y: const_32, bop: BOp::Mul });
-        let combined_idx = self.insert_before(first_load, Op::Binary { x: scaled, y: lidx1, bop: BOp::Add });
-        let zero = self.insert_before(first_load, Op::Const(Constant::idx(0u32)));
-
-        // Allocate local buffers for each unique global source
-        let mut src_to_local: Map<OpId, OpId> = Map::default();
+        // Define circular buffers for each unique global source
+        let mut src_to_cb: Map<OpId, OpId> = Map::default();
         for &(_, src, _) in &global_loads {
-            if src_to_local.contains_key(&src) {
+            if src_to_cb.contains_key(&src) {
                 continue;
             }
-            let local = self
-                .insert_after(last_global, Op::Define { dtype: self.dtype(src), scope: MemScope::Local, ro: false, len: 1024 });
-            last_global = local;
-            src_to_local.insert(src, local);
+            let cb = self.insert_after(
+                last_global,
+                Op::Define { dtype: self.dtype(src), scope: MemScope::Circular, ro: false, len: 1024 },
+            );
+            last_global = cb;
+            src_to_cb.insert(src, cb);
         }
+
+        // Insert two loops, each length 32
+        let const_32 = self.insert_after(last_global, Op::Const(Constant::idx(32u32)));
+        let outer_loop = self.insert_after(const_32, Op::Loop { len: const_32 });
+        let const_32_inner = self.insert_after(outer_loop, Op::Const(Constant::idx(32u32)));
+        let inner_loop = self.insert_after(const_32_inner, Op::Loop { len: const_32_inner });
+
+        // Create mad(outer_loop, 32, inner_loop) representing the original loop index
+        let mad_id = self.insert_after(inner_loop, Op::Mad { x: outer_loop, y: const_32, z: inner_loop });
+
+        // Replay the indexing chain for each global load, replacing the original
+        // loop id with mad_id, then load globals into circular buffers.
+        let mut clone_map: Map<OpId, OpId> = Map::default();
+        clone_map.insert(loop_id, mad_id);
+
+        let mut insert_point = mad_id;
+        for &(_, src, index) in &global_loads {
+            let cb = src_to_cb[&src];
+
+            // Gather transitive deps of this load's index
+            let deps = gather_deps(self, &[index]);
+            let mut sorted_deps: Vec<OpId> = deps.iter().copied().collect();
+            sorted_deps.sort_by_key(|&id| {
+                let mut order = 0u32;
+                let mut scan = self.head;
+                while !scan.is_null() && scan != id {
+                    order += 1;
+                    scan = self.next_op(scan);
+                }
+                order
+            });
+
+            // Clone non-sticky ops, replacing loop id with mad_id
+            for &dep_id in &sorted_deps {
+                if dep_id == loop_id {
+                    continue;
+                }
+                if matches!(
+                    self.at(dep_id),
+                    Op::Define { .. } | Op::Const(_) | Op::Index { .. } | Op::Barrier | Op::Loop { .. } | Op::EndLoop
+                ) {
+                    clone_map.entry(dep_id).or_insert(dep_id);
+                    continue;
+                }
+                if clone_map.contains_key(&dep_id) {
+                    continue;
+                }
+                let mut cloned_op = self.at(dep_id).clone();
+                for param in cloned_op.parameters_mut() {
+                    if let Some(&new_id) = clone_map.get(param) {
+                        *param = new_id;
+                    }
+                }
+                let new_id = self.insert_after(insert_point, cloned_op);
+                insert_point = new_id;
+                clone_map.insert(dep_id, new_id);
+            }
+
+            let rebuilt_index = clone_map[&index];
+
+            // Load from global into circular buffer using rebuilt index
+            let load_id = self.insert_after(insert_point, Op::Load { src, index: rebuilt_index, layout: MemLayout::Scalar });
+            insert_point = load_id;
+        }
+
+        // Close the two loops
+        self.insert_after(insert_point, Op::EndLoop);
+        self.insert_after(insert_point, Op::EndLoop);
+
+        self.debug();
+
+        todo!();
     }
 }
