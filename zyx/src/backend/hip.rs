@@ -128,7 +128,7 @@ pub(super) fn initialize_device(
         && device_ids.is_empty()
     {
         if debug_dev {
-            println!("[HIP] configured out");
+            println!("[hip] configured out");
         }
         return Ok(());
     }
@@ -205,7 +205,7 @@ pub(super) fn initialize_device(
     }
     if debug_dev {
         println!(
-            "[HIP] driver version {}.{} on devices:",
+            "[hip] driver version {}.{} on devices:",
             driver_version / 1000,
             (driver_version - (driver_version / 1000 * 1000)) / 10
         );
@@ -227,14 +227,14 @@ pub(super) fn initialize_device(
             continue;
         };
         if debug_dev {
-            println!("[HIP] {:?}, compute: {major}.{minor}", unsafe { std::ffi::CStr::from_ptr(device_name.as_ptr()) });
+            println!("[hip] {:?}, compute: {major}.{minor}", unsafe { std::ffi::CStr::from_ptr(device_name.as_ptr()) });
         }
         let mut free_bytes: usize = 0;
         let Ok(()) = unsafe { hipDeviceTotalMem(&raw mut free_bytes, device) }.check(ErrorStatus::DeviceQuery) else {
             continue;
         };
         if debug_dev {
-            println!("[HIP] device total memory: {} MB", free_bytes / (1024 * 1024));
+            println!("[hip] device total memory: {} MB", free_bytes / (1024 * 1024));
         }
         let mut context: HIPcontext = ptr::null_mut();
         unsafe { hipCtxCreate(&raw mut context, 0, device) }.check(ErrorStatus::Initialization)?;
@@ -265,7 +265,7 @@ pub(super) fn initialize_device(
             let mut stream = ptr::null_mut();
             if let Err(err) = unsafe { hipStreamCreate(&raw mut stream, 0) }.check(ErrorStatus::Initialization) {
                 if debug_dev {
-                    println!("[HIP] device {dev_id}: stream init failed: {err:?}");
+                    println!("[hip] device {dev_id}: stream init failed: {err:?}");
                 }
                 continue;
             }

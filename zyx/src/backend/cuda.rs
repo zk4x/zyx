@@ -163,7 +163,6 @@ pub struct CUDADevice {
     memory_pool_id: PoolId,
     dev_info: DeviceInfo,
     compute_capability: [c_int; 2],
-    include_path: Option<PathBuf>,
     cudnn_available: bool,
 }
 
@@ -317,7 +316,7 @@ pub(super) fn initialize_device(
         && device_ids.is_empty()
     {
         if debug_dev {
-            println!("[CUDA] configured out");
+            println!("[cuda] configured out");
         }
         return Ok(());
     }
@@ -330,76 +329,22 @@ pub(super) fn initialize_device(
         "/lib/x86_64-linux-gnu/libcuda.so",
         "/lib64/x86_64-linux-gnu/libcuda.so",
     ];
-    let cuda = if let Some(cuda) = cuda_paths.into_iter().find_map(|path| unsafe { Library::new(path) }.ok()) {
-        Some(cuda)
-    } else {
-        let mut cuda_paths = Vec::new();
-        let roots = ["lib", "lib64", "/usr", "/opt"];
-        let mut stack: Vec<PathBuf> = roots.into_iter().map(PathBuf::from).collect();
-        while let Some(dir) = stack.pop() {
-            if let Ok(entries) = std::fs::read_dir(&dir) {
-                for entry in entries.flatten() {
-                    let path = entry.path();
-                    if path.is_dir() {
-                        stack.push(path);
-                    } else if path.file_name().is_some_and(|f| f == "libcuda.so") {
-                        cuda_paths.push(path);
-                    }
-                }
-            }
-        }
-        cuda_paths.sort_by_key(|k| k.components().count());
-        //println!("cuda paths: {cuda_paths:?}");
-        cuda_paths.into_iter().find_map(|path| unsafe { Library::new(path) }.ok())
-    };
+    let cuda = cuda_paths.into_iter().find_map(|path| unsafe { Library::new(path) }.ok());
 
     let Some(cuda) = cuda else {
         if debug_dev {
-            println!("[CUDA] libcuda.so not found");
+            println!("[cuda] libcuda.so not found");
         }
-        return Err(BackendError { status: ErrorStatus::DyLibNotFound, context: "[CUDA] libcuda.so not found.".into() });
+        return Err(BackendError { status: ErrorStatus::DyLibNotFound, context: "[cuda] libcuda.so not found.".into() });
     };
-
-    // Prefer the system CUDA toolkit include path (compatible with the installed nvrtc).
-    let include_paths = [
-        "/usr/include",
-        "/usr/local/cuda/include",
-        "/opt/cuda/targets/x86_64-linux/include",
-    ];
-    let mut include_path: Option<PathBuf> = None;
-    for path in include_paths {
-        let mut path_buf = PathBuf::from(path);
-        path_buf.push("cuda_fp16.h");
-        if path_buf.exists() {
-            include_path = Some(PathBuf::from(path));
-            break;
-        }
-    }
-    if include_path.is_none() {
-        let roots = [PathBuf::from("/usr"), PathBuf::from("/opt")];
-        let mut stack: Vec<PathBuf> = roots.to_vec();
-        'a: while let Some(dir) = stack.pop() {
-            if let Ok(entries) = std::fs::read_dir(&dir) {
-                for entry in entries.flatten() {
-                    let path = entry.path();
-                    if path.is_dir() {
-                        stack.push(path);
-                    } else if path.file_name().is_some_and(|f| f == "cuda_fp16.h") {
-                        include_path = path.parent().map(PathBuf::from);
-                        break 'a;
-                    }
-                }
-            }
-        }
-    }
 
     // Load cuDNN for AOT matmul kernels (optional). Kept alive for the worker
     // threads via an Arc; without it the CUDA backend still works normally.
     let cudnn = if config.cudnn { load_cudnn() } else { None };
     if debug_dev && cudnn.is_some() {
-        println!("[CUDA] cuDNN graph API loaded");
+        println!("[cuda] cuDNN graph API loaded");
     } else if debug_dev && !config.cudnn {
-        println!("[CUDA] cuDNN disabled by config");
+        println!("[cuda] cuDNN disabled by config");
     }
 
     let cuInit: unsafe extern "C" fn(c_uint) -> CUDAStatus = *unsafe { cuda.get(b"cuInit\0") }?;
@@ -466,7 +411,7 @@ pub(super) fn initialize_device(
 
     if let Err(err) = unsafe { cuInit(0) }.check(ErrorStatus::Initialization) {
         if debug_dev {
-            println!("[CUDA] cuInit failed: {err:?}");
+            println!("[cuda] cuInit failed: {err:?}");
         }
         return Err(err);
     }
@@ -481,7 +426,7 @@ pub(super) fn initialize_device(
         (0..num_devices).filter(|id| config.device_ids.as_ref().is_none_or(|ids| ids.contains(id))).collect();
     if debug_dev && !device_ids.is_empty() {
         println!(
-            "[CUDA] driver version {}.{} on devices:",
+            "[cuda] driver version {}.{} on devices:",
             driver_version / 1000,
             (driver_version - (driver_version / 1000 * 1000)) / 10
         );
@@ -491,7 +436,7 @@ pub(super) fn initialize_device(
         let mut device = 0;
         if let Err(err) = unsafe { cuDeviceGet(&raw mut device, dev_id) }.check(ErrorStatus::DeviceEnumeration) {
             if debug_dev {
-                println!("[CUDA] device {dev_id}: could not be enumerated: {err}.");
+                println!("[cuda] device {dev_id}: could not be enumerated: {err}.");
             }
             continue;
         }
@@ -506,14 +451,14 @@ pub(super) fn initialize_device(
             continue;
         };
         if debug_dev {
-            println!("[CUDA] {:?}, compute: {major}.{minor}", unsafe { std::ffi::CStr::from_ptr(device_name.as_ptr()) });
+            println!("[cuda] {:?}, compute: {major}.{minor}", unsafe { std::ffi::CStr::from_ptr(device_name.as_ptr()) });
         }
         let mut free_bytes = 0;
         let Ok(()) = unsafe { cuDeviceTotalMem(&raw mut free_bytes, device) }.check(ErrorStatus::DeviceQuery) else {
             continue;
         };
         if debug_dev {
-            println!("[CUDA] device total memory: {} MB", free_bytes / (1024 * 1024));
+            println!("[cuda] device total memory: {} MB", free_bytes / (1024 * 1024));
         }
         let (tx, rx): (Sender<CUDACommand>, Receiver<CUDACommand>) = channel();
         let free_bytes_atomic = Arc::new(AtomicU64::new(free_bytes as u64));
@@ -526,7 +471,7 @@ pub(super) fn initialize_device(
                 let mut context: CUcontext = ptr::null_mut();
                 if let Err(e) = unsafe { cuCtxCreate(&raw mut context, 0, device) }.check(ErrorStatus::Initialization) {
                     if debug_dev {
-                        println!("[CUDA] context init failed: {e:?}");
+                        println!("[cuda] context init failed: {e:?}");
                     }
                     return;
                 }
@@ -536,7 +481,7 @@ pub(super) fn initialize_device(
                     let mut stream = ptr::null_mut();
                     if let Err(err) = unsafe { cuStreamCreate(&raw mut stream, 0) }.check(ErrorStatus::Initialization) {
                         if debug_dev {
-                            println!("[CUDA] device {dev_id}: stream init failed: {err:?}");
+                            println!("[cuda] device {dev_id}: stream init failed: {err:?}");
                         }
                         continue;
                     }
@@ -671,7 +616,7 @@ pub(super) fn initialize_device(
                             .check(ErrorStatus::KernelCompilation)
                             {
                                 if debug_dev {
-                                    println!("[CUDA] PTX compilation failed: {err:?}");
+                                    println!("[cuda] PTX compilation failed: {err:?}");
                                 }
                                 //panic!();
                                 _ = reply.send(Err(err));
@@ -683,7 +628,7 @@ pub(super) fn initialize_device(
                                 .check(ErrorStatus::KernelLaunch)
                             {
                                 if debug_dev {
-                                    println!("[CUDA] kernel launch failed: {err:?}\n");
+                                    println!("[cuda] kernel launch failed: {err:?}\n");
                                 }
                                 _ = reply.send(Err(err));
                                 continue;
@@ -842,7 +787,6 @@ pub(super) fn initialize_device(
             },
             memory_pool_id: PoolId::from(usize::from(memory_pools.len()) - 1),
             compute_capability: [major, minor],
-            include_path: include_path.clone(),
             cudnn_available: cudnn.is_some(),
             device_id: DeviceId::NULL,
         };
@@ -1910,7 +1854,25 @@ impl CUDADevice {
             format!("--gpu-architecture=compute_{}{}", self.compute_capability[0], self.compute_capability[1]),
         ];
 
-        if let Some(path) = &self.include_path {
+        let include_paths = [
+            "/usr/include",
+            "/usr/local/cuda/include",
+            "/opt/cuda/targets/x86_64-linux/include",
+        ];
+        let mut include_path: Option<PathBuf> = None;
+        for path in include_paths {
+            let mut path_buf = PathBuf::from(path);
+            path_buf.push("cuda_fp16.h");
+            if path_buf.exists() {
+                include_path = Some(PathBuf::from(path));
+                break;
+            }
+        }
+        if include_path.is_none() {
+            return Err(BackendError { status: ErrorStatus::KernelCompilation, context: "[cuda] cuda_fp16.h not found".into() });
+        }
+
+        if let Some(path) = include_path {
             let path = format!("--include-path={}", path.display());
             opts.push(path);
         }

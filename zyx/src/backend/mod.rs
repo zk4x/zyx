@@ -226,59 +226,59 @@ pub fn initialize_backends(
 ) -> Result<(), BackendError> {
     if let Err(err) = host::initialize_pool(memory_pools, debug_backends) {
         if debug_backends {
-            println!("{err}");
+            println!("[host] {err}");
         }
     }
     if let Err(err) = disk::initialize_pool(memory_pools, debug_backends) {
         if debug_backends {
-            println!("{err}");
+            println!("[host] {err}");
         }
     }
     if let Err(err) = c::initialize_device(&device_config.c, memory_pools, devices, debug_backends) {
         if debug_backends {
-            println!("{err}");
+            println!("[C] {err}");
         }
     }
     if let Err(err) = cblas::initialize_device(&device_config.cblas, memory_pools, devices, debug_backends) {
         if debug_backends {
-            println!("{err}");
+            println!("[cblas] {err}");
         }
     }
     if let Err(err) = cuda::initialize_device(&device_config.cuda, memory_pools, devices, debug_backends) {
         if debug_backends {
-            println!("{err}");
+            println!("[cuda] {err}");
         }
     }
     if let Err(err) = hip::initialize_device(&device_config.hip, memory_pools, devices, debug_backends) {
         if debug_backends {
-            println!("{err}");
+            println!("[HIP] {err}");
         }
     }
     #[cfg(feature = "tenstorrent")]
     if let Err(err) = tenstorrent::initialize_device(&device_config.tenstorrent, memory_pools, devices, debug_backends) {
         if debug_backends {
-            println!("{err}");
+            println!("[tenstorrent] {err}");
         }
     }
     if let Err(err) = vulkan::initialize_device(&device_config.vulkan, memory_pools, devices, debug_backends) {
         if debug_backends {
-            println!("{err}");
+            println!("[vulkan] {err}");
         }
     }
     if let Err(err) = opencl::initialize_device(&device_config.opencl, memory_pools, devices, debug_backends) {
         if debug_backends {
-            println!("{err}");
+            println!("[opencl] {err}");
         }
     }
     #[cfg(feature = "wgpu")]
     if let Err(err) = wgpu::initialize_device(&device_config.wgpu, memory_pools, devices, debug_backends) {
         if debug_backends {
-            println!("{err}");
+            println!("[wgpu] {err}");
         }
     }
     if let Err(err) = dummy::initialize_device(&device_config.dummy, memory_pools, devices, debug_backends) {
         if debug_backends {
-            println!("{err}");
+            println!("[dummy] {err}");
         }
     }
     //println!("YO {:?}", devices[DeviceId::from(0)].info().supported_dtypes);

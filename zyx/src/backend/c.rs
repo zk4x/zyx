@@ -56,12 +56,12 @@ pub(super) fn initialize_device(
 ) -> Result<(), BackendError> {
     if !config.enabled {
         if debug_dev {
-            println!("[C] configured out");
+            println!("[c] configured out");
         }
         return Ok(());
     }
     if debug_dev {
-        println!("[C] initialized");
+        println!("[c] initialized");
     }
     // C backend reuses HostMemoryPool — doesn't create its own pool
     // Just register the device with the host pool
@@ -135,8 +135,8 @@ pub(super) fn initialize_device(
         has_openmp,
     }));
     if debug_dev {
-        println!("[C] vector extensions: {has_vector_exts}");
-        println!("[C] OpenMP: {has_openmp}");
+        println!("[c] vector extensions: {has_vector_exts}");
+        println!("[c] OpenMP: {has_openmp}");
     }
     Ok(())
 }

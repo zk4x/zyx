@@ -142,7 +142,7 @@ pub(super) fn initialize_device(
         && device_ids.is_empty()
     {
         if debug_dev {
-            println!("[OPENCL] configured out");
+            println!("[opencl] configured out");
         }
         return Ok(());
     }
@@ -357,7 +357,7 @@ pub(super) fn initialize_device(
                     Vec::default()
                 }
             };
-            println!("[OPENCL] {} on devices:", String::from_utf8(platform_name).unwrap());
+            println!("[opencl] {} on devices:", String::from_utf8(platform_name).unwrap());
         }
         if device_ids.is_empty() {
             continue;
@@ -380,7 +380,7 @@ pub(super) fn initialize_device(
             continue;
         }
         if debug_dev {
-            println!("[OPENCL] device total memory: {} MB", total_bytes / (1024 * 1024));
+            println!("[opencl] device total memory: {} MB", total_bytes / (1024 * 1024));
         }
 
         let (tx, rx): (Sender<Command>, Receiver<Command>) = channel();
@@ -897,7 +897,7 @@ fn query_device_info(
     let device_name = String::from_utf8(device_name).unwrap();
     let max_work_item_dims = get_device_data(device, clGetDeviceInfo, CL_DEVICE_MAX_WORK_ITEM_DIMENSIONS)?;
     if debug_dev {
-        println!("[OPENCL] {device_name}");
+        println!("[opencl] {device_name}");
     }
     let max_work_item_dims = u32::from_ne_bytes(max_work_item_dims.try_into().unwrap()) as usize;
     let mwis = get_device_data(device, clGetDeviceInfo, CL_DEVICE_MAX_WORK_ITEM_SIZES)?;
