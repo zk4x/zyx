@@ -103,7 +103,11 @@ impl Kernel {
                         }
                         MoveOp::Permute { axes, shape } => {
                             let view = &views[&op_id];
-                            let view = axes.iter().rev().enumerate().map(|(i, a)| (view[i].0, view[*a as usize].1)).collect();
+                            let mut inv_axes = vec![0; axes.len()];
+                            for (i, &a) in axes.iter().enumerate() {
+                                inv_axes[a as usize] = i;
+                            }
+                            let view = inv_axes.iter().enumerate().map(|(i, a)| (view[i].0, view[*a as usize].1)).collect();
                             views.insert(x, view);
                         }
                         MoveOp::Pad { padding, shape } => todo!(),
