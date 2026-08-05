@@ -432,7 +432,6 @@ impl Kernel {
         kernel.fuse_mad();
         kernel.run_always_on_optimizations();
         kernel.run_always_on_optimizations();
-        kernel.debug();
 
         let (args, new_bufs) = kernel.alloc_buffers(memory_pool, &[])?;
         let (program_id, timing) =

@@ -20,7 +20,7 @@ impl Kernel {
     ///
     /// Movement ops (Reshape, Expand, Permute, Pad) are applied directly to axis indices,
     /// and LoadView/StoreView/ConstView are converted to Load/Store/Const in a single pass.
-    pub fn linearize(&mut self) {
+    pub fn linearize2(&mut self) {
         let has_gidx = self.ops.values().any(|n| matches!(n.op, Op::Index { scope: IdxScope::Group, .. }));
         let has_view_moves = self.ops.values().any(|n| matches!(n.op, Op::LoadView(_) | Op::StoreView { .. } | Op::Move { .. }));
 
@@ -142,8 +142,20 @@ impl Kernel {
             }
             op_id = prev;
         }
-        self.instruction_schedule();
+
+        // Reverse the order of globals
+        let mut op_id = self.tail;
+        let head = self.head;
+        while op_id != head {
+            let prev = self.prev_op(op_id);
+            if let Op::Define { dtype, scope, ro, len } = self.ops[op_id].op {
+                self.move_op_before(op_id, head);
+            }
+            op_id = prev;
+        }
         self.debug();
+
+        self.instruction_schedule();
         //panic!();
 
         self.verify();
