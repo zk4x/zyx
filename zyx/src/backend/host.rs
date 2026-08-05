@@ -17,14 +17,28 @@ pub struct HostMemoryPool {
 #[derive(Debug, Clone)]
 pub struct HostEvent;
 
+fn detect_host_memory_bytes() -> u64 {
+    let meminfo = std::fs::read_to_string("/proc/meminfo").unwrap_or_default();
+    for line in meminfo.lines() {
+        if let Some(rest) = line.strip_prefix("MemTotal:") {
+            let kb: u64 = rest.trim().split_whitespace().next().and_then(|s| s.parse().ok()).unwrap_or(0);
+            if kb > 0 {
+                return kb * 1024;
+            }
+        }
+    }
+    1u64 * 1024 * 1024 * 1024
+}
+
 #[allow(clippy::unnecessary_wraps)]
 pub(super) fn initialize_pool(memory_pools: &mut Slab<PoolId, MemoryPool>, debug_dev: bool) -> Result<(), BackendError> {
     if debug_dev {
         println!("[host] initialized");
     }
-    let pool = MemoryPool::Host(HostMemoryPool { free_bytes: 1024 * 1024 * 1024 * 8, buffers: Slab::new() });
+    let total_bytes = detect_host_memory_bytes();
+    let pool = MemoryPool::Host(HostMemoryPool { free_bytes: total_bytes, buffers: Slab::new() });
     if debug_dev {
-        println!("[host] device total memory: {} MB", 64 * 1024);
+        println!("[host] device total memory: {} MB", total_bytes / (1024 * 1024));
     }
     memory_pools.push(pool);
     Ok(())
