@@ -140,7 +140,42 @@ impl Kernel {
                 Op::Reduce { x, rop, n_axes } => todo!(),
                 Op::Move { x, ref mop } => {
                     match mop.as_ref() {
-                        MoveOp::Reshape { shape } => todo!(),
+                        MoveOp::Reshape { shape } => {
+                            // Reshape merges/splits contiguous dims, so axis indices don't
+                            // align 1:1. Build a single flat index over the output view (all
+                            // the arithmetic LoadView would do), then recover each input axis
+                            // by successive div/mod against the input's contiguous strides.
+                            let out_view = views[&op_id].clone();
+                            let x_shape = self.shape_of(x);
+                            let mut x_strides = vec![1; x_shape.len()];
+                            let mut st = 1;
+                            for a in (0..x_shape.len()).rev() {
+                                x_strides[a] = st;
+                                st *= x_shape[a];
+                            }
+                            let zero = self.insert_const_idx_before(start, 0u32);
+                            let mut base = zero;
+                            for &(idx, drift, _, _) in &out_view {
+                                base = self.insert_before(start, Op::Mad { x: idx, y: drift, z: base });
+                            }
+                            let n = x_shape.len();
+                            let mut view = Vec::with_capacity(n);
+                            let mut q = base;
+                            for a in 0..n {
+                                let s = x_strides[a];
+                                let s_id = self.insert_const_idx_before(start, s);
+                                let idx_expr = if a == n - 1 {
+                                    q
+                                } else {
+                                    let div = self.insert_before(start, Op::Binary { x: q, y: s_id, bop: BOp::Div });
+                                    let rem = self.insert_before(start, Op::Binary { x: q, y: s_id, bop: BOp::Mod });
+                                    q = rem;
+                                    div
+                                };
+                                view.push((idx_expr, s_id, zero, zero));
+                            }
+                            views.insert(x, view);
+                        }
                         MoveOp::Expand { shape } => {
                             let x_shape = self.shape_of(x);
                             let shape = shape.clone();
