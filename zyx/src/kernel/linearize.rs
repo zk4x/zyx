@@ -20,7 +20,7 @@ impl Kernel {
     ///
     /// Movement ops (Reshape, Expand, Permute, Pad) are applied directly to axis indices,
     /// and LoadView/StoreView/ConstView are converted to Load/Store/Const in a single pass.
-    pub fn linearize2(&mut self) {
+    pub fn linearize(&mut self) {
         let has_gidx = self.ops.values().any(|n| matches!(n.op, Op::Index { scope: IdxScope::Group, .. }));
         let has_view_moves = self.ops.values().any(|n| matches!(n.op, Op::LoadView(_) | Op::StoreView { .. } | Op::Move { .. }));
 
@@ -58,6 +58,8 @@ impl Kernel {
             }
             true
         });
+
+        self.debug();
 
         // For each op, shape and strides
         let mut views: Map<OpId, Vec<(OpId, OpId)>> = Map::default();
@@ -106,6 +108,7 @@ impl Kernel {
                 }
                 Op::StoreView { src, dtype } => {
                     let shape = self.shape_of(src);
+                    let len = shape.iter().product();
                     let mut view = Vec::new();
                     let mut st = 1;
                     for axis in (0..shape.len() as u32).rev() {
@@ -120,7 +123,7 @@ impl Kernel {
                     for &(idx, st) in &view {
                         index = self.insert_before(start, Op::Mad { x: idx, y: st, z: index });
                     }
-                    let dst = self.insert_before(start, Op::Define { dtype, scope: MemScope::Global, ro: true, len: 0 });
+                    let dst = self.insert_before(start, Op::Define { dtype, scope: MemScope::Global, ro: false, len });
                     self.ops[op_id].op = Op::Store { dst, x: src, index, layout: MemLayout::Scalar };
                     views.insert(src, view);
                 }
@@ -144,6 +147,5 @@ impl Kernel {
         //panic!();
 
         self.verify();
-        self.unfold_reduces();
     }
 }

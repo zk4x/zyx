@@ -140,7 +140,13 @@ impl Kernel {
                                 _ = match uop {
                                     UOp::BitNot => writeln!(source, "{indent}r{reg}.{c} = ~{x}.{c};"),
                                     UOp::Neg => writeln!(source, "{indent}r{reg}.{c} = -{x}.{c};"),
-                                    UOp::Exp => return Err(BackendError { status: ErrorStatus::KernelCompilation, context: "OpenCL codegen: UOp::Exp should be converted to Exp2 + mul by ln2(e) before reaching OpenCL backend".into() }),
+                                    UOp::Exp => {
+                                        if dtype.0 == DType::F16 {
+                                            writeln!(source, "{indent}r{reg}.{c} = (half)exp((float){x}.{c});")
+                                        } else {
+                                            writeln!(source, "{indent}r{reg}.{c} = exp({x}.{c});")
+                                        }
+                                    }
                                     UOp::Exp2 => {
                                         if dtype.0 == DType::F16 {
                                             writeln!(source, "{indent}r{reg}.{c} = (half)exp2((float){x}.{c});")
@@ -165,7 +171,13 @@ impl Kernel {
                         MemLayout::Scalar => match uop {
                             UOp::BitNot => _ = writeln!(source, "{indent}r{reg} = ~{x};"),
                             UOp::Neg => _ = writeln!(source, "{indent}r{reg} = -{x};"),
-                            UOp::Exp => return Err(BackendError { status: ErrorStatus::KernelCompilation, context: "OpenCL codegen: UOp::Exp should be converted to Exp2 + mul by ln2(e) before reaching OpenCL backend".into() }),
+                            UOp::Exp => {
+                                if dtype.0 == DType::F16 {
+                                    _ = writeln!(source, "{indent}r{reg} = (half)exp((float){x});");
+                                } else {
+                                    _ = writeln!(source, "{indent}r{reg} = exp({x});");
+                                }
+                            }
                             UOp::Exp2 => {
                                 if dtype.0 == DType::F16 {
                                     _ = writeln!(source, "{indent}r{reg} = (half)exp2((float){x});");
@@ -185,7 +197,12 @@ impl Kernel {
                             UOp::Ln => _ = writeln!(source, "{indent}r{reg} = log({x});"),
                             UOp::Abs => _ = writeln!(source, "{indent}r{reg} = fabs({x});"),
                         },
-                        MemLayout::Tile { .. } => return Err(BackendError { status: ErrorStatus::KernelCompilation, context: "OpenCL codegen: Tile layout not supported for Binary".into() }),
+                        MemLayout::Tile { .. } => {
+                            return Err(BackendError {
+                                status: ErrorStatus::KernelCompilation,
+                                context: "OpenCL codegen: Tile layout not supported for Binary".into(),
+                            });
+                        }
                     }
                 }
                 Op::Vectorize { ref ops } => {
