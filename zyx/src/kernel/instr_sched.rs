@@ -230,6 +230,23 @@ impl Kernel {
             }
         }
 
+        // Indices are emitted in ascending axis order.
+        let mut index_positions: Vec<(u32, usize)> = rest
+            .iter()
+            .enumerate()
+            .filter_map(|(i, &id)| match self.at(id) {
+                Op::Index { axis, .. } => Some((*axis, i)),
+                _ => None,
+            })
+            .collect();
+        index_positions.sort_by_key(|&(axis, _)| axis);
+        for pair in index_positions.windows(2) {
+            let (_, prev) = pair[0];
+            let (_, next) = pair[1];
+            edges.push((prev, next));
+            in_degree[next] += 1;
+        }
+
         // Control flow and barriers keep their mutual order.
         let mut prev_structural = usize::MAX;
         let mut structural_positions = Vec::with_capacity(structural.iter().filter(|b| **b).count());

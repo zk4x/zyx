@@ -90,15 +90,26 @@ impl Kernel {
                         MoveOp::Reshape { shape } => todo!(),
                         MoveOp::Expand { shape } => {
                             let x_shape = self.shape_of(x);
-                            let mut view = views[&op_id].clone();
-                            let mut axis = 0;
-                            for (d, nd) in x_shape.into_iter().zip(shape.clone()) {
-                                if d != nd {
-                                    view[axis].0 = OpId::NULL;
-                                    view[axis].1 = OpId::NULL;
-                                }
-                                axis += 1;
+                            let shape = shape.clone();
+                            let view = &views[&op_id];
+                            let mut x_strides = vec![1; x_shape.len()];
+                            let mut st = 1;
+                            for a in (0..x_shape.len()).rev() {
+                                x_strides[a] = st;
+                                st *= x_shape[a];
                             }
+                            let zero = self.insert_const_idx_before(start, 0);
+                            let view = (0..x_shape.len())
+                                .map(|a| {
+                                    let idx = view[a].0;
+                                    let stride = if x_shape[a] != shape[a] {
+                                        zero
+                                    } else {
+                                        self.insert_const_idx_before(start, x_strides[a])
+                                    };
+                                    (idx, stride)
+                                })
+                                .collect();
                             views.insert(x, view);
                         }
                         MoveOp::Permute { axes, shape } => {
@@ -107,7 +118,20 @@ impl Kernel {
                             for (i, &a) in axes.iter().enumerate() {
                                 inv_axes[a as usize] = i;
                             }
-                            let view = inv_axes.iter().enumerate().map(|(i, a)| (view[i].0, view[*a as usize].1)).collect();
+                            let x_shape = self.shape_of(x);
+                            let mut x_strides = vec![1; x_shape.len()];
+                            let mut st = 1;
+                            for a in (0..x_shape.len()).rev() {
+                                x_strides[a] = st;
+                                st *= x_shape[a];
+                            }
+                            let view = (0..x_shape.len())
+                                .map(|a| {
+                                    let i = inv_axes[a];
+                                    let stride = self.insert_const_idx_before(start, x_strides[a]);
+                                    (view[i].0, stride)
+                                })
+                                .collect();
                             views.insert(x, view);
                         }
                         MoveOp::Pad { padding, shape } => todo!(),
