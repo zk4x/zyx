@@ -13,6 +13,7 @@
 use crate::{
     Map, Set,
     kernel::{IdxScope, Kernel, MemLayout, MemScope, MoveOp, Op, OpId},
+    shape,
 };
 
 impl Kernel {
@@ -20,7 +21,7 @@ impl Kernel {
     ///
     /// Movement ops (Reshape, Expand, Permute, Pad) are applied directly to axis indices,
     /// and LoadView/StoreView/ConstView are converted to Load/Store/Const in a single pass.
-    pub fn linearize2(&mut self) {
+    pub fn linearize(&mut self) {
         let has_gidx = self.ops.values().any(|n| matches!(n.op, Op::Index { scope: IdxScope::Group, .. }));
         let has_view_moves = self.ops.values().any(|n| matches!(n.op, Op::LoadView(_) | Op::StoreView { .. } | Op::Move { .. }));
 
@@ -100,7 +101,11 @@ impl Kernel {
                             }
                             views.insert(x, view);
                         }
-                        MoveOp::Permute { axes, shape } => todo!(),
+                        MoveOp::Permute { axes, shape } => {
+                            let view = &views[&op_id];
+                            let view = axes.iter().enumerate().map(|(i, a)| (view[i].0, view[*a as usize].1)).collect();
+                            views.insert(x, view);
+                        }
                         MoveOp::Pad { padding, shape } => todo!(),
                     }
                     self.remap(op_id, x);
