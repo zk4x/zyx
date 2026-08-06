@@ -17,7 +17,7 @@ use std::collections::BTreeMap;
 use super::autotune::Optimization;
 use crate::{
     dtype::Constant,
-    kernel::{BOp, Kernel, MemScope, Op, OpId},
+    kernel::{BOp, Kernel, Op, OpId},
 };
 
 impl Kernel {
@@ -68,12 +68,21 @@ impl Kernel {
         // across the inner iterations) runs its reset once per outer iteration
         // originally, but once per *flat* iteration after merging — changing the
         // result. Refuse to merge such groups.
+        //
+        // The register may be defined outside the outer loop (linearize hoists
+        // accumulator defines to the top of the kernel and resets them via
+        // Store inside the loop), so also refuse when a Register is stored or
+        // loaded anywhere in the region — its value crosses the inner/outer
+        // boundary either way.
         let anchor = loop_ids[0];
         let end = self.get_last_dim_op(anchor);
         let mut op_id = self.next_op(anchor);
         while op_id != end {
-            if let Op::Define { scope: MemScope::Register, ro: false, .. } = self.ops[op_id].op {
-                return;
+            match self.ops[op_id].op {
+                Op::Store { .. } => {
+                    return;
+                }
+                _ => {}
             }
             op_id = self.next_op(op_id);
         }

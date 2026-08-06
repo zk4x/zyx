@@ -132,10 +132,12 @@ impl Kernel {
                 &Op::Binary { x, y, bop: BOp::Mul } if is_const(k, y) => {
                     let c = match const_u64(k, y) {
                         Some(c) => c,
-                        None => return (vec![], None),
+                        None => return (vec![], Some(op_id)),
                     };
                     if !c.is_power_of_two() {
-                        return (vec![], None);
+                        // Not a slice-changing multiply — keep the term as a
+                        // non-derived constant so it survives the roundtrip.
+                        return (vec![], Some(op_id));
                     }
                     let kk = c.ilog2() as u64;
                     let (mut slices, constant) = collect_slices_inner(k, x);
@@ -147,10 +149,10 @@ impl Kernel {
                 &Op::Binary { x, y, bop: BOp::Div } if is_const(k, y) => {
                     let c = match const_u64(k, y) {
                         Some(c) => c,
-                        None => return (vec![], None),
+                        None => return (vec![], Some(op_id)),
                     };
                     if !c.is_power_of_two() {
-                        return (vec![], None);
+                        return (vec![], Some(op_id));
                     }
                     let kk = c.ilog2() as u64;
                     let (mut slices, constant) = collect_slices_inner(k, x);
@@ -173,10 +175,10 @@ impl Kernel {
                 &Op::Binary { x, y, bop: BOp::Mod } if is_const(k, y) => {
                     let c = match const_u64(k, y) {
                         Some(c) => c,
-                        None => return (vec![], None),
+                        None => return (vec![], Some(op_id)),
                     };
                     if !c.is_power_of_two() {
-                        return (vec![], None);
+                        return (vec![], Some(op_id));
                     }
                     let width = c.ilog2() as u64;
                     let (mut slices, constant) = collect_slices_inner(k, x);
@@ -234,17 +236,34 @@ impl Kernel {
                 }
                 (false, true) => {
                     slices = x_slices;
-                    constant_term = y_const.unwrap_or(y);
+                    // y has no slices, so it is a constant term itself. If x also
+                    // carried a non-derived constant, both must be preserved.
+                    constant_term = if let Some(a) = x_const {
+                        self.insert_before(op_id, Op::Binary { x: a, y, bop: BOp::Add })
+                    } else {
+                        y
+                    };
                 }
                 (true, false) => {
                     slices = y_slices;
-                    constant_term = x_const.unwrap_or(x);
+                    constant_term = if let Some(b) = y_const {
+                        self.insert_before(op_id, Op::Binary { x, y: b, bop: BOp::Add })
+                    } else {
+                        x
+                    };
                 }
                 (false, false) => {
                     if x_slices[0].root == y_slices[0].root {
                         slices = x_slices;
                         slices.extend(y_slices);
-                        constant_term = x_const.or(y_const).unwrap_or(OpId::NULL);
+                        constant_term = match (x_const, y_const) {
+                            (None, None) => OpId::NULL,
+                            (Some(a), None) => a,
+                            (None, Some(b)) => b,
+                            (Some(a), Some(b)) => {
+                                self.insert_before(op_id, Op::Binary { x: a, y: b, bop: BOp::Add })
+                            }
+                        };
                     } else {
                         op_id = next;
                         continue;
