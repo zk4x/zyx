@@ -25,11 +25,12 @@ fn pad_value(k: &Kernel, id: OpId) -> u64 {
     c.as_dim().expect("pad constant must be a non-negative dim")
 }
 
-/// Extract the axis length of an `Op::Index`.
+/// Extract the axis length of an `Op::Index` or reduce-opened `Op::Loop`.
 fn index_len(k: &Kernel, idx: OpId) -> u64 {
     match k.ops[idx].op {
         Op::Index { len, .. } => len,
-        _ => unreachable!("pad condition needs an Index length, got {:?}", k.ops[idx].op),
+        Op::Loop { len } => k.loop_len_dim(len),
+        _ => unreachable!("pad condition needs an Index/Loop length, got {:?}", k.ops[idx].op),
     }
 }
 
@@ -140,7 +141,37 @@ impl Kernel {
                     }
                 }
                 Op::ConstView(ref x) => {
-                    self.ops[op_id].op = Op::Const(x.0);
+                    let value = x.0;
+                    let view = views.remove(&op_id).unwrap();
+                    // The constant is a scalar whose value must be nullified where the
+                    // view's padding condition is false (padded regions read as zero).
+                    let mut pc = self.insert_before(start, Op::Const(Constant::Bool(true)));
+                    let mut has_pad = false;
+                    for &(idx, _st, lp_id, rp_id) in &view {
+                        let lp = pad_value(self, lp_id);
+                        let rp = pad_value(self, rp_id);
+                        if lp > 0 || rp > 0 {
+                            has_pad = true;
+                            if lp > 0 {
+                                let lp_m1 = self.insert_const_idx_before(start, lp - 1);
+                                let t = self.insert_before(start, Op::Binary { x: idx, y: lp_m1, bop: BOp::Cmpgt });
+                                pc = self.insert_before(start, Op::Binary { x: t, y: pc, bop: BOp::And });
+                            }
+                            if rp > 0 {
+                                let axis_len = index_len(self, idx);
+                                let len_mr = self.insert_const_idx_before(start, axis_len - rp);
+                                let t = self.insert_before(start, Op::Binary { x: idx, y: len_mr, bop: BOp::Cmplt });
+                                pc = self.insert_before(start, Op::Binary { x: t, y: pc, bop: BOp::And });
+                            }
+                        }
+                    }
+                    if has_pad {
+                        let pcd = self.insert_before(start, Op::Cast { x: pc, dtype: value.dtype() });
+                        let z = self.insert_before(start, Op::Const(value));
+                        self.ops[op_id].op = Op::Binary { x: pcd, y: z, bop: BOp::Mul };
+                    } else {
+                        self.ops[op_id].op = Op::Const(value);
+                    }
                 }
                 Op::Reduce { x, rop, n_axes } => {
                     // Collect all transitive dependencies of the reduce input and the
