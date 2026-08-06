@@ -406,6 +406,12 @@ impl Kernel {
                                     } else {
                                         idx
                                     };
+                                    // The input-view index ranges over the padded
+                                    // coordinates (length x_shape + lp + rp). Record it
+                                    // so pad conditions can bound it when the padded
+                                    // tensor is an intermediate (its index is an offset
+                                    // Add, not an Index/Loop).
+                                    axis_lens.insert(idx, ((x_shape[a] as i64) + lp + rp).max(0) as u64);
                                     let lp_id = if lp > 0 {
                                         self.insert_const_idx_before(start, lp as u64)
                                     } else {
