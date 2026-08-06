@@ -494,8 +494,111 @@ impl Kernel {
                     x = self.next_op(x);
                 }
             }
+            // Fallback: the comparison may be a ceil-style mask
+            // `((k + gidx + coeff*loop) >> 1) > 0` that folds to `gidx > 0` at
+            // `loop == 0` and is always true for `loop >= 1`. See trace_masked_ceil.
+            if let Some(gidx) = self.trace_masked_ceil(op_id, loop_id) {
+                return Some((1, 1, c, mul_const, gidx));
+            }
         }
         None
+    }
+
+    /// Matches a ceil-style mask: `((k + gidx + coeff*loop) >> 1) > 0`.
+    ///
+    /// For unsigned arithmetic, `(x >> 1) > 0` is equivalent to `x >= 2`. With
+    /// `k == 1` and `coeff >= 1`, `k + gidx + coeff*loop >= 2` fails only at
+    /// `loop == 0` when `gidx == 0`. The number of true iterations over
+    /// `loop in 0..len` is therefore `len - 1 + min(gidx, 1)`, which equals
+    /// `gidx + len - 1` when the bounds of `gidx` are contained in `{0, 1}`.
+    ///
+    /// Returns the gidx op if the mask is of this form and the bounds check
+    /// holds; the caller can then use the standard `(gidx + len - 1) * step`
+    /// closed form.
+    fn trace_masked_ceil(&self, mask_id: OpId, loop_id: OpId) -> Option<OpId> {
+        let Op::Binary { x, y, bop: BOp::Cmpgt } = self.at(mask_id) else {
+            return None;
+        };
+        let Op::Const(threshold) = self.at(*y) else {
+            return None;
+        };
+        if threshold.as_dim() != Some(0) {
+            return None;
+        }
+        let Op::Binary { x: sh_x, y: sh_y, bop: BOp::BitShiftRight } = self.at(*x) else {
+            return None;
+        };
+        let Op::Const(shift) = self.at(*sh_y) else {
+            return None;
+        };
+        if shift.as_dim() != Some(1) {
+            return None;
+        }
+        let (k, coeff, gidx) = self.peel_mask_add(*sh_x, loop_id, 0, 0, OpId::NULL)?;
+        if k != 1 || coeff == 0 || gidx == OpId::NULL {
+            return None;
+        }
+        // Only safe when the outer index is provably in {0, 1}.
+        let bounds = self.compute_bounds();
+        match bounds.get(&gidx) {
+            Some((_, hi)) if *hi <= 1 => Some(gidx),
+            _ => None,
+        }
+    }
+
+    /// Peels an addition tree rooted at `id` into `k + coeff * loop_id + gidx`.
+    ///
+    /// Returns `(k, coeff, gidx)` where `k` is the accumulated constant, `coeff`
+    /// is the coefficient of the loop variable, and `gidx` is the single
+    /// non-constant, non-loop term. Returns `None` if the tree contains anything
+    /// else (e.g. multiple outer variables or a loop-dependent gidx).
+    fn peel_mask_add(&self, id: OpId, loop_id: OpId, k: i64, coeff: u64, gidx: OpId) -> Option<(i64, u64, OpId)> {
+        if id == loop_id {
+            return Some((k, coeff.saturating_add(1), gidx));
+        }
+        match self.at(id) {
+            Op::Binary { x, y, bop: BOp::Add } => {
+                let (kx, cx, gx) = self.peel_mask_add(*x, loop_id, k, coeff, gidx)?;
+                self.peel_mask_add(*y, loop_id, kx, cx, gx)
+            }
+            Op::Binary { x, y, bop: BOp::Mul } => {
+                let (c, loop_side) = if *x == loop_id {
+                    if let Op::Const(v) = self.at(*y) {
+                        (v.as_dim(), true)
+                    } else {
+                        (None, false)
+                    }
+                } else if *y == loop_id {
+                    if let Op::Const(v) = self.at(*x) {
+                        (v.as_dim(), true)
+                    } else {
+                        (None, false)
+                    }
+                } else {
+                    (None, false)
+                };
+                match c {
+                    Some(d) if loop_side => Some((k, coeff.saturating_add(d as u64), gidx)),
+                    _ => None,
+                }
+            }
+            Op::Binary { x, y, bop: BOp::BitShiftLeft } if *x == loop_id => {
+                let Op::Const(v) = self.at(*y) else { return None };
+                let Some(d) = v.as_dim() else { return None };
+                Some((k, coeff.saturating_add(1u64.checked_shl(u32::try_from(d).ok()?).unwrap_or(u64::MAX)), gidx))
+            }
+            Op::Const(v) => {
+                let Some(d) = v.as_dim() else { return None };
+                Some((k.saturating_add(d as i64), coeff, gidx))
+            }
+            _ => {
+                if gidx == OpId::NULL {
+                    Some((k, coeff, id))
+                } else {
+                    None
+                }
+            }
+        }
     }
 
     /// Checks if the operation represents accumulation based on the loop condition.
@@ -933,5 +1036,52 @@ mod tests {
         let src = crate::Tensor::from([100i32, 200, 300]);
         let result = compiled.forward(&[&indices, &arange, &src], vec![[10]]).unwrap().pop().unwrap();
         assert_eq!(result, [100, 0, 0, 0, 0, 200, 0, 0, 0, 300]);
+    }
+
+    /// Reproduce the ceil-style inner accumulation loop from the
+    /// `gather_3d_tensor` IR: over `i in 0..2`, accumulate
+    /// `i32(((1 + g + 2*i) >> 1) > 0)` for an outer index `g` in `{0, 1}`.
+    ///
+    /// The closed form for the count is `g + 1`, so after folding the loop the
+    /// kernel should write `out[g] = g + 1` (i.e. `[1, 2]`).
+    #[test]
+    fn test_ceil_mask_loop_folds() {
+        let mut k = Kernel::new(DeviceId::AUTO);
+        let out = k.define(DType::I32, MemScope::Global, false, 2);
+        let g = k.group_index(0, 2);
+        let acc = k.define(DType::I32, MemScope::Register, false, 1);
+        let zi = k.const_idx(0u32);
+        let ziv = k.const_val(0i32);
+        k.store(acc, ziv, zi, MemLayout::Scalar);
+
+        let ilen = k.const_idx(2u32);
+        let loop_id = k.loop_(ilen);
+
+        let i2 = k.binary(loop_id, loop_id, BOp::Add);
+        let body = k.binary(g, i2, BOp::Add);
+        let c1 = k.const_idx(1u32);
+        let b2 = k.binary(c1, body, BOp::Add);
+        let shr1 = k.const_idx(1u32);
+        let sh = k.binary(b2, shr1, BOp::BitShiftRight);
+        let z = k.const_idx(0u32);
+        let cmp = k.binary(sh, z, BOp::Cmpgt);
+        let mask = k.cast(cmp, DType::I32);
+        let l = k.load(acc, zi, MemLayout::Scalar);
+        let sum = k.binary(mask, l, BOp::Add);
+        k.store(acc, sum, zi, MemLayout::Scalar);
+
+        k.end_loop();
+
+        let res = k.load(acc, zi, MemLayout::Scalar);
+        k.store(out, res, g, MemLayout::Scalar);
+
+        k.simplify_accumulating_loop();
+
+        // The after-loop load must be rewritten to the closed form (not a Load).
+        assert!(matches!(k.at(res), Op::Cast { .. }), "ceil mask loop should fold");
+
+        let compiled = k.compile().unwrap();
+        let result = compiled.forward(&[], vec![[2]]).unwrap().pop().unwrap();
+        assert_eq!(result, [1, 2]);
     }
 }
