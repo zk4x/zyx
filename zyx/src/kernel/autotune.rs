@@ -433,6 +433,8 @@ impl Kernel {
         kernel.run_always_on_optimizations();
         kernel.run_always_on_optimizations();
 
+        self.debug();
+
         let (args, new_bufs) = kernel.alloc_buffers(memory_pool, &[])?;
         let (program_id, timing) =
             kernel.launch_with_timings(&args, device, memory_pool, debug, flop, read_bytes, write_bytes, self.get_hash())?;
@@ -478,7 +480,7 @@ impl Kernel {
         debug: DebugMask,
         buffers: &[PoolBufferId],
     ) -> Result<(DeviceProgramId, OptSeq, u64), BackendError> {
-        if true {
+        if false {
             return self.apply_selected_optimizations(device, memory_pool, config, flop, read_bytes, write_bytes, debug);
         }
 

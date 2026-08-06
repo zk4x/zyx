@@ -38,7 +38,7 @@ impl Kernel {
     ///
     /// Movement ops (Reshape, Expand, Permute, Pad) are applied directly to axis indices,
     /// and LoadView/StoreView/ConstView are converted to Load/Store/Const in a single pass.
-    pub fn linearize(&mut self) {
+    pub fn linearize2(&mut self) {
         let has_gidx = self.ops.values().any(|n| matches!(n.op, Op::Index { scope: IdxScope::Group, .. }));
         let has_view_moves = self.ops.values().any(|n| matches!(n.op, Op::LoadView(_) | Op::StoreView { .. } | Op::Move { .. }));
 
@@ -339,6 +339,14 @@ impl Kernel {
                                     let lp = padding[a].0;
                                     let rp = padding[a].1;
                                     let stride = self.insert_const_idx_before(start, x_strides[a]);
+                                    // Negative left padding is a slice offset:
+                                    // input index = output index - lp.
+                                    let idx = if lp < 0 {
+                                        let off = self.insert_const_idx_before(start, (-lp) as u64);
+                                        self.insert_before(start, Op::Binary { x: idx, y: off, bop: BOp::Add })
+                                    } else {
+                                        idx
+                                    };
                                     let lp_id = if lp > 0 {
                                         self.insert_const_idx_before(start, lp as u64)
                                     } else {
