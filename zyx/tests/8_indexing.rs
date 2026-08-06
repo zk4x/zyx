@@ -177,7 +177,6 @@ fn slice_all_dims_explicit() -> Result<(), ZyxError> {
     Ok(())
 }
 
-#[cfg(not(feature = "wgpu"))]
 #[test]
 fn gather_basic() -> Result<(), ZyxError> {
     let x = Tensor::from([[10u16, 20, 30, 40, 50], [11, 21, 31, 41, 51], [12, 22, 32, 42, 52]]);
@@ -187,7 +186,6 @@ fn gather_basic() -> Result<(), ZyxError> {
     Ok(())
 }
 
-#[cfg(not(feature = "wgpu"))]
 #[test]
 fn gather_axis0() -> Result<(), ZyxError> {
     let x = Tensor::from([[1, 2, 3], [4, 5, 6], [7, 8, 9]]);
@@ -197,7 +195,6 @@ fn gather_axis0() -> Result<(), ZyxError> {
     Ok(())
 }
 
-#[cfg(not(feature = "wgpu"))]
 #[test]
 fn gather_1d() -> Result<(), ZyxError> {
     let x = Tensor::from([10, 20, 30, 40, 50]);
@@ -207,7 +204,6 @@ fn gather_1d() -> Result<(), ZyxError> {
     Ok(())
 }
 
-#[cfg(not(feature = "wgpu"))]
 #[test]
 fn gather_error_wrong_axis() -> Result<(), ZyxError> {
     let x = Tensor::from([[1, 2], [3, 4]]);
@@ -217,7 +213,6 @@ fn gather_error_wrong_axis() -> Result<(), ZyxError> {
     Ok(())
 }
 
-#[cfg(not(feature = "wgpu"))]
 #[test]
 fn gather_negative_indices() -> Result<(), ZyxError> {
     let x = Tensor::from([[1, 2, 3], [4, 5, 6]]);
@@ -227,7 +222,6 @@ fn gather_negative_indices() -> Result<(), ZyxError> {
     Ok(())
 }
 
-#[cfg(not(feature = "wgpu"))]
 #[test]
 fn gather_duplicate_indices() -> Result<(), ZyxError> {
     let x = Tensor::from([10, 20, 30]);
@@ -237,7 +231,6 @@ fn gather_duplicate_indices() -> Result<(), ZyxError> {
     Ok(())
 }
 
-#[cfg(not(feature = "wgpu"))]
 #[test]
 fn gather_3d_tensor() -> Result<(), ZyxError> {
     let x = Tensor::from([[[1, 2], [3, 4]], [[5, 6], [7, 8]]]);
@@ -247,7 +240,6 @@ fn gather_3d_tensor() -> Result<(), ZyxError> {
     Ok(())
 }
 
-#[cfg(not(feature = "wgpu"))]
 #[test]
 fn gather_axis_minus1() -> Result<(), ZyxError> {
     let x = Tensor::from([[1, 2, 3], [4, 5, 6]]);
@@ -257,7 +249,6 @@ fn gather_axis_minus1() -> Result<(), ZyxError> {
     Ok(())
 }
 
-#[cfg(not(feature = "wgpu"))]
 #[test]
 fn gather_axis_minus2() -> Result<(), ZyxError> {
     let x = Tensor::from([[1, 2], [3, 4], [5, 6]]);
@@ -269,7 +260,6 @@ fn gather_axis_minus2() -> Result<(), ZyxError> {
     Ok(())
 }
 
-#[cfg(not(feature = "wgpu"))]
 #[test]
 fn gather_f32_dtype() -> Result<(), ZyxError> {
     let x = Tensor::from([1.0f32, 2.0, 3.0, 4.0]);
@@ -280,7 +270,6 @@ fn gather_f32_dtype() -> Result<(), ZyxError> {
     Ok(())
 }
 
-#[cfg(not(feature = "wgpu"))]
 #[test]
 fn gather_single_element() -> Result<(), ZyxError> {
     let x = Tensor::from([42]);
@@ -290,7 +279,6 @@ fn gather_single_element() -> Result<(), ZyxError> {
     Ok(())
 }
 
-#[cfg(not(feature = "wgpu"))]
 #[test]
 fn gather_all_indices() -> Result<(), ZyxError> {
     let x = Tensor::from([1, 2, 3, 4, 5]);
@@ -300,7 +288,6 @@ fn gather_all_indices() -> Result<(), ZyxError> {
     Ok(())
 }
 
-#[cfg(not(feature = "wgpu"))]
 #[test]
 fn gather_indices_larger_than_axis() -> Result<(), ZyxError> {
     let x = Tensor::from([[1, 2], [3, 4]]);
@@ -310,7 +297,6 @@ fn gather_indices_larger_than_axis() -> Result<(), ZyxError> {
     Ok(())
 }
 
-#[cfg(not(feature = "wgpu"))]
 #[test]
 fn scatter_basic() -> Result<(), ZyxError> {
     let x = Tensor::zeros([3, 3], zyx::DType::I32);
@@ -321,7 +307,6 @@ fn scatter_basic() -> Result<(), ZyxError> {
     Ok(())
 }
 
-#[cfg(not(feature = "wgpu"))]
 #[test]
 fn scatter_axis_1() -> Result<(), ZyxError> {
     let x = Tensor::zeros([3, 4], zyx::DType::I32);
@@ -332,7 +317,6 @@ fn scatter_axis_1() -> Result<(), ZyxError> {
     Ok(())
 }
 
-#[cfg(not(feature = "wgpu"))]
 #[test]
 fn scatter_duplicate_indices() -> Result<(), ZyxError> {
     let x = Tensor::zeros([5], zyx::DType::I32);
@@ -343,7 +327,6 @@ fn scatter_duplicate_indices() -> Result<(), ZyxError> {
     Ok(())
 }
 
-#[cfg(not(feature = "wgpu"))]
 #[test]
 fn scatter_1d() -> Result<(), ZyxError> {
     let x = Tensor::zeros([10], zyx::DType::I32);
@@ -354,7 +337,6 @@ fn scatter_1d() -> Result<(), ZyxError> {
     Ok(())
 }
 
-#[cfg(not(feature = "wgpu"))]
 #[test]
 fn scatter_nonzero_self() -> Result<(), ZyxError> {
     let x = Tensor::from([[10, 10, 10], [10, 10, 10]]);
@@ -365,7 +347,6 @@ fn scatter_nonzero_self() -> Result<(), ZyxError> {
     Ok(())
 }
 
-#[cfg(not(feature = "wgpu"))]
 #[test]
 fn scatter_negative_indices() -> Result<(), ZyxError> {
     let x = Tensor::zeros([3, 3], zyx::DType::I32);
@@ -376,7 +357,6 @@ fn scatter_negative_indices() -> Result<(), ZyxError> {
     Ok(())
 }
 
-#[cfg(not(feature = "wgpu"))]
 #[test]
 fn scatter_3d() -> Result<(), ZyxError> {
     let x = Tensor::zeros([2, 3, 4], zyx::DType::I32);
@@ -393,7 +373,6 @@ fn scatter_3d() -> Result<(), ZyxError> {
     Ok(())
 }
 
-#[cfg(not(feature = "wgpu"))]
 #[test]
 fn scatter_large_1d() -> Result<(), ZyxError> {
     let n = 10000;
@@ -409,7 +388,6 @@ fn scatter_large_1d() -> Result<(), ZyxError> {
     Ok(())
 }
 
-#[cfg(not(feature = "wgpu"))]
 #[test]
 fn scatter_partial_overlap() -> Result<(), ZyxError> {
     let x = Tensor::zeros([3, 3], zyx::DType::I32);
@@ -440,7 +418,6 @@ fn scatter_error_shape_mismatch() -> Result<(), ZyxError> {
     Ok(())
 }
 
-#[cfg(not(feature = "wgpu"))]
 #[test]
 fn scatter_f32() -> Result<(), ZyxError> {
     let x = Tensor::zeros([3], zyx::DType::F32);
@@ -454,7 +431,6 @@ fn scatter_f32() -> Result<(), ZyxError> {
     Ok(())
 }
 
-#[cfg(not(feature = "wgpu"))]
 #[test]
 fn gather_4d_tensor() -> Result<(), ZyxError> {
     let x = Tensor::from([[[[1, 2], [3, 4]], [[5, 6], [7, 8]]]]);
@@ -464,7 +440,6 @@ fn gather_4d_tensor() -> Result<(), ZyxError> {
     Ok(())
 }
 
-#[cfg(not(feature = "wgpu"))]
 #[test]
 fn gather_large_tensor_axis0() -> Result<(), ZyxError> {
     let x = Tensor::arange(0, 10000, 1)?;
@@ -475,7 +450,6 @@ fn gather_large_tensor_axis0() -> Result<(), ZyxError> {
     Ok(())
 }
 
-#[cfg(not(feature = "wgpu"))]
 #[test]
 fn gather_large_2d_tensor() -> Result<(), ZyxError> {
     let data: Vec<i32> = (0..10000).collect();
@@ -487,7 +461,6 @@ fn gather_large_2d_tensor() -> Result<(), ZyxError> {
     Ok(())
 }
 
-#[cfg(not(feature = "wgpu"))]
 #[test]
 fn gather_mnist_like_sampling() -> Result<(), ZyxError> {
     let n = 1000;
@@ -594,7 +567,6 @@ fn arange_large_range() -> Result<(), ZyxError> {
     Ok(())
 }
 
-#[cfg(not(feature = "wgpu"))]
 #[test]
 fn one_hot_large_num_classes() -> Result<(), ZyxError> {
     let indices = Tensor::from([0u16, 1, 2]);
@@ -603,7 +575,6 @@ fn one_hot_large_num_classes() -> Result<(), ZyxError> {
     Ok(())
 }
 
-#[cfg(not(feature = "wgpu"))]
 #[test]
 fn gather_with_one_hot_large_dim() -> Result<(), ZyxError> {
     let n = 500;
