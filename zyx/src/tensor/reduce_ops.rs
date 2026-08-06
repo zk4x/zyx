@@ -2,7 +2,10 @@
 // SPDX-License-Identifier: LGPL-3.0-only
 
 use crate::{
-    DType, RT, Tensor, ZyxError, kernel::BOp, shape::{Dim, UAxis, into_axes}, tensor::Axis
+    DType, RT, Tensor, ZyxError,
+    kernel::BOp,
+    shape::{Dim, UAxis, into_axes},
+    tensor::Axis,
 };
 
 /// Specifies how to reduce per-sample losses or values.

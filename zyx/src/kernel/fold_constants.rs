@@ -150,15 +150,20 @@ impl Kernel {
                             self.ops[op_id].op = Op::Binary { x, y, bop: BOp::BitAnd };
                         }
                         BOp::Mod if cy.is_zero() => panic!("Modulo by constant zero"),
-                        // Consecutive modulo by constant, pick smallest constant
+                        // Consecutive modulo by constant: (x % a) % b folds to x % b
+                        // only when b | a, and to x % a only when a | b. When neither
+                        // divides the other the result cannot be reduced to a single mod.
                         BOp::Mod if cy.dtype() == IDX_T => {
                             if let Op::Binary { bop, x: xi, y: yi } = self.ops[x].op {
                                 if bop == BOp::Mod
                                     && let Op::Const(ciy) = self.ops[yi].op
+                                    && let (Some(a), Some(b)) = (ciy.as_dim(), cy.as_dim())
+                                    && a != 0
+                                    && b != 0
                                 {
-                                    if ciy > cy {
+                                    if a % b == 0 {
                                         self.ops[op_id].op = Op::Binary { x: xi, y, bop: BOp::Mod };
-                                    } else {
+                                    } else if b % a == 0 {
                                         self.ops[op_id].op = Op::Binary { x: xi, y: yi, bop: BOp::Mod };
                                     }
                                 }
