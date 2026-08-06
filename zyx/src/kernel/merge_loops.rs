@@ -17,7 +17,7 @@ use std::collections::BTreeMap;
 use super::autotune::Optimization;
 use crate::{
     dtype::Constant,
-    kernel::{BOp, Kernel, Op, OpId},
+    kernel::{BOp, Kernel, MemScope, Op, OpId},
 };
 
 impl Kernel {
@@ -59,6 +59,23 @@ impl Kernel {
     pub(crate) fn merge_nested_loops(&mut self, loop_ids: &[OpId]) {
         if loop_ids.len() < 2 {
             return;
+        }
+
+        // Merging nested loops into one flat loop is only valid when the loop
+        // body has no mutable register state that depends on the outer/inner
+        // boundary. A `def mut reg` inside the outer loop (e.g. a per-row count
+        // accumulator that is reset once per outer iteration and accumulated
+        // across the inner iterations) runs its reset once per outer iteration
+        // originally, but once per *flat* iteration after merging — changing the
+        // result. Refuse to merge such groups.
+        let anchor = loop_ids[0];
+        let end = self.get_last_dim_op(anchor);
+        let mut op_id = self.next_op(anchor);
+        while op_id != end {
+            if let Op::Define { scope: MemScope::Register, ro: false, .. } = self.ops[op_id].op {
+                return;
+            }
+            op_id = self.next_op(op_id);
         }
 
         let mut total_len: u64 = 1;

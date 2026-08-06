@@ -57,8 +57,8 @@ use std::hash::{Hash, Hasher};
 type OptConfigFn = fn(&Kernel, &DeviceInfo) -> (Optimization, usize);
 
 const AVAILABLE_OPTIMIZATIONS: [OptConfigFn; 9] = [
-    |k, _| Kernel::opt_reassociate_commutative(k),
     Kernel::opt_split_global_to_local,
+    |k, _| Kernel::opt_reassociate_commutative(k),
     |k, _| Kernel::opt_thread_coarse(k),
     |k, _| Kernel::opt_register_blocking(k),
     Kernel::opt_local_reduce,

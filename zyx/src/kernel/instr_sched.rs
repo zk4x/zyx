@@ -297,7 +297,26 @@ impl Kernel {
             }
         }
 
-        let barrier_positions: Vec<usize> = (0..n).filter(|&i| barrier[i]).collect();
+        // Hoisting prevention: a define must never leave the scope it was
+        // defined in. Hoisting a register define out of a loop breaks
+        // per-iteration register reset semantics that downstream passes (e.g.
+        // `merge_nested_loops`) rely on to keep nested reduce loops intact. So
+        // a define must stay after every opener that precedes it and before
+        // every closer that follows it.
+        for i in (0..n).filter(|&i| matches!(self.at(rest[i]), Op::Define { .. })) {
+            for &j in &openers {
+                if j < i {
+                    edges.push((j, i));
+                    in_degree[i] += 1;
+                }
+            }
+            for &j in &closers {
+                if i < j {
+                    edges.push((i, j));
+                    in_degree[j] += 1;
+                }
+            }
+        }
 
         // Stores never leave the loops/ifs that contain them and never cross
         // barriers: keep every store ordered with every structural op.
@@ -315,6 +334,8 @@ impl Kernel {
                 }
             }
         }
+
+        let barrier_positions: Vec<usize> = (0..n).filter(|&i| barrier[i]).collect();
         // Loads never cross barriers.
         for i in 0..n {
             if !load[i] {
