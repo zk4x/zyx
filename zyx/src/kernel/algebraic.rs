@@ -93,13 +93,13 @@ impl Kernel {
                     let (rs, rc) = collect_slices_inner(k, y);
                     // Try to merge slices; if roots differ, non-root side becomes constant
                     let slices = if !ls.is_empty() && !rs.is_empty() && ls[0].root != rs[0].root {
-                        // One side's root is not the loop — treat as constant
+                        // One side's root is not the loop — treat the whole other
+                        // operand as an opaque constant term (it may carry its own
+                        // scale, e.g. `4*loop`), never just its bare loop root.
                         if matches!(k.at(ls[0].root), Op::Loop { .. }) {
-                            // ls is from the loop, rs is not
-                            return (ls, Some(rs[0].root));
+                            return (ls, Some(y));
                         } else {
-                            let const_term = ls[0].root;
-                            return (rs, Some(const_term));
+                            return (rs, Some(x));
                         }
                     } else {
                         if ls.is_empty() {
@@ -260,9 +260,7 @@ impl Kernel {
                             (None, None) => OpId::NULL,
                             (Some(a), None) => a,
                             (None, Some(b)) => b,
-                            (Some(a), Some(b)) => {
-                                self.insert_before(op_id, Op::Binary { x: a, y: b, bop: BOp::Add })
-                            }
+                            (Some(a), Some(b)) => self.insert_before(op_id, Op::Binary { x: a, y: b, bop: BOp::Add }),
                         };
                     } else {
                         op_id = next;
@@ -808,3 +806,164 @@ fn mad(k: &Kernel, x: OpId) -> Option<(OpId, u64, OpId)> {
     let cval = cst.as_dim()?;
     Some((*a, cval, *b))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::kernel::{DeviceId, MemLayout, MemScope};
+
+    /// Build the cumsum-window mask kernel exactly as linearize produces it
+    /// for the gather_f32_dtype one-hot reduce: thread index r47 (outer loop)
+    /// and reduce index r81 (inner loop) are packed as `r47 + 4*r81`, split
+    /// back into (row, col) via >>2 / %4, repacked as `col + 8*row`, then
+    /// masked with `% 7 > 2`. Returns the kernel and the mask cmpgt op.
+    fn make_mask_kernel() -> (Kernel, OpId) {
+        let mut k = Kernel::new(DeviceId::AUTO);
+
+        let r72 = k.define(DType::I32, MemScope::Global, true, 4);
+        let r65 = k.define(DType::F32, MemScope::Global, true, 4);
+        let r41 = k.define(DType::F32, MemScope::Global, false, 4);
+
+        let c0 = k.const_idx(0u32);
+        let c1 = k.const_idx(1u32);
+        let c2 = k.const_idx(2u32);
+        let c3 = k.const_idx(3u32);
+        let c4 = k.const_idx(4u32);
+        let c7 = k.const_idx(7u32);
+
+        let r37 = k.group_index(0, 4);
+
+        // Outer loop r47 (0..4), inner loop r81 (0..4).
+        let r47 = k.loop_(c4);
+        let r78 = k.define(DType::I64, MemScope::Register, false, 1);
+        let r77 = k.const_val(0i64);
+        k.store(r78, r77, c0, MemLayout::Scalar);
+        let r81 = k.loop_(c4);
+
+        let r92 = k.binary(r81, c2, BOp::BitShiftLeft);
+        let r93 = k.binary(r47, r92, BOp::Add);
+        let r95 = k.binary(r93, c2, BOp::BitShiftRight);
+        let r96 = k.binary(r93, c4, BOp::Mod);
+        let _r98 = k.binary(r96, c1, BOp::Div);
+        let r99 = k.binary(r93, c1, BOp::Mod);
+        let r104 = k.binary(r95, c2, BOp::BitShiftLeft);
+        let r105 = k.binary(r96, r104, BOp::Add);
+        let r106 = k.binary(r99, r105, BOp::Add);
+        let r108 = k.binary(r106, c2, BOp::BitShiftRight);
+        let r109 = k.binary(r106, c4, BOp::Mod);
+        let r113 = k.binary(r108, c3, BOp::BitShiftLeft);
+        let r114 = k.binary(r109, r113, BOp::Add);
+        let r120 = k.binary(r114, c7, BOp::Mod);
+        let r129 = k.binary(r120, c2, BOp::Cmpgt);
+
+        // Keep the mask alive via an accumulate that feeds a store.
+        let r131 = k.cast(r129, DType::I64);
+        let r85 = k.load(r78, c0, MemLayout::Scalar);
+        let r86 = k.binary(r131, r85, BOp::Add);
+        k.store(r78, r86, c0, MemLayout::Scalar);
+        k.end_loop();
+
+        let r14 = k.load(r78, c0, MemLayout::Scalar);
+        let r21 = k.cast(r14, DType::I32);
+        let r23 = k.load(r72, r37, MemLayout::Scalar);
+        let r25 = k.binary(r23, r21, BOp::Eq);
+        let r26 = k.cast(r25, DType::F32);
+        let r27 = k.load(r65, r47, MemLayout::Scalar);
+        let r32 = k.binary(r26, r27, BOp::Mul);
+        k.store(r41, r32, r37, MemLayout::Scalar);
+        k.end_loop();
+
+        (k, r129)
+    }
+
+    /// Evaluate the mask (r129) for every (r47, r81) pair using the kernel's op
+    /// graph. Returns a 4x4 truth table.
+    fn eval_mask(k: &Kernel, mask: OpId) -> [[bool; 4]; 4] {
+        use std::collections::HashMap;
+        let mut table = [[false; 4]; 4];
+        for outer in 0..4u64 {
+            for inner in 0..4u64 {
+                let mut vals: HashMap<usize, u64> = HashMap::new();
+                let mut op_id = k.head;
+                let mut loop_idx = 0usize;
+                while !op_id.is_null() {
+                    let next = k.next_op(op_id);
+                    let id = op_id.0 as usize;
+                    match k.at(op_id) {
+                        Op::Loop { .. } => {
+                            vals.insert(id, if loop_idx == 0 { outer } else { inner });
+                            loop_idx += 1;
+                        }
+                        Op::Const(c) => {
+                            if let Some(v) = c.as_dim() {
+                                vals.insert(id, v);
+                            } else if let crate::dtype::Constant::Bool(v) = c {
+                                vals.insert(id, *v as u64);
+                            }
+                        }
+                        Op::Binary { x, y, bop } => {
+                            if let (Some(&a), Some(&b)) = (vals.get(&(x.0 as usize)), vals.get(&(y.0 as usize))) {
+                                let v = match bop {
+                                    BOp::Add => a.wrapping_add(b),
+                                    BOp::Sub => a.wrapping_sub(b),
+                                    BOp::Mul => a.wrapping_mul(b),
+                                    BOp::Div => a.wrapping_div(b),
+                                    BOp::Mod => a.wrapping_rem(b),
+                                    BOp::Cmpgt => (a > b) as u64,
+                                    BOp::Cmplt => (a < b) as u64,
+                                    BOp::Eq => (a == b) as u64,
+                                    BOp::BitShiftLeft => a << b,
+                                    BOp::BitShiftRight => a >> b,
+                                    BOp::And => (a != 0 && b != 0) as u64,
+                                    _ => continue,
+                                };
+                                vals.insert(id, v);
+                            }
+                        }
+                        Op::Unary { x, uop } => {
+                            if let Some(&a) = vals.get(&(x.0 as usize)) {
+                                vals.insert(
+                                    id,
+                                    match uop {
+                                        crate::kernel::UOp::BitNot => !a,
+                                        _ => a,
+                                    },
+                                );
+                            }
+                        }
+                        _ => {}
+                    }
+                    op_id = next;
+                }
+                table[outer as usize][inner as usize] = vals.get(&(mask.0 as usize)).copied().unwrap_or(0) != 0;
+            }
+        }
+        table
+    }
+
+    fn expected_mask() -> [[bool; 4]; 4] {
+        // mask = (r47 + 8*r81) % 7 > 2 == (r47 + r81) % 7 > 2 == (r47 + r81) > 2
+        // since r47, r81 in 0..4 and r47+r81 <= 6 < 7.
+        let mut t = [[false; 4]; 4];
+        for i in 0..4 {
+            for j in 0..4 {
+                t[i][j] = i + j > 2;
+            }
+        }
+        t
+    }
+
+    #[test]
+    fn mask_survives_algebraic_simplification() {
+        let (mut k, mask) = make_mask_kernel();
+        let before = eval_mask(&k, mask);
+        assert_eq!(before, expected_mask(), "mask must be correct before simplification");
+
+        k.move_constants_to_beginning();
+        k.algebraic_simplification();
+
+        let after = eval_mask(&k, mask);
+        assert_eq!(after, expected_mask(), "mask must stay correct after algebraic_simplification");
+    }
+}
+
