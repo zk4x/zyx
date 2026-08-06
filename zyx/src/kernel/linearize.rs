@@ -19,7 +19,9 @@ use crate::{
 
 /// Extract the value of an index constant op.
 fn pad_value(k: &Kernel, id: OpId) -> u64 {
-    let Op::Const(c) = k.ops[id].op else { unreachable!("pad constant expected, got {:?}", k.ops[id].op) };
+    let Op::Const(c) = k.ops[id].op else {
+        unreachable!("pad constant expected, got {:?}", k.ops[id].op)
+    };
     c.as_dim().expect("pad constant must be a non-negative dim")
 }
 
@@ -79,6 +81,9 @@ impl Kernel {
 
         // For each op, shape and strides: (index, stride, left pad, right pad)
         let mut views: Map<OpId, Vec<(OpId, OpId, OpId, OpId)>> = Map::default();
+
+        // Reused group index per axis, so every store of a result shares one index.
+        let mut group_indices: Map<u32, OpId> = Map::default();
 
         let start = self.head;
         let mut op_id = self.tail;
@@ -180,9 +185,12 @@ impl Kernel {
                             _ => unreachable!(),
                         }),
                     );
-                    let acc =
-                        self.insert_before(loop_start, Op::Define { dtype: acc_dtype, scope: MemScope::Register, ro: false, len: 1 });
-                    self.insert_before(loop_start, Op::Store { dst: acc, x: acc_init_id, index: const_zero, layout: MemLayout::Scalar });
+                    let acc = self
+                        .insert_before(loop_start, Op::Define { dtype: acc_dtype, scope: MemScope::Register, ro: false, len: 1 });
+                    self.insert_before(
+                        loop_start,
+                        Op::Store { dst: acc, x: acc_init_id, index: const_zero, layout: MemLayout::Scalar },
+                    );
 
                     // Open the reduce loops over the reduced dims, keeping the loop ids.
                     let dims = self.reduce_dims(op_id);
@@ -192,10 +200,10 @@ impl Kernel {
                         loop_ids.push(self.insert_before(loop_start, Op::Loop { len }));
                     }
 
-                    // x's view is the reduce output view (non-reduced axes) plus the
-                    // reduced axes driven by the newly opened loops, with contiguous
-                    // strides and zero padding.
-                    let mut view = views[&op_id].clone();
+                    // x's view uses the reduce input's row-major strides for the
+                    // non-reduced axes, plus the newly opened loops for the reduced
+                    // axes with contiguous strides and zero padding.
+                    let out_view = views.remove(&op_id).unwrap();
                     let rank = self.shape_of(x).len();
                     let non_reduce = rank - n_axes;
                     let mut strides = vec![1; rank];
@@ -205,6 +213,12 @@ impl Kernel {
                         st *= self.shape_of(x)[a];
                     }
                     let zero = self.insert_const_idx_before(loop_start, 0u32);
+                    let mut view = Vec::with_capacity(rank);
+                    for e in 0..non_reduce {
+                        let (idx, _st, lp, rp) = out_view[e];
+                        let stride = self.insert_const_idx_before(loop_start, strides[e]);
+                        view.push((idx, stride, lp, rp));
+                    }
                     for (i, &lid) in loop_ids.iter().enumerate() {
                         let stride = self.insert_const_idx_before(loop_start, strides[non_reduce + i]);
                         view.push((lid, stride, zero, zero));
@@ -325,8 +339,16 @@ impl Kernel {
                                     let lp = padding[a].0;
                                     let rp = padding[a].1;
                                     let stride = self.insert_const_idx_before(start, x_strides[a]);
-                                    let lp_id = if lp > 0 { self.insert_const_idx_before(start, lp as u64) } else { zero };
-                                    let rp_id = if rp > 0 { self.insert_const_idx_before(start, rp as u64) } else { zero };
+                                    let lp_id = if lp > 0 {
+                                        self.insert_const_idx_before(start, lp as u64)
+                                    } else {
+                                        zero
+                                    };
+                                    let rp_id = if rp > 0 {
+                                        self.insert_const_idx_before(start, rp as u64)
+                                    } else {
+                                        zero
+                                    };
                                     (idx, stride, lp_id, rp_id)
                                 })
                                 .collect();
@@ -344,7 +366,14 @@ impl Kernel {
                     let mut st = 1;
                     for axis in (0..shape.len() as u32).rev() {
                         let len = shape[axis as usize];
-                        let idx = self.insert_before(start, Op::Index { len, axis, scope: IdxScope::Group });
+                        let idx = match group_indices.get(&axis) {
+                            Some(&id) => id,
+                            None => {
+                                let id = self.insert_before(start, Op::Index { len, axis, scope: IdxScope::Group });
+                                group_indices.insert(axis, id);
+                                id
+                            }
+                        };
                         let st_id = self.insert_const_idx_before(start, st);
                         view.push((idx, st_id, zero, zero));
                         st *= len;
