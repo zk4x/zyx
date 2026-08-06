@@ -87,9 +87,16 @@ impl Kernel {
         let mut group_indices: Map<u32, OpId> = Map::default();
 
         let start = self.head;
-        let mut op_id = self.tail;
-        while !op_id.is_null() {
-            let prev = self.prev_op(op_id);
+        // Snapshot the original ops in list order. Handlers insert index arithmetic
+        // before `start`; walking a snapshot in reverse avoids processing those
+        // inserted ops (they are not view ops and have no view entry).
+        let mut op_ids: Vec<OpId> = Vec::new();
+        let mut scan = self.head;
+        while !scan.is_null() {
+            op_ids.push(scan);
+            scan = self.next_op(scan);
+        }
+        for &op_id in op_ids.iter().rev() {
             match self.ops[op_id].op {
                 Op::LoadView(ref x) => {
                     let dtype = x.0;
@@ -442,7 +449,6 @@ impl Kernel {
                     unreachable!("{op:?}");
                 }*/
             }
-            op_id = prev;
         }
 
         // Reverse the order of globals
