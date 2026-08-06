@@ -318,15 +318,18 @@ impl Kernel {
                                 st *= x_shape[a];
                             }
                             let zero = self.insert_const_idx_before(start, 0);
+                            // New leading axes are prepended broadcasts; the input axes
+                            // align to the tail of the output shape.
+                            let offset = shape.len() - x_shape.len();
                             let view = (0..x_shape.len())
                                 .map(|a| {
-                                    let idx = view[a].0;
-                                    let stride = if x_shape[a] != shape[a] {
+                                    let idx = view[offset + a].0;
+                                    let stride = if x_shape[a] != shape[offset + a] {
                                         zero
                                     } else {
                                         self.insert_const_idx_before(start, x_strides[a])
                                     };
-                                    (idx, stride, view[a].2, view[a].3)
+                                    (idx, stride, view[offset + a].2, view[offset + a].3)
                                 })
                                 .collect();
                             views.insert(x, view);
