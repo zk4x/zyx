@@ -137,7 +137,93 @@ impl Kernel {
                 Op::ConstView(ref x) => {
                     self.ops[op_id].op = Op::Const(x.0);
                 }
-                Op::Reduce { x, rop, n_axes } => todo!(),
+                Op::Reduce { x, rop, n_axes } => {
+                    // Collect all transitive dependencies of the reduce input and the
+                    // accumulator dtype. The loop that wraps the reduction is opened at
+                    // the soonest dependency that appears in the graph.
+                    let mut reduce_loop_ops_set = Set::default();
+                    let mut params = vec![x];
+                    let mut acc_dtype = None;
+                    while let Some(param) = params.pop() {
+                        if reduce_loop_ops_set.insert(param) {
+                            params.extend(self.at(param).parameters());
+                            if acc_dtype.is_none() {
+                                match self.at(param) {
+                                    &Op::Define { dtype, .. } | &Op::Cast { dtype, .. } => acc_dtype = Some(dtype),
+                                    Op::ConstView(v) => acc_dtype = Some(v.0.dtype()),
+                                    Op::LoadView(v) => acc_dtype = Some(v.0),
+                                    _ => {}
+                                }
+                            }
+                        }
+                    }
+                    let acc_dtype = acc_dtype.unwrap();
+
+                    let mut loop_start = OpId::NULL;
+                    let mut scan = self.head;
+                    while !scan.is_null() {
+                        if reduce_loop_ops_set.contains(&scan) {
+                            loop_start = scan;
+                            break;
+                        }
+                        scan = self.next_op(scan);
+                    }
+
+                    // const zero + init accumulator constant.
+                    let const_zero = self.insert_const_idx_before(loop_start, 0u32);
+                    let acc_init_id = self.insert_before(
+                        loop_start,
+                        Op::Const(match rop {
+                            BOp::Add => acc_dtype.zero_constant(),
+                            BOp::Max => acc_dtype.min_constant(),
+                            BOp::Mul => acc_dtype.one_constant(),
+                            _ => unreachable!(),
+                        }),
+                    );
+                    let acc =
+                        self.insert_before(loop_start, Op::Define { dtype: acc_dtype, scope: MemScope::Register, ro: false, len: 1 });
+                    self.insert_before(loop_start, Op::Store { dst: acc, x: acc_init_id, index: const_zero, layout: MemLayout::Scalar });
+
+                    // Open the reduce loops over the reduced dims, keeping the loop ids.
+                    let dims = self.reduce_dims(op_id);
+                    let mut loop_ids = Vec::with_capacity(n_axes);
+                    for &dim in &dims[..n_axes] {
+                        let len = self.insert_const_idx_before(loop_start, dim);
+                        loop_ids.push(self.insert_before(loop_start, Op::Loop { len }));
+                    }
+
+                    // x's view is the reduce output view (non-reduced axes) plus the
+                    // reduced axes driven by the newly opened loops, with contiguous
+                    // strides and zero padding.
+                    let mut view = views[&op_id].clone();
+                    let rank = self.shape_of(x).len();
+                    let non_reduce = rank - n_axes;
+                    let mut strides = vec![1; rank];
+                    let mut st = 1;
+                    for a in (0..rank).rev() {
+                        strides[a] = st;
+                        st *= self.shape_of(x)[a];
+                    }
+                    let zero = self.insert_const_idx_before(loop_start, 0u32);
+                    for (i, &lid) in loop_ids.iter().enumerate() {
+                        let stride = self.insert_const_idx_before(loop_start, strides[non_reduce + i]);
+                        view.push((lid, stride, zero, zero));
+                    }
+                    views.insert(x, view);
+
+                    // Accumulate just before the reduce op (which is inside the loop).
+                    let load_acc = self.insert_before(op_id, Op::Load { src: acc, index: const_zero, layout: MemLayout::Scalar });
+                    let bin_acc = self.insert_before(op_id, Op::Binary { x, y: load_acc, bop: rop });
+                    self.insert_before(op_id, Op::Store { dst: acc, x: bin_acc, index: const_zero, layout: MemLayout::Scalar });
+
+                    // Close the reduce loop.
+                    for _ in 0..n_axes {
+                        self.insert_before(op_id, Op::EndLoop);
+                    }
+
+                    // Replace the reduce with a load of the accumulator result.
+                    self.ops[op_id].op = Op::Load { src: acc, index: const_zero, layout: MemLayout::Scalar };
+                }
                 Op::Move { x, ref mop } => {
                     match mop.as_ref() {
                         MoveOp::Reshape { shape } => {
