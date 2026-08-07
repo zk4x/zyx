@@ -27,7 +27,7 @@ impl Graph {
     /// Returns the product class and the contraction dim `k`.
     fn reduce_add_last(&self, cid: ClassId, shapes: &Slab<ShapeId, Vec<Dim>>) -> Option<(ClassId, Dim)> {
         self.classes[cid].nodes.iter().find_map(|&nid| match &self.nodes[nid].node {
-            Node::Reduce { x, bop: BOp::Add, axes } => {
+            Node::Reduce { x, rop: BOp::Add, axes } => {
                 let prod_shape = &shapes[self.classes[*x].shape];
                 if prod_shape.len() == 3 && axes.len() == 1 && axes[0] == prod_shape.len() - 1 {
                     Some((*x, prod_shape[2]))

@@ -35,12 +35,7 @@ impl Kernel {
         let mut op_id = self.head;
         while !op_id.is_null() {
             let depth = match self.ops[op_id].op {
-                Op::Move { .. }
-                | Op::ConstView { .. }
-                | Op::LoadView { .. }
-                | Op::StoreView { .. }
-                | Op::Reduce { .. }
-                | Op::ReduceTile { .. } => {
+                Op::Move { .. } | Op::LoadView { .. } | Op::StoreView { .. } | Op::Reduce { .. } | Op::ReduceTile { .. } => {
                     unreachable!()
                 }
                 Op::MatmulTile { x, y } => loop_dep[&x].max(loop_dep[&y]),
@@ -98,7 +93,7 @@ impl Kernel {
         let mut op_id = self.head;
         while !op_id.is_null() {
             let depth = match self.at(op_id) {
-                Op::Move { .. } | Op::ConstView { .. } | Op::LoadView { .. } | Op::StoreView { .. } | Op::Reduce { .. } => {
+                Op::Move { .. } | Op::LoadView { .. } | Op::StoreView { .. } | Op::Reduce { .. } => {
                     unreachable!()
                 }
                 Op::ReduceTile { x, .. } => loop_dep[&x],

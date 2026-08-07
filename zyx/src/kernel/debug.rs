@@ -79,18 +79,11 @@ impl Kernel {
                 op_id
             };
             match *self.at(op_id) {
-                Op::ConstView(ref x) => {
-                    let value = x.0;
-                    let view = &x.1;
-                    let dtype = value.dtype();
-                    dtypes.insert(op_id, dtype);
-                    println!("{indent}r{out_id}{grey}: {dtype}{reset} = {cyan}{value}{reset} {view}");
-                }
                 Op::LoadView(ref x) => {
                     let dtype = x.0;
                     let view = &x.1;
                     dtypes.insert(op_id, dtype);
-                    println!("{indent}r{out_id}{grey}: {dtype}{reset} = {cyan}load{reset} {view}");
+                    println!("{indent}r{out_id}{grey}: {dtype}{reset} = {cyan}load{reset} {view:?}");
                 }
                 Op::StoreView { src, dtype, .. } => {
                     let src = id_map[&src];

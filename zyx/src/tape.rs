@@ -57,7 +57,6 @@ use crate::{
     shape::Dim,
     slab::SlabId,
     tensor::TensorId,
-    view::View,
 };
 
 /// Tape-scoped lazy graph.
@@ -314,8 +313,7 @@ impl FrozenTape {
 
         let mut outputs = Vec::new();
         for (cid, shape, dtype) in self.outputs.iter() {
-            let view = View::contiguous(shape);
-            let tid = rt.new_eager_tensor(Op::LoadView(Box::new((*dtype, view))));
+            let tid = rt.new_eager_tensor(Op::LoadView(Box::new((*dtype, shape.clone()))));
             rt.buffer_map.insert(tid, class_buf[cid]);
             outputs.push(Tensor::from_id(tid));
         }

@@ -113,7 +113,7 @@ mod tests {
         let mul = class(&mut graph, &mut shapes, Node::Binary { x: ea, y: eb, bop: BOp::Mul }, vec![m, n, k]);
         let cast = class(&mut graph, &mut shapes, Node::Cast { x: mul, dtype: DType::F32 }, vec![m, n, k]);
         let out =
-            class(&mut graph, &mut shapes, Node::Reduce { x: cast, bop: BOp::Add, axes: vec![2].into_boxed_slice() }, vec![m, n]);
+            class(&mut graph, &mut shapes, Node::Reduce { x: cast, rop: BOp::Add, axes: vec![2].into_boxed_slice() }, vec![m, n]);
         let outputs: BTreeSet<ClassId> = [out].into();
         (graph, shapes, outputs)
     }
@@ -134,7 +134,7 @@ mod tests {
         let out = class(
             &mut graph,
             &mut shapes,
-            Node::Reduce { x: ClassId::from(6), bop: BOp::Add, axes: vec![0].into_boxed_slice() },
+            Node::Reduce { x: ClassId::from(6), rop: BOp::Add, axes: vec![0].into_boxed_slice() },
             vec![3, 4],
         );
         assert!(graph.match_matmul(out, &shapes).is_none());
@@ -157,7 +157,7 @@ mod tests {
         let mul = class(&mut graph, &mut shapes, Node::Binary { x: ea, y: ClassId::from(6), bop: BOp::Mul }, vec![m, n, k]);
         let cast = class(&mut graph, &mut shapes, Node::Cast { x: mul, dtype: DType::F32 }, vec![m, n, k]);
         let out =
-            class(&mut graph, &mut shapes, Node::Reduce { x: cast, bop: BOp::Add, axes: vec![2].into_boxed_slice() }, vec![m, n]);
+            class(&mut graph, &mut shapes, Node::Reduce { x: cast, rop: BOp::Add, axes: vec![2].into_boxed_slice() }, vec![m, n]);
         let mm = graph.match_matmul(out, &shapes).unwrap();
         assert_eq!(mm.a, folded_a);
         assert_eq!(mm.m, m);

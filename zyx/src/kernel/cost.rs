@@ -84,7 +84,7 @@ impl Kernel {
             let mut op_id = self.head;
             while !op_id.is_null() {
                 match self.ops[op_id].op {
-                    Op::ConstView { .. } | Op::StoreView { .. } | Op::LoadView { .. } | Op::Move { .. } | Op::Reduce { .. } => {
+                    Op::StoreView { .. } | Op::LoadView { .. } | Op::Move { .. } | Op::Reduce { .. } => {
                         unreachable!()
                     }
                     Op::Vectorize { ref ops } => {
@@ -219,7 +219,6 @@ impl Kernel {
                 | Op::Const(_)
                 | Op::Index { .. } => true,
                 Op::Store { .. } | Op::EndLoop | Op::Barrier { .. } | Op::If { .. } | Op::EndIf => false,
-                Op::ConstView(_) => todo!(),
                 Op::LoadView(_) => todo!(),
                 Op::StoreView { .. } => todo!(),
                 Op::Move { .. } => todo!(),
@@ -280,7 +279,6 @@ impl Kernel {
                 | Op::EndIf
                 | Op::Devectorize { .. }
                 | Op::Vectorize { .. }
-                | Op::ConstView(_)
                 | Op::LoadView(_)
                 | Op::StoreView { .. }
                 | Op::Move { .. }

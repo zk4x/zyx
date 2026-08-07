@@ -334,7 +334,6 @@ impl Kernel {
                 | Op::MatmulTile { .. }
                 | Op::TransposeTile { .. }
                 | Op::Move { .. }
-                | Op::ConstView { .. }
                 | Op::LoadView { .. }
                 | Op::StoreView { .. }
                 | Op::PushTile { .. }

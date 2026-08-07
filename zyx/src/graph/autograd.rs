@@ -384,7 +384,7 @@ impl Runtime {
                         let reduced = self
                             .push_node(
                                 graph_id,
-                                Node::Reduce { x: grad, bop: BOp::Add, axes: sum_axes.into_boxed_slice() },
+                                Node::Reduce { x: grad, rop: BOp::Add, axes: sum_axes.into_boxed_slice() },
                                 x_shape,
                                 self.graphs[graph_id].classes[grad].dtype,
                             )
@@ -410,7 +410,7 @@ impl Runtime {
                 Node::PadZeros { x, .. } => {
                     accum_grad(self, graph_id, &mut grads, x, grad);
                 }
-                Node::Reduce { x, bop, ref axes } => {
+                Node::Reduce { x, rop: bop, ref axes } => {
                     let axes = axes.clone();
                     match bop {
                         BOp::Add => {

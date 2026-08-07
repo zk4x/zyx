@@ -103,9 +103,6 @@ impl Kernel {
         let mut dtypes: Map<OpId, DType> = Map::default();
         while !op_id.is_null() {
             match self.ops[op_id].op {
-                Op::ConstView(ref x) => {
-                    dtypes.insert(op_id, x.0.dtype());
-                }
                 Op::LoadView(ref x) => {
                     dtypes.insert(op_id, x.0);
                 }

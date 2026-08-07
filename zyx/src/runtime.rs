@@ -40,7 +40,6 @@ use crate::{
     shape::{Dim, UAxis},
     slab::{Slab, SlabId},
     tensor::TensorId,
-    view::View,
 };
 
 /// Loads present in `old` but not in `new`, counting multiplicities.
@@ -429,7 +428,7 @@ impl Runtime {
         self.tensors[tid].graph_id = GraphId::NULL;
         let shape: Vec<Dim> = self.shape(tid).into();
         let dtype = self.dtype(tid);
-        let op = Op::LoadView(Box::new((dtype, View::contiguous(&shape))));
+        let op = Op::LoadView(Box::new((dtype, shape)));
         let kernel_id = self.kernels.push(KernelData {
             outputs: vec![tid; handles],
             loads: Vec::new(),
@@ -620,8 +619,8 @@ impl Runtime {
 
     pub fn new_eager_tensor(&mut self, op: Op) -> TensorId {
         let (dtype, shape) = match &op {
-            Op::LoadView(x) => (x.0, x.1.shape()),
-            Op::ConstView(x) => (x.0.dtype(), x.1.shape()),
+            Op::LoadView(x) => (x.0, x.1.clone()),
+            Op::Const(x) => (x.dtype(), vec![1]),
             _ => unreachable!(),
         };
         let shape_id = self.push_shape(shape);
@@ -645,7 +644,7 @@ impl Runtime {
     pub fn new_constant_tensor(&mut self, value: Constant) -> TensorId {
         #[cfg(feature = "debug_tensor_op")]
         println!("runtime::new_constant_tensor(value={value:?})");
-        let result = self.new_eager_tensor(Op::ConstView(Box::new((value, View::contiguous(&[1])))));
+        let result = self.new_eager_tensor(Op::Const(value));
         #[cfg(feature = "debug_tensor_op")]
         println!("  -> tid={result}, {:?}", self.tensors[result]);
         result
@@ -654,7 +653,7 @@ impl Runtime {
     pub fn new_full(&mut self, shape: Vec<Dim>, value: Constant) -> TensorId {
         #[cfg(feature = "debug_tensor_op")]
         println!("runtime::new_full(shape={shape:?}, value={value:?})");
-        let x = self.new_eager_tensor(Op::ConstView(Box::new((value, View::contiguous(&[1])))));
+        let x = self.new_eager_tensor(Op::Const(value));
         let expanded = self.expand(x, shape).unwrap();
         self.release(x);
         #[cfg(feature = "debug_tensor_op")]
@@ -690,7 +689,7 @@ impl Runtime {
         let buffer_id = BufferId { pool: PoolId::HOST, buffer: pool.insert(data) };
 
         let shape = self.push_shape(shape);
-        let op = Op::LoadView(Box::new((dtype, View::contiguous(&self.shapes[shape]))));
+        let op = Op::LoadView(Box::new((dtype, self.shapes[shape].clone())));
         let tid = self.new_eager_tensor(op);
         self.kernels[self.tensors[tid].kernel_id].loads.push(tid);
         self.retain_load(tid);
@@ -719,7 +718,7 @@ impl Runtime {
         let buffer_id = BufferId { pool: PoolId::DISK, buffer: pool.buffer_from_path(bytes, path, offset_bytes) };
 
         let shape_id = self.push_shape(shape);
-        let tid = self.new_eager_tensor(Op::LoadView(Box::new((dtype, View::contiguous(&self.shapes[shape_id])))));
+        let tid = self.new_eager_tensor(Op::LoadView(Box::new((dtype, self.shapes[shape_id].clone()))));
         self.kernels[self.tensors[tid].kernel_id].loads.push(tid);
         self.retain_load(tid);
         self.buffer_map.insert(tid, buffer_id);
@@ -775,7 +774,7 @@ impl Runtime {
                     continue;
                 }
                 match kernel.at(oid) {
-                    Op::LoadView(_) | Op::ConstView(_) => {}
+                    Op::LoadView(_) | Op::Const(_) => {}
                     Op::Unary { x, .. } => stack.push(*x),
                     Op::Binary { x, y, .. } => {
                         stack.push(*x);
@@ -796,10 +795,11 @@ impl Runtime {
         let mut op_id = self.kernels[kernel_id].kernel.head;
         while !op_id.is_null() {
             if relevant.contains(&op_id) {
-                let op = self.kernels[kernel_id].kernel.at(op_id).clone();
-                let class_id = match &op {
-                    Op::LoadView(view) => {
+                let class_id = match self.kernels[kernel_id].kernel.ops[op_id].op {
+                    Op::LoadView(ref view) => {
                         let load_tid = loads[load_idx];
+                        let shape_id = self.tensors[load_tid].shape_id;
+                        debug_assert_eq!(view.1, self.shapes[shape_id], "LoadView shape mismatch");
                         if !self.buffer_map.contains_key(&load_tid) {
                             let pending = if self.tensors[load_tid].class_id.is_null() {
                                 self.tensors[load_tid].pending
@@ -819,9 +819,7 @@ impl Runtime {
                             // load_tid is already a leaf of this graph: reuse its class.
                             self.tensors[load_tid].class_id
                         } else {
-                            let shape_id = self.tensors[load_tid].shape_id;
                             let dtype = self.tensors[load_tid].dtype;
-                            debug_assert_eq!(view.1.shape(), self.shapes[shape_id], "LoadView shape mismatch");
                             let (_, class_id) = self.push_leaf_node(graph_id, dtype, shape_id);
                             self.graphs[graph_id].leaf_map.insert(class_id, load_tid);
                             self.graphs[graph_id].leaf_classes.push(class_id);
@@ -832,54 +830,49 @@ impl Runtime {
                         };
                         class_id
                     }
-                    Op::ConstView(x) => {
-                        let shape = x.1.shape();
-                        let shape_id = self.push_shape(shape);
-                        let (_, class_id) = self.push_node(graph_id, Node::Const(x.0), shape_id, x.0.dtype());
+                    Op::Const(x) => {
+                        let shape_id = self.push_shape(vec![1]);
+                        let (_, class_id) = self.push_node(graph_id, Node::Const(x), shape_id, x.dtype());
                         class_id
                     }
                     Op::Unary { x, uop } => {
-                        let x_class = op_to_class[x];
+                        let x_class = op_to_class[&x];
                         let shape = self.graphs[graph_id].classes[x_class].shape;
                         let dtype = self.graphs[graph_id].classes[x_class].dtype;
-                        let (_, class_id) = self.push_node(graph_id, Node::Unary { x: x_class, uop: *uop }, shape, dtype);
+                        let (_, class_id) = self.push_node(graph_id, Node::Unary { x: x_class, uop }, shape, dtype);
                         class_id
                     }
                     Op::Binary { x, y, bop } => {
-                        let x_class = op_to_class[x];
-                        let y_class = op_to_class[y];
-                        self.push_binary_node(graph_id, x_class, y_class, *bop)
+                        let x_class = op_to_class[&x];
+                        let y_class = op_to_class[&y];
+                        self.push_binary_node(graph_id, x_class, y_class, bop)
                     }
                     Op::Cast { x, dtype } => {
-                        let x_class = op_to_class[x];
+                        let x_class = op_to_class[&x];
                         let shape = self.graphs[graph_id].classes[x_class].shape;
-                        let (_, class_id) = self.push_node(graph_id, Node::Cast { x: x_class, dtype: *dtype }, shape, *dtype);
+                        let (_, class_id) = self.push_node(graph_id, Node::Cast { x: x_class, dtype }, shape, dtype);
                         class_id
                     }
                     Op::Reduce { x, rop, n_axes } => {
-                        let x_class = op_to_class[x];
+                        let x_class = op_to_class[&x];
                         let in_shape = self.shapes[self.graphs[graph_id].classes[x_class].shape].clone();
                         debug_assert!(
-                            *n_axes as usize <= in_shape.len(),
+                            n_axes <= in_shape.len(),
                             "Reduce: n_axes {} > input rank {} (shape {:?})",
                             n_axes,
                             in_shape.len(),
                             in_shape
                         );
-                        let out_shape: Vec<Dim> = in_shape[..in_shape.len() - *n_axes as usize].to_vec();
+                        let out_shape: Vec<Dim> = in_shape[..in_shape.len() - n_axes].to_vec();
                         let out_shape_id = self.push_shape(out_shape);
                         let dtype = self.graphs[graph_id].classes[x_class].dtype;
-                        let axes: Vec<UAxis> = (in_shape.len() - *n_axes as usize..in_shape.len()).collect();
-                        let (_, class_id) = self.push_node(
-                            graph_id,
-                            Node::Reduce { x: x_class, bop: *rop, axes: axes.into() },
-                            out_shape_id,
-                            dtype,
-                        );
+                        let axes: Vec<UAxis> = (in_shape.len() - n_axes..in_shape.len()).collect();
+                        let (_, class_id) =
+                            self.push_node(graph_id, Node::Reduce { x: x_class, rop, axes: axes.into() }, out_shape_id, dtype);
                         class_id
                     }
-                    Op::Move { x, mop } => {
-                        let x_class = op_to_class[x];
+                    Op::Move { x, ref mop } => {
+                        let x_class = op_to_class[&x];
                         let in_shape = &self.shapes[self.graphs[graph_id].classes[x_class].shape];
                         match mop.as_ref() {
                             MoveOp::Reshape { shape } => {
@@ -927,13 +920,9 @@ impl Runtime {
                                     in_shape
                                 );
                                 let dtype = self.graphs[graph_id].classes[x_class].dtype;
+                                let axes = axes.clone().into();
                                 let shape_id = self.push_shape(shape.clone());
-                                let (_, class_id) = self.push_node(
-                                    graph_id,
-                                    Node::Permute { x: x_class, axes: axes.clone().into() },
-                                    shape_id,
-                                    dtype,
-                                );
+                                let (_, class_id) = self.push_node(graph_id, Node::Permute { x: x_class, axes }, shape_id, dtype);
                                 class_id
                             }
                             MoveOp::Pad { padding, shape } => {
@@ -946,13 +935,10 @@ impl Runtime {
                                     in_shape
                                 );
                                 let dtype = self.graphs[graph_id].classes[x_class].dtype;
+                                let padding = padding.clone().into();
                                 let shape_id = self.push_shape(shape.clone());
-                                let (_, class_id) = self.push_node(
-                                    graph_id,
-                                    Node::PadZeros { x: x_class, padding: padding.clone().into() },
-                                    shape_id,
-                                    dtype,
-                                );
+                                let (_, class_id) =
+                                    self.push_node(graph_id, Node::PadZeros { x: x_class, padding }, shape_id, dtype);
                                 class_id
                             }
                         }
@@ -1214,7 +1200,7 @@ impl Runtime {
         if self.is_graph(x) {
             let (class_id, graph_id) = self.graph_ids(x);
             let (_node_id, class_id) =
-                self.push_node(graph_id, Node::Reduce { x: class_id, bop: rop, axes: axes.into_boxed_slice() }, shape_id, dtype);
+                self.push_node(graph_id, Node::Reduce { x: class_id, rop, axes: axes.into_boxed_slice() }, shape_id, dtype);
             let tid = self.new_graph_tensor(graph_id, class_id, shape_id, dtype);
             #[cfg(feature = "debug_tensor_op")]
             println!("  -> tid={tid}, nid={_node_id:?}, cid={class_id:?}");

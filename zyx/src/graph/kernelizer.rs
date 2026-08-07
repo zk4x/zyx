@@ -7,7 +7,6 @@ use crate::{
     runtime::ShapeId,
     shape::{Dim, UAxis},
     slab::{Slab, SlabId},
-    view::View,
 };
 
 impl Graph {
@@ -136,7 +135,7 @@ impl Graph {
                     Node::Const(value) => {
                         let rc = *rcs.get(&cid).unwrap();
                         let mut kernel = Kernel::new(DeviceId::NULL);
-                        kernel.push_back(Op::ConstView(Box::new((value, View::contiguous(&[1])))));
+                        kernel.push_back(Op::Const(value));
                         let op_id = kernel.head;
                         let kid = self.jit_kernels.push(JitKernelData {
                             kernel,
@@ -187,7 +186,7 @@ impl Graph {
                         self.push_outputs(kid, cid, *rcs.get(&cid).unwrap());
                         visited.insert(cid, (kid, result_op));
                     }
-                    Node::Reduce { x, bop, ref axes } => {
+                    Node::Reduce { x, rop: bop, ref axes } => {
                         let axes: Vec<UAxis> = axes.to_vec();
                         let n_axes: UAxis = axes.len() as UAxis;
                         let (mut kid, mut op_id) = visited[&x];

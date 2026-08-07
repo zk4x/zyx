@@ -4,7 +4,6 @@ use crate::dtype::Constant;
 use crate::kernel::{MemLayout, MemScope};
 use crate::shape::{Dim, UAxis};
 use crate::slab::SlabId;
-use crate::view::View;
 use crate::{DType, Map};
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, SerBin, DeBin)]
@@ -107,12 +106,7 @@ pub enum Op {
     },
 
     // ops that exist only in kernelizer, basically they can be eventually removed.
-    // TODO Get rid of the view, use whatever ops that are needed directly
-    // and then use unfold movement ops function to convert it all into indices.
-    // This will make Op smaller and Copy.
-    // TODO Use MovementOp instead for all the movement.
-    ConstView(Box<(Constant, View)>),
-    LoadView(Box<(DType, View)>),
+    LoadView(Box<(DType, Vec<Dim>)>),
     StoreView {
         src: OpId,
         dtype: DType,
@@ -397,8 +391,7 @@ impl Op {
     #[allow(clippy::match_same_arms)]
     pub(crate) fn parameters(&self) -> impl DoubleEndedIterator<Item = OpId> {
         match self {
-            Op::ConstView { .. }
-            | Op::LoadView { .. }
+            Op::LoadView { .. }
             | Op::Const { .. }
             | Op::Define { .. }
             | Op::Index { .. }
@@ -433,8 +426,7 @@ impl Op {
     #[allow(clippy::match_same_arms)]
     pub(crate) fn parameters_mut(&mut self) -> impl DoubleEndedIterator<Item = &mut OpId> {
         match self {
-            Op::ConstView { .. }
-            | Op::LoadView { .. }
+            Op::LoadView { .. }
             | Op::Const { .. }
             | Op::Define { .. }
             | Op::Index { .. }

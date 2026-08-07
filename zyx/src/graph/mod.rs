@@ -121,7 +121,7 @@ pub(crate) enum Node {
     },
     Reduce {
         x: ClassId,
-        bop: BOp,
+        rop: BOp,
         axes: Box<[UAxis]>,
     },
     Cast {
@@ -159,7 +159,7 @@ impl PartialEq for Node {
             (Self::Permute { x: a, axes: aa }, Self::Permute { x: b, axes: ba }) => a == b && aa == ba,
             (Self::Reshape { x: a, shape: as_ }, Self::Reshape { x: b, shape: bs }) => a == b && as_ == bs,
             (Self::PadZeros { x: a, padding: ap }, Self::PadZeros { x: b, padding: bp }) => a == b && ap == bp,
-            (Self::Reduce { x: a, bop: ar, axes: aa }, Self::Reduce { x: b, bop: br, axes: ba }) => {
+            (Self::Reduce { x: a, rop: ar, axes: aa }, Self::Reduce { x: b, rop: br, axes: ba }) => {
                 a == b && ar == br && aa == ba
             }
             (Self::Cast { x: a, dtype: ad }, Self::Cast { x: b, dtype: bd }) => a == b && ad == bd,
@@ -208,7 +208,7 @@ impl std::hash::Hash for Node {
                 x.hash(state);
                 padding.hash(state);
             }
-            Self::Reduce { x, bop, axes } => {
+            Self::Reduce { x, rop: bop, axes } => {
                 6u8.hash(state);
                 x.hash(state);
                 bop.hash(state);
@@ -494,7 +494,7 @@ impl Graph {
                     _ => kind.class_params(),
                 };
                 let name = match kind {
-                    Node::Reduce { bop, .. } => format!("Reduce {:?}", bop),
+                    Node::Reduce { rop: bop, .. } => format!("Reduce {:?}", bop),
                     Node::Binary { bop, .. } => format!("Binary {:?}", bop),
                     Node::Unary { uop, .. } => format!("Unary {:?}", uop),
                     Node::Cast { dtype, .. } => format!("Cast {:?}", dtype),

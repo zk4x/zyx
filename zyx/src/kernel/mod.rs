@@ -90,7 +90,6 @@
 //! ```
 
 pub use crate::backend::DeviceId;
-use crate::view::View;
 
 use crate::{
     DType, Map, Set,
@@ -305,12 +304,7 @@ impl Kernel {
         let mut op_id = self.head;
         while !op_id.is_null() {
             match self.ops[op_id].op {
-                Op::ConstView { .. }
-                | Op::StoreView { .. }
-                | Op::LoadView { .. }
-                | Op::Move { .. }
-                | Op::Reduce { .. }
-                | Op::ReduceTile { .. } => {
+                Op::StoreView { .. } | Op::LoadView { .. } | Op::Move { .. } | Op::Reduce { .. } | Op::ReduceTile { .. } => {
                     unreachable!()
                 }
                 Op::Const(x) => {
@@ -427,7 +421,6 @@ impl Kernel {
             Op::Devectorize { vec, .. } => self.dtype(vec),
             Op::Store { x, .. } => self.dtype(x),
             Op::StoreView { src, .. } => self.dtype(src),
-            Op::ConstView(ref b) => b.0.dtype(),
             Op::LoadView(ref b) => b.0,
             Op::Move { x, .. } => self.dtype(x),
             Op::Reduce { x, .. } => self.dtype(x),
@@ -441,7 +434,7 @@ impl Kernel {
 
     /// Load a contiguous tensor from device memory.
     pub fn load_contiguous(&mut self, dtype: DType, shape: &[Dim]) -> OpId {
-        self.push_back(Op::LoadView(Box::new((dtype, View::contiguous(shape)))))
+        self.push_back(Op::LoadView(Box::new((dtype, shape.into()))))
     }
 
     /// Permute tensor axes.
@@ -539,7 +532,7 @@ impl Kernel {
     /// Constant data value as a contiguous view (uses natural dtype).
     /// For index constants, use [`Kernel::const_idx`].
     pub fn const_contiguous<T: crate::scalar::Scalar>(&mut self, val: T) -> OpId {
-        self.push_back(Op::ConstView(Box::new((Constant::new(val), View::contiguous(&[1])))))
+        self.push_back(Op::Const(Constant::new(val)))
     }
 
     /// Constant index value (normalized to index type).
@@ -1103,14 +1096,10 @@ impl Kernel {
         let mut op_id = self.head;
         while !op_id.is_null() {
             let info = match self.at(op_id) {
-                Op::ConstView(x) => {
-                    let shape = x.1.shape();
-                    Info { shape, flops: 0, mem_read: 0, mem_write: 0 }
-                }
+                Op::Const(_) => Info { shape: vec![1], flops: 0, mem_read: 0, mem_write: 0 },
                 Op::LoadView(x) => {
-                    let (dtype, view) = x.as_ref();
-                    let shape = view.shape();
-                    let mem_read = view.original_numel() * u64::from(dtype.bit_size()) / 8;
+                    let (dtype, shape) = x.as_ref().clone();
+                    let mem_read = shape.iter().product::<Dim>() * u64::from(dtype.bit_size()) / 8;
                     Info { shape, flops: 0, mem_read, mem_write: 0 }
                 }
                 Op::StoreView { src, dtype } => {
@@ -1172,7 +1161,6 @@ impl Kernel {
                 | Op::EndIf
                 | Op::Barrier { .. }
                 | Op::Mad { .. }
-                | Op::Const(_)
                 | Op::Define { .. }
                 | Op::Load { .. }
                 | Op::Index { .. }
@@ -1233,8 +1221,8 @@ impl Kernel {
 
     fn shape_of(&self, op_id: OpId) -> Vec<Dim> {
         match self.ops[op_id].op {
-            Op::LoadView(ref x) => x.1.shape(),
-            Op::ConstView(ref x) => x.1.shape(),
+            Op::LoadView(ref x) => x.1.clone(),
+            Op::Const(_) => vec![1],
             Op::Cast { x, .. } | Op::Unary { x, .. } | Op::Binary { x, .. } | Op::Mad { x, .. } => self.shape_of(x),
             Op::Reduce { x, n_axes, .. } => {
                 let mut s = self.shape_of(x);
@@ -1251,19 +1239,8 @@ impl Kernel {
                 | MoveOp::Permute { shape, .. }
                 | MoveOp::Pad { shape, .. } => shape.clone(),
             },
-            Op::Const(_) => vec![1],
             _ => unreachable!(),
         }
-    }
-
-    #[allow(unused)]
-    /// Check if a reshape is contiguous.
-    pub(crate) fn is_reshape_contiguous(&self, range: std::ops::Range<UAxis>, shape: &[Dim]) -> bool {
-        self.ops.values().all(|node| match &node.op {
-            Op::ConstView(x) => x.1.is_reshape_contiguous(range.clone(), shape),
-            Op::LoadView(x) => x.1.is_reshape_contiguous(range.clone(), shape),
-            _ => true,
-        })
     }
 
     /// Get index loop ids, dimensions and strides.
@@ -1565,7 +1542,6 @@ impl Kernel {
         false
     }
 
-    #[allow(unused)]
     pub(crate) fn is_preceded_by_compute(&self, x: OpId) -> bool {
         let mut params = vec![x];
         let mut seen: Set<OpId> = Set::default();
@@ -1580,7 +1556,7 @@ impl Kernel {
                     params.extend(self.ops[param].op.parameters());
                 }
                 Op::LoadView(_) | Op::Load { .. } => has_load = true,
-                Op::ConstView(_) | Op::Const(_) => {}
+                Op::Const(_) => {}
                 _ => params.extend(self.ops[param].op.parameters()),
             }
         }

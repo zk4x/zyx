@@ -38,9 +38,7 @@ impl Kernel {
         while !op_id.is_null() {
             let next = self.next_op(op_id);
             match self.ops[op_id].op {
-                Op::Move { .. } | Op::ConstView { .. } | Op::LoadView { .. } | Op::StoreView { .. } | Op::Reduce { .. } => {
-                    unreachable!("these ops should be unfolded before constant folding")
-                }
+                Op::Move { .. } | Op::LoadView { .. } | Op::StoreView { .. } | Op::Reduce { .. } => {}
                 Op::ReduceTile { .. }
                 | Op::PushTile { .. }
                 | Op::PopTile { .. }

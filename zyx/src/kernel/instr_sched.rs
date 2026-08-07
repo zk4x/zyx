@@ -174,14 +174,8 @@ impl Kernel {
                     add_param!(x);
                     add_param!(y);
                 }
-                Op::Const(_)
-                | Op::Define { .. }
-                | Op::Index { .. }
-                | Op::EndLoop
-                | Op::Barrier
-                | Op::EndIf
-                | Op::ConstView(_)
-                | Op::LoadView(_) => {}
+                Op::Const(_) | Op::Define { .. } | Op::Index { .. } | Op::EndLoop | Op::Barrier | Op::EndIf | Op::LoadView(_) => {
+                }
                 Op::Store { dst, x, index, .. } => {
                     add_param!(dst);
                     add_param!(x);

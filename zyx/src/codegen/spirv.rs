@@ -995,7 +995,6 @@ impl Kernel {
             while !op_id.is_null() {
                 match self.ops[op_id].op {
                     Op::ReduceTile { .. }
-                    | Op::ConstView { .. }
                     | Op::LoadView { .. }
                     | Op::StoreView { .. }
                     | Op::Move { .. }

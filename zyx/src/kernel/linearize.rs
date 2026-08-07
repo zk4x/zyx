@@ -128,7 +128,7 @@ impl Kernel {
             match self.ops[op_id].op {
                 Op::LoadView(ref x) => {
                     let dtype = x.0;
-                    let len = x.1.original_numel();
+                    let len = x.1.iter().product();
                     let view = views.remove(&op_id).unwrap();
                     let zero = self.insert_const_idx_before(anchor, 0u32);
                     let one = self.insert_const_idx_before(anchor, 1u32);
@@ -176,8 +176,7 @@ impl Kernel {
                         self.ops[op_id].op = Op::Load { src, index, layout: MemLayout::Scalar };
                     }
                 }
-                Op::ConstView(ref x) => {
-                    let value = x.0;
+                Op::Const(value) => {
                     let view = views.remove(&op_id).unwrap();
                     // The constant is a scalar whose value must be nullified where the
                     // view's padding condition is false (padded regions read as zero).
@@ -205,8 +204,6 @@ impl Kernel {
                         let pcd = self.insert_before(anchor, Op::Cast { x: pc, dtype: value.dtype() });
                         let z = self.insert_before(anchor, Op::Const(value));
                         self.ops[op_id].op = Op::Binary { x: pcd, y: z, bop: BOp::Mul };
-                    } else {
-                        self.ops[op_id].op = Op::Const(value);
                     }
                 }
                 Op::Reduce { x, rop, n_axes } => {
@@ -223,7 +220,7 @@ impl Kernel {
                             if acc_dtype.is_none() {
                                 match self.at(param) {
                                     &Op::Define { dtype, .. } | &Op::Cast { dtype, .. } => acc_dtype = Some(dtype),
-                                    Op::ConstView(v) => acc_dtype = Some(v.0.dtype()),
+                                    Op::Const(v) => acc_dtype = Some(v.dtype()),
                                     Op::LoadView(v) => acc_dtype = Some(v.0),
                                     _ => {}
                                 }
@@ -530,15 +527,9 @@ impl Kernel {
         while let Some(param) = params.pop() {
             if visited.insert(param) {
                 match self.at(param) {
-                    Op::ConstView(x) => {
-                        let view = &x.1;
-                        let n = view.rank();
-                        return view.shape()[n - n_reduce_axes..].into();
-                    }
+                    Op::Const(_) => return vec![1],
                     Op::LoadView(x) => {
-                        let view = &x.1;
-                        let n = view.rank();
-                        return view.shape()[n - n_reduce_axes..].into();
+                        return x.1[x.1.len() - n_reduce_axes..].into();
                     }
                     Op::Reduce { n_axes, .. } => n_reduce_axes += n_axes,
                     Op::Move { mop, .. } => match mop.as_ref() {
