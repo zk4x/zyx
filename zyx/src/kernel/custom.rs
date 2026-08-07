@@ -95,7 +95,7 @@ impl Kernel {
         if outputs.is_empty() {
             return Err(ZyxError::BackendError(BackendError {
                 status: crate::error::ErrorStatus::KernelCompilation,
-                context: format!("Kernel must have at least one output.").into(),
+                context: "Kernel must have at least one output.".to_string().into(),
             }));
         }
 
@@ -161,7 +161,7 @@ impl CompiledKernel {
                     pool_events.push(rt.events.remove(&key).unwrap());
                 }
                 let dtype = rt.tensors[input.id].dtype;
-                let bytes = (rt.shape(input.id).iter().product::<Dim>() * dtype.bit_size() as Dim + 7) / 8;
+                let bytes = (rt.shape(input.id).iter().product::<Dim>() * dtype.bit_size() as Dim).div_ceil(8);
                 let (dev_buf, alloc_ev) = rt.pools[pool_id].allocate(bytes)?;
                 pool_events.push(alloc_ev);
                 let dev_buf_id = BufferId { pool: pool_id, buffer: dev_buf };
@@ -188,7 +188,7 @@ impl CompiledKernel {
         let mut output_bufs = Vec::new();
         for (i, shape) in shapes.iter().enumerate() {
             let dtype = self.outputs[i];
-            let bytes = (shape.iter().product::<Dim>() * dtype.bit_size() as Dim + 7) / 8;
+            let bytes = (shape.iter().product::<Dim>() * dtype.bit_size() as Dim).div_ceil(8);
             let (buf, ev) = rt.pools[pool_id].allocate(bytes)?;
             event_wait_list.push(ev);
             let buf_id = BufferId { pool: pool_id, buffer: buf };

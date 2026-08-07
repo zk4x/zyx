@@ -65,7 +65,7 @@ impl LSTMCell {
         let dtype = dtype.unwrap_or(DType::F32);
 
         // In PyTorch, parameters are stacked as [i, f, g, o]
-        let k = (1.0 / (hidden_size as f32).sqrt()) as f32;
+        let k = 1.0 / (hidden_size as f32).sqrt();
         let w_ih = Tensor::uniform([4 * hidden_size, input_size], -k..k)?.cast(dtype);
         let w_hh = Tensor::uniform([4 * hidden_size, hidden_size], -k..k)?.cast(dtype);
 
@@ -112,7 +112,7 @@ impl LSTMCell {
         let hs = self.hidden_size;
 
         // Gates computation — lazy, will be fused
-        let mut gates = x.matmul(&self.w_ih.t())? + h.matmul(&self.w_hh.t())?;
+        let mut gates = x.matmul(self.w_ih.t())? + h.matmul(self.w_hh.t())?;
         if let Some(b) = &self.b_ih {
             gates = &gates + b;
         }

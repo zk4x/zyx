@@ -117,7 +117,7 @@ impl RNNCell {
     /// let h_next = rnn.forward(&x, &h).unwrap();
     /// ```
     pub fn forward(&self, x: &Tensor, hx: &Tensor) -> Result<Tensor, ZyxError> {
-        let h_new = x.matmul(&self.weight_ih.t())? + hx.matmul(&self.weight_hh.t())?;
+        let h_new = x.matmul(self.weight_ih.t())? + hx.matmul(self.weight_hh.t())?;
 
         let h_new = if let Some(b) = &self.bias_ih {
             h_new + b

@@ -52,13 +52,13 @@ impl GRUCell {
         let hs = self.hidden_size;
 
         // 🔹 Linear for input-to-hidden: x @ W_ih^T + b_ih
-        let mut gates = input.matmul(&self.weight_ih.t())?;
+        let mut gates = input.matmul(self.weight_ih.t())?;
         if let Some(b_ih) = &self.bias_ih {
             gates = gates + b_ih.reshape([1, 3 * hs])?;
         }
 
         // 🔹 Linear for hidden-to-hidden: hx @ W_hh^T + b_hh
-        let mut gates_h = hx.matmul(&self.weight_hh.t())?;
+        let mut gates_h = hx.matmul(self.weight_hh.t())?;
         if let Some(b_hh) = &self.bias_hh {
             gates_h = gates_h + b_hh.reshape([1, 3 * hs])?;
         }

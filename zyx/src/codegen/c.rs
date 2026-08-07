@@ -40,7 +40,7 @@ impl Kernel {
                         indices.insert(op_id, loop_id);
                         loop_id = loop_id.checked_add(1).expect("C: too many loops (>255)");
                     }
-                    Op::Define { dtype, scope, .. } if scope == MemScope::Global => {
+                    Op::Define { dtype, scope: MemScope::Global, .. } => {
                         if matches!(dtype, DType::F16 | DType::BF16) {
                             _ = writeln!(global_cast, "  unsigned short* p{op_id} = (unsigned short*)args[{n_global_defines}];");
                         } else {
@@ -329,7 +329,7 @@ impl Kernel {
                         );
                     }
                 }
-                Op::Barrier { .. } => {}
+                Op::Barrier => {}
                 Op::ReduceTile { .. }
                 | Op::MatmulTile { .. }
                 | Op::TransposeTile { .. }
@@ -375,8 +375,7 @@ impl Kernel {
                         }),
                 }
             );
-            let mut i = 1;
-            for (dt, _, _) in &registers[1..] {
+            for (i, (dt, _, _)) in (1..).zip(registers[1..].iter()) {
                 if *dt == prev_dt {
                     _ = write!(reg_str, ", r{i}");
                 } else {
@@ -395,7 +394,6 @@ impl Kernel {
                     );
                 }
                 prev_dt = *dt;
-                i += 1;
             }
             _ = writeln!(reg_str, ";");
         }

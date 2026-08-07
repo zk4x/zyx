@@ -59,7 +59,7 @@ fn reduce_bench() -> Result<(), ZyxError> {
 
 fn softmax_bench() -> Result<(), ZyxError> {
     //println!("=== Softmax ===");
-    for &(dims, ref axes) in &[
+    for &(dims, axes) in &[
         (&[4096u64][..], &[0i32][..]),
         (&[128, 4096], &[0i32][..]),
         (&[512, 1024], &[1i32][..]),
@@ -84,7 +84,7 @@ fn embedding_bench() -> Result<(), ZyxError> {
         &[(10000, 768, 64), (50000, 1024, 256), (100000, 768, 128)]
     {
         let embedding = Tensor::rand([vocab_size, embed_dim], DType::F32)?;
-        let idx: Vec<i32> = (0..seq_len).map(|i| (i % vocab_size) as i32).collect();
+        let idx: Vec<i32> = (0..seq_len).map(|i| (i % vocab_size)).collect();
         let indices = Tensor::from(idx);
         embedding.index_select(0, indices)?;
     }
@@ -127,7 +127,7 @@ fn activation_bench() -> Result<(), ZyxError> {
 
 fn ln_softmax_bench() -> Result<(), ZyxError> {
     //println!("=== Ln Softmax ===");
-    for &(dims, ref axes) in &[
+    for &(dims, axes) in &[
         (&[4096u64][..], &[0i32][..]),
         (&[256, 4096], &[0i32][..]),
         (&[512, 1024], &[1i32][..]),

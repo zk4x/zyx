@@ -101,10 +101,12 @@ impl<S: std::hash::BuildHasher + Default> Module for HashMap<String, Tensor, S> 
 }
 
 impl Module for Vec<Tensor> {
+    #[allow(clippy::into_iter_on_ref)] // into_iter on &Vec/&mut Vec is the existing pattern; changing resolution risks recursion
     fn iter(&self) -> impl Iterator<Item = &Tensor> {
         self.into_iter()
     }
 
+    #[allow(clippy::into_iter_on_ref)] // into_iter on &Vec/&mut Vec is the existing pattern; changing resolution risks recursion
     fn iter_mut(&mut self) -> impl Iterator<Item = &mut Tensor> {
         self.into_iter()
     }
@@ -167,8 +169,8 @@ impl Tensor {
         let mut f = std::fs::File::open(&path)?;
         let mut magic = [0; 4];
         f.read_exact(&mut magic)?;
-        if magic != [b'G', b'G', b'U', b'F'] {
-            if magic == [b'F', b'U', b'G', b'G'] {
+        if magic != *b"GGUF" {
+            if magic == *b"FUGG" {
                 return Err(ZyxError::parse_error(
                     "GGUF data seems to be stored in big endian order. Only little endian is supported for GGUF in zyx.".into(),
                 ));

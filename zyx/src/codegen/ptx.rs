@@ -225,6 +225,7 @@ impl Compiler {
 
 impl Kernel {
     /// Compile kernel to PTX assembly.
+    #[allow(clippy::type_complexity)] // complex return type inherent to PTX backend API
     pub fn generate_ptx(
         &self,
         cc: [i32; 2],
@@ -246,13 +247,12 @@ impl Kernel {
         let mut lws = vec![1; 3];
         let mut op_id = self.head;
         while !op_id.is_null() {
-            match self.ops[op_id].op {
-                Op::Index { len, axis, scope } => match scope {
+            if let Op::Index { len, axis, scope } = self.ops[op_id].op {
+                match scope {
                     IdxScope::Group => gws[axis as usize] = len,
                     IdxScope::Local => lws[axis as usize] = len,
                     IdxScope::Warp => todo!(),
-                },
-                _ => {}
+                }
             }
             op_id = self.next_op(op_id);
         }
@@ -491,9 +491,7 @@ impl Kernel {
                             }
                         }
                         (_, DType::Bool) => {
-                            if dtype == DType::F64 {
-                                _ = writeln!(comp.body, "{}selp.{} %r{reg}, 1.0, 0.0, %r{x};", comp.indent, dtype.ptx());
-                            } else if dtype == DType::F32 {
+                            if dtype == DType::F64 || dtype == DType::F32 {
                                 _ = writeln!(comp.body, "{}selp.{} %r{reg}, 1.0, 0.0, %r{x};", comp.indent, dtype.ptx());
                             } else if dtype == DType::F16 {
                                 _ = writeln!(comp.body, "{}selp.b16 %r{reg}, 0x3C00, 0, %r{x};", comp.indent);

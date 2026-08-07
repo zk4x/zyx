@@ -22,6 +22,7 @@
 #![allow(clippy::decimal_literal_representation)]
 use super::cost::Cost;
 impl Cost {
+    #[allow(clippy::too_many_arguments)] // auto-generated regression model with 22 features
     pub(crate) fn predict_time_us(
         num_groups: u32,
         wi_per_group: u32,

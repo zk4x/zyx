@@ -207,14 +207,12 @@ fn t05() -> Result<(), ZyxError> {
     let x = (x - y.expand([2048, 320])? * 1.4f32) / y.expand([2048, 320])?;
     let xvec: Vec<f32> = x.try_into()?;
 
-    let mut i = 0;
-    for ((x0, x1), x2) in xdata.into_iter().zip(ydata).zip(xvec) {
+    for (i, ((x0, x1), x2)) in xdata.into_iter().zip(ydata).zip(xvec).enumerate() {
         let z = (x0 - x1 * 1.4f32) / x1;
         if !z.is_equal(x2) {
             println!("{z} != {x2} at idx={i}");
             panic!();
         }
-        i += 1;
     }
 
     Ok(())

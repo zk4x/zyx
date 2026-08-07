@@ -190,7 +190,7 @@ impl Graph {
                         let axes: Vec<UAxis> = axes.to_vec();
                         let n_axes: UAxis = axes.len() as UAxis;
                         let (mut kid, mut op_id) = visited[&x];
-                        (kid, op_id) = self.duplicate_or_store_class(x, kid, op_id, &mut visited, &mut rcs, shapes, false);
+                        (kid, op_id) = self.duplicate_or_store_class(x, kid, op_id, &mut visited, &rcs, shapes, false);
                         self.consume(x, kid, &mut visited, &mut rcs);
 
                         // Permute so that reduce dimensions are last
@@ -444,10 +444,10 @@ impl Graph {
         while !i.is_null() {
             let mut op = src_kernel.ops[i].op.clone();
             for param in op.parameters_mut() {
-                if !param.is_null() {
-                    if let Some(&new_param) = op_map.get(param) {
-                        *param = new_param;
-                    }
+                if !param.is_null()
+                    && let Some(&new_param) = op_map.get(param)
+                {
+                    *param = new_param;
                 }
             }
             let new_id = self.jit_kernels[dst].kernel.push_back(op);
@@ -455,7 +455,7 @@ impl Graph {
             i = src_kernel.ops[i].next;
         }
 
-        for (_, (kid, op_id)) in visited.iter_mut() {
+        for (kid, op_id) in visited.values_mut() {
             if *kid == src {
                 *kid = dst;
                 if let Some(&new_op) = op_map.get(op_id) {
@@ -471,13 +471,14 @@ impl Graph {
     /// The new kernel contains this one child class and the new kernel is guaranteed to have only one output.
     /// This is called by functions that HAVE TO have only 1 output, because they are movement or reduce.
     /// Movement or reduce change the view of the load, that's why they require that the load is duplicated.
+    #[allow(clippy::too_many_arguments)] // graph kernel API, arguments are structural parameters
     fn duplicate_or_store_class(
         &mut self,
         child: ClassId,
         mut kid: JitKernelId,
         mut op_id: OpId,
         visited: &mut Map<ClassId, (JitKernelId, OpId)>,
-        rcs: &mut Map<ClassId, u32>,
+        rcs: &Map<ClassId, u32>,
         shapes: &Slab<ShapeId, Vec<Dim>>,
         force_store: bool,
     ) -> (JitKernelId, OpId) {
@@ -542,6 +543,7 @@ impl Graph {
         self.jit_kernels[kid].outputs.extend(std::iter::repeat_n(cid, n as usize));
     }
 
+    #[allow(clippy::too_many_arguments)] // graph kernel API, arguments are structural parameters
     fn add_move(
         &mut self,
         cid: ClassId,
@@ -592,7 +594,7 @@ impl Graph {
         let structural: Vec<ClassId> = order.iter().copied().filter(|&c| !producer_boundaries.contains(&c)).collect();
         let idx: Map<ClassId, usize> = structural.iter().enumerate().map(|(i, &c)| (c, i)).collect();
         let mut parent: Vec<usize> = (0..structural.len()).collect();
-        fn find(parent: &mut Vec<usize>, mut i: usize) -> usize {
+        fn find(parent: &mut [usize], mut i: usize) -> usize {
             while parent[i] != i {
                 parent[i] = parent[parent[i]];
                 i = parent[i];

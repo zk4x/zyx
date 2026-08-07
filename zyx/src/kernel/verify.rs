@@ -285,7 +285,7 @@ impl Kernel {
                 Op::EndIf => {
                     stack.pop();
                 }
-                Op::Barrier { .. } => {}
+                Op::Barrier => {}
             }
             stack.last_mut().unwrap().insert(op_id);
             prev = op_id;
@@ -314,20 +314,20 @@ impl Kernel {
                 }
                 Op::Load { src, index, .. } => {
                     let idx_range = Self::get_bounds(index);
-                    if let Some(range) = idx_range {
-                        if *range.end() >= defines[&src] {
-                            self.debug();
-                            panic!("OOB detected in op {}: index {:?} exceeds buffer length {:?}", op_id, range, defines[&src]);
-                        }
+                    if let Some(range) = idx_range
+                        && *range.end() >= defines[&src]
+                    {
+                        self.debug();
+                        panic!("OOB detected in op {}: index {:?} exceeds buffer length {:?}", op_id, range, defines[&src]);
                     }
                 }
                 Op::Store { dst, index, .. } => {
                     let idx_range = Self::get_bounds(index);
-                    if let Some(range) = idx_range {
-                        if *range.start() > defines[&dst] + 1 {
-                            self.debug();
-                            panic!("OOB detected in op {}: index {:?} exceeds buffer length {:?}", op_id, range, defines[&dst]);
-                        }
+                    if let Some(range) = idx_range
+                        && *range.start() > defines[&dst] + 1
+                    {
+                        self.debug();
+                        panic!("OOB detected in op {}: index {:?} exceeds buffer length {:?}", op_id, range, defines[&dst]);
                     }
                 }
                 _ => {}
@@ -365,32 +365,30 @@ impl Kernel {
                         if let Op::Binary { x, y, bop } = self.at(param) {
                             match bop {
                                 BOp::Eq => {
-                                    if let Some((yl, yu)) = prev.get(y) {
-                                        if yl == yu {
-                                            if let Some((_xl, _xu)) = prev.get(x) {
-                                                let x_id = *x;
-                                                let yl = *yl;
-                                                let yu = *yu;
-                                                prev.insert(x_id, (yl, yu));
-                                                self.backward_constrain(x_id, yl, yu, &mut prev, &mut skip_rederive);
-                                            }
-                                        }
+                                    if let Some((yl, yu)) = prev.get(y)
+                                        && yl == yu
+                                        && let Some((_xl, _xu)) = prev.get(x)
+                                    {
+                                        let x_id = *x;
+                                        let yl = *yl;
+                                        let yu = *yu;
+                                        prev.insert(x_id, (yl, yu));
+                                        self.backward_constrain(x_id, yl, yu, &mut prev, &mut skip_rederive);
                                     }
                                 }
                                 BOp::Cmplt => {
-                                    if let Some((yl, yu)) = prev.get(y) {
-                                        if yl == yu {
-                                            if let Some((xl, _xu)) = prev.get(x) {
-                                                let x_id = *x;
-                                                let xl = *xl;
-                                                let new_upper = yl.saturating_sub(1);
-                                                prev.insert(x_id, (xl, new_upper));
-                                                // Don't add x_id to skip_rederive — the re-derive will
-                                                // recompute it from the backward-constrained operands
-                                                // correctly (and possibly tighter).
-                                                self.backward_constrain(x_id, xl, new_upper, &mut prev, &mut skip_rederive);
-                                            }
-                                        }
+                                    if let Some((yl, yu)) = prev.get(y)
+                                        && yl == yu
+                                        && let Some((xl, _xu)) = prev.get(x)
+                                    {
+                                        let x_id = *x;
+                                        let xl = *xl;
+                                        let new_upper = yl.saturating_sub(1);
+                                        prev.insert(x_id, (xl, new_upper));
+                                        // Don't add x_id to skip_rederive — the re-derive will
+                                        // recompute it from the backward-constrained operands
+                                        // correctly (and possibly tighter).
+                                        self.backward_constrain(x_id, xl, new_upper, &mut prev, &mut skip_rederive);
                                     }
                                 }
                                 _ => {}
@@ -441,11 +439,11 @@ impl Kernel {
             // Skip at EndIf — parent scope entries are stale inside the If body
             // and would overwrite the refined bounds that were already merged
             // from the If scope during body processing.
-            if !matches!(*self.at(op_id), Op::EndIf) {
-                if let Some(scope_bounds) = bounds_stack.last() {
-                    for (&k, &v) in scope_bounds {
-                        bounds.insert(k, v);
-                    }
+            if !matches!(*self.at(op_id), Op::EndIf)
+                && let Some(scope_bounds) = bounds_stack.last()
+            {
+                for (&k, &v) in scope_bounds {
+                    bounds.insert(k, v);
                 }
             }
             op_id = self.ops[op_id].next;
@@ -473,15 +471,13 @@ impl Kernel {
                     (Some((k, _)), None) => Some((*y, k)),
                     _ => None,
                 };
-                if let Some((operand, k)) = operand_k {
-                    if let Some(upper) = new_upper.checked_div(k) {
-                        if let Some(&(ol, ou)) = prev.get(&operand) {
-                            if upper < ou {
-                                prev.insert(operand, (ol, upper));
-                                skip_rederive.insert(operand);
-                            }
-                        }
-                    }
+                if let Some((operand, k)) = operand_k
+                    && let Some(upper) = new_upper.checked_div(k)
+                    && let Some(&(ol, ou)) = prev.get(&operand)
+                    && upper < ou
+                {
+                    prev.insert(operand, (ol, upper));
+                    skip_rederive.insert(operand);
                 }
             }
             Op::Binary { x, y, bop: BOp::Add } => {
@@ -492,24 +488,24 @@ impl Kernel {
                     (Some((k, _)), None) => Some((*y, k)),
                     _ => None,
                 };
-                if let Some((operand, k)) = operand_k {
-                    if new_upper >= k {
-                        let upper = new_upper - k;
-                        if let Some(&(ol, ou)) = prev.get(&operand) {
-                            if upper < ou {
-                                prev.insert(operand, (ol, upper));
-                                skip_rederive.insert(operand);
-                            }
-                        }
+                if let Some((operand, k)) = operand_k
+                    && new_upper >= k
+                {
+                    let upper = new_upper - k;
+                    if let Some(&(ol, ou)) = prev.get(&operand)
+                        && upper < ou
+                    {
+                        prev.insert(operand, (ol, upper));
+                        skip_rederive.insert(operand);
                     }
                 }
             }
             Op::Cast { x, .. } => {
-                if let Some(&(cl, cu)) = prev.get(x) {
-                    if new_upper < cu {
-                        prev.insert(*x, (cl, new_upper));
-                        skip_rederive.insert(*x);
-                    }
+                if let Some(&(cl, cu)) = prev.get(x)
+                    && new_upper < cu
+                {
+                    prev.insert(*x, (cl, new_upper));
+                    skip_rederive.insert(*x);
                 }
             }
             _ => {}

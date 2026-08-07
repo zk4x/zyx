@@ -69,7 +69,7 @@ impl ExecPlan {
             let shape = &shapes[class.shape];
             let numel: Dim = shape.iter().product();
             // Add one trash element
-            ((numel + 1) * class.dtype.bit_size() as Dim + 7) / 8
+            ((numel + 1) * class.dtype.bit_size() as Dim).div_ceil(8)
         };
 
         for &nid in nodes {

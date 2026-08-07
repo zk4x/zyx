@@ -193,10 +193,10 @@ impl CDevice {
         let mut gws0 = 1u64;
         let mut op_id = kernel.head;
         while !op_id.is_null() {
-            if let Op::Index { len, axis, scope: IdxScope::Group } = kernel.ops[op_id].op {
-                if axis == 0 {
-                    gws0 = len.max(1);
-                }
+            if let Op::Index { len, axis, scope: IdxScope::Group } = kernel.ops[op_id].op
+                && axis == 0
+            {
+                gws0 = len.max(1);
             }
             op_id = kernel.next_op(op_id);
         }

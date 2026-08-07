@@ -380,7 +380,7 @@ impl Kernel {
                             let view = &views[&op_id];
                             let mut inv_axes = vec![0; axes.len()];
                             for (i, &a) in axes.iter().enumerate() {
-                                inv_axes[a as usize] = i;
+                                inv_axes[a] = i;
                             }
                             let x_shape = self.shape_of(x);
                             let mut x_strides = vec![1; x_shape.len()];
@@ -500,10 +500,10 @@ impl Kernel {
             }
             // Leave loop scopes as the reverse walk exits them, after the
             // loop_start op (which lives inside the loop) has been processed.
-            if let Some(&(ls, _)) = open_loops.last() {
-                if ls == op_id {
-                    open_loops.pop();
-                }
+            if let Some(&(ls, _)) = open_loops.last()
+                && ls == op_id
+            {
+                open_loops.pop();
             }
         }
 

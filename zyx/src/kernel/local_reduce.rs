@@ -26,7 +26,7 @@ impl Kernel {
         let _timer = crate::Timer::new("opt_tiled_reduce");
         // Let's not tile reduce kernel with barriers for now
         // Don't apply tiled reduce if there's already a barrier or local index
-        if self.ops.values().any(|node| matches!(node.op, Op::Barrier { .. } | Op::Index { scope: IdxScope::Local, .. })) {
+        if self.ops.values().any(|node| matches!(node.op, Op::Barrier | Op::Index { scope: IdxScope::Local, .. })) {
             return (Optimization::TiledReduce { factors: Vec::new() }, 0);
         }
         // Only apply tiled reduce if there's exactly one loop in the kernel
@@ -192,7 +192,7 @@ impl Kernel {
         let lidx = self.insert_before(insert_at, Op::Index { len: factor, axis: laxis, scope: IdxScope::Local });
 
         // Divide reduce loop by factor
-        let factor_const = self.insert_before(loop_start, Op::Const(Constant::idx(factor as u64)));
+        let factor_const = self.insert_before(loop_start, Op::Const(Constant::idx(factor)));
         let new_len = self.insert_const_idx_before(loop_start, loop_len / factor);
         let ridx = self.insert_before(loop_start, Op::Loop { len: new_len });
         self.ops[loop_start].op = Op::Mad { x: ridx, y: factor_const, z: lidx };
@@ -215,7 +215,7 @@ impl Kernel {
         while stride > 1 {
             let use_tree_branch = stride >= tree_branch;
             let active_threads = if use_tree_branch { stride / tree_branch } else { stride / 2 };
-            let limit_const = self.insert_before(acc_load_id, Op::Const(Constant::idx(active_threads as u64)));
+            let limit_const = self.insert_before(acc_load_id, Op::Const(Constant::idx(active_threads)));
             let condition = self.insert_before(acc_load_id, Op::Binary { x: lidx, y: limit_const, bop: BOp::Cmplt });
             self.insert_before(acc_load_id, Op::If { condition });
 
@@ -223,7 +223,7 @@ impl Kernel {
             let mut sum_x = None;
             for i in 1..branch {
                 let offset = i * active_threads;
-                let offset_const = self.insert_before(acc_load_id, Op::Const(Constant::idx(offset as u64)));
+                let offset_const = self.insert_before(acc_load_id, Op::Const(Constant::idx(offset)));
                 let offset_idx = self.insert_before(acc_load_id, Op::Binary { x: lidx, y: offset_const, bop: BOp::Add });
                 let local_load =
                     self.insert_before(acc_load_id, Op::Load { src: loc_acc, index: offset_idx, layout: MemLayout::Scalar });

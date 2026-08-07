@@ -49,10 +49,10 @@ impl Kernel {
         #[cfg(feature = "time")]
         let _timer = crate::Timer::new("eliminate zero index");
         for node in self.ops.values_mut() {
-            if let Op::Index { len, .. } = node.op {
-                if len == 1 {
-                    node.op = Op::Const(Constant::idx(0));
-                }
+            if let Op::Index { len, .. } = node.op
+                && len == 1
+            {
+                node.op = Op::Const(Constant::idx(0));
             }
         }
         self.verify();
@@ -145,10 +145,8 @@ impl Kernel {
                     let len = self.loop_len_dim(len_id);
                     endloop_ids.pop().unwrap();
                     let is_const = constant_loops.pop().unwrap();
-                    if !is_const {
-                        if let Some(inner_loop) = constant_loops.last_mut() {
-                            *inner_loop = false;
-                        }
+                    if !is_const && let Some(inner_loop) = constant_loops.last_mut() {
+                        *inner_loop = false;
                     }
                     if len == 1
                         || (is_const && self.ops.len().0 as usize + (self.n_ops_in_loop(op_id) * (len as usize - 1)) < 5_000)
@@ -213,7 +211,7 @@ impl Kernel {
         self.ops[loop_id].op = Op::Const(Constant::idx(0));
         let last_loop_op = self.prev_op(endloop_id);
 
-        for idx in 1..len as u64 {
+        for idx in 1..len {
             let mut new_ops_map = Map::default();
             let idx_op = self.insert_before(endloop_id, Op::Const(Constant::idx(idx)));
             new_ops_map.insert(loop_id, idx_op);

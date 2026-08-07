@@ -12,7 +12,7 @@ use crate::{
 
 fn gather_deps(kernel: &Kernel, seeds: &[OpId]) -> Set<OpId> {
     let mut visited = Set::default();
-    let mut stack: Vec<OpId> = seeds.iter().copied().collect();
+    let mut stack: Vec<OpId> = seeds.to_vec();
     while let Some(id) = stack.pop() {
         if !visited.insert(id) {
             continue;
@@ -186,10 +186,10 @@ impl Kernel {
             let mut loads = Vec::new();
             let mut op_id = self.head;
             while !op_id.is_null() {
-                if let Op::Load { src, index, layout: MemLayout::Scalar } = self.at(op_id) {
-                    if matches!(self.at(*src), Op::Define { scope: MemScope::Global, .. }) {
-                        loads.push((op_id, *src, *index));
-                    }
+                if let Op::Load { src, index, layout: MemLayout::Scalar } = self.at(op_id)
+                    && matches!(self.at(*src), Op::Define { scope: MemScope::Global, .. })
+                {
+                    loads.push((op_id, *src, *index));
                 }
                 op_id = self.next_op(op_id);
             }
@@ -260,10 +260,10 @@ impl Kernel {
             let mut stores = Vec::new();
             let mut op_id = self.head;
             while !op_id.is_null() {
-                if let Op::Store { dst, x, index, layout: MemLayout::Scalar } = self.at(op_id) {
-                    if matches!(self.at(*dst), Op::Define { scope: MemScope::Global, .. }) {
-                        stores.push((op_id, *dst, *x, *index));
-                    }
+                if let Op::Store { dst, x, index, layout: MemLayout::Scalar } = self.at(op_id)
+                    && matches!(self.at(*dst), Op::Define { scope: MemScope::Global, .. })
+                {
+                    stores.push((op_id, *dst, *x, *index));
                 }
                 op_id = self.next_op(op_id);
             }
@@ -593,10 +593,10 @@ impl Kernel {
         let mut global_loads = Vec::new();
         let mut op_id = self.next_op(loop_id);
         while op_id != endloop_id {
-            if let Op::Load { src, index, layout: MemLayout::Scalar } = self.at(op_id) {
-                if matches!(self.at(*src), Op::Define { scope: MemScope::Global, .. }) {
-                    global_loads.push((op_id, *src, *index));
-                }
+            if let Op::Load { src, index, layout: MemLayout::Scalar } = self.at(op_id)
+                && matches!(self.at(*src), Op::Define { scope: MemScope::Global, .. })
+            {
+                global_loads.push((op_id, *src, *index));
             }
             op_id = self.next_op(op_id);
         }
@@ -738,11 +738,11 @@ impl Kernel {
         let mut accumulator = OpId::NULL;
         let mut op_id = self.next_op(loop_id);
         while op_id != endloop_id {
-            if let Op::Store { dst, .. } = self.at(op_id) {
-                if matches!(self.at(*dst), Op::Define { scope: MemScope::Register, .. }) {
-                    accumulator = *dst;
-                    break;
-                }
+            if let Op::Store { dst, .. } = self.at(op_id)
+                && matches!(self.at(*dst), Op::Define { scope: MemScope::Register, .. })
+            {
+                accumulator = *dst;
+                break;
             }
             op_id = self.next_op(op_id);
         }
@@ -774,13 +774,13 @@ impl Kernel {
         let mut accumulation_bop = BOp::Add;
         let mut op_id = self.next_op(loop_id);
         while op_id != endloop_id {
-            if let Op::Store { dst, x, .. } = self.at(op_id) {
-                if *dst == accumulator {
-                    if let Op::Binary { bop, .. } = self.at(*x) {
-                        accumulation_bop = *bop;
-                    }
-                    break;
+            if let Op::Store { dst, x, .. } = self.at(op_id)
+                && *dst == accumulator
+            {
+                if let Op::Binary { bop, .. } = self.at(*x) {
+                    accumulation_bop = *bop;
                 }
+                break;
             }
             op_id = self.next_op(op_id);
         }

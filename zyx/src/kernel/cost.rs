@@ -164,7 +164,7 @@ impl Kernel {
                     Op::If { condition } => {
                         *rcs.entry(condition).or_insert(0) += 1;
                     }
-                    Op::PopTile { .. } | Op::PushTile { .. } | Op::Barrier { .. } | Op::EndIf | Op::EndLoop => {}
+                    Op::PopTile { .. } | Op::PushTile { .. } | Op::Barrier | Op::EndIf | Op::EndLoop => {}
                 }
                 op_id = self.next_op(op_id);
             }
@@ -200,7 +200,7 @@ impl Kernel {
         while !op_id.is_null() {
             // Register allocation: allocate if this op produces a value
             let produces = match self.ops[op_id].op {
-                Op::Define { scope, .. } if scope == MemScope::Register => true,
+                Op::Define { scope: MemScope::Register, .. } => true,
                 Op::Load { .. }
                 | Op::Cast { .. }
                 | Op::Unary { .. }
@@ -218,31 +218,29 @@ impl Kernel {
                 | Op::Define { .. }
                 | Op::Const(_)
                 | Op::Index { .. } => true,
-                Op::Store { .. } | Op::EndLoop | Op::Barrier { .. } | Op::If { .. } | Op::EndIf => false,
+                Op::Store { .. } | Op::EndLoop | Op::Barrier | Op::If { .. } | Op::EndIf => false,
                 Op::LoadView(_) => todo!(),
                 Op::StoreView { .. } => todo!(),
                 Op::Move { .. } => todo!(),
                 Op::Reduce { .. } => todo!(),
             };
-            if produces {
-                if let Some(&rc) = rcs.get(&op_id) {
-                    let dtype = dtypes[&op_id];
-                    let idx = reg_slots.iter().position(|(r, dt)| *r == 0 && *dt == dtype).unwrap_or_else(|| {
-                        let i = reg_slots.len();
-                        reg_slots.push((0, dtype));
-                        i
-                    });
-                    reg_slots[idx].0 = rc;
-                    reg_map.insert(op_id, idx);
-                }
+            if produces && let Some(&rc) = rcs.get(&op_id) {
+                let dtype = dtypes[&op_id];
+                let idx = reg_slots.iter().position(|(r, dt)| *r == 0 && *dt == dtype).unwrap_or_else(|| {
+                    let i = reg_slots.len();
+                    reg_slots.push((0, dtype));
+                    i
+                });
+                reg_slots[idx].0 = rc;
+                reg_map.insert(op_id, idx);
             }
 
             // Decrement RC for each operand
             for param in self.ops[op_id].op.parameters() {
-                if let Some(&p) = reg_map.get(&param) {
-                    if reg_slots[p].0 > 0 {
-                        reg_slots[p].0 -= 1;
-                    }
+                if let Some(&p) = reg_map.get(&param)
+                    && reg_slots[p].0 > 0
+                {
+                    reg_slots[p].0 -= 1;
                 }
             }
 
@@ -254,10 +252,10 @@ impl Kernel {
             {
                 indexing_ops.insert(op_id);
             }
-            if let Op::Const(c) = op {
-                if c.dtype() == IDX_T {
-                    indexing_ops.insert(op_id);
-                }
+            if let Op::Const(c) = op
+                && c.dtype() == IDX_T
+            {
+                indexing_ops.insert(op_id);
             }
 
             // Instruction counting
@@ -331,7 +329,7 @@ impl Kernel {
                                 glb_load_lidx_stride_weighted += st * n_bits;
                                 glb_load_lidx_stride_weight += n_bits;
                             } else if let Op::Index { .. } = self.ops[index].op {
-                                glb_load_lidx_stride_weighted += 1 * n_bits;
+                                glb_load_lidx_stride_weighted += n_bits;
                                 glb_load_lidx_stride_weight += n_bits;
                             }
                         }
@@ -367,7 +365,7 @@ impl Kernel {
                                 loc_load_lidx_stride_weighted += st * n_bits;
                                 loc_load_lidx_stride_weight += n_bits;
                             } else if let Op::Index { .. } = self.ops[index].op {
-                                loc_load_lidx_stride_weighted += 1 * n_bits;
+                                loc_load_lidx_stride_weighted += n_bits;
                                 loc_load_lidx_stride_weight += n_bits;
                             }
                         }
@@ -418,7 +416,7 @@ impl Kernel {
                                 glb_store_lidx_stride_weighted += st * n_bits;
                                 glb_store_lidx_stride_weight += n_bits;
                             } else if let Op::Index { .. } = self.ops[index].op {
-                                glb_store_lidx_stride_weighted += 1 * n_bits;
+                                glb_store_lidx_stride_weighted += n_bits;
                                 glb_store_lidx_stride_weight += n_bits;
                             }
                         }
@@ -454,7 +452,7 @@ impl Kernel {
                                 loc_store_lidx_stride_weighted += st * n_bits;
                                 loc_store_lidx_stride_weight += n_bits;
                             } else if let Op::Index { .. } = self.ops[index].op {
-                                loc_store_lidx_stride_weighted += 1 * n_bits;
+                                loc_store_lidx_stride_weighted += n_bits;
                                 loc_store_lidx_stride_weight += n_bits;
                             }
                         }
@@ -494,7 +492,7 @@ impl Kernel {
                         wi_compute_ops += loop_mult * cost;
                     }
                 }
-                Op::Barrier { .. } => {
+                Op::Barrier => {
                     wi_barriers += loop_mult;
                 }
                 Op::If { .. } => {

@@ -107,7 +107,7 @@ impl Kernel {
         // Also let's not upcast kernel with barriers for now
         if self.ops.values().any(|node| match node.op {
             Op::Load { layout, .. } | Op::Store { layout, .. } => layout != MemLayout::Scalar,
-            Op::Barrier { .. } => true,
+            Op::Barrier => true,
             _ => false,
         }) {
             return;
@@ -132,12 +132,12 @@ impl Kernel {
         self.move_op_before(gidx_id, op_id);
 
         // Create constant for factor
-        let const_factor = self.insert_before(gidx_id, Op::Const(Constant::idx(factor as u64)));
+        let const_factor = self.insert_before(gidx_id, Op::Const(Constant::idx(factor)));
 
         // Create index offsets
         let mut offsets = Vec::with_capacity((factor - 1) as usize);
         for i in 1..factor {
-            offsets.push(self.insert_before(gidx_id, Op::Const(Constant::idx(i as u64))));
+            offsets.push(self.insert_before(gidx_id, Op::Const(Constant::idx(i))));
         }
 
         // For remapping parameters
@@ -163,7 +163,7 @@ impl Kernel {
                     self.ops[op_id].op = Op::Define { dtype, scope: MemScope::Register, ro, len: len * factor };
                     acc_defines.insert(op_id);
                 }
-                Op::Index { .. } | Op::Loop { .. } | Op::EndLoop | Op::If { .. } | Op::EndIf | Op::Barrier { .. } => {}
+                Op::Index { .. } | Op::Loop { .. } | Op::EndLoop | Op::If { .. } | Op::EndIf | Op::Barrier => {}
                 Op::Store { dst, x, index, layout } => {
                     let mut ids = Vec::with_capacity((factor - 1) as usize);
                     let mut id = op_id;
@@ -264,13 +264,13 @@ impl Kernel {
                     }
                 }
             }
-            if let Op::Index { len, scope: IdxScope::Group, .. } = self.ops[op_id].op {
-                if len >= 8 {
-                    let applicable: Vec<u64> =
-                        candidates.iter().copied().filter(|&f| len.is_multiple_of(f) && len / f >= 4).collect();
-                    if !applicable.is_empty() {
-                        global_upcasts.insert(op_id, applicable);
-                    }
+            if let Op::Index { len, scope: IdxScope::Group, .. } = self.ops[op_id].op
+                && len >= 8
+            {
+                let applicable: Vec<u64> =
+                    candidates.iter().copied().filter(|&f| len.is_multiple_of(f) && len / f >= 4).collect();
+                if !applicable.is_empty() {
+                    global_upcasts.insert(op_id, applicable);
                 }
             }
             op_id = self.next_op(op_id);
@@ -305,7 +305,7 @@ impl Kernel {
         let mut remaining_reduce = config / n_global_options;
 
         let mut reduce_indices: Vec<usize> = Vec::with_capacity(n_reduce);
-        for (_, factors) in reduce_splits.iter() {
+        for factors in reduce_splits.values() {
             let n_options = factors.len();
             let factor_idx = remaining_reduce % n_options;
             remaining_reduce /= n_options;
@@ -313,7 +313,7 @@ impl Kernel {
         }
 
         let mut global_indices: Vec<usize> = Vec::with_capacity(n_global);
-        for (_, factors) in global_upcasts.iter() {
+        for factors in global_upcasts.values() {
             let n_options = factors.len() + 1;
             let factor_idx = remaining_global % n_options;
             remaining_global /= n_options;
@@ -328,14 +328,12 @@ impl Kernel {
         }
 
         // Then apply upcast
-        let mut idx = 0;
-        for (op_id, factors) in global_upcasts.iter() {
+        for (idx, (op_id, factors)) in global_upcasts.iter().enumerate() {
             let factor_idx = global_indices[idx];
             let factor = if factor_idx == 0 { 1 } else { factors[factor_idx - 1] };
             if factor > 1 {
-                self.thread_coarse(*op_id, factor as u64);
+                self.thread_coarse(*op_id, factor);
             }
-            idx += 1;
         }
     }
 }

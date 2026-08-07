@@ -659,13 +659,12 @@ pub(super) fn initialize_device(
                             let stream = next_stream(&mut streams, cuStreamSynchronize);
 
                             while let Some(Event::CUDA(CUDAEvent { event })) = event_wait_list.pop() {
-                                if !event.is_null() {
-                                    if let Err(err) =
+                                if !event.is_null()
+                                    && let Err(err) =
                                         unsafe { (cuStreamWaitEvent)(stream, event, 0) }.check(ErrorStatus::KernelLaunch)
-                                    {
-                                        _ = reply.send(Err(err));
-                                        continue 'work_thread_loop;
-                                    }
+                                {
+                                    _ = reply.send(Err(err));
+                                    continue 'work_thread_loop;
                                 }
                             }
 
@@ -1286,13 +1285,11 @@ unsafe fn build_cudnn_plan(
             return Err(BackendError { status: ErrorStatus::KernelCompilation, context: "cuDNN workspace query".into() });
         }
         let mut workspace: u64 = 0;
-        if workspace_bytes > 0 {
-            if (cuMemAlloc)(&raw mut workspace, workspace_bytes as usize) != CUDAStatus::CUDA_SUCCESS {
-                for d in descrs.iter().rev() {
-                    let _ = (cudnn.backend_destroy_descriptor)(*d);
-                }
-                return Err(BackendError { status: ErrorStatus::MemoryAllocation, context: "cuDNN workspace alloc".into() });
+        if workspace_bytes > 0 && (cuMemAlloc)(&raw mut workspace, workspace_bytes as usize) != CUDAStatus::CUDA_SUCCESS {
+            for d in descrs.iter().rev() {
+                let _ = (cudnn.backend_destroy_descriptor)(*d);
             }
+            return Err(BackendError { status: ErrorStatus::MemoryAllocation, context: "cuDNN workspace alloc".into() });
         }
         descrs.push(plan);
 
@@ -1773,13 +1770,12 @@ impl CUDADevice {
         let mut lws = vec![1; 3];
         let mut op_id = kernel.head;
         while !op_id.is_null() {
-            match kernel.ops[op_id].op {
-                Op::Index { len, axis, scope } => match scope {
+            if let Op::Index { len, axis, scope } = kernel.ops[op_id].op {
+                match scope {
                     IdxScope::Group => gws[axis as usize] = len,
                     IdxScope::Local => lws[axis as usize] = len,
                     IdxScope::Warp => todo!(),
-                },
-                _ => {}
+                }
             }
             op_id = kernel.next_op(op_id);
         }

@@ -31,17 +31,18 @@ impl Kernel {
             for param in self.ops[op_id].op.parameters() {
                 rcs.entry(param).and_modify(|rc| *rc += 1).or_insert(1);
             }
-            if let Op::Binary { x: xo, y: yo, bop } = self.ops[op_id].op {
-                if bop == BOp::Add {
-                    if let Op::Binary { x, y, bop } = self.ops[xo].op {
-                        if bop == BOp::Mul && rcs[&xo] == 1 {
-                            self.ops[op_id].op = Op::Mad { x, y, z: yo };
-                        }
-                    } else if let Op::Binary { x, y, bop } = self.ops[yo].op {
-                        if bop == BOp::Mul && rcs[&yo] == 1 {
-                            self.ops[op_id].op = Op::Mad { x, y, z: xo };
-                        }
+            if let Op::Binary { x: xo, y: yo, bop } = self.ops[op_id].op
+                && bop == BOp::Add
+            {
+                if let Op::Binary { x, y, bop } = self.ops[xo].op {
+                    if bop == BOp::Mul && rcs[&xo] == 1 {
+                        self.ops[op_id].op = Op::Mad { x, y, z: yo };
                     }
+                } else if let Op::Binary { x, y, bop } = self.ops[yo].op
+                    && bop == BOp::Mul
+                    && rcs[&yo] == 1
+                {
+                    self.ops[op_id].op = Op::Mad { x, y, z: xo };
                 }
             }
             op_id = self.next_op(op_id);

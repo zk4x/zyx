@@ -78,11 +78,8 @@ impl Kernel {
         let end = self.get_last_dim_op(anchor);
         let mut op_id = self.next_op(anchor);
         while op_id != end {
-            match self.ops[op_id].op {
-                Op::Store { .. } => {
-                    return;
-                }
-                _ => {}
+            if let Op::Store { .. } = self.ops[op_id].op {
+                return;
             }
             op_id = self.next_op(op_id);
         }
@@ -182,7 +179,7 @@ impl Kernel {
         let mut x = self.insert_before(first_id.unwrap(), Op::Index { len: acc, axis, scope });
 
         for (.., (loop_id, len)) in axes {
-            let y = self.insert_before(loop_id, Op::Const(Constant::idx(len as u64)));
+            let y = self.insert_before(loop_id, Op::Const(Constant::idx(len)));
             self.ops[loop_id].op = Op::Binary { x, y, bop: BOp::Mod };
             x = self.insert_after(loop_id, Op::Binary { x, y, bop: BOp::Div });
         }

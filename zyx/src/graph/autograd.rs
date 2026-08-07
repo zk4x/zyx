@@ -395,7 +395,7 @@ impl Runtime {
                 Node::Permute { x, ref axes } => {
                     let mut inv_axes: Vec<UAxis> = vec![0; axes.len()];
                     for (i, &a) in axes.iter().enumerate() {
-                        inv_axes[a as usize] = i as UAxis;
+                        inv_axes[a] = i as UAxis;
                     }
                     let g = self
                         .push_node(
@@ -418,7 +418,7 @@ impl Runtime {
                             let x_shape_vec: Vec<Dim> = self.shapes[x_shape_id].clone();
                             let mut grad_shape_vec: Vec<Dim> = self.shapes[self.graphs[graph_id].classes[cid].shape].clone();
                             for &axis in axes.iter() {
-                                grad_shape_vec.insert(axis as usize, 1);
+                                grad_shape_vec.insert(axis, 1);
                             }
                             if axes.len() == x_shape_vec.len() {
                                 grad_shape_vec.remove(0);
@@ -448,7 +448,7 @@ impl Runtime {
 
                             let mut z_shape_vec: Vec<Dim> = self.shapes[self.graphs[graph_id].classes[cid].shape].clone();
                             for &axis in axes.iter() {
-                                z_shape_vec.insert(axis as usize, 1);
+                                z_shape_vec.insert(axis, 1);
                             }
                             if axes.len() == x_shape_vec.len() {
                                 z_shape_vec.remove(0);
@@ -499,7 +499,7 @@ impl Runtime {
 
                             let mut grad_shape_vec: Vec<Dim> = self.shapes[self.graphs[graph_id].classes[grad].shape].clone();
                             for &axis in axes.iter() {
-                                grad_shape_vec.insert(axis as usize, 1);
+                                grad_shape_vec.insert(axis, 1);
                             }
                             if axes.len() == x_shape_vec.len() {
                                 grad_shape_vec.remove(0);
@@ -603,14 +603,14 @@ impl Graph {
         let mut internal_rcs: Map<ClassId, u32> = Map::default();
         let mut stack: Vec<ClassId> = outputs.iter().copied().collect();
         while let Some(cid) = stack.pop() {
-            if let Some(&rc) = rcs.get(&cid) {
-                if rc == *internal_rcs.entry(cid).and_modify(|c| *c += 1).or_insert(1) {
-                    order.push(cid);
-                    for nid in &self.classes[cid].nodes {
-                        for p in self.nodes[*nid].node.class_params() {
-                            if !stack.contains(&p) {
-                                stack.push(p);
-                            }
+            if let Some(&rc) = rcs.get(&cid)
+                && rc == *internal_rcs.entry(cid).and_modify(|c| *c += 1).or_insert(1)
+            {
+                order.push(cid);
+                for nid in &self.classes[cid].nodes {
+                    for p in self.nodes[*nid].node.class_params() {
+                        if !stack.contains(&p) {
+                            stack.push(p);
                         }
                     }
                 }

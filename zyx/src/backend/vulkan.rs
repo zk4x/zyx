@@ -50,7 +50,7 @@ type VkResult = i32;
 
 const VK_SUCCESS: VkResult = 0;
 const VK_WHOLE_SIZE: u64 = !0;
-const VK_API_VERSION_1_2: u32 = (1 << 22) | (2 << 12) | 0;
+const VK_API_VERSION_1_2: u32 = (1 << 22) | (2 << 12);
 const VK_NULL_HANDLE: VkPipelineCache = std::ptr::null_mut();
 
 const VK_STRUCTURE_TYPE_APPLICATION_INFO: u32 = 0;
@@ -507,7 +507,7 @@ impl std::fmt::Debug for VulkanEvent {
 // ── Program ──────────────────────────────────────────────────────────────────
 
 struct VulkanProgram {
-    gws: Vec<Dim>,
+    gws: [Dim; 3],
     pipeline: VkPipeline,
     pipeline_layout: VkPipelineLayout,
     desc_layout: VkDescriptorSetLayout,
@@ -756,7 +756,7 @@ pub(super) fn initialize_device(
             let mut props = vec![unsafe { std::mem::zeroed::<VkExtensionProperties>() }; count as usize];
             unsafe { vkEnumerateDeviceExtensionProperties(gpu, std::ptr::null(), &mut count, props.as_mut_ptr()) };
             props.iter().any(|p| {
-                let name = unsafe { CStr::from_ptr(p.extensionName.as_ptr() as *const i8) };
+                let name = unsafe { CStr::from_ptr(p.extensionName.as_ptr()) };
                 name.to_bytes() == b"VK_KHR_shader_bfloat16"
             })
         };
@@ -1154,12 +1154,12 @@ pub(super) fn initialize_device(
                 while let Ok(cmd) = rx.recv() {
                     match cmd {
                         VulkanCommand::Allocate { bytes, reply } => {
-                            let size = bytes.next_multiple_of(4) as u64;
+                            let size = bytes.next_multiple_of(4);
                             let (buf, mem, ptr) = send_or_continue!(create_buffer(size), reply);
                             let id = buffers.push((buf, mem, ptr, bytes as usize));
                             free_bytes_atomic.fetch_sub(size, Ordering::SeqCst);
                             let _ = reply.send(Ok((
-                                PoolBufferId::from(id),
+                                id,
                                 Event::Vulkan(VulkanEvent {
                                     fence: std::ptr::null_mut(),
                                     cmd: std::ptr::null_mut(),
@@ -1239,17 +1239,16 @@ pub(super) fn initialize_device(
                             let _ = reply.send(Ok(()));
                         }
                         VulkanCommand::Compile { kernel, debug_asm, reply } => {
-                            let mut gws = vec![Dim::from(1u64); 3];
-                            let mut lws = vec![Dim::from(1u64); 3];
+                            let mut gws = [1; 3];
+                            let mut lws = [1; 3];
                             let mut op_id = kernel.head;
                             while !op_id.is_null() {
-                                match kernel.ops[op_id].op {
-                                    Op::Index { len, axis, scope } => match scope {
+                                if let Op::Index { len, axis, scope } = kernel.ops[op_id].op {
+                                    match scope {
                                         IdxScope::Group => gws[axis as usize] = len,
                                         IdxScope::Local => lws[axis as usize] = len,
                                         IdxScope::Warp => todo!(),
-                                    },
-                                    _ => {}
+                                    }
                                 }
                                 op_id = kernel.next_op(op_id);
                             }
@@ -1285,10 +1284,10 @@ pub(super) fn initialize_device(
                                 let mut n = 0usize;
                                 let mut op = kernel.head;
                                 while !op.is_null() {
-                                    if let crate::kernel::Op::Define { ro: _, scope, .. } = kernel.at(op) {
-                                        if *scope == crate::kernel::MemScope::Global {
-                                            n += 1;
-                                        }
+                                    if let crate::kernel::Op::Define { ro: _, scope, .. } = kernel.at(op)
+                                        && *scope == crate::kernel::MemScope::Global
+                                    {
+                                        n += 1;
                                     }
                                     op = kernel.next_op(op);
                                 }
@@ -1432,7 +1431,7 @@ pub(super) fn initialize_device(
                                 buf_infos.push(VkDescriptorBufferInfo { buffer: buf, offset: 0, range: VK_WHOLE_SIZE });
                             }
                             let mut writes: Vec<VkWriteDescriptorSet> = Vec::with_capacity(n);
-                            for i in 0..n {
+                            for (i, buf_info) in buf_infos.iter().enumerate() {
                                 writes.push(VkWriteDescriptorSet {
                                     sType: VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
                                     pNext: std::ptr::null(),
@@ -1442,7 +1441,7 @@ pub(super) fn initialize_device(
                                     descriptorCount: 1,
                                     descriptorType: VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
                                     pImageInfo: std::ptr::null(),
-                                    pBufferInfo: &buf_infos[i],
+                                    pBufferInfo: buf_info,
                                     pTexelBufferView: std::ptr::null(),
                                 });
                             }

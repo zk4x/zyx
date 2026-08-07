@@ -289,7 +289,7 @@ impl Tape {
         let plan = rt.compile_graph(graph_id, &output_set)?;
         rt.plan_cache.insert(cache_key, plan);
 
-        return Ok(FrozenTape { cache_key, outputs });
+        Ok(FrozenTape { cache_key, outputs })
     }
 }
 

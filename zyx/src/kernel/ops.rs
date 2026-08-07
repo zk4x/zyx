@@ -396,7 +396,7 @@ impl Op {
             | Op::Define { .. }
             | Op::Index { .. }
             | Op::EndLoop
-            | Op::Barrier { .. }
+            | Op::Barrier
             | Op::EndIf => {
                 vec![]
             }
@@ -432,7 +432,7 @@ impl Op {
             | Op::Index { .. }
             | Op::EndLoop
             | Op::EndIf
-            | Op::Barrier { .. } => vec![],
+            | Op::Barrier => vec![],
             Op::PopTile { src: cb } => vec![cb],
             Op::PushTile { dst: cb, x } => vec![cb, x],
             Op::Loop { len, .. } => vec![len],

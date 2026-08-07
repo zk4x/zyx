@@ -74,14 +74,14 @@ impl Kernel {
         // Find the initial store to the accumulator (acc[0] = init_value)
         let mut store_id = self.next_op(acc_id);
         while !store_id.is_null() {
-            if let &Op::Store { dst, index, .. } = self.at(store_id) {
-                if dst == acc_id {
-                    // Looking for store at index 0 (the init value)
-                    if let Op::Const(cst) = self.at(index) {
-                        if cst.as_dim() == Some(0) {
-                            break;
-                        }
-                    }
+            if let &Op::Store { dst, index, .. } = self.at(store_id)
+                && dst == acc_id
+            {
+                // Looking for store at index 0 (the init value)
+                if let Op::Const(cst) = self.at(index)
+                    && cst.as_dim() == Some(0)
+                {
+                    break;
                 }
             }
             store_id = self.next_op(store_id);
@@ -117,11 +117,11 @@ impl Kernel {
         let mut search_id = self.next_op(acc_id);
         let mut store_id = OpId::NULL;
         while !search_id.is_null() {
-            if let &Op::Store { dst, .. } = self.at(search_id) {
-                if dst == acc_id {
-                    store_id = search_id;
-                    break;
-                }
+            if let &Op::Store { dst, .. } = self.at(search_id)
+                && dst == acc_id
+            {
+                store_id = search_id;
+                break;
             }
             search_id = self.next_op(search_id);
         }
@@ -154,10 +154,10 @@ impl Kernel {
     fn identify_accumulate_pattern(&self, acc_id: OpId, loop_id: OpId) -> Option<(OpId, OpId)> {
         let mut load_id = loop_id;
         loop {
-            if let Op::Load { src, .. } = self.ops[load_id].op {
-                if src == acc_id {
-                    break;
-                }
+            if let Op::Load { src, .. } = self.ops[load_id].op
+                && src == acc_id
+            {
+                break;
             }
             load_id = self.next_op(load_id);
         }
@@ -578,17 +578,17 @@ impl Kernel {
                     (None, false)
                 };
                 match c {
-                    Some(d) if loop_side => Some((k, coeff.saturating_add(d as u64), gidx)),
+                    Some(d) if loop_side => Some((k, coeff.saturating_add(d), gidx)),
                     _ => None,
                 }
             }
             Op::Binary { x, y, bop: BOp::BitShiftLeft } if *x == loop_id => {
                 let Op::Const(v) = self.at(*y) else { return None };
-                let Some(d) = v.as_dim() else { return None };
+                let d = v.as_dim()?;
                 Some((k, coeff.saturating_add(1u64.checked_shl(u32::try_from(d).ok()?).unwrap_or(u64::MAX)), gidx))
             }
             Op::Const(v) => {
-                let Some(d) = v.as_dim() else { return None };
+                let d = v.as_dim()?;
                 Some((k.saturating_add(d as i64), coeff, gidx))
             }
             _ => {

@@ -393,7 +393,7 @@ impl Kernel {
                 Op::If { condition } => {
                     *rcs.entry(condition).or_insert(0) += 1;
                 }
-                Op::Barrier { .. } | Op::EndIf | Op::EndLoop => {}
+                Op::Barrier | Op::EndIf | Op::EndLoop => {}
             }
             op_id = self.next_op(op_id);
         }
@@ -426,7 +426,7 @@ impl Kernel {
             Op::Reduce { x, .. } => self.dtype(x),
             Op::ReduceTile { x, .. } => self.dtype(x),
             Op::EndLoop | Op::Loop { .. } => IDX_T,
-            Op::PushTile { .. } | Op::Barrier { .. } | Op::If { .. } | Op::EndIf => {
+            Op::PushTile { .. } | Op::Barrier | Op::If { .. } | Op::EndIf => {
                 panic!("operation has no dtype")
             }
         }
@@ -1129,7 +1129,7 @@ impl Kernel {
                 }
                 Op::MatmulTile { x, .. } => {
                     let Info { shape, .. } = stack[x].clone();
-                    let flops = shape.iter().product::<Dim>() as u64;
+                    let flops = shape.iter().product::<Dim>();
                     Info { shape, flops, mem_read: 0, mem_write: 0 }
                 }
                 Op::TransposeTile { x } => {
@@ -1143,12 +1143,12 @@ impl Kernel {
                 }
                 Op::Unary { x, .. } => {
                     let Info { shape, .. } = stack[x].clone();
-                    let flops = shape.iter().product::<Dim>() as u64;
+                    let flops = shape.iter().product::<Dim>();
                     Info { shape, flops, mem_read: 0, mem_write: 0 }
                 }
                 Op::Binary { x, .. } => {
                     let Info { shape, .. } = stack[x].clone();
-                    let flops = shape.iter().product::<Dim>() as u64;
+                    let flops = shape.iter().product::<Dim>();
                     Info { shape, flops, mem_read: 0, mem_write: 0 }
                 }
                 Op::Wmma { .. }
@@ -1159,7 +1159,7 @@ impl Kernel {
                 | Op::Store { .. }
                 | Op::If { .. }
                 | Op::EndIf
-                | Op::Barrier { .. }
+                | Op::Barrier
                 | Op::Mad { .. }
                 | Op::Define { .. }
                 | Op::Load { .. }

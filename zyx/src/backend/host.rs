@@ -21,13 +21,13 @@ fn detect_host_memory_bytes() -> u64 {
     let meminfo = std::fs::read_to_string("/proc/meminfo").unwrap_or_default();
     for line in meminfo.lines() {
         if let Some(rest) = line.strip_prefix("MemTotal:") {
-            let kb: u64 = rest.trim().split_whitespace().next().and_then(|s| s.parse().ok()).unwrap_or(0);
+            let kb: u64 = rest.split_whitespace().next().and_then(|s| s.parse().ok()).unwrap_or(0);
             if kb > 0 {
                 return kb * 1024;
             }
         }
     }
-    1u64 * 1024 * 1024 * 1024
+    1024 * 1024 * 1024
 }
 
 #[allow(clippy::unnecessary_wraps)]

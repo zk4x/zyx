@@ -82,13 +82,12 @@ impl Kernel {
                     stores.push(Vec::new());
                 }
                 EndLoop => {
-                    if let Some(k_loop_id) = loop_ids.pop() {
-                        if let Some(stores) = stores.pop() {
-                            if !stores.is_empty() {
-                                self.write_mma_op(&stores, k_loop_id);
-                                mma_exists = true;
-                            }
-                        }
+                    if let Some(k_loop_id) = loop_ids.pop()
+                        && let Some(stores) = stores.pop()
+                        && !stores.is_empty()
+                    {
+                        self.write_mma_op(&stores, k_loop_id);
+                        mma_exists = true;
                     }
                 }
                 Store { .. } => {
@@ -96,10 +95,10 @@ impl Kernel {
                         let Loop { len: len_id, .. } = self.ops[k_loop_id].op else {
                             unreachable!()
                         };
-                        if self.loop_len_dim(len_id) == 8 {
-                            if let Some(store_info) = self.mma_store_info(op_id, k_loop_id) {
-                                stores.last_mut().unwrap().push(store_info);
-                            }
+                        if self.loop_len_dim(len_id) == 8
+                            && let Some(store_info) = self.mma_store_info(op_id, k_loop_id)
+                        {
+                            stores.last_mut().unwrap().push(store_info);
                         }
                     }
                 }
@@ -238,18 +237,18 @@ impl Kernel {
         // TODO we need to put the warp row with stride 1, while offset needs to be adjusted
         let mut idx = self.insert_before(k_loop_id, Op::Const(Constant::idx(0)));
         for (&i, &st) in &stores[0].a_index {
-            let stride = self.insert_before(k_loop_id, Op::Const(Constant::idx(st as u64)));
+            let stride = self.insert_before(k_loop_id, Op::Const(Constant::idx(st)));
             let y = self.insert_before(k_loop_id, Op::Binary { x: stride, y: i, bop: BOp::Mul });
             idx = self.insert_before(k_loop_id, Op::Binary { x: idx, y, bop: BOp::Add });
         }
         let a_load1 = self.insert_before(k_loop_id, Op::Load { src: stores[0].a, index: idx, layout: MemLayout::Scalar });
-        let offset = self.insert_before(k_loop_id, Op::Const(Constant::idx(stores[1].a_offset as u64)));
+        let offset = self.insert_before(k_loop_id, Op::Const(Constant::idx(stores[1].a_offset)));
         let index = self.insert_before(k_loop_id, Op::Binary { x: offset, y: idx, bop: BOp::Add });
         let a_load2 = self.insert_before(k_loop_id, Op::Load { src: stores[1].a, index, layout: MemLayout::Scalar });
-        let offset = self.insert_before(k_loop_id, Op::Const(Constant::idx(stores[2].a_offset as u64)));
+        let offset = self.insert_before(k_loop_id, Op::Const(Constant::idx(stores[2].a_offset)));
         let index = self.insert_before(k_loop_id, Op::Binary { x: offset, y: idx, bop: BOp::Add });
         let a_load3 = self.insert_before(k_loop_id, Op::Load { src: stores[2].a, index, layout: MemLayout::Scalar });
-        let offset = self.insert_before(k_loop_id, Op::Const(Constant::idx(stores[3].a_offset as u64)));
+        let offset = self.insert_before(k_loop_id, Op::Const(Constant::idx(stores[3].a_offset)));
         let index = self.insert_before(k_loop_id, Op::Binary { x: offset, y: idx, bop: BOp::Add });
         let a_load4 = self.insert_before(k_loop_id, Op::Load { src: stores[3].a, index, layout: MemLayout::Scalar });
 
@@ -258,12 +257,12 @@ impl Kernel {
         // B load
         let mut idx = self.insert_before(k_loop_id, Op::Const(Constant::idx(0)));
         for (&i, &st) in &stores[0].b_index {
-            let stride = self.insert_before(k_loop_id, Op::Const(Constant::idx(st as u64)));
+            let stride = self.insert_before(k_loop_id, Op::Const(Constant::idx(st)));
             let y = self.insert_before(k_loop_id, Op::Binary { x: stride, y: i, bop: BOp::Mul });
             idx = self.insert_before(k_loop_id, Op::Binary { x: idx, y, bop: BOp::Add });
         }
         let b_load1 = self.insert_before(k_loop_id, Op::Load { src: stores[0].b, index: idx, layout: MemLayout::Scalar });
-        let offset = self.insert_before(k_loop_id, Op::Const(Constant::idx(stores[1].b_offset as u64)));
+        let offset = self.insert_before(k_loop_id, Op::Const(Constant::idx(stores[1].b_offset)));
         let index = self.insert_before(k_loop_id, Op::Binary { x: offset, y: idx, bop: BOp::Add });
         let b_load2 = self.insert_before(k_loop_id, Op::Load { src: stores[0].b, index, layout: MemLayout::Scalar });
         let b_load = self.insert_before(k_loop_id, Op::Vectorize { ops: vec![b_load1, b_load2] });
@@ -319,9 +318,9 @@ impl Kernel {
         }
 
         let warp_loop = self.insert_before(local_loops[0], Op::Index { len: local_dims[0] * n, axis: 0, scope: IdxScope::Warp });
-        let y = self.insert_before(warp_loop, Op::Const(Constant::idx(n as u64)));
+        let y = self.insert_before(warp_loop, Op::Const(Constant::idx(n)));
         self.ops[local_loops[0]].op = Op::Binary { x: warp_loop, y, bop: BOp::Div };
-        let y = self.insert_before(warp_loop, Op::Const(Constant::idx(n as u64)));
+        let y = self.insert_before(warp_loop, Op::Const(Constant::idx(n)));
         self.ops[local_loops[1]].op = Op::Binary { x: warp_loop, y, bop: BOp::Mod };
 
         true

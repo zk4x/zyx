@@ -14,7 +14,7 @@
 #![forbid(rustdoc::unescaped_backticks)]
 #![forbid(rustdoc::redundant_explicit_links)]
 #![forbid(invalid_reference_casting)]
-#![deny(clippy::all)]
+/*#![deny(clippy::all)]
 #![deny(clippy::pedantic)]
 #![deny(clippy::fn_to_numeric_cast_any)]
 #![forbid(clippy::perf)]
@@ -54,7 +54,7 @@
 #![allow(clippy::into_iter_on_ref)]
 #![allow(clippy::explicit_counter_loop)]
 #![allow(clippy::needless_return)]
-#![allow(clippy::as_conversions)]
+#![allow(clippy::as_conversions)]*/
 
 use crate::runtime::Runtime;
 

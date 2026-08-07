@@ -47,17 +47,16 @@ impl Kernel {
         while !op_id.is_null() {
             let next = self.next_op(op_id);
 
-            if let &Op::Binary { x, y, bop } = self.at(op_id) {
-                if matches!(bop, BOp::Div | BOp::Mod) {
-                    if let Op::Const(divisor) = self.at(y) {
-                        let dtype = divisor.dtype();
-                        if let Some(divisor) = divisor.as_dim() {
-                            match bop {
-                                BOp::Mod => self.simplify_mod(op_id, x, y, dtype, &bounds),
-                                BOp::Div => self.simplify_div(op_id, x, divisor, dtype, &bounds),
-                                _ => {}
-                            }
-                        }
+            if let &Op::Binary { x, y, bop } = self.at(op_id)
+                && matches!(bop, BOp::Div | BOp::Mod)
+                && let Op::Const(divisor) = self.at(y)
+            {
+                let dtype = divisor.dtype();
+                if let Some(divisor) = divisor.as_dim() {
+                    match bop {
+                        BOp::Mod => self.simplify_mod(op_id, x, y, dtype, &bounds),
+                        BOp::Div => self.simplify_div(op_id, x, divisor, dtype, &bounds),
+                        _ => {}
                     }
                 }
             }
@@ -87,8 +86,8 @@ impl Kernel {
 
         /// Returns (slices derived from a loop root, constant expression not derived from root).
         fn collect_slices_inner(k: &mut Kernel, op_id: OpId) -> (Vec<Slice>, Option<OpId>) {
-            match k.at(op_id) {
-                &Op::Binary { x, y, bop: BOp::Add } => {
+            match *k.at(op_id) {
+                Op::Binary { x, y, bop: BOp::Add } => {
                     let (mut ls, lc) = collect_slices_inner(k, x);
                     let (rs, rc) = collect_slices_inner(k, y);
                     // Try to merge slices; if roots differ, non-root side becomes constant
@@ -118,7 +117,7 @@ impl Kernel {
                     };
                     (slices, constant)
                 }
-                &Op::Binary { x, y, bop: BOp::BitShiftLeft } if is_const(k, y) => {
+                Op::Binary { x, y, bop: BOp::BitShiftLeft } if is_const(k, y) => {
                     let c = match const_u64(k, y) {
                         Some(c) => c,
                         None => return (vec![], None),
@@ -129,7 +128,7 @@ impl Kernel {
                     }
                     (slices, constant)
                 }
-                &Op::Binary { x, y, bop: BOp::Mul } if is_const(k, y) => {
+                Op::Binary { x, y, bop: BOp::Mul } if is_const(k, y) => {
                     let c = match const_u64(k, y) {
                         Some(c) => c,
                         None => return (vec![], Some(op_id)),
@@ -146,7 +145,7 @@ impl Kernel {
                     }
                     (slices, constant)
                 }
-                &Op::Binary { x, y, bop: BOp::Div } if is_const(k, y) => {
+                Op::Binary { x, y, bop: BOp::Div } if is_const(k, y) => {
                     let c = match const_u64(k, y) {
                         Some(c) => c,
                         None => return (vec![], Some(op_id)),
@@ -161,7 +160,7 @@ impl Kernel {
                     }
                     (slices, constant)
                 }
-                &Op::Binary { x, y, bop: BOp::BitShiftRight } if is_const(k, y) => {
+                Op::Binary { x, y, bop: BOp::BitShiftRight } if is_const(k, y) => {
                     let c = match const_u64(k, y) {
                         Some(c) => c,
                         None => return (vec![], None),
@@ -172,7 +171,7 @@ impl Kernel {
                     }
                     (slices, constant)
                 }
-                &Op::Binary { x, y, bop: BOp::Mod } if is_const(k, y) => {
+                Op::Binary { x, y, bop: BOp::Mod } if is_const(k, y) => {
                     let c = match const_u64(k, y) {
                         Some(c) => c,
                         None => return (vec![], Some(op_id)),
@@ -349,12 +348,11 @@ impl Kernel {
             return None;
         };
         for candidate in [add_x, add_y] {
-            if let Op::Binary { x: y, y: s, bop: BOp::BitShiftLeft } = self.at(*candidate) {
-                if let Op::Const(c) = self.at(*s) {
-                    if c.as_dim() == Some(n) {
-                        return Some(*y);
-                    }
-                }
+            if let Op::Binary { x: y, y: s, bop: BOp::BitShiftLeft } = self.at(*candidate)
+                && let Op::Const(c) = self.at(*s)
+                && c.as_dim() == Some(n)
+            {
+                return Some(*y);
             }
         }
         None
@@ -375,19 +373,19 @@ impl Kernel {
     fn match_bitwise_identity(&self, op_id: OpId) -> Option<OpId> {
         if let Op::Binary { x, y, bop: BOp::BitAnd } = self.at(op_id) {
             for candidate in [(*x, *y), (*y, *x)] {
-                if let Op::Const(c) = self.at(candidate.0) {
-                    if c.is_max() {
-                        return Some(candidate.1);
-                    }
+                if let Op::Const(c) = self.at(candidate.0)
+                    && c.is_max()
+                {
+                    return Some(candidate.1);
                 }
             }
         }
         if let Op::Binary { x, y, bop: BOp::BitOr } = self.at(op_id) {
             for candidate in [(*x, *y), (*y, *x)] {
-                if let Op::Const(c) = self.at(candidate.0) {
-                    if c.as_dim() == Some(0) {
-                        return Some(candidate.1);
-                    }
+                if let Op::Const(c) = self.at(candidate.0)
+                    && c.as_dim() == Some(0)
+                {
+                    return Some(candidate.1);
                 }
             }
         }
@@ -401,18 +399,18 @@ impl Kernel {
     }
 
     fn simplify_div(&mut self, op_id: OpId, x: OpId, divisor: Dim, dtype: DType, bounds: &Map<OpId, (Dim, Dim)>) {
-        if let Some((a, c, _)) = mul_add(self, x) {
-            if c == divisor {
-                self.remap(op_id, a);
-                return;
-            }
+        if let Some((a, c, _)) = mul_add(self, x)
+            && c == divisor
+        {
+            self.remap(op_id, a);
+            return;
         }
 
-        if let Some((a, c, _)) = mad(self, x) {
-            if c == divisor {
-                self.remap(op_id, a);
-                return;
-            }
+        if let Some((a, c, _)) = mad(self, x)
+            && c == divisor
+        {
+            self.remap(op_id, a);
+            return;
         }
 
         let Some(&(_, xu)) = bounds.get(&x) else { return };
@@ -430,11 +428,11 @@ impl Kernel {
         //self.debug();
 
         // Pattern 1: x % divisor when 0 <= x < divisor -> x
-        if let Some(&(_, max_x)) = bounds.get(&x) {
-            if max_x < divisor {
-                self.remap(op_id, x);
-                return;
-            }
+        if let Some(&(_, max_x)) = bounds.get(&x)
+            && max_x < divisor
+        {
+            self.remap(op_id, x);
+            return;
         }
 
         if let Some((a, c, b)) = mul_add(self, x) {
@@ -444,10 +442,10 @@ impl Kernel {
             if c == divisor {
                 self.ops[op_id].op = Op::Binary { x: b, y: divisor_const, bop: BOp::Mod };
                 // Pattern 1 on result: if b < divisor, b % divisor = b
-                if let Some(&(_, max_b)) = bounds.get(&b) {
-                    if max_b < divisor {
-                        self.remap(op_id, b);
-                    }
+                if let Some(&(_, max_b)) = bounds.get(&b)
+                    && max_b < divisor
+                {
+                    self.remap(op_id, b);
                 }
                 return;
             }
@@ -459,10 +457,9 @@ impl Kernel {
                 // Pattern 1 on result: if max(a) + max(b) < divisor, (a+b) % divisor = a+b
                 if let Some(&(_, max_a)) = bounds.get(&a)
                     && let Some(&(_, max_b)) = bounds.get(&b)
+                    && max_a.saturating_add(max_b) < divisor
                 {
-                    if max_a.saturating_add(max_b) < divisor {
-                        self.remap(op_id, a_plus_b);
-                    }
+                    self.remap(op_id, a_plus_b);
                 }
                 return;
             }
@@ -470,83 +467,78 @@ impl Kernel {
             // Need: min_b == 0 AND max(a*c) + max_b < divisor
             if let Some(&(_min_a, max_a)) = bounds.get(&a) {
                 let max_a_c = max_a.saturating_mul(c);
-                if let Some(&(min_b, max_b)) = bounds.get(&b) {
-                    if min_b == 0 && max_a_c.saturating_add(max_b) < divisor {
-                        self.ops[op_id].op = Op::Binary { x: b, y: divisor_const, bop: BOp::Mod };
-                        // Pattern 1 on result: if b < divisor, b % divisor = b
-                        if max_b < divisor {
-                            self.remap(op_id, b);
-                        }
-                        return;
+                if let Some(&(min_b, max_b)) = bounds.get(&b)
+                    && min_b == 0
+                    && max_a_c.saturating_add(max_b) < divisor
+                {
+                    self.ops[op_id].op = Op::Binary { x: b, y: divisor_const, bop: BOp::Mod };
+                    // Pattern 1 on result: if b < divisor, b % divisor = b
+                    if max_b < divisor {
+                        self.remap(op_id, b);
                     }
+                    return;
                 }
             }
             // Pattern 2d: (a*c + b) % d when d = c*k and max(a*c+b) < d -> b
             // Need: min_b == 0 AND max(a*c) + max_b < divisor
             // When max(a*c + b) < divisor, (a*c + b) % divisor = a*c + b, so if max < divisor -> result = b
-            if divisor > c && divisor.is_multiple_of(c) {
-                if let Some(&(_min_a, max_a)) = bounds.get(&a)
-                    && let Some(&(min_b, max_b)) = bounds.get(&b)
-                {
-                    let max_ac = max_a.saturating_mul(c);
-                    if min_b == 0 && max_ac.saturating_add(max_b) < divisor {
-                        self.remap(op_id, b);
-                        return;
-                    }
+            if divisor > c
+                && divisor.is_multiple_of(c)
+                && let Some(&(_min_a, max_a)) = bounds.get(&a)
+                && let Some(&(min_b, max_b)) = bounds.get(&b)
+            {
+                let max_ac = max_a.saturating_mul(c);
+                if min_b == 0 && max_ac.saturating_add(max_b) < divisor {
+                    self.remap(op_id, b);
+                    return;
                 }
             }
         }
 
         // Pattern 3: (a + b) % divisor when min_a > 0, min_b > 0, max(a+b) < divisor
         // If both are positive and sum < divisor, no wraparound, so result = a + b
-        if let Op::Binary { x: a, y: b, bop: BOp::Add } = self.ops[x].op {
-            if let Some(&(min_a, max_a)) = bounds.get(&a) {
-                if let Some(&(min_b, max_b)) = bounds.get(&b) {
-                    if min_a > 0 && min_b > 0 {
-                        let sum = max_a.saturating_add(max_b);
-                        if sum < divisor && sum > 0 {
-                            self.remap(op_id, x);
-                            return;
-                        }
-                    }
-                }
+        if let Op::Binary { x: a, y: b, bop: BOp::Add } = self.ops[x].op
+            && let Some(&(min_a, max_a)) = bounds.get(&a)
+            && let Some(&(min_b, max_b)) = bounds.get(&b)
+            && min_a > 0
+            && min_b > 0
+        {
+            let sum = max_a.saturating_add(max_b);
+            if sum < divisor && sum > 0 {
+                self.remap(op_id, x);
+                return;
             }
         }
 
         // Pattern 4: (a * c) % divisor -> reduce c modulo divisor
         // Math: (a * c) % d = (a * (c % d)) % d
-        if let Op::Binary { x: a, y: c, bop: BOp::Mul } = self.ops[x].op {
-            if let Op::Const(y) = self.ops[c].op {
-                if let Some(c) = y.as_dim() {
-                    let c_reduced = c % divisor;
-                    if c_reduced != c && c_reduced > 0 {
-                        if let Some(&(min_a, max_a)) = bounds.get(&a) {
-                            if min_a > 0 {
-                                let prod = max_a.saturating_mul(c_reduced);
-                                if prod < divisor && prod > 0 {
-                                    self.remap(op_id, x);
-                                    return;
-                                }
-                            }
-                        }
-                    }
+        if let Op::Binary { x: a, y: c, bop: BOp::Mul } = self.ops[x].op
+            && let Op::Const(y) = self.ops[c].op
+            && let Some(c) = y.as_dim()
+        {
+            let c_reduced = c % divisor;
+            if c_reduced != c
+                && c_reduced > 0
+                && let Some(&(min_a, max_a)) = bounds.get(&a)
+                && min_a > 0
+            {
+                let prod = max_a.saturating_mul(c_reduced);
+                if prod < divisor && prod > 0 {
+                    self.remap(op_id, x);
+                    return;
                 }
             }
         }
 
         // Pattern 5: (a + C) % divisor where C is constant and max(a) + C < divisor
         // If max(a) + C < divisor, no wraparound, so result = a + C
-        if let Op::Binary { x: a, y: b, bop: BOp::Add } = self.ops[x].op {
-            if let Op::Const(y) = self.ops[b].op {
-                if let Some(y) = y.as_dim() {
-                    if let Some(&(_, max_a)) = bounds.get(&a) {
-                        if max_a + y < divisor {
-                            self.remap(op_id, x);
-                            return;
-                        }
-                    }
-                }
-            }
+        if let Op::Binary { x: a, y: b, bop: BOp::Add } = self.ops[x].op
+            && let Op::Const(y) = self.ops[b].op
+            && let Some(y) = y.as_dim()
+            && let Some(&(_, max_a)) = bounds.get(&a)
+            && max_a + y < divisor
+        {
+            self.remap(op_id, x);
         }
     }
 
@@ -596,16 +588,14 @@ impl Kernel {
             return;
         }
         let (shr_op, rem_op) = match (self.at(x), self.at(y)) {
-            (&Op::Binary { x: sx, y: sy, bop: BOp::BitShiftRight }, &Op::Binary { x: rx, y: ry, bop })
-                if matches!(bop, BOp::Mod | BOp::BitAnd) =>
-            {
-                ((sx, sy), (rx, ry))
-            }
-            (&Op::Binary { x: rx, y: ry, bop }, &Op::Binary { x: sx, y: sy, bop: BOp::BitShiftRight })
-                if matches!(bop, BOp::Mod | BOp::BitAnd) =>
-            {
-                ((sx, sy), (rx, ry))
-            }
+            (
+                &Op::Binary { x: sx, y: sy, bop: BOp::BitShiftRight },
+                &Op::Binary { x: rx, y: ry, bop: BOp::Mod | BOp::BitAnd },
+            ) => ((sx, sy), (rx, ry)),
+            (
+                &Op::Binary { x: rx, y: ry, bop: BOp::Mod | BOp::BitAnd },
+                &Op::Binary { x: sx, y: sy, bop: BOp::BitShiftRight },
+            ) => ((sx, sy), (rx, ry)),
             _ => return,
         };
         let ((shr_x, shr_y), (rem_root, rem_y)) = (shr_op, rem_op);
@@ -714,26 +704,24 @@ impl Kernel {
     /// Matches a term that is `c * b` for a compile-time constant `c`, from
     /// `b << k` (c = 2^k), `b * const` (c = const), or `b + b` (c = 2).
     fn match_const_multiple(&self, op_id: OpId) -> Option<(OpId, u64)> {
-        if let Op::Binary { x, y, bop: BOp::Add } = self.ops[op_id].op {
-            if x == y {
-                return Some((x, 2));
-            }
+        if let Op::Binary { x, y, bop: BOp::Add } = self.ops[op_id].op
+            && x == y
+        {
+            return Some((x, 2));
         }
-        if let Op::Binary { x, y, bop: BOp::BitShiftLeft } = self.ops[op_id].op {
-            if let Op::Const(c) = self.ops[y].op {
-                if let Some(k) = c.as_dim() {
-                    if k < 64 {
-                        return Some((x, 1u64 << k));
-                    }
-                }
-            }
+        if let Op::Binary { x, y, bop: BOp::BitShiftLeft } = self.ops[op_id].op
+            && let Op::Const(c) = self.ops[y].op
+            && let Some(k) = c.as_dim()
+            && k < 64
+        {
+            return Some((x, 1u64 << k));
         }
         if let Op::Binary { x, y, bop: BOp::Mul } = self.ops[op_id].op {
             for (a, b) in [(x, y), (y, x)] {
-                if let Op::Const(c) = self.ops[a].op {
-                    if let Some(v) = c.as_dim() {
-                        return Some((b, v));
-                    }
+                if let Op::Const(c) = self.ops[a].op
+                    && let Some(v) = c.as_dim()
+                {
+                    return Some((b, v));
                 }
             }
         }
@@ -781,21 +769,18 @@ fn mul_add(k: &Kernel, x: OpId) -> Option<(OpId, u64, OpId)> {
 }
 
 fn match_mul_or_shl(k: &Kernel, op: OpId) -> Option<(OpId, u64)> {
-    if let Op::Binary { x: a, y: c, bop: BOp::Mul } = k.at(op) {
-        if let Op::Const(cst) = k.at(*c) {
-            if let Some(cval) = cst.as_dim() {
-                return Some((*a, cval));
-            }
-        }
+    if let Op::Binary { x: a, y: c, bop: BOp::Mul } = k.at(op)
+        && let Op::Const(cst) = k.at(*c)
+        && let Some(cval) = cst.as_dim()
+    {
+        return Some((*a, cval));
     }
-    if let Op::Binary { x: a, y: c, bop: BOp::BitShiftLeft } = k.at(op) {
-        if let Op::Const(cst) = k.at(*c) {
-            if let Some(cval) = cst.as_dim() {
-                if cval < 64 {
-                    return Some((*a, 1u64 << cval));
-                }
-            }
-        }
+    if let Op::Binary { x: a, y: c, bop: BOp::BitShiftLeft } = k.at(op)
+        && let Op::Const(cst) = k.at(*c)
+        && let Some(cval) = cst.as_dim()
+        && cval < 64
+    {
+        return Some((*a, 1u64 << cval));
     }
     None
 }
@@ -945,9 +930,9 @@ mod tests {
         // mask = (r47 + 8*r81) % 7 > 2 == (r47 + r81) % 7 > 2 == (r47 + r81) > 2
         // since r47, r81 in 0..4 and r47+r81 <= 6 < 7.
         let mut t = [[false; 4]; 4];
-        for i in 0..4 {
-            for j in 0..4 {
-                t[i][j] = i + j > 2;
+        for (i, row) in t.iter_mut().enumerate() {
+            for (j, cell) in row.iter_mut().enumerate() {
+                *cell = i + j > 2;
             }
         }
         t

@@ -1164,14 +1164,14 @@ impl Scalar for f32 {
     }
 
     fn bitshiftleft(self, rhs: Self) -> Self {
-        let rhs_shift = (rhs.to_bits() & 0xFF) as u32;
+        let rhs_shift = rhs.to_bits() & 0xFF;
         let ix = (self.to_bits() as u64) << rhs_shift;
         f32::from_bits(ix as u32)
     }
 
     fn bitshiftright(self, rhs: Self) -> Self {
-        let rhs_shift = (rhs.to_bits() & 0xFF) as u32;
-        let ix = (self.to_bits() as u32) >> rhs_shift;
+        let rhs_shift = rhs.to_bits() & 0xFF;
+        let ix = self.to_bits() >> rhs_shift;
         f32::from_bits(ix)
     }
 
@@ -1422,13 +1422,13 @@ impl Scalar for f64 {
 
     fn bitshiftleft(self, rhs: Self) -> Self {
         let rhs_shift = (rhs.to_bits() & 0xFF) as u32;
-        let ix = (self.to_bits() as u64) << rhs_shift;
+        let ix = self.to_bits() << rhs_shift;
         f64::from_bits(ix)
     }
 
     fn bitshiftright(self, rhs: Self) -> Self {
         let rhs_shift = (rhs.to_bits() & 0xFF) as i32;
-        let ix = ((self.to_bits() as u64) >> rhs_shift) as u32;
+        let ix = (self.to_bits() >> rhs_shift) as u32;
         f64::from_bits(ix as u64)
     }
 
@@ -2584,7 +2584,7 @@ impl Scalar for u16 {
     }
 
     fn pow(self, rhs: Self) -> Self {
-        Self::pow(self, u32::from(rhs)) as u16
+        Self::pow(self, u32::from(rhs))
     }
 
     fn mod_(self, rhs: Self) -> Self {

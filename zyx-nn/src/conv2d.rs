@@ -22,6 +22,7 @@ pub struct Conv2d {
 
 impl Conv2d {
     /// Initialize Conv2d
+    #[allow(clippy::too_many_arguments)] // mirrors PyTorch API with multiple config parameters
     pub fn new(
         in_channels: u64,
         out_channels: u64,

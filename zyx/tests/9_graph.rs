@@ -56,7 +56,7 @@ fn softmax() -> Result<(), ZyxError> {
     let tape = Tape::new([&x])?;
     let y = x.softmax([])?;
     tape.realize([&y])?;
-    assert_eq!(y, [0.09003056585788726807f32, 0.66524088382720947266, 0.24472846090793609619]);
+    assert_eq!(y, [0.090_030_566_f32, 0.665_240_9, 0.244_728_46]);
     Ok(())
 }
 
@@ -159,8 +159,8 @@ fn small_net() -> Result<(), ZyxError> {
         let tape = Tape::new([&w1, &b1, &w2, &b2])?;
         let x = Tensor::randn([2, 4], DType::F32)?;
         let y = Tensor::from([0u32, 1]);
-        let h = (x.dot(&w1.t())? + &b1).relu();
-        let logits = h.dot(&w2.t())? + &b2;
+        let h = (x.dot(w1.t())? + &b1).relu();
+        let logits = h.dot(w2.t())? + &b2;
         let loss = logits.cross_entropy(y, ReduceOp::Mean)?;
         let grads = tape.gradient(&loss, [&w1, &b1, &w2, &b2]);
 

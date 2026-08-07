@@ -34,7 +34,7 @@ fn grad_reciprocal() -> Result<(), ZyxError> {
     let mut grads = tape.gradient(&z, [&x]);
     let x_grad = grads.pop().unwrap();
     tape.realize([&x_grad])?;
-    assert_eq!(x_grad, [-0.1111111111f32, -0.25, -0.0625]);
+    assert_eq!(x_grad, [-0.111_111_11_f32, -0.25, -0.0625]);
     Ok(())
 }
 
@@ -198,7 +198,7 @@ fn grad_cos_2() -> Result<(), ZyxError> {
     let mut grads = tape.gradient(&z, [&x]);
     let x_grad = grads.pop().unwrap();
     tape.realize([&x_grad])?;
-    assert_eq!(x_grad, [-0.1411200017f32, -0.9092974067, 0.7568024993]);
+    assert_eq!(x_grad, [-0.141_12_f32, -0.909_297_4, 0.756_802_5]);
     Ok(())
 }
 
@@ -257,8 +257,8 @@ fn grad_div_1() -> Result<(), ZyxError> {
     let y_grad = grads.pop().unwrap();
     let x_grad = grads.pop().unwrap();
     tape.realize([&x_grad, &y_grad])?;
-    assert_eq!(x_grad, [0.3333333333f32, 1., 0.2]);
-    assert_eq!(y_grad, [-0.3333333333f32, -2., -0.16]);
+    assert_eq!(x_grad, [0.333_333_34_f32, 1., 0.2]);
+    assert_eq!(y_grad, [-0.333_333_34_f32, -2., -0.16]);
     Ok(())
 }
 
@@ -273,7 +273,7 @@ fn grad_pow() -> Result<(), ZyxError> {
     let x_grad = grads.pop().unwrap();
     tape.realize([&x_grad, &y_grad])?;
     assert_eq!(x_grad, [27f32, 1., 1280.]);
-    assert_eq!(y_grad, [29.6625317940f32, 1.3862943611, 1419.5654257868]);
+    assert_eq!(y_grad, [29.662_53_f32, 1.386_294_4, 1_419.565_4]);
     Ok(())
 }
 
@@ -751,15 +751,15 @@ fn grad7() -> Result<(), ZyxError> {
     let loss = out.sum_all();
 
     // First call: gradient of loss wrt w3
-    let _d_w3 = tape.gradient(&loss, &[w3.clone()]);
+    let _d_w3 = tape.gradient(&loss, std::slice::from_ref(&w3));
     //println!("d_w3: {:?}", d_w3);
 
     // Second call: gradient of loss wrt spike2
-    let _d_spike2 = tape.gradient(&loss, &[spike2.clone()]);
+    let _d_spike2 = tape.gradient(&loss, std::slice::from_ref(&spike2));
     //println!("d_spike2: {:?}", d_spike2);
 
     // Third call: gradient of loss wrt spike1 - this is where the crash happens
-    let _d_spike1 = tape.gradient(&loss, &[spike1.clone()]);
+    let _d_spike1 = tape.gradient(&loss, std::slice::from_ref(&spike1));
     //println!("d_spike1: {:?}", d_spike1);
 
     drop(tape);
@@ -787,7 +787,7 @@ fn grad_cmpgt_source() -> Result<(), ZyxError> {
     // Gradient through cmpgt (w.r.t. input) is zero since cmpgt is non-differentiable
     let d_x = tape.gradient(&loss, &[x])[0].clone();
     // Gradient w.r.t. w is spike_f32 = [0, 0, 1]
-    let d_w = tape.gradient(&loss, &[w.clone()])[0].clone();
+    let d_w = tape.gradient(&loss, std::slice::from_ref(&w))[0].clone();
 
     tape.realize([&d_x, &d_w])?;
 

@@ -84,10 +84,10 @@ impl Tensor {
             Err(PyTypeError::new_err("Unsupported input type for Tensor"))
         }?;
 
-        if let Some(target_dtype) = dtype {
-            if tensor.dtype() != target_dtype {
-                return Ok(tensor.cast(target_dtype));
-            }
+        if let Some(target_dtype) = dtype
+            && tensor.dtype() != target_dtype
+        {
+            return Ok(tensor.cast(target_dtype));
         }
         Ok(tensor)
     }
@@ -157,7 +157,7 @@ impl Tensor {
     #[must_use]
     #[pyo3(name = "training")]
     pub fn training_py() -> bool {
-        return Tensor::training();
+        Tensor::training()
     }
 
     /// Set training mode.
@@ -251,7 +251,6 @@ impl Tensor {
     /// Create a tensor with random values from a uniform distribution
     /// Similar to torch.rand but with uniform distribution
     #[staticmethod]
-    #[must_use]
     #[pyo3(name = "uniform", signature = (*shape, dtype=DType::F32))]
     pub fn uniform_py(shape: &Bound<'_, PyTuple>, dtype: DType) -> Result<Tensor, ZyxError> {
         Tensor::rand(to_sh(shape)?, dtype)
@@ -285,7 +284,6 @@ impl Tensor {
     /// let tensor = Tensor::uniform_(1, 1, from_=0.0, to_=10.0);
     /// ```
     #[staticmethod]
-    #[must_use]
     #[pyo3(name = "uniform_", signature = (*shape, from_=-1.0, to_=1.0, dtype=DType::F32))]
     pub fn uniform_py_with_range(shape: &Bound<'_, PyTuple>, from_: f32, to_: f32, dtype: DType) -> Result<Tensor, ZyxError> {
         // Create tensor with uniform distribution (0,1) then scale to desired range
@@ -310,7 +308,7 @@ impl Tensor {
     #[must_use]
     #[pyo3(name = "ones", signature = (*shape, dtype=DType::F32))]
     pub fn ones_py(shape: &Bound<'_, PyTuple>, dtype: DType) -> Tensor {
-        return Tensor::ones(to_sh(shape).unwrap(), dtype);
+        Tensor::ones(to_sh(shape).unwrap(), dtype)
     }
 
     /// # Panics
@@ -351,7 +349,7 @@ impl Tensor {
     #[must_use]
     #[pyo3(name = "eye", signature = (n, dtype=DType::F32))]
     pub fn eye_py(n: Dim, dtype: DType) -> Tensor {
-        return Tensor::eye(n, dtype);
+        Tensor::eye(n, dtype)
     }
 
     /// # Errors
@@ -366,42 +364,42 @@ impl Tensor {
     #[must_use]
     #[pyo3(name = "abs")]
     pub fn abs_py(&self) -> Tensor {
-        return self.abs();
+        self.abs()
     }
 
     /// Casts the tensor to the given data type.
     #[must_use]
     #[pyo3(name = "cast")]
     pub fn cast_py(&self, dtype: DType) -> Tensor {
-        return self.cast(dtype);
+        self.cast(dtype)
     }
 
     /// Computes the cosine element-wise.
     #[must_use]
     #[pyo3(name = "cos")]
     pub fn cos_py(&self) -> Tensor {
-        return self.cos();
+        self.cos()
     }
 
     /// Computes the hyperbolic cosine element-wise.
     #[must_use]
     #[pyo3(name = "cosh")]
     pub fn cosh_py(&self) -> Tensor {
-        return self.cosh();
+        self.cosh()
     }
 
     /// Computes the exponential element-wise.
     #[must_use]
     #[pyo3(name = "exp")]
     pub fn exp_py(&self) -> Tensor {
-        return self.exp();
+        self.exp()
     }
 
     /// Computes the floor element-wise.
     #[must_use]
     #[pyo3(name = "floor")]
     pub fn floor_py(&self) -> Tensor {
-        return self.floor();
+        self.floor()
     }
 
     /// # Errors
@@ -421,77 +419,77 @@ impl Tensor {
     #[must_use]
     #[pyo3(name = "log2")]
     pub fn log2_py(&self) -> Tensor {
-        return self.log2();
+        self.log2()
     }
 
     /// Computes the reciprocal element-wise.
     #[must_use]
     #[pyo3(name = "reciprocal")]
     pub fn reciprocal_py(&self) -> Tensor {
-        return self.reciprocal();
+        self.reciprocal()
     }
 
     /// Applies the `ReLU` activation function element-wise.
     #[must_use]
     #[pyo3(name = "relu")]
     pub fn relu_py(&self) -> Tensor {
-        return self.relu();
+        self.relu()
     }
 
     /// Computes the reciprocal square root element-wise.
     #[must_use]
     #[pyo3(name = "rsqrt")]
     pub fn rsqrt_py(&self) -> Tensor {
-        return self.rsqrt();
+        self.rsqrt()
     }
 
     /// Applies the sigmoid activation function element-wise.
     #[must_use]
     #[pyo3(name = "sigmoid")]
     pub fn sigmoid_py(&self) -> Tensor {
-        return self.sigmoid();
+        self.sigmoid()
     }
 
     /// Computes the sine element-wise.
     #[must_use]
     #[pyo3(name = "sin")]
     pub fn sin_py(&self) -> Tensor {
-        return self.sin();
+        self.sin()
     }
 
     /// Computes the hyperbolic sine element-wise.
     #[must_use]
     #[pyo3(name = "sinh")]
     pub fn sinh_py(&self) -> Tensor {
-        return self.sinh();
+        self.sinh()
     }
 
     /// Computes the square root element-wise.
     #[must_use]
     #[pyo3(name = "sqrt")]
     pub fn sqrt_py(&self) -> Tensor {
-        return self.sqrt();
+        self.sqrt()
     }
 
     /// Computes the tangent element-wise.
     #[must_use]
     #[pyo3(name = "tan")]
     pub fn tan_py(&self) -> Tensor {
-        return self.tan();
+        self.tan()
     }
 
     /// Computes the hyperbolic tangent element-wise.
     #[must_use]
     #[pyo3(name = "tanh")]
     pub fn tanh_py(&self) -> Tensor {
-        return self.tanh();
+        self.tanh()
     }
 
     /// Applies the GELU activation function element-wise.
     #[must_use]
     #[pyo3(name = "gelu")]
     pub fn gelu_py(&self) -> Tensor {
-        return self.gelu();
+        self.gelu()
     }
 
     /// # Panics
@@ -512,7 +510,7 @@ impl Tensor {
     #[must_use]
     #[pyo3(name = "ln")]
     pub fn ln_py(&self) -> Tensor {
-        return self.ln();
+        self.ln()
     }
 
     /// # Errors
@@ -672,91 +670,91 @@ impl Tensor {
     #[must_use]
     #[pyo3(name = "bitnot")]
     pub fn bitnot_py(&self) -> Tensor {
-        return self.bitnot();
+        self.bitnot()
     }
 
     /// Computes the ceiling element-wise.
     #[must_use]
     #[pyo3(name = "ceil")]
     pub fn ceil_py(&self) -> Tensor {
-        return self.ceil();
+        self.ceil()
     }
 
     /// Computes the error function element-wise.
     #[must_use]
     #[pyo3(name = "erf")]
     pub fn erf_py(&self) -> Tensor {
-        return self.erf();
+        self.erf()
     }
 
     /// Computes the fractional part element-wise.
     #[must_use]
     #[pyo3(name = "frac")]
     pub fn frac_py(&self) -> Tensor {
-        return self.frac();
+        self.frac()
     }
 
     /// Returns a boolean tensor indicating which elements are NaN.
     #[must_use]
     #[pyo3(name = "isnan")]
     pub fn isnan_py(&self) -> Tensor {
-        return self.isnan();
+        self.isnan()
     }
 
     /// Returns a boolean tensor indicating which elements are infinity.
     #[must_use]
     #[pyo3(name = "isinf")]
     pub fn isinf_py(&self) -> Tensor {
-        return self.isinf();
+        self.isinf()
     }
 
     /// Computes the base-10 logarithm element-wise.
     #[must_use]
     #[pyo3(name = "log10")]
     pub fn log10_py(&self) -> Tensor {
-        return self.log10();
+        self.log10()
     }
 
     /// Converts angles from radians to degrees element-wise.
     #[must_use]
     #[pyo3(name = "rad2deg")]
     pub fn rad2deg_py(&self) -> Tensor {
-        return self.rad2deg();
+        self.rad2deg()
     }
 
     /// Converts angles from degrees to radians element-wise.
     #[must_use]
     #[pyo3(name = "deg2rad")]
     pub fn deg2rad_py(&self) -> Tensor {
-        return self.deg2rad();
+        self.deg2rad()
     }
 
     /// Rounds to the nearest integer element-wise.
     #[must_use]
     #[pyo3(name = "round")]
     pub fn round_py(&self) -> Tensor {
-        return self.round();
+        self.round()
     }
 
     /// Returns the sign of each element.
     #[must_use]
     #[pyo3(name = "sign")]
     pub fn sign_py(&self) -> Tensor {
-        return self.sign();
+        self.sign()
     }
 
     /// Computes the square element-wise.
     #[must_use]
     #[pyo3(name = "square")]
     pub fn square_py(&self) -> Tensor {
-        return self.square();
+        self.square()
     }
 
     /// Computes the truncated integer element-wise.
     #[must_use]
     #[pyo3(name = "trunc")]
     pub fn trunc_py(&self) -> Tensor {
-        return self.trunc();
+        self.trunc()
     }
 
     /// # Errors
@@ -816,7 +814,7 @@ impl Tensor {
         } else if let Ok(rhs) = rhs.extract::<f64>() {
             self.cmplt(Tensor::from(rhs))
         } else {
-            return Err(ZyxError::DTypeError("unsupported rhs for cmplt".into()));
+            Err(ZyxError::DTypeError("unsupported rhs for cmplt".into()))
         }
     }
 
@@ -829,7 +827,7 @@ impl Tensor {
         } else if let Ok(rhs) = rhs.extract::<f64>() {
             self.cmpgt(Tensor::from(rhs))
         } else {
-            return Err(ZyxError::DTypeError("unsupported rhs for cmpgt".into()));
+            Err(ZyxError::DTypeError("unsupported rhs for cmpgt".into()))
         }
     }
 
@@ -842,7 +840,7 @@ impl Tensor {
         } else if let Ok(rhs) = rhs.extract::<f64>() {
             self.maximum(Tensor::from(rhs))
         } else {
-            return Err(ZyxError::DTypeError("unsupported rhs for maximum".into()));
+            Err(ZyxError::DTypeError("unsupported rhs for maximum".into()))
         }
     }
 
@@ -855,7 +853,7 @@ impl Tensor {
         } else if let Ok(rhs) = rhs.extract::<f64>() {
             self.minimum(Tensor::from(rhs))
         } else {
-            return Err(ZyxError::DTypeError("unsupported rhs for minimum".into()));
+            Err(ZyxError::DTypeError("unsupported rhs for minimum".into()))
         }
     }
 
@@ -868,7 +866,7 @@ impl Tensor {
         } else if let Ok(rhs) = rhs.extract::<f64>() {
             self.equal(Tensor::from(rhs))
         } else {
-            return Err(ZyxError::DTypeError("unsupported rhs for equal".into()));
+            Err(ZyxError::DTypeError("unsupported rhs for equal".into()))
         }
     }
 
@@ -883,7 +881,7 @@ impl Tensor {
             } else if let Ok(max_val) = max.extract::<f64>() {
                 self.clamp(min_tensor, Tensor::from(max_val))
             } else {
-                return Err(ZyxError::DTypeError("unsupported max for clamp".into()));
+                Err(ZyxError::DTypeError("unsupported max for clamp".into()))
             }
         } else if let Ok(min_val) = min.extract::<f64>() {
             if let Ok(max_tensor) = max.extract::<Self>() {
@@ -891,10 +889,10 @@ impl Tensor {
             } else if let Ok(max_val) = max.extract::<f64>() {
                 self.clamp(Tensor::from(min_val), Tensor::from(max_val))
             } else {
-                return Err(ZyxError::DTypeError("unsupported max for clamp".into()));
+                Err(ZyxError::DTypeError("unsupported max for clamp".into()))
             }
         } else {
-            return Err(ZyxError::DTypeError("unsupported min for clamp".into()));
+            Err(ZyxError::DTypeError("unsupported min for clamp".into()))
         }
     }
 
@@ -907,7 +905,7 @@ impl Tensor {
         } else if let Ok(exp_val) = exponent.extract::<f64>() {
             self.pow(Tensor::from(exp_val))
         } else {
-            return Err(ZyxError::DTypeError("unsupported exponent for pow".into()));
+            Err(ZyxError::DTypeError("unsupported exponent for pow".into()))
         }
     }
 
@@ -920,7 +918,7 @@ impl Tensor {
         } else if let Ok(rhs) = rhs.extract::<f64>() {
             self.logical_and(Tensor::from(rhs))
         } else {
-            return Err(ZyxError::DTypeError("unsupported rhs for logical_and".into()));
+            Err(ZyxError::DTypeError("unsupported rhs for logical_and".into()))
         }
     }
 
@@ -933,7 +931,7 @@ impl Tensor {
         } else if let Ok(rhs) = rhs.extract::<f64>() {
             self.logical_or(Tensor::from(rhs))
         } else {
-            return Err(ZyxError::DTypeError("unsupported rhs for logical_or".into()));
+            Err(ZyxError::DTypeError("unsupported rhs for logical_or".into()))
         }
     }
 
@@ -954,7 +952,7 @@ impl Tensor {
             } else if let Ok(false_val) = if_false.extract::<f64>() {
                 self.where_(true_tensor, Tensor::from(false_val))
             } else {
-                return Err(ZyxError::DTypeError("unsupported if_false for where".into()));
+                Err(ZyxError::DTypeError("unsupported if_false for where".into()))
             }
         } else if let Ok(true_val) = if_true.extract::<f64>() {
             if let Ok(false_tensor) = if_false.extract::<Self>() {
@@ -962,10 +960,10 @@ impl Tensor {
             } else if let Ok(false_val) = if_false.extract::<f64>() {
                 self.where_(Tensor::from(true_val), Tensor::from(false_val))
             } else {
-                return Err(ZyxError::DTypeError("unsupported if_false for where".into()));
+                Err(ZyxError::DTypeError("unsupported if_false for where".into()))
             }
         } else {
-            return Err(ZyxError::DTypeError("unsupported if_true for where".into()));
+            Err(ZyxError::DTypeError("unsupported if_true for where".into()))
         }
     }
 
@@ -978,7 +976,7 @@ impl Tensor {
         } else if let Ok(target_val) = target.extract::<f64>() {
             Ok(self.l1_loss(Tensor::from(target_val)))
         } else {
-            return Err(ZyxError::DTypeError("unsupported target for l1_loss".into()));
+            Err(ZyxError::DTypeError("unsupported target for l1_loss".into()))
         }
     }
 
@@ -991,7 +989,7 @@ impl Tensor {
         } else if let Ok(target_val) = target.extract::<f64>() {
             self.mse_loss(Tensor::from(target_val))
         } else {
-            return Err(ZyxError::DTypeError("unsupported target for mse_loss".into()));
+            Err(ZyxError::DTypeError("unsupported target for mse_loss".into()))
         }
     }
 
@@ -1005,7 +1003,7 @@ impl Tensor {
             } else if let Ok(eps_val) = eps.extract::<f64>() {
                 self.cosine_similarity(rhs_tensor, Tensor::from(eps_val))
             } else {
-                return Err(ZyxError::DTypeError("unsupported eps for cosine_similarity".into()));
+                Err(ZyxError::DTypeError("unsupported eps for cosine_similarity".into()))
             }
         } else if let Ok(rhs_val) = rhs.extract::<f64>() {
             if let Ok(eps_tensor) = eps.extract::<Self>() {
@@ -1013,10 +1011,10 @@ impl Tensor {
             } else if let Ok(eps_val) = eps.extract::<f64>() {
                 self.cosine_similarity(Tensor::from(rhs_val), Tensor::from(eps_val))
             } else {
-                return Err(ZyxError::DTypeError("unsupported eps for cosine_similarity".into()));
+                Err(ZyxError::DTypeError("unsupported eps for cosine_similarity".into()))
             }
         } else {
-            return Err(ZyxError::DTypeError("unsupported rhs for cosine_similarity".into()));
+            Err(ZyxError::DTypeError("unsupported rhs for cosine_similarity".into()))
         }
     }
 
@@ -1088,10 +1086,10 @@ impl Tensor {
             } else if let Ok(value_val) = value.extract::<f64>() {
                 self.masked_fill(mask_tensor, Tensor::from(value_val))
             } else {
-                return Err(ZyxError::DTypeError("unsupported value for masked_fill".into()));
+                Err(ZyxError::DTypeError("unsupported value for masked_fill".into()))
             }
         } else {
-            return Err(ZyxError::DTypeError("unsupported mask for masked_fill".into()));
+            Err(ZyxError::DTypeError("unsupported mask for masked_fill".into()))
         }
     }
 
@@ -1220,7 +1218,7 @@ impl Tensor {
         if let Ok(rhs) = rhs.extract::<Self>() {
             self.dot(rhs)
         } else {
-            return Err(ZyxError::DTypeError("unsupported rhs for dot".into()));
+            Err(ZyxError::DTypeError("unsupported rhs for dot".into()))
         }
     }
 
@@ -1231,7 +1229,7 @@ impl Tensor {
         if let Ok(rhs) = rhs.extract::<Self>() {
             self.dot(rhs)
         } else {
-            return Err(ZyxError::DTypeError("unsupported rhs for matmul".into()));
+            Err(ZyxError::DTypeError("unsupported rhs for matmul".into()))
         }
     }
 
@@ -1239,7 +1237,7 @@ impl Tensor {
         if let Ok(rhs) = rhs.extract::<Self>() {
             self.dot(rhs)
         } else {
-            return Err(ZyxError::DTypeError("unsupported rhs for dot".into()));
+            Err(ZyxError::DTypeError("unsupported rhs for dot".into()))
         }
     }
 
@@ -1249,7 +1247,7 @@ impl Tensor {
         } else if let Ok(rhs) = rhs.extract::<f64>() {
             Ok(self + rhs)
         } else {
-            return Err(ZyxError::DTypeError("unsupported rhs for add".into()));
+            Err(ZyxError::DTypeError("unsupported rhs for add".into()))
         }
     }
 
@@ -1259,7 +1257,7 @@ impl Tensor {
         } else if let Ok(rhs) = rhs.extract::<f64>() {
             Ok(self - rhs)
         } else {
-            return Err(ZyxError::DTypeError("unsupported rhs for sub".into()));
+            Err(ZyxError::DTypeError("unsupported rhs for sub".into()))
         }
     }
 
@@ -1269,7 +1267,7 @@ impl Tensor {
         } else if let Ok(rhs) = rhs.extract::<f64>() {
             Ok(self * rhs)
         } else {
-            return Err(ZyxError::DTypeError("unsupported rhs for mul".into()));
+            Err(ZyxError::DTypeError("unsupported rhs for mul".into()))
         }
     }
 
@@ -1279,7 +1277,7 @@ impl Tensor {
         } else if let Ok(rhs) = rhs.extract::<f64>() {
             Ok(self / rhs)
         } else {
-            return Err(ZyxError::DTypeError("unsupported rhs for div".into()));
+            Err(ZyxError::DTypeError("unsupported rhs for div".into()))
         }
     }
 
@@ -1289,7 +1287,7 @@ impl Tensor {
         } else if let Ok(rhs) = rhs.extract::<f64>() {
             Ok(self / rhs)
         } else {
-            return Err(ZyxError::DTypeError("unsupported rhs for truediv".into()));
+            Err(ZyxError::DTypeError("unsupported rhs for truediv".into()))
         }
     }
 
@@ -1321,7 +1319,7 @@ impl Tensor {
     #[must_use]
     #[pyo3(name = "item")]
     pub fn item_py(&self) -> f64 {
-        self.item::<f64>() as f64
+        self.item::<f64>()
     }
 
     /// # Errors
@@ -1478,7 +1476,7 @@ pub fn register_tape(m: &Bound<'_, PyModule>) -> PyResult<()> {
 fn from_numpy<T: crate::Scalar + pyo3::buffer::Element>(obj: &Bound<'_, PyAny>) -> PyResult<Tensor> {
     let buffer = PyBuffer::<T>::get(obj)?;
 
-    let shape: Vec<Dim> = buffer.shape().to_vec().into_iter().map(|s| Dim::try_from(s as usize).unwrap()).collect();
+    let shape: Vec<Dim> = buffer.shape().to_vec().into_iter().map(|s| Dim::try_from(s).unwrap()).collect();
     let strides: Vec<Dim> = buffer.strides().to_vec().into_iter().map(|s| Dim::try_from(s as usize).unwrap()).collect();
     let data = buffer.as_slice(obj.py()).unwrap();
 

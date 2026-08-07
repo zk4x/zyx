@@ -20,17 +20,16 @@ impl Kernel {
     pub fn generate_cuda(&self, _device_info: &DeviceInfo, name: &str) -> Result<String, BackendError> {
         use std::fmt::Write;
 
-        let mut gws = vec![1; 3];
-        let mut lws = vec![1; 3];
+        let mut gws = [1; 3];
+        let mut lws = [1; 3];
         let mut op_id = self.head;
         while !op_id.is_null() {
-            match self.ops[op_id].op {
-                Op::Index { len, axis, scope } => match scope {
+            if let Op::Index { len, axis, scope } = self.ops[op_id].op {
+                match scope {
                     IdxScope::Group => gws[axis as usize] = len,
                     IdxScope::Local => lws[axis as usize] = len,
                     IdxScope::Warp => todo!(),
-                },
-                _ => {}
+                }
             }
             op_id = self.next_op(op_id);
         }
@@ -153,8 +152,7 @@ impl Kernel {
                     } else {
                         match mem_layout {
                             MemLayout::Vector(len) => {
-                                for i in 0..len as usize {
-                                    let c = VEC_COMPONENTS[i];
+                                for &c in VEC_COMPONENTS.iter().take(len as usize) {
                                     _ = writeln!(source, "{indent}r{reg}.{c} = ({}){x_var}.{c};", dtype.cu());
                                 }
                             }
@@ -168,8 +166,7 @@ impl Kernel {
                     let reg = new_reg(op_id, &mut reg_map, &mut registers, dtype, rcs[&op_id], loop_id);
                     match dtype.1 {
                         MemLayout::Vector(len) => {
-                            for i in 0..len as usize {
-                                let c = VEC_COMPONENTS[i];
+                            for &c in VEC_COMPONENTS.iter().take(len as usize) {
                                 _ = match uop {
                                     UOp::BitNot => writeln!(source, "{indent}r{reg}.{c} = ~{x}.{c};"),
                                     UOp::Neg => writeln!(source, "{indent}r{reg}.{c} = -{x}.{c};"),
@@ -228,8 +225,7 @@ impl Kernel {
                     let reg = new_reg(op_id, &mut reg_map, &mut registers, dtype, rcs[&op_id], loop_id);
                     match dtype.1 {
                         MemLayout::Vector(len) => {
-                            for i in 0..len as usize {
-                                let c = VEC_COMPONENTS[i];
+                            for &c in VEC_COMPONENTS.iter().take(len as usize) {
                                 _ = match bop {
                                     BOp::Add => writeln!(source, "{indent}r{reg}.{c} = {x}.{c} + {y}.{c};"),
                                     BOp::Sub => writeln!(source, "{indent}r{reg}.{c} = {x}.{c} - {y}.{c};"),
@@ -308,8 +304,7 @@ impl Kernel {
                     let reg = new_reg(op_id, &mut reg_map, &mut registers, dtype, rcs[&op_id], loop_id);
                     match dtype.1 {
                         MemLayout::Vector(len) => {
-                            for i in 0..len as usize {
-                                let c = VEC_COMPONENTS[i];
+                            for &c in VEC_COMPONENTS.iter().take(len as usize) {
                                 _ = writeln!(source, "{indent}r{reg}.{c} = {x}.{c} * {y}.{c} + {z}.{c};");
                             }
                         }
@@ -376,8 +371,7 @@ impl Kernel {
                         }),
                 }
             );
-            let mut i = 1;
-            for (dt, _, _) in registers {
+            for (i, (dt, _, _)) in (1..).zip(registers) {
                 if dt == prev_dt {
                     _ = write!(reg_str, ", r{i}");
                 } else {
@@ -396,7 +390,6 @@ impl Kernel {
                     );
                 }
                 prev_dt = dt;
-                i += 1;
             }
             _ = writeln!(reg_str, ";");
         }

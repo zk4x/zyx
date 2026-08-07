@@ -501,6 +501,7 @@ fn slice_range_to_clamped() -> Result<(), ZyxError> {
 }
 
 #[test]
+#[allow(clippy::reversed_empty_ranges)] // testing that empty range 3..2 is handled
 fn slice_invalid_range_end_less_than_start() -> Result<(), ZyxError> {
     let x = Tensor::from([1, 2, 3, 4, 5]);
     let result = x.slice(3..2);
@@ -583,7 +584,7 @@ fn gather_with_one_hot_large_dim() -> Result<(), ZyxError> {
     let indices = Tensor::from([0u16, n as u16 - 1, 0, n as u16 / 2]);
     let gathered = x.gather(0, &indices)?;
     let result: Vec<f32> = gathered.try_into()?;
-    let expected = vec![0.0, (n - 1) as f32, 0.0, (n / 2) as f32];
+    let expected = [0.0, (n - 1) as f32, 0.0, (n / 2) as f32];
     for (a, b) in result.iter().zip(expected.iter()) {
         assert!((a - b).abs() < 1e-5, "a={a}, b={b}");
     }

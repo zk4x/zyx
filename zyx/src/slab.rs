@@ -158,8 +158,8 @@ impl<Id: SlabId, T> Slab<Id, T> {
         self.values
             .iter_mut()
             .enumerate()
-            .filter(|(id, _)| !self.empty.contains(&(Id::try_from(*id).unwrap())))
-            .map(|(id, x)| (Id::try_from(id).unwrap(), unsafe { x.assume_init_mut() }))
+            .filter(|(id, _)| !self.empty.contains(&(Id::from(*id))))
+            .map(|(id, x)| (Id::from(id), unsafe { x.assume_init_mut() }))
     }
 
     /*pub(crate) fn first_id(&self) -> Id {
@@ -273,12 +273,11 @@ impl<Id: SlabId, T: PartialOrd> PartialOrd for Slab<Id, T> {
         let mut iter = self.iter().zip(other.iter());
         if let Some((x, y)) = iter.next() {
             let res = x.partial_cmp(&y);
-            if let Some(res) = res {
-                if res == std::cmp::Ordering::Equal {
-                    if x.eq(&y) {
-                        return Some(std::cmp::Ordering::Equal);
-                    }
-                }
+            if let Some(res) = res
+                && res == std::cmp::Ordering::Equal
+                && x.eq(&y)
+            {
+                return Some(std::cmp::Ordering::Equal);
             }
             res
         } else {

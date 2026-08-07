@@ -120,8 +120,7 @@ impl Kernel {
                     let reg = new_reg(op_id, &mut reg_map, &mut registers, (dtype, layout), rcs[&op_id], loop_id);
                     match layout {
                         MemLayout::Vector(len) => {
-                            for i in 0..len as usize {
-                                let c = VEC_COMPONENTS[i];
+                            for &c in VEC_COMPONENTS.iter().take(len as usize) {
                                 _ = writeln!(source, "{indent}r{reg}.{c} = ({}){x}.{c};", dtype.ocl());
                             }
                         }
@@ -134,8 +133,7 @@ impl Kernel {
                     let reg = new_reg(op_id, &mut reg_map, &mut registers, dtype, rcs[&op_id], loop_id);
                     match dtype.1 {
                         MemLayout::Vector(len) => {
-                            for i in 0..len as usize {
-                                let c = VEC_COMPONENTS[i];
+                            for &c in VEC_COMPONENTS.iter().take(len as usize) {
                                 _ = match uop {
                                     UOp::BitNot => writeln!(source, "{indent}r{reg}.{c} = ~{x}.{c};"),
                                     UOp::Neg => writeln!(source, "{indent}r{reg}.{c} = -{x}.{c};"),
@@ -245,8 +243,7 @@ impl Kernel {
                     let reg = new_reg(op_id, &mut reg_map, &mut registers, dtype, rcs[&op_id], loop_id);
                     match dtype.1 {
                         MemLayout::Vector(len) => {
-                            for i in 0..len as usize {
-                                let c = VEC_COMPONENTS[i];
+                            for &c in VEC_COMPONENTS.iter().take(len as usize) {
                                 _ = match bop {
                                     BOp::Add => writeln!(source, "{indent}r{reg}.{c} = {x}.{c} + {y}.{c};"),
                                     BOp::Sub => writeln!(source, "{indent}r{reg}.{c} = {x}.{c} - {y}.{c};"),
@@ -307,8 +304,7 @@ impl Kernel {
                     let reg = new_reg(op_id, &mut reg_map, &mut registers, dtype, rcs[&op_id], loop_id);
                     match dtype.1 {
                         MemLayout::Vector(len) => {
-                            for i in 0..len as usize {
-                                let c = VEC_COMPONENTS[i];
+                            for &c in VEC_COMPONENTS.iter().take(len as usize) {
                                 _ = writeln!(source, "{indent}r{reg}.{c} = {x}.{c} * {y}.{c} + {z}.{c};");
                             }
                         }
@@ -364,8 +360,7 @@ impl Kernel {
                         }),
                 }
             );
-            let mut i = 1;
-            for (dt, _, _) in registers {
+            for (i, (dt, _, _)) in (1..).zip(registers) {
                 if dt == prev_dt {
                     _ = write!(reg_str, ", r{i}");
                 } else {
@@ -384,7 +379,6 @@ impl Kernel {
                     );
                 }
                 prev_dt = dt;
-                i += 1;
             }
             _ = writeln!(reg_str, ";");
         }

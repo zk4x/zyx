@@ -58,7 +58,7 @@ impl Kernel {
             if let Op::Index { len, axis, scope: IdxScope::Group } = self.ops[op_id].op {
                 let mut l_factors: Vec<u64> = vec![64, 32, 16, 8, 4, 2];
                 if !local_axis_sizes.contains_key(&axis) {
-                    let max_per_axis = dev_info.max_local_work_dims[axis as usize] as u64;
+                    let max_per_axis = dev_info.max_local_work_dims[axis as usize];
                     l_factors.retain(|&f| len.is_multiple_of(f) && f <= remaining_threads && f <= max_per_axis);
                     for &f in &l_factors {
                         factors.push((op_id, f));
@@ -152,7 +152,7 @@ impl Kernel {
         let mut split_ids: Vec<OpId> = Vec::new();
         let mut acc = self.insert_before(dim_id, Op::Const(Constant::idx(0)));
         for (&st, op) in strides.iter().zip(splits) {
-            let x = self.insert_before(dim_id, Op::Const(Constant::idx(st as u64)));
+            let x = self.insert_before(dim_id, Op::Const(Constant::idx(st)));
             let y = self.insert_before(dim_id, op);
             acc = self.insert_before(dim_id, Op::Mad { x, y, z: acc });
             split_ids.push(y);

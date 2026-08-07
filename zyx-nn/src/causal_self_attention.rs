@@ -67,7 +67,7 @@ impl CausalSelfAttention {
         y = y.transpose(1, 2)?.reshape([b, t, c])?;
         y = self.c_proj.forward(y)?;
         //y = y.dropout(self.dropout_p)?;
-        return Ok(y);
+        Ok(y)
     }
 }
 

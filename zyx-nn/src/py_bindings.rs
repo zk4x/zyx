@@ -24,10 +24,16 @@ fn to_sh(shape: &Bound<'_, PyTuple>) -> Vec<u64> {
         let first = shape.get_item(0).unwrap();
         if first.is_instance_of::<PyList>() || first.is_instance_of::<PyTuple>() {
             let iter = PyIterator::from_object(&first).unwrap();
-            return iter.filter_map(|item| item.ok().and_then(|v| v.extract::<u64>().ok())).collect();
+            return iter
+                .filter_map(|item| item.ok().and_then(|v| v.extract::<u64>().ok()))
+                .collect();
         }
     }
-    shape.as_slice().iter().filter_map(|x| x.extract::<u64>().ok()).collect()
+    shape
+        .as_slice()
+        .iter()
+        .filter_map(|x| x.extract::<u64>().ok())
+        .collect()
 }
 
 /// Python bindings for Linear layer.
@@ -37,7 +43,12 @@ impl Linear {
     /// Create a new Linear layer.
     #[new]
     #[pyo3(signature = (in_features, out_features, bias=true, dtype=DType::F32))]
-    pub fn py_new(in_features: u64, out_features: u64, bias: bool, dtype: DType) -> ZyxResult<Self> {
+    pub fn py_new(
+        in_features: u64,
+        out_features: u64,
+        bias: bool,
+        dtype: DType,
+    ) -> ZyxResult<Self> {
         Self::new(in_features, out_features, bias, dtype)
     }
 
@@ -72,7 +83,17 @@ impl Conv2d {
         bias: bool,
         dtype: DType,
     ) -> ZyxResult<Self> {
-        Self::new(in_channels, out_channels, to_sh_from_tuple(kernel_size), to_sh_from_tuple(stride), to_sh_from_tuple(padding), to_sh_from_tuple(dilation), groups, bias, dtype)
+        Self::new(
+            in_channels,
+            out_channels,
+            to_sh_from_tuple(kernel_size),
+            to_sh_from_tuple(stride),
+            to_sh_from_tuple(padding),
+            to_sh_from_tuple(dilation),
+            groups,
+            bias,
+            dtype,
+        )
     }
 
     /// Forward pass through the conv2d layer.
@@ -119,8 +140,20 @@ impl LayerNorm {
     /// Create a new LayerNorm layer.
     #[new]
     #[pyo3(signature = (normalized_shape, eps=1e-5, elementwise_affine=true, py_bias=true, dtype=DType::F32))]
-    pub fn py_new(normalized_shape: &Bound<'_, PyTuple>, eps: f64, elementwise_affine: bool, py_bias: bool, dtype: DType) -> ZyxResult<Self> {
-        Self::new(to_sh(normalized_shape), eps, elementwise_affine, py_bias, dtype)
+    pub fn py_new(
+        normalized_shape: &Bound<'_, PyTuple>,
+        eps: f64,
+        elementwise_affine: bool,
+        py_bias: bool,
+        dtype: DType,
+    ) -> ZyxResult<Self> {
+        Self::new(
+            to_sh(normalized_shape),
+            eps,
+            elementwise_affine,
+            py_bias,
+            dtype,
+        )
     }
 
     /// Forward pass through the layer norm layer.
@@ -143,16 +176,43 @@ impl BatchNorm {
     /// Create a new BatchNorm layer.
     #[new]
     #[pyo3(signature = (num_features, eps=1e-5, momentum=0.1, affine=true, track_running_stats=true, dtype=DType::F32))]
-    pub fn py_new(num_features: u64, eps: f64, momentum: f64, affine: bool, track_running_stats: bool, dtype: DType) -> Self {
+    pub fn py_new(
+        num_features: u64,
+        eps: f64,
+        momentum: f64,
+        affine: bool,
+        track_running_stats: bool,
+        dtype: DType,
+    ) -> Self {
         Self {
             eps: eps as f32,
             momentum: momentum as f32,
             track_running_stats,
-            weight: if affine { Some(Tensor::ones(num_features, dtype)) } else { None },
-            bias: if affine { Some(Tensor::zeros(num_features, dtype)) } else { None },
-            running_mean: if track_running_stats { Tensor::zeros(num_features, dtype) } else { Tensor::zeros(0, dtype) },
-            running_var: if track_running_stats { Tensor::ones(num_features, dtype) } else { Tensor::zeros(0, dtype) },
-            num_batches_tracked: if track_running_stats { Tensor::zeros(1, dtype) } else { Tensor::zeros(0, dtype) },
+            weight: if affine {
+                Some(Tensor::ones(num_features, dtype))
+            } else {
+                None
+            },
+            bias: if affine {
+                Some(Tensor::zeros(num_features, dtype))
+            } else {
+                None
+            },
+            running_mean: if track_running_stats {
+                Tensor::zeros(num_features, dtype)
+            } else {
+                Tensor::zeros(0, dtype)
+            },
+            running_var: if track_running_stats {
+                Tensor::ones(num_features, dtype)
+            } else {
+                Tensor::zeros(0, dtype)
+            },
+            num_batches_tracked: if track_running_stats {
+                Tensor::zeros(1, dtype)
+            } else {
+                Tensor::zeros(0, dtype)
+            },
         }
     }
 }
@@ -164,7 +224,13 @@ impl GroupNorm {
     /// Create a new GroupNorm layer.
     #[new]
     #[pyo3(signature = (num_groups, num_channels, eps=1e-5, affine=true, dtype=DType::F32))]
-    pub fn py_new(num_groups: u64, num_channels: u64, eps: f64, affine: bool, dtype: DType) -> ZyxResult<Self> {
+    pub fn py_new(
+        num_groups: u64,
+        num_channels: u64,
+        eps: f64,
+        affine: bool,
+        dtype: DType,
+    ) -> ZyxResult<Self> {
         // Note: zyx-nn GroupNorm::new hardcodes eps=1e-5 internally, we pass it through affine and dtype
         // The eps is already set to 1e-5 in the struct by default, matching PyTorch
         let _ = eps; // eps is 1e-5 by default in both
@@ -216,7 +282,13 @@ impl CausalSelfAttention {
     /// Create a new CausalSelfAttention layer.
     #[new]
     #[pyo3(signature = (embed_dim, num_heads, bias=true, dropout=0.0, dtype=DType::F32))]
-    pub fn py_new(embed_dim: u64, num_heads: u64, bias: bool, dropout: f32, dtype: DType) -> ZyxResult<Self> {
+    pub fn py_new(
+        embed_dim: u64,
+        num_heads: u64,
+        bias: bool,
+        dropout: f32,
+        dtype: DType,
+    ) -> ZyxResult<Self> {
         Self::new(embed_dim, num_heads, bias, dropout, dtype)
     }
 
@@ -252,19 +324,58 @@ impl MultiheadAttention {
         batch_first: bool,
         dtype: DType,
     ) -> ZyxResult<Self> {
-        Self::new(embed_dim, num_heads, dropout, bias, add_bias_kv, add_zero_attn, kdim, vdim, batch_first, dtype)
+        Self::new(
+            embed_dim,
+            num_heads,
+            dropout,
+            bias,
+            add_bias_kv,
+            add_zero_attn,
+            kdim,
+            vdim,
+            batch_first,
+            dtype,
+        )
     }
 
     /// Forward pass through the multihead attention layer.
     #[pyo3(name = "forward")]
-    pub fn forward_py(&self, query: &Tensor, key: &Tensor, value: &Tensor) -> ZyxResult<(Tensor, Option<Tensor>)> {
-        self.forward(query.clone(), key.clone(), value.clone(), None::<Tensor>, true, None::<Tensor>, true, false)
+    pub fn forward_py(
+        &self,
+        query: &Tensor,
+        key: &Tensor,
+        value: &Tensor,
+    ) -> ZyxResult<(Tensor, Option<Tensor>)> {
+        self.forward(
+            query.clone(),
+            key.clone(),
+            value.clone(),
+            None::<Tensor>,
+            true,
+            None::<Tensor>,
+            true,
+            false,
+        )
     }
 
     /// Call the multihead attention layer (alias for forward).
     #[pyo3(name = "__call__")]
-    pub fn call_py(&self, query: &Tensor, key: &Tensor, value: &Tensor) -> ZyxResult<(Tensor, Option<Tensor>)> {
-        self.forward(query.clone(), key.clone(), value.clone(), None::<Tensor>, true, None::<Tensor>, true, false)
+    pub fn call_py(
+        &self,
+        query: &Tensor,
+        key: &Tensor,
+        value: &Tensor,
+    ) -> ZyxResult<(Tensor, Option<Tensor>)> {
+        self.forward(
+            query.clone(),
+            key.clone(),
+            value.clone(),
+            None::<Tensor>,
+            true,
+            None::<Tensor>,
+            true,
+            false,
+        )
     }
 }
 
@@ -310,7 +421,18 @@ impl TransformerEncoderLayer {
         bias: bool,
         dtype: DType,
     ) -> ZyxResult<Self> {
-        Self::new(d_model, nhead, dim_feedforward, dropout, |t| t.relu(), layer_norm_eps, batch_first, norm_first, bias, dtype)
+        Self::new(
+            d_model,
+            nhead,
+            dim_feedforward,
+            dropout,
+            |t| t.relu(),
+            layer_norm_eps,
+            batch_first,
+            norm_first,
+            bias,
+            dtype,
+        )
     }
 
     /// Forward pass through the transformer encoder layer.
@@ -344,19 +466,48 @@ impl TransformerDecoderLayer {
         bias: bool,
         dtype: DType,
     ) -> ZyxResult<Self> {
-        Self::new(d_model, nhead, dim_feedforward, dropout, |t| t.relu(), layer_norm_eps, batch_first, norm_first, bias, dtype)
+        Self::new(
+            d_model,
+            nhead,
+            dim_feedforward,
+            dropout,
+            |t| t.relu(),
+            layer_norm_eps,
+            batch_first,
+            norm_first,
+            bias,
+            dtype,
+        )
     }
 
     /// Forward pass through the transformer decoder layer.
     #[pyo3(name = "forward")]
     pub fn forward_py(&self, tgt: &Tensor, memory: &Tensor) -> ZyxResult<Tensor> {
-        self.forward(tgt, memory, None::<Tensor>, None::<Tensor>, None::<Tensor>, None::<Tensor>, false, false)
+        self.forward(
+            tgt,
+            memory,
+            None::<Tensor>,
+            None::<Tensor>,
+            None::<Tensor>,
+            None::<Tensor>,
+            false,
+            false,
+        )
     }
 
     /// Call the transformer decoder layer (alias for forward).
     #[pyo3(name = "__call__")]
     pub fn call_py(&self, tgt: &Tensor, memory: &Tensor) -> ZyxResult<Tensor> {
-        self.forward(tgt, memory, None::<Tensor>, None::<Tensor>, None::<Tensor>, None::<Tensor>, false, false)
+        self.forward(
+            tgt,
+            memory,
+            None::<Tensor>,
+            None::<Tensor>,
+            None::<Tensor>,
+            None::<Tensor>,
+            false,
+            false,
+        )
     }
 }
 
@@ -367,7 +518,13 @@ impl RNNCell {
     /// Create a new RNNCell.
     #[new]
     #[pyo3(signature = (input_size, hidden_size, bias=true, nonlinearity="tanh", dtype=DType::F32))]
-    pub fn py_new(input_size: u64, hidden_size: u64, bias: bool, nonlinearity: &str, dtype: DType) -> ZyxResult<Self> {
+    pub fn py_new(
+        input_size: u64,
+        hidden_size: u64,
+        bias: bool,
+        nonlinearity: &str,
+        dtype: DType,
+    ) -> ZyxResult<Self> {
         let s = String::from(nonlinearity);
         Self::new(input_size, hidden_size, bias, s.leak(), Some(dtype))
     }

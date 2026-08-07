@@ -163,7 +163,7 @@ impl Optimization {
                 let mut remaining_reduce = config / n_global_options;
 
                 let mut reduce_indices: Vec<usize> = Vec::with_capacity(n_reduce);
-                for (_, factors) in reduce_splits.iter() {
+                for factors in reduce_splits.values() {
                     let n_options = factors.len();
                     let factor_idx = remaining_reduce % n_options;
                     remaining_reduce /= n_options;
@@ -171,7 +171,7 @@ impl Optimization {
                 }
 
                 let mut global_indices: Vec<usize> = Vec::with_capacity(n_global);
-                for (_, factors) in thread_coarses.iter() {
+                for factors in thread_coarses.values() {
                     let n_options = factors.len() + 1;
                     let factor_idx = remaining_global % n_options;
                     remaining_global /= n_options;
@@ -186,14 +186,12 @@ impl Optimization {
                 }
 
                 // Then apply thread coarsing
-                let mut idx = 0;
-                for (op_id, factors) in thread_coarses.iter() {
+                for (idx, (op_id, factors)) in thread_coarses.iter().enumerate() {
                     let factor_idx = global_indices[idx];
                     let factor = if factor_idx == 0 { 1 } else { factors[factor_idx - 1] };
                     if factor > 1 {
                         _ = write!(info, ", thread coarse gidx op_id={op_id} by {factor}");
                     }
-                    idx += 1;
                 }
                 println!("{info}");
             }
@@ -407,6 +405,7 @@ impl Kernel {
 
     /// Autotune for debugging, applying only a selected series of optimizations
     #[allow(unused)]
+    #[allow(clippy::too_many_arguments)] // autotune internal API, arguments are kernel parameters
     pub(crate) fn apply_selected_optimizations(
         &self,
         device: &mut Device,
@@ -473,6 +472,7 @@ impl Kernel {
     /// # Returns
     ///
     /// Returns the best program ID and optimization sequence found.
+    #[allow(clippy::too_many_arguments)] // autotune internal API, arguments are kernel parameters
     pub(crate) fn autotune_(
         &self,
         device: &mut Device,
@@ -702,6 +702,7 @@ impl Kernel {
     /// # Returns
     ///
     /// Returns a tuple of (program_id, nanoseconds) or an error.
+    #[allow(clippy::too_many_arguments)] // autotune internal API, arguments are kernel parameters
     pub(crate) fn launch_with_timings(
         &self,
         buffers: &[PoolBufferId],

@@ -66,6 +66,7 @@ impl MultiheadAttention {
     ///
     /// # Returns
     /// A configured `MultiheadAttention` module, or error on shape issues.
+    #[allow(clippy::too_many_arguments)] // mirrors PyTorch API with multiple config parameters
     pub fn new(
         embed_dim: u64,
         num_heads: u64,
@@ -78,7 +79,7 @@ impl MultiheadAttention {
         batch_first: bool,
         dtype: DType,
     ) -> Result<Self, ZyxError> {
-        if embed_dim % num_heads != 0 {
+        if !embed_dim.is_multiple_of(num_heads) {
             return Err(ZyxError::shape_error(
                 format!(
                     "embed_dim ({}) must be divisible by num_heads ({})",
@@ -129,6 +130,7 @@ impl MultiheadAttention {
     }
 
     /// Multi head attention
+    #[allow(clippy::too_many_arguments)] // mirrors PyTorch API with multiple config parameters
     pub fn forward(
         &self,
         query: impl Into<Tensor>,

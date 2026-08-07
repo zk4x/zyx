@@ -680,7 +680,7 @@ fn softmax_1() -> Result<(), ZyxError> {
     //assert_eq!(y, [0.09003056585788726807, 0.66524088382720947266, 0.24472846090793609619]);
     let y = x.softmax([])?;
     //println!("{y}");
-    assert_eq!(y, [0.09003056585788726807f32, 0.66524088382720947266, 0.24472846090793609619,]);
+    assert_eq!(y, [0.090_030_566_f32, 0.665_240_9, 0.244_728_46,]);
     //Tensor::plot_graph([], "graph").unwrap();
     Ok(())
 }
@@ -738,13 +738,7 @@ fn multiple_stores() -> Result<(), ZyxError> {
     let y = x.ln();
     let z = y.tanh();
     //println!("{z:.14}");
-    assert_eq!(
-        z,
-        [
-            [0.8000000119f32, 0.8823529482, 0.6000000238],
-            [0.9230769277, 0.8823529482, 0.0000000000]
-        ]
-    );
+    assert_eq!(z, [[0.8_f32, 0.882_352_95, 0.6], [0.923_076_9, 0.882_352_95, 0.0000000000]]);
     Ok(())
 }
 
@@ -979,7 +973,7 @@ fn complex_movement_reduce() -> Result<(), ZyxError> {
 #[test]
 fn mean1() -> Result<(), ZyxError> {
     let x = Tensor::from([[1i32, 2, 3], [4, 5, 6]]);
-    let mean = x.sum([1])? * 0.3333333333333f32;
+    let mean = x.sum([1])? * 0.333_333_34_f32;
     //assert_eq!(mean, [2f32, 5.]);
     let y = x - mean.reshape([2, 1])?;
     //panic!("{y}");
@@ -1047,18 +1041,18 @@ fn softmax_2() -> Result<(), ZyxError> {
     assert_eq!(
         y,
         [
-            [0.0450152867f32, 0.3326204717, 0.1223642379],
-            [0.3326204717, 0.0450152867, 0.1223642379]
+            [0.045_015_287_f32, 0.332_620_47, 0.122_364_24],
+            [0.332_620_47, 0.045_015_287, 0.122_364_24]
         ]
     );
     let y = x.softmax([0])?;
-    assert_eq!(y, [[0.1192029193f32, 0.8807970285, 0.5], [0.8807970285, 0.1192029193, 0.5]]);
+    assert_eq!(y, [[0.119_202_92_f32, 0.880_797, 0.5], [0.880_797, 0.119_202_92, 0.5]]);
     let y = x.softmax([1])?;
     assert_eq!(
         y,
         [
-            [0.0900305659f32, 0.6652408838, 0.2447284609],
-            [0.6652408838, 0.0900305659, 0.2447284609]
+            [0.090_030_566_f32, 0.665_240_9, 0.244_728_46],
+            [0.665_240_9, 0.090_030_566, 0.244_728_46]
         ]
     );
     Ok(())
@@ -1422,8 +1416,8 @@ fn zz_bw_relu_matmul() -> Result<(), ZyxError> {
     let w2 = Tensor::randn([10, 128], DType::F32)?;
     let b2 = Tensor::randn([10], DType::F32)?;
     let tape = Tape::new([&w1, &b1, &w2, &b2])?;
-    let l1 = (x.matmul(&w1.t())? + &b1).relu();
-    let logits = l1.matmul(&w2.t())? + &b2;
+    let l1 = (x.matmul(w1.t())? + &b1).relu();
+    let logits = l1.matmul(w2.t())? + &b2;
     let loss = logits.sum_all();
     let grads = tape.gradient(&loss, [&w1, &b1, &w2, &b2, &loss]);
     let lr = 0.01f32;
@@ -1447,9 +1441,9 @@ fn zz_bw_relu_matmul_manual() -> Result<(), ZyxError> {
     let tape = Tape::new([&w1, &b1, &w2, &b2])?;
 
     // Forward.
-    let z1 = x.matmul(&w1.t())? + &b1;
+    let z1 = x.matmul(w1.t())? + &b1;
     let l1 = z1.relu();
-    let logits = l1.matmul(&w2.t())? + &b2;
+    let logits = l1.matmul(w2.t())? + &b2;
     let loss = logits.sum_all();
 
     // Manual backprop replicating autograd's outer-product broadcast pattern.

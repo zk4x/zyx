@@ -52,6 +52,7 @@ impl TransformerEncoderLayer {
     /// # Returns
     ///
     /// A `Result` containing the initialized `TransformerEncoderLayer` or a `ZyxError`.
+    #[allow(clippy::too_many_arguments)] // mirrors PyTorch API with multiple config parameters
     pub fn new(
         d_model: u64,
         nhead: u64,

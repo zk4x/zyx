@@ -79,7 +79,7 @@ impl PositionalEncoding {
         }
 
         // Pad if d_model is odd
-        if d_model % 2 != 0 {
+        if !d_model.is_multiple_of(2) {
             let pad = sin_part
                 .slice((0..max_len, d_model / 2 - 1))?
                 .unsqueeze(1)?;

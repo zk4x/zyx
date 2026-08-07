@@ -114,7 +114,7 @@ impl Tensor {
                                 format!("Slice range end {e} is less than start {s} for dimension {axis}").into(),
                             ));
                         }
-                        Ok((-(s as i64), -((dim_size as i64) - e as i64)))
+                        Ok((-s, -(dim_size - e)))
                     }
                     DimIndex::Index(i) => {
                         squeeze_axes.push(axis as i32);
@@ -124,13 +124,13 @@ impl Tensor {
                                 format!("Index {i} out of bounds for dimension {axis} of size {dim_size}").into(),
                             ));
                         }
-                        Ok((-(i as i64), -((dim_size as i64) - i as i64 - 1)))
+                        Ok((-i, -(dim_size - i - 1)))
                     }
                     DimIndex::RangeFull => Ok((0i64, 0i64)),
                     DimIndex::RangeFrom { start } => {
                         let s = if start < 0 { (start + dim_size).max(0) } else { start };
                         let s = s.min(dim_size);
-                        Ok((-(s as i64), 0i64))
+                        Ok((-s, 0i64))
                     }
                     DimIndex::RangeTo { end } => {
                         let e = if end > dim_size {
@@ -141,7 +141,7 @@ impl Tensor {
                             end
                         };
                         let e = e.min(dim_size).max(0);
-                        Ok((0i64, -((dim_size as i64) - e as i64)))
+                        Ok((0i64, -(dim_size - e)))
                     }
                 }
             })
@@ -197,7 +197,7 @@ impl Tensor {
                                 format!("Slice range end {e} is less than start {s} for dimension {axis}").into(),
                             ));
                         }
-                        Ok((-(s as i64), -((dim_size as i64) - e as i64)))
+                        Ok((-s, -(dim_size - e)))
                     }
                     DimIndex::Index(i) => {
                         squeeze_axes.push(axis as i32);
@@ -207,13 +207,13 @@ impl Tensor {
                                 format!("Index {i} out of bounds for dimension {axis} of size {dim_size}").into(),
                             ));
                         }
-                        Ok((-(i as i64), -((dim_size as i64) - i as i64 - 1)))
+                        Ok((-i, -(dim_size - i - 1)))
                     }
                     DimIndex::RangeFull => Ok((0i64, 0i64)),
                     DimIndex::RangeFrom { start } => {
                         let s = if start < 0 { (start + dim_size).max(0) } else { start };
                         let s = s.min(dim_size);
-                        Ok((-(s as i64), 0i64))
+                        Ok((-s, 0i64))
                     }
                     DimIndex::RangeTo { end } => {
                         let e = if end > dim_size {
@@ -224,7 +224,7 @@ impl Tensor {
                             end
                         };
                         let e = e.min(dim_size).max(0);
-                        Ok((0i64, -((dim_size as i64) - e as i64)))
+                        Ok((0i64, -(dim_size - e)))
                     }
                 }
             })

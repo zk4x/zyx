@@ -484,8 +484,8 @@ impl Graph {
         println!("{}", line);
         for cid in self.classes.ids() {
             let class = &self.classes[cid];
-            let shape_str = format!("{:?}", &shapes[class.shape]);
-            let dtype_str = format!("{:?}", &class.dtype);
+            let shape_str = format!("{:?}", shapes[class.shape]);
+            let dtype_str = format!("{:?}", class.dtype);
             println!("Class {:?} shape={} dtype={}", cid, shape_str, dtype_str);
             for &nid in &class.nodes {
                 let kind = &self.nodes[nid].node;
@@ -521,7 +521,7 @@ impl Graph {
     pub fn add_memory_ops(&mut self, devices: &Slab<DeviceId, Device>, buffer_map: &Map<TensorId, BufferId>) {
         let class_ids: Vec<ClassId> = self.classes.ids().collect();
         for cid in class_ids {
-            let node_ids: Vec<NodeId> = self.classes[cid].nodes.iter().copied().collect();
+            let node_ids: Vec<NodeId> = self.classes[cid].nodes.to_vec();
             for &nid in &node_ids {
                 let (device_id, inputs) = match &self.nodes[nid].node {
                     Node::Kernel { program_id, inputs, .. } => {
@@ -591,10 +591,10 @@ impl Graph {
                         }
                     }
                 }
-                if let Some(new_inputs) = new_inputs {
-                    if let Node::Kernel { inputs: node_inputs, .. } = &mut self.nodes[nid].node {
-                        *node_inputs = new_inputs;
-                    }
+                if let Some(new_inputs) = new_inputs
+                    && let Node::Kernel { inputs: node_inputs, .. } = &mut self.nodes[nid].node
+                {
+                    *node_inputs = new_inputs;
                 }
             }
         }
@@ -676,7 +676,7 @@ impl Graph {
                             let candidate = time + total;
                             for &ocid in outputs {
                                 let oidx = ocid.0 as usize;
-                                if cost[oidx].map_or(true, |c| candidate < c) {
+                                if cost[oidx].is_none_or(|c| candidate < c) {
                                     cost[oidx] = Some(candidate);
                                     producer[oidx] = Some(nid);
                                 }
@@ -686,7 +686,7 @@ impl Graph {
                     Node::ToDevice { x, time, .. } => {
                         if let Some(c) = cost[x.0 as usize] {
                             let candidate = time + c;
-                            if cost[idx].map_or(true, |c| candidate < c) {
+                            if cost[idx].is_none_or(|c| candidate < c) {
                                 cost[idx] = Some(candidate);
                                 producer[idx] = Some(nid);
                             }
@@ -720,11 +720,11 @@ impl Graph {
                             }
                         }
                         eprintln!("]");*/
-                        if let Some(producer_nid) = producer[cid.0 as usize] {
-                            if let Node::Kernel { inputs, .. } = &self.nodes[producer_nid].node {
-                                for icid in inputs.iter() {
-                                    eprintln!("  input {icid:?}: cost={:?}", cost[icid.0 as usize]);
-                                }
+                        if let Some(producer_nid) = producer[cid.0 as usize]
+                            && let Node::Kernel { inputs, .. } = &self.nodes[producer_nid].node
+                        {
+                            for icid in inputs.iter() {
+                                eprintln!("  input {icid:?}: cost={:?}", cost[icid.0 as usize]);
                             }
                         }
                     }
@@ -760,10 +760,10 @@ impl Graph {
             if !needed[cid.0 as usize] {
                 continue;
             }
-            if let Some(nid) = producer[cid.0 as usize] {
-                if seen.insert(nid) {
-                    result.push(nid);
-                }
+            if let Some(nid) = producer[cid.0 as usize]
+                && seen.insert(nid)
+            {
+                result.push(nid);
             }
         }
         result

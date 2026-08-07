@@ -43,7 +43,7 @@ impl Kernel {
                 | Op::PushTile { .. }
                 | Op::PopTile { .. }
                 | Op::Wmma { .. }
-                | Op::Barrier { .. }
+                | Op::Barrier
                 | Op::If { .. }
                 | Op::EndIf
                 | Op::MatmulTile { .. }
@@ -68,10 +68,10 @@ impl Kernel {
                 }
                 Op::Store { dst, x, .. } => {
                     // If we store something that we just loaded, the store is pointless
-                    if let Op::Load { src, .. } = *self.at(x) {
-                        if src == dst {
-                            self.remove_op(op_id);
-                        }
+                    if let Op::Load { src, .. } = *self.at(x)
+                        && src == dst
+                    {
+                        self.remove_op(op_id);
                     }
                 }
                 Op::Cast { x, dtype } => {
@@ -90,10 +90,10 @@ impl Kernel {
                         } else {
                             sub_x
                         };
-                        if let Op::Binary { x: inner_add_x, y: add_y, bop: BOp::Add } = *self.at(add_x) {
-                            if self.constants_equal(add_y, sub_y) {
-                                self.ops[op_id].op = Op::Cast { x: inner_add_x, dtype };
-                            }
+                        if let Op::Binary { x: inner_add_x, y: add_y, bop: BOp::Add } = *self.at(add_x)
+                            && self.constants_equal(add_y, sub_y)
+                        {
+                            self.ops[op_id].op = Op::Cast { x: inner_add_x, dtype };
                         }
                     }
                 }
@@ -152,18 +152,17 @@ impl Kernel {
                         // only when b | a, and to x % a only when a | b. When neither
                         // divides the other the result cannot be reduced to a single mod.
                         BOp::Mod if cy.dtype() == IDX_T => {
-                            if let Op::Binary { bop, x: xi, y: yi } = self.ops[x].op {
-                                if bop == BOp::Mod
-                                    && let Op::Const(ciy) = self.ops[yi].op
-                                    && let (Some(a), Some(b)) = (ciy.as_dim(), cy.as_dim())
-                                    && a != 0
-                                    && b != 0
-                                {
-                                    if a % b == 0 {
-                                        self.ops[op_id].op = Op::Binary { x: xi, y, bop: BOp::Mod };
-                                    } else if b % a == 0 {
-                                        self.ops[op_id].op = Op::Binary { x: xi, y: yi, bop: BOp::Mod };
-                                    }
+                            if let Op::Binary { bop, x: xi, y: yi } = self.ops[x].op
+                                && bop == BOp::Mod
+                                && let Op::Const(ciy) = self.ops[yi].op
+                                && let (Some(a), Some(b)) = (ciy.as_dim(), cy.as_dim())
+                                && a != 0
+                                && b != 0
+                            {
+                                if a % b == 0 {
+                                    self.ops[op_id].op = Op::Binary { x: xi, y, bop: BOp::Mod };
+                                } else if b % a == 0 {
+                                    self.ops[op_id].op = Op::Binary { x: xi, y: yi, bop: BOp::Mod };
                                 }
                             }
                         }
@@ -241,10 +240,10 @@ impl Kernel {
                 }
                 Op::Store { dst, .. } => {
                     //println!("Store to {dst}, loop_level={loop_level}");
-                    if let Some(level) = defines.get(&dst) {
-                        if loop_level > *level {
-                            defines.remove(&dst);
-                        }
+                    if let Some(level) = defines.get(&dst)
+                        && loop_level > *level
+                    {
+                        defines.remove(&dst);
                     }
                 }
                 Op::Loop { .. } => {
@@ -413,7 +412,7 @@ impl Kernel {
                 Op::Store { .. }
                     | Op::Define { .. }
                     | Op::Wmma { .. }
-                    | Op::Barrier { .. }
+                    | Op::Barrier
                     | Op::If { .. }
                     | Op::EndIf
                     | Op::Loop { .. }
@@ -458,7 +457,7 @@ impl Kernel {
         let mut op_id = self.head;
         while !op_id.is_null() {
             match &mut self.ops[op_id].op {
-                Op::Barrier { .. } | Op::Define { .. } => {} // skip define and barrier ops, these can not be deduplicated
+                Op::Barrier | Op::Define { .. } => {} // skip define and barrier ops, these can not be deduplicated
                 Op::If { .. } | Op::Loop { .. } => {
                     stack.push(Map::with_capacity_and_hasher(20, BuildHasherDefault::default()));
                     stored_stack.push(Set::with_capacity_and_hasher(10, BuildHasherDefault::default()));
@@ -599,12 +598,12 @@ impl Kernel {
     pub(crate) fn unfold_pows(&mut self) {
         let mut op_id = self.head;
         while !op_id.is_null() {
-            if let &Op::Binary { x, y, bop } = self.at(op_id) {
-                if bop == BOp::Pow {
-                    let x = self.insert_before(op_id, Op::Unary { x, uop: UOp::Log2 });
-                    let x = self.insert_before(op_id, Op::Binary { x, y, bop: BOp::Mul });
-                    self.ops[op_id].op = Op::Unary { x, uop: UOp::Exp2 };
-                }
+            if let &Op::Binary { x, y, bop } = self.at(op_id)
+                && bop == BOp::Pow
+            {
+                let x = self.insert_before(op_id, Op::Unary { x, uop: UOp::Log2 });
+                let x = self.insert_before(op_id, Op::Binary { x, y, bop: BOp::Mul });
+                self.ops[op_id].op = Op::Unary { x, uop: UOp::Exp2 };
             }
             op_id = self.next_op(op_id);
         }

@@ -17,10 +17,10 @@ fn mnist() -> Result<(), ZyxError> {
     impl MnistNet {
         fn forward(&self, x: &Tensor) -> Tensor {
             let x = x.reshape([0, 784]).unwrap();
-            let x = x.matmul(&self.l1_weight.t()).unwrap() + &self.l1_bias;
+            let x = x.matmul(self.l1_weight.t()).unwrap() + &self.l1_bias;
             let x = x.relu();
-            let x = x.matmul(&self.l2_weight.t()).unwrap() + &self.l2_bias;
-            x
+
+            x.matmul(self.l2_weight.t()).unwrap() + &self.l2_bias
         }
     }
 
@@ -38,12 +38,14 @@ fn mnist() -> Result<(), ZyxError> {
         l2_bias: Tensor::randn([10], DType::F32)?,
     };
 
+    #[allow(clippy::never_loop)] // inner loop breaks after first batch; test verifies single SGD step
+    #[allow(clippy::single_range_in_vec_init)] // slice() accepts array of ranges
     for _ in 0..5 {
-        for i in (0..num_train as u64).step_by(batch_size) {
-            let end = if i + batch_size as u64 <= num_train as u64 {
+        for i in (0..num_train).step_by(batch_size) {
+            let end = if i + batch_size as u64 <= num_train {
                 i + batch_size as u64
             } else {
-                num_train as u64
+                num_train
             };
 
             let x = train_x.slice([i..end])?;

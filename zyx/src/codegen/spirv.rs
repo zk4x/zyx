@@ -26,6 +26,7 @@ const SC_WORKGROUP: u32 = 4;
 
 #[repr(u32)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(clippy::enum_variant_names)]
 pub enum Decoration {
     DecBlock = 2,
     DecArrayStride = 6,
@@ -602,7 +603,7 @@ impl Kernel {
         const_pool.insert(Constant::U32(0), const_u32_0);
 
         // Pre-populate all vector types needed by dtypes, so they're emitted before function body
-        for (_op_id, (dt, layout)) in dtypes.iter() {
+        for (dt, layout) in dtypes.values() {
             if let MemLayout::Vector(len) = layout {
                 let scalar_id = push_dtype(&mut asm, &mut type_cache, &mut type_entries, *dt);
                 push_vec_type(&mut asm, &mut vec_type_cache, &mut type_entries, scalar_id, *len);
@@ -772,30 +773,30 @@ impl Kernel {
                     _ => {}
                 }
                 // Pre-allocate constants for Recip, Abs, and Loop
-                match self.at(op_id) {
-                    &Op::Unary { uop, x } if uop == UOp::Reciprocal => {
+                match *self.at(op_id) {
+                    Op::Unary { uop: UOp::Reciprocal, x } => {
                         let dt = dtypes[&x].0;
                         let one_c = float_one(dt);
-                        if !const_pool.contains_key(&one_c) {
+                        const_pool.entry(one_c).or_insert_with(|| {
                             let tid = type_cache[&dt];
                             let cid = asm.id();
                             let words = const_to_words(&one_c);
                             const_entries.push((tid, cid, words));
-                            const_pool.insert(one_c, cid);
-                        }
+                            cid
+                        });
                     }
-                    &Op::Unary { uop, x } if uop == UOp::Abs && dtypes[&x].0.is_int() && !dtypes[&x].0.is_uint() => {
+                    Op::Unary { uop, x } if uop == UOp::Abs && dtypes[&x].0.is_int() && !dtypes[&x].0.is_uint() => {
                         let dt = dtypes[&x].0;
                         let tid = type_cache[&dt];
                         let zero = dt.zero_constant();
-                        if !const_pool.contains_key(&zero) {
+                        const_pool.entry(zero).or_insert_with(|| {
                             let cid = asm.id();
                             let words = const_to_words(&zero);
                             const_entries.push((tid, cid, words));
-                            const_pool.insert(zero, cid);
-                        }
+                            cid
+                        });
                     }
-                    &Op::Loop { len } => {
+                    Op::Loop { len } => {
                         let len = self.loop_len_dim(len);
                         for &val in &[0u32, 1, len as u32] {
                             let key = match IDX_T {
@@ -809,31 +810,31 @@ impl Kernel {
                                     });
                                 }
                             };
-                            if !const_pool.contains_key(&key) {
+                            const_pool.entry(key).or_insert_with(|| {
                                 let tid = type_cache[&IDX_T];
                                 let cid = asm.id();
                                 let words = const_to_words(&key);
                                 const_entries.push((tid, cid, words));
-                                const_pool.insert(key, cid);
-                            }
+                                cid
+                            });
                         }
                     }
-                    &Op::Barrier { .. } => {
+                    Op::Barrier => {
                         for &val in &[SCOPE_WORKGROUP, SEM_ACQUIRE_RELEASE | SEM_WORKGROUP_MEMORY] {
                             let key = Constant::U32(val);
-                            if !const_pool.contains_key(&key) {
+                            const_pool.entry(key).or_insert_with(|| {
                                 let tid = type_cache[&DType::U32];
                                 let cid = asm.id();
                                 const_entries.push((tid, cid, vec![val]));
-                                const_pool.insert(key, cid);
-                            }
+                                cid
+                            });
                         }
                     }
                     _ => {}
                 }
                 // Track work sizes from Index ops
-                match self.ops[op_id].op {
-                    Op::Index { len, axis, scope } => match scope {
+                if let Op::Index { len, axis, scope } = self.ops[op_id].op {
+                    match scope {
                         IdxScope::Group => {
                             if axis < 3 {
                                 gws[axis as usize] = gws[axis as usize].max(len);
@@ -845,8 +846,7 @@ impl Kernel {
                             }
                         }
                         IdxScope::Warp => todo!(),
-                    },
-                    _ => {}
+                    }
                 }
                 op_id = self.next_op(op_id);
             }
@@ -938,14 +938,14 @@ impl Kernel {
         for (op, id, operands) in &type_entries {
             if *op == OpTypeArray {
                 // OpTypeArray [result_id, element_type, length_const_id]
-                if let Some(&len_cid) = operands.get(1) {
-                    if emitted_consts.insert(len_cid) {
-                        // Find and emit the constant before the array type that references it
-                        for &(ct, cr, ref cw) in &const_entries {
-                            if cr == len_cid {
-                                asm.emit_typed(OpConstant, ct, cr, cw);
-                                break;
-                            }
+                if let Some(&len_cid) = operands.get(1)
+                    && emitted_consts.insert(len_cid)
+                {
+                    // Find and emit the constant before the array type that references it
+                    for &(ct, cr, ref cw) in &const_entries {
+                        if cr == len_cid {
+                            asm.emit_typed(OpConstant, ct, cr, cw);
+                            break;
                         }
                     }
                 }
@@ -1475,7 +1475,7 @@ impl Kernel {
                         let continue_lbl = asm.id();
                         let merge = asm.id();
                         let idx_type = emit_type(&mut asm, &mut type_cache, IDX_T);
-                        let len = self.loop_len_dim(len) as u64;
+                        let len = self.loop_len_dim(len);
 
                         // Pre-header: allocate counter var and store 0, then branch to header
                         let counter_ptr_type = push_ptr_type(&mut asm, &mut ptr_cache, &mut type_entries, SC_FUNCTION, idx_type);
@@ -1814,7 +1814,7 @@ pub fn debug_print(spv: &[u32]) {
             }
             22 => {
                 // TypeFloat
-                if operands.len() >= 1 {
+                if !operands.is_empty() {
                     print!(" %{} {}", operands[0], operands[1]);
                 }
             }

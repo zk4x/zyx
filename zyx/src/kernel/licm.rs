@@ -51,18 +51,19 @@ impl Kernel {
                 }
                 Op::Unary { x, .. } | Op::Cast { x, .. } => loop_dep[&x],
                 Op::Binary { x, y, bop } => {
-                    if bop.is_commutative() && !self.ops[x].op.is_const() {
-                        if loop_dep[&x] > loop_dep[&y] || self.ops[y].op.is_const() || self.ops[x].op.is_load() {
-                            //println!("Swapping {x}, {y}, loop dep {} > {}: {:?}, {:?}", loop_dep[&x], loop_dep[&y], self.ops[x].op, self.ops[y].op);
-                            if let Op::Binary { x, y, .. } = &mut self.ops[op_id].op {
-                                std::mem::swap(x, y);
-                            }
+                    if bop.is_commutative()
+                        && !self.ops[x].op.is_const()
+                        && (loop_dep[&x] > loop_dep[&y] || self.ops[y].op.is_const() || self.ops[x].op.is_load())
+                    {
+                        //println!("Swapping {x}, {y}, loop dep {} > {}: {:?}, {:?}", loop_dep[&x], loop_dep[&y], self.ops[x].op, self.ops[y].op);
+                        if let Op::Binary { x, y, .. } = &mut self.ops[op_id].op {
+                            std::mem::swap(x, y);
                         }
                     }
                     loop_dep[&x].max(loop_dep[&y])
                 }
                 Op::Mad { x, y, z } => loop_dep[&x].max(loop_dep[&y]).max(loop_dep[&z]),
-                Op::Barrier { .. }
+                Op::Barrier
                 | Op::Index { .. }
                 | Op::Load { .. }
                 | Op::Store { .. }
@@ -96,9 +97,9 @@ impl Kernel {
                 Op::Move { .. } | Op::LoadView { .. } | Op::StoreView { .. } | Op::Reduce { .. } => {
                     unreachable!()
                 }
-                Op::ReduceTile { x, .. } => loop_dep[&x],
-                Op::MatmulTile { x, y } => loop_dep[&x].max(loop_dep[&y]),
-                Op::TransposeTile { x } => loop_dep[&x],
+                Op::ReduceTile { x, .. } => loop_dep[x],
+                Op::MatmulTile { x, y } => loop_dep[x].max(loop_dep[y]),
+                Op::TransposeTile { x } => loop_dep[x],
                 Op::Vectorize { ops } => {
                     let mut max = 0;
                     for op in ops {
@@ -119,7 +120,7 @@ impl Kernel {
                 Op::Unary { x, .. } | Op::Cast { x, .. } => loop_dep[x],
                 Op::Binary { x, y, .. } => loop_dep[x].max(loop_dep[y]),
                 Op::Index { .. }
-                | Op::Barrier { .. }
+                | Op::Barrier
                 | Op::PushTile { .. }
                 | Op::PopTile { .. }
                 | Op::Load { .. }
@@ -145,12 +146,12 @@ impl Kernel {
                 let mut params = vec![op_id];
                 let mut chain = Vec::new();
                 while let Some(param) = params.pop() {
-                    if let &Op::Binary { x, y, bop: t_bop } = self.at(param) {
-                        if t_bop == bop {
-                            params.push(x);
-                            params.push(y);
-                            continue;
-                        }
+                    if let &Op::Binary { x, y, bop: t_bop } = self.at(param)
+                        && t_bop == bop
+                    {
+                        params.push(x);
+                        params.push(y);
+                        continue;
                     }
                     chain.push(param);
                     // We have to be somewhat reasonabe about those chains
@@ -213,7 +214,7 @@ impl Kernel {
                             | Op::Loop { .. }
                             | Op::EndLoop
                             | Op::Define { .. }
-                            | Op::Barrier { .. }
+                            | Op::Barrier
                             | Op::If { .. }
                             | Op::EndIf
                     ) && op.parameters().all(|op_id| !op_ids_in_loop.contains(&op_id))

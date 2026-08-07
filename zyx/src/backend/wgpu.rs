@@ -203,7 +203,7 @@ impl WGPUMemoryPool {
         }
         let buffer = self.device.create_buffer(&BufferDescriptor {
             label: None,
-            size: bytes as u64,
+            size: bytes,
             usage: BufferUsages::from_bits_truncate(
                 BufferUsages::STORAGE.bits() | BufferUsages::COPY_SRC.bits() | BufferUsages::COPY_DST.bits(),
             ),
@@ -356,7 +356,7 @@ impl WGPUMemoryPool {
             if let Event::WGPU(event) = event {
                 _ = self
                     .device
-                    .poll(PollType::Wait { submission_index: event.submission_index, timeout: Some(Duration::from_mins(5)) });
+                    .poll(PollType::Wait { submission_index: event.submission_index, timeout: Some(Duration::from_secs(300)) });
             }
         }
         Ok(())
@@ -398,16 +398,15 @@ impl WGPUDevice {
 
     pub fn compile(&mut self, kernel: &Kernel, debug_asm: bool) -> Result<DeviceProgramId, BackendError> {
         let mut gws = vec![Dim::from(1u64); 3];
-        let mut lws = vec![Dim::from(1u64); 3];
+        let mut lws = [Dim::from(1u64); 3];
         let mut op_id = kernel.head;
         while !op_id.is_null() {
-            match kernel.ops[op_id].op {
-                Op::Index { len, axis, scope } => match scope {
+            if let Op::Index { len, axis, scope } = kernel.ops[op_id].op {
+                match scope {
                     IdxScope::Group => gws[axis as usize] = len,
                     IdxScope::Local => lws[axis as usize] = len,
                     IdxScope::Warp => todo!(),
-                },
-                _ => {}
+                }
             }
             op_id = kernel.next_op(op_id);
         }
@@ -419,7 +418,7 @@ impl WGPUDevice {
             source: wgpu::ShaderSource::SpirV(std::borrow::Cow::Owned(spirv_words)),
         });
 
-        if lws.iter().product::<u64>() > self.dev_info.max_local_threads as u64 {
+        if lws.iter().product::<u64>() > self.dev_info.max_local_threads {
             return Err(BackendError { status: ErrorStatus::KernelCompilation, context: "Invalid local work size.".into() });
         }
 
@@ -433,10 +432,10 @@ impl WGPUDevice {
         let mut arg_ro_flags = Vec::new();
         let mut op_id = kernel.head;
         while !op_id.is_null() {
-            if let &Op::Define { dtype: _, scope, ro, len: _ } = kernel.at(op_id) {
-                if scope == MemScope::Global {
-                    arg_ro_flags.push(ro);
-                }
+            if let &Op::Define { dtype: _, scope, ro, len: _ } = kernel.at(op_id)
+                && scope == MemScope::Global
+            {
+                arg_ro_flags.push(ro);
             }
             op_id = kernel.next_op(op_id);
         }

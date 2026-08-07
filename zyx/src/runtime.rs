@@ -571,7 +571,7 @@ impl Runtime {
                 let in_shape = &self.shapes[self.graphs[graph_id].classes[x].shape];
                 for &a in axes.iter() {
                     assert!(
-                        (a as usize) < in_shape.len(),
+                        a < in_shape.len(),
                         "Reduce: axis {} out of range for input rank {} (shape {:?})",
                         a,
                         in_shape.len(),
@@ -674,12 +674,12 @@ impl Runtime {
 
         self.initialize_devices()?;
         debug_assert_eq!(shape.iter().product::<Dim>(), data.len() as Dim);
-        let bytes = (data.len() * dtype.bit_size() as usize + 7) / 8;
-        debug_assert_eq!(data.len() * std::mem::size_of::<T>(), bytes as usize);
+        let bytes = (data.len() * dtype.bit_size() as usize).div_ceil(8);
+        debug_assert_eq!(data.len() * std::mem::size_of::<T>(), bytes);
 
         // Convert to Box<[u8]>
         let ptr = (Box::into_raw(data) as *mut T) as *mut u8;
-        let slice = std::ptr::slice_from_raw_parts_mut(ptr, bytes as usize);
+        let slice = std::ptr::slice_from_raw_parts_mut(ptr, bytes);
         let data = unsafe { Box::from_raw(slice) };
 
         // Store to Host memory
@@ -710,7 +710,7 @@ impl Runtime {
         offset_bytes: u64,
     ) -> Result<TensorId, ZyxError> {
         self.initialize_devices()?;
-        let bytes: Dim = (shape.iter().product::<Dim>() * dtype.bit_size() as Dim + 7) / 8;
+        let bytes: Dim = (shape.iter().product::<Dim>() * dtype.bit_size() as Dim).div_ceil(8);
 
         let pool = self.pools[PoolId::DISK]
             .disk_pool()
@@ -812,7 +812,8 @@ impl Runtime {
                                 self.add_store(otid)?;
                             }
                         }
-                        let class_id = if !self.tensors[load_tid].class_id.is_null()
+
+                        if !self.tensors[load_tid].class_id.is_null()
                             && self.tensors[load_tid].graph_id == graph_id
                             && !self.graphs[graph_id].dead
                         {
@@ -827,8 +828,7 @@ impl Runtime {
                             self.tensors[load_tid].class_id = class_id;
                             self.tensors[load_tid].graph_id = graph_id;
                             class_id
-                        };
-                        class_id
+                        }
                     }
                     Op::Const(x) => {
                         let shape_id = self.push_shape(vec![1]);
@@ -1172,6 +1172,7 @@ impl Runtime {
         }
     }
 
+    #[allow(clippy::wrong_self_convention)] // naming convention from GPU API, not a conversion method
     pub fn to_device(&mut self, x: TensorId, device_id: DeviceId) -> Result<TensorId, ZyxError> {
         #[cfg(feature = "debug_tensor_op")]
         println!("runtime::to_device(x={x}, device_id={device_id:?})");
@@ -1209,11 +1210,11 @@ impl Runtime {
             let (kid, mut op_id) = self.duplicate_or_store(x, false)?;
 
             let n = shape.len();
-            let max_axis = *axes.last().unwrap() as usize;
+            let max_axis = *axes.last().unwrap();
             let mut ai = 0;
             let mut permute_axes = Vec::with_capacity(n);
             for i in 0..=max_axis {
-                if axes[ai] as usize == i {
+                if axes[ai] == i {
                     ai += 1;
                 } else {
                     permute_axes.push(i as UAxis);
@@ -1414,7 +1415,7 @@ impl Runtime {
             let (kernel_id, op_id) = self.duplicate_or_store(x, false).unwrap();
             let op_id = self.kernels[kernel_id]
                 .kernel
-                .push_back(Op::Move { x: op_id, mop: Box::new(MoveOp::Permute { axes: axes.into(), shape: new_shape }) });
+                .push_back(Op::Move { x: op_id, mop: Box::new(MoveOp::Permute { axes, shape: new_shape }) });
             let tid = self.tensors.push(TensorData {
                 shape_id,
                 dtype,
@@ -1496,7 +1497,7 @@ impl Runtime {
 
         // Fast path: already realized
         if let Some(&buffer_id) = self.buffer_map.get(&x) {
-            let bytes = (data.len() * T::bit_size() as usize + 7) / 8;
+            let bytes = (data.len() * T::bit_size() as usize).div_ceil(8);
             let byte_slice = unsafe { std::slice::from_raw_parts_mut(data.as_mut_ptr().cast(), bytes) };
             for buffers in self.events.keys() {
                 if buffers.contains(&buffer_id) {
@@ -1531,7 +1532,7 @@ impl Runtime {
         }
 
         // Copy result to host
-        let bytes = (data.len() * T::bit_size() as usize + 7) / 8;
+        let bytes = (data.len() * T::bit_size() as usize).div_ceil(8);
         let byte_slice = unsafe { std::slice::from_raw_parts_mut(data.as_mut_ptr().cast(), bytes) };
         let buffer_id = self.buffer_map[&x];
         for buffers in self.events.keys() {
@@ -1826,7 +1827,7 @@ impl Runtime {
         let dtype = self.tensors[x].dtype;
         let mut kernel = Kernel::new(DeviceId::AUTO);
         let shape = self.shape(x);
-        let load_op_id = kernel.load_contiguous(dtype, &shape);
+        let load_op_id = kernel.load_contiguous(dtype, shape);
         let load_kid = self.kernels.push(KernelData { outputs: vec![x; count], loads: vec![x], stores: Vec::new(), kernel });
         self.tensors[x].kernel_id = load_kid;
         self.tensors[x].op_id = load_op_id;
@@ -2009,7 +2010,7 @@ impl Runtime {
             let buf_id = self.buffer_map[&tid];
             if buf_id.pool != pool_id {
                 let src = buf_id.buffer;
-                let bytes = (self.shape(tid).iter().product::<Dim>() as usize * self.dtype(tid).bit_size() as usize + 7) / 8;
+                let bytes = (self.shape(tid).iter().product::<Dim>() as usize * self.dtype(tid).bit_size() as usize).div_ceil(8);
                 let mut byte_slice = vec![0u8; bytes];
 
                 let mut ev = Vec::new();
@@ -2056,7 +2057,7 @@ impl Runtime {
                 kernel_buffers.insert(buf_id);
                 self.tensors[tid].pending = KernelId::NULL;
             } else {
-                let bytes = (self.shape(tid).iter().product::<Dim>() as usize * self.dtype(tid).bit_size() as usize + 7) / 8;
+                let bytes = (self.shape(tid).iter().product::<Dim>() as usize * self.dtype(tid).bit_size() as usize).div_ceil(8);
                 let alloc_bytes = bytes as Dim + Dim::from(self.dtype(tid).bit_size() / 8);
                 let (buf, event) = self.pools[pool_id].allocate(alloc_bytes)?;
                 let global_id = BufferId { pool: pool_id, buffer: buf };

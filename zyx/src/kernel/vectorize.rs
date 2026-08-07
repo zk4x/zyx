@@ -103,11 +103,10 @@ impl Kernel {
                                     found
                                 })
                         }
-                    }) {
-                        if offsets.remove(&0) {
-                            base_index = Some(base_idx);
-                            break;
-                        }
+                    }) && offsets.remove(&0)
+                    {
+                        base_index = Some(base_idx);
+                        break;
                     }
                 }
 
@@ -198,11 +197,10 @@ impl Kernel {
                                     found
                                 })
                         }
-                    }) {
-                        if offsets.remove(&0) {
-                            base_index = Some(base_idx);
-                            break;
-                        }
+                    }) && offsets.remove(&0)
+                    {
+                        base_index = Some(base_idx);
+                        break;
                     }
                 }
 
@@ -282,6 +280,7 @@ impl Kernel {
             Binary(BOp, u8), // (op, devec_operand_index)
         }
 
+        #[allow(clippy::type_complexity)] // internal data structure, complexity inherent to the algorithm
         let mut groups: Vec<(OpId, OpType, Vec<(OpId, usize)>)> = Vec::new();
 
         loop {
@@ -718,10 +717,11 @@ mod tests {
         let mut found_vec_bin = false;
         let mut op_id = k.head;
         while !op_id.is_null() {
-            if let Op::Binary { bop: BOp::Add, x, y } = &k.ops[op_id].op {
-                if matches!(k.ops[*x].op, Op::Vectorize { .. }) && matches!(k.ops[*y].op, Op::Vectorize { .. }) {
-                    found_vec_bin = true;
-                }
+            if let Op::Binary { bop: BOp::Add, x, y } = &k.ops[op_id].op
+                && matches!(k.ops[*x].op, Op::Vectorize { .. })
+                && matches!(k.ops[*y].op, Op::Vectorize { .. })
+            {
+                found_vec_bin = true;
             }
             op_id = k.next_op(op_id);
         }

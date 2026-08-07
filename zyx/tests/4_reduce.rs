@@ -133,7 +133,7 @@ fn sum_reduce_32k() -> Result<(), ZyxError> {
 fn sum_reduce_last_dim_3d() -> Result<(), ZyxError> {
     // 3D tensor with large reduction over last dimension
     // Shape: [4, 8, 512] -> reduce last dim -> [4, 8]
-    let data: Vec<i32> = (0..(4 * 1024 * 512)).map(|i| (i % 10) as i32).collect();
+    let data: Vec<i32> = (0..(4 * 1024 * 512)).map(|i| i % 10).collect();
     let x = Tensor::from(data);
     let x = x.reshape([4, 1024, 512])?;
     let x0 = x.sum([-1])?;
@@ -141,11 +141,11 @@ fn sum_reduce_last_dim_3d() -> Result<(), ZyxError> {
     // Calculate expected values per row
     let expected: [[i32; 1024]; 4] = {
         let mut arr = [[0i32; 1024]; 4];
-        for i in 0..4 {
-            for j in 0..1024 {
-                let row = i * 1024 + j;
-                let start = row * 512;
-                arr[i][j] = (start..start + 512).map(|k| (k % 10) as i32).sum();
+        for (i, row) in arr.iter_mut().enumerate() {
+            for (j, cell) in row.iter_mut().enumerate() {
+                let row_idx = i * 1024 + j;
+                let start = row_idx * 512;
+                *cell = (start..start + 512).map(|k| (k % 10) as i32).sum();
             }
         }
         arr

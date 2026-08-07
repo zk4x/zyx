@@ -299,8 +299,7 @@ impl Tensor {
     #[must_use]
     pub fn selu(&self) -> Tensor {
         let dtype = self.dtype();
-        (1.050_700_987_355_480_5f32 * (self.relu() - (1.673_263_242_354_377_3f32 * (Tensor::ones(1, dtype) - self.exp())).relu()))
-            .cast(dtype)
+        (1.050_701_f32 * (self.relu() - (1.673_263_2_f32 * (Tensor::ones(1, dtype) - self.exp())).relu())).cast(dtype)
     }
 
     /// Rounds each element of the input tensor to the nearest integer.

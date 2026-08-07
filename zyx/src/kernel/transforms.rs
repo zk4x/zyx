@@ -48,16 +48,16 @@ impl Kernel {
         let mut op_id = self.head;
         while !op_id.is_null() {
             let next = self.next_op(op_id);
-            if let &Op::Unary { x, uop: UOp::Exp2 } = self.at(op_id) {
-                if let &Op::Binary { x: left, y: right, bop: BOp::Mul } = self.at(x) {
-                    let input = match (self.at(left), self.at(right)) {
-                        (&Op::Const(c), _) if constant_is_log2_e(&c) => right,
-                        (_, &Op::Const(c)) if constant_is_log2_e(&c) => left,
-                        _ => OpId::NULL,
-                    };
-                    if input != OpId::NULL {
-                        self.ops[op_id].op = Op::Unary { x: input, uop: UOp::Exp };
-                    }
+            if let &Op::Unary { x, uop: UOp::Exp2 } = self.at(op_id)
+                && let &Op::Binary { x: left, y: right, bop: BOp::Mul } = self.at(x)
+            {
+                let input = match (self.at(left), self.at(right)) {
+                    (&Op::Const(c), _) if constant_is_log2_e(&c) => right,
+                    (_, &Op::Const(c)) if constant_is_log2_e(&c) => left,
+                    _ => OpId::NULL,
+                };
+                if input != OpId::NULL {
+                    self.ops[op_id].op = Op::Unary { x: input, uop: UOp::Exp };
                 }
             }
             op_id = next;
@@ -81,10 +81,10 @@ impl Kernel {
                     op_id = next;
                     continue;
                 };
-                if let &Op::Const(c) = const_op {
-                    if constant_is_ln_2(&c) {
-                        self.ops[op_id].op = Op::Unary { x: log2_op, uop: UOp::Ln };
-                    }
+                if let &Op::Const(c) = const_op
+                    && constant_is_ln_2(&c)
+                {
+                    self.ops[op_id].op = Op::Unary { x: log2_op, uop: UOp::Ln };
                 }
             }
             op_id = next;

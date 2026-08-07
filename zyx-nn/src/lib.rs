@@ -2,7 +2,6 @@
 // SPDX-License-Identifier: LGPL-3.0-only
 
 #![doc = include_str!("../README.md")]
-
 #![forbid(unsafe_code)]
 #![forbid(rustdoc::broken_intra_doc_links)]
 #![forbid(rustdoc::private_intra_doc_links)]
