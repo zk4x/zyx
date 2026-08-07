@@ -125,7 +125,6 @@ mod split_loops;
 mod tenstorrent;
 mod thread_coarse;
 mod transforms;
-mod unfold;
 mod unroll_loops;
 mod vectorize;
 mod verify;
@@ -535,6 +534,12 @@ impl Kernel {
     /// For index constants, use [`Kernel::const_idx`].
     pub fn const_val<T: crate::scalar::Scalar>(&mut self, val: T) -> OpId {
         self.push_back(Op::Const(Constant::new(val)))
+    }
+
+    /// Constant data value as a contiguous view (uses natural dtype).
+    /// For index constants, use [`Kernel::const_idx`].
+    pub fn const_contiguous<T: crate::scalar::Scalar>(&mut self, val: T) -> OpId {
+        self.push_back(Op::ConstView(Box::new((Constant::new(val), View::contiguous(&[1])))))
     }
 
     /// Constant index value (normalized to index type).

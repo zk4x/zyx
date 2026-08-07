@@ -1,7 +1,10 @@
 // Copyright (C) 2025 zk4x
 // SPDX-License-Identifier: LGPL-3.0-only
 
-use zyx::{DType, Scalar, Tensor, ZyxError};
+use zyx::{
+    DType, Scalar, Tape, Tensor, ZyxError,
+    kernel::{DeviceId, Kernel},
+};
 
 #[allow(unused)]
 fn matmul(a: &[f32], b: &[f32], m: usize, k: usize, n: usize) -> Vec<f32> {
@@ -1348,3 +1351,147 @@ fn rope_2() -> Result<(), ZyxError> {
 
     Ok(())
 }*/
+
+#[test]
+fn zz_repro() -> Result<(), ZyxError> {
+    let mut kernel = Kernel::new(DeviceId::AUTO);
+
+    // r0 = 1
+    let r0 = kernel.const_contiguous(1.0f32);
+    // r1 = expand r0 -> [64, 128]
+    let r1 = kernel.expand(r0, &[64, 128]);
+    // r2 = load [64, 128]
+    let r2 = kernel.load_contiguous(DType::F32, &[64, 128]);
+    // r3 = 0
+    let r3 = kernel.const_contiguous(0.0f32);
+    // r4 = expand r3 -> [64, 128]
+    let r4 = kernel.expand(r3, &[64, 128]);
+    // r5 = r2 > r4
+    let r5 = kernel.cmpgt(r2, r4);
+    // r6 = f32(r5)
+    let r6 = kernel.cast(r5, DType::F32);
+    // r7 = 1
+    let r7 = kernel.const_contiguous(1.0f32);
+    // r8 = expand r7 -> [64, 10]
+    let r8 = kernel.expand(r7, &[64, 10]);
+    // r9 = reshape r8 -> [64, 1, 10]
+    let r9 = kernel.reshape(r8, &[64, 1, 10]);
+    // r10 = expand r9 -> [64, 128, 10]
+    let r10 = kernel.expand(r9, &[64, 128, 10]);
+    // r11 = load [1, 128, 10]
+    let r11 = kernel.load_contiguous(DType::F32, &[1, 128, 10]);
+    // r12 = expand r11 -> [64, 128, 10]
+    let r12 = kernel.expand(r11, &[64, 128, 10]);
+    // r13 = r10 * r12
+    let r13 = kernel.mul(r10, r12);
+    // r14 = f32(r13)
+    let r14 = kernel.cast(r13, DType::F32);
+    // r15 = reduce sum r14, dims=1
+    let r15 = kernel.reduce_sum(r14, 1);
+    // r16 = bool(r15)
+    let r16 = kernel.cast(r15, DType::Bool);
+    // r17 = f32(r16)
+    let r17 = kernel.cast(r16, DType::F32);
+    // r18 = r6 * r17
+    let r18 = kernel.mul(r6, r17);
+    // r19 = r1 - r17
+    let r19 = kernel.sub(r1, r17);
+    // r20 = r19 * r2
+    let r20 = kernel.mul(r19, r2);
+    // r21 = r18 + r20
+    let r21 = kernel.add(r18, r20);
+    // store r21
+    kernel.store_contiguous(r21, DType::F32);
+
+    let compiled = kernel.compile()?;
+    let x = Tensor::rand([64, 128], DType::F32)?;
+    let y = Tensor::rand([1, 128, 10], DType::F32)?;
+
+    for _ in 0..100 {
+        let _ = compiled.forward(&[&x, &y], vec![[64, 128]])?;
+        //println!("{}", x[0]);
+    }
+    Ok(())
+}
+
+#[test]
+fn zz_bw_relu_matmul() -> Result<(), ZyxError> {
+    let x = Tensor::randn([64, 784], DType::F32)?;
+    let w1 = Tensor::randn([128, 784], DType::F32)?;
+    let b1 = Tensor::randn([128], DType::F32)?;
+    let w2 = Tensor::randn([10, 128], DType::F32)?;
+    let b2 = Tensor::randn([10], DType::F32)?;
+    let tape = Tape::new([&w1, &b1, &w2, &b2])?;
+    let l1 = (x.matmul(&w1.t())? + &b1).relu();
+    let logits = l1.matmul(&w2.t())? + &b2;
+    let loss = logits.sum_all();
+    let grads = tape.gradient(&loss, [&w1, &b1, &w2, &b2, &loss]);
+    let lr = 0.01f32;
+    let n1 = &w1 - &grads[0] * lr;
+    let n2 = &b1 - &grads[1] * lr;
+    let n3 = &w2 - &grads[2] * lr;
+    let n4 = &b2 - &grads[3] * lr;
+    tape.realize([&n1, &n2, &n3, &n4, &loss])?;
+    let v: Vec<f32> = loss.try_into()?;
+    println!("loss {}", v[0]);
+    Ok(())
+}
+
+#[test]
+fn zz_bw_relu_matmul_manual() -> Result<(), ZyxError> {
+    let x = Tensor::randn([64, 784], DType::F32)?;
+    let w1 = Tensor::randn([128, 784], DType::F32)?;
+    let b1 = Tensor::randn([128], DType::F32)?;
+    let w2 = Tensor::randn([10, 128], DType::F32)?;
+    let b2 = Tensor::randn([10], DType::F32)?;
+    let tape = Tape::new([&w1, &b1, &w2, &b2])?;
+
+    // Forward.
+    let z1 = x.matmul(&w1.t())? + &b1;
+    let l1 = z1.relu();
+    let logits = l1.matmul(&w2.t())? + &b2;
+    let loss = logits.sum_all();
+
+    // Manual backprop replicating autograd's outer-product broadcast pattern.
+    // gw2[j,k] = sum_i g_logits[i,j] * l1[i,k]
+    let g_logits = Tensor::ones_like(&logits);
+    let gl1 = g_logits.matmul(&w2)?;
+
+    // relu backward, exact autograd structure:
+    //   s1 = z1 > 0 (bool)
+    //   gb = gl1 as bool ; gm = (1 - gb) ; gz1 = gb*mask + gm*z1
+    let relu_mask = z1.cmpgt(Tensor::from(0f32))?.cast(DType::F32);
+    let gl1_as_bool = gl1.cast(DType::Bool).cast(DType::F32);
+    let one_minus = Tensor::ones_like(&gl1) - &gl1.cast(DType::Bool).cast(DType::F32);
+    let gz1n = &relu_mask * &gl1_as_bool;
+    let gz1 = gz1n + &(&one_minus * &z1);
+
+    // gw2: expand g_logits to [64,10,128], expand l1 to [64,10,128], mul, reduce over batch.
+    let gl3 = g_logits.reshape([64, 10, 1])?.expand([64, 10, 128])?;
+    let l1_3 = l1.reshape([64, 1, 128])?.expand([64, 10, 128])?;
+    let prod = gl3 * &l1_3;
+    let gw2 = prod.sum([0])?;
+
+    // gb2: sum over batch.
+    let gb2 = g_logits.sum([0])?;
+
+    // gw1: gz1 [128,64] outer x. autograd: Permute[128,64]->Reshape[128,1,64]->Expand[128,784,64]
+    //   times x [128,784,64], reduce -> [128,784].
+    let gz1_t = gz1.t();
+    let gz1_3 = gz1_t.reshape([128, 1, 64])?.expand([128, 784, 64])?;
+    let x_3 = x.t().reshape([1, 784, 64])?.expand([128, 784, 64])?;
+    let gw1 = (gz1_3 * &x_3).sum([2])?;
+
+    // gb1: sum over batch.
+    let gb1 = gz1.sum([0])?;
+
+    let lr = 0.01f32;
+    let n1 = &w1 - &gw1 * lr;
+    let n2 = &b1 - &gb1 * lr;
+    let n3 = &w2 - &gw2 * lr;
+    let n4 = &b2 - &gb2 * lr;
+    tape.realize([&n1, &n2, &n3, &n4, &loss])?;
+    let v: Vec<f32> = loss.try_into()?;
+    println!("loss {}", v[0]);
+    Ok(())
+}

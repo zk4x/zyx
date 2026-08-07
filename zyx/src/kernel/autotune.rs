@@ -425,13 +425,13 @@ impl Kernel {
         #[cfg(feature = "tenstorrent")]
         if let Device::TT(_) = device {
             kernel.opt_tenstorrent_tile();
-        }
+        }*/
 
         kernel.run_always_on_optimizations();
         kernel.run_always_on_optimizations();
         kernel.fuse_mad();
         kernel.run_always_on_optimizations();
-        kernel.run_always_on_optimizations();*/
+        kernel.run_always_on_optimizations();
 
         kernel.dead_code_elimination();
 
@@ -484,7 +484,7 @@ impl Kernel {
         debug: DebugMask,
         buffers: &[PoolBufferId],
     ) -> Result<(DeviceProgramId, OptSeq, u64), BackendError> {
-        if true {
+        if false {
             return self.apply_selected_optimizations(device, memory_pool, config, flop, read_bytes, write_bytes, debug);
         }
 

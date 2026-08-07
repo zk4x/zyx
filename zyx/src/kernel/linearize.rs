@@ -14,7 +14,7 @@ use crate::{
     Map, Set,
     dtype::Constant,
     kernel::{BOp, IDX_T, IdxScope, Kernel, MemLayout, MemScope, MoveOp, Op, OpId},
-    shape,
+    shape::{self, Dim},
 };
 
 /// Extract the value of an index constant op.
@@ -107,9 +107,16 @@ impl Kernel {
         // reverse avoids processing those inserted ops (they are not view ops and
         // have no view entry).
         let mut op_ids: Vec<OpId> = Vec::new();
+        let mut load_views: Vec<OpId> = Vec::new();
+        let mut store_views: Vec<OpId> = Vec::new();
         let mut scan = self.head;
         while !scan.is_null() {
             op_ids.push(scan);
+            match &self.ops[scan].op {
+                Op::LoadView(_) => load_views.push(scan),
+                Op::StoreView { .. } => store_views.push(scan),
+                _ => {}
+            }
             scan = self.next_op(scan);
         }
         for &op_id in op_ids.iter().rev() {
@@ -156,6 +163,7 @@ impl Kernel {
                         }
                     }
                     let src = self.insert_before(anchor, Op::Define { dtype, scope: MemScope::Global, ro: true, len });
+                    *load_views.iter_mut().find(|x| **x == op_id).unwrap() = src;
                     if has_pad {
                         // Zero the offset where the padding condition fails, so the load
                         // always reads in-bounds, then zero the loaded value itself.
@@ -477,6 +485,7 @@ impl Kernel {
                         index = self.insert_before(start, Op::Mad { x: idx, y: st, z: index });
                     }
                     let dst = self.insert_before(start, Op::Define { dtype, scope: MemScope::Global, ro: false, len });
+                    *store_views.iter_mut().find(|x| **x == op_id).unwrap() = dst;
                     self.ops[op_id].op = Op::Store { dst, x: src, index, layout: MemLayout::Scalar };
                     views.insert(src, view);
                 }
@@ -501,17 +510,50 @@ impl Kernel {
             }
         }
 
-        // Reverse the order of globals
-        let mut op_id = self.tail;
+        // Order the global defines: all load defines first (in graph order),
+        // then all store defines. Arg buffers are passed loads-then-stores
+        // and codegen binds the defines positionally, so this must match.
+        // During the walk each view op was replaced in place by its Load/Store
+        // op, so its src/dst define is recovered from the view op id.
         let head = self.head;
-        while op_id != head {
-            let prev = self.prev_op(op_id);
-            if let Op::Define { scope: MemScope::Global, .. } = self.ops[op_id].op {
-                self.move_op_before(op_id, head);
-            }
-            op_id = prev;
+        for id in load_views.into_iter().chain(store_views) {
+            self.move_op_before(id, head);
         }
 
         self.verify();
+    }
+
+    pub(crate) fn reduce_dims(&self, op_id: OpId) -> Vec<Dim> {
+        let mut params = vec![op_id];
+        let mut n_reduce_axes = 0;
+        let mut visited = Set::default();
+        while let Some(param) = params.pop() {
+            if visited.insert(param) {
+                match self.at(param) {
+                    Op::ConstView(x) => {
+                        let view = &x.1;
+                        let n = view.rank();
+                        return view.shape()[n - n_reduce_axes..].into();
+                    }
+                    Op::LoadView(x) => {
+                        let view = &x.1;
+                        let n = view.rank();
+                        return view.shape()[n - n_reduce_axes..].into();
+                    }
+                    Op::Reduce { n_axes, .. } => n_reduce_axes += n_axes,
+                    Op::Move { mop, .. } => match mop.as_ref() {
+                        MoveOp::Reshape { shape, .. }
+                        | MoveOp::Expand { shape }
+                        | MoveOp::Permute { shape, .. }
+                        | MoveOp::Pad { shape, .. } => {
+                            return shape[shape.len() - n_reduce_axes..].into();
+                        }
+                    },
+                    _ => {}
+                }
+                params.extend(self.at(param).parameters());
+            }
+        }
+        unreachable!();
     }
 }

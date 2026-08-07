@@ -140,6 +140,13 @@ impl Kernel {
         let mut axes = BTreeMap::default();
         let mut first_id = None;
         let mut op_id = self.head;
+
+        // The decomposed Mod/Div chain must land in list order: each index's
+        // Mod uses the previous index's Div, so the indices have to appear in
+        // the same order they will be processed (ascending axis). Collect the
+        // list order while scanning.
+        #[cfg(debug_assertions)]
+        let mut list_order: Vec<OpId> = Vec::new();
         while axes.len() != loops.len() {
             if loops.contains(&op_id) {
                 // TODO check all scopes are the same
@@ -148,11 +155,25 @@ impl Kernel {
                 };
                 acc *= len;
                 axes.insert(axis, (op_id, len));
+                #[cfg(debug_assertions)]
+                list_order.push(op_id);
                 if first_id.is_none() {
                     first_id = Some(op_id);
                 }
             }
             op_id = self.next_op(op_id);
+        }
+
+        #[cfg(debug_assertions)]
+        {
+            // The index ops must already be ordered by axis in the list, otherwise
+            // a Div inserted after one index would land after the next index's Mod
+            // that consumes it. This optimization can't handle that input; leave
+            // the kernel untouched.
+            let process_order: Vec<OpId> = axes.values().map(|&(id, _)| id).collect();
+            if process_order != list_order {
+                panic!("merge_indices requires order");
+            }
         }
 
         let Op::Index { axis, scope, .. } = self.ops[first_id.unwrap()].op else {

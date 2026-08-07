@@ -677,7 +677,7 @@ pub(super) fn initialize_device(
 
                             let result = match &programs[program_id] {
                                 CUDAProgram::Module { function, gws, lws, .. } => {
-                                    //println!("CUDA launch program id: {program_id}, gws: {:?}, lws: {:?}", program.global_work_size, program.local_work_size);
+                                    //println!("CUDA launch program id: {program_id:?}, gws: {gws:?}, lws: {lws:?}",);
                                     let mut kernel_params: Vec<*mut core::ffi::c_void> = Vec::new();
                                     for arg in args {
                                         let arg = &buffers[arg];

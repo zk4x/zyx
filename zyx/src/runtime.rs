@@ -1897,15 +1897,10 @@ impl Runtime {
             kernel.debug();
         }
 
-        if std::env::var("ZYX_LIN2").is_ok() {
-            kernel.linearize2();
-        } else {
-            kernel.linearize();
-        }
-        if std::env::var("ZYX_DUMP").is_ok() {
-            eprintln!("ZYX_DUMP_MARKER reached");
-            kernel.debug();
-        }
+        kernel.linearize();
+        kernel.common_subexpression_elimination();
+        kernel.dead_code_elimination();
+        kernel.instruction_schedule();
 
         {
             let device = &mut self.devices[kernel.device_id];
