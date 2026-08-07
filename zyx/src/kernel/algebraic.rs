@@ -33,7 +33,7 @@ impl Kernel {
     ///
     /// The simplification uses bounds analysis to determine when
     /// algebraic patterns can be simplified safely.
-    pub fn algebraic_simplification(&mut self) {
+    pub fn algebraic_simplifications(&mut self) {
         #[cfg(feature = "time")]
         let _timer = crate::Timer::new("algebraic_simplification");
 
@@ -960,10 +960,9 @@ mod tests {
         assert_eq!(before, expected_mask(), "mask must be correct before simplification");
 
         k.move_constants_to_beginning();
-        k.algebraic_simplification();
+        k.algebraic_simplifications();
 
         let after = eval_mask(&k, mask);
         assert_eq!(after, expected_mask(), "mask must stay correct after algebraic_simplification");
     }
 }
-

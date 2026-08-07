@@ -512,8 +512,6 @@ impl Kernel {
             op_id = prev;
         }
 
-        self.instruction_schedule();
-
         self.verify();
     }
 }

@@ -342,7 +342,7 @@ impl Kernel {
         self.delete_zero_len_indices();
         self.delete_zero_len_loops();
         self.unfold_pows();
-        self.algebraic_simplification();
+        self.algebraic_simplifications();
         self.simplify_accumulating_loop();
         self.swap_commutative();
         self.common_subexpression_elimination();
@@ -419,7 +419,7 @@ impl Kernel {
     ) -> Result<(DeviceProgramId, OptSeq, u64), BackendError> {
         let mut kernel = self.clone();
 
-        kernel.run_always_on_optimizations();
+        /*kernel.run_always_on_optimizations();
         kernel.run_always_on_optimizations();
 
         #[cfg(feature = "tenstorrent")]
@@ -431,9 +431,13 @@ impl Kernel {
         kernel.run_always_on_optimizations();
         kernel.fuse_mad();
         kernel.run_always_on_optimizations();
-        kernel.run_always_on_optimizations();
+        kernel.run_always_on_optimizations();*/
 
-        self.debug();
+        kernel.dead_code_elimination();
+
+        if debug.ir() {
+            self.debug();
+        }
 
         let (args, new_bufs) = kernel.alloc_buffers(memory_pool, &[])?;
         let (program_id, timing) =
@@ -480,7 +484,7 @@ impl Kernel {
         debug: DebugMask,
         buffers: &[PoolBufferId],
     ) -> Result<(DeviceProgramId, OptSeq, u64), BackendError> {
-        if false {
+        if true {
             return self.apply_selected_optimizations(device, memory_pool, config, flop, read_bytes, write_bytes, debug);
         }
 

@@ -1095,8 +1095,8 @@ impl Runtime {
 
             Ok(self.new_graph_tensor(graph_id, class_id, shape_id, dtype))
         } else {
-            let (kid_x, op_id_x) = self.eager_ids(x);
-            let (kid_y, op_id_y) = self.eager_ids(y);
+            let (mut kid_x, mut op_id_x) = self.eager_ids(x);
+            let (mut kid_y, mut op_id_y) = self.eager_ids(y);
             //println!("Binary input kernels: {kid_x:?} and {kid_y:?}");
 
             let (kernel_id, op_id) = if kid_x == kid_y {
@@ -1105,9 +1105,17 @@ impl Runtime {
             } else {
                 let x_stores = !self.kernels[kid_x].stores.is_empty();
                 let y_stores = !self.kernels[kid_y].stores.is_empty();
-                if x_stores || y_stores {
-                    todo!("binary with stores not yet handled (kernelize.rs materializes input via add_store before merge)");
+                match (x_stores, y_stores) {
+                    (true, true) => {
+                        self.add_store(x)?;
+                        self.add_store(y)?;
+                    }
+                    (true, false) => self.add_store(x)?,
+                    (false, true) => self.add_store(y)?,
+                    (false, false) => {}
                 }
+                (kid_x, op_id_x) = self.eager_ids(x);
+                (kid_y, op_id_y) = self.eager_ids(y);
 
                 let swap = self.kernels[kid_y].kernel.is_reduce() && !self.kernels[kid_x].kernel.is_reduce();
                 let (keep_kid, merge_kid, keep_op, merge_op) = if swap {
@@ -1889,7 +1897,15 @@ impl Runtime {
             kernel.debug();
         }
 
-        kernel.linearize();
+        if std::env::var("ZYX_LIN2").is_ok() {
+            kernel.linearize2();
+        } else {
+            kernel.linearize();
+        }
+        if std::env::var("ZYX_DUMP").is_ok() {
+            eprintln!("ZYX_DUMP_MARKER reached");
+            kernel.debug();
+        }
 
         {
             let device = &mut self.devices[kernel.device_id];
