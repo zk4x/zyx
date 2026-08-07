@@ -1424,3 +1424,24 @@ fn zz_bw_relu_matmul_manual() -> Result<(), ZyxError> {
     println!("loss {}", v[0]);
     Ok(())
 }
+
+#[test]
+fn assign_no_movement_dst() -> Result<(), ZyxError> {
+    let dst = Tensor::from([0f32, 0f32, 0f32, 0f32]);
+    let src = Tensor::from([1f32, 2f32, 3f32, 4f32]);
+    dst.assign(&src)?;
+    let out: Vec<f32> = dst.try_into()?;
+    assert_eq!(out, vec![1.0, 2.0, 3.0, 4.0]);
+    Ok(())
+}
+
+#[test]
+fn assign_movement_dst() -> Result<(), ZyxError> {
+    let base = Tensor::from([0f32, 0f32, 0f32, 0f32, 0f32]);
+    let dst = base.slice(1..4)?;
+    let src = Tensor::from([7f32, 8f32, 9f32]);
+    dst.assign(&src)?;
+    let out: Vec<f32> = base.try_into()?;
+    assert_eq!(out, vec![0.0, 7.0, 8.0, 9.0, 0.0]);
+    Ok(())
+}
