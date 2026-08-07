@@ -80,10 +80,9 @@ impl Kernel {
             };
             match *self.at(op_id) {
                 Op::LoadView(ref x) => {
-                    let dtype = x.0;
-                    let view = &x.1;
-                    dtypes.insert(op_id, dtype);
-                    println!("{indent}r{out_id}{grey}: {dtype}{reset} = {cyan}load{reset} {view:?}");
+                    let (x, dtype, view) = x.as_ref();
+                    dtypes.insert(op_id, *dtype);
+                    println!("{indent}r{out_id}{grey}: {dtype}{reset} = {cyan}load{reset} {x} sh={view:?}");
                 }
                 Op::StoreView { src, dtype, .. } => {
                     let src = id_map[&src];

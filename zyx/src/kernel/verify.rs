@@ -104,7 +104,7 @@ impl Kernel {
         while !op_id.is_null() {
             match self.ops[op_id].op {
                 Op::LoadView(ref x) => {
-                    dtypes.insert(op_id, x.0);
+                    dtypes.insert(op_id, x.1);
                 }
                 Op::StoreView { src, .. } => {
                     check(op_id, src, &stack);

@@ -221,7 +221,7 @@ impl CompiledKernel {
                 dtype,
                 kernel_id,
                 op_id: OpId::NULL,
-                pending: KernelId::NULL,
+                depends_on: KernelId::NULL,
                 class_id: ClassId::NULL,
                 graph_id: GraphId::NULL,
                 rc: 1,

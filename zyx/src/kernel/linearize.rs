@@ -62,7 +62,7 @@ impl Kernel {
             let mut stack: Vec<OpId> = Vec::new();
             let mut op_id = self.head;
             while !op_id.is_null() {
-                if matches!(self.ops[op_id].op, Op::Store { .. } | Op::StoreView { .. }) {
+                if matches!(self.ops[op_id].op, Op::Define { .. } | Op::Store { .. } | Op::StoreView { .. }) {
                     stack.push(op_id);
                 }
                 op_id = self.next_op(op_id);
@@ -76,7 +76,7 @@ impl Kernel {
             while !op_id.is_null() {
                 if !live.contains(&op_id) {
                     self.debug();
-                    panic!("unfold_movement_ops: dead code detected at op {op_id}");
+                    panic!("linearize: dead code detected at op {op_id}");
                 }
                 op_id = self.next_op(op_id);
             }
@@ -93,7 +93,6 @@ impl Kernel {
         // Reused group index per axis, so every store of a result shares one index.
         let mut group_indices: Map<u32, OpId> = Map::default();
 
-        let start = self.head;
         // Stack of open reduce loops, as `(loop_start, anchor)`. `loop_start` is
         // the first dependency of the reduce (where its loop opener is inserted
         // and where its scope begins on rescan); `anchor` is the op right after
@@ -107,16 +106,10 @@ impl Kernel {
         // reverse avoids processing those inserted ops (they are not view ops and
         // have no view entry).
         let mut op_ids: Vec<OpId> = Vec::new();
-        let mut load_views: Vec<OpId> = Vec::new();
-        let mut store_views: Vec<OpId> = Vec::new();
         let mut scan = self.head;
+        let start = self.head;
         while !scan.is_null() {
             op_ids.push(scan);
-            match &self.ops[scan].op {
-                Op::LoadView(_) => load_views.push(scan),
-                Op::StoreView { .. } => store_views.push(scan),
-                _ => {}
-            }
             scan = self.next_op(scan);
         }
         for &op_id in op_ids.iter().rev() {
@@ -126,9 +119,11 @@ impl Kernel {
             // index arithmetic must still land inside the loop.
             let anchor = open_loops.last().map(|&(_, a)| a).unwrap_or(start);
             match self.ops[op_id].op {
+                Op::Define { .. } => {}
                 Op::LoadView(ref x) => {
-                    let dtype = x.0;
-                    let len = x.1.iter().product();
+                    let src = x.0;
+                    let dtype = x.1;
+                    let len = x.2.iter().product::<Dim>();
                     let view = views.remove(&op_id).unwrap();
                     let zero = self.insert_const_idx_before(anchor, 0u32);
                     let one = self.insert_const_idx_before(anchor, 1u32);
@@ -162,8 +157,6 @@ impl Kernel {
                             }
                         }
                     }
-                    let src = self.insert_before(anchor, Op::Define { dtype, scope: MemScope::Global, ro: true, len });
-                    *load_views.iter_mut().find(|x| **x == op_id).unwrap() = src;
                     if has_pad {
                         // Zero the offset where the padding condition fails, so the load
                         // always reads in-bounds, then zero the loaded value itself.
@@ -221,7 +214,7 @@ impl Kernel {
                                 match self.at(param) {
                                     &Op::Define { dtype, .. } | &Op::Cast { dtype, .. } => acc_dtype = Some(dtype),
                                     Op::Const(v) => acc_dtype = Some(v.dtype()),
-                                    Op::LoadView(v) => acc_dtype = Some(v.0),
+                                    Op::LoadView(v) => acc_dtype = Some(v.1),
                                     _ => {}
                                 }
                             }
@@ -482,7 +475,6 @@ impl Kernel {
                         index = self.insert_before(start, Op::Mad { x: idx, y: st, z: index });
                     }
                     let dst = self.insert_before(start, Op::Define { dtype, scope: MemScope::Global, ro: false, len });
-                    *store_views.iter_mut().find(|x| **x == op_id).unwrap() = dst;
                     self.ops[op_id].op = Op::Store { dst, x: src, index, layout: MemLayout::Scalar };
                     views.insert(src, view);
                 }
@@ -507,14 +499,23 @@ impl Kernel {
             }
         }
 
-        // Order the global defines: all load defines first (in graph order),
-        // then all store defines. Arg buffers are passed loads-then-stores
-        // and codegen binds the defines positionally, so this must match.
-        // During the walk each view op was replaced in place by its Load/Store
-        // op, so its src/dst define is recovered from the view op id.
+        // Put defines in the beginning
         let head = self.head;
-        for id in load_views.into_iter().chain(store_views) {
-            self.move_op_before(id, head);
+        let mut op_id = head;
+        let mut first_mut_global = head;
+        while !op_id.is_null() {
+            let next = self.next_op(op_id);
+            if let Op::Define { ro, scope: MemScope::Global, .. } = self.ops[op_id].op {
+                if ro {
+                    self.move_op_before(op_id, first_mut_global);
+                } else {
+                    self.move_op_before(op_id, head);
+                    if first_mut_global == head {
+                        first_mut_global = op_id;
+                    }
+                }
+            }
+            op_id = next;
         }
 
         self.verify();
@@ -529,7 +530,7 @@ impl Kernel {
                 match self.at(param) {
                     Op::Const(_) => return vec![1],
                     Op::LoadView(x) => {
-                        return x.1[x.1.len() - n_reduce_axes..].into();
+                        return x.2[x.2.len() - n_reduce_axes..].into();
                     }
                     Op::Reduce { n_axes, .. } => n_reduce_axes += n_axes,
                     Op::Move { mop, .. } => match mop.as_ref() {

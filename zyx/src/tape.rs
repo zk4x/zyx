@@ -53,7 +53,6 @@ use crate::{
     backend::BufferId,
     graph::plan::drain_events_for_buf,
     graph::{ClassId, Graph, GraphId},
-    kernel::Op,
     shape::Dim,
     slab::SlabId,
     tensor::TensorId,
@@ -313,7 +312,7 @@ impl FrozenTape {
 
         let mut outputs = Vec::new();
         for (cid, shape, dtype) in self.outputs.iter() {
-            let tid = rt.new_eager_tensor(Op::LoadView(Box::new((*dtype, shape.clone()))));
+            let tid = rt.new_eager_tensor(shape.clone(), *dtype);
             rt.buffer_map.insert(tid, class_buf[cid]);
             outputs.push(Tensor::from_id(tid));
         }

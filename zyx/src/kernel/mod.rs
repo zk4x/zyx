@@ -421,7 +421,7 @@ impl Kernel {
             Op::Devectorize { vec, .. } => self.dtype(vec),
             Op::Store { x, .. } => self.dtype(x),
             Op::StoreView { src, .. } => self.dtype(src),
-            Op::LoadView(ref b) => b.0,
+            Op::LoadView(ref b) => b.1,
             Op::Move { x, .. } => self.dtype(x),
             Op::Reduce { x, .. } => self.dtype(x),
             Op::ReduceTile { x, .. } => self.dtype(x),
@@ -434,7 +434,8 @@ impl Kernel {
 
     /// Load a contiguous tensor from device memory.
     pub fn load_contiguous(&mut self, dtype: DType, shape: &[Dim]) -> OpId {
-        self.push_back(Op::LoadView(Box::new((dtype, shape.into()))))
+        let x = self.push_back(Op::Define { dtype, scope: MemScope::Global, ro: true, len: shape.iter().product() });
+        self.push_back(Op::LoadView(Box::new((x, dtype, shape.into()))))
     }
 
     /// Permute tensor axes.
@@ -1098,7 +1099,7 @@ impl Kernel {
             let info = match self.at(op_id) {
                 Op::Const(_) => Info { shape: vec![1], flops: 0, mem_read: 0, mem_write: 0 },
                 Op::LoadView(x) => {
-                    let (dtype, shape) = x.as_ref().clone();
+                    let (_, dtype, shape) = x.as_ref().clone();
                     let mem_read = shape.iter().product::<Dim>() * u64::from(dtype.bit_size()) / 8;
                     Info { shape, flops: 0, mem_read, mem_write: 0 }
                 }
@@ -1151,6 +1152,7 @@ impl Kernel {
                     let flops = shape.iter().product::<Dim>();
                     Info { shape, flops, mem_read: 0, mem_write: 0 }
                 }
+                Op::Define { .. } => Info { shape: vec![], flops: 0, mem_read: 0, mem_write: 0 },
                 Op::Wmma { .. }
                 | Op::Vectorize { .. }
                 | Op::Devectorize { .. }
@@ -1161,7 +1163,6 @@ impl Kernel {
                 | Op::EndIf
                 | Op::Barrier
                 | Op::Mad { .. }
-                | Op::Define { .. }
                 | Op::Load { .. }
                 | Op::Index { .. }
                 | Op::Loop { .. }
@@ -1221,7 +1222,7 @@ impl Kernel {
 
     fn shape_of(&self, op_id: OpId) -> Vec<Dim> {
         match self.ops[op_id].op {
-            Op::LoadView(ref x) => x.1.clone(),
+            Op::LoadView(ref x) => x.2.clone(),
             Op::Const(_) => vec![1],
             Op::Cast { x, .. } | Op::Unary { x, .. } | Op::Binary { x, .. } | Op::Mad { x, .. } => self.shape_of(x),
             Op::Reduce { x, n_axes, .. } => {

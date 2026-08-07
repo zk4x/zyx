@@ -32,10 +32,8 @@ use crate::{
     },
     dtype::Constant,
     error::{BackendError, ErrorStatus},
-    graph::ExecPlan,
-    graph::plan::drain_events_for_buf,
-    graph::{ClassId, EClass, Graph, GraphId, Node, NodeData, NodeId},
-    kernel::{BOp, DeviceId, Kernel, MoveOp, Op, OpId, UOp, autotune::OptSeq},
+    graph::{ClassId, EClass, ExecPlan, Graph, GraphId, Node, NodeData, NodeId, plan::drain_events_for_buf},
+    kernel::{BOp, DeviceId, Kernel, MemScope, MoveOp, Op, OpId, UOp, autotune::OptSeq},
     rng::Rng,
     shape::{Dim, UAxis},
     slab::{Slab, SlabId},
@@ -118,7 +116,7 @@ pub struct TensorData {
     pub dtype: DType,
     pub kernel_id: KernelId,
     pub op_id: OpId,
-    pub pending: KernelId,
+    pub depends_on: KernelId,
     pub class_id: ClassId,
     pub graph_id: GraphId,
     pub rc: u16,
@@ -247,7 +245,7 @@ impl Runtime {
         let rc = self.tensors[x].rc - 1;
         self.tensors[x].rc = rc;
         let (kernel_id, op_id, pending, class_id) =
-            (self.tensors[x].kernel_id, self.tensors[x].op_id, self.tensors[x].pending, self.tensors[x].class_id);
+            (self.tensors[x].kernel_id, self.tensors[x].op_id, self.tensors[x].depends_on, self.tensors[x].class_id);
 
         // Keep the eager kernel's outputs in sync with rc.
         if !kernel_id.is_null() {
@@ -322,7 +320,7 @@ impl Runtime {
     /// reference it. Remove it, freeing its buffer if no other tensor maps to
     /// the same buffer. Graph-affiliated tensors may be kept by their graph.
     fn on_rc_zero(&mut self, x: TensorId) {
-        let (pending, class_id, graph_id) = (self.tensors[x].pending, self.tensors[x].class_id, self.tensors[x].graph_id);
+        let (pending, class_id, graph_id) = (self.tensors[x].depends_on, self.tensors[x].class_id, self.tensors[x].graph_id);
 
         if !class_id.is_null() {
             // Graph-affiliated tensor (pure graph or "both" while graph alive).
@@ -428,18 +426,19 @@ impl Runtime {
         self.tensors[tid].graph_id = GraphId::NULL;
         let shape: Vec<Dim> = self.shape(tid).into();
         let dtype = self.dtype(tid);
-        let op = Op::LoadView(Box::new((dtype, shape)));
         let kernel_id = self.kernels.push(KernelData {
             outputs: vec![tid; handles],
             loads: Vec::new(),
             stores: Vec::new(),
             kernel: Kernel::new(DeviceId::AUTO),
         });
-        let op_id = self.kernels[kernel_id].kernel.push_back(op);
+        let len = shape.iter().product();
+        let op_id = self.kernels[kernel_id].kernel.push_back(Op::Define { dtype, scope: MemScope::Global, ro: true, len });
+        let op_id = self.kernels[kernel_id].kernel.push_back(Op::LoadView(Box::new((op_id, dtype, shape))));
         self.kernels[kernel_id].loads.push(tid);
         self.tensors[tid].kernel_id = kernel_id;
         self.tensors[tid].op_id = op_id;
-        self.tensors[tid].pending = KernelId::NULL;
+        self.tensors[tid].depends_on = KernelId::NULL;
         self.retain_load(tid);
         self.graphs[graph_id].ref_count -= 1;
     }
@@ -515,7 +514,7 @@ impl Runtime {
             dtype,
             kernel_id: KernelId::NULL,
             op_id: OpId::NULL,
-            pending: KernelId::NULL,
+            depends_on: KernelId::NULL,
             class_id,
             graph_id,
             rc: 1,
@@ -617,22 +616,40 @@ impl Runtime {
         .1
     }
 
-    pub fn new_eager_tensor(&mut self, op: Op) -> TensorId {
-        let (dtype, shape) = match &op {
-            Op::LoadView(x) => (x.0, x.1.clone()),
-            Op::Const(x) => (x.dtype(), vec![1]),
-            _ => unreachable!(),
-        };
-        let shape_id = self.push_shape(shape);
+    pub fn new_eager_tensor(&mut self, shape: Vec<Dim>, dtype: DType) -> TensorId {
+        let len = shape.iter().product();
+        let shape_id = self.push_shape(shape.clone());
         let mut kernel = Kernel::new(DeviceId::AUTO);
-        let op_id = kernel.push_back(op);
+        let op_id = kernel.push_back(Op::Define { dtype, scope: MemScope::Global, ro: true, len });
+        let op_id = kernel.push_back(Op::LoadView(Box::new((op_id, dtype, shape))));
         let kernel_id = self.kernels.push(KernelData { outputs: Vec::new(), loads: Vec::new(), stores: Vec::new(), kernel });
         let tid = self.tensors.push(TensorData {
             shape_id,
             dtype,
             kernel_id,
             op_id,
-            pending: KernelId::NULL,
+            depends_on: KernelId::NULL,
+            class_id: ClassId::NULL,
+            graph_id: GraphId::NULL,
+            rc: 1,
+        });
+        self.kernels[kernel_id].loads.push(tid);
+        self.kernels[kernel_id].outputs.push(tid);
+        tid
+    }
+
+    pub fn new_constant_tensor(&mut self, value: Constant) -> TensorId {
+        let shape_id = self.push_shape(vec![1]);
+        let dtype = value.dtype();
+        let mut kernel = Kernel::new(DeviceId::AUTO);
+        let op_id = kernel.push_back(Op::Const(value));
+        let kernel_id = self.kernels.push(KernelData { outputs: Vec::new(), loads: Vec::new(), stores: Vec::new(), kernel });
+        let tid = self.tensors.push(TensorData {
+            shape_id,
+            dtype,
+            kernel_id,
+            op_id,
+            depends_on: KernelId::NULL,
             class_id: ClassId::NULL,
             graph_id: GraphId::NULL,
             rc: 1,
@@ -641,19 +658,10 @@ impl Runtime {
         tid
     }
 
-    pub fn new_constant_tensor(&mut self, value: Constant) -> TensorId {
-        #[cfg(feature = "debug_tensor_op")]
-        println!("runtime::new_constant_tensor(value={value:?})");
-        let result = self.new_eager_tensor(Op::Const(value));
-        #[cfg(feature = "debug_tensor_op")]
-        println!("  -> tid={result}, {:?}", self.tensors[result]);
-        result
-    }
-
     pub fn new_full(&mut self, shape: Vec<Dim>, value: Constant) -> TensorId {
         #[cfg(feature = "debug_tensor_op")]
         println!("runtime::new_full(shape={shape:?}, value={value:?})");
-        let x = self.new_eager_tensor(Op::Const(value));
+        let x = self.new_constant_tensor(value);
         let expanded = self.expand(x, shape).unwrap();
         self.release(x);
         #[cfg(feature = "debug_tensor_op")]
@@ -688,10 +696,7 @@ impl Runtime {
         };
         let buffer_id = BufferId { pool: PoolId::HOST, buffer: pool.insert(data) };
 
-        let shape = self.push_shape(shape);
-        let op = Op::LoadView(Box::new((dtype, self.shapes[shape].clone())));
-        let tid = self.new_eager_tensor(op);
-        self.kernels[self.tensors[tid].kernel_id].loads.push(tid);
+        let tid = self.new_eager_tensor(shape, dtype);
         self.retain_load(tid);
 
         self.buffer_map.insert(tid, buffer_id);
@@ -717,9 +722,7 @@ impl Runtime {
             .ok_or(BackendError { status: ErrorStatus::Initialization, context: "[disk] not available.".into() })?;
         let buffer_id = BufferId { pool: PoolId::DISK, buffer: pool.buffer_from_path(bytes, path, offset_bytes) };
 
-        let shape_id = self.push_shape(shape);
-        let tid = self.new_eager_tensor(Op::LoadView(Box::new((dtype, self.shapes[shape_id].clone()))));
-        self.kernels[self.tensors[tid].kernel_id].loads.push(tid);
+        let tid = self.new_eager_tensor(shape, dtype);
         self.retain_load(tid);
         self.buffer_map.insert(tid, buffer_id);
         Ok(tid)
@@ -799,10 +802,10 @@ impl Runtime {
                     Op::LoadView(ref view) => {
                         let load_tid = loads[load_idx];
                         let shape_id = self.tensors[load_tid].shape_id;
-                        debug_assert_eq!(view.1, self.shapes[shape_id], "LoadView shape mismatch");
+                        debug_assert_eq!(view.2, self.shapes[shape_id], "LoadView shape mismatch");
                         if !self.buffer_map.contains_key(&load_tid) {
                             let pending = if self.tensors[load_tid].class_id.is_null() {
-                                self.tensors[load_tid].pending
+                                self.tensors[load_tid].depends_on
                             } else {
                                 KernelId::NULL
                             };
@@ -974,7 +977,7 @@ impl Runtime {
                 dtype,
                 kernel_id,
                 op_id,
-                pending: KernelId::NULL,
+                depends_on: KernelId::NULL,
                 class_id: ClassId::NULL,
                 graph_id: GraphId::NULL,
                 rc: 1,
@@ -1007,7 +1010,7 @@ impl Runtime {
                 dtype,
                 kernel_id,
                 op_id,
-                pending: KernelId::NULL,
+                depends_on: KernelId::NULL,
                 class_id: ClassId::NULL,
                 graph_id: GraphId::NULL,
                 rc: 1,
@@ -1039,7 +1042,7 @@ impl Runtime {
                 dtype,
                 kernel_id,
                 op_id,
-                pending: KernelId::NULL,
+                depends_on: KernelId::NULL,
                 class_id: ClassId::NULL,
                 graph_id: GraphId::NULL,
                 rc: 1,
@@ -1159,7 +1162,7 @@ impl Runtime {
                 dtype,
                 kernel_id,
                 op_id,
-                pending: KernelId::NULL,
+                depends_on: KernelId::NULL,
                 class_id: ClassId::NULL,
                 graph_id: GraphId::NULL,
                 rc: 1,
@@ -1238,7 +1241,7 @@ impl Runtime {
                 dtype,
                 kernel_id: kid,
                 op_id,
-                pending: KernelId::NULL,
+                depends_on: KernelId::NULL,
                 class_id: ClassId::NULL,
                 graph_id: GraphId::NULL,
                 rc: 1,
@@ -1292,7 +1295,7 @@ impl Runtime {
                     dtype,
                     kernel_id,
                     op_id,
-                    pending: KernelId::NULL,
+                    depends_on: KernelId::NULL,
                     class_id: ClassId::NULL,
                     graph_id: GraphId::NULL,
                     rc: 1,
@@ -1313,7 +1316,7 @@ impl Runtime {
                 dtype,
                 kernel_id: kernel_id_dup,
                 op_id,
-                pending: KernelId::NULL,
+                depends_on: KernelId::NULL,
                 class_id: ClassId::NULL,
                 graph_id: GraphId::NULL,
                 rc: 1,
@@ -1368,7 +1371,7 @@ impl Runtime {
                 dtype,
                 kernel_id,
                 op_id,
-                pending: KernelId::NULL,
+                depends_on: KernelId::NULL,
                 class_id: ClassId::NULL,
                 graph_id: GraphId::NULL,
                 rc: 1,
@@ -1421,7 +1424,7 @@ impl Runtime {
                 dtype,
                 kernel_id,
                 op_id,
-                pending: KernelId::NULL,
+                depends_on: KernelId::NULL,
                 class_id: ClassId::NULL,
                 graph_id: GraphId::NULL,
                 rc: 1,
@@ -1465,7 +1468,7 @@ impl Runtime {
                 dtype,
                 kernel_id,
                 op_id,
-                pending: KernelId::NULL,
+                depends_on: KernelId::NULL,
                 class_id: ClassId::NULL,
                 graph_id: GraphId::NULL,
                 rc: 1,
@@ -1798,7 +1801,7 @@ impl Runtime {
     pub fn add_store(&mut self, x: TensorId) -> Result<(), ZyxError> {
         let (kid, op_id, pending) = {
             let (kid, op_id) = self.eager_ids(x);
-            (kid, op_id, self.tensors[x].pending)
+            (kid, op_id, self.tensors[x].depends_on)
         };
 
         // Remove ALL occurrences of x (handles reference counting from retain/clone)
@@ -1831,7 +1834,7 @@ impl Runtime {
         let load_kid = self.kernels.push(KernelData { outputs: vec![x; count], loads: vec![x], stores: Vec::new(), kernel });
         self.tensors[x].kernel_id = load_kid;
         self.tensors[x].op_id = load_op_id;
-        self.tensors[x].pending = pending;
+        self.tensors[x].depends_on = pending;
         self.retain_load(x);
 
         if outputs_empty {
@@ -1977,7 +1980,7 @@ impl Runtime {
         // and materialize them so our loads become available.
         for &load in &loads {
             let pending = if self.tensors[load].class_id.is_null() {
-                self.tensors[load].pending
+                self.tensors[load].depends_on
             } else {
                 KernelId::NULL
             };
@@ -2055,14 +2058,14 @@ impl Runtime {
         for &tid in &stores {
             if let Some(&buf_id) = self.buffer_map.get(&tid) {
                 kernel_buffers.insert(buf_id);
-                self.tensors[tid].pending = KernelId::NULL;
+                self.tensors[tid].depends_on = KernelId::NULL;
             } else {
                 let bytes = (self.shape(tid).iter().product::<Dim>() as usize * self.dtype(tid).bit_size() as usize).div_ceil(8);
                 let alloc_bytes = bytes as Dim + Dim::from(self.dtype(tid).bit_size() / 8);
                 let (buf, event) = self.pools[pool_id].allocate(alloc_bytes)?;
                 let global_id = BufferId { pool: pool_id, buffer: buf };
                 self.buffer_map.insert(tid, global_id);
-                self.tensors[tid].pending = KernelId::NULL;
+                self.tensors[tid].depends_on = KernelId::NULL;
                 kernel_buffers.insert(global_id);
                 event_wait_list.push(event);
             }

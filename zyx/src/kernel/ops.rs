@@ -106,7 +106,7 @@ pub enum Op {
     },
 
     // ops that exist only in kernelizer, basically they can be eventually removed.
-    LoadView(Box<(DType, Vec<Dim>)>),
+    LoadView(Box<(OpId, DType, Vec<Dim>)>),
     StoreView {
         src: OpId,
         dtype: DType,
@@ -391,15 +391,10 @@ impl Op {
     #[allow(clippy::match_same_arms)]
     pub(crate) fn parameters(&self) -> impl DoubleEndedIterator<Item = OpId> {
         match self {
-            Op::LoadView { .. }
-            | Op::Const { .. }
-            | Op::Define { .. }
-            | Op::Index { .. }
-            | Op::EndLoop
-            | Op::Barrier
-            | Op::EndIf => {
+            Op::Const { .. } | Op::Define { .. } | Op::Index { .. } | Op::EndLoop | Op::Barrier | Op::EndIf => {
                 vec![]
             }
+            Op::LoadView(x) => vec![x.0],
             &Op::PopTile { src: cb } => vec![cb],
             &Op::PushTile { dst: cb, x } => vec![cb, x],
             &Op::Loop { len, .. } => vec![len],
@@ -426,13 +421,8 @@ impl Op {
     #[allow(clippy::match_same_arms)]
     pub(crate) fn parameters_mut(&mut self) -> impl DoubleEndedIterator<Item = &mut OpId> {
         match self {
-            Op::LoadView { .. }
-            | Op::Const { .. }
-            | Op::Define { .. }
-            | Op::Index { .. }
-            | Op::EndLoop
-            | Op::EndIf
-            | Op::Barrier => vec![],
+            Op::Const { .. } | Op::Define { .. } | Op::Index { .. } | Op::EndLoop | Op::EndIf | Op::Barrier => vec![],
+            Op::LoadView(x) => vec![&mut x.as_mut().0],
             Op::PopTile { src: cb } => vec![cb],
             Op::PushTile { dst: cb, x } => vec![cb, x],
             Op::Loop { len, .. } => vec![len],
