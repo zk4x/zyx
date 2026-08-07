@@ -1590,7 +1590,9 @@ impl Runtime {
 
         // Add StoreView to src's kernel: src's value will be stored into dst's buffer.
         let (kid, op_id) = self.eager_ids(src);
-        self.kernels[kid].kernel.store_contiguous(op_id, src_dtype);
+        let len = src_shape.iter().product();
+        let dst_id = self.kernels[kid].kernel.define(src_dtype, MemScope::Global, false, len);
+        self.kernels[kid].kernel.store_contiguous(dst_id, op_id, src_dtype);
         self.kernels[kid].stores.push(dst);
 
         // TODO pending needs to be updated, think about it, dst might need to be realized
@@ -1817,7 +1819,9 @@ impl Runtime {
             debug_assert!(!self.kernels[kid].loads.contains(&x), "kernel {kid:?} both loads and stores tid {x}");
 
             let dtype = self.tensors[x].dtype;
-            self.kernels[kid].kernel.store_contiguous(op_id, dtype);
+            let len = self.shape(x).iter().product();
+            let dst_id = self.kernels[kid].kernel.define(dtype, MemScope::Global, false, len);
+            self.kernels[kid].kernel.store_contiguous(dst_id, op_id, dtype);
             self.kernels[kid].stores.push(x);
             kid
         } else {

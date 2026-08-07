@@ -382,8 +382,7 @@ impl Graph {
     fn new_load_kernel(&mut self, cid: ClassId, shapes: &Slab<ShapeId, Vec<Dim>>, rc: u32) -> (JitKernelId, OpId) {
         let mut kernel = Kernel::new(DeviceId::NULL);
         let shape: Vec<Dim> = shapes[self.classes[cid].shape].clone();
-        kernel.load_contiguous(self.classes[cid].dtype, &shape);
-        let op_id = kernel.head;
+        let op_id = kernel.load_contiguous(self.classes[cid].dtype, &shape);
         let kid = self.jit_kernels.push(JitKernelData {
             kernel,
             outputs: vec![cid; rc as usize],
@@ -406,9 +405,11 @@ impl Graph {
         //println!("add store cid={cid:?} kid={kid:?} op_id={op_id:?} rc={}", rcs.get(&cid).unwrap());
         //println!("outputs={:?}", self.ekernels[kid].outputs);
 
+        let len = shapes[self.classes[cid].shape].iter().product();
         let dtype = self.classes[cid].dtype;
         if !self.jit_kernels[kid].loads.contains(&cid) {
-            self.jit_kernels[kid].kernel.store_contiguous(op_id, dtype);
+            let dst = self.jit_kernels[kid].kernel.define(dtype, crate::kernel::MemScope::Global, false, len);
+            self.jit_kernels[kid].kernel.store_contiguous(dst, op_id, dtype);
             self.jit_kernels[kid].stores.push(cid);
             visited.remove(&cid);
         }

@@ -1,10 +1,7 @@
 // Copyright (C) 2025 zk4x
 // SPDX-License-Identifier: LGPL-3.0-only
 
-use zyx::{
-    DType, Scalar, Tape, Tensor, ZyxError,
-    kernel::{DeviceId, Kernel},
-};
+use zyx::{DType, Scalar, Tape, Tensor, ZyxError};
 
 #[allow(unused)]
 fn matmul(a: &[f32], b: &[f32], m: usize, k: usize, n: usize) -> Vec<f32> {
@@ -1345,68 +1342,6 @@ fn rope_2() -> Result<(), ZyxError> {
 
     Ok(())
 }*/
-
-#[test]
-fn zz_repro() -> Result<(), ZyxError> {
-    let mut kernel = Kernel::new(DeviceId::AUTO);
-
-    // r0 = 1
-    let r0 = kernel.const_contiguous(1.0f32);
-    // r1 = expand r0 -> [64, 128]
-    let r1 = kernel.expand(r0, &[64, 128]);
-    // r2 = load [64, 128]
-    let r2 = kernel.load_contiguous(DType::F32, &[64, 128]);
-    // r3 = 0
-    let r3 = kernel.const_contiguous(0.0f32);
-    // r4 = expand r3 -> [64, 128]
-    let r4 = kernel.expand(r3, &[64, 128]);
-    // r5 = r2 > r4
-    let r5 = kernel.cmpgt(r2, r4);
-    // r6 = f32(r5)
-    let r6 = kernel.cast(r5, DType::F32);
-    // r7 = 1
-    let r7 = kernel.const_contiguous(1.0f32);
-    // r8 = expand r7 -> [64, 10]
-    let r8 = kernel.expand(r7, &[64, 10]);
-    // r9 = reshape r8 -> [64, 1, 10]
-    let r9 = kernel.reshape(r8, &[64, 1, 10]);
-    // r10 = expand r9 -> [64, 128, 10]
-    let r10 = kernel.expand(r9, &[64, 128, 10]);
-    // r11 = load [1, 128, 10]
-    let r11 = kernel.load_contiguous(DType::F32, &[1, 128, 10]);
-    // r12 = expand r11 -> [64, 128, 10]
-    let r12 = kernel.expand(r11, &[64, 128, 10]);
-    // r13 = r10 * r12
-    let r13 = kernel.mul(r10, r12);
-    // r14 = f32(r13)
-    let r14 = kernel.cast(r13, DType::F32);
-    // r15 = reduce sum r14, dims=1
-    let r15 = kernel.reduce_sum(r14, 1);
-    // r16 = bool(r15)
-    let r16 = kernel.cast(r15, DType::Bool);
-    // r17 = f32(r16)
-    let r17 = kernel.cast(r16, DType::F32);
-    // r18 = r6 * r17
-    let r18 = kernel.mul(r6, r17);
-    // r19 = r1 - r17
-    let r19 = kernel.sub(r1, r17);
-    // r20 = r19 * r2
-    let r20 = kernel.mul(r19, r2);
-    // r21 = r18 + r20
-    let r21 = kernel.add(r18, r20);
-    // store r21
-    kernel.store_contiguous(r21, DType::F32);
-
-    let compiled = kernel.compile()?;
-    let x = Tensor::rand([64, 128], DType::F32)?;
-    let y = Tensor::rand([1, 128, 10], DType::F32)?;
-
-    for _ in 0..100 {
-        let _ = compiled.forward(&[&x, &y], vec![[64, 128]])?;
-        //println!("{}", x[0]);
-    }
-    Ok(())
-}
 
 #[test]
 fn zz_bw_relu_matmul() -> Result<(), ZyxError> {

@@ -449,9 +449,9 @@ impl Kernel {
                     self.remap(op_id, x);
                     self.remove_op(op_id);
                 }
-                Op::StoreView { src, dtype } => {
+                Op::StoreView { dst, src, dtype } => {
                     let shape = self.shape_of(src);
-                    let len = shape.iter().product();
+                    let len = shape.iter().product::<Dim>();
                     let mut view = Vec::new();
                     let zero = self.insert_const_idx_before(start, 0u32);
                     let mut st = 1;
@@ -474,7 +474,6 @@ impl Kernel {
                     for &(idx, st, _, _) in &view {
                         index = self.insert_before(start, Op::Mad { x: idx, y: st, z: index });
                     }
-                    let dst = self.insert_before(start, Op::Define { dtype, scope: MemScope::Global, ro: false, len });
                     self.ops[op_id].op = Op::Store { dst, x: src, index, layout: MemLayout::Scalar };
                     views.insert(src, view);
                 }

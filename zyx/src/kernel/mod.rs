@@ -520,8 +520,8 @@ impl Kernel {
     }
 
     /// Store tensor to contiguous device memory.
-    pub fn store_contiguous(&mut self, src: OpId, dtype: DType) {
-        self.push_back(Op::StoreView { src, dtype });
+    pub fn store_contiguous(&mut self, dst: OpId, src: OpId, dtype: DType) {
+        self.push_back(Op::StoreView { dst, src, dtype });
     }
 
     /// Constant data value (uses natural dtype).
@@ -1103,7 +1103,7 @@ impl Kernel {
                     let mem_read = shape.iter().product::<Dim>() * u64::from(dtype.bit_size()) / 8;
                     Info { shape, flops: 0, mem_read, mem_write: 0 }
                 }
-                Op::StoreView { src, dtype } => {
+                Op::StoreView { dst: _, src, dtype } => {
                     let Info { shape, .. } = stack[src].clone();
                     let mem_write = shape.iter().product::<Dim>() * u64::from(dtype.bit_size()) / 8;
                     Info { shape, flops: 0, mem_read: 0, mem_write }
@@ -1224,7 +1224,11 @@ impl Kernel {
         match self.ops[op_id].op {
             Op::LoadView(ref x) => x.2.clone(),
             Op::Const(_) => vec![1],
-            Op::Cast { x, .. } | Op::Unary { x, .. } | Op::Binary { x, .. } | Op::Mad { x, .. } => self.shape_of(x),
+            Op::StoreView { src: x, .. }
+            | Op::Cast { x, .. }
+            | Op::Unary { x, .. }
+            | Op::Binary { x, .. }
+            | Op::Mad { x, .. } => self.shape_of(x),
             Op::Reduce { x, n_axes, .. } => {
                 let mut s = self.shape_of(x);
                 s.truncate(s.len() - n_axes);
@@ -1240,7 +1244,7 @@ impl Kernel {
                 | MoveOp::Permute { shape, .. }
                 | MoveOp::Pad { shape, .. } => shape.clone(),
             },
-            _ => unreachable!(),
+            ref op => todo!("{op:?}"),
         }
     }
 

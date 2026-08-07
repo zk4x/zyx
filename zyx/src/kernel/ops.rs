@@ -108,6 +108,7 @@ pub enum Op {
     // ops that exist only in kernelizer, basically they can be eventually removed.
     LoadView(Box<(OpId, DType, Vec<Dim>)>),
     StoreView {
+        dst: OpId,
         src: OpId,
         dtype: DType,
     },
@@ -399,7 +400,7 @@ impl Op {
             &Op::PushTile { dst: cb, x } => vec![cb, x],
             &Op::Loop { len, .. } => vec![len],
             &Op::Move { x, .. } => vec![x],
-            &Op::StoreView { src, .. } => vec![src],
+            &Op::StoreView { dst, src, .. } => vec![dst, src],
             Op::Reduce { x, .. } => vec![*x],
             Op::ReduceTile { x, .. } => vec![*x],
             &Op::Store { dst, x, index, .. } => vec![dst, x, index],
@@ -426,7 +427,7 @@ impl Op {
             Op::PopTile { src: cb } => vec![cb],
             Op::PushTile { dst: cb, x } => vec![cb, x],
             Op::Loop { len, .. } => vec![len],
-            Op::StoreView { src, .. } => vec![src],
+            Op::StoreView { dst, src, .. } => vec![dst, src],
             Op::Move { x, .. } => vec![x],
             Op::Reduce { x, .. } => vec![x],
             Op::ReduceTile { x, .. } => vec![x],
