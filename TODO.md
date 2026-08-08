@@ -1,4 +1,8 @@
 - [ ] backend
+  - [x] dummy
+    - [ ] validation for program ids
+  - [x] c (clang)
+    - [x] optional openmp
   - [x] cuda
     - [x] fix async memcopy
     - [ ] tensor cores
@@ -18,10 +22,13 @@
   - [x] wgpu
     - [ ] fix load calculation, probably using Atomic usize
     - [x] spirv compiler
-  - [x] dummy
-    - [ ] validation for program ids
-  - [x] c (clang)
-    - [x] optional openmp
+  - [ ] tenstorrent
+    - [x] memory pool, allocation, movement
+    - [x] cpp runtime
+    - [x] elementwise
+    - [ ] reduce tile
+    - [ ] matmul tile
+    - [ ] transpose tile
 - [ ] runtime
   - [x] fix event handling
   - [x] node deallocation after realization
@@ -96,6 +103,16 @@
       - [x] of ops
   - [x] register tiling (needs improvement)
   - [ ] variable op for dynamic constants (that is scalars that should be kernel args, not baked)
+  - [ ] local memory tiling for matmul like kernels
+  - [ ] wmma optimization pass
+  - [ ] tiling optimization passes for tenstorrent
+    - [x] elementwise
+    - [ ] reduce
+      - [ ] scalar
+      - [ ] row
+      - [ ] col
+    - [ ] matmul
+    - [ ] transpose
 - [ ] tensor
   - [x] gather
   - [x] scatter
@@ -119,9 +136,6 @@
   - [x] smooth l1 loss
   - [x] ctc loss
   - [x] triplet margin loss
-  - [ ] frobenius norm
-  - [ ] spectral norm
-  - [ ] instance norm
   - [x] tril
   - [x] triu
   - [ ] topk
