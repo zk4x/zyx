@@ -154,6 +154,23 @@ fn erf_1() -> Result<(), ZyxError> {
 }
 
 #[test]
+fn erfinv_1() -> Result<(), ZyxError> {
+    // Winitzki approximation: erfinv(y) ≈ sign(y) * sqrt((-A + sqrt(A² - 4a·L)) / (2a))
+    // where L = ln(1 - y²), A = 4/π + a·L, a = 0.147
+    let data: [f32; 5] = [0.0, 0.5, -0.5, 0.9, -0.9];
+    let x = Tensor::from(data);
+    let result = x.erfinv();
+    let zdata: Vec<f32> = result.cast(DType::F32).try_into()?;
+
+    // Expected values from scipy.special.erfinv
+    let expected = [0.0f32, 0.47693628, -0.47693628, 1.1630872, -1.1630872];
+    for (got, exp) in zdata.iter().zip(expected.iter()) {
+        assert!(got.is_equal(*exp), "got {got} vs expected {exp}");
+    }
+    Ok(())
+}
+
+#[test]
 fn sign_1() -> Result<(), ZyxError> {
     let t = Tensor::from([-2.0f32, 0.0, 3.0]);
     let result = t.sign();

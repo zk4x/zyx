@@ -57,6 +57,33 @@ impl Tensor {
         x.sign() * (one - t * poly * (-x.clone() * x).exp())
     }
 
+    /// Inverse error function (erfinv) via the Winitzki approximation.
+    ///
+    /// Computes `erfinv(x)` for `|x| < 1` using:
+    /// ```text
+    /// L = ln(1 - x²)
+    /// a = 0.147
+    /// A = 4/π + a·L
+    /// t = (sqrt(A² - 4a·L) - A) / (2a)
+    /// erfinv(x) = sign(x) * sqrt(t)
+    /// ```
+    #[must_use]
+    #[allow(clippy::missing_panics_doc)]
+    pub fn erfinv(&self) -> Tensor {
+        let x = self.float_cast().unwrap();
+        let a: Tensor = 0.147f32.into();
+        let four_over_pi: Tensor = (4.0f32 / core::f32::consts::PI).into();
+        let one: Tensor = 1.0f32.into();
+        let xsq = x.clone().square();
+        let one_minus_xsq = one - xsq;
+        let l = one_minus_xsq.ln();
+        let a_val = a.clone();
+        let big_a = four_over_pi + a_val.clone() * l.clone();
+        let inner = big_a.clone().square() - (Tensor::from(4.0f32) * a_val.clone() * l.clone());
+        let t = (inner.sqrt() - big_a) / (Tensor::from(2.0f32) * a_val);
+        x.sign() * t.sqrt()
+    }
+
     /// Applies element-wise, CELU(x)=max⁡(0,x)+min⁡(0,α∗(exp⁡(x/α)−1)).
     #[must_use]
     pub fn celu(&self, alpha: impl Scalar) -> Tensor {

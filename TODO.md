@@ -109,7 +109,7 @@
   - [ ] upsample
   - [ ] downsample
   - [x] erf
-  - [ ] erfinv
+  - [x] erfinv
   - [ ] lgamma (log gamma)
   - [ ] i0 (modified Bessel function)
   - [x] trunc
