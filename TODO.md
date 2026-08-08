@@ -104,14 +104,11 @@
   - [ ] pinverse
   - [ ] eigvalsh
   - [ ] singular value decomposition
-  - [ ] instance norm
   - [x] interpolate
   - [ ] upsample
   - [ ] downsample
   - [x] erf
   - [x] erfinv
-  - [ ] lgamma (log gamma)
-  - [ ] i0 (modified Bessel function)
   - [x] trunc
   - [x] frac
   - [x] ceil
@@ -121,9 +118,10 @@
   - [x] huber loss
   - [x] smooth l1 loss
   - [x] ctc loss
-  - [ ] triplet margin loss
+  - [x] triplet margin loss
   - [ ] frobenius norm
   - [ ] spectral norm
+  - [ ] instance norm
   - [x] tril
   - [x] triu
   - [ ] topk

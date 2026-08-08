@@ -1841,6 +1841,77 @@ impl Tensor {
         }
     }
 
+    /// Triplet margin loss.
+    ///
+    /// Computes the triplet margin loss between anchor, positive, and negative
+    /// samples using the p-norm distance.
+    ///
+    /// `loss = max(d(anchor, positive) - d(anchor, negative) + margin, 0)`
+    ///
+    /// where `d(x, y) = ||x - y||_p` is the p-norm distance.
+    ///
+    /// When `swap` is true, the positive distance is taken as the maximum of
+    /// `d(anchor, positive)` and `d(positive, negative)`.
+    ///
+    /// Inputs should be 2D tensors of shape `[N, D]` (batch, features).
+    ///
+    /// # Arguments
+    ///
+    /// * `positive` - Positive sample tensor.
+    /// * `negative` - Negative sample tensor.
+    /// * `margin` - Margin for the triplet loss (default 1.0).
+    /// * `p` - The norm degree for pairwise distance (default 2).
+    /// * `swap` - Whether to swap for the positive distance (default false).
+    /// * `reduction` - Reduction mode.
+    ///
+    /// # Errors
+    ///
+    /// Returns error if shapes are incompatible.
+    #[allow(clippy::missing_panics_doc)]
+    pub fn triplet_margin_loss(
+        &self,
+        positive: &Tensor,
+        negative: &Tensor,
+        margin: f32,
+        p: i32,
+        swap: bool,
+        reduction: ReduceOp,
+    ) -> Result<Tensor, ZyxError> {
+        let anchor = self;
+        let dtype = anchor.dtype();
+        let eps: f32 = 1e-6;
+
+        // Helper: p-norm distance along axis 1
+        let dist = |a: &Tensor, b: &Tensor| -> Result<Tensor, ZyxError> {
+            let diff = a - b;
+            let abs_diff = diff.abs();
+            let pow_p = abs_diff.pow(Tensor::from(p as f32))?;
+            let sum_p = pow_p.sum([1])?;
+            let eps_t = Tensor::from(eps).cast(dtype);
+            let sum_p_eps = sum_p + eps_t;
+            Ok(sum_p_eps.pow(Tensor::from(1.0 / p as f32))?)
+        };
+
+        let dist_pos = dist(anchor, positive)?;
+        let dist_neg = dist(anchor, negative)?;
+
+        let dist_pos_final = if swap {
+            let dist_pn = dist(positive, negative)?;
+            dist_pos.maximum(&dist_pn)?
+        } else {
+            dist_pos
+        };
+
+        let loss = (dist_pos_final - &dist_neg + Tensor::from(margin)).relu();
+
+        match reduction {
+            ReduceOp::Mean => Ok(loss.mean_all()),
+            ReduceOp::Sum => Ok(loss.sum_all()),
+            ReduceOp::None => Ok(loss),
+            _ => Err(ZyxError::ParseError("invalid reduction for triplet_margin_loss".into())),
+        }
+    }
+
     /// Gather
     ///
     /// Gathers values along axis based on indices.

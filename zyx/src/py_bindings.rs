@@ -1419,6 +1419,41 @@ impl Tensor {
 
     /// # Errors
     /// Returns a `ZyxError` if the operation fails.
+    #[pyo3(name = "triplet_margin_loss")]
+    pub fn triplet_margin_loss_py(
+        &self,
+        positive: &Bound<'_, PyAny>,
+        negative: &Bound<'_, PyAny>,
+        margin: f32,
+        p: i32,
+        swap: bool,
+        reduction: &Bound<'_, PyAny>,
+    ) -> Result<Tensor, ZyxError> {
+        let positive_tensor = positive.extract::<Tensor>().map_err(|_| {
+            ZyxError::DTypeError("positive must be a Tensor".into())
+        })?;
+        let negative_tensor = negative.extract::<Tensor>().map_err(|_| {
+            ZyxError::DTypeError("negative must be a Tensor".into())
+        })?;
+        let r = if let Ok(reduction_str) = reduction.extract::<String>() {
+            match reduction_str.as_str() {
+                "mean" => ReduceOp::Mean,
+                "sum" => ReduceOp::Sum,
+                "none" => ReduceOp::None,
+                _ => {
+                    return Err(ZyxError::ParseError(
+                        "invalid reduction, expected 'mean', 'sum', or 'none'".into(),
+                    ))
+                }
+            }
+        } else {
+            ReduceOp::Mean
+        };
+        self.triplet_margin_loss(&positive_tensor, &negative_tensor, margin, p, swap, r)
+    }
+
+    /// # Errors
+    /// Returns a `ZyxError` if the operation fails.
     #[pyo3(name = "one_hot_along_dim")]
     pub fn one_hot_along_dim_py(&self, num_classes: Dim, dim: Axis) -> Result<Tensor, ZyxError> {
         self.one_hot_along_dim(num_classes, dim)

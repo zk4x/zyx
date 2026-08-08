@@ -215,6 +215,95 @@ fn nll_loss_5() -> Result<(), ZyxError> {
 }
 
 #[test]
+fn triplet_margin_loss_1() -> Result<(), ZyxError> {
+    use zyx::ReduceOp;
+    // Simple single-sample test
+    // a = [0, 0], p = [2, 0], n = [0.5, 0]
+    // dist_ap = sqrt(4 + eps) ~ 2.0, dist_an = sqrt(0.25 + eps) ~ 0.5
+    // loss = max(2 - 0.5 + 1, 0) = 2.5
+    let anchor = Tensor::from([[0.0f32, 0.0]]);
+    let positive = Tensor::from([[2.0f32, 0.0]]);
+    let negative = Tensor::from([[0.5f32, 0.0]]);
+    let loss = anchor.triplet_margin_loss(&positive, &negative, 1.0, 2, false, ReduceOp::Mean)?;
+    assert!((loss.item::<f32>() - 2.5f32).abs() < 1e-4);
+    Ok(())
+}
+
+#[test]
+fn triplet_margin_loss_2() -> Result<(), ZyxError> {
+    use zyx::ReduceOp;
+    // Anchor == positive → dist_ap ~ 0 → loss should be 0 (margin satisfied)
+    let anchor = Tensor::from([[0.0f32, 0.0]]);
+    let positive = Tensor::from([[0.0f32, 0.0]]);
+    let negative = Tensor::from([[5.0f32, 0.0]]);
+    let loss = anchor.triplet_margin_loss(&positive, &negative, 1.0, 2, false, ReduceOp::Mean)?;
+    assert!(loss.item::<f32>() < 1e-3);
+    Ok(())
+}
+
+#[test]
+fn triplet_margin_loss_3() -> Result<(), ZyxError> {
+    use zyx::ReduceOp;
+    // Two samples, Mean reduction
+    // Sample 0: a=[0,0], p=[2,0], n=[0.5,0] → loss = max(2 - 0.5 + 1, 0) = 2.5
+    // Sample 1: a=[0,0], p=[0,0], n=[5,0] → loss = max(~0 - ~5 + 1, 0) = 0
+    // mean = (2.5 + 0) / 2 = 1.25
+    let anchor = Tensor::from([[0.0f32, 0.0], [0.0, 0.0]]);
+    let positive = Tensor::from([[2.0f32, 0.0], [0.0, 0.0]]);
+    let negative = Tensor::from([[0.5f32, 0.0], [5.0, 0.0]]);
+    let loss = anchor.triplet_margin_loss(&positive, &negative, 1.0, 2, false, ReduceOp::Mean)?;
+    assert!((loss.item::<f32>() - 1.25f32).abs() < 1e-4);
+    Ok(())
+}
+
+#[test]
+fn triplet_margin_loss_4() -> Result<(), ZyxError> {
+    use zyx::ReduceOp;
+    // Two samples, Sum reduction
+    // loss = [2.5, 0.0] → sum = 2.5
+    let anchor = Tensor::from([[0.0f32, 0.0], [0.0, 0.0]]);
+    let positive = Tensor::from([[2.0f32, 0.0], [0.0, 0.0]]);
+    let negative = Tensor::from([[0.5f32, 0.0], [5.0, 0.0]]);
+    let loss = anchor.triplet_margin_loss(&positive, &negative, 1.0, 2, false, ReduceOp::Sum)?;
+    assert!((loss.item::<f32>() - 2.5f32).abs() < 1e-4);
+    Ok(())
+}
+
+#[test]
+fn triplet_margin_loss_5() -> Result<(), ZyxError> {
+    use zyx::ReduceOp;
+    // Test with swap=true
+    // a=[0,0], p=[1,0], n=[3,0], margin=3
+    // dist_ap = 1, dist_an = 3, dist_pn = 2
+    // swap: d_p = max(1, 2) = 2
+    // loss = max(2 - 3 + 3, 0) = 2
+    let anchor = Tensor::from([[0.0f32, 0.0]]);
+    let positive = Tensor::from([[1.0f32, 0.0]]);
+    let negative = Tensor::from([[3.0f32, 0.0]]);
+    let loss = anchor.triplet_margin_loss(&positive, &negative, 3.0, 2, true, ReduceOp::Mean)?;
+    assert!((loss.item::<f32>() - 2.0f32).abs() < 1e-4);
+    Ok(())
+}
+
+#[test]
+fn triplet_margin_loss_6() -> Result<(), ZyxError> {
+    use zyx::ReduceOp;
+    // Verify swap does NOT change when dist_pn < dist_ap
+    // a=[0,0], p=[10,0], n=[3,0], margin=1
+    // dist_ap = 10, dist_an = 3, dist_pn = 7
+    // swap: d_p = max(10, 7) = 10 (unchanged)
+    // loss = max(10 - 3 + 1, 0) = 8
+    let anchor = Tensor::from([[0.0f32, 0.0]]);
+    let positive = Tensor::from([[10.0f32, 0.0]]);
+    let negative = Tensor::from([[3.0f32, 0.0]]);
+    let loss_no_swap = anchor.triplet_margin_loss(&positive, &negative, 1.0, 2, false, ReduceOp::Mean)?;
+    let loss_swap = anchor.triplet_margin_loss(&positive, &negative, 1.0, 2, true, ReduceOp::Mean)?;
+    assert!((loss_no_swap.item::<f32>() - 8.0f32).abs() < 1e-4);
+    assert!((loss_swap.item::<f32>() - 8.0f32).abs() < 1e-4);
+    Ok(())
+}
+
+#[test]
 fn erf_1() -> Result<(), ZyxError> {
     // Test basic erf values
     let t = Tensor::from([0.0f32, 0.5, 1.0, -0.5, -1.0]);
