@@ -1039,6 +1039,37 @@ impl Tensor {
         Ok(Tensor { id: RT.lock().permute(self.id, axes) })
     }
 
+    /// Flips tensor along the given axes, reversing the order of elements.
+    /// Works the same way as `torch.flip`.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use zyx::Tensor;
+    /// let t = Tensor::from([1, 2, 3]);
+    /// let flipped = t.flip([0])?;
+    /// assert_eq!(flipped, [3, 2, 1]);
+    /// # Ok::<(), zyx::ZyxError>(())
+    /// ```
+    ///
+    /// # Errors
+    /// Returns error if the axes list is empty, or an axis is out of range.
+    pub fn flip(&self, axes: impl IntoIterator<Item = Axis>) -> Result<Tensor, ZyxError> {
+        let rank = self.rank();
+        let mut axes: Vec<UAxis> = axes
+            .into_iter()
+            .map(|a| into_axis(a, rank as usize))
+            .collect::<Result<_, _>>()?;
+        if axes.is_empty() {
+            return Err(ZyxError::shape_error(
+                format!("Axes must not be empty for a tensor of rank {rank}").into(),
+            ));
+        }
+        axes.sort_unstable();
+        axes.dedup();
+        Ok(Tensor { id: RT.lock().flip(self.id, axes)? })
+    }
+
     /// Creates a new tensor by padding zeros around this tensor based on the specified padding configuration.
     /// First padding tuple pads first dimension, second pads second dimension, etc.
     ///

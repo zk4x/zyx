@@ -410,6 +410,19 @@ impl Runtime {
                 Node::PadZeros { x, .. } => {
                     accum_grad(self, graph_id, &mut grads, x, grad);
                 }
+                Node::Flip { x, ref axes } => {
+                    // Flip is its own inverse: the gradient back-propagates by
+                    // flipping along the same axes.
+                    let g = self
+                        .push_node(
+                            graph_id,
+                            Node::Flip { x: grad, axes: axes.clone() },
+                            self.graphs[graph_id].classes[x].shape,
+                            self.graphs[graph_id].classes[grad].dtype,
+                        )
+                        .1;
+                    accum_grad(self, graph_id, &mut grads, x, g);
+                }
                 Node::Reduce { x, rop: bop, ref axes } => {
                     let axes = axes.clone();
                     match bop {

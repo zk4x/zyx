@@ -14,7 +14,7 @@ use crate::{
     Map, Set,
     dtype::Constant,
     kernel::{BOp, IDX_T, IdxScope, Kernel, MemLayout, MemScope, MoveOp, Op, OpId},
-    shape::{self, Dim},
+    shape::{self, Dim, UAxis},
 };
 
 /// Extract the value of an index constant op.
@@ -399,6 +399,30 @@ impl Kernel {
                                 .collect();
                             views.insert(x, view);
                         }
+                        MoveOp::Flip { axes } => {
+                            let axes = axes.clone();
+                            let x_shape = self.shape_of(x);
+                            let view = &views[&op_id];
+                            let view = (0..x_shape.len())
+                                .map(|a| {
+                                    let (idx, stride, lp_id, rp_id) = view[a];
+                                    if axes.contains(&(a as UAxis)) {
+                                        // Reverse the axis: the input coordinate is
+                                        // `extent - 1 - out_idx`. The extent is the
+                                        // coordinate range of the padded axis.
+                                        let n = index_len(self, &axis_lens, idx).max(x_shape[a]);
+                                        let len_m1 = self.insert_const_idx_before(anchor, n - 1);
+                                        let idx = self.insert_before(anchor, Op::Binary { x: len_m1, y: idx, bop: BOp::Sub });
+                                        axis_lens.insert(idx, n);
+                                        // Padding swaps sides under a flip.
+                                        (idx, stride, rp_id, lp_id)
+                                    } else {
+                                        (idx, stride, lp_id, rp_id)
+                                    }
+                                })
+                                .collect();
+                            views.insert(x, view);
+                        }
                         MoveOp::Pad { padding, .. } => {
                             let x_shape = self.shape_of(x);
                             let padding = padding.clone();
@@ -540,6 +564,7 @@ impl Kernel {
                         | MoveOp::Pad { shape, .. } => {
                             return shape[shape.len() - n_reduce_axes..].into();
                         }
+                        MoveOp::Flip { .. } => {}
                     },
                     _ => {}
                 }

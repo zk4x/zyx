@@ -256,6 +256,17 @@ impl Graph {
                             shapes,
                         );
                     }
+                    Node::Flip { x, ref axes } => {
+                        self.add_move(
+                            cid,
+                            x,
+                            MoveOp::Flip { axes: axes.to_vec() },
+                            false,
+                            &mut visited,
+                            &mut rcs,
+                            shapes,
+                        );
+                    }
                     Node::ToDevice { x, .. } => {
                         let (child_kid, child_op) = visited[&x];
                         let (kid, op_id) = self.add_store(x, child_kid, child_op, &mut visited, &rcs, shapes);

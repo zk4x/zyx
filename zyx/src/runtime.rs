@@ -944,6 +944,20 @@ impl Runtime {
                                     self.push_node(graph_id, Node::PadZeros { x: x_class, padding }, shape_id, dtype);
                                 class_id
                             }
+                            MoveOp::Flip { axes } => {
+                                debug_assert!(
+                                    !axes.is_empty(),
+                                    "Flip: axes must not be empty (rank {} shape {:?})",
+                                    in_shape.len(),
+                                    in_shape
+                                );
+                                let dtype = self.graphs[graph_id].classes[x_class].dtype;
+                                let axes = axes.clone().into();
+                                let shape_id = self.push_shape(in_shape.clone());
+                                let (_, class_id) =
+                                    self.push_node(graph_id, Node::Flip { x: x_class, axes }, shape_id, dtype);
+                                class_id
+                            }
                         }
                     }
                     _ => unreachable!(),
@@ -1478,6 +1492,60 @@ impl Runtime {
             #[cfg(feature = "debug_tensor_op")]
             println!("  -> tid={tid}, kid={kernel_id:?}, op_id={op_id:?}");
             tid
+        }
+    }
+
+    /// Flip tensor along axes.
+    ///
+    /// # Errors
+    /// Returns shape error if the axes list is empty.
+    pub fn flip(&mut self, x: TensorId, mut axes: Vec<UAxis>) -> Result<TensorId, ZyxError> {
+        #[cfg(feature = "debug_tensor_op")]
+        println!("runtime::flip(x={x}, axes={axes:?})");
+
+        let sh = self.shape(x);
+        if axes.is_empty() {
+            return Err(ZyxError::shape_error(format!("flip: axes must not be empty for tensor of shape {sh:?}").into()));
+        }
+        for &axis in &axes {
+            if (axis as usize) >= sh.len() {
+                return Err(ZyxError::shape_error(
+                    format!("Axis {axis} is out of range of rank {}", sh.len()).into(),
+                ));
+            }
+        }
+        axes.sort_unstable();
+        axes.dedup();
+
+        let shape_id = self.push_shape(sh.to_vec());
+        let dtype = self.tensors[x].dtype;
+
+        if self.is_graph(x) {
+            let (class_id, graph_id) = self.graph_ids(x);
+            let (_, class_id) =
+                self.push_node(graph_id, Node::Flip { x: class_id, axes: axes.into_boxed_slice() }, shape_id, dtype);
+            let tid = self.new_graph_tensor(graph_id, class_id, shape_id, dtype);
+            #[cfg(feature = "debug_tensor_op")]
+            println!("  -> tid={tid}, cid={class_id:?}");
+            Ok(tid)
+        } else {
+            let (kernel_id, op_id) = self.duplicate_or_store(x, false).unwrap();
+            let op_id = self.kernels[kernel_id].kernel.flip(op_id, &axes);
+            let tid = self.tensors.push(TensorData {
+                shape_id,
+                dtype,
+                kernel_id,
+                op_id,
+                depends_on: KernelId::NULL,
+                class_id: ClassId::NULL,
+                graph_id: GraphId::NULL,
+                rc: 1,
+            });
+            debug_assert_eq!(self.kernels[kernel_id].outputs.len(), 0, "input into flip must have empty outputs");
+            self.kernels[kernel_id].outputs.push(tid);
+            #[cfg(feature = "debug_tensor_op")]
+            println!("  -> tid={tid}, kid={kernel_id:?}, op_id={op_id:?}");
+            Ok(tid)
         }
     }
 

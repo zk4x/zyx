@@ -119,6 +119,10 @@ pub(crate) enum Node {
         x: ClassId,
         padding: Box<[(i64, i64)]>,
     },
+    Flip {
+        x: ClassId,
+        axes: Box<[UAxis]>,
+    },
     Reduce {
         x: ClassId,
         rop: BOp,
@@ -159,6 +163,7 @@ impl PartialEq for Node {
             (Self::Permute { x: a, axes: aa }, Self::Permute { x: b, axes: ba }) => a == b && aa == ba,
             (Self::Reshape { x: a, shape: as_ }, Self::Reshape { x: b, shape: bs }) => a == b && as_ == bs,
             (Self::PadZeros { x: a, padding: ap }, Self::PadZeros { x: b, padding: bp }) => a == b && ap == bp,
+            (Self::Flip { x: a, axes: aa }, Self::Flip { x: b, axes: ba }) => a == b && aa == ba,
             (Self::Reduce { x: a, rop: ar, axes: aa }, Self::Reduce { x: b, rop: br, axes: ba }) => {
                 a == b && ar == br && aa == ba
             }
@@ -207,6 +212,11 @@ impl std::hash::Hash for Node {
                 5u8.hash(state);
                 x.hash(state);
                 padding.hash(state);
+            }
+            Self::Flip { x, axes } => {
+                12u8.hash(state);
+                x.hash(state);
+                axes.hash(state);
             }
             Self::Reduce { x, rop: bop, axes } => {
                 6u8.hash(state);
@@ -314,6 +324,7 @@ impl Node {
             Self::Permute { x, .. } => vec![*x],
             Self::Reshape { x, .. } => vec![*x],
             Self::PadZeros { x, .. } => vec![*x],
+            Self::Flip { x, .. } => vec![*x],
             Self::Reduce { x, .. } => vec![*x],
             Self::Cast { x, .. } => vec![*x],
             Self::Unary { x, .. } => vec![*x],
@@ -503,6 +514,7 @@ impl Graph {
                     Node::Permute { axes, .. } => format!("Permute {:?}", axes),
                     Node::Reshape { shape, .. } => format!("Reshape {:?}", shapes[*shape]),
                     Node::PadZeros { padding, .. } => format!("Pad {:?}", padding),
+                    Node::Flip { axes, .. } => format!("Flip {:?}", axes),
                     Node::ToDevice { device, time, .. } => format!("ToDevice {:?} time={}", device, time),
                     Node::Const(v) => format!("Const {:?}", v),
                     Node::Leaf { dtype, .. } => format!("Leaf {:?}", dtype),

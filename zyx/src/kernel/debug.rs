@@ -345,6 +345,9 @@ impl Kernel {
                                 "{indent}r{out_id}{grey}: {dtype}{reset} = {cyan}pad{reset} r{x} padding={padding:?} -> {shape:?}",
                             );
                         }
+                        MoveOp::Flip { axes } => {
+                            println!("{indent}r{out_id}{grey}: {dtype}{reset} = {cyan}flip{reset} r{x} axes={axes:?}");
+                        }
                     }
                 }
                 Op::Barrier => {

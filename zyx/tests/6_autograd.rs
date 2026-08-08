@@ -326,6 +326,18 @@ fn grad_permute() -> Result<(), ZyxError> {
 }
 
 #[test]
+fn grad_flip() -> Result<(), ZyxError> {
+    let x = Tensor::from([[4i32, 5], [3, 1]]);
+    let tape = Tape::new([&x])?;
+    let z = x.flip([0, 1])?;
+    let mut grads = tape.gradient(&z, [&x]);
+    let x_grad = grads.pop().unwrap();
+    tape.realize([&x_grad])?;
+    assert_eq!(x_grad, [[1, 1], [1, 1]]);
+    Ok(())
+}
+
+#[test]
 fn grad_dot() -> Result<(), ZyxError> {
     let x = Tensor::from([2, 3, 1]);
     let y = Tensor::from([2, 3, 1]).reshape([3, 1]).unwrap();

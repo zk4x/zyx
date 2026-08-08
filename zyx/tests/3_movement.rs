@@ -56,3 +56,35 @@ fn pad_2() -> Result<(), ZyxError> {
     assert_eq!(c, [[[[6i32, 8, 7, 8], [8, 10, 7, 8], [5, 6, 7, 8], [5, 6, 7, 8]]]]);
     Ok(())
 }
+
+#[test]
+fn flip_1() -> Result<(), ZyxError> {
+    let x = Tensor::from([1, 2, 3, 4]);
+    let y = x.flip([0])?;
+    assert_eq!(y, [4, 3, 2, 1]);
+    Ok(())
+}
+
+#[test]
+fn flip_2() -> Result<(), ZyxError> {
+    let x = Tensor::from([[1, 2, 3], [4, 5, 6]]);
+    let y = x.flip([0, 1])?;
+    assert_eq!(y, [[6, 5, 4], [3, 2, 1]]);
+    Ok(())
+}
+
+#[test]
+fn flip_3() -> Result<(), ZyxError> {
+    let x = Tensor::from([[1, 2, 3], [4, 5, 6]]);
+    let y = x.flip([-1])?;
+    assert_eq!(y, [[3, 2, 1], [6, 5, 4]]);
+    Ok(())
+}
+
+#[test]
+fn flip_errors() -> Result<(), ZyxError> {
+    let x = Tensor::from([1, 2, 3]);
+    assert!(x.flip(std::iter::empty::<i32>()).is_err());
+    assert!(x.flip([1]).is_err());
+    Ok(())
+}

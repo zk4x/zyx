@@ -498,6 +498,17 @@ impl Kernel {
         self.push_back(Op::Move { x, mop: Box::new(MoveOp::Pad { padding, shape }) })
     }
 
+    /// Flip tensor axes.
+    pub fn flip(&mut self, x: OpId, axes: &[UAxis]) -> OpId {
+        let axes = axes.to_vec();
+        let in_shape = self.shape_of(x);
+        debug_assert!(!axes.is_empty(), "flip: axes must not be empty");
+        for &axis in &axes {
+            debug_assert!((axis as usize) < in_shape.len(), "flip: axis {axis} out of range for rank {}", in_shape.len());
+        }
+        self.push_back(Op::Move { x, mop: Box::new(MoveOp::Flip { axes }) })
+    }
+
     /// Sum over the last `n_axes` dimensions.
     pub fn reduce_sum(&mut self, x: OpId, n_axes: usize) -> OpId {
         let in_shape = self.shape_of(x);
@@ -1104,11 +1115,12 @@ impl Kernel {
                     let mem_write = shape.iter().product::<Dim>() * u64::from(dtype.bit_size()) / 8;
                     Info { shape, flops: 0, mem_read: 0, mem_write }
                 }
-                Op::Move { mop, .. } => match mop.as_ref() {
+                Op::Move { x, mop } => match mop.as_ref() {
                     MoveOp::Reshape { shape, .. }
                     | MoveOp::Expand { shape }
                     | MoveOp::Permute { shape, .. }
                     | MoveOp::Pad { shape, .. } => Info { shape: shape.clone(), flops: 0, mem_read: 0, mem_write: 0 },
+                    MoveOp::Flip { .. } => Info { shape: stack[x].shape.clone(), flops: 0, mem_read: 0, mem_write: 0 },
                 },
                 Op::Reduce { x, n_axes, .. } => {
                     let Info { mut shape, .. } = stack[x].clone();
@@ -1234,11 +1246,12 @@ impl Kernel {
                 let _ = self.shape_of(x);
                 vec![1]
             }
-            Op::Move { ref mop, .. } => match mop.as_ref() {
+            Op::Move { x, ref mop } => match mop.as_ref() {
                 MoveOp::Reshape { shape, .. }
                 | MoveOp::Expand { shape }
                 | MoveOp::Permute { shape, .. }
                 | MoveOp::Pad { shape, .. } => shape.clone(),
+                MoveOp::Flip { .. } => self.shape_of(x),
             },
             ref op => todo!("{op:?}"),
         }
