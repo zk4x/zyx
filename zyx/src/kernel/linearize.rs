@@ -25,20 +25,6 @@ fn pad_value(k: &Kernel, id: OpId) -> u64 {
     c.as_dim().expect("pad constant must be a non-negative dim")
 }
 
-/// Extract the axis length of an `Op::Index`, reduce-opened `Op::Loop`, or a
-/// reshape-recovered div/mod index (via `axis_lens` or the mod divisor).
-fn index_len(k: &Kernel, axis_lens: &Map<OpId, u64>, idx: OpId) -> u64 {
-    if let Some(&len) = axis_lens.get(&idx) {
-        return len;
-    }
-    match k.ops[idx].op {
-        Op::Index { len, .. } => k.index_len(len),
-        Op::Loop { len } => k.loop_len_dim(len),
-        Op::Binary { y, bop: BOp::Mod, .. } => pad_value(k, y),
-        _ => unreachable!("pad condition needs an Index/Loop length, got {:?}", k.ops[idx].op),
-    }
-}
-
 impl Kernel {
     /// Unfold movement operations into index-based operations using tinygrad's rangeify approach.
     ///
@@ -83,12 +69,8 @@ impl Kernel {
             true
         });
 
-        // For each op, shape and strides: (index, stride, left pad, right pad)
-        let mut views: Map<OpId, Vec<(OpId, OpId, OpId, OpId)>> = Map::default();
-
-        // Axis length of each reshape-recovered div/mod index op, keyed by the
-        // index expression's OpId. Used to build padding conditions.
-        let mut axis_lens: Map<OpId, u64> = Map::default();
+        // For each op, shape and strides: (index, stride, left pad, right pad, axis length)
+        let mut views: Map<OpId, Vec<(OpId, OpId, OpId, OpId, OpId)>> = Map::default();
 
         // Reused group index per axis, so every store of a result shares one index.
         let mut group_indices: Map<u32, OpId> = Map::default();
@@ -123,17 +105,15 @@ impl Kernel {
                 Op::LoadView(ref x) => {
                     let src = x.0;
                     let dtype = x.1;
-                    let len = x.2.iter().product::<Dim>();
                     let view = views.remove(&op_id).unwrap();
                     let zero = self.insert_const_idx_before(anchor, 0u32);
-                    let one = self.insert_const_idx_before(anchor, 1u32);
                     // Padding condition: valid where index is within the source extent.
                     // index = sum over axes of (idx - lp) * stride
                     // pc = and over padded axes of idx > lp-1 && idx < len-rp
                     let mut index = zero;
                     let mut pc = self.insert_before(anchor, Op::Const(Constant::Bool(true)));
                     let mut has_pad = false;
-                    for &(idx, st, lp_id, rp_id) in &view {
+                    for &(idx, st, lp_id, rp_id, len_op) in &view {
                         let lp = pad_value(self, lp_id);
                         let rp = pad_value(self, rp_id);
                         let src_idx = if lp == 0 {
@@ -150,8 +130,7 @@ impl Kernel {
                                 pc = self.insert_before(anchor, Op::Binary { x: t, y: pc, bop: BOp::And });
                             }
                             if rp > 0 {
-                                let axis_len = index_len(self, &axis_lens, idx);
-                                let len_mr = self.insert_const_idx_before(anchor, axis_len - rp);
+                                let len_mr = self.insert_before(anchor, Op::Binary { x: len_op, y: rp_id, bop: BOp::Sub });
                                 let t = self.insert_before(anchor, Op::Binary { x: idx, y: len_mr, bop: BOp::Cmplt });
                                 pc = self.insert_before(anchor, Op::Binary { x: t, y: pc, bop: BOp::And });
                             }
@@ -175,7 +154,7 @@ impl Kernel {
                     // view's padding condition is false (padded regions read as zero).
                     let mut pc = self.insert_before(anchor, Op::Const(Constant::Bool(true)));
                     let mut has_pad = false;
-                    for &(idx, _st, lp_id, rp_id) in &view {
+                    for &(idx, _st, lp_id, rp_id, len_op) in &view {
                         let lp = pad_value(self, lp_id);
                         let rp = pad_value(self, rp_id);
                         if lp > 0 || rp > 0 {
@@ -186,8 +165,7 @@ impl Kernel {
                                 pc = self.insert_before(anchor, Op::Binary { x: t, y: pc, bop: BOp::And });
                             }
                             if rp > 0 {
-                                let axis_len = index_len(self, &axis_lens, idx);
-                                let len_mr = self.insert_const_idx_before(anchor, axis_len - rp);
+                                let len_mr = self.insert_before(anchor, Op::Binary { x: len_op, y: rp_id, bop: BOp::Sub });
                                 let t = self.insert_before(anchor, Op::Binary { x: idx, y: len_mr, bop: BOp::Cmplt });
                                 pc = self.insert_before(anchor, Op::Binary { x: t, y: pc, bop: BOp::And });
                             }
@@ -253,8 +231,10 @@ impl Kernel {
                     // Open the reduce loops over the reduced dims, keeping the loop ids.
                     let dims = self.reduce_dims(op_id);
                     let mut loop_ids = Vec::with_capacity(n_axes);
+                    let mut loop_lens = Vec::with_capacity(n_axes);
                     for &dim in &dims[..n_axes] {
                         let len = self.insert_const_idx_before(loop_start, dim);
+                        loop_lens.push(len);
                         loop_ids.push(self.insert_before(loop_start, Op::Loop { len }));
                     }
 
@@ -273,13 +253,13 @@ impl Kernel {
                     let zero = self.insert_const_idx_before(loop_start, 0u32);
                     let mut view = Vec::with_capacity(rank);
                     for e in 0..non_reduce {
-                        let (idx, _st, lp, rp) = out_view[e];
+                        let (idx, _st, lp, rp, len) = out_view[e];
                         let stride = self.insert_const_idx_before(loop_start, strides[e]);
-                        view.push((idx, stride, lp, rp));
+                        view.push((idx, stride, lp, rp, len));
                     }
                     for (i, &lid) in loop_ids.iter().enumerate() {
                         let stride = self.insert_const_idx_before(loop_start, strides[non_reduce + i]);
-                        view.push((lid, stride, zero, zero));
+                        view.push((lid, stride, zero, zero, loop_lens[i]));
                     }
                     views.insert(x, view);
 
@@ -320,7 +300,7 @@ impl Kernel {
                             }
                             let zero = self.insert_const_idx_before(anchor, 0u32);
                             let mut base = zero;
-                            for &(idx, drift, _, _) in &out_view {
+                            for &(idx, drift, _, _, _) in &out_view {
                                 base = self.insert_before(anchor, Op::Mad { x: idx, y: drift, z: base });
                             }
                             let n = x_shape.len();
@@ -329,17 +309,17 @@ impl Kernel {
                             for a in 0..n {
                                 let s = x_strides[a];
                                 let s_id = self.insert_const_idx_before(anchor, s);
-                                let idx_expr = if a == n - 1 {
-                                    q
-                                } else {
-                                    let div = self.insert_before(anchor, Op::Binary { x: q, y: s_id, bop: BOp::Div });
-                                    let rem = self.insert_before(anchor, Op::Binary { x: q, y: s_id, bop: BOp::Mod });
-                                    q = rem;
-                                    div
-                                };
-                                axis_lens.insert(idx_expr, x_shape[a]);
-                                view.push((idx_expr, s_id, zero, zero));
-                            }
+let idx_expr = if a == n - 1 {
+                                        q
+                                    } else {
+                                        let div = self.insert_before(anchor, Op::Binary { x: q, y: s_id, bop: BOp::Div });
+                                        let rem = self.insert_before(anchor, Op::Binary { x: q, y: s_id, bop: BOp::Mod });
+                                        q = rem;
+                                        div
+                                    };
+                                    let len_id = self.insert_const_idx_before(anchor, x_shape[a]);
+                                    view.push((idx_expr, s_id, zero, zero, len_id));
+                                }
                             views.insert(x, view);
                         }
                         MoveOp::Expand { shape } => {
@@ -364,7 +344,7 @@ impl Kernel {
                                     } else {
                                         self.insert_const_idx_before(anchor, x_strides[a])
                                     };
-                                    (idx, stride, view[offset + a].2, view[offset + a].3)
+                                    (idx, stride, view[offset + a].2, view[offset + a].3, view[offset + a].4)
                                 })
                                 .collect();
                             views.insert(x, view);
@@ -388,13 +368,13 @@ impl Kernel {
                             // axis is broadcast (stride 0), in which case it stays 0.
                             let view = (0..x_shape.len())
                                 .map(|j| {
-                                    let (idx, os, lp, rp) = view[inv_axes[j]];
+                                    let (idx, os, lp, rp, len) = view[inv_axes[j]];
                                     let stride = if matches!(self.ops[os].op, Op::Const(c) if c.as_dim() == Some(0)) {
                                         zero
                                     } else {
                                         self.insert_const_idx_before(anchor, x_strides[j])
                                     };
-                                    (idx, stride, lp, rp)
+                                    (idx, stride, lp, rp, len)
                                 })
                                 .collect();
                             views.insert(x, view);
@@ -403,21 +383,21 @@ impl Kernel {
                             let axes = axes.clone();
                             let x_shape = self.shape_of(x);
                             let view = &views[&op_id];
+                            let zero = self.insert_const_idx_before(anchor, 0u32);
+                            let one = self.insert_const_idx_before(anchor, 1u32);
                             let view = (0..x_shape.len())
                                 .map(|a| {
-                                    let (idx, stride, lp_id, rp_id) = view[a];
+                                    let (idx, stride, lp_id, rp_id, len_id) = view[a];
                                     if axes.contains(&(a as UAxis)) {
                                         // Reverse the axis: the input coordinate is
                                         // `extent - 1 - out_idx`. The extent is the
                                         // coordinate range of the padded axis.
-                                        let n = index_len(self, &axis_lens, idx).max(x_shape[a]);
-                                        let len_m1 = self.insert_const_idx_before(anchor, n - 1);
+                                        let len_m1 = self.insert_before(anchor, Op::Binary { x: len_id, y: one, bop: BOp::Sub });
                                         let idx = self.insert_before(anchor, Op::Binary { x: len_m1, y: idx, bop: BOp::Sub });
-                                        axis_lens.insert(idx, n);
                                         // Padding swaps sides under a flip.
-                                        (idx, stride, rp_id, lp_id)
+                                        (idx, stride, rp_id, lp_id, len_id)
                                     } else {
-                                        (idx, stride, lp_id, rp_id)
+                                        (idx, stride, lp_id, rp_id, len_id)
                                     }
                                 })
                                 .collect();
@@ -449,11 +429,11 @@ impl Kernel {
                                         idx
                                     };
                                     // The input-view index ranges over the padded
-                                    // coordinates (length x_shape + lp + rp). Record it
-                                    // so pad conditions can bound it when the padded
-                                    // tensor is an intermediate (its index is an offset
-                                    // Add, not an Index/Loop).
-                                    axis_lens.insert(idx, ((x_shape[a] as i64) + lp + rp).max(0) as u64);
+                                    // coordinates (length x_shape + lp + rp), which is
+                                    // this axis' extent for pad-condition bounds -- NOT
+                                    // the consumer's view extent (that is the slice
+                                    // output length when the pad is a slice).
+                                    let len_id = self.insert_const_idx_before(anchor, ((x_shape[a] as i64) + lp + rp).max(0) as u64);
                                     let lp_id = if lp > 0 {
                                         self.insert_const_idx_before(anchor, lp as u64)
                                     } else {
@@ -464,7 +444,7 @@ impl Kernel {
                                     } else {
                                         zero
                                     };
-                                    (idx, stride, lp_id, rp_id)
+                                    (idx, stride, lp_id, rp_id, len_id)
                                 })
                                 .collect();
                             views.insert(x, view);
@@ -475,7 +455,6 @@ impl Kernel {
                 }
                 Op::StoreView { dst, src, dtype } => {
                     let shape = self.shape_of(src);
-                    let len = shape.iter().product::<Dim>();
                     let mut view = Vec::new();
                     let zero = self.insert_const_idx_before(start, 0u32);
                     let mut st = 1;
@@ -491,12 +470,12 @@ impl Kernel {
                             }
                         };
                         let st_id = self.insert_const_idx_before(start, st);
-                        view.push((idx, st_id, zero, zero));
+                        view.push((idx, st_id, zero, zero, len_id));
                         st *= len;
                     }
                     view.reverse();
                     let mut index = self.insert_const_idx_before(start, 0);
-                    for &(idx, st, _, _) in &view {
+                    for &(idx, st, _, _, _) in &view {
                         index = self.insert_before(start, Op::Mad { x: idx, y: st, z: index });
                     }
                     self.ops[op_id].op = Op::Store { dst, x: src, index, layout: MemLayout::Scalar };
