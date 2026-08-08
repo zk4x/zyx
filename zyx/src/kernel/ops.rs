@@ -266,6 +266,8 @@ pub enum MoveOp {
     Permute { axes: Vec<UAxis>, shape: Vec<Dim> },
     /// Pad dimensions.
     Pad { padding: Vec<(i64, i64)>, shape: Vec<Dim> },
+    // Flip axes
+    //Flip { axes: Vec<UAxis> },
 }
 
 /// Matrix multiply dimensions for tensor core operations.
