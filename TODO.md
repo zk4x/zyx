@@ -116,7 +116,7 @@
   - [x] frac
   - [x] ceil
   - [x] round
-  - [ ] nll loss
+  - [x] nll loss
   - [x] bce loss
   - [x] huber loss
   - [x] smooth l1 loss

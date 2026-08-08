@@ -15,6 +15,8 @@ pub enum ReduceOp {
     Sum,
     /// Compute the mean (average) of all values.
     Mean,
+    /// No reduction, return per-sample values.
+    None,
     /// Compute the variance.
     Var,
     /// Compute the standard deviation.
@@ -126,6 +128,7 @@ impl Tensor {
                     self.var(axes)?.sqrt()
                 }
             }
+            ReduceOp::None => self.clone(),
         };
 
         if dtype.is_none() && x_dtype != tensor.dtype() {

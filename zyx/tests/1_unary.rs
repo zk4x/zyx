@@ -132,6 +132,62 @@ fn nonzero() -> Result<(), ZyxError> {
 }
 
 #[test]
+fn nll_loss_1() -> Result<(), ZyxError> {
+    use zyx::ReduceOp;
+    let log_probs = Tensor::from([[-1.2f32, -0.5, -2.3], [0.1, -1.5, -0.8]]);
+    let target = Tensor::from([1i64, 0]);
+    let loss = log_probs.nll_loss(target, None, None, ReduceOp::Mean)?;
+    // gathered: [-0.5, 0.1], nll = [0.5, -0.1], mean = 0.2
+    assert!((loss.item::<f32>() - 0.2f32).abs() < 1e-5);
+    Ok(())
+}
+
+#[test]
+fn nll_loss_2() -> Result<(), ZyxError> {
+    use zyx::ReduceOp;
+    let log_probs = Tensor::from([[-1.2f32, -0.5, -2.3], [0.1, -1.5, -0.8]]);
+    let target = Tensor::from([1i64, 0]);
+    let loss = log_probs.nll_loss(target, None, None, ReduceOp::None)?;
+    let vals: Vec<f32> = loss.cast(DType::F32).try_into()?;
+    assert!(vals[0].is_equal(0.5f32));
+    assert!(vals[1].is_equal(-0.1f32));
+    Ok(())
+}
+
+#[test]
+fn nll_loss_3() -> Result<(), ZyxError> {
+    use zyx::ReduceOp;
+    let log_probs = Tensor::from([[-1.2f32, -0.5, -2.3], [0.1, -1.5, -0.8]]);
+    let target = Tensor::from([1i64, 0]);
+    let loss = log_probs.nll_loss(target, None, None, ReduceOp::Sum)?;
+    assert!(loss.item::<f32>().is_equal(0.4f32));
+    Ok(())
+}
+
+#[test]
+fn nll_loss_4() -> Result<(), ZyxError> {
+    use zyx::ReduceOp;
+    let log_probs = Tensor::from([[-1.2f32, -0.5, -2.3], [0.1, -1.5, -0.8]]);
+    let target = Tensor::from([1i64, 0]);
+    let weight = Tensor::from([0.5f32, 2.0, 1.0]);
+    let loss = log_probs.nll_loss(target, Some(weight), None, ReduceOp::Mean)?;
+    // gathered weights: [2.0, 0.5], nll = [1.0, -0.05], mean = 0.95/2.5 = 0.38
+    assert!((loss.item::<f32>() - 0.38f32).abs() < 1e-5);
+    Ok(())
+}
+
+#[test]
+fn nll_loss_5() -> Result<(), ZyxError> {
+    use zyx::ReduceOp;
+    let log_probs = Tensor::from([[-1.2f32, -0.5, -2.3], [0.1, -1.5, -0.8]]);
+    let target = Tensor::from([1i64, 0]);
+    let loss = log_probs.nll_loss(target, None, Some(0), ReduceOp::Mean)?;
+    // Sample 1 (target=0) is ignored. Only sample 0: nll=0.5, weight=1.0
+    assert!((loss.item::<f32>() - 0.5f32).abs() < 1e-5);
+    Ok(())
+}
+
+#[test]
 fn erf_1() -> Result<(), ZyxError> {
     // Test basic erf values
     let t = Tensor::from([0.0f32, 0.5, 1.0, -0.5, -1.0]);

@@ -1615,6 +1615,18 @@ impl Tensor {
         Ok(x)
     }
 
+    /// Returns boolean mask with true where self != rhs
+    ///
+    /// # Errors
+    ///
+    /// Returns error if the tensors have non broadcasteable shapes.
+    pub fn ne(&self, rhs: impl Into<Tensor>) -> Result<Tensor, ZyxError> {
+        let (x, y) = Tensor::broadcast(self.clone(), rhs)?;
+        let id = RT.lock().binary(x.id, y.id, BOp::NotEq)?;
+        let x = Tensor { id };
+        Ok(x)
+    }
+
     /// Returns true where self is different from zero and false otherwise.
     #[allow(clippy::missing_panics_doc)]
     #[must_use]
@@ -1666,7 +1678,59 @@ impl Tensor {
         match reduction {
             ReduceOp::Mean => Ok(per_sample.mean_all()),
             ReduceOp::Sum => Ok(per_sample.sum_all()),
-            _ => Err(ZyxError::ParseError("invalid reduction for cross_entropy, expected Mean or Sum".into())),
+            ReduceOp::None => Ok(per_sample),
+            _ => Err(ZyxError::ParseError("invalid reduction for cross_entropy, expected Mean, Sum, or None".into())),
+        }
+    }
+
+    /// Negative log-likelihood loss.
+    ///
+    /// Computes the NLL loss between log-probabilities and target class indices.
+    /// `self` should be log-probabilities of shape `[N, C]` (or `[C]` for 1D),
+    /// `target` should be class indices of shape `[N]` (or a scalar for 1D).
+    ///
+    /// # Arguments
+    ///
+    /// * `target` - Class indices tensor.
+    /// * `weight` - Optional per-class weight tensor.
+    /// * `ignore_index` - Optional class index to ignore.
+    /// * `reduction` - Reduction mode: `Mean`, `Sum`, or `None`.
+    ///
+    /// # Errors
+    ///
+    /// Returns error if the shapes are incompatible.
+    #[allow(clippy::missing_panics_doc)]
+    pub fn nll_loss(
+        &self,
+        target: impl Into<Tensor>,
+        weight: Option<Tensor>,
+        ignore_index: Option<i64>,
+        reduction: ReduceOp,
+    ) -> Result<Tensor, ZyxError> {
+        let target = target.into();
+        let classes_dim: Axis = if self.rank() <= 1 { 0 } else { 1 };
+        let _n_classes = self.shape()[classes_dim as usize];
+
+        let weight = match weight {
+            Some(w) => w.gather(0, target.flatten(..)?)?.reshape(target.shape())?,
+            None => Tensor::ones(target.shape(), self.dtype()),
+        };
+
+        let masked_weight = match ignore_index {
+            Some(idx) => weight * target.ne(Tensor::from(idx))?,
+            None => weight,
+        };
+
+        let idx = target.unsqueeze(classes_dim)?;
+        let gathered = self.gather(classes_dim, idx)?;
+        let gathered = gathered.squeeze([classes_dim]);
+        let nll = (-gathered) * masked_weight.clone();
+
+        match reduction {
+            ReduceOp::Mean => Ok(nll.sum_all() / masked_weight.sum_all()),
+            ReduceOp::Sum => Ok(nll.sum_all()),
+            ReduceOp::None => Ok(nll),
+            _ => Err(ZyxError::ParseError("invalid reduction for nll_loss".into())),
         }
     }
 

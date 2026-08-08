@@ -687,6 +687,13 @@ impl Tensor {
         self.erf()
     }
 
+    /// Computes the inverse error function element-wise.
+    #[must_use]
+    #[pyo3(name = "erfinv")]
+    pub fn erfinv_py(&self) -> Tensor {
+        self.erfinv()
+    }
+
     /// Computes the fractional part element-wise.
     #[must_use]
     #[pyo3(name = "frac")]
@@ -1340,6 +1347,44 @@ impl Tensor {
         } else {
             Err(ZyxError::DTypeError("target must be a Tensor".into()))
         }
+    }
+
+    /// Computes the negative log-likelihood loss.
+    ///
+    /// # Errors
+    /// Returns a `ZyxError` if the operation fails.
+    #[pyo3(name = "nll_loss")]
+    pub fn nll_loss_py(
+        &self,
+        target: &Bound<'_, PyAny>,
+        weight: Option<&Bound<'_, PyAny>>,
+        ignore_index: Option<i64>,
+        reduction: &Bound<'_, PyAny>,
+    ) -> Result<Tensor, ZyxError> {
+        let target_tensor = target.extract::<Tensor>().map_err(|_| {
+            ZyxError::DTypeError("target must be a Tensor".into())
+        })?;
+        let weight_tensor = match weight {
+            Some(w) => Some(w.extract::<Tensor>().map_err(|_| {
+                ZyxError::DTypeError("weight must be a Tensor".into())
+            })?),
+            None => None,
+        };
+        let r = if let Ok(reduction_str) = reduction.extract::<String>() {
+            match reduction_str.as_str() {
+                "mean" => ReduceOp::Mean,
+                "sum" => ReduceOp::Sum,
+                "none" => ReduceOp::None,
+                _ => {
+                    return Err(ZyxError::ParseError(
+                        "invalid reduction, expected 'mean', 'sum', or 'none'".into(),
+                    ))
+                }
+            }
+        } else {
+            ReduceOp::Mean
+        };
+        self.nll_loss(target_tensor, weight_tensor, ignore_index, r)
     }
 
     /// # Errors
