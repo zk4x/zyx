@@ -1,0 +1,202 @@
+- [ ] backend
+  - [x] cuda
+    - [x] fix async memcopy
+    - [ ] tensor cores
+    - [ ] fix load calculation
+    - [x] fix event memory leaks, all events must be properly destroyed
+    - [x] channel for context, because cuda context is thread local
+    - [x] rewrite PTX compiler to have proper register manager that handles constants and everything
+  - [ ] hip
+  - [x] opencl
+    - [ ] fix load calculation
+  - [ ] vulkan
+    - [x] initialization
+    - [x] memory management
+    - [x] spirv compiler (to spirv binary)
+      - [ ] replace opcodes and other things with enums instead of constants
+    - [x] kernel launch
+  - [x] wgpu
+    - [ ] fix load calculation, probably using Atomic usize
+    - [x] spirv compiler
+  - [x] dummy
+    - [ ] validation for program ids
+  - [x] c (clang)
+    - [x] optional openmp
+- [ ] runtime
+  - [x] fix event handling
+  - [x] node deallocation after realization
+  - [x] clean up completed transfer events to free host staging buffers early
+  - [x] when promoting to graph, promote the whole kernel without materializing
+  - [ ] add contiguous op - it calls add_store and forces kernel fusion split, in egraph this works the same
+  - [ ] add user ability to have custom assembly, cuda, spirv, ptx, tenstorrent, etc. kernels
+  - [ ] add user ability to add custom kernel optimization passes to the autotune
+- [ ] graph
+  - [x] autograd
+    - [x] fix t6 test
+    - [x] proper backprop, since now we don't quite need to calculate requires_grad_nodes, those are now in gradient_tape
+    - [x] fix realize function with gradient tape
+  - [x] all dim reduce
+  - [x] cache Map<(Kernel, Optimizations), Program> instead of Map<IRKernel, Program>
+  - [x] improve reshape node
+    - [x] merges, splits, reshapes of non reduce axes
+    - [x] inserting new loops to the end of the kernel
+  - [x] improve expand node (should almost never store)
+  - [x] improve permute node (should never store)
+  - [x] improve pad node (should almost never store)
+  - [x] pad could also work even with kernels that store stuff, just pad the store view
+  - [x] cost model needs to account for
+    - [x] tensor reuse (known thanks to reference counts)
+    - [x] shared memory pressure (loads + stores)
+    - [x] register memory pressure (spill)
+    - [x] global memory pressure (loads + stores)
+  - [x] expand reduce bug
+  - [x] fix is expandable conditions
+  - [ ] binary op improved fusion (with dependent loads and stores)/ full fusion
+  - [ ] improve heuristics for cost based duplication and splitting for both movement and reduce ops separately in the egraph
+  - [ ] tests for fusion, test will create it's own graph and check how the fused kernel looks
+    - [x] softmax fusion test (eventually should be single kernel)
+    - [ ] just asserts that various graphs fuse into single kernel
+  - [x] scheduling to multiple devices
+  - [x] fix bug when running phi3, panic on min_kernel function
+  - [x] automatic dropping of unneeded tensors
+  - [ ] deduplicate tensor loads
+  - [ ] automatic sharding across devices
+  - [ ] add assign node to the graph
+  - [ ] add contiguous node to the graph
+  - [ ] add user ability to add pattern matching of custom kernels to egraph
+  - [x] static graphs (FrozenTape) - unfortunately necessary for very high performance networks to achieve hundreds of millions of tensor ops/second - just add replay method for tape
+- [ ] kernel
+  - [x] default optimizations
+  - [x] indexing for padded views
+  - [x] indexing for multi reshape views
+  - [x] common subexpression elimination
+  - [x] dead store elimination
+  - [x] kernel flops, memory reads, memory writes
+  - [x] global to inner loop splitting
+  - [x] inner loop splitting
+  - [x] merge loops
+  - [x] unroll and jam
+  - [x] loop unrolling
+    - [x] in optimizer
+    - [x] in kernel
+  - [x] potentially integrate optimizer into kernel
+  - [ ] improve unfold_pows
+    - [ ] specialized case for integers
+    - [ ] specialized case for constants
+  - [x] loop invariant code motion
+  - [x] comutative reorder (put before LICM)
+  - [x] div mod simplifications
+    - [x] consequtive modulos
+  - [x] dead accumulator elimination (after unroll)
+  - [x] vectorization, vector dtypes
+    - [x] vector dtypes
+    - [x] automatic vectorization
+      - [x] of stores
+      - [x] of loads
+      - [x] of ops
+  - [x] register tiling (needs improvement)
+  - [ ] variable op for dynamic constants (that is scalars that should be kernel args, not baked)
+- [ ] tensor
+  - [x] gather
+  - [x] scatter
+  - [ ] solve
+  - [ ] inverse of matrix
+  - [ ] pinverse
+  - [ ] eigvalsh
+  - [ ] singular value decomposition
+  - [ ] instance norm
+  - [x] interpolate
+  - [ ] upsample
+  - [ ] downsample
+  - [x] erf
+  - [ ] erfinv
+  - [ ] lgamma (log gamma)
+  - [ ] i0 (modified Bessel function)
+  - [x] trunc
+  - [x] frac
+  - [x] ceil
+  - [x] round
+  - [ ] nll loss
+  - [x] bce loss
+  - [x] huber loss
+  - [x] smooth l1 loss
+  - [ ] ctc loss
+  - [ ] triplet margin loss
+  - [ ] frobenius norm
+  - [ ] spectral norm
+  - [x] tril
+  - [x] triu
+  - [ ] topk
+  - [ ] sort
+
+- [ ] dtype
+  - [ ] quantized dtypes
+  - [x] optional implicit dtype casts
+- [x] index select, gather, remove last loop
+- [ ] better spreading of kernel variants in autotune across threads (instead of batched, where one thread can have complex kernel, blocking other threads with simpler kernels)
+- [ ] improved memory mapper with graph-level decision making
+- [ ] tensor layout (RowMajor, TileMajor for Tenstorrent, Sharded for multi-device)
+      - Runtime stores layout per-tensor in `layout_map`
+      - Scheduler converts layout during pool migration when `src_layout != dst_layout`
+      - Backends declare native layout via `DeviceInfo::native_layout`
+      - Conversion utility: row-major ↔ tile-major byte rearrangement
+- [ ] tensor cores
+    - [ ] tensor core ops
+- [ ] local memory tiling
+  - [x] merge all mul + add into mad instructions
+  - [ ] local memory tiling
+    - [x] local tiling for accumulators in large reduces
+    - [ ] local tiling for caching
+  - [ ] multi step reduce (with multiple accumulators)
+  - [ ] streaming dual reduce ops (e.g. streaming softmax)
+  - [x] optimizer with search
+  
+- [ ] testing
+  - [ ] fuzzy tester
+    - [x] unary ops
+    - [ ] movemnt ops
+    - [ ] binary ops
+  - [x] pad_2
+  - [x] reshape_permute_1
+  - [x] rope_1
+  - [x] rope_2
+  - [x] softmax_1
+  - [x] padding on elementwise kernel
+  - [x] expand on elementwise kernel
+  - [x] reshape on elementwise kernel
+  - [x] permute on elementwise kernel
+  - [x] padding on reduce kernel
+  - [x] expand on reduce kernel
+  - [x] reshape on reduce kernel
+  - [x] permute on reduce kernel
+  - [x] lot of testing for kernelizer correctness
+  - [x] more autograd tests
+
+- [x] docs
+  - [x] manual for adding new backends
+- [x] dependencies
+  - [x] replace serde with nanoserde
+  - [x] implement custom progress bar
+  - [x] remove indicatiff
+  - [x] remove xdg
+  - [x] remove rand
+
+- examples
+  - [x] tiny net
+  - [x] tiny net with sigmoid activation
+  - [x] mnist
+  - [x] RNN
+  - [ ] resnet
+  - [ ] llama
+  - [ ] phi LLM
+
+- [ ] python bindings
+  - [x] basic tensor creation (randn, zeros, ones, from numpy)
+  - [x] elementwise ops: abs, cos, cosh, exp, floor, ln, log2, relu, rsqrt, sigmoid, sin, sinh, sqrt, tan, tanh, leaky_relu, celu, elu, softplus, exp2, mish, quick_gelu, selu, hard_sigmoid, swish, cmplt, cmpgt, maximum, minimum, clamp
+  - [x] elementwise ops: bitnot, ceil, erf, frac, isnan, isinf, isclose, log10, rad2deg, deg2rad, round, sign, square, trunc, logical_and, logical_or
+  - [x] reduction ops: sum, mean, var, std, min, max, prod (with dim, keepdim, dtype, unbiased)
+  - [x] shape ops: reshape, transpose, permute, squeeze, unsqueeze, flatten, expand, t
+  - [x] linear algebra: matmul, dot
+  - [x] nn ops: softmax, log_softmax, cross_entropy, conv2d
+  - [x] indexing: slice, index_select, gather, scatter
+  - [x] gather, index_select, one_hot, argmax, argmax_axis, conv
