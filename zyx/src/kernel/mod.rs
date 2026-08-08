@@ -530,12 +530,6 @@ impl Kernel {
         self.push_back(Op::Const(Constant::new(val)))
     }
 
-    /// Constant data value as a contiguous view (uses natural dtype).
-    /// For index constants, use [`Kernel::const_idx`].
-    pub fn const_contiguous<T: crate::scalar::Scalar>(&mut self, val: T) -> OpId {
-        self.push_back(Op::Const(Constant::new(val)))
-    }
-
     /// Constant index value (normalized to index type).
     /// For data constants, use [`Kernel::const_val`].
     pub fn const_idx<T: crate::scalar::Scalar>(&mut self, val: T) -> OpId {

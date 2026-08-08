@@ -82,12 +82,12 @@ impl Kernel {
                 Op::LoadView(ref x) => {
                     let (x, dtype, view) = x.as_ref();
                     dtypes.insert(op_id, *dtype);
-                    println!("{indent}r{out_id}{grey}: {dtype}{reset} = {cyan}load{reset} {x} sh={view:?}");
+                    println!("{indent}r{out_id}{grey}: {dtype}{reset} = {cyan}load{reset} r{x} sh={view:?}");
                 }
-                Op::StoreView { src, dtype, .. } => {
+                Op::StoreView { dst, src, dtype } => {
                     let src = id_map[&src];
                     dtypes.insert(op_id, dtype);
-                    println!("{indent}{cyan}store{reset} r{src}");
+                    println!("{indent}{cyan}store{reset} r{dst} <- r{src}");
                 }
                 Op::Reduce { x, rop, n_axes, .. } => {
                     let dtype = dtypes[&x];

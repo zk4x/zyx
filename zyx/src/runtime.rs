@@ -1577,108 +1577,139 @@ impl Runtime {
         if dst_dtype != src_dtype {
             return Err(ZyxError::DTypeError(format!("assign dtype mismatch: dst={dst_dtype}, src={src_dtype}").into()));
         }
-
         let dst_shape = self.shape(dst);
         let src_shape = self.shape(src);
         if dst_shape != src_shape {
             return Err(ZyxError::shape_error(format!("assign shape mismatch: dst={dst_shape:?}, src={src_shape:?}").into()));
         }
-
         if self.is_graph(dst) && !self.buffer_map.contains_key(&dst) {
             return Err(ZyxError::graph_tensor_not_realized(dst));
         }
-
         // Merge dst's (movement-only) kernel into src's kernel, then store src's
         // value into dst's base buffer in-place.
-        let (kid_src, op_src) = self.eager_ids(src);
-        let (kid_dst, _op_dst) = self.eager_ids(dst);
-
+        let (src_kid, src_op) = self.eager_ids(src);
+        let (dst_kid, dst_op) = self.eager_ids(dst);
         // The destination must be a movement-only view kernel with a single output.
-        if self.kernels[kid_dst].outputs.len() != 1 {
+        if self.kernels[dst_kid].outputs.len() != 1 {
             return Err(ZyxError::ShapeError(
-                format!("assign: dst kernel {kid_dst:?} has {} outputs, expected 1", self.kernels[kid_dst].outputs.len()).into(),
+                format!("assign: dst kernel {dst_kid:?} has {} outputs, expected 1", self.kernels[dst_kid].outputs.len()).into(),
             ));
         }
-        if self.kernels[kid_dst].kernel.is_reduce() {
-            return Err(ZyxError::ShapeError(format!("assign: dst kernel {kid_dst:?} must not be a reduction").into()));
-        }
-        for (_op_id, op) in self.kernels[kid_dst].kernel.iter_unordered() {
-            if !matches!(op, Op::Define { .. } | Op::LoadView(_) | Op::Move { .. } | Op::Const(_)) {
+        for op in self.kernels[dst_kid].kernel.ops.values() {
+            if !matches!(op.op, Op::Define { .. } | Op::LoadView(_) | Op::Move { .. } | Op::Const(_)) {
                 return Err(ZyxError::ShapeError(
-                    format!("assign: dst kernel {kid_dst:?} has unsupported op {op:?}, only movement ops allowed").into(),
+                    format!("assign: dst kernel {dst_kid:?} has unsupported op {:?}, only movement ops allowed", op.op).into(),
                 ));
             }
         }
+        if src_kid == dst_kid {
+            return Err(ZyxError::ShapeError(
+                format!("assign: src and dst share kernel {dst_kid:?}; dst must be a separate movement-only kernel").into(),
+            ));
+        }
+        if !self.kernels[dst_kid].stores.is_empty() {
+            return Err(ZyxError::ShapeError(
+                format!("assign: dst kernel {dst_kid:?} has stores {}; expected none", self.kernels[dst_kid].stores.len()).into(),
+            ));
+        }
+        if self.kernels[src_kid].loads.contains(&dst) {
+            return Err(ZyxError::ShapeError(
+                format!("assign: src kernel {dst_kid:?} loads dst tensor, not allowed to avoid data races").into(),
+            ));
+        }
+        if self.kernels[dst_kid].loads.len() > 1 {
+            return Err(ZyxError::ShapeError(format!("assign: dst kernel {dst_kid:?} must have exactly 1 load").into()));
+        }
 
-        if kid_src == kid_dst {
-            return Err(ZyxError::ShapeError(
-                format!("assign: src and dst share kernel {kid_dst:?}; dst must be a separate movement-only kernel").into(),
-            ));
-        }
-        if !self.kernels[kid_dst].stores.is_empty() {
-            return Err(ZyxError::ShapeError(
-                format!("assign: dst kernel {kid_dst:?} has stores {}; expected none", self.kernels[kid_dst].stores.len()).into(),
-            ));
-        }
+        let shape: Vec<Dim> = src_shape.into();
 
         // Merge dst's kernel into src's kernel (src is the base, dst the movement).
-        let KernelData { kernel, .. } = unsafe { self.kernels.remove_and_return(kid_dst) };
-        let Kernel { ops: merge_ops, head: merge_head, .. } = kernel;
+        let KernelData { kernel, loads, .. } = unsafe { self.kernels.remove_and_return(dst_kid) };
+        let dst_org = loads[0];
 
-        // Replay dst's (movement-only) kernel onto src.
-        let mut op_map: Map<OpId, OpId> = Map::with_hasher(BuildHasherDefault::new());
-        let mut i = merge_head;
-        while !i.is_null() {
-            let mut op = merge_ops[i].op.clone();
-            for param in op.parameters_mut() {
-                if let Some(&new_param) = op_map.get(param) {
-                    *param = new_param;
+        // Identify define used by the store, only can go through movement ops
+        let mut dst_define = dst_op;
+        for _ in 0..100 {
+            match kernel.ops[dst_define].op {
+                Op::Move { x, .. } => {
+                    dst_define = x;
                 }
-            }
-            let new_id = self.kernels[kid_src].kernel.push_back(op);
-            op_map.insert(i, new_id);
-            i = merge_ops[i].next;
-        }
-
-        // Redirect tensors that pointed at dst's kernel to src's kernel.
-        for (_tid, t_data) in self.tensors.iter_mut() {
-            if t_data.kernel_id == kid_dst {
-                t_data.kernel_id = kid_src;
-                if let Some(&new_op_id) = op_map.get(&t_data.op_id) {
-                    t_data.op_id = new_op_id;
+                Op::Define { .. } => {
+                    break;
                 }
+                _ => {}
             }
         }
 
-        // Store src's value through dst's (remapped) view op, in-place.
-        let keep_data = &mut self.kernels[kid_src];
-        keep_data.kernel.store_contiguous(op_map[&_op_dst], op_src, src_dtype);
-        keep_data.stores.push(dst);
-
-        // Forced realization: assign must take effect immediately. The store was
-        // added manually above, so manually consume each remaining output:
-        // remove it from outputs, give it a load kernel so it stays usable, then
-        // materialize once outputs is exhausted (mirrors add_store's tail).
-        let rem_outputs = self.kernels[kid_src].outputs.clone();
-        for x in rem_outputs {
-            let prev_len = self.kernels[kid_src].outputs.len();
-            self.kernels[kid_src].outputs.retain(|&e| e != x);
-            let count = prev_len - self.kernels[kid_src].outputs.len();
-            debug_assert!(count > 0, "assign: tid {x} not in merged outputs");
-
-            let dtype = self.tensors[x].dtype;
-            let mut kernel = Kernel::new(DeviceId::AUTO);
-            let shape = self.shape(x);
-            let load_op_id = kernel.load_contiguous(dtype, shape);
-            let load_kid = self.kernels.push(KernelData { outputs: vec![x; count], loads: vec![x], stores: Vec::new(), kernel });
-            self.tensors[x].kernel_id = load_kid;
-            self.tensors[x].op_id = load_op_id;
-            self.retain_load(x);
-
-            if self.kernels[kid_src].outputs.is_empty() {
-                self.materialize_kernel(kid_src)?;
+        // Replay dst kernel ops into src kernel
+        let mut op_map = Map::default();
+        let mut op_id = kernel.head;
+        let mut load_op = OpId::NULL;
+        while !op_id.is_null() {
+            match kernel.ops[op_id].op {
+                Op::Const(value) => {
+                    let id = self.kernels[src_kid].kernel.push_back(Op::Const(value));
+                    op_map.insert(op_id, id);
+                }
+                Op::Define { dtype, scope, ro, len } => {
+                    let id = self.kernels[src_kid].kernel.push_back(Op::Define { dtype, scope, ro, len });
+                    op_map.insert(op_id, id);
+                }
+                Op::LoadView(ref x) => {
+                    let (x_id, dtype, shape) = x.as_ref().clone();
+                    if x_id == dst_define {
+                        load_op = x_id;
+                        continue;
+                    }
+                    let x_id = op_map[&x_id];
+                    let id = self.kernels[src_kid].kernel.push_back(Op::LoadView(Box::new((x_id, dtype, shape))));
+                    op_map.insert(op_id, id);
+                }
+                Op::Move { x, ref mop } => {
+                    let mut x = op_map[&x];
+                    if x == load_op {
+                        x = dst_define;
+                    }
+                    let id = self.kernels[src_kid].kernel.push_back(Op::Move { x, mop: mop.clone() });
+                    op_map.insert(op_id, id);
+                }
+                _ => unreachable!("should've already returned error"),
             }
+            op_id = kernel.next_op(op_id);
         }
+
+        let dtype = src_dtype;
+
+        // Add storeview and bookkeeping of outputs, loads and stores
+        self.kernels[src_kid].kernel.store_contiguous(dst_op, src_op, dtype);
+        self.kernels[src_kid].outputs.retain(|&x| x != dst);
+        self.kernels[src_kid].stores.push(src);
+
+        // Create new load kernel for dst
+        let len = shape.iter().product();
+        let mut kernel = Kernel::new(DeviceId::AUTO);
+        let op_id = kernel.push_back(Op::Define { dtype, scope: MemScope::Global, ro: true, len });
+        let op_id = kernel.push_back(Op::LoadView(Box::new((op_id, dtype, shape))));
+        let kernel_id = self.kernels.push(KernelData { outputs: Vec::new(), loads: Vec::new(), stores: Vec::new(), kernel });
+        self.kernels[kernel_id].loads.push(dst);
+        self.kernels[kernel_id].outputs.push(dst);
+
+        // TODO finish up by fixing rcs, and ids
+
+        self.tensors[dst_org].kernel_id = kernel_id;
+        self.tensors[dst_org].op_id = op_id;
+        self.tensors[dst_org].depends_on = kernel_id;
+        self.tensors[dst_org].rc = 1;
+
+        self.tensors[dst].kernel_id = kernel_id;
+        self.tensors[dst].op_id = op_id;
+        self.tensors[dst].depends_on = kernel_id;
+        self.tensors[dst].rc = 1;
+
+        self.tensors[src].kernel_id = kernel_id;
+        self.tensors[src].op_id = op_id;
+        self.tensors[src].depends_on = kernel_id;
+        self.tensors[src].rc = 1;
 
         Ok(())
     }
