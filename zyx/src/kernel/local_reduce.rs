@@ -38,6 +38,7 @@ impl Kernel {
         let mut local_axis_sizes: crate::Map<u32, u64> = crate::Map::default();
         for op in self.ops.values() {
             if let Op::Index { axis, len, scope: IdxScope::Local } = op.op {
+                let len = self.index_len(len);
                 if let Some(&existing) = local_axis_sizes.get(&axis) {
                     debug_assert_eq!(existing, len);
                 } else {
@@ -189,7 +190,8 @@ impl Kernel {
         };
         let loc_acc =
             self.insert_before(insert_at, Op::Define { dtype: acc_dtype, scope: MemScope::Local, ro: false, len: factor });
-        let lidx = self.insert_before(insert_at, Op::Index { len: factor, axis: laxis, scope: IdxScope::Local });
+        let lidx_len = self.insert_before(insert_at, Op::Const(Constant::idx(factor)));
+        let lidx = self.insert_before(insert_at, Op::Index { len: lidx_len, axis: laxis, scope: IdxScope::Local });
 
         // Divide reduce loop by factor
         let factor_const = self.insert_before(loop_start, Op::Const(Constant::idx(factor)));

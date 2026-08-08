@@ -277,7 +277,7 @@ impl Kernel {
                 }
                 Op::Index { len, axis, scope } => {
                     dtypes.insert(op_id, IDX_T);
-                    let ub = len - 1;
+                    let ub = self.index_len(len).saturating_sub(1);
                     println!("{indent}r{out_id}{grey}: {IDX_T}{reset} = {blue}{scope}_index({axis}){reset}    // 0..={ub}");
                 }
                 Op::Loop { len } => {

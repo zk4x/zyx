@@ -59,7 +59,7 @@ impl Kernel {
         while !op_id.is_null() {
             if let &Op::Index { len, axis, scope } = self.at(op_id) {
                 if scope == IdxScope::Group {
-                    gidxs.push((op_id, axis, len));
+                    gidxs.push((op_id, axis, self.index_len(len)));
                 } else {
                     // Can't run this optimization on kernel that already has local indices
                     continue;
@@ -86,7 +86,7 @@ impl Kernel {
                     self.pad_index(id, pad);
                 }
                 let new_len = if let Op::Index { len, scope: IdxScope::Group, .. } = self.at(id) {
-                    *len
+                    self.index_len(*len)
                 } else {
                     unreachable!()
                 };
@@ -96,11 +96,13 @@ impl Kernel {
                     return;
                 };
                 let f2 = new_len / f1;
+                let f1_id = self.const_idx(f1);
+                let f2_id = self.const_idx(f2);
                 self.split_dim(
                     id,
                     vec![
-                        Op::Index { len: f1, axis: 0, scope: IdxScope::Group },
-                        Op::Index { len: f2, axis: 1, scope: IdxScope::Group },
+                        Op::Index { len: f1_id, axis: 0, scope: IdxScope::Group },
+                        Op::Index { len: f2_id, axis: 1, scope: IdxScope::Group },
                     ],
                 );
             }
@@ -143,13 +145,16 @@ impl Kernel {
         let mut op_id = self.head;
         while !op_id.is_null() {
             if let Op::Index { len, axis, scope: IdxScope::Group } = self.ops[op_id].op {
+                let len = self.index_len(len);
                 if len % 32 == 0 && len >= 32 {
                     let f1 = len / 32;
+                    let f1_id = self.const_idx(f1);
+                    let local_id = self.const_idx(32);
                     self.split_dim(
                         op_id,
                         vec![
-                            Op::Index { len: f1, axis, scope: IdxScope::Group },
-                            Op::Index { len: 32, axis, scope: IdxScope::Local },
+                            Op::Index { len: f1_id, axis, scope: IdxScope::Group },
+                            Op::Index { len: local_id, axis, scope: IdxScope::Local },
                         ],
                     );
                 } else {
@@ -164,7 +169,7 @@ impl Kernel {
         let mut op_id = self.head;
         while !op_id.is_null() {
             if let Op::Index { len, axis, scope: IdxScope::Local } = self.at(op_id) {
-                if *len != 32 {
+                if self.index_len(*len) != 32 {
                     return;
                 }
                 lidxs.push((*axis, op_id));
@@ -381,7 +386,7 @@ impl Kernel {
         let mut op_id = self.head;
         while !op_id.is_null() {
             if let Op::Index { len, axis, scope: IdxScope::Local } = self.at(op_id) {
-                lidxs.push((*axis, op_id, *len as u32));
+                lidxs.push((*axis, op_id, self.index_len(*len) as u32));
             }
             op_id = self.next_op(op_id);
         }

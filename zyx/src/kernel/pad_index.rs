@@ -42,11 +42,14 @@ impl Kernel {
         }
 
         // 1. Extend the index length
-        let Op::Index { len, .. } = &mut self.ops[gidx_id].op else {
+        let Op::Index { len, .. } = &self.ops[gidx_id].op else {
             panic!("pad_index: op is not an Index");
         };
-        let current_len = *len;
-        *len = current_len + pad_len;
+        let current_len = self.index_len(*len);
+        let new_len = self.insert_before(gidx_id, Op::Const(Constant::idx(current_len + pad_len)));
+        if let Op::Index { len, .. } = &mut self.ops[gidx_id].op {
+            *len = new_len;
+        }
 
         // 2. Create limit constant for comparison
         let limit = self.insert_before(gidx_id, Op::Const(Constant::idx(current_len)));
@@ -164,10 +167,11 @@ impl Kernel {
         let mut factors = Vec::new();
         let mut op_id = self.head;
         while !op_id.is_null() {
-            if let Op::Index { len, .. } = self.ops[op_id].op
-                && len % 32 != 0
-            {
-                factors.push((op_id, 32));
+            if let Op::Index { len, .. } = self.ops[op_id].op {
+                let len = self.index_len(len);
+                if len % 32 != 0 {
+                    factors.push((op_id, 32));
+                }
             }
             op_id = self.next_op(op_id);
         }

@@ -415,7 +415,7 @@ impl Kernel {
                 }
                 Op::Index { len, .. } => {
                     let b = bounds_stack.last_mut().unwrap();
-                    b.insert(op_id, (0, len - 1));
+                    b.insert(op_id, (0, self.index_len(len).saturating_sub(1)));
                 }
                 Op::Vectorize { ref ops } => {
                     let b = bounds_stack.last_mut().unwrap();

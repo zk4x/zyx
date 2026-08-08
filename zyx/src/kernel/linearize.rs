@@ -32,7 +32,7 @@ fn index_len(k: &Kernel, axis_lens: &Map<OpId, u64>, idx: OpId) -> u64 {
         return len;
     }
     match k.ops[idx].op {
-        Op::Index { len, .. } => len,
+        Op::Index { len, .. } => k.index_len(len),
         Op::Loop { len } => k.loop_len_dim(len),
         Op::Binary { y, bop: BOp::Mod, .. } => pad_value(k, y),
         _ => unreachable!("pad condition needs an Index/Loop length, got {:?}", k.ops[idx].op),
@@ -457,10 +457,11 @@ impl Kernel {
                     let mut st = 1;
                     for axis in (0..shape.len() as u32).rev() {
                         let len = shape[axis as usize];
+                        let len_id = self.insert_const_idx_before(start, len);
                         let idx = match group_indices.get(&axis) {
                             Some(&id) => id,
                             None => {
-                                let id = self.insert_before(start, Op::Index { len, axis, scope: IdxScope::Group });
+                                let id = self.insert_before(start, Op::Index { len: len_id, axis, scope: IdxScope::Group });
                                 group_indices.insert(axis, id);
                                 id
                             }

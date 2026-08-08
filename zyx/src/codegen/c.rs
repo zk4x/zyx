@@ -36,7 +36,7 @@ impl Kernel {
                                 context: "C codegen: C only supports group index".into(),
                             });
                         }
-                        gws[axis as usize] = dim.max(1u64);
+                        gws[axis as usize] = self.index_len(dim).max(1u64);
                         indices.insert(op_id, loop_id);
                         loop_id = loop_id.checked_add(1).expect("C: too many loops (>255)");
                     }
@@ -73,7 +73,7 @@ impl Kernel {
                     if index_loop_depth == 0 && gws[0] > 1 && has_openmp {
                         _ = writeln!(source, "{indent}#pragma omp parallel for");
                     }
-                    _ = writeln!(source, "{indent}for (unsigned int idx{loop_id} = 0; idx{loop_id} < {len}; ++idx{loop_id}) {{");
+                    _ = writeln!(source, "{indent}for (unsigned int idx{loop_id} = 0; idx{loop_id} < {}; ++idx{loop_id}) {{", self.index_len(len));
                     indent += "  ";
                     index_loop_depth += 1;
                     loop_id += 1;

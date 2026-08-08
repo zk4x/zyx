@@ -44,7 +44,7 @@ pub enum Op {
         layout: MemLayout,
     },
     Index {
-        len: Dim,
+        len: OpId,
         axis: u32,
         scope: IdxScope,
     },
@@ -394,9 +394,10 @@ impl Op {
     #[allow(clippy::match_same_arms)]
     pub(crate) fn parameters(&self) -> impl DoubleEndedIterator<Item = OpId> {
         match self {
-            Op::Const { .. } | Op::Define { .. } | Op::Index { .. } | Op::EndLoop | Op::Barrier | Op::EndIf => {
+            Op::Const { .. } | Op::Define { .. } | Op::EndLoop | Op::Barrier | Op::EndIf => {
                 vec![]
             }
+            Op::Index { len, .. } => vec![*len],
             Op::LoadView(x) => vec![x.0],
             &Op::PopTile { src: cb } => vec![cb],
             &Op::PushTile { dst: cb, x } => vec![cb, x],
@@ -424,7 +425,8 @@ impl Op {
     #[allow(clippy::match_same_arms)]
     pub(crate) fn parameters_mut(&mut self) -> impl DoubleEndedIterator<Item = &mut OpId> {
         match self {
-            Op::Const { .. } | Op::Define { .. } | Op::Index { .. } | Op::EndLoop | Op::EndIf | Op::Barrier => vec![],
+            Op::Const { .. } | Op::Define { .. } | Op::EndLoop | Op::EndIf | Op::Barrier => vec![],
+            Op::Index { len, .. } => vec![len],
             Op::LoadView(x) => vec![&mut x.as_mut().0],
             Op::PopTile { src: cb } => vec![cb],
             Op::PushTile { dst: cb, x } => vec![cb, x],

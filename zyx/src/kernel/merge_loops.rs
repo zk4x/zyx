@@ -150,6 +150,7 @@ impl Kernel {
                 let Op::Index { len, axis, .. } = self.ops[op_id].op else {
                     unreachable!()
                 };
+                let len = self.index_len(len);
                 acc *= len;
                 axes.insert(axis, (op_id, len));
                 #[cfg(debug_assertions)]
@@ -176,7 +177,8 @@ impl Kernel {
         let Op::Index { axis, scope, .. } = self.ops[first_id.unwrap()].op else {
             unreachable!()
         };
-        let mut x = self.insert_before(first_id.unwrap(), Op::Index { len: acc, axis, scope });
+        let len = self.insert_before(first_id.unwrap(), Op::Const(Constant::idx(acc)));
+        let mut x = self.insert_before(first_id.unwrap(), Op::Index { len, axis, scope });
 
         for (.., (loop_id, len)) in axes {
             let y = self.insert_before(loop_id, Op::Const(Constant::idx(len)));

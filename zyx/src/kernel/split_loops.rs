@@ -38,6 +38,7 @@ impl Kernel {
         let mut local_axis_sizes: crate::Map<u32, u64> = crate::Map::default();
         for op in self.ops.values() {
             if let Op::Index { axis, len, scope: IdxScope::Local } = op.op {
+                let len = self.index_len(len);
                 if let Some(&existing) = local_axis_sizes.get(&axis) {
                     debug_assert_eq!(existing, len);
                 } else {
@@ -59,6 +60,7 @@ impl Kernel {
                 let mut l_factors: Vec<u64> = vec![64, 32, 16, 8, 4, 2];
                 if !local_axis_sizes.contains_key(&axis) {
                     let max_per_axis = dev_info.max_local_work_dims[axis as usize];
+                    let len = self.index_len(len);
                     l_factors.retain(|&f| len.is_multiple_of(f) && f <= remaining_threads && f <= max_per_axis);
                     for &f in &l_factors {
                         factors.push((op_id, f));
@@ -113,12 +115,12 @@ impl Kernel {
             for op in splits.iter() {
                 match op {
                     Op::Loop { len, .. } => dim *= self.loop_len_dim(*len),
-                    Op::Index { len, .. } => dim *= len,
+                    Op::Index { len, .. } => dim *= self.index_len(*len),
                     _ => unreachable!("split can be only index or loop"),
                 }
             }
             match self.ops[dim_id].op {
-                Op::Index { len, .. } => debug_assert_eq!(len, dim),
+                Op::Index { len, .. } => debug_assert_eq!(self.index_len(len), dim),
                 Op::Loop { len, .. } => debug_assert_eq!(self.loop_len_dim(len), dim),
                 _ => {}
             }
@@ -141,7 +143,7 @@ impl Kernel {
             strides.push(st);
             match op {
                 Op::Loop { len, .. } => st *= self.loop_len_dim(*len),
-                Op::Index { len, .. } => st *= len,
+                Op::Index { len, .. } => st *= self.index_len(*len),
                 _ => unreachable!(),
             }
         }

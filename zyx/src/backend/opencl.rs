@@ -810,7 +810,8 @@ impl OpenCLDevice {
         let mut lws = vec![1; 3];
         let mut op_id = kernel.head;
         while !op_id.is_null() {
-            if let Op::Index { len, axis, scope } = kernel.ops[op_id].op {
+            if let Op::Index { len: len_id, axis, scope } = kernel.ops[op_id].op {
+                let len = kernel.index_len(len_id);
                 match scope {
                     IdxScope::Group => gws[axis as usize] = len,
                     IdxScope::Local => lws[axis as usize] = len,

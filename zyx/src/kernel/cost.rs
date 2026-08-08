@@ -462,8 +462,8 @@ impl Kernel {
                     }
                 }
                 Op::Index { len, axis, scope } => match scope {
-                    IdxScope::Group => gws[axis as usize] = len,
-                    IdxScope::Local => lws[axis as usize] = len,
+                    IdxScope::Group => gws[axis as usize] = self.index_len(len),
+                    IdxScope::Local => lws[axis as usize] = self.index_len(len),
                     IdxScope::Warp => todo!(),
                 },
                 Op::Loop { len: len_id } => {

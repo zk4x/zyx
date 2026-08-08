@@ -548,11 +548,13 @@ impl Kernel {
 
     /// Group (block) index.
     pub fn group_index(&mut self, axis: u32, len: Dim) -> OpId {
+        let len = self.const_idx(len);
         self.push_back(Op::Index { len, axis, scope: IdxScope::Group })
     }
 
     /// Local thread index.
     pub fn local_index(&mut self, axis: u32, len: Dim) -> OpId {
+        let len = self.const_idx(len);
         self.push_back(Op::Index { len, axis, scope: IdxScope::Local })
     }
 
@@ -1187,7 +1189,7 @@ impl Kernel {
                 .values()
                 .filter_map(|x| {
                     if let Op::Index { len, axis, .. } = x.op {
-                        Some((len, axis))
+                        Some((self.index_len(len), axis))
                     } else {
                         None
                     }
@@ -1260,14 +1262,14 @@ impl Kernel {
                             indices.insert(x, (d, 1));
                             params.push((y, scale));
                         } else if let Op::Index { len, .. } = self.ops[x].op {
-                            indices.insert(x, (len, 1));
+                            indices.insert(x, (self.index_len(len), 1));
                             params.push((y, scale));
                         } else if let Op::Loop { len, .. } = self.ops[y].op {
                             let d = self.loop_len_dim(len);
                             indices.insert(y, (d, 1));
                             params.push((x, scale));
                         } else if let Op::Index { len, .. } = self.ops[y].op {
-                            indices.insert(y, (len, 1));
+                            indices.insert(y, (self.index_len(len), 1));
                             params.push((x, scale));
                         } else {
                             params.push((x, scale));
@@ -1285,10 +1287,10 @@ impl Kernel {
                                 indices.insert(y, (d, c.as_dim().unwrap() * scale));
                             }
                             (Op::Index { len, .. }, Op::Const(c)) => {
-                                indices.insert(x, (*len, c.as_dim().unwrap() * scale));
+                                indices.insert(x, (self.index_len(*len), c.as_dim().unwrap() * scale));
                             }
                             (Op::Const(c), Op::Index { len, .. }) => {
-                                indices.insert(y, (*len, c.as_dim().unwrap() * scale));
+                                indices.insert(y, (self.index_len(*len), c.as_dim().unwrap() * scale));
                             }
                             _ => {}
                         }
@@ -1300,10 +1302,10 @@ impl Kernel {
                                 indices.insert(x, (d, (1u64 << c.as_dim().unwrap()) * scale));
                             }
                             (Op::Index { len, .. }, Op::Const(c)) => {
-                                indices.insert(x, (*len, (1u64 << c.as_dim().unwrap()) * scale));
+                                indices.insert(x, (self.index_len(*len), (1u64 << c.as_dim().unwrap()) * scale));
                             }
                             (Op::Const(c), Op::Index { len, .. }) => {
-                                indices.insert(y, (*len, (1u64 << c.as_dim().unwrap()) * scale));
+                                indices.insert(y, (self.index_len(*len), (1u64 << c.as_dim().unwrap()) * scale));
                             }
                             (Op::Const(c), Op::Loop { len, .. }) => {
                                 let d = self.loop_len_dim(*len);
@@ -1323,7 +1325,7 @@ impl Kernel {
                             indices.insert(z, (self.loop_len_dim(*len), 1));
                         }
                         Op::Index { len, .. } => {
-                            indices.insert(z, (*len, 1));
+                            indices.insert(z, (self.index_len(*len), 1));
                         }
                         _ => {
                             params.push((z, scale));
@@ -1334,13 +1336,13 @@ impl Kernel {
                             indices.insert(x, (self.loop_len_dim(*len), c.as_dim().unwrap() * scale));
                         }
                         (Op::Index { len, .. }, Op::Const(c)) => {
-                            indices.insert(x, (*len, c.as_dim().unwrap() * scale));
+                            indices.insert(x, (self.index_len(*len), c.as_dim().unwrap() * scale));
                         }
                         (Op::Const(c), Op::Loop { len, .. }) => {
                             indices.insert(y, (self.loop_len_dim(*len), c.as_dim().unwrap() * scale));
                         }
                         (Op::Const(c), Op::Index { len, .. }) => {
-                            indices.insert(y, (*len, c.as_dim().unwrap() * scale));
+                            indices.insert(y, (self.index_len(*len), c.as_dim().unwrap() * scale));
                         }
                         _ => {}
                     }
@@ -1365,6 +1367,20 @@ impl Kernel {
             c.as_dim().unwrap_or(0)
         } else {
             0
+        }
+    }
+
+    /// Resolve an `Op::Index` length operand (an `OpId`) to a concrete dim.
+    ///
+    /// The length is a kernel-shape value; for statically-shaped kernels it is a
+    /// constant. Returns `0` when the length is not a resolvable constant, so
+    /// dynamic workloads are handled by callers that track the op itself.
+    pub(crate) fn index_len(&self, id: OpId) -> Dim {
+        match &self.ops[id].op {
+            Op::Const(c) => c.as_dim().unwrap_or(0),
+            Op::Loop { len } => self.loop_len_dim(*len),
+            Op::Index { len, .. } => self.index_len(*len),
+            _ => 0,
         }
     }
 

@@ -196,7 +196,7 @@ impl CDevice {
             if let Op::Index { len, axis, scope: IdxScope::Group } = kernel.ops[op_id].op
                 && axis == 0
             {
-                gws0 = len.max(1);
+                gws0 = kernel.index_len(len).max(1);
             }
             op_id = kernel.next_op(op_id);
         }

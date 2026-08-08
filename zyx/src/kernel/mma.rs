@@ -300,7 +300,7 @@ impl Kernel {
         let mut op_id = self.head;
         while !op_id.is_null() {
             if let Op::Index { len: dim, axis, scope: IdxScope::Local } = self.ops[op_id].op {
-                local_dims.push(dim);
+                local_dims.push(self.index_len(dim));
                 local_loops.push(op_id);
             }
             op_id = self.next_op(op_id);
@@ -317,7 +317,8 @@ impl Kernel {
             return false;
         }
 
-        let warp_loop = self.insert_before(local_loops[0], Op::Index { len: local_dims[0] * n, axis: 0, scope: IdxScope::Warp });
+        let warp_len = self.insert_before(local_loops[0], Op::Const(Constant::idx(local_dims[0] * n)));
+        let warp_loop = self.insert_before(local_loops[0], Op::Index { len: warp_len, axis: 0, scope: IdxScope::Warp });
         let y = self.insert_before(warp_loop, Op::Const(Constant::idx(n)));
         self.ops[local_loops[0]].op = Op::Binary { x: warp_loop, y, bop: BOp::Div };
         let y = self.insert_before(warp_loop, Op::Const(Constant::idx(n)));

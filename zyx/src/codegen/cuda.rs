@@ -26,8 +26,8 @@ impl Kernel {
         while !op_id.is_null() {
             if let Op::Index { len, axis, scope } = self.ops[op_id].op {
                 match scope {
-                    IdxScope::Group => gws[axis as usize] = len,
-                    IdxScope::Local => lws[axis as usize] = len,
+                    IdxScope::Group => gws[axis as usize] = self.index_len(len),
+                    IdxScope::Local => lws[axis as usize] = self.index_len(len),
                     IdxScope::Warp => todo!(),
                 }
             }
@@ -322,7 +322,7 @@ impl Kernel {
                             IdxScope::Warp => todo!(),
                         },
                         ["x", "y", "z"][axis as usize],
-                        len - 1
+                        self.index_len(len).saturating_sub(1)
                     );
                     loop_id += 1;
                 }

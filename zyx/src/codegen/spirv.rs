@@ -833,7 +833,8 @@ impl Kernel {
                     _ => {}
                 }
                 // Track work sizes from Index ops
-                if let Op::Index { len, axis, scope } = self.ops[op_id].op {
+                if let Op::Index { len: len_id, axis, scope } = self.ops[op_id].op {
+                    let len = self.index_len(len_id);
                     match scope {
                         IdxScope::Group => {
                             if axis < 3 {

@@ -75,6 +75,7 @@ impl Kernel {
         let mut op_id = self.head;
         while !op_id.is_null() {
             if let Op::Index { len, scope: IdxScope::Group, .. } = self.ops[op_id].op {
+                let len = self.index_len(len);
                 for f in [16, 8, 4] {
                     //println!("len={len} f={f}");
                     if len.is_multiple_of(f) {
@@ -97,6 +98,7 @@ impl Kernel {
         let Op::Index { len, axis, scope: IdxScope::Group } = self.ops[gidx_id].op else {
             unreachable!()
         };
+        let len = self.index_len(len);
         debug_assert!(len.is_multiple_of(factor));
 
         //println!("thread coarse gidx_id={gidx_id} by factor={factor}");
@@ -144,7 +146,8 @@ impl Kernel {
         let mut remaps: Map<OpId, Vec<OpId>> = Map::default();
 
         // Group index now split into multiple indices with constant offsets
-        let x = self.insert_before(gidx_id, Op::Index { len: len / factor, axis, scope: IdxScope::Group });
+        let new_len = self.const_idx(len / factor);
+        let x = self.insert_before(gidx_id, Op::Index { len: new_len, axis, scope: IdxScope::Group });
         self.ops[gidx_id].op = Op::Binary { x, y: const_factor, bop: BOp::Mul };
         let mut ids = Vec::with_capacity((factor - 1) as usize);
         let mut id = gidx_id;
@@ -265,8 +268,9 @@ impl Kernel {
                 }
             }
             if let Op::Index { len, scope: IdxScope::Group, .. } = self.ops[op_id].op
-                && len >= 8
+                && self.index_len(len) >= 8
             {
+                let len = self.index_len(len);
                 let applicable: Vec<u64> =
                     candidates.iter().copied().filter(|&f| len.is_multiple_of(f) && len / f >= 4).collect();
                 if !applicable.is_empty() {

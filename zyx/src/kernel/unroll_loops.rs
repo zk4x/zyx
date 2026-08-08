@@ -48,11 +48,14 @@ impl Kernel {
     pub(crate) fn delete_zero_len_indices(&mut self) {
         #[cfg(feature = "time")]
         let _timer = crate::Timer::new("eliminate zero index");
-        for node in self.ops.values_mut() {
-            if let Op::Index { len, .. } = node.op
-                && len == 1
-            {
-                node.op = Op::Const(Constant::idx(0));
+        let node_ids: Vec<OpId> = self.ops.ids().collect();
+        for id in node_ids.iter().copied() {
+            let is_len1 = match &self.ops[id].op {
+                Op::Index { len, .. } => self.index_len(*len) == 1,
+                _ => false,
+            };
+            if is_len1 {
+                self.ops[id].op = Op::Const(Constant::idx(0));
             }
         }
         self.verify();

@@ -241,11 +241,14 @@ impl Optimization {
                     unreachable!()
                 };
                 let factor: Dim = factor;
+                let len = kernel.index_len(len);
+                let group_len = kernel.const_idx(len / factor);
+                let local_len = kernel.const_idx(factor);
                 kernel.split_dim(
                     op_id,
                     vec![
-                        Op::Index { len: len / factor, axis, scope: IdxScope::Group },
-                        Op::Index { len: factor, axis, scope: IdxScope::Local },
+                        Op::Index { len: group_len, axis, scope: IdxScope::Group },
+                        Op::Index { len: local_len, axis, scope: IdxScope::Local },
                     ],
                 );
             }
@@ -284,6 +287,7 @@ impl Optimization {
                 let Op::Index { len: current_len, .. } = kernel.ops[idx_id].op else {
                     unreachable!()
                 };
+                let current_len = kernel.index_len(current_len);
                 let pad_len = (pad_to - current_len % pad_to) % pad_to;
                 if pad_len > 0 {
                     kernel.pad_index(idx_id, pad_len);
