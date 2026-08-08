@@ -954,8 +954,7 @@ impl Runtime {
                                 let dtype = self.graphs[graph_id].classes[x_class].dtype;
                                 let axes = axes.clone().into();
                                 let shape_id = self.push_shape(in_shape.clone());
-                                let (_, class_id) =
-                                    self.push_node(graph_id, Node::Flip { x: x_class, axes }, shape_id, dtype);
+                                let (_, class_id) = self.push_node(graph_id, Node::Flip { x: x_class, axes }, shape_id, dtype);
                                 class_id
                             }
                         }
@@ -1509,9 +1508,7 @@ impl Runtime {
         }
         for &axis in &axes {
             if (axis as usize) >= sh.len() {
-                return Err(ZyxError::shape_error(
-                    format!("Axis {axis} is out of range of rank {}", sh.len()).into(),
-                ));
+                return Err(ZyxError::shape_error(format!("Axis {axis} is out of range of rank {}", sh.len()).into()));
             }
         }
         axes.sort_unstable();

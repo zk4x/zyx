@@ -1361,13 +1361,9 @@ impl Tensor {
         ignore_index: Option<i64>,
         reduction: &Bound<'_, PyAny>,
     ) -> Result<Tensor, ZyxError> {
-        let target_tensor = target.extract::<Tensor>().map_err(|_| {
-            ZyxError::DTypeError("target must be a Tensor".into())
-        })?;
+        let target_tensor = target.extract::<Tensor>().map_err(|_| ZyxError::DTypeError("target must be a Tensor".into()))?;
         let weight_tensor = match weight {
-            Some(w) => Some(w.extract::<Tensor>().map_err(|_| {
-                ZyxError::DTypeError("weight must be a Tensor".into())
-            })?),
+            Some(w) => Some(w.extract::<Tensor>().map_err(|_| ZyxError::DTypeError("weight must be a Tensor".into()))?),
             None => None,
         };
         let r = if let Ok(reduction_str) = reduction.extract::<String>() {
@@ -1375,11 +1371,7 @@ impl Tensor {
                 "mean" => ReduceOp::Mean,
                 "sum" => ReduceOp::Sum,
                 "none" => ReduceOp::None,
-                _ => {
-                    return Err(ZyxError::ParseError(
-                        "invalid reduction, expected 'mean', 'sum', or 'none'".into(),
-                    ))
-                }
+                _ => return Err(ZyxError::ParseError("invalid reduction, expected 'mean', 'sum', or 'none'".into())),
             }
         } else {
             ReduceOp::Mean
@@ -1392,24 +1384,13 @@ impl Tensor {
     /// # Errors
     /// Returns a `ZyxError` if the operation fails.
     #[pyo3(name = "ctc_loss")]
-    pub fn ctc_loss_py(
-        &self,
-        target: &Bound<'_, PyAny>,
-        blank: i64,
-        reduction: &Bound<'_, PyAny>,
-    ) -> Result<Tensor, ZyxError> {
-        let target_tensor = target.extract::<Tensor>().map_err(|_| {
-            ZyxError::DTypeError("target must be a Tensor".into())
-        })?;
+    pub fn ctc_loss_py(&self, target: &Bound<'_, PyAny>, blank: i64, reduction: &Bound<'_, PyAny>) -> Result<Tensor, ZyxError> {
+        let target_tensor = target.extract::<Tensor>().map_err(|_| ZyxError::DTypeError("target must be a Tensor".into()))?;
         let r = if let Ok(reduction_str) = reduction.extract::<String>() {
             match reduction_str.as_str() {
                 "mean" => ReduceOp::Mean,
                 "sum" => ReduceOp::Sum,
-                _ => {
-                    return Err(ZyxError::ParseError(
-                        "invalid reduction, expected 'mean' or 'sum'".into(),
-                    ))
-                }
+                _ => return Err(ZyxError::ParseError("invalid reduction, expected 'mean' or 'sum'".into())),
             }
         } else {
             ReduceOp::Mean
@@ -1429,22 +1410,16 @@ impl Tensor {
         swap: bool,
         reduction: &Bound<'_, PyAny>,
     ) -> Result<Tensor, ZyxError> {
-        let positive_tensor = positive.extract::<Tensor>().map_err(|_| {
-            ZyxError::DTypeError("positive must be a Tensor".into())
-        })?;
-        let negative_tensor = negative.extract::<Tensor>().map_err(|_| {
-            ZyxError::DTypeError("negative must be a Tensor".into())
-        })?;
+        let positive_tensor =
+            positive.extract::<Tensor>().map_err(|_| ZyxError::DTypeError("positive must be a Tensor".into()))?;
+        let negative_tensor =
+            negative.extract::<Tensor>().map_err(|_| ZyxError::DTypeError("negative must be a Tensor".into()))?;
         let r = if let Ok(reduction_str) = reduction.extract::<String>() {
             match reduction_str.as_str() {
                 "mean" => ReduceOp::Mean,
                 "sum" => ReduceOp::Sum,
                 "none" => ReduceOp::None,
-                _ => {
-                    return Err(ZyxError::ParseError(
-                        "invalid reduction, expected 'mean', 'sum', or 'none'".into(),
-                    ))
-                }
+                _ => return Err(ZyxError::ParseError("invalid reduction, expected 'mean', 'sum', or 'none'".into())),
             }
         } else {
             ReduceOp::Mean

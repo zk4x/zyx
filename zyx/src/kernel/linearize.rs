@@ -309,17 +309,17 @@ impl Kernel {
                             for a in 0..n {
                                 let s = x_strides[a];
                                 let s_id = self.insert_const_idx_before(anchor, s);
-let idx_expr = if a == n - 1 {
-                                        q
-                                    } else {
-                                        let div = self.insert_before(anchor, Op::Binary { x: q, y: s_id, bop: BOp::Div });
-                                        let rem = self.insert_before(anchor, Op::Binary { x: q, y: s_id, bop: BOp::Mod });
-                                        q = rem;
-                                        div
-                                    };
-                                    let len_id = self.insert_const_idx_before(anchor, x_shape[a]);
-                                    view.push((idx_expr, s_id, zero, zero, len_id));
-                                }
+                                let idx_expr = if a == n - 1 {
+                                    q
+                                } else {
+                                    let div = self.insert_before(anchor, Op::Binary { x: q, y: s_id, bop: BOp::Div });
+                                    let rem = self.insert_before(anchor, Op::Binary { x: q, y: s_id, bop: BOp::Mod });
+                                    q = rem;
+                                    div
+                                };
+                                let len_id = self.insert_const_idx_before(anchor, x_shape[a]);
+                                view.push((idx_expr, s_id, zero, zero, len_id));
+                            }
                             views.insert(x, view);
                         }
                         MoveOp::Expand { shape } => {
@@ -433,7 +433,8 @@ let idx_expr = if a == n - 1 {
                                     // this axis' extent for pad-condition bounds -- NOT
                                     // the consumer's view extent (that is the slice
                                     // output length when the pad is a slice).
-                                    let len_id = self.insert_const_idx_before(anchor, ((x_shape[a] as i64) + lp + rp).max(0) as u64);
+                                    let len_id =
+                                        self.insert_const_idx_before(anchor, ((x_shape[a] as i64) + lp + rp).max(0) as u64);
                                     let lp_id = if lp > 0 {
                                         self.insert_const_idx_before(anchor, lp as u64)
                                     } else {

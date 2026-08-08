@@ -73,7 +73,11 @@ impl Kernel {
                     if index_loop_depth == 0 && gws[0] > 1 && has_openmp {
                         _ = writeln!(source, "{indent}#pragma omp parallel for");
                     }
-                    _ = writeln!(source, "{indent}for (unsigned int idx{loop_id} = 0; idx{loop_id} < {}; ++idx{loop_id}) {{", self.index_len(len));
+                    _ = writeln!(
+                        source,
+                        "{indent}for (unsigned int idx{loop_id} = 0; idx{loop_id} < {}; ++idx{loop_id}) {{",
+                        self.index_len(len)
+                    );
                     indent += "  ";
                     index_loop_depth += 1;
                     loop_id += 1;

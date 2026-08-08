@@ -313,7 +313,11 @@ impl Kernel {
                 }
                 Op::Index { len, axis, scope } => {
                     indices.insert(op_id, loop_id);
-                    _ = writeln!(source, "{indent}unsigned int idx{loop_id} = get_{scope}_id({axis}); // 0..={}", self.index_len(len).saturating_sub(1));
+                    _ = writeln!(
+                        source,
+                        "{indent}unsigned int idx{loop_id} = get_{scope}_id({axis}); // 0..={}",
+                        self.index_len(len).saturating_sub(1)
+                    );
                     loop_id += 1;
                 }
                 Op::Loop { len, .. } => {

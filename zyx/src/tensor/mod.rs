@@ -1056,14 +1056,9 @@ impl Tensor {
     /// Returns error if the axes list is empty, or an axis is out of range.
     pub fn flip(&self, axes: impl IntoIterator<Item = Axis>) -> Result<Tensor, ZyxError> {
         let rank = self.rank();
-        let mut axes: Vec<UAxis> = axes
-            .into_iter()
-            .map(|a| into_axis(a, rank as usize))
-            .collect::<Result<_, _>>()?;
+        let mut axes: Vec<UAxis> = axes.into_iter().map(|a| into_axis(a, rank as usize)).collect::<Result<_, _>>()?;
         if axes.is_empty() {
-            return Err(ZyxError::shape_error(
-                format!("Axes must not be empty for a tensor of rank {rank}").into(),
-            ));
+            return Err(ZyxError::shape_error(format!("Axes must not be empty for a tensor of rank {rank}").into()));
         }
         axes.sort_unstable();
         axes.dedup();
@@ -1728,7 +1723,7 @@ impl Tensor {
 
         match reduction {
             ReduceOp::Mean => Ok(nll.sum_all() / masked_weight.sum_all()),
-             ReduceOp::Sum => Ok(nll.sum_all()),
+            ReduceOp::Sum => Ok(nll.sum_all()),
             ReduceOp::None => Ok(nll),
             _ => Err(ZyxError::ParseError("invalid reduction for nll_loss".into())),
         }
@@ -1745,12 +1740,7 @@ impl Tensor {
     ///
     /// Returns the scalar loss.
     #[allow(clippy::missing_panics_doc)]
-    pub fn ctc_loss(
-        &self,
-        targets: impl Into<Tensor>,
-        blank: i64,
-        reduction: ReduceOp,
-    ) -> Result<Tensor, ZyxError> {
+    pub fn ctc_loss(&self, targets: impl Into<Tensor>, blank: i64, reduction: ReduceOp) -> Result<Tensor, ZyxError> {
         let target = targets.into();
         let shape = self.shape();
         let t_dim = shape[0];

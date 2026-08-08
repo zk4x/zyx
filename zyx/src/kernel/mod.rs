@@ -214,6 +214,8 @@ pub enum MemScope {
     Register,
     /// Circular buffer, SRAM (tenstorrent)
     Circular,
+    /// Single scalar variable
+    Scalar,
 }
 
 /// Memory layout for kernel operations.
