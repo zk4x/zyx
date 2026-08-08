@@ -1564,25 +1564,43 @@ impl Runtime {
         }
 
         // Fast path: already realized
-        if let Some(&buffer_id) = self.buffer_map.get(&x) {
-            let bytes = (data.len() * T::bit_size() as usize).div_ceil(8);
-            let byte_slice = unsafe { std::slice::from_raw_parts_mut(data.as_mut_ptr().cast(), bytes) };
-            for buffers in self.events.keys() {
-                if buffers.contains(&buffer_id) {
-                    let buffers = buffers.clone();
-                    let event = self.events.remove(&buffers).unwrap();
-                    self.pools[buffer_id.pool].pool_to_host(buffer_id.buffer, byte_slice, vec![event])?;
-                    #[cfg(feature = "debug_tensor_op")]
-                    println!("  -> x={x}, {:?}", self.tensors[x]);
-                    return Ok(());
-                }
-            }
-            self.pools[buffer_id.pool].pool_to_host(buffer_id.buffer, byte_slice, Vec::new())?;
-            #[cfg(feature = "debug_tensor_op")]
-            println!("  -> x={x}, {:?}", self.tensors[x]);
-            return Ok(());
-        }
+        let Some(mut buffer_id) = self.buffer_map.get(&x).copied() else {
+            return self.load_slow_path(x, data);
+        };
 
+        // A store may still be pending on this tensor (assign wrote into
+        // this buffer in place). Run the pending producer kernel first so
+        // the buffer is up to date, then re-fetch the buffer id (the store
+        // may have moved it to a device pool).
+        if !self.tensors[x].depends_on.is_null() {
+            let kid = self.tensors[x].depends_on;
+            let seen: Set<TensorId> = self.kernels[kid].outputs.iter().copied().collect();
+            for tid in seen {
+                self.add_store(tid)?;
+            }
+            buffer_id = self.buffer_map.get(&x).copied().ok_or_else(|| {
+                ZyxError::AllocationError(format!("load: tensor {x} lost its buffer during pending store").into())
+            })?;
+        }
+        let bytes = (data.len() * T::bit_size() as usize).div_ceil(8);
+        let byte_slice = unsafe { std::slice::from_raw_parts_mut(data.as_mut_ptr().cast(), bytes) };
+        for buffers in self.events.keys() {
+            if buffers.contains(&buffer_id) {
+                let buffers = buffers.clone();
+                let event = self.events.remove(&buffers).unwrap();
+                self.pools[buffer_id.pool].pool_to_host(buffer_id.buffer, byte_slice, vec![event])?;
+                #[cfg(feature = "debug_tensor_op")]
+                println!("  -> x={x}, {:?}", self.tensors[x]);
+                return Ok(());
+            }
+        }
+        self.pools[buffer_id.pool].pool_to_host(buffer_id.buffer, byte_slice, Vec::new())?;
+        #[cfg(feature = "debug_tensor_op")]
+        println!("  -> x={x}, {:?}", self.tensors[x]);
+        Ok(())
+    }
+
+    fn load_slow_path<T: Scalar>(&mut self, x: TensorId, data: &mut [T]) -> Result<(), ZyxError> {
         // Slow path: add store for each output, last one triggers materialize
         self.initialize_devices()?;
 
@@ -1654,10 +1672,12 @@ impl Runtime {
         // value into dst's base buffer in-place.
         let (src_kid, src_op) = self.eager_ids(src);
         let (dst_kid, dst_op) = self.eager_ids(dst);
-        // The destination must be a movement-only view kernel with a single output.
-        if self.kernels[dst_kid].outputs.len() != 1 {
+        // The destination must be a movement-only view kernel with no outputs
+        // other than dst itself (dst may appear multiple times, once per
+        // cloned handle).
+        if self.kernels[dst_kid].outputs.iter().any(|&e| e != dst) {
             return Err(ZyxError::ShapeError(
-                format!("assign: dst kernel {dst_kid:?} has {} outputs, expected 1", self.kernels[dst_kid].outputs.len()).into(),
+                format!("assign: dst kernel {dst_kid:?} has other outputs {:?}, only dst allowed", self.kernels[dst_kid].outputs).into(),
             ));
         }
         for op in self.kernels[dst_kid].kernel.ops.values() {
@@ -1686,95 +1706,82 @@ impl Runtime {
             return Err(ZyxError::ShapeError(format!("assign: dst kernel {dst_kid:?} must have exactly 1 load").into()));
         }
 
-        let shape: Vec<Dim> = src_shape.into();
-
-        // Merge dst's kernel into src's kernel (src is the base, dst the movement).
+        // Remove the dst (movement-only) kernel; its base buffer is dst_org.
+        // The removed kernel held a kernel-load reference on dst_org.
         let KernelData { kernel, loads, .. } = unsafe { self.kernels.remove_and_return(dst_kid) };
         let dst_org = loads[0];
+        self.release_load(dst_org);
 
-        // Identify define used by the store, only can go through movement ops
-        let mut dst_define = dst_op;
-        for _ in 0..100 {
-            match kernel.ops[dst_define].op {
-                Op::Move { x, .. } => {
-                    dst_define = x;
-                }
-                Op::Define { .. } => {
-                    break;
-                }
-                _ => {}
-            }
-        }
-
-        // Replay dst kernel ops into src kernel
+        // Replay dst's movement chain into src's kernel. The replayed base
+        // define becomes the (mutable) store target; the last replayed
+        // movement op yields dst's final value within src's kernel.
+        let has_moves = kernel.ops.values().any(|n| matches!(n.op, Op::Move { .. }));
         let mut op_map = Map::default();
         let mut op_id = kernel.head;
-        let mut load_op = OpId::NULL;
+        let mut dst_final = OpId::NULL;
         while !op_id.is_null() {
             match kernel.ops[op_id].op {
                 Op::Const(value) => {
                     let id = self.kernels[src_kid].kernel.push_back(Op::Const(value));
                     op_map.insert(op_id, id);
                 }
-                Op::Define { dtype, scope, ro, len } => {
-                    let id = self.kernels[src_kid].kernel.push_back(Op::Define { dtype, scope, ro, len });
+                Op::Define { dtype, scope, ro: _, len } => {
+                    let id = self.kernels[src_kid].kernel.push_back(Op::Define { dtype, scope, ro: false, len });
                     op_map.insert(op_id, id);
+                    dst_final = id;
                 }
                 Op::LoadView(ref x) => {
-                    let (x_id, dtype, shape) = x.as_ref().clone();
-                    if x_id == dst_define {
-                        load_op = x_id;
-                        continue;
+                    // Without further movement ops the base view is dead code.
+                    if has_moves {
+                        let (x_id, dtype, shape) = x.as_ref().clone();
+                        let x_id = op_map[&x_id];
+                        let id = self.kernels[src_kid].kernel.push_back(Op::LoadView(Box::new((x_id, dtype, shape))));
+                        op_map.insert(op_id, id);
                     }
-                    let x_id = op_map[&x_id];
-                    let id = self.kernels[src_kid].kernel.push_back(Op::LoadView(Box::new((x_id, dtype, shape))));
-                    op_map.insert(op_id, id);
                 }
                 Op::Move { x, ref mop } => {
-                    let mut x = op_map[&x];
-                    if x == load_op {
-                        x = dst_define;
-                    }
+                    let x = op_map[&x];
                     let id = self.kernels[src_kid].kernel.push_back(Op::Move { x, mop: mop.clone() });
                     op_map.insert(op_id, id);
+                    dst_final = id;
                 }
                 _ => unreachable!("should've already returned error"),
             }
             op_id = kernel.next_op(op_id);
         }
+        debug_assert!(!dst_final.is_null());
 
-        let dtype = src_dtype;
+        // Store src's value into dst's base buffer through the replayed chain.
+        self.kernels[src_kid].kernel.store_contiguous(dst_final, src_op, src_dtype);
+        self.kernels[src_kid].stores.push(dst_org);
 
-        // Add storeview and bookkeeping of outputs, loads and stores
-        self.kernels[src_kid].kernel.store_contiguous(dst_op, src_op, dtype);
-        self.kernels[src_kid].outputs.retain(|&x| x != dst);
-        self.kernels[src_kid].stores.push(src);
-
-        // Create new load kernel for dst
-        let len = shape.iter().product();
-        let mut kernel = Kernel::new(DeviceId::AUTO);
-        let op_id = kernel.push_back(Op::Define { dtype, scope: MemScope::Global, ro: true, len });
-        let op_id = kernel.push_back(Op::LoadView(Box::new((op_id, dtype, shape))));
-        let kernel_id = self.kernels.push(KernelData { outputs: Vec::new(), loads: Vec::new(), stores: Vec::new(), kernel });
-        self.kernels[kernel_id].loads.push(dst);
-        self.kernels[kernel_id].outputs.push(dst);
-
-        // TODO finish up by fixing rcs, and ids
-
-        self.tensors[dst_org].kernel_id = kernel_id;
-        self.tensors[dst_org].op_id = op_id;
-        self.tensors[dst_org].depends_on = kernel_id;
-        self.tensors[dst_org].rc = 1;
-
-        self.tensors[dst].kernel_id = kernel_id;
-        self.tensors[dst].op_id = op_id;
-        self.tensors[dst].depends_on = kernel_id;
-        self.tensors[dst].rc = 1;
-
-        self.tensors[src].kernel_id = kernel_id;
-        self.tensors[src].op_id = op_id;
-        self.tensors[src].depends_on = kernel_id;
-        self.tensors[src].rc = 1;
+        // The store writes IN PLACE into dst_org's existing buffer, which
+        // stays resident in buffer_map — no new buffer is allocated for the
+        // destination. If dst owns that buffer (dst == dst_org), dst stays
+        // valid and is marked pending on src_kid so a read of dst runs the
+        // store first. If dst is a movement view (dst != dst_org) it has no
+        // buffer and is invalid after the in-place write, so run the store
+        // right away and invalidate dst.
+        if dst == dst_org {
+            // dst owns the target buffer. Keep it valid but pending on the
+            // store kernel so a read runs the in-place write first. Re-point
+            // dst onto its own load kernel (as add_store does) so clone
+            // drops / releases target a live kernel instead of the store
+            // kernel that gets consumed on materialization.
+            self.tensors[dst].depends_on = src_kid;
+            self.kernels[src_kid].outputs.push(dst);
+            self.tensors[dst].kernel_id = src_kid;
+            self.tensors[dst].op_id = op_map.get(&dst_op).copied().unwrap_or(dst_final);
+            self.add_store(dst)?;
+        } else {
+            self.tensors[dst].kernel_id = KernelId::NULL;
+            self.tensors[dst].op_id = OpId::NULL;
+            self.tensors[dst].depends_on = KernelId::NULL;
+            let seen: Set<TensorId> = self.kernels[src_kid].outputs.iter().copied().collect();
+            for tid in seen {
+                self.add_store(tid)?;
+            }
+        }
 
         Ok(())
     }
@@ -2183,11 +2190,45 @@ impl Runtime {
 
         // Pick device and pool
         self.initialize_devices()?;
-        let mut dev_ids: Vec<DeviceId> = self.devices.ids().collect();
-        dev_ids.sort_unstable_by_key(|&dev_id| self.devices[dev_id].free_compute());
-        dev_ids.reverse();
-        let dev_id = *dev_ids.first().ok_or_else(|| ZyxError::AllocationError("no available device".into()))?;
-        let pool_id = self.devices[dev_id].memory_pool_id();
+
+        // If stores already have buffers (e.g. assign writes in-place), a
+        // kernel can only touch memory of one pool, so those buffers dictate
+        // the pool — and hence the device. Stores spanning multiple pools is
+        // an error. Without existing store buffers (or if no device shares
+        // their pool), fall back to the freest device and move the buffers.
+        let mut store_pools: BTreeSet<PoolId> = BTreeSet::new();
+        for &tid in &stores {
+            if let Some(buf_id) = self.buffer_map.get(&tid) {
+                store_pools.insert(buf_id.pool);
+            }
+        }
+        let (dev_id, pool_id) = if store_pools.len() == 1 {
+            let pool_id = *store_pools.iter().next().unwrap();
+            let dev_id = self
+                .devices
+                .ids()
+                .find(|&dev_id| self.devices[dev_id].memory_pool_id() == pool_id);
+            match dev_id {
+                Some(dev_id) => (dev_id, pool_id),
+                None => {
+                    let mut dev_ids: Vec<DeviceId> = self.devices.ids().collect();
+                    dev_ids.sort_unstable_by_key(|&dev_id| self.devices[dev_id].free_compute());
+                    dev_ids.reverse();
+                    let dev_id = *dev_ids.first().ok_or_else(|| ZyxError::AllocationError("no available device".into()))?;
+                    (dev_id, self.devices[dev_id].memory_pool_id())
+                }
+            }
+        } else if store_pools.is_empty() {
+            let mut dev_ids: Vec<DeviceId> = self.devices.ids().collect();
+            dev_ids.sort_unstable_by_key(|&dev_id| self.devices[dev_id].free_compute());
+            dev_ids.reverse();
+            let dev_id = *dev_ids.first().ok_or_else(|| ZyxError::AllocationError("no available device".into()))?;
+            (dev_id, self.devices[dev_id].memory_pool_id())
+        } else {
+            return Err(ZyxError::AllocationError(
+                format!("stores span multiple pools {store_pools:?}; a kernel can only touch memory of a single pool").into(),
+            ));
+        };
         kernel.device_id = dev_id;
 
         // Ensure loads are in target pool
@@ -2229,6 +2270,38 @@ impl Runtime {
                         break;
                     }
                 }
+            }
+        }
+
+        // Ensure stores are in target pool (assign writes in-place into an
+        // existing buffer, which may live in a different pool).
+        for &tid in &stores {
+            let Some(buf_id) = self.buffer_map.get(&tid).copied() else { continue };
+            if buf_id.pool != pool_id {
+                let src = buf_id.buffer;
+                let bytes = (self.shape(tid).iter().product::<Dim>() as usize * self.dtype(tid).bit_size() as usize).div_ceil(8);
+                let mut byte_slice = vec![0u8; bytes];
+
+                let mut ev = Vec::new();
+                for buffers in self.events.keys() {
+                    if buffers.contains(&buf_id) {
+                        let buffers = buffers.clone();
+                        let event = self.events.remove(&buffers).unwrap();
+                        ev.push(event);
+                        break;
+                    }
+                }
+                self.pools[buf_id.pool].pool_to_host(src, &mut byte_slice, ev)?;
+                self.buffer_map.remove(&tid);
+                if !self.buffer_map.values().any(|b| b.buffer == src) {
+                    self.pools[buf_id.pool].deallocate(src, vec![]);
+                }
+
+                let (dst, event) = self.pools[pool_id].allocate(bytes as Dim)?;
+                let dst_global = BufferId { pool: pool_id, buffer: dst };
+                let event = self.pools[pool_id].host_to_pool(&byte_slice, dst, vec![event])?;
+                self.pools[pool_id].sync_events(vec![event])?;
+                self.buffer_map.insert(tid, dst_global);
             }
         }
 

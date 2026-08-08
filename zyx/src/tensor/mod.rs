@@ -398,7 +398,7 @@ impl Tensor {
     ///
     /// Returns [`ZyxError::GraphTensorNotRealized`] if this tensor is a
     /// graph tensor that has not been realized yet.
-    pub fn assign(&self, src: impl Into<Tensor>) -> Result<(), ZyxError> {
+    pub fn assign(self, src: impl Into<Tensor>) -> Result<(), ZyxError> {
         let src = src.into();
         RT.lock().assign(self.id, src.id)
     }
