@@ -1728,9 +1728,116 @@ impl Tensor {
 
         match reduction {
             ReduceOp::Mean => Ok(nll.sum_all() / masked_weight.sum_all()),
-            ReduceOp::Sum => Ok(nll.sum_all()),
+             ReduceOp::Sum => Ok(nll.sum_all()),
             ReduceOp::None => Ok(nll),
             _ => Err(ZyxError::ParseError("invalid reduction for nll_loss".into())),
+        }
+    }
+
+    /// CTC loss (Connectionist Temporal Classification).
+    ///
+    /// Computes the CTC loss between log-probabilities and target labels using
+    /// the forward-backward algorithm in log space.
+    ///
+    /// `self` should be log-probabilities of shape `[T, C]` (time, classes).
+    /// `targets` should be class indices of shape `[L]`.
+    /// `blank` is the blank label index.
+    ///
+    /// Returns the scalar loss.
+    #[allow(clippy::missing_panics_doc)]
+    pub fn ctc_loss(
+        &self,
+        targets: impl Into<Tensor>,
+        blank: i64,
+        reduction: ReduceOp,
+    ) -> Result<Tensor, ZyxError> {
+        let target = targets.into();
+        let shape = self.shape();
+        let t_dim = shape[0];
+        let l_dim = target.shape()[0];
+        let n_ext: usize = (2 * l_dim + 1).try_into().unwrap();
+        let dtype = self.dtype();
+        let neg_inf: f32 = -1e30;
+
+        // Build extended labels: [blank, t0, blank, t1, ..., blank, tL-1, blank]
+        let target_vals: Vec<i32> = target.cast(DType::I32).try_into()?;
+        let mut ext_vals: Vec<i32> = Vec::with_capacity(n_ext);
+        ext_vals.push(blank as i32);
+        for &t in &target_vals {
+            ext_vals.push(t);
+            ext_vals.push(blank as i32);
+        }
+        let ext_labels = Tensor::from_vec(ext_vals, [n_ext])?;
+
+        // Gather extended log-probs: [T, 2L+1]
+        let ext_labels_exp = ext_labels.expand([t_dim, n_ext as u64])?;
+        let lp = self.gather(1, ext_labels_exp)?;
+
+        // log_add helper: max(a,b) + ln(1 + exp(min(a,b) - max(a,b)))
+        let log_add = |a: &Tensor, b: &Tensor| -> Tensor {
+            let max_val = a.maximum(b).unwrap();
+            let min_val = a.minimum(b).unwrap();
+            let one = Tensor::ones(max_val.shape(), dtype);
+            max_val.clone() + (one + (min_val - &max_val).exp()).ln()
+        };
+
+        let neg_inf_tensor = Tensor::full([n_ext], neg_inf).cast(dtype);
+        let neg_inf_val = Tensor::from(neg_inf).cast(dtype);
+
+        // Initialize alpha[0]: [-inf, ..., -inf] with first two set
+        let lp0 = lp.clone().slice(0..1)?.squeeze([0]);
+        let init_vals: Vec<i32> = (0..n_ext).map(|i| if i <= 1 { 1 } else { 0 }).collect();
+        let init_mask = Tensor::from(init_vals).cast(dtype);
+        let alpha0 = init_mask.where_(&lp0, &neg_inf_tensor)?;
+        let mut alpha = vec![alpha0];
+
+        // Skip mask: positions s >= 2 where ext_labels[s-2] != ext_labels[s]
+        let labels_prev = ext_labels.clone().slice(0..((n_ext - 2) as i64))?;
+        let labels_curr = ext_labels.clone().slice(2..(n_ext as i64))?;
+        let skip_inner = labels_prev.ne(&labels_curr)?.cast(dtype);
+        let skip_mask = if n_ext >= 3 {
+            let zeros_pad = Tensor::zeros([2], dtype);
+            let cat_tensors: Vec<&Tensor> = vec![&zeros_pad, &skip_inner];
+            Tensor::cat(cat_tensors, 0)?
+        } else {
+            skip_inner
+        };
+
+        // Forward pass
+        for t in 1..t_dim as usize {
+            let alpha_prev = alpha.last().unwrap().clone();
+            let lpt = lp.clone().slice((t as i64)..(t as i64 + 1))?.squeeze([0]);
+
+            // Shift right by 1: pad with -inf on left
+            let padded1 = alpha_prev.clone().pad([(1, 0)], neg_inf_val.clone())?;
+            let shifted1 = padded1.slice(0..(n_ext as i64))?;
+
+            // base = log_add(alpha_prev, shifted1) + lpt
+            let base = log_add(&alpha_prev, &shifted1) + &lpt;
+
+            // Shift right by 2: pad with -inf on left
+            let padded2 = alpha_prev.clone().pad([(2, 0)], neg_inf_val.clone())?;
+            let shifted2 = padded2.slice(0..(n_ext as i64))?;
+
+            // skip = log_add(base, shifted2)
+            let skip_val = log_add(&base, &shifted2);
+
+            // alpha_t = where_(skip_mask, skip_val, base)
+            let alpha_t = skip_mask.clone().where_(&skip_val, &base)?;
+            alpha.push(alpha_t);
+        }
+
+        // Loss = -log_add(alpha[T-1, n_ext-2], alpha[T-1, n_ext-1])
+        let last = alpha.last().unwrap();
+        let last_two = last.slice((n_ext as i64 - 2)..(n_ext as i64))?;
+        let a1 = last_two.clone().slice(0..1)?.squeeze([0]);
+        let a2 = last_two.slice(1..2)?.squeeze([0]);
+        let log_sum = log_add(&a1, &a2);
+
+        match reduction {
+            ReduceOp::Mean | ReduceOp::Sum => Ok(-log_sum),
+            ReduceOp::None => Err(ZyxError::ParseError("CTC loss with 'None' reduction is not supported".into())),
+            _ => Err(ZyxError::ParseError("invalid reduction for ctc_loss".into())),
         }
     }
 

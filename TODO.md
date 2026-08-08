@@ -120,7 +120,7 @@
   - [x] bce loss
   - [x] huber loss
   - [x] smooth l1 loss
-  - [ ] ctc loss
+  - [x] ctc loss
   - [ ] triplet margin loss
   - [ ] frobenius norm
   - [ ] spectral norm

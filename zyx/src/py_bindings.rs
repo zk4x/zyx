@@ -1387,6 +1387,36 @@ impl Tensor {
         self.nll_loss(target_tensor, weight_tensor, ignore_index, r)
     }
 
+    /// Computes the CTC (Connectionist Temporal Classification) loss.
+    ///
+    /// # Errors
+    /// Returns a `ZyxError` if the operation fails.
+    #[pyo3(name = "ctc_loss")]
+    pub fn ctc_loss_py(
+        &self,
+        target: &Bound<'_, PyAny>,
+        blank: i64,
+        reduction: &Bound<'_, PyAny>,
+    ) -> Result<Tensor, ZyxError> {
+        let target_tensor = target.extract::<Tensor>().map_err(|_| {
+            ZyxError::DTypeError("target must be a Tensor".into())
+        })?;
+        let r = if let Ok(reduction_str) = reduction.extract::<String>() {
+            match reduction_str.as_str() {
+                "mean" => ReduceOp::Mean,
+                "sum" => ReduceOp::Sum,
+                _ => {
+                    return Err(ZyxError::ParseError(
+                        "invalid reduction, expected 'mean' or 'sum'".into(),
+                    ))
+                }
+            }
+        } else {
+            ReduceOp::Mean
+        };
+        self.ctc_loss(target_tensor, blank, r)
+    }
+
     /// # Errors
     /// Returns a `ZyxError` if the operation fails.
     #[pyo3(name = "one_hot_along_dim")]
