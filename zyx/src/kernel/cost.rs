@@ -296,6 +296,7 @@ impl Kernel {
                     };
                     let total_elements = loop_mult * layout.n_elements();
                     match scope {
+                        MemScope::Scalar => todo!(),
                         MemScope::Global => {
                             let n_bits = total_elements * dtypes[&op_id].0.bit_size() as u64;
                             n_scoped_load_bits[0] += n_bits;
@@ -383,6 +384,7 @@ impl Kernel {
                         unreachable!()
                     };
                     match scope {
+                        MemScope::Scalar => todo!(),
                         MemScope::Global => {
                             let n_bits = loop_mult * layout.n_elements() * dtypes[&op_id].0.bit_size() as u64;
                             n_scoped_store_bits[0] += n_bits;

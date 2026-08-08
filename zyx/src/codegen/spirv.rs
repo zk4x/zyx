@@ -652,6 +652,7 @@ impl Kernel {
                     &Op::Define { dtype, scope, ro, len } => {
                         let st = push_dtype(&mut asm, &mut type_cache, &mut type_entries, dtype);
                         match scope {
+                            MemScope::Scalar => todo!(),
                             MemScope::Circular => unreachable!(),
                             MemScope::Global => {
                                 let is_bool = dtype == DType::Bool;
@@ -1030,6 +1031,7 @@ impl Kernel {
                     }
                     Op::Define { scope, .. } => {
                         match scope {
+                            MemScope::Scalar => todo!(),
                             MemScope::Circular => unreachable!(),
                             MemScope::Global | MemScope::Local => {
                                 // Already declared as module-level variable
