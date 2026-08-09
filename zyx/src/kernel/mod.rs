@@ -760,7 +760,10 @@ impl Kernel {
                     let flops = shape.iter().product::<Dim>();
                     Info { shape, flops, mem_read: 0, mem_write: 0 }
                 }
-                Op::Define { .. } => Info { shape: vec![], flops: 0, mem_read: 0, mem_write: 0 },
+                &Op::Define { ref shape, .. } => {
+                    let shape: Vec<Dim> = shape.as_ref().into();
+                    Info { shape, flops: 0, mem_read: 0, mem_write: 0 }
+                }
                 Op::Wmma { .. }
                 | Op::Asm { .. }
                 | Op::Vectorize { .. }
