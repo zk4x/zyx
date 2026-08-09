@@ -16,6 +16,7 @@ use crate::{
     kernel::{BOp, IDX_T, IdxScope, Kernel, MemLayout, MemScope, MoveOp, Op, OpId},
     shape::{self, Dim, UAxis},
     slab::SlabId,
+    DType,
 };
 
 /// Extract the value of an index constant op.
@@ -72,6 +73,20 @@ impl Kernel {
             }
             true
         });
+
+        // Snapshot the order of global defines so linearize can assert it never
+        // reorders the buffers' declaration order.
+        let global_defines: Vec<(DType, bool, Vec<Dim>, MemScope)> = {
+            let mut defines = Vec::new();
+            let mut op_id = self.head;
+            while !op_id.is_null() {
+                if let Op::Define { dtype, scope: MemScope::Global, ro, ref shape } = self.ops[op_id].op {
+                    defines.push((dtype, ro, shape.iter().copied().collect(), MemScope::Global));
+                }
+                op_id = self.next_op(op_id);
+            }
+            defines
+        };
 
         // For each op, shape and strides: (index, stride, left pad, right pad, axis length)
         let mut views: Map<OpId, Vec<(OpId, OpId, OpId, OpId, OpId)>> = Map::default();
@@ -209,7 +224,9 @@ impl Kernel {
                             }
                         }
                     }
-                    let src = self.insert_before(anchor, Op::Define { dtype, scope, ro, shape });
+                    // Insert the ro source define immediately before this op so the
+                    // global define order (which buffer args bind to) is preserved.
+                    let src = self.insert_before(op_id, Op::Define { dtype, scope, ro, shape });
                     if has_pad {
                         // Zero the offset where the padding condition fails, so the load
                         // always reads in-bounds, then zero the loaded value itself.
@@ -584,6 +601,23 @@ impl Kernel {
             }
             op_id = next;
         }
+
+        // Verify the relative order of global defines is unchanged by linearize.
+        debug_assert!({
+            let mut defines = Vec::new();
+            let mut op_id = self.head;
+            while !op_id.is_null() {
+                if let Op::Define { dtype, scope: MemScope::Global, ro, ref shape } = self.ops[op_id].op {
+                    defines.push((dtype, ro, shape.iter().copied().collect(), MemScope::Global));
+                }
+                op_id = self.next_op(op_id);
+            }
+            if defines != global_defines {
+                self.debug();
+                panic!("linearize: global define order changed:\n  original = {global_defines:?}\n  final = {defines:?}");
+            }
+            true
+        });
 
         self.verify();
     }

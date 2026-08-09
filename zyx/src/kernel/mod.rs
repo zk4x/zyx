@@ -684,6 +684,7 @@ impl Kernel {
     ///
     /// Returns estimated flops, memory reads, and memory writes.
     pub(crate) fn flop_mem_rw(&self) -> (u64, u64, u64) {
+        self.debug();
         #[derive(Clone)]
         struct Info {
             shape: Vec<Dim>,
