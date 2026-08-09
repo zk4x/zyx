@@ -1435,7 +1435,7 @@ fn assign_no_movement_dst() -> Result<(), ZyxError> {
     Ok(())
 }
 
-/*#[test]
+#[test]
 fn assign_movement_dst() -> Result<(), ZyxError> {
     let base = Tensor::from([0f32, 0f32, 0f32, 0f32, 0f32]);
     let dst = base.slice(1..4)?;
@@ -1444,4 +1444,4 @@ fn assign_movement_dst() -> Result<(), ZyxError> {
     let out: Vec<f32> = base.try_into()?;
     assert_eq!(out, vec![0.0, 7.0, 8.0, 9.0, 0.0]);
     Ok(())
-}*/
+}

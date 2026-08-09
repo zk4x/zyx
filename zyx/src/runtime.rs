@@ -1677,7 +1677,8 @@ impl Runtime {
         // cloned handle).
         if self.kernels[dst_kid].outputs.iter().any(|&e| e != dst) {
             return Err(ZyxError::ShapeError(
-                format!("assign: dst kernel {dst_kid:?} has other outputs {:?}, only dst allowed", self.kernels[dst_kid].outputs).into(),
+                format!("assign: dst kernel {dst_kid:?} has other outputs {:?}, only dst allowed", self.kernels[dst_kid].outputs)
+                    .into(),
             ));
         }
         for op in self.kernels[dst_kid].kernel.ops.values() {
@@ -1712,47 +1713,74 @@ impl Runtime {
         let dst_org = loads[0];
         self.release_load(dst_org);
 
+        kernel.debug();
+        let mut dst_define = dst_op;
+        for _ in 0..100 {
+            match kernel.ops[dst_define].op {
+                Op::Move { x, .. } => {
+                    dst_define = x;
+                }
+                Op::LoadView(ref x) => {
+                    dst_define = x.0;
+                }
+                Op::Define { .. } => {
+                    break;
+                }
+                _ => {}
+            }
+        }
+        println!("dst_define={dst_define:?}");
+
         // Replay dst's movement chain into src's kernel. The replayed base
         // define becomes the (mutable) store target; the last replayed
         // movement op yields dst's final value within src's kernel.
-        let has_moves = kernel.ops.values().any(|n| matches!(n.op, Op::Move { .. }));
         let mut op_map = Map::default();
         let mut op_id = kernel.head;
-        let mut dst_final = OpId::NULL;
         while !op_id.is_null() {
             match kernel.ops[op_id].op {
                 Op::Const(value) => {
                     let id = self.kernels[src_kid].kernel.push_back(Op::Const(value));
                     op_map.insert(op_id, id);
                 }
-                Op::Define { dtype, scope, ro: _, len } => {
-                    let id = self.kernels[src_kid].kernel.push_back(Op::Define { dtype, scope, ro: false, len });
+                Op::Define { dtype, scope, mut ro, len } => {
+                    if op_id == dst_define {
+                        ro = false;
+                    }
+                    let id = self.kernels[src_kid].kernel.push_back(Op::Define { dtype, scope, ro, len });
+                    println!("add define at op_id={op_id} id={id}");
                     op_map.insert(op_id, id);
-                    dst_final = id;
                 }
                 Op::LoadView(ref x) => {
-                    // Without further movement ops the base view is dead code.
-                    if has_moves {
-                        let (x_id, dtype, shape) = x.as_ref().clone();
-                        let x_id = op_map[&x_id];
-                        let id = self.kernels[src_kid].kernel.push_back(Op::LoadView(Box::new((x_id, dtype, shape))));
-                        op_map.insert(op_id, id);
+                    println!("load_view={x:?}");
+                    let (x_id, dtype, shape) = x.as_ref().clone();
+                    if x_id == dst_define {
+                        println!("dst_define found at op_id={op_id}");
+                        op_id = kernel.next_op(op_id);
+                        continue;
                     }
+                    let x_id = op_map[&x_id];
+                    let id = self.kernels[src_kid].kernel.push_back(Op::LoadView(Box::new((x_id, dtype, shape))));
+                    op_map.insert(op_id, id);
                 }
                 Op::Move { x, ref mop } => {
-                    let x = op_map[&x];
+                    let x = if let Some(x) = op_map.get(&x) {
+                        *x
+                    } else {
+                        // this is the move on the load
+                        op_map[&dst_define]
+                    };
+                    println!("move x={x}");
                     let id = self.kernels[src_kid].kernel.push_back(Op::Move { x, mop: mop.clone() });
                     op_map.insert(op_id, id);
-                    dst_final = id;
                 }
                 _ => unreachable!("should've already returned error"),
             }
             op_id = kernel.next_op(op_id);
         }
-        debug_assert!(!dst_final.is_null());
 
+        let dst_op = op_map.get(&dst_op).copied().unwrap_or(op_map[&dst_define]);
         // Store src's value into dst's base buffer through the replayed chain.
-        self.kernels[src_kid].kernel.store_contiguous(dst_final, src_op, src_dtype);
+        self.kernels[src_kid].kernel.store_contiguous(dst_op, src_op, src_dtype);
         self.kernels[src_kid].stores.push(dst_org);
 
         // The store writes IN PLACE into dst_org's existing buffer, which
@@ -1771,7 +1799,7 @@ impl Runtime {
             self.tensors[dst].depends_on = src_kid;
             self.kernels[src_kid].outputs.push(dst);
             self.tensors[dst].kernel_id = src_kid;
-            self.tensors[dst].op_id = op_map.get(&dst_op).copied().unwrap_or(dst_final);
+            self.tensors[dst].op_id = dst_op;
             self.add_store(dst)?;
         } else {
             self.tensors[dst].kernel_id = KernelId::NULL;
@@ -2204,10 +2232,7 @@ impl Runtime {
         }
         let (dev_id, pool_id) = if store_pools.len() == 1 {
             let pool_id = *store_pools.iter().next().unwrap();
-            let dev_id = self
-                .devices
-                .ids()
-                .find(|&dev_id| self.devices[dev_id].memory_pool_id() == pool_id);
+            let dev_id = self.devices.ids().find(|&dev_id| self.devices[dev_id].memory_pool_id() == pool_id);
             match dev_id {
                 Some(dev_id) => (dev_id, pool_id),
                 None => {
@@ -2276,7 +2301,9 @@ impl Runtime {
         // Ensure stores are in target pool (assign writes in-place into an
         // existing buffer, which may live in a different pool).
         for &tid in &stores {
-            let Some(buf_id) = self.buffer_map.get(&tid).copied() else { continue };
+            let Some(buf_id) = self.buffer_map.get(&tid).copied() else {
+                continue;
+            };
             if buf_id.pool != pool_id {
                 let src = buf_id.buffer;
                 let bytes = (self.shape(tid).iter().product::<Dim>() as usize * self.dtype(tid).bit_size() as usize).div_ceil(8);
