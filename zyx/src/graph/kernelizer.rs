@@ -217,6 +217,102 @@ impl Graph {
                         self.push_outputs(kid, cid, *rcs.get(&cid).unwrap());
                         visited.insert(cid, (kid, result_op));
                     }
+                    Node::Assign { dst, src } => {
+                        let (src_kid, src_op) = visited[&src];
+                        let (dst_kid, dst_op) = visited[&dst];
+
+                        // Mirror runtime::assign validations: dst must be a
+                        // movement-only kernel over exactly one (leaf) load, with
+                        // no stores and no other outputs, in its own kernel.
+                        assert!(
+                            self.jit_kernels[dst_kid].stores.is_empty(),
+                            "assign: dst class {dst:?} kernel has stores; only a movement-only dst is allowed"
+                        );
+                        assert_eq!(
+                            self.jit_kernels[dst_kid].loads.len(),
+                            1,
+                            "assign: dst class {dst:?} kernel must have exactly 1 load"
+                        );
+                        assert!(
+                            self.jit_kernels[dst_kid].outputs.iter().all(|&x| x == dst),
+                            "assign: dst class {dst:?} kernel produces other classes, only dst allowed"
+                        );
+                        assert_ne!(src_kid, dst_kid, "assign: src and dst share kernel {src_kid:?}");
+                        let dst_leaf = self.jit_kernels[dst_kid].loads[0];
+                        assert!(
+                            !self.jit_kernels[src_kid].loads.contains(&dst_leaf),
+                            "assign: src kernel loads dst tensor, not allowed to avoid data races"
+                        );
+                        assert_eq!(
+                            rcs[&dst], 1,
+                            "assign: dst class {dst:?} must be consumed only by the assign (rcs={}); \
+                             multi-consumer dst is not supported yet",
+                            rcs[&dst]
+                        );
+
+                        // Remove dst's movement-only kernel; its base buffer is
+                        // dst_leaf's. The assign store reuses that buffer in-place.
+                        let JitKernelData { kernel: dst_kernel, .. } = unsafe { self.jit_kernels.remove_and_return(dst_kid) };
+
+                        // Backtrace to dst's base define.
+                        let mut dst_define = dst_op;
+                        for _ in 0..100 {
+                            match dst_kernel.ops[dst_define].op {
+                                Op::Move { x, .. } => dst_define = x,
+                                Op::Define { .. } => break,
+                                _ => {}
+                            }
+                        }
+
+                        // Replay dst's movement chain into src's kernel. The
+                        // replayed base define becomes the mutable (ro=false)
+                        // store target; the last replayed move yields dst's final
+                        // position, which is also cid's read position (cid aliases
+                        // dst's buffer).
+                        let mut op_map: Map<OpId, OpId> = Map::default();
+                        let mut op_id = dst_kernel.head;
+                        while !op_id.is_null() {
+                            match dst_kernel.ops[op_id].op.clone() {
+                                Op::Const(value) => {
+                                    let id = self.jit_kernels[src_kid].kernel.push_back(Op::Const(value));
+                                    op_map.insert(op_id, id);
+                                }
+                                Op::Define { dtype, scope, mut ro, ref shape } => {
+                                    if op_id == dst_define {
+                                        ro = false;
+                                    }
+                                    let id = self.jit_kernels[src_kid].kernel.push_back(Op::Define {
+                                        dtype,
+                                        scope,
+                                        ro,
+                                        shape: shape.clone(),
+                                    });
+                                    op_map.insert(op_id, id);
+                                }
+                                Op::Move { x, ref mop } => {
+                                    let x = op_map.get(&x).copied().unwrap_or(op_map[&dst_define]);
+                                    let id = self.jit_kernels[src_kid].kernel.push_back(Op::Move { x, mop: mop.clone() });
+                                    op_map.insert(op_id, id);
+                                }
+                                _ => unreachable!("assign: dst kernel must be movement-only"),
+                            }
+                            op_id = dst_kernel.next_op(op_id);
+                        }
+
+                        let dst_op = op_map.get(&dst_op).copied().unwrap_or(op_map[&dst_define]);
+                        // Store src's value into dst's (leaf) buffer through the
+                        // replayed chain, in-place.
+                        self.jit_kernels[src_kid].kernel.store(dst_op, src_op, OpId::NULL, MemLayout::Scalar);
+                        self.jit_kernels[src_kid].stores.push(cid);
+
+                        // Bookkeeping: the assign consumed dst and src. cid reads
+                        // dst's buffer via the replayed chain position.
+                        *rcs.get_mut(&dst).unwrap() -= 1;
+                        visited.remove(&dst);
+                        self.consume(src, src_kid, &mut visited, &mut rcs);
+                        self.push_outputs(src_kid, cid, *rcs.get(&cid).unwrap());
+                        visited.insert(cid, (src_kid, dst_op));
+                    }
                     Node::Expand { x, .. } => {
                         let (kid, op_id) = visited[&x];
                         let force_store = self.jit_kernels[kid].kernel.is_preceded_by_compute(op_id);
@@ -282,10 +378,18 @@ impl Graph {
             // Post-processing: store if final output
             if outputs.contains(&cid) {
                 let (mut kid, op_id) = visited[&cid];
-                // AOT kernel classes are already materialized into storage by the
-                // backend kernel — storing the load kernel again would produce a
-                // self-copying kernel.
-                if !self.classes[cid].nodes.iter().any(|&nid| matches!(&self.nodes[nid].node, Node::Kernel { .. })) {
+                let is_assign = self.classes[cid]
+                    .nodes
+                    .iter()
+                    .any(|&nid| matches!(&self.nodes[nid].node, Node::Assign { .. }));
+                // Assign classes are in-place aliases of dst's (leaf) buffer; the
+                // kernelizer already recorded the in-place store, so do not add a
+                // fresh-buffer store. AOT kernel classes are already materialized
+                // into storage by the backend kernel — storing the load kernel
+                // again would produce a self-copying kernel.
+                if !is_assign
+                    && !self.classes[cid].nodes.iter().any(|&nid| matches!(&self.nodes[nid].node, Node::Kernel { .. }))
+                {
                     (kid, _) = self.add_store(cid, kid, op_id, &mut visited, &rcs, shapes);
                 }
                 *rcs.get_mut(&cid).unwrap() -= 1;

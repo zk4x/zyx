@@ -476,9 +476,13 @@ impl Runtime {
                 debug_assert!(self.buffer_map.contains_key(&tid), "leaf {tid} not realized");
                 debug_assert!(self.tensors[tid].graph_id == graph_id, "leaf {tid} belongs to another graph");
             }
-            // I2: no non-leaf graph tensor is realized.
+            // I2: no non-leaf graph tensor is realized — except in-place assign
+            // targets, whose value lives in the (realized) leaf buffer they alias.
             for (tid, td) in self.tensors.iter() {
-                if td.graph_id == graph_id && !self.graphs[graph_id].is_leaf(td.class_id) {
+                if td.graph_id == graph_id
+                    && !self.graphs[graph_id].is_leaf(td.class_id)
+                    && !self.graphs[graph_id].is_assign_alias(td.class_id)
+                {
                     debug_assert!(!self.buffer_map.contains_key(&tid), "non-leaf graph tensor {tid} realized before realize");
                 }
             }
@@ -1668,6 +1672,41 @@ impl Runtime {
         }
         if self.is_graph(dst) && !self.buffer_map.contains_key(&dst) {
             return Err(ZyxError::graph_tensor_not_realized(dst));
+        }
+        if self.is_graph(dst) {
+            // Graph-mode in-place assign: record a Node::Assign inside the tape
+            // graph. The plan writes src's value into dst's existing buffer
+            // in-place; dst must be a realized (promoted) leaf tensor.
+            if dst == src {
+                return Err(ZyxError::ShapeError("assign: dst equals src (self-assign)".into()));
+            }
+            let (dst_class, graph_id) = self.graph_ids(dst);
+            self.assert_graph_alive(graph_id);
+            // The plan writes cid as an in-place alias of dst's buffer, so dst
+            // must be the base leaf tensor itself. A movement view over a leaf
+            // (slice/permute/reshape etc.) is not yet supported in graph mode:
+            // reading back the aliased buffer would not re-apply the view.
+            if !self.graphs[graph_id].is_leaf(dst_class) {
+                return Err(ZyxError::ShapeError(
+                    "assign: graph-mode dst must be a realized leaf tensor (movement dst not supported yet)".into(),
+                ));
+            }
+            if self.is_graph(src) {
+                let (_, src_graph_id) = self.graph_ids(src);
+                if src_graph_id != graph_id {
+                    panic!("tensor belongs to a different tape scope");
+                }
+            } else {
+                self.promote_to_graph(src, graph_id)?;
+            }
+            let src_class = self.graph_ids(src).0;
+            let shape_id = self.tensors[dst].shape_id;
+            let dtype = self.tensors[dst].dtype;
+            let (_node_id, cid) = self.push_node(graph_id, Node::Assign { dst: dst_class, src: src_class }, shape_id, dtype);
+            self.tensors[dst].class_id = cid;
+            #[cfg(feature = "debug_tensor_op")]
+            println!("  -> cid={cid:?}");
+            return Ok(());
         }
         // Merge dst's (movement-only) kernel into src's kernel, then store src's
         // value into dst's base buffer in-place.

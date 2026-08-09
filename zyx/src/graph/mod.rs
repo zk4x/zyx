@@ -141,6 +141,10 @@ pub(crate) enum Node {
         y: ClassId,
         bop: BOp,
     },
+    Assign {
+        dst: ClassId,
+        src: ClassId,
+    },
     ToDevice {
         x: ClassId,
         device: DeviceId,
@@ -170,6 +174,7 @@ impl PartialEq for Node {
             (Self::Cast { x: a, dtype: ad }, Self::Cast { x: b, dtype: bd }) => a == b && ad == bd,
             (Self::Unary { x: a, uop: au }, Self::Unary { x: b, uop: bu }) => a == b && au == bu,
             (Self::Binary { x: a, y: ay, bop: ab }, Self::Binary { x: b, y: by, bop: bb }) => a == b && ay == by && ab == bb,
+            (Self::Assign { dst: a, src: as_ }, Self::Assign { dst: b, src: bs }) => a == b && as_ == bs,
             (Self::ToDevice { x: a, device: ad, .. }, Self::ToDevice { x: b, device: bd, .. }) => a == b && ad == bd,
             (
                 Self::Kernel { inputs: ai, outputs: ao, program_id: ap, .. },
@@ -244,6 +249,11 @@ impl std::hash::Hash for Node {
                 10u8.hash(state);
                 x.hash(state);
                 device.hash(state);
+            }
+            Self::Assign { dst, src } => {
+                13u8.hash(state);
+                dst.hash(state);
+                src.hash(state);
             }
             Self::Kernel { inputs, outputs, program_id, .. } => {
                 11u8.hash(state);
@@ -329,6 +339,7 @@ impl Node {
             Self::Cast { x, .. } => vec![*x],
             Self::Unary { x, .. } => vec![*x],
             Self::Binary { x, y, .. } => vec![*x, *y],
+            Self::Assign { dst, src } => vec![*dst, *src],
             Self::ToDevice { x, .. } => vec![*x],
             Self::Kernel { inputs, .. } => inputs.to_vec(),
         }
@@ -352,6 +363,12 @@ impl Graph {
 
     pub fn is_leaf(&self, class_id: ClassId) -> bool {
         self.classes[class_id].nodes.iter().any(|&nid| matches!(&self.nodes[nid].node, Node::Leaf { .. }))
+    }
+
+    /// Whether `class_id` is the output of an in-place `assign` — a class whose
+    /// value lives in (aliases) dst's realized leaf buffer.
+    pub fn is_assign_alias(&self, class_id: ClassId) -> bool {
+        self.classes[class_id].nodes.iter().any(|&nid| matches!(&self.nodes[nid].node, Node::Assign { .. }))
     }
 
     pub fn push_to_device(&mut self, x: ClassId, device: DeviceId, time: u64) -> ClassId {
@@ -507,6 +524,7 @@ impl Graph {
                 let name = match kind {
                     Node::Reduce { rop: bop, .. } => format!("Reduce {:?}", bop),
                     Node::Binary { bop, .. } => format!("Binary {:?}", bop),
+                    Node::Assign { .. } => "Assign".into(),
                     Node::Unary { uop, .. } => format!("Unary {:?}", uop),
                     Node::Cast { dtype, .. } => format!("Cast {:?}", dtype),
                     Node::Kernel { program_id, time, .. } => format!("Kernel prog={:?} time={}", program_id, time),

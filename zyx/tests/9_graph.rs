@@ -176,6 +176,31 @@ fn small_net() -> Result<(), ZyxError> {
 }
 
 #[test]
+fn assign_graph() -> Result<(), ZyxError> {
+    let x = Tensor::from([0f32, 0f32, 0f32, 0f32]);
+    let src = Tensor::from([1f32, 2f32, 3f32, 4f32]);
+    let tape = Tape::new([&x])?;
+    x.clone().assign(&src)?;
+    tape.realize([&x])?;
+    let out: Vec<f32> = x.try_into()?;
+    assert_eq!(out, vec![1.0, 2.0, 3.0, 4.0]);
+    Ok(())
+}
+
+#[test]
+fn assign_graph_computed_src() -> Result<(), ZyxError> {
+    let x = Tensor::from([0f32, 0f32, 0f32, 0f32]);
+    let a = Tensor::from([1f32, 2f32, 3f32, 4f32]);
+    let tape = Tape::new([&x, &a])?;
+    let src = (&a * 2.0f32) + 1.0f32;
+    x.clone().assign(&src)?;
+    tape.realize([&x])?;
+    let out: Vec<f32> = x.try_into()?;
+    assert_eq!(out, vec![3.0, 5.0, 7.0, 9.0]);
+    Ok(())
+}
+
+#[test]
 fn tape_caching() -> Result<(), ZyxError> {
     let x = Tensor::from([1.0f32, 2.0, 3.0]);
     let y = Tensor::randn([3, 3], DType::F32)?;

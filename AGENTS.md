@@ -11,6 +11,13 @@
 
 Quick reference for coding agents working in the zyx repository.
 
+## Design Notes (READ FIRST)
+
+Design decisions already made by the user are recorded in `NOTES_assign.md`.
+When a task touches `assign`, the graph `Node::Assign`, or anything these notes
+cover, READ `NOTES_assign.md` BEFORE implementing or asking. Do not re-ask
+decisions that are already recorded there.
+
 ## Know Your Limits
 
 - If you cannot actually solve a task (hardware-specific, deeply subtle, or repeatedly failing), SAY SO plainly up front instead of guessing or producing half-baked advice that wastes the user's time.
