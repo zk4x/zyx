@@ -30,8 +30,8 @@ pub enum Op {
         dtype: DType,
         scope: MemScope,
         ro: bool,
-        len: Dim,
-    }, // len is 0 for global stores
+        shape: Box<[Dim]>,
+    },
     Store {
         dst: OpId,
         x: OpId,
@@ -106,11 +106,12 @@ pub enum Op {
     },
 
     // ops that exist only in kernelizer, basically they can be eventually removed.
-    LoadView(Box<(OpId, DType, Vec<Dim>)>),
+    LoadView {
+        src: OpId,
+    },
     StoreView {
         dst: OpId,
         src: OpId,
-        dtype: DType,
     },
     Move {
         x: OpId,
