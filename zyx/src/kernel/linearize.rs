@@ -76,6 +76,12 @@ impl Kernel {
         // For each op, shape and strides: (index, stride, left pad, right pad, axis length)
         let mut views: Map<OpId, Vec<(OpId, OpId, OpId, OpId, OpId)>> = Map::default();
 
+        // Maps a writable global define to the store that writes into it. The
+        // store handler records the entry (walking dst through any moves to the
+        // terminal define); the define handler uses it to write back the store's
+        // computed index.
+        let mut dst_stores: Map<OpId, OpId> = Map::default();
+
         // Reused group index per axis, so every store of a result shares one index.
         let mut group_indices: Map<u32, OpId> = Map::default();
 
@@ -135,6 +141,42 @@ impl Kernel {
                     }
                 }
                 Op::Define { dtype, scope, ro, ref shape } => {
+                    // Register-scope defines (e.g. reduce accumulators) are managed
+                    // by the ops that create them; only global defines are rangeified
+                    // here. Writable globals are store destinations, read-only globals
+                    // are load sources.
+                    if scope != MemScope::Global {
+                        continue;
+                    }
+                    if !ro {
+                        // Write path: this define is the destination of a store. The
+                        // store's index is computed from the define's rangeified view
+                        // and written back into the matching store op.
+                        let store_id = dst_stores.remove(&op_id).unwrap();
+                        let view = views.remove(&op_id).unwrap();
+                        let zero = self.insert_const_idx_before(anchor, 0u32);
+                        let mut write_index = zero;
+                        let mut has_pad = false;
+                        for (index_elem, stride, lp_id, rp_id, _len_op) in &view {
+                            let lp = pad_value(self, *lp_id);
+                            let rp = pad_value(self, *rp_id);
+                            has_pad |= lp > 0 || rp > 0;
+                            let src_idx = if lp == 0 {
+                                *index_elem
+                            } else {
+                                self.insert_before(anchor, Op::Binary { x: *index_elem, y: *lp_id, bop: BOp::Sub })
+                            };
+                            write_index = self.insert_before(anchor, Op::Mad { x: src_idx, y: *stride, z: write_index });
+                        }
+                        // A store cannot write padding: the store covers exactly the
+                        // define's writable extent, so padding here is invalid.
+                        debug_assert!(!has_pad, "store destination define has padding: {has_pad}");
+                        match &mut self.ops[store_id].op {
+                            Op::Store { index, .. } => *index = write_index,
+                            _ => unreachable!("graph stores are the only stores at linearize time"),
+                        }
+                        continue;
+                    }
                     let shape = shape.clone();
                     let view = views.remove(&op_id).unwrap();
                     let zero = self.insert_const_idx_before(anchor, 0u32);
@@ -183,8 +225,8 @@ impl Kernel {
                 Op::Store { dst, src, index, layout } => {
                     debug_assert_eq!(index, OpId::NULL);
                     debug_assert_eq!(layout, MemLayout::Scalar);
+                    debug_assert_eq!(self.shape_of(src), self.shape_of(dst));
                     let shape = self.shape_of(src);
-                    println!("shape={shape:?}");
                     let mut view = Vec::new();
                     let zero = self.insert_const_idx_before(start, 0u32);
                     let mut st = 1;
@@ -204,12 +246,26 @@ impl Kernel {
                         st *= len;
                     }
                     view.reverse();
-                    let mut index = self.insert_const_idx_before(start, 0);
-                    for &(idx, st, _, _, _) in &view {
-                        index = self.insert_before(start, Op::Mad { x: idx, y: st, z: index });
+                    // The store index is written back by the terminal define (as a
+                    // writable global) when its walk reaches it. Walk dst through the
+                    // movement ops (these are the only ops allowed between a store and
+                    // the define it writes) and record the mapping.
+                    let mut dst_define = dst;
+                    while let Op::Move { x, .. } = self.ops[dst_define].op {
+                        dst_define = x;
                     }
-                    self.ops[op_id].op = Op::Store { dst, src, index, layout: MemLayout::Scalar };
-                    views.insert(src, view);
+                    let dst_define_op = &self.ops[dst_define].op;
+                    assert!(
+                        matches!(dst_define_op, Op::Define { scope: MemScope::Global, ro: false, .. }),
+                        "store dst chain must terminate at a writable global define, got {dst_define_op:?}"
+                    );
+                    assert!(
+                        dst_stores.insert(dst_define, op_id).is_none(),
+                        "store dst chain terminates at define {dst_define:?}, which is already a store destination"
+                    );
+                    self.ops[op_id].op = Op::Store { dst, src, index: OpId::NULL, layout: MemLayout::Scalar };
+                    views.insert(src, view.clone());
+                    views.insert(dst, view);
                 }
                 Op::Reduce { x, rop, n_axes } => {
                     // Collect all transitive dependencies of the reduce input and the
