@@ -60,14 +60,9 @@ impl Kernel {
                     // vectorize[devec(v,0), devec(v,1), ..., devec(v,n-1)] → v
                     if let Op::Devectorize { vec, idx: 0 } = self.at(ops[0]) {
                         let vec = *vec;
-                        // only fold if the vector covers exactly n lanes (no widening of sub-vectors)
-                        let full_len =
-                            matches!(self.at(vec), Op::Vectorize { ops: v } if v.len() == ops.len());
-                        if full_len
-                            && ops.iter().skip(1).enumerate().all(
-                                |(i, &sub)| matches!(self.at(sub), Op::Devectorize { vec: v, idx } if *v == vec && *idx == i + 1),
-                            )
-                        {
+                        if ops.iter().skip(1).enumerate().all(
+                            |(i, &sub)| matches!(self.at(sub), Op::Devectorize { vec: v, idx } if *v == vec && *idx == i + 1),
+                        ) {
                             self.remap(op_id, vec);
                         }
                     }

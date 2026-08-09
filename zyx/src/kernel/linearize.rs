@@ -14,7 +14,8 @@ use crate::{
     Map, Set,
     dtype::Constant,
     kernel::{BOp, IDX_T, IdxScope, Kernel, MemLayout, MemScope, MoveOp, Op, OpId},
-    shape::{self, Dim, UAxis}, slab::SlabId,
+    shape::{self, Dim, UAxis},
+    slab::SlabId,
 };
 
 /// Extract the value of an index constant op.
@@ -33,14 +34,15 @@ impl Kernel {
     // TODO Currently it only works if each define has a single move op chain.
     // Make it also work with move op chains when each define is accessed by multiple move ops.
     pub fn linearize(&mut self) {
-        let has_gidx = self.ops.values().any(|n| matches!(n.op, Op::Index { scope: IdxScope::Group, .. }));
-        let has_moves = self.ops.values().any(|n| matches!(n.op, Op::Move { .. }));
+        if !self.ops.values().any(|n| matches!(n.op, Op::Store { index: OpId::NULL, .. })) {
+            return;
+        }
 
-        match (has_gidx, has_moves) {
-            (false, false) => return,
-            (true, false) => return,
-            (false, true) => {}
-            (true, true) => {
+        #[cfg(debug_assertions)]
+        {
+            let has_gidx = self.ops.values().any(|n| matches!(n.op, Op::Index { scope: IdxScope::Group, .. }));
+            let has_moves = self.ops.values().any(|n| matches!(n.op, Op::Move { .. }));
+            if has_gidx && has_moves {
                 panic!("unfold_movement_ops: cannot have both explicit gidx and LoadView/StoreView/Move ops");
             }
         }
@@ -50,13 +52,13 @@ impl Kernel {
             let mut stack: Vec<OpId> = Vec::new();
             let mut op_id = self.head;
             while !op_id.is_null() {
-                if matches!(self.ops[op_id].op, Op::Define { .. } | Op::Store { .. }) {
+                if matches!(self.ops[op_id].op, Op::Store { .. }) {
                     stack.push(op_id);
                 }
                 op_id = self.next_op(op_id);
             }
             while let Some(id) = stack.pop() {
-                if live.insert(id) {
+                if !id.is_null() && live.insert(id) {
                     stack.extend(self.ops[id].op.parameters());
                 }
             }
@@ -103,6 +105,35 @@ impl Kernel {
             // index arithmetic must still land inside the loop.
             let anchor = open_loops.last().map(|&(_, a)| a).unwrap_or(start);
             match self.ops[op_id].op {
+                Op::Const(value) => {
+                    let view = views.remove(&op_id).unwrap();
+                    // The constant is a scalar whose value must be nullified where the
+                    // view's padding condition is false (padded regions read as zero).
+                    let mut pc = self.insert_before(anchor, Op::Const(Constant::Bool(true)));
+                    let mut has_pad = false;
+                    for &(idx, _st, lp_id, rp_id, len_op) in &view {
+                        let lp = pad_value(self, lp_id);
+                        let rp = pad_value(self, rp_id);
+                        if lp > 0 || rp > 0 {
+                            has_pad = true;
+                            if lp > 0 {
+                                let lp_m1 = self.insert_const_idx_before(anchor, lp - 1);
+                                let t = self.insert_before(anchor, Op::Binary { x: idx, y: lp_m1, bop: BOp::Cmpgt });
+                                pc = self.insert_before(anchor, Op::Binary { x: t, y: pc, bop: BOp::And });
+                            }
+                            if rp > 0 {
+                                let len_mr = self.insert_before(anchor, Op::Binary { x: len_op, y: rp_id, bop: BOp::Sub });
+                                let t = self.insert_before(anchor, Op::Binary { x: idx, y: len_mr, bop: BOp::Cmplt });
+                                pc = self.insert_before(anchor, Op::Binary { x: t, y: pc, bop: BOp::And });
+                            }
+                        }
+                    }
+                    if has_pad {
+                        let pcd = self.insert_before(anchor, Op::Cast { x: pc, dtype: value.dtype() });
+                        let z = self.insert_before(anchor, Op::Const(value));
+                        self.ops[op_id].op = Op::Binary { x: pcd, y: z, bop: BOp::Mul };
+                    }
+                }
                 Op::Define { dtype, scope, ro, ref shape } => {
                     let shape = shape.clone();
                     let view = views.remove(&op_id).unwrap();
@@ -149,34 +180,36 @@ impl Kernel {
                         self.ops[op_id].op = Op::Load { src, index, layout: MemLayout::Scalar };
                     }
                 }
-                Op::Const(value) => {
-                    let view = views.remove(&op_id).unwrap();
-                    // The constant is a scalar whose value must be nullified where the
-                    // view's padding condition is false (padded regions read as zero).
-                    let mut pc = self.insert_before(anchor, Op::Const(Constant::Bool(true)));
-                    let mut has_pad = false;
-                    for &(idx, _st, lp_id, rp_id, len_op) in &view {
-                        let lp = pad_value(self, lp_id);
-                        let rp = pad_value(self, rp_id);
-                        if lp > 0 || rp > 0 {
-                            has_pad = true;
-                            if lp > 0 {
-                                let lp_m1 = self.insert_const_idx_before(anchor, lp - 1);
-                                let t = self.insert_before(anchor, Op::Binary { x: idx, y: lp_m1, bop: BOp::Cmpgt });
-                                pc = self.insert_before(anchor, Op::Binary { x: t, y: pc, bop: BOp::And });
+                Op::Store { dst, src, index, layout } => {
+                    debug_assert_eq!(index, OpId::NULL);
+                    debug_assert_eq!(layout, MemLayout::Scalar);
+                    let shape = self.shape_of(src);
+                    println!("shape={shape:?}");
+                    let mut view = Vec::new();
+                    let zero = self.insert_const_idx_before(start, 0u32);
+                    let mut st = 1;
+                    for axis in (0..shape.len() as u32).rev() {
+                        let len = shape[axis as usize];
+                        let len_id = self.insert_const_idx_before(start, len);
+                        let idx = match group_indices.get(&axis) {
+                            Some(&id) => id,
+                            None => {
+                                let id = self.insert_before(start, Op::Index { len: len_id, axis, scope: IdxScope::Group });
+                                group_indices.insert(axis, id);
+                                id
                             }
-                            if rp > 0 {
-                                let len_mr = self.insert_before(anchor, Op::Binary { x: len_op, y: rp_id, bop: BOp::Sub });
-                                let t = self.insert_before(anchor, Op::Binary { x: idx, y: len_mr, bop: BOp::Cmplt });
-                                pc = self.insert_before(anchor, Op::Binary { x: t, y: pc, bop: BOp::And });
-                            }
-                        }
+                        };
+                        let st_id = self.insert_const_idx_before(start, st);
+                        view.push((idx, st_id, zero, zero, len_id));
+                        st *= len;
                     }
-                    if has_pad {
-                        let pcd = self.insert_before(anchor, Op::Cast { x: pc, dtype: value.dtype() });
-                        let z = self.insert_before(anchor, Op::Const(value));
-                        self.ops[op_id].op = Op::Binary { x: pcd, y: z, bop: BOp::Mul };
+                    view.reverse();
+                    let mut index = self.insert_const_idx_before(start, 0);
+                    for &(idx, st, _, _, _) in &view {
+                        index = self.insert_before(start, Op::Mad { x: idx, y: st, z: index });
                     }
+                    self.ops[op_id].op = Op::Store { dst, src, index, layout: MemLayout::Scalar };
+                    views.insert(src, view);
                 }
                 Op::Reduce { x, rop, n_axes } => {
                     // Collect all transitive dependencies of the reduce input and the
@@ -455,36 +488,6 @@ impl Kernel {
                     }
                     self.remap(op_id, x);
                     self.remove_op(op_id);
-                }
-                Op::Store { dst, src, index, layout } => {
-                    debug_assert_eq!(index, OpId::NULL);
-                    debug_assert_eq!(layout, MemLayout::Scalar);
-                    let shape = self.shape_of(src);
-                    let mut view = Vec::new();
-                    let zero = self.insert_const_idx_before(start, 0u32);
-                    let mut st = 1;
-                    for axis in (0..shape.len() as u32).rev() {
-                        let len = shape[axis as usize];
-                        let len_id = self.insert_const_idx_before(start, len);
-                        let idx = match group_indices.get(&axis) {
-                            Some(&id) => id,
-                            None => {
-                                let id = self.insert_before(start, Op::Index { len: len_id, axis, scope: IdxScope::Group });
-                                group_indices.insert(axis, id);
-                                id
-                            }
-                        };
-                        let st_id = self.insert_const_idx_before(start, st);
-                        view.push((idx, st_id, zero, zero, len_id));
-                        st *= len;
-                    }
-                    view.reverse();
-                    let mut index = self.insert_const_idx_before(start, 0);
-                    for &(idx, st, _, _, _) in &view {
-                        index = self.insert_before(start, Op::Mad { x: idx, y: st, z: index });
-                    }
-                    self.ops[op_id].op = Op::Store { dst, src, index, layout: MemLayout::Scalar };
-                    views.insert(src, view);
                 }
                 Op::Cast { x, .. } | Op::Unary { x, .. } => {
                     views.insert(x, views[&op_id].clone());

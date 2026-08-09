@@ -849,6 +849,7 @@ impl Kernel {
                 | MoveOp::Pad { shape, .. } => shape.clone(),
                 MoveOp::Flip { .. } => self.shape_of(x),
             },
+            Op::Define { ref shape, .. } => shape.clone().into(),
             ref op => todo!("{op:?}"),
         }
     }
