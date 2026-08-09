@@ -1435,13 +1435,13 @@ fn assign_no_movement_dst() -> Result<(), ZyxError> {
     Ok(())
 }
 
-/*#[test]
+#[test]
 fn assign_movement_dst() -> Result<(), ZyxError> {
-    let base = Tensor::from([0f32, 0f32, 0f32, 0f32, 0f32]);
+    let base = Tensor::from([1.6f32, 0f32, 0f32, 2.3f32, 4.7f32]);
     let dst = base.slice(1..4)?;
     let src = Tensor::from([7f32, 8f32, 9f32]);
     dst.assign(&src)?;
     let out: Vec<f32> = base.try_into()?;
-    assert_eq!(out, vec![0.0, 7.0, 8.0, 9.0, 0.0]);
+    assert_eq!(out, vec![1.6f32, 7.0, 8.0, 9.0, 4.7]);
     Ok(())
-}*/
+}

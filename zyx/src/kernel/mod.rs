@@ -709,10 +709,8 @@ impl Kernel {
                     Info { shape, flops: 0, mem_read, mem_write: 0 }
                 }
                 &Op::Store { dst, .. } => {
-                    let Op::Define { dtype, ref shape, .. } = self.ops[dst].op else {
-                        unreachable!()
-                    };
-                    let shape: Vec<Dim> = shape.as_ref().into();
+                    let dtype = self.dtype(dst);
+                    let shape = self.shape(dst);
                     let mem_write = shape.iter().product::<Dim>() * u64::from(dtype.bit_size()) / 8;
                     Info { shape, flops: 0, mem_read: 0, mem_write }
                 }
@@ -794,42 +792,7 @@ impl Kernel {
         self.ops.values().any(|x| matches!(x.op, Op::Reduce { .. } | Op::ReduceTile { .. }))
     }
 
-    /// Shape of the kernel output.
-    pub fn shape(&self) -> Vec<Dim> {
-        if self.ops.values().any(|x| matches!(x.op, Op::Index { .. })) {
-            let mut indices: Vec<(Dim, u32)> = self
-                .ops
-                .values()
-                .filter_map(|x| {
-                    if let Op::Index { len, axis, .. } = x.op {
-                        Some((self.index_len(len), axis))
-                    } else {
-                        None
-                    }
-                })
-                .collect();
-            indices.sort_by_key(|x| x.1);
-            return indices.into_iter().map(|x| x.0).collect();
-        }
-        let mut max_shape = Vec::<Dim>::new();
-        let mut max_numel = 0usize;
-        let mut op_id = self.tail;
-        while !op_id.is_null() {
-            if let Op::Store { src, .. } = self.at(op_id) {
-                let shape = self.shape_of(*src);
-                let numel = shape.iter().copied().map(|d| d as usize).product();
-                if numel > max_numel {
-                    max_numel = numel;
-                    max_shape = shape;
-                }
-            }
-            op_id = self.prev_op(op_id);
-        }
-        assert!(!max_shape.is_empty(), "shape(): no StoreViews found in kernel");
-        max_shape
-    }
-
-    fn shape_of(&self, op_id: OpId) -> Vec<Dim> {
+    fn shape(&self, op_id: OpId) -> Vec<Dim> {
         match self.ops[op_id].op {
             Op::Const(_) => vec![1],
             Op::Load { src: x, .. }
@@ -837,14 +800,14 @@ impl Kernel {
             | Op::Cast { x, .. }
             | Op::Unary { x, .. }
             | Op::Binary { x, .. }
-            | Op::Mad { x, .. } => self.shape_of(x),
+            | Op::Mad { x, .. } => self.shape(x),
             Op::Reduce { x, n_axes, .. } => {
-                let mut s = self.shape_of(x);
+                let mut s = self.shape(x);
                 s.truncate(s.len() - n_axes);
                 s
             }
             Op::ReduceTile { x, .. } => {
-                let _ = self.shape_of(x);
+                let _ = self.shape(x);
                 vec![1]
             }
             Op::Move { x, ref mop } => match mop.as_ref() {
@@ -852,7 +815,7 @@ impl Kernel {
                 | MoveOp::Expand { shape }
                 | MoveOp::Permute { shape, .. }
                 | MoveOp::Pad { shape, .. } => shape.clone(),
-                MoveOp::Flip { .. } => self.shape_of(x),
+                MoveOp::Flip { .. } => self.shape(x),
             },
             Op::Define { ref shape, .. } => shape.clone().into(),
             ref op => todo!("{op:?}"),

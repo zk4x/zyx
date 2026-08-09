@@ -155,7 +155,7 @@ impl Kernel {
     /// Permute tensor axes.
     pub fn permute(&mut self, x: OpId, axes: &[UAxis]) -> OpId {
         let axes = axes.to_vec();
-        let in_shape = self.shape_of(x);
+        let in_shape = self.shape(x);
         debug_assert_eq!(axes.len(), in_shape.len(), "permute: axes length {} != rank {}", axes.len(), in_shape.len());
         {
             let mut sorted = axes.clone();
@@ -173,7 +173,7 @@ impl Kernel {
     /// Reshape tensor.
     pub fn reshape(&mut self, x: OpId, shape: &[Dim]) -> OpId {
         let shape = shape.to_vec();
-        let in_shape = self.shape_of(x);
+        let in_shape = self.shape(x);
         debug_assert_eq!(
             shape.iter().product::<Dim>(),
             in_shape.iter().product::<Dim>(),
@@ -187,7 +187,7 @@ impl Kernel {
     /// Expand tensor (adds singleton dims).
     pub fn expand(&mut self, x: OpId, shape: &[Dim]) -> OpId {
         let shape = shape.to_vec();
-        let in_shape = self.shape_of(x);
+        let in_shape = self.shape(x);
         debug_assert!(
             in_shape.len() <= shape.len(),
             "expand: input rank {} > target rank {}: {:?} -> {:?}",
@@ -205,7 +205,7 @@ impl Kernel {
     /// Pad tensor with zeros.
     pub fn pad(&mut self, x: OpId, padding: &[(i64, i64)]) -> OpId {
         let padding = padding.to_vec();
-        let in_shape = self.shape_of(x);
+        let in_shape = self.shape(x);
         debug_assert_eq!(padding.len(), in_shape.len(), "pad: padding length {} != rank {}", padding.len(), in_shape.len());
         let mut shape = in_shape.clone();
         crate::shape::pad(&mut shape, &padding);
@@ -215,7 +215,7 @@ impl Kernel {
     /// Flip tensor axes.
     pub fn flip(&mut self, x: OpId, axes: &[UAxis]) -> OpId {
         let axes = axes.to_vec();
-        let in_shape = self.shape_of(x);
+        let in_shape = self.shape(x);
         debug_assert!(!axes.is_empty(), "flip: axes must not be empty");
         for &axis in &axes {
             debug_assert!((axis as usize) < in_shape.len(), "flip: axis {axis} out of range for rank {}", in_shape.len());
@@ -225,7 +225,7 @@ impl Kernel {
 
     /// Sum over the last `n_axes` dimensions.
     pub fn reduce_sum(&mut self, x: OpId, n_axes: usize) -> OpId {
-        let in_shape = self.shape_of(x);
+        let in_shape = self.shape(x);
         debug_assert!(n_axes <= in_shape.len(), "reduce_sum: n_axes {} > rank {}", n_axes, in_shape.len());
         debug_assert!(n_axes > 0, "reduce_sum: n_axes == 0");
         self.push_back(Op::Reduce { x, rop: BOp::Add, n_axes })
@@ -233,7 +233,7 @@ impl Kernel {
 
     /// Max over the last `n_axes` dimensions.
     pub fn reduce_max(&mut self, x: OpId, n_axes: usize) -> OpId {
-        let in_shape = self.shape_of(x);
+        let in_shape = self.shape(x);
         debug_assert!(n_axes <= in_shape.len(), "reduce_max: n_axes {} > rank {}", n_axes, in_shape.len());
         debug_assert!(n_axes > 0, "reduce_max: n_axes == 0");
         self.push_back(Op::Reduce { x, rop: BOp::Max, n_axes })

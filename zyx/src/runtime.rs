@@ -289,6 +289,11 @@ impl Runtime {
             self.on_rc_zero(x);
         }
 
+        // In case it was used in assign, all of graph_id and kernel_id and class_id and op_id are null
+        if kernel_id.is_null() {
+            return;
+        }
+
         if self.kernels[kernel_id].outputs.is_empty() {
             if !self.kernels[kernel_id].kernel.contains_stores() {
                 //eprintln!("A: kernels.remove({kid:?})");

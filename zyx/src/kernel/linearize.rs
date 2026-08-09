@@ -270,8 +270,8 @@ impl Kernel {
                 Op::Store { dst, src, index, layout } => {
                     debug_assert_eq!(index, OpId::NULL);
                     debug_assert_eq!(layout, MemLayout::Scalar);
-                    debug_assert_eq!(self.shape_of(src), self.shape_of(dst));
-                    let shape = self.shape_of(src);
+                    debug_assert_eq!(self.shape(src), self.shape(dst));
+                    let shape = self.shape(src);
                     let mut view = Vec::new();
                     let zero = self.insert_const_idx_before(start, 0u32);
                     let mut st = 1;
@@ -317,7 +317,7 @@ impl Kernel {
                     // accumulator dtype. The loop that wraps the reduction is opened at
                     // the soonest dependency that appears in the graph.
                     let mut reduce_loop_ops_set = Set::default();
-                    let shape = self.shape_of(x);
+                    let shape = self.shape(x);
                     let mut params = vec![x];
                     let mut acc_dtype = None;
                     while let Some(param) = params.pop() {
@@ -427,7 +427,7 @@ impl Kernel {
                             // the arithmetic LoadView would do), then recover each input axis
                             // by successive div/mod against the input's contiguous strides.
                             let out_view = views[&op_id].clone();
-                            let x_shape = self.shape_of(x);
+                            let x_shape = self.shape(x);
                             let mut x_strides = vec![1; x_shape.len()];
                             let mut st = 1;
                             for a in (0..x_shape.len()).rev() {
@@ -459,7 +459,7 @@ impl Kernel {
                             views.insert(x, view);
                         }
                         MoveOp::Expand { shape } => {
-                            let x_shape = self.shape_of(x);
+                            let x_shape = self.shape(x);
                             let shape = shape.clone();
                             let view = &views[&op_id];
                             let mut x_strides = vec![1; x_shape.len()];
@@ -491,7 +491,7 @@ impl Kernel {
                             for (i, &a) in axes.iter().enumerate() {
                                 inv_axes[a] = i;
                             }
-                            let x_shape = self.shape_of(x);
+                            let x_shape = self.shape(x);
                             let mut x_strides = vec![1; x_shape.len()];
                             let mut st = 1;
                             for a in (0..x_shape.len()).rev() {
@@ -517,7 +517,7 @@ impl Kernel {
                         }
                         MoveOp::Flip { axes } => {
                             let axes = axes.clone();
-                            let x_shape = self.shape_of(x);
+                            let x_shape = self.shape(x);
                             let view = &views[&op_id];
                             let zero = self.insert_const_idx_before(anchor, 0u32);
                             let one = self.insert_const_idx_before(anchor, 1u32);
@@ -540,7 +540,7 @@ impl Kernel {
                             views.insert(x, view);
                         }
                         MoveOp::Pad { padding, .. } => {
-                            let x_shape = self.shape_of(x);
+                            let x_shape = self.shape(x);
                             let padding = padding.clone();
                             let view = &views[&op_id];
                             let mut x_strides = vec![1; x_shape.len()];
