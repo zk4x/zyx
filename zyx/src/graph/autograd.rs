@@ -372,23 +372,38 @@ impl Runtime {
                 }
                 Node::Expand { x, .. } => {
                     let x_shape = self.graphs[graph_id].classes[x].shape;
-                    let sum_axes: Vec<UAxis> = self.shapes[self.graphs[graph_id].classes[cid].shape]
+                    let out_shape = self.shapes[self.graphs[graph_id].classes[cid].shape].clone();
+                    let in_shape = self.shapes[x_shape].clone();
+                    // Right-align the input against the expanded output per broadcast
+                    // semantics; the sum_axes are the trailing-aligned dims where the
+                    // input is a singleton broadcast to a larger output extent.
+                    let pad = out_shape.len() - in_shape.len();
+                    let sum_axes: Vec<UAxis> = in_shape
                         .iter()
-                        .zip(self.shapes[x_shape].iter())
                         .enumerate()
-                        .filter_map(|(i, (&od, &xd))| if od != xd { Some(i as UAxis) } else { None })
+                        .filter_map(|(i, &xd)| if xd == 1 && out_shape[pad + i] > 1 { Some((pad + i) as UAxis) } else { None })
                         .collect();
                     if sum_axes.is_empty() {
                         accum_grad(self, graph_id, &mut grads, x, grad);
                     } else {
+                        let grad_shape = self.shapes[self.graphs[graph_id].classes[grad].shape].to_vec();
+                        let reduce_shape_id = self.push_shape(crate::shape::reduce(&grad_shape, &sum_axes));
                         let reduced = self
                             .push_node(
                                 graph_id,
                                 Node::Reduce { x: grad, rop: BOp::Add, axes: sum_axes.into_boxed_slice() },
-                                x_shape,
+                                reduce_shape_id,
                                 self.graphs[graph_id].classes[grad].dtype,
                             )
                             .1;
+                        // The graph reduce drops the reduced dims; restore the
+                        // original shape (keepdim) with an explicit reshape.
+                        let reduced = if reduce_shape_id == x_shape {
+                            reduced
+                        } else {
+                            self.push_node(graph_id, Node::Reshape { x: reduced, shape: x_shape }, x_shape, self.graphs[graph_id].classes[grad].dtype)
+                                .1
+                        };
                         accum_grad(self, graph_id, &mut grads, x, reduced);
                     }
                 }

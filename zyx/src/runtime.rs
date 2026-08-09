@@ -1709,7 +1709,6 @@ impl Runtime {
         let dst_org = loads[0];
         self.release_load(dst_org);
 
-        kernel.debug();
         let mut dst_define = dst_op;
         for _ in 0..100 {
             match kernel.ops[dst_define].op {
@@ -1722,7 +1721,6 @@ impl Runtime {
                 _ => {}
             }
         }
-        println!("dst_define={dst_define:?}");
 
         // Replay dst's movement chain into src's kernel. The replayed base
         // define becomes the (mutable) store target; the last replayed

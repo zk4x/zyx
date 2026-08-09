@@ -18,9 +18,9 @@
 //! let (m, n, k) = (1024, 1024, 1024);
 //! let mut kernel = Kernel::new(DeviceId::AUTO);
 //!
-//! let a_buf = kernel.define(DType::F16, MemScope::Global, true, m * k);
-//! let b_buf = kernel.define(DType::F16, MemScope::Global, true, k * n);
-//! let c_buf = kernel.define(DType::F32, MemScope::Global, false, m * n);
+//! let a_buf = kernel.define(DType::F16, MemScope::Global, true, &[m, k]);
+//! let b_buf = kernel.define(DType::F16, MemScope::Global, true, &[k, n]);
+//! let c_buf = kernel.define(DType::F32, MemScope::Global, false, &[m, n]);
 //!
 //! let gidx = kernel.group_index(0, m / 16);
 //! let gidy = kernel.group_index(1, n / 8);
@@ -38,9 +38,9 @@
 //! let b_col = kernel.mad(gidy, c8, row_in_tile);
 //! let tile_base_col = kernel.mul(gidy, c8);
 //!
-//! let acc = kernel.define(DType::F32, MemScope::Register, false, 4);
+//! let acc = kernel.define(DType::F32, MemScope::Register, false, &[4]);
 //! let zf = kernel.const_val(0.0f32);
-//! let zero_acc = kernel.vectorize(vec![zf, zf, zf, zf]);
+//! let zero_acc = kernel.vectorize(&[zf, zf, zf, zf]);
 //! kernel.store(acc, zero_acc, c0, MemLayout::Vector(4));
 //!
 //! let k_div_8 = kernel.const_idx(k / 8);
@@ -56,14 +56,14 @@
 //! let a_load_2 = kernel.load(a_buf, a_base2, MemLayout::Scalar);
 //! let a_base2_p1 = kernel.add(a_base2, c1);
 //! let a_load_3 = kernel.load(a_buf, a_base2_p1, MemLayout::Scalar);
-//! let a_frag = kernel.vectorize(vec![a_load_0, a_load_1, a_load_2, a_load_3]);
+//! let a_frag = kernel.vectorize(&[a_load_0, a_load_1, a_load_2, a_load_3]);
 //!
 //! let b_row = kernel.add(k_off, col_in_tile);
 //! let b_base = kernel.mad(b_row, n_const, b_col);
 //! let b_load_0 = kernel.load(b_buf, b_base, MemLayout::Scalar);
 //! let b_base_n = kernel.add(b_base, n_const);
 //! let b_load_1 = kernel.load(b_buf, b_base_n, MemLayout::Scalar);
-//! let b_frag = kernel.vectorize(vec![b_load_0, b_load_1]);
+//! let b_frag = kernel.vectorize(&[b_load_0, b_load_1]);
 //!
 //! let acc_old = kernel.load(acc, c0, MemLayout::Vector(4));
 //! let acc_new = kernel.wmma(
@@ -157,13 +157,13 @@ pub(crate) const IDX_T: DType = DType::U32;
 ///
 /// let mut kernel = Kernel::new(DeviceId::AUTO);
 /// let n = 256;
-/// let inp = kernel.define(DType::F32, MemScope::Global, true, n);
+/// let inp = kernel.define(DType::F32, MemScope::Global, true, &[n]);
 /// let gidx = kernel.group_index(0, n);
 /// let loaded = kernel.load(inp, gidx, MemLayout::Scalar);
 /// let s = kernel.sin(loaded);
 /// let c = kernel.cos(loaded);
 /// let result = kernel.add(s, c);
-/// let out = kernel.define(DType::F32, MemScope::Global, false, n);
+/// let out = kernel.define(DType::F32, MemScope::Global, false, &[n]);
 /// kernel.store(out, result, gidx, MemLayout::Scalar);
 /// ```
 ///
@@ -177,11 +177,11 @@ pub(crate) const IDX_T: DType = DType::U32;
 ///
 /// let mut kernel = Kernel::new(DeviceId::AUTO);
 /// let n = 4;
-/// let inp = kernel.define(DType::F32, MemScope::Global, true, n);
+/// let inp = kernel.define(DType::F32, MemScope::Global, true, &[n]);
 /// let gidx = kernel.group_index(0, n);
 /// let loaded = kernel.load(inp, gidx, MemLayout::Scalar);
 /// let result = kernel.mad(loaded, loaded, loaded); // x*x + x
-/// let out = kernel.define(DType::F32, MemScope::Global, false, n);
+/// let out = kernel.define(DType::F32, MemScope::Global, false, &[n]);
 /// kernel.store(out, result, gidx, MemLayout::Scalar);
 ///
 /// let compiled = kernel.compile()?;
@@ -686,7 +686,6 @@ impl Kernel {
     ///
     /// Returns estimated flops, memory reads, and memory writes.
     pub(crate) fn flop_mem_rw(&self) -> (u64, u64, u64) {
-        self.debug();
         #[derive(Clone)]
         struct Info {
             shape: Vec<Dim>,

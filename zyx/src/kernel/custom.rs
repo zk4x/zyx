@@ -52,11 +52,11 @@ impl Kernel {
     ///
     /// let mut kernel = Kernel::new(DeviceId::AUTO);
     /// let n = 4;
-    /// let inp = kernel.define(DType::F32, MemScope::Global, true, n);
+    /// let inp = kernel.define(DType::F32, MemScope::Global, true, &[n]);
     /// let gidx = kernel.group_index(0, n);
     /// let loaded = kernel.load(inp, gidx, MemLayout::Scalar);
     /// let doubled = kernel.add(loaded, loaded);
-    /// let out = kernel.define(DType::F32, MemScope::Global, false, n);
+    /// let out = kernel.define(DType::F32, MemScope::Global, false, &[n]);
     /// kernel.store(out, doubled, gidx, MemLayout::Scalar);
     /// ```
     pub fn new(device_id: DeviceId) -> Self {
@@ -86,11 +86,11 @@ impl Kernel {
     ///
     /// let mut kernel = Kernel::new(DeviceId::AUTO);
     /// let n = 4;
-    /// let inp = kernel.define(DType::F32, MemScope::Global, true, n);
+    /// let inp = kernel.define(DType::F32, MemScope::Global, true, &[n]);
     /// let gidx = kernel.group_index(0, n);
     /// let loaded = kernel.load(inp, gidx, MemLayout::Scalar);
     /// let doubled = kernel.add(loaded, loaded);
-    /// let out = kernel.define(DType::F32, MemScope::Global, false, n);
+    /// let out = kernel.define(DType::F32, MemScope::Global, false, &[n]);
     /// kernel.store(out, doubled, gidx, MemLayout::Scalar);
     ///
     /// let compiled = kernel.compile()?;
