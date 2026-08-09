@@ -26,7 +26,7 @@ use crate::kernel::{BOp, DeviceId, IdxScope, Kernel, MMADType, MMADims, MMALayou
 use crate::runtime::{KernelData, KernelId, TensorData};
 use crate::shape::UAxis;
 use crate::slab::{Slab, SlabId};
-use crate::types::TinyVec;
+use crate::types::{TinyString, TinyVec};
 use crate::{DType, IntoShape, Tensor, ZyxError, shape::Dim};
 
 /// A compiled kernel ready for repeated execution.
@@ -464,6 +464,23 @@ impl Kernel {
     /// Warp matrix multiply-accumulate.
     pub fn wmma(&mut self, dims: MMADims, layout: MMALayout, dtype: MMADType, a: OpId, b: OpId, c: OpId) -> OpId {
         self.push_back(Op::Wmma { dims, layout, dtype, a, b, c })
+    }
+
+    /// Hardware tile matmul: multiplies two tiles into an accumulator tile.
+    pub fn matmul_tile(&mut self, x: OpId, y: OpId) -> OpId {
+        self.push_back(Op::MatmulTile { x, y })
+    }
+
+    /// Hardware tile transpose.
+    pub fn transpose_tile(&mut self, x: OpId) -> OpId {
+        self.push_back(Op::TransposeTile { x })
+    }
+
+    /// Backend-specific assembly instruction applied to `ops`.
+    pub fn asm(&mut self, asm: &str, ops: &[OpId]) -> OpId {
+        let asm = TinyString::new(asm);
+        let ops = TinyVec::new(ops);
+        self.push_back(Op::Asm { asm, ops })
     }
 
     /// Vectorize ops into a single value.
