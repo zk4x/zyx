@@ -561,7 +561,7 @@ impl Kernel {
         let mut stack = vec![x];
         while let Some(op) = stack.pop() {
             if chain.insert(op) {
-                stack.extend(self.ops[op].op.parameters());
+                stack.extend(self.ops[op].op.parameters().filter(|&p| !p.is_null()));
             }
         }
 
@@ -576,16 +576,17 @@ impl Kernel {
         }
         while let Some(op) = stack.pop() {
             if live.insert(op) {
-                stack.extend(self.ops[op].op.parameters());
+                stack.extend(self.ops[op].op.parameters().filter(|&p| !p.is_null()));
             }
         }
 
-        // Collect define OpIds in op order (before removal)
+        // Collect input (ro global) define OpIds in op order (before removal).
+        // These are the defines that correspond 1:1 with `loads`.
         let define_ops: Vec<OpId> = {
             let mut ops = Vec::new();
             let mut id = self.head;
             while !id.is_null() {
-                if matches!(&self.ops[id].op, Op::Define { .. }) {
+                if let &Op::Define { scope: MemScope::Global, ro: true, .. } = &self.ops[id].op {
                     ops.push(id);
                 }
                 id = self.next_op(id);
@@ -603,7 +604,8 @@ impl Kernel {
             op_id = next;
         }
 
-        // Keep only loads whose corresponding LoadView was not removed
+        // Keep only loads whose corresponding input define was not removed.
+        // `loads[i]` maps to the i-th ro global define in op order.
         define_ops.iter().enumerate().filter(|&(_, &lv_id)| !to_remove.contains(&lv_id)).map(|(i, _)| loads[i]).collect()
     }
 

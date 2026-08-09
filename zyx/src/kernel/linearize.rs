@@ -7,6 +7,34 @@
 //! without the View abstraction for movement op propagation.
 //! Movement ops are applied directly to axis indices, and
 //! LoadView/StoreView/ConstView are converted to Load/Store/Const in a single pass.
+//!
+//! # Kernel structure before and after linearize
+//!
+//! Before [`linearize`](Kernel::linearize), kernels contain only high-level ops:
+//! `Define`, `Move` (reshape/expand/permute/pad/flip), `Reduce`, `Binary`, and
+//! `Store`. Notably, they contain **no `Load`s**. All inputs to a kernel are
+//! `Define` ops with `MemScope::Global` scope, and every global define is either:
+//!
+//! - **read-only** (`ro: true`) — an input, later turned into a `Load`
+//! - **not read-only** (`ro: false`) — a `Store` destination (an output)
+//!
+//! Because there are no `Load`s before linearize, the kernel does not yet have a
+//! `loads` list.
+//!
+//! Linearize performs the bulk of the "unfolding":
+//!
+//! - it **removes `Move` and `Reduce`**, expanding them into index arithmetic,
+//! - it **inserts `Load`s**, `Loop`s, and the indexing computation (`Index`,
+//!   `Mad`, `Binary` on loop/group indices),
+//! - it computes each `Store`'s index from the shape it writes,
+//! - read-only global defines become `Load { src, .. }` referencing a freshly
+//!   inserted source `Define`,
+//! - writable global defines stay in place as `Store` destinations.
+//!
+//! Only after linearize does the kernel have `Load` ops, so the `loads` list only
+//! becomes meaningful then. This matters for any pass that maps kernel args to
+//! buffers: pre-linearize, map from the global `Define` ops (in op order), not
+//! from a `loads` list.
 
 #![allow(unused)]
 
