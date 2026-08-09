@@ -19,6 +19,7 @@ use crate::{
     DType, Map, Set,
     dtype::Constant,
     kernel::{BOp, IDX_T, Kernel, MemLayout, MemScope, Op, OpId, UOp},
+    shape::Dim, slab::SlabId,
 };
 use std::hash::BuildHasherDefault;
 
@@ -38,10 +39,10 @@ impl Kernel {
         while !op_id.is_null() {
             let next = self.next_op(op_id);
             match self.ops[op_id].op {
-                Op::Move { .. } | Op::LoadView { .. } | Op::StoreView { .. } | Op::Reduce { .. } => {}
-                Op::ReduceTile { .. }
-                | Op::PushTile { .. }
-                | Op::PopTile { .. }
+                Op::Asm { .. }
+                | Op::Move { .. }
+                | Op::Reduce { .. }
+                | Op::ReduceTile { .. }
                 | Op::Wmma { .. }
                 | Op::Barrier
                 | Op::If { .. }
@@ -59,14 +60,19 @@ impl Kernel {
                     // vectorize[devec(v,0), devec(v,1), ..., devec(v,n-1)] → v
                     if let Op::Devectorize { vec, idx: 0 } = self.at(ops[0]) {
                         let vec = *vec;
-                        if ops[1..].iter().enumerate().all(
-                            |(i, &sub)| matches!(self.at(sub), Op::Devectorize { vec: v, idx } if *v == vec && *idx == i + 1),
-                        ) {
+                        // only fold if the vector covers exactly n lanes (no widening of sub-vectors)
+                        let full_len =
+                            matches!(self.at(vec), Op::Vectorize { ops: v } if v.len() == ops.len());
+                        if full_len
+                            && ops.iter().skip(1).enumerate().all(
+                                |(i, &sub)| matches!(self.at(sub), Op::Devectorize { vec: v, idx } if *v == vec && *idx == i + 1),
+                            )
+                        {
                             self.remap(op_id, vec);
                         }
                     }
                 }
-                Op::Store { dst, x, .. } => {
+                Op::Store { dst, src: x, .. } => {
                     // If we store something that we just loaded, the store is pointless
                     if let Op::Load { src, .. } = *self.at(x)
                         && src == dst
@@ -268,18 +274,18 @@ impl Kernel {
     /// constant values and eliminating redundant computations.
     pub(crate) fn fold_acc(&mut self, define_id: OpId) {
         //println!("Folding acc {define_id}");
-        let Op::Define { len, .. } = self.ops[define_id].op else {
+        let Op::Define { ref shape, .. } = self.ops[define_id].op else {
             unreachable!()
         };
+        let mut latest_stores = vec![OpId::NULL; shape.iter().product::<Dim>() as usize];
         self.remove_op(define_id);
-        let mut latest_stores = vec![OpId::NULL; len as usize];
 
         let mut remaps = Map::default();
         let mut op_id = self.head;
         while !op_id.is_null() {
             let next = self.next_op(op_id);
             match *self.at(op_id) {
-                Op::Store { dst, x, index, layout } => {
+                Op::Store { dst, src: x, index, layout } => {
                     if layout != MemLayout::Scalar {
                         continue;
                     }
@@ -349,7 +355,7 @@ impl Kernel {
                         defines_stack.last_mut().unwrap().insert(op_id);
                     }
                 }
-                Op::Store { dst, .. } | Op::PushTile { dst, .. } => {
+                Op::Store { dst, .. } => {
                     for (i, defines_set) in defines_stack.iter().enumerate().take(defines_stack.len() - 1) {
                         if defines_set.contains(dst) {
                             for delete_flag in delete_stack.iter_mut().skip(i + 1) {
@@ -417,8 +423,6 @@ impl Kernel {
                     | Op::EndIf
                     | Op::Loop { .. }
                     | Op::EndLoop
-                    | Op::StoreView { .. }
-                    | Op::PushTile { .. }
             ) {
                 params.push(op_id);
             }

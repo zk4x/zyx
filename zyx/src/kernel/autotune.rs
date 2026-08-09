@@ -59,7 +59,7 @@ type OptConfigFn = fn(&Kernel, &DeviceInfo) -> (Optimization, usize);
 const AVAILABLE_OPTIMIZATIONS: [OptConfigFn; 9] = [
     Kernel::opt_split_global_to_local,
     |k, _| Kernel::opt_reassociate_commutative(k),
-    |k, _| Kernel::opt_thread_coarse(k),
+    |k, _| Kernel::opt_coarsen(k),
     |k, _| Kernel::opt_register_blocking(k),
     Kernel::opt_local_reduce,
     |k, _| Kernel::opt_split_loop(k),
@@ -257,7 +257,7 @@ impl Optimization {
                     return;
                 }
                 let (op_id, factor) = factors[config];
-                kernel.thread_coarse(op_id, factor);
+                kernel.coarsen(op_id, factor);
             }
             Optimization::RegisterBlocking { reduce_splits, thread_coarses } => {
                 kernel.apply_register_blocking(reduce_splits, thread_coarses, config);
@@ -364,10 +364,11 @@ impl Kernel {
         let mut op_id = self.head;
         while !op_id.is_null() {
             match self.ops[op_id].op {
-                Op::Define { dtype, scope: MemScope::Global, len, ro } => {
+                Op::Define { dtype, scope: MemScope::Global, ro, ref shape } => {
                     if buf_idx < buffers.len() && buffers[buf_idx] != PoolBufferId::NULL {
                         used_bufs.push(buffers[buf_idx]);
                     } else {
+                        let len: Dim = shape.iter().product();
                         let bytes_alloc = (dtype.bit_size() as Dim * (len + 1)) / 8;
                         let (buf, ev) = memory_pool.allocate(bytes_alloc)?;
                         used_bufs.push(buf);

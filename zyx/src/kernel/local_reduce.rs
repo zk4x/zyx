@@ -18,6 +18,7 @@ use crate::{
     backend::DeviceInfo,
     dtype::Constant,
     kernel::{BOp, IdxScope, Kernel, MemLayout, MemScope, Op, OpId},
+    shape::Dim, slab::SlabId,
 };
 
 impl Kernel {
@@ -119,8 +120,8 @@ impl Kernel {
         let reg_acc;
         let acc_dtype;
         loop {
-            if let Op::Define { dtype, scope, ro, len } = self.ops[op_id].op {
-                if scope != MemScope::Register || ro || len != 1 {
+            if let Op::Define { dtype, scope, ro, ref shape } = self.ops[op_id].op {
+                if scope != MemScope::Register || ro || shape.iter().product::<Dim>() != 1 {
                     return;
                 }
                 reg_acc = op_id;
@@ -143,7 +144,7 @@ impl Kernel {
         loop {
             match self.ops[op_id].op {
                 // Update store to use the lidx for indexing
-                Op::Store { dst, x, layout, .. } => {
+                Op::Store { dst, src: x, layout, .. } => {
                     debug_assert_eq!(layout, MemLayout::Scalar);
                     if dst == reg_acc {
                         reduce_bop_id = x;
@@ -188,8 +189,10 @@ impl Kernel {
             }
             None => self.head,
         };
-        let loc_acc =
-            self.insert_before(insert_at, Op::Define { dtype: acc_dtype, scope: MemScope::Local, ro: false, len: factor });
+        let loc_acc = self.insert_before(
+            insert_at,
+            Op::Define { dtype: acc_dtype, scope: MemScope::Local, ro: false, shape: vec![factor].into() },
+        );
         let lidx_len = self.insert_before(insert_at, Op::Const(Constant::idx(factor)));
         let lidx = self.insert_before(insert_at, Op::Index { len: lidx_len, axis: laxis, scope: IdxScope::Local });
 
@@ -202,7 +205,7 @@ impl Kernel {
         // Store to local accumulator
         let const_zero = self.insert_before(acc_load_id, Op::Const(Constant::idx(0)));
         let x = self.insert_before(acc_load_id, Op::Load { src: reg_acc, index: const_zero, layout: MemLayout::Scalar });
-        self.insert_before(acc_load_id, Op::Store { dst: loc_acc, x, index: lidx, layout: MemLayout::Scalar });
+        self.insert_before(acc_load_id, Op::Store { dst: loc_acc, src: x, index: lidx, layout: MemLayout::Scalar });
 
         // Sync memory
         self.insert_before(acc_load_id, Op::Barrier);
@@ -238,7 +241,7 @@ impl Kernel {
                 }
             }
             let bop_id = sum_x.unwrap();
-            self.insert_before(acc_load_id, Op::Store { dst: loc_acc, x: bop_id, index: lidx, layout: MemLayout::Scalar });
+            self.insert_before(acc_load_id, Op::Store { dst: loc_acc, src: bop_id, index: lidx, layout: MemLayout::Scalar });
 
             self.insert_before(acc_load_id, Op::EndIf);
             self.insert_before(acc_load_id, Op::Barrier);
@@ -250,7 +253,7 @@ impl Kernel {
         let condition = self.insert_before(acc_load_id, Op::Binary { x: lidx, y: const_zero, bop: BOp::Eq });
         self.insert_before(acc_load_id, Op::If { condition });
         let final_val = self.insert_before(acc_load_id, Op::Load { src: loc_acc, index: const_zero, layout: MemLayout::Scalar });
-        self.insert_before(acc_load_id, Op::Store { dst: reg_acc, x: final_val, index: const_zero, layout: MemLayout::Scalar });
+        self.insert_before(acc_load_id, Op::Store { dst: reg_acc, src: final_val, index: const_zero, layout: MemLayout::Scalar });
         self.insert_after(self.tail, Op::EndIf);
 
         self.verify();

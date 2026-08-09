@@ -14,7 +14,7 @@ use crate::{
     Map, Set,
     dtype::Constant,
     kernel::{BOp, IDX_T, IdxScope, Kernel, MemLayout, MemScope, MoveOp, Op, OpId},
-    shape::{self, Dim, UAxis},
+    shape::{self, Dim, UAxis}, slab::SlabId,
 };
 
 /// Extract the value of an index constant op.
@@ -30,17 +30,19 @@ impl Kernel {
     ///
     /// Movement ops (Reshape, Expand, Permute, Pad) are applied directly to axis indices,
     /// and LoadView/StoreView/ConstView are converted to Load/Store/Const in a single pass.
+    // TODO Currently it only works if each define has a single move op chain.
+    // Make it also work with move op chains when each define is accessed by multiple move ops.
     pub fn linearize(&mut self) {
         let has_gidx = self.ops.values().any(|n| matches!(n.op, Op::Index { scope: IdxScope::Group, .. }));
-        let has_view_moves = self.ops.values().any(|n| matches!(n.op, Op::LoadView(_) | Op::StoreView { .. } | Op::Move { .. }));
+        let has_moves = self.ops.values().any(|n| matches!(n.op, Op::Move { .. }));
 
-        match (has_gidx, has_view_moves) {
+        match (has_gidx, has_moves) {
+            (false, false) => return,
             (true, false) => return,
+            (false, true) => {}
             (true, true) => {
                 panic!("unfold_movement_ops: cannot have both explicit gidx and LoadView/StoreView/Move ops");
             }
-            (false, true) => {}
-            (false, false) => return,
         }
 
         debug_assert!({
@@ -48,7 +50,7 @@ impl Kernel {
             let mut stack: Vec<OpId> = Vec::new();
             let mut op_id = self.head;
             while !op_id.is_null() {
-                if matches!(self.ops[op_id].op, Op::Define { .. } | Op::Store { .. } | Op::StoreView { .. }) {
+                if matches!(self.ops[op_id].op, Op::Define { .. } | Op::Store { .. }) {
                     stack.push(op_id);
                 }
                 op_id = self.next_op(op_id);
@@ -101,10 +103,8 @@ impl Kernel {
             // index arithmetic must still land inside the loop.
             let anchor = open_loops.last().map(|&(_, a)| a).unwrap_or(start);
             match self.ops[op_id].op {
-                Op::Define { .. } => {}
-                Op::LoadView(ref x) => {
-                    let src = x.0;
-                    let dtype = x.1;
+                Op::Define { dtype, scope, ro, ref shape } => {
+                    let shape = shape.clone();
                     let view = views.remove(&op_id).unwrap();
                     let zero = self.insert_const_idx_before(anchor, 0u32);
                     // Padding condition: valid where index is within the source extent.
@@ -136,6 +136,7 @@ impl Kernel {
                             }
                         }
                     }
+                    let src = self.insert_before(anchor, Op::Define { dtype, scope, ro, shape });
                     if has_pad {
                         // Zero the offset where the padding condition fails, so the load
                         // always reads in-bounds, then zero the loaded value itself.
@@ -192,7 +193,6 @@ impl Kernel {
                                 match self.at(param) {
                                     &Op::Define { dtype, .. } | &Op::Cast { dtype, .. } => acc_dtype = Some(dtype),
                                     Op::Const(v) => acc_dtype = Some(v.dtype()),
-                                    Op::LoadView(v) => acc_dtype = Some(v.1),
                                     _ => {}
                                 }
                             }
@@ -221,11 +221,13 @@ impl Kernel {
                             _ => unreachable!(),
                         }),
                     );
-                    let acc = self
-                        .insert_before(loop_start, Op::Define { dtype: acc_dtype, scope: MemScope::Register, ro: false, len: 1 });
+                    let acc = self.insert_before(
+                        loop_start,
+                        Op::Define { dtype: acc_dtype, scope: MemScope::Register, ro: false, shape: vec![1].into() },
+                    );
                     self.insert_before(
                         loop_start,
-                        Op::Store { dst: acc, x: acc_init_id, index: const_zero, layout: MemLayout::Scalar },
+                        Op::Store { dst: acc, src: acc_init_id, index: const_zero, layout: MemLayout::Scalar },
                     );
 
                     // Open the reduce loops over the reduced dims, keeping the loop ids.
@@ -266,7 +268,7 @@ impl Kernel {
                     // Accumulate just before the reduce op (which is inside the loop).
                     let load_acc = self.insert_before(op_id, Op::Load { src: acc, index: const_zero, layout: MemLayout::Scalar });
                     let bin_acc = self.insert_before(op_id, Op::Binary { x, y: load_acc, bop: rop });
-                    self.insert_before(op_id, Op::Store { dst: acc, x: bin_acc, index: const_zero, layout: MemLayout::Scalar });
+                    self.insert_before(op_id, Op::Store { dst: acc, src: bin_acc, index: const_zero, layout: MemLayout::Scalar });
 
                     // Close the reduce loop.
                     for _ in 0..n_axes {
@@ -454,7 +456,9 @@ impl Kernel {
                     self.remap(op_id, x);
                     self.remove_op(op_id);
                 }
-                Op::StoreView { dst, src, dtype } => {
+                Op::Store { dst, src, index, layout } => {
+                    debug_assert_eq!(index, OpId::NULL);
+                    debug_assert_eq!(layout, MemLayout::Scalar);
                     let shape = self.shape_of(src);
                     let mut view = Vec::new();
                     let zero = self.insert_const_idx_before(start, 0u32);
@@ -479,7 +483,7 @@ impl Kernel {
                     for &(idx, st, _, _, _) in &view {
                         index = self.insert_before(start, Op::Mad { x: idx, y: st, z: index });
                     }
-                    self.ops[op_id].op = Op::Store { dst, x: src, index, layout: MemLayout::Scalar };
+                    self.ops[op_id].op = Op::Store { dst, src, index, layout: MemLayout::Scalar };
                     views.insert(src, view);
                 }
                 Op::Cast { x, .. } | Op::Unary { x, .. } => {
@@ -531,13 +535,13 @@ impl Kernel {
         let mut visited = Set::default();
         while let Some(param) = params.pop() {
             if visited.insert(param) {
-                match self.at(param) {
+                match self.ops[param].op {
                     Op::Const(_) => return vec![1],
-                    Op::LoadView(x) => {
-                        return x.2[x.2.len() - n_reduce_axes..].into();
+                    Op::Define { ref shape, .. } => {
+                        return shape[shape.len() - n_reduce_axes..].into();
                     }
                     Op::Reduce { n_axes, .. } => n_reduce_axes += n_axes,
-                    Op::Move { mop, .. } => match mop.as_ref() {
+                    Op::Move { ref mop, .. } => match mop.as_ref() {
                         MoveOp::Reshape { shape, .. }
                         | MoveOp::Expand { shape }
                         | MoveOp::Permute { shape, .. }

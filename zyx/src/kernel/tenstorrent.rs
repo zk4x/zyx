@@ -7,7 +7,7 @@ use crate::{
     Map, Set,
     dtype::Constant,
     kernel::{BOp, IDX_T, IdxScope, Kernel, MemLayout, MemScope, Op, OpId},
-    shape::Dim,
+    shape::Dim, slab::SlabId,
 };
 
 fn gather_deps(kernel: &Kernel, seeds: &[OpId]) -> Set<OpId> {
@@ -231,7 +231,7 @@ impl Kernel {
             }
             let local = self.insert_after(
                 last_global,
-                Op::Define { dtype: self.dtype(src), scope: MemScope::Circular, ro: false, len: 1024 },
+                Op::Define { dtype: self.dtype(src), scope: MemScope::Circular, ro: false, shape: vec![32, 32].into() },
             );
             last_global = local;
             src_to_local.insert(src, local);
@@ -248,7 +248,7 @@ impl Kernel {
                     self.insert_before(first_load, Op::Load { src, index: first_global_idx, layout: MemLayout::Scalar });
                 self.insert_before(
                     first_load,
-                    Op::Store { dst: local, x: global_load, index: combined_idx, layout: MemLayout::Scalar },
+                    Op::Store { dst: local, src: global_load, index: combined_idx, layout: MemLayout::Scalar },
                 );
             }
         }
@@ -265,7 +265,7 @@ impl Kernel {
             let mut stores = Vec::new();
             let mut op_id = self.head;
             while !op_id.is_null() {
-                if let Op::Store { dst, x, index, layout: MemLayout::Scalar } = self.at(op_id)
+                if let Op::Store { dst, src: x, index, layout: MemLayout::Scalar } = self.at(op_id)
                     && matches!(self.at(*dst), Op::Define { scope: MemScope::Global, .. })
                 {
                     stores.push((op_id, *dst, *x, *index));
@@ -286,8 +286,10 @@ impl Kernel {
             if dst_to_local.contains_key(&dst) {
                 continue;
             }
-            let local = self
-                .insert_after(last_local, Op::Define { dtype: self.dtype(dst), scope: MemScope::Circular, ro: false, len: 1024 });
+            let local = self.insert_after(
+                last_local,
+                Op::Define { dtype: self.dtype(dst), scope: MemScope::Circular, ro: false, shape: vec![32, 32].into() },
+            );
             last_local = local;
             dst_to_local.insert(dst, local);
         }
@@ -297,7 +299,7 @@ impl Kernel {
         for &(store_op, dst, val, _) in &global_stores {
             let local = dst_to_local[&dst];
             self.ops[store_op].op =
-                Op::Store { dst: local, x: val, index: zero, layout: MemLayout::Tile { x: 32, y: 32, stride: 32 } };
+                Op::Store { dst: local, src: val, index: zero, layout: MemLayout::Tile { x: 32, y: 32, stride: 32 } };
         }
 
         // Insert barrier after the last store, then scalar loads + global stores
@@ -312,7 +314,7 @@ impl Kernel {
                 self.insert_after(insert_point, Op::Load { src: local, index: combined_idx, layout: MemLayout::Scalar });
             insert_point = scalar_load;
             let global_store =
-                self.insert_after(insert_point, Op::Store { dst, x: scalar_load, index: store_idx, layout: MemLayout::Scalar });
+                self.insert_after(insert_point, Op::Store { dst, src: scalar_load, index: store_idx, layout: MemLayout::Scalar });
             insert_point = global_store;
         }
 
@@ -638,7 +640,7 @@ impl Kernel {
             }
             let cb = self.insert_after(
                 last_global,
-                Op::Define { dtype: self.dtype(src), scope: MemScope::Circular, ro: false, len: 1024 },
+                Op::Define { dtype: self.dtype(src), scope: MemScope::Circular, ro: false, shape: vec![32, 32].into() },
             );
             last_global = cb;
             src_to_cb.insert(src, cb);
@@ -754,17 +756,17 @@ impl Kernel {
         debug_assert!(!accumulator.is_null());
 
         // Convert accumulator to register tile, length 1024
-        if let Op::Define { len, .. } = &mut self.ops[accumulator].op {
-            *len = 1024;
+        if let Op::Define { shape, .. } = &mut self.ops[accumulator].op {
+            *shape = vec![32, 32].into();
         }
 
         // Change accumulator store and load to tiled layout
         let mut op_id = self.next_op(loop_id);
         while op_id != endloop_id {
             match self.at(op_id) {
-                Op::Store { dst, x, index, layout } if *dst == accumulator => {
+                Op::Store { dst, src: x, index, layout } if *dst == accumulator => {
                     self.ops[op_id].op =
-                        Op::Store { dst: *dst, x: *x, index: *index, layout: MemLayout::Tile { x: 32, y: 32, stride: 32 } };
+                        Op::Store { dst: *dst, src: *x, index: *index, layout: MemLayout::Tile { x: 32, y: 32, stride: 32 } };
                 }
                 Op::Load { src, index, layout } if *src == accumulator => {
                     self.ops[op_id].op =
@@ -779,7 +781,7 @@ impl Kernel {
         let mut accumulation_bop = BOp::Add;
         let mut op_id = self.next_op(loop_id);
         while op_id != endloop_id {
-            if let Op::Store { dst, x, .. } = self.at(op_id)
+            if let Op::Store { dst, src: x, .. } = self.at(op_id)
                 && *dst == accumulator
             {
                 if let Op::Binary { bop, .. } = self.at(*x) {

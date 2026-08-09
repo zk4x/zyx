@@ -33,7 +33,7 @@ use crate::{
     dtype::Constant,
     error::{BackendError, ErrorStatus},
     graph::{ClassId, EClass, ExecPlan, Graph, GraphId, Node, NodeData, NodeId, plan::drain_events_for_buf},
-    kernel::{BOp, DeviceId, Kernel, MemScope, MoveOp, Op, OpId, UOp, autotune::OptSeq},
+    kernel::{BOp, DeviceId, Kernel, MemLayout, MemScope, MoveOp, Op, OpId, UOp, autotune::OptSeq},
     rng::Rng,
     shape::{Dim, UAxis},
     slab::{Slab, SlabId},
@@ -424,7 +424,7 @@ impl Runtime {
 
         self.tensors[tid].class_id = ClassId::NULL;
         self.tensors[tid].graph_id = GraphId::NULL;
-        let shape: Vec<Dim> = self.shape(tid).into();
+        let shape: Box<[Dim]> = self.shape(tid).into();
         let dtype = self.dtype(tid);
         let kernel_id = self.kernels.push(KernelData {
             outputs: vec![tid; handles],
@@ -432,9 +432,7 @@ impl Runtime {
             stores: Vec::new(),
             kernel: Kernel::new(DeviceId::AUTO),
         });
-        let len = shape.iter().product();
-        let op_id = self.kernels[kernel_id].kernel.push_back(Op::Define { dtype, scope: MemScope::Global, ro: true, len });
-        let op_id = self.kernels[kernel_id].kernel.push_back(Op::LoadView(Box::new((op_id, dtype, shape))));
+        let op_id = self.kernels[kernel_id].kernel.push_back(Op::Define { dtype, scope: MemScope::Global, ro: true, shape });
         self.kernels[kernel_id].loads.push(tid);
         self.tensors[tid].kernel_id = kernel_id;
         self.tensors[tid].op_id = op_id;
@@ -617,11 +615,9 @@ impl Runtime {
     }
 
     pub fn new_eager_tensor(&mut self, shape: Vec<Dim>, dtype: DType) -> TensorId {
-        let len = shape.iter().product();
         let shape_id = self.push_shape(shape.clone());
         let mut kernel = Kernel::new(DeviceId::AUTO);
-        let op_id = kernel.push_back(Op::Define { dtype, scope: MemScope::Global, ro: true, len });
-        let op_id = kernel.push_back(Op::LoadView(Box::new((op_id, dtype, shape))));
+        let op_id = kernel.push_back(Op::Define { dtype, scope: MemScope::Global, ro: true, shape: shape.into() });
         let kernel_id = self.kernels.push(KernelData { outputs: Vec::new(), loads: Vec::new(), stores: Vec::new(), kernel });
         let tid = self.tensors.push(TensorData {
             shape_id,
@@ -776,16 +772,16 @@ impl Runtime {
                 if !relevant.insert(oid) {
                     continue;
                 }
-                match kernel.at(oid) {
-                    Op::LoadView(_) | Op::Const(_) => {}
-                    Op::Unary { x, .. } => stack.push(*x),
+                match kernel.ops[oid].op {
+                    Op::Define { .. } | Op::Const(_) => {}
+                    Op::Unary { x, .. } => stack.push(x),
                     Op::Binary { x, y, .. } => {
-                        stack.push(*x);
-                        stack.push(*y);
+                        stack.push(x);
+                        stack.push(y);
                     }
-                    Op::Cast { x, .. } => stack.push(*x),
-                    Op::Reduce { x, .. } => stack.push(*x),
-                    Op::Move { x, .. } => stack.push(*x),
+                    Op::Cast { x, .. } => stack.push(x),
+                    Op::Reduce { x, .. } => stack.push(x),
+                    Op::Move { x, .. } => stack.push(x),
                     _ => unreachable!(),
                 }
             }
@@ -794,15 +790,15 @@ impl Runtime {
 
         let loads = self.kernels[kernel_id].loads.clone();
         let mut op_to_class: Map<OpId, ClassId> = Map::default();
-        let mut load_idx = 0;
+        let mut define_idx = 0;
         let mut op_id = self.kernels[kernel_id].kernel.head;
         while !op_id.is_null() {
             if relevant.contains(&op_id) {
                 let class_id = match self.kernels[kernel_id].kernel.ops[op_id].op {
-                    Op::LoadView(ref view) => {
-                        let load_tid = loads[load_idx];
+                    Op::Define { ref shape, .. } => {
+                        let load_tid = loads[define_idx];
                         let shape_id = self.tensors[load_tid].shape_id;
-                        debug_assert_eq!(view.2, self.shapes[shape_id], "LoadView shape mismatch");
+                        debug_assert_eq!(shape.to_vec(), self.shapes[shape_id], "define shape mismatch");
                         if !self.buffer_map.contains_key(&load_tid) {
                             let pending = if self.tensors[load_tid].class_id.is_null() {
                                 self.tensors[load_tid].depends_on
@@ -964,8 +960,8 @@ impl Runtime {
                 op_to_class.insert(op_id, class_id);
             }
 
-            if matches!(self.kernels[kernel_id].kernel.at(op_id), Op::LoadView(_)) {
-                load_idx += 1;
+            if matches!(self.kernels[kernel_id].kernel.at(op_id), Op::Define { .. }) {
+                define_idx += 1;
             }
             op_id = self.kernels[kernel_id].kernel.next_op(op_id);
         }
@@ -1300,7 +1296,7 @@ impl Runtime {
             // view-only reshape.
             if let Some(&buf_id) = self.buffer_map.get(&x) {
                 let mut kernel = Kernel::new(DeviceId::AUTO);
-                let op_id = kernel.load_contiguous(dtype, &shape);
+                let op_id = kernel.define(dtype, MemScope::Global, true, &shape);
                 let kernel_id =
                     self.kernels.push(KernelData { outputs: Vec::new(), loads: Vec::new(), stores: Vec::new(), kernel });
                 let tid = self.tensors.push(TensorData {
@@ -1682,7 +1678,7 @@ impl Runtime {
             ));
         }
         for op in self.kernels[dst_kid].kernel.ops.values() {
-            if !matches!(op.op, Op::Define { .. } | Op::LoadView(_) | Op::Move { .. } | Op::Const(_)) {
+            if !matches!(op.op, Op::Define { .. } | Op::Move { .. } | Op::Const(_)) {
                 return Err(ZyxError::ShapeError(
                     format!("assign: dst kernel {dst_kid:?} has unsupported op {:?}, only movement ops allowed", op.op).into(),
                 ));
@@ -1720,9 +1716,6 @@ impl Runtime {
                 Op::Move { x, .. } => {
                     dst_define = x;
                 }
-                Op::LoadView(ref x) => {
-                    dst_define = x.0;
-                }
                 Op::Define { .. } => {
                     break;
                 }
@@ -1742,24 +1735,11 @@ impl Runtime {
                     let id = self.kernels[src_kid].kernel.push_back(Op::Const(value));
                     op_map.insert(op_id, id);
                 }
-                Op::Define { dtype, scope, mut ro, len } => {
+                Op::Define { dtype, scope, mut ro, ref shape } => {
                     if op_id == dst_define {
                         ro = false;
                     }
-                    let id = self.kernels[src_kid].kernel.push_back(Op::Define { dtype, scope, ro, len });
-                    println!("add define at op_id={op_id} id={id}");
-                    op_map.insert(op_id, id);
-                }
-                Op::LoadView(ref x) => {
-                    println!("load_view={x:?}");
-                    let (x_id, dtype, shape) = x.as_ref().clone();
-                    if x_id == dst_define {
-                        println!("dst_define found at op_id={op_id}");
-                        op_id = kernel.next_op(op_id);
-                        continue;
-                    }
-                    let x_id = op_map[&x_id];
-                    let id = self.kernels[src_kid].kernel.push_back(Op::LoadView(Box::new((x_id, dtype, shape))));
+                    let id = self.kernels[src_kid].kernel.push_back(Op::Define { dtype, scope, ro, shape: shape.clone() });
                     op_map.insert(op_id, id);
                 }
                 Op::Move { x, ref mop } => {
@@ -1769,7 +1749,6 @@ impl Runtime {
                         // this is the move on the load
                         op_map[&dst_define]
                     };
-                    println!("move x={x}");
                     let id = self.kernels[src_kid].kernel.push_back(Op::Move { x, mop: mop.clone() });
                     op_map.insert(op_id, id);
                 }
@@ -1780,7 +1759,7 @@ impl Runtime {
 
         let dst_op = op_map.get(&dst_op).copied().unwrap_or(op_map[&dst_define]);
         // Store src's value into dst's base buffer through the replayed chain.
-        self.kernels[src_kid].kernel.store_contiguous(dst_op, src_op, src_dtype);
+        self.kernels[src_kid].kernel.store(dst_op, src_op, OpId::NULL, MemLayout::Scalar);
         self.kernels[src_kid].stores.push(dst_org);
 
         // The store writes IN PLACE into dst_org's existing buffer, which
@@ -2033,9 +2012,9 @@ impl Runtime {
             debug_assert!(!self.kernels[kid].loads.contains(&x), "kernel {kid:?} both loads and stores tid {x}");
 
             let dtype = self.tensors[x].dtype;
-            let len = self.shape(x).iter().product();
-            let dst_id = self.kernels[kid].kernel.define(dtype, MemScope::Global, false, len);
-            self.kernels[kid].kernel.store_contiguous(dst_id, op_id, dtype);
+            let shape = &self.shapes[self.tensors[x].shape_id];
+            let dst_id = self.kernels[kid].kernel.define(dtype, MemScope::Global, false, shape);
+            self.kernels[kid].kernel.store(dst_id, op_id, OpId::NULL, MemLayout::Scalar);
             self.kernels[kid].stores.push(x);
             kid
         } else {
@@ -2048,7 +2027,7 @@ impl Runtime {
         let dtype = self.tensors[x].dtype;
         let mut kernel = Kernel::new(DeviceId::AUTO);
         let shape = self.shape(x);
-        let load_op_id = kernel.load_contiguous(dtype, shape);
+        let load_op_id = kernel.define(dtype, MemScope::Global, true, shape);
         let load_kid = self.kernels.push(KernelData { outputs: vec![x; count], loads: vec![x], stores: Vec::new(), kernel });
         self.tensors[x].kernel_id = load_kid;
         self.tensors[x].op_id = load_op_id;

@@ -3,7 +3,7 @@ use std::collections::BTreeSet;
 use crate::{
     Map, Set,
     graph::{ClassId, Graph, JitKernelData, JitKernelId, Node},
-    kernel::{DeviceId, Kernel, MoveOp, Op, OpId},
+    kernel::{DeviceId, Kernel, MemLayout, MemScope, MoveOp, Op, OpId},
     runtime::ShapeId,
     shape::{Dim, UAxis},
     slab::{Slab, SlabId},
@@ -384,8 +384,8 @@ impl Graph {
 
     fn new_load_kernel(&mut self, cid: ClassId, shapes: &Slab<ShapeId, Vec<Dim>>, rc: u32) -> (JitKernelId, OpId) {
         let mut kernel = Kernel::new(DeviceId::NULL);
-        let shape: Vec<Dim> = shapes[self.classes[cid].shape].clone();
-        let op_id = kernel.load_contiguous(self.classes[cid].dtype, &shape);
+        let shape = &shapes[self.classes[cid].shape];
+        let op_id = kernel.define(self.classes[cid].dtype, MemScope::Global, true, &shape);
         let kid = self.jit_kernels.push(JitKernelData {
             kernel,
             outputs: vec![cid; rc as usize],
@@ -408,11 +408,11 @@ impl Graph {
         //println!("add store cid={cid:?} kid={kid:?} op_id={op_id:?} rc={}", rcs.get(&cid).unwrap());
         //println!("outputs={:?}", self.ekernels[kid].outputs);
 
-        let len = shapes[self.classes[cid].shape].iter().product();
-        let dtype = self.classes[cid].dtype;
         if !self.jit_kernels[kid].loads.contains(&cid) {
-            let dst = self.jit_kernels[kid].kernel.define(dtype, crate::kernel::MemScope::Global, false, len);
-            self.jit_kernels[kid].kernel.store_contiguous(dst, op_id, dtype);
+            let dtype = self.classes[cid].dtype;
+            let shape = &shapes[self.classes[cid].shape];
+            let dst = self.jit_kernels[kid].kernel.define(dtype, MemScope::Global, false, shape);
+            self.jit_kernels[kid].kernel.store(dst, op_id, OpId::NULL, MemLayout::Scalar);
             self.jit_kernels[kid].stores.push(cid);
             visited.remove(&cid);
         }

@@ -305,7 +305,7 @@ impl Kernel {
         let mut op_id = acc_id;
         let acc_init;
         loop {
-            if let Op::Store { dst, x, .. } = self.ops[op_id].op
+            if let Op::Store { dst, src: x, .. } = self.ops[op_id].op
                 && dst == acc_id
             {
                 acc_init = x;
@@ -361,7 +361,7 @@ impl Kernel {
             {
                 // TODO debug assert index is const zero
                 map.insert(this_id, vec![acc_init; factor as usize - 1]);
-            } else if let Op::Store { dst, x, index, layout: MemLayout::Scalar } = self.ops[this_id].op
+            } else if let Op::Store { dst, src: x, index, layout: MemLayout::Scalar } = self.ops[this_id].op
                 && dst == acc_id
             {
                 let Op::Binary { bop, .. } = self.ops[x].op else {
@@ -379,7 +379,7 @@ impl Kernel {
                     };
                     carry = self.insert_before(op_id, Op::Binary { x, y: carry, bop });
                 }
-                self.insert_before(op_id, Op::Store { dst, x: carry, index, layout: MemLayout::Scalar });
+                self.insert_before(op_id, Op::Store { dst, src: carry, index, layout: MemLayout::Scalar });
             } else {
                 let mut new_ones = Vec::with_capacity(factor as usize - 1);
                 for i in 1..factor {

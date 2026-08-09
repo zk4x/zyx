@@ -53,21 +53,19 @@ impl Kernel {
                 Op::ReduceTile { .. }
                 | Op::MatmulTile { .. }
                 | Op::TransposeTile { .. }
-                | Op::LoadView { .. }
-                | Op::StoreView { .. }
                 | Op::Reduce { .. }
-                | Op::PushTile { .. }
-                | Op::PopTile { .. }
                 | Op::Move { .. } => {
                     return Err(BackendError {
                         status: ErrorStatus::KernelCompilation,
                         context: "OpenCL codegen: unexpected kernel op (should be unfolded)".into(),
                     });
                 }
+                Op::Asm { .. } => todo!(),
                 Op::Const(x) => {
                     constants.insert(op_id, x);
                 }
-                Op::Define { dtype, scope, ro, len } => {
+                Op::Define { dtype, scope, ro, ref shape } => {
+                    let len: u64 = shape.iter().product();
                     if scope == MemScope::Register {
                         _ = writeln!(
                             source,
@@ -102,7 +100,7 @@ impl Kernel {
                         }
                     }
                 }
-                Op::Store { dst, x: src, index, layout } => {
+                Op::Store { dst, src, index, layout } => {
                     let idx = get_var(index, &constants, &indices, &reg_map, &mut registers, loop_id)?;
                     let x = get_var(src, &constants, &indices, &reg_map, &mut registers, loop_id)?;
                     match layout {
@@ -205,7 +203,7 @@ impl Kernel {
                 Op::Vectorize { ref ops } => {
                     let dtype = dtypes[&op_id];
                     let mut vars = String::new();
-                    for &x in ops {
+                    for &x in ops.iter() {
                         let x = get_var(x, &constants, &indices, &reg_map, &mut registers, loop_id)?;
                         _ = write!(vars, "{x}, ");
                     }

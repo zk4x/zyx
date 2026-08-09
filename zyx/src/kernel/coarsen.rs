@@ -68,7 +68,7 @@ use crate::{
 // then rewritten to just `lidx`, and `Const(i)` becomes `Mul(Const(i), V)`.
 
 impl Kernel {
-    pub(crate) fn opt_thread_coarse(&self) -> (Optimization, usize) {
+    pub(crate) fn opt_coarsen(&self) -> (Optimization, usize) {
         #[cfg(feature = "time")]
         let _timer = crate::Timer::new("opt_upcast");
         let mut factors = Vec::new();
@@ -92,7 +92,7 @@ impl Kernel {
     /// Thread coarsening and register blocking optimization.
     ///
     /// Coarsens threads and applies register blocking for tiled reductions.
-    pub fn thread_coarse(&mut self, gidx_id: OpId, factor: u64) {
+    pub fn coarsen(&mut self, gidx_id: OpId, factor: u64) {
         #[cfg(feature = "time")]
         let _timer = crate::Timer::new("thread_coarse");
         let Op::Index { len, axis, scope: IdxScope::Group } = self.ops[gidx_id].op else {
@@ -162,12 +162,12 @@ impl Kernel {
         while !op_id.is_null() {
             let next_op_id = self.next_op(op_id);
             match self.ops[op_id].op {
-                Op::Define { dtype, scope: MemScope::Register, ro, len } => {
-                    self.ops[op_id].op = Op::Define { dtype, scope: MemScope::Register, ro, len: len * factor };
+                Op::Define { scope: MemScope::Register, ref mut shape, .. } => {
+                    shape[0] *= factor;
                     acc_defines.insert(op_id);
                 }
                 Op::Index { .. } | Op::Loop { .. } | Op::EndLoop | Op::If { .. } | Op::EndIf | Op::Barrier => {}
-                Op::Store { dst, x, index, layout } => {
+                Op::Store { dst, src: x, index, layout } => {
                     let mut ids = Vec::with_capacity((factor - 1) as usize);
                     let mut id = op_id;
                     if acc_defines.contains(&dst) {
@@ -177,11 +177,11 @@ impl Kernel {
                                 x = remap[i];
                             }
                             let index = self.insert_before(id, Op::Mad { x: index, y: const_factor, z: offsets[i] });
-                            id = self.insert_after(index, Op::Store { dst, x, index, layout });
+                            id = self.insert_after(index, Op::Store { dst, src: x, index, layout });
                             ids.push(id);
                         }
                         let index = self.insert_before(op_id, Op::Binary { x: index, y: const_factor, bop: BOp::Mul });
-                        self.ops[op_id].op = Op::Store { dst, x, index, layout };
+                        self.ops[op_id].op = Op::Store { dst, src: x, index, layout };
                     } else {
                         for i in 0..(factor - 1) as usize {
                             let mut x = x;
@@ -192,7 +192,7 @@ impl Kernel {
                             if let Some(remap) = remaps.get(&index) {
                                 index = remap[i];
                             }
-                            id = self.insert_after(id, Op::Store { dst, x, index, layout });
+                            id = self.insert_after(id, Op::Store { dst, src: x, index, layout });
                             ids.push(id);
                         }
                     }
@@ -336,7 +336,7 @@ impl Kernel {
             let factor_idx = global_indices[idx];
             let factor = if factor_idx == 0 { 1 } else { factors[factor_idx - 1] };
             if factor > 1 {
-                self.thread_coarse(*op_id, factor);
+                self.coarsen(*op_id, factor);
             }
         }
     }

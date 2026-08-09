@@ -78,6 +78,7 @@ mod shape;
 mod slab;
 mod tape;
 mod tensor;
+mod types;
 
 type Set<T> = std::collections::HashSet<T, std::hash::BuildHasherDefault<crate::hashers::FHasher>>;
 type Map<K, V> = std::collections::HashMap<K, V, std::hash::BuildHasherDefault<crate::hashers::FHasher>>;

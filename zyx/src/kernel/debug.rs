@@ -79,16 +79,6 @@ impl Kernel {
                 op_id
             };
             match *self.at(op_id) {
-                Op::LoadView(ref x) => {
-                    let (x, dtype, view) = x.as_ref();
-                    dtypes.insert(op_id, *dtype);
-                    println!("{indent}r{out_id}{grey}: {dtype}{reset} = {cyan}load{reset} r{x} sh={view:?}");
-                }
-                Op::StoreView { dst, src, dtype } => {
-                    let src = id_map[&src];
-                    dtypes.insert(op_id, dtype);
-                    println!("{indent}{cyan}store{reset} r{dst} <- r{src}");
-                }
                 Op::Reduce { x, rop, n_axes, .. } => {
                     let dtype = dtypes[&x];
                     dtypes.insert(op_id, dtype);
@@ -136,28 +126,17 @@ impl Kernel {
                     let x = id_map[&x];
                     println!("{indent}r{out_id}{grey}: {dtype}{reset} = {red}transpose_tile{reset} r{x}");
                 }
-                Op::Define { dtype, scope, ro, len, .. } => {
+                Op::Define { dtype, scope, ro, ref shape } => {
                     dtypes.insert(op_id, dtype);
                     let ro = if ro { "" } else { "mut " };
-                    println!("{indent}{red}r{out_id}{reset}{grey}: {dtype}{reset} = {yellow}def {ro}{reset}{scope}, len={len}");
+                    println!(
+                        "{indent}{red}r{out_id}{reset}{grey}: {dtype}{reset} = {yellow}def {ro}{reset}{scope}, sh={shape:?}"
+                    );
                 }
                 Op::Const(value) => {
                     let dtype = value.dtype();
                     dtypes.insert(op_id, dtype);
                     println!("{indent}r{out_id}{grey}: {dtype}{reset} = {magenta}{value}{reset}");
-                }
-                Op::PushTile { dst, x } => {
-                    let dtype = dtypes[&x];
-                    dtypes.insert(op_id, dtype);
-                    let dst = id_map.get(&dst).copied().unwrap_or(OpId::NULL);
-                    let x = id_map.get(&x).copied().unwrap_or(OpId::NULL);
-                    println!("{indent}{red}push_tile{reset} cb{dst} = r{x}");
-                }
-                Op::PopTile { src: cb } => {
-                    let dtype = dtypes[&cb];
-                    dtypes.insert(op_id, dtype);
-                    let src = id_map.get(&cb).copied().unwrap_or(OpId::NULL);
-                    println!("{indent}r{out_id}{grey}: {dtype}{reset} = {red}pop_tile{reset} cb{src}");
                 }
                 Op::Load { src, index, layout } => {
                     let dtype = dtypes[&src];
@@ -169,7 +148,7 @@ impl Kernel {
                         "{indent}r{out_id}{grey}: {dtype}{reset} = {red}r{src}{reset}[r{index} @ {layout}]    // {lb}..={ub} {green}load{reset}"
                     );
                 }
-                Op::Store { dst, x, index, layout } => {
+                Op::Store { dst, src: x, index, layout } => {
                     let dtype = dtypes[&x];
                     dtypes.insert(op_id, dtype);
                     let (lb, ub) = bounds.get(&index).copied().unwrap_or((0, 0));
@@ -303,6 +282,12 @@ impl Kernel {
                         indent.pop();
                     }
                     println!("{indent}}}");
+                }
+                Op::Asm { ref asm, ref ops } => {
+                    let dtype = dtypes[&ops[0]];
+                    dtypes.insert(op_id, dtype);
+                    let ops: Vec<OpId> = ops.iter().map(|x| id_map.get(x).copied().unwrap_or(OpId::NULL)).collect();
+                    println!("{indent}r{out_id}{grey}: {dtype}{reset} = {orange}asm{reset} {asm:?} {ops:?}");
                 }
                 Op::Vectorize { ref ops } => {
                     let dtype = dtypes[&ops[0]];

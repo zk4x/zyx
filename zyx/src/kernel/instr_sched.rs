@@ -17,7 +17,7 @@ use std::collections::BinaryHeap;
 
 use crate::{
     Map,
-    kernel::{Kernel, MemScope, Op, OpId},
+    kernel::{Kernel, MemScope, Op, OpId}, slab::SlabId,
 };
 
 impl Kernel {
@@ -158,13 +158,6 @@ impl Kernel {
                 | Op::Move { x, .. }
                 | Op::Reduce { x, .. }
                 | Op::ReduceTile { x, .. } => add_param!(x),
-                Op::PushTile { dst, x } => {
-                    add_param!(dst);
-                    add_param!(x);
-                }
-                Op::PopTile { src: cb } => {
-                    add_param!(cb);
-                }
                 Op::MatmulTile { x, y } => {
                     add_param!(x);
                     add_param!(y);
@@ -174,9 +167,8 @@ impl Kernel {
                     add_param!(x);
                     add_param!(y);
                 }
-                Op::Const(_) | Op::Define { .. } | Op::Index { .. } | Op::EndLoop | Op::Barrier | Op::EndIf | Op::LoadView(_) => {
-                }
-                Op::Store { dst, x, index, .. } => {
+                Op::Const(_) | Op::Define { .. } | Op::Index { .. } | Op::EndLoop | Op::Barrier | Op::EndIf => {}
+                Op::Store { dst, src: x, index, .. } => {
                     add_param!(dst);
                     add_param!(x);
                     add_param!(index);
@@ -197,13 +189,17 @@ impl Kernel {
                     add_param!(b);
                     add_param!(c);
                 }
+                Op::Asm { ops, .. } => {
+                    for &p in ops.iter() {
+                        add_param!(p);
+                    }
+                }
                 Op::Vectorize { ops } => {
-                    for &p in ops {
+                    for &p in ops.iter() {
                         add_param!(p);
                     }
                 }
                 Op::Devectorize { vec, .. } => add_param!(vec),
-                Op::StoreView { src, .. } => add_param!(src),
             }
             n_params[i] = count;
         }
@@ -416,10 +412,10 @@ mod tests {
     #[test]
     fn test_instruction_schedule_orders_defines() {
         let mut k = Kernel::new(DeviceId::AUTO);
-        let _local_rw = k.define(DType::F32, MemScope::Local, false, 4);
-        let global_ro = k.define(DType::F32, MemScope::Global, true, 4);
-        let _local_ro = k.define(DType::F32, MemScope::Local, true, 4);
-        let global_rw = k.define(DType::F32, MemScope::Global, false, 4);
+        let _local_rw = k.define(DType::F32, MemScope::Local, false, &[4]);
+        let global_ro = k.define(DType::F32, MemScope::Global, true, &[4]);
+        let _local_ro = k.define(DType::F32, MemScope::Local, true, &[4]);
+        let global_rw = k.define(DType::F32, MemScope::Global, false, &[4]);
 
         let gidx = k.group_index(0, 4);
         let c = k.const_val(1.0f32);
@@ -449,8 +445,8 @@ mod tests {
     #[test]
     fn test_instruction_schedule_keeps_stores_in_loops() {
         let mut k = Kernel::new(DeviceId::AUTO);
-        let src = k.define(DType::F32, MemScope::Global, true, 4);
-        let dst = k.define(DType::F32, MemScope::Global, false, 4);
+        let src = k.define(DType::F32, MemScope::Global, true, &[4]);
+        let dst = k.define(DType::F32, MemScope::Global, false, &[4]);
 
         let len = k.const_idx(4u32);
         let loop_id = k.loop_(len);
@@ -472,7 +468,7 @@ mod tests {
     #[test]
     fn test_instruction_schedule_keeps_memory_order_per_define() {
         let mut k = Kernel::new(DeviceId::AUTO);
-        let buf = k.define(DType::F32, MemScope::Global, false, 4);
+        let buf = k.define(DType::F32, MemScope::Global, false, &[4]);
 
         let gidx = k.group_index(0, 4);
         let val = k.const_val(1.0f32);
@@ -493,7 +489,7 @@ mod tests {
     #[test]
     fn test_instruction_schedule_keeps_stores_after_barriers() {
         let mut k = Kernel::new(DeviceId::AUTO);
-        let buf = k.define(DType::F32, MemScope::Local, false, 4);
+        let buf = k.define(DType::F32, MemScope::Local, false, &[4]);
 
         let gidx = k.group_index(0, 4);
         let val = k.const_val(1.0f32);
@@ -512,8 +508,8 @@ mod tests {
     #[test]
     fn test_instruction_schedule_topological() {
         let mut k = Kernel::new(DeviceId::AUTO);
-        let src = k.define(DType::F32, MemScope::Global, true, 4);
-        let dst = k.define(DType::F32, MemScope::Global, false, 4);
+        let src = k.define(DType::F32, MemScope::Global, true, &[4]);
+        let dst = k.define(DType::F32, MemScope::Global, false, &[4]);
 
         let gidx = k.group_index(0, 4);
         let a = k.load(src, gidx, MemLayout::Scalar);
@@ -532,9 +528,9 @@ mod tests {
     #[test]
     fn test_instruction_schedule_never_sinks_across_loops() {
         let mut k = Kernel::new(DeviceId::AUTO);
-        let src = k.define(DType::F32, MemScope::Global, true, 4);
-        let dst = k.define(DType::F32, MemScope::Global, false, 4);
-        let local = k.define(DType::F32, MemScope::Local, false, 4);
+        let src = k.define(DType::F32, MemScope::Global, true, &[4]);
+        let dst = k.define(DType::F32, MemScope::Global, false, &[4]);
+        let local = k.define(DType::F32, MemScope::Local, false, &[4]);
 
         let c0 = k.const_idx(0u32);
         let c5 = k.const_idx(5u32);
@@ -566,9 +562,9 @@ mod tests {
     #[test]
     fn _bench_instruction_schedule_large_kernel() {
         let mut k = Kernel::new(DeviceId::AUTO);
-        let a = k.define(DType::F32, MemScope::Global, true, 1024);
-        let b = k.define(DType::F32, MemScope::Global, true, 1024);
-        let out = k.define(DType::F32, MemScope::Global, false, 1024);
+        let a = k.define(DType::F32, MemScope::Global, true, &[1024]);
+        let b = k.define(DType::F32, MemScope::Global, true, &[1024]);
+        let out = k.define(DType::F32, MemScope::Global, false, &[1024]);
         let gidx = k.group_index(0, 1024);
         let mut acc = k.load(a, gidx, MemLayout::Scalar);
         for _ in 0..200 {

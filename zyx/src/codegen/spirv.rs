@@ -649,7 +649,8 @@ impl Kernel {
                         const_entries.push((st, cid, words));
                         spv_values.insert(op_id, cid);
                     }
-                    &Op::Define { dtype, scope, ro, len } => {
+                    &Op::Define { dtype, scope, ro, ref shape } => {
+                        let len: u64 = shape.iter().product();
                         let st = push_dtype(&mut asm, &mut type_cache, &mut type_entries, dtype);
                         match scope {
                             MemScope::Scalar => todo!(),
@@ -997,20 +998,17 @@ impl Kernel {
             while !op_id.is_null() {
                 match self.ops[op_id].op {
                     Op::ReduceTile { .. }
-                    | Op::LoadView { .. }
-                    | Op::StoreView { .. }
                     | Op::Move { .. }
                     | Op::Reduce { .. }
                     | Op::Wmma { .. }
                     | Op::MatmulTile { .. }
-                    | Op::PushTile { .. }
-                    | Op::PopTile { .. }
                     | Op::TransposeTile { .. } => {
                         return Err(BackendError {
                             status: ErrorStatus::KernelCompilation,
                             context: "SPIR-V: unexpected kernel op (should be unfolded)".into(),
                         });
                     }
+                    Op::Asm { .. } => todo!(),
                     Op::Vectorize { ref ops } => {
                         let (dt, layout) = dtypes[&op_id];
                         let result_type =
@@ -1130,7 +1128,7 @@ impl Kernel {
                             }
                         }
                     }
-                    Op::Store { dst, x, index, layout } => {
+                    Op::Store { dst, src: x, index, layout } => {
                         let val_id = spv_values[&x];
                         let index_id = spv_values[&index];
 

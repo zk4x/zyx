@@ -84,7 +84,8 @@ impl Kernel {
             let mut op_id = self.head;
             while !op_id.is_null() {
                 match self.ops[op_id].op {
-                    Op::StoreView { .. } | Op::LoadView { .. } | Op::Move { .. } | Op::Reduce { .. } => {
+                    Op::Asm { .. } => todo!(),
+                    Op::Move { .. } | Op::Reduce { .. } => {
                         unreachable!()
                     }
                     Op::Vectorize { ref ops } => {
@@ -115,7 +116,7 @@ impl Kernel {
                         dtypes.insert(op_id, (dtypes[&src].0, layout));
                         *rcs.entry(index).or_insert(0) += 1;
                     }
-                    Op::Store { dst, x, index, .. } => {
+                    Op::Store { dst, src: x, index, .. } => {
                         dtypes.insert(op_id, dtypes[&x]);
                         *rcs.entry(dst).or_insert(0) += 1;
                         *rcs.entry(x).or_insert(0) += 1;
@@ -164,7 +165,7 @@ impl Kernel {
                     Op::If { condition } => {
                         *rcs.entry(condition).or_insert(0) += 1;
                     }
-                    Op::PopTile { .. } | Op::PushTile { .. } | Op::Barrier | Op::EndIf | Op::EndLoop => {}
+                    Op::Barrier | Op::EndIf | Op::EndLoop => {}
                 }
                 op_id = self.next_op(op_id);
             }
@@ -200,6 +201,7 @@ impl Kernel {
         while !op_id.is_null() {
             // Register allocation: allocate if this op produces a value
             let produces = match self.ops[op_id].op {
+                Op::Asm { .. } => todo!(),
                 Op::Define { scope: MemScope::Register, .. } => true,
                 Op::Load { .. }
                 | Op::Cast { .. }
@@ -207,8 +209,6 @@ impl Kernel {
                 | Op::Binary { .. }
                 | Op::Mad { .. }
                 | Op::Vectorize { .. }
-                | Op::PushTile { .. }
-                | Op::PopTile { .. }
                 | Op::Wmma { .. }
                 | Op::ReduceTile { .. }
                 | Op::MatmulTile { .. }
@@ -219,8 +219,6 @@ impl Kernel {
                 | Op::Const(_)
                 | Op::Index { .. } => true,
                 Op::Store { .. } | Op::EndLoop | Op::Barrier | Op::If { .. } | Op::EndIf => false,
-                Op::LoadView(_) => todo!(),
-                Op::StoreView { .. } => todo!(),
                 Op::Move { .. } => todo!(),
                 Op::Reduce { .. } => todo!(),
             };
@@ -277,14 +275,11 @@ impl Kernel {
                 | Op::EndIf
                 | Op::Devectorize { .. }
                 | Op::Vectorize { .. }
-                | Op::LoadView(_)
-                | Op::StoreView { .. }
                 | Op::Move { .. }
                 | Op::Reduce { .. }
                 | Op::ReduceTile { .. }
                 | Op::MatmulTile { .. }
-                | Op::PopTile { .. }
-                | Op::PushTile { .. }
+                | Op::Asm { .. }
                 | Op::TransposeTile { .. } => {}
                 Op::Load { src, index, layout } => {
                     wi_ops += loop_mult;

@@ -35,12 +35,12 @@ impl Kernel {
         let mut op_id = self.head;
         while !op_id.is_null() {
             let depth = match self.ops[op_id].op {
-                Op::Move { .. } | Op::LoadView { .. } | Op::StoreView { .. } | Op::Reduce { .. } | Op::ReduceTile { .. } => {
+                Op::Move { .. } | Op::Reduce { .. } | Op::ReduceTile { .. } => {
                     unreachable!()
                 }
                 Op::MatmulTile { x, y } => loop_dep[&x].max(loop_dep[&y]),
                 Op::TransposeTile { x } => loop_dep[&x],
-                Op::Devectorize { .. } | Op::Wmma { .. } | Op::Vectorize { .. } => loop_depth,
+                Op::Asm { .. } | Op::Devectorize { .. } | Op::Wmma { .. } | Op::Vectorize { .. } => loop_depth,
                 Op::If { .. } | Op::Loop { .. } => {
                     loop_depth += 1;
                     loop_depth
@@ -63,14 +63,9 @@ impl Kernel {
                     loop_dep[&x].max(loop_dep[&y])
                 }
                 Op::Mad { x, y, z } => loop_dep[&x].max(loop_dep[&y]).max(loop_dep[&z]),
-                Op::Barrier
-                | Op::Index { .. }
-                | Op::Load { .. }
-                | Op::Store { .. }
-                | Op::Const(_)
-                | Op::Define { .. }
-                | Op::PushTile { .. }
-                | Op::PopTile { .. } => loop_depth,
+                Op::Barrier | Op::Index { .. } | Op::Load { .. } | Op::Store { .. } | Op::Const(_) | Op::Define { .. } => {
+                    loop_depth
+                }
             };
             loop_dep.insert(op_id, depth);
             op_id = self.next_op(op_id);
@@ -94,15 +89,22 @@ impl Kernel {
         let mut op_id = self.head;
         while !op_id.is_null() {
             let depth = match self.at(op_id) {
-                Op::Move { .. } | Op::LoadView { .. } | Op::StoreView { .. } | Op::Reduce { .. } => {
+                Op::Move { .. } | Op::Reduce { .. } => {
                     unreachable!()
                 }
                 Op::ReduceTile { x, .. } => loop_dep[x],
                 Op::MatmulTile { x, y } => loop_dep[x].max(loop_dep[y]),
                 Op::TransposeTile { x } => loop_dep[x],
+                Op::Asm { ops, .. } => {
+                    let mut max = 0;
+                    for op in ops.iter() {
+                        max = max.max(loop_dep[op]);
+                    }
+                    max
+                }
                 Op::Vectorize { ops } => {
                     let mut max = 0;
-                    for op in ops {
+                    for op in ops.iter() {
                         max = max.max(loop_dep[op]);
                     }
                     max
@@ -121,8 +123,6 @@ impl Kernel {
                 Op::Binary { x, y, .. } => loop_dep[x].max(loop_dep[y]),
                 Op::Index { .. }
                 | Op::Barrier
-                | Op::PushTile { .. }
-                | Op::PopTile { .. }
                 | Op::Load { .. }
                 | Op::Store { .. }
                 | Op::Const(_)

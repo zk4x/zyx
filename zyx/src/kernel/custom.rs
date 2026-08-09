@@ -19,11 +19,14 @@
 use std::collections::BTreeSet;
 
 use crate::backend::{BufferId, DeviceInfo, MemoryPool, ProgramId};
+use crate::dtype::Constant;
 use crate::error::BackendError;
 use crate::graph::{ClassId, GraphId};
-use crate::kernel::{DeviceId, Kernel, MemScope, Op, OpId};
+use crate::kernel::{BOp, DeviceId, IdxScope, Kernel, MMADType, MMADims, MMALayout, MemLayout, MemScope, MoveOp, Op, OpId, UOp};
 use crate::runtime::{KernelData, KernelId, TensorData};
-use crate::slab::SlabId;
+use crate::shape::UAxis;
+use crate::slab::{Slab, SlabId};
+use crate::types::TinyVec;
 use crate::{DType, IntoShape, Tensor, ZyxError, shape::Dim};
 
 /// A compiled kernel ready for repeated execution.
@@ -35,6 +38,31 @@ pub struct CompiledKernel {
 }
 
 impl Kernel {
+    /// Create a new custom kernel targeting a specific device.
+    ///
+    /// Two approaches for inputs:
+    /// - **Manual gidx**: `define(dtype, MemScope::Global, true, len)` + [`Kernel::gidx`]
+    /// - **LoadView**: `push_back(Op::LoadView(...))` — `compile()` adds thread indices.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use zyx::kernel::{Kernel, MemScope, MemLayout, DeviceId};
+    /// use zyx::DType;
+    ///
+    /// let mut kernel = Kernel::new(DeviceId::AUTO);
+    /// let n = 4;
+    /// let inp = kernel.define(DType::F32, MemScope::Global, true, n);
+    /// let gidx = kernel.group_index(0, n);
+    /// let loaded = kernel.load(inp, gidx, MemLayout::Scalar);
+    /// let doubled = kernel.add(loaded, loaded);
+    /// let out = kernel.define(DType::F32, MemScope::Global, false, n);
+    /// kernel.store(out, doubled, gidx, MemLayout::Scalar);
+    /// ```
+    pub fn new(device_id: DeviceId) -> Self {
+        Self { ops: Slab::new(), head: OpId::NULL, tail: OpId::NULL, device_id }
+    }
+
     /// Compile the kernel. Consumes `self`.
     ///
     /// Runs [`Kernel::unfold_movement_ops`] and [`Kernel::verify`] before compilation.
@@ -123,6 +151,367 @@ impl Kernel {
     fn autotune(self) -> Result<CompiledKernel, crate::ZyxError> {
         self.compile()
     }*/
+
+    /// Permute tensor axes.
+    pub fn permute(&mut self, x: OpId, axes: &[UAxis]) -> OpId {
+        let axes = axes.to_vec();
+        let in_shape = self.shape_of(x);
+        debug_assert_eq!(axes.len(), in_shape.len(), "permute: axes length {} != rank {}", axes.len(), in_shape.len());
+        {
+            let mut sorted = axes.clone();
+            sorted.sort();
+            debug_assert!(
+                sorted.iter().copied().eq(0..in_shape.len() as UAxis),
+                "permute: axes not a valid permutation: {axes:?} for rank {}",
+                in_shape.len()
+            );
+        }
+        let shape = crate::shape::permute(&in_shape, &axes);
+        self.push_back(Op::Move { x, mop: Box::new(MoveOp::Permute { axes, shape }) })
+    }
+
+    /// Reshape tensor.
+    pub fn reshape(&mut self, x: OpId, shape: &[Dim]) -> OpId {
+        let shape = shape.to_vec();
+        let in_shape = self.shape_of(x);
+        debug_assert_eq!(
+            shape.iter().product::<Dim>(),
+            in_shape.iter().product::<Dim>(),
+            "reshape: element count mismatch: {:?} -> {:?}",
+            in_shape,
+            shape
+        );
+        self.push_back(Op::Move { x, mop: Box::new(MoveOp::Reshape { shape }) })
+    }
+
+    /// Expand tensor (adds singleton dims).
+    pub fn expand(&mut self, x: OpId, shape: &[Dim]) -> OpId {
+        let shape = shape.to_vec();
+        let in_shape = self.shape_of(x);
+        debug_assert!(
+            in_shape.len() <= shape.len(),
+            "expand: input rank {} > target rank {}: {:?} -> {:?}",
+            in_shape.len(),
+            shape.len(),
+            in_shape,
+            shape
+        );
+        for (old, new) in in_shape.iter().copied().rev().zip(shape.iter().copied().rev()) {
+            debug_assert!(old == new || old == 1, "expand: incompatible dims: {old} vs {new} in {:?} -> {:?}", in_shape, shape);
+        }
+        self.push_back(Op::Move { x, mop: Box::new(MoveOp::Expand { shape }) })
+    }
+
+    /// Pad tensor with zeros.
+    pub fn pad(&mut self, x: OpId, padding: &[(i64, i64)]) -> OpId {
+        let padding = padding.to_vec();
+        let in_shape = self.shape_of(x);
+        debug_assert_eq!(padding.len(), in_shape.len(), "pad: padding length {} != rank {}", padding.len(), in_shape.len());
+        let mut shape = in_shape.clone();
+        crate::shape::pad(&mut shape, &padding);
+        self.push_back(Op::Move { x, mop: Box::new(MoveOp::Pad { padding, shape }) })
+    }
+
+    /// Flip tensor axes.
+    pub fn flip(&mut self, x: OpId, axes: &[UAxis]) -> OpId {
+        let axes = axes.to_vec();
+        let in_shape = self.shape_of(x);
+        debug_assert!(!axes.is_empty(), "flip: axes must not be empty");
+        for &axis in &axes {
+            debug_assert!((axis as usize) < in_shape.len(), "flip: axis {axis} out of range for rank {}", in_shape.len());
+        }
+        self.push_back(Op::Move { x, mop: Box::new(MoveOp::Flip { axes }) })
+    }
+
+    /// Sum over the last `n_axes` dimensions.
+    pub fn reduce_sum(&mut self, x: OpId, n_axes: usize) -> OpId {
+        let in_shape = self.shape_of(x);
+        debug_assert!(n_axes <= in_shape.len(), "reduce_sum: n_axes {} > rank {}", n_axes, in_shape.len());
+        debug_assert!(n_axes > 0, "reduce_sum: n_axes == 0");
+        self.push_back(Op::Reduce { x, rop: BOp::Add, n_axes })
+    }
+
+    /// Max over the last `n_axes` dimensions.
+    pub fn reduce_max(&mut self, x: OpId, n_axes: usize) -> OpId {
+        let in_shape = self.shape_of(x);
+        debug_assert!(n_axes <= in_shape.len(), "reduce_max: n_axes {} > rank {}", n_axes, in_shape.len());
+        debug_assert!(n_axes > 0, "reduce_max: n_axes == 0");
+        self.push_back(Op::Reduce { x, rop: BOp::Max, n_axes })
+    }
+
+    /// Product over the last `n_axes` dimensions.
+    pub fn reduce_prod(&mut self, x: OpId, n_axes: usize) -> OpId {
+        self.push_back(Op::Reduce { x, rop: BOp::Mul, n_axes })
+    }
+
+    /// Constant data value (uses natural dtype).
+    /// For index constants, use [`Kernel::const_idx`].
+    pub fn const_val<T: crate::scalar::Scalar>(&mut self, val: T) -> OpId {
+        self.push_back(Op::Const(Constant::new(val)))
+    }
+
+    /// Constant index value (normalized to index type).
+    /// For data constants, use [`Kernel::const_val`].
+    pub fn const_idx<T: crate::scalar::Scalar>(&mut self, val: T) -> OpId {
+        self.push_back(Op::Const(Constant::idx(val)))
+    }
+
+    /// Create multiple constant indices.
+    pub fn const_idxs<const N: usize>(&mut self, vals: [u32; N]) -> [OpId; N] {
+        core::array::from_fn(|i| self.const_idx(vals[i]))
+    }
+
+    /// Define a tensor buffer.
+    pub fn define(&mut self, dtype: DType, scope: MemScope, ro: bool, shape: &[Dim]) -> OpId {
+        self.push_back(Op::Define { dtype, scope, ro, shape: shape.into() })
+    }
+
+    /// Group (block) index.
+    pub fn group_index(&mut self, axis: u32, len: Dim) -> OpId {
+        let len = self.const_idx(len);
+        self.push_back(Op::Index { len, axis, scope: IdxScope::Group })
+    }
+
+    /// Local thread index.
+    pub fn local_index(&mut self, axis: u32, len: Dim) -> OpId {
+        let len = self.const_idx(len);
+        self.push_back(Op::Index { len, axis, scope: IdxScope::Local })
+    }
+
+    /// Store `x` to `dst` at `index`.
+    pub fn store(&mut self, dst: OpId, x: OpId, index: OpId, layout: MemLayout) {
+        self.push_back(Op::Store { dst, src: x, index, layout });
+    }
+
+    /// Load from `src` at `index`.
+    pub fn load(&mut self, src: OpId, index: OpId, layout: MemLayout) -> OpId {
+        self.push_back(Op::Load { src, index, layout })
+    }
+
+    /// Begin a loop.
+    pub fn loop_(&mut self, len: OpId) -> OpId {
+        self.push_back(Op::Loop { len })
+    }
+
+    /// End the current loop.
+    pub fn end_loop(&mut self) {
+        self.push_back(Op::EndLoop);
+    }
+
+    pub(crate) fn unary(&mut self, x: OpId, uop: UOp) -> OpId {
+        self.push_back(Op::Unary { x, uop })
+    }
+
+    /// `-x`
+    pub fn neg(&mut self, x: OpId) -> OpId {
+        self.unary(x, UOp::Neg)
+    }
+
+    /// `~x`
+    pub fn bit_not(&mut self, x: OpId) -> OpId {
+        self.unary(x, UOp::BitNot)
+    }
+
+    /// `e^x`
+    pub fn exp(&mut self, x: OpId) -> OpId {
+        self.unary(x, UOp::Exp)
+    }
+
+    /// `2^x`
+    pub fn exp2(&mut self, x: OpId) -> OpId {
+        self.unary(x, UOp::Exp2)
+    }
+
+    /// `ln(x)`
+    pub fn ln(&mut self, x: OpId) -> OpId {
+        self.unary(x, UOp::Ln)
+    }
+
+    /// `log2(x)`
+    pub fn log2(&mut self, x: OpId) -> OpId {
+        self.unary(x, UOp::Log2)
+    }
+
+    /// `1/x`
+    pub fn reciprocal(&mut self, x: OpId) -> OpId {
+        self.unary(x, UOp::Reciprocal)
+    }
+
+    /// `sqrt(x)`
+    pub fn sqrt(&mut self, x: OpId) -> OpId {
+        self.unary(x, UOp::Sqrt)
+    }
+
+    /// `sin(x)`
+    pub fn sin(&mut self, x: OpId) -> OpId {
+        self.unary(x, UOp::Sin)
+    }
+
+    /// `cos(x)`
+    pub fn cos(&mut self, x: OpId) -> OpId {
+        self.unary(x, UOp::Cos)
+    }
+
+    /// `floor(x)`
+    pub fn floor(&mut self, x: OpId) -> OpId {
+        self.unary(x, UOp::Floor)
+    }
+
+    /// `trunc(x)`
+    pub fn trunc(&mut self, x: OpId) -> OpId {
+        self.unary(x, UOp::Trunc)
+    }
+
+    /// `|x|`
+    pub fn abs(&mut self, x: OpId) -> OpId {
+        self.unary(x, UOp::Abs)
+    }
+
+    pub(crate) fn binary(&mut self, x: OpId, y: OpId, bop: BOp) -> OpId {
+        self.push_back(Op::Binary { x, y, bop })
+    }
+
+    /// `x + y`
+    pub fn add(&mut self, x: OpId, y: OpId) -> OpId {
+        self.binary(x, y, BOp::Add)
+    }
+
+    /// `x - y`
+    pub fn sub(&mut self, x: OpId, y: OpId) -> OpId {
+        self.binary(x, y, BOp::Sub)
+    }
+
+    /// `x * y`
+    pub fn mul(&mut self, x: OpId, y: OpId) -> OpId {
+        self.binary(x, y, BOp::Mul)
+    }
+
+    /// `x / y`
+    pub fn div(&mut self, x: OpId, y: OpId) -> OpId {
+        self.binary(x, y, BOp::Div)
+    }
+
+    /// `x^y`
+    pub fn pow(&mut self, x: OpId, y: OpId) -> OpId {
+        self.binary(x, y, BOp::Pow)
+    }
+
+    /// `x % y`
+    pub fn mod_(&mut self, x: OpId, y: OpId) -> OpId {
+        self.binary(x, y, BOp::Mod)
+    }
+
+    /// `x < y`
+    pub fn cmplt(&mut self, x: OpId, y: OpId) -> OpId {
+        self.binary(x, y, BOp::Cmplt)
+    }
+
+    /// `x > y`
+    pub fn cmpgt(&mut self, x: OpId, y: OpId) -> OpId {
+        self.binary(x, y, BOp::Cmpgt)
+    }
+
+    /// `max(x, y)`
+    pub fn max(&mut self, x: OpId, y: OpId) -> OpId {
+        self.binary(x, y, BOp::Max)
+    }
+
+    /// `x | y`
+    pub fn or_(&mut self, x: OpId, y: OpId) -> OpId {
+        self.binary(x, y, BOp::Or)
+    }
+
+    /// `x & y`
+    pub fn and_(&mut self, x: OpId, y: OpId) -> OpId {
+        self.binary(x, y, BOp::And)
+    }
+
+    /// `x ^ y`
+    pub fn bit_xor(&mut self, x: OpId, y: OpId) -> OpId {
+        self.binary(x, y, BOp::BitXor)
+    }
+
+    /// `x | y`
+    pub fn bit_or(&mut self, x: OpId, y: OpId) -> OpId {
+        self.binary(x, y, BOp::BitOr)
+    }
+
+    /// `x & y`
+    pub fn bit_and(&mut self, x: OpId, y: OpId) -> OpId {
+        self.binary(x, y, BOp::BitAnd)
+    }
+
+    /// `x << y`
+    pub fn bit_shift_left(&mut self, x: OpId, y: OpId) -> OpId {
+        self.binary(x, y, BOp::BitShiftLeft)
+    }
+
+    /// `x >> y`
+    pub fn bit_shift_right(&mut self, x: OpId, y: OpId) -> OpId {
+        self.binary(x, y, BOp::BitShiftRight)
+    }
+
+    /// `x != y`
+    pub fn not_eq(&mut self, x: OpId, y: OpId) -> OpId {
+        self.binary(x, y, BOp::NotEq)
+    }
+
+    /// `x == y`
+    pub fn eq(&mut self, x: OpId, y: OpId) -> OpId {
+        self.binary(x, y, BOp::Eq)
+    }
+
+    /// Warp matrix multiply-accumulate.
+    pub fn wmma(&mut self, dims: MMADims, layout: MMALayout, dtype: MMADType, a: OpId, b: OpId, c: OpId) -> OpId {
+        self.push_back(Op::Wmma { dims, layout, dtype, a, b, c })
+    }
+
+    /// Vectorize ops into a single value.
+    pub fn vectorize(&mut self, ops: &[OpId]) -> OpId {
+        let ops = TinyVec::new(ops);
+        self.push_back(Op::Vectorize { ops })
+    }
+
+    /// Extract one element from a vectorized value.
+    pub fn devectorize_one(&mut self, vec: OpId, idx: usize) -> OpId {
+        self.push_back(Op::Devectorize { vec, idx })
+    }
+
+    /// Extract all elements from a vectorized value.
+    pub fn devectorize<const N: usize>(&mut self, vec: OpId) -> [OpId; N] {
+        core::array::from_fn(|i| self.devectorize_one(vec, i))
+    }
+
+    /// Local thread barrier.
+    /// Thread barrier (synchronization point).
+    pub fn barrier(&mut self) {
+        self.push_back(Op::Barrier);
+    }
+
+    /// Begin conditional block.
+    pub fn if_(&mut self, condition: OpId) {
+        self.push_back(Op::If { condition });
+    }
+
+    /// End conditional block.
+    pub fn end_if(&mut self) {
+        self.push_back(Op::EndIf);
+    }
+
+    /// Cast to a different dtype.
+    pub fn cast(&mut self, x: OpId, dtype: DType) -> OpId {
+        self.push_back(Op::Cast { x, dtype })
+    }
+
+    /// Bitcast to a different dtype.
+    pub fn bitcast(&mut self, _x: OpId, _dtype: DType) -> OpId {
+        todo!()
+    }
+
+    /// `x * y + z`
+    pub fn mad(&mut self, x: OpId, y: OpId, z: OpId) -> OpId {
+        self.push_back(Op::Mad { x, y, z })
+    }
 }
 
 impl CompiledKernel {

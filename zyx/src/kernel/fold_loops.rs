@@ -30,6 +30,7 @@ use crate::{
     Set,
     dtype::{Constant, DType},
     kernel::{BOp, IDX_T, IdxScope, Kernel, MemLayout, MemScope, Op, OpId},
+    shape::Dim, slab::SlabId,
 };
 
 impl Kernel {
@@ -63,9 +64,12 @@ impl Kernel {
     /// On success, the loop and accumulator are removed and replaced with closed-form ops.
     fn fold_loop(&mut self, acc_id: OpId) -> bool {
         // Check that acc_id is a register define with length 1 (scalar accumulator)
-        let &Op::Define { dtype: acc_dtype, scope, ro, len: 1 } = self.at(acc_id) else {
+        let &Op::Define { dtype: acc_dtype, scope, ro, ref shape } = self.at(acc_id) else {
             return false;
         };
+        if shape.iter().product::<Dim>() != 1 {
+            return false;
+        }
         // We only fold register-scoped accumulators; global/local have different semantics
         if scope != MemScope::Register || ro {
             return false;
@@ -188,7 +192,7 @@ impl Kernel {
         };
 
         let store_id = self.next_op(add_id);
-        let &Op::Store { dst, x, index, layout: MemLayout::Scalar } = self.at(store_id) else {
+        let &Op::Store { dst, src: x, index, layout: MemLayout::Scalar } = self.at(store_id) else {
             return None;
         };
         let &Op::Const(index) = self.at(index) else { return None };
@@ -361,9 +365,12 @@ impl Kernel {
             return false;
         };
         let loop_len = self.loop_len_dim(loop_len_id);
-        let &Op::Define { dtype, scope: MemScope::Register, ro: false, len: 1 } = self.at(acc_id) else {
+        let &Op::Define { dtype, scope: MemScope::Register, ro: false, ref shape } = self.at(acc_id) else {
             return false;
         };
+        if shape.iter().product::<Dim>() != 1 {
+            return false;
+        }
 
         let Some((a, b, c, mul_const, gidx_id)) = self.trace_to_linear_comparison(accumulated_value_id, loop_id) else {
             return false;
@@ -663,7 +670,7 @@ mod tests {
     /// identify_accumulate_pattern fails because next_op(load(tmp)) is eq, not Add.
     fn make_interleaved_gather_kernel(loop_len: u32) -> (Kernel, OpId) {
         let mut k = Kernel::new(DeviceId::AUTO);
-        let acc = k.define(DType::F32, MemScope::Register, false, 1);
+        let acc = k.define(DType::F32, MemScope::Register, false, &[1]);
 
         let zi = k.const_idx(0u32);
         let zf = k.const_val(0.0f32);
@@ -697,7 +704,7 @@ mod tests {
     /// Sanity test: the simple pattern (accum value BEFORE load) IS optimized.
     fn make_flat_gather_kernel(loop_len: u32) -> (Kernel, OpId, OpId) {
         let mut k = Kernel::new(DeviceId::AUTO);
-        let acc = k.define(DType::F32, MemScope::Register, false, 1);
+        let acc = k.define(DType::F32, MemScope::Register, false, &[1]);
 
         let zi = k.const_idx(0u32);
         let zf = k.const_val(0.0f32);
@@ -744,9 +751,9 @@ mod tests {
     fn make_gather_kernel_with_source_before_indices() -> (Kernel, OpId) {
         let mut k = Kernel::new(DeviceId::AUTO);
 
-        let r95 = k.define(DType::U16, MemScope::Global, true, 9);
-        let r114 = k.define(DType::U16, MemScope::Global, true, 15);
-        let r122 = k.define(DType::U16, MemScope::Global, false, 9);
+        let r95 = k.define(DType::U16, MemScope::Global, true, &[9]);
+        let r114 = k.define(DType::U16, MemScope::Global, true, &[15]);
+        let r122 = k.define(DType::U16, MemScope::Global, false, &[9]);
         let r7 = k.const_val(0u32);
         let r22 = k.const_val(0u16);
         let r74 = k.const_val(3u32);
@@ -755,7 +762,7 @@ mod tests {
         let r110 = k.const_val(5u32);
         let r37 = k.group_index(0, 3);
         let r5 = k.group_index(1, 3);
-        let r1 = k.define(DType::U16, MemScope::Register, false, 1);
+        let r1 = k.define(DType::U16, MemScope::Register, false, &[1]);
         k.store(r1, r22, r7, MemLayout::Scalar);
         let r123 = k.binary(r37, r74, BOp::Mul);
         let r92 = k.binary(r123, r5, BOp::Add);
@@ -816,9 +823,9 @@ mod tests {
     fn test_resnet_index_select_ir_not_optimized() {
         let mut k = Kernel::new(DeviceId::AUTO);
 
-        let r93 = k.define(DType::I32, MemScope::Global, false, 50000);
-        let r116 = k.define(DType::F32, MemScope::Global, false, 153600000);
-        let r128 = k.define(DType::F32, MemScope::Global, true, 153600000);
+        let r93 = k.define(DType::I32, MemScope::Global, false, &[50000]);
+        let r116 = k.define(DType::F32, MemScope::Global, false, &[153600000]);
+        let r128 = k.define(DType::F32, MemScope::Global, true, &[153600000]);
         let r130 = k.const_idx(50000u32);
         let r1 = k.const_idx(0u32);
         let r42 = k.const_val(0.0f32);
@@ -840,7 +847,7 @@ mod tests {
         let r22 = k.binary(r129, r130, BOp::Mod);
         let r131 = k.binary(r129, r130, BOp::Div);
 
-        let r3 = k.define(DType::F32, MemScope::Register, true, 1);
+        let r3 = k.define(DType::F32, MemScope::Register, true, &[1]);
         k.store(r3, r42, r1, MemLayout::Scalar);
 
         let r135 = k.binary(r2, r84, BOp::BitShiftLeft);
@@ -906,10 +913,10 @@ mod tests {
         let mut k = Kernel::new(DeviceId::AUTO);
 
         let n: u64 = dim * dim;
-        let r29 = k.define(DType::I32, MemScope::Global, true, n);
-        let r38 = k.define(DType::I32, MemScope::Global, true, dim);
-        let r49 = k.define(DType::F32, MemScope::Global, true, dim * n);
-        let r57 = k.define(DType::F32, MemScope::Global, false, n);
+        let r29 = k.define(DType::I32, MemScope::Global, true, &[n]);
+        let r38 = k.define(DType::I32, MemScope::Global, true, &[dim]);
+        let r49 = k.define(DType::F32, MemScope::Global, true, &[dim * n]);
+        let r57 = k.define(DType::F32, MemScope::Global, false, &[n]);
         let r1 = k.const_idx(0u32);
         let r8 = k.const_val(0.0f32);
         let r15 = k.const_idx(dim);
@@ -917,7 +924,7 @@ mod tests {
         let r7 = k.group_index(0, dim);
         let r10 = k.group_index(1, dim);
 
-        let r3 = k.define(DType::F32, MemScope::Register, false, 1);
+        let r3 = k.define(DType::F32, MemScope::Register, false, &[1]);
         k.store(r3, r8, r1, MemLayout::Scalar);
 
         let r58 = k.binary(r7, r25, BOp::Mul);
@@ -986,16 +993,16 @@ mod tests {
     fn make_scatter_kernel(dim: u64, num_indices: u64) -> (Kernel, OpId) {
         let mut k = Kernel::new(DeviceId::AUTO);
 
-        let r29 = k.define(DType::I32, MemScope::Global, true, num_indices);
-        let r38 = k.define(DType::I32, MemScope::Global, true, dim);
-        let r47 = k.define(DType::I32, MemScope::Global, true, num_indices);
-        let r61 = k.define(DType::I32, MemScope::Global, false, dim);
+        let r29 = k.define(DType::I32, MemScope::Global, true, &[num_indices]);
+        let r38 = k.define(DType::I32, MemScope::Global, true, &[dim]);
+        let r47 = k.define(DType::I32, MemScope::Global, true, &[num_indices]);
+        let r61 = k.define(DType::I32, MemScope::Global, false, &[dim]);
         let r14 = k.const_idx(0u32);
         let r1 = k.const_val(0i32);
         let r10 = k.const_idx(num_indices);
         let r7 = k.group_index(0, dim);
 
-        let r9 = k.define(DType::I32, MemScope::Register, false, 1);
+        let r9 = k.define(DType::I32, MemScope::Register, false, &[1]);
         k.store(r9, r1, r14, MemLayout::Scalar);
 
         let loop_id = k.loop_(r10);
@@ -1047,9 +1054,9 @@ mod tests {
     #[test]
     fn test_ceil_mask_loop_folds() {
         let mut k = Kernel::new(DeviceId::AUTO);
-        let out = k.define(DType::I32, MemScope::Global, false, 2);
+        let out = k.define(DType::I32, MemScope::Global, false, &[2]);
         let g = k.group_index(0, 2);
-        let acc = k.define(DType::I32, MemScope::Register, false, 1);
+        let acc = k.define(DType::I32, MemScope::Register, false, &[1]);
         let zi = k.const_idx(0u32);
         let ziv = k.const_val(0i32);
         k.store(acc, ziv, zi, MemLayout::Scalar);

@@ -3,10 +3,7 @@
 
 use super::autotune::Optimization;
 use crate::{
-    DType, Map, Set,
-    backend::DeviceInfo,
-    kernel::{BOp, Kernel, MemLayout, Op, OpId, UOp},
-    shape::Dim,
+    DType, Map, Set, backend::DeviceInfo, kernel::{BOp, Kernel, MemLayout, Op, OpId, UOp}, shape::Dim, slab::SlabId, types::TinyVec
 };
 
 #[derive(Debug)]
@@ -138,7 +135,7 @@ impl Kernel {
                 Op::Loop { .. } => {
                     stores.push(Map::default());
                 }
-                Op::Store { dst, x, index, layout } => {
+                Op::Store { dst, src: x, index, layout } => {
                     if layout == MemLayout::Scalar {
                         stores
                             .last_mut()
@@ -227,11 +224,12 @@ impl Kernel {
                     }
 
                     // Insert Vectorize after the last store so all values are declared before it.
-                    let vstore = self.insert_after(last_id, Op::Vectorize { ops: vec_values });
+                    let ops = TinyVec::new(&vec_values);
+                    let vstore = self.insert_after(last_id, Op::Vectorize { ops });
                     // Insert the vectorized store after the Vectorize and remove all scalar stores.
                     self.insert_after(
                         vstore,
-                        Op::Store { dst, x: vstore, index: stores[0].index, layout: MemLayout::Vector(vec_len as u16) },
+                        Op::Store { dst, src: vstore, index: stores[0].index, layout: MemLayout::Vector(vec_len as u16) },
                     );
                     for store in &stores {
                         self.remove_op(store.id);
@@ -386,7 +384,7 @@ impl Kernel {
                                 _ => unreachable!(),
                             })
                             .collect();
-                        let vd = self.insert_before(first, Op::Vectorize { ops: devec_ops });
+                        let vd = self.insert_before(first, Op::Vectorize { ops: TinyVec::new(&devec_ops) });
                         self.insert_before(first, Op::Unary { x: vd, uop: *uop })
                     }
                     OpType::Cast(dtype) => {
@@ -397,7 +395,7 @@ impl Kernel {
                                 _ => unreachable!(),
                             })
                             .collect();
-                        let vd = self.insert_before(first, Op::Vectorize { ops: devec_ops });
+                        let vd = self.insert_before(first, Op::Vectorize { ops: TinyVec::new(&devec_ops) });
                         self.insert_before(first, Op::Cast { x: vd, dtype: *dtype })
                     }
                     OpType::Binary(bop, devec_pos) => {
@@ -417,8 +415,8 @@ impl Kernel {
                                 other_ops.push(x);
                             }
                         }
-                        let vd = self.insert_before(first, Op::Vectorize { ops: devec_ops });
-                        let vo = self.insert_before(first, Op::Vectorize { ops: other_ops });
+                        let vd = self.insert_before(first, Op::Vectorize { ops: TinyVec::new(&devec_ops) });
+                        let vo = self.insert_before(first, Op::Vectorize { ops: TinyVec::new(&other_ops) });
                         let (vx, vy) = if *devec_pos == 0 { (vd, vo) } else { (vo, vd) };
                         self.insert_before(first, Op::Binary { x: vx, y: vy, bop: *bop })
                     }
@@ -466,7 +464,7 @@ impl Kernel {
                 Op::Unary { uop, .. } => {
                     let uop = *uop;
                     let mut sources = Vec::with_capacity(n);
-                    for &sub in &ops {
+                    for &sub in ops.iter() {
                         match &self.ops[sub].op {
                             Op::Unary { x, uop: u } if *u == uop => sources.push(*x),
                             _ => {
@@ -477,7 +475,7 @@ impl Kernel {
                     }
                     if !sources.is_empty() && !sources.iter().any(|s| ops.contains(s)) {
                         let last = self.last_in_kernel_order(&sources);
-                        let v_src = self.insert_after(last, Op::Vectorize { ops: sources });
+                        let v_src = self.insert_after(last, Op::Vectorize { ops: TinyVec::new(&sources) });
                         let v_op = self.insert_after(v_src, Op::Unary { x: v_src, uop });
                         self.remap(op_id, v_op);
                     }
@@ -485,7 +483,7 @@ impl Kernel {
                 Op::Cast { dtype, .. } => {
                     let dtype = *dtype;
                     let mut sources = Vec::with_capacity(n);
-                    for &sub in &ops {
+                    for &sub in ops.iter() {
                         match &self.ops[sub].op {
                             Op::Cast { x, dtype: d } if *d == dtype => sources.push(*x),
                             _ => {
@@ -496,7 +494,7 @@ impl Kernel {
                     }
                     if !sources.is_empty() && !sources.iter().any(|s| ops.contains(s)) {
                         let last = self.last_in_kernel_order(&sources);
-                        let v_src = self.insert_after(last, Op::Vectorize { ops: sources });
+                        let v_src = self.insert_after(last, Op::Vectorize { ops: TinyVec::new(&sources) });
                         let v_op = self.insert_after(v_src, Op::Cast { x: v_src, dtype });
                         self.remap(op_id, v_op);
                     }
@@ -505,7 +503,7 @@ impl Kernel {
                     let bop = *bop;
                     let mut xs = Vec::with_capacity(n);
                     let mut ys = Vec::with_capacity(n);
-                    for &sub in &ops {
+                    for &sub in ops.iter() {
                         match &self.ops[sub].op {
                             Op::Binary { x, y, bop: b } if *b == bop => {
                                 xs.push(*x);
@@ -520,8 +518,8 @@ impl Kernel {
                     if !xs.is_empty() && !xs.iter().any(|x| ops.contains(x)) && !ys.iter().any(|y| ops.contains(y)) {
                         let all: Vec<OpId> = xs.iter().chain(ys.iter()).copied().collect();
                         let last = self.last_in_kernel_order(&all);
-                        let v_xs = self.insert_after(last, Op::Vectorize { ops: xs });
-                        let v_ys = self.insert_after(v_xs, Op::Vectorize { ops: ys });
+                        let v_xs = self.insert_after(last, Op::Vectorize { ops: TinyVec::new(&xs) });
+                        let v_ys = self.insert_after(v_xs, Op::Vectorize { ops: TinyVec::new(&ys) });
                         let v_op = self.insert_after(v_ys, Op::Binary { x: v_xs, y: v_ys, bop });
                         self.remap(op_id, v_op);
                     }
@@ -563,8 +561,8 @@ mod tests {
     #[test]
     fn vectorize_ops_forward_2_lane() {
         let mut k = Kernel::new(DeviceId::AUTO);
-        let src = k.define(DType::F32, MemScope::Global, true, 16);
-        let dst = k.define(DType::F32, MemScope::Global, false, 16);
+        let src = k.define(DType::F32, MemScope::Global, true, &[16]);
+        let dst = k.define(DType::F32, MemScope::Global, false, &[16]);
         let g0 = k.group_index(0, 4);
         let two = k.const_idx(2u32);
         let offset = k.binary(g0, two, BOp::BitShiftLeft);
@@ -587,8 +585,8 @@ mod tests {
     #[test]
     fn vectorize_ops_forward_4_lane() {
         let mut k = Kernel::new(DeviceId::AUTO);
-        let src = k.define(DType::F32, MemScope::Global, true, 16);
-        let dst = k.define(DType::F32, MemScope::Global, false, 16);
+        let src = k.define(DType::F32, MemScope::Global, true, &[16]);
+        let dst = k.define(DType::F32, MemScope::Global, false, &[16]);
         let g0 = k.group_index(0, 4);
         let two = k.const_idx(2u32);
         let offset = k.binary(g0, two, BOp::BitShiftLeft);
@@ -639,8 +637,8 @@ mod tests {
         // After first pass: cos(2) is vectorized
         // After second pass: sin(2) is vectorized
         let mut k = Kernel::new(DeviceId::AUTO);
-        let src = k.define(DType::F32, MemScope::Global, true, 16);
-        let dst = k.define(DType::F32, MemScope::Global, false, 16);
+        let src = k.define(DType::F32, MemScope::Global, true, &[16]);
+        let dst = k.define(DType::F32, MemScope::Global, false, &[16]);
         let g0 = k.group_index(0, 4);
         let two = k.const_idx(2u32);
         let offset = k.binary(g0, two, BOp::BitShiftLeft);
@@ -691,8 +689,8 @@ mod tests {
     #[test]
     fn vectorize_ops_forward_binary() {
         let mut k = Kernel::new(DeviceId::AUTO);
-        let src = k.define(DType::F32, MemScope::Global, true, 16);
-        let dst = k.define(DType::F32, MemScope::Global, false, 16);
+        let src = k.define(DType::F32, MemScope::Global, true, &[16]);
+        let dst = k.define(DType::F32, MemScope::Global, false, &[16]);
         let g0 = k.group_index(0, 4);
         let two = k.const_idx(2u32);
         let offset = k.binary(g0, two, BOp::BitShiftLeft);
@@ -732,8 +730,8 @@ mod tests {
     fn vectorize_ops_forward_binary_y_pos() {
         // devec in Y position: c + devec(v, i)
         let mut k = Kernel::new(DeviceId::AUTO);
-        let src = k.define(DType::F32, MemScope::Global, true, 16);
-        let dst = k.define(DType::F32, MemScope::Global, false, 16);
+        let src = k.define(DType::F32, MemScope::Global, true, &[16]);
+        let dst = k.define(DType::F32, MemScope::Global, false, &[16]);
         let g0 = k.group_index(0, 4);
         let two = k.const_idx(2u32);
         let offset = k.binary(g0, two, BOp::BitShiftLeft);
@@ -757,8 +755,8 @@ mod tests {
     fn vectorize_ops_and_constfold_clears_vectorize_devectorize() {
         let mut k = Kernel::new(DeviceId::AUTO);
 
-        let src = k.define(DType::F32, MemScope::Global, true, 16);
-        let dst = k.define(DType::F32, MemScope::Global, false, 16);
+        let src = k.define(DType::F32, MemScope::Global, true, &[16]);
+        let dst = k.define(DType::F32, MemScope::Global, false, &[16]);
         let g0 = k.group_index(0, 4);
         let two = k.const_idx(2u32);
         let offset = k.binary(g0, two, BOp::BitShiftLeft);
@@ -768,7 +766,7 @@ mod tests {
         let c1 = k.unary(s1, UOp::Cos);
         let c2 = k.unary(s2, UOp::Cos);
         let c3 = k.unary(s3, UOp::Cos);
-        let vec = k.vectorize(vec![c0, c1, c2, c3]);
+        let vec = k.vectorize(&[c0, c1, c2, c3]);
         k.store(dst, vec, offset, MemLayout::Vector(4));
 
         k.vectorize_ops_backward(&[4]);

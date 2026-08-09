@@ -287,7 +287,8 @@ impl Kernel {
         let mut op_id = self.head;
         while !op_id.is_null() {
             match self.ops[op_id].op {
-                Op::Define { dtype, scope, len, .. } => {
+                Op::Define { dtype, scope, ref shape, .. } => {
+                    let len: u64 = shape.iter().product();
                     comp.scopes.insert(op_id, scope);
                     match scope {
                         MemScope::Scalar => todo!(),
@@ -402,7 +403,7 @@ impl Kernel {
                         }
                     }
                 }
-                Op::Store { dst, x, index, .. } => {
+                Op::Store { dst, src: x, index, .. } => {
                     let dtype = dtypes[&x].0;
                     let byte_shift = (dtype.bit_size() / 8).ilog2();
                     let offset = comp.new_reg(DType::U64, 1);

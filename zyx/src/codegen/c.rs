@@ -151,7 +151,7 @@ impl Kernel {
                         }
                     }
                 }
-                Op::Store { dst, x: src, index, layout } => {
+                Op::Store { dst, src, index, layout } => {
                     let idx = get_var(index, &constants, &indices, &reg_map, &mut registers, loop_id)?;
                     let x = get_var(src, &constants, &indices, &reg_map, &mut registers, loop_id)?;
                     match layout {
@@ -255,7 +255,7 @@ impl Kernel {
                 Op::Vectorize { ref ops } => {
                     let dtype = dtypes[&op_id];
                     let mut vars = String::new();
-                    for &x in ops {
+                    for &x in ops.iter() {
                         let x = get_var(x, &constants, &indices, &reg_map, &mut registers, loop_id)?;
                         _ = write!(vars, "{x}, ");
                     }
@@ -323,7 +323,8 @@ impl Kernel {
                     }
                     _ = writeln!(source, "{indent}}}");
                 }
-                Op::Define { dtype, scope, ro, len } => {
+                Op::Define { dtype, scope, ro, ref shape } => {
+                    let len: u64 = shape.iter().product();
                     if matches!(scope, MemScope::Register | MemScope::Local) {
                         _ = writeln!(
                             source,
@@ -334,14 +335,11 @@ impl Kernel {
                     }
                 }
                 Op::Barrier => {}
+                Op::Asm { .. } => todo!(),
                 Op::ReduceTile { .. }
                 | Op::MatmulTile { .. }
                 | Op::TransposeTile { .. }
                 | Op::Move { .. }
-                | Op::LoadView { .. }
-                | Op::StoreView { .. }
-                | Op::PushTile { .. }
-                | Op::PopTile { .. }
                 | Op::Reduce { .. } => {
                     return Err(BackendError {
                         status: ErrorStatus::KernelCompilation,

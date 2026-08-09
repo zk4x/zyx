@@ -4,9 +4,10 @@ use crate::dtype::Constant;
 use crate::kernel::{MemLayout, MemScope};
 use crate::shape::{Dim, UAxis};
 use crate::slab::SlabId;
+use crate::types::{TinyString, TinyVec};
 use crate::{DType, Map};
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, SerBin, DeBin)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, SerBin)]
 pub enum Op {
     // ops that exist in both
     Cast {
@@ -34,7 +35,7 @@ pub enum Op {
     },
     Store {
         dst: OpId,
-        x: OpId,
+        src: OpId,
         index: OpId,
         layout: MemLayout,
     },
@@ -43,12 +44,12 @@ pub enum Op {
         index: OpId,
         layout: MemLayout,
     },
+    // Like loop, but for dimensions always executed in parallel
     Index {
         len: OpId,
         axis: u32,
         scope: IdxScope,
     },
-    // TODO add WarpIndex
     // Control flow
     Loop {
         len: OpId,
@@ -66,7 +67,7 @@ pub enum Op {
     },
     // Vectorization, YAY!
     Vectorize {
-        ops: Vec<OpId>,
+        ops: TinyVec<OpId>,
     },
     Devectorize {
         vec: OpId,
@@ -95,24 +96,13 @@ pub enum Op {
     TransposeTile {
         x: OpId,
     },
-    /// Push x into CB
-    PushTile {
-        dst: OpId,
-        x: OpId,
-    },
-    /// Pop last tile from CB
-    PopTile {
-        src: OpId,
+    // For backend specific assembly
+    Asm {
+        asm: TinyString,
+        ops: TinyVec<OpId>,
     },
 
-    // ops that exist only in kernelizer, basically they can be eventually removed.
-    LoadView {
-        src: OpId,
-    },
-    StoreView {
-        dst: OpId,
-        src: OpId,
-    },
+    // ops that exist before linearize and linearize converts them into these ops: index, loop and load
     Move {
         x: OpId,
         mop: Box<MoveOp>,
@@ -320,7 +310,7 @@ pub enum MMADType {
     f16_f16_f16_f32,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, SerBin, DeBin)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, SerBin)]
 pub struct OpNode {
     pub prev: OpId,
     pub next: OpId, // Use Vec<OpId> instead for egraph
@@ -334,8 +324,6 @@ pub struct OpNode {
 pub struct OpId(pub(crate) u32);
 
 impl OpId {
-    pub(crate) const NULL: Self = Self(u32::MAX);
-
     /// Check if this OpId is null.
     pub const fn is_null(self) -> bool {
         self.0 == u32::MAX
@@ -398,22 +386,18 @@ impl Op {
             Op::Const { .. } | Op::Define { .. } | Op::EndLoop | Op::Barrier | Op::EndIf => {
                 vec![]
             }
-            Op::Index { len, .. } => vec![*len],
-            Op::LoadView(x) => vec![x.0],
-            &Op::PopTile { src: cb } => vec![cb],
-            &Op::PushTile { dst: cb, x } => vec![cb, x],
+            &Op::Index { len, .. } => vec![len],
             &Op::Loop { len, .. } => vec![len],
             &Op::Move { x, .. } => vec![x],
-            &Op::StoreView { dst, src, .. } => vec![dst, src],
             Op::Reduce { x, .. } => vec![*x],
             Op::ReduceTile { x, .. } => vec![*x],
-            &Op::Store { dst, x, index, .. } => vec![dst, x, index],
+            &Op::Store { dst, src: x, index, .. } => vec![dst, x, index],
             Op::Cast { x, .. } => vec![*x],
             Op::Unary { x, .. } => vec![*x],
             &Op::Binary { x, y, .. } => vec![x, y],
             &Op::Load { src, index, .. } => vec![src, index],
             &Op::Mad { x, y, z } => vec![x, y, z],
-            Op::Vectorize { ops } => ops.clone(),
+            Op::Asm { ops, .. } | Op::Vectorize { ops } => ops.iter().copied().collect(),
             &Op::Devectorize { vec, .. } => vec![vec],
             &Op::Wmma { a, b, c, .. } => vec![a, b, c],
             Op::If { condition } => vec![*condition],
@@ -428,15 +412,11 @@ impl Op {
         match self {
             Op::Const { .. } | Op::Define { .. } | Op::EndLoop | Op::EndIf | Op::Barrier => vec![],
             Op::Index { len, .. } => vec![len],
-            Op::LoadView(x) => vec![&mut x.as_mut().0],
-            Op::PopTile { src: cb } => vec![cb],
-            Op::PushTile { dst: cb, x } => vec![cb, x],
             Op::Loop { len, .. } => vec![len],
-            Op::StoreView { dst, src, .. } => vec![dst, src],
             Op::Move { x, .. } => vec![x],
             Op::Reduce { x, .. } => vec![x],
             Op::ReduceTile { x, .. } => vec![x],
-            Op::Store { dst, x, index, .. } => vec![dst, x, index],
+            Op::Store { dst, src: x, index, .. } => vec![dst, x, index],
             Op::Cast { x, .. } => vec![x],
             Op::Unary { x, .. } => vec![x],
             Op::Binary { x, y, .. } => vec![x, y],
@@ -448,6 +428,7 @@ impl Op {
             Op::If { condition } => vec![condition],
             Op::MatmulTile { x, y } => vec![x, y],
             Op::TransposeTile { x } => vec![x],
+            Op::Asm { ops, .. } => ops.iter_mut().collect(),
         }
         .into_iter()
     }

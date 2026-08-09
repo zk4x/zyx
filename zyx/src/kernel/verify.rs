@@ -103,24 +103,7 @@ impl Kernel {
         let mut dtypes: Map<OpId, DType> = Map::default();
         while !op_id.is_null() {
             match self.ops[op_id].op {
-                Op::LoadView(ref x) => {
-                    dtypes.insert(op_id, x.1);
-                }
-                Op::StoreView { src, .. } => {
-                    check(op_id, src, &stack);
-                    dtypes.insert(op_id, dtypes[&src]);
-                }
-                Op::PushTile { dst: cb, x } => {
-                    if !defines.contains_key(&cb) {
-                        println!("store={op_id} is trying to store to undefined variable");
-                        self.debug();
-                        panic!();
-                    }
-                    check(op_id, cb, &stack);
-                    check(op_id, x, &stack);
-                    dtypes.insert(op_id, dtypes[&x]);
-                }
-                Op::Store { dst, x, index, .. } => {
+                Op::Store { dst, src: x, index, .. } => {
                     if !defines.contains_key(&dst) {
                         println!("store={op_id} is trying to store to undefined variable");
                         self.debug();
@@ -176,9 +159,9 @@ impl Kernel {
                         dtypes.insert(op_id, dtypes[&x]);
                     }
                 }
-                Op::Vectorize { ref ops } => {
+                Op::Asm { ref ops, .. } | Op::Vectorize { ref ops } => {
                     let dtype = dtypes[&ops[0]];
-                    for &x in ops {
+                    for &x in ops.iter() {
                         check(op_id, x, &stack);
                         if dtypes[&x] != dtype {
                             println!("Vectorize dtype mismatch on op={op_id}.");
@@ -218,21 +201,12 @@ impl Kernel {
                 Op::Const(v) => {
                     dtypes.insert(op_id, v.dtype());
                 }
-                Op::Define { dtype, scope, ro, len } => {
-                    defines.insert(op_id, (scope, ro, len));
+                Op::Define { dtype, scope, ro, ref shape } => {
+                    defines.insert(op_id, (scope, ro, shape));
                     dtypes.insert(op_id, dtype);
                 }
-                Op::PopTile { src: cb } => {
-                    if !defines.contains_key(&cb) {
-                        println!("load={op_id} is trying to load from undefined variable");
-                        self.debug();
-                        panic!();
-                    }
-                    check(op_id, cb, &stack);
-                    dtypes.insert(op_id, dtypes[&cb]);
-                }
                 Op::Load { src, index, .. } => {
-                    if !defines.contains_key(&src) && !matches!(self.ops[src].op, Op::PopTile { .. }) {
+                    if !defines.contains_key(&src) {
                         println!("load={op_id} is trying to load from undefined variable");
                         self.debug();
                         panic!();
@@ -309,13 +283,13 @@ impl Kernel {
         let mut op_id = self.head;
         while !op_id.is_null() {
             match *self.at(op_id) {
-                Op::Define { len, .. } => {
-                    defines.insert(op_id, len);
+                Op::Define { ref shape, .. } => {
+                    defines.insert(op_id, shape);
                 }
                 Op::Load { src, index, .. } => {
                     let idx_range = Self::get_bounds(index);
                     if let Some(range) = idx_range
-                        && *range.end() >= defines[&src]
+                        && *range.end() >= defines[&src].iter().product()
                     {
                         self.debug();
                         panic!("OOB detected in op {}: index {:?} exceeds buffer length {:?}", op_id, range, defines[&src]);
@@ -324,7 +298,7 @@ impl Kernel {
                 Op::Store { dst, index, .. } => {
                     let idx_range = Self::get_bounds(index);
                     if let Some(range) = idx_range
-                        && *range.start() > defines[&dst] + 1
+                        && *range.start() > defines[&dst].iter().product::<Dim>() + 1
                     {
                         self.debug();
                         panic!("OOB detected in op {}: index {:?} exceeds buffer length {:?}", op_id, range, defines[&dst]);
@@ -417,10 +391,10 @@ impl Kernel {
                     let b = bounds_stack.last_mut().unwrap();
                     b.insert(op_id, (0, self.index_len(len).saturating_sub(1)));
                 }
-                Op::Vectorize { ref ops } => {
+                Op::Asm { ref ops, .. } | Op::Vectorize { ref ops } => {
                     let b = bounds_stack.last_mut().unwrap();
                     let mut r = None;
-                    for x in ops {
+                    for x in ops.iter() {
                         if let Some(&(xl, xu)) = b.get(x) {
                             if let Some((l, u)) = r {
                                 r = Some((xl.min(l), xu.max(u)));

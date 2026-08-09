@@ -19,9 +19,9 @@ fn wmma_matmul() -> Result<(), ZyxError> {
 
     let mut kernel = Kernel::new(DeviceId::AUTO);
 
-    let a_buf = kernel.define(DType::F16, MemScope::Global, true, m * k);
-    let b_buf = kernel.define(DType::F16, MemScope::Global, true, k * n);
-    let c_buf = kernel.define(DType::F32, MemScope::Global, false, m * n);
+    let a_buf = kernel.define(DType::F16, MemScope::Global, true, &[m, k]);
+    let b_buf = kernel.define(DType::F16, MemScope::Global, true, &[k, n]);
+    let c_buf = kernel.define(DType::F32, MemScope::Global, false, &[m, n]);
 
     let gidx = kernel.group_index(0, m / 16);
     let gidy = kernel.group_index(1, n / 8);
@@ -44,9 +44,9 @@ fn wmma_matmul() -> Result<(), ZyxError> {
     let tile_base_col = kernel.mul(gidy, c8);
 
     // Accumulator: 4×f32 register
-    let acc = kernel.define(DType::F32, MemScope::Register, false, 4);
+    let acc = kernel.define(DType::F32, MemScope::Register, false, &[4]);
     let zf = kernel.const_val(0.0f32);
-    let zero_acc = kernel.vectorize(vec![zf, zf, zf, zf]);
+    let zero_acc = kernel.vectorize(&[zf, zf, zf, zf]);
     kernel.store(acc, zero_acc, c0, MemLayout::Vector(4));
 
     // K loop (k/8 iterations)
@@ -63,7 +63,7 @@ fn wmma_matmul() -> Result<(), ZyxError> {
     let a_load_2 = kernel.load(a_buf, a_base2, MemLayout::Scalar);
     let a_base2_p1 = kernel.add(a_base2, c1);
     let a_load_3 = kernel.load(a_buf, a_base2_p1, MemLayout::Scalar);
-    let a_frag = kernel.vectorize(vec![a_load_0, a_load_1, a_load_2, a_load_3]);
+    let a_frag = kernel.vectorize(&[a_load_0, a_load_1, a_load_2, a_load_3]);
 
     // Load B fragment: 2 f16 per thread (k8 × n8)
     let b_row = kernel.add(k_off, col_in_tile);
@@ -71,7 +71,7 @@ fn wmma_matmul() -> Result<(), ZyxError> {
     let b_load_0 = kernel.load(b_buf, b_base, MemLayout::Scalar);
     let b_base_n = kernel.add(b_base, n_const);
     let b_load_1 = kernel.load(b_buf, b_base_n, MemLayout::Scalar);
-    let b_frag = kernel.vectorize(vec![b_load_0, b_load_1]);
+    let b_frag = kernel.vectorize(&[b_load_0, b_load_1]);
 
     // WMMA: acc = A_frag @ B_frag + acc
     let acc_old = kernel.load(acc, c0, MemLayout::Vector(4));
