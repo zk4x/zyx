@@ -28,7 +28,7 @@ impl RMSNorm {
         let x = x.into();
         let dtype = x.dtype();
         let x_normed =
-            &x * (x.pow(2)?.mean_keepdim([-1])? + Tensor::from(self.eps).cast(dtype)).rsqrt();
+            &x * ((&x * &x).mean_keepdim([-1])? + Tensor::from(self.eps).cast(dtype)).rsqrt();
         Ok(x_normed * &self.scale)
     }
 }

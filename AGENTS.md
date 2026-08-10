@@ -44,15 +44,13 @@ zyx/           core tensor library (all the real work)
 zyx-nn, zyx-optim, zyx-onnx, zyx-fuzzy, zyx-py, zyx-bench, zyx-examples, zyx-book
 ```
 
-Root docs worth reading: `ENV_VARS.md` (ZYX_DEBUG), `CONFIG.md` (backend config), `NOTES_assign.md`, `STYLE.md`, `ADDING_BACKENDS.md`.
+Root docs worth reading: `ENV_VARS.md` (ZYX_DEBUG), `CONFIG.md` (backend config), `STYLE.md`, `ADDING_BACKENDS.md`.
 
 ## The Graph
 
 Zyx is all about the graph. Lazy (no compute until `Tensor::realize`), dynamic, and **one graph serves both laziness and autograd**. TensorId is a `u32`.
 
 `Node` (`src/graph/mod.rs`) has 14 variants: Const, Leaf, Expand, Permute, Reshape, PadZeros, Flip, Reduce, Cast, Unary, Binary, Assign, ToDevice, Kernel.
-
-When a task touches `assign`, `Node::Assign`, or covers topics in `NOTES_assign.md`, **read that file BEFORE implementing or asking** — design decisions are already recorded there.
 
 ## The Egraph
 
