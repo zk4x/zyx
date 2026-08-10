@@ -559,6 +559,9 @@ impl Runtime {
                 Node::ToDevice { x, .. } => {
                     accum_grad(self, graph_id, &mut grads, x, grad);
                 }
+                Node::Contiguous { x } => {
+                    accum_grad(self, graph_id, &mut grads, x, grad);
+                }
                 Node::Assign { dst: _, src, .. } => {
                     accum_grad(self, graph_id, &mut grads, src, grad);
                 }

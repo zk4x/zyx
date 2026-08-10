@@ -360,6 +360,11 @@ impl Graph {
                         let (kid, op_id) = self.add_store(x, child_kid, child_op, &mut visited, &rcs, shapes);
                         visited.insert(cid, (kid, op_id));
                     }
+                    Node::Contiguous { x } => {
+                        let (child_kid, child_op) = visited[&x];
+                        let (kid, op_id) = self.add_store(x, child_kid, child_op, &mut visited, &rcs, shapes);
+                        visited.insert(cid, (kid, op_id));
+                    }
                     Node::Kernel { .. } => {}
                 }
             }

@@ -1210,6 +1210,31 @@ impl Runtime {
         Ok(tid)
     }
 
+    pub fn contiguous(&mut self, x: TensorId) -> Result<TensorId, ZyxError> {
+        #[cfg(feature = "debug_tensor_op")]
+        println!("runtime::contiguous(x={x})");
+
+        if self.is_graph(x) {
+            let (class_id, graph_id) = self.graph_ids(x);
+            let shape_id = self.tensors[x].shape_id;
+            let dtype = self.tensors[x].dtype;
+            let (_node_id, cid) = self.push_node(graph_id, Node::Contiguous { x: class_id }, shape_id, dtype);
+            let tid = self.new_graph_tensor(graph_id, cid, shape_id, dtype);
+            #[cfg(feature = "debug_tensor_op")]
+            println!("  -> tid={tid}, nid={_node_id:?}, cid={cid:?}");
+            Ok(tid)
+        } else if self.buffer_map.contains_key(&x) {
+            // Already realized: the tensor is a load from its own contiguous
+            // buffer, so this is a no-op. Mirror reshape's already-resized path.
+            self.retain(x);
+            Ok(x)
+        } else {
+            self.add_store(x)?;
+            self.retain(x);
+            Ok(x)
+        }
+    }
+
     pub fn reduce(&mut self, x: TensorId, mut axes: Vec<UAxis>, rop: BOp) -> Result<TensorId, ZyxError> {
         #[cfg(feature = "debug_tensor_op")]
         println!("runtime::reduce(x={x}, axes={axes:?}, rop={rop:?})");

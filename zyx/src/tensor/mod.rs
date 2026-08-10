@@ -3134,6 +3134,15 @@ impl Tensor {
         let id = RT.lock().to_device(self.id, device)?;
         Ok(Tensor { id })
     }
+
+    /// Returns a tensor whose value is materialized in its own contiguous
+    /// (row-major) buffer. This breaks kernel fusion: the current value is
+    /// stored out and reloaded, so downstream ops no longer fuse with the
+    /// producer kernel.
+    pub fn contiguous(&self) -> Result<Tensor, ZyxError> {
+        let id = RT.lock().contiguous(self.id)?;
+        Ok(Tensor { id })
+    }
 }
 
 #[cfg_attr(feature = "py", pyo3::pyclass)]

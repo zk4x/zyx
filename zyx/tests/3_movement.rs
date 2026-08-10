@@ -88,3 +88,42 @@ fn flip_errors() -> Result<(), ZyxError> {
     assert!(x.flip([1]).is_err());
     Ok(())
 }
+
+#[test]
+fn contiguous_1() -> Result<(), ZyxError> {
+    // Eager chain: contiguous breaks fusion but preserves the value.
+    let x = Tensor::from([[1, 2, 3], [4, 5, 6]]);
+    let y = (x + 1).contiguous()?;
+    assert_eq!(y, [[2, 3, 4], [5, 6, 7]]);
+    Ok(())
+}
+
+#[test]
+fn contiguous_2() -> Result<(), ZyxError> {
+    // After a permute, contiguous materializes the transposed value.
+    let x = Tensor::from([[1, 2], [3, 4]]);
+    let t = x.permute([1, 0])?;
+    let c = t.contiguous()?;
+    assert_eq!(c, [[1, 3], [2, 4]]);
+    Ok(())
+}
+
+#[test]
+fn contiguous_3() -> Result<(), ZyxError> {
+    // Already realized tensor: contiguous is a no-op returning the same value.
+    let x = Tensor::from([[1, 2], [3, 4]]);
+    let c = x.contiguous()?;
+    assert_eq!(c, [[1, 2], [3, 4]]);
+    Ok(())
+}
+
+#[test]
+fn contiguous_4() -> Result<(), ZyxError> {
+    // Computed chain followed by contiguous then more computation.
+    let x = Tensor::from([1f32, 2., 3.]);
+    let y = x.exp2();
+    let c = y.contiguous()?;
+    let z = c * 2.0;
+    assert_eq!(z, [4.0, 8.0, 16.0]);
+    Ok(())
+}

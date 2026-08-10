@@ -81,6 +81,20 @@ fn grad_reciprocal_2() -> Result<(), ZyxError> {
 }
 
 #[test]
+fn grad_contiguous() -> Result<(), ZyxError> {
+    // Graph path: contiguous is a fusion break inside a tape scope, and the
+    // gradient flows through it unchanged (d(y)/dx with y = contiguous(x) is 1).
+    let x = Tensor::from([1.0, 2.0, 3.0]);
+    let tape = Tape::new([&x])?;
+    let z = x.contiguous()?.relu();
+    let mut grads = tape.gradient(&z, [&x]);
+    let x_grad = grads.pop().unwrap();
+    tape.realize([&x_grad])?;
+    assert_eq!(x_grad, [1.0, 1.0, 1.0]);
+    Ok(())
+}
+
+#[test]
 fn grad_floor() -> Result<(), ZyxError> {
     if !Tensor::dtype_capability(DType::F64).any() {
         return Ok(());

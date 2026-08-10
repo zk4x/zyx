@@ -150,6 +150,9 @@ pub(crate) enum Node {
         device: DeviceId,
         time: u64,
     },
+    Contiguous {
+        x: ClassId,
+    },
     Kernel {
         inputs: Box<[ClassId]>,
         outputs: Box<[ClassId]>,
@@ -176,6 +179,7 @@ impl PartialEq for Node {
             (Self::Binary { x: a, y: ay, bop: ab }, Self::Binary { x: b, y: by, bop: bb }) => a == b && ay == by && ab == bb,
             (Self::Assign { dst: a, src: as_ }, Self::Assign { dst: b, src: bs }) => a == b && as_ == bs,
             (Self::ToDevice { x: a, device: ad, .. }, Self::ToDevice { x: b, device: bd, .. }) => a == b && ad == bd,
+            (Self::Contiguous { x: a }, Self::Contiguous { x: b }) => a == b,
             (
                 Self::Kernel { inputs: ai, outputs: ao, program_id: ap, .. },
                 Self::Kernel { inputs: bi, outputs: bo, program_id: bp, .. },
@@ -249,6 +253,10 @@ impl std::hash::Hash for Node {
                 10u8.hash(state);
                 x.hash(state);
                 device.hash(state);
+            }
+            Self::Contiguous { x } => {
+                14u8.hash(state);
+                x.hash(state);
             }
             Self::Assign { dst, src } => {
                 13u8.hash(state);
@@ -341,6 +349,7 @@ impl Node {
             Self::Binary { x, y, .. } => vec![*x, *y],
             Self::Assign { dst, src } => vec![*dst, *src],
             Self::ToDevice { x, .. } => vec![*x],
+            Self::Contiguous { x, .. } => vec![*x],
             Self::Kernel { inputs, .. } => inputs.to_vec(),
         }
     }
@@ -534,6 +543,7 @@ impl Graph {
                     Node::PadZeros { padding, .. } => format!("Pad {:?}", padding),
                     Node::Flip { axes, .. } => format!("Flip {:?}", axes),
                     Node::ToDevice { device, time, .. } => format!("ToDevice {:?} time={}", device, time),
+                    Node::Contiguous { .. } => "Contiguous".into(),
                     Node::Const(v) => format!("Const {:?}", v),
                     Node::Leaf { dtype, .. } => format!("Leaf {:?}", dtype),
                 };
