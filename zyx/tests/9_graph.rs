@@ -201,6 +201,19 @@ fn assign_graph_computed_src() -> Result<(), ZyxError> {
 }
 
 #[test]
+fn assign_graph_movement_dst() -> Result<(), ZyxError> {
+    let base = Tensor::from([1.6f32, 0f32, 0f32, 2.3f32, 4.7f32]);
+    let src = Tensor::from([7f32, 8f32, 9f32]);
+    let tape = Tape::new([&base])?;
+    let dst = base.slice(1..4)?;
+    dst.assign(&src)?;
+    tape.realize([&base])?;
+    let out: Vec<f32> = base.try_into()?;
+    assert_eq!(out, vec![1.6f32, 7.0, 8.0, 9.0, 4.7]);
+    Ok(())
+}
+
+#[test]
 fn tape_caching() -> Result<(), ZyxError> {
     let x = Tensor::from([1.0f32, 2.0, 3.0]);
     let y = Tensor::randn([3, 3], DType::F32)?;

@@ -1695,9 +1695,6 @@ impl Runtime {
         if dst_shape != src_shape {
             return Err(ZyxError::shape_error(format!("assign shape mismatch: dst={dst_shape:?}, src={src_shape:?}").into()));
         }
-        if self.is_graph(dst) && !self.buffer_map.contains_key(&dst) {
-            return Err(ZyxError::graph_tensor_not_realized(dst));
-        }
         if self.is_graph(dst) {
             // Graph-mode in-place assign: record a Node::Assign inside the tape
             // graph. The plan writes src's value into dst's existing buffer
