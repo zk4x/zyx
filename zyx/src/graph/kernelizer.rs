@@ -356,13 +356,15 @@ impl Graph {
                         self.add_move(cid, x, MoveOp::Flip { axes: axes.to_vec() }, false, &mut visited, &mut rcs, shapes);
                     }
                     Node::ToDevice { x, .. } => {
-                        let (child_kid, child_op) = visited[&x];
-                        let (kid, op_id) = self.add_store(x, child_kid, child_op, &mut visited, &rcs, shapes);
+                        let (kid, op_id) = visited[&x];
+                        self.consume(x, kid, &mut visited, &mut rcs);
+                        let (kid, op_id) = self.add_store(x, kid, op_id, &mut visited, &rcs, shapes);
                         visited.insert(cid, (kid, op_id));
                     }
                     Node::Contiguous { x } => {
-                        let (child_kid, child_op) = visited[&x];
-                        let (kid, op_id) = self.add_store(x, child_kid, child_op, &mut visited, &rcs, shapes);
+                        let (kid, op_id) = visited[&x];
+                        self.consume(x, kid, &mut visited, &mut rcs);
+                        let (kid, op_id) = self.add_store(x, kid, op_id, &mut visited, &rcs, shapes);
                         visited.insert(cid, (kid, op_id));
                     }
                     Node::Kernel { .. } => {}
@@ -383,17 +385,13 @@ impl Graph {
             // Post-processing: store if final output
             if outputs.contains(&cid) {
                 let (mut kid, op_id) = visited[&cid];
-                let is_assign = self.classes[cid]
-                    .nodes
-                    .iter()
-                    .any(|&nid| matches!(&self.nodes[nid].node, Node::Assign { .. }));
+                let is_assign = self.classes[cid].nodes.iter().any(|&nid| matches!(&self.nodes[nid].node, Node::Assign { .. }));
                 // Assign classes are in-place aliases of dst's (leaf) buffer; the
                 // kernelizer already recorded the in-place store, so do not add a
                 // fresh-buffer store. AOT kernel classes are already materialized
                 // into storage by the backend kernel — storing the load kernel
                 // again would produce a self-copying kernel.
-                if !is_assign
-                    && !self.classes[cid].nodes.iter().any(|&nid| matches!(&self.nodes[nid].node, Node::Kernel { .. }))
+                if !is_assign && !self.classes[cid].nodes.iter().any(|&nid| matches!(&self.nodes[nid].node, Node::Kernel { .. }))
                 {
                     (kid, _) = self.add_store(cid, kid, op_id, &mut visited, &rcs, shapes);
                 }

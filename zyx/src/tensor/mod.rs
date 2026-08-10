@@ -3136,7 +3136,7 @@ impl Tensor {
     }
 
     /// Returns a tensor whose value is materialized in its own contiguous
-    /// (row-major) buffer. This breaks kernel fusion: the current value is
+    /// buffer. This is a manual kernel fusion break: the current value is
     /// stored out and reloaded, so downstream ops no longer fuse with the
     /// producer kernel.
     pub fn contiguous(&self) -> Result<Tensor, ZyxError> {
