@@ -19,7 +19,8 @@ use crate::{
     DType, Map, Set,
     dtype::Constant,
     kernel::{BOp, IDX_T, Kernel, MemLayout, MemScope, Op, OpId, UOp},
-    shape::Dim, slab::SlabId,
+    shape::Dim,
+    slab::SlabId,
 };
 use std::hash::BuildHasherDefault;
 
@@ -110,6 +111,8 @@ impl Kernel {
                     (Op::Const(cx), _) => match bop {
                         BOp::And if cx.dtype() == DType::Bool && cx.is_zero() => self.remap(op_id, x),
                         BOp::And if cx.dtype() == DType::Bool && cx.is_one() => self.remap(op_id, y),
+                        BOp::Or if cx.dtype() == DType::Bool && cx.is_zero() => self.remap(op_id, y),
+                        BOp::Or if cx.dtype() == DType::Bool && cx.is_one() => self.remap(op_id, x),
                         BOp::Add if cx.is_zero() => self.remap(op_id, y),
                         BOp::Sub if cx.is_zero() => self.ops[op_id].op = Op::Unary { x: y, uop: UOp::Neg },
                         BOp::Mul | BOp::Div if cx.is_zero() => self.ops[op_id].op = Op::Const(cx),
@@ -120,15 +123,25 @@ impl Kernel {
                             self.ops[op_id].op = Op::Binary { x: y, y: c, bop: BOp::BitShiftLeft };
                         }
                         BOp::Div if cx.is_zero() => self.remap(op_id, x),
-                        BOp::Div if cx.is_one() => self.ops[op_id].op = Op::Unary { x: y, uop: UOp::Reciprocal },
+                        BOp::Div if cx.is_one() && cx.dtype().is_float() => {
+                            self.ops[op_id].op = Op::Unary { x: y, uop: UOp::Reciprocal }
+                        }
                         BOp::Pow if cx.is_one() => self.ops[op_id].op = Op::Const(cx),
                         BOp::Max if cx.is_minimum() => self.remap(op_id, y),
-                        BOp::BitShiftLeft | BOp::BitShiftRight if cx.is_zero() => self.remap(op_id, y),
+                        BOp::Max if cx.is_max() => self.remap(op_id, x),
+                        BOp::BitAnd if cx.is_zero() => self.remap(op_id, x),
+                        BOp::BitAnd if cx.is_max() && cx.dtype().is_uint() => self.remap(op_id, y),
+                        BOp::BitOr if cx.is_zero() => self.remap(op_id, y),
+                        BOp::BitOr if cx.is_max() => self.remap(op_id, x),
+                        BOp::BitXor if cx.is_zero() => self.remap(op_id, y),
+                        BOp::BitShiftLeft | BOp::BitShiftRight if cx.is_zero() => self.remap(op_id, x),
                         _ => {}
                     },
                     (_, Op::Const(cy)) => match bop {
                         BOp::And if cy.dtype() == DType::Bool && cy.is_zero() => self.remap(op_id, y),
                         BOp::And if cy.dtype() == DType::Bool && cy.is_one() => self.remap(op_id, x),
+                        BOp::Or if cy.dtype() == DType::Bool && cy.is_zero() => self.remap(op_id, x),
+                        BOp::Or if cy.dtype() == DType::Bool && cy.is_one() => self.remap(op_id, y),
                         BOp::Add | BOp::Sub if cy.is_zero() => self.remap(op_id, x),
                         BOp::Mul if cy.is_zero() => self.ops[op_id].op = Op::Const(cy),
                         BOp::Mul if cy.is_one() => self.remap(op_id, x),
@@ -143,8 +156,22 @@ impl Kernel {
                             let y = self.insert_before(op_id, Op::Const(cy.unary(UOp::Log2)));
                             self.ops[op_id].op = Op::Binary { x, y, bop: BOp::BitShiftRight };
                         }
-                        BOp::Mod if cy.is_one() && !cy.dtype().is_float() => self.ops[op_id].op = Op::Const(cy.dtype().zero_constant()),
+                        BOp::Mod if cy.is_one() && !cy.dtype().is_float() => {
+                            self.ops[op_id].op = Op::Const(cy.dtype().zero_constant())
+                        }
                         BOp::Mod if cy.is_zero() && !cy.dtype().is_float() => panic!("Modulo by constant zero"),
+                        BOp::Pow if cy.is_zero() => self.ops[op_id].op = Op::Const(cy.dtype().one_constant()),
+                        BOp::Pow if cy.is_one() => self.remap(op_id, x),
+                        BOp::Pow if cy.is_two() => self.ops[op_id].op = Op::Binary { x, y: x, bop: BOp::Mul },
+                        BOp::Max if cy.is_minimum() => self.remap(op_id, x),
+                        BOp::Max if cy.is_max() => self.remap(op_id, y),
+                        BOp::BitAnd if cy.is_zero() => self.remap(op_id, y),
+                        BOp::BitAnd if cy.is_max() && cy.dtype().is_uint() => self.remap(op_id, x),
+                        BOp::BitOr if cy.is_zero() => self.remap(op_id, x),
+                        BOp::BitOr if cy.is_max() => self.remap(op_id, y),
+                        BOp::BitXor if cy.is_zero() => self.remap(op_id, x),
+                        BOp::BitShiftLeft if cy.is_zero() => self.remap(op_id, x),
+                        BOp::BitShiftRight if cy.is_zero() => self.remap(op_id, x),
                         // Consecutive modulo by constant: (x % a) % b folds to x % b
                         // only when b | a, and to x % a only when a | b. When neither
                         // divides the other the result cannot be reduced to a single mod.
@@ -163,11 +190,6 @@ impl Kernel {
                                 }
                             }
                         }
-                        BOp::Pow if cy.is_zero() => self.ops[op_id].op = Op::Const(cy.dtype().one_constant()),
-                        BOp::Pow if cy.is_one() => self.remap(op_id, x),
-                        BOp::Pow if cy.is_two() => self.ops[op_id].op = Op::Binary { x, y: x, bop: BOp::Mul },
-                        BOp::BitShiftLeft if cy.is_zero() => self.remap(op_id, x),
-                        BOp::BitShiftRight if cy.is_zero() => self.remap(op_id, x),
                         _ => {}
                     },
                     (x_op, y_op) if x_op == y_op => match bop {
@@ -179,6 +201,18 @@ impl Kernel {
                             let dtype = self.dtype(x);
                             self.ops[op_id].op = Op::Const(dtype.zero_constant());
                         }
+                        BOp::Mod if !self.dtype(x).is_float() => {
+                            let dtype = self.dtype(x);
+                            self.ops[op_id].op = Op::Const(dtype.zero_constant());
+                        }
+                        BOp::BitXor => {
+                            let dtype = self.dtype(x);
+                            self.ops[op_id].op = Op::Const(dtype.zero_constant());
+                        }
+                        BOp::BitAnd | BOp::BitOr | BOp::Max => self.remap(op_id, x),
+                        BOp::Cmpgt | BOp::Cmplt => self.ops[op_id].op = Op::Const(DType::Bool.zero_constant()),
+                        BOp::Eq if !self.dtype(x).is_float() => self.ops[op_id].op = Op::Const(DType::Bool.one_constant()),
+                        BOp::NotEq if !self.dtype(x).is_float() => self.ops[op_id].op = Op::Const(DType::Bool.zero_constant()),
                         _ => {}
                     },
                     _ => {}
