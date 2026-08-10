@@ -329,7 +329,7 @@ impl Runtime {
                 if td.graph_id == graph_id
                     && !output_set.contains(&tid)
                     && !self.graphs[graph_id].is_leaf(td.class_id)
-                    && !self.graphs[graph_id].is_assign_alias(td.class_id)
+                    && !self.graphs[graph_id].is_after(td.class_id)
                 {
                     debug_assert!(
                         !self.buffer_map.contains_key(&tid),

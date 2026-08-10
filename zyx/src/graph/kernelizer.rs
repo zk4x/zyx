@@ -118,10 +118,10 @@ impl Graph {
             debug_assert!(!visited.contains_key(&cid), "class {cid:?} already visited");
 
             let nid = self.classes[cid].nodes[0];
-            /*println!(
+            println!(
                 "cid={} nid={} rc={} shape={:?}, {:?}",
                 cid.0, nid.0, rcs[&cid], shapes[self.classes[cid].shape], self.nodes[nid].node
-            );*/
+            );
             if inputs.contains(&cid) {
                 // Boundary input: load the class from storage, same as a leaf.
                 let (kid, op_id) = self.new_load_kernel(cid, shapes, *rcs.get(&cid).unwrap());
@@ -217,6 +217,19 @@ impl Graph {
                         self.push_outputs(kid, cid, *rcs.get(&cid).unwrap());
                         visited.insert(cid, (kid, result_op));
                     }
+                    Node::After { x, dep } => {
+                        *rcs.get_mut(&x).unwrap() -= 1;
+                        if *rcs.get(&x).unwrap() == 0 {
+                            visited.remove(&x);
+                        }
+                        *rcs.get_mut(&dep).unwrap() -= 1;
+                        if *rcs.get(&dep).unwrap() == 0 {
+                            visited.remove(&dep);
+                        }
+                        let (kid, op_id) = self.new_load_kernel(x, shapes, 1);
+                        self.push_outputs(kid, cid, *rcs.get(&cid).unwrap());
+                        visited.insert(cid, (kid, op_id));
+                    }
                     Node::Assign { dst, src } => {
                         let (src_kid, src_op) = visited[&src];
                         let (dst_kid, dst_op) = visited[&dst];
@@ -252,7 +265,9 @@ impl Graph {
 
                         // Remove dst's movement-only kernel; its base buffer is
                         // dst_leaf's. The assign store reuses that buffer in-place.
-                        let JitKernelData { kernel: dst_kernel, .. } = unsafe { self.jit_kernels.remove_and_return(dst_kid) };
+                        let JitKernelData { kernel: dst_kernel, loads: dst_loads, .. } =
+                            unsafe { self.jit_kernels.remove_and_return(dst_kid) };
+                        debug_assert_eq!(dst_loads.len(), 1);
 
                         // Backtrace to dst's base define.
                         let mut dst_define = dst_op;
@@ -303,14 +318,13 @@ impl Graph {
                         // Store src's value into dst's (leaf) buffer through the
                         // replayed chain, in-place.
                         self.jit_kernels[src_kid].kernel.store(dst_op, src_op, OpId::NULL, MemLayout::Scalar);
-                        self.jit_kernels[src_kid].stores.push(cid);
+                        self.jit_kernels[src_kid].stores.push(dst_loads[0]);
 
                         // Bookkeeping: the assign consumed dst and src. cid reads
                         // dst's buffer via the replayed chain position.
                         *rcs.get_mut(&dst).unwrap() -= 1;
                         visited.remove(&dst);
                         self.consume(src, src_kid, &mut visited, &mut rcs);
-                        self.push_outputs(src_kid, cid, *rcs.get(&cid).unwrap());
                         visited.insert(cid, (src_kid, dst_op));
                     }
                     Node::Expand { x, .. } => {
@@ -430,10 +444,10 @@ impl Graph {
                     if !counts.is_empty() && counts.iter().any(|(c, &n)| *rcs.get(c).unwrap() != n) {
                         println!("outputs={:?}, counts={counts:?}", ek.outputs);
                         for (c, n) in counts.iter() {
-                            println!("c={c:?}, rcs={}, n={n}", rcs[c]);
+                            println!("class={c:?}, rcs={}, n={n}", rcs[c]);
                         }
                         ek.kernel.debug();
-                        panic!("output:rcs invariant violated");
+                        panic!("output != rcs");
                     }
                 }
                 for c in &order[..=i] {
@@ -745,16 +759,6 @@ impl Graph {
             for &cid in &region {
                 if outputs.contains(&cid) || kernel_inputs.contains(&cid) {
                     region_outputs.insert(cid);
-                }
-                // In-place assigns mutate a realized leaf buffer as a side effect
-                // and must always be kernelized — even when the assigned-to view
-                // is not among the requested outputs (e.g. assigning into a slice
-                // then realizing the base leaf).
-                for nid in &self.classes[cid].nodes {
-                    if matches!(&self.nodes[*nid].node, Node::Assign { .. }) {
-                        region_outputs.insert(cid);
-                        break;
-                    }
                 }
             }
 

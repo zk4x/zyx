@@ -39,12 +39,11 @@
 #![allow(unused)]
 
 use crate::{
-    Map, Set,
+    DType, Map, Set,
     dtype::Constant,
     kernel::{BOp, IDX_T, IdxScope, Kernel, MemLayout, MemScope, MoveOp, Op, OpId},
     shape::{self, Dim, UAxis},
     slab::SlabId,
-    DType,
 };
 
 /// Extract the value of an index constant op.

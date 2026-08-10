@@ -381,7 +381,13 @@ impl Runtime {
                     let sum_axes: Vec<UAxis> = in_shape
                         .iter()
                         .enumerate()
-                        .filter_map(|(i, &xd)| if xd == 1 && out_shape[pad + i] > 1 { Some((pad + i) as UAxis) } else { None })
+                        .filter_map(|(i, &xd)| {
+                            if xd == 1 && out_shape[pad + i] > 1 {
+                                Some((pad + i) as UAxis)
+                            } else {
+                                None
+                            }
+                        })
                         .collect();
                     if sum_axes.is_empty() {
                         accum_grad(self, graph_id, &mut grads, x, grad);
@@ -401,8 +407,13 @@ impl Runtime {
                         let reduced = if reduce_shape_id == x_shape {
                             reduced
                         } else {
-                            self.push_node(graph_id, Node::Reshape { x: reduced, shape: x_shape }, x_shape, self.graphs[graph_id].classes[grad].dtype)
-                                .1
+                            self.push_node(
+                                graph_id,
+                                Node::Reshape { x: reduced, shape: x_shape },
+                                x_shape,
+                                self.graphs[graph_id].classes[grad].dtype,
+                            )
+                            .1
                         };
                         accum_grad(self, graph_id, &mut grads, x, reduced);
                     }
@@ -564,6 +575,9 @@ impl Runtime {
                 }
                 Node::Assign { dst: _, src, .. } => {
                     accum_grad(self, graph_id, &mut grads, src, grad);
+                }
+                Node::After { .. } => {
+                    todo!()
                 }
                 Node::Leaf { .. } | Node::Const(_) | Node::Kernel { .. } => {}
             }

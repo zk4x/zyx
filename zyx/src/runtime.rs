@@ -212,7 +212,7 @@ impl Runtime {
         (td.class_id, td.graph_id)
     }
 
-    fn eager_ids(&self, x: TensorId) -> (KernelId, OpId) {
+    pub fn eager_ids(&self, x: TensorId) -> (KernelId, OpId) {
         let td = &self.tensors[x];
         if td.kernel_id.is_null() {
             panic!(
@@ -451,28 +451,6 @@ impl Runtime {
             !self.graphs[graph_id].dead,
             "tape scope has ended (tensor belongs to a dead tape scope; Tape dropped or realized without this tensor being an output)"
         );
-    }
-
-    pub(crate) fn debug_assert_pre_realize(&self, graph_id: GraphId) {
-        if cfg!(debug_assertions) {
-            // I2: all leaves realized. A leaf is either a directly-promoted
-            // realized tensor (Graph state) or the load tensor of a promoted
-            // kernel (Eager state) — both carry a buffer.
-            for &tid in self.graphs[graph_id].leaf_map.values() {
-                debug_assert!(self.buffer_map.contains_key(&tid), "leaf {tid} not realized");
-                debug_assert!(self.tensors[tid].graph_id == graph_id, "leaf {tid} belongs to another graph");
-            }
-            // I2: no non-leaf graph tensor is realized — except in-place assign
-            // targets, whose value lives in the (realized) leaf buffer they alias.
-            for (tid, td) in self.tensors.iter() {
-                if td.graph_id == graph_id
-                    && !self.graphs[graph_id].is_leaf(td.class_id)
-                    && !self.graphs[graph_id].is_assign_alias(td.class_id)
-                {
-                    debug_assert!(!self.buffer_map.contains_key(&tid), "non-leaf graph tensor {tid} realized before realize");
-                }
-            }
-        }
     }
 
     pub fn push_shape(&mut self, shape: Vec<Dim>) -> ShapeId {
@@ -717,255 +695,6 @@ impl Runtime {
         self.retain_load(tid);
         self.buffer_map.insert(tid, buffer_id);
         Ok(tid)
-    }
-
-    pub fn promote_to_graph(&mut self, tid: TensorId, graph_id: GraphId) -> Result<ClassId, ZyxError> {
-        let (class_id, gid) = (self.tensors[tid].class_id, self.tensors[tid].graph_id);
-        if !class_id.is_null() {
-            if !self.graphs[gid].dead {
-                if graph_id == gid {
-                    return Ok(class_id);
-                } else {
-                    panic!("tensor belongs to a different tape scope");
-                }
-            }
-            // Graph is dead: the tensor reverts to eager (its kernel_id is still
-            // valid since we never mutated the eager kernel). Clear the graph
-            // affiliation before promoting it into a new scope.
-            self.tensors[tid].class_id = ClassId::NULL;
-            self.tensors[tid].graph_id = GraphId::NULL;
-            self.graphs[gid].ref_count -= 1;
-            if self.graphs[gid].dead && self.graphs[gid].ref_count == 0 {
-                self.remove_dead_graph(gid);
-            }
-        }
-
-        let (kernel_id, my_op_id) = self.eager_ids(tid);
-
-        // Already realized eager tensors promote to the graph as leaves directly.
-        // Their buffer is read by the plan as an input; the value is preserved and
-        // not recomputed. The eager kernel is left untouched (rc/outputs already
-        // count the handles), so the tensor reverts to eager when the graph dies.
-        if self.buffer_map.contains_key(&tid) {
-            let (shape_id, dtype) = (self.tensors[tid].shape_id, self.tensors[tid].dtype);
-            let (_, class_id) = self.push_leaf_node(graph_id, dtype, shape_id);
-            self.graphs[graph_id].leaf_map.insert(class_id, tid);
-            self.graphs[graph_id].leaf_classes.push(class_id);
-            self.graphs[graph_id].ref_count += 1;
-            self.tensors[tid].class_id = class_id;
-            self.tensors[tid].graph_id = graph_id;
-            return Ok(class_id);
-        }
-
-        debug_assert!(self.kernels[kernel_id].outputs.contains(&tid));
-
-        let relevant = {
-            let kernel = &self.kernels[kernel_id].kernel;
-            let mut relevant: Set<OpId> = Set::default();
-            let mut stack = vec![my_op_id];
-            while let Some(oid) = stack.pop() {
-                if !relevant.insert(oid) {
-                    continue;
-                }
-                match kernel.ops[oid].op {
-                    Op::Define { .. } | Op::Const(_) => {}
-                    Op::Unary { x, .. } => stack.push(x),
-                    Op::Binary { x, y, .. } => {
-                        stack.push(x);
-                        stack.push(y);
-                    }
-                    Op::Cast { x, .. } => stack.push(x),
-                    Op::Reduce { x, .. } => stack.push(x),
-                    Op::Move { x, .. } => stack.push(x),
-                    _ => unreachable!(),
-                }
-            }
-            relevant
-        };
-
-        let loads = self.kernels[kernel_id].loads.clone();
-        let mut op_to_class: Map<OpId, ClassId> = Map::default();
-        let mut define_idx = 0;
-        let mut op_id = self.kernels[kernel_id].kernel.head;
-        while !op_id.is_null() {
-            if relevant.contains(&op_id) {
-                let class_id = match self.kernels[kernel_id].kernel.ops[op_id].op {
-                    Op::Define { ref shape, .. } => {
-                        let load_tid = loads[define_idx];
-                        let shape_id = self.tensors[load_tid].shape_id;
-                        debug_assert_eq!(shape.to_vec(), self.shapes[shape_id], "define shape mismatch");
-                        if !self.buffer_map.contains_key(&load_tid) {
-                            let pending = if self.tensors[load_tid].class_id.is_null() {
-                                self.tensors[load_tid].depends_on
-                            } else {
-                                KernelId::NULL
-                            };
-                            debug_assert!(!pending.is_null());
-                            let outputs: Vec<TensorId> = self.kernels[pending].outputs.clone();
-                            for &otid in &outputs {
-                                self.add_store(otid)?;
-                            }
-                        }
-
-                        if !self.tensors[load_tid].class_id.is_null()
-                            && self.tensors[load_tid].graph_id == graph_id
-                            && !self.graphs[graph_id].dead
-                        {
-                            // load_tid is already a leaf of this graph: reuse its class.
-                            self.tensors[load_tid].class_id
-                        } else {
-                            let dtype = self.tensors[load_tid].dtype;
-                            let (_, class_id) = self.push_leaf_node(graph_id, dtype, shape_id);
-                            self.graphs[graph_id].leaf_map.insert(class_id, load_tid);
-                            self.graphs[graph_id].leaf_classes.push(class_id);
-                            self.graphs[graph_id].ref_count += 1;
-                            self.tensors[load_tid].class_id = class_id;
-                            self.tensors[load_tid].graph_id = graph_id;
-                            class_id
-                        }
-                    }
-                    Op::Const(x) => {
-                        let shape_id = self.push_shape(vec![1]);
-                        let (_, class_id) = self.push_node(graph_id, Node::Const(x), shape_id, x.dtype());
-                        class_id
-                    }
-                    Op::Unary { x, uop } => {
-                        let x_class = op_to_class[&x];
-                        let shape = self.graphs[graph_id].classes[x_class].shape;
-                        let dtype = self.graphs[graph_id].classes[x_class].dtype;
-                        let (_, class_id) = self.push_node(graph_id, Node::Unary { x: x_class, uop }, shape, dtype);
-                        class_id
-                    }
-                    Op::Binary { x, y, bop } => {
-                        let x_class = op_to_class[&x];
-                        let y_class = op_to_class[&y];
-                        self.push_binary_node(graph_id, x_class, y_class, bop)
-                    }
-                    Op::Cast { x, dtype } => {
-                        let x_class = op_to_class[&x];
-                        let shape = self.graphs[graph_id].classes[x_class].shape;
-                        let (_, class_id) = self.push_node(graph_id, Node::Cast { x: x_class, dtype }, shape, dtype);
-                        class_id
-                    }
-                    Op::Reduce { x, rop, n_axes } => {
-                        let x_class = op_to_class[&x];
-                        let in_shape = self.shapes[self.graphs[graph_id].classes[x_class].shape].clone();
-                        debug_assert!(
-                            n_axes <= in_shape.len(),
-                            "Reduce: n_axes {} > input rank {} (shape {:?})",
-                            n_axes,
-                            in_shape.len(),
-                            in_shape
-                        );
-                        let out_shape: Vec<Dim> = in_shape[..in_shape.len() - n_axes].to_vec();
-                        let out_shape_id = self.push_shape(out_shape);
-                        let dtype = self.graphs[graph_id].classes[x_class].dtype;
-                        let axes: Vec<UAxis> = (in_shape.len() - n_axes..in_shape.len()).collect();
-                        let (_, class_id) =
-                            self.push_node(graph_id, Node::Reduce { x: x_class, rop, axes: axes.into() }, out_shape_id, dtype);
-                        class_id
-                    }
-                    Op::Move { x, ref mop } => {
-                        let x_class = op_to_class[&x];
-                        let in_shape = &self.shapes[self.graphs[graph_id].classes[x_class].shape];
-                        match mop.as_ref() {
-                            MoveOp::Reshape { shape } => {
-                                debug_assert_eq!(
-                                    shape.iter().product::<Dim>(),
-                                    in_shape.iter().product::<Dim>(),
-                                    "Reshape: element count mismatch {:?} -> {:?}",
-                                    in_shape,
-                                    shape
-                                );
-                                let dtype = self.graphs[graph_id].classes[x_class].dtype;
-                                let shape_id = self.push_shape(shape.clone());
-                                let (_, class_id) =
-                                    self.push_node(graph_id, Node::Reshape { x: x_class, shape: shape_id }, shape_id, dtype);
-                                class_id
-                            }
-                            MoveOp::Expand { shape } => {
-                                debug_assert!(
-                                    shape.len() >= in_shape.len(),
-                                    "Expand: output rank {} < input rank {}",
-                                    shape.len(),
-                                    in_shape.len()
-                                );
-                                let shape_id = self.push_shape(shape.clone());
-                                let dtype = self.graphs[graph_id].classes[x_class].dtype;
-                                let (_, class_id) =
-                                    self.push_node(graph_id, Node::Expand { x: x_class, shape: shape_id }, shape_id, dtype);
-                                class_id
-                            }
-                            MoveOp::Permute { axes, shape } => {
-                                debug_assert_eq!(
-                                    axes.len(),
-                                    in_shape.len(),
-                                    "Permute: axes length {} != input rank {} (shape {:?})",
-                                    axes.len(),
-                                    in_shape.len(),
-                                    in_shape
-                                );
-                                debug_assert_eq!(
-                                    shape.len(),
-                                    in_shape.len(),
-                                    "Permute: output shape rank {} != input rank {} (shape {:?})",
-                                    shape.len(),
-                                    in_shape.len(),
-                                    in_shape
-                                );
-                                let dtype = self.graphs[graph_id].classes[x_class].dtype;
-                                let axes = axes.clone().into();
-                                let shape_id = self.push_shape(shape.clone());
-                                let (_, class_id) = self.push_node(graph_id, Node::Permute { x: x_class, axes }, shape_id, dtype);
-                                class_id
-                            }
-                            MoveOp::Pad { padding, shape } => {
-                                debug_assert_eq!(
-                                    padding.len(),
-                                    in_shape.len(),
-                                    "Pad: padding length {} != input rank {} (shape {:?})",
-                                    padding.len(),
-                                    in_shape.len(),
-                                    in_shape
-                                );
-                                let dtype = self.graphs[graph_id].classes[x_class].dtype;
-                                let padding = padding.clone().into();
-                                let shape_id = self.push_shape(shape.clone());
-                                let (_, class_id) =
-                                    self.push_node(graph_id, Node::PadZeros { x: x_class, padding }, shape_id, dtype);
-                                class_id
-                            }
-                            MoveOp::Flip { axes } => {
-                                debug_assert!(
-                                    !axes.is_empty(),
-                                    "Flip: axes must not be empty (rank {} shape {:?})",
-                                    in_shape.len(),
-                                    in_shape
-                                );
-                                let dtype = self.graphs[graph_id].classes[x_class].dtype;
-                                let axes = axes.clone().into();
-                                let shape_id = self.push_shape(in_shape.clone());
-                                let (_, class_id) = self.push_node(graph_id, Node::Flip { x: x_class, axes }, shape_id, dtype);
-                                class_id
-                            }
-                        }
-                    }
-                    _ => unreachable!(),
-                };
-                op_to_class.insert(op_id, class_id);
-            }
-
-            if matches!(self.kernels[kernel_id].kernel.at(op_id), Op::Define { .. }) {
-                define_idx += 1;
-            }
-            op_id = self.kernels[kernel_id].kernel.next_op(op_id);
-        }
-
-        let class_id = op_to_class[&my_op_id];
-        self.graphs[graph_id].ref_count += 1;
-        self.tensors[tid].class_id = class_id;
-        self.tensors[tid].graph_id = graph_id;
-        Ok(class_id)
     }
 
     pub fn cast(&mut self, x: TensorId, dtype: DType) -> TensorId {
@@ -1690,7 +1419,7 @@ impl Runtime {
             if dst == src {
                 return Err(ZyxError::ShapeError("assign: dst equals src (self-assign)".into()));
             }
-            let (dst_class, graph_id) = self.graph_ids(dst);
+            let (dst_cid, graph_id) = self.graph_ids(dst);
             self.assert_graph_alive(graph_id);
             if self.is_graph(src) {
                 let (_, src_graph_id) = self.graph_ids(src);
@@ -1700,15 +1429,32 @@ impl Runtime {
             } else {
                 self.promote_to_graph(src, graph_id)?;
             }
+            let mut dst_define_cid = dst_cid;
+            // Walk graph to find the source of the lvalue
+            let graph = &self.graphs[graph_id];
+            loop {
+                match graph.nodes[graph.classes[dst_define_cid].nodes[0]].node {
+                    Node::PadZeros { x, .. }
+                    | Node::Flip { x, .. }
+                    | Node::Expand { x, .. }
+                    | Node::Reshape { x, .. }
+                    | Node::Permute { x, .. } => dst_define_cid = x,
+                    Node::Leaf { .. } => break,
+                    _ => unreachable!(),
+                }
+            }
+            let dst_define = graph.leaf_map[&dst_define_cid];
+
             // The Assign node keeps the ORIGINAL dst-chain and src classes; the
             // output class cid is what any later use of dst or src resolves to,
             // so both tensors are re-pointed at it.
-            let src_class = self.graph_ids(src).0;
+            let src_cid = self.graph_ids(src).0;
             let shape_id = self.tensors[dst].shape_id;
             let dtype = self.tensors[dst].dtype;
-            let (_node_id, cid) = self.push_node(graph_id, Node::Assign { dst: dst_class, src: src_class }, shape_id, dtype);
-            self.tensors[dst].class_id = cid;
-            self.tensors[src].class_id = cid;
+            let (_node_id, assign_cid) = self.push_node(graph_id, Node::Assign { dst: dst_cid, src: src_cid }, shape_id, dtype);
+            self.tensors[dst_define].class_id =
+                self.push_node(graph_id, Node::After { x: dst_define_cid, dep: assign_cid }, shape_id, dtype).1;
+            self.tensors[dst].class_id = self.push_node(graph_id, Node::After { x: dst_cid, dep: assign_cid }, shape_id, dtype).1;
             #[cfg(feature = "debug_tensor_op")]
             println!("  -> cid={cid:?}");
             return Ok(());
