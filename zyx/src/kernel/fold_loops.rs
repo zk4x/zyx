@@ -1091,4 +1091,120 @@ mod tests {
         let result = compiled.forward(&[], vec![[2]]).unwrap().pop().unwrap();
         assert_eq!(result, [1, 2]);
     }
+
+    /// Reproduce the llama one-hot/embedding IR from ZYX_DEBUG=8 (llama/src,
+    /// the `embedding` reduce). Per (batch, vocab) thread it counts, over a
+    /// full vocab loop, `loop + v > V - 2` (via a divmod round-trip packing
+    /// through `% 1` and `(a*2V + b) % (2V-1)`), accumulates the count, then
+    /// compares `count - 1 == token` after the loop.
+    ///
+    /// With `V = 8` the closed form of the inner loop is `v + 1`, so after
+    /// folding the whole kernel is just a one-hot lookup: `out[b,p,v] =
+    /// (v == tokens[b,p])`. The loop must fold.
+    #[test]
+    fn test_llama_onehot_loop_folds() {
+        let mut k = Kernel::new(DeviceId::AUTO);
+
+        let r67 = k.define(DType::U32, MemScope::Global, true, &[1, 2]);
+        let r30 = k.define(DType::F16, MemScope::Global, false, &[1, 2, 8, 1]);
+        let c0 = k.const_idx(0u32);
+        let c1 = k.const_idx(1u32);
+        let c2 = k.const_idx(2u32);
+        let c8 = k.const_idx(8u32);
+        let c16 = k.const_idx(16u32);
+        let c15 = k.const_idx(15u32);
+        let c6 = k.const_idx(6u32);
+        let ctrue = k.const_val(true);
+        let c0i = k.const_val(0i64);
+        let c1i = k.const_val(1i64);
+
+        let r97 = k.group_index(0, 2);
+        let r37 = k.group_index(1, 8);
+        let r34 = k.group_index(2, 1);
+
+        let r43 = k.mod_(r97, c1);
+        let r3 = k.div(r97, c1);
+        let r40 = k.mod_(r3, c2);
+        let _r45 = k.div(r3, c2);
+        let r46 = k.mad(r43, c16, c0);
+        let r47 = k.mad(r40, c8, r46);
+        let r48 = k.mad(r37, c1, r47);
+        let r49 = k.mad(r34, c1, r48);
+        let r54 = k.mad(r43, c2, c0);
+        let r55 = k.mad(r40, c1, r54);
+        let r56 = k.mad(r37, c0, r55);
+        let r57 = k.mad(r34, c1, r56);
+        let r59 = k.div(r57, c2);
+        let r60 = k.mod_(r57, c2);
+        let r65 = k.mad(r59, c2, c0);
+        let r66 = k.mad(r60, c1, r65);
+        let r72 = k.mad(r43, c8, c0);
+        let r73 = k.mad(r40, c0, r72);
+        let r74 = k.mad(r37, c1, r73);
+        let r75 = k.mad(r34, c1, r74);
+
+        let r81 = k.define(DType::I64, MemScope::Register, false, &[1]);
+        k.store(r81, c0i, c0, MemLayout::Scalar);
+        let r84 = k.loop_(c8);
+
+        let r88 = k.load(r81, c0, MemLayout::Scalar);
+        let r95 = k.mad(r84, c8, c0);
+        let r96 = k.mad(r75, c1, r95);
+        let r98 = k.div(r96, c8);
+        let r99 = k.mod_(r96, c8);
+        let _r102 = k.div(r99, c1);
+        let r103 = k.mod_(r99, c1);
+        let r113 = k.mad(r98, c8, c0);
+        let r114 = k.mad(_r102, c1, r113);
+        let r115 = k.mad(r103, c1, r114);
+        let r117 = k.div(r115, c8);
+        let r118 = k.mod_(r115, c8);
+        let r126 = k.mad(r117, c16, c0);
+        let r127 = k.mad(r118, c1, r126);
+        let r132 = k.mad(r127, c1, c0);
+        let r134 = k.div(r132, c15);
+        let r135 = k.mod_(r132, c15);
+        let r140 = k.mad(r134, c0, c0);
+        let r141 = k.mad(r135, c1, r140);
+        let r148 = k.cmpgt(r141, c6);
+        let r149 = k.and_(r148, ctrue);
+        let r150 = k.cast(r149, DType::I64);
+        let r0 = k.mul(r150, c1i);
+        let r13 = k.cast(r0, DType::I64);
+        let r89 = k.add(r13, r88);
+        k.store(r81, r89, c0, MemLayout::Scalar);
+        k.end_loop();
+
+        let r14 = k.load(r81, c0, MemLayout::Scalar);
+        let r17 = k.add(r14, c0i);
+        let r20 = k.sub(r17, c1i);
+        let r22 = k.cast(r20, DType::F32);
+        let r24 = k.load(r67, r66, MemLayout::Scalar);
+        let r25 = k.cast(r24, DType::F32);
+        let r28 = k.binary(r22, r25, BOp::Eq);
+        let r29 = k.cast(r28, DType::F16);
+        k.store(r30, r29, r49, MemLayout::Scalar);
+
+        k.constant_folding();
+        k.algebraic_simplifications();
+        k.simplify_accumulating_loop();
+
+        k.debug();
+        // The inner loop must have been folded: the after-loop accumulator
+        // load is rewritten to the closed form Cast((gidx + 1) * 1).
+        assert!(matches!(k.at(r14), Op::Cast { .. }), "llama one-hot loop should fold");
+
+        let tokens = crate::Tensor::from([[1u32, 5]]);
+        let tokens_host: Vec<u32> = tokens.clone().try_into().unwrap();
+
+        let compiled = k.compile().unwrap();
+        let result = compiled.forward(&[&tokens], vec![[1, 2, 8, 1]]).unwrap().pop().unwrap();
+        let got: Vec<f32> = result.cast(DType::F32).try_into().unwrap();
+
+        let mut expected = vec![0f32; 1 * 2 * 8 * 1];
+        for p in 0..2 {
+            expected[p * 8 + tokens_host[p] as usize] = 1.0;
+        }
+        assert_eq!(got, expected);
+    }
 }

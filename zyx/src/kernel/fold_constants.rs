@@ -143,6 +143,7 @@ impl Kernel {
                             let y = self.insert_before(op_id, Op::Const(cy.unary(UOp::Log2)));
                             self.ops[op_id].op = Op::Binary { x, y, bop: BOp::BitShiftRight };
                         }
+                        BOp::Mod if cy.is_one() => self.ops[op_id].op = Op::Const(cy.dtype().zero_constant()),
                         BOp::Mod if cy.is_zero() && cy.dtype() == IDX_T => {
                             let shift = Constant::binary(cy, Constant::idx(1), BOp::Sub);
                             let y = self.insert_before(op_id, Op::Const(shift));
