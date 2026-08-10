@@ -374,6 +374,30 @@ impl Graph {
         self.classes[class_id].nodes.iter().any(|&nid| matches!(&self.nodes[nid].node, Node::Leaf { .. }))
     }
 
+    /// Walks back through single-input movement nodes until reaching dst's base
+    /// leaf class (a key of `leaf_map`). Used to find which leaf buffer an
+    /// [`ExecNode`] class's store aliases.
+    pub(crate) fn base_leaf(&self, mut c: ClassId) -> ClassId {
+        loop {
+            if self.leaf_map.contains_key(&c) {
+                return c;
+            }
+            let mut next = None;
+            for nid in &self.classes[c].nodes {
+                match &self.nodes[*nid].node {
+                    Node::Expand { x, .. }
+                    | Node::Permute { x, .. }
+                    | Node::Reshape { x, .. }
+                    | Node::PadZeros { x, .. }
+                    | Node::Flip { x, .. }
+                    | Node::ToDevice { x, .. } => next = Some(*x),
+                    _ => {}
+                }
+            }
+            c = next.unwrap_or_else(|| panic!("assign dst class {c:?} must be a realized leaf or a movement chain over one"));
+        }
+    }
+
     /// Whether `class_id` is the output of an in-place `assign` — a class whose
     /// value lives in (aliases) dst's realized leaf buffer.
     pub fn is_assign_alias(&self, class_id: ClassId) -> bool {
@@ -395,6 +419,7 @@ impl Graph {
     }
 
     pub fn topo_sort_classes(&self, outputs: &BTreeSet<ClassId>) -> Vec<ClassId> {
+        let outputs = self.with_assigned_dependencies(outputs, None);
         let mut rcs: Map<ClassId, u32> = Map::default();
         let mut stack: Vec<ClassId> = outputs.iter().copied().collect();
         while let Some(cid) = stack.pop() {
@@ -450,6 +475,7 @@ impl Graph {
         outputs: &BTreeSet<ClassId>,
         allowed: Option<&Set<ClassId>>,
     ) -> Vec<ClassId> {
+        let outputs = self.with_assigned_dependencies(outputs, allowed);
         let mut rcs: Map<ClassId, u32> = Map::default();
         let mut stack: Vec<ClassId> = outputs.iter().copied().collect();
         while let Some(cid) = stack.pop() {
@@ -477,7 +503,62 @@ impl Graph {
         order
     }
 
-    /// Dependencies of a class, stopping at `inputs`: an input class that is a
+    /// Post-pass for the topo sorts: an in-place assign is a dependency sink —
+    /// nothing produces it — yet it mutates a realized buffer, so its store
+    /// kernel must still be produced whenever the assign operates on anything
+    /// the toposort already needs. Returns `seed` extended with every assign
+    /// class whose (dst-chain / src) dependency closure overlaps the seed's
+    /// closure; an assign that shares no dependency with the required classes
+    /// stays dropped. Mirrors tinygrad's `AFTER(view, store)`, which makes
+    /// consumers of the buffer depend on the store and so schedules it.
+    fn with_assigned_dependencies(&self, seed: &BTreeSet<ClassId>, allowed: Option<&Set<ClassId>>) -> BTreeSet<ClassId> {
+        let mut out: BTreeSet<ClassId> = seed.iter().copied().collect();
+        loop {
+            let mut closure: Set<ClassId> = Set::default();
+            let mut stack: Vec<ClassId> = out.iter().copied().collect();
+            while let Some(cid) = stack.pop() {
+                if closure.insert(cid) {
+                    for dep in self.deps_without_kernels(cid) {
+                        if allowed.is_none_or(|a| a.contains(&dep)) {
+                            stack.push(dep);
+                        }
+                    }
+                }
+            }
+            let mut added = false;
+            for cid in self.classes.ids() {
+                if out.contains(&cid) {
+                    continue;
+                }
+                for nid in &self.classes[cid].nodes {
+                    if !matches!(&self.nodes[*nid].node, Node::Assign { .. }) {
+                        continue;
+                    }
+                    let mut aclosure: Set<ClassId> = Set::default();
+                    let mut astack: Vec<ClassId> = self.nodes[*nid].node.class_params().to_vec();
+                    while let Some(dep) = astack.pop() {
+                        if aclosure.insert(dep) {
+                            for d in self.deps_without_kernels(dep) {
+                                if allowed.is_none_or(|a| a.contains(&d)) {
+                                    astack.push(d);
+                                }
+                            }
+                        }
+                    }
+                    if aclosure.intersection(&closure).next().is_some() {
+                        out.insert(cid);
+                        added = true;
+                    }
+                    break;
+                }
+            }
+            if !added {
+                break;
+            }
+        }
+        out
+    }
+
     /// kernel output follows only its kernel-node inputs (so classes feeding an
     /// AOT kernel still get covered), an input leaf has no dependencies, and any
     /// other class uses its structural dependencies.
@@ -781,17 +862,41 @@ impl Graph {
         // selected producers and mark every reachable class as needed.
         let mut needed: Vec<bool> = vec![false; n];
         let mut stack: Vec<ClassId> = outputs.iter().copied().collect();
-        while let Some(cid) = stack.pop() {
-            if !needed[cid.0 as usize] {
-                needed[cid.0 as usize] = true;
-                if let Some(nid) = producer[cid.0 as usize] {
-                    match &self.nodes[nid].node {
-                        Node::Kernel { inputs, .. } => stack.extend(inputs.iter().copied()),
-                        Node::ToDevice { x, .. } => stack.push(*x),
-                        _ => {}
+        loop {
+            while let Some(cid) = stack.pop() {
+                if !needed[cid.0 as usize] {
+                    needed[cid.0 as usize] = true;
+                    if let Some(nid) = producer[cid.0 as usize] {
+                        match &self.nodes[nid].node {
+                            Node::Kernel { inputs, .. } => stack.extend(inputs.iter().copied()),
+                            Node::ToDevice { x, .. } => stack.push(*x),
+                            _ => {}
+                        }
                     }
                 }
             }
+            // In-place assigns write into the realized buffer of their dst's base
+            // leaf class, so the store kernel is a side effect on that buffer
+            // rather than a producer on the read path — nothing consumes the
+            // assign class, so the backward walk above never reaches it. Run the
+            // store whenever the buffer it writes is needed.
+            let mut add: Vec<ClassId> = Vec::new();
+            for &cid in &order {
+                if !needed[cid.0 as usize]
+                    && self.classes[cid].nodes.iter().any(|&nid| {
+                        matches!(&self.nodes[nid].node, Node::Assign { dst, .. } if needed[self.base_leaf(*dst).0 as usize])
+                    })
+                {
+                    add.push(cid);
+                }
+            }
+            if add.is_empty() {
+                break;
+            }
+            for &cid in &add {
+                needed[cid.0 as usize] = true;
+            }
+            stack.extend(add);
         }
 
         let mut result = Vec::new();

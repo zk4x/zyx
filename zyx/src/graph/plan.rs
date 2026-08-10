@@ -84,7 +84,7 @@ impl ExecPlan {
         for cid in graph.classes.ids() {
             for nid in &graph.classes[cid].nodes {
                 if let Node::Assign { dst, .. } = &graph.nodes[*nid].node {
-                    let base = base_leaf(graph, *dst);
+                    let base = graph.base_leaf(*dst);
                     aliases.push((cid, base, class_bytes(cid)));
                     alias_classes.insert(cid);
                 }
@@ -114,7 +114,11 @@ impl ExecPlan {
                     for &ic in &**inputs {
                         let c = rc.get_mut(&ic).unwrap();
                         *c -= 1;
-                        if *c == 0 && !graph.leaf_map.contains_key(&ic) && !output_set.contains(&ic) && !alias_classes.contains(&ic) {
+                        if *c == 0
+                            && !graph.leaf_map.contains_key(&ic)
+                            && !output_set.contains(&ic)
+                            && !alias_classes.contains(&ic)
+                        {
                             plan_nodes.push(ExecNode::Deallocate { class: ic });
                         }
                     }
@@ -122,7 +126,8 @@ impl ExecPlan {
                 Node::ToDevice { x, device, .. } => {
                     let pool = devices[*device].memory_pool_id();
                     let class_of = graph.nodes[nid].class_of;
-                    if allocated.insert(class_of) && !graph.leaf_map.contains_key(&class_of) && !alias_classes.contains(&class_of) {
+                    if allocated.insert(class_of) && !graph.leaf_map.contains_key(&class_of) && !alias_classes.contains(&class_of)
+                    {
                         plan_nodes.push(ExecNode::Allocate { class: class_of, pool, bytes: class_bytes(class_of) });
                     }
                     let cb = class_bytes(class_of);
@@ -141,7 +146,8 @@ impl ExecPlan {
         // requested outputs (e.g. the extra stores of a multi-output kernel).
         let allocated: Vec<ClassId> = allocated.iter().copied().collect();
         for c in allocated {
-            if !graph.leaf_map.contains_key(&c) && !output_set.contains(&c) && !alias_classes.contains(&c) && !rc.contains_key(&c) {
+            if !graph.leaf_map.contains_key(&c) && !output_set.contains(&c) && !alias_classes.contains(&c) && !rc.contains_key(&c)
+            {
                 plan_nodes.push(ExecNode::Deallocate { class: c });
             }
         }
@@ -271,28 +277,4 @@ fn drain_events_for_bufs(events: &mut Map<BTreeSet<BufferId>, Event>, bufs: &BTr
         result.push(events.remove(&key).unwrap());
     }
     result
-}
-
-/// Walks back through single-input movement nodes until reaching dst's base
-/// leaf class (a key of `leaf_map`). Used to find which leaf buffer an
-/// [`ExecNode`] class's store aliases.
-fn base_leaf(graph: &Graph, mut c: ClassId) -> ClassId {
-    loop {
-        if graph.leaf_map.contains_key(&c) {
-            return c;
-        }
-        let mut next = None;
-        for nid in &graph.classes[c].nodes {
-            match &graph.nodes[*nid].node {
-                Node::Expand { x, .. }
-                | Node::Permute { x, .. }
-                | Node::Reshape { x, .. }
-                | Node::PadZeros { x, .. }
-                | Node::Flip { x, .. }
-                | Node::ToDevice { x, .. } => next = Some(*x),
-                _ => {}
-            }
-        }
-        c = next.unwrap_or_else(|| panic!("assign dst class {c:?} must be a realized leaf or a movement chain over one"));
-    }
 }

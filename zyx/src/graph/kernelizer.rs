@@ -746,6 +746,16 @@ impl Graph {
                 if outputs.contains(&cid) || kernel_inputs.contains(&cid) {
                     region_outputs.insert(cid);
                 }
+                // In-place assigns mutate a realized leaf buffer as a side effect
+                // and must always be kernelized — even when the assigned-to view
+                // is not among the requested outputs (e.g. assigning into a slice
+                // then realizing the base leaf).
+                for nid in &self.classes[cid].nodes {
+                    if matches!(&self.nodes[*nid].node, Node::Assign { .. }) {
+                        region_outputs.insert(cid);
+                        break;
+                    }
+                }
             }
 
             if region_outputs.is_empty() {

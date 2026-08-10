@@ -49,10 +49,10 @@
 use std::collections::BTreeSet;
 
 use crate::{
-    DType, Map, RT, Tensor, ZyxError,
+    DType, Map, RT, Set, Tensor, ZyxError,
     backend::BufferId,
-    graph::plan::drain_events_for_buf,
-    graph::{ClassId, Graph, GraphId},
+    graph::{ClassId, Graph, GraphId, plan::drain_events_for_buf},
+    runtime::Runtime,
     shape::Dim,
     slab::SlabId,
     tensor::TensorId,
@@ -318,5 +318,25 @@ impl FrozenTape {
         }
 
         Ok(outputs)
+    }
+}
+
+impl Runtime {
+    fn debug_assert_no_stray_buffers(&self, graph_id: GraphId, outputs: &[TensorId]) {
+        if cfg!(debug_assertions) {
+            let output_set: Set<TensorId> = outputs.iter().copied().collect();
+            for (tid, td) in self.tensors.iter() {
+                if td.graph_id == graph_id
+                    && !output_set.contains(&tid)
+                    && !self.graphs[graph_id].is_leaf(td.class_id)
+                    && !self.graphs[graph_id].is_assign_alias(td.class_id)
+                {
+                    debug_assert!(
+                        !self.buffer_map.contains_key(&tid),
+                        "non-leaf, non-output graph tensor {tid} realized after execute_plan"
+                    );
+                }
+            }
+        }
     }
 }
