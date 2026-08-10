@@ -392,7 +392,7 @@ impl Kernel {
             Op::Reduce { x, .. } => self.dtype(x),
             Op::ReduceTile { x, .. } => self.dtype(x),
             Op::EndLoop | Op::Loop { .. } => IDX_T,
-            Op::Barrier { .. } | Op::If { .. } | Op::EndIf { .. } => todo!()
+            Op::Barrier { .. } | Op::If { .. } | Op::EndIf { .. } => todo!(),
         }
     }
 

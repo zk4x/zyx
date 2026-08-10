@@ -65,9 +65,29 @@ impl Kernel {
         }
 
         self.simplify_mod_shift_sequences(&bounds);
+        self.simplify_zero_shifts(&bounds);
         self.simplify_demux_roundtrip(&bounds);
         self.dead_code_elimination();
         self.verify();
+    }
+
+    /// Fold `x >> k` to constant zero when the upper bound of `x` is below `2^k`.
+    fn simplify_zero_shifts(&mut self, bounds: &Map<OpId, (Dim, Dim)>) {
+        let mut op_id = self.head;
+        while !op_id.is_null() {
+            let next = self.next_op(op_id);
+            if let &Op::Binary { x, y, bop: BOp::BitShiftRight } = self.at(op_id)
+                && let Op::Const(shift) = self.at(y)
+                && let Some(k) = shift.as_dim()
+                && k < 64
+                && let Some(&(_, xu)) = bounds.get(&x)
+                && xu < (1u64 << k)
+            {
+                let dtype = self.dtype(x);
+                self.ops[op_id].op = Op::Const(dtype.zero_constant());
+            }
+            op_id = next;
+        }
     }
 
     /// Try to recognize an expression as `root << K + constant` where the

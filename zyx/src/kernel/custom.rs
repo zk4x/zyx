@@ -611,28 +611,29 @@ impl CompiledKernel {
         let event = unsafe { device.launch(self.program.program, &mut *pool_ptr, &args, event_wait_list)? };
         rt.events.insert(all_bufs, event);
 
-        let kernel_id = rt.kernels.push(KernelData {
-            outputs: Vec::new(),
-            loads: Vec::new(),
-            stores: Vec::new(),
-            kernel: Kernel::new(device_id),
-        });
-
-        // Put to tensors
+        // Put to tensors. Each output gets its own load kernel: a realized
+        // tensor is referenced through a read-only global Define (like
+        // Runtime::eagerify/add_store does), never a NULL op id. NULL op ids
+        // break any eager op built on the forward result (e.g. a .cast()).
         let mut tensors = Vec::new();
         for ((dtype, shape), buf_id) in self.outputs.iter().copied().zip(shapes).zip(output_bufs) {
-            let shape_id = rt.push_shape(shape);
+            let shape_id = rt.push_shape(shape.clone());
             let id = rt.tensors.push(TensorData {
                 shape_id,
                 dtype,
-                kernel_id,
+                kernel_id: KernelId::NULL,
                 op_id: OpId::NULL,
                 depends_on: KernelId::NULL,
                 class_id: ClassId::NULL,
                 graph_id: GraphId::NULL,
                 rc: 1,
             });
-            rt.kernels[kernel_id].outputs.push(id);
+            let mut kernel = Kernel::new(DeviceId::AUTO);
+            let op_id = kernel.push_back(Op::Define { dtype, scope: MemScope::Global, ro: true, shape: shape.into() });
+            let load_kid = rt.kernels.push(KernelData { outputs: vec![id], loads: vec![id], stores: Vec::new(), kernel });
+            rt.tensors[id].kernel_id = load_kid;
+            rt.tensors[id].op_id = op_id;
+            rt.retain_load(id);
             rt.buffer_map.insert(id, buf_id);
             tensors.push(Tensor { id })
         }

@@ -137,19 +137,14 @@ impl Kernel {
                             let c = self.insert_before(op_id, Op::Const(cy.unary(UOp::Log2)));
                             self.ops[op_id].op = Op::Binary { x, y: c, bop: BOp::BitShiftLeft };
                         }
-                        BOp::Div if cy.is_zero() => panic!("Division by constant zero"),
+                        BOp::Div if cy.is_zero() && !cy.dtype().is_float() => panic!("Division by constant zero"),
                         BOp::Div if cy.is_one() => self.remap(op_id, x),
                         BOp::Div if cy.is_power_of_two() && cy.dtype() == IDX_T => {
                             let y = self.insert_before(op_id, Op::Const(cy.unary(UOp::Log2)));
                             self.ops[op_id].op = Op::Binary { x, y, bop: BOp::BitShiftRight };
                         }
-                        BOp::Mod if cy.is_one() => self.ops[op_id].op = Op::Const(cy.dtype().zero_constant()),
-                        BOp::Mod if cy.is_zero() && cy.dtype() == IDX_T => {
-                            let shift = Constant::binary(cy, Constant::idx(1), BOp::Sub);
-                            let y = self.insert_before(op_id, Op::Const(shift));
-                            self.ops[op_id].op = Op::Binary { x, y, bop: BOp::BitAnd };
-                        }
-                        BOp::Mod if cy.is_zero() => panic!("Modulo by constant zero"),
+                        BOp::Mod if cy.is_one() && !cy.dtype().is_float() => self.ops[op_id].op = Op::Const(cy.dtype().zero_constant()),
+                        BOp::Mod if cy.is_zero() && !cy.dtype().is_float() => panic!("Modulo by constant zero"),
                         // Consecutive modulo by constant: (x % a) % b folds to x % b
                         // only when b | a, and to x % a only when a | b. When neither
                         // divides the other the result cannot be reduced to a single mod.
@@ -195,8 +190,12 @@ impl Kernel {
                     }
                     (Op::Const(cx), Op::Const(cy), _) => {
                         let mul = Constant::binary(cx, cy, BOp::Mul);
-                        let x = self.insert_before(op_id, Op::Const(mul));
-                        self.ops[op_id].op = Op::Binary { x, y: z, bop: BOp::Add };
+                        if mul.is_zero() {
+                            self.remap(op_id, z);
+                        } else {
+                            let x = self.insert_before(op_id, Op::Const(mul));
+                            self.ops[op_id].op = Op::Binary { x, y: z, bop: BOp::Add };
+                        }
                     }
                     (Op::Const(cx), _, _) if cx.is_zero() => {
                         self.remap(op_id, z);
