@@ -226,21 +226,26 @@ impl Graph {
                     }
                     Node::After { x, dep } => {
                         let (kid, op_id) = visited[&x];
+                        let (dep_kid, _) = visited[&dep];
 
                         self.consume(x, kid, &mut visited, &mut rcs);
-                        self.consume(dep, kid, &mut visited, &mut rcs);
+                        if self.jit_kernels[kid].outputs.is_empty() && self.jit_kernels[kid].stores.is_empty() {
+                            self.jit_kernels.remove(kid);
+                        }
+                        self.consume(dep, dep_kid, &mut visited, &mut rcs);
 
-                        self.push_outputs(kid, cid, rcs[&cid]);
-                        visited.insert(cid, (kid, op_id));
+                        self.jit_kernels[dep_kid].stores.retain(|&z| z != x);
+
+                        self.push_outputs(dep_kid, cid, rcs[&cid]);
+                        self.jit_kernels[dep_kid].stores.push(cid);
+
+                        visited.insert(cid, (dep_kid, op_id));
                     }
                     Node::Assign { dst, src } => {
                         let (kid, src_op) = visited[&src];
                         let (dst_kid, dst_op) = visited[&dst];
 
-                        // Mirror runtime::assign validations: dst must be a
-                        // movement-only kernel over exactly one (leaf) load, with
-                        // no stores and no other outputs, in its own kernel.
-                        assert_ne!(kid, dst_kid, "assign: src and dst share kernel {kid:?}");
+                        assert_ne!(kid, dst_kid, "assign: src and dst must not share kernel {kid:?}");
                         let dst_leaf = self.jit_kernels[dst_kid].loads[0];
                         assert!(
                             !self.jit_kernels[kid].loads.contains(&dst_leaf),
@@ -255,13 +260,11 @@ impl Graph {
 
                         // Remove dst's movement-only kernel; its base buffer is
                         // dst_leaf's. The assign store reuses that buffer in-place.
-                        println!("before remove there is {:?} kernels", self.jit_kernels.len());
                         let JitKernelData { kernel: dst_kernel, loads, stores, outputs } =
                             unsafe { self.jit_kernels.remove_and_return(dst_kid) };
                         debug_assert_eq!(loads.len(), 1);
                         debug_assert!(stores.is_empty());
                         debug_assert!(outputs.iter().all(|&x| x == dst));
-                        println!("after remove there is {:?} kernels", self.jit_kernels.len());
 
                         // Backtrace to dst's base define.
                         let mut dst_define = dst_op;
@@ -276,8 +279,7 @@ impl Graph {
                         // Replay dst's movement chain into src's kernel. The
                         // replayed base define becomes the mutable (ro=false)
                         // store target; the last replayed move yields dst's final
-                        // position, which is also cid's read position (cid aliases
-                        // dst's buffer).
+                        // position.
                         let mut op_map: Map<OpId, OpId> = Map::default();
                         let mut op_id = dst_kernel.head;
                         while !op_id.is_null() {
@@ -313,6 +315,10 @@ impl Graph {
                         self.jit_kernels[kid].stores.push(dst_leaf);
 
                         self.consume(src, kid, &mut visited, &mut rcs);
+                        *rcs.get_mut(&dst).unwrap() -= 1;
+                        if rcs[&dst] == 0 {
+                            visited.remove(&dst);
+                        }
 
                         self.push_outputs(kid, src, rcs[&src]);
                         if rcs[&src] > 0 {
@@ -324,11 +330,11 @@ impl Graph {
                             visited.insert(cid, (kid, op_id));
                         }
 
-                        println!("\ncid={cid:?} src={src:?} dst={dst:?}, n_kernels={:?}", self.jit_kernels.len());
+                        /*println!("\ncid={cid:?} src={src:?} dst={dst:?}, n_kernels={:?}", self.jit_kernels.len());
                         println!("outputs={:?}", self.jit_kernels[kid].outputs);
                         println!("loads={:?}", self.jit_kernels[kid].loads);
                         println!("stores={:?}", self.jit_kernels[kid].stores);
-                        self.jit_kernels[kid].kernel.debug();
+                        self.jit_kernels[kid].kernel.debug();*/
                     }
                     Node::Expand { x, .. } => {
                         let (kid, op_id) = visited[&x];
@@ -410,7 +416,7 @@ impl Graph {
                 if !self.classes[cid]
                     .nodes
                     .iter()
-                    .any(|&nid| matches!(&self.nodes[nid].node, Node::Assign { .. } | Node::Kernel { .. }))
+                    .any(|&nid| matches!(&self.nodes[nid].node, Node::After { .. } | Node::Kernel { .. }))
                 {
                     (kid, _) = self.add_store(cid, kid, op_id, &mut visited, &rcs, shapes);
                 }
@@ -487,7 +493,7 @@ impl Graph {
                 debug_assert!(kernel.outputs.is_empty());
                 if kernel.stores.is_empty() {
                     kernel.kernel.debug();
-                    panic!("encountered empty kernel");
+                    panic!("encountered kernel without stores");
                 }
                 // A kernel must never load a class it also stores — that would
                 // create a self-referential producer path and break extract.
@@ -502,7 +508,9 @@ impl Graph {
             }
         }
 
-        /*for kernel in self.ekernels.values() {
+        /*for kernel in self.jit_kernels.values() {
+            println!("loads={:?}", kernel.loads);
+            println!("stores={:?}", kernel.stores);
             kernel.kernel.debug();
         }
         panic!();*/
