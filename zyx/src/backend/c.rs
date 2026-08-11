@@ -173,19 +173,17 @@ impl CDevice {
             .or_else(|| std::env::home_dir().map(|h| h.join(".config")))
             .map(|p| p.join("zyx/cache/c"));
 
-        if let Some(ref cache_dir) = cache_dir {
+        // Skip the disk cache when debug_asm is set so the generated source is
+        // always printed below.
+        if !debug_asm
+            && let Some(ref cache_dir) = cache_dir
+        {
             let cached_so = cache_dir.join(format!("{hash:016x}.so"));
-            if cached_so.is_file() {
-                if debug_asm {
-                    println!("[C] loading cached kernel {name} from {}", cached_so.display());
-                }
-                if let Ok(lib) = unsafe { Library::new(&cached_so) } {
-                    let program_id = self.programs.push(CProgram { lib, name });
-                    return Ok(program_id);
-                }
-                if debug_asm {
-                    println!("[C] failed to load cached kernel, recompiling...");
-                }
+            if cached_so.is_file()
+                && let Ok(lib) = unsafe { Library::new(&cached_so) }
+            {
+                let program_id = self.programs.push(CProgram { lib, name });
+                return Ok(program_id);
             }
         }
 
@@ -218,7 +216,11 @@ impl CDevice {
         let compiler = compilers.iter().find(|c| Command::new(c).arg("--version").output().is_ok()).copied().unwrap_or("cc");
         let is_clang = compiler.contains("clang");
         let mut cmd = Command::new(compiler);
-        cmd.args(["-shared", "-O3", "-ffast-math", "-fPIC", "-o"]).arg(&so_path).arg(&c_path).arg("-lm");
+        // -fno-associative-math is necessary for numerical stability under
+        // LLVM's -ffast-math reassociation: clang rewrites x*a + (1-x)*b into
+        // x*(a-b) + b, which catastrophically cancels when b is a huge value
+        // like the -1e30 log-prob used by ctc_loss.
+        cmd.args(["-shared", "-O3", "-ffast-math", "-fno-associative-math", "-fPIC", "-o"]).arg(&so_path).arg(&c_path).arg("-lm");
         if self.has_openmp && gws0 > 1 {
             cmd.arg(if is_clang { "-fopenmp=libgomp" } else { "-fopenmp" });
         }

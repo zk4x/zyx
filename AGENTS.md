@@ -113,15 +113,17 @@ All kernel optimizations live in `zyx/src/kernel/` (`autotune.rs` driver + one f
 |-------|--------|
 | 1 | hardware devices + kernel launches |
 | 2 | egraph print (after realize) |
-| 4 | kernels created by scheduler |
-| 8 | kernel IR |
+| 4 | kernels created by scheduler — IR BEFORE linearization (tensor graph, no loops/indices/loads/stores) |
+| 8 | kernel IR AFTER linearization + optimization (loops, indices, loads, stores) |
 | 16 | generated assembly/code |
 | 32 | kernel launch + memory movement |
 | 64 | memory alloc/dealloc |
 | 128 | kernel compilation |
 | 256 | autotune exploration |
 
-Combine by summing (`24` = ir + asm). `ZYX_DEBUG=8` prints IR during compilation, BEFORE any GPU kernel runs — use `timeout 10 bash -c 'ZYX_DEBUG=8 cargo run 2>&1' > /tmp/ir.txt` to capture it without a GPU hang.
+Combine by summing (`24` = ir + asm). The two IR views show different stages: `ZYX_DEBUG=4` prints the kernel as it comes out of the scheduler (a DAG of buffer ops, scalar consts, expands — no loops yet), `ZYX_DEBUG=8` prints the same kernel after linearization and the optimization passes (flat loops over element indices, per-op loads/stores). `ZYX_DEBUG=8` prints IR during compilation, BEFORE any GPU kernel runs — use `timeout 10 bash -c 'ZYX_DEBUG=8 cargo run 2>&1' > /tmp/ir.txt` to capture it without a GPU hang.
+
+In `cargo test`, library `eprintln!` output only shows with `-- --nocapture` (`AGENT=1 cargo test -- --nocapture`), otherwise it's hidden by the test harness.
 
 ### Inspecting kernel IR
 
