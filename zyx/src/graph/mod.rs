@@ -548,7 +548,7 @@ impl Graph {
         deps
     }
 
-    pub fn debug_print(&self, shapes: &Slab<ShapeId, Vec<Dim>>) {
+    pub fn debug(&self, shapes: &Slab<ShapeId, Vec<Dim>>) {
         let line = "─".repeat(60);
         println!("\n{}", line);
         println!("  E-Graph");
@@ -1263,7 +1263,7 @@ impl Runtime {
         self.graphs[graph_id].add_memory_ops(unsafe { &*devices_ptr }, unsafe { &*buffer_map_ptr });
 
         if self.debug.egraph() {
-            self.graphs[graph_id].debug_print(&self.shapes);
+            self.graphs[graph_id].debug(&self.shapes);
         }
 
         let nodes = self.graphs[graph_id].extract(output_set);

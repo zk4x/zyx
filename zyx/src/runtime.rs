@@ -1439,11 +1439,18 @@ impl Runtime {
                     | Node::Expand { x, .. }
                     | Node::Reshape { x, .. }
                     | Node::Permute { x, .. } => dst_define_cid = x,
-                    Node::Leaf { .. } => break,
+                    Node::After { .. } | Node::Leaf { .. } => break,
                     _ => unreachable!(),
                 }
             }
-            let dst_define = graph.leaf_map[&dst_define_cid];
+            // Resolve the base leaf through any After chain (a previous assign on
+            // the same buffer) to find the base tensor. The After for this assign
+            // threads onto the previous After, not the original buffer.
+            let mut leaf_cid = dst_define_cid;
+            while let Node::After { x, .. } = &graph.nodes[graph.classes[leaf_cid].nodes[0]].node {
+                leaf_cid = *x;
+            }
+            let dst_define = graph.leaf_map[&leaf_cid];
 
             // The Assign node keeps the ORIGINAL dst-chain and src classes; the
             // output class cid is what any later use of dst or src resolves to,

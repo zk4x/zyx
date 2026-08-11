@@ -75,6 +75,7 @@ impl Graph {
         shapes: &Slab<ShapeId, Vec<Dim>>,
         allowed: Option<&Set<ClassId>>,
     ) {
+        self.debug(shapes);
         // A class can't be both a boundary input and a region output — that
         // would make a fused kernel load and store the same class.
         if cfg!(debug_assertions) {
@@ -120,7 +121,7 @@ impl Graph {
             debug_assert!(!visited.contains_key(&cid), "class {cid:?} already visited");
 
             let nid = self.classes[cid].nodes[0];
-            /*println!(
+            println!(
                 "cid={} nid={} rc={} shape={:?}, {:?}, n_kernels={:?}",
                 cid.0,
                 nid.0,
@@ -128,7 +129,7 @@ impl Graph {
                 shapes[self.classes[cid].shape],
                 self.nodes[nid].node,
                 self.jit_kernels.len()
-            );*/
+            );
             if inputs.contains(&cid) {
                 // Boundary input: load the class from storage, same as a leaf.
                 let (kid, op_id) = self.new_load_kernel(cid, shapes, *rcs.get(&cid).unwrap());
@@ -509,7 +510,7 @@ impl Graph {
                 }
             }
             if rcs.values().any(|&r| r != 0) {
-                self.debug_print(shapes);
+                self.debug(shapes);
             }
             debug_assert!(rcs.values().all(|&r| r == 0), "all rcs must be zero");
             debug_assert!(visited.is_empty(), "visited must be empty");
