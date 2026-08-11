@@ -269,7 +269,7 @@ impl Kernel {
                 Op::Store { dst, src, index, layout } => {
                     debug_assert_eq!(index, OpId::NULL);
                     debug_assert_eq!(layout, MemLayout::Scalar);
-                    debug_assert_eq!(self.shape(src), self.shape(dst));
+                    debug_assert_eq!(self.shape(dst), self.shape(src));
                     let shape = self.shape(src);
                     let mut view = Vec::new();
                     let zero = self.insert_const_idx_before(start, 0u32);
