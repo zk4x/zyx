@@ -214,6 +214,22 @@ fn assign_graph_movement_dst() -> Result<(), ZyxError> {
 }
 
 #[test]
+fn assign_multiple_same_root() -> Result<(), ZyxError> {
+    let base = Tensor::from([0f32, 0f32, 0f32, 0f32, 0f32, 0f32]);
+    let src1 = Tensor::from([1f32, 2f32, 3f32, 4f32, 5f32, 6f32]);
+    let src2 = Tensor::from([7f32, 8f32]);
+    let src3 = Tensor::from([9f32, 10f32]);
+    let tape = Tape::new([&base])?;
+    base.clone().assign(&src1)?;
+    base.slice(0..2)?.assign(&src2)?;
+    base.slice(4..6)?.assign(&src3)?;
+    tape.realize([&base])?;
+    let out: Vec<f32> = base.try_into()?;
+    assert_eq!(out, vec![7.0, 8.0, 3.0, 4.0, 9.0, 10.0]);
+    Ok(())
+}
+
+#[test]
 fn tape_caching() -> Result<(), ZyxError> {
     let x = Tensor::from([1.0f32, 2.0, 3.0]);
     let y = Tensor::randn([3, 3], DType::F32)?;

@@ -153,6 +153,10 @@ Write a minimal reproducer test, then add `panic!("A")`, `panic!("B")`, ... alon
 
 - Every user message: if it contains a `?`, **answer the question and stop** — do not edit/write files. Otherwise proceed.
 - When in doubt, ask. Don't guess specs/values — the user has them. Ask before hunting through source.
+- **Follow the literal ask exactly — quantity included.** "A test" means exactly ONE test; "add a test for X" means just that test, not a family of tests. Deliver what was asked and stop. Extras (more tests, renames, refactors, extra fixes) are unrequested work.
+- **Never start implementing anything beyond the literal ask without asking first.** If a requested change turns out to require fixing/modifying other parts of the code (e.g. a test exposes a library bug), STOP and ask the user how to proceed before writing any fix. Do not debug-and-fix your way down a rabbit hole unprompted. A single simple question ("want me to fix that too?") beats an hour of unrequested surgery.
+- A test's pass/fail status is not the deliverable unless the user says so. Adding a test that currently fails (because it documents a bug) is a valid outcome — do not "fix" the code underneath it unprompted.
+- **Never leave temporary debug code behind** (eprintln!/println! debug blocks, commented-out scaffolding). If you add debug output while investigating, remove it before finishing. When reverting, revert completely — no stray debug prints, no leftover comments.
 - **Never commit unless explicitly asked.** When asked, `git add` + `git commit` a concise message matching repo style and produce zero extra commentary.
 - Never use `git stash` or `git checkout --`; use `git restore`. Never discard or hide changes.
 - No silent fixes. No commentary after doing something ("Done.", "X lines changed."). Don't dump git diffs verbatim.
