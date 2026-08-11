@@ -1451,9 +1451,12 @@ impl Runtime {
             let src_cid = self.graph_ids(src).0;
             let shape_id = self.tensors[dst].shape_id;
             let dtype = self.tensors[dst].dtype;
+            let define_shape_id = self.tensors[dst_define].shape_id;
+            let define_dtype = self.tensors[dst_define].dtype;
             let (_node_id, assign_cid) = self.push_node(graph_id, Node::Assign { dst: dst_cid, src: src_cid }, shape_id, dtype);
-            self.tensors[dst_define].class_id =
-                self.push_node(graph_id, Node::After { x: dst_define_cid, dep: assign_cid }, shape_id, dtype).1;
+            self.tensors[dst_define].class_id = self
+                .push_node(graph_id, Node::After { x: dst_define_cid, dep: assign_cid }, define_shape_id, define_dtype)
+                .1;
             self.tensors[dst].class_id = self.push_node(graph_id, Node::After { x: dst_cid, dep: assign_cid }, shape_id, dtype).1;
             #[cfg(feature = "debug_tensor_op")]
             println!("  -> cid={cid:?}");

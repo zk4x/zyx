@@ -35,7 +35,7 @@ pub enum ExecNode {
 pub struct ExecPlan {
     pub nodes: Vec<ExecNode>,
     pub leaf_classes: Vec<ClassId>,
-    // Assign output classes alias the buffer of dst's base leaf class. On
+    // After output classes alias the buffer of x's base leaf class. On
     // execution they share that buffer (in-place write) instead of getting a
     // fresh allocation. Mapped (alias_class, base_leaf_class, byte_size).
     pub aliases: Vec<(ClassId, ClassId, Dim)>,
@@ -76,15 +76,17 @@ impl ExecPlan {
             ((numel + 1) * class.dtype.bit_size() as Dim).div_ceil(8)
         };
 
-        // Assign output classes alias the buffer of dst's base leaf class
-        // (in-place write). They must not be allocated or deallocated — the
-        // leaf's buffer is owned by the realized tensor.
+        // After output classes alias the buffer of x's base leaf class: the
+        // assign writes the new buffer version in-place into that leaf buffer,
+        // so an After class (x's value after the assign) shares the leaf's
+        // buffer. They must not be allocated or deallocated — the leaf's buffer
+        // is owned by the realized tensor.
         let mut aliases: Vec<(ClassId, ClassId, Dim)> = Vec::new();
         let mut alias_classes: Set<ClassId> = Set::default();
         for cid in graph.classes.ids() {
             for nid in &graph.classes[cid].nodes {
-                if let Node::Assign { dst, .. } = &graph.nodes[*nid].node {
-                    let base = graph.base_leaf(*dst);
+                if let Node::After { x, .. } = &graph.nodes[*nid].node {
+                    let base = graph.base_leaf(*x);
                     aliases.push((cid, base, class_bytes(cid)));
                     alias_classes.insert(cid);
                 }
@@ -99,8 +101,8 @@ impl ExecPlan {
                         if !allocated.insert(oc) {
                             continue;
                         }
-                        // Realized leaves and assign aliases already have buffers
-                        // (leaf buffers via leaf_map, aliases share dst's leaf
+                        // Realized leaves and after aliases already have buffers
+                        // (leaf buffers via leaf_map, aliases share x's leaf
                         // buffer) — never allocate fresh buffers for them.
                         if !graph.leaf_map.contains_key(&oc) && !alias_classes.contains(&oc) {
                             plan_nodes.push(ExecNode::Allocate { class: oc, pool, bytes: class_bytes(oc) });
@@ -185,7 +187,7 @@ impl Runtime {
     pub fn execute_plan(&mut self, cache_key: u64, class_buf: &mut Map<ClassId, BufferId>) -> Result<(), ZyxError> {
         let plan = self.plan_cache.get(&cache_key).unwrap();
 
-        // Assign outputs alias dst's base leaf buffer — bind them before running
+        // After outputs alias x's base leaf buffer — bind them before running
         // so the in-place store targets the existing leaf buffer. If the leaf
         // buffer lives in a pool other than the assign kernel's, move a copy of
         // its data into that pool first (mirrors eager assign's store-to-target
