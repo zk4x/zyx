@@ -226,21 +226,29 @@ impl Graph {
                         visited.insert(cid, (kid, result_op));
                     }
                     Node::After { x, dep } => {
-                        let (kid, op_id) = visited[&x];
+                        // dep (the assign) wrote the new value in-place into x's
+                        // base leaf buffer; cid aliases that buffer. Consume dep
+                        // and keep its store so extract sees the assign kernel as
+                        // cid's producer (this also orders any reader of cid after
+                        // the in-place write).
                         let (dep_kid, _) = visited[&dep];
+                        self.consume(dep, dep_kid, &mut visited, &mut rcs);
 
+                        // Structurally the After consumes x; the assign kernel now
+                        // owns the in-place store, so x's output slot is dropped.
+                        let (kid, _) = visited[&x];
                         self.consume(x, kid, &mut visited, &mut rcs);
                         if self.jit_kernels[kid].outputs.is_empty() && self.jit_kernels[kid].stores.is_empty() {
                             self.jit_kernels.remove(kid);
                         }
-                        self.consume(dep, dep_kid, &mut visited, &mut rcs);
 
+                        // Re-expose the post-assign buffer via a fresh load kernel
+                        // instead of aliasing x's op into dep's kernel (which
+                        // breaks across chained Afters).
                         self.jit_kernels[dep_kid].stores.retain(|&z| z != x);
-
-                        self.push_outputs(dep_kid, cid, rcs[&cid]);
                         self.jit_kernels[dep_kid].stores.push(cid);
-
-                        visited.insert(cid, (dep_kid, op_id));
+                        let (new_kid, new_op) = self.new_load_kernel(cid, shapes, rcs[&cid]);
+                        visited.insert(cid, (new_kid, new_op));
                     }
                     Node::Assign { dst, src } => {
                         let (kid, src_op) = visited[&src];

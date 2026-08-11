@@ -400,7 +400,8 @@ impl Graph {
                     | Node::Reshape { x, .. }
                     | Node::PadZeros { x, .. }
                     | Node::Flip { x, .. }
-                    | Node::ToDevice { x, .. } => next = Some(*x),
+                    | Node::ToDevice { x, .. }
+                    | Node::After { x, .. } => next = Some(*x),
                     _ => {}
                 }
             }
@@ -825,6 +826,20 @@ impl Graph {
                             Node::Kernel { inputs, .. } => stack.extend(inputs.iter().copied()),
                             Node::ToDevice { x, .. } => stack.push(*x),
                             _ => {}
+                        }
+                    }
+                    // After classes alias their base leaf buffer, and their
+                    // value comes from dep (the assign) writing over x's
+                    // version of that buffer. If the post-assign value is
+                    // needed, the assign that wrote it and every earlier
+                    // After in the chain are needed too — otherwise extract
+                    // drops the in-place store kernels of chained assigns.
+                    if let Some(&nid2) = self.classes[cid].nodes.iter().find(|&&nid| {
+                        matches!(&self.nodes[nid].node, Node::After { .. })
+                    }) {
+                        if let Node::After { x, dep } = &self.nodes[nid2].node {
+                            stack.push(*x);
+                            stack.push(*dep);
                         }
                     }
                 }

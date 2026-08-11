@@ -193,6 +193,7 @@ impl Runtime {
         // its data into that pool first (mirrors eager assign's store-to-target
         // pool handling); afterwards the kernel writes in-place and the output
         // tensor maps to the kernel-pool buffer.
+        let mut alias_copies: Map<ClassId, BufferId> = Map::default();
         for (class, to, bytes) in &plan.aliases {
             let leaf = class_buf[to];
             let kernel_pool = plan.nodes.iter().find_map(|node| match node {
@@ -203,13 +204,22 @@ impl Runtime {
             });
             match kernel_pool {
                 Some(pool) if leaf.pool != pool => {
-                    let wait = drain_events_for_buf(&mut self.events, leaf);
-                    let mut tmp = vec![0u8; *bytes as usize];
-                    self.pools[leaf.pool].pool_to_host(leaf.buffer, &mut tmp, wait)?;
-                    let (buf, event) = self.pools[pool].allocate(*bytes)?;
-                    let event = self.pools[pool].host_to_pool(&tmp, buf, vec![event])?;
-                    self.pools[pool].sync_events(vec![event])?;
-                    class_buf.insert(*class, BufferId { pool, buffer: buf });
+                    // Chained After aliases of the same leaf (multiple assigns on
+                    // one buffer) must share a single kernel-pool copy, or each
+                    // would snapshot the leaf before the previous assign ran and
+                    // the intermediate writes would be lost. Reuse the copy made
+                    // for the first alias of this leaf.
+                    if !alias_copies.contains_key(to) {
+                        let wait = drain_events_for_buf(&mut self.events, leaf);
+                        let mut tmp = vec![0u8; *bytes as usize];
+                        self.pools[leaf.pool].pool_to_host(leaf.buffer, &mut tmp, wait)?;
+                        let (buf, event) = self.pools[pool].allocate(*bytes)?;
+                        let event = self.pools[pool].host_to_pool(&tmp, buf, vec![event])?;
+                        self.pools[pool].sync_events(vec![event])?;
+                        alias_copies.insert(*to, BufferId { pool, buffer: buf });
+                    }
+                    let shared = alias_copies[to];
+                    class_buf.insert(*class, shared);
                 }
                 _ => {
                     class_buf.insert(*class, leaf);
