@@ -319,11 +319,6 @@ impl Graph {
                             visited.insert(src, (kid, op_id));
                         }
 
-                        self.push_outputs(kid, dst_leaf, rcs[&dst_leaf]);
-                        if rcs[&dst_leaf] > 0 {
-                            visited.insert(dst_leaf, (kid, op_id));
-                        }
-
                         self.push_outputs(kid, cid, rcs[&cid]);
                         if rcs[&cid] > 0 {
                             visited.insert(cid, (kid, op_id));
