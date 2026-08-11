@@ -251,10 +251,27 @@ impl Graph {
                             !self.jit_kernels[kid].loads.contains(&dst_leaf),
                             "assign: src kernel loads dst tensor, not allowed to avoid data races"
                         );
+                        // The assign's dst is normally consumed only by the
+                        // assign itself. An After node re-exposes the post-assign
+                        // version of dst, so each `After { x: dst, .. }` is a
+                        // legitimate extra consumer.
+                        let n_after_dst: usize = order
+                            .iter()
+                            .map(|&c| {
+                                self.classes[c]
+                                    .nodes
+                                    .iter()
+                                    .filter(|&&nid| {
+                                        matches!(&self.nodes[nid].node, Node::After { x, .. } if *x == dst)
+                                    })
+                                    .count()
+                            })
+                            .sum();
+                        let expected_rcs = 1 + n_after_dst + outputs.contains(&dst) as usize;
                         assert_eq!(
-                            rcs[&dst], 1,
-                            "assign: dst class {dst:?} must be consumed only by the assign (rcs={}); \
-                             multi-consumer dst is not supported yet",
+                            rcs[&dst], expected_rcs as u32,
+                            "assign: dst class {dst:?} must be consumed only by the assign and its After(s) \
+                             (rcs={}, expected {expected_rcs})",
                             rcs[&dst]
                         );
 
@@ -316,7 +333,15 @@ impl Graph {
 
                         self.consume(src, kid, &mut visited, &mut rcs);
                         *rcs.get_mut(&dst).unwrap() -= 1;
-                        if rcs[&dst] == 0 {
+                        if rcs[&dst] > 0 {
+                            // The After(s) still consume dst: after the in-place
+                            // store, dst's value lives in the (replayed) base
+                            // define inside src's kernel. Point the remaining
+                            // consumers at it — the assign already removed dst's
+                            // old kernel, so the After arm cannot resolve it
+                            // otherwise.
+                            visited.insert(dst, (kid, dst_op));
+                        } else {
                             visited.remove(&dst);
                         }
 
