@@ -484,7 +484,7 @@ impl Graph {
         outputs: &BTreeSet<ClassId>,
         allowed: Option<&Set<ClassId>>,
     ) -> Vec<ClassId> {
-        println!("topo sort inputs={inputs:?} outputs={outputs:?}");
+        //println!("topo sort inputs={inputs:?} outputs={outputs:?}");
         let mut rcs: Map<ClassId, u32> = Map::default();
         let mut stack: Vec<ClassId> = outputs.iter().copied().collect();
         while let Some(cid) = stack.pop() {

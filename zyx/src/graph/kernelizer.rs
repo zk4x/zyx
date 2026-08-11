@@ -114,13 +114,13 @@ impl Graph {
 
         let mut visited: Map<ClassId, (JitKernelId, OpId)> = Map::default();
 
-        println!("order={:?}", order);
+        //println!("order={:?}", order);
 
         for (i, &cid) in order.iter().enumerate() {
             debug_assert!(!visited.contains_key(&cid), "class {cid:?} already visited");
 
             let nid = self.classes[cid].nodes[0];
-            println!(
+            /*println!(
                 "cid={} nid={} rc={} shape={:?}, {:?}, n_kernels={:?}",
                 cid.0,
                 nid.0,
@@ -128,7 +128,7 @@ impl Graph {
                 shapes[self.classes[cid].shape],
                 self.nodes[nid].node,
                 self.jit_kernels.len()
-            );
+            );*/
             if inputs.contains(&cid) {
                 // Boundary input: load the class from storage, same as a leaf.
                 let (kid, op_id) = self.new_load_kernel(cid, shapes, *rcs.get(&cid).unwrap());

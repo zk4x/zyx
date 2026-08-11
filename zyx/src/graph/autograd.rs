@@ -375,19 +375,26 @@ impl Runtime {
                     let out_shape = self.shapes[self.graphs[graph_id].classes[cid].shape].clone();
                     let in_shape = self.shapes[x_shape].clone();
                     // Right-align the input against the expanded output per broadcast
-                    // semantics; the sum_axes are the trailing-aligned dims where the
-                    // input is a singleton broadcast to a larger output extent.
+                    // semantics. The input is broadcast to the output by (a) leading
+                    // `pad` dims that the input did not have at all (implicitly size 1)
+                    // and (b) trailing-aligned dims where the input is a singleton (1)
+                    // broadcast to a larger output extent. The gradient of a broadcast
+                    // must be summed over *all* of these axes to drop back to the
+                    // input shape.
                     let pad = out_shape.len() - in_shape.len();
-                    let sum_axes: Vec<UAxis> = in_shape
-                        .iter()
-                        .enumerate()
-                        .filter_map(|(i, &xd)| {
-                            if xd == 1 && out_shape[pad + i] > 1 {
-                                Some((pad + i) as UAxis)
-                            } else {
-                                None
-                            }
-                        })
+                    let sum_axes: Vec<UAxis> = (0..pad)
+                        .chain(
+                            in_shape
+                                .iter()
+                                .enumerate()
+                                .filter_map(|(i, &xd)| {
+                                    if xd == 1 && out_shape[pad + i] > 1 {
+                                        Some((pad + i) as UAxis)
+                                    } else {
+                                        None
+                                    }
+                                }),
+                        )
                         .collect();
                     if sum_axes.is_empty() {
                         accum_grad(self, graph_id, &mut grads, x, grad);
