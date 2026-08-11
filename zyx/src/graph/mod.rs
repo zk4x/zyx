@@ -1283,7 +1283,13 @@ impl Runtime {
 
         let nodes = self.graphs[graph_id].extract(output_set);
 
-        let plan = ExecPlan::new(&self.graphs[graph_id], &nodes, output_set, &self.devices, &self.shapes);
+        // Leaf pools at compile time — the plan bakes the alias binding (and
+        // any cross-pool copy) into its ExecNodes, so leaves must stay put.
+        let mut leaf_pools: Map<ClassId, PoolId> = Map::default();
+        for (&cid, &tid) in &self.graphs[graph_id].leaf_map {
+            leaf_pools.insert(cid, self.buffer_map[&tid].pool);
+        }
+        let plan = ExecPlan::new(&self.graphs[graph_id], &nodes, output_set, &self.devices, &self.shapes, &leaf_pools);
         if self.debug.egraph() {
             plan.debug();
         }

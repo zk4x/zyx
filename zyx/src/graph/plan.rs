@@ -29,16 +29,23 @@ pub enum ExecNode {
         load_classes: Box<[ClassId]>,
         store_classes: Box<[ClassId]>,
     },
+    // Binds class_buf[class] = class_buf[to]: an After output aliases the
+    // buffer of its base leaf class (in-place assign write). Preplanned by
+    // ExecPlan::new so execute_plan only resolves buffers, never decides.
+    Alias {
+        class: ClassId,
+        to: ClassId,
+    },
 }
 
 #[derive(Debug, Clone)]
 pub struct ExecPlan {
     pub nodes: Vec<ExecNode>,
     pub leaf_classes: Vec<ClassId>,
-    // After output classes alias the buffer of x's base leaf class. On
-    // execution they share that buffer (in-place write) instead of getting a
-    // fresh allocation. Mapped (alias_class, base_leaf_class, byte_size).
-    pub aliases: Vec<(ClassId, ClassId, Dim)>,
+    // Pool each leaf class lived in when the plan was compiled. Leaf pools
+    // must not vary across plan reuse, or the preplanned Alias/Allocate/Copy
+    // binding would be wrong — debug-asserted in execute_plan.
+    pub leaf_pools: Map<ClassId, PoolId>,
 }
 
 impl ExecPlan {
@@ -49,6 +56,7 @@ impl ExecPlan {
         output_set: &BTreeSet<ClassId>,
         devices: &Slab<DeviceId, Device>,
         shapes: &Slab<ShapeId, Vec<Dim>>,
+        leaf_pools: &Map<ClassId, PoolId>,
     ) -> Self {
         let mut rc: Map<ClassId, u32> = Map::default();
         for &nid in nodes {
@@ -90,6 +98,41 @@ impl ExecPlan {
                     aliases.push((cid, base, class_bytes(cid)));
                     alias_classes.insert(cid);
                 }
+            }
+        }
+
+        // Pool of the kernel that stores each alias class — precomputed so the
+        // binding below is decided at plan time, not execution time.
+        let mut store_pool: Map<ClassId, PoolId> = Map::default();
+        for &nid in nodes {
+            if let Node::Kernel { outputs, program_id, .. } = &graph.nodes[nid].node {
+                let pool = devices[program_id.device].memory_pool_id();
+                for &oc in &**outputs {
+                    store_pool.insert(oc, pool);
+                }
+            }
+        }
+
+        // Bind aliases before any kernel runs. A leaf in the same pool as its
+        // assign kernel binds straight to the leaf buffer. A cross-pool leaf
+        // needs one kernel-pool copy of itself shared by every alias of that
+        // leaf — chained assigns must write the same physical buffer or the
+        // intermediate writes are lost. Mirrors eager assign's store-to-target
+        // pool handling.
+        let mut leaf_copy: Map<ClassId, ClassId> = Map::default();
+        for (class, to, bytes) in &aliases {
+            match store_pool.get(class) {
+                Some(pool) if leaf_pools[to] != *pool => {
+                    let owner = *leaf_copy.entry(*to).or_insert_with(|| {
+                        plan_nodes.push(ExecNode::Allocate { class: *class, pool: *pool, bytes: *bytes });
+                        plan_nodes.push(ExecNode::Copy { dst_class: *class, src_class: *to, bytes: *bytes });
+                        *class
+                    });
+                    if owner != *class {
+                        plan_nodes.push(ExecNode::Alias { class: *class, to: owner });
+                    }
+                }
+                _ => plan_nodes.push(ExecNode::Alias { class: *class, to: *to }),
             }
         }
 
@@ -154,7 +197,7 @@ impl ExecPlan {
             }
         }
 
-        Self { nodes: plan_nodes, leaf_classes: graph.leaf_classes.clone(), aliases }
+        Self { nodes: plan_nodes, leaf_classes: graph.leaf_classes.clone(), leaf_pools: leaf_pools.clone() }
     }
 
     #[allow(unused)]
@@ -177,6 +220,9 @@ impl ExecPlan {
                 ExecNode::Launch { program_id, load_classes, store_classes } => {
                     println!("  Launch prog={program_id:?} loads={load_classes:?} stores={store_classes:?}");
                 }
+                ExecNode::Alias { class, to } => {
+                    println!("  Alias class={class:?} -> to={to:?}");
+                }
             }
         }
         println!("{}\n", line);
@@ -187,43 +233,14 @@ impl Runtime {
     pub fn execute_plan(&mut self, cache_key: u64, class_buf: &mut Map<ClassId, BufferId>) -> Result<(), ZyxError> {
         let plan = self.plan_cache.get(&cache_key).unwrap();
 
-        // After outputs alias x's base leaf buffer — bind them before running
-        // so the in-place store targets the existing leaf buffer. If the leaf
-        // buffer lives in a pool other than the assign kernel's, move a copy of
-        // its data into that pool first (mirrors eager assign's store-to-target
-        // pool handling); afterwards the kernel writes in-place and the output
-        // tensor maps to the kernel-pool buffer.
-        let mut alias_copies: Map<ClassId, BufferId> = Map::default();
-        for (class, to, bytes) in &plan.aliases {
-            let leaf = class_buf[to];
-            let kernel_pool = plan.nodes.iter().find_map(|node| match node {
-                ExecNode::Launch { program_id, store_classes, .. } if store_classes.contains(class) => {
-                    Some(self.devices[program_id.device].memory_pool_id())
-                }
-                _ => None,
-            });
-            match kernel_pool {
-                Some(pool) if leaf.pool != pool => {
-                    // Chained After aliases of the same leaf (multiple assigns on
-                    // one buffer) must share a single kernel-pool copy, or each
-                    // would snapshot the leaf before the previous assign ran and
-                    // the intermediate writes would be lost. Reuse the copy made
-                    // for the first alias of this leaf.
-                    if !alias_copies.contains_key(to) {
-                        let wait = drain_events_for_buf(&mut self.events, leaf);
-                        let mut tmp = vec![0u8; *bytes as usize];
-                        self.pools[leaf.pool].pool_to_host(leaf.buffer, &mut tmp, wait)?;
-                        let (buf, event) = self.pools[pool].allocate(*bytes)?;
-                        let event = self.pools[pool].host_to_pool(&tmp, buf, vec![event])?;
-                        self.pools[pool].sync_events(vec![event])?;
-                        alias_copies.insert(*to, BufferId { pool, buffer: buf });
-                    }
-                    let shared = alias_copies[to];
-                    class_buf.insert(*class, shared);
-                }
-                _ => {
-                    class_buf.insert(*class, leaf);
-                }
+        #[cfg(debug_assertions)]
+        {
+            for (&cid, &pool) in &plan.leaf_pools {
+                debug_assert_eq!(
+                    class_buf[&cid].pool, pool,
+                    "leaf class {cid:?} moved pools since the plan was compiled — preplanned \
+                     Alias/Allocate/Copy binding would be wrong"
+                );
             }
         }
 
@@ -265,6 +282,10 @@ impl Runtime {
                     let buf = class_buf.remove(class).unwrap();
                     let wait_list = drain_events_for_buf(&mut self.events, buf);
                     self.pools[buf.pool].deallocate(buf.buffer, wait_list);
+                }
+                ExecNode::Alias { class, to } => {
+                    let buf = class_buf[to];
+                    class_buf.insert(*class, buf);
                 }
             }
         }

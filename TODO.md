@@ -68,8 +68,8 @@
   - [x] automatic dropping of unneeded tensors
   - [ ] deduplicate tensor loads
   - [ ] automatic sharding across devices
-  - [ ] add assign node to the graph
-  - [ ] add contiguous node to the graph
+  - [x] add assign node to the graph
+  - [x] add contiguous node to the graph
   - [ ] add user ability to add pattern matching of custom kernels to egraph
   - [x] static graphs (FrozenTape) - unfortunately necessary for very high performance networks to achieve hundreds of millions of tensor ops/second - just add replay method for tape
 - [ ] kernel
