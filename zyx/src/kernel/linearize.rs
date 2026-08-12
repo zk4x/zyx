@@ -585,7 +585,33 @@ impl Kernel {
                                 .collect();
                             views.insert(x, view);
                         }
-                        MoveOp::Slice { axis, start, len } => todo!(),
+                        &MoveOp::Slice { axis, start, len } => {
+                            let x_shape = self.shape(x);
+                            let view = &views[&op_id];
+                            let mut x_strides = vec![1; x_shape.len()];
+                            let mut st = 1;
+                            for a in (0..x_shape.len()).rev() {
+                                x_strides[a] = st;
+                                st *= x_shape[a];
+                            }
+                            let zero = self.insert_const_idx_before(anchor, 0u32);
+                            let view = (0..x_shape.len())
+                                .map(|a| {
+                                    let idx = view[a].0;
+                                    let stride = self.insert_const_idx_before(anchor, x_strides[a]);
+                                    if a == axis {
+                                        // Pure crop: input index = output index + start.
+                                        let idx = self.insert_before(anchor, Op::Binary { x: idx, y: start, bop: BOp::Add });
+                                        let len_id = self.insert_const_idx_before(anchor, len);
+                                        (idx, stride, zero, zero, len_id)
+                                    } else {
+                                        let len_id = self.insert_const_idx_before(anchor, x_shape[a]);
+                                        (idx, stride, zero, zero, len_id)
+                                    }
+                                })
+                                .collect();
+                            views.insert(x, view);
+                        }
                     }
                     self.remap(op_id, x);
                     self.remove_op(op_id);

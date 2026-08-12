@@ -332,7 +332,7 @@ impl Kernel {
                         }
                         MoveOp::Slice { axis, start, len } => {
                             println!(
-                                "{indent}r{out_id}{grey}: {dtype}{reset} = {cyan}slice{reset} r{x} axis={axis} start=r{start:?} len={len}",
+                                "{indent}r{out_id}{grey}: {dtype}{reset} = {cyan}slice{reset} r{x} axis={axis} start=r{start} len={len}",
                             );
                         }
                         MoveOp::Flip { axes } => {

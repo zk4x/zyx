@@ -390,10 +390,17 @@ impl Op {
             }
             &Op::Index { len, .. } => vec![len],
             &Op::Loop { len, .. } => vec![len],
-            &Op::Move { x, .. } => vec![x],
+            &Op::Move { x, ref mop } => match mop.as_ref() {
+                MoveOp::Reshape { .. }
+                | MoveOp::Expand { .. }
+                | MoveOp::Permute { .. }
+                | MoveOp::Pad { .. }
+                | MoveOp::Flip { .. } => vec![x],
+                MoveOp::Slice { start, .. } => vec![x, *start],
+            },
             Op::Reduce { x, .. } => vec![*x],
             Op::ReduceTile { x, .. } => vec![*x],
-            &Op::Store { dst, src: x, index, .. } => vec![dst, x, index],
+            &Op::Store { dst, src, index, .. } => vec![dst, src, index],
             Op::Cast { x, .. } => vec![*x],
             Op::Unary { x, .. } => vec![*x],
             &Op::Binary { x, y, .. } => vec![x, y],
@@ -415,7 +422,14 @@ impl Op {
             Op::Const { .. } | Op::Define { .. } | Op::EndLoop | Op::EndIf | Op::Barrier => vec![],
             Op::Index { len, .. } => vec![len],
             Op::Loop { len, .. } => vec![len],
-            Op::Move { x, .. } => vec![x],
+            Op::Move { x, mop } => match mop.as_mut() {
+                MoveOp::Reshape { .. }
+                | MoveOp::Expand { .. }
+                | MoveOp::Permute { .. }
+                | MoveOp::Pad { .. }
+                | MoveOp::Flip { .. } => vec![x],
+                MoveOp::Slice { start, .. } => vec![x, start],
+            },
             Op::Reduce { x, .. } => vec![x],
             Op::ReduceTile { x, .. } => vec![x],
             Op::Store { dst, src: x, index, .. } => vec![dst, x, index],
