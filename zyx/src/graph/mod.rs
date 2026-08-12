@@ -123,6 +123,12 @@ pub(crate) enum Node {
         x: ClassId,
         axes: Box<[UAxis]>,
     },
+    Slice {
+        x: ClassId,
+        axis: UAxis,
+        start: OpId,
+        len: Dim,
+    },
     Reduce {
         x: ClassId,
         rop: BOp,
@@ -230,6 +236,13 @@ impl std::hash::Hash for Node {
                 12u8.hash(state);
                 x.hash(state);
                 axes.hash(state);
+            }
+            Self::Slice { x, axis, start, len } => {
+                16u8.hash(state);
+                x.hash(state);
+                axis.hash(state);
+                start.hash(state);
+                len.hash(state);
             }
             Self::Reduce { x, rop: bop, axes } => {
                 6u8.hash(state);
@@ -351,6 +364,7 @@ impl Node {
             Self::Permute { x, .. } => vec![*x],
             Self::Reshape { x, .. } => vec![*x],
             Self::PadZeros { x, .. } => vec![*x],
+            Self::Slice { x, .. } => vec![*x],
             Self::Flip { x, .. } => vec![*x],
             Self::Reduce { x, .. } => vec![*x],
             Self::Cast { x, .. } => vec![*x],
@@ -577,6 +591,7 @@ impl Graph {
                     Node::Permute { axes, .. } => format!("Permute {:?}", axes),
                     Node::Reshape { shape, .. } => format!("Reshape {:?}", shapes[*shape]),
                     Node::PadZeros { padding, .. } => format!("Pad {:?}", padding),
+                    Node::Slice { axis, start, len, .. } => format!("Slice axis={axis:?} start={start} len={len}"),
                     Node::Flip { axes, .. } => format!("Flip {:?}", axes),
                     Node::ToDevice { device, time, .. } => format!("ToDevice {:?} time={}", device, time),
                     Node::Contiguous { .. } => "Contiguous".into(),

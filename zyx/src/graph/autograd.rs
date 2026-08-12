@@ -438,6 +438,9 @@ impl Runtime {
                 Node::PadZeros { .. } => {
                     todo!()
                 }
+                Node::Slice { .. } => {
+                    todo!()
+                }
                 Node::Flip { x, ref axes } => {
                     // Flip is its own inverse: the gradient back-propagates by
                     // flipping along the same axes.
