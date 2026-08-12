@@ -109,6 +109,7 @@ use nanoserde::DeJson;
 
 use crate::{
     DType, Set,
+    dtype::Constant,
     error::{BackendError, ErrorStatus},
     graph::{ClassId, Graph, Node, NodeData},
     kernel::{IdxScope, Kernel, MMADType, MMADims, Op, OpId},
@@ -150,9 +151,9 @@ pub struct CUDAMemoryPool {
 }
 
 #[derive(Debug)]
-pub(super) struct CUDABuffer {
-    ptr: u64,
-    bytes: Dim,
+pub(super) enum CUDABuffer {
+    Scalar(Constant),
+    Buffer { ptr: u64, bytes: Dim },
 }
 
 #[derive(Debug)]
@@ -528,7 +529,7 @@ pub(super) fn initialize_device(
                             );
                             debug_assert!(free_bytes_atomic.load(Ordering::SeqCst) > bytes);
                             free_bytes_atomic.fetch_sub(bytes, Ordering::SeqCst);
-                            let buffer_id = buffers.push(CUDABuffer { ptr, bytes });
+                            let buffer_id = buffers.push(CUDABuffer::Buffer { ptr, bytes });
                             let event = Event::CUDA(CUDAEvent { event });
                             let _ = reply.send(Ok((buffer_id, event)));
                         }
