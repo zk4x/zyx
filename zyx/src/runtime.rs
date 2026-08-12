@@ -1261,8 +1261,8 @@ impl Runtime {
                 self.push_node(graph_id, Node::Slice { x: class_id, axis, start: OpId(start_cid.0), len }, shape_id, dtype);
             self.new_graph_tensor(graph_id, class_id, shape_id, dtype)
         } else {
-            let kernel_id = self.eager_ids(x).0;
-            let (_, op_id) = self.duplicate_or_store(x, false).unwrap();
+            let (kernel_id, op_id) = self.duplicate_or_store(x, false).unwrap();
+            debug_assert_eq!(self.kernels[kernel_id].outputs.len(), 0, "input into slice must have empty outputs");
             let start_op_id = self.kernels[kernel_id].kernel.const_idx(start);
             let op_id = self.kernels[kernel_id]
                 .kernel
@@ -1277,7 +1277,6 @@ impl Runtime {
                 graph_id: GraphId::NULL,
                 rc: 1,
             });
-            debug_assert_eq!(self.kernels[kernel_id].outputs.len(), 0, "input into slice must have empty outputs");
             self.kernels[kernel_id].outputs.push(tid);
             #[cfg(feature = "debug_tensor_op")]
             println!("  -> tid={tid}, kid={kernel_id:?}, op_id={op_id:?}");
