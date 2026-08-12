@@ -610,6 +610,7 @@ impl Kernel {
                                     }
                                 })
                                 .collect();
+                            views.insert(start, Vec::new());
                             views.insert(x, view);
                         }
                     }

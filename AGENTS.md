@@ -180,5 +180,5 @@ construction point.
 - **Never commit unless explicitly asked.** When asked, `git add` + `git commit` a concise message matching repo style and produce zero extra commentary.
 - Never use `git stash` or `git checkout --`; use `git restore`. Never discard or hide changes.
 - No silent fixes. No commentary after doing something ("Done.", "X lines changed."). Don't dump git diffs verbatim.
-- Test failures are your fault — find and fix them. Never rerun tests to check "pre-change" state.
+- Test failures are test failures. You don't need to fix them unless I tell you to fix them.
 - Edit precisely, don't cascade: change only what was referenced; propose (don't do) anything else.
