@@ -149,6 +149,26 @@ Write a minimal reproducer test, then add `panic!("A")`, `panic!("B")`, ... alon
 - Training step: `Tape::new(&net)` → forward/loss → `tape.gradient(&loss, &net)` → `optim.update(&mut net, grads)` → `tape.realize(net.iter().chain(optim.iter()))`. After drop, realized tensors become eager again.
 - Fixed control flow: `tape.freeze(&outputs)` once, then `frozen.replay(&inputs)` per step.
 
+### Two execution paths: eager vs graph
+
+Every tensor op has **two** possible paths, chosen by whether the caller is inside a tape scope:
+
+- **Eager path** (no tape): `Runtime::{pad_zeros, unary, binary, ...}` directly pushes the
+  `Op` (a `MoveOp`, or a compute op like `Unary`/`Binary`/`Reduce`) into the tensor's
+  current kernel (`eager_ids`, e.g. `runtime.rs:1221` for pad). No graph nodes are
+  created. The kernel is built with the custom-kernel API (`Kernel::new`/`define`/
+  `pad`/`add`/... in `kernel/custom.rs`).
+- **Graph path** (inside `Tape`): the same op pushes a `Node` into the egraph
+  (`push_node`, e.g. `Node::PadZeros` at `graph/mod.rs:1238`). Only at `compile_graph`
+  does the kernelizer (`kernelizer.rs`) turn those nodes into `Op`s.
+
+This dual path applies to **every op** — unary, binary, reduce, pad, cast, etc. all either push an `Op` into an eager kernel (`runtime.rs`) or push a
+`Node` into the egraph (`graph/mod.rs`) depending purely on whether the caller is in a
+tape scope. When reasoning about kernel identity / recompilation (e.g. the kv-cache
+`narrow(0, start, len)` case), consider which path the consumer actually runs, and
+note that changing an `Op` means changing it in **both** places unless the two share a
+construction point.
+
 ## Interaction Rules
 
 - Every user message: if it contains a `?`, **answer the question and stop** — do not edit/write files. Otherwise proceed.
