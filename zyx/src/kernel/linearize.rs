@@ -108,7 +108,7 @@ impl Kernel {
             let mut op_id = self.head;
             while !op_id.is_null() {
                 if let Op::Define { dtype, scope: MemScope::Global, ro, ref shape } = self.ops[op_id].op {
-                    defines.push((dtype, ro, shape.iter().copied().collect(), MemScope::Global));
+                    defines.push((dtype, ro, shape.to_vec(), MemScope::Global));
                 }
                 op_id = self.next_op(op_id);
             }
@@ -635,7 +635,7 @@ impl Kernel {
             let mut op_id = self.head;
             while !op_id.is_null() {
                 if let Op::Define { dtype, scope: MemScope::Global, ro, ref shape } = self.ops[op_id].op {
-                    defines.push((dtype, ro, shape.iter().copied().collect(), MemScope::Global));
+                    defines.push((dtype, ro, shape.to_vec(), MemScope::Global));
                 }
                 op_id = self.next_op(op_id);
             }

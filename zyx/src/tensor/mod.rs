@@ -1879,7 +1879,7 @@ impl Tensor {
             let sum_p = pow_p.sum([1])?;
             let eps_t = Tensor::from(eps).cast(dtype);
             let sum_p_eps = sum_p + eps_t;
-            Ok(sum_p_eps.pow(Tensor::from(1.0 / p as f32))?)
+            sum_p_eps.pow(Tensor::from(1.0 / p as f32))
         };
 
         let dist_pos = dist(anchor, positive)?;

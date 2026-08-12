@@ -169,7 +169,7 @@ impl Kernel {
         while !op_id.is_null() {
             if let Op::Index { len, .. } = self.ops[op_id].op {
                 let len = self.index_len(len);
-                if len % 32 != 0 {
+                if !len.is_multiple_of(32) {
                     factors.push((op_id, 32));
                 }
             }

@@ -270,9 +270,7 @@ impl Graph {
                                 self.classes[c]
                                     .nodes
                                     .iter()
-                                    .filter(|&&nid| {
-                                        matches!(&self.nodes[nid].node, Node::After { x, .. } if *x == dst)
-                                    })
+                                    .filter(|&&nid| matches!(&self.nodes[nid].node, Node::After { x, .. } if *x == dst))
                                     .count()
                             })
                             .sum();
@@ -553,7 +551,7 @@ impl Graph {
     fn new_load_kernel(&mut self, cid: ClassId, shapes: &Slab<ShapeId, Vec<Dim>>, rc: u32) -> (JitKernelId, OpId) {
         let mut kernel = Kernel::new(DeviceId::NULL);
         let shape = &shapes[self.classes[cid].shape];
-        let op_id = kernel.define(self.classes[cid].dtype, MemScope::Global, true, &shape);
+        let op_id = kernel.define(self.classes[cid].dtype, MemScope::Global, true, shape);
         let kid = self.jit_kernels.push(JitKernelData {
             kernel,
             outputs: vec![cid; rc as usize],

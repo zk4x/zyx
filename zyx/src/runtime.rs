@@ -1252,7 +1252,7 @@ impl Runtime {
             return Err(ZyxError::shape_error(format!("flip: axes must not be empty for tensor of shape {sh:?}").into()));
         }
         for &axis in &axes {
-            if (axis as usize) >= sh.len() {
+            if axis >= sh.len() {
                 return Err(ZyxError::shape_error(format!("Axis {axis} is out of range of rank {}", sh.len()).into()));
             }
         }
@@ -1461,9 +1461,8 @@ impl Runtime {
             let define_shape_id = self.tensors[dst_define].shape_id;
             let define_dtype = self.tensors[dst_define].dtype;
             let (_node_id, assign_cid) = self.push_node(graph_id, Node::Assign { dst: dst_cid, src: src_cid }, shape_id, dtype);
-            self.tensors[dst_define].class_id = self
-                .push_node(graph_id, Node::After { x: dst_define_cid, dep: assign_cid }, define_shape_id, define_dtype)
-                .1;
+            self.tensors[dst_define].class_id =
+                self.push_node(graph_id, Node::After { x: dst_define_cid, dep: assign_cid }, define_shape_id, define_dtype).1;
             self.tensors[dst].class_id = self.push_node(graph_id, Node::After { x: dst_cid, dep: assign_cid }, shape_id, dtype).1;
             #[cfg(feature = "debug_tensor_op")]
             println!("  -> cid={cid:?}");

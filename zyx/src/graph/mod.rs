@@ -734,87 +734,225 @@ impl Graph {
         let order = self.topo_sort_classes(outputs);
 
         let n = self.classes.ids().count();
-        let mut cost: Vec<Option<u64>> = vec![None; n];
-        let mut producer: Vec<Option<NodeId>> = vec![None; n];
+        let is_leaf: Vec<bool> = (0..n)
+            .map(|i| {
+                let cid = ClassId(i as u32);
+                self.classes[cid].nodes.iter().any(|&nid| matches!(&self.nodes[nid].node, Node::Leaf { .. }))
+            })
+            .collect();
 
+        // Candidate producer nodes per class: Kernel and ToDevice nodes. Multiple
+        // kernels may produce the same class (different fusions compete in
+        // extraction); a leaf class is already realized and never needs one.
+        #[derive(Clone, Copy)]
+        struct Cand {
+            nid: NodeId,
+            time: u64,
+        }
+        let mut cands: Vec<Vec<Cand>> = vec![Vec::new(); n];
+        let nn = self.nodes.ids().count();
+        let mut node_in: Vec<Vec<ClassId>> = vec![Vec::new(); nn];
+        let mut node_out: Vec<Vec<ClassId>> = vec![Vec::new(); nn];
+        let mut node_time: Vec<u64> = vec![0; nn];
         for &cid in &order {
-            let idx = cid.0 as usize;
-
-            if self.classes[cid].nodes.iter().any(|&nid| matches!(&self.nodes[nid].node, Node::Leaf { .. })) {
-                cost[idx] = Some(0);
-            }
-
             for &nid in &self.classes[cid].nodes {
-                match &self.nodes[nid].node {
-                    Node::Kernel { inputs, outputs, time, .. } => {
-                        if inputs.iter().all(|icid| cost[icid.0 as usize].is_some()) {
-                            let total: u64 = inputs.iter().map(|icid| cost[icid.0 as usize].unwrap()).sum();
-                            let candidate = time + total;
-                            for &ocid in outputs {
-                                let oidx = ocid.0 as usize;
-                                if cost[oidx].is_none_or(|c| candidate < c) {
-                                    cost[oidx] = Some(candidate);
-                                    producer[oidx] = Some(nid);
-                                }
-                            }
-                        }
-                    }
+                let (time, inputs, outputs) = match &self.nodes[nid].node {
+                    Node::Kernel { inputs, outputs, time, .. } => (*time, inputs.to_vec(), outputs.to_vec()),
                     Node::ToDevice { x, time, .. } => {
-                        if let Some(c) = cost[x.0 as usize] {
-                            let candidate = time + c;
-                            if cost[idx].is_none_or(|c| candidate < c) {
-                                cost[idx] = Some(candidate);
-                                producer[idx] = Some(nid);
-                            }
-                        }
+                        let outputs = vec![self.nodes[nid].class_of];
+                        (*time, vec![*x], outputs)
                     }
-                    _ => {}
-                }
+                    _ => continue,
+                };
+                node_time[nid.0 as usize] = time;
+                node_in[nid.0 as usize] = inputs.clone();
+                node_out[nid.0 as usize] = outputs.clone();
+                cands[cid.0 as usize].push(Cand { nid, time });
             }
         }
 
-        for &ocid in outputs {
-            let idx = ocid.0 as usize;
-            if cost[idx].is_none() {
-                for &cid in &order {
-                    if cost[cid.0 as usize].is_none() {
-                        /*eprint!("{cid:?}:[");
-                        for &nid in &self.classes[cid].nodes {
-                            match &self.nodes[nid].node {
-                                Node::Kernel { inputs, .. } => eprint!("Kernel(inputs={inputs:?}) "),
-                                Node::Leaf { .. } => eprint!("Leaf "),
-                                Node::ToDevice { .. } => eprint!("ToDevice "),
-                                Node::Const(_) => eprint!("Const "),
-                                Node::Expand { .. } => eprint!("Expand "),
-                                Node::Permute { .. } => eprint!("Permute "),
-                                Node::Reshape { .. } => eprint!("Reshape "),
-                                Node::PadZeros { .. } => eprint!("PadZeros "),
-                                Node::Reduce { .. } => eprint!("Reduce "),
-                                Node::Cast { .. } => eprint!("Cast "),
-                                Node::Unary { .. } => eprint!("Unary "),
-                                Node::Binary { .. } => eprint!("Binary "),
-                            }
-                        }
-                        eprintln!("]");*/
-                        if let Some(producer_nid) = producer[cid.0 as usize]
-                            && let Node::Kernel { inputs, .. } = &self.nodes[producer_nid].node
-                        {
-                            for icid in inputs.iter() {
-                                eprintln!("  input {icid:?}: cost={:?}", cost[icid.0 as usize]);
+        // After classes alias their base leaf buffer; their value comes from the
+        // assign writing in-place over the previous version of that buffer.
+        // Needing an After class forces its whole assign chain to run (every
+        // earlier After plus the assign classes) — otherwise the in-place store
+        // kernels of chained assigns get dropped. Mirrors the backward walk below.
+        let mut after_chain: Vec<Vec<ClassId>> = vec![Vec::new(); n];
+        for &cid in &order {
+            let mut chain = Vec::new();
+            let mut cur = cid;
+            while let Some(&nid2) =
+                self.classes[cur].nodes.iter().find(|&&nid| matches!(&self.nodes[nid].node, Node::After { .. }))
+            {
+                let Node::After { x, dep } = &self.nodes[nid2].node else {
+                    unreachable!()
+                };
+                chain.push(*x);
+                chain.push(*dep);
+                if *x == cur {
+                    break;
+                }
+                cur = *x;
+            }
+            after_chain[cid.0 as usize] = chain;
+        }
+
+        struct Ctx<'a> {
+            outputs: &'a BTreeSet<ClassId>,
+            order: &'a [ClassId],
+            cands: &'a [Vec<Cand>],
+            node_in: &'a [Vec<ClassId>],
+            node_out: &'a [Vec<ClassId>],
+            node_time: &'a [u64],
+            after_chain: &'a [Vec<ClassId>],
+            is_leaf: &'a [bool],
+        }
+
+        impl Ctx<'_> {
+            /// The classes that still must be produced (`pending`, in topological
+            /// order) and the classes already produced, derived from `selected`.
+            fn pending_and_produced(&self, selected: &Set<NodeId>) -> (Vec<ClassId>, Set<ClassId>) {
+                let mut produced: Set<ClassId> = Set::default();
+                let mut requested: Set<ClassId> = self.outputs.iter().copied().collect();
+                for &nid in selected {
+                    for &o in &self.node_out[nid.0 as usize] {
+                        produced.insert(o);
+                    }
+                    for &i in &self.node_in[nid.0 as usize] {
+                        requested.insert(i);
+                    }
+                }
+                loop {
+                    let mut add: Vec<ClassId> = Vec::new();
+                    for &c in &requested {
+                        for &r in &self.after_chain[c.0 as usize] {
+                            if !requested.contains(&r) {
+                                add.push(r);
                             }
                         }
                     }
+                    if add.is_empty() {
+                        break;
+                    }
+                    for r in add {
+                        requested.insert(r);
+                    }
                 }
+                let mut pending = Vec::new();
+                for &c in self.order {
+                    if !produced.contains(&c)
+                        && requested.contains(&c)
+                        && !self.is_leaf[c.0 as usize]
+                        && !self.cands[c.0 as usize].is_empty()
+                    {
+                        pending.push(c);
+                    }
+                }
+                (pending, produced)
+            }
+
+            fn plan_cost(&self, selected: &Set<NodeId>) -> u64 {
+                selected.iter().map(|&nid| self.node_time[nid.0 as usize]).sum()
+            }
+
+            /// A feasible plan that selects the cheapest producer of each pending
+            /// class in topological order. Always terminates; provides the upper
+            /// bound for the search and a safe fallback.
+            fn greedy(&self) -> Set<NodeId> {
+                let mut selected: Set<NodeId> = Set::default();
+                loop {
+                    let (pending, _) = self.pending_and_produced(&selected);
+                    if pending.is_empty() {
+                        return selected;
+                    }
+                    let c = pending[0];
+                    let cand = self.cands[c.0 as usize].iter().min_by_key(|k| k.time).expect("pending class has no candidates");
+                    selected.insert(cand.nid);
+                }
+            }
+
+            /// Branch-and-bound DFS over producer sets. `selected` is the current
+            /// set, `cost` the cost so far, `best` the best total cost seen
+            /// (prunes branches that cannot improve it). Returns the cheapest
+            /// completion from this state and the nodes it selects.
+            fn search(&self, selected: &mut Set<NodeId>, cost: u64, best: &mut u64) -> Option<(u64, Vec<NodeId>)> {
+                let (pending, _) = self.pending_and_produced(selected);
+                if pending.is_empty() {
+                    return Some((0, Vec::new()));
+                }
+                let c = pending[0];
+                let mut ordered: Vec<&Cand> = self.cands[c.0 as usize].iter().collect();
+                ordered.sort_by_key(|k| k.time);
+                let mut best_res: Option<(u64, Vec<NodeId>)> = None;
+                for cand in ordered {
+                    if selected.contains(&cand.nid) {
+                        continue;
+                    }
+                    let new_cost = cost + cand.time;
+                    if new_cost >= *best {
+                        continue;
+                    }
+                    selected.insert(cand.nid);
+                    if let Some((rest, mut nodes)) = self.search(selected, new_cost, best) {
+                        let total = cand.time + rest;
+                        nodes.push(cand.nid);
+                        if best_res.as_ref().is_none_or(|(b, _)| total < *b) {
+                            best_res = Some((total, nodes));
+                            *best = (*best).min(cost + total);
+                        }
+                    }
+                    selected.remove(&cand.nid);
+                }
+                best_res
+            }
+        }
+
+        let ctx = Ctx {
+            outputs,
+            order: &order,
+            cands: &cands,
+            node_in: &node_in,
+            node_out: &node_out,
+            node_time: &node_time,
+            after_chain: &after_chain,
+            is_leaf: &is_leaf,
+        };
+
+        let greedy_plan = ctx.greedy();
+        let greedy_cost = ctx.plan_cost(&greedy_plan);
+
+        // Output classes must have a producer path through Kernel/ToDevice
+        // nodes. Leaves are already realized and need none.
+        let (_, produced) = ctx.pending_and_produced(&greedy_plan);
+        for &ocid in outputs {
+            if !is_leaf[ocid.0 as usize] && !produced.contains(&ocid) {
                 panic!("class {ocid:?} has no valid producer path through Kernel or ToDevice nodes");
             }
         }
 
-        // Only keep producers that are actually needed to compute the outputs.
-        // A class may have a (cheap) producer selected even though nothing on the
-        // path to an output consumes it — e.g. an AOT cblas matmul whose result
-        // feeds into an op that got fused into a bigger kernel. Such dead kernels
-        // must not be extracted. Walk backward from the outputs through the
-        // selected producers and mark every reachable class as needed.
+        // Cheapest closed producer set: the search improves on greedy when a
+        // cheaper closure exists, otherwise greedy is already optimal.
+        let mut best = greedy_cost;
+        let mut winning = greedy_plan.clone();
+        if let Some((total, nodes)) = ctx.search(&mut Set::default(), 0, &mut best)
+            && total < greedy_cost
+        {
+            winning = nodes.into_iter().collect();
+        }
+
+        // Producer of each class in the winning plan (multi-output kernels
+        // produce several classes at once).
+        let mut producer: Vec<Option<NodeId>> = vec![None; n];
+        for &nid in &winning {
+            for &oc in &node_out[nid.0 as usize] {
+                producer[oc.0 as usize] = Some(nid);
+            }
+        }
+
+        // Mark every class needed to compute the outputs by walking backward from
+        // the outputs through the selected producers. The winning plan's selected
+        // set is already closed under its producers, so this is a no-op on the
+        // pure kernel graph — it exists to (a) thread the After/assign chains
+        // below and (b) emit the producers in class-topological order.
         let mut needed: Vec<bool> = vec![false; n];
         let mut stack: Vec<ClassId> = outputs.iter().copied().collect();
         loop {
@@ -834,13 +972,12 @@ impl Graph {
                     // needed, the assign that wrote it and every earlier
                     // After in the chain are needed too — otherwise extract
                     // drops the in-place store kernels of chained assigns.
-                    if let Some(&nid2) = self.classes[cid].nodes.iter().find(|&&nid| {
-                        matches!(&self.nodes[nid].node, Node::After { .. })
-                    }) {
-                        if let Node::After { x, dep } = &self.nodes[nid2].node {
-                            stack.push(*x);
-                            stack.push(*dep);
-                        }
+                    if let Some(&nid2) =
+                        self.classes[cid].nodes.iter().find(|&&nid| matches!(&self.nodes[nid].node, Node::After { .. }))
+                        && let Node::After { x, dep } = &self.nodes[nid2].node
+                    {
+                        stack.push(*x);
+                        stack.push(*dep);
                     }
                 }
             }

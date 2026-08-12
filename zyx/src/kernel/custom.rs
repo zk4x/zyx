@@ -218,7 +218,7 @@ impl Kernel {
         let in_shape = self.shape(x);
         debug_assert!(!axes.is_empty(), "flip: axes must not be empty");
         for &axis in &axes {
-            debug_assert!((axis as usize) < in_shape.len(), "flip: axis {axis} out of range for rank {}", in_shape.len());
+            debug_assert!(axis < in_shape.len(), "flip: axis {axis} out of range for rank {}", in_shape.len());
         }
         self.push_back(Op::Move { x, mop: Box::new(MoveOp::Flip { axes }) })
     }

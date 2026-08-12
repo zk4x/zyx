@@ -7,7 +7,8 @@ use crate::{
     Map, Set,
     dtype::Constant,
     kernel::{BOp, IDX_T, IdxScope, Kernel, MemLayout, MemScope, Op, OpId},
-    shape::Dim, slab::SlabId,
+    shape::Dim,
+    slab::SlabId,
 };
 
 fn gather_deps(kernel: &Kernel, seeds: &[OpId]) -> Set<OpId> {
@@ -146,7 +147,7 @@ impl Kernel {
         while !op_id.is_null() {
             if let Op::Index { len, axis, scope: IdxScope::Group } = self.ops[op_id].op {
                 let len = self.index_len(len);
-                if len % 32 == 0 && len >= 32 {
+                if len.is_multiple_of(32) && len >= 32 {
                     let f1 = len / 32;
                     let f1_id = self.const_idx(f1);
                     let local_id = self.const_idx(32);
