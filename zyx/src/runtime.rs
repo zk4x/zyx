@@ -2089,28 +2089,40 @@ impl Runtime {
             if buf_id.pool != pool_id {
                 let src = buf_id.buffer;
                 let bytes = (self.shape(tid).iter().product::<Dim>() as usize * self.dtype(tid).bit_size() as usize).div_ceil(8);
-                let mut byte_slice = vec![0u8; bytes];
 
-                let mut ev = Vec::new();
+                // Gather the events that the source buffer depends on (prior
+                // writers), so the copy waits for them.
+                let mut wait_list = Vec::new();
                 for buffers in self.events.keys() {
                     if buffers.contains(&buf_id) {
                         let buffers = buffers.clone();
                         let event = self.events.remove(&buffers).unwrap();
-                        ev.push(event);
+                        wait_list.push(event);
                         break;
                     }
                 }
-                self.pools[buf_id.pool].pool_to_host(src, &mut byte_slice, ev)?;
+
+                let (dst, alloc_ev) = self.pools[pool_id].allocate(bytes as Dim)?;
+                let dst_global = BufferId { pool: pool_id, buffer: dst };
+                debug_assert_ne!(buf_id.pool, pool_id, "pool_to_pool across the same pool is disallowed");
+                let src_pool_ptr: *mut MemoryPool = &mut self.pools[buf_id.pool];
+                let copy_ev = self.pools[pool_id].pool_to_pool(
+                    unsafe { &mut *src_pool_ptr },
+                    src,
+                    dst,
+                    {
+                        wait_list.push(alloc_ev);
+                        wait_list
+                    },
+                )?;
+                self.pools[pool_id].sync_events(vec![copy_ev])?;
+
+                // Remove and deallocate the old buffer only AFTER pool_to_pool
+                // has finished reading it.
                 self.buffer_map.remove(&tid);
-                // Deallocate old buffer if no other mapping uses it
                 if !self.buffer_map.values().any(|b| b.buffer == src) {
                     self.pools[buf_id.pool].deallocate(src, vec![]);
                 }
-
-                let (dst, event) = self.pools[pool_id].allocate(bytes as Dim)?;
-                let dst_global = BufferId { pool: pool_id, buffer: dst };
-                let event = self.pools[pool_id].host_to_pool(&byte_slice, dst, vec![event])?;
-                self.pools[pool_id].sync_events(vec![event])?;
                 self.buffer_map.insert(tid, dst_global);
             } else {
                 for buffers in self.events.keys() {
