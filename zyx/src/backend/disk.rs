@@ -60,6 +60,11 @@ impl DiskMemoryPool {
         self.buffers.push(DiskBuffer { bytes, path: path.into(), offset_bytes })
     }
 
+    /// Return the size in bytes of a disk-backed buffer.
+    pub fn buffer_bytes(&self, src: PoolBufferId) -> Dim {
+        self.buffers[src].bytes
+    }
+
     #[allow(clippy::needless_pass_by_value)]
     pub fn deallocate(&mut self, buffer_id: PoolBufferId, event_wait_list: Vec<Event>) {
         //println!("Deallocate buffer={buffer_id:?} from the disk");

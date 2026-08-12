@@ -128,7 +128,7 @@ fn contiguous_4() -> Result<(), ZyxError> {
     Ok(())
 }
 
-/*#[test]
+#[test]
 fn narrow_1() -> Result<(), ZyxError> {
     let x = Tensor::from([[1, 2, 3, 4], [5, 6, 7, 8], [9, 10, 11, 12], [13, 14, 15, 16]]);
     let y = x.narrow(0, 1, 2)?;
@@ -137,4 +137,4 @@ fn narrow_1() -> Result<(), ZyxError> {
     let z = y.narrow(-1, 1, 2)?;
     assert_eq!(z, [[6, 7], [10, 11]]);
     Ok(())
-}*/
+}
