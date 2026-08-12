@@ -41,7 +41,7 @@ impl Kernel {
                             panic!();
                         }
                     }
-                    Op::Define { scope: MemScope::Global, ro: false, .. } => {
+                    Op::Define { scope: MemScope::Global | MemScope::Scalar, ro: false, .. } => {
                         if phase == Phase::GlobalRo {
                             phase = Phase::GlobalRw;
                         }

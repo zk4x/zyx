@@ -124,7 +124,7 @@ impl Kernel {
         while !op_id.is_null()
             && matches!(
                 self.ops[op_id].op,
-                Op::Define { scope: MemScope::Global | MemScope::Local, .. } | Op::Index { .. } | Op::Const(_)
+                Op::Define { .. } | Op::Index { .. } | Op::Const(_)
             )
         {
             op_id = self.next_op(op_id);

@@ -47,8 +47,8 @@ impl Kernel {
         while !op_id.is_null() {
             let next = self.next_op(op_id);
             match self.at(op_id) {
-                Op::Define { scope: MemScope::Global, ro: true, .. } => global_ro.push(op_id),
-                Op::Define { scope: MemScope::Global, ro: false, .. } => global_rw.push(op_id),
+                Op::Define { scope: MemScope::Global | MemScope::Scalar, ro: true, .. } => global_ro.push(op_id),
+                Op::Define { scope: MemScope::Global | MemScope::Scalar, ro: false, .. } => global_rw.push(op_id),
                 Op::Define { scope: MemScope::Local, ro: true, .. } => local_ro.push(op_id),
                 Op::Define { scope: MemScope::Local, ro: false, .. } => local_rw.push(op_id),
                 _ => rest.push(op_id),
