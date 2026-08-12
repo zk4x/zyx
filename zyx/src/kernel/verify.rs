@@ -34,7 +34,7 @@ impl Kernel {
             let mut scan = self.head;
             while !scan.is_null() {
                 match self.at(scan) {
-                    Op::Define { scope: MemScope::Global, ro: true, .. } => {
+                    Op::Define { scope: MemScope::Global | MemScope::Scalar, ro: true, .. } => {
                         if phase != Phase::GlobalRo {
                             println!("Global read-only defines must come first.");
                             self.debug();

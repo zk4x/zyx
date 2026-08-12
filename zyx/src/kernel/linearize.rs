@@ -107,7 +107,7 @@ impl Kernel {
             let mut defines = Vec::new();
             let mut op_id = self.head;
             while !op_id.is_null() {
-                if let Op::Define { dtype, scope: MemScope::Global, ro, ref shape } = self.ops[op_id].op {
+                if let Op::Define { dtype, scope: MemScope::Global | MemScope::Scalar, ro, ref shape } = self.ops[op_id].op {
                     defines.push((dtype, ro, shape.to_vec(), MemScope::Global));
                 }
                 op_id = self.next_op(op_id);
@@ -644,7 +644,7 @@ impl Kernel {
         let mut first_mut_global = head;
         while !op_id.is_null() {
             let next = self.next_op(op_id);
-            if let Op::Define { ro, scope: MemScope::Global, .. } = self.ops[op_id].op {
+            if let Op::Define { ro, scope: MemScope::Global | MemScope::Scalar, .. } = self.ops[op_id].op {
                 if ro {
                     self.move_op_before(op_id, first_mut_global);
                 } else {
@@ -662,7 +662,7 @@ impl Kernel {
             let mut defines = Vec::new();
             let mut op_id = self.head;
             while !op_id.is_null() {
-                if let Op::Define { dtype, scope: MemScope::Global, ro, ref shape } = self.ops[op_id].op {
+                if let Op::Define { dtype, scope: MemScope::Global | MemScope::Scalar, ro, ref shape } = self.ops[op_id].op {
                     defines.push((dtype, ro, shape.to_vec(), MemScope::Global));
                 }
                 op_id = self.next_op(op_id);

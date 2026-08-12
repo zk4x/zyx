@@ -33,7 +33,7 @@ use crate::{
     dtype::Constant,
     error::{BackendError, ErrorStatus},
     graph::{ClassId, EClass, ExecPlan, Graph, GraphId, Node, NodeData, NodeId, plan::drain_events_for_buf},
-    kernel::{BOp, DeviceId, Kernel, MemLayout, MemScope, MoveOp, Op, OpId, UOp, autotune::OptSeq},
+    kernel::{BOp, DeviceId, IDX_T, Kernel, MemLayout, MemScope, MoveOp, Op, OpId, UOp, autotune::OptSeq},
     rng::Rng,
     shape::{Dim, UAxis},
     slab::{Slab, SlabId},
@@ -1263,7 +1263,7 @@ impl Runtime {
         } else {
             let (kernel_id, op_id) = self.duplicate_or_store(x, false).unwrap();
             debug_assert_eq!(self.kernels[kernel_id].outputs.len(), 0, "input into slice must have empty outputs");
-            let start_op_id = self.kernels[kernel_id].kernel.const_idx(start);
+            let start_op_id = self.kernels[kernel_id].kernel.define(IDX_T, MemScope::Scalar, true, &[1]);
             let op_id = self.kernels[kernel_id]
                 .kernel
                 .push_back(Op::Move { x: op_id, mop: Box::new(MoveOp::Slice { axis, start: start_op_id, len }) });
