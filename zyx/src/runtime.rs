@@ -1239,6 +1239,52 @@ impl Runtime {
         }
     }
 
+    /// Slice
+    pub fn slice(&mut self, x: TensorId, axis: UAxis, start: Dim, len: Dim) -> TensorId {
+        #[cfg(feature = "debug_tensor_op")]
+        println!("runtime::slice(x={x}, axis={axis}, start={start}, len={len})");
+
+        let sh = self.shape(x);
+        debug_assert!(axis < sh.len() as UAxis, "slice: axis {axis} out of range for rank {}", sh.len());
+
+        let mut new_shape = sh.to_vec();
+        new_shape[axis] = len;
+        let shape_id = self.push_shape(new_shape.clone());
+        let dtype = self.tensors[x].dtype;
+
+        if self.is_graph(x) {
+            let (class_id, graph_id) = self.graph_ids(x);
+            let start_const = Constant::idx(start);
+            let scalar_shape = self.push_shape(vec![1]);
+            let (_, start_cid) = self.push_node(graph_id, Node::Const(start_const), scalar_shape, start_const.dtype());
+            let (_, class_id) =
+                self.push_node(graph_id, Node::Slice { x: class_id, axis, start: OpId(start_cid.0), len }, shape_id, dtype);
+            self.new_graph_tensor(graph_id, class_id, shape_id, dtype)
+        } else {
+            let (kernel_id, op_id) = self.eager_ids(x);
+            let (_, op_id) = self.duplicate_or_store(x, false).unwrap();
+            let start_op_id = self.kernels[kernel_id].kernel.const_idx(start);
+            let op_id = self.kernels[kernel_id]
+                .kernel
+                .push_back(Op::Move { x: op_id, mop: Box::new(MoveOp::Slice { axis, start: start_op_id, len }) });
+            let tid = self.tensors.push(TensorData {
+                shape_id,
+                dtype,
+                kernel_id,
+                op_id,
+                depends_on: KernelId::NULL,
+                class_id: ClassId::NULL,
+                graph_id: GraphId::NULL,
+                rc: 1,
+            });
+            debug_assert_eq!(self.kernels[kernel_id].outputs.len(), 0, "input into slice must have empty outputs");
+            self.kernels[kernel_id].outputs.push(tid);
+            #[cfg(feature = "debug_tensor_op")]
+            println!("  -> tid={tid}, kid={kernel_id:?}, op_id={op_id:?}");
+            tid
+        }
+    }
+
     /// Flip tensor along axes.
     ///
     /// # Errors
