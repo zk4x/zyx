@@ -2,12 +2,11 @@
 // SPDX-License-Identifier: LGPL-3.0-only
 
 use crate::{
-    Tensor, ZyxError,
+    RT, Tensor, ZyxError,
     shape::{Dim, UAxis, into_axis},
     tensor::Axis,
 };
 use std::{
-    iter::{once, repeat_n},
     ops::{Mul, Range, RangeFrom, RangeFull, RangeInclusive, RangeTo},
 };
 
@@ -298,15 +297,18 @@ impl Tensor {
         let shape = self.shape();
         let rank = shape.len() as UAxis;
         let axis = into_axis(axis, rank)?;
-        let dim = i64::try_from(shape[axis]).unwrap();
-        let padding: Vec<(i64, i64)> =
-            once((-i64::try_from(start).unwrap(), -dim + i64::try_from(length).unwrap() + i64::try_from(start).unwrap()))
-                .chain(repeat_n((0i64, 0i64), rank - axis - 1))
-                .collect::<Vec<(i64, i64)>>()
-                .into_iter()
-                .rev()
-                .collect();
-        Ok(self.rpad_zeros(padding).unwrap())
+        let dim = shape[axis];
+        if start > dim {
+            return Err(ZyxError::shape_error(
+                format!("narrow: start {start} out of range on axis {axis} (dim {dim})").into(),
+            ));
+        }
+        if length > dim - start {
+            return Err(ZyxError::shape_error(
+                format!("narrow: start {start} + length {length} > dim {dim} on axis {axis}").into(),
+            ));
+        }
+        Ok(Tensor { id: RT.lock().slice(self.id, axis, start, length) })
     }
 
     /// Gather
