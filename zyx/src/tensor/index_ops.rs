@@ -1,8 +1,15 @@
 // Copyright (C) 2025 zk4x
 // SPDX-License-Identifier: LGPL-3.0-only
 
-use crate::{Tensor, ZyxError, tensor::Axis};
-use std::ops::{Range, RangeFrom, RangeFull, RangeInclusive, RangeTo};
+use crate::{
+    Tensor, ZyxError,
+    shape::{Dim, UAxis, into_axis},
+    tensor::Axis,
+};
+use std::{
+    iter::{once, repeat_n},
+    ops::{Mul, Range, RangeFrom, RangeFull, RangeInclusive, RangeTo},
+};
 
 /// Panics on indexing, with a helpful message directing to `.slice(...)`.
 impl<I> std::ops::Index<I> for Tensor {
@@ -274,6 +281,168 @@ impl Tensor {
             .unwrap()
             .flatten(..)
             .unwrap()
+    }
+
+    /// Narrow tensor along an axis, is essentially just padding
+    /// ```
+    /// # use zyx::Tensor;
+    /// let x = Tensor::from([[1, 2, 3], [4, 5, 6], [7, 8, 9]]);
+    /// assert_eq!(x.narrow(0, 0, 2)?, [[1, 2, 3], [4, 5, 6]]);
+    /// assert_eq!(x.narrow(1, 1, 2)?, [[2, 3], [5, 6], [8, 9]]);
+    /// # Ok::<(), zyx::ZyxError>(())
+    /// ```
+    /// # Errors
+    /// Returns error if self cannot be narrowed.
+    #[allow(clippy::missing_panics_doc)]
+    pub fn narrow(&self, axis: Axis, start: Dim, length: Dim) -> Result<Tensor, ZyxError> {
+        let shape = self.shape();
+        let rank = shape.len() as UAxis;
+        let axis = into_axis(axis, rank)?;
+        let dim = i64::try_from(shape[axis]).unwrap();
+        let padding: Vec<(i64, i64)> =
+            once((-i64::try_from(start).unwrap(), -dim + i64::try_from(length).unwrap() + i64::try_from(start).unwrap()))
+                .chain(repeat_n((0i64, 0i64), rank - axis - 1))
+                .collect::<Vec<(i64, i64)>>()
+                .into_iter()
+                .rev()
+                .collect();
+        Ok(self.rpad_zeros(padding).unwrap())
+    }
+
+    /// Gather
+    ///
+    /// Gathers values along axis based on indices.
+    ///
+    /// Negative indices are wrapped (e.g., -1 → last element).
+    /// Out-of-bounds indices return 0 (zya doesn't check bounds, returns 0 for OOB).
+    ///
+    /// # Errors
+    ///
+    /// Returns error if the shapes are incompatible.
+    pub fn gather(&self, axis: Axis, indices: impl Into<Tensor>) -> Result<Tensor, ZyxError> {
+        let indices = indices.into();
+        let shape = self.shape();
+        let index_shape = indices.shape();
+        let dim = into_axis(axis, shape.len())?;
+
+        if shape.len() != index_shape.len() {
+            return Err(ZyxError::shape_error(
+                format!("self.rank({}) != indices.rank({})", shape.len(), index_shape.len()).into(),
+            ));
+        }
+
+        for (d, (&s, &i)) in shape.iter().zip(index_shape.iter()).enumerate() {
+            if d != dim && s < i {
+                return Err(ZyxError::shape_error(
+                    format!("Shape mismatch at dimension {d}: self.shape[{d}] = {s} < indices.shape[{d}] = {i}").into(),
+                ));
+            }
+        }
+
+        let dim_size = shape[dim];
+        let is_negative = indices.cmplt(0)?;
+        let indices = indices + is_negative.mul(dim_size as u32);
+
+        // Prepare one-hot along dim
+        let one_hot = indices.unsqueeze(-1)?.one_hot_along_dim(dim_size, -1)?;
+
+        // Prepare negative padding for shrink
+        let mut padding = Vec::new();
+        for d in (0..index_shape.len()).rev() {
+            if d == dim {
+                padding.push((0i64, 0i64));
+            } else {
+                padding.push((0i64, -(shape[d] as i64 - index_shape[d] as i64)));
+            }
+        }
+
+        let x = self.rpad_zeros(padding)?.unsqueeze(-1)?.transpose(-1, dim as i32)?;
+        let result = one_hot.mul(&x).sum_dtype([-1], self.dtype())?;
+
+        Ok(result)
+    }
+
+    /// Scatter
+    ///
+    /// Scatters values from `src` into `self` along `axis` according to `indices`.
+    ///
+    /// For each position in `indices`, the value from `src` at the same position
+    /// is added to `self` at the output position `indices[i, j, ...]` along `axis`.
+    /// Multiple indices mapping to the same output position are summed.
+    ///
+    /// Negative indices are wrapped (e.g., -1 → last element).
+    ///
+    /// # Errors
+    ///
+    /// Returns error if the shapes are incompatible.
+    pub fn scatter(&self, axis: Axis, indices: impl Into<Tensor>, src: impl Into<Tensor>) -> Result<Tensor, ZyxError> {
+        let indices = indices.into();
+        let src = src.into();
+        let shape = self.shape();
+        let index_shape = indices.shape();
+        let dim = into_axis(axis, shape.len())?;
+        let dim_size = shape[dim];
+
+        if shape.len() != index_shape.len() {
+            return Err(ZyxError::shape_error(
+                format!("self.rank({}) != indices.rank({})", shape.len(), index_shape.len()).into(),
+            ));
+        }
+
+        if index_shape != src.shape() {
+            return Err(ZyxError::shape_error(format!("indices shape {:?} != src shape {:?}", index_shape, src.shape()).into()));
+        }
+
+        for (d, (&s, &i)) in shape.iter().zip(index_shape.iter()).enumerate() {
+            if d != dim && s < i {
+                return Err(ZyxError::shape_error(
+                    format!("Shape mismatch at dimension {d}: self.shape[{d}] = {s} < indices.shape[{d}] = {i}").into(),
+                ));
+            }
+        }
+
+        let is_negative = indices.cmplt(0)?;
+        let indices = indices + is_negative.mul(dim_size as i32);
+
+        let one_hot = indices.unsqueeze(-1)?.one_hot_along_dim(dim_size, -1)?;
+
+        let contrib = one_hot.mul(&src.unsqueeze(-1)?);
+
+        let contrib = contrib.transpose(-1, dim as i32)?;
+
+        let rank = self.rank() as usize;
+        let mut padding = Vec::new();
+        for d in (0..=rank).rev() {
+            if d == dim || d == rank {
+                padding.push((0i64, 0i64));
+            } else {
+                padding.push((0i64, (shape[d] - index_shape[d]) as i64));
+            }
+        }
+        let contrib = contrib.rpad_zeros(padding)?;
+
+        let result = contrib.sum_dtype([-1], self.dtype())? + self;
+
+        Ok(result)
+    }
+
+    /// Index select
+    ///
+    /// # Errors
+    ///
+    /// Returns error if the dimension is out of bounds.
+    pub fn index_select(&self, dim: Axis, index: impl Into<Tensor>) -> Result<Tensor, ZyxError> {
+        let index = index.into();
+        let mut shape = self.shape();
+        let rank = shape.len();
+        let dim = into_axis(dim, rank)?;
+
+        shape[dim] = index.shape()[0];
+        let mut view_shape: Vec<Dim> = vec![1; rank];
+        view_shape[dim] = 0;
+        let index_expanded = index.reshape(view_shape)?.expand(shape)?;
+
+        self.gather(dim as Axis, index_expanded)
     }
 }
 

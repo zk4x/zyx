@@ -4,7 +4,7 @@
 use crate::{
     DType, RT, Tensor, ZyxError,
     kernel::BOp,
-    shape::{Dim, UAxis, into_axes},
+    shape::{Dim, UAxis, into_axes, into_axis},
     tensor::Axis,
 };
 
@@ -1040,5 +1040,53 @@ impl Tensor {
         correction: Dim,
     ) -> Result<Tensor, ZyxError> {
         self.reduce_impl::<true>(ReduceOp::Std, axes, Some(dtype), correction)
+    }
+
+    /// Comulative sum along axis.
+    ///
+    /// # Errors
+    ///
+    /// Returns error if axis is out of range.
+    #[allow(clippy::missing_panics_doc)]
+    pub fn cumsum(&self, axis: Axis) -> Result<Tensor, ZyxError> {
+        self.cum_reduce(axis, BOp::Add)
+    }
+
+    /// Comulative max along axis.
+    ///
+    /// # Errors
+    ///
+    /// Returns error if axis is out of range.
+    #[allow(clippy::missing_panics_doc)]
+    pub fn cummax(&self, axis: Axis) -> Result<Tensor, ZyxError> {
+        self.cum_reduce(axis, BOp::Max)
+    }
+
+    /// Comulative product along axis.
+    ///
+    /// # Errors
+    ///
+    /// Returns error if axis is out of range.
+    #[allow(clippy::missing_panics_doc)]
+    pub fn cumprod(&self, axis: Axis) -> Result<Tensor, ZyxError> {
+        self.cum_reduce(axis, BOp::Mul)
+    }
+
+    /// Cumulative reduce along axis
+    fn cum_reduce(&self, axis: Axis, rop: BOp) -> Result<Tensor, ZyxError> {
+        let shape = self.shape();
+        let uaxis = into_axis(axis, shape.len())?;
+        let pl_sz = i64::try_from(shape[uaxis] - 1).unwrap();
+        let mut x = self.transpose(axis, -1)?;
+        x = x.rpad_zeros([(pl_sz, 0i64)])?;
+        x = x.pool(shape[uaxis], 1, 1)?;
+        x = match rop {
+            BOp::Add => x.sum([-1])?,
+            BOp::Max => x.max([-1])?,
+            BOp::Mul => x.prod([-1])?,
+            _ => unreachable!(),
+        };
+        x = x.transpose(axis, -1)?;
+        Ok(x)
     }
 }
