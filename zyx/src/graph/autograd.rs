@@ -383,18 +383,13 @@ impl Runtime {
                     // input shape.
                     let pad = out_shape.len() - in_shape.len();
                     let sum_axes: Vec<UAxis> = (0..pad)
-                        .chain(
-                            in_shape
-                                .iter()
-                                .enumerate()
-                                .filter_map(|(i, &xd)| {
-                                    if xd == 1 && out_shape[pad + i] > 1 {
-                                        Some((pad + i) as UAxis)
-                                    } else {
-                                        None
-                                    }
-                                }),
-                        )
+                        .chain(in_shape.iter().enumerate().filter_map(|(i, &xd)| {
+                            if xd == 1 && out_shape[pad + i] > 1 {
+                                Some((pad + i) as UAxis)
+                            } else {
+                                None
+                            }
+                        }))
                         .collect();
                     if sum_axes.is_empty() {
                         accum_grad(self, graph_id, &mut grads, x, grad);
@@ -440,8 +435,8 @@ impl Runtime {
                         .1;
                     accum_grad(self, graph_id, &mut grads, x, g);
                 }
-                Node::PadZeros { x, .. } => {
-                    accum_grad(self, graph_id, &mut grads, x, grad);
+                Node::PadZeros { .. } => {
+                    todo!()
                 }
                 Node::Flip { x, ref axes } => {
                     // Flip is its own inverse: the gradient back-propagates by

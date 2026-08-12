@@ -720,6 +720,7 @@ impl Kernel {
                     | MoveOp::Permute { shape, .. }
                     | MoveOp::Pad { shape, .. } => Info { shape: shape.clone(), flops: 0, mem_read: 0, mem_write: 0 },
                     MoveOp::Flip { .. } => Info { shape: stack[x].shape.clone(), flops: 0, mem_read: 0, mem_write: 0 },
+                    MoveOp::Slice { .. } => Info { shape: todo!(), flops: 0, mem_read: 0, mem_write: 0 },
                 },
                 Op::Reduce { x, n_axes, .. } => {
                     let Info { mut shape, .. } = stack[x].clone();
@@ -816,6 +817,7 @@ impl Kernel {
                 | MoveOp::Permute { shape, .. }
                 | MoveOp::Pad { shape, .. } => shape.clone(),
                 MoveOp::Flip { .. } => self.shape(x),
+                MoveOp::Slice { .. } => todo!(),
             },
             Op::Define { ref shape, .. } => shape.clone().into(),
             ref op => todo!("{op:?}"),

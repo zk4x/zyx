@@ -1238,6 +1238,9 @@ impl Runtime {
                                     self.push_node(graph_id, Node::PadZeros { x: x_class, padding }, shape_id, dtype);
                                 class_id
                             }
+                            MoveOp::Slice { axis, start, len } => {
+                                todo!()
+                            }
                             MoveOp::Flip { axes } => {
                                 debug_assert!(
                                     !axes.is_empty(),

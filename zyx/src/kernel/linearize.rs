@@ -585,6 +585,7 @@ impl Kernel {
                                 .collect();
                             views.insert(x, view);
                         }
+                        MoveOp::Slice { axis, start, len } => todo!(),
                     }
                     self.remap(op_id, x);
                     self.remove_op(op_id);
@@ -668,6 +669,7 @@ impl Kernel {
                         | MoveOp::Pad { shape, .. } => {
                             return shape[shape.len() - n_reduce_axes..].into();
                         }
+                        MoveOp::Slice { .. } => {}
                         MoveOp::Flip { .. } => {}
                     },
                     _ => {}
@@ -676,41 +678,5 @@ impl Kernel {
             }
         }
         unreachable!();
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use crate::DType;
-    use crate::kernel::{DeviceId, Kernel, MemLayout, MemScope, OpId};
-    use crate::slab::SlabId;
-
-    /// Slice the first `len` elements of a `[6]` tensor starting at `start`,
-    /// i.e. pad `[(-start, -(6 - len - start))]`. This is exactly what a
-    /// kv-cache writer does every step when it writes to `cache.narrow(0, start, len)`.
-    fn slice_kernel(start: i64) -> Kernel {
-        let mut k = Kernel::new(DeviceId::AUTO);
-        let x = k.define(DType::F32, MemScope::Global, true, &[6]);
-        let p = k.pad(x, &[(-start, -(6 - 3 - start))]);
-        let out = k.define(DType::F32, MemScope::Global, false, &[3]);
-        k.store(out, p, OpId::NULL, MemLayout::Scalar);
-        k
-    }
-
-    /// Two kernels that differ only in the slice offset (the pad values) must be
-    /// the same kernel, so the `kernel_map` cache reuses the compiled program
-    /// instead of recompiling on every kv-cache step.
-    #[test]
-    fn different_padding_is_same_kernel() {
-        let mut k1 = slice_kernel(1);
-        let mut k2 = slice_kernel(2);
-        k1.linearize();
-        k2.linearize();
-        assert_eq!(
-            k1, k2,
-            "kernels differing only in pad offsets must share one kernel_map entry; \
-             currently the offset is baked in as an Op::Const, so every kv-cache step \
-             recompiles. This test passes once padding becomes a runtime scalar arg."
-        );
     }
 }

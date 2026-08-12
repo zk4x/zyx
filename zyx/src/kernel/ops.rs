@@ -259,6 +259,8 @@ pub enum MoveOp {
     Pad { padding: Vec<(i64, i64)>, shape: Vec<Dim> },
     /// Flip axes
     Flip { axes: Vec<UAxis> },
+    /// Slice axis
+    Slice { axis: UAxis, start: OpId, len: Dim },
 }
 
 /// Matrix multiply dimensions for tensor core operations.
