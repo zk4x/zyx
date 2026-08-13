@@ -255,7 +255,6 @@ your measured results.
 ## Roadmap
 
 - [ ] full tenstorrent coverage
-- [ ] custom backend code/assembly kernels
 - [ ] automatic device sharding search
 - [ ] more backends
 - [ ] more optimization passes

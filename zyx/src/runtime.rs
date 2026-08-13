@@ -431,7 +431,11 @@ impl Runtime {
         self.tensors[tid].graph_id = GraphId::NULL;
         let shape: Box<[Dim]> = self.shape(tid).into();
         let dtype = self.dtype(tid);
-        let scope = if self.is_variable_tensor(tid) { MemScope::Variable } else { MemScope::Global };
+        let scope = if self.is_variable_tensor(tid) {
+            MemScope::Variable
+        } else {
+            MemScope::Global
+        };
         let kernel_id = self.kernels.push(KernelData {
             outputs: vec![tid; handles],
             loads: Vec::new(),
@@ -1068,7 +1072,11 @@ impl Runtime {
             // won't add a StoreView for it. This avoids copying data for a
             // view-only reshape.
             if let Some(&buf_id) = self.buffer_map.get(&x) {
-                let scope = if self.is_variable_tensor(x) { MemScope::Variable } else { MemScope::Global };
+                let scope = if self.is_variable_tensor(x) {
+                    MemScope::Variable
+                } else {
+                    MemScope::Global
+                };
                 let mut kernel = Kernel::new(DeviceId::AUTO);
                 let op_id = kernel.define(dtype, scope, true, &shape);
                 let kernel_id =
@@ -1900,7 +1908,11 @@ impl Runtime {
 
         // Create load kernel so the tensor remains usable (visited must point to a live kernel)
         let dtype = self.tensors[x].dtype;
-        let scope = if self.is_variable_tensor(x) { MemScope::Variable } else { MemScope::Global };
+        let scope = if self.is_variable_tensor(x) {
+            MemScope::Variable
+        } else {
+            MemScope::Global
+        };
         let shape = self.shape(x);
         let mut kernel = Kernel::new(DeviceId::AUTO);
         let load_op_id = kernel.define(dtype, scope, true, shape);

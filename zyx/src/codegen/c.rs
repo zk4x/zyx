@@ -123,48 +123,60 @@ impl Kernel {
                         } else {
                             let idx = get_var(index, &constants, &indices, &reg_map, &mut registers, loop_id)?;
                             match layout {
-                            MemLayout::Scalar => match dtypes[&src].0 {
-                                DType::F16 => {
-                                    _ = writeln!(source, "{indent}r{reg} = f16tof32(p{src}[{idx}]);");
-                                }
-                                DType::BF16 => {
-                                    _ = writeln!(source, "{indent}r{reg} = bf16tof32(p{src}[{idx}]);");
-                                }
-                                _ => {
-                                    _ = writeln!(source, "{indent}r{reg} = p{src}[{idx}];");
-                                }
-                            },
-                            MemLayout::Vector(len) => match dtypes[&src].0 {
-                                DType::F16 => {
-                                    for i in 0..len {
-                                        _ = writeln!(source, "{indent}{} = f16tof32(p{src}[{idx} + {i}]);", lane_access(&format!("r{reg}"), i as usize));
+                                MemLayout::Scalar => match dtypes[&src].0 {
+                                    DType::F16 => {
+                                        _ = writeln!(source, "{indent}r{reg} = f16tof32(p{src}[{idx}]);");
                                     }
-                                }
-                                DType::BF16 => {
-                                    for i in 0..len {
-                                        _ = writeln!(source, "{indent}{} = bf16tof32(p{src}[{idx} + {i}]);", lane_access(&format!("r{reg}"), i as usize));
+                                    DType::BF16 => {
+                                        _ = writeln!(source, "{indent}r{reg} = bf16tof32(p{src}[{idx}]);");
                                     }
-                                }
-                                _ if !device_info.supported_vec_lens.is_empty() => {
-                                    _ = writeln!(
-                                        source,
-                                        "{indent}r{reg} = *(({}*)(p{src} + {idx}));",
-                                        dtype.0.vec_type_name(len)
-                                    );
-                                }
-                                _ => {
-                                    for i in 0..len {
-                                        _ = writeln!(source, "{indent}{} = p{src}[{idx} + {i}];", lane_access(&format!("r{reg}"), i as usize));
+                                    _ => {
+                                        _ = writeln!(source, "{indent}r{reg} = p{src}[{idx}];");
                                     }
+                                },
+                                MemLayout::Vector(len) => match dtypes[&src].0 {
+                                    DType::F16 => {
+                                        for i in 0..len {
+                                            _ = writeln!(
+                                                source,
+                                                "{indent}{} = f16tof32(p{src}[{idx} + {i}]);",
+                                                lane_access(&format!("r{reg}"), i as usize)
+                                            );
+                                        }
+                                    }
+                                    DType::BF16 => {
+                                        for i in 0..len {
+                                            _ = writeln!(
+                                                source,
+                                                "{indent}{} = bf16tof32(p{src}[{idx} + {i}]);",
+                                                lane_access(&format!("r{reg}"), i as usize)
+                                            );
+                                        }
+                                    }
+                                    _ if !device_info.supported_vec_lens.is_empty() => {
+                                        _ = writeln!(
+                                            source,
+                                            "{indent}r{reg} = *(({}*)(p{src} + {idx}));",
+                                            dtype.0.vec_type_name(len)
+                                        );
+                                    }
+                                    _ => {
+                                        for i in 0..len {
+                                            _ = writeln!(
+                                                source,
+                                                "{indent}{} = p{src}[{idx} + {i}];",
+                                                lane_access(&format!("r{reg}"), i as usize)
+                                            );
+                                        }
+                                    }
+                                },
+                                MemLayout::Tile { .. } => {
+                                    return Err(BackendError {
+                                        status: ErrorStatus::KernelCompilation,
+                                        context: "C codegen: Tile layout not supported for Load".into(),
+                                    });
                                 }
-                            },
-                            MemLayout::Tile { .. } => {
-                                return Err(BackendError {
-                                    status: ErrorStatus::KernelCompilation,
-                                    context: "C codegen: Tile layout not supported for Load".into(),
-                                });
                             }
-                        }
                         }
                     }
                 }
@@ -189,12 +201,20 @@ impl Kernel {
                         MemLayout::Vector(len) => match dtypes[&dst].0 {
                             DType::F16 => {
                                 for i in 0..len {
-                                    _ = writeln!(source, "{indent}p{dst}[{idx} + {i}] = f32tof16({});", lane_access(&x, i as usize));
+                                    _ = writeln!(
+                                        source,
+                                        "{indent}p{dst}[{idx} + {i}] = f32tof16({});",
+                                        lane_access(&x, i as usize)
+                                    );
                                 }
                             }
                             DType::BF16 => {
                                 for i in 0..len {
-                                    _ = writeln!(source, "{indent}p{dst}[{idx} + {i}] = f32tobf16({});", lane_access(&x, i as usize));
+                                    _ = writeln!(
+                                        source,
+                                        "{indent}p{dst}[{idx} + {i}] = f32tobf16({});",
+                                        lane_access(&x, i as usize)
+                                    );
                                 }
                             }
                             _ if !device_info.supported_vec_lens.is_empty() => {

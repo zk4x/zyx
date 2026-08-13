@@ -928,7 +928,8 @@ impl Kernel {
             var_entries.push((ptr_t, var, SC_PUSH_CONSTANT, false));
             global_var_ids.push(var);
             for &(_, dt) in &variable_defs {
-                let st = push_dtype(&mut asm, &mut type_cache, &mut type_entries, if dt == DType::Bool { DType::U32 } else { dt });
+                let st =
+                    push_dtype(&mut asm, &mut type_cache, &mut type_entries, if dt == DType::Bool { DType::U32 } else { dt });
                 push_ptr_type(&mut asm, &mut ptr_cache, &mut type_entries, SC_PUSH_CONSTANT, st);
             }
             var
@@ -1124,13 +1125,8 @@ impl Kernel {
                         let (base_ptr, element_ptr_type, is_storage_buffer, is_bool_src, push_member) =
                             if let Some(&(member_const, storage_type, is_bool)) = variable_members.get(&src) {
                                 // Push-constant member: OpAccessChain(base, member_const), then load
-                                let elem_ptr = push_ptr_type(
-                                    &mut asm,
-                                    &mut ptr_cache,
-                                    &mut type_entries,
-                                    SC_PUSH_CONSTANT,
-                                    storage_type,
-                                );
+                                let elem_ptr =
+                                    push_ptr_type(&mut asm, &mut ptr_cache, &mut type_entries, SC_PUSH_CONSTANT, storage_type);
                                 (push_constant_var, elem_ptr, false, is_bool, Some(member_const))
                             } else if let Some(&var_id) = spv_variables.get(&src) {
                                 let is_local = matches!(self.at(src), &Op::Define { scope: MemScope::Local, .. });
@@ -1146,7 +1142,8 @@ impl Kernel {
                                 (var_id, elem_ptr, !is_local, is_bool_buf, None)
                             } else if let Some(&var_id) = reg_vars.get(&src) {
                                 let scalar_type = push_dtype(&mut asm, &mut type_cache, &mut type_entries, load_dt);
-                                let elem_ptr = push_ptr_type(&mut asm, &mut ptr_cache, &mut type_entries, SC_FUNCTION, scalar_type);
+                                let elem_ptr =
+                                    push_ptr_type(&mut asm, &mut ptr_cache, &mut type_entries, SC_FUNCTION, scalar_type);
                                 (var_id, elem_ptr, false, false, None)
                             } else {
                                 return Err(BackendError {

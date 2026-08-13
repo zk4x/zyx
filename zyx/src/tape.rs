@@ -49,7 +49,14 @@
 use std::collections::BTreeSet;
 
 use crate::{
-    DType, Map, RT, Set, Tensor, ZyxError, backend::BufferId, graph::{ClassId, Graph, GraphId, plan::drain_events_for_buf}, kernel::MemScope, runtime::Runtime, shape::Dim, slab::SlabId, tensor::TensorId
+    DType, Map, RT, Set, Tensor, ZyxError,
+    backend::BufferId,
+    graph::{ClassId, Graph, GraphId, plan::drain_events_for_buf},
+    kernel::MemScope,
+    runtime::Runtime,
+    shape::Dim,
+    slab::SlabId,
+    tensor::TensorId,
 };
 
 /// Tape-scoped lazy graph.

@@ -17,7 +17,8 @@ use std::collections::BinaryHeap;
 
 use crate::{
     Map,
-    kernel::{Kernel, MemScope, Op, OpId}, slab::SlabId,
+    kernel::{Kernel, MemScope, Op, OpId},
+    slab::SlabId,
 };
 
 impl Kernel {

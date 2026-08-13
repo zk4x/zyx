@@ -68,7 +68,7 @@ impl HostMemoryPool {
         self.buffers.push(buffer)
     }
 
-/// Returns the stored constant if `buffer_id` is a variable, `None` otherwise.
+    /// Returns the stored constant if `buffer_id` is a variable, `None` otherwise.
     #[allow(unused)]
     pub fn get_variable(&self, buffer_id: PoolBufferId) -> Option<Constant> {
         match &self.buffers[buffer_id] {

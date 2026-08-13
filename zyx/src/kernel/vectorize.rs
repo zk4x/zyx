@@ -3,7 +3,12 @@
 
 use super::autotune::Optimization;
 use crate::{
-    DType, Map, Set, backend::DeviceInfo, kernel::{BOp, Kernel, MemLayout, Op, OpId, UOp}, shape::Dim, slab::SlabId, types::TinyVec
+    DType, Map, Set,
+    backend::DeviceInfo,
+    kernel::{BOp, Kernel, MemLayout, Op, OpId, UOp},
+    shape::Dim,
+    slab::SlabId,
+    types::TinyVec,
 };
 
 #[derive(Debug)]

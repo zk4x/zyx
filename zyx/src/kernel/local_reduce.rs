@@ -18,7 +18,8 @@ use crate::{
     backend::DeviceInfo,
     dtype::Constant,
     kernel::{BOp, IdxScope, Kernel, MemLayout, MemScope, Op, OpId},
-    shape::Dim, slab::SlabId,
+    shape::Dim,
+    slab::SlabId,
 };
 
 impl Kernel {

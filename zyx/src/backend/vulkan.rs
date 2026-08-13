@@ -551,7 +551,12 @@ struct VulkanProgram {
 #[derive(Debug)]
 pub(super) enum VulkanBuffer {
     Variable(Constant),
-    Buffer { buf: VkBuffer, mem: VkDeviceMemory, ptr: *mut u8, bytes: usize },
+    Buffer {
+        buf: VkBuffer,
+        mem: VkDeviceMemory,
+        ptr: *mut u8,
+        bytes: usize,
+    },
 }
 
 // ── Device ───────────────────────────────────────────────────────────────────
@@ -1293,13 +1298,13 @@ pub(super) fn initialize_device(
                                 }
                             }
                             let &VulkanBuffer::Buffer { ptr, .. } = &buffers[src] else {
-let _ = reply.send(Err(BackendError {
-                                status: ErrorStatus::MemoryCopyP2H,
-                                context: "PoolToHost: src is a variable, not a buffer".into(),
-                            }));
-                            continue;
-                        };
-                        unsafe { std::ptr::copy_nonoverlapping(ptr, dst, bytes) };
+                                let _ = reply.send(Err(BackendError {
+                                    status: ErrorStatus::MemoryCopyP2H,
+                                    context: "PoolToHost: src is a variable, not a buffer".into(),
+                                }));
+                                continue;
+                            };
+                            unsafe { std::ptr::copy_nonoverlapping(ptr, dst, bytes) };
                             let _ = reply.send(Ok(()));
                         }
                         VulkanCommand::StoreVariable { variable, reply } => {
@@ -1428,7 +1433,11 @@ let _ = reply.send(Err(BackendError {
                                 }
                             }
 
-                            let push_constant_range = VkPushConstantRange { stageFlags: VK_SHADER_STAGE_COMPUTE_BIT, offset: 0, size: push_constants_size };
+                            let push_constant_range = VkPushConstantRange {
+                                stageFlags: VK_SHADER_STAGE_COMPUTE_BIT,
+                                offset: 0,
+                                size: push_constants_size,
+                            };
                             let pl_ci = VkPipelineLayoutCreateInfo {
                                 sType: VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
                                 pNext: std::ptr::null(),
@@ -1491,7 +1500,8 @@ let _ = reply.send(Err(BackendError {
 
                             unsafe { vkDestroyShaderModule(device, shader, std::ptr::null()) };
 
-                            let id = programs.push(VulkanProgram { gws, pipeline, pipeline_layout, desc_layout, push_constants_size });
+                            let id =
+                                programs.push(VulkanProgram { gws, pipeline, pipeline_layout, desc_layout, push_constants_size });
                             let _ = reply.send(Ok(id));
                         }
                         VulkanCommand::Launch { program_id, args, mut event_wait_list, reply } => {

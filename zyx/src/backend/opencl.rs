@@ -536,52 +536,50 @@ pub(super) fn initialize_device(
                             }
                             let _ = reply.send(Ok(OpenCLEvent { event }));
                         }
-                        Command::PoolToHost { src, dst, bytes, event_wait_list, reply } => {
-                            match &buffers[src] {
-                                OpenCLBuffer::Variable(constant) => {
-                                    let value = constant.to_le_bytes();
-                                    let len = (bytes as usize).min(value.len());
-                                    unsafe { core::ptr::copy_nonoverlapping(value.as_ptr(), dst.cast(), len) };
-                                    let _ = reply.send(Ok(()));
-                                }
-                                OpenCLBuffer::Buffer { ptr, .. } => {
-                                    debug_assert!(!ptr.is_null(), "Trying to read null memory. Internal bug.");
-                                    let mut event_wait_list: Vec<*mut c_void> =
-                                        event_wait_list.into_iter().map(|e| e.event).filter(|event| !event.is_null()).collect();
-                                    if !event_wait_list.is_empty() {
-                                        let _ = unsafe {
-                                            clWaitForEvents(
-                                                u32::try_from(event_wait_list.len()).expect("So many events..."),
-                                                event_wait_list.as_ptr(),
-                                            )
-                                        }
-                                        .check(ErrorStatus::MemoryCopyP2H);
-                                    }
-                                    let mut event: *mut c_void = ptr::null_mut();
-                                    let status = unsafe {
-                                        clEnqueueReadBuffer(
-                                            data_queue,
-                                            *ptr,
-                                            CL_NON_BLOCKING,
-                                            0,
-                                            bytes as usize,
-                                            dst.cast(),
-                                            0,
-                                            ptr::null(),
-                                            &raw mut event,
-                                        )
-                                    };
-                                    if let Err(e) = status.check(ErrorStatus::MemoryCopyP2H) {
-                                        let _ = reply.send(Err(e));
-                                        continue 'work_thread_loop;
-                                    }
-                                    let events = [event];
-                                    let _ = unsafe { clWaitForEvents(1, events.as_ptr()) }.check(ErrorStatus::MemoryCopyP2H);
-                                    event_wait_list.push(event);
-                                    _ = reply.send(Ok(()));
-                                }
+                        Command::PoolToHost { src, dst, bytes, event_wait_list, reply } => match &buffers[src] {
+                            OpenCLBuffer::Variable(constant) => {
+                                let value = constant.to_le_bytes();
+                                let len = (bytes as usize).min(value.len());
+                                unsafe { core::ptr::copy_nonoverlapping(value.as_ptr(), dst.cast(), len) };
+                                let _ = reply.send(Ok(()));
                             }
-                        }
+                            OpenCLBuffer::Buffer { ptr, .. } => {
+                                debug_assert!(!ptr.is_null(), "Trying to read null memory. Internal bug.");
+                                let mut event_wait_list: Vec<*mut c_void> =
+                                    event_wait_list.into_iter().map(|e| e.event).filter(|event| !event.is_null()).collect();
+                                if !event_wait_list.is_empty() {
+                                    let _ = unsafe {
+                                        clWaitForEvents(
+                                            u32::try_from(event_wait_list.len()).expect("So many events..."),
+                                            event_wait_list.as_ptr(),
+                                        )
+                                    }
+                                    .check(ErrorStatus::MemoryCopyP2H);
+                                }
+                                let mut event: *mut c_void = ptr::null_mut();
+                                let status = unsafe {
+                                    clEnqueueReadBuffer(
+                                        data_queue,
+                                        *ptr,
+                                        CL_NON_BLOCKING,
+                                        0,
+                                        bytes as usize,
+                                        dst.cast(),
+                                        0,
+                                        ptr::null(),
+                                        &raw mut event,
+                                    )
+                                };
+                                if let Err(e) = status.check(ErrorStatus::MemoryCopyP2H) {
+                                    let _ = reply.send(Err(e));
+                                    continue 'work_thread_loop;
+                                }
+                                let events = [event];
+                                let _ = unsafe { clWaitForEvents(1, events.as_ptr()) }.check(ErrorStatus::MemoryCopyP2H);
+                                event_wait_list.push(event);
+                                _ = reply.send(Ok(()));
+                            }
+                        },
                         Command::SyncEvents { events, reply } => {
                             let events: Vec<*mut c_void> =
                                 events.into_iter().map(|e| e.event).filter(|event| !event.is_null()).collect();
@@ -682,9 +680,8 @@ pub(super) fn initialize_device(
                                         (value_ptr.cast(), scalar_values[0].len())
                                     }
                                 };
-                                if let Err(e) =
-                                    unsafe { clSetKernelArg(program.kernel, i, arg_size, arg_ptr) }
-                                        .check(ErrorStatus::IncorrectKernelArg)
+                                if let Err(e) = unsafe { clSetKernelArg(program.kernel, i, arg_size, arg_ptr) }
+                                    .check(ErrorStatus::IncorrectKernelArg)
                                 {
                                     let _ = reply.send(Err(e));
                                     // fall through to next command

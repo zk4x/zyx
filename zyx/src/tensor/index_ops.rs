@@ -6,9 +6,7 @@ use crate::{
     shape::{Dim, UAxis, into_axis},
     tensor::Axis,
 };
-use std::{
-    ops::{Mul, Range, RangeFrom, RangeFull, RangeInclusive, RangeTo},
-};
+use std::ops::{Mul, Range, RangeFrom, RangeFull, RangeInclusive, RangeTo};
 
 /// Panics on indexing, with a helpful message directing to `.slice(...)`.
 impl<I> std::ops::Index<I> for Tensor {
@@ -299,9 +297,7 @@ impl Tensor {
         let axis = into_axis(axis, rank)?;
         let dim = shape[axis];
         if start > dim {
-            return Err(ZyxError::shape_error(
-                format!("narrow: start {start} out of range on axis {axis} (dim {dim})").into(),
-            ));
+            return Err(ZyxError::shape_error(format!("narrow: start {start} out of range on axis {axis} (dim {dim})").into()));
         }
         if length > dim - start {
             return Err(ZyxError::shape_error(

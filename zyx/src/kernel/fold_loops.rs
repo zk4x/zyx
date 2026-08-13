@@ -30,7 +30,8 @@ use crate::{
     Set,
     dtype::{Constant, DType},
     kernel::{BOp, IDX_T, IdxScope, Kernel, MemLayout, MemScope, Op, OpId},
-    shape::Dim, slab::SlabId,
+    shape::Dim,
+    slab::SlabId,
 };
 
 impl Kernel {

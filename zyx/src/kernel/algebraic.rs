@@ -17,7 +17,8 @@ use crate::{
     DType, Map,
     dtype::Constant,
     kernel::{BOp, Kernel, Op, OpId},
-    shape::Dim, slab::SlabId,
+    shape::Dim,
+    slab::SlabId,
 };
 
 impl Kernel {

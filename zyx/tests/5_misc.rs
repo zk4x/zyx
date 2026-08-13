@@ -1031,6 +1031,20 @@ fn var4() -> Result<(), ZyxError> {
     Ok(())
 }
 
+/// Exercises a bool scalar variable (a comparison result), which is carried as
+/// a scalar `MemScope::Variable` and shipped through the Vulkan push-constant
+/// block (bool stored as u32, recovered via INotEqual).
+#[test]
+fn bool_var_compare() -> Result<(), ZyxError> {
+    let cmp = Tensor::from(3i32).cmpgt(&Tensor::from(2i32))?;
+    let val: i32 = cmp.cast(zyx::DType::I32).try_into()?;
+    assert_eq!(val, 1);
+    let cmp2 = Tensor::from(1i32).cmpgt(&Tensor::from(2i32))?;
+    let val2: i32 = cmp2.cast(zyx::DType::I32).try_into()?;
+    assert_eq!(val2, 0);
+    Ok(())
+}
+
 #[test]
 fn softmax_2() -> Result<(), ZyxError> {
     let x = Tensor::from([[2f32, 4., 3.], [4., 2., 3.]]);

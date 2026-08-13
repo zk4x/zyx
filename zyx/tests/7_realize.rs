@@ -477,7 +477,7 @@ fn add() -> Result<(), ZyxError> {
 #[test]
 fn opt_local() -> Result<(), ZyxError> {
     if !Tensor::dtype_capability(DType::BF16).any() {
-        return Ok(())
+        return Ok(());
     }
     let x = Tensor::rand([2, 128255, 1], DType::BF16)?;
     let y = Tensor::rand([2, 128255, 1], DType::F32)?;

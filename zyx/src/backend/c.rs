@@ -175,9 +175,7 @@ impl CDevice {
 
         // Skip the disk cache when debug_asm is set so the generated source is
         // always printed below.
-        if !debug_asm
-            && let Some(ref cache_dir) = cache_dir
-        {
+        if !debug_asm && let Some(ref cache_dir) = cache_dir {
             let cached_so = cache_dir.join(format!("{hash:016x}.so"));
             if cached_so.is_file()
                 && let Ok(lib) = unsafe { Library::new(&cached_so) }
@@ -220,7 +218,10 @@ impl CDevice {
         // LLVM's -ffast-math reassociation: clang rewrites x*a + (1-x)*b into
         // x*(a-b) + b, which catastrophically cancels when b is a huge value
         // like the -1e30 log-prob used by ctc_loss.
-        cmd.args(["-shared", "-O3", "-ffast-math", "-fno-associative-math", "-fPIC", "-o"]).arg(&so_path).arg(&c_path).arg("-lm");
+        cmd.args(["-shared", "-O3", "-ffast-math", "-fno-associative-math", "-fPIC", "-o"])
+            .arg(&so_path)
+            .arg(&c_path)
+            .arg("-lm");
         if self.has_openmp && gws0 > 1 {
             cmd.arg(if is_clang { "-fopenmp=libgomp" } else { "-fopenmp" });
         }
