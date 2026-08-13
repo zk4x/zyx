@@ -50,7 +50,7 @@ pub struct OpenCLMemoryPool {
 
 #[derive(Debug)]
 pub enum OpenCLBuffer {
-    Scalar(Constant),
+    Variable(Constant),
     Buffer { ptr: *mut c_void, bytes: Dim },
 }
 
@@ -82,8 +82,8 @@ pub struct OpenCLEvent {
 }
 
 enum Command {
-    StoreScalar {
-        scalar: Constant,
+    StoreVariable {
+        variable: Constant,
         reply: Sender<PoolBufferId>,
     },
     Allocate {
@@ -444,8 +444,8 @@ pub(super) fn initialize_device(
 
                 'work_thread_loop: while let Ok(cmd) = rx.recv() {
                     match cmd {
-                        Command::StoreScalar { scalar, reply } => {
-                            let buffer_id = buffers.push(OpenCLBuffer::Scalar(scalar));
+                        Command::StoreVariable { variable: scalar, reply } => {
+                            let buffer_id = buffers.push(OpenCLBuffer::Variable(scalar));
                             let _ = reply.send(buffer_id);
                         }
                         Command::Allocate { bytes, reply } => {
@@ -723,9 +723,9 @@ impl OpenCLMemoryPool {
         self.free_bytes.load(Ordering::SeqCst)
     }
 
-    pub fn store_scalar(&mut self, scalar: Constant) -> PoolBufferId {
+    pub fn store_variable(&mut self, variable: Constant) -> PoolBufferId {
         let (reply, reply_rx) = channel();
-        self.tx.send(Command::StoreScalar { scalar, reply }).unwrap();
+        self.tx.send(Command::StoreVariable { variable, reply }).unwrap();
         reply_rx.recv().unwrap()
     }
 

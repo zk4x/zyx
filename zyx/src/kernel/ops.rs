@@ -472,7 +472,7 @@ impl Op {
 impl std::fmt::Display for MemScope {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(match self {
-            MemScope::Scalar => "scalar",
+            MemScope::Variable => "scalar",
             MemScope::Global => "global",
             MemScope::Local => "local",
             MemScope::Register => "reg",

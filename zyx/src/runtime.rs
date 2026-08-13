@@ -647,13 +647,13 @@ impl Runtime {
         self.initialize_devices()?;
 
         if data.len() == 1 {
-            let tid = self.new_eager_tensor(shape, dtype, MemScope::Scalar);
+            let tid = self.new_eager_tensor(shape, dtype, MemScope::Variable);
             self.retain_load(tid);
 
             let MemoryPool::Host(ref mut pool) = self.pools[PoolId::HOST] else {
                 unreachable!("Host must exist.")
             };
-            let buffer_id = BufferId { pool: PoolId::HOST, buffer: pool.store_scalar(Constant::new(data[0])) };
+            let buffer_id = BufferId { pool: PoolId::HOST, buffer: pool.store_variable(Constant::new(data[0])) };
             self.buffer_map.insert(tid, buffer_id);
 
             #[cfg(feature = "debug_tensor_op")]
@@ -1274,7 +1274,7 @@ impl Runtime {
         } else {
             let (kernel_id, op_id) = self.duplicate_or_store(x, false).unwrap();
             debug_assert_eq!(self.kernels[kernel_id].outputs.len(), 0, "input into slice must have empty outputs");
-            let start_op_id = self.kernels[kernel_id].kernel.define(IDX_T, MemScope::Scalar, true, &[1]);
+            let start_op_id = self.kernels[kernel_id].kernel.define(IDX_T, MemScope::Variable, true, &[1]);
             let op_id = self.kernels[kernel_id]
                 .kernel
                 .push_back(Op::Move { x: op_id, mop: Box::new(MoveOp::Slice { axis, start: start_op_id, len }) });
@@ -1965,7 +1965,7 @@ impl Runtime {
             let n_global_defines = kernel
                 .ops
                 .values()
-                .filter(|op| matches!(&op.op, Op::Define { scope: MemScope::Global | MemScope::Scalar, .. }))
+                .filter(|op| matches!(&op.op, Op::Define { scope: MemScope::Global | MemScope::Variable, .. }))
                 .count();
             let n_buffers = buffers.iter().filter(|&&b| b != PoolBufferId::NULL).count();
             assert!(

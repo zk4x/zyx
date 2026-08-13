@@ -34,14 +34,14 @@ impl Kernel {
             let mut scan = self.head;
             while !scan.is_null() {
                 match self.at(scan) {
-                    Op::Define { scope: MemScope::Global | MemScope::Scalar, ro: true, .. } => {
+                    Op::Define { scope: MemScope::Global | MemScope::Variable, ro: true, .. } => {
                         if phase != Phase::GlobalRo {
                             println!("Global read-only defines must come first.");
                             self.debug();
                             panic!();
                         }
                     }
-                    Op::Define { scope: MemScope::Global | MemScope::Scalar, ro: false, .. } => {
+                    Op::Define { scope: MemScope::Global | MemScope::Variable, ro: false, .. } => {
                         if phase == Phase::GlobalRo {
                             phase = Phase::GlobalRw;
                         }
@@ -96,7 +96,7 @@ impl Kernel {
         let mut gids = Set::default();
         let mut lids = Set::default();
 
-        let mut defines = Map::default();
+        let mut defines: Map<OpId, (MemScope, bool, &Box<[Dim]>)> = Map::default();
 
         let mut op_id = self.head;
         let mut prev: OpId;
@@ -106,6 +106,11 @@ impl Kernel {
                 Op::Store { dst, src: x, index, .. } => {
                     if !defines.contains_key(&dst) {
                         println!("store={op_id} is trying to store to undefined variable");
+                        self.debug();
+                        panic!();
+                    }
+                    if matches!(defines[&dst].0, MemScope::Variable) {
+                        println!("store={op_id} is trying to store to a MemScope::Variable variable, which is invalid");
                         self.debug();
                         panic!();
                     }

@@ -39,8 +39,14 @@ impl Kernel {
         while !op_id.is_null() {
             let op = &self.ops[op_id].op;
             if let &Op::Define { dtype, scope, ro, .. } = op {
-                if scope == MemScope::Global {
-                    _ = writeln!(global_args, "  {}{}* p{op_id},", if ro { "const " } else { "" }, dtype.cu());
+                match scope {
+                    MemScope::Global => {
+                        _ = writeln!(global_args, "  {}{}* p{op_id},", if ro { "const " } else { "" }, dtype.cu());
+                    }
+                    MemScope::Variable => {
+                        _ = writeln!(global_args, "  {}{} p{op_id},", if ro { "const " } else { "" }, dtype.cu());
+                    }
+                    _ => {}
                 }
             } else {
                 break;
@@ -97,24 +103,31 @@ impl Kernel {
                 Op::Load { src, index, layout } => {
                     if rcs.contains_key(&op_id) {
                         let dtype = dtypes[&op_id];
-                        let idx = get_var(index, &constants, &indices, &reg_map, &mut registers, loop_id)?;
                         let reg = new_reg(op_id, &mut reg_map, &mut registers, dtype, rcs[&op_id], loop_id);
-                        match layout {
-                            MemLayout::Scalar => _ = writeln!(source, "{indent}r{reg} = p{src}[{idx}];"),
-                            MemLayout::Vector(len) => {
-                                _ = writeln!(
-                                    source,
-                                    "{indent}r{reg} = *reinterpret_cast<const {}*>(&p{src}[{idx}]);",
-                                    dtype.0.cu_vec_type(len)
-                                )
+                        if matches!(self.ops[src].op, Op::Define { scope: MemScope::Variable, .. }) {
+                            _ = writeln!(source, "{indent}r{reg} = p{src};");
+                        } else {
+                            let idx = get_var(index, &constants, &indices, &reg_map, &mut registers, loop_id)?;
+                            match layout {
+                                MemLayout::Scalar => _ = writeln!(source, "{indent}r{reg} = p{src}[{idx}];"),
+                                MemLayout::Vector(len) => {
+                                    _ = writeln!(
+                                        source,
+                                        "{indent}r{reg} = *reinterpret_cast<const {}*>(&p{src}[{idx}]);",
+                                        dtype.0.cu_vec_type(len)
+                                    )
+                                }
+                                MemLayout::Tile { .. } => todo!(),
                             }
-                            MemLayout::Tile { .. } => todo!(),
                         }
                     }
                 }
                 Op::Store { dst, src, index, layout } => {
-                    let idx = get_var(index, &constants, &indices, &reg_map, &mut registers, loop_id)?;
                     let x = get_var(src, &constants, &indices, &reg_map, &mut registers, loop_id)?;
+                    if matches!(self.ops[dst].op, Op::Define { scope: MemScope::Variable, .. }) {
+                        unreachable!("CUDA codegen: stores to MemScope::Variable are invalid");
+                    }
+                    let idx = get_var(index, &constants, &indices, &reg_map, &mut registers, loop_id)?;
                     match layout {
                         MemLayout::Scalar => _ = writeln!(source, "{indent}p{dst}[{idx}] = {x};"),
                         MemLayout::Vector(len) => {

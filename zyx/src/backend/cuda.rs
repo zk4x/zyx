@@ -152,7 +152,7 @@ pub struct CUDAMemoryPool {
 
 #[derive(Debug)]
 pub(super) enum CUDABuffer {
-    Scalar(Constant),
+    Variable(Constant),
     Buffer { ptr: u64, bytes: Dim },
 }
 
@@ -250,8 +250,8 @@ pub struct CUDAEvent {
 unsafe impl Send for CUDAEvent {}
 
 enum CUDACommand {
-    StoreScalar {
-        scalar: Constant,
+    StoreVariable {
+        variable: Constant,
         reply: Sender<PoolBufferId>,
     },
     Allocate {
@@ -510,8 +510,8 @@ pub(super) fn initialize_device(
                 // Worker loop
                 'work_thread_loop: while let Ok(cmd) = rx.recv() {
                     match cmd {
-                        CUDACommand::StoreScalar { scalar, reply } => {
-                            let buffer_id = buffers.push(CUDABuffer::Scalar(scalar));
+                        CUDACommand::StoreVariable { variable: scalar, reply } => {
+                            let buffer_id = buffers.push(CUDABuffer::Variable(scalar));
                             let _ = reply.send(buffer_id);
                         }
                         CUDACommand::Allocate { bytes, reply } => {
@@ -554,7 +554,7 @@ pub(super) fn initialize_device(
                                 continue;
                             }
                             match buffers[buffer_id] {
-                                CUDABuffer::Scalar(_) => {}
+                                CUDABuffer::Variable(_) => {}
                                 CUDABuffer::Buffer { ptr, bytes } => {
                                     //_ = unsafe { (self.cuMemFreeAsync)(buffer.ptr, self.stream) }.check(ErrorStatus::MemoryDeallocation);
                                     _ = unsafe { (cuMemFree)(ptr) }.check(ErrorStatus::MemoryDeallocation);
@@ -865,9 +865,9 @@ impl CUDAMemoryPool {
         self.free_bytes.load(Ordering::SeqCst)
     }
 
-    pub fn store_scalar(&mut self, scalar: Constant) -> PoolBufferId {
+    pub fn store_variable(&mut self, variable: Constant) -> PoolBufferId {
         let (reply, reply_rx) = channel();
-        self.tx.send(CUDACommand::StoreScalar { scalar, reply }).unwrap();
+        self.tx.send(CUDACommand::StoreVariable { variable, reply }).unwrap();
         reply_rx.recv().unwrap()
     }
 
@@ -1437,7 +1437,7 @@ unsafe fn launch_cudnn_plan(
         let data_ptrs: Vec<*mut c_void> = args
             .iter()
             .map(|arg| match buffers[*arg] {
-                CUDABuffer::Scalar(constant) => todo!(),
+                CUDABuffer::Variable(constant) => todo!(),
                 CUDABuffer::Buffer { ptr, .. } => ptr as *mut c_void,
             })
             .collect();

@@ -556,13 +556,13 @@ impl MemoryPool {
         }
     }
 
-    pub fn store_scalar(&mut self, scalar: Constant) -> PoolBufferId {
+    pub fn store_variable(&mut self, scalar: Constant) -> PoolBufferId {
         match self {
             MemoryPool::Dummy(_) => todo!(),
             MemoryPool::Disk(_) => unreachable!(),
-            MemoryPool::Host(pool) => pool.store_scalar(scalar),
-            MemoryPool::CUDA(pool) => pool.store_scalar(scalar),
-            MemoryPool::OpenCL(pool) => pool.store_scalar(scalar),
+            MemoryPool::Host(pool) => pool.store_variable(scalar),
+            MemoryPool::CUDA(pool) => pool.store_variable(scalar),
+            MemoryPool::OpenCL(pool) => pool.store_variable(scalar),
             MemoryPool::HIP(_) => todo!(),
             MemoryPool::Vulkan(_) => todo!(),
         }

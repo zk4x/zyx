@@ -215,7 +215,7 @@ pub enum MemScope {
     /// Circular buffer, SRAM (tenstorrent)
     Circular,
     /// Single scalar variable
-    Scalar,
+    Variable,
 }
 
 /// Memory layout for kernel operations.
@@ -586,7 +586,7 @@ impl Kernel {
             let mut ops = Vec::new();
             let mut id = self.head;
             while !id.is_null() {
-                if let &Op::Define { scope: MemScope::Global | MemScope::Scalar, ro: true, .. } = &self.ops[id].op {
+                if let &Op::Define { scope: MemScope::Global | MemScope::Variable, ro: true, .. } = &self.ops[id].op {
                     ops.push(id);
                 }
                 id = self.next_op(id);
