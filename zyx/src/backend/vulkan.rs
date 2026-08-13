@@ -19,6 +19,7 @@ use nanoserde::DeJson;
 use crate::kernel::{IdxScope, Op};
 use crate::{
     DType,
+    dtype::Constant,
     error::{BackendError, ErrorStatus},
     kernel::Kernel,
     shape::Dim,
@@ -167,6 +168,12 @@ struct VkMemoryRequirements {
     memoryTypeBits: u32,
 }
 #[repr(C)]
+struct VkPushConstantRange {
+    stageFlags: u32,
+    offset: u32,
+    size: u32,
+}
+#[repr(C)]
 struct VkDescriptorSetLayoutBinding {
     binding: u32,
     descriptorType: u32,
@@ -190,7 +197,7 @@ struct VkPipelineLayoutCreateInfo {
     setLayoutCount: u32,
     pSetLayouts: *const VkDescriptorSetLayout,
     pushConstantRangeCount: u32,
-    pPushConstantRanges: *const std::ffi::c_void,
+    pPushConstantRanges: *const VkPushConstantRange,
 }
 #[repr(C)]
 struct VkPipelineShaderStageCreateInfo {
@@ -397,6 +404,14 @@ enum VulkanCommand {
         event_wait_list: Vec<Event>,
         reply: Sender<Result<(), BackendError>>,
     },
+    StoreVariable {
+        variable: Constant,
+        reply: Sender<Result<PoolBufferId, BackendError>>,
+    },
+    GetVariable {
+        buffer_id: PoolBufferId,
+        reply: Sender<Result<Constant, BackendError>>,
+    },
     Compile {
         kernel: Box<Kernel>,
         debug_asm: bool,
@@ -443,6 +458,16 @@ impl VulkanMemoryPool {
     }
     pub(super) fn deallocate(&mut self, buffer_id: PoolBufferId, event_wait_list: Vec<Event>) {
         self.tx.send(VulkanCommand::Deallocate { buffer_id, event_wait_list }).unwrap();
+    }
+    pub(super) fn store_variable(&mut self, variable: Constant) -> PoolBufferId {
+        let (reply, rx) = channel();
+        self.tx.send(VulkanCommand::StoreVariable { variable, reply }).unwrap();
+        rx.recv().unwrap().unwrap()
+    }
+    pub(super) fn get_variable(&mut self, buffer_id: PoolBufferId) -> Option<Constant> {
+        let (reply, rx) = channel();
+        self.tx.send(VulkanCommand::GetVariable { buffer_id, reply }).unwrap();
+        rx.recv().unwrap().ok()
     }
     pub(super) fn host_to_pool(
         &mut self,
@@ -511,6 +536,17 @@ struct VulkanProgram {
     pipeline: VkPipeline,
     pipeline_layout: VkPipelineLayout,
     desc_layout: VkDescriptorSetLayout,
+    push_constants_size: u32,
+}
+
+// ── Buffer ───────────────────────────────────────────────────────────────────
+
+/// A buffer in the Vulkan memory pool. Either a real device buffer or a scalar
+/// variable (a `Constant` stored by value, no device allocation).
+#[derive(Debug)]
+pub(super) enum VulkanBuffer {
+    Variable(Constant),
+    Buffer { buf: VkBuffer, mem: VkDeviceMemory, ptr: *mut u8, bytes: usize },
 }
 
 // ── Device ───────────────────────────────────────────────────────────────────
@@ -1013,6 +1049,14 @@ pub(super) fn initialize_device(
             *const u32,
         ) = ld!("vkCmdBindDescriptorSets");
         let vkCmdDispatch: unsafe extern "system" fn(VkCommandBuffer, u32, u32, u32) = ld!("vkCmdDispatch");
+        let vkCmdPushConstants: unsafe extern "system" fn(
+            VkCommandBuffer,
+            VkPipelineLayout,
+            u32,
+            u32,
+            u32,
+            *const std::ffi::c_void,
+        ) = ld!("vkCmdPushConstants");
         let vkQueueSubmit: unsafe extern "system" fn(VkQueue, u32, *const VkSubmitInfo, VkFence) -> VkResult =
             ld!("vkQueueSubmit");
 
@@ -1071,7 +1115,7 @@ pub(super) fn initialize_device(
                     return;
                 }
 
-                let mut buffers: Slab<PoolBufferId, (VkBuffer, VkDeviceMemory, *mut u8, usize)> = Slab::new();
+                let mut buffers: Slab<PoolBufferId, VulkanBuffer> = Slab::new();
                 let mut programs: Slab<DeviceProgramId, VulkanProgram> = Slab::new();
 
                 macro_rules! send_or_continue {
@@ -1156,7 +1200,7 @@ pub(super) fn initialize_device(
                         VulkanCommand::Allocate { bytes, reply } => {
                             let size = bytes.next_multiple_of(4);
                             let (buf, mem, ptr) = send_or_continue!(create_buffer(size), reply);
-                            let id = buffers.push((buf, mem, ptr, bytes as usize));
+                            let id = buffers.push(VulkanBuffer::Buffer { buf, mem, ptr, bytes: bytes as usize });
                             free_bytes_atomic.fetch_sub(size, Ordering::SeqCst);
                             let _ = reply.send(Ok((
                                 id,
@@ -1186,7 +1230,10 @@ pub(super) fn initialize_device(
                                     }
                                 }
                             }
-                            let (buf, mem, ptr, size) = unsafe { buffers.remove_and_return(buffer_id) };
+                            let res = unsafe { buffers.remove_and_return(buffer_id) };
+                            let VulkanBuffer::Buffer { buf, mem, ptr, bytes: size } = res else {
+                                continue;
+                            };
                             if !ptr.is_null() {
                                 unsafe { vkUnmapMemory(device, mem) };
                             }
@@ -1211,7 +1258,13 @@ pub(super) fn initialize_device(
                                     unsafe { vkFreeDescriptorSets(device, desc_pool, 1, &ev.desc_set) };
                                 }
                             }
-                            let &(_, _, ptr, _) = &buffers[dst];
+                            let &VulkanBuffer::Buffer { ptr, .. } = &buffers[dst] else {
+                                let _ = reply.send(Err(BackendError {
+                                    status: ErrorStatus::MemoryCopyP2H,
+                                    context: "HostToPool: dst is a variable, not a buffer".into(),
+                                }));
+                                continue;
+                            };
                             unsafe { std::ptr::copy_nonoverlapping(src, ptr, bytes) };
                             let _ = reply.send(Ok(Event::Vulkan(VulkanEvent {
                                 fence: std::ptr::null_mut(),
@@ -1234,9 +1287,29 @@ pub(super) fn initialize_device(
                                     unsafe { vkFreeDescriptorSets(device, desc_pool, 1, &ev.desc_set) };
                                 }
                             }
-                            let &(_, _, ptr, _) = &buffers[src];
-                            unsafe { std::ptr::copy_nonoverlapping(ptr, dst, bytes) };
+                            let &VulkanBuffer::Buffer { ptr, .. } = &buffers[src] else {
+let _ = reply.send(Err(BackendError {
+                                status: ErrorStatus::MemoryCopyP2H,
+                                context: "PoolToHost: src is a variable, not a buffer".into(),
+                            }));
+                            continue;
+                        };
+                        unsafe { std::ptr::copy_nonoverlapping(ptr, dst, bytes) };
                             let _ = reply.send(Ok(()));
+                        }
+                        VulkanCommand::StoreVariable { variable, reply } => {
+                            let id = buffers.push(VulkanBuffer::Variable(variable));
+                            let _ = reply.send(Ok(id));
+                        }
+                        VulkanCommand::GetVariable { buffer_id, reply } => {
+                            if let VulkanBuffer::Variable(c) = buffers[buffer_id] {
+                                let _ = reply.send(Ok(c));
+                            } else {
+                                let _ = reply.send(Err(BackendError {
+                                    status: ErrorStatus::MemoryCopyP2H,
+                                    context: "GetVariable: buffer is not a variable".into(),
+                                }));
+                            }
                         }
                         VulkanCommand::Compile { kernel, debug_asm, reply } => {
                             let mut gws: [Dim; 3] = [1; 3];
@@ -1295,6 +1368,30 @@ pub(super) fn initialize_device(
                                 n
                             };
 
+                            // Same layout as the SPIR-V push-constant block (std140 scalars; bool stored as u32)
+                            let push_constants_size = {
+                                let mut cur: u32 = 0;
+                                let mut op = kernel.head;
+                                while !op.is_null() {
+                                    if let crate::kernel::Op::Define { dtype, scope: crate::kernel::MemScope::Variable, .. } =
+                                        kernel.at(op)
+                                    {
+                                        let dtype = *dtype;
+                                        let storage_bits = if dtype == crate::DType::Bool {
+                                            32
+                                        } else {
+                                            dtype.bit_size()
+                                        };
+                                        let size = storage_bits as u32 / 8;
+                                        let align = if size >= 8 { 8 } else { 4 };
+                                        cur = cur.next_multiple_of(align);
+                                        cur += size;
+                                    }
+                                    op = kernel.next_op(op);
+                                }
+                                cur.next_multiple_of(4).max(4)
+                            };
+
                             let bindings: Vec<VkDescriptorSetLayoutBinding> = (0..n_args as u32)
                                 .map(|i| VkDescriptorSetLayoutBinding {
                                     binding: i,
@@ -1325,14 +1422,15 @@ pub(super) fn initialize_device(
                                 }
                             }
 
+                            let push_constant_range = VkPushConstantRange { stageFlags: VK_SHADER_STAGE_COMPUTE_BIT, offset: 0, size: push_constants_size };
                             let pl_ci = VkPipelineLayoutCreateInfo {
                                 sType: VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
                                 pNext: std::ptr::null(),
                                 flags: 0,
                                 setLayoutCount: 1,
                                 pSetLayouts: &desc_layout,
-                                pushConstantRangeCount: 0,
-                                pPushConstantRanges: std::ptr::null(),
+                                pushConstantRangeCount: u32::from(push_constants_size > 4),
+                                pPushConstantRanges: &push_constant_range,
                             };
                             let mut pipeline_layout = std::ptr::null_mut();
                             {
@@ -1387,7 +1485,7 @@ pub(super) fn initialize_device(
 
                             unsafe { vkDestroyShaderModule(device, shader, std::ptr::null()) };
 
-                            let id = programs.push(VulkanProgram { gws, pipeline, pipeline_layout, desc_layout });
+                            let id = programs.push(VulkanProgram { gws, pipeline, pipeline_layout, desc_layout, push_constants_size });
                             let _ = reply.send(Ok(id));
                         }
                         VulkanCommand::Launch { program_id, args, mut event_wait_list, reply } => {
@@ -1426,12 +1524,35 @@ pub(super) fn initialize_device(
                                 continue;
                             }
                             let n = args.len();
+                            // Separate buffer args (descriptors) from variable args (push constants).
+                            // Buffer bindings are 0..nbuffers in define order; push-constant members
+                            // use the same std140 layout as the SPIR-V block, in define order.
                             let mut buf_infos: Vec<VkDescriptorBufferInfo> = Vec::with_capacity(n);
+                            let mut push_constants: Vec<u8> = vec![0u8; prog.push_constants_size as usize];
+                            let mut push_off: u32 = 0;
                             for &arg_id in &args {
-                                let &(buf, _, _, _) = &buffers[arg_id];
-                                buf_infos.push(VkDescriptorBufferInfo { buffer: buf, offset: 0, range: VK_WHOLE_SIZE });
+                                match &buffers[arg_id] {
+                                    VulkanBuffer::Variable(constant) => {
+                                        let storage_bits = if constant.dtype() == crate::DType::Bool {
+                                            32
+                                        } else {
+                                            constant.dtype().bit_size()
+                                        };
+                                        let size = storage_bits as u32 / 8;
+                                        let align = if size >= 8 { 8 } else { 4 };
+                                        push_off = push_off.next_multiple_of(align);
+                                        let bytes = constant.to_le_bytes();
+                                        push_constants[push_off as usize..push_off as usize + bytes.len()]
+                                            .copy_from_slice(&bytes);
+                                        push_off += size;
+                                    }
+                                    VulkanBuffer::Buffer { buf, .. } => {
+                                        buf_infos.push(VkDescriptorBufferInfo { buffer: *buf, offset: 0, range: VK_WHOLE_SIZE });
+                                    }
+                                }
                             }
-                            let mut writes: Vec<VkWriteDescriptorSet> = Vec::with_capacity(n);
+                            let n_buffers = buf_infos.len();
+                            let mut writes: Vec<VkWriteDescriptorSet> = Vec::with_capacity(n_buffers);
                             for (i, buf_info) in buf_infos.iter().enumerate() {
                                 writes.push(VkWriteDescriptorSet {
                                     sType: VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
@@ -1494,6 +1615,16 @@ pub(super) fn initialize_device(
 
                             unsafe {
                                 vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, prog.pipeline);
+                                if prog.push_constants_size > 0 {
+                                    vkCmdPushConstants(
+                                        cmd,
+                                        prog.pipeline_layout,
+                                        VK_SHADER_STAGE_COMPUTE_BIT,
+                                        0,
+                                        push_constants.len() as u32,
+                                        push_constants.as_ptr().cast(),
+                                    );
+                                }
                                 vkCmdBindDescriptorSets(
                                     cmd,
                                     VK_PIPELINE_BIND_POINT_COMPUTE,
@@ -1610,7 +1741,10 @@ pub(super) fn initialize_device(
 
                 // Cleanup all resources
                 for id in buffers.ids().collect::<Vec<_>>() {
-                    let (buf, mem, ptr, _) = unsafe { buffers.remove_and_return(id) };
+                    let res = unsafe { buffers.remove_and_return(id) };
+                    let VulkanBuffer::Buffer { buf, mem, ptr, .. } = res else {
+                        continue;
+                    };
                     if !ptr.is_null() {
                         unsafe { vkUnmapMemory(device, mem) };
                     }

@@ -564,7 +564,7 @@ impl MemoryPool {
             MemoryPool::CUDA(pool) => pool.store_variable(scalar),
             MemoryPool::OpenCL(pool) => pool.store_variable(scalar),
             MemoryPool::HIP(_) => todo!(),
-            MemoryPool::Vulkan(_) => todo!(),
+            MemoryPool::Vulkan(pool) => pool.store_variable(scalar),
         }
     }
 
@@ -578,7 +578,7 @@ impl MemoryPool {
             MemoryPool::CUDA(pool) => pool.get_variable(buffer_id),
             MemoryPool::OpenCL(pool) => pool.get_variable(buffer_id),
             MemoryPool::HIP(_) => None,
-            MemoryPool::Vulkan(_) => None,
+            MemoryPool::Vulkan(pool) => pool.get_variable(buffer_id),
         }
     }
 

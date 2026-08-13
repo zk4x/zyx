@@ -23,6 +23,7 @@ const SC_FUNCTION: u32 = 7;
 const SC_INPUT: u32 = 1;
 const SC_STORAGE_BUFFER: u32 = 12;
 const SC_WORKGROUP: u32 = 4;
+const SC_PUSH_CONSTANT: u32 = 9;
 
 #[repr(u32)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -594,6 +595,12 @@ impl Kernel {
         let mut reg_arrays: Map<OpId, (u32, u32)> = Map::with_capacity_and_hasher(8, BuildHasherDefault::new());
         let mut cast_u32_consts: Map<OpId, (u32, u32)> = Map::with_capacity_and_hasher(4, BuildHasherDefault::new());
         let mut const_pool: Map<Constant, u32> = Map::with_capacity_and_hasher(16, BuildHasherDefault::new());
+        // Scalar variables (MemScope::Variable): collected in define order and
+        // exposed through a single push-constant block (SPIR-V has no by-value
+        // kernel params). Maps kernel define op_id -> member index.
+        let mut variable_defs: Vec<(OpId, DType)> = Vec::new();
+        // Maps kernel define op_id -> (member index, member storage type id, is_bool)
+        let mut variable_members: Map<OpId, (u32, u32, bool)> = Map::with_capacity_and_hasher(4, BuildHasherDefault::new());
 
         // Pre-define common types
         type_entries.push((OpTypeVoid, void_id, vec![]));
@@ -650,12 +657,13 @@ impl Kernel {
                         spv_values.insert(op_id, cid);
                     }
                     &Op::Define { dtype, scope, ro, ref shape } => {
-                        let len: u64 = shape.iter().product();
-                        let st = push_dtype(&mut asm, &mut type_cache, &mut type_entries, dtype);
                         match scope {
-                            MemScope::Variable => todo!(),
+                            MemScope::Variable => {
+                                variable_defs.push((op_id, dtype));
+                            }
                             MemScope::Circular => unreachable!(),
                             MemScope::Global => {
+                                let st = push_dtype(&mut asm, &mut type_cache, &mut type_entries, dtype);
                                 let is_bool = dtype == DType::Bool;
                                 if is_bool {
                                     bool_buffers.insert(op_id);
@@ -692,6 +700,8 @@ impl Kernel {
                                 );
                             }
                             MemScope::Local => {
+                                let len: u64 = shape.iter().product();
+                                let st = push_dtype(&mut asm, &mut type_cache, &mut type_entries, dtype);
                                 let len_cid = asm.id();
                                 const_entries.push((u32_id, len_cid, vec![len as u32]));
                                 len_const_ids.insert(len_cid);
@@ -706,6 +716,8 @@ impl Kernel {
                                 push_ptr_type(&mut asm, &mut ptr_cache, &mut type_entries, SC_WORKGROUP, st);
                             }
                             MemScope::Register => {
+                                let len: u64 = shape.iter().product();
+                                let st = push_dtype(&mut asm, &mut type_cache, &mut type_entries, dtype);
                                 let len_cid = asm.id();
                                 const_entries.push((u32_id, len_cid, vec![len as u32]));
                                 len_const_ids.insert(len_cid);
@@ -863,6 +875,64 @@ impl Kernel {
         // Pre-populate pointer types needed during body processing
         let idx_type = type_cache[&IDX_T];
         push_ptr_type(&mut asm, &mut ptr_cache, &mut type_entries, SC_FUNCTION, idx_type);
+
+        // === Push-constant block for scalar variables ===
+        // SPIR-V has no by-value kernel params, so MemScope::Variable defines are
+        // exposed through a single push-constant block struct (define order).
+        // Layout: std140 scalar alignment (8 for 64-bit types, 4 otherwise),
+        // total padded to a multiple of 4. The Vulkan backend mirrors this layout
+        // at launch (it must satisfy Vulkan push-constant layout rules).
+        let push_constant_var: u32 = if variable_defs.is_empty() {
+            0
+        } else {
+            let mut member_types: Vec<u32> = Vec::with_capacity(variable_defs.len());
+            let mut cur: u32 = 0;
+            for (idx, &(op_id, dt)) in variable_defs.iter().enumerate() {
+                // Bool members are stored as u32 (Vulkan blocks can't contain OpTypeBool)
+                let (storage_dt, is_bool) = if dt == DType::Bool { (DType::U32, true) } else { (dt, false) };
+                let st = push_dtype(&mut asm, &mut type_cache, &mut type_entries, storage_dt);
+                let size = elem_stride(storage_dt) as u32;
+                let align = if size >= 8 { 8 } else { 4 };
+                cur = cur.next_multiple_of(align);
+                member_types.push(st);
+                cur += size;
+                // Member index constant for OpAccessChain
+                let member_const = asm.id();
+                const_entries.push((u32_id, member_const, vec![idx as u32]));
+                variable_members.insert(op_id, (member_const, st, is_bool));
+            }
+            let total = cur.next_multiple_of(4).max(4);
+            let struct_id = asm.id();
+            type_entries.push((OpTypeStruct, struct_id, member_types));
+            decorations.push((struct_id, Decoration::DecBlock, vec![]));
+            let mut op_id = self.head;
+            let mut idx = 0u32;
+            let mut off = 0u32;
+            while !op_id.is_null() && idx < variable_defs.len() as u32 {
+                if let &Op::Define { dtype, scope: MemScope::Variable, .. } = self.at(op_id) {
+                    let storage_dt = if dtype == DType::Bool { DType::U32 } else { dtype };
+                    let size = elem_stride(storage_dt) as u32;
+                    let align = if size >= 8 { 8 } else { 4 };
+                    off = off.next_multiple_of(align);
+                    member_decorations.push((struct_id, idx, Decoration::DecOffset, vec![off]));
+                    off += size;
+                    idx += 1;
+                }
+                op_id = self.next_op(op_id);
+            }
+            debug_assert_eq!(idx, variable_defs.len() as u32);
+            debug_assert_eq!(off.next_multiple_of(4).max(4), total);
+            let ptr_t = asm.id();
+            type_entries.push((OpTypePointer, ptr_t, vec![SC_PUSH_CONSTANT, struct_id]));
+            let var = asm.id();
+            var_entries.push((ptr_t, var, SC_PUSH_CONSTANT, false));
+            global_var_ids.push(var);
+            for &(_, dt) in &variable_defs {
+                let st = push_dtype(&mut asm, &mut type_cache, &mut type_entries, if dt == DType::Bool { DType::U32 } else { dt });
+                push_ptr_type(&mut asm, &mut ptr_cache, &mut type_entries, SC_PUSH_CONSTANT, st);
+            }
+            var
+        };
 
         // === Builtin variables for Index ops ===
         let needs_global = {
@@ -1029,7 +1099,9 @@ impl Kernel {
                     }
                     Op::Define { scope, .. } => {
                         match scope {
-                            MemScope::Variable => todo!(),
+                            MemScope::Variable => {
+                                // Exposed through the push-constant block; loaded on access
+                            }
                             MemScope::Circular => unreachable!(),
                             MemScope::Global | MemScope::Local => {
                                 // Already declared as module-level variable
@@ -1049,32 +1121,41 @@ impl Kernel {
                         // then decompose into scalar loads + OpCompositeConstruct.
                         // SPIR-V does not allow loading a vector through a scalar pointer.
                         let is_vec = matches!(layout, MemLayout::Vector(_));
-                        let (base_ptr, element_ptr_type, is_storage_buffer, is_bool_src) = if let Some(&var_id) =
-                            spv_variables.get(&src)
-                        {
-                            let is_local = matches!(self.at(src), &Op::Define { scope: MemScope::Local, .. });
-                            let sc = if is_local { SC_WORKGROUP } else { SC_STORAGE_BUFFER };
-                            let is_bool_buf = bool_buffers.contains(&src) && !is_local;
-                            // For bool storage buffers or vector loads, use scalar storage type
-                            let storage_type = if is_bool_buf {
-                                u8_id.unwrap()
+                        let (base_ptr, element_ptr_type, is_storage_buffer, is_bool_src, push_member) =
+                            if let Some(&(member_const, storage_type, is_bool)) = variable_members.get(&src) {
+                                // Push-constant member: OpAccessChain(base, member_const), then load
+                                let elem_ptr = push_ptr_type(
+                                    &mut asm,
+                                    &mut ptr_cache,
+                                    &mut type_entries,
+                                    SC_PUSH_CONSTANT,
+                                    storage_type,
+                                );
+                                (push_constant_var, elem_ptr, false, is_bool, Some(member_const))
+                            } else if let Some(&var_id) = spv_variables.get(&src) {
+                                let is_local = matches!(self.at(src), &Op::Define { scope: MemScope::Local, .. });
+                                let sc = if is_local { SC_WORKGROUP } else { SC_STORAGE_BUFFER };
+                                let is_bool_buf = bool_buffers.contains(&src) && !is_local;
+                                // For bool storage buffers or vector loads, use scalar storage type
+                                let storage_type = if is_bool_buf {
+                                    u8_id.unwrap()
+                                } else {
+                                    push_dtype(&mut asm, &mut type_cache, &mut type_entries, load_dt)
+                                };
+                                let elem_ptr = push_ptr_type(&mut asm, &mut ptr_cache, &mut type_entries, sc, storage_type);
+                                (var_id, elem_ptr, !is_local, is_bool_buf, None)
+                            } else if let Some(&var_id) = reg_vars.get(&src) {
+                                let scalar_type = push_dtype(&mut asm, &mut type_cache, &mut type_entries, load_dt);
+                                let elem_ptr = push_ptr_type(&mut asm, &mut ptr_cache, &mut type_entries, SC_FUNCTION, scalar_type);
+                                (var_id, elem_ptr, false, false, None)
                             } else {
-                                push_dtype(&mut asm, &mut type_cache, &mut type_entries, load_dt)
+                                return Err(BackendError {
+                                    status: ErrorStatus::KernelCompilation,
+                                    context: "SPIR-V: Load from unknown variable".into(),
+                                });
                             };
-                            let elem_ptr = push_ptr_type(&mut asm, &mut ptr_cache, &mut type_entries, sc, storage_type);
-                            (var_id, elem_ptr, !is_local, is_bool_buf)
-                        } else if let Some(&var_id) = reg_vars.get(&src) {
-                            let scalar_type = push_dtype(&mut asm, &mut type_cache, &mut type_entries, load_dt);
-                            let elem_ptr = push_ptr_type(&mut asm, &mut ptr_cache, &mut type_entries, SC_FUNCTION, scalar_type);
-                            (var_id, elem_ptr, false, false)
-                        } else {
-                            return Err(BackendError {
-                                status: ErrorStatus::KernelCompilation,
-                                context: "SPIR-V: Load from unknown variable".into(),
-                            });
-                        };
 
-                        if is_vec && !is_bool_src {
+                        if is_vec && push_member.is_none() && !is_bool_src {
                             // Vector load: access into buffer at index, then do N scalar loads
                             let mut scalars = Vec::new();
                             let vec_len = match layout {
@@ -1113,13 +1194,26 @@ impl Kernel {
                             let access = asm.id();
                             if is_storage_buffer {
                                 asm.emit_typed(OpAccessChain, element_ptr_type, access, &[base_ptr, const_u32_0, index_id]);
+                            } else if let Some(member_const) = push_member {
+                                asm.emit_typed(OpAccessChain, element_ptr_type, access, &[base_ptr, member_const]);
                             } else {
                                 asm.emit_typed(OpAccessChain, element_ptr_type, access, &[base_ptr, index_id]);
                             }
                             let loaded = asm.id();
-                            let load_type = if is_bool_src { u8_id.unwrap() } else { result_type };
+                            let load_type = if let Some(&(_, storage_type, true)) = variable_members.get(&src) {
+                                storage_type
+                            } else if is_bool_src {
+                                u8_id.unwrap()
+                            } else {
+                                result_type
+                            };
                             asm.emit_typed(OpLoad, load_type, loaded, &[access]);
-                            if is_bool_src {
+                            if let Some(&(_, _, true)) = variable_members.get(&src) {
+                                // Bool stored as u32; compare != 0 to recover the boolean
+                                let bool_val = asm.id();
+                                asm.emit_typed(OpINotEqual, result_type, bool_val, &[loaded, const_u32_0]);
+                                spv_values.insert(op_id, bool_val);
+                            } else if is_bool_src {
                                 let bool_val = asm.id();
                                 asm.emit_typed(OpINotEqual, result_type, bool_val, &[loaded, const_u8_0.unwrap()]);
                                 spv_values.insert(op_id, bool_val);
