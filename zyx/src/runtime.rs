@@ -665,16 +665,19 @@ impl Runtime {
         let bytes = (data.len() * dtype.bit_size() as usize).div_ceil(8);
         debug_assert_eq!(data.len() * std::mem::size_of::<T>(), bytes);
 
-        // Convert to Box<[u8]>
-        let ptr = (Box::into_raw(data) as *mut T) as *mut u8;
-        let slice = std::ptr::slice_from_raw_parts_mut(ptr, bytes);
-        let data = unsafe { Box::from_raw(slice) };
+        // Allocate one element extra so masked store writes to the trash
+        // element stay within bounds (eager tensors can become store
+        // targets, e.g. in-place assign).
+        let alloc_bytes = bytes + dtype.bit_size() as usize / 8;
+        let mut buf = vec![0u8; alloc_bytes].into_boxed_slice();
+        let src = unsafe { std::slice::from_raw_parts(data.as_ptr().cast::<u8>(), bytes) };
+        buf[..bytes].copy_from_slice(src);
 
         // Store to Host memory
         let MemoryPool::Host(ref mut pool) = self.pools[PoolId::HOST] else {
             unreachable!("Host must exist.")
         };
-        let buffer_id = BufferId { pool: PoolId::HOST, buffer: pool.insert(data) };
+        let buffer_id = BufferId { pool: PoolId::HOST, buffer: pool.insert(buf) };
 
         let tid = self.new_eager_tensor(shape, dtype, MemScope::Global);
         self.retain_load(tid);
@@ -2100,6 +2103,7 @@ impl Runtime {
             if buf_id.pool != pool_id {
                 let src = buf_id.buffer;
                 let bytes = (self.shape(tid).iter().product::<Dim>() as usize * self.dtype(tid).bit_size() as usize).div_ceil(8);
+                let alloc_bytes = bytes + self.dtype(tid).bit_size() as usize / 8;
 
                 // Gather the events that the source buffer depends on (prior
                 // writers), so the copy waits for them.
@@ -2113,7 +2117,7 @@ impl Runtime {
                     }
                 }
 
-                let (dst, alloc_ev) = self.pools[pool_id].allocate(bytes as Dim)?;
+                let (dst, alloc_ev) = self.pools[pool_id].allocate(alloc_bytes as Dim)?;
                 let dst_global = BufferId { pool: pool_id, buffer: dst };
                 debug_assert_ne!(buf_id.pool, pool_id, "pool_to_pool across the same pool is disallowed");
                 let src_pool_ptr: *mut MemoryPool = &mut self.pools[buf_id.pool];
@@ -2151,6 +2155,7 @@ impl Runtime {
             if buf_id.pool != pool_id {
                 let src = buf_id.buffer;
                 let bytes = (self.shape(tid).iter().product::<Dim>() as usize * self.dtype(tid).bit_size() as usize).div_ceil(8);
+                let alloc_bytes = bytes as Dim + Dim::from(self.dtype(tid).bit_size() / 8);
                 let mut byte_slice = vec![0u8; bytes];
 
                 let mut ev = Vec::new();
@@ -2168,7 +2173,7 @@ impl Runtime {
                     self.pools[buf_id.pool].deallocate(src, vec![]);
                 }
 
-                let (dst, event) = self.pools[pool_id].allocate(bytes as Dim)?;
+                let (dst, event) = self.pools[pool_id].allocate(alloc_bytes)?;
                 let dst_global = BufferId { pool: pool_id, buffer: dst };
                 let event = self.pools[pool_id].host_to_pool(&byte_slice, dst, vec![event])?;
                 self.pools[pool_id].sync_events(vec![event])?;

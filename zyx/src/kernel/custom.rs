@@ -568,7 +568,8 @@ impl CompiledKernel {
                 }
                 let dtype = rt.tensors[input.id].dtype;
                 let bytes = (rt.shape(input.id).iter().product::<Dim>() * dtype.bit_size() as Dim).div_ceil(8);
-                let (dev_buf, alloc_ev) = rt.pools[pool_id].allocate(bytes)?;
+                let alloc_bytes = bytes + dtype.bit_size() as Dim / 8;
+                let (dev_buf, alloc_ev) = rt.pools[pool_id].allocate(alloc_bytes)?;
                 pool_events.push(alloc_ev);
                 let dev_buf_id = BufferId { pool: pool_id, buffer: dev_buf };
                 let src_pool_ptr: *mut MemoryPool = &mut rt.pools[buf_id.pool];
