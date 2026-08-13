@@ -12,6 +12,7 @@
 use super::{DTypeCapability, Device, DeviceId, DeviceInfo, DeviceProgramId, Event, MemoryPool, PoolBufferId, PoolId};
 use crate::{
     DType,
+    dtype::Constant,
     error::{BackendError, ErrorStatus},
     kernel::{IdxScope, Kernel, Op},
     shape::Dim,
@@ -48,9 +49,9 @@ pub struct OpenCLMemoryPool {
 }
 
 #[derive(Debug)]
-pub(super) struct OpenCLBuffer {
-    buffer: *mut c_void,
-    bytes: Dim,
+pub enum OpenCLBuffer {
+    Scalr(Constant),
+    Buffer { ptr: *mut c_void, bytes: Dim },
 }
 
 #[derive(Debug)]
@@ -456,12 +457,14 @@ pub(super) fn initialize_device(
                                 continue 'work_thread_loop;
                             }
                             free_bytes_atomic.fetch_sub(bytes, Ordering::SeqCst);
-                            let id = buffers.push(OpenCLBuffer { buffer, bytes });
+                            let id = buffers.push(OpenCLBuffer::Buffer { ptr: buffer, bytes });
                             let _ = reply.send(Ok((id, OpenCLEvent { event: ptr::null_mut() })));
                         }
                         Command::Deallocate { buffer_id, event_wait_list } => {
-                            let buffer = &buffers[buffer_id];
-                            debug_assert!(!buffer.buffer.is_null(), "Deallocating null buffer is invalid");
+                            let OpenCLBuffer::Buffer { ptr, bytes } = buffers[buffer_id] else {
+                                unreachable!()
+                            };
+                            debug_assert!(!ptr.is_null(), "Deallocating null buffer is invalid");
                             let event_wait_list: Vec<*mut c_void> =
                                 event_wait_list.into_iter().map(|e| e.event).filter(|event| !event.is_null()).collect();
                             if !event_wait_list.is_empty() {
@@ -471,14 +474,16 @@ pub(super) fn initialize_device(
                                 .check(ErrorStatus::Deinitialization);
                             }
                             if buffers.contains_key(buffer_id) {
-                                let _ = unsafe { clReleaseMemObject(buffer.buffer) }.check(ErrorStatus::Deinitialization);
-                                free_bytes_atomic.fetch_add(buffer.bytes, Ordering::SeqCst);
+                                let _ = unsafe { clReleaseMemObject(ptr) }.check(ErrorStatus::Deinitialization);
+                                free_bytes_atomic.fetch_add(bytes, Ordering::SeqCst);
                                 buffers.remove(buffer_id);
                             }
                         }
                         Command::HostToPool { src, bytes, dst, event_wait_list, reply } => {
-                            let dst = &buffers[dst];
-                            debug_assert!(bytes <= dst.bytes);
+                            let OpenCLBuffer::Buffer { ptr, .. } = buffers[dst] else {
+                                unreachable!()
+                            };
+                            debug_assert!(bytes <= bytes);
                             let event_wait_list: Vec<*mut c_void> =
                                 event_wait_list.into_iter().map(|e| e.event).filter(|event| !event.is_null()).collect();
                             let event_wait_list_ptr = if event_wait_list.is_empty() {
@@ -490,7 +495,7 @@ pub(super) fn initialize_device(
                             let status = unsafe {
                                 clEnqueueWriteBuffer(
                                     data_queue,
-                                    dst.buffer,
+                                    ptr,
                                     CL_NON_BLOCKING,
                                     0,
                                     bytes as usize,
@@ -507,8 +512,10 @@ pub(super) fn initialize_device(
                             let _ = reply.send(Ok(OpenCLEvent { event }));
                         }
                         Command::PoolToHost { src, dst, bytes, event_wait_list, reply } => {
-                            let src = &buffers[src];
-                            debug_assert!(!src.buffer.is_null(), "Trying to read null memory. Internal bug.");
+                            let OpenCLBuffer::Buffer { ptr, .. } = buffers[src] else {
+                                unreachable!()
+                            };
+                            debug_assert!(!ptr.is_null(), "Trying to read null memory. Internal bug.");
                             let mut event_wait_list: Vec<*mut c_void> =
                                 event_wait_list.into_iter().map(|e| e.event).filter(|event| !event.is_null()).collect();
                             if !event_wait_list.is_empty() {
@@ -524,7 +531,7 @@ pub(super) fn initialize_device(
                             let status = unsafe {
                                 clEnqueueReadBuffer(
                                     data_queue,
-                                    src.buffer,
+                                    ptr,
                                     CL_NON_BLOCKING,
                                     0,
                                     bytes as usize,
@@ -630,8 +637,10 @@ pub(super) fn initialize_device(
                             let program = &programs[program_id];
                             let mut i = 0;
                             for &arg in &args {
-                                let arg = &buffers[arg];
-                                let ptr: *const _ = &raw const arg.buffer;
+                                let OpenCLBuffer::Buffer { ptr, .. } = buffers[arg] else {
+                                    todo!()
+                                };
+                                let ptr: *const _ = &raw const ptr;
                                 if let Err(e) =
                                     unsafe { clSetKernelArg(program.kernel, i, core::mem::size_of::<*mut c_void>(), ptr.cast()) }
                                         .check(ErrorStatus::IncorrectKernelArg)

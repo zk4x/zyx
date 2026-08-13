@@ -250,6 +250,10 @@ pub struct CUDAEvent {
 unsafe impl Send for CUDAEvent {}
 
 enum CUDACommand {
+    StoreScalar {
+        scalar: Constant,
+        reply: Sender<PoolBufferId>,
+    },
     Allocate {
         bytes: Dim,
         reply: Sender<Result<(PoolBufferId, Event), BackendError>>,
@@ -506,6 +510,10 @@ pub(super) fn initialize_device(
                 // Worker loop
                 'work_thread_loop: while let Ok(cmd) = rx.recv() {
                     match cmd {
+                        CUDACommand::StoreScalar { scalar, reply } => {
+                            let buffer_id = buffers.push(CUDABuffer::Scalar(scalar));
+                            let _ = reply.send(buffer_id);
+                        }
                         CUDACommand::Allocate { bytes, reply } => {
                             //println!("Allocating to context {:?}, device {:?}", self.context, self.device);
 
@@ -545,10 +553,14 @@ pub(super) fn initialize_device(
                             if !buffers.contains_key(buffer_id) {
                                 continue;
                             }
-                            let buffer = &mut buffers[buffer_id];
-                            //_ = unsafe { (self.cuMemFreeAsync)(buffer.ptr, self.stream) }.check(ErrorStatus::MemoryDeallocation);
-                            _ = unsafe { (cuMemFree)(buffer.ptr) }.check(ErrorStatus::MemoryDeallocation);
-                            free_bytes_atomic.fetch_add(buffer.bytes, Ordering::SeqCst);
+                            match buffers[buffer_id] {
+                                CUDABuffer::Scalar(_) => {}
+                                CUDABuffer::Buffer { ptr, bytes } => {
+                                    //_ = unsafe { (self.cuMemFreeAsync)(buffer.ptr, self.stream) }.check(ErrorStatus::MemoryDeallocation);
+                                    _ = unsafe { (cuMemFree)(ptr) }.check(ErrorStatus::MemoryDeallocation);
+                                    free_bytes_atomic.fetch_add(bytes, Ordering::SeqCst);
+                                }
+                            }
                             buffers.remove(buffer_id);
                         }
                         CUDACommand::HostToPool { src, bytes, dst, mut event_wait_list, reply } => {
@@ -569,8 +581,11 @@ pub(super) fn initialize_device(
                             );
                             debug_assert!(!stream.is_null());
                             //unsafe { (self.cuStreamSynchronize)(self.stream) }.check(ErrorStatus::MemoryCopyH2P)?;
+                            let &CUDABuffer::Buffer { ptr, .. } = dst else {
+                                unreachable!()
+                            };
                             send_or_continue!(
-                                unsafe { (cuMemcpyHtoDAsync)(dst.ptr, src.cast(), bytes as usize, stream) }
+                                unsafe { (cuMemcpyHtoDAsync)(ptr, src.cast(), bytes as usize, stream) }
                                     .check(ErrorStatus::MemoryCopyH2P),
                                 reply
                             );
@@ -596,8 +611,11 @@ pub(super) fn initialize_device(
                                 unsafe { (cuEventCreate)(&raw mut event, 0x2) }.check(ErrorStatus::MemoryCopyP2H),
                                 reply
                             );
+                            let &CUDABuffer::Buffer { ptr, .. } = src else {
+                                unreachable!()
+                            };
                             send_or_continue!(
-                                unsafe { (cuMemcpyDtoHAsync)(dst.cast(), src.ptr, bytes as usize, stream) }
+                                unsafe { (cuMemcpyDtoHAsync)(dst.cast(), ptr, bytes as usize, stream) }
                                     .check(ErrorStatus::MemoryCopyP2H),
                                 reply
                             );
@@ -680,11 +698,14 @@ pub(super) fn initialize_device(
                                     //println!("CUDA launch program id: {program_id:?}, gws: {gws:?}, lws: {lws:?}",);
                                     let mut kernel_params: Vec<*mut core::ffi::c_void> = Vec::new();
                                     for arg in args {
-                                        let arg = &buffers[arg];
-                                        //let ptr = &mut arg.mem;
-                                        let ptr: *const u64 = &raw const arg.ptr;
-                                        let ptr: *mut u64 = ptr.cast_mut();
-                                        kernel_params.push(ptr.cast());
+                                        match buffers[arg] {
+                                            CUDABuffer::Scalar(constant) => todo!(),
+                                            CUDABuffer::Buffer { ptr, .. } => {
+                                                let ptr: *const u64 = &raw const ptr;
+                                                let ptr: *mut u64 = ptr.cast_mut();
+                                                kernel_params.push(ptr.cast());
+                                            }
+                                        }
                                     }
                                     unsafe {
                                         (cuLaunchKernel)(
@@ -845,6 +866,12 @@ impl CUDAMemoryPool {
 
     pub fn free_bytes(&self) -> Dim {
         self.free_bytes.load(Ordering::SeqCst)
+    }
+
+    pub fn store_scalar(&mut self, scalar: Constant) -> PoolBufferId {
+        let (reply, reply_rx) = channel();
+        self.tx.send(CUDACommand::StoreScalar { scalar, reply }).unwrap();
+        reply_rx.recv().unwrap()
     }
 
     #[allow(clippy::needless_pass_by_ref_mut)]
@@ -1410,7 +1437,13 @@ unsafe fn launch_cudnn_plan(
             return Err(BackendError { status: ErrorStatus::KernelLaunch, context: "cuDNN variant pack".into() });
         }
 
-        let data_ptrs: Vec<*mut c_void> = args.iter().map(|arg| buffers[*arg].ptr as *mut c_void).collect();
+        let data_ptrs: Vec<*mut c_void> = args
+            .iter()
+            .map(|arg| match buffers[*arg] {
+                CUDABuffer::Scalar(constant) => todo!(),
+                CUDABuffer::Buffer { ptr, .. } => ptr as *mut c_void,
+            })
+            .collect();
         let unique_ids: Vec<i64> = plan.arg_uids.clone();
 
         let set_ok = (cudnn.backend_set_attribute)(
