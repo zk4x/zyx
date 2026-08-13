@@ -695,6 +695,8 @@ impl Kernel {
             op_id = next;
         }
 
+        self.instruction_schedule();
+
         // Verify the relative order of global defines is unchanged by linearize.
         debug_assert!({
             let mut defines = Vec::new();
