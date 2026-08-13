@@ -1316,7 +1316,6 @@ impl Runtime {
                 graph_id: GraphId::NULL,
                 rc: 1,
             });
-            self.retain_load(tid);
             self.buffer_map.insert(tid, buffer_id);
             self.kernels[kernel_id].loads.push(tid);
 

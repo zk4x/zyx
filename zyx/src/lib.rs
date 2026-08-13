@@ -58,7 +58,6 @@
 
 use crate::runtime::Runtime;
 
-mod aot_kernels;
 mod backend;
 mod codegen;
 mod dtype;
@@ -79,6 +78,7 @@ mod slab;
 mod tape;
 mod tensor;
 mod types;
+mod vendor;
 
 type Set<T> = std::collections::HashSet<T, std::hash::BuildHasherDefault<crate::hashers::FHasher>>;
 type Map<K, V> = std::collections::HashMap<K, V, std::hash::BuildHasherDefault<crate::hashers::FHasher>>;
