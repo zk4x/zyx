@@ -34,7 +34,7 @@
   - [x] node deallocation after realization
   - [x] clean up completed transfer events to free host staging buffers early
   - [x] when promoting to graph, promote the whole kernel without materializing
-  - [ ] add contiguous op - it calls add_store and forces kernel fusion split, in egraph this works the same
+  - [x] add contiguous op - it calls add_store and forces kernel fusion split, in egraph this works the same
   - [ ] add user ability to have custom assembly, cuda, spirv, ptx, tenstorrent, etc. kernels
   - [ ] add user ability to add custom kernel optimization passes to the autotune
 - [ ] graph
@@ -56,7 +56,6 @@
     - [x] shared memory pressure (loads + stores)
     - [x] register memory pressure (spill)
     - [x] global memory pressure (loads + stores)
-  - [x] expand reduce bug
   - [x] fix is expandable conditions
   - [ ] binary op improved fusion (with dependent loads and stores)/ full fusion
   - [ ] improve heuristics for cost based duplication and splitting for both movement and reduce ops separately in the egraph
@@ -64,7 +63,6 @@
     - [x] softmax fusion test (eventually should be single kernel)
     - [ ] just asserts that various graphs fuse into single kernel
   - [x] scheduling to multiple devices
-  - [x] fix bug when running phi3, panic on min_kernel function
   - [x] automatic dropping of unneeded tensors
   - [ ] deduplicate tensor loads
   - [ ] automatic sharding across devices
@@ -102,7 +100,7 @@
       - [x] of loads
       - [x] of ops
   - [x] register tiling (needs improvement)
-  - [ ] variable op for dynamic constants (that is scalars that should be kernel args, not baked)
+  - [x] variable op for dynamic constants (that is scalars that should be kernel args, not baked)
   - [ ] local memory tiling for matmul like kernels
   - [ ] wmma optimization pass
   - [ ] tiling optimization passes for tenstorrent

@@ -1294,12 +1294,36 @@ impl Runtime {
                 self.push_node(graph_id, Node::Narrow { x: class_id, axis, start: OpId(start_cid.0), len }, shape_id, dtype);
             self.new_graph_tensor(graph_id, class_id, shape_id, dtype)
         } else {
-            let (kernel_id, op_id) = self.duplicate_or_store(x, false).unwrap();
+            // Create the tensor and store the start variable
+            let (kernel_id, x) = self.duplicate_or_store(x, false).unwrap();
             debug_assert_eq!(self.kernels[kernel_id].outputs.len(), 0, "input into slice must have empty outputs");
+
+            let MemoryPool::Host(ref mut pool) = self.pools[PoolId::HOST] else {
+                unreachable!("Host must exist.")
+            };
+            let buffer_id = BufferId { pool: PoolId::HOST, buffer: pool.store_variable(Constant::idx(start)) };
+
             let start_op_id = self.kernels[kernel_id].kernel.define(IDX_T, MemScope::Variable, true, &[1]);
+
+            // Tensor for start variable
+            let tid = self.tensors.push(TensorData {
+                shape_id,
+                dtype: IDX_T,
+                kernel_id,
+                op_id: start_op_id,
+                depends_on: KernelId::NULL,
+                class_id: ClassId::NULL,
+                graph_id: GraphId::NULL,
+                rc: 1,
+            });
+            self.retain_load(tid);
+            self.buffer_map.insert(tid, buffer_id);
+            self.kernels[kernel_id].loads.push(tid);
+
+            // Move op
             let op_id = self.kernels[kernel_id]
                 .kernel
-                .push_back(Op::Move { x: op_id, mop: Box::new(MoveOp::Narrow { axis, start: start_op_id, len }) });
+                .push_back(Op::Move { x, mop: Box::new(MoveOp::Narrow { axis, start: start_op_id, len }) });
             let tid = self.tensors.push(TensorData {
                 shape_id,
                 dtype,
