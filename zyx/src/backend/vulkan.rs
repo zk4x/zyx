@@ -488,6 +488,11 @@ impl VulkanMemoryPool {
     ) -> Result<Event, BackendError> {
         match src_pool {
             MemoryPool::Host(src_pool) => self.host_to_pool(src_pool.get_buffer(src), dst, event_wait_list),
+            MemoryPool::Disk(src_pool) => {
+                let mut byte_slice = vec![0u8; src_pool.buffer_bytes(src) as usize];
+                src_pool.pool_to_host(src, &mut byte_slice, Vec::new())?;
+                self.host_to_pool(&byte_slice, dst, event_wait_list)
+            }
             _ => todo!(),
         }
     }
