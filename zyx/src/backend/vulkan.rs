@@ -1369,27 +1369,28 @@ let _ = reply.send(Err(BackendError {
                             };
 
                             // Same layout as the SPIR-V push-constant block (std140 scalars; bool stored as u32)
-                            let push_constants_size = {
+                            let (push_constants_size, _n_vars) = {
                                 let mut cur: u32 = 0;
+                                let mut n_vars = 0u32;
                                 let mut op = kernel.head;
                                 while !op.is_null() {
                                     if let crate::kernel::Op::Define { dtype, scope: crate::kernel::MemScope::Variable, .. } =
                                         kernel.at(op)
                                     {
-                                        let dtype = *dtype;
-                                        let storage_bits = if dtype == crate::DType::Bool {
-                                            32
-                                        } else {
-                                            dtype.bit_size()
-                                        };
+                                        let storage_bits = if *dtype == crate::DType::Bool { 32 } else { dtype.bit_size() };
                                         let size = storage_bits as u32 / 8;
                                         let align = if size >= 8 { 8 } else { 4 };
                                         cur = cur.next_multiple_of(align);
                                         cur += size;
+                                        n_vars += 1;
                                     }
                                     op = kernel.next_op(op);
                                 }
-                                cur.next_multiple_of(4).max(4)
+                                if n_vars == 0 {
+                                    (0u32, 0u32)
+                                } else {
+                                    (cur.next_multiple_of(4).max(4), n_vars)
+                                }
                             };
 
                             let bindings: Vec<VkDescriptorSetLayoutBinding> = (0..n_args as u32)
