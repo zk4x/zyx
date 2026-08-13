@@ -438,7 +438,7 @@ impl Runtime {
                 Node::PadZeros { .. } => {
                     todo!()
                 }
-                Node::Slice { .. } => {
+                Node::Narrow { .. } => {
                     todo!()
                 }
                 Node::Flip { x, ref axes } => {

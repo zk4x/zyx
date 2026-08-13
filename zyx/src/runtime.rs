@@ -1291,7 +1291,7 @@ impl Runtime {
             let scalar_shape = self.push_shape(vec![1]);
             let (_, start_cid) = self.push_node(graph_id, Node::Const(start_const), scalar_shape, start_const.dtype());
             let (_, class_id) =
-                self.push_node(graph_id, Node::Slice { x: class_id, axis, start: OpId(start_cid.0), len }, shape_id, dtype);
+                self.push_node(graph_id, Node::Narrow { x: class_id, axis, start: OpId(start_cid.0), len }, shape_id, dtype);
             self.new_graph_tensor(graph_id, class_id, shape_id, dtype)
         } else {
             let (kernel_id, op_id) = self.duplicate_or_store(x, false).unwrap();
@@ -1299,7 +1299,7 @@ impl Runtime {
             let start_op_id = self.kernels[kernel_id].kernel.define(IDX_T, MemScope::Variable, true, &[1]);
             let op_id = self.kernels[kernel_id]
                 .kernel
-                .push_back(Op::Move { x: op_id, mop: Box::new(MoveOp::Slice { axis, start: start_op_id, len }) });
+                .push_back(Op::Move { x: op_id, mop: Box::new(MoveOp::Narrow { axis, start: start_op_id, len }) });
             let tid = self.tensors.push(TensorData {
                 shape_id,
                 dtype,

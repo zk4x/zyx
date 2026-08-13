@@ -330,7 +330,7 @@ impl Kernel {
                                 "{indent}r{out_id}{grey}: {dtype}{reset} = {cyan}pad{reset} r{x} padding={padding:?} -> {shape:?}",
                             );
                         }
-                        MoveOp::Slice { axis, start, len } => {
+                        MoveOp::Narrow { axis, start, len } => {
                             println!(
                                 "{indent}r{out_id}{grey}: {dtype}{reset} = {cyan}slice{reset} r{x} axis={axis} start=r{start} len={len}",
                             );

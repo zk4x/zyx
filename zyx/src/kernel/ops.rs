@@ -260,7 +260,7 @@ pub enum MoveOp {
     /// Flip axes
     Flip { axes: Vec<UAxis> },
     /// Slice axis
-    Slice { axis: UAxis, start: OpId, len: Dim },
+    Narrow { axis: UAxis, start: OpId, len: Dim },
 }
 
 /// Matrix multiply dimensions for tensor core operations.
@@ -396,7 +396,7 @@ impl Op {
                 | MoveOp::Permute { .. }
                 | MoveOp::Pad { .. }
                 | MoveOp::Flip { .. } => vec![x],
-                MoveOp::Slice { start, .. } => vec![x, *start],
+                MoveOp::Narrow { start, .. } => vec![x, *start],
             },
             Op::Reduce { x, .. } => vec![*x],
             Op::ReduceTile { x, .. } => vec![*x],
@@ -428,7 +428,7 @@ impl Op {
                 | MoveOp::Permute { .. }
                 | MoveOp::Pad { .. }
                 | MoveOp::Flip { .. } => vec![x],
-                MoveOp::Slice { start, .. } => vec![x, start],
+                MoveOp::Narrow { start, .. } => vec![x, start],
             },
             Op::Reduce { x, .. } => vec![x],
             Op::ReduceTile { x, .. } => vec![x],

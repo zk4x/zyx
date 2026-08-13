@@ -623,7 +623,7 @@ impl Kernel {
                                 .collect();
                             views.insert(x, view);
                         }
-                        &MoveOp::Slice { axis, start, len } => {
+                        &MoveOp::Narrow { axis, start, len } => {
                             let x_shape = self.shape(x);
                             let view = &views[&op_id];
                             let mut x_strides = vec![1; x_shape.len()];
@@ -734,7 +734,7 @@ impl Kernel {
                         | MoveOp::Pad { shape, .. } => {
                             return shape[shape.len() - n_reduce_axes..].into();
                         }
-                        MoveOp::Slice { .. } => {}
+                        MoveOp::Narrow { .. } => {}
                         MoveOp::Flip { .. } => {}
                     },
                     _ => {}

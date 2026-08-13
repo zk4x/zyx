@@ -407,7 +407,7 @@ impl Graph {
                             shapes,
                         );
                     }
-                    Node::Slice { .. } => todo!(),
+                    Node::Narrow { .. } => todo!(),
                     Node::Flip { x, ref axes } => {
                         self.add_move(cid, x, MoveOp::Flip { axes: axes.to_vec() }, false, &mut visited, &mut rcs, shapes);
                     }
