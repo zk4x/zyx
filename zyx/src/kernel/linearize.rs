@@ -184,10 +184,12 @@ impl Kernel {
                 }
                 Op::Define { dtype, scope, ro, ref shape } => {
                     // Register-scope defines (e.g. reduce accumulators) are managed
-                    // by the ops that create them; only global defines are rangeified
-                    // here. Writable globals are store destinations, read-only globals
-                    // are load sources.
-                    if scope != MemScope::Global {
+                    // by the ops that create them; only global/variable defines are
+                    // rangeified here. Writable globals are store destinations,
+                    // read-only globals/variables are load sources. Writables with
+                    // MemScope::Variable are left alone (stores to variables are
+                    // invalid; the verifier rejects them).
+                    if scope != MemScope::Global && scope != MemScope::Variable {
                         continue;
                     }
                     if !ro {
@@ -222,6 +224,42 @@ impl Kernel {
                     let shape = shape.clone();
                     let view = views.remove(&op_id).unwrap();
                     let zero = self.insert_const_idx_before(anchor, 0u32);
+                    if scope == MemScope::Variable {
+                        // Variables are single values (no indexing). Like constants,
+                        // they only need the padding mask: where the view is out of
+                        // bounds, the loaded value is zeroed.
+                        let mut pc = self.insert_before(anchor, Op::Const(Constant::Bool(true)));
+                        let mut has_pad = false;
+                        for &(idx, _st, lp_id, rp_id, len_op) in &view {
+                            let lp = pad_value(self, lp_id);
+                            let rp = pad_value(self, rp_id);
+                            if lp > 0 || rp > 0 {
+                                has_pad = true;
+                                if lp > 0 {
+                                    let lp_m1 = self.insert_const_idx_before(anchor, lp - 1);
+                                    let t = self.insert_before(anchor, Op::Binary { x: idx, y: lp_m1, bop: BOp::Cmpgt });
+                                    pc = self.insert_before(anchor, Op::Binary { x: t, y: pc, bop: BOp::And });
+                                }
+                                if rp > 0 {
+                                    let len_mr = self.insert_before(anchor, Op::Binary { x: len_op, y: rp_id, bop: BOp::Sub });
+                                    let t = self.insert_before(anchor, Op::Binary { x: idx, y: len_mr, bop: BOp::Cmplt });
+                                    pc = self.insert_before(anchor, Op::Binary { x: t, y: pc, bop: BOp::And });
+                                }
+                            }
+                        }
+                        // Insert the ro source define immediately before this op so the
+                        // global/variable define order (which buffer args bind to) is
+                        // preserved.
+                        let src = self.insert_before(op_id, Op::Define { dtype, scope, ro, shape });
+                        if has_pad {
+                            let z = self.insert_before(anchor, Op::Load { src, index: zero, layout: MemLayout::Scalar });
+                            let pcd = self.insert_before(anchor, Op::Cast { x: pc, dtype });
+                            self.ops[op_id].op = Op::Binary { x: pcd, y: z, bop: BOp::Mul };
+                        } else {
+                            self.ops[op_id].op = Op::Load { src, index: zero, layout: MemLayout::Scalar };
+                        }
+                        continue;
+                    }
                     // Padding condition: valid where index is within the source extent.
                     // index = sum over axes of (idx - lp) * stride
                     // pc = and over padded axes of idx > lp-1 && idx < len-rp

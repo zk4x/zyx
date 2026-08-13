@@ -121,6 +121,23 @@ impl HostMemoryPool {
         Ok(())
     }
 
+    pub fn pool_to_pool(
+        &mut self,
+        src_pool: &mut MemoryPool,
+        src: PoolBufferId,
+        dst: PoolBufferId,
+        event_wait_list: Vec<Event>,
+    ) -> Result<Event, BackendError> {
+        match src_pool {
+            MemoryPool::Disk(src_pool) => {
+                let mut byte_slice = vec![0u8; src_pool.buffer_bytes(src) as usize];
+                src_pool.pool_to_host(src, &mut byte_slice, Vec::new())?;
+                self.host_to_pool(&byte_slice, dst, event_wait_list)
+            }
+            _ => todo!(),
+        }
+    }
+
     #[allow(clippy::needless_pass_by_value)]
     #[allow(clippy::unnecessary_wraps)]
     #[allow(clippy::needless_pass_by_ref_mut)]

@@ -68,6 +68,7 @@ How to work with it:
 ## Code Style
 
 - **Simplicity/debuggability > "clean"**: duplicate code first, abstract later. Use enums, not `dyn Trait`. Explicit returns. Minimize Arc/Rc.
+- **Better `todo!()` than silent failures**: an explicit unimplemented panic beats a wrong result or garbage output. Leave `todo!()` in for unimplemented paths rather than faking them.
 - Keep ~1000 LOC per module; add new files only when necessary.
 - License header on every new file: `// Copyright (C) 2025 zk4x` / `// SPDX-License-Identifier: LGPL-3.0-only`
 - Public items need docs (`#![warn(missing_docs)]` is active). Error constructors use `#[track_caller]` and embed file:line:column. Use `From` for conversions.

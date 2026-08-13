@@ -391,6 +391,31 @@ impl Kernel {
                     }
                     buf_idx += 1;
                 }
+                Op::Define { dtype, scope: MemScope::Variable, ro, .. } => {
+                    if buf_idx < buffers.len() && buffers[buf_idx] != PoolBufferId::NULL {
+                        used_bufs.push(buffers[buf_idx]);
+                    } else {
+                        let bytes_alloc = dtype.bit_size() as Dim / 8;
+                        let (buf, ev) = memory_pool.allocate(bytes_alloc)?;
+                        used_bufs.push(buf);
+                        new_bufs.push(buf);
+                        if ro {
+                            let one: Vec<u8> = match dtype {
+                                DType::BF16 => bf16::ONE.to_le_bytes().to_vec(),
+                                DType::F16 => f16::ONE.to_le_bytes().to_vec(),
+                                DType::F32 => 1f32.to_le_bytes().to_vec(),
+                                DType::F64 => 1f64.to_le_bytes().to_vec(),
+                                DType::U8 | DType::I8 | DType::Bool => vec![1],
+                                DType::U16 | DType::I16 => 1u16.to_le_bytes().to_vec(),
+                                DType::U32 | DType::I32 => 1u32.to_le_bytes().to_vec(),
+                                DType::U64 | DType::I64 => 1u64.to_le_bytes().to_vec(),
+                            };
+                            let ev = memory_pool.host_to_pool(&one, buf, vec![ev])?;
+                            events.push(ev);
+                        }
+                    }
+                    buf_idx += 1;
+                }
                 Op::Define { .. } => {
                     // Skip non-Global defines (e.g. local buffer defines from tile_local)
                 }

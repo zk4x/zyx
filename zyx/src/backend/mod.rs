@@ -697,7 +697,7 @@ impl MemoryPool {
         let event = match self {
             MemoryPool::Dummy(_) => todo!(),
             MemoryPool::Disk(_) => todo!(),
-            MemoryPool::Host(_) => todo!(),
+            MemoryPool::Host(memory_pool) => memory_pool.pool_to_pool(src_pool, src, dst, event_wait_list)?,
             MemoryPool::CUDA(memory_pool) => memory_pool.pool_to_pool(src_pool, src, dst, event_wait_list)?,
             MemoryPool::OpenCL(memory_pool) => memory_pool.pool_to_pool(src_pool, src, dst, event_wait_list)?,
             MemoryPool::HIP(_) => todo!(),

@@ -49,6 +49,15 @@ impl Kernel {
                         }
                         n_global_defines += 1;
                     }
+                    Op::Define { dtype, scope: MemScope::Variable, .. } => {
+                        if matches!(dtype, DType::F16 | DType::BF16) {
+                            _ = writeln!(global_cast, "  unsigned short p{op_id} = *(unsigned short*)args[{n_global_defines}];");
+                        } else {
+                            let ct = dtype.c_type();
+                            _ = writeln!(global_cast, "  {ct} p{op_id} = *({ct}*)args[{n_global_defines}];");
+                        }
+                        n_global_defines += 1;
+                    }
                     _ => {}
                 }
                 op_id = self.next_op(op_id);
@@ -104,9 +113,16 @@ impl Kernel {
                 Op::Load { src, index, layout } => {
                     if let Some(&rc) = rcs.get(&op_id) {
                         let dtype = dtypes[&op_id];
-                        let idx = get_var(index, &constants, &indices, &reg_map, &mut registers, loop_id)?;
                         let reg = new_reg(op_id, &mut reg_map, &mut registers, dtype, rc, loop_id);
-                        match layout {
+                        if matches!(self.ops[src].op, Op::Define { scope: MemScope::Variable, .. }) {
+                            match dtypes[&src].0 {
+                                DType::F16 => _ = writeln!(source, "{indent}r{reg} = f16tof32(p{src});"),
+                                DType::BF16 => _ = writeln!(source, "{indent}r{reg} = bf16tof32(p{src});"),
+                                _ => _ = writeln!(source, "{indent}r{reg} = p{src};"),
+                            }
+                        } else {
+                            let idx = get_var(index, &constants, &indices, &reg_map, &mut registers, loop_id)?;
+                            match layout {
                             MemLayout::Scalar => match dtypes[&src].0 {
                                 DType::F16 => {
                                     _ = writeln!(source, "{indent}r{reg} = f16tof32(p{src}[{idx}]);");
@@ -149,9 +165,13 @@ impl Kernel {
                                 });
                             }
                         }
+                        }
                     }
                 }
                 Op::Store { dst, src, index, layout } => {
+                    if matches!(self.ops[dst].op, Op::Define { scope: MemScope::Variable, .. }) {
+                        unreachable!("C codegen: stores to MemScope::Variable are invalid");
+                    }
                     let idx = get_var(index, &constants, &indices, &reg_map, &mut registers, loop_id)?;
                     let x = get_var(src, &constants, &indices, &reg_map, &mut registers, loop_id)?;
                     match layout {
