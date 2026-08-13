@@ -86,6 +86,10 @@ enum Command {
         variable: Constant,
         reply: Sender<PoolBufferId>,
     },
+    GetVariable {
+        buffer_id: PoolBufferId,
+        reply: Sender<Option<Constant>>,
+    },
     Allocate {
         bytes: Dim,
         reply: Sender<Result<(PoolBufferId, OpenCLEvent), BackendError>>,
@@ -448,6 +452,17 @@ pub(super) fn initialize_device(
                             let buffer_id = buffers.push(OpenCLBuffer::Variable(scalar));
                             let _ = reply.send(buffer_id);
                         }
+                        Command::GetVariable { buffer_id, reply } => {
+                            let variable = if !buffers.contains_key(buffer_id) {
+                                None
+                            } else {
+                                match &buffers[buffer_id] {
+                                    OpenCLBuffer::Variable(constant) => Some(constant.clone()),
+                                    OpenCLBuffer::Buffer { .. } => None,
+                                }
+                            };
+                            let _ = reply.send(variable);
+                        }
                         Command::Allocate { bytes, reply } => {
                             if bytes > free_bytes_atomic.load(Ordering::SeqCst) {
                                 let _ = reply.send(Err(BackendError {
@@ -726,6 +741,14 @@ impl OpenCLMemoryPool {
     pub fn store_variable(&mut self, variable: Constant) -> PoolBufferId {
         let (reply, reply_rx) = channel();
         self.tx.send(Command::StoreVariable { variable, reply }).unwrap();
+        reply_rx.recv().unwrap()
+    }
+
+    /// Returns the stored constant if `buffer_id` is a variable, `None` otherwise.
+    #[allow(unused)]
+    pub fn get_variable(&mut self, buffer_id: PoolBufferId) -> Option<Constant> {
+        let (reply, reply_rx) = channel();
+        self.tx.send(Command::GetVariable { buffer_id, reply }).unwrap();
         reply_rx.recv().unwrap()
     }
 

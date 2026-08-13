@@ -254,6 +254,10 @@ enum CUDACommand {
         variable: Constant,
         reply: Sender<PoolBufferId>,
     },
+    GetVariable {
+        buffer_id: PoolBufferId,
+        reply: Sender<Option<Constant>>,
+    },
     Allocate {
         bytes: Dim,
         reply: Sender<Result<(PoolBufferId, Event), BackendError>>,
@@ -514,6 +518,17 @@ pub(super) fn initialize_device(
                             let buffer_id = buffers.push(CUDABuffer::Variable(scalar));
                             let _ = reply.send(buffer_id);
                         }
+                        CUDACommand::GetVariable { buffer_id, reply } => {
+                            let variable = if !buffers.contains_key(buffer_id) {
+                                None
+                            } else {
+                                match &buffers[buffer_id] {
+                                    CUDABuffer::Variable(constant) => Some(constant.clone()),
+                                    CUDABuffer::Buffer { .. } => None,
+                                }
+                            };
+                            let _ = reply.send(variable);
+                        }
                         CUDACommand::Allocate { bytes, reply } => {
                             //println!("Allocating to context {:?}, device {:?}", self.context, self.device);
 
@@ -695,14 +710,21 @@ pub(super) fn initialize_device(
 
                             let result = match &programs[program_id] {
                                 CUDAProgram::Module { function, gws, lws, .. } => {
-                                    //println!("CUDA launch program id: {program_id:?}, gws: {gws:?}, lws: {lws:?}",);
                                     let mut kernel_params: Vec<*mut core::ffi::c_void> = Vec::new();
-                                    for arg in args {
-                                        let CUDABuffer::Buffer { ptr, .. } = &buffers[arg] else {
-                                            todo!()
-                                        };
-                                        let ptr: *const u64 = &raw const *ptr;
-                                        kernel_params.push(ptr.cast_mut().cast());
+                                    let mut scalar_values: Vec<Vec<u8>> = Vec::new();
+                                    for (i, arg) in args.iter().enumerate() {
+                                        match &buffers[*arg] {
+                                            CUDABuffer::Buffer { ptr, .. } => {
+                                                let slot: *const u64 = &raw const *ptr;
+                                                kernel_params.push(slot.cast_mut().cast());
+                                            }
+                                            CUDABuffer::Variable(constant) => {
+                                                let bytes = constant.to_le_bytes();
+                                                scalar_values.push(bytes);
+                                                let value = scalar_values.last().unwrap();
+                                                kernel_params.push(value.as_ptr().cast_mut().cast());
+                                            }
+                                        }
                                     }
                                     unsafe {
                                         (cuLaunchKernel)(
@@ -868,6 +890,14 @@ impl CUDAMemoryPool {
     pub fn store_variable(&mut self, variable: Constant) -> PoolBufferId {
         let (reply, reply_rx) = channel();
         self.tx.send(CUDACommand::StoreVariable { variable, reply }).unwrap();
+        reply_rx.recv().unwrap()
+    }
+
+    /// Returns the stored constant if `buffer_id` is a variable, `None` otherwise.
+    #[allow(unused)]
+    pub fn get_variable(&mut self, buffer_id: PoolBufferId) -> Option<Constant> {
+        let (reply, reply_rx) = channel();
+        self.tx.send(CUDACommand::GetVariable { buffer_id, reply }).unwrap();
         reply_rx.recv().unwrap()
     }
 

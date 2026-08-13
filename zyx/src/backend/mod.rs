@@ -568,6 +568,20 @@ impl MemoryPool {
         }
     }
 
+    /// Returns the stored constant if `buffer_id` refers to a variable in this
+    /// pool, `None` otherwise (regular buffer or unknown id).
+    pub fn get_variable(&mut self, buffer_id: PoolBufferId) -> Option<Constant> {
+        match self {
+            MemoryPool::Dummy(_) => None,
+            MemoryPool::Disk(_) => None,
+            MemoryPool::Host(pool) => pool.get_variable(buffer_id),
+            MemoryPool::CUDA(pool) => pool.get_variable(buffer_id),
+            MemoryPool::OpenCL(pool) => pool.get_variable(buffer_id),
+            MemoryPool::HIP(_) => None,
+            MemoryPool::Vulkan(_) => None,
+        }
+    }
+
     /// Allocate a buffer. Returns (buffer_id, event) where the event signals
     /// when the buffer is ready for use. For most backends the event is a no-op
     /// (immediately signaled); CUDA returns an event recorded after the async allocation.

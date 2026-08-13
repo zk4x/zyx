@@ -431,13 +431,14 @@ impl Runtime {
         self.tensors[tid].graph_id = GraphId::NULL;
         let shape: Box<[Dim]> = self.shape(tid).into();
         let dtype = self.dtype(tid);
+        let scope = if self.is_variable_tensor(tid) { MemScope::Variable } else { MemScope::Global };
         let kernel_id = self.kernels.push(KernelData {
             outputs: vec![tid; handles],
             loads: Vec::new(),
             stores: Vec::new(),
             kernel: Kernel::new(DeviceId::AUTO),
         });
-        let op_id = self.kernels[kernel_id].kernel.push_back(Op::Define { dtype, scope: MemScope::Global, ro: true, shape });
+        let op_id = self.kernels[kernel_id].kernel.push_back(Op::Define { dtype, scope, ro: true, shape });
         self.kernels[kernel_id].loads.push(tid);
         self.tensors[tid].kernel_id = kernel_id;
         self.tensors[tid].op_id = op_id;
@@ -585,6 +586,15 @@ impl Runtime {
             self.graphs[graph_id].classes[x].dtype,
         )
         .1
+    }
+
+    /// Returns whether `x` is a variable: its buffer (if any) is stored as a
+    /// scalar constant via `store_variable` rather than a real buffer.
+    fn is_variable_tensor(&mut self, x: TensorId) -> bool {
+        match self.buffer_map.get(&x) {
+            Some(&buf_id) => self.pools[buf_id.pool].get_variable(buf_id.buffer).is_some(),
+            None => false,
+        }
     }
 
     pub fn new_eager_tensor(&mut self, shape: Vec<Dim>, dtype: DType, scope: MemScope) -> TensorId {
@@ -1058,8 +1068,9 @@ impl Runtime {
             // won't add a StoreView for it. This avoids copying data for a
             // view-only reshape.
             if let Some(&buf_id) = self.buffer_map.get(&x) {
+                let scope = if self.is_variable_tensor(x) { MemScope::Variable } else { MemScope::Global };
                 let mut kernel = Kernel::new(DeviceId::AUTO);
-                let op_id = kernel.define(dtype, MemScope::Global, true, &shape);
+                let op_id = kernel.define(dtype, scope, true, &shape);
                 let kernel_id =
                     self.kernels.push(KernelData { outputs: Vec::new(), loads: Vec::new(), stores: Vec::new(), kernel });
                 let tid = self.tensors.push(TensorData {
@@ -1886,9 +1897,10 @@ impl Runtime {
 
         // Create load kernel so the tensor remains usable (visited must point to a live kernel)
         let dtype = self.tensors[x].dtype;
-        let mut kernel = Kernel::new(DeviceId::AUTO);
+        let scope = if self.is_variable_tensor(x) { MemScope::Variable } else { MemScope::Global };
         let shape = self.shape(x);
-        let load_op_id = kernel.define(dtype, MemScope::Global, true, shape);
+        let mut kernel = Kernel::new(DeviceId::AUTO);
+        let load_op_id = kernel.define(dtype, scope, true, shape);
         let load_kid = self.kernels.push(KernelData { outputs: vec![x; count], loads: vec![x], stores: Vec::new(), kernel });
         self.tensors[x].kernel_id = load_kid;
         self.tensors[x].op_id = load_op_id;
@@ -2102,6 +2114,12 @@ impl Runtime {
             let buf_id = self.buffer_map[&tid];
             if buf_id.pool != pool_id {
                 let src = buf_id.buffer;
+                if let Some(constant) = self.pools[buf_id.pool].get_variable(src) {
+                    let dst = self.pools[pool_id].store_variable(constant);
+                    self.buffer_map.remove(&tid);
+                    self.buffer_map.insert(tid, BufferId { pool: pool_id, buffer: dst });
+                    continue;
+                }
                 let bytes = (self.shape(tid).iter().product::<Dim>() as usize * self.dtype(tid).bit_size() as usize).div_ceil(8);
                 let alloc_bytes = bytes + self.dtype(tid).bit_size() as usize / 8;
 

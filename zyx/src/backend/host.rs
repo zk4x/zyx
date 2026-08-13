@@ -3,6 +3,7 @@
 
 use super::{Event, MemoryPool, PoolBufferId, PoolId};
 use crate::{
+    DType,
     dtype::Constant,
     error::{BackendError, ErrorStatus},
     shape::Dim,
@@ -17,7 +18,7 @@ pub struct HostMemoryPool {
 
 #[derive(Debug)]
 enum HostBuffer {
-    Variable(Box<[u8]>),
+    Variable { value: Box<[u8]>, dtype: DType },
     Buffer(Box<[u8]>),
 }
 
@@ -62,8 +63,18 @@ impl HostMemoryPool {
     }
 
     pub fn store_variable(&mut self, variable: Constant) -> PoolBufferId {
-        let buffer = HostBuffer::Variable(variable.to_le_bytes().into_boxed_slice());
+        let dtype = variable.dtype();
+        let buffer = HostBuffer::Variable { value: variable.to_le_bytes().into_boxed_slice(), dtype };
         self.buffers.push(buffer)
+    }
+
+/// Returns the stored constant if `buffer_id` is a variable, `None` otherwise.
+    #[allow(unused)]
+    pub fn get_variable(&self, buffer_id: PoolBufferId) -> Option<Constant> {
+        match &self.buffers[buffer_id] {
+            HostBuffer::Variable { value, dtype } => Some(Constant::from_le_bytes(value, *dtype)),
+            HostBuffer::Buffer(..) => None,
+        }
     }
 
     pub fn allocate(&mut self, bytes: Dim) -> Result<(PoolBufferId, Event), BackendError> {
@@ -89,7 +100,7 @@ impl HostMemoryPool {
         let _ = event_wait_list;
         if self.buffers.contains_key(buffer_id) {
             match unsafe { self.buffers.remove_and_return(buffer_id) } {
-                HostBuffer::Variable(..) => {}
+                HostBuffer::Variable { .. } => {}
                 HostBuffer::Buffer(buffer) => self.free_bytes += buffer.len() as Dim,
             }
         }
@@ -157,14 +168,14 @@ impl HostMemoryPool {
 
     pub fn get_buffer(&self, id: PoolBufferId) -> &[u8] {
         match &self.buffers[id] {
-            HostBuffer::Variable(items) | HostBuffer::Buffer(items) => items,
+            HostBuffer::Variable { value, .. } | HostBuffer::Buffer(value) => value,
         }
     }
 
     /// Get a mutable raw pointer to the buffer's data
     pub fn buffer_ptr_mut(&mut self, id: PoolBufferId) -> *mut u8 {
         match &mut self.buffers[id] {
-            HostBuffer::Variable(items) | HostBuffer::Buffer(items) => items.as_mut_ptr(),
+            HostBuffer::Variable { value, .. } | HostBuffer::Buffer(value) => value.as_mut_ptr(),
         }
     }
 }
