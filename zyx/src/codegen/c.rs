@@ -137,12 +137,12 @@ impl Kernel {
                             MemLayout::Vector(len) => match dtypes[&src].0 {
                                 DType::F16 => {
                                     for i in 0..len {
-                                        _ = writeln!(source, "{indent}r{reg}.s{i} = f16tof32(p{src}[{idx} + {i}]);");
+                                        _ = writeln!(source, "{indent}{} = f16tof32(p{src}[{idx} + {i}]);", lane_access(&format!("r{reg}"), i as usize));
                                     }
                                 }
                                 DType::BF16 => {
                                     for i in 0..len {
-                                        _ = writeln!(source, "{indent}r{reg}.s{i} = bf16tof32(p{src}[{idx} + {i}]);");
+                                        _ = writeln!(source, "{indent}{} = bf16tof32(p{src}[{idx} + {i}]);", lane_access(&format!("r{reg}"), i as usize));
                                     }
                                 }
                                 _ if !device_info.supported_vec_lens.is_empty() => {
@@ -154,7 +154,7 @@ impl Kernel {
                                 }
                                 _ => {
                                     for i in 0..len {
-                                        _ = writeln!(source, "{indent}r{reg}.s{i} = p{src}[{idx} + {i}];");
+                                        _ = writeln!(source, "{indent}{} = p{src}[{idx} + {i}];", lane_access(&format!("r{reg}"), i as usize));
                                     }
                                 }
                             },
@@ -189,12 +189,12 @@ impl Kernel {
                         MemLayout::Vector(len) => match dtypes[&dst].0 {
                             DType::F16 => {
                                 for i in 0..len {
-                                    _ = writeln!(source, "{indent}p{dst}[{idx} + {i}] = f32tof16({x}.s{i});");
+                                    _ = writeln!(source, "{indent}p{dst}[{idx} + {i}] = f32tof16({});", lane_access(&x, i as usize));
                                 }
                             }
                             DType::BF16 => {
                                 for i in 0..len {
-                                    _ = writeln!(source, "{indent}p{dst}[{idx} + {i}] = f32tobf16({x}.s{i});");
+                                    _ = writeln!(source, "{indent}p{dst}[{idx} + {i}] = f32tobf16({});", lane_access(&x, i as usize));
                                 }
                             }
                             _ if !device_info.supported_vec_lens.is_empty() => {
@@ -203,7 +203,7 @@ impl Kernel {
                             }
                             _ => {
                                 for i in 0..len {
-                                    _ = writeln!(source, "{indent}p{dst}[{idx} + {i}] = {x}.s{i};");
+                                    _ = writeln!(source, "{indent}p{dst}[{idx} + {i}] = {};", lane_access(&x, i as usize));
                                 }
                             }
                         },
@@ -222,7 +222,13 @@ impl Kernel {
                     match vlen {
                         MemLayout::Vector(n) => {
                             for i in 0..n {
-                                _ = writeln!(source, "{indent}r{reg}.s{i} = ({}){x}.s{i};", dtype.c_type());
+                                _ = writeln!(
+                                    source,
+                                    "{indent}{} = ({})({});",
+                                    lane_access(&format!("r{reg}"), i as usize),
+                                    dtype.c_type(),
+                                    lane_access(&x, i as usize)
+                                );
                             }
                         }
                         _ => _ = writeln!(source, "{indent}r{reg} = ({}){x};", dtype.c_type()),
@@ -235,23 +241,24 @@ impl Kernel {
                     match dtype.1 {
                         MemLayout::Vector(n) => {
                             for i in 0..n {
-                                let lane = format!("{x}.s{i}");
+                                let lane = lane_access(&x, i as usize);
+                                let dst = lane_access(&format!("r{reg}"), i as usize);
                                 match uop {
-                                    UOp::BitNot => _ = writeln!(source, "{indent}r{reg}.s{i} = ~{lane};"),
-                                    UOp::Neg => _ = writeln!(source, "{indent}r{reg}.s{i} = -{lane};"),
-                                    UOp::Exp => _ = writeln!(source, "{indent}r{reg}.s{i} = exp({lane});"),
-                                    UOp::Exp2 => _ = writeln!(source, "{indent}r{reg}.s{i} = exp2({lane});"),
-                                    UOp::Ln => _ = writeln!(source, "{indent}r{reg}.s{i} = log({lane});"),
-                                    UOp::Log2 => _ = writeln!(source, "{indent}r{reg}.s{i} = log2({lane});"),
+                                    UOp::BitNot => _ = writeln!(source, "{indent}{dst} = ~{lane};"),
+                                    UOp::Neg => _ = writeln!(source, "{indent}{dst} = -{lane};"),
+                                    UOp::Exp => _ = writeln!(source, "{indent}{dst} = exp({lane});"),
+                                    UOp::Exp2 => _ = writeln!(source, "{indent}{dst} = exp2({lane});"),
+                                    UOp::Ln => _ = writeln!(source, "{indent}{dst} = log({lane});"),
+                                    UOp::Log2 => _ = writeln!(source, "{indent}{dst} = log2({lane});"),
                                     UOp::Reciprocal => {
-                                        _ = writeln!(source, "{indent}r{reg}.s{i} = {}/{lane};", dtype.0.one_constant().c_code())
+                                        _ = writeln!(source, "{indent}{dst} = {}/{lane};", dtype.0.one_constant().c_code())
                                     }
-                                    UOp::Sqrt => _ = writeln!(source, "{indent}r{reg}.s{i} = sqrt({lane});"),
-                                    UOp::Sin => _ = writeln!(source, "{indent}r{reg}.s{i} = sin({lane});"),
-                                    UOp::Cos => _ = writeln!(source, "{indent}r{reg}.s{i} = cos({lane});"),
-                                    UOp::Floor => _ = writeln!(source, "{indent}r{reg}.s{i} = floor({lane});"),
-                                    UOp::Trunc => _ = writeln!(source, "{indent}r{reg}.s{i} = trunc({lane});"),
-                                    UOp::Abs => _ = writeln!(source, "{indent}r{reg}.s{i} = fabs({lane});"),
+                                    UOp::Sqrt => _ = writeln!(source, "{indent}{dst} = sqrt({lane});"),
+                                    UOp::Sin => _ = writeln!(source, "{indent}{dst} = sin({lane});"),
+                                    UOp::Cos => _ = writeln!(source, "{indent}{dst} = cos({lane});"),
+                                    UOp::Floor => _ = writeln!(source, "{indent}{dst} = floor({lane});"),
+                                    UOp::Trunc => _ = writeln!(source, "{indent}{dst} = trunc({lane});"),
+                                    UOp::Abs => _ = writeln!(source, "{indent}{dst} = fabs({lane});"),
                                 }
                             }
                         }
@@ -304,7 +311,7 @@ impl Kernel {
                     let dtype = dtypes[&op_id];
                     let vec = get_var(vec, &constants, &indices, &reg_map, &mut registers, loop_id)?;
                     let reg = new_reg(op_id, &mut reg_map, &mut registers, dtype, rcs[&op_id], loop_id);
-                    _ = writeln!(source, "{indent}r{reg} = {vec}.s{idx};");
+                    _ = writeln!(source, "{indent}r{reg} = {};", lane_access(&vec, idx));
                 }
                 Op::Binary { x, y, bop } => {
                     let dtype = dtypes[&op_id];
@@ -314,8 +321,8 @@ impl Kernel {
                     match dtype.1 {
                         MemLayout::Vector(n) => {
                             for i in 0..n {
-                                let xl = format!("{x}.s{i}");
-                                let yl = format!("{y}.s{i}");
+                                let xl = lane_access(&x, i as usize);
+                                let yl = lane_access(&y, i as usize);
                                 emit_binary_op(&mut source, &indent, reg, i as usize, &xl, &yl, bop);
                             }
                         }
@@ -543,11 +550,21 @@ fn get_var(
     }
 }
 
+fn lane_access(var: &str, lane: usize) -> String {
+    if lane < 10 {
+        format!("{var}.s{lane}")
+    } else {
+        // clang parses `.s10`..`.s15` as multi-lane swizzles, not decimal
+        // lanes, so lanes >= 10 must use subscript indexing.
+        format!("{var}[{lane}]")
+    }
+}
+
 fn emit_binary_op(source: &mut String, indent: &str, reg: usize, lane: usize, x: &str, y: &str, bop: BOp) {
     let dst = if lane == usize::MAX {
         format!("r{reg}")
     } else {
-        format!("r{reg}.s{lane}")
+        lane_access(&format!("r{reg}"), lane)
     };
     _ = match bop {
         BOp::Add => writeln!(source, "{indent}{dst} = {x} + {y};"),
