@@ -698,14 +698,11 @@ pub(super) fn initialize_device(
                                     //println!("CUDA launch program id: {program_id:?}, gws: {gws:?}, lws: {lws:?}",);
                                     let mut kernel_params: Vec<*mut core::ffi::c_void> = Vec::new();
                                     for arg in args {
-                                        match buffers[arg] {
-                                            CUDABuffer::Scalar(constant) => todo!(),
-                                            CUDABuffer::Buffer { ptr, .. } => {
-                                                let ptr: *const u64 = &raw const ptr;
-                                                let ptr: *mut u64 = ptr.cast_mut();
-                                                kernel_params.push(ptr.cast());
-                                            }
-                                        }
+                                        let CUDABuffer::Buffer { ptr, .. } = &buffers[arg] else {
+                                            todo!()
+                                        };
+                                        let ptr: *const u64 = &raw const *ptr;
+                                        kernel_params.push(ptr.cast_mut().cast());
                                     }
                                     unsafe {
                                         (cuLaunchKernel)(

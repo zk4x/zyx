@@ -50,7 +50,7 @@ pub struct OpenCLMemoryPool {
 
 #[derive(Debug)]
 pub enum OpenCLBuffer {
-    Scalr(Constant),
+    Scalar(Constant),
     Buffer { ptr: *mut c_void, bytes: Dim },
 }
 
@@ -82,6 +82,10 @@ pub struct OpenCLEvent {
 }
 
 enum Command {
+    StoreScalar {
+        scalar: Constant,
+        reply: Sender<PoolBufferId>,
+    },
     Allocate {
         bytes: Dim,
         reply: Sender<Result<(PoolBufferId, OpenCLEvent), BackendError>>,
@@ -440,6 +444,10 @@ pub(super) fn initialize_device(
 
                 'work_thread_loop: while let Ok(cmd) = rx.recv() {
                     match cmd {
+                        Command::StoreScalar { scalar, reply } => {
+                            let buffer_id = buffers.push(OpenCLBuffer::Scalar(scalar));
+                            let _ = reply.send(buffer_id);
+                        }
                         Command::Allocate { bytes, reply } => {
                             if bytes > free_bytes_atomic.load(Ordering::SeqCst) {
                                 let _ = reply.send(Err(BackendError {
@@ -637,10 +645,10 @@ pub(super) fn initialize_device(
                             let program = &programs[program_id];
                             let mut i = 0;
                             for &arg in &args {
-                                let OpenCLBuffer::Buffer { ptr, .. } = buffers[arg] else {
+                                let OpenCLBuffer::Buffer { ptr, .. } = &buffers[arg] else {
                                     todo!()
                                 };
-                                let ptr: *const _ = &raw const ptr;
+                                let ptr: *const _ = &raw const *ptr;
                                 if let Err(e) =
                                     unsafe { clSetKernelArg(program.kernel, i, core::mem::size_of::<*mut c_void>(), ptr.cast()) }
                                         .check(ErrorStatus::IncorrectKernelArg)
@@ -713,6 +721,12 @@ impl OpenCLMemoryPool {
 
     pub fn free_bytes(&self) -> Dim {
         self.free_bytes.load(Ordering::SeqCst)
+    }
+
+    pub fn store_scalar(&mut self, scalar: Constant) -> PoolBufferId {
+        let (reply, reply_rx) = channel();
+        self.tx.send(Command::StoreScalar { scalar, reply }).unwrap();
+        reply_rx.recv().unwrap()
     }
 
     pub fn allocate(&mut self, bytes: Dim) -> Result<(PoolBufferId, Event), BackendError> {

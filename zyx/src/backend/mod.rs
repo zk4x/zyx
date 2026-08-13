@@ -15,7 +15,7 @@
 use crate::{
     DebugMask,
     backend::hip::{HIPDevice, HIPMemoryPool},
-    dtype::DType,
+    dtype::{Constant, DType},
     error::{BackendError, ErrorStatus},
     graph::{ClassId, Graph},
     kernel::Kernel,
@@ -556,6 +556,18 @@ impl MemoryPool {
         }
     }
 
+    pub fn store_scalar(&mut self, scalar: Constant) -> PoolBufferId {
+        match self {
+            MemoryPool::Dummy(_) => todo!(),
+            MemoryPool::Disk(_) => unreachable!(),
+            MemoryPool::Host(pool) => pool.store_scalar(scalar),
+            MemoryPool::CUDA(pool) => pool.store_scalar(scalar),
+            MemoryPool::OpenCL(pool) => pool.store_scalar(scalar),
+            MemoryPool::HIP(_) => todo!(),
+            MemoryPool::Vulkan(_) => todo!(),
+        }
+    }
+
     /// Allocate a buffer. Returns (buffer_id, event) where the event signals
     /// when the buffer is ready for use. For most backends the event is a no-op
     /// (immediately signaled); CUDA returns an event recorded after the async allocation.
@@ -565,14 +577,14 @@ impl MemoryPool {
             MemoryPool::Dummy(pool) => (pool.allocate(bytes), "dummy"),
             MemoryPool::Disk(_) => todo!(),
             MemoryPool::Host(pool) => (pool.allocate(bytes), "host"),
-            MemoryPool::CUDA(pool) => (pool.allocate(bytes), "CUDA"),
-            MemoryPool::OpenCL(pool) => (pool.allocate(bytes), "OPENCL"),
-            MemoryPool::HIP(pool) => (pool.allocate(bytes), "HIP"),
+            MemoryPool::CUDA(pool) => (pool.allocate(bytes), "cuda"),
+            MemoryPool::OpenCL(pool) => (pool.allocate(bytes), "opencl"),
+            MemoryPool::HIP(pool) => (pool.allocate(bytes), "hip"),
             #[cfg(feature = "tenstorrent")]
             MemoryPool::TT(pool) => (pool.allocate(bytes), "tenstorrent"),
-            MemoryPool::Vulkan(pool) => (pool.allocate(bytes), "Vulkan"),
+            MemoryPool::Vulkan(pool) => (pool.allocate(bytes), "vulkan"),
             #[cfg(feature = "wgpu")]
-            MemoryPool::WGPU(pool) => (pool.allocate(bytes), "WGPU"),
+            MemoryPool::WGPU(pool) => (pool.allocate(bytes), "wgpu"),
         };
         if result.is_ok() {
             if let Ok(x) = std::env::var("ZYX_DEBUG")
