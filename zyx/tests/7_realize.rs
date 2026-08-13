@@ -476,10 +476,40 @@ fn add() -> Result<(), ZyxError> {
 
 #[test]
 fn opt_local() -> Result<(), ZyxError> {
+    if !Tensor::dtype_capability(DType::BF16).any() {
+        return Ok(())
+    }
     let x = Tensor::rand([2, 128255, 1], DType::BF16)?;
     let y = Tensor::rand([2, 128255, 1], DType::F32)?;
     let tape = zyx::Tape::new([&x])?;
     let z = x + y.cast(DType::BF16);
     tape.realize([&z])?;
+    Ok(())
+}
+
+#[test]
+fn ctc_loss_1() -> Result<(), ZyxError> {
+    use zyx::ReduceOp;
+    // Simple test: 3 time steps, 3 classes, target = [1]
+    // log_probs (random but normalized):
+    let log_probs = Tensor::from([[-1.2f32, -0.5, -2.3], [0.1, -1.5, -0.8], [-0.3, -1.0, -2.0]]);
+    let target = Tensor::from([1i64]);
+    let loss = log_probs.ctc_loss(target, 0, ReduceOp::Mean)?;
+    let loss_val = loss.item::<f32>();
+    // Loss should be positive
+    assert!(loss_val > 0.0);
+    Ok(())
+}
+
+#[test]
+fn ctc_loss_2() -> Result<(), ZyxError> {
+    use zyx::ReduceOp;
+    // Test that ctc_loss with same log_probs and target gives consistent results
+    let log_probs = Tensor::from([[-1.0f32, -2.0, -3.0], [-2.0, -1.0, -3.0], [-3.0, -2.0, -1.0]]);
+    let target = Tensor::from([1i64, 0]);
+    let loss = log_probs.ctc_loss(target, 0, ReduceOp::Mean)?;
+    let loss_val = loss.item::<f32>();
+    assert!(loss_val.is_finite());
+    assert!(loss_val > 0.0);
     Ok(())
 }

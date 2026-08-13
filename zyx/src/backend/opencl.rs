@@ -484,10 +484,6 @@ pub(super) fn initialize_device(
                             let _ = reply.send(Ok((id, OpenCLEvent { event: ptr::null_mut() })));
                         }
                         Command::Deallocate { buffer_id, event_wait_list } => {
-                            let OpenCLBuffer::Buffer { ptr, bytes } = buffers[buffer_id] else {
-                                unreachable!()
-                            };
-                            debug_assert!(!ptr.is_null(), "Deallocating null buffer is invalid");
                             let event_wait_list: Vec<*mut c_void> =
                                 event_wait_list.into_iter().map(|e| e.event).filter(|event| !event.is_null()).collect();
                             if !event_wait_list.is_empty() {
@@ -497,8 +493,14 @@ pub(super) fn initialize_device(
                                 .check(ErrorStatus::Deinitialization);
                             }
                             if buffers.contains_key(buffer_id) {
-                                let _ = unsafe { clReleaseMemObject(ptr) }.check(ErrorStatus::Deinitialization);
-                                free_bytes_atomic.fetch_add(bytes, Ordering::SeqCst);
+                                match buffers[buffer_id] {
+                                    OpenCLBuffer::Variable(_) => {}
+                                    OpenCLBuffer::Buffer { ptr, bytes } => {
+                                        debug_assert!(!ptr.is_null(), "Deallocating null buffer is invalid");
+                                        let _ = unsafe { clReleaseMemObject(ptr) }.check(ErrorStatus::Deinitialization);
+                                        free_bytes_atomic.fetch_add(bytes, Ordering::SeqCst);
+                                    }
+                                }
                                 buffers.remove(buffer_id);
                             }
                         }
@@ -535,43 +537,50 @@ pub(super) fn initialize_device(
                             let _ = reply.send(Ok(OpenCLEvent { event }));
                         }
                         Command::PoolToHost { src, dst, bytes, event_wait_list, reply } => {
-                            let OpenCLBuffer::Buffer { ptr, .. } = buffers[src] else {
-                                unreachable!()
-                            };
-                            debug_assert!(!ptr.is_null(), "Trying to read null memory. Internal bug.");
-                            let mut event_wait_list: Vec<*mut c_void> =
-                                event_wait_list.into_iter().map(|e| e.event).filter(|event| !event.is_null()).collect();
-                            if !event_wait_list.is_empty() {
-                                let _ = unsafe {
-                                    clWaitForEvents(
-                                        u32::try_from(event_wait_list.len()).expect("So many events..."),
-                                        event_wait_list.as_ptr(),
-                                    )
+                            match &buffers[src] {
+                                OpenCLBuffer::Variable(constant) => {
+                                    let value = constant.to_le_bytes();
+                                    let len = (bytes as usize).min(value.len());
+                                    unsafe { core::ptr::copy_nonoverlapping(value.as_ptr(), dst.cast(), len) };
+                                    let _ = reply.send(Ok(()));
                                 }
-                                .check(ErrorStatus::MemoryCopyP2H);
+                                OpenCLBuffer::Buffer { ptr, .. } => {
+                                    debug_assert!(!ptr.is_null(), "Trying to read null memory. Internal bug.");
+                                    let mut event_wait_list: Vec<*mut c_void> =
+                                        event_wait_list.into_iter().map(|e| e.event).filter(|event| !event.is_null()).collect();
+                                    if !event_wait_list.is_empty() {
+                                        let _ = unsafe {
+                                            clWaitForEvents(
+                                                u32::try_from(event_wait_list.len()).expect("So many events..."),
+                                                event_wait_list.as_ptr(),
+                                            )
+                                        }
+                                        .check(ErrorStatus::MemoryCopyP2H);
+                                    }
+                                    let mut event: *mut c_void = ptr::null_mut();
+                                    let status = unsafe {
+                                        clEnqueueReadBuffer(
+                                            data_queue,
+                                            *ptr,
+                                            CL_NON_BLOCKING,
+                                            0,
+                                            bytes as usize,
+                                            dst.cast(),
+                                            0,
+                                            ptr::null(),
+                                            &raw mut event,
+                                        )
+                                    };
+                                    if let Err(e) = status.check(ErrorStatus::MemoryCopyP2H) {
+                                        let _ = reply.send(Err(e));
+                                        continue 'work_thread_loop;
+                                    }
+                                    let events = [event];
+                                    let _ = unsafe { clWaitForEvents(1, events.as_ptr()) }.check(ErrorStatus::MemoryCopyP2H);
+                                    event_wait_list.push(event);
+                                    _ = reply.send(Ok(()));
+                                }
                             }
-                            let mut event: *mut c_void = ptr::null_mut();
-                            let status = unsafe {
-                                clEnqueueReadBuffer(
-                                    data_queue,
-                                    ptr,
-                                    CL_NON_BLOCKING,
-                                    0,
-                                    bytes as usize,
-                                    dst.cast(),
-                                    0,
-                                    ptr::null(),
-                                    &raw mut event,
-                                )
-                            };
-                            if let Err(e) = status.check(ErrorStatus::MemoryCopyP2H) {
-                                let _ = reply.send(Err(e));
-                                continue 'work_thread_loop;
-                            }
-                            let events = [event];
-                            let _ = unsafe { clWaitForEvents(1, events.as_ptr()) }.check(ErrorStatus::MemoryCopyP2H);
-                            event_wait_list.push(event);
-                            _ = reply.send(Ok(()));
                         }
                         Command::SyncEvents { events, reply } => {
                             let events: Vec<*mut c_void> =
@@ -605,7 +614,7 @@ pub(super) fn initialize_device(
                                     program,
                                     cl_uint::try_from(devices.len()).expect("So many devices..."),
                                     devices.as_ptr(),
-                                    c"-cl-fast-relaxed-math".as_ptr().cast(),
+                                    c"-cl-finite-math-only -cl-no-signed-zeros -cl-mad-enable".as_ptr().cast(),
                                     None,
                                     ptr::null_mut(),
                                 )
@@ -660,18 +669,31 @@ pub(super) fn initialize_device(
                             let program = &programs[program_id];
                             let mut i = 0;
                             for &arg in &args {
-                                let OpenCLBuffer::Buffer { ptr, .. } = &buffers[arg] else {
-                                    todo!()
+                                let mut scalar_values: Vec<Vec<u8>> = Vec::new();
+                                let (arg_ptr, arg_size) = match &buffers[arg] {
+                                    OpenCLBuffer::Buffer { ptr, .. } => {
+                                        let value_ptr: *const _ = &raw const *ptr;
+                                        (value_ptr.cast(), core::mem::size_of::<*mut c_void>())
+                                    }
+                                    OpenCLBuffer::Variable(constant) => {
+                                        let bytes = constant.to_le_bytes();
+                                        let value_ptr = bytes.as_ptr();
+                                        scalar_values.push(bytes);
+                                        (value_ptr.cast(), scalar_values[0].len())
+                                    }
                                 };
-                                let ptr: *const _ = &raw const *ptr;
                                 if let Err(e) =
-                                    unsafe { clSetKernelArg(program.kernel, i, core::mem::size_of::<*mut c_void>(), ptr.cast()) }
+                                    unsafe { clSetKernelArg(program.kernel, i, arg_size, arg_ptr) }
                                         .check(ErrorStatus::IncorrectKernelArg)
                                 {
                                     let _ = reply.send(Err(e));
-                                    continue 'work_thread_loop;
+                                    // fall through to next command
+                                    break;
                                 }
                                 i += 1;
+                            }
+                            if i < u32::try_from(args.len()).expect("So many args...") {
+                                continue 'work_thread_loop;
                             }
                             let mut event: *mut c_void = ptr::null_mut();
                             let lws_ptr = if program.lws.is_empty() {
@@ -791,6 +813,11 @@ impl OpenCLMemoryPool {
     ) -> Result<Event, BackendError> {
         match src_pool {
             MemoryPool::Host(src_pool) => self.host_to_pool(src_pool.get_buffer(src), dst, event_wait_list),
+            MemoryPool::Disk(src_pool) => {
+                let mut byte_slice = vec![0u8; src_pool.buffer_bytes(src) as usize];
+                src_pool.pool_to_host(src, &mut byte_slice, Vec::new())?;
+                self.host_to_pool(&byte_slice, dst, event_wait_list)
+            }
             _ => todo!(),
         }
     }

@@ -1771,7 +1771,10 @@ impl Runtime {
     }
 
     /// Returns the maximum free bytes available across all memory pools.
-    pub fn free_memory(&self) -> Dim {
+    pub fn free_memory(&mut self) -> Dim {
+        if self.pools.is_empty() {
+            self.initialize_devices().expect("initialize_devices");
+        }
         self.pools.iter().map(|(_, p)| p.free_bytes()).max().unwrap_or(0)
     }
 }
