@@ -17,7 +17,7 @@ pub struct HostMemoryPool {
 
 #[derive(Debug)]
 enum HostBuffer {
-    Scalar(Constant),
+    Scalar(Box<[u8]>),
     Buffer(Box<[u8]>),
 }
 
@@ -62,7 +62,7 @@ impl HostMemoryPool {
     }
 
     pub fn store_scalar(&mut self, scalar: Constant) -> PoolBufferId {
-        let buffer = HostBuffer::Scalar(scalar);
+        let buffer = HostBuffer::Scalar(scalar.to_le_bytes().into_boxed_slice());
         self.buffers.push(buffer)
     }
 
@@ -88,9 +88,10 @@ impl HostMemoryPool {
     pub fn deallocate(&mut self, buffer_id: PoolBufferId, event_wait_list: Vec<Event>) {
         let _ = event_wait_list;
         if self.buffers.contains_key(buffer_id) {
-            let buffer = unsafe { self.buffers.remove_and_return(buffer_id) };
-            let HostBuffer::Buffer(buffer) = buffer else { unreachable!() };
-            self.free_bytes += buffer.len() as Dim;
+            match unsafe { self.buffers.remove_and_return(buffer_id) } {
+                HostBuffer::Scalar(..) => {}
+                HostBuffer::Buffer(buffer) => self.free_bytes += buffer.len() as Dim,
+            }
         }
     }
 
@@ -138,17 +139,15 @@ impl HostMemoryPool {
     }
 
     pub fn get_buffer(&self, id: PoolBufferId) -> &[u8] {
-        let HostBuffer::Buffer(buffer) = &self.buffers[id] else {
-            unreachable!()
-        };
-        buffer
+        match &self.buffers[id] {
+            HostBuffer::Scalar(items) | HostBuffer::Buffer(items) => items,
+        }
     }
 
     /// Get a mutable raw pointer to the buffer's data
     pub fn buffer_ptr_mut(&mut self, id: PoolBufferId) -> *mut u8 {
-        let HostBuffer::Buffer(buffer) = &mut self.buffers[id] else {
-            unreachable!()
-        };
-        buffer.as_mut_ptr()
+        match &mut self.buffers[id] {
+            HostBuffer::Scalar(items) | HostBuffer::Buffer(items) => items.as_mut_ptr(),
+        }
     }
 }

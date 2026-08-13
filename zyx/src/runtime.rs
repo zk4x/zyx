@@ -587,10 +587,10 @@ impl Runtime {
         .1
     }
 
-    pub fn new_eager_tensor(&mut self, shape: Vec<Dim>, dtype: DType) -> TensorId {
+    pub fn new_eager_tensor(&mut self, shape: Vec<Dim>, dtype: DType, scope: MemScope) -> TensorId {
         let shape_id = self.push_shape(shape.clone());
         let mut kernel = Kernel::new(DeviceId::AUTO);
-        let op_id = kernel.push_back(Op::Define { dtype, scope: MemScope::Global, ro: true, shape: shape.into() });
+        let op_id = kernel.push_back(Op::Define { dtype, scope, ro: true, shape: shape.into() });
         let kernel_id = self.kernels.push(KernelData { outputs: Vec::new(), loads: Vec::new(), stores: Vec::new(), kernel });
         let tid = self.tensors.push(TensorData {
             shape_id,
@@ -643,13 +643,24 @@ impl Runtime {
         #[cfg(feature = "debug_tensor_op")]
         println!("runtime::new_host_tensor(shape={shape:?})");
 
-        if data.len() == 1 && shape.len() <= 1 {
-            return Ok(self.new_constant_tensor(Constant::new(data[0])));
+        let dtype = T::dtype();
+        self.initialize_devices()?;
+
+        if data.len() == 1 {
+            let tid = self.new_eager_tensor(shape, dtype, MemScope::Scalar);
+            self.retain_load(tid);
+
+            let MemoryPool::Host(ref mut pool) = self.pools[PoolId::HOST] else {
+                unreachable!("Host must exist.")
+            };
+            let buffer_id = BufferId { pool: PoolId::HOST, buffer: pool.store_scalar(Constant::new(data[0])) };
+            self.buffer_map.insert(tid, buffer_id);
+
+            #[cfg(feature = "debug_tensor_op")]
+            println!("  -> tid={tid}, scalar dtype={}", self.dtype(tid));
+            return Ok(tid);
         }
 
-        let dtype = T::dtype();
-
-        self.initialize_devices()?;
         debug_assert_eq!(shape.iter().product::<Dim>(), data.len() as Dim);
         let bytes = (data.len() * dtype.bit_size() as usize).div_ceil(8);
         debug_assert_eq!(data.len() * std::mem::size_of::<T>(), bytes);
@@ -665,7 +676,7 @@ impl Runtime {
         };
         let buffer_id = BufferId { pool: PoolId::HOST, buffer: pool.insert(data) };
 
-        let tid = self.new_eager_tensor(shape, dtype);
+        let tid = self.new_eager_tensor(shape, dtype, MemScope::Global);
         self.retain_load(tid);
 
         self.buffer_map.insert(tid, buffer_id);
@@ -691,7 +702,7 @@ impl Runtime {
             .ok_or(BackendError { status: ErrorStatus::Initialization, context: "[disk] not available.".into() })?;
         let buffer_id = BufferId { pool: PoolId::DISK, buffer: pool.buffer_from_path(bytes, path, offset_bytes) };
 
-        let tid = self.new_eager_tensor(shape, dtype);
+        let tid = self.new_eager_tensor(shape, dtype, MemScope::Global);
         self.retain_load(tid);
         self.buffer_map.insert(tid, buffer_id);
         Ok(tid)
@@ -1239,8 +1250,8 @@ impl Runtime {
         }
     }
 
-    /// Slice
-    pub fn slice(&mut self, x: TensorId, axis: UAxis, start: Dim, len: Dim) -> TensorId {
+    /// Narrow
+    pub fn narrow(&mut self, x: TensorId, axis: UAxis, start: Dim, len: Dim) -> TensorId {
         #[cfg(feature = "debug_tensor_op")]
         println!("runtime::slice(x={x}, axis={axis}, start={start}, len={len})");
 
@@ -1954,12 +1965,12 @@ impl Runtime {
             let n_global_defines = kernel
                 .ops
                 .values()
-                .filter(|op| matches!(&op.op, Op::Define { scope: crate::kernel::MemScope::Global, .. }))
+                .filter(|op| matches!(&op.op, Op::Define { scope: MemScope::Global | MemScope::Scalar, .. }))
                 .count();
             let n_buffers = buffers.iter().filter(|&&b| b != PoolBufferId::NULL).count();
             assert!(
                 n_buffers <= n_global_defines,
-                "buffers len ({}) must not exceed number of global defines ({}) in kernel",
+                "buffers len ({}) must not exceed number of global/scalar defines ({}) in kernel",
                 n_buffers,
                 n_global_defines,
             );
@@ -2106,15 +2117,10 @@ impl Runtime {
                 let dst_global = BufferId { pool: pool_id, buffer: dst };
                 debug_assert_ne!(buf_id.pool, pool_id, "pool_to_pool across the same pool is disallowed");
                 let src_pool_ptr: *mut MemoryPool = &mut self.pools[buf_id.pool];
-                let copy_ev = self.pools[pool_id].pool_to_pool(
-                    unsafe { &mut *src_pool_ptr },
-                    src,
-                    dst,
-                    {
-                        wait_list.push(alloc_ev);
-                        wait_list
-                    },
-                )?;
+                let copy_ev = self.pools[pool_id].pool_to_pool(unsafe { &mut *src_pool_ptr }, src, dst, {
+                    wait_list.push(alloc_ev);
+                    wait_list
+                })?;
                 self.pools[pool_id].sync_events(vec![copy_ev])?;
 
                 // Remove and deallocate the old buffer only AFTER pool_to_pool

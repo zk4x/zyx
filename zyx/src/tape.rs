@@ -49,13 +49,7 @@
 use std::collections::BTreeSet;
 
 use crate::{
-    DType, Map, RT, Set, Tensor, ZyxError,
-    backend::BufferId,
-    graph::{ClassId, Graph, GraphId, plan::drain_events_for_buf},
-    runtime::Runtime,
-    shape::Dim,
-    slab::SlabId,
-    tensor::TensorId,
+    DType, Map, RT, Set, Tensor, ZyxError, backend::BufferId, graph::{ClassId, Graph, GraphId, plan::drain_events_for_buf}, kernel::MemScope, runtime::Runtime, shape::Dim, slab::SlabId, tensor::TensorId
 };
 
 /// Tape-scoped lazy graph.
@@ -312,7 +306,7 @@ impl FrozenTape {
 
         let mut outputs = Vec::new();
         for (cid, shape, dtype) in self.outputs.iter() {
-            let tid = rt.new_eager_tensor(shape.clone(), *dtype);
+            let tid = rt.new_eager_tensor(shape.clone(), *dtype, MemScope::Global);
             rt.buffer_map.insert(tid, class_buf[cid]);
             outputs.push(Tensor::from_id(tid));
         }

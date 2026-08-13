@@ -308,7 +308,7 @@ impl Tensor {
                 format!("narrow: start {start} + length {length} > dim {dim} on axis {axis}").into(),
             ));
         }
-        Ok(Tensor { id: RT.lock().slice(self.id, axis, start, length) })
+        Ok(Tensor { id: RT.lock().narrow(self.id, axis, start, length) })
     }
 
     /// Gather

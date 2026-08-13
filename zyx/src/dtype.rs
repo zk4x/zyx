@@ -278,6 +278,23 @@ impl Constant {
         }
     }
 
+    #[must_use]
+    pub(crate) fn to_le_bytes(self) -> Vec<u8> {
+        match self {
+            Constant::BF16(x) | Constant::F16(x) => x.to_vec(),
+            Constant::F32(x) => x.to_vec(),
+            Constant::F64(x) => x.to_vec(),
+            Constant::U8(x) => vec![x],
+            Constant::U16(x) => x.to_le_bytes().to_vec(),
+            Constant::U32(x) => x.to_le_bytes().to_vec(),
+            Constant::U64(x) | Constant::I64(x) => x.to_vec(),
+            Constant::I8(x) => vec![x as u8],
+            Constant::I16(x) => x.to_le_bytes().to_vec(),
+            Constant::I32(x) => x.to_le_bytes().to_vec(),
+            Constant::Bool(x) => vec![x as u8],
+        }
+    }
+
     #[allow(unused)]
     #[must_use]
     pub(super) fn as_dim(self) -> Option<Dim> {
