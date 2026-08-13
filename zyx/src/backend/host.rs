@@ -125,10 +125,16 @@ impl HostMemoryPool {
     #[allow(clippy::unnecessary_wraps)]
     pub fn pool_to_host(&mut self, src: PoolBufferId, dst: &mut [u8], event_wait_list: Vec<Event>) -> Result<(), BackendError> {
         let _ = event_wait_list;
-        let buffer = &self.buffers[src];
-        let HostBuffer::Buffer(buffer) = buffer else { unreachable!() };
-        let len = dst.len().min(buffer.len());
-        dst[..len].copy_from_slice(&buffer[..len]);
+        match &self.buffers[src] {
+            HostBuffer::Buffer(buffer) => {
+                let len = dst.len().min(buffer.len());
+                dst[..len].copy_from_slice(&buffer[..len]);
+            }
+            HostBuffer::Variable { value, .. } => {
+                let len = dst.len().min(value.len());
+                dst[..len].copy_from_slice(&value[..len]);
+            }
+        }
         Ok(())
     }
 
