@@ -124,6 +124,11 @@ impl Kernel {
         // computed index.
         let mut dst_stores: Map<OpId, OpId> = Map::default();
 
+        // Variable defines already materialized as a load by a move handler (e.g.
+        // the narrow offset). The Define handler must skip them, otherwise it would
+        // emit a duplicate load after the arithmetic that consumes it.
+        let mut consumed_vars: Set<OpId> = Set::default();
+
         // Reused group index per axis, so every store of a result shares one index.
         let mut group_indices: Map<u32, OpId> = Map::default();
 
@@ -219,6 +224,9 @@ impl Kernel {
                             Op::Store { index, .. } => *index = write_index,
                             _ => unreachable!("graph stores are the only stores at linearize time"),
                         }
+                        continue;
+                    }
+                    if consumed_vars.contains(&op_id) {
                         continue;
                     }
                     let shape = shape.clone();
@@ -633,6 +641,19 @@ impl Kernel {
                                 st *= x_shape[a];
                             }
                             let zero = self.insert_const_idx_before(anchor, 0u32);
+                            // A MemScope::Variable offset must be loaded before the
+                            // index arithmetic that uses it, otherwise the Define
+                            // handler emits the load after the arithmetic. Put
+                            // the load here and mark the variable consumed so the
+                            // Define handler skips it.
+                            let start = if let Op::Define { scope: MemScope::Variable, ro: true, .. } = self.ops[start].op {
+                                let load =
+                                    self.insert_before(anchor, Op::Load { src: start, index: zero, layout: MemLayout::Scalar });
+                                consumed_vars.insert(start);
+                                load
+                            } else {
+                                start
+                            };
                             let view = (0..x_shape.len())
                                 .map(|a| {
                                     let idx = view[a].0;
@@ -648,7 +669,9 @@ impl Kernel {
                                     }
                                 })
                                 .collect();
-                            views.insert(start, Vec::new());
+                            if !consumed_vars.contains(&start) {
+                                views.insert(start, Vec::new());
+                            }
                             views.insert(x, view);
                         }
                     }
