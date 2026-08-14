@@ -695,8 +695,6 @@ impl Kernel {
             op_id = next;
         }
 
-        self.instruction_schedule();
-
         // Verify the relative order of global defines is unchanged by linearize
         // (read-only defines first, then writable ones, both in original order).
         debug_assert!({
@@ -712,7 +710,9 @@ impl Kernel {
             expected.sort_by_key(|(_, ro, _, _)| !*ro);
             if defines != expected {
                 self.debug();
-                panic!("linearize: global define order changed:\n  original = {global_defines:?}\n  expected = {expected:?}\n  final = {defines:?}");
+                panic!(
+                    "linearize: global define order changed:\n  original = {global_defines:?}\n  expected = {expected:?}\n  final = {defines:?}"
+                );
             }
             true
         });
