@@ -8,7 +8,7 @@ use crate::{
     DType, Map,
     dtype::Constant,
     error::{BackendError, ErrorStatus},
-    kernel::{BOp, IDX_T, IdxScope, Kernel, MemLayout, MemScope, Op, OpId, UOp},
+    kernel::{BOp, IDX_T, IdxScope, Kernel, MemLayout, MemScope, Op, OpId, ParamKind, UOp},
 };
 use std::hash::BuildHasherDefault;
 
@@ -410,7 +410,7 @@ impl Kernel {
             let mut op_id = self.head;
             let mut found = false;
             while !op_id.is_null() {
-                if let Op::Define { dtype: DType::Bool, scope: MemScope::Global, .. } = self.at(op_id) {
+                if let Op::Storage { dtype: DType::Bool, scope: MemScope::Global, .. } = self.at(op_id) {
                     found = true;
                     break;
                 }
@@ -424,7 +424,7 @@ impl Kernel {
             let mut op_id = self.head;
             let mut found = false;
             while !op_id.is_null() {
-                if let Op::Define { dtype: DType::BF16, .. } = self.at(op_id) {
+                if let Op::Storage { dtype: DType::BF16, .. } = self.at(op_id) {
                     found = true;
                     break;
                 }
@@ -656,13 +656,10 @@ impl Kernel {
                         const_entries.push((st, cid, words));
                         spv_values.insert(op_id, cid);
                     }
-                    &Op::Define { dtype, scope, ro, ref shape } => {
-                        match scope {
-                            MemScope::Variable => {
-                                variable_defs.push((op_id, dtype));
-                            }
-                            MemScope::Circular => unreachable!(),
-                            MemScope::Global => {
+                    &Op::Param { dtype, kind } => {
+                        match kind {
+                            ParamKind::Variable => variable_defs.push((op_id, dtype)),
+                            ParamKind::Global | ParamKind::GlobalMut => {
                                 let st = push_dtype(&mut asm, &mut type_cache, &mut type_entries, dtype);
                                 let is_bool = dtype == DType::Bool;
                                 if is_bool {
@@ -685,7 +682,7 @@ impl Kernel {
                                 global_var_ids.push(var);
                                 decorations.push((var, Decoration::DecDescriptorSet, vec![0]));
                                 decorations.push((var, Decoration::DecBinding, vec![binding]));
-                                if ro {
+                                if kind == ParamKind::Global {
                                     decorations.push((var, Decoration::DecNonWritable, vec![]));
                                 }
                                 binding += 1;
@@ -699,8 +696,16 @@ impl Kernel {
                                     if is_bool { u8_id.unwrap() } else { st },
                                 );
                             }
+                        }
+                    }
+                    &Op::Storage { dtype, scope, len } => {
+                        match scope {
+                            MemScope::Variable => unreachable!(),
+                            MemScope::Circular => unreachable!(),
+                            MemScope::Global => {
+                                unreachable!()
+                            }
                             MemScope::Local => {
-                                let len: u64 = shape.iter().product();
                                 let st = push_dtype(&mut asm, &mut type_cache, &mut type_entries, dtype);
                                 let len_cid = asm.id();
                                 const_entries.push((u32_id, len_cid, vec![len as u32]));
@@ -716,7 +721,6 @@ impl Kernel {
                                 push_ptr_type(&mut asm, &mut ptr_cache, &mut type_entries, SC_WORKGROUP, st);
                             }
                             MemScope::Register => {
-                                let len: u64 = shape.iter().product();
                                 let st = push_dtype(&mut asm, &mut type_cache, &mut type_entries, dtype);
                                 let len_cid = asm.id();
                                 const_entries.push((u32_id, len_cid, vec![len as u32]));
@@ -909,7 +913,7 @@ impl Kernel {
             let mut idx = 0u32;
             let mut off = 0u32;
             while !op_id.is_null() && idx < variable_defs.len() as u32 {
-                if let &Op::Define { dtype, scope: MemScope::Variable, .. } = self.at(op_id) {
+                if let &Op::Storage { dtype, scope: MemScope::Variable, .. } = self.at(op_id) {
                     let storage_dt = if dtype == DType::Bool { DType::U32 } else { dtype };
                     let size = elem_stride(storage_dt) as u32;
                     let align = if size >= 8 { 8 } else { 4 };
@@ -1098,7 +1102,10 @@ impl Kernel {
                     Op::Const(_) => {
                         // Already emitted in pass 1
                     }
-                    Op::Define { scope, .. } => {
+                    Op::Param { .. } => {
+                        // Already declared as module-level variable
+                    }
+                    Op::Storage { scope, .. } => {
                         match scope {
                             MemScope::Variable => {
                                 // Exposed through the push-constant block; loaded on access
@@ -1129,7 +1136,7 @@ impl Kernel {
                                     push_ptr_type(&mut asm, &mut ptr_cache, &mut type_entries, SC_PUSH_CONSTANT, storage_type);
                                 (push_constant_var, elem_ptr, false, is_bool, Some(member_const))
                             } else if let Some(&var_id) = spv_variables.get(&src) {
-                                let is_local = matches!(self.at(src), &Op::Define { scope: MemScope::Local, .. });
+                                let is_local = matches!(self.at(src), &Op::Storage { scope: MemScope::Local, .. });
                                 let sc = if is_local { SC_WORKGROUP } else { SC_STORAGE_BUFFER };
                                 let is_bool_buf = bool_buffers.contains(&src) && !is_local;
                                 // For bool storage buffers or vector loads, use scalar storage type
@@ -1225,7 +1232,7 @@ impl Kernel {
 
                         let (base_ptr, element_ptr_type, is_storage_buffer, is_bool_dst) =
                             if let Some(&var_id) = spv_variables.get(&dst) {
-                                let is_local = matches!(self.at(dst), &Op::Define { scope: MemScope::Local, .. });
+                                let is_local = matches!(self.at(dst), &Op::Storage { scope: MemScope::Local, .. });
                                 let sc = if is_local { SC_WORKGROUP } else { SC_STORAGE_BUFFER };
                                 let is_bool_buf = bool_buffers.contains(&dst) && !is_local;
                                 let val_type = emit_type(&mut asm, &mut type_cache, dtypes[&x].0);

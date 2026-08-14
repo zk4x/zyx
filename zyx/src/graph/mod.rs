@@ -105,7 +105,7 @@ pub(crate) enum Node {
     },
     Expand {
         x: ClassId,
-        shape: ShapeId,
+        shape: Vec<Dim>,
     },
     Permute {
         x: ClassId,
@@ -113,7 +113,7 @@ pub(crate) enum Node {
     },
     Reshape {
         x: ClassId,
-        shape: ShapeId,
+        shape: Vec<OpId>,
     },
     PadZeros {
         x: ClassId,
@@ -304,8 +304,6 @@ pub(crate) struct NodeData {
 #[derive(Debug)]
 pub struct EClass {
     pub nodes: Vec<NodeId>,
-    pub shape: ShapeId,
-    pub dtype: DType,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -435,10 +433,8 @@ impl Graph {
         if let Some(&nid) = self.hashcons.get(&node) {
             return self.nodes[nid].class_of;
         }
-        let shape = self.classes[x].shape;
-        let dtype = self.classes[x].dtype;
         let nid = self.nodes.push(NodeData { node: node.clone(), class_of: ClassId::NULL });
-        let cid = self.classes.push(EClass { nodes: vec![nid], shape, dtype });
+        let cid = self.classes.push(EClass { nodes: vec![nid] });
         self.nodes[nid].class_of = cid;
         self.hashcons.insert(node, nid);
         cid
@@ -564,15 +560,15 @@ impl Graph {
         deps
     }
 
-    pub fn debug(&self, shapes: &Slab<ShapeId, Vec<Dim>>) {
+    pub fn debug(&self) {
         let line = "─".repeat(60);
         println!("\n{}", line);
         println!("  E-Graph");
         println!("{}", line);
         for cid in self.classes.ids() {
             let class = &self.classes[cid];
-            let shape_str = format!("{:?}", shapes[class.shape]);
-            let dtype_str = format!("{:?}", class.dtype);
+            let shape_str = format!("{:?}", self.shape(cid));
+            let dtype_str = format!("{:?}", self.dtype(cid));
             println!("Class {:?} shape={} dtype={}", cid, shape_str, dtype_str);
             for &nid in &class.nodes {
                 let kind = &self.nodes[nid].node;
@@ -590,7 +586,7 @@ impl Graph {
                     Node::Kernel { program_id, time, .. } => format!("Kernel prog={:?} time={}", program_id, time),
                     Node::Expand { .. } => "Expand".into(),
                     Node::Permute { axes, .. } => format!("Permute {:?}", axes),
-                    Node::Reshape { shape, .. } => format!("Reshape {:?}", shapes[*shape]),
+                    Node::Reshape { shape, .. } => format!("Reshape {shape:?}"),
                     Node::PadZeros { padding, .. } => format!("Pad {:?}", padding),
                     Node::Narrow { axis, start, len, .. } => format!("Slice axis={axis:?} start={start:?} len={len}"),
                     Node::Flip { axes, .. } => format!("Flip {:?}", axes),
@@ -709,10 +705,9 @@ impl Graph {
             node.hash(&mut hasher);
         }
 
+        // TODO - is this even needed?
         for cid in self.classes.ids() {
             cid.hash(&mut hasher);
-            self.classes[cid].shape.hash(&mut hasher);
-            self.classes[cid].dtype.hash(&mut hasher);
         }
 
         for &cid in outputs {
@@ -1035,6 +1030,18 @@ impl Graph {
         }
         result
     }
+
+    pub fn rank(&self, class: ClassId) -> UAxis {
+        todo!()
+    }
+
+    pub fn shape(&self, class: ClassId) -> &[Dim] {
+        todo!()
+    }
+
+    pub fn dtype(&self, class: ClassId) -> DType {
+        todo!()
+    }
 }
 
 impl Runtime {
@@ -1066,8 +1073,7 @@ impl Runtime {
         // not recomputed. The eager kernel is left untouched (rc/outputs already
         // count the handles), so the tensor reverts to eager when the graph dies.
         if self.buffer_map.contains_key(&tid) {
-            let (shape_id, dtype) = (self.tensors[tid].shape_id, self.tensors[tid].dtype);
-            let (_, class_id) = self.push_leaf_node(graph_id, dtype, shape_id);
+            let (_, class_id) = self.push_leaf_node(graph_id);
             self.graphs[graph_id].leaf_map.insert(class_id, tid);
             self.graphs[graph_id].leaf_classes.push(class_id);
             self.graphs[graph_id].ref_count += 1;
@@ -1087,7 +1093,7 @@ impl Runtime {
                     continue;
                 }
                 match kernel.ops[oid].op {
-                    Op::Define { .. } | Op::Const(_) => {}
+                    Op::Storage { .. } | Op::Const(_) => {}
                     Op::Unary { x, .. } => stack.push(x),
                     Op::Binary { x, y, .. } => {
                         stack.push(x);
@@ -1109,10 +1115,8 @@ impl Runtime {
         while !op_id.is_null() {
             if relevant.contains(&op_id) {
                 let class_id = match self.kernels[kernel_id].kernel.ops[op_id].op {
-                    Op::Define { ref shape, .. } => {
+                    Op::Param { .. } => {
                         let load_tid = loads[define_idx];
-                        let shape_id = self.tensors[load_tid].shape_id;
-                        debug_assert_eq!(shape.to_vec(), self.shapes[shape_id], "define shape mismatch");
                         if !self.buffer_map.contains_key(&load_tid) {
                             let pending = if self.tensors[load_tid].class_id.is_null() {
                                 self.tensors[load_tid].depends_on
@@ -1133,8 +1137,7 @@ impl Runtime {
                             // load_tid is already a leaf of this graph: reuse its class.
                             self.tensors[load_tid].class_id
                         } else {
-                            let dtype = self.tensors[load_tid].dtype;
-                            let (_, class_id) = self.push_leaf_node(graph_id, dtype, shape_id);
+                            let (_, class_id) = self.push_leaf_node(graph_id);
                             self.graphs[graph_id].leaf_map.insert(class_id, load_tid);
                             self.graphs[graph_id].leaf_classes.push(class_id);
                             self.graphs[graph_id].ref_count += 1;
@@ -1144,15 +1147,12 @@ impl Runtime {
                         }
                     }
                     Op::Const(x) => {
-                        let shape_id = self.push_shape(vec![1]);
-                        let (_, class_id) = self.push_node(graph_id, Node::Const(x), shape_id, x.dtype());
+                        let (_, class_id) = self.push_node(graph_id, Node::Const(x));
                         class_id
                     }
                     Op::Unary { x, uop } => {
                         let x_class = op_to_class[&x];
-                        let shape = self.graphs[graph_id].classes[x_class].shape;
-                        let dtype = self.graphs[graph_id].classes[x_class].dtype;
-                        let (_, class_id) = self.push_node(graph_id, Node::Unary { x: x_class, uop }, shape, dtype);
+                        let (_, class_id) = self.push_node(graph_id, Node::Unary { x: x_class, uop });
                         class_id
                     }
                     Op::Binary { x, y, bop } => {
@@ -1162,44 +1162,24 @@ impl Runtime {
                     }
                     Op::Cast { x, dtype } => {
                         let x_class = op_to_class[&x];
-                        let shape = self.graphs[graph_id].classes[x_class].shape;
-                        let (_, class_id) = self.push_node(graph_id, Node::Cast { x: x_class, dtype }, shape, dtype);
+                        let (_, class_id) = self.push_node(graph_id, Node::Cast { x: x_class, dtype });
                         class_id
                     }
                     Op::Reduce { x, rop, n_axes } => {
                         let x_class = op_to_class[&x];
-                        let in_shape = self.shapes[self.graphs[graph_id].classes[x_class].shape].clone();
-                        debug_assert!(
-                            n_axes <= in_shape.len(),
-                            "Reduce: n_axes {} > input rank {} (shape {:?})",
-                            n_axes,
-                            in_shape.len(),
-                            in_shape
-                        );
-                        let out_shape: Vec<Dim> = in_shape[..in_shape.len() - n_axes].to_vec();
-                        let out_shape_id = self.push_shape(out_shape);
-                        let dtype = self.graphs[graph_id].classes[x_class].dtype;
-                        let axes: Vec<UAxis> = (in_shape.len() - n_axes..in_shape.len()).collect();
-                        let (_, class_id) =
-                            self.push_node(graph_id, Node::Reduce { x: x_class, rop, axes: axes.into() }, out_shape_id, dtype);
+                        let rank = self.graphs[graph_id].rank(x_class);
+                        debug_assert!(n_axes <= rank, "Reduce: n_axes {} > input rank {}", n_axes, rank);
+                        let axes: Vec<UAxis> = (rank - n_axes..rank).collect();
+                        let (_, class_id) = self.push_node(graph_id, Node::Reduce { x: x_class, rop, axes: axes.into() });
                         class_id
                     }
                     Op::Move { x, ref mop } => {
                         let x_class = op_to_class[&x];
-                        let in_shape = &self.shapes[self.graphs[graph_id].classes[x_class].shape];
+                        let in_shape = self.graphs[graph_id].shape(x_class);
                         match mop.as_ref() {
                             MoveOp::Reshape { shape } => {
-                                debug_assert_eq!(
-                                    shape.iter().product::<Dim>(),
-                                    in_shape.iter().product::<Dim>(),
-                                    "Reshape: element count mismatch {:?} -> {:?}",
-                                    in_shape,
-                                    shape
-                                );
-                                let dtype = self.graphs[graph_id].classes[x_class].dtype;
-                                let shape_id = self.push_shape(shape.clone());
-                                let (_, class_id) =
-                                    self.push_node(graph_id, Node::Reshape { x: x_class, shape: shape_id }, shape_id, dtype);
+                                let shape = shape.clone();
+                                let (_, class_id) = self.push_node(graph_id, Node::Reshape { x: x_class, shape });
                                 class_id
                             }
                             MoveOp::Expand { shape } => {
@@ -1209,10 +1189,7 @@ impl Runtime {
                                     shape.len(),
                                     in_shape.len()
                                 );
-                                let shape_id = self.push_shape(shape.clone());
-                                let dtype = self.graphs[graph_id].classes[x_class].dtype;
-                                let (_, class_id) =
-                                    self.push_node(graph_id, Node::Expand { x: x_class, shape: shape_id }, shape_id, dtype);
+                                let (_, class_id) = self.push_node(graph_id, Node::Expand { x: x_class, shape: shape.clone() });
                                 class_id
                             }
                             MoveOp::Permute { axes, shape } => {
@@ -1232,10 +1209,8 @@ impl Runtime {
                                     in_shape.len(),
                                     in_shape
                                 );
-                                let dtype = self.graphs[graph_id].classes[x_class].dtype;
                                 let axes = axes.clone().into();
-                                let shape_id = self.push_shape(shape.clone());
-                                let (_, class_id) = self.push_node(graph_id, Node::Permute { x: x_class, axes }, shape_id, dtype);
+                                let (_, class_id) = self.push_node(graph_id, Node::Permute { x: x_class, axes });
                                 class_id
                             }
                             MoveOp::Pad { padding, shape } => {
@@ -1247,11 +1222,8 @@ impl Runtime {
                                     in_shape.len(),
                                     in_shape
                                 );
-                                let dtype = self.graphs[graph_id].classes[x_class].dtype;
                                 let padding = padding.clone().into();
-                                let shape_id = self.push_shape(shape.clone());
-                                let (_, class_id) =
-                                    self.push_node(graph_id, Node::PadZeros { x: x_class, padding }, shape_id, dtype);
+                                let (_, class_id) = self.push_node(graph_id, Node::PadZeros { x: x_class, padding });
                                 class_id
                             }
                             MoveOp::Narrow { .. } => {
@@ -1264,10 +1236,8 @@ impl Runtime {
                                     in_shape.len(),
                                     in_shape
                                 );
-                                let dtype = self.graphs[graph_id].classes[x_class].dtype;
                                 let axes = axes.clone().into();
-                                let shape_id = self.push_shape(in_shape.clone());
-                                let (_, class_id) = self.push_node(graph_id, Node::Flip { x: x_class, axes }, shape_id, dtype);
+                                let (_, class_id) = self.push_node(graph_id, Node::Flip { x: x_class, axes });
                                 class_id
                             }
                         }
@@ -1277,7 +1247,7 @@ impl Runtime {
                 op_to_class.insert(op_id, class_id);
             }
 
-            if matches!(self.kernels[kernel_id].kernel.at(op_id), Op::Define { .. }) {
+            if matches!(self.kernels[kernel_id].kernel.at(op_id), Op::Storage { .. }) {
                 define_idx += 1;
             }
             op_id = self.kernels[kernel_id].kernel.next_op(op_id);
@@ -1392,9 +1362,6 @@ impl Runtime {
             }
         }
 
-        // SAFETY: graph and shapes are separate fields of Runtime, no aliasing, rust is stupid
-        let shapes_ptr: *const Slab<ShapeId, Vec<Dim>> = &self.shapes;
-
         // Pattern match specialized AOT kernels (e.g. matmul -> cblas) so they can
         // compete with the fused zyx kernels in extraction.
         // SAFETY: devices, graphs and shapes are separate fields of Runtime, no aliasing, rust is stupid
@@ -1434,7 +1401,7 @@ impl Runtime {
         self.graphs[graph_id].add_memory_ops(unsafe { &*devices_ptr }, unsafe { &*buffer_map_ptr });
 
         if self.debug.egraph() {
-            self.graphs[graph_id].debug(&self.shapes);
+            self.graphs[graph_id].debug();
         }
 
         let nodes = self.graphs[graph_id].extract(output_set);
@@ -1445,7 +1412,7 @@ impl Runtime {
         for (&cid, &tid) in &self.graphs[graph_id].leaf_map {
             leaf_pools.insert(cid, self.buffer_map[&tid].pool);
         }
-        let plan = ExecPlan::new(&self.graphs[graph_id], &nodes, output_set, &self.devices, &self.shapes, &leaf_pools);
+        let plan = ExecPlan::new(&self.graphs[graph_id], &nodes, output_set, &self.devices, &leaf_pools);
         if self.debug.egraph() {
             plan.debug();
         }

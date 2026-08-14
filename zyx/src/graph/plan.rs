@@ -4,7 +4,7 @@ use crate::{
     Map, Set, ZyxError,
     backend::{BufferId, Device, DeviceId, Event, MemoryPool, PoolId, ProgramId},
     graph::{ClassId, Graph, Node, NodeId},
-    runtime::{Runtime, ShapeId},
+    runtime::Runtime,
     shape::Dim,
     slab::Slab,
 };
@@ -54,7 +54,6 @@ impl ExecPlan {
         nodes: &[NodeId],
         output_set: &BTreeSet<ClassId>,
         devices: &Slab<DeviceId, Device>,
-        shapes: &Slab<ShapeId, Vec<Dim>>,
         leaf_pools: &Map<ClassId, PoolId>,
     ) -> Self {
         let mut rc: Map<ClassId, u32> = Map::default();
@@ -74,14 +73,6 @@ impl ExecPlan {
 
         let mut plan_nodes = Vec::new();
         let mut allocated: Set<ClassId> = Set::default();
-
-        let class_bytes = |cid: ClassId| -> Dim {
-            let class = &graph.classes[cid];
-            let shape = &shapes[class.shape];
-            let numel: Dim = shape.iter().product();
-            // Add one trash element
-            ((numel + 1) * class.dtype.bit_size() as Dim).div_ceil(8)
-        };
 
         // After output classes alias the buffer of x's base leaf class: the
         // assign writes the new buffer version in-place into that leaf buffer,

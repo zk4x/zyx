@@ -15,9 +15,7 @@
 use crate::{
     graph::{ClassId, Graph, Node},
     kernel::BOp,
-    runtime::ShapeId,
     shape::Dim,
-    slab::Slab,
 };
 
 mod matmul;
@@ -25,10 +23,10 @@ mod matmul;
 impl Graph {
     /// Finds a `Reduce(Add)` over the single trailing axis of a 3D product.
     /// Returns the product class and the contraction dim `k`.
-    fn reduce_add_last(&self, cid: ClassId, shapes: &Slab<ShapeId, Vec<Dim>>) -> Option<(ClassId, Dim)> {
+    fn reduce_add_last(&self, cid: ClassId) -> Option<(ClassId, Dim)> {
         self.classes[cid].nodes.iter().find_map(|&nid| match &self.nodes[nid].node {
             Node::Reduce { x, rop: BOp::Add, axes } => {
-                let prod_shape = &shapes[self.classes[*x].shape];
+                let prod_shape: Vec<Dim> = todo!();
                 if prod_shape.len() == 3 && axes.len() == 1 && axes[0] == prod_shape.len() - 1 {
                     Some((*x, prod_shape[2]))
                 } else {
@@ -63,12 +61,12 @@ impl Graph {
     /// The shape is read from the source class itself, so matching does not
     /// depend on how the shape was produced (e.g. a `Reshape` in the canonical
     /// matmul form, or an eager tensor already at the broadcast shape).
-    fn expand_src(&self, cid: ClassId, shapes: &Slab<ShapeId, Vec<Dim>>) -> Option<(ClassId, Vec<Dim>)> {
+    fn expand_src(&self, cid: ClassId) -> Option<(ClassId, Vec<Dim>)> {
         let x = self.classes[cid].nodes.iter().find_map(|&nid| match &self.nodes[nid].node {
             Node::Expand { x, .. } => Some(*x),
             _ => None,
         })?;
-        Some((x, shapes[self.classes[x].shape].clone()))
+        Some((x, todo!()))
     }
 
     /// Finds the source of a 2D `Permute [1, 0]` (a `[n, k]` transposed from

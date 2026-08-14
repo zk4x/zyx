@@ -41,7 +41,7 @@ use crate::dtype::{Constant, DType};
 use crate::error::{BackendError, ErrorStatus};
 use crate::hashers::AHasher;
 use crate::kernel::cost::Cost;
-use crate::kernel::{IdxScope, Kernel, MemScope, Op, OpId};
+use crate::kernel::{IdxScope, Kernel, MemScope, Op, OpId, ParamKind};
 use crate::rng::Rng;
 use crate::scalar::{bf16, f16};
 use crate::shape::Dim;
@@ -364,16 +364,16 @@ impl Kernel {
         let mut op_id = self.head;
         while !op_id.is_null() {
             match self.ops[op_id].op {
-                Op::Define { dtype, scope: MemScope::Global, ro, ref shape } => {
+                Op::Param { kind, dtype } => {
                     if buf_idx < buffers.len() && buffers[buf_idx] != PoolBufferId::NULL {
                         used_bufs.push(buffers[buf_idx]);
                     } else {
-                        let len: Dim = shape.iter().product();
+                        let len: Dim = todo!();
                         let bytes_alloc = (dtype.bit_size() as Dim * (len + 1)) / 8;
                         let (buf, ev) = memory_pool.allocate(bytes_alloc)?;
                         used_bufs.push(buf);
                         new_bufs.push(buf);
-                        if ro {
+                        if matches!(kind, ParamKind::Global) {
                             let one: Vec<u8> = match dtype {
                                 DType::BF16 => bf16::ONE.to_le_bytes().to_vec(),
                                 DType::F16 => f16::ONE.to_le_bytes().to_vec(),
@@ -391,7 +391,7 @@ impl Kernel {
                     }
                     buf_idx += 1;
                 }
-                Op::Define { dtype, scope: MemScope::Variable, .. } => {
+                Op::Storage { dtype, scope: MemScope::Variable, .. } => {
                     if buf_idx < buffers.len() && buffers[buf_idx] != PoolBufferId::NULL {
                         used_bufs.push(buffers[buf_idx]);
                     } else {
@@ -412,7 +412,7 @@ impl Kernel {
                     }
                     buf_idx += 1;
                 }
-                Op::Define { .. } => {
+                Op::Storage { .. } => {
                     // Skip non-Global defines (e.g. local buffer defines from tile_local)
                 }
                 _ => break,

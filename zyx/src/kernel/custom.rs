@@ -22,7 +22,9 @@ use crate::backend::{BufferId, DeviceInfo, MemoryPool, ProgramId};
 use crate::dtype::Constant;
 use crate::error::BackendError;
 use crate::graph::{ClassId, GraphId};
-use crate::kernel::{BOp, DeviceId, IdxScope, Kernel, MMADType, MMADims, MMALayout, MemLayout, MemScope, MoveOp, Op, OpId, UOp};
+use crate::kernel::{
+    BOp, DeviceId, IdxScope, Kernel, MMADType, MMADims, MMALayout, MemLayout, MemScope, MoveOp, Op, OpId, ParamKind, UOp,
+};
 use crate::runtime::{KernelData, KernelId, TensorData};
 use crate::shape::UAxis;
 use crate::slab::{Slab, SlabId};
@@ -110,11 +112,10 @@ impl Kernel {
         let mut outputs = Vec::new();
         let mut op_id = self.head;
         while !op_id.is_null() {
-            if let Op::Define { dtype, scope: MemScope::Global, ro, .. } = self.ops[op_id].op {
-                if ro {
-                    inputs.push(dtype);
-                } else {
-                    outputs.push(dtype);
+            if let Op::Param { dtype, kind } = self.ops[op_id].op {
+                match kind {
+                    ParamKind::Variable | ParamKind::Global => inputs.push(dtype),
+                    ParamKind::GlobalMut => outputs.push(dtype),
                 }
             }
             op_id = self.next_op(op_id);
@@ -171,45 +172,19 @@ impl Kernel {
     }
 
     /// Reshape tensor.
-    pub fn reshape(&mut self, x: OpId, shape: &[Dim]) -> OpId {
-        let shape = shape.to_vec();
-        let in_shape = self.shape(x);
-        debug_assert_eq!(
-            shape.iter().product::<Dim>(),
-            in_shape.iter().product::<Dim>(),
-            "reshape: element count mismatch: {:?} -> {:?}",
-            in_shape,
-            shape
-        );
+    pub fn reshape(&mut self, x: OpId, shape: Vec<OpId>) -> OpId {
         self.push_back(Op::Move { x, mop: Box::new(MoveOp::Reshape { shape }) })
     }
 
     /// Expand tensor (adds singleton dims).
-    pub fn expand(&mut self, x: OpId, shape: &[Dim]) -> OpId {
-        let shape = shape.to_vec();
-        let in_shape = self.shape(x);
-        debug_assert!(
-            in_shape.len() <= shape.len(),
-            "expand: input rank {} > target rank {}: {:?} -> {:?}",
-            in_shape.len(),
-            shape.len(),
-            in_shape,
-            shape
-        );
-        for (old, new) in in_shape.iter().copied().rev().zip(shape.iter().copied().rev()) {
-            debug_assert!(old == new || old == 1, "expand: incompatible dims: {old} vs {new} in {:?} -> {:?}", in_shape, shape);
-        }
+    pub fn expand(&mut self, x: OpId, shape: Vec<Dim>) -> OpId {
         self.push_back(Op::Move { x, mop: Box::new(MoveOp::Expand { shape }) })
     }
 
     /// Pad tensor with zeros.
     pub fn pad(&mut self, x: OpId, padding: &[(i64, i64)]) -> OpId {
         let padding = padding.to_vec();
-        let in_shape = self.shape(x);
-        debug_assert_eq!(padding.len(), in_shape.len(), "pad: padding length {} != rank {}", padding.len(), in_shape.len());
-        let mut shape = in_shape.clone();
-        crate::shape::pad(&mut shape, &padding);
-        self.push_back(Op::Move { x, mop: Box::new(MoveOp::Pad { padding, shape }) })
+        self.push_back(Op::Move { x, mop: Box::new(MoveOp::Pad { padding }) })
     }
 
     /// Flip tensor axes.
@@ -261,9 +236,14 @@ impl Kernel {
         core::array::from_fn(|i| self.const_idx(vals[i]))
     }
 
-    /// Define a tensor buffer.
-    pub fn define(&mut self, dtype: DType, scope: MemScope, ro: bool, shape: &[Dim]) -> OpId {
-        self.push_back(Op::Define { dtype, scope, ro, shape: shape.into() })
+    /// Define a kernel parameter.
+    pub fn param(&mut self, dtype: DType, kind: ParamKind) -> OpId {
+        self.push_back(Op::Param { dtype, kind })
+    }
+
+    /// Define a storage.
+    pub fn storage(&mut self, dtype: DType, scope: MemScope, len: Dim) -> OpId {
+        self.push_back(Op::Storage { dtype, scope, len })
     }
 
     /// Group (block) index.
@@ -566,7 +546,6 @@ impl CompiledKernel {
                 for key in keys {
                     pool_events.push(rt.events.remove(&key).unwrap());
                 }
-                let dtype = rt.tensors[input.id].dtype;
                 let bytes = (rt.shape(input.id).iter().product::<Dim>() * dtype.bit_size() as Dim).div_ceil(8);
                 let alloc_bytes = bytes + dtype.bit_size() as Dim / 8;
                 let (dev_buf, alloc_ev) = rt.pools[pool_id].allocate(alloc_bytes)?;
@@ -618,10 +597,7 @@ impl CompiledKernel {
         // break any eager op built on the forward result (e.g. a .cast()).
         let mut tensors = Vec::new();
         for ((dtype, shape), buf_id) in self.outputs.iter().copied().zip(shapes).zip(output_bufs) {
-            let shape_id = rt.push_shape(shape.clone());
             let id = rt.tensors.push(TensorData {
-                shape_id,
-                dtype,
                 kernel_id: KernelId::NULL,
                 op_id: OpId::NULL,
                 depends_on: KernelId::NULL,
@@ -630,7 +606,7 @@ impl CompiledKernel {
                 rc: 1,
             });
             let mut kernel = Kernel::new(DeviceId::AUTO);
-            let op_id = kernel.push_back(Op::Define { dtype, scope: MemScope::Global, ro: true, shape: shape.into() });
+            let op_id = kernel.push_back(Op::Param { dtype, kind: ParamKind::Global });
             let load_kid = rt.kernels.push(KernelData { outputs: vec![id], loads: vec![id], stores: Vec::new(), kernel });
             rt.tensors[id].kernel_id = load_kid;
             rt.tensors[id].op_id = op_id;

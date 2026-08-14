@@ -5,7 +5,7 @@ use std::ops::RangeInclusive;
 
 use crate::{
     DType, Map, Set,
-    kernel::{BOp, IDX_T, IdxScope, Kernel, MemScope, Op, OpId},
+    kernel::{BOp, IDX_T, IdxScope, Kernel, MemScope, Op, OpId, ParamKind},
     shape::Dim,
 };
 
@@ -34,36 +34,27 @@ impl Kernel {
             let mut scan = self.head;
             while !scan.is_null() {
                 match self.at(scan) {
-                    Op::Define { scope: MemScope::Global | MemScope::Variable, ro: true, .. } => {
-                        if phase != Phase::GlobalRo {
-                            println!("Global read-only defines must come first.");
-                            self.debug();
-                            panic!();
+                    Op::Param { kind, .. } => match kind {
+                        ParamKind::Variable | ParamKind::Global => {
+                            if phase != Phase::GlobalRo {
+                                println!("Global read-only defines must come first.");
+                                self.debug();
+                                panic!();
+                            }
                         }
-                    }
-                    Op::Define { scope: MemScope::Global | MemScope::Variable, ro: false, .. } => {
-                        if phase == Phase::GlobalRo {
-                            phase = Phase::GlobalRw;
+                        ParamKind::GlobalMut => {
+                            if phase == Phase::GlobalRo {
+                                phase = Phase::GlobalRw;
+                            }
+                            if phase != Phase::GlobalRw {
+                                println!("Global read-write defines must come before local defines.");
+                                self.debug();
+                                panic!();
+                            }
                         }
-                        if phase != Phase::GlobalRw {
-                            println!("Global read-write defines must come before local defines.");
-                            self.debug();
-                            panic!();
-                        }
-                    }
-                    Op::Define { scope: MemScope::Local, ro: true, .. }
-                    | Op::Define { scope: MemScope::Circular, ro: true, .. } => {
-                        if phase == Phase::GlobalRo || phase == Phase::GlobalRw {
-                            phase = Phase::LocalRo;
-                        }
-                        if phase != Phase::LocalRo {
-                            println!("Local read-only defines must come after all global defines.");
-                            self.debug();
-                            panic!();
-                        }
-                    }
-                    Op::Define { scope: MemScope::Local, ro: false, .. }
-                    | Op::Define { scope: MemScope::Circular, ro: false, .. } => {
+                    },
+                    Op::Storage { scope: MemScope::Local, .. }
+                    | Op::Storage { scope: MemScope::Circular, .. } => {
                         if phase == Phase::GlobalRo || phase == Phase::GlobalRw || phase == Phase::LocalRo {
                             phase = Phase::LocalRw;
                         }
@@ -96,7 +87,8 @@ impl Kernel {
         let mut gids = Set::default();
         let mut lids = Set::default();
 
-        let mut defines: Map<OpId, (MemScope, bool, &Box<[Dim]>)> = Map::default();
+        let mut params: Map<OpId, Kind> = Map::default();
+        let mut storages: Map<OpId, (MemScope, Dim)> = Map::default();
 
         let mut op_id = self.head;
         let mut prev: OpId;
@@ -206,7 +198,11 @@ impl Kernel {
                 Op::Const(v) => {
                     dtypes.insert(op_id, v.dtype());
                 }
-                Op::Define { dtype, scope, ro, ref shape } => {
+                Op::Param { dtype, kind } => {
+                    defines.insert(op_id, (scope, ro, shape));
+                    dtypes.insert(op_id, dtype);
+                }
+                Op::Storage { dtype, scope, ro, ref shape } => {
                     defines.insert(op_id, (scope, ro, shape));
                     dtypes.insert(op_id, dtype);
                 }
@@ -288,7 +284,7 @@ impl Kernel {
         let mut op_id = self.head;
         while !op_id.is_null() {
             match *self.at(op_id) {
-                Op::Define { ref shape, .. } => {
+                Op::Storage { ref shape, .. } => {
                     defines.insert(op_id, shape);
                 }
                 Op::Load { src, index, .. } => {
@@ -330,7 +326,7 @@ impl Kernel {
                         b.insert(op_id, (v, v));
                     }
                 }
-                Op::Define { .. } => {}
+                Op::Storage { .. } => {}
                 Op::Loop { .. } | Op::Unary { .. } | Op::Cast { .. } | Op::Binary { .. } | Op::Mad { .. } => {
                     let b = bounds_stack.last_mut().unwrap();
                     self.rederive_bounds(b, op_id);

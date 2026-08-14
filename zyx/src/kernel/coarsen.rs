@@ -124,7 +124,7 @@ impl Kernel {
         while !op_id.is_null()
             && matches!(
                 self.ops[op_id].op,
-                Op::Define { scope: MemScope::Global | MemScope::Local | MemScope::Variable, .. }
+                Op::Storage { scope: MemScope::Global | MemScope::Local | MemScope::Variable, .. }
                     | Op::Index { .. }
                     | Op::Const(_)
             )
@@ -164,8 +164,8 @@ impl Kernel {
         while !op_id.is_null() {
             let next_op_id = self.next_op(op_id);
             match self.ops[op_id].op {
-                Op::Define { scope: MemScope::Register, ref mut shape, .. } => {
-                    shape[0] *= factor;
+                Op::Storage { scope: MemScope::Register, ref mut len, .. } => {
+                    *len *= factor;
                     acc_defines.insert(op_id);
                 }
                 Op::Index { .. } | Op::Loop { .. } | Op::EndLoop | Op::If { .. } | Op::EndIf | Op::Barrier => {}

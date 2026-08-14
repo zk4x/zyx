@@ -129,7 +129,7 @@ mod vectorize;
 mod verify;
 
 pub(crate) use ops::{BOp, IdxScope, MoveOp, Op, OpId, OpNode, UOp};
-pub use ops::{MMADType, MMADims, MMALayout};
+pub use ops::{MMADType, MMADims, MMALayout, ParamKind};
 
 // TODO later make this dynamic u32 or u64 depending on max range
 /// Type used for indexing into arrays within kernels.
@@ -287,7 +287,10 @@ impl Kernel {
                 Op::Const(x) => {
                     dtypes.insert(op_id, (x.dtype(), MemLayout::Scalar));
                 }
-                Op::Define { dtype, .. } => {
+                Op::Param { dtype, .. } => {
+                    dtypes.insert(op_id, (dtype, MemLayout::Scalar));
+                }
+                Op::Storage { dtype, .. } => {
                     dtypes.insert(op_id, (dtype, MemLayout::Scalar));
                 }
                 Op::Load { src, index, layout } => {
@@ -372,7 +375,8 @@ impl Kernel {
     pub(crate) fn dtype(&self, op_id: OpId) -> DType {
         match self.ops[op_id].op {
             Op::Const(c) => c.dtype(),
-            Op::Define { dtype, .. } => dtype,
+            Op::Param { dtype, .. } => dtype,
+            Op::Storage { dtype, .. } => dtype,
             Op::Cast { dtype, .. } => dtype,
             Op::Index { .. } => IDX_T,
             Op::Load { src, .. } => self.dtype(src),
@@ -586,7 +590,7 @@ impl Kernel {
             let mut ops = Vec::new();
             let mut id = self.head;
             while !id.is_null() {
-                if let &Op::Define { scope: MemScope::Global | MemScope::Variable, ro: true, .. } = &self.ops[id].op {
+                if let Op::Param { .. } = &self.ops[id].op {
                     ops.push(id);
                 }
                 id = self.next_op(id);
@@ -701,24 +705,24 @@ impl Kernel {
             let info = match self.at(op_id) {
                 Op::Const(_) => Info { shape: vec![1], flops: 0, mem_read: 0, mem_write: 0 },
                 &Op::Load { src, .. } => {
-                    let Op::Define { dtype, ref shape, .. } = self.ops[src].op else {
+                    let Op::Param { dtype, .. } = self.ops[src].op else {
                         unreachable!()
                     };
-                    let shape: Vec<Dim> = shape.as_ref().into();
+                    let shape: Vec<Dim> = todo!();
                     let mem_read = shape.iter().product::<Dim>() * u64::from(dtype.bit_size()) / 8;
                     Info { shape, flops: 0, mem_read, mem_write: 0 }
                 }
                 &Op::Store { dst, .. } => {
                     let dtype = self.dtype(dst);
-                    let shape = self.shape(dst);
+                    let shape: Vec<Dim> = todo!();
                     let mem_write = shape.iter().product::<Dim>() * u64::from(dtype.bit_size()) / 8;
                     Info { shape, flops: 0, mem_read: 0, mem_write }
                 }
                 Op::Move { x, mop } => match mop.as_ref() {
-                    MoveOp::Reshape { shape, .. }
-                    | MoveOp::Expand { shape }
-                    | MoveOp::Permute { shape, .. }
-                    | MoveOp::Pad { shape, .. } => Info { shape: shape.clone(), flops: 0, mem_read: 0, mem_write: 0 },
+                    MoveOp::Reshape { shape, .. } => Info { shape: todo!(), flops: 0, mem_read: 0, mem_write: 0 },
+                    MoveOp::Expand { shape } | MoveOp::Permute { shape, .. } | MoveOp::Pad { shape, .. } => {
+                        Info { shape: shape.clone(), flops: 0, mem_read: 0, mem_write: 0 }
+                    }
                     MoveOp::Flip { .. } => Info { shape: stack[x].shape.clone(), flops: 0, mem_read: 0, mem_write: 0 },
                     MoveOp::Narrow { axis, len, .. } => {
                         let mut shape = stack[x].shape.clone();
@@ -764,8 +768,8 @@ impl Kernel {
                     let flops = shape.iter().product::<Dim>();
                     Info { shape, flops, mem_read: 0, mem_write: 0 }
                 }
-                Op::Define { shape, .. } => {
-                    let shape: Vec<Dim> = shape.as_ref().into();
+                &Op::Storage { len, .. } => {
+                    let shape: Vec<Dim> = vec![len];
                     Info { shape, flops: 0, mem_read: 0, mem_write: 0 }
                 }
                 Op::Wmma { .. }
@@ -779,6 +783,7 @@ impl Kernel {
                 | Op::Index { .. }
                 | Op::Loop { .. }
                 | Op::EndLoop => todo!(),
+                Op::Param { dtype, kind } => todo!(),
             };
             stack.insert(op_id, info);
             op_id = self.next_op(op_id);
@@ -797,7 +802,7 @@ impl Kernel {
         self.ops.values().any(|x| matches!(x.op, Op::Reduce { .. } | Op::ReduceTile { .. }))
     }
 
-    fn shape(&self, op_id: OpId) -> Vec<Dim> {
+    /*fn shape(&self, op_id: OpId) -> Vec<Dim> {
         match self.ops[op_id].op {
             Op::Const(_) => vec![1],
             Op::Load { src: x, .. }
@@ -830,7 +835,7 @@ impl Kernel {
             Op::Define { ref shape, .. } => shape.clone().into(),
             ref op => todo!("{op:?}"),
         }
-    }
+    }*/
 
     /// Get index loop ids, dimensions and strides.
     ///
@@ -1036,7 +1041,7 @@ impl Kernel {
         let mut load_idx = 0;
         let mut oid = self.head;
         while !oid.is_null() {
-            if matches!(self.at(oid), Op::Define { .. }) {
+            if matches!(self.at(oid), Op::Storage { .. }) {
                 if other_required.contains(&oid) {
                     self_loads.push(loads[load_idx]);
                 }
@@ -1137,7 +1142,7 @@ impl Kernel {
             if !seen.insert(param) {
                 continue;
             }
-            if matches!(self.ops[param].op, Op::Define { .. } | Op::Reduce { .. }) {
+            if matches!(self.ops[param].op, Op::Storage { .. } | Op::Reduce { .. }) {
                 return true;
             }
             params.extend(self.ops[param].op.parameters());
@@ -1158,7 +1163,7 @@ impl Kernel {
                     has_compute = true;
                     params.extend(self.ops[param].op.parameters());
                 }
-                Op::Define { .. } => has_define = true,
+                Op::Storage { .. } => has_define = true,
                 Op::Const(_) => {}
                 _ => params.extend(self.ops[param].op.parameters()),
             }

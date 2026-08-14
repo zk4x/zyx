@@ -816,7 +816,7 @@ fn mad(k: &Kernel, x: OpId) -> Option<(OpId, u64, OpId)> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::kernel::{DeviceId, MemLayout, MemScope};
+    use crate::kernel::{DeviceId, MemLayout, MemScope, ParamKind};
 
     /// Build the cumsum-window mask kernel exactly as linearize produces it
     /// for the gather_f32_dtype one-hot reduce: thread index r47 (outer loop)
@@ -826,9 +826,9 @@ mod tests {
     fn make_mask_kernel() -> (Kernel, OpId) {
         let mut k = Kernel::new(DeviceId::AUTO);
 
-        let r72 = k.define(DType::I32, MemScope::Global, true, &[4]);
-        let r65 = k.define(DType::F32, MemScope::Global, true, &[4]);
-        let r41 = k.define(DType::F32, MemScope::Global, false, &[4]);
+        let r72 = k.param(DType::I32, ParamKind::Global);
+        let r65 = k.param(DType::F32, ParamKind::GlobalMut);
+        let r41 = k.param(DType::F32, ParamKind::Global);
 
         let c0 = k.const_idx(0u32);
         let c1 = k.const_idx(1u32);
@@ -841,7 +841,7 @@ mod tests {
 
         // Outer loop r47 (0..4), inner loop r81 (0..4).
         let r47 = k.loop_(c4);
-        let r78 = k.define(DType::I64, MemScope::Register, false, &[1]);
+        let r78 = k.storage(DType::I64, MemScope::Register, 1);
         let r77 = k.const_val(0i64);
         k.store(r78, r77, c0, MemLayout::Scalar);
         let r81 = k.loop_(c4);

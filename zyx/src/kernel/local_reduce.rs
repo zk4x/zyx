@@ -121,7 +121,7 @@ impl Kernel {
         let reg_acc;
         let acc_dtype;
         loop {
-            if let Op::Define { dtype, scope, ro, ref shape } = self.ops[op_id].op {
+            if let Op::Storage { dtype, scope, ro, ref shape } = self.ops[op_id].op {
                 if scope != MemScope::Register || ro || shape.iter().product::<Dim>() != 1 {
                     return;
                 }
@@ -176,7 +176,7 @@ impl Kernel {
         let mut last_global = None;
         let mut op_id = self.head;
         while !op_id.is_null() {
-            if matches!(self.ops[op_id].op, Op::Define { scope: MemScope::Global, .. }) {
+            if matches!(self.ops[op_id].op, Op::Storage { scope: MemScope::Global, .. }) {
                 last_global = Some(op_id);
             }
             op_id = self.next_op(op_id);
@@ -192,7 +192,7 @@ impl Kernel {
         };
         let loc_acc = self.insert_before(
             insert_at,
-            Op::Define { dtype: acc_dtype, scope: MemScope::Local, ro: false, shape: vec![factor].into() },
+            Op::Storage { dtype: acc_dtype, scope: MemScope::Local, ro: false, shape: vec![factor].into() },
         );
         let lidx_len = self.insert_before(insert_at, Op::Const(Constant::idx(factor)));
         let lidx = self.insert_before(insert_at, Op::Index { len: lidx_len, axis: laxis, scope: IdxScope::Local });

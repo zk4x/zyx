@@ -582,6 +582,7 @@ impl MemoryPool {
     /// when the buffer is ready for use. For most backends the event is a no-op
     /// (immediately signaled); CUDA returns an event recorded after the async allocation.
     pub fn allocate(&mut self, bytes: Dim) -> Result<(PoolBufferId, Event), BackendError> {
+        let bytes = bytes + 8; // for the extra element, why not
         let free = self.free_bytes();
         let (result, name) = match self {
             MemoryPool::Dummy(pool) => (pool.allocate(bytes), "dummy"),

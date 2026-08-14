@@ -64,7 +64,10 @@ impl Kernel {
                 && self.depends_on(store_idx, gidx_id, &mut Set::default())
             {
                 let buf_len: Option<Dim> = match &self.ops[dst].op {
-                    Op::Define { scope: MemScope::Global, shape, .. } => Some(shape.iter().product()),
+                    Op::Param { .. } => {
+                        let shape: Vec<Dim> = todo!();
+                        Some(shape.iter().product())
+                    }
                     _ => None,
                 };
                 if let Some(buf_len) = buf_len {
@@ -126,8 +129,9 @@ impl Kernel {
             if let Op::Store { dst, src: x, index: store_idx, layout } = self.ops[op_id].op.clone()
                 && self.depends_on(store_idx, loop_id, &mut Set::default())
             {
-                let buf_len: Option<Dim> = match &self.ops[dst].op {
-                    Op::Define { scope: MemScope::Global, shape, .. } => Some(shape.iter().product()),
+                let buf_len: Option<Dim> = match self.ops[dst].op {
+                    Op::Param { .. } => todo!(),
+                    Op::Storage { len, .. } => Some(len),
                     _ => None,
                 };
                 if let Some(buf_len) = buf_len {
@@ -184,7 +188,7 @@ impl Kernel {
             return expr == target;
         }
         match self.at(expr) {
-            Op::Const(_) | Op::Index { .. } | Op::Define { .. } | Op::Loop { .. } | Op::EndLoop => false,
+            Op::Const(_) | Op::Index { .. } | Op::Storage { .. } | Op::Loop { .. } | Op::EndLoop => false,
             op => op.parameters().any(|p| self.depends_on(p, target, visited)),
         }
     }

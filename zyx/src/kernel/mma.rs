@@ -151,14 +151,14 @@ impl Kernel {
             let &Load { src: a, index, layout: MemLayout::Scalar } = self.at(x) else {
                 return None;
             };
-            let Define { dtype: a_dtype, .. } = self.ops[a].op else {
+            let Storage { dtype: a_dtype, .. } = self.ops[a].op else {
                 unreachable!()
             };
             let (a_base_index, a_offset) = self.index_base_and_offset(index, k_loop_id);
             let &Load { src: b, index, layout: MemLayout::Scalar } = self.at(y) else {
                 return None;
             };
-            let Define { dtype: b_dtype, .. } = self.ops[b].op else {
+            let Storage { dtype: b_dtype, .. } = self.ops[b].op else {
                 unreachable!()
             };
             let (b_base_index, b_offset) = self.index_base_and_offset(index, k_loop_id);
@@ -186,14 +186,14 @@ impl Kernel {
             let &Load { src: a, index, layout: MemLayout::Scalar } = self.at(x) else {
                 return None;
             };
-            let Define { dtype: a_dtype, .. } = self.ops[a].op else {
+            let Storage { dtype: a_dtype, .. } = self.ops[a].op else {
                 unreachable!()
             };
             let (a_base_index, a_offset) = self.index_base_and_offset(index, k_loop_id);
             let &Load { src: b, index, layout: MemLayout::Scalar } = self.at(y) else {
                 return None;
             };
-            let Define { dtype: b_dtype, .. } = self.ops[b].op else {
+            let Storage { dtype: b_dtype, .. } = self.ops[b].op else {
                 unreachable!()
             };
             let (b_base_index, b_offset) = self.index_base_and_offset(index, k_loop_id);

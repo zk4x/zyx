@@ -52,7 +52,7 @@ impl Kernel {
                 | Op::TransposeTile { .. }
                 | Op::Devectorize { .. }
                 | Op::Const(_)
-                | Op::Define { .. }
+                | Op::Storage { .. }
                 | Op::Load { .. }
                 | Op::Index { .. }
                 | Op::Loop { .. }
@@ -270,7 +270,7 @@ impl Kernel {
         let mut op_id = self.head;
         while !op_id.is_null() {
             match *self.at(op_id) {
-                Op::Define { scope: MemScope::Register, .. } => {
+                Op::Storage { scope: MemScope::Register, .. } => {
                     defines.insert(op_id, loop_level);
                 }
                 Op::Store { dst, .. } => {
@@ -303,7 +303,7 @@ impl Kernel {
     /// constant values and eliminating redundant computations.
     pub(crate) fn fold_acc(&mut self, define_id: OpId) {
         //println!("Folding acc {define_id}");
-        let Op::Define { ref shape, .. } = self.ops[define_id].op else {
+        let Op::Storage { ref shape, .. } = self.ops[define_id].op else {
             unreachable!()
         };
         let mut latest_stores = vec![OpId::NULL; shape.iter().product::<Dim>() as usize];
@@ -379,7 +379,7 @@ impl Kernel {
                         slice.insert(op_id);
                     }
                 }
-                Op::Define { ro, .. } => {
+                Op::Storage { ro, .. } => {
                     if !ro {
                         defines_stack.last_mut().unwrap().insert(op_id);
                     }
@@ -445,7 +445,7 @@ impl Kernel {
             if matches!(
                 op,
                 Op::Store { .. }
-                    | Op::Define { .. }
+                    | Op::Storage { .. }
                     | Op::Wmma { .. }
                     | Op::Barrier
                     | Op::If { .. }
@@ -490,7 +490,7 @@ impl Kernel {
         let mut op_id = self.head;
         while !op_id.is_null() {
             match &mut self.ops[op_id].op {
-                Op::Barrier | Op::Define { .. } => {} // skip define and barrier ops, these can not be deduplicated
+                Op::Barrier | Op::Storage { .. } => {} // skip define and barrier ops, these can not be deduplicated
                 Op::If { .. } | Op::Loop { .. } => {
                     stack.push(Map::with_capacity_and_hasher(20, BuildHasherDefault::default()));
                     stored_stack.push(Set::with_capacity_and_hasher(10, BuildHasherDefault::default()));
@@ -557,7 +557,7 @@ impl Kernel {
         #[cfg(feature = "time")]
         let _timer = crate::Timer::new("move_constants_to_beginning");
         let mut start = self.head;
-        while let Op::Define { .. } = self.at(start) {
+        while let Op::Storage { .. } = self.at(start) {
             start = self.next_op(start);
         }
 
@@ -575,7 +575,7 @@ impl Kernel {
 
         // Find position after last Op::Const (skip past all defines and consts)
         let mut start = self.head;
-        while let Op::Define { .. } | Op::Const(_) = self.at(start) {
+        while let Op::Storage { .. } | Op::Const(_) = self.at(start) {
             start = self.next_op(start);
         }
 

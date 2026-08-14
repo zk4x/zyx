@@ -8,7 +8,7 @@ use crate::{
     backend::DeviceInfo,
     dtype::Constant,
     error::{BackendError, ErrorStatus},
-    kernel::{BOp, IDX_T, IdxScope, Kernel, MemScope, Op, OpId, UOp},
+    kernel::{BOp, IDX_T, IdxScope, Kernel, MemScope, Op, OpId, ParamKind, UOp},
     scalar::bf16,
     shape::Dim,
 };
@@ -270,7 +270,7 @@ impl Kernel {
         _ = writeln!(comp.header, ".version {0}.{1}\n.target sm_{0}{1}\n.address_size 64\n.visible .entry {name}(", cc[0], cc[1]);
         let mut op_id = self.head;
         while !op_id.is_null() {
-            if matches!(self.ops[op_id].op, Op::Define { scope: MemScope::Global, .. }) {
+            if matches!(self.ops[op_id].op, Op::Storage { scope: MemScope::Global, .. }) {
                 writeln!(comp.header, "{}.param .u64 g{op_id},", comp.indent).unwrap();
             }
             op_id = self.next_op(op_id);
@@ -287,15 +287,15 @@ impl Kernel {
         let mut op_id = self.head;
         while !op_id.is_null() {
             match self.ops[op_id].op {
-                Op::Define { dtype, scope, ref shape, .. } => {
-                    let len: u64 = shape.iter().product();
+                Op::Param { kind, .. } => match kind {
+                    ParamKind::Variable => todo!(),
+                    ParamKind::Global | ParamKind::GlobalMut => {
+                        _ = writeln!(comp.body, "{}ld.param.u64 %p{op_id}, [g{op_id}];", comp.indent)
+                    }
+                },
+                Op::Storage { dtype, scope, len, .. } => {
                     comp.scopes.insert(op_id, scope);
                     match scope {
-                        MemScope::Variable => todo!(),
-                        MemScope::Circular => unreachable!(),
-                        MemScope::Global => {
-                            _ = writeln!(comp.body, "{}ld.param.u64 %p{op_id}, [g{op_id}];", comp.indent);
-                        }
                         MemScope::Local => {
                             _ = writeln!(
                                 comp.body,
@@ -314,6 +314,9 @@ impl Kernel {
                                 dtype.ptx()
                             );
                         }
+                        MemScope::Variable |
+                        MemScope::Circular |
+                        MemScope::Global => unreachable!("ptx only supports local or register storage"),
                     }
                 }
                 Op::Index { axis, scope, .. } => {
@@ -656,7 +659,7 @@ impl Kernel {
 
         let mut op_id = self.head;
         while !op_id.is_null() {
-            if matches!(self.ops[op_id].op, Op::Define { scope: MemScope::Global, .. }) {
+            if matches!(self.ops[op_id].op, Op::Storage { scope: MemScope::Global, .. }) {
                 _ = writeln!(comp.header, "{}.reg .s64 %p{op_id};", comp.indent);
             }
             op_id = self.next_op(op_id);

@@ -6,7 +6,7 @@ use crate::{
     backend::DeviceInfo,
     dtype::Constant,
     error::{BackendError, ErrorStatus},
-    kernel::{BOp, Kernel, MemLayout, MemScope, Op, OpId, UOp},
+    kernel::{BOp, Kernel, MemLayout, MemScope, Op, OpId, ParamKind, UOp},
     scalar::{bf16, f16},
 };
 use std::{fmt::Write, hash::BuildHasherDefault};
@@ -22,15 +22,11 @@ impl Kernel {
         let mut op_id = self.head;
         while !op_id.is_null() {
             let op = self.at(op_id);
-            if let &Op::Define { dtype, scope, ro, .. } = op {
-                match scope {
-                    MemScope::Global => {
-                        _ = writeln!(global_args, "  __global {}{}* p{op_id},", if ro { "const " } else { "" }, dtype.ocl());
-                    }
-                    MemScope::Variable => {
-                        _ = writeln!(global_args, "  {}{} p{op_id},", if ro { "const " } else { "" }, dtype.ocl());
-                    }
-                    _ => {}
+            if let &Op::Param { dtype, kind } = op {
+                match kind {
+                    ParamKind::Variable => _ = writeln!(global_args, "  const {} p{op_id},", dtype.ocl()),
+                    ParamKind::Global => _ = writeln!(global_args, "  __global const {}* p{op_id},", dtype.ocl()),
+                    ParamKind::GlobalMut => _ = writeln!(global_args, "  __global {}* p{op_id},", dtype.ocl()),
                 }
             } else {
                 break;
@@ -70,29 +66,21 @@ impl Kernel {
                 Op::Const(x) => {
                     constants.insert(op_id, x);
                 }
-                Op::Define { dtype, scope, ro, ref shape } => {
-                    let len: u64 = shape.iter().product();
-                    if scope == MemScope::Register {
-                        _ = writeln!(
-                            source,
-                            "{indent}{}{} p{op_id}[{len}] __attribute__ ((aligned));",
-                            if ro { "const " } else { "" },
-                            dtype.ocl(),
-                        );
-                    } else if scope == MemScope::Local {
-                        _ = writeln!(
-                            source,
-                            "{indent}__local {}{} p{op_id}[{len}] __attribute__ ((aligned));",
-                            if ro { "const " } else { "" },
-                            dtype.ocl(),
-                        );
+                Op::Param { .. } => {}
+                Op::Storage { dtype, scope, len } => match scope {
+                    MemScope::Local => {
+                        _ = writeln!(source, "{indent}__local {} p{op_id}[{len}] __attribute__ ((aligned));", dtype.ocl())
                     }
-                }
+                    MemScope::Register => {
+                        _ = writeln!(source, "{indent}{} p{op_id}[{len}] __attribute__ ((aligned));", dtype.ocl())
+                    }
+                    _ => unreachable!("opencl only handles local or register storage"),
+                },
                 Op::Load { src, index, layout } => {
                     if rcs.contains_key(&op_id) {
                         let dtype = dtypes[&op_id];
                         let reg = new_reg(op_id, &mut reg_map, &mut registers, dtype, rcs[&op_id], loop_id);
-                        if matches!(self.ops[src].op, Op::Define { scope: MemScope::Variable, .. }) {
+                        if matches!(self.ops[src].op, Op::Storage { scope: MemScope::Variable, .. }) {
                             _ = writeln!(source, "{indent}r{reg} = p{src};");
                         } else {
                             let idx = get_var(index, &constants, &indices, &reg_map, &mut registers, loop_id)?;

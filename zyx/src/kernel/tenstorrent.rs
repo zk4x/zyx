@@ -193,7 +193,7 @@ impl Kernel {
             let mut op_id = self.head;
             while !op_id.is_null() {
                 if let Op::Load { src, index, layout: MemLayout::Scalar } = self.at(op_id)
-                    && matches!(self.at(*src), Op::Define { scope: MemScope::Global, .. })
+                    && matches!(self.at(*src), Op::Storage { scope: MemScope::Global, .. })
                 {
                     loads.push((op_id, *src, *index));
                 }
@@ -218,7 +218,7 @@ impl Kernel {
         let mut last_global = self.head;
         let mut scan = self.head;
         while !scan.is_null() {
-            if matches!(self.at(scan), Op::Define { scope: MemScope::Global, .. }) {
+            if matches!(self.at(scan), Op::Storage { scope: MemScope::Global, .. }) {
                 last_global = scan;
             }
             scan = self.next_op(scan);
@@ -232,7 +232,7 @@ impl Kernel {
             }
             let local = self.insert_after(
                 last_global,
-                Op::Define { dtype: self.dtype(src), scope: MemScope::Circular, ro: false, shape: vec![32, 32].into() },
+                Op::Storage { dtype: self.dtype(src), scope: MemScope::Circular, len: 1024 },
             );
             last_global = local;
             src_to_local.insert(src, local);
@@ -267,7 +267,7 @@ impl Kernel {
             let mut op_id = self.head;
             while !op_id.is_null() {
                 if let Op::Store { dst, src: x, index, layout: MemLayout::Scalar } = self.at(op_id)
-                    && matches!(self.at(*dst), Op::Define { scope: MemScope::Global, .. })
+                    && matches!(self.at(*dst), Op::Storage { scope: MemScope::Global, .. })
                 {
                     stores.push((op_id, *dst, *x, *index));
                 }
@@ -289,7 +289,7 @@ impl Kernel {
             }
             let local = self.insert_after(
                 last_local,
-                Op::Define { dtype: self.dtype(dst), scope: MemScope::Circular, ro: false, shape: vec![32, 32].into() },
+                Op::Storage { dtype: self.dtype(dst), scope: MemScope::Circular, len: 1024 },
             );
             last_local = local;
             dst_to_local.insert(dst, local);
@@ -361,7 +361,7 @@ impl Kernel {
         let set1 = gather_deps(self, &stores1);
         let set2 = gather_deps(self, &stores2);
 
-        let is_sticky = |k: &Kernel, id: OpId| -> bool { matches!(k.ops[id].op, Op::Define { .. } | Op::Const(_) | Op::Barrier) };
+        let is_sticky = |k: &Kernel, id: OpId| -> bool { matches!(k.ops[id].op, Op::Storage { .. } | Op::Const(_) | Op::Barrier) };
 
         let mut order_rev = Vec::new();
         let mut op_id = self.tail;
@@ -483,7 +483,7 @@ impl Kernel {
             if inside {
                 continue;
             }
-            if matches!(self.at(dep_id), Op::Define { .. } | Op::Const(_) | Op::Index { .. } | Op::Barrier | Op::Loop { .. }) {
+            if matches!(self.at(dep_id), Op::Storage { .. } | Op::Const(_) | Op::Index { .. } | Op::Barrier | Op::Loop { .. }) {
                 continue;
             }
             let mut cloned_op = self.at(dep_id).clone();
@@ -571,7 +571,7 @@ impl Kernel {
             debug_assert!(
                 !matches!(
                     self.at(op_id),
-                    Op::Load { src, .. } if matches!(self.at(*src), Op::Define { scope: MemScope::Global, .. })
+                    Op::Load { src, .. } if matches!(self.at(*src), Op::Storage { scope: MemScope::Global, .. })
                 ),
                 "global loads should have been moved into circular buffers"
             );
@@ -602,7 +602,7 @@ impl Kernel {
         let mut op_id = self.next_op(loop_id);
         while op_id != endloop_id {
             if let Op::Load { src, index, layout: MemLayout::Scalar } = self.at(op_id)
-                && matches!(self.at(*src), Op::Define { scope: MemScope::Global, .. })
+                && matches!(self.at(*src), Op::Storage { scope: MemScope::Global, .. })
             {
                 global_loads.push((op_id, *src, *index));
             }
@@ -618,7 +618,7 @@ impl Kernel {
         let mut op_id = self.next_op(endloop_id);
         while !op_id.is_null() {
             if let Op::Load { src, .. } = self.at(op_id) {
-                debug_assert!(!matches!(self.at(*src), Op::Define { scope: MemScope::Global, .. }));
+                debug_assert!(!matches!(self.at(*src), Op::Storage { scope: MemScope::Global, .. }));
             }
             op_id = self.next_op(op_id);
         }
@@ -627,7 +627,7 @@ impl Kernel {
         let mut last_global = self.head;
         let mut scan = self.head;
         while !scan.is_null() {
-            if matches!(self.at(scan), Op::Define { scope: MemScope::Global, .. }) {
+            if matches!(self.at(scan), Op::Storage { scope: MemScope::Global, .. }) {
                 last_global = scan;
             }
             scan = self.next_op(scan);
@@ -641,7 +641,7 @@ impl Kernel {
             }
             let cb = self.insert_after(
                 last_global,
-                Op::Define { dtype: self.dtype(src), scope: MemScope::Circular, ro: false, shape: vec![32, 32].into() },
+                Op::Storage { dtype: self.dtype(src), scope: MemScope::Circular, len: 1024 },
             );
             last_global = cb;
             src_to_cb.insert(src, cb);
@@ -685,7 +685,7 @@ impl Kernel {
                 }
                 if matches!(
                     self.at(dep_id),
-                    Op::Define { .. } | Op::Const(_) | Op::Index { .. } | Op::Barrier | Op::Loop { .. } | Op::EndLoop
+                    Op::Storage { .. } | Op::Const(_) | Op::Index { .. } | Op::Barrier | Op::Loop { .. } | Op::EndLoop
                 ) {
                     clone_map.entry(dep_id).or_insert(dep_id);
                     continue;
@@ -747,7 +747,7 @@ impl Kernel {
         let mut op_id = self.next_op(loop_id);
         while op_id != endloop_id {
             if let Op::Store { dst, .. } = self.at(op_id)
-                && matches!(self.at(*dst), Op::Define { scope: MemScope::Register, .. })
+                && matches!(self.at(*dst), Op::Storage { scope: MemScope::Register, .. })
             {
                 accumulator = *dst;
                 break;
@@ -757,8 +757,8 @@ impl Kernel {
         debug_assert!(!accumulator.is_null());
 
         // Convert accumulator to register tile, length 1024
-        if let Op::Define { shape, .. } = &mut self.ops[accumulator].op {
-            *shape = vec![32, 32].into();
+        if let Op::Storage { len, .. } = &mut self.ops[accumulator].op {
+            *len = 1024;
         }
 
         // Change accumulator store and load to tiled layout

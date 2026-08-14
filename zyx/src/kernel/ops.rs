@@ -7,6 +7,16 @@ use crate::slab::SlabId;
 use crate::types::{TinyString, TinyVec};
 use crate::{DType, Map};
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, SerBin)]
+pub enum ParamKind {
+    // Single scalar variable
+    Variable,
+    // Global read only buffer
+    Global,
+    // Global read-write buffer
+    GlobalMut,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, SerBin)]
 pub enum Op {
     // ops that exist in both
@@ -27,11 +37,16 @@ pub enum Op {
 
     // ops that only exist after unfolding views and reduces
     Const(Constant),
-    Define {
+    // For things that are kernel parameters
+    Param {
+        dtype: DType,
+        kind: ParamKind,
+    },
+    // Storage declared inside kernel
+    Storage {
         dtype: DType,
         scope: MemScope,
-        ro: bool,
-        shape: Box<[Dim]>,
+        len: Dim,
     },
     Store {
         dst: OpId,
@@ -250,13 +265,13 @@ impl BOp {
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, SerBin, DeBin)]
 pub enum MoveOp {
     /// Reshape to a new shape.
-    Reshape { shape: Vec<Dim> },
+    Reshape { shape: Vec<OpId> },
     /// Expand dimensions.
     Expand { shape: Vec<Dim> },
     /// Permute axes.
-    Permute { axes: Vec<UAxis>, shape: Vec<Dim> },
+    Permute { axes: Vec<UAxis> },
     /// Pad dimensions.
-    Pad { padding: Vec<(i64, i64)>, shape: Vec<Dim> },
+    Pad { padding: Vec<(i64, i64)> },
     /// Flip axes
     Flip { axes: Vec<UAxis> },
     /// Slice axis
@@ -271,8 +286,8 @@ impl MoveOp {
         match self {
             MoveOp::Reshape { shape } => Box::new(MoveOp::Reshape { shape: shape.clone() }),
             MoveOp::Expand { shape } => Box::new(MoveOp::Expand { shape: shape.clone() }),
-            MoveOp::Permute { axes, shape } => Box::new(MoveOp::Permute { axes: axes.clone(), shape: shape.clone() }),
-            MoveOp::Pad { padding, shape } => Box::new(MoveOp::Pad { padding: padding.clone(), shape: shape.clone() }),
+            MoveOp::Permute { axes } => Box::new(MoveOp::Permute { axes: axes.clone() }),
+            MoveOp::Pad { padding } => Box::new(MoveOp::Pad { padding: padding.clone() }),
             MoveOp::Flip { axes } => Box::new(MoveOp::Flip { axes: axes.clone() }),
             MoveOp::Narrow { axis, start, len } => {
                 let start = op_map.get(start).copied().unwrap_or(fallback);
@@ -404,7 +419,7 @@ impl Op {
     #[allow(clippy::match_same_arms)]
     pub(crate) fn parameters(&self) -> impl DoubleEndedIterator<Item = OpId> {
         match self {
-            Op::Const { .. } | Op::Define { .. } | Op::EndLoop | Op::Barrier | Op::EndIf => {
+            Op::Param { .. } | Op::Const { .. } | Op::Storage { .. } | Op::EndLoop | Op::Barrier | Op::EndIf => {
                 vec![]
             }
             &Op::Index { len, .. } => vec![len],
@@ -438,7 +453,7 @@ impl Op {
     #[allow(clippy::match_same_arms)]
     pub(crate) fn parameters_mut(&mut self) -> impl DoubleEndedIterator<Item = &mut OpId> {
         match self {
-            Op::Const { .. } | Op::Define { .. } | Op::EndLoop | Op::EndIf | Op::Barrier => vec![],
+            Op::Param { .. } | Op::Const { .. } | Op::Storage { .. } | Op::EndLoop | Op::EndIf | Op::Barrier => vec![],
             Op::Index { len, .. } => vec![len],
             Op::Loop { len, .. } => vec![len],
             Op::Move { x, mop } => match mop.as_mut() {

@@ -103,7 +103,10 @@ impl Kernel {
                     Op::Const(x) => {
                         dtypes.insert(op_id, (x.dtype(), MemLayout::Scalar));
                     }
-                    Op::Define { dtype, .. } => {
+                    Op::Param { dtype, .. } => {
+                        dtypes.insert(op_id, (dtype, MemLayout::Scalar));
+                    }
+                    Op::Storage { dtype, .. } => {
                         dtypes.insert(op_id, (dtype, MemLayout::Scalar));
                     }
                     Op::Wmma { c, a, b, .. } => {
@@ -202,7 +205,7 @@ impl Kernel {
             // Register allocation: allocate if this op produces a value
             let produces = match self.ops[op_id].op {
                 Op::Asm { .. } => todo!(),
-                Op::Define { scope: MemScope::Register, .. } => true,
+                Op::Storage { scope: MemScope::Register, .. } => true,
                 Op::Load { .. }
                 | Op::Cast { .. }
                 | Op::Unary { .. }
@@ -215,7 +218,8 @@ impl Kernel {
                 | Op::TransposeTile { .. }
                 | Op::Loop { .. }
                 | Op::Devectorize { .. }
-                | Op::Define { .. }
+                | Op::Param { .. }
+                | Op::Storage { .. }
                 | Op::Const(_)
                 | Op::Index { .. } => true,
                 Op::Store { .. } | Op::EndLoop | Op::Barrier | Op::If { .. } | Op::EndIf => false,
@@ -271,7 +275,8 @@ impl Kernel {
                     }
                 }
                 Op::Const(_)
-                | Op::Define { .. }
+                | Op::Param { .. }
+                | Op::Storage { .. }
                 | Op::EndIf
                 | Op::Devectorize { .. }
                 | Op::Vectorize { .. }
@@ -286,7 +291,7 @@ impl Kernel {
                     if !indexing_ops.contains(&op_id) {
                         wi_compute_ops += loop_mult;
                     }
-                    let Op::Define { scope, .. } = self.ops[src].op else {
+                    let Op::Storage { scope, .. } = self.ops[src].op else {
                         unreachable!()
                     };
                     let total_elements = loop_mult * layout.n_elements();
@@ -377,7 +382,7 @@ impl Kernel {
                     if !indexing_ops.contains(&op_id) {
                         wi_compute_ops += loop_mult * 3;
                     }
-                    let Op::Define { scope, .. } = self.ops[dst].op else {
+                    let Op::Storage { scope, .. } = self.ops[dst].op else {
                         unreachable!()
                     };
                     match scope {

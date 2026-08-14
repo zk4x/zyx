@@ -126,7 +126,7 @@ impl Kernel {
                     let x = id_map[&x];
                     println!("{indent}r{out_id}{grey}: {dtype}{reset} = {red}transpose_tile{reset} r{x}");
                 }
-                Op::Define { dtype, scope, ro, ref shape } => {
+                Op::Storage { dtype, scope, ro, ref shape } => {
                     dtypes.insert(op_id, dtype);
                     let ro = if ro { "" } else { "mut " };
                     println!(

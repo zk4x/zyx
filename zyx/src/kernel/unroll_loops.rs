@@ -158,7 +158,7 @@ impl Kernel {
                     }
                 }
                 Op::Store { dst, .. } => {
-                    let Op::Define { scope, .. } = self.ops[dst].op else {
+                    let Op::Storage { scope, .. } = self.ops[dst].op else {
                         unreachable!()
                     };
                     if scope != MemScope::Register {
@@ -166,7 +166,7 @@ impl Kernel {
                     }
                 }
                 Op::Load { src, .. } => {
-                    let Op::Define { scope, .. } = self.ops[src].op else {
+                    let Op::Storage { scope, .. } = self.ops[src].op else {
                         unreachable!()
                     };
                     if scope != MemScope::Register {
@@ -292,7 +292,7 @@ impl Kernel {
             }
             match self.ops[op_id].op {
                 Op::Loop { .. } => return, // nested reduce or no reduce
-                Op::Define { scope: MemScope::Register, .. } => {
+                Op::Storage { scope: MemScope::Register, .. } => {
                     acc_id = op_id;
                     break;
                 }

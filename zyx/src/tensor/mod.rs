@@ -1253,9 +1253,10 @@ impl Tensor {
     ///
     /// # Errors
     /// Returns error if self cannot be reshaped to shape.
-    pub fn reshape(&self, shape: impl IntoShape) -> Result<Tensor, ZyxError> {
-        let mut shape: Vec<Dim> = shape.into_shape().collect();
-        let numel = self.numel();
+    pub fn reshape<D: Into<Tensor>>(&self, shape: impl IntoIterator<Item = D>) -> Result<Tensor, ZyxError> {
+        let shape: Vec<TensorId> = shape.into_iter().map(|x| x.into().id).collect();
+
+        /*let numel = self.numel();
 
         // count how many dimensions to infer
         let infer_count = shape.iter().filter(|&&d| d == 0).count();
@@ -1287,7 +1288,7 @@ impl Tensor {
                 )
                 .into(),
             ));
-        }
+        }*/
 
         Ok(Tensor { id: RT.lock().reshape(self.id, shape) })
     }
@@ -1896,7 +1897,7 @@ impl Tensor {
         // Reshape to [num_classes, 1, 1, ..., 1] with `offset` ones
         let mut new_shape: Vec<Dim> = vec![num_classes];
         new_shape.extend(vec![1; offset as usize]);
-        let arange = arange.reshape(&new_shape)?;
+        let arange = arange.reshape(new_shape)?;
 
         // Broadcast and compare
         self.equal(&arange)
@@ -2214,7 +2215,7 @@ impl Tensor {
         let range = Tensor::arange(0, shape[uaxis] as i32, 1)?;
         let mut reshape_shape = vec![1; shape.len()];
         reshape_shape[uaxis] = shape[uaxis];
-        let reshaped_range = range.reshape(&reshape_shape)?;
+        let reshaped_range = range.reshape(reshape_shape)?;
 
         // mask * range -> positions of max values
         let idx = mask * reshaped_range;

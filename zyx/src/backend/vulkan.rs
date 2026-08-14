@@ -1368,7 +1368,7 @@ pub(super) fn initialize_device(
                                 let mut n = 0usize;
                                 let mut op = kernel.head;
                                 while !op.is_null() {
-                                    if let crate::kernel::Op::Define { ro: _, scope, .. } = kernel.at(op)
+                                    if let crate::kernel::Op::Storage { scope, .. } = kernel.at(op)
                                         && *scope == crate::kernel::MemScope::Global
                                     {
                                         n += 1;
@@ -1384,7 +1384,7 @@ pub(super) fn initialize_device(
                                 let mut n_vars = 0u32;
                                 let mut op = kernel.head;
                                 while !op.is_null() {
-                                    if let crate::kernel::Op::Define { dtype, scope: crate::kernel::MemScope::Variable, .. } =
+                                    if let crate::kernel::Op::Storage { dtype, scope: crate::kernel::MemScope::Variable, .. } =
                                         kernel.at(op)
                                     {
                                         let storage_bits = if *dtype == crate::DType::Bool { 32 } else { dtype.bit_size() };

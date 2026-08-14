@@ -3,7 +3,7 @@ use std::collections::BTreeSet;
 use crate::{
     Map, Set,
     graph::{ClassId, Graph, JitKernelData, JitKernelId, Node},
-    kernel::{DeviceId, IDX_T, Kernel, MemLayout, MemScope, MoveOp, Op, OpId},
+    kernel::{DeviceId, IDX_T, Kernel, MemLayout, MemScope, MoveOp, Op, OpId, ParamKind},
     runtime::ShapeId,
     shape::{Dim, UAxis},
     slab::{Slab, SlabId},
@@ -132,12 +132,12 @@ impl Graph {
             );*/
             if inputs.contains(&cid) {
                 // Boundary input: load the class from storage, same as a leaf.
-                let (kid, op_id) = self.new_load_kernel(cid, shapes, *rcs.get(&cid).unwrap());
+                let (kid, op_id) = self.new_load_kernel(cid, rcs[&cid]);
                 visited.insert(cid, (kid, op_id));
             } else {
                 match self.nodes[nid].node {
                     Node::Leaf { .. } => {
-                        let (kid, op_id) = self.new_load_kernel(cid, shapes, *rcs.get(&cid).unwrap());
+                        let (kid, op_id) = self.new_load_kernel(cid, rcs[&cid]);
                         visited.insert(cid, (kid, op_id));
                     }
                     Node::Const(value) => {
@@ -176,11 +176,11 @@ impl Graph {
                             let kidy_stores = self.jit_kernels[kidy].kernel.contains_stores();
                             match (kid_stores, kidy_stores) {
                                 (true, true) => {
-                                    (kid, op_id) = self.add_store(x, kid, op_id, &mut visited, &rcs, shapes);
-                                    (kidy, _) = self.add_store(y, kidy, op_idy, &mut visited, &rcs, shapes);
+                                    (kid, op_id) = self.add_store(x, kid, op_id, &mut visited, &rcs);
+                                    (kidy, _) = self.add_store(y, kidy, op_idy, &mut visited, &rcs);
                                 }
-                                (true, false) => (kid, op_id) = self.add_store(x, kid, op_id, &mut visited, &rcs, shapes),
-                                (false, true) => (kidy, _) = self.add_store(y, kidy, op_idy, &mut visited, &rcs, shapes),
+                                (true, false) => (kid, op_id) = self.add_store(x, kid, op_id, &mut visited, &rcs),
+                                (false, true) => (kidy, _) = self.add_store(y, kidy, op_idy, &mut visited, &rcs),
                                 (false, false) => {}
                             }
 
@@ -247,7 +247,7 @@ impl Graph {
                         // breaks across chained Afters).
                         self.jit_kernels[dep_kid].stores.retain(|&z| z != x);
                         self.jit_kernels[dep_kid].stores.push(cid);
-                        let (new_kid, new_op) = self.new_load_kernel(cid, shapes, rcs[&cid]);
+                        let (new_kid, new_op) = self.new_load_kernel(cid, rcs[&cid]);
                         visited.insert(cid, (new_kid, new_op));
                     }
                     Node::Assign { dst, src } => {
@@ -294,7 +294,7 @@ impl Graph {
                         for _ in 0..100 {
                             match dst_kernel.ops[dst_define].op {
                                 Op::Move { x, .. } => dst_define = x,
-                                Op::Define { .. } => break,
+                                Op::Storage { .. } => break,
                                 _ => {}
                             }
                         }
@@ -311,16 +311,11 @@ impl Graph {
                                     let id = self.jit_kernels[kid].kernel.push_back(Op::Const(value));
                                     op_map.insert(op_id, id);
                                 }
-                                Op::Define { dtype, scope, mut ro, ref shape } => {
+                                Op::Param { dtype, ref mut kind } => {
                                     if op_id == dst_define {
-                                        ro = false;
+                                        *kind = ParamKind::GlobalMut;
                                     }
-                                    let id = self.jit_kernels[kid].kernel.push_back(Op::Define {
-                                        dtype,
-                                        scope,
-                                        ro,
-                                        shape: shape.clone(),
-                                    });
+                                    let id = self.jit_kernels[kid].kernel.push_back(Op::Param { dtype, kind: *kind });
                                     op_map.insert(op_id, id);
                                 }
                                 Op::Move { x, ref mop } => {
@@ -390,8 +385,8 @@ impl Graph {
                             shapes,
                         );
                     }
-                    Node::Reshape { x, shape } => {
-                        let shape = shapes[shape].clone();
+                    Node::Reshape { x, ref shape } => {
+                        let shape = shape.clone();
                         self.add_move(cid, x, MoveOp::Reshape { shape }, false, &mut visited, &mut rcs, shapes);
                     }
                     Node::PadZeros { x, ref padding } => {
@@ -420,7 +415,7 @@ impl Graph {
                         let (mut kid, mut op_id) = visited[&x];
                         (kid, op_id) = self.duplicate_or_store_class(x, kid, op_id, &mut visited, &mut rcs, shapes, false);
                         self.consume(x, kid, &mut visited, &mut rcs);
-                        let start_op = self.jit_kernels[kid].kernel.define(IDX_T, MemScope::Variable, true, &[1]);
+                        let start_op = self.jit_kernels[kid].kernel.param(IDX_T, MemScope::Variable, true, &[1]);
                         self.jit_kernels[kid].loads.push(start_cid);
                         let result_op = self.jit_kernels[kid]
                             .kernel
@@ -537,7 +532,7 @@ impl Graph {
                 }
             }
             if rcs.values().any(|&r| r != 0) {
-                self.debug(shapes);
+                self.debug();
             }
             debug_assert!(rcs.values().all(|&r| r == 0), "all rcs must be zero");
             debug_assert!(visited.is_empty(), "visited must be empty");
@@ -569,10 +564,9 @@ impl Graph {
         panic!();*/
     }
 
-    fn new_load_kernel(&mut self, cid: ClassId, shapes: &Slab<ShapeId, Vec<Dim>>, rc: u32) -> (JitKernelId, OpId) {
+    fn new_load_kernel(&mut self, cid: ClassId, rc: u32) -> (JitKernelId, OpId) {
         let mut kernel = Kernel::new(DeviceId::NULL);
-        let shape = &shapes[self.classes[cid].shape];
-        let op_id = kernel.define(self.classes[cid].dtype, MemScope::Global, true, shape);
+        let op_id = kernel.param(self.classes[cid].dtype, ParamKind::Global);
         let kid = self.jit_kernels.push(JitKernelData {
             kernel,
             outputs: vec![cid; rc as usize],
@@ -590,15 +584,12 @@ impl Graph {
         op_id: OpId,
         visited: &mut Map<ClassId, (JitKernelId, OpId)>,
         rcs: &Map<ClassId, u32>,
-        shapes: &Slab<ShapeId, Vec<Dim>>,
     ) -> (JitKernelId, OpId) {
         //println!("add store cid={cid:?} kid={kid:?} op_id={op_id:?} rc={}", rcs.get(&cid).unwrap());
         //println!("outputs={:?}", self.ekernels[kid].outputs);
 
         if !self.jit_kernels[kid].loads.contains(&cid) {
-            let dtype = self.classes[cid].dtype;
-            let shape = &shapes[self.classes[cid].shape];
-            let dst = self.jit_kernels[kid].kernel.define(dtype, MemScope::Global, false, shape);
+            let dst = self.jit_kernels[kid].kernel.param(dtype, ParamKind::Global);
             self.jit_kernels[kid].kernel.store(dst, op_id, OpId::NULL, MemLayout::Scalar);
             self.jit_kernels[kid].stores.push(cid);
             visited.remove(&cid);
@@ -612,7 +603,7 @@ impl Graph {
         if let Some(rc) = rcs.get(&cid).copied()
             && rc > 0
         {
-            let (new_kid, new_op) = self.new_load_kernel(cid, shapes, rc);
+            let (new_kid, new_op) = self.new_load_kernel(cid, rc);
             visited.insert(cid, (new_kid, new_op));
             (new_kid, new_op)
         } else {
@@ -680,7 +671,7 @@ impl Graph {
         //println!("n_outputs={}", self.ekernels[kid].outputs.len());
         if self.jit_kernels[kid].outputs.len() > 1 || force_store {
             if force_store || self.jit_kernels[kid].kernel.is_preceded_by_reduce(op_id) {
-                (kid, op_id) = self.add_store(child, kid, op_id, visited, rcs, shapes);
+                (kid, op_id) = self.add_store(child, kid, op_id, visited, rcs);
 
                 // After storing, the new kernel can have more than one output. If it does, we have to split into another kernel
                 debug_assert!(self.jit_kernels[kid].outputs.iter().all(|&x| x == child));
@@ -688,7 +679,7 @@ impl Graph {
                     // Remove from the original kernel
                     remove_first_output(&mut self.jit_kernels, kid, child);
                     // Create another kernel with just one output
-                    (kid, op_id) = self.new_load_kernel(child, shapes, 1);
+                    (kid, op_id) = self.new_load_kernel(child, 1);
                 }
             } else {
                 remove_first_output(&mut self.jit_kernels, kid, child);
