@@ -149,7 +149,7 @@ impl Tensor {
     where
         Self: Sized,
     {
-        RT.lock().initialize_devices()?; // So that we load debug mask
+        RT.lock().initialize_backends(); // So that we load debug mask
         let e = path.as_ref().extension().and_then(OsStr::to_str).unwrap();
         match e {
             "safetensors" => Self::load_safetensors(path),

@@ -375,6 +375,12 @@ impl Tensor {
         RT.lock().implicit_casts = implicit_casts;
     }
 
+    /// Create a tensor with single scalar not baked into kernel (dynamic)
+    pub fn variable(x: impl Scalar) -> Tensor {
+        let id = RT.lock().new_variable_tensor(x);
+        Tensor { id }
+    }
+
     /// Item
     #[allow(clippy::missing_panics_doc)]
     pub fn item<T: Scalar>(&self) -> T {
@@ -2192,28 +2198,6 @@ impl Tensor {
         self.argmax_impl(axis, false)
     }
 
-    /* // Argmax
-    fn argmax_impl(&self, axis: Axis, keepdim: bool) -> Result<Tensor, ZyxError> {
-        // Find the maximum values along the specified axis
-        let max_vals = self.max_keepdim([axis]).unwrap();
-
-        // Create a mask where each element is `true` if it equals the max value
-        let mask = self.equal(max_vals)?;
-        let shape = self.shape();
-        let uaxis = into_axis(axis, shape.len())?;
-        println!("shape={shape:?}, uaxis={uaxis}");
-        let range = Tensor::arange(shape[uaxis] as i32, 0, -1)?;
-
-        let shape_value = shape[uaxis];
-        let repeat_count = shape.len() - uaxis;
-        let mut shape = vec![shape_value];
-        shape.extend(vec![1; repeat_count]);
-
-        let reshaped_range = range.reshape(&shape)?;
-        let idx = mask * reshaped_range;
-        let res = Tensor::from(shape[uaxis] as i64) - if keepdim { idx.max_keepdim([axis])? } else { idx.max([axis])? };
-        Ok(res.cast(DType::I32))
-    }*/
     /// Argmax
     fn argmax_impl(&self, axis: Axis, keepdim: bool) -> Result<Tensor, ZyxError> {
         // max values along the axis
@@ -2836,11 +2820,6 @@ impl Tensor {
 
         Ok(r)
     }
-
-    /*#[must_use]
-    pub fn conv(&self) -> Tensor {
-        todo!()
-    }*/
 
     /// Create new tensor from file on disk.
     pub(crate) fn from_path(shape: Vec<Dim>, dtype: DType, path: impl AsRef<Path>, offset: u64) -> Result<Tensor, ZyxError> {

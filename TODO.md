@@ -141,6 +141,7 @@
 
 - [ ] dtype
   - [ ] quantized dtypes
+  - [ ] make binary if one side is scalar do autopromotion to the dtype of the dtype of the non-scalar tensor
   - [x] optional implicit dtype casts
 - [x] index select, gather, remove last loop
 - [ ] better spreading of kernel variants in autotune across threads (instead of batched, where one thread can have complex kernel, blocking other threads with simpler kernels)

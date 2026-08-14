@@ -130,7 +130,7 @@ impl Kernel {
         // Get shapes and dtypes for inputs and outputs
 
         let mut rt = crate::RT.lock();
-        rt.initialize_devices()?;
+        rt.initialize_backends();
         let device_id = if self.device_id == DeviceId::AUTO {
             rt.devices.ids().next().expect("no devices available")
         } else {

@@ -224,7 +224,7 @@ impl Runtime {
 
     /// Returns operation capabilities for a dtype across all devices.
     pub fn supports_dtype(&mut self, dtype: DType) -> DTypeCapability {
-        self.initialize_devices().expect("initialize_devices");
+        self.initialize_backends();
         let mut caps = DTypeCapability::none();
         for (_id, dev) in self.devices.iter() {
             caps = caps.include(dev.info().supports_dtype(dtype));
@@ -652,28 +652,33 @@ impl Runtime {
         expanded
     }
 
+    pub fn new_variable_tensor<T: Scalar>(&mut self, x: T) -> TensorId {
+        let dtype = T::dtype();
+        self.initialize_backends();
+        let tid = self.new_eager_tensor(vec![1], dtype, MemScope::Variable);
+        self.retain_load(tid);
+
+        let MemoryPool::Host(ref mut pool) = self.pools[PoolId::HOST] else {
+            unreachable!("Host must exist.")
+        };
+        let buffer_id = BufferId { pool: PoolId::HOST, buffer: pool.store_variable(Constant::new(x)) };
+        self.buffer_map.insert(tid, buffer_id);
+
+        return tid;
+    }
+
     // Creates new tensor in host memory
     pub fn new_host_tensor<T: Scalar>(&mut self, shape: Vec<Dim>, data: Box<[T]>) -> Result<TensorId, ZyxError> {
         #[cfg(feature = "debug_tensor_op")]
         println!("runtime::new_host_tensor(shape={shape:?})");
 
-        let dtype = T::dtype();
-        self.initialize_devices()?;
-
-        if data.len() == 1 {
-            let tid = self.new_eager_tensor(shape, dtype, MemScope::Variable);
-            self.retain_load(tid);
-
-            let MemoryPool::Host(ref mut pool) = self.pools[PoolId::HOST] else {
-                unreachable!("Host must exist.")
-            };
-            let buffer_id = BufferId { pool: PoolId::HOST, buffer: pool.store_variable(Constant::new(data[0])) };
-            self.buffer_map.insert(tid, buffer_id);
-
-            #[cfg(feature = "debug_tensor_op")]
-            println!("  -> tid={tid}, scalar dtype={}", self.dtype(tid));
+        if data.len() == 1 && shape.len() == 1 {
+            let tid = self.new_constant_tensor(Constant::new(data[0]));
             return Ok(tid);
         }
+
+        let dtype = T::dtype();
+        self.initialize_backends();
 
         debug_assert_eq!(shape.iter().product::<Dim>(), data.len() as Dim);
         let bytes = (data.len() * dtype.bit_size() as usize).div_ceil(8);
@@ -683,14 +688,21 @@ impl Runtime {
         // element stay within bounds (eager tensors can become store
         // targets, e.g. in-place assign).
         let alloc_bytes = bytes + dtype.bit_size() as usize / 8;
-        let mut buf = vec![0u8; alloc_bytes].into_boxed_slice();
-        let src = unsafe { std::slice::from_raw_parts(data.as_ptr().cast::<u8>(), bytes) };
-        buf[..bytes].copy_from_slice(src);
-
         // Store to Host memory
         let MemoryPool::Host(ref mut pool) = self.pools[PoolId::HOST] else {
             unreachable!("Host must exist.")
         };
+        let free_bytes = pool.free_bytes();
+        if alloc_bytes as Dim > free_bytes {
+            return Err(ZyxError::AllocationError(
+                format!("Attempted to allocate {alloc_bytes} B on host, but it only has {free_bytes} B free").into(),
+            ));
+        }
+
+        let mut buf = vec![0u8; alloc_bytes].into_boxed_slice();
+        let src = unsafe { std::slice::from_raw_parts(data.as_ptr().cast::<u8>(), bytes) };
+        buf[..bytes].copy_from_slice(src);
+
         let buffer_id = BufferId { pool: PoolId::HOST, buffer: pool.insert(buf) };
 
         let tid = self.new_eager_tensor(shape, dtype, MemScope::Global);
@@ -711,7 +723,7 @@ impl Runtime {
         path: &Path,
         offset_bytes: u64,
     ) -> Result<TensorId, ZyxError> {
-        self.initialize_devices()?;
+        self.initialize_backends();
         let bytes: Dim = (shape.iter().product::<Dim>() * dtype.bit_size() as Dim).div_ceil(8);
 
         let pool = self.pools[PoolId::DISK]
@@ -1411,7 +1423,34 @@ impl Runtime {
 
         // Fast path: already realized
         let Some(mut buffer_id) = self.buffer_map.get(&x).copied() else {
-            return self.load_slow_path(x, data);
+            let this = &mut *self;
+            this.initialize_backends();
+            let kid = if this.is_graph(x) {
+                return Err(ZyxError::graph_tensor_not_realized(x));
+            } else {
+                this.eager_ids(x).0
+            };
+            let seen: Set<TensorId> = this.kernels[kid].outputs.iter().copied().collect();
+            for tid in seen {
+                this.add_store(tid)?;
+            }
+            let bytes = (data.len() * T::bit_size() as usize).div_ceil(8);
+            let byte_slice = unsafe { std::slice::from_raw_parts_mut(data.as_mut_ptr().cast(), bytes) };
+            let buffer_id = this.buffer_map[&x];
+            for buffers in this.events.keys() {
+                if buffers.contains(&buffer_id) {
+                    let buffers = buffers.clone();
+                    let event = this.events.remove(&buffers).unwrap();
+                    this.pools[buffer_id.pool].pool_to_host(buffer_id.buffer, byte_slice, vec![event])?;
+                    #[cfg(feature = "debug_tensor_op")]
+                    println!("  -> x={x}, {:?}", self.tensors[x]);
+                    return Ok(());
+                }
+            }
+            this.pools[buffer_id.pool].pool_to_host(buffer_id.buffer, byte_slice, Vec::new())?;
+            #[cfg(feature = "debug_tensor_op")]
+            println!("  -> x={x}, {:?}", self.tensors[x]);
+            return Ok(());
         };
 
         // A store may still be pending on this tensor (assign wrote into
@@ -1430,43 +1469,6 @@ impl Runtime {
         }
         let bytes = (data.len() * T::bit_size() as usize).div_ceil(8);
         let byte_slice = unsafe { std::slice::from_raw_parts_mut(data.as_mut_ptr().cast(), bytes) };
-        for buffers in self.events.keys() {
-            if buffers.contains(&buffer_id) {
-                let buffers = buffers.clone();
-                let event = self.events.remove(&buffers).unwrap();
-                self.pools[buffer_id.pool].pool_to_host(buffer_id.buffer, byte_slice, vec![event])?;
-                #[cfg(feature = "debug_tensor_op")]
-                println!("  -> x={x}, {:?}", self.tensors[x]);
-                return Ok(());
-            }
-        }
-        self.pools[buffer_id.pool].pool_to_host(buffer_id.buffer, byte_slice, Vec::new())?;
-        #[cfg(feature = "debug_tensor_op")]
-        println!("  -> x={x}, {:?}", self.tensors[x]);
-        Ok(())
-    }
-
-    fn load_slow_path<T: Scalar>(&mut self, x: TensorId, data: &mut [T]) -> Result<(), ZyxError> {
-        // Slow path: add store for each output, last one triggers materialize
-        self.initialize_devices()?;
-
-        let kid = if self.is_graph(x) {
-            return Err(ZyxError::graph_tensor_not_realized(x));
-        } else {
-            self.eager_ids(x).0
-        };
-
-        // Deduplicate: add_store removes ALL occurrences at once and creates a load kernel,
-        // so we must process each unique tid only once
-        let seen: Set<TensorId> = self.kernels[kid].outputs.iter().copied().collect();
-        for tid in seen {
-            self.add_store(tid)?;
-        }
-
-        // Copy result to host
-        let bytes = (data.len() * T::bit_size() as usize).div_ceil(8);
-        let byte_slice = unsafe { std::slice::from_raw_parts_mut(data.as_mut_ptr().cast(), bytes) };
-        let buffer_id = self.buffer_map[&x];
         for buffers in self.events.keys() {
             if buffers.contains(&buffer_id) {
                 let buffers = buffers.clone();
@@ -1696,14 +1698,12 @@ impl Runtime {
         Ok(())
     }
 
-    // Initializes all available devices, creating a device for each compute
-    // device and a memory pool for each physical memory.
-    // Does nothing if devices were already initialized.
-    // Returns error if all devices failed to initialize
-    // DeviceParameters allows to disable some devices if requested
-    pub fn initialize_devices(&mut self) -> Result<(), ZyxError> {
-        if !self.devices.is_empty() {
-            return Ok(());
+    /// Initializes all available devices, creating a device for each compute
+    /// device and a memory pool for each physical memory.
+    /// Does nothing if devices were already initialized.
+    pub fn initialize_backends(&mut self) {
+        if !self.pools.is_empty() {
+            return;
         }
 
         // Set env vars
@@ -1768,11 +1768,10 @@ impl Runtime {
             }
         }*/
 
-        crate::backend::initialize_backends(&config, &mut self.pools, &mut self.devices, self.debug.dev())?;
+        crate::backend::initialize_backends(&config, &mut self.pools, &mut self.devices, self.debug.dev());
 
         self.autotune_config = config.autotune;
         //println!("INIT runtime");
-        Ok(())
     }
 
     /// This function deinitializes the whole runtime, deallocates all allocated memory and deallocates all caches
@@ -1804,7 +1803,7 @@ impl Runtime {
     /// Returns the maximum free bytes available across all memory pools.
     pub fn free_memory(&mut self) -> Dim {
         if self.pools.is_empty() {
-            self.initialize_devices().expect("initialize_devices");
+            self.initialize_backends();
         }
         self.pools.iter().map(|(_, p)| p.free_bytes()).max().unwrap_or(0)
     }
@@ -2107,7 +2106,7 @@ impl Runtime {
         );
 
         // Pick device and pool
-        self.initialize_devices()?;
+        self.initialize_backends();
 
         // If stores already have buffers (e.g. assign writes in-place), a
         // kernel can only touch memory of one pool, so those buffers dictate

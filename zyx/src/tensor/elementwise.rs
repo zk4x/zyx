@@ -32,8 +32,8 @@ impl Tensor {
     #[allow(clippy::missing_panics_doc)]
     pub fn sign(&self) -> Tensor {
         let zero = Tensor::zeros_like(self.clone());
-        let neg_one: Tensor = (-1i32).into();
-        let pos_one: Tensor = (1i32).into();
+        let neg_one = Tensor::from(-1i32);
+        let pos_one = Tensor::from(1i32);
         let is_neg = self.clone().cmplt(zero.clone()).unwrap();
         let result = is_neg.where_(&neg_one, &pos_one).unwrap();
         self.nonzero().where_(&result, &zero).unwrap()
@@ -44,17 +44,10 @@ impl Tensor {
     #[allow(clippy::missing_panics_doc)]
     pub fn erf(&self) -> Tensor {
         let x = self.float_cast().unwrap();
-        let one: Tensor = 1.0f32.into();
-        let t = one.clone() / (one.clone() + 0.327_591_1f32 * x.abs());
-        let coeffs = [
-            1.061_405_4f32,
-            -1.453_152_1f32,
-            1.421_413_8f32,
-            -0.284_496_74f32,
-            0.254_829_6f32,
-        ];
+        let t: Tensor = 1 / (1 + 0.327_591_1f32 * x.abs());
+        let coeffs = [1.061_405_4f32, -1.453_152_1, 1.421_413_8, -0.284_496_74, 0.254_829_6];
         let poly = Self::poly_n(t.clone(), coeffs);
-        x.sign() * (one - t * poly * (-x.clone() * x).exp())
+        x.sign() * (1 - t * poly * (-x.clone() * x).exp())
     }
 
     /// Inverse error function (erfinv) via the Winitzki approximation.
@@ -71,9 +64,9 @@ impl Tensor {
     #[allow(clippy::missing_panics_doc)]
     pub fn erfinv(&self) -> Tensor {
         let x = self.float_cast().unwrap();
-        let a: Tensor = 0.147f32.into();
-        let four_over_pi: Tensor = (4.0f32 / core::f32::consts::PI).into();
-        let one: Tensor = 1.0f32.into();
+        let a = Tensor::from(0.147f32);
+        let four_over_pi = Tensor::from(4.0f32 / core::f32::consts::PI);
+        let one = Tensor::from(1.0f32);
         let xsq = x.clone().square();
         let one_minus_xsq = one - xsq;
         let l = one_minus_xsq.ln();
@@ -296,8 +289,7 @@ impl Tensor {
     pub fn relu(&self) -> Tensor {
         //return Tensor { id: RT.lock().unary(self.id, UOp::ReLU) };
         //self.cmpgt(0).unwrap().where_(self, 0).unwrap() // for whatever reason this is the fastest
-        let dtype = self.dtype();
-        self.cmpgt(Tensor::from(0f32).cast(dtype)).unwrap() * self
+        self.cmpgt(0f32).unwrap() * self
     }
 
     /// Computes the reciprocal square root of each element in the input tensor.
@@ -326,7 +318,7 @@ impl Tensor {
     #[must_use]
     pub fn selu(&self) -> Tensor {
         let dtype = self.dtype();
-        (1.050_701_f32 * (self.relu() - (1.673_263_2_f32 * (Tensor::ones(1, dtype) - self.exp())).relu())).cast(dtype)
+        1.050_701_f32 * (self.relu() - (1.673_263_2_f32 * (Tensor::ones(1, dtype) - self.exp())).relu())
     }
 
     /// Rounds each element of the input tensor to the nearest integer.
@@ -406,10 +398,8 @@ impl Tensor {
 
         // For negative numbers, add 1 to make fractional part positive
         // For positive numbers, keep as is
-        #[allow(clippy::redundant_clone)]
-        let is_negative = fractional.clone().cmplt(0.0f32).unwrap();
-        let fractional_positive = is_negative.clone() * (fractional.clone() + 1.0f32) + is_negative.not() * fractional;
-
+        let is_negative = fractional.cmplt(0).unwrap();
+        let fractional_positive = is_negative.clone() * (fractional.clone() + 1) + is_negative.not() * fractional;
         fractional_positive.cast(original_dtype)
     }
 
@@ -445,7 +435,7 @@ impl Tensor {
 
         // Since we don't have a direct ceil operation, we implement it using:
         // ceil(x) = -floor(-x)
-        let ceiled = (-x).floor() * -1.0f32;
+        let ceiled = (-x).floor() * -1;
 
         ceiled.cast(original_dtype)
     }
@@ -471,12 +461,7 @@ impl Tensor {
     /// Panics if applied on non-float dtype while implicit casting is disabled.
     #[must_use]
     pub fn hard_sigmoid(&self) -> Tensor {
-        let dtype = self.dtype();
-        let c1 = Tensor::from(-3).cast(dtype);
-        let c2 = Tensor::from(1).cast(dtype);
-        let c3 = Tensor::from(6f32).cast(dtype);
-        let c4 = Tensor::from(0.5f32).cast(dtype);
-        (self.cmpgt(c1).unwrap() * (self / c3 + c4)).minimum(c2).unwrap()
+        (self.cmpgt(-3).unwrap() * (self / 6 + 0.5)).minimum(1).unwrap()
     }
 
     /// Applies the sine function to each element in the input tensor.
@@ -596,8 +581,7 @@ impl Tensor {
     #[must_use]
     pub fn tanh(&self) -> Tensor {
         let exp2x = (self + self).exp();
-        let one = Tensor::from(1).cast(self.dtype());
-        (exp2x.clone() - one.clone()) / (exp2x + one)
+        (exp2x.clone() - 1) / (exp2x + 1)
     }
 
     /// Converts angles from degrees to radians.
@@ -605,7 +589,7 @@ impl Tensor {
     /// Panics if applied on non-float dtype while implicit casting is disabled.
     #[must_use]
     pub fn deg2rad(&self) -> Tensor {
-        (self * (core::f32::consts::PI / 180.0)).cast(self.dtype())
+        self * (core::f32::consts::PI / 180.0)
     }
 
     /// Returns a boolean tensor where elements are close within a tolerance.
@@ -647,7 +631,7 @@ impl Tensor {
     /// Panics if applied on non-float dtype while implicit casting is disabled.
     #[must_use]
     pub fn log10(&self) -> Tensor {
-        (self.log(Tensor::from(10f32))).cast(self.dtype())
+        (self.log(10)).cast(self.dtype())
     }
 
     /// Converts angles from radians to degrees.
@@ -655,7 +639,7 @@ impl Tensor {
     /// Panics if applied on non-float dtype while implicit casting is disabled.
     #[must_use]
     pub fn rad2deg(&self) -> Tensor {
-        (self * (180.0 / core::f32::consts::PI)).cast(self.dtype())
+        self * (180.0 / core::f32::consts::PI)
     }
 
     /// Bitnot

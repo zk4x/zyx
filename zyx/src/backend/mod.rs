@@ -223,7 +223,7 @@ pub fn initialize_backends(
     memory_pools: &mut Slab<PoolId, MemoryPool>,
     devices: &mut Slab<DeviceId, Device>,
     debug_backends: bool,
-) -> Result<(), BackendError> {
+) {
     if let Err(err) = host::initialize_pool(memory_pools, debug_backends)
         && debug_backends
     {
@@ -283,13 +283,9 @@ pub fn initialize_backends(
     }
     //println!("YO {:?}", devices[DeviceId::from(0)].info().supported_dtypes);
 
-    if devices.is_empty() || memory_pools.is_empty() {
-        return Err(BackendError {
-            status: ErrorStatus::Initialization,
-            context: "All backends failed to initialize or were configured out.".into(),
-        });
+    if devices.is_empty() {
+        println!("All devices failed to initialize or were configured out.");
     }
-    Ok(())
 }
 
 #[derive(Debug)]
