@@ -80,7 +80,7 @@ impl Kernel {
             };
             match *self.at(op_id) {
                 Op::Reduce { x, rop, n_axes, .. } => {
-                    let dtype = dtypes[&x];
+                    let dtype = dtypes.get(&x).copied().unwrap_or(DType::U8);
                     dtypes.insert(op_id, dtype);
                     let x = id_map[&x];
                     if has_loops {
@@ -96,11 +96,11 @@ impl Kernel {
                             BOp::Mul => "prod",
                             _ => unreachable!(),
                         },
-                        dtypes[&op_id]
+                        dtypes.get(&op_id).copied().unwrap_or(DType::U8)
                     );
                 }
                 Op::ReduceTile { x, rop, .. } => {
-                    let dtype = dtypes[&x];
+                    let dtype = dtypes.get(&x).copied().unwrap_or(DType::U8);
                     dtypes.insert(op_id, dtype);
                     let x = id_map[&x];
                     println!(
@@ -114,14 +114,14 @@ impl Kernel {
                     );
                 }
                 Op::MatmulTile { x, y } => {
-                    let dtype = dtypes[&x];
+                    let dtype = dtypes.get(&x).copied().unwrap_or(DType::U8);
                     dtypes.insert(op_id, dtype);
                     let x = id_map[&x];
                     let y = id_map[&y];
                     println!("{indent}r{out_id}{grey}: {dtype}{reset} = {red}matmul_tile{reset} r{x}, r{y}");
                 }
                 Op::TransposeTile { x } => {
-                    let dtype = dtypes[&x];
+                    let dtype = dtypes.get(&x).copied().unwrap_or(DType::U8);
                     dtypes.insert(op_id, dtype);
                     let x = id_map[&x];
                     println!("{indent}r{out_id}{grey}: {dtype}{reset} = {red}transpose_tile{reset} r{x}");
@@ -139,7 +139,7 @@ impl Kernel {
                     println!("{indent}r{out_id}{grey}: {dtype}{reset} = {magenta}{value}{reset}");
                 }
                 Op::Load { src, index, layout } => {
-                    let dtype = dtypes[&src];
+                    let dtype = dtypes.get(&src).copied().unwrap_or(DType::U8);
                     dtypes.insert(op_id, dtype);
                     let (lb, ub) = bounds.get(&index).copied().unwrap_or((0, 0));
                     let src = id_map.get(&src).copied().unwrap_or(OpId::NULL);
@@ -149,7 +149,7 @@ impl Kernel {
                     );
                 }
                 Op::Store { dst, src: x, index, layout } => {
-                    let dtype = dtypes[&x];
+                    let dtype = dtypes.get(&x).copied().unwrap_or(DType::U8);
                     dtypes.insert(op_id, dtype);
                     let (lb, ub) = bounds.get(&index).copied().unwrap_or((0, 0));
                     let dst = id_map.get(&dst).copied().unwrap_or(OpId::NULL);
@@ -167,7 +167,7 @@ impl Kernel {
                     }
                 }
                 Op::Unary { x, uop, .. } => {
-                    let dtype = dtypes[&x];
+                    let dtype = dtypes.get(&x).copied().unwrap_or(DType::U8);
                     dtypes.insert(op_id, dtype);
                     let (op1, op2) = match uop {
                         UOp::Neg => ("-", ""),
@@ -192,7 +192,7 @@ impl Kernel {
                     }
                 }
                 Op::Binary { x, y, bop, .. } => {
-                    let dtype = if bop.returns_bool() { DType::Bool } else { dtypes[&x] };
+                    let dtype = if bop.returns_bool() { DType::Bool } else { dtypes.get(&x).copied().unwrap_or(DType::U8) };
                     dtypes.insert(op_id, dtype);
                     let (op1, op2, op3) = match bop {
                         BOp::Add => ("", " + ", ""),
@@ -233,7 +233,7 @@ impl Kernel {
                     }
                 }
                 Op::Mad { x, y, z } => {
-                    let dtype = dtypes[&x];
+                    let dtype = dtypes.get(&x).copied().unwrap_or(DType::U8);
                     dtypes.insert(op_id, dtype);
                     let x = id_map.get(&x).copied().unwrap_or(OpId::NULL);
                     let y = id_map.get(&y).copied().unwrap_or(OpId::NULL);
@@ -245,7 +245,7 @@ impl Kernel {
                     }
                 }
                 Op::Wmma { dims, layout, dtype, c, a, b } => {
-                    let cdtype = dtypes[&c];
+                    let cdtype = dtypes.get(&c).copied().unwrap_or(DType::U8);
                     dtypes.insert(op_id, cdtype);
                     let a = id_map.get(&a).copied().unwrap_or(OpId::NULL);
                     let b = id_map.get(&b).copied().unwrap_or(OpId::NULL);
@@ -261,7 +261,7 @@ impl Kernel {
                 }
                 Op::Loop { len } => {
                     has_loops = true;
-                    let dtype = dtypes[&len];
+                    let dtype = dtypes.get(&len).copied().unwrap_or(DType::U8);
                     dtypes.insert(op_id, dtype);
                     let len = id_map.get(&len).copied().unwrap_or(OpId::NULL);
                     if let Some((l, u)) = bounds.get(&op_id) {
@@ -284,13 +284,13 @@ impl Kernel {
                     println!("{indent}}}");
                 }
                 Op::Asm { ref asm, ref ops } => {
-                    let dtype = dtypes[&ops[0]];
+                    let dtype = dtypes.get(&ops[0]).copied().unwrap_or(DType::U8);
                     dtypes.insert(op_id, dtype);
                     let ops: Vec<OpId> = ops.iter().map(|x| id_map.get(x).copied().unwrap_or(OpId::NULL)).collect();
                     println!("{indent}r{out_id}{grey}: {dtype}{reset} = {orange}asm{reset} {asm:?} {ops:?}");
                 }
                 Op::Vectorize { ref ops } => {
-                    let dtype = dtypes[&ops[0]];
+                    let dtype = dtypes.get(&ops[0]).copied().unwrap_or(DType::U8);
                     dtypes.insert(op_id, dtype);
                     let ops: Vec<OpId> = ops.iter().map(|x| id_map.get(x).copied().unwrap_or(OpId::NULL)).collect();
                     if let Some((lb, ub)) = bounds.get(&op_id) {
@@ -300,7 +300,7 @@ impl Kernel {
                     }
                 }
                 Op::Devectorize { vec, idx } => {
-                    let dtype = dtypes[&vec];
+                    let dtype = dtypes.get(&vec).copied().unwrap_or(DType::U8);
                     dtypes.insert(op_id, dtype);
                     let vec = id_map.get(&vec).copied().unwrap_or(OpId::NULL);
                     if let Some((l, u)) = bounds.get(&op_id) {
@@ -310,7 +310,7 @@ impl Kernel {
                     }
                 }
                 Op::Move { x, ref mop } => {
-                    let dtype = dtypes[&x];
+                    let dtype = dtypes.get(&x).copied().unwrap_or(DType::U8);
                     dtypes.insert(op_id, dtype);
                     let x = id_map.get(&x).copied().unwrap_or(OpId::NULL);
                     match mop.as_ref() {
