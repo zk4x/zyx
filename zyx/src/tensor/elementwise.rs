@@ -3,7 +3,7 @@
 
 use std::ops::{Neg, Not};
 
-use crate::{Float, RT, Scalar, Tensor, error::ZyxError, kernel::UOp};
+use crate::{DType, Float, RT, Scalar, Tensor, error::ZyxError, kernel::UOp};
 
 impl Tensor {
     #[allow(clippy::needless_pass_by_value)]
@@ -351,13 +351,18 @@ impl Tensor {
         let x = self.float_cast().unwrap();
         let original_dtype = self.dtype();
 
-        // Round to nearest integer using: floor(x + 0.5) for positive numbers
-        // But we need to handle negative numbers and the halfway case properly
-        // Simple rounding that works for both positive and negative
-        let sign = x.cmplt(0.0f32).unwrap() * -2.0f32 + 1.0f32;
-        let abs_x = x.abs();
-        let rounded_abs = (abs_x + 0.5f32).floor();
-        let rounded = rounded_abs * sign;
+        // Round half to even (banker's rounding), matching torch.round and numpy.
+        let floor_x = x.floor();
+        let frac = x - floor_x.clone();
+
+        // Round up when the fraction is past the midpoint.
+        let round_up = frac.cmpgt(0.5f32).unwrap().cast(DType::F32);
+        // On a tie, round to the nearest even integer.
+        let is_half = frac.equal(0.5f32).unwrap().cast(DType::F32);
+        let floor_odd = (floor_x.clone() / 2.0f32).frac().ne(0.0f32).unwrap().cast(DType::F32);
+
+        let add = round_up + is_half * floor_odd;
+        let rounded = floor_x + add;
 
         rounded.cast(original_dtype)
     }

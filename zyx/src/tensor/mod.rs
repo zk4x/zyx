@@ -2966,20 +2966,25 @@ impl Tensor {
         // We can later add option for backend to disable these implicit conversions.
         let x_dtype = x.dtype();
         let y_dtype = y.dtype();
-        if x_dtype != y_dtype && RT.lock().implicit_casts {
-            let common_dtype = x_dtype.least_upper_dtype(y_dtype);
-            if x_dtype != common_dtype {
-                x = x.cast(common_dtype);
-            }
-            if y_dtype != common_dtype {
-                y = y.cast(common_dtype);
-            }
-        } else if x_dtype != y_dtype {
-            return Err(ZyxError::dtype_error(format!("Binary inputs have different dtypes: {x_dtype} and {y_dtype}").into()));
-        }
-
         let x_shape = x.shape();
         let y_shape = y.shape();
+        if x_dtype != y_dtype {
+            if x_shape == [1] {
+                x = x.cast(y_dtype);
+            } else if y_shape == [1] {
+                y = y.cast(x_dtype);
+            } else if RT.lock().implicit_casts {
+                let common_dtype = x_dtype.least_upper_dtype(y_dtype);
+                if x_dtype != common_dtype {
+                    x = x.cast(common_dtype);
+                }
+                if y_dtype != common_dtype {
+                    y = y.cast(common_dtype);
+                }
+            } else {
+                return Err(ZyxError::dtype_error(format!("Implicit casting disabled, binary inputs have different dtypes: {x_dtype} and {y_dtype}").into()));
+            }
+        }
 
         for (&x, &y) in x_shape.iter().rev().zip(y_shape.iter().rev()) {
             if x != y && x != 1 && y != 1 {

@@ -430,12 +430,12 @@ fn round_1() -> Result<(), ZyxError> {
 
 #[test]
 fn round_2() -> Result<(), ZyxError> {
-    // Test halfway cases (simple rounding away from zero)
+    // Test halfway cases (round half to even, like torch)
     let t = Tensor::from([2.5f32, 3.5, 4.5, 5.5]);
     let rounded = t.round();
 
-    // Simple rounding rounds away from zero: 3, 4, 5, 6
-    assert_eq!(rounded, [3.0f32, 4.0, 5.0, 6.0]);
+    // Banker's rounding rounds to the nearest even integer: 2, 4, 4, 6
+    assert_eq!(rounded, [2.0f32, 4.0, 4.0, 6.0]);
 
     Ok(())
 }
