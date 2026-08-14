@@ -124,7 +124,7 @@ fn contiguous_4() -> Result<(), ZyxError> {
     let y = x.exp2();
     let c = y.contiguous()?;
     let z = c * 2.0;
-    assert_eq!(z, [4.0, 8.0, 16.0]);
+    assert_eq!(z, [4.0f32, 8.0, 16.0]);
     Ok(())
 }
 
