@@ -13,6 +13,8 @@
 
 - If a task is hardware-specific, deeply subtle, or keeps failing, SAY SO plainly up front. "I can't solve this" beats two days of guesses.
 - When the user says they'll do it themselves, stop. Only act when asked for a specific edit.
+- **ASK QUESTIONS.** When a task has ambiguity — design decisions, expected behavior, specs, values, whether a behavior is intended — ask BEFORE implementing, and whenever you find yourself guessing or inventing an answer. Guessing wrong and writing broken code wastes more time than asking. Never let a time budget make you skip asking.
+- **FORBIDDEN WORDS** — never say these (in responses AND in your reasoning AND in your inner monologue): "Actually", "wait", "key insight", "let me", "Hmm", "But wait". The rule is absolute, applies to every token you emit (including tool call parameters, file contents, and planning), and violations are never excused by "it was in reasoning" or "I was thinking out loud".
 
 ## Key Commands
 
@@ -108,6 +110,12 @@ All kernel optimizations live in `zyx/src/kernel/` (`autotune.rs` driver + one f
 
 ## Debugging
 
+### First steps
+
+1. Run the failing test in isolation, pointing at its test file so the other tests aren't recompiled:
+   `cd zyx && AGENT=1 cargo test --test 9_graph narrow`
+2. Use `ZYX_DEBUG` (below) to see the graph, kernel IR, and generated code instead of guessing.
+
 ### ZYX_DEBUG (bitmask, `ENV_VARS.md`)
 
 | Value | Output |
@@ -129,6 +137,18 @@ In `cargo test`, library `eprintln!` output only shows with `-- --nocapture` (`A
 ### Inspecting kernel IR
 
 Add `kernel.debug()` temporarily in code to print the IR (op IDs, args, loop scopes) at any pipeline point. `AGENT=1` strips ANSI colors; `AGENT=0` keeps them.
+
+### Debugging GPU launch failures (CUDA_ERROR_ILLEGAL_ADDRESS etc.)
+
+1. Run the failing test in isolation (see First steps).
+2. Capture the failing kernel's IR (`ZYX_DEBUG=8`) and generated code (`ZYX_DEBUG=16`). Compare the kernel signature arg count/order against the buffers passed at launch:
+   - CUDA codegen builds the kernel signature from `MemScope::Global` and `MemScope::Variable` defines in head order (`codegen/cuda.rs`).
+   - `alloc_buffers` in `kernel/autotune.rs` counts the same defines (stops at first non-Define op) and allocates a fresh buffer per define.
+   - `device.launch` in the CUDA backend maps each arg buffer to a kernel param (`backend/cuda.rs`); a `CUDABuffer::Buffer` passes a pointer, `CUDABuffer::Variable` passes the scalar value.
+3. A mismatch between the signature arg count and the number of buffers passed causes ILLEGAL_ADDRESS. Add an `eprintln!` in the CUDA `launch` (backend/cuda.rs ~713) printing `args.len()` and the compiled signature's define count to confirm. Print the kernel IR too.
+4. To test whether a change broke the graph path but not eager, run the equivalent eager test (`tests/3_movement.rs`) — if it passes, the bug is graph-specific.
+5. Print the ExecPlan (`plan.debug()` in `graph/plan.rs`) to see which classes are bound to which pools and how `Launch` binds `load_classes`/`store_classes`.
+6. When reading debug output, do NOT pipe through `rg`/`grep`/`head` — `plan.debug()` output may be swallowed by the test harness; run with `-- --nocapture` and view the full output. Debug output must be visible in the actual run.
 
 ### Fixing a broken optimization pass
 

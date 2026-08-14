@@ -3,7 +3,7 @@ use std::collections::BTreeSet;
 use crate::{
     Map, Set,
     graph::{ClassId, Graph, JitKernelData, JitKernelId, Node},
-    kernel::{DeviceId, Kernel, MemLayout, MemScope, MoveOp, Op, OpId},
+    kernel::{DeviceId, IDX_T, Kernel, MemLayout, MemScope, MoveOp, Op, OpId},
     runtime::ShapeId,
     shape::{Dim, UAxis},
     slab::{Slab, SlabId},
@@ -286,7 +286,6 @@ impl Graph {
                         // dst_leaf's. The assign store reuses that buffer in-place.
                         let JitKernelData { kernel: dst_kernel, loads, stores, outputs } =
                             unsafe { self.jit_kernels.remove_and_return(dst_kid) };
-                        debug_assert_eq!(loads.len(), 1);
                         debug_assert!(stores.is_empty());
                         debug_assert!(outputs.iter().all(|&x| x == dst));
 
@@ -407,7 +406,23 @@ impl Graph {
                             shapes,
                         );
                     }
-                    Node::Narrow { .. } => todo!(),
+                    Node::Narrow { x, axis, start, len } => {
+                        // The start class is a leaf holding the crop offset (see
+                        // runtime::narrow). Mirror the eager path: load it as a
+                        // read-only variable define in this kernel, backed by the
+                        // leaf's host buffer.
+                        let start_cid = start;
+                        let (mut kid, mut op_id) = visited[&x];
+                        (kid, op_id) = self.duplicate_or_store_class(x, kid, op_id, &mut visited, &mut rcs, shapes, false);
+                        self.consume(x, kid, &mut visited, &mut rcs);
+                        let start_op = self.jit_kernels[kid].kernel.define(IDX_T, MemScope::Variable, true, &[1]);
+                        self.jit_kernels[kid].loads.push(start_cid);
+                        let result_op = self.jit_kernels[kid]
+                            .kernel
+                            .push_back(Op::Move { x: op_id, mop: Box::new(MoveOp::Narrow { axis, start: start_op, len }) });
+                        self.push_outputs(kid, cid, *rcs.get(&cid).unwrap());
+                        visited.insert(cid, (kid, result_op));
+                    }
                     Node::Flip { x, ref axes } => {
                         self.add_move(cid, x, MoveOp::Flip { axes: axes.to_vec() }, false, &mut visited, &mut rcs, shapes);
                     }

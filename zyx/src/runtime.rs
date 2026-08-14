@@ -1299,11 +1299,35 @@ impl Runtime {
 
         if self.is_graph(x) {
             let (class_id, graph_id) = self.graph_ids(x);
-            let start_const = Constant::idx(start);
+            // The crop offset is a graph leaf backed by a host variable buffer,
+            // mirroring the eager path: the value lives in a buffer, not in the
+            // kernel identity, so changing the start (e.g. a rolling kv-cache
+            // window) reuses the compiled plan instead of recompiling.
             let scalar_shape = self.push_shape(vec![1]);
-            let (_, start_cid) = self.push_node(graph_id, Node::Const(start_const), scalar_shape, start_const.dtype());
+            let (_, start_cid) = self.push_leaf_node(graph_id, IDX_T, scalar_shape);
+
+            let MemoryPool::Host(ref mut pool) = self.pools[PoolId::HOST] else {
+                unreachable!("Host must exist.")
+            };
+            let buffer_id = BufferId { pool: PoolId::HOST, buffer: pool.store_variable(Constant::idx(start)) };
+
+            let start_tid = self.tensors.push(TensorData {
+                shape_id: scalar_shape,
+                dtype: IDX_T,
+                kernel_id: KernelId::NULL,
+                op_id: OpId::NULL,
+                depends_on: KernelId::NULL,
+                class_id: start_cid,
+                graph_id,
+                rc: 1,
+            });
+            self.buffer_map.insert(start_tid, buffer_id);
+            self.graphs[graph_id].leaf_map.insert(start_cid, start_tid);
+            self.graphs[graph_id].leaf_classes.push(start_cid);
+            self.graphs[graph_id].ref_count += 1;
+
             let (_, class_id) =
-                self.push_node(graph_id, Node::Narrow { x: class_id, axis, start: OpId(start_cid.0), len }, shape_id, dtype);
+                self.push_node(graph_id, Node::Narrow { x: class_id, axis, start: start_cid, len }, shape_id, dtype);
             self.new_graph_tensor(graph_id, class_id, shape_id, dtype)
         } else {
             // Create the tensor and store the start variable
@@ -1541,6 +1565,7 @@ impl Runtime {
                     | Node::Flip { x, .. }
                     | Node::Expand { x, .. }
                     | Node::Reshape { x, .. }
+                    | Node::Narrow { x, .. }
                     | Node::Permute { x, .. } => dst_define_cid = x,
                     Node::After { .. } | Node::Leaf { .. } => break,
                     _ => unreachable!(),

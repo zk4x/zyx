@@ -2,7 +2,7 @@ use std::collections::BTreeSet;
 
 use crate::{
     Map, Set, ZyxError,
-    backend::{BufferId, Device, DeviceId, Event, PoolId, ProgramId},
+    backend::{BufferId, Device, DeviceId, Event, MemoryPool, PoolId, ProgramId},
     graph::{ClassId, Graph, Node, NodeId},
     runtime::{Runtime, ShapeId},
     shape::Dim,
@@ -19,7 +19,6 @@ pub enum ExecNode {
     Copy {
         dst_class: ClassId,
         src_class: ClassId,
-        bytes: Dim,
     },
     Deallocate {
         class: ClassId,
@@ -120,19 +119,19 @@ impl ExecPlan {
         // intermediate writes are lost. Mirrors eager assign's store-to-target
         // pool handling.
         let mut leaf_copy: Map<ClassId, ClassId> = Map::default();
-        for (class, to, bytes) in &aliases {
-            match store_pool.get(class) {
-                Some(pool) if leaf_pools[to] != *pool => {
-                    let owner = *leaf_copy.entry(*to).or_insert_with(|| {
-                        plan_nodes.push(ExecNode::Allocate { class: *class, pool: *pool, bytes: *bytes });
-                        plan_nodes.push(ExecNode::Copy { dst_class: *class, src_class: *to, bytes: *bytes });
-                        *class
+        for &(class, to, bytes) in &aliases {
+            match store_pool.get(&class) {
+                Some(pool) if leaf_pools[&to] != *pool => {
+                    let owner = *leaf_copy.entry(to).or_insert_with(|| {
+                        plan_nodes.push(ExecNode::Allocate { class, pool: *pool, bytes });
+                        plan_nodes.push(ExecNode::Copy { dst_class: class, src_class: to });
+                        class
                     });
-                    if owner != *class {
-                        plan_nodes.push(ExecNode::Alias { class: *class, to: owner });
+                    if owner != class {
+                        plan_nodes.push(ExecNode::Alias { class, to: owner });
                     }
                 }
-                _ => plan_nodes.push(ExecNode::Alias { class: *class, to: *to }),
+                _ => plan_nodes.push(ExecNode::Alias { class, to }),
             }
         }
 
@@ -168,19 +167,18 @@ impl ExecPlan {
                         }
                     }
                 }
-                Node::ToDevice { x, device, .. } => {
-                    let pool = devices[*device].memory_pool_id();
+                &Node::ToDevice { x, device, .. } => {
+                    let pool = devices[device].memory_pool_id();
                     let class_of = graph.nodes[nid].class_of;
                     if allocated.insert(class_of) && !graph.leaf_map.contains_key(&class_of) && !alias_classes.contains(&class_of)
                     {
                         plan_nodes.push(ExecNode::Allocate { class: class_of, pool, bytes: class_bytes(class_of) });
                     }
-                    let cb = class_bytes(class_of);
-                    plan_nodes.push(ExecNode::Copy { dst_class: class_of, src_class: *x, bytes: cb });
-                    let c = rc.get_mut(x).unwrap();
+                    plan_nodes.push(ExecNode::Copy { dst_class: class_of, src_class: x });
+                    let c = rc.get_mut(&x).unwrap();
                     *c -= 1;
-                    if *c == 0 && !graph.leaf_map.contains_key(x) && !output_set.contains(x) && !alias_classes.contains(x) {
-                        plan_nodes.push(ExecNode::Deallocate { class: *x });
+                    if *c == 0 && !graph.leaf_map.contains_key(&x) && !output_set.contains(&x) && !alias_classes.contains(&x) {
+                        plan_nodes.push(ExecNode::Deallocate { class: x });
                     }
                 }
                 _ => unreachable!(),
@@ -211,8 +209,8 @@ impl ExecPlan {
                 ExecNode::Allocate { class, pool, bytes } => {
                     println!("  Allocate class={class:?} pool={pool:?} bytes={bytes}");
                 }
-                ExecNode::Copy { dst_class, src_class, bytes } => {
-                    println!("  Copy dst={dst_class:?} src={src_class:?} bytes={bytes}");
+                ExecNode::Copy { dst_class, src_class } => {
+                    println!("  Copy dst={dst_class:?} src={src_class:?}");
                 }
                 ExecNode::Deallocate { class } => {
                     println!("  Deallocate class={class:?}");
@@ -269,13 +267,24 @@ impl Runtime {
                         self.devices[program_id.device].launch(program_id.program, &mut self.pools[pool_id], &args, wait_list)?;
                     self.events.insert(kernel_bufs, event);
                 }
-                ExecNode::Copy { dst_class, src_class, bytes } => {
+                ExecNode::Copy { dst_class, src_class } => {
                     let src = class_buf[src_class];
                     let dst = class_buf[dst_class];
                     let wait_list = drain_events_for_buf(&mut self.events, src);
-                    let mut tmp = vec![0u8; *bytes as usize];
-                    self.pools[src.pool].pool_to_host(src.buffer, &mut tmp, wait_list)?;
-                    let event = self.pools[dst.pool].host_to_pool(&tmp, dst.buffer, vec![])?;
+                    // Variable buffers hold a single scalar value, not pool memory:
+                    // copy them value-by-value, never via pool_to_pool.
+                    if let Some(constant) = self.pools[src.pool].get_variable(src.buffer) {
+                        let dst_buf = self.pools[dst.pool].store_variable(constant);
+                        class_buf.insert(*dst_class, BufferId { pool: dst.pool, buffer: dst_buf });
+                        continue;
+                    }
+                    // SAFETY: src_pool and dst_pool are different PoolIds (checked
+                    // below); rust cannot split the Slab borrow across the two
+                    // indices.
+                    debug_assert_ne!(src.pool, dst.pool);
+                    let src_pool: *mut MemoryPool = &mut self.pools[src.pool];
+                    let dst_pool = &mut self.pools[dst.pool];
+                    let event = dst_pool.pool_to_pool(unsafe { &mut *src_pool }, src.buffer, dst.buffer, wait_list)?;
                     self.pools[dst.pool].sync_events(vec![event])?;
                 }
                 ExecNode::Deallocate { class } => {

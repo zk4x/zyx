@@ -117,6 +117,26 @@ fn self_attention() -> Result<(), ZyxError> {
 // fuses the arange produced by one_hot_along_dim into constants, making the
 // mask's loop operand analyzable so the gather loop can fold to a direct gather.
 #[test]
+fn narrow_1() -> Result<(), ZyxError> {
+    let x = Tensor::from([[1, 2, 3, 4], [5, 6, 7, 8], [9, 10, 11, 12], [13, 14, 15, 16]]);
+    let tape = Tape::new([&x])?;
+    let y = x.narrow(0, 1, 2)?;
+    tape.realize([&y])?;
+    assert_eq!(y, [[5, 6, 7, 8], [9, 10, 11, 12]]);
+    Ok(())
+}
+
+#[test]
+fn narrow_2() -> Result<(), ZyxError> {
+    let x = Tensor::from([[1, 2, 3, 4], [5, 6, 7, 8], [9, 10, 11, 12], [13, 14, 15, 16]]);
+    let tape = Tape::new([&x])?;
+    let y = x.narrow(0, 1, 2)?;
+    let z = y.narrow(-1, 1, 2)?;
+    tape.realize([&z])?;
+    assert_eq!(z, [[6, 7], [10, 11]]);
+    Ok(())
+}
+#[test]
 fn gather() -> Result<(), ZyxError> {
     let x = Tensor::from([10, 20, 30, 40, 50]);
     let indices = Tensor::from([0u32, 2, 4, 1]);
@@ -226,6 +246,20 @@ fn assign_multiple_same_root() -> Result<(), ZyxError> {
     tape.realize([&base])?;
     let out: Vec<f32> = base.try_into()?;
     assert_eq!(out, vec![7.0, 8.0, 3.0, 4.0, 9.0, 10.0]);
+    Ok(())
+}
+
+#[test]
+fn assign_narrow_same_root() -> Result<(), ZyxError> {
+    let base = Tensor::from([0f32, 0f32, 0f32, 0f32, 0f32, 0f32]);
+    let src1 = Tensor::from([1f32, 2f32]);
+    let src2 = Tensor::from([3f32, 4f32]);
+    let tape = Tape::new([&base])?;
+    base.narrow(0, 0, 2)?.assign(&src1)?;
+    base.narrow(0, 2, 2)?.assign(&src2)?;
+    tape.realize([&base])?;
+    let out: Vec<f32> = base.try_into()?;
+    assert_eq!(out, vec![1.0, 2.0, 3.0, 4.0, 0.0, 0.0]);
     Ok(())
 }
 

@@ -126,7 +126,7 @@ pub(crate) enum Node {
     Narrow {
         x: ClassId,
         axis: UAxis,
-        start: OpId,
+        start: ClassId,
         len: Dim,
     },
     Reduce {
@@ -591,7 +591,7 @@ impl Graph {
                     Node::Permute { axes, .. } => format!("Permute {:?}", axes),
                     Node::Reshape { shape, .. } => format!("Reshape {:?}", shapes[*shape]),
                     Node::PadZeros { padding, .. } => format!("Pad {:?}", padding),
-                    Node::Narrow { axis, start, len, .. } => format!("Slice axis={axis:?} start={start} len={len}"),
+                    Node::Narrow { axis, start, len, .. } => format!("Slice axis={axis:?} start={start:?} len={len}"),
                     Node::Flip { axes, .. } => format!("Flip {:?}", axes),
                     Node::ToDevice { device, time, .. } => format!("ToDevice {:?} time={}", device, time),
                     Node::Contiguous { .. } => "Contiguous".into(),
