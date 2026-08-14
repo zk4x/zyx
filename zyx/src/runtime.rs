@@ -859,7 +859,7 @@ impl Runtime {
         } else {
             let (mut kid_x, mut op_id_x) = self.eager_ids(x);
             let (mut kid_y, mut op_id_y) = self.eager_ids(y);
-            eprintln!("BIN bop={bop:?} kid_x={kid_x:?} op_x={op_id_x:?} kid_y={kid_y:?} op_y={op_id_y:?} stores_x={} stores_y={}", !self.kernels[kid_x].stores.is_empty(), !self.kernels[kid_y].stores.is_empty());
+            //println!("Binary input kernels: {kid_x:?} and {kid_y:?}");
 
             let (kernel_id, op_id) = if kid_x == kid_y {
                 let op_id = self.kernels[kid_x].kernel.binary(op_id_x, op_id_y, bop);
@@ -885,8 +885,6 @@ impl Runtime {
                 } else {
                     (kid_x, kid_y, op_id_x, op_id_y)
                 };
-
-                eprintln!("  -> merge: keep={keep_kid:?} merge={merge_kid:?}");
 
                 //println!("Remove kernel {merge_kid:?}");
                 let KernelData { outputs: merge_outputs, loads: merge_loads, stores: merge_stores, kernel } = unsafe {
