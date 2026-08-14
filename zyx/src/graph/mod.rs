@@ -1253,7 +1253,7 @@ impl Runtime {
                                     self.push_node(graph_id, Node::PadZeros { x: x_class, padding }, shape_id, dtype);
                                 class_id
                             }
-                            MoveOp::Narrow { axis, start, len } => {
+                            MoveOp::Narrow { .. } => {
                                 todo!()
                             }
                             MoveOp::Flip { axes } => {

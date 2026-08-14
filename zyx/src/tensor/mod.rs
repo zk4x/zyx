@@ -2969,11 +2969,7 @@ impl Tensor {
         let x_shape = x.shape();
         let y_shape = y.shape();
         if x_dtype != y_dtype {
-            if x_shape == [1] {
-                x = x.cast(y_dtype);
-            } else if y_shape == [1] {
-                y = y.cast(x_dtype);
-            } else if RT.lock().implicit_casts {
+            if RT.lock().implicit_casts && ((x_shape == [1] && y_shape == [1]) || (x_shape != [1] && y_shape != [1])) {
                 let common_dtype = x_dtype.least_upper_dtype(y_dtype);
                 if x_dtype != common_dtype {
                     x = x.cast(common_dtype);
@@ -2981,8 +2977,14 @@ impl Tensor {
                 if y_dtype != common_dtype {
                     y = y.cast(common_dtype);
                 }
+            } else if x_shape == [1] && y_shape != [1] {
+                x = x.cast(y_dtype);
+            } else if x_shape != [1] && y_shape == [1] {
+                y = y.cast(x_dtype);
             } else {
-                return Err(ZyxError::dtype_error(format!("Implicit casting disabled, binary inputs have different dtypes: {x_dtype} and {y_dtype}").into()));
+                return Err(ZyxError::dtype_error(
+                    format!("Implicit casting disabled, binary inputs have different dtypes: {x_dtype} and {y_dtype}").into(),
+                ));
             }
         }
 
