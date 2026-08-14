@@ -969,7 +969,7 @@ fn complex_movement_reduce() -> Result<(), ZyxError> {
 
 #[test]
 fn mean1() -> Result<(), ZyxError> {
-    let x = Tensor::from([[1i32, 2, 3], [4, 5, 6]]);
+    let x = Tensor::from([[1f32, 2., 3.], [4., 5., 6.]]);
     let mean = x.sum([1])? * 0.333_333_34_f32;
     //assert_eq!(mean, [2f32, 5.]);
     let y = x - mean.reshape([2, 1])?;
@@ -1227,11 +1227,11 @@ fn test_expand_on_elementwise_kernel() {
     if !Tensor::dtype_capability(DType::I64).any() || !Tensor::dtype_capability(DType::F64).any() {
         return;
     }
-    let t = Tensor::from([2, 3, 4]);
+    let t = Tensor::from([2i32, 3, 4]);
     let expanded = t.expand([3, 3]).unwrap();
     let result = expanded + 1.0;
     assert_eq!(result.shape(), &[3, 3]);
-    assert_eq!(result.slice((1, 1)).unwrap(), 4.0);
+    assert_eq!(result.slice((1, 1)).unwrap(), 4i32);
 }
 
 #[test]
@@ -1243,7 +1243,7 @@ fn test_reshape_on_elementwise_kernel() {
     let reshaped = t.reshape([3, 1]).unwrap();
     let result = reshaped * 2.0;
     assert_eq!(result.shape(), &[3, 1]);
-    assert_eq!(result.slice((2, 0)).unwrap(), 8.0);
+    assert_eq!(result.slice((2, 0)).unwrap(), 8i32);
 }
 
 #[test]

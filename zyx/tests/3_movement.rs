@@ -123,7 +123,7 @@ fn contiguous_4() -> Result<(), ZyxError> {
     let x = Tensor::from([1f32, 2., 3.]);
     let y = x.exp2();
     let c = y.contiguous()?;
-    let z = c * 2.0;
+    let z = c * 2;
     assert_eq!(z, [4.0f32, 8.0, 16.0]);
     Ok(())
 }
