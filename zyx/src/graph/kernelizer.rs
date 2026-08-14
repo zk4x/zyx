@@ -325,7 +325,8 @@ impl Graph {
                                 }
                                 Op::Move { x, ref mop } => {
                                     let x = op_map.get(&x).copied().unwrap_or(op_map[&dst_define]);
-                                    let id = self.jit_kernels[kid].kernel.push_back(Op::Move { x, mop: mop.clone() });
+                                    let mop = mop.remap(&op_map, dst_define);
+                                    let id = self.jit_kernels[kid].kernel.push_back(Op::Move { x, mop });
                                     op_map.insert(op_id, id);
                                 }
                                 _ => unreachable!("assign: dst kernel must be movement-only"),
@@ -336,6 +337,10 @@ impl Graph {
                         let dst_op = op_map.get(&dst_op).copied().unwrap_or(op_map[&dst_define]);
                         self.jit_kernels[kid].kernel.store(dst_op, src_op, OpId::NULL, MemLayout::Scalar);
                         self.jit_kernels[kid].stores.push(dst_leaf);
+                        // Extra loads (variable defines like a narrow start, all
+                        // but the base define) are replayed as new defines in
+                        // src's kernel and must be passed at launch too.
+                        self.jit_kernels[kid].loads.extend(loads.iter().skip(1).copied());
 
                         self.consume(src, kid, &mut visited, &mut rcs);
                         *rcs.get_mut(&dst).unwrap() -= 1;

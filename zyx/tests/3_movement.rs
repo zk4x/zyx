@@ -138,3 +138,15 @@ fn narrow_1() -> Result<(), ZyxError> {
     assert_eq!(z, [[6, 7], [10, 11]]);
     Ok(())
 }
+
+#[test]
+fn assign_narrow_same_root() -> Result<(), ZyxError> {
+    let base = Tensor::from([0f32, 0f32, 0f32, 0f32, 0f32, 0f32]);
+    let src1 = Tensor::from([1f32, 2f32]);
+    let src2 = Tensor::from([3f32, 4f32]);
+    base.narrow(0, 0, 2)?.assign(&src1)?;
+    base.narrow(0, 2, 2)?.assign(&src2)?;
+    let out: Vec<f32> = base.try_into()?;
+    assert_eq!(out, vec![1.0, 2.0, 3.0, 4.0, 0.0, 0.0]);
+    Ok(())
+}

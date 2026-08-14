@@ -697,7 +697,8 @@ impl Kernel {
 
         self.instruction_schedule();
 
-        // Verify the relative order of global defines is unchanged by linearize.
+        // Verify the relative order of global defines is unchanged by linearize
+        // (read-only defines first, then writable ones, both in original order).
         debug_assert!({
             let mut defines = Vec::new();
             let mut op_id = self.head;
@@ -707,9 +708,11 @@ impl Kernel {
                 }
                 op_id = self.next_op(op_id);
             }
-            if defines != global_defines {
+            let mut expected = global_defines.clone();
+            expected.sort_by_key(|(_, ro, _, _)| !*ro);
+            if defines != expected {
                 self.debug();
-                panic!("linearize: global define order changed:\n  original = {global_defines:?}\n  final = {defines:?}");
+                panic!("linearize: global define order changed:\n  original = {global_defines:?}\n  expected = {expected:?}\n  final = {defines:?}");
             }
             true
         });

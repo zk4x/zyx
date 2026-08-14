@@ -414,6 +414,7 @@ impl Graph {
                     | Node::Reshape { x, .. }
                     | Node::PadZeros { x, .. }
                     | Node::Flip { x, .. }
+                    | Node::Narrow { x, .. }
                     | Node::ToDevice { x, .. }
                     | Node::After { x, .. } => next = Some(*x),
                     _ => {}

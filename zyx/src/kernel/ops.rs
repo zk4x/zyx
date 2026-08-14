@@ -263,6 +263,25 @@ pub enum MoveOp {
     Narrow { axis: UAxis, start: OpId, len: Dim },
 }
 
+impl MoveOp {
+    /// Returns a copy with all `OpId` references remapped through `op_map`.
+    /// `fallback` is used for op ids not present in `op_map` (mirroring the
+    /// assign replay's handling of the movement-chain head).
+    pub(crate) fn remap(&self, op_map: &Map<OpId, OpId>, fallback: OpId) -> Box<Self> {
+        match self {
+            MoveOp::Reshape { shape } => Box::new(MoveOp::Reshape { shape: shape.clone() }),
+            MoveOp::Expand { shape } => Box::new(MoveOp::Expand { shape: shape.clone() }),
+            MoveOp::Permute { axes, shape } => Box::new(MoveOp::Permute { axes: axes.clone(), shape: shape.clone() }),
+            MoveOp::Pad { padding, shape } => Box::new(MoveOp::Pad { padding: padding.clone(), shape: shape.clone() }),
+            MoveOp::Flip { axes } => Box::new(MoveOp::Flip { axes: axes.clone() }),
+            MoveOp::Narrow { axis, start, len } => {
+                let start = op_map.get(start).copied().unwrap_or(fallback);
+                Box::new(MoveOp::Narrow { axis: *axis, start, len: *len })
+            }
+        }
+    }
+}
+
 /// Matrix multiply dimensions for tensor core operations.
 ///
 /// Represents the shape (m, n, k) for matrix multiplication.

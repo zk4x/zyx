@@ -1631,9 +1631,6 @@ impl Runtime {
                 format!("assign: src kernel {dst_kid:?} loads dst tensor, not allowed to avoid data races").into(),
             ));
         }
-        if self.kernels[dst_kid].loads.len() > 1 {
-            return Err(ZyxError::ShapeError(format!("assign: dst kernel {dst_kid:?} must have exactly 1 load").into()));
-        }
 
         // Remove the dst (movement-only) kernel; its base buffer is dst_org.
         // The removed kernel held a kernel-load reference on dst_org.
@@ -1679,7 +1676,8 @@ impl Runtime {
                         // this is the move on the load
                         op_map[&dst_define]
                     };
-                    let id = self.kernels[src_kid].kernel.push_back(Op::Move { x, mop: mop.clone() });
+                    let mop = mop.remap(&op_map, op_map[&dst_define]);
+                    let id = self.kernels[src_kid].kernel.push_back(Op::Move { x, mop });
                     op_map.insert(op_id, id);
                 }
                 _ => unreachable!("should've already returned error"),
@@ -1691,6 +1689,10 @@ impl Runtime {
         // Store src's value into dst's base buffer through the replayed chain.
         self.kernels[src_kid].kernel.store(dst_op, src_op, OpId::NULL, MemLayout::Scalar);
         self.kernels[src_kid].stores.push(dst_org);
+        // Extra loads (variable defines like a narrow start, all but the base
+        // define) are replayed as new defines in src's kernel and must be
+        // passed at launch too.
+        self.kernels[src_kid].loads.extend(loads.iter().skip(1).copied());
 
         // The store writes IN PLACE into dst_org's existing buffer, which
         // stays resident in buffer_map — no new buffer is allocated for the
