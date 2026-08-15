@@ -156,19 +156,7 @@ impl Kernel {
     /// Permute tensor axes.
     pub fn permute(&mut self, x: OpId, axes: &[UAxis]) -> OpId {
         let axes = axes.to_vec();
-        let in_shape = self.shape(x);
-        debug_assert_eq!(axes.len(), in_shape.len(), "permute: axes length {} != rank {}", axes.len(), in_shape.len());
-        {
-            let mut sorted = axes.clone();
-            sorted.sort();
-            debug_assert!(
-                sorted.iter().copied().eq(0..in_shape.len() as UAxis),
-                "permute: axes not a valid permutation: {axes:?} for rank {}",
-                in_shape.len()
-            );
-        }
-        let shape = crate::shape::permute(&in_shape, &axes);
-        self.push_back(Op::Move { x, mop: Box::new(MoveOp::Permute { axes, shape }) })
+        self.push_back(Op::Move { x, mop: Box::new(MoveOp::Permute { axes }) })
     }
 
     /// Reshape tensor.
@@ -509,6 +497,11 @@ impl Kernel {
     pub fn mad(&mut self, x: OpId, y: OpId, z: OpId) -> OpId {
         self.push_back(Op::Mad { x, y, z })
     }
+
+    /// shape
+    pub fn shape(&self, x: OpId) -> Vec<Dim> {
+        todo!()
+    }
 }
 
 impl CompiledKernel {
@@ -546,6 +539,7 @@ impl CompiledKernel {
                 for key in keys {
                     pool_events.push(rt.events.remove(&key).unwrap());
                 }
+                let dtype = rt.dtype(input.id);
                 let bytes = (rt.shape(input.id).iter().product::<Dim>() * dtype.bit_size() as Dim).div_ceil(8);
                 let alloc_bytes = bytes + dtype.bit_size() as Dim / 8;
                 let (dev_buf, alloc_ev) = rt.pools[pool_id].allocate(alloc_bytes)?;

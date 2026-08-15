@@ -17,7 +17,7 @@ use std::collections::BinaryHeap;
 
 use crate::{
     Map,
-    kernel::{Kernel, MemScope, Op, OpId},
+    kernel::{Kernel, MemScope, Op, OpId, ParamKind},
     slab::SlabId,
 };
 
@@ -40,7 +40,6 @@ impl Kernel {
     pub fn instruction_schedule(&mut self) {
         let mut global_ro = Vec::new();
         let mut global_rw = Vec::new();
-        let mut local_ro = Vec::new();
         let mut local_rw = Vec::new();
         let mut rest = Vec::new();
 
@@ -48,10 +47,9 @@ impl Kernel {
         while !op_id.is_null() {
             let next = self.next_op(op_id);
             match self.at(op_id) {
-                Op::Storage { scope: MemScope::Global | MemScope::Variable, ro: true, .. } => global_ro.push(op_id),
-                Op::Storage { scope: MemScope::Global | MemScope::Variable, ro: false, .. } => global_rw.push(op_id),
-                Op::Storage { scope: MemScope::Local, ro: true, .. } => local_ro.push(op_id),
-                Op::Storage { scope: MemScope::Local, ro: false, .. } => local_rw.push(op_id),
+                Op::Param { kind: ParamKind::Global | ParamKind::Variable, .. } => global_ro.push(op_id),
+                Op::Param { kind: ParamKind::GlobalMut, .. } => global_rw.push(op_id),
+                Op::Storage { scope: MemScope::Local, .. } => local_rw.push(op_id),
                 _ => rest.push(op_id),
             }
             op_id = next;
@@ -60,10 +58,9 @@ impl Kernel {
         let sorted_rest = self.schedule_rest(&rest);
 
         let mut order =
-            Vec::with_capacity(global_ro.len() + global_rw.len() + local_ro.len() + local_rw.len() + sorted_rest.len());
+            Vec::with_capacity(global_ro.len() + global_rw.len() + local_rw.len() + sorted_rest.len());
         order.extend(global_ro);
         order.extend(global_rw);
-        order.extend(local_ro);
         order.extend(local_rw);
         order.extend(sorted_rest);
 
@@ -168,7 +165,7 @@ impl Kernel {
                     add_param!(x);
                     add_param!(y);
                 }
-                Op::Const(_) | Op::Storage { .. } | Op::Index { .. } | Op::EndLoop | Op::Barrier | Op::EndIf => {}
+                Op::Param { .. } | Op::Const(_) | Op::Storage { .. } | Op::Index { .. } | Op::EndLoop | Op::Barrier | Op::EndIf => {}
                 Op::Store { dst, src: x, index, .. } => {
                     add_param!(dst);
                     add_param!(x);
@@ -392,7 +389,7 @@ mod tests {
         let mut order = Vec::new();
         let mut op_id = k.head;
         while !op_id.is_null() {
-            if let Op::Storage { scope, ro, .. } = k.at(op_id) {
+            if let Op::Storage { scope, .. } = k.at(op_id) {
                 order.push((*scope, *ro));
             }
             op_id = k.next_op(op_id);

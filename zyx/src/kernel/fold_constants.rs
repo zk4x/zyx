@@ -18,8 +18,7 @@
 use crate::{
     DType, Map, Set,
     dtype::Constant,
-    kernel::{BOp, IDX_T, Kernel, MemLayout, MemScope, Op, OpId, UOp},
-    shape::Dim,
+    kernel::{BOp, IDX_T, Kernel, MemLayout, MemScope, Op, OpId, ParamKind, UOp},
     slab::SlabId,
 };
 use std::hash::BuildHasherDefault;
@@ -52,6 +51,7 @@ impl Kernel {
                 | Op::TransposeTile { .. }
                 | Op::Devectorize { .. }
                 | Op::Const(_)
+                | Op::Param { .. }
                 | Op::Storage { .. }
                 | Op::Load { .. }
                 | Op::Index { .. }
@@ -303,10 +303,10 @@ impl Kernel {
     /// constant values and eliminating redundant computations.
     pub(crate) fn fold_acc(&mut self, define_id: OpId) {
         //println!("Folding acc {define_id}");
-        let Op::Storage { ref shape, .. } = self.ops[define_id].op else {
+        let Op::Storage { ref len, .. } = self.ops[define_id].op else {
             unreachable!()
         };
-        let mut latest_stores = vec![OpId::NULL; shape.iter().product::<Dim>() as usize];
+        let mut latest_stores = vec![OpId::NULL; *len as usize];
         self.remove_op(define_id);
 
         let mut remaps = Map::default();
@@ -379,10 +379,13 @@ impl Kernel {
                         slice.insert(op_id);
                     }
                 }
-                Op::Storage { ro, .. } => {
-                    if !ro {
+                &Op::Param { kind, .. } => {
+                    if kind == ParamKind::GlobalMut {
                         defines_stack.last_mut().unwrap().insert(op_id);
                     }
+                }
+                Op::Storage { .. } => {
+                    defines_stack.last_mut().unwrap().insert(op_id);
                 }
                 Op::Store { dst, .. } => {
                     for (i, defines_set) in defines_stack.iter().enumerate().take(defines_stack.len() - 1) {

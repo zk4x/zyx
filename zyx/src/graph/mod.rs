@@ -1384,12 +1384,12 @@ impl Runtime {
 
         // Pass 1: fill every gap between all AOT kernels, ignoring devices.
         let all_kernel_outputs: Set<ClassId> = pool_kernel_outputs.values().flatten().copied().collect();
-        self.graphs[graph_id].fill_gaps(&all_kernel_outputs, output_set, unsafe { &*shapes_ptr });
+        self.graphs[graph_id].fill_gaps(&all_kernel_outputs, output_set);
 
         // Pass 2: for each memory pool, fill the gaps between only that pool's
         // kernels — other pools' kernels are ignored, giving single-pool paths.
         for active_outputs in pool_kernel_outputs.values() {
-            self.graphs[graph_id].fill_gaps(active_outputs, output_set, unsafe { &*shapes_ptr });
+            self.graphs[graph_id].fill_gaps(active_outputs, output_set);
         }
 
         // Autotunes custom zyx kernels for all devices and adds kernel nodes for all of them

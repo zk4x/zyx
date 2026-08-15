@@ -910,10 +910,10 @@ impl Device {
     /// Pattern-matches subgraphs in `graph` (e.g. matmul) and adds `Node::Kernel`s
     /// backed by this device's AOT kernels so they compete with the fused zyx
     /// kernels in extraction. No-op for devices without AOT kernels.
-    pub fn match_graph(&mut self, graph: &mut Graph, outputs: &BTreeSet<ClassId>, shapes: &Slab<ShapeId, Vec<Dim>>) {
+    pub fn match_graph(&mut self, graph: &mut Graph, outputs: &BTreeSet<ClassId>) {
         match self {
-            Device::Cblas(dev) => dev.match_graph(graph, outputs, shapes),
-            Device::CUDA(dev) => dev.match_graph(graph, outputs, shapes),
+            Device::Cblas(dev) => dev.match_graph(graph, outputs),
+            Device::CUDA(dev) => dev.match_graph(graph, outputs),
             _ => {}
         }
     }

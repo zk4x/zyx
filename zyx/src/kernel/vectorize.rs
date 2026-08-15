@@ -541,7 +541,7 @@ impl Kernel {
 mod tests {
     use crate::{
         DType,
-        kernel::{BOp, DeviceId, Kernel, MemLayout, MemScope, Op, UOp},
+        kernel::{BOp, DeviceId, Kernel, MemLayout, Op, UOp, ParamKind},
     };
 
     // Helper to verify c0/c1 were replaced with devecs, find vectorize + vector op
@@ -566,8 +566,8 @@ mod tests {
     #[test]
     fn vectorize_ops_forward_2_lane() {
         let mut k = Kernel::new(DeviceId::AUTO);
-        let src = k.param(DType::F32, crate::kernel::ParamKind::Global);
-        let dst = k.param(DType::F32, crate::kernel::ParamKind::Global);
+        let src = k.param(DType::F32, ParamKind::Global);
+        let dst = k.param(DType::F32, ParamKind::Global);
         let g0 = k.group_index(0, 4);
         let two = k.const_idx(2u32);
         let offset = k.binary(g0, two, BOp::BitShiftLeft);
@@ -590,8 +590,8 @@ mod tests {
     #[test]
     fn vectorize_ops_forward_4_lane() {
         let mut k = Kernel::new(DeviceId::AUTO);
-        let src = k.param(DType::F32, MemScope::Global, true, &[16]);
-        let dst = k.param(DType::F32, MemScope::Global, false, &[16]);
+        let src = k.param(DType::F32, ParamKind::Global);
+        let dst = k.param(DType::F32, ParamKind::Global);
         let g0 = k.group_index(0, 4);
         let two = k.const_idx(2u32);
         let offset = k.binary(g0, two, BOp::BitShiftLeft);
@@ -642,8 +642,8 @@ mod tests {
         // After first pass: cos(2) is vectorized
         // After second pass: sin(2) is vectorized
         let mut k = Kernel::new(DeviceId::AUTO);
-        let src = k.param(DType::F32, MemScope::Global, true, &[16]);
-        let dst = k.param(DType::F32, MemScope::Global, false, &[16]);
+        let src = k.param(DType::F32, ParamKind::Global);
+        let dst = k.param(DType::F32, ParamKind::Global);
         let g0 = k.group_index(0, 4);
         let two = k.const_idx(2u32);
         let offset = k.binary(g0, two, BOp::BitShiftLeft);
@@ -694,8 +694,8 @@ mod tests {
     #[test]
     fn vectorize_ops_forward_binary() {
         let mut k = Kernel::new(DeviceId::AUTO);
-        let src = k.param(DType::F32, MemScope::Global, true, &[16]);
-        let dst = k.param(DType::F32, MemScope::Global, false, &[16]);
+        let src = k.param(DType::F32, ParamKind::Global);
+        let dst = k.param(DType::F32, ParamKind::Global);
         let g0 = k.group_index(0, 4);
         let two = k.const_idx(2u32);
         let offset = k.binary(g0, two, BOp::BitShiftLeft);
@@ -735,8 +735,8 @@ mod tests {
     fn vectorize_ops_forward_binary_y_pos() {
         // devec in Y position: c + devec(v, i)
         let mut k = Kernel::new(DeviceId::AUTO);
-        let src = k.param(DType::F32, MemScope::Global, true, &[16]);
-        let dst = k.param(DType::F32, MemScope::Global, false, &[16]);
+        let src = k.param(DType::F32, ParamKind::Global);
+        let dst = k.param(DType::F32, ParamKind::Global);
         let g0 = k.group_index(0, 4);
         let two = k.const_idx(2u32);
         let offset = k.binary(g0, two, BOp::BitShiftLeft);
@@ -760,8 +760,8 @@ mod tests {
     fn vectorize_ops_and_constfold_clears_vectorize_devectorize() {
         let mut k = Kernel::new(DeviceId::AUTO);
 
-        let src = k.param(DType::F32, MemScope::Global, true, &[16]);
-        let dst = k.param(DType::F32, MemScope::Global, false, &[16]);
+        let src = k.param(DType::F32, ParamKind::Global);
+        let dst = k.param(DType::F32, ParamKind::Global);
         let g0 = k.group_index(0, 4);
         let two = k.const_idx(2u32);
         let offset = k.binary(g0, two, BOp::BitShiftLeft);

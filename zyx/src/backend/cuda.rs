@@ -1016,13 +1016,13 @@ impl CUDADevice {
     /// for each with the exact shapes and dtypes, adding `Node::Kernel`s (with
     /// `time = 1`) so they beat any fused zyx kernel in extraction. Only f32 is
     /// supported for now (compute type float).
-    pub fn match_graph(&mut self, graph: &mut Graph, outputs: &BTreeSet<ClassId>, shapes: &Slab<ShapeId, Vec<Dim>>) {
+    pub fn match_graph(&mut self, graph: &mut Graph, outputs: &BTreeSet<ClassId>) {
         if !self.cudnn_available {
             return;
         }
         let order = graph.topo_sort_classes_without_kernels(&Set::default(), outputs, None);
         for &cid in &order {
-            let Some(mm) = graph.match_matmul(cid, shapes) else {
+            let Some(mm) = graph.match_matmul(cid) else {
                 continue;
             };
             // Only f32 matmul is supported by the cudnn matmul builder for now.

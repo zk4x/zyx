@@ -17,6 +17,16 @@ pub enum ParamKind {
     GlobalMut,
 }
 
+impl std::fmt::Display for ParamKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            ParamKind::Variable => "var",
+            ParamKind::Global => "global",
+            ParamKind::GlobalMut => "global mut",
+        })
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, SerBin)]
 pub enum Op {
     // ops that exist in both

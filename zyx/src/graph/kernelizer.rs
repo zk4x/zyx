@@ -755,7 +755,7 @@ impl Graph {
     /// AOT kernel inputs / final outputs on the output side. Each region is
     /// kernelized independently, so the gaps between AOT kernels get filled
     /// while each AOT kernel keeps its own subgraph.
-    pub fn fill_gaps(&mut self, active_outputs: &Set<ClassId>, outputs: &BTreeSet<ClassId>, shapes: &Slab<ShapeId, Vec<Dim>>) {
+    pub fn fill_gaps(&mut self, active_outputs: &Set<ClassId>, outputs: &BTreeSet<ClassId>) {
         let mut producer_boundaries: Set<ClassId> = self.leaf_classes.iter().copied().collect();
         producer_boundaries.extend(active_outputs.iter().copied());
 

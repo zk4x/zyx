@@ -126,12 +126,13 @@ impl Kernel {
                     let x = id_map[&x];
                     println!("{indent}r{out_id}{grey}: {dtype}{reset} = {red}transpose_tile{reset} r{x}");
                 }
-                Op::Storage { dtype, scope, ro, ref shape } => {
+                Op::Param { dtype, kind } => {
                     dtypes.insert(op_id, dtype);
-                    let ro = if ro { "" } else { "mut " };
-                    println!(
-                        "{indent}{red}r{out_id}{reset}{grey}: {dtype}{reset} = {yellow}def {ro}{reset}{scope}, sh={shape:?}"
-                    );
+                    println!("{indent}{red}r{out_id}{reset}{grey}: {dtype}{reset} = {yellow}param{reset} {kind}");
+                }
+                Op::Storage { dtype, scope, len } => {
+                    dtypes.insert(op_id, dtype);
+                    println!("{indent}{red}r{out_id}{reset}{grey}: {dtype}{reset} = {yellow}storage{reset} {scope}, len={len:?}");
                 }
                 Op::Const(value) => {
                     let dtype = value.dtype();
@@ -192,7 +193,11 @@ impl Kernel {
                     }
                 }
                 Op::Binary { x, y, bop, .. } => {
-                    let dtype = if bop.returns_bool() { DType::Bool } else { dtypes.get(&x).copied().unwrap_or(DType::U8) };
+                    let dtype = if bop.returns_bool() {
+                        DType::Bool
+                    } else {
+                        dtypes.get(&x).copied().unwrap_or(DType::U8)
+                    };
                     dtypes.insert(op_id, dtype);
                     let (op1, op2, op3) = match bop {
                         BOp::Add => ("", " + ", ""),
@@ -320,15 +325,11 @@ impl Kernel {
                         MoveOp::Expand { shape } => {
                             println!("{indent}r{out_id}{grey}: {dtype}{reset} = {cyan}expand{reset} r{x} -> {shape:?}");
                         }
-                        MoveOp::Permute { axes, shape } => {
-                            println!(
-                                "{indent}r{out_id}{grey}: {dtype}{reset} = {cyan}permute{reset} r{x} axes={axes:?} -> {shape:?}",
-                            );
+                        MoveOp::Permute { axes } => {
+                            println!("{indent}r{out_id}{grey}: {dtype}{reset} = {cyan}permute{reset} r{x} axes={axes:?}");
                         }
-                        MoveOp::Pad { padding, shape } => {
-                            println!(
-                                "{indent}r{out_id}{grey}: {dtype}{reset} = {cyan}pad{reset} r{x} padding={padding:?} -> {shape:?}",
-                            );
+                        MoveOp::Pad { padding } => {
+                            println!("{indent}r{out_id}{grey}: {dtype}{reset} = {cyan}pad{reset} r{x} padding={padding:?}",);
                         }
                         MoveOp::Narrow { axis, start, len } => {
                             println!(

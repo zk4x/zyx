@@ -25,7 +25,6 @@ use crate::{
     error::{BackendError, ErrorStatus},
     graph::{ClassId, Graph, Node, NodeData},
     kernel::Kernel,
-    runtime::ShapeId,
     shape::Dim,
     slab::{Slab, SlabId},
 };
@@ -211,10 +210,10 @@ impl CblasDevice {
     /// Pattern-matches matmul subgraphs in `graph` and adds `Node::Kernel`s backed
     /// by this device's gemm kernels so they compete with the fused zyx kernels in
     /// extraction. `time = 1` makes the AOT gemm win over any fused kernel.
-    pub fn match_graph(&mut self, graph: &mut Graph, outputs: &BTreeSet<ClassId>, shapes: &Slab<ShapeId, Vec<Dim>>) {
+    pub fn match_graph(&mut self, graph: &mut Graph, outputs: &BTreeSet<ClassId>) {
         let order = graph.topo_sort_classes_without_kernels(&Set::default(), outputs, None);
         for &cid in &order {
-            let Some(mm) = graph.match_matmul(cid, shapes) else {
+            let Some(mm) = graph.match_matmul(cid) else {
                 continue;
             };
             // Only f32 sgemm is loaded, so skip matmuls of any other dtype. The
