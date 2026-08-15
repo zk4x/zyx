@@ -85,7 +85,8 @@ impl ExecPlan {
             for nid in &graph.classes[cid].nodes {
                 if let Node::After { x, .. } = &graph.nodes[*nid].node {
                     let base = graph.base_leaf(*x);
-                    aliases.push((cid, base, class_bytes(cid)));
+                    let bytes = todo!();
+                    aliases.push((cid, base, bytes));
                     alias_classes.insert(cid);
                 }
             }
@@ -138,7 +139,8 @@ impl ExecPlan {
                         // (leaf buffers via leaf_map, aliases share x's leaf
                         // buffer) — never allocate fresh buffers for them.
                         if !graph.leaf_map.contains_key(&oc) && !alias_classes.contains(&oc) {
-                            plan_nodes.push(ExecNode::Allocate { class: oc, pool, bytes: class_bytes(oc) });
+                            let bytes = todo!(); // class_bytes(oc)
+                            plan_nodes.push(ExecNode::Allocate { class: oc, pool, bytes });
                         }
                     }
                     plan_nodes.push(ExecNode::Launch {
@@ -163,7 +165,8 @@ impl ExecPlan {
                     let class_of = graph.nodes[nid].class_of;
                     if allocated.insert(class_of) && !graph.leaf_map.contains_key(&class_of) && !alias_classes.contains(&class_of)
                     {
-                        plan_nodes.push(ExecNode::Allocate { class: class_of, pool, bytes: class_bytes(class_of) });
+                        let bytes = todo!(); // class_bytes(class_of)
+                        plan_nodes.push(ExecNode::Allocate { class: class_of, pool, bytes });
                     }
                     plan_nodes.push(ExecNode::Copy { dst_class: class_of, src_class: x });
                     let c = rc.get_mut(&x).unwrap();

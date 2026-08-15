@@ -52,7 +52,7 @@ use crate::{
     DType, Map, RT, Set, Tensor, ZyxError,
     backend::BufferId,
     graph::{ClassId, Graph, GraphId, plan::drain_events_for_buf},
-    kernel::MemScope,
+    kernel::ParamKind,
     runtime::Runtime,
     shape::Dim,
     slab::SlabId,
@@ -313,7 +313,7 @@ impl FrozenTape {
 
         let mut outputs = Vec::new();
         for (cid, shape, dtype) in self.outputs.iter() {
-            let tid = rt.new_eager_tensor(shape.clone(), *dtype, MemScope::Global);
+            let tid = rt.new_eager_tensor(shape.clone(), *dtype, ParamKind::Global);
             rt.buffer_map.insert(tid, class_buf[cid]);
             outputs.push(Tensor::from_id(tid));
         }

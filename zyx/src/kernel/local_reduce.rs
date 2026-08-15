@@ -18,7 +18,6 @@ use crate::{
     backend::DeviceInfo,
     dtype::Constant,
     kernel::{BOp, IdxScope, Kernel, MemLayout, MemScope, Op, OpId},
-    shape::Dim,
     slab::SlabId,
 };
 
@@ -121,8 +120,8 @@ impl Kernel {
         let reg_acc;
         let acc_dtype;
         loop {
-            if let Op::Storage { dtype, scope, ro, ref shape } = self.ops[op_id].op {
-                if scope != MemScope::Register || ro || shape.iter().product::<Dim>() != 1 {
+            if let Op::Storage { dtype, scope, len } = self.ops[op_id].op {
+                if scope != MemScope::Register || len != 1 {
                     return;
                 }
                 reg_acc = op_id;
@@ -192,7 +191,7 @@ impl Kernel {
         };
         let loc_acc = self.insert_before(
             insert_at,
-            Op::Storage { dtype: acc_dtype, scope: MemScope::Local, ro: false, shape: vec![factor].into() },
+            Op::Storage { dtype: acc_dtype, scope: MemScope::Local, len: factor },
         );
         let lidx_len = self.insert_before(insert_at, Op::Const(Constant::idx(factor)));
         let lidx = self.insert_before(insert_at, Op::Index { len: lidx_len, axis: laxis, scope: IdxScope::Local });

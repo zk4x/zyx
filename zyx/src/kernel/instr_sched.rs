@@ -383,14 +383,14 @@ impl Kernel {
 #[cfg(test)]
 mod tests {
     use crate::DType;
-    use crate::kernel::{DeviceId, Kernel, MemLayout, MemScope, Op, OpId};
+    use crate::kernel::{DeviceId, Kernel, MemLayout, MemScope, Op, OpId, ParamKind};
 
     fn defines_in_order(k: &Kernel) -> Vec<(MemScope, bool)> {
         let mut order = Vec::new();
         let mut op_id = k.head;
         while !op_id.is_null() {
             if let Op::Storage { scope, .. } = k.at(op_id) {
-                order.push((*scope, *ro));
+                order.push((*scope, false));
             }
             op_id = k.next_op(op_id);
         }
@@ -410,10 +410,10 @@ mod tests {
     #[test]
     fn test_instruction_schedule_orders_defines() {
         let mut k = Kernel::new(DeviceId::AUTO);
-        let _local_rw = k.param(DType::F32, MemScope::Local, false, &[4]);
-        let global_ro = k.param(DType::F32, MemScope::Global, true, &[4]);
-        let _local_ro = k.param(DType::F32, MemScope::Local, true, &[4]);
-        let global_rw = k.param(DType::F32, MemScope::Global, false, &[4]);
+        let _local_rw = k.storage(DType::F32, MemScope::Local, 4);
+        let global_ro = k.param(DType::F32, ParamKind::Global);
+        let _local_ro = k.storage(DType::F32, MemScope::Local, 4);
+        let global_rw = k.param(DType::F32, ParamKind::GlobalMut);
 
         let gidx = k.group_index(0, 4);
         let c = k.const_val(1.0f32);
@@ -443,8 +443,8 @@ mod tests {
     #[test]
     fn test_instruction_schedule_keeps_stores_in_loops() {
         let mut k = Kernel::new(DeviceId::AUTO);
-        let src = k.param(DType::F32, MemScope::Global, true, &[4]);
-        let dst = k.param(DType::F32, MemScope::Global, false, &[4]);
+        let src = k.param(DType::F32, ParamKind::Global);
+        let dst = k.param(DType::F32, ParamKind::GlobalMut);
 
         let len = k.const_idx(4u32);
         let loop_id = k.loop_(len);
@@ -466,7 +466,7 @@ mod tests {
     #[test]
     fn test_instruction_schedule_keeps_memory_order_per_define() {
         let mut k = Kernel::new(DeviceId::AUTO);
-        let buf = k.param(DType::F32, MemScope::Global, false, &[4]);
+        let buf = k.param(DType::F32, ParamKind::Global);
 
         let gidx = k.group_index(0, 4);
         let val = k.const_val(1.0f32);
@@ -487,7 +487,7 @@ mod tests {
     #[test]
     fn test_instruction_schedule_keeps_stores_after_barriers() {
         let mut k = Kernel::new(DeviceId::AUTO);
-        let buf = k.param(DType::F32, MemScope::Local, false, &[4]);
+        let buf = k.storage(DType::F32, MemScope::Local, 4);
 
         let gidx = k.group_index(0, 4);
         let val = k.const_val(1.0f32);
@@ -506,8 +506,8 @@ mod tests {
     #[test]
     fn test_instruction_schedule_topological() {
         let mut k = Kernel::new(DeviceId::AUTO);
-        let src = k.param(DType::F32, MemScope::Global, true, &[4]);
-        let dst = k.param(DType::F32, MemScope::Global, false, &[4]);
+        let src = k.param(DType::F32, ParamKind::Global);
+        let dst = k.param(DType::F32, ParamKind::GlobalMut);
 
         let gidx = k.group_index(0, 4);
         let a = k.load(src, gidx, MemLayout::Scalar);
@@ -526,9 +526,9 @@ mod tests {
     #[test]
     fn test_instruction_schedule_never_sinks_across_loops() {
         let mut k = Kernel::new(DeviceId::AUTO);
-        let src = k.param(DType::F32, MemScope::Global, true, &[4]);
-        let dst = k.param(DType::F32, MemScope::Global, false, &[4]);
-        let local = k.param(DType::F32, MemScope::Local, false, &[4]);
+        let src = k.param(DType::F32, ParamKind::Global);
+        let dst = k.param(DType::F32, ParamKind::GlobalMut);
+        let local = k.storage(DType::F32, MemScope::Local, 4);
 
         let c0 = k.const_idx(0u32);
         let c5 = k.const_idx(5u32);
@@ -560,9 +560,9 @@ mod tests {
     #[test]
     fn _bench_instruction_schedule_large_kernel() {
         let mut k = Kernel::new(DeviceId::AUTO);
-        let a = k.param(DType::F32, MemScope::Global, true, &[1024]);
-        let b = k.param(DType::F32, MemScope::Global, true, &[1024]);
-        let out = k.param(DType::F32, MemScope::Global, false, &[1024]);
+        let a = k.param(DType::F32, ParamKind::Global);
+        let b = k.param(DType::F32, ParamKind::Global);
+        let out = k.param(DType::F32, ParamKind::GlobalMut);
         let gidx = k.group_index(0, 1024);
         let mut acc = k.load(a, gidx, MemLayout::Scalar);
         for _ in 0..200 {

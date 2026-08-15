@@ -41,7 +41,7 @@
 use crate::{
     DType, Map, Set,
     dtype::Constant,
-    kernel::{BOp, IDX_T, IdxScope, Kernel, MemLayout, MemScope, MoveOp, Op, OpId},
+    kernel::{BOp, IDX_T, IdxScope, Kernel, MemLayout, MemScope, MoveOp, Op, OpId, ParamKind},
     shape::{self, Dim, UAxis},
     slab::SlabId,
 };
@@ -103,12 +103,12 @@ impl Kernel {
 
         // Snapshot the order of global defines so linearize can assert it never
         // reorders the buffers' declaration order.
-        let global_defines: Vec<(DType, bool, Vec<Dim>, MemScope)> = {
+        let global_defines: Vec<(DType, ParamKind)> = {
             let mut defines = Vec::new();
             let mut op_id = self.head;
             while !op_id.is_null() {
-                if let Op::Storage { dtype, scope: MemScope::Global | MemScope::Variable, ro, ref shape } = self.ops[op_id].op {
-                    defines.push((dtype, ro, shape.to_vec(), MemScope::Global));
+                if let Op::Param { dtype, kind } = self.ops[op_id].op {
+                    defines.push((dtype, kind));
                 }
                 op_id = self.next_op(op_id);
             }
@@ -187,17 +187,14 @@ impl Kernel {
                         self.ops[op_id].op = Op::Binary { x: pcd, y: z, bop: BOp::Mul };
                     }
                 }
-                Op::Storage { dtype, scope, ro, ref shape } => {
+                Op::Param { dtype, kind } => {
                     // Register-scope defines (e.g. reduce accumulators) are managed
                     // by the ops that create them; only global/variable defines are
                     // rangeified here. Writable globals are store destinations,
                     // read-only globals/variables are load sources. Writables with
                     // MemScope::Variable are left alone (stores to variables are
                     // invalid; the verifier rejects them).
-                    if scope != MemScope::Global && scope != MemScope::Variable {
-                        continue;
-                    }
-                    if !ro {
+                    if kind == ParamKind::GlobalMut {
                         // Write path: this define is the destination of a store. The
                         // store's index is computed from the define's rangeified view
                         // and written back into the matching store op.
@@ -229,10 +226,10 @@ impl Kernel {
                     if consumed_vars.contains(&op_id) {
                         continue;
                     }
-                    let shape = shape.clone();
+                    let shape = todo!();
                     let view = views.remove(&op_id).unwrap();
                     let zero = self.insert_const_idx_before(anchor, 0u32);
-                    if scope == MemScope::Variable {
+                    if kind == ParamKind::Variable {
                         // Variables are single values (no indexing). Like constants,
                         // they only need the padding mask: where the view is out of
                         // bounds, the loaded value is zeroed.
@@ -258,7 +255,7 @@ impl Kernel {
                         // Insert the ro source define immediately before this op so the
                         // global/variable define order (which buffer args bind to) is
                         // preserved.
-                        let src = self.insert_before(op_id, Op::Storage { dtype, scope, ro, shape });
+                        let src = self.insert_before(op_id, Op::Param { dtype, kind });
                         if has_pad {
                             let z = self.insert_before(anchor, Op::Load { src, index: zero, layout: MemLayout::Scalar });
                             let pcd = self.insert_before(anchor, Op::Cast { x: pc, dtype });
@@ -299,7 +296,7 @@ impl Kernel {
                     }
                     // Insert the ro source define immediately before this op so the
                     // global define order (which buffer args bind to) is preserved.
-                    let src = self.insert_before(op_id, Op::Storage { dtype, scope, ro, shape });
+                    let src = self.insert_before(op_id, Op::Param { dtype, kind });
                     if has_pad {
                         // Zero the offset where the padding condition fails, so the load
                         // always reads in-bounds, then zero the loaded value itself.
@@ -346,7 +343,7 @@ impl Kernel {
                     }
                     let dst_define_op = &self.ops[dst_define].op;
                     assert!(
-                        matches!(dst_define_op, Op::Storage { scope: MemScope::Global, ro: false, .. }),
+                        matches!(dst_define_op, Op::Param { kind: ParamKind::GlobalMut, .. }),
                         "store dst chain must terminate at a writable global define, got {dst_define_op:?}"
                     );
                     assert!(
@@ -400,10 +397,7 @@ impl Kernel {
                             _ => unreachable!(),
                         }),
                     );
-                    let acc = self.insert_before(
-                        loop_start,
-                        Op::Storage { dtype: acc_dtype, scope: MemScope::Register, ro: false, shape: vec![1].into() },
-                    );
+                    let acc = self.insert_before(loop_start, Op::Storage { dtype: acc_dtype, scope: MemScope::Register, len: 1 });
                     self.insert_before(
                         loop_start,
                         Op::Store { dst: acc, src: acc_init_id, index: const_zero, layout: MemLayout::Scalar },
@@ -530,7 +524,7 @@ impl Kernel {
                                 .collect();
                             views.insert(x, view);
                         }
-                        MoveOp::Permute { axes, shape } => {
+                        MoveOp::Permute { axes } => {
                             let view = &views[&op_id];
                             let mut inv_axes = vec![0; axes.len()];
                             for (i, &a) in axes.iter().enumerate() {
@@ -631,48 +625,8 @@ impl Kernel {
                                 .collect();
                             views.insert(x, view);
                         }
-                        &MoveOp::Narrow { axis, start, len } => {
-                            let x_shape = self.shape(x);
-                            let view = &views[&op_id];
-                            let mut x_strides = vec![1; x_shape.len()];
-                            let mut st = 1;
-                            for a in (0..x_shape.len()).rev() {
-                                x_strides[a] = st;
-                                st *= x_shape[a];
-                            }
-                            let zero = self.insert_const_idx_before(anchor, 0u32);
-                            // A MemScope::Variable offset must be loaded before the
-                            // index arithmetic that uses it, otherwise the Define
-                            // handler emits the load after the arithmetic. Put
-                            // the load here and mark the variable consumed so the
-                            // Define handler skips it.
-                            let start = if let Op::Storage { scope: MemScope::Variable, ro: true, .. } = self.ops[start].op {
-                                let load =
-                                    self.insert_before(anchor, Op::Load { src: start, index: zero, layout: MemLayout::Scalar });
-                                consumed_vars.insert(start);
-                                load
-                            } else {
-                                start
-                            };
-                            let view = (0..x_shape.len())
-                                .map(|a| {
-                                    let idx = view[a].0;
-                                    let stride = self.insert_const_idx_before(anchor, x_strides[a]);
-                                    if a == axis {
-                                        // Pure crop: input index = output index + start.
-                                        let idx = self.insert_before(anchor, Op::Binary { x: idx, y: start, bop: BOp::Add });
-                                        let len_id = self.insert_const_idx_before(anchor, len);
-                                        (idx, stride, zero, zero, len_id)
-                                    } else {
-                                        let len_id = self.insert_const_idx_before(anchor, x_shape[a]);
-                                        (idx, stride, zero, zero, len_id)
-                                    }
-                                })
-                                .collect();
-                            if !consumed_vars.contains(&start) {
-                                views.insert(start, Vec::new());
-                            }
-                            views.insert(x, view);
+                        &MoveOp::Narrow { .. } => {
+                            todo!()
                         }
                     }
                     self.remap(op_id, x);
@@ -705,13 +659,14 @@ impl Kernel {
         let mut first_mut_global = head;
         while !op_id.is_null() {
             let next = self.next_op(op_id);
-            if let Op::Storage { ro, scope: MemScope::Global | MemScope::Variable, .. } = self.ops[op_id].op {
-                if ro {
-                    self.move_op_before(op_id, first_mut_global);
-                } else {
-                    self.move_op_before(op_id, head);
-                    if first_mut_global == head {
-                        first_mut_global = op_id;
+            if let Op::Param { kind, .. } = self.ops[op_id].op {
+                match kind {
+                    ParamKind::Variable | ParamKind::Global => self.move_op_before(op_id, first_mut_global),
+                    ParamKind::GlobalMut => {
+                        self.move_op_before(op_id, head);
+                        if first_mut_global == head {
+                            first_mut_global = op_id;
+                        }
                     }
                 }
             }
@@ -724,13 +679,13 @@ impl Kernel {
             let mut defines = Vec::new();
             let mut op_id = self.head;
             while !op_id.is_null() {
-                if let Op::Storage { dtype, scope: MemScope::Global | MemScope::Variable, ro, ref shape } = self.ops[op_id].op {
-                    defines.push((dtype, ro, shape.to_vec(), MemScope::Global));
+                if let Op::Param { dtype, kind } = self.ops[op_id].op {
+                    defines.push((dtype, kind));
                 }
                 op_id = self.next_op(op_id);
             }
             let mut expected = global_defines.clone();
-            expected.sort_by_key(|(_, ro, _, _)| !*ro);
+            expected.sort_by_key(|(_, kind)| *kind == ParamKind::GlobalMut);
             if defines != expected {
                 self.debug();
                 panic!(
@@ -751,18 +706,17 @@ impl Kernel {
             if visited.insert(param) {
                 match self.ops[param].op {
                     Op::Const(_) => return vec![1],
-                    Op::Storage { ref shape, .. } => {
-                        return shape[shape.len() - n_reduce_axes..].into();
+                    Op::Param { .. } => todo!(),
+                    Op::Storage { .. } => {
+                        todo!()
                     }
                     Op::Reduce { n_axes, .. } => n_reduce_axes += n_axes,
                     Op::Move { ref mop, .. } => match mop.as_ref() {
                         MoveOp::Reshape { shape, .. } => {
-                            return shape[shape.len() - n_reduce_axes..].into();
+                            todo!()
                         }
-                        MoveOp::Expand { shape }
-                        | MoveOp::Permute { shape, .. }
-                        | MoveOp::Pad { shape, .. } => {
-                            return shape[shape.len() - n_reduce_axes..].into();
+                        MoveOp::Expand { .. } | MoveOp::Permute { .. } | MoveOp::Pad { .. } => {
+                            todo!()
                         }
                         MoveOp::Narrow { .. } => {}
                         MoveOp::Flip { .. } => {}

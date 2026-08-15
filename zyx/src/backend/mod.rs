@@ -19,7 +19,6 @@ use crate::{
     error::{BackendError, ErrorStatus},
     graph::{ClassId, Graph},
     kernel::Kernel,
-    runtime::ShapeId,
     shape::Dim,
     slab::{Slab, SlabId},
 };

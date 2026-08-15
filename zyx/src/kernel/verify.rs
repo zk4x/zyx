@@ -87,7 +87,7 @@ impl Kernel {
         let mut gids = Set::default();
         let mut lids = Set::default();
 
-        let mut params: Map<OpId, Kind> = Map::default();
+        let mut params: Map<OpId, ParamKind> = Map::default();
         let mut storages: Map<OpId, (MemScope, Dim)> = Map::default();
 
         let mut op_id = self.head;
@@ -96,16 +96,16 @@ impl Kernel {
         while !op_id.is_null() {
             match self.ops[op_id].op {
                 Op::Store { dst, src: x, index, .. } => {
-                    if !defines.contains_key(&dst) {
+                    if !params.contains_key(&dst) && !storages.contains_key(&dst) {
                         println!("store={op_id} is trying to store to undefined variable");
                         self.debug();
                         panic!();
                     }
-                    if matches!(defines[&dst].0, MemScope::Variable) {
+                    /*if matches!(defines[&dst].0, MemScope::Variable) {
                         println!("store={op_id} is trying to store to a MemScope::Variable variable, which is invalid");
                         self.debug();
                         panic!();
-                    }
+                    }*/
                     debug_assert_eq!(dtypes[&index], IDX_T);
                     check(op_id, dst, &stack);
                     check(op_id, x, &stack);
@@ -199,15 +199,15 @@ impl Kernel {
                     dtypes.insert(op_id, v.dtype());
                 }
                 Op::Param { dtype, kind } => {
-                    defines.insert(op_id, (scope, ro, shape));
+                    params.insert(op_id, kind);
                     dtypes.insert(op_id, dtype);
                 }
-                Op::Storage { dtype, scope, ro, ref shape } => {
-                    defines.insert(op_id, (scope, ro, shape));
+                Op::Storage { dtype, scope, len } => {
+                    storages.insert(op_id, (scope, len));
                     dtypes.insert(op_id, dtype);
                 }
                 Op::Load { src, index, .. } => {
-                    if !defines.contains_key(&src) {
+                    if !params.contains_key(&src) && ! storages.contains_key(&src) {
                         println!("load={op_id} is trying to load from undefined variable");
                         self.debug();
                         panic!();
@@ -284,13 +284,13 @@ impl Kernel {
         let mut op_id = self.head;
         while !op_id.is_null() {
             match *self.at(op_id) {
-                Op::Storage { ref shape, .. } => {
-                    defines.insert(op_id, shape);
+                Op::Storage { len, .. } => {
+                    defines.insert(op_id, len);
                 }
                 Op::Load { src, index, .. } => {
                     let idx_range = Self::get_bounds(index);
                     if let Some(range) = idx_range
-                        && *range.end() >= defines[&src].iter().product()
+                        && *range.end() >= defines[&src]
                     {
                         self.debug();
                         panic!("OOB detected in op {}: index {:?} exceeds buffer length {:?}", op_id, range, defines[&src]);
@@ -299,7 +299,7 @@ impl Kernel {
                 Op::Store { dst, index, .. } => {
                     let idx_range = Self::get_bounds(index);
                     if let Some(range) = idx_range
-                        && *range.start() > defines[&dst].iter().product::<Dim>() + 1
+                        && *range.start() > defines[&dst] + 1
                     {
                         self.debug();
                         panic!("OOB detected in op {}: index {:?} exceeds buffer length {:?}", op_id, range, defines[&dst]);

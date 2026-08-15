@@ -19,7 +19,7 @@ use crate::{
     backend::{BufferId, Device, PoolId, ProgramId},
     dtype::Constant,
     kernel::{BOp, DeviceId, Kernel, MoveOp, Op, OpId, UOp},
-    runtime::{KernelId, Runtime, ShapeId},
+    runtime::{KernelId, Runtime},
     shape::{Dim, UAxis},
     slab::{Slab, SlabId},
     tensor::TensorId,
@@ -1035,7 +1035,7 @@ impl Graph {
         todo!()
     }
 
-    pub fn shape(&self, class: ClassId) -> &[Dim] {
+    pub fn shape(&self, class: ClassId) -> Vec<Dim> {
         todo!()
     }
 
@@ -1192,7 +1192,7 @@ impl Runtime {
                                 let (_, class_id) = self.push_node(graph_id, Node::Expand { x: x_class, shape: shape.clone() });
                                 class_id
                             }
-                            MoveOp::Permute { axes, shape } => {
+                            MoveOp::Permute { axes } => {
                                 debug_assert_eq!(
                                     axes.len(),
                                     in_shape.len(),
@@ -1201,19 +1201,19 @@ impl Runtime {
                                     in_shape.len(),
                                     in_shape
                                 );
-                                debug_assert_eq!(
+                                /*debug_assert_eq!(
                                     shape.len(),
                                     in_shape.len(),
                                     "Permute: output shape rank {} != input rank {} (shape {:?})",
                                     shape.len(),
                                     in_shape.len(),
                                     in_shape
-                                );
+                                );*/
                                 let axes = axes.clone().into();
                                 let (_, class_id) = self.push_node(graph_id, Node::Permute { x: x_class, axes });
                                 class_id
                             }
-                            MoveOp::Pad { padding, shape } => {
+                            MoveOp::Pad { padding } => {
                                 debug_assert_eq!(
                                     padding.len(),
                                     in_shape.len(),
@@ -1368,7 +1368,7 @@ impl Runtime {
         let dev_ids: Vec<DeviceId> = self.devices.ids().collect();
         let graph_ptr: *mut Graph = &mut self.graphs[graph_id];
         for dev_id in dev_ids {
-            self.devices[dev_id].match_graph(unsafe { &mut *graph_ptr }, output_set, unsafe { &*shapes_ptr });
+            self.devices[dev_id].match_graph(unsafe { &mut *graph_ptr }, output_set);
         }
 
         // AOT kernel output classes, grouped by the memory pool they run in.

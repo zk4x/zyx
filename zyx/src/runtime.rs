@@ -440,7 +440,7 @@ impl Runtime {
             stores: Vec::new(),
             kernel: Kernel::new(DeviceId::AUTO),
         });
-        let op_id = self.kernels[kernel_id].kernel.push_back(Op::Storage { dtype, scope, ro: true, shape });
+        let op_id = self.kernels[kernel_id].kernel.push_back(Op::Param { dtype, kind: ParamKind::Global });
         self.kernels[kernel_id].loads.push(tid);
         self.tensors[tid].kernel_id = kernel_id;
         self.tensors[tid].op_id = op_id;
@@ -487,7 +487,7 @@ impl Runtime {
         //println!("push node to graph_id={graph_id:?}");
         match node {
             Node::Permute { x, ref axes } => {
-                let in_shape = &self.shapes[self.graphs[graph_id].classes[x].shape];
+                /*let in_shape = &self.shapes[self.graphs[graph_id].classes[x].shape];
                 assert_eq!(
                     axes.len(),
                     in_shape.len(),
@@ -495,7 +495,7 @@ impl Runtime {
                     axes.len(),
                     in_shape.len(),
                     in_shape
-                );
+                );*/
             }
             Node::Reshape { x, shape } => {
                 /*let in_shape = &self.shapes[self.graphs[graph_id].classes[x].shape];

@@ -3,8 +3,7 @@ use std::collections::BTreeSet;
 use crate::{
     Map, Set,
     graph::{ClassId, Graph, JitKernelData, JitKernelId, Node},
-    kernel::{DeviceId, IDX_T, Kernel, MemLayout, MemScope, MoveOp, Op, OpId, ParamKind},
-    runtime::ShapeId,
+    kernel::{DeviceId, IDX_T, Kernel, MemLayout, MoveOp, Op, OpId, ParamKind},
     shape::{Dim, UAxis},
     slab::{Slab, SlabId},
 };
@@ -68,13 +67,7 @@ impl Graph {
     /// 2. **Visited residency**: Every class with `rcs[cid] > 0` that has been produced must have
     ///    exactly one entry in `visited` mapping it to the kernel where its computation lives.
     ///    [`add_store`] removes the entry and restores it via a load kernel if consumers remain.
-    pub fn kernelize(
-        &mut self,
-        inputs: &Set<ClassId>,
-        outputs: &BTreeSet<ClassId>,
-        shapes: &Slab<ShapeId, Vec<Dim>>,
-        allowed: Option<&Set<ClassId>>,
-    ) {
+    pub fn kernelize(&mut self, inputs: &Set<ClassId>, outputs: &BTreeSet<ClassId>, allowed: Option<&Set<ClassId>>) {
         //self.debug(shapes);
         // A class can't be both a boundary input and a region output — that
         // would make a fused kernel load and store the same class.
@@ -198,11 +191,11 @@ impl Graph {
                         let axes: Vec<UAxis> = axes.to_vec();
                         let n_axes: UAxis = axes.len() as UAxis;
                         let (mut kid, mut op_id) = visited[&x];
-                        (kid, op_id) = self.duplicate_or_store_class(x, kid, op_id, &mut visited, &rcs, shapes, false);
+                        (kid, op_id) = self.duplicate_or_store_class(x, kid, op_id, &mut visited, &rcs, false);
                         self.consume(x, kid, &mut visited, &mut rcs);
 
                         // Permute so that reduce dimensions are last
-                        let in_shape: Vec<Dim> = shapes[self.classes[x].shape].clone();
+                        let in_shape: Vec<Dim> = self.shape(x).into();
                         let kernel = &mut self.jit_kernels[kid].kernel;
                         let permuted = {
                             let n = in_shape.len();
@@ -217,10 +210,10 @@ impl Graph {
 
                         let mut result_op = kernel.push_back(Op::Reduce { x: permuted, rop: bop, n_axes });
 
-                        // reshape if only 1 function remains
-                        if in_shape.len() == n_axes as usize {
+                        // TODO reshape if only 1 function remains
+                        /*if in_shape.len() == n_axes as usize {
                             result_op = kernel.reshape(result_op, &[1]);
-                        }
+                        }*/
 
                         self.push_outputs(kid, cid, rcs[&cid]);
                         visited.insert(cid, (kid, result_op));
@@ -311,11 +304,11 @@ impl Graph {
                                     let id = self.jit_kernels[kid].kernel.push_back(Op::Const(value));
                                     op_map.insert(op_id, id);
                                 }
-                                Op::Param { dtype, ref mut kind } => {
+                                Op::Param { dtype, mut kind } => {
                                     if op_id == dst_define {
-                                        *kind = ParamKind::GlobalMut;
+                                        kind = ParamKind::GlobalMut;
                                     }
-                                    let id = self.jit_kernels[kid].kernel.push_back(Op::Param { dtype, kind: *kind });
+                                    let id = self.jit_kernels[kid].kernel.push_back(Op::Param { dtype, kind });
                                     op_map.insert(op_id, id);
                                 }
                                 Op::Move { x, ref mop } => {
@@ -367,44 +360,27 @@ impl Graph {
                         println!("stores={:?}", self.jit_kernels[kid].stores);
                         self.jit_kernels[kid].kernel.debug();*/
                     }
-                    Node::Expand { x, .. } => {
+                    Node::Expand { x, ref shape } => {
                         let (kid, op_id) = visited[&x];
                         let force_store = self.jit_kernels[kid].kernel.is_preceded_by_compute(op_id);
-                        let shape = shapes[self.classes[cid].shape].clone();
-                        self.add_move(cid, x, MoveOp::Expand { shape }, force_store, &mut visited, &mut rcs, shapes);
+                        let shape = shape.clone();
+                        self.add_move(cid, x, MoveOp::Expand { shape }, force_store, &mut visited, &mut rcs);
                     }
                     Node::Permute { x, ref axes } => {
-                        let shape = shapes[self.classes[cid].shape].clone();
-                        self.add_move(
-                            cid,
-                            x,
-                            MoveOp::Permute { axes: axes.to_vec(), shape },
-                            false,
-                            &mut visited,
-                            &mut rcs,
-                            shapes,
-                        );
+                        self.add_move(cid, x, MoveOp::Permute { axes: axes.to_vec() }, false, &mut visited, &mut rcs);
                     }
                     Node::Reshape { x, ref shape } => {
                         let shape = shape.clone();
-                        self.add_move(cid, x, MoveOp::Reshape { shape }, false, &mut visited, &mut rcs, shapes);
+                        self.add_move(cid, x, MoveOp::Reshape { shape }, false, &mut visited, &mut rcs);
                     }
                     Node::PadZeros { x, ref padding } => {
                         let (kid, op_id) = visited[&x];
-                        let child_n: Dim = shapes[self.classes[x].shape].iter().product();
-                        let shape = shapes[self.classes[cid].shape].clone();
+                        let child_n: Dim = self.shape(x).iter().product();
+                        let shape = self.shape(cid);
                         // if shape after expand is larger than original and is compute kernel
                         let force_store =
                             shape.iter().product::<Dim>() > child_n && self.jit_kernels[kid].kernel.is_preceded_by_compute(op_id);
-                        self.add_move(
-                            cid,
-                            x,
-                            MoveOp::Pad { padding: padding.to_vec(), shape },
-                            force_store,
-                            &mut visited,
-                            &mut rcs,
-                            shapes,
-                        );
+                        self.add_move(cid, x, MoveOp::Pad { padding: padding.to_vec() }, force_store, &mut visited, &mut rcs);
                     }
                     Node::Narrow { x, axis, start, len } => {
                         // The start class is a leaf holding the crop offset (see
@@ -413,9 +389,9 @@ impl Graph {
                         // leaf's host buffer.
                         let start_cid = start;
                         let (mut kid, mut op_id) = visited[&x];
-                        (kid, op_id) = self.duplicate_or_store_class(x, kid, op_id, &mut visited, &mut rcs, shapes, false);
+                        (kid, op_id) = self.duplicate_or_store_class(x, kid, op_id, &mut visited, &mut rcs, false);
                         self.consume(x, kid, &mut visited, &mut rcs);
-                        let start_op = self.jit_kernels[kid].kernel.param(IDX_T, MemScope::Variable, true, &[1]);
+                        let start_op = self.jit_kernels[kid].kernel.param(IDX_T, ParamKind::Variable);
                         self.jit_kernels[kid].loads.push(start_cid);
                         let result_op = self.jit_kernels[kid]
                             .kernel
@@ -424,18 +400,18 @@ impl Graph {
                         visited.insert(cid, (kid, result_op));
                     }
                     Node::Flip { x, ref axes } => {
-                        self.add_move(cid, x, MoveOp::Flip { axes: axes.to_vec() }, false, &mut visited, &mut rcs, shapes);
+                        self.add_move(cid, x, MoveOp::Flip { axes: axes.to_vec() }, false, &mut visited, &mut rcs);
                     }
                     Node::ToDevice { x, .. } => {
                         let (kid, op_id) = visited[&x];
                         self.consume(x, kid, &mut visited, &mut rcs);
-                        let (kid, op_id) = self.add_store(x, kid, op_id, &mut visited, &rcs, shapes);
+                        let (kid, op_id) = self.add_store(x, kid, op_id, &mut visited, &rcs);
                         visited.insert(cid, (kid, op_id));
                     }
                     Node::Contiguous { x } => {
                         let (kid, op_id) = visited[&x];
                         self.consume(x, kid, &mut visited, &mut rcs);
-                        let (kid, op_id) = self.add_store(x, kid, op_id, &mut visited, &rcs, shapes);
+                        let (kid, op_id) = self.add_store(x, kid, op_id, &mut visited, &rcs);
                         visited.insert(cid, (kid, op_id));
                     }
                     Node::Kernel { .. } => {}
@@ -450,7 +426,7 @@ impl Graph {
                 && self.classes[cid].nodes.iter().any(|&nid| matches!(&self.nodes[nid].node, Node::Kernel { .. }))
             {
                 let (kid, op_id) = visited[&cid];
-                let _ = self.add_store(cid, kid, op_id, &mut visited, &rcs, shapes);
+                let _ = self.add_store(cid, kid, op_id, &mut visited, &rcs);
             }
 
             // Post-processing: store if final output
@@ -466,7 +442,7 @@ impl Graph {
                     .iter()
                     .any(|&nid| matches!(&self.nodes[nid].node, Node::After { .. } | Node::Kernel { .. }))
                 {
-                    (kid, _) = self.add_store(cid, kid, op_id, &mut visited, &rcs, shapes);
+                    (kid, _) = self.add_store(cid, kid, op_id, &mut visited, &rcs);
                 }
                 *rcs.get_mut(&cid).unwrap() -= 1;
                 remove_first_output(&mut self.jit_kernels, kid, cid);
@@ -566,7 +542,7 @@ impl Graph {
 
     fn new_load_kernel(&mut self, cid: ClassId, rc: u32) -> (JitKernelId, OpId) {
         let mut kernel = Kernel::new(DeviceId::NULL);
-        let op_id = kernel.param(self.classes[cid].dtype, ParamKind::Global);
+        let op_id = kernel.param(self.dtype(cid), ParamKind::Global);
         let kid = self.jit_kernels.push(JitKernelData {
             kernel,
             outputs: vec![cid; rc as usize],
@@ -589,6 +565,7 @@ impl Graph {
         //println!("outputs={:?}", self.ekernels[kid].outputs);
 
         if !self.jit_kernels[kid].loads.contains(&cid) {
+            let dtype = todo!();
             let dst = self.jit_kernels[kid].kernel.param(dtype, ParamKind::Global);
             self.jit_kernels[kid].kernel.store(dst, op_id, OpId::NULL, MemLayout::Scalar);
             self.jit_kernels[kid].stores.push(cid);
@@ -661,7 +638,6 @@ impl Graph {
         mut op_id: OpId,
         visited: &mut Map<ClassId, (JitKernelId, OpId)>,
         rcs: &Map<ClassId, u32>,
-        shapes: &Slab<ShapeId, Vec<Dim>>,
         force_store: bool,
     ) -> (JitKernelId, OpId) {
         // if kernel has stores, store child and create fresh load kernel
@@ -734,10 +710,9 @@ impl Graph {
         force_store: bool,
         visited: &mut Map<ClassId, (JitKernelId, OpId)>,
         rcs: &mut Map<ClassId, u32>,
-        shapes: &Slab<ShapeId, Vec<Dim>>,
     ) {
         let (mut kid, mut op_id) = visited[&child];
-        (kid, op_id) = self.duplicate_or_store_class(child, kid, op_id, visited, rcs, shapes, force_store);
+        (kid, op_id) = self.duplicate_or_store_class(child, kid, op_id, visited, rcs, force_store);
         self.consume(child, kid, visited, rcs);
         let kernel = &mut self.jit_kernels[kid].kernel;
         let result_op = kernel.push_back(Op::Move { x: op_id, mop: Box::new(mop) });
@@ -823,7 +798,7 @@ impl Graph {
                 continue;
             }
             let region_allowed: Set<ClassId> = region.union(&region_inputs).copied().collect();
-            self.kernelize(&region_inputs, &region_outputs, shapes, Some(&region_allowed));
+            self.kernelize(&region_inputs, &region_outputs, Some(&region_allowed));
         }
     }
 }
