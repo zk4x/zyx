@@ -703,21 +703,13 @@ impl Kernel {
         let mut op_id = self.head;
         while !op_id.is_null() {
             let info = match self.at(op_id) {
+                // TODO implement
+                Op::Param { .. } => Info { shape: vec![1], flops: 0, mem_read: 0, mem_write: 0 },
+                // TODO implement
+                &Op::Load { .. } => Info { shape: vec![1], flops: 0, mem_read: 1, mem_write: 0 },
+                // TODO implement
+                &Op::Store { .. } => Info { shape: vec![1], flops: 0, mem_read: 0, mem_write: 1 },
                 Op::Const(_) => Info { shape: vec![1], flops: 0, mem_read: 0, mem_write: 0 },
-                &Op::Load { src, .. } => {
-                    let Op::Param { dtype, .. } = self.ops[src].op else {
-                        unreachable!()
-                    };
-                    let shape: Vec<Dim> = todo!();
-                    let mem_read = shape.iter().product::<Dim>() * u64::from(dtype.bit_size()) / 8;
-                    Info { shape, flops: 0, mem_read, mem_write: 0 }
-                }
-                &Op::Store { dst, .. } => {
-                    let dtype = self.dtype(dst);
-                    let shape: Vec<Dim> = todo!();
-                    let mem_write = shape.iter().product::<Dim>() * u64::from(dtype.bit_size()) / 8;
-                    Info { shape, flops: 0, mem_read: 0, mem_write }
-                }
                 Op::Move { x, mop } => match mop.as_ref() {
                     MoveOp::Reshape { shape, .. } => Info { shape: todo!(), flops: 0, mem_read: 0, mem_write: 0 },
                     MoveOp::Permute { .. } | MoveOp::Pad { .. } => todo!(),
@@ -780,7 +772,6 @@ impl Kernel {
                 | Op::Index { .. }
                 | Op::Loop { .. }
                 | Op::EndLoop => todo!(),
-                Op::Param { dtype, kind } => todo!(),
             };
             stack.insert(op_id, info);
             op_id = self.next_op(op_id);

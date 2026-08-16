@@ -185,6 +185,15 @@ impl Runtime {
         &self.shapes[&x]
     }
 
+    /// Read the scalar value of a constant tensor as a dimension.
+    fn const_dim(&self, kernel_id: KernelId, op_id: OpId) -> Dim {
+        let kernel = &self.kernels[kernel_id].kernel;
+        match &kernel.ops[op_id].op {
+            Op::Const(c) => c.as_dim().expect("constant shape must be non-negative"),
+            op => todo!("const_dim: {op:?} is not a constant"),
+        }
+    }
+
     pub fn dtype(&self, x: TensorId) -> DType {
         if self.is_graph(x) {
             let (class_id, graph_id) = self.graph_ids(x);
@@ -477,14 +486,17 @@ impl Runtime {
 
     pub(crate) fn new_graph_tensor(&mut self, graph_id: GraphId, class_id: ClassId) -> TensorId {
         self.graphs[graph_id].ref_count += 1;
-        self.tensors.push(TensorData {
+        let shape = self.graphs[graph_id].shape(class_id).to_vec();
+        let tid = self.tensors.push(TensorData {
             kernel_id: KernelId::NULL,
             op_id: OpId::NULL,
             depends_on: KernelId::NULL,
             class_id,
             graph_id,
             rc: 1,
-        })
+        });
+        self.shapes.insert(tid, shape);
+        tid
     }
 
     pub fn push_node(&mut self, graph_id: GraphId, node: Node) -> (NodeId, ClassId) {
@@ -590,6 +602,7 @@ impl Runtime {
         });
         self.kernels[kernel_id].loads.push(tid);
         self.kernels[kernel_id].outputs.push(tid);
+        self.shapes.insert(tid, shape);
         tid
     }
 
@@ -607,6 +620,7 @@ impl Runtime {
             rc: 1,
         });
         self.kernels[kernel_id].outputs.push(tid);
+        self.shapes.insert(tid, vec![1]);
         tid
     }
 
@@ -724,6 +738,7 @@ impl Runtime {
             self.kernels[kernel_id].outputs.push(tid);
             #[cfg(feature = "debug_tensor_op")]
             println!("  -> tid={tid}, kid={kernel_id:?}, op_id={op_id:?}");
+            self.shapes.insert(tid, self.shape(x).to_vec());
             tid
         } else {
             let graph_id = td.graph_id;
@@ -754,6 +769,7 @@ impl Runtime {
             self.kernels[kernel_id].outputs.push(tid);
             #[cfg(feature = "debug_tensor_op")]
             println!("  -> tid={tid}, kid={kernel_id:?}, op_id={op_id:?}");
+            self.shapes.insert(tid, self.shape(x).to_vec());
             tid
         }
     }
@@ -782,6 +798,7 @@ impl Runtime {
             self.kernels[kernel_id].outputs.push(tid);
             #[cfg(feature = "debug_tensor_op")]
             println!("  -> tid={tid}, kid={kernel_id:?}, op_id={op_id:?}");
+            self.shapes.insert(tid, self.shape(x).to_vec());
             tid
         }
     }
@@ -895,6 +912,7 @@ impl Runtime {
 
             #[cfg(feature = "debug_tensor_op")]
             println!("  -> tid={tid}, kid={kernel_id:?}, op_id={op_id:?}");
+            self.shapes.insert(tid, self.shape(x).to_vec());
             Ok(tid)
         }
     }
@@ -992,6 +1010,7 @@ impl Runtime {
 
             #[cfg(feature = "debug_tensor_op")]
             println!("  -> tid={tid}, kid={kid:?}, op_id={op_id:?}");
+            self.shapes.insert(tid, reduce_shape);
             Ok(tid)
         }
     }
@@ -999,7 +1018,7 @@ impl Runtime {
     pub(super) fn reshape(&mut self, x: TensorId, shape: Vec<TensorId>) -> TensorId {
         #[cfg(feature = "debug_tensor_op")]
         println!("runtime::reshape(x={x}, shape={shape:?})");
-        let sh = self.shape(x);
+        let sh = self.shape(x).to_vec();
         /*debug_assert_eq!(
             shape.iter().product::<Dim>(),
             sh.iter().product::<Dim>(),
@@ -1017,10 +1036,12 @@ impl Runtime {
         } else {
             let (kernel_id, op_id) = self.duplicate_or_store(x, false).unwrap();
             let mut new_shape = Vec::new();
+            let mut out_dims = Vec::with_capacity(shape.len());
             for tid in shape {
                 // TODO deal with kernel merges and stores like in binary
-                let (_, op_id) = self.eager_ids(tid);
+                let (kid, op_id) = self.eager_ids(tid);
                 new_shape.push(op_id);
+                out_dims.push(self.const_dim(kid, op_id));
             }
             let op_id = self.kernels[kernel_id].kernel.reshape(op_id, new_shape);
             let tid = self.tensors.push(TensorData {
@@ -1037,6 +1058,7 @@ impl Runtime {
 
             #[cfg(feature = "debug_tensor_op")]
             println!("  -> tid={tid}, kid={kernel_id_dup:?}, op_id={op_id:?}");
+            self.shapes.insert(tid, out_dims);
             tid
         }
     }
@@ -1072,6 +1094,7 @@ impl Runtime {
             let force_store = self.kernels[kernel_id].kernel.is_preceded_by_compute(op_id);
             let (kernel_id, op_id) = self.duplicate_or_store(x, force_store)?;
 
+            let out_shape = shape.clone();
             let op_id = self.kernels[kernel_id].kernel.expand(op_id, shape);
             let tid = self.tensors.push(TensorData {
                 kernel_id,
@@ -1087,6 +1110,7 @@ impl Runtime {
 
             #[cfg(feature = "debug_tensor_op")]
             println!("  -> tid={tid}, kid={kernel_id:?}, op_id={op_id:?}");
+            self.shapes.insert(tid, out_shape);
             Ok(tid)
         }
     }
@@ -1094,7 +1118,7 @@ impl Runtime {
     pub fn permute(&mut self, x: TensorId, axes: Vec<UAxis>) -> TensorId {
         #[cfg(feature = "debug_tensor_op")]
         println!("runtime::permute(x={x}, axes={axes:?})");
-        let sh = self.shape(x);
+        let sh = self.shape(x).to_vec();
         debug_assert_eq!(axes.len(), sh.len(), "permute: axes length {} != rank {}", axes.len(), sh.len());
         {
             let mut sorted = axes.clone();
@@ -1116,6 +1140,7 @@ impl Runtime {
             self.new_graph_tensor(graph_id, class_id)
         } else {
             let (kernel_id, op_id) = self.duplicate_or_store(x, false).unwrap();
+            let permuted_shape = crate::shape::permute(&sh, &axes);
             let op_id = self.kernels[kernel_id].kernel.push_back(Op::Move { x: op_id, mop: Box::new(MoveOp::Permute { axes }) });
             let tid = self.tensors.push(TensorData {
                 kernel_id,
@@ -1129,6 +1154,7 @@ impl Runtime {
             self.kernels[kernel_id].outputs.push(tid);
             #[cfg(feature = "debug_tensor_op")]
             println!("  -> tid={tid}, kid={kernel_id:?}, op_id={op_id:?}");
+            self.shapes.insert(tid, permuted_shape);
             tid
         }
     }
@@ -1166,6 +1192,7 @@ impl Runtime {
             self.kernels[kernel_id].outputs.push(tid);
             #[cfg(feature = "debug_tensor_op")]
             println!("  -> tid={tid}, kid={kernel_id:?}, op_id={op_id:?}");
+            self.shapes.insert(tid, new_shape);
             tid
         }
     }
@@ -1175,7 +1202,7 @@ impl Runtime {
         #[cfg(feature = "debug_tensor_op")]
         println!("runtime::narrow(x={x}, axis={axis}, start={start}, len={len})");
 
-        let sh = self.shape(x);
+        let sh = self.shape(x).to_vec();
         debug_assert!(axis < sh.len() as UAxis, "narrow: axis {axis} out of range for rank {}", sh.len());
 
         if self.is_graph(x) {
@@ -1194,11 +1221,12 @@ impl Runtime {
             debug_assert_eq!(self.kernels[kernel_id].outputs.len(), 0, "input into slice must have empty outputs");
 
             let (_, start) = self.eager_ids(start);
-            let (_, len) = self.eager_ids(len);
+            let (len_kid, len_op) = self.eager_ids(len);
 
             // Move op
-            let op_id =
-                self.kernels[kernel_id].kernel.push_back(Op::Move { x, mop: Box::new(MoveOp::Narrow { axis, start, len }) });
+            let op_id = self.kernels[kernel_id]
+                .kernel
+                .push_back(Op::Move { x, mop: Box::new(MoveOp::Narrow { axis, start, len: len_op }) });
             let tid = self.tensors.push(TensorData {
                 kernel_id,
                 op_id,
@@ -1210,6 +1238,9 @@ impl Runtime {
             self.kernels[kernel_id].outputs.push(tid);
             #[cfg(feature = "debug_tensor_op")]
             println!("  -> tid={tid}, kid={kernel_id:?}, op_id={op_id:?}");
+            let mut narrowed = sh.to_vec();
+            narrowed[axis as usize] = self.const_dim(len_kid, len_op);
+            self.shapes.insert(tid, narrowed);
             tid
         }
     }
@@ -1222,7 +1253,7 @@ impl Runtime {
         #[cfg(feature = "debug_tensor_op")]
         println!("runtime::flip(x={x}, axes={axes:?})");
 
-        let sh = self.shape(x);
+        let sh = self.shape(x).to_vec();
         if axes.is_empty() {
             return Err(ZyxError::shape_error(format!("flip: axes must not be empty for tensor of shape {sh:?}").into()));
         }
@@ -1256,6 +1287,7 @@ impl Runtime {
             self.kernels[kernel_id].outputs.push(tid);
             #[cfg(feature = "debug_tensor_op")]
             println!("  -> tid={tid}, kid={kernel_id:?}, op_id={op_id:?}");
+            self.shapes.insert(tid, sh.to_vec());
             Ok(tid)
         }
     }

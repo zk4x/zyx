@@ -297,7 +297,7 @@ impl Constant {
 
     #[allow(unused)]
     #[must_use]
-    pub(super) fn as_dim(self) -> Option<Dim> {
+    pub(crate) fn as_dim(self) -> Option<Dim> {
         match self {
             Constant::U8(d) => Some(Dim::from(d)),
             Constant::U16(d) => Some(Dim::from(d)),
