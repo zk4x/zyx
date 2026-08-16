@@ -3,7 +3,7 @@
 
 use crate::{
     RT, Tensor, ZyxError,
-    shape::{Dim, UAxis, into_axis},
+    shape::{Dim, into_axis},
     tensor::Axis,
 };
 use std::ops::{Mul, Range, RangeFrom, RangeFull, RangeInclusive, RangeTo};
@@ -291,11 +291,12 @@ impl Tensor {
     /// # Errors
     /// Returns error if self cannot be narrowed.
     #[allow(clippy::missing_panics_doc)]
-    pub fn narrow(&self, axis: Axis, start: Dim, length: Dim) -> Result<Tensor, ZyxError> {
-        let shape = self.shape();
-        let rank = shape.len() as UAxis;
+    pub fn narrow(&self, axis: Axis, start: impl Into<Tensor>, length: impl Into<Tensor>) -> Result<Tensor, ZyxError> {
+        let rank = self.rank() as usize;
         let axis = into_axis(axis, rank)?;
-        let dim = shape[axis];
+        let start = start.into();
+        let length = length.into();
+        /*let dim = shape[axis];
         if start > dim {
             return Err(ZyxError::shape_error(format!("narrow: start {start} out of range on axis {axis} (dim {dim})").into()));
         }
@@ -303,8 +304,8 @@ impl Tensor {
             return Err(ZyxError::shape_error(
                 format!("narrow: start {start} + length {length} > dim {dim} on axis {axis}").into(),
             ));
-        }
-        Ok(Tensor { id: RT.lock().narrow(self.id, axis, start, length) })
+        }*/
+        Ok(Tensor { id: RT.lock().narrow(self.id, axis, start.id, length.id) })
     }
 
     /// Gather

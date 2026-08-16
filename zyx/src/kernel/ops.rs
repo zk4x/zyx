@@ -7,13 +7,14 @@ use crate::slab::SlabId;
 use crate::types::{TinyString, TinyVec};
 use crate::{DType, Map};
 
+/// Kernel parameter kind
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, SerBin)]
 pub enum ParamKind {
-    // Single scalar variable
+    /// Single scalar variable
     Variable,
-    // Global read only buffer
+    /// Global read only buffer
     Global,
-    // Global read-write buffer
+    /// Global read-write buffer
     GlobalMut,
 }
 
@@ -285,7 +286,7 @@ pub enum MoveOp {
     /// Flip axes
     Flip { axes: Vec<UAxis> },
     /// Slice axis
-    Narrow { axis: UAxis, start: OpId, len: Dim },
+    Narrow { axis: UAxis, start: OpId, len: OpId },
 }
 
 impl MoveOp {

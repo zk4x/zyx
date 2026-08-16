@@ -369,7 +369,7 @@ fn mix_reshape1() -> Result<(), ZyxError> {
 
 #[test]
 fn pool() -> Result<(), ZyxError> {
-    let mut x = Tensor::from((0..9).collect::<Vec<i32>>()).reshape((3, 3))?;
+    let mut x = Tensor::from((0..9).collect::<Vec<i32>>()).reshape([3, 3])?;
     //x = x.repeat([2, 2]);
     //println!("{x}");
     //x = x.reshape([12, 3]);
@@ -382,7 +382,7 @@ fn pool() -> Result<(), ZyxError> {
 
 #[test]
 fn cumsum() -> Result<(), ZyxError> {
-    let mut x = Tensor::from((0..9).collect::<Vec<i32>>()).reshape((3, 3))?;
+    let mut x = Tensor::from((0..9).collect::<Vec<i32>>()).reshape([3, 3])?;
     x = x.cumsum(1)?;
     assert_eq!(x, [[0, 1, 3], [3, 7, 12], [6, 13, 21]]);
     Ok(())
@@ -857,7 +857,7 @@ fn binary_y_depends_on_x() -> Result<(), ZyxError> {
 
         let y = x.permute([1, 0]).unwrap();
 
-        let z = x.reshape(6).unwrap() + y.reshape(6).unwrap() + x.reshape(6).unwrap();
+        let z = x.reshape([6]).unwrap() + y.reshape([6]).unwrap() + x.reshape([6]).unwrap();
         z.exp2().log2()
     };
     assert_eq!(z, [6f32, 11., 6., 8., 5., 12.]);

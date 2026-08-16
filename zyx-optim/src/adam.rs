@@ -51,7 +51,7 @@ impl Adam {
     pub fn update<'a>(
         &mut self,
         parameters: impl IntoIterator<Item = &'a mut Tensor>,
-        gradients: impl IntoIterator<Item = Option<Tensor>>,
+        gradients: impl IntoIterator<Item = Tensor>,
     ) {
         use zyx::Scalar;
         //let params: Vec<&mut Tensor> = parameters.into_iter().collect();
@@ -65,14 +65,7 @@ impl Adam {
 
         self.t += 1;
 
-        for (i, (param, grad)) in parameters.into_iter().zip(gradients).enumerate() {
-            let Some(mut grad) = grad else {
-                if self.m.len() <= i {
-                    self.m.push(Tensor::zeros_like(&*param));
-                    self.v.push(Tensor::zeros_like(&*param));
-                }
-                continue;
-            };
+        for (i, (param, mut grad)) in parameters.into_iter().zip(gradients).enumerate() {
             if self.weight_decay != 0.0 {
                 grad = grad + &*param * self.weight_decay;
             }

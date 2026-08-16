@@ -59,17 +59,13 @@ fn main() -> Result<(), ZyxError> {
         let now = Instant::now();
         Tensor::set_training(true);
         let tape = Tape::new(&net)?;
-        let samples = Tensor::uniform(batch_size, 0..n_train)?;
+        let samples = Tensor::randint(batch_size, 0..n_train)?;
         let x = train_x.index_select(0, &samples)?;
-        let y = train_y.index_select(0, &samples)?;
+        let y = train_y.index_select(0, samples)?;
 
         let logits = net.forward(&x);
         let loss = logits.cross_entropy(y, ReduceOp::Mean)?;
-        let grads: Vec<_> = tape
-            .gradient(&loss, &net)
-            .into_iter()
-            .map(Some)
-            .collect::<Vec<_>>();
+        let grads = tape.gradient(&loss, &net);
         optim.update(&mut net, grads);
 
         let elapsed_ms = now.elapsed().as_secs_f64() * 1000.0;

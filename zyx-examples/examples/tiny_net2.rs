@@ -38,9 +38,9 @@ fn main() -> Result<(), ZyxError> {
         let tape = Tape::new(&net)?;
         let y = net.forward(&x);
         let loss = y.mse_loss(&target)?;
-        let grads = tape.gradient(&loss, &net).into_iter().map(Some).collect::<Vec<_>>();
+        let grads = tape.gradient(&loss, &net);
         optim.update(&mut net, grads);
-        
+
         //
     }
 

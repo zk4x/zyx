@@ -19,11 +19,7 @@ fn main() -> Result<(), ZyxError> {
     for _ in 0..100 {
         let tape = Tape::new([&w])?;
         let y = x.matmul(&w)?.sigmoid();
-        let grads = tape
-            .gradient(&y, [&w])
-            .into_iter()
-            .map(Some)
-            .collect::<Vec<_>>();
+        let grads = tape.gradient(&y, [&w]);
         optim.update([&mut w], grads);
 
         //

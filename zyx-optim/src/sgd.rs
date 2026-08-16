@@ -45,10 +45,10 @@ impl SGD {
     pub fn update<'a>(
         &mut self,
         parameters: impl IntoIterator<Item = &'a mut Tensor>,
-        gradients: impl IntoIterator<Item = Option<Tensor>>,
+        gradients: impl IntoIterator<Item = Tensor>,
     ) {
         let params: Vec<&mut Tensor> = parameters.into_iter().collect();
-        let grads: Vec<Option<Tensor>> = gradients.into_iter().collect();
+        let grads: Vec<Tensor> = gradients.into_iter().collect();
 
         assert_eq!(
             params.len(),
@@ -57,30 +57,28 @@ impl SGD {
         );
 
         let mut bias_idx = 0usize;
-        for (param, grad) in params.into_iter().zip(grads) {
-            if let Some(mut grad) = grad {
-                if self.weight_decay != 0.0 {
-                    grad = grad + param.clone() * self.weight_decay;
-                }
-                if self.momentum != 0.0 {
-                    if bias_idx < self.bias.len() {
-                        self.bias[bias_idx] =
-                            self.bias[bias_idx].clone() * self.momentum + grad.clone() * (1.0 - self.dampening);
-                    } else {
-                        self.bias.push(grad.clone());
-                    }
-                    if self.nesterov {
-                        grad = grad + self.bias[bias_idx].clone() * self.momentum;
-                    } else {
-                        grad = self.bias[bias_idx].clone();
-                    }
-                    bias_idx += 1;
-                }
-                if self.maximize {
-                    *param = (&*param + grad * self.learning_rate).cast(param.dtype());
+        for (param, mut grad) in params.into_iter().zip(grads) {
+            if self.weight_decay != 0.0 {
+                grad = grad + param.clone() * self.weight_decay;
+            }
+            if self.momentum != 0.0 {
+                if bias_idx < self.bias.len() {
+                    self.bias[bias_idx] = self.bias[bias_idx].clone() * self.momentum
+                        + grad.clone() * (1.0 - self.dampening);
                 } else {
-                    *param = (&*param - grad * self.learning_rate).cast(param.dtype());
+                    self.bias.push(grad.clone());
                 }
+                if self.nesterov {
+                    grad = grad + self.bias[bias_idx].clone() * self.momentum;
+                } else {
+                    grad = self.bias[bias_idx].clone();
+                }
+                bias_idx += 1;
+            }
+            if self.maximize {
+                *param = (param.clone() + grad * self.learning_rate).cast(param.dtype());
+            } else {
+                *param = (param.clone() - grad * self.learning_rate).cast(param.dtype());
             }
         }
     }

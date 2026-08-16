@@ -649,11 +649,11 @@ impl Tensor {
     /// Create tensor of discrete uniform integers in range [low, high).
     /// # Errors
     /// Returns device error if the device fails to allocate memory for tensor.
-    pub fn randint<T: Scalar>(shape: impl IntoShape, low: T, high: T) -> Result<Tensor, ZyxError> {
+    pub fn randint<T: Scalar>(shape: impl IntoShape, range: impl core::ops::RangeBounds<T> + Clone) -> Result<Tensor, ZyxError> {
         let shape: Vec<Dim> = shape.into_shape().collect();
         let n = shape.iter().product();
         let mut rt = RT.lock();
-        let data: Vec<T> = (0..n).map(|_| rt.rng.range(low..high)).collect();
+        let data: Vec<T> = (0..n).map(|_| rt.rng.range(range.clone())).collect();
         Ok(Tensor { id: rt.new_host_tensor(shape.clone(), data.into())? })
     }
 

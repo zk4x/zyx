@@ -13,7 +13,7 @@ fn main() -> Result<(), ZyxError> {
 
     let batch_size: u64 = 128;
     let n_train = 60000;
-    let indices = Tensor::randint::<i64>(batch_size, 0, n_train as i64)?;
+    let indices = Tensor::randint::<i64>(batch_size, 0..n_train as i64)?;
     let x = train_x.index_select(0, &indices)?;
     let y = train_y.index_select(0, &indices)?;
 

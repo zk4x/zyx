@@ -51,23 +51,11 @@ impl AdamW {
     pub fn update<'a>(
         &mut self,
         parameters: impl IntoIterator<Item = &'a mut Tensor>,
-        gradients: impl IntoIterator<Item = Option<Tensor>>,
+        gradients: impl IntoIterator<Item = Tensor>,
     ) {
         use zyx::Scalar;
         self.t += 1;
         for (i, (param, grad)) in parameters.into_iter().zip(gradients).enumerate() {
-            let Some(grad) = grad else {
-                // Initialize moment estimates for new params (lazy)
-                if self.m.len() <= i {
-                    self.m.push(Tensor::zeros_like(&*param));
-                    self.v.push(Tensor::zeros_like(&*param));
-                    if self.amsgrad {
-                        self.vm.push(Tensor::zeros_like(&*param));
-                    }
-                }
-                continue;
-            };
-
             // Update biased first moment estimate
             if let Some(m) = self.m.get_mut(i) {
                 *m = &*m * self.betas.0 + &grad * (1.0 - self.betas.0);

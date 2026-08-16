@@ -371,7 +371,13 @@ impl Graph {
                     }
                     Node::Reshape { x, ref shape } => {
                         let shape = shape.clone();
-                        self.add_move(cid, x, MoveOp::Reshape { shape }, false, &mut visited, &mut rcs);
+                        let mut new_shape = Vec::new();
+                        for cid in shape {
+                            // TODO deal with kernel merges and stores like in binary
+                            let (_, op_id) = visited[&cid];
+                            new_shape.push(op_id);
+                        }
+                        self.add_move(cid, x, MoveOp::Reshape { shape: new_shape }, false, &mut visited, &mut rcs);
                     }
                     Node::PadZeros { x, ref padding } => {
                         let (kid, op_id) = visited[&x];
@@ -387,15 +393,15 @@ impl Graph {
                         // runtime::narrow). Mirror the eager path: load it as a
                         // read-only variable define in this kernel, backed by the
                         // leaf's host buffer.
-                        let start_cid = start;
                         let (mut kid, mut op_id) = visited[&x];
                         (kid, op_id) = self.duplicate_or_store_class(x, kid, op_id, &mut visited, &mut rcs, false);
-                        self.consume(x, kid, &mut visited, &mut rcs);
-                        let start_op = self.jit_kernels[kid].kernel.param(IDX_T, ParamKind::Variable);
-                        self.jit_kernels[kid].loads.push(start_cid);
+                        // TODO binary like handling for start and length
+                        let (_, start) = visited[&start];
+                        let (_, len) = visited[&len];
                         let result_op = self.jit_kernels[kid]
                             .kernel
-                            .push_back(Op::Move { x: op_id, mop: Box::new(MoveOp::Narrow { axis, start: start_op, len }) });
+                            .push_back(Op::Move { x: op_id, mop: Box::new(MoveOp::Narrow { axis, start, len }) });
+                        self.consume(x, kid, &mut visited, &mut rcs);
                         self.push_outputs(kid, cid, *rcs.get(&cid).unwrap());
                         visited.insert(cid, (kid, result_op));
                     }

@@ -33,7 +33,7 @@ use crate::{
     dtype::Constant,
     error::{BackendError, ErrorStatus},
     graph::{ClassId, EClass, ExecPlan, Graph, GraphId, Node, NodeData, NodeId, plan::drain_events_for_buf},
-    kernel::{BOp, DeviceId, IDX_T, Kernel, MemLayout, MemScope, MoveOp, Op, OpId, ParamKind, UOp, autotune::OptSeq},
+    kernel::{BOp, DeviceId, Kernel, MemLayout, MemScope, MoveOp, Op, OpId, ParamKind, UOp, autotune::OptSeq},
     rng::Rng,
     shape::{Dim, UAxis},
     slab::{Slab, SlabId},
@@ -456,7 +456,7 @@ impl Runtime {
         );
     }
 
-    pub fn push_leaf_node(&mut self, graph_id: GraphId) -> (NodeId, ClassId) {
+    pub fn push_leaf_node(&mut self, graph_id: GraphId, dtype: DType) -> (NodeId, ClassId) {
         let g = &mut self.graphs[graph_id];
         let leaf_id = g.max_leaf_id;
         g.max_leaf_id += 1;
@@ -497,7 +497,7 @@ impl Runtime {
                     in_shape
                 );*/
             }
-            Node::Reshape { x, shape } => {
+            Node::Reshape { x, ref shape } => {
                 /*let in_shape = &self.shapes[self.graphs[graph_id].classes[x].shape];
                 let out_shape = &self.shapes[out_shape_id];
                 assert_eq!(
@@ -508,28 +508,22 @@ impl Runtime {
                     out_shape
                 );*/
             }
-            Node::Expand { x, shape: out_shape_id } => {
-                let in_shape = &self.shapes[self.graphs[graph_id].classes[x].shape];
-                let out_shape = &self.shapes[out_shape_id];
+            Node::Expand { x, ref shape } => {
+                let in_shape = self.graphs[graph_id].shape(x);
                 assert!(
-                    in_shape.len() <= out_shape.len(),
+                    in_shape.len() <= shape.len(),
                     "Expand: input rank {} > output rank {}: {:?} -> {:?}",
                     in_shape.len(),
-                    out_shape.len(),
+                    shape.len(),
                     in_shape,
-                    out_shape
+                    shape
                 );
-                for (old, new) in in_shape.iter().copied().rev().zip(out_shape.iter().copied().rev()) {
-                    assert!(
-                        old == new || old == 1,
-                        "Expand: incompatible dims: {old} vs {new} in {:?} -> {:?}",
-                        in_shape,
-                        out_shape
-                    );
+                for (old, new) in in_shape.iter().copied().rev().zip(shape.iter().copied().rev()) {
+                    assert!(old == new || old == 1, "Expand: incompatible dims: {old} vs {new} in {:?} -> {:?}", in_shape, shape);
                 }
             }
             Node::Reduce { x, ref axes, .. } => {
-                let in_shape = &self.shapes[self.graphs[graph_id].classes[x].shape];
+                let in_shape = self.graphs[graph_id].shape(x);
                 for &a in axes.iter() {
                     assert!(
                         a < in_shape.len(),
@@ -541,7 +535,7 @@ impl Runtime {
                 }
             }
             Node::PadZeros { x, ref padding } => {
-                let in_shape = &self.shapes[self.graphs[graph_id].classes[x].shape];
+                let in_shape = self.graphs[graph_id].shape(x);
                 assert_eq!(
                     padding.len(),
                     in_shape.len(),
@@ -907,8 +901,6 @@ impl Runtime {
         println!("runtime::to_device(x={x}, device_id={device_id:?})");
         let (class_id, graph_id) = self.graph_ids(x);
         self.assert_graph_alive(graph_id);
-        let shape_id = self.tensors[x].shape_id;
-        let dtype = self.tensors[x].dtype;
         // TODO measure actual time by running a test copy
         let (_node_id, cid) = self.push_node(graph_id, Node::ToDevice { x: class_id, device: device_id, time: 0 });
         let tid = self.new_graph_tensor(graph_id, cid);
@@ -923,8 +915,6 @@ impl Runtime {
 
         if self.is_graph(x) {
             let (class_id, graph_id) = self.graph_ids(x);
-            let shape_id = self.tensors[x].shape_id;
-            let dtype = self.tensors[x].dtype;
             let (_node_id, cid) = self.push_node(graph_id, Node::Contiguous { x: class_id });
             let tid = self.new_graph_tensor(graph_id, cid);
             #[cfg(feature = "debug_tensor_op")]
@@ -945,11 +935,9 @@ impl Runtime {
     pub fn reduce(&mut self, x: TensorId, mut axes: Vec<UAxis>, rop: BOp) -> Result<TensorId, ZyxError> {
         #[cfg(feature = "debug_tensor_op")]
         println!("runtime::reduce(x={x}, axes={axes:?}, rop={rop:?})");
-        let dtype = self.tensors[x].dtype;
         let shape = self.shape(x).to_vec();
         axes.sort_unstable();
         let reduce_shape = crate::shape::reduce(&shape, &axes);
-        let shape_id = self.push_shape(reduce_shape);
 
         if self.is_graph(x) {
             let (class_id, graph_id) = self.graph_ids(x);
@@ -982,7 +970,8 @@ impl Runtime {
             op_id = self.kernels[kid].kernel.push_back(Op::Reduce { x: op_id, rop, n_axes: axes.len() });
 
             if shape.len() == axes.len() {
-                op_id = self.kernels[kid].kernel.reshape(op_id, &[1]);
+                todo!()
+                //op_id = self.kernels[kid].kernel.reshape(op_id, &[1]);
             }
 
             let tid = self.tensors.push(TensorData {
@@ -1018,48 +1007,20 @@ impl Runtime {
 
         if self.is_graph(x) {
             let (class_id, graph_id) = self.graph_ids(x);
+            let shape = shape.iter().map(|&tid| self.tensors[tid].class_id).collect();
             let (_, class_id) = self.push_node(graph_id, Node::Reshape { x: class_id, shape });
             self.new_graph_tensor(graph_id, class_id)
         } else {
-            // If x is realized, create a load kernel with the target shape.
-            // The result shares x's buffer (set in buffer_map), so add_store
-            // won't add a StoreView for it. This avoids copying data for a
-            // view-only reshape.
-            if let Some(&buf_id) = self.buffer_map.get(&x) {
-                let scope = if self.is_variable_tensor(x) {
-                    MemScope::Variable
-                } else {
-                    MemScope::Global
-                };
-                let mut kernel = Kernel::new(DeviceId::AUTO);
-                let op_id = kernel.param(dtype, scope, true, &shape);
-                let kernel_id =
-                    self.kernels.push(KernelData { outputs: Vec::new(), loads: Vec::new(), stores: Vec::new(), kernel });
-                let tid = self.tensors.push(TensorData {
-                    shape_id,
-                    dtype,
-                    kernel_id,
-                    op_id,
-                    depends_on: KernelId::NULL,
-                    class_id: ClassId::NULL,
-                    graph_id: GraphId::NULL,
-                    rc: 1,
-                });
-                self.kernels[kernel_id].outputs.push(tid);
-                self.kernels[kernel_id].loads.push(tid);
-                self.retain_load(tid);
-                self.buffer_map.insert(tid, buf_id);
-                #[cfg(feature = "debug_tensor_op")]
-                println!("  -> tid={tid} (load kernel, shares buffer with x={x})");
-                return tid;
+            let (kernel_id, op_id) = self.duplicate_or_store(x, false).unwrap();
+            let mut new_shape = Vec::new();
+            for tid in shape {
+                // TODO deal with kernel merges and stores like in binary
+                let (_, op_id) = self.eager_ids(tid);
+                new_shape.push(op_id);
             }
-
-            let (kernel_id_dup, op_id_dup) = self.duplicate_or_store(x, false).unwrap();
-            let op_id = self.kernels[kernel_id_dup].kernel.reshape(op_id_dup, &shape);
+            let op_id = self.kernels[kernel_id].kernel.reshape(op_id, new_shape);
             let tid = self.tensors.push(TensorData {
-                shape_id,
-                dtype,
-                kernel_id: kernel_id_dup,
+                kernel_id,
                 op_id,
                 depends_on: KernelId::NULL,
                 class_id: ClassId::NULL,
@@ -1067,8 +1028,8 @@ impl Runtime {
                 rc: 1,
             });
 
-            debug_assert_eq!(self.kernels[kernel_id_dup].outputs.len(), 0, "input into reshape must have empty outputs");
-            self.kernels[kernel_id_dup].outputs.push(tid);
+            debug_assert_eq!(self.kernels[kernel_id].outputs.len(), 0, "input into reshape must have empty outputs");
+            self.kernels[kernel_id].outputs.push(tid);
 
             #[cfg(feature = "debug_tensor_op")]
             println!("  -> tid={tid}, kid={kernel_id_dup:?}, op_id={op_id:?}");
@@ -1098,22 +1059,17 @@ impl Runtime {
             return Ok(x);
         }
 
-        let shape_id = self.push_shape(shape);
-        let dtype = self.tensors[x].dtype;
-
         if self.is_graph(x) {
             let (class_id, graph_id) = self.graph_ids(x);
-            let (_, class_id) = self.push_node(graph_id, Node::Expand { x: class_id, shape: shape_id }, shape_id, dtype);
-            Ok(self.new_graph_tensor(graph_id, class_id, shape_id, dtype))
+            let (_, class_id) = self.push_node(graph_id, Node::Expand { x: class_id, shape });
+            Ok(self.new_graph_tensor(graph_id, class_id))
         } else {
             let (kernel_id, op_id) = self.eager_ids(x);
             let force_store = self.kernels[kernel_id].kernel.is_preceded_by_compute(op_id);
             let (kernel_id, op_id) = self.duplicate_or_store(x, force_store)?;
 
-            let op_id = self.kernels[kernel_id].kernel.expand(op_id, &self.shapes[shape_id]);
+            let op_id = self.kernels[kernel_id].kernel.expand(op_id, shape);
             let tid = self.tensors.push(TensorData {
-                shape_id,
-                dtype,
                 kernel_id,
                 op_id,
                 depends_on: KernelId::NULL,
@@ -1150,23 +1106,14 @@ impl Runtime {
             return x;
         }
 
-        let new_shape = crate::shape::permute(self.shape(x), &axes);
-        let shape_id = self.push_shape(new_shape.clone());
-        let dtype = self.tensors[x].dtype;
-
         if self.is_graph(x) {
             let (class_id, graph_id) = self.graph_ids(x);
-            let (_, class_id) =
-                self.push_node(graph_id, Node::Permute { x: class_id, axes: axes.into_boxed_slice() }, shape_id, dtype);
-            self.new_graph_tensor(graph_id, class_id, shape_id, dtype)
+            let (_, class_id) = self.push_node(graph_id, Node::Permute { x: class_id, axes: axes.into_boxed_slice() });
+            self.new_graph_tensor(graph_id, class_id)
         } else {
             let (kernel_id, op_id) = self.duplicate_or_store(x, false).unwrap();
-            let op_id = self.kernels[kernel_id]
-                .kernel
-                .push_back(Op::Move { x: op_id, mop: Box::new(MoveOp::Permute { axes, shape: new_shape }) });
+            let op_id = self.kernels[kernel_id].kernel.push_back(Op::Move { x: op_id, mop: Box::new(MoveOp::Permute { axes }) });
             let tid = self.tensors.push(TensorData {
-                shape_id,
-                dtype,
                 kernel_id,
                 op_id,
                 depends_on: KernelId::NULL,
@@ -1193,24 +1140,17 @@ impl Runtime {
         let mut new_shape = sh.to_vec();
         crate::shape::pad(&mut new_shape, &padding);
         let pad_n: Dim = new_shape.iter().product();
-        let shape_id = self.push_shape(new_shape.clone());
-        let dtype = self.tensors[x].dtype;
 
         if self.is_graph(x) {
             let (class_id, graph_id) = self.graph_ids(x);
-            let (_, class_id) =
-                self.push_node(graph_id, Node::PadZeros { x: class_id, padding: padding.into_boxed_slice() }, shape_id, dtype);
-            self.new_graph_tensor(graph_id, class_id, shape_id, dtype)
+            let (_, class_id) = self.push_node(graph_id, Node::PadZeros { x: class_id, padding: padding.into_boxed_slice() });
+            self.new_graph_tensor(graph_id, class_id)
         } else {
             let (kernel_id, op_id) = self.eager_ids(x);
             let force_store = pad_n > child_n && self.kernels[kernel_id].kernel.is_preceded_by_compute(op_id);
             let (kernel_id, op_id) = self.duplicate_or_store(x, force_store).unwrap();
-            let op_id = self.kernels[kernel_id]
-                .kernel
-                .push_back(Op::Move { x: op_id, mop: Box::new(MoveOp::Pad { padding, shape: new_shape }) });
+            let op_id = self.kernels[kernel_id].kernel.push_back(Op::Move { x: op_id, mop: Box::new(MoveOp::Pad { padding }) });
             let tid = self.tensors.push(TensorData {
-                shape_id,
-                dtype,
                 kernel_id,
                 op_id,
                 depends_on: KernelId::NULL,
@@ -1227,83 +1167,35 @@ impl Runtime {
     }
 
     /// Narrow
-    pub fn narrow(&mut self, x: TensorId, axis: UAxis, start: Dim, len: Dim) -> TensorId {
+    pub fn narrow(&mut self, x: TensorId, axis: UAxis, start: TensorId, len: TensorId) -> TensorId {
         #[cfg(feature = "debug_tensor_op")]
-        println!("runtime::slice(x={x}, axis={axis}, start={start}, len={len})");
+        println!("runtime::narrow(x={x}, axis={axis}, start={start}, len={len})");
 
         let sh = self.shape(x);
-        debug_assert!(axis < sh.len() as UAxis, "slice: axis {axis} out of range for rank {}", sh.len());
-
-        let mut new_shape = sh.to_vec();
-        new_shape[axis] = len;
-        let shape_id = self.push_shape(new_shape.clone());
-        let dtype = self.tensors[x].dtype;
+        debug_assert!(axis < sh.len() as UAxis, "narrow: axis {axis} out of range for rank {}", sh.len());
 
         if self.is_graph(x) {
-            let (class_id, graph_id) = self.graph_ids(x);
-            // The crop offset is a graph leaf backed by a host variable buffer,
-            // mirroring the eager path: the value lives in a buffer, not in the
-            // kernel identity, so changing the start (e.g. a rolling kv-cache
-            // window) reuses the compiled plan instead of recompiling.
-            let scalar_shape = self.push_shape(vec![1]);
-            let (_, start_cid) = self.push_leaf_node(graph_id, IDX_T, scalar_shape);
+            let (class_id, graph_id_x) = self.graph_ids(x);
+            let (start, graph_id_start) = self.graph_ids(start);
+            let (len, graph_id_len) = self.graph_ids(len);
 
-            let MemoryPool::Host(ref mut pool) = self.pools[PoolId::HOST] else {
-                unreachable!("Host must exist.")
-            };
-            let buffer_id = BufferId { pool: PoolId::HOST, buffer: pool.store_variable(Constant::idx(start)) };
+            debug_assert_eq!(graph_id_x, graph_id_start);
+            debug_assert_eq!(graph_id_x, graph_id_len);
 
-            let start_tid = self.tensors.push(TensorData {
-                shape_id: scalar_shape,
-                dtype: IDX_T,
-                kernel_id: KernelId::NULL,
-                op_id: OpId::NULL,
-                depends_on: KernelId::NULL,
-                class_id: start_cid,
-                graph_id,
-                rc: 1,
-            });
-            self.buffer_map.insert(start_tid, buffer_id);
-            self.graphs[graph_id].leaf_map.insert(start_cid, start_tid);
-            self.graphs[graph_id].leaf_classes.push(start_cid);
-            self.graphs[graph_id].ref_count += 1;
-
-            let (_, class_id) =
-                self.push_node(graph_id, Node::Narrow { x: class_id, axis, start: start_cid, len }, shape_id, dtype);
-            self.new_graph_tensor(graph_id, class_id, shape_id, dtype)
+            let (_, class_id) = self.push_node(graph_id_x, Node::Narrow { x: class_id, axis, start, len });
+            self.new_graph_tensor(graph_id_x, class_id)
         } else {
             // Create the tensor and store the start variable
             let (kernel_id, x) = self.duplicate_or_store(x, false).unwrap();
             debug_assert_eq!(self.kernels[kernel_id].outputs.len(), 0, "input into slice must have empty outputs");
 
-            let MemoryPool::Host(ref mut pool) = self.pools[PoolId::HOST] else {
-                unreachable!("Host must exist.")
-            };
-            let buffer_id = BufferId { pool: PoolId::HOST, buffer: pool.store_variable(Constant::idx(start)) };
-
-            let start_op_id = self.kernels[kernel_id].kernel.param(IDX_T, MemScope::Variable, true, &[1]);
-
-            // Tensor for start variable
-            let tid = self.tensors.push(TensorData {
-                shape_id,
-                dtype: IDX_T,
-                kernel_id,
-                op_id: start_op_id,
-                depends_on: KernelId::NULL,
-                class_id: ClassId::NULL,
-                graph_id: GraphId::NULL,
-                rc: 1,
-            });
-            self.buffer_map.insert(tid, buffer_id);
-            self.kernels[kernel_id].loads.push(tid);
+            let (_, start) = self.eager_ids(start);
+            let (_, len) = self.eager_ids(len);
 
             // Move op
-            let op_id = self.kernels[kernel_id]
-                .kernel
-                .push_back(Op::Move { x, mop: Box::new(MoveOp::Narrow { axis, start: start_op_id, len }) });
+            let op_id =
+                self.kernels[kernel_id].kernel.push_back(Op::Move { x, mop: Box::new(MoveOp::Narrow { axis, start, len }) });
             let tid = self.tensors.push(TensorData {
-                shape_id,
-                dtype,
                 kernel_id,
                 op_id,
                 depends_on: KernelId::NULL,
@@ -1338,14 +1230,10 @@ impl Runtime {
         axes.sort_unstable();
         axes.dedup();
 
-        let shape_id = self.push_shape(sh.to_vec());
-        let dtype = self.tensors[x].dtype;
-
         if self.is_graph(x) {
             let (class_id, graph_id) = self.graph_ids(x);
-            let (_, class_id) =
-                self.push_node(graph_id, Node::Flip { x: class_id, axes: axes.into_boxed_slice() }, shape_id, dtype);
-            let tid = self.new_graph_tensor(graph_id, class_id, shape_id, dtype);
+            let (_, class_id) = self.push_node(graph_id, Node::Flip { x: class_id, axes: axes.into_boxed_slice() });
+            let tid = self.new_graph_tensor(graph_id, class_id);
             #[cfg(feature = "debug_tensor_op")]
             println!("  -> tid={tid}, cid={class_id:?}");
             Ok(tid)
@@ -1353,8 +1241,6 @@ impl Runtime {
             let (kernel_id, op_id) = self.duplicate_or_store(x, false).unwrap();
             let op_id = self.kernels[kernel_id].kernel.flip(op_id, &axes);
             let tid = self.tensors.push(TensorData {
-                shape_id,
-                dtype,
                 kernel_id,
                 op_id,
                 depends_on: KernelId::NULL,
@@ -1375,7 +1261,7 @@ impl Runtime {
     pub fn load<T: Scalar>(&mut self, x: TensorId, data: &mut [T]) -> Result<(), ZyxError> {
         #[cfg(feature = "debug_tensor_op")]
         println!("runtime::load(x={x})");
-        let dt = self.tensors[x].dtype;
+        let dt = self.dtype(x);
         if dt != T::dtype() {
             return Err(ZyxError::DTypeError(format!("loading dtype {}, but the data has dtype {dt}", T::dtype()).into()));
         }
@@ -1469,8 +1355,8 @@ impl Runtime {
         #[cfg(feature = "debug_tensor_op")]
         println!("runtime::assign(dst={dst}, src={src})");
 
-        let dst_dtype = self.tensors[dst].dtype;
-        let src_dtype = self.tensors[src].dtype;
+        let dst_dtype = self.dtype(dst);
+        let src_dtype = self.dtype(src);
         if dst_dtype != src_dtype {
             return Err(ZyxError::DTypeError(format!("assign dtype mismatch: dst={dst_dtype}, src={src_dtype}").into()));
         }
@@ -1526,14 +1412,9 @@ impl Runtime {
             // output class cid is what any later use of dst or src resolves to,
             // so both tensors are re-pointed at it.
             let src_cid = self.graph_ids(src).0;
-            let shape_id = self.tensors[dst].shape_id;
-            let dtype = self.tensors[dst].dtype;
-            let define_shape_id = self.tensors[dst_define].shape_id;
-            let define_dtype = self.tensors[dst_define].dtype;
-            let (_node_id, assign_cid) = self.push_node(graph_id, Node::Assign { dst: dst_cid, src: src_cid }, shape_id, dtype);
-            self.tensors[dst_define].class_id =
-                self.push_node(graph_id, Node::After { x: dst_define_cid, dep: assign_cid }, define_shape_id, define_dtype).1;
-            self.tensors[dst].class_id = self.push_node(graph_id, Node::After { x: dst_cid, dep: assign_cid }, shape_id, dtype).1;
+            let (_node_id, assign_cid) = self.push_node(graph_id, Node::Assign { dst: dst_cid, src: src_cid });
+            self.tensors[dst_define].class_id = self.push_node(graph_id, Node::After { x: dst_define_cid, dep: assign_cid }).1;
+            self.tensors[dst].class_id = self.push_node(graph_id, Node::After { x: dst_cid, dep: assign_cid }).1;
             #[cfg(feature = "debug_tensor_op")]
             println!("  -> cid={cid:?}");
             return Ok(());
@@ -1604,11 +1485,11 @@ impl Runtime {
                     let id = self.kernels[src_kid].kernel.push_back(Op::Const(value));
                     op_map.insert(op_id, id);
                 }
-                Op::Storage { dtype, scope, mut ro, ref shape } => {
+                Op::Param { dtype, mut kind } => {
                     if op_id == dst_define {
-                        ro = false;
+                        kind = ParamKind::GlobalMut;
                     }
-                    let id = self.kernels[src_kid].kernel.push_back(Op::Storage { dtype, scope, ro, shape: shape.clone() });
+                    let id = self.kernels[src_kid].kernel.push_back(Op::Param { dtype, kind });
                     op_map.insert(op_id, id);
                 }
                 Op::Move { x, ref mop } => {
@@ -1759,8 +1640,6 @@ impl Runtime {
             }
         }
         //println!("DEINIT runtime");
-        self.shape_map = Map::default();
-        self.shapes = Slab::new();
         self.tensors = Slab::new();
         self.kernels = Slab::new();
     }
@@ -1880,14 +1759,13 @@ impl Runtime {
         debug_assert!(count > 0, "add_store called for tid not in outputs");
 
         // Only add StoreView if x isn't already realized or pending
+        let dtype = self.dtype(x);
         let add_store = !self.buffer_map.contains_key(&x) && pending.is_null();
         let pending = if add_store {
             // Invariant: a kernel must never both load and store the same tensor
             debug_assert!(!self.kernels[kid].loads.contains(&x), "kernel {kid:?} both loads and stores tid {x}");
 
-            let dtype = self.tensors[x].dtype;
-            let shape = &self.shapes[self.tensors[x].shape_id];
-            let dst_id = self.kernels[kid].kernel.param(dtype, MemScope::Global, false, shape);
+            let dst_id = self.kernels[kid].kernel.param(dtype, ParamKind::GlobalMut);
             self.kernels[kid].kernel.store(dst_id, op_id, OpId::NULL, MemLayout::Scalar);
             self.kernels[kid].stores.push(x);
             kid
@@ -1898,7 +1776,6 @@ impl Runtime {
         let outputs_empty = self.kernels[kid].outputs.is_empty();
 
         // Create load kernel so the tensor remains usable (visited must point to a live kernel)
-        let dtype = self.tensors[x].dtype;
         let scope = if self.is_variable_tensor(x) {
             MemScope::Variable
         } else {
@@ -1906,7 +1783,7 @@ impl Runtime {
         };
         let shape = self.shape(x);
         let mut kernel = Kernel::new(DeviceId::AUTO);
-        let load_op_id = kernel.param(dtype, scope, true, shape);
+        let load_op_id = kernel.param(dtype, ParamKind::GlobalMut);
         let load_kid = self.kernels.push(KernelData { outputs: vec![x; count], loads: vec![x], stores: Vec::new(), kernel });
         self.tensors[x].kernel_id = load_kid;
         self.tensors[x].op_id = load_op_id;

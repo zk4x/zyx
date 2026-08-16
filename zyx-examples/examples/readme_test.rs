@@ -1,7 +1,7 @@
 // Copyright (C) 2025 zk4x
 // SPDX-License-Identifier: LGPL-3.0-only
 
-use zyx::{DType, Tape, Module, Tensor};
+use zyx::{DType, Module, Tape, Tensor};
 use zyx_nn::{LayerNorm, Linear, Module, MultiheadAttention};
 use zyx_optim::AdamW;
 
@@ -46,7 +46,7 @@ fn main() -> Result<(), zyx::ZyxError> {
 
     let tape = Tape::new(&model)?;
     let out = model.forward(&x)?;
-    let grads: Vec<Option<Tensor>> = tape.gradient(&out, &model).into_iter().map(Some).collect();
+    let grads = tape.gradient(&out, &model);
 
     // Update parameters with gradients
     optim.update(model.iter_mut(), grads);

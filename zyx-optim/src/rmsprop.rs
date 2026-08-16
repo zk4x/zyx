@@ -53,21 +53,9 @@ impl RMSprop {
     pub fn update<'a>(
         &mut self,
         parameters: impl IntoIterator<Item = &'a mut Tensor>,
-        gradients: impl IntoIterator<Item = Option<Tensor>>,
+        gradients: impl IntoIterator<Item = Tensor>,
     ) {
         for (i, (param, grad)) in parameters.into_iter().zip(gradients).enumerate() {
-            let Some(grad) = grad else {
-                // Lazy init for new parameters
-                if self.buffer.len() <= i {
-                    self.buffer.push(Tensor::zeros_like(&*param));
-                    self.momentum_buf.push(Tensor::zeros_like(&*param));
-                    if self.centered {
-                        self.grad_avg.push(Tensor::zeros_like(&*param));
-                    }
-                }
-                continue;
-            };
-
             // Lazy init state if missing
             if self.buffer.len() <= i {
                 self.buffer.push(&grad * &grad * (1.0 - self.alpha));

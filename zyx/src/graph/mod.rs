@@ -113,7 +113,7 @@ pub(crate) enum Node {
     },
     Reshape {
         x: ClassId,
-        shape: Vec<OpId>,
+        shape: Vec<ClassId>,
     },
     PadZeros {
         x: ClassId,
@@ -127,7 +127,7 @@ pub(crate) enum Node {
         x: ClassId,
         axis: UAxis,
         start: ClassId,
-        len: Dim,
+        len: ClassId,
     },
     Reduce {
         x: ClassId,
@@ -588,7 +588,7 @@ impl Graph {
                     Node::Permute { axes, .. } => format!("Permute {:?}", axes),
                     Node::Reshape { shape, .. } => format!("Reshape {shape:?}"),
                     Node::PadZeros { padding, .. } => format!("Pad {:?}", padding),
-                    Node::Narrow { axis, start, len, .. } => format!("Slice axis={axis:?} start={start:?} len={len}"),
+                    Node::Narrow { axis, start, len, x } => format!("Narrow {x:?} axis={axis:?} start={start:?} len={len:?}"),
                     Node::Flip { axes, .. } => format!("Flip {:?}", axes),
                     Node::ToDevice { device, time, .. } => format!("ToDevice {:?} time={}", device, time),
                     Node::Contiguous { .. } => "Contiguous".into(),
@@ -1073,7 +1073,8 @@ impl Runtime {
         // not recomputed. The eager kernel is left untouched (rc/outputs already
         // count the handles), so the tensor reverts to eager when the graph dies.
         if self.buffer_map.contains_key(&tid) {
-            let (_, class_id) = self.push_leaf_node(graph_id);
+            let dtype = self.dtype(tid);
+            let (_, class_id) = self.push_leaf_node(graph_id, dtype);
             self.graphs[graph_id].leaf_map.insert(class_id, tid);
             self.graphs[graph_id].leaf_classes.push(class_id);
             self.graphs[graph_id].ref_count += 1;
@@ -1137,13 +1138,14 @@ impl Runtime {
                             // load_tid is already a leaf of this graph: reuse its class.
                             self.tensors[load_tid].class_id
                         } else {
-                            let (_, class_id) = self.push_leaf_node(graph_id);
+                            todo!()
+                            /*let (_, class_id) = self.push_leaf_node(graph_id);
                             self.graphs[graph_id].leaf_map.insert(class_id, load_tid);
                             self.graphs[graph_id].leaf_classes.push(class_id);
                             self.graphs[graph_id].ref_count += 1;
                             self.tensors[load_tid].class_id = class_id;
                             self.tensors[load_tid].graph_id = graph_id;
-                            class_id
+                            class_id*/
                         }
                     }
                     Op::Const(x) => {
@@ -1178,8 +1180,11 @@ impl Runtime {
                         let in_shape = self.graphs[graph_id].shape(x_class);
                         match mop.as_ref() {
                             MoveOp::Reshape { shape } => {
-                                let shape = shape.clone();
-                                let (_, class_id) = self.push_node(graph_id, Node::Reshape { x: x_class, shape });
+                                let mut new_shape = Vec::new();
+                                for cid in shape {
+                                    new_shape.push(op_to_class[&cid]);
+                                }
+                                let (_, class_id) = self.push_node(graph_id, Node::Reshape { x: x_class, shape: new_shape });
                                 class_id
                             }
                             MoveOp::Expand { shape } => {
