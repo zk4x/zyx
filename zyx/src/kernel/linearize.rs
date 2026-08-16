@@ -149,9 +149,6 @@ impl Kernel {
         // emit a duplicate load after the arithmetic that consumes it.
         let mut consumed_vars: Set<OpId> = Set::default();
 
-        // Reused group index per axis, so every store of a result shares one index.
-        let mut group_indices: Map<u32, OpId> = Map::default();
-
         // Stack of open reduce loops, as `(loop_start, anchor)`. `loop_start` is
         // the first dependency of the reduce (where its loop opener is inserted
         // and where its scope begins on rescan); `anchor` is the op right after
@@ -330,30 +327,11 @@ impl Kernel {
                     }
                 }
                 Op::Store { dst, src, index, layout } => {
-                    todo!();
-                    /*debug_assert_eq!(index, OpId::NULL);
+                    debug_assert_eq!(index, OpId::NULL);
                     debug_assert_eq!(layout, MemLayout::Scalar);
-                    debug_assert_eq!(self.shape(dst), self.shape(src));
-                    let shape = self.shape(src);
-                    let mut view = Vec::new();
-                    let zero = self.insert_const_idx_before(start, 0u32);
-                    let mut st = 1;
-                    for axis in (0..shape.len() as u32).rev() {
-                        let len = shape[axis as usize];
-                        let len_id = self.insert_const_idx_before(start, len);
-                        let idx = match group_indices.get(&axis) {
-                            Some(&id) => id,
-                            None => {
-                                let id = self.insert_before(start, Op::Index { len: len_id, axis, scope: IdxScope::Group });
-                                group_indices.insert(axis, id);
-                                id
-                            }
-                        };
-                        let st_id = self.insert_const_idx_before(start, st);
-                        view.push((idx, st_id, zero, zero, len_id));
-                        st *= len;
-                    }
-                    view.reverse();
+                    // The store writes the kernel's single contiguous output, so its
+                    // view is `init_view` (built from the symbolic `output_shape`).
+                    let view = init_view.clone();
                     // The store index is written back by the terminal define (as a
                     // writable global) when its walk reaches it. Walk dst through the
                     // movement ops (these are the only ops allowed between a store and
@@ -373,7 +351,7 @@ impl Kernel {
                     );
                     self.ops[op_id].op = Op::Store { dst, src, index: OpId::NULL, layout: MemLayout::Scalar };
                     views.insert(src, view.clone());
-                    views.insert(dst, view);*/
+                    views.insert(dst, view);
                 }
                 Op::Reduce { x, rop, n_axes } => {
                     todo!()

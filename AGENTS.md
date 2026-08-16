@@ -11,6 +11,7 @@
 
 ## Know Your Limits
 
+- **ALWAYS ASK QUESTIONS FIRST. NO MATTER WHAT.** This is unconditional — not just when you perceive ambiguity. Before writing ANY code for a task, ask whatever needs clarifying in your reply as plain text (never the `question` tool). Do not skip asking because the task "seems clear" or you think you know the answer. Not asking is the failure. If you are about to start an edit and have not asked questions, stop and ask first.
 - If a task is hardware-specific, deeply subtle, or keeps failing, SAY SO plainly up front. "I can't solve this" beats two days of guesses.
 - When the user says they'll do it themselves, stop. Only act when asked for a specific edit.
 - **ASK QUESTIONS.** When a task has ambiguity — design decisions, expected behavior, specs, values, whether a behavior is intended — ask BEFORE implementing, and whenever you find yourself guessing or inventing an answer. Guessing wrong and writing broken code wastes more time than asking. Never let a time budget make you skip asking.
