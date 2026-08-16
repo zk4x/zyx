@@ -440,13 +440,7 @@ impl Runtime {
 
         self.tensors[tid].class_id = ClassId::NULL;
         self.tensors[tid].graph_id = GraphId::NULL;
-        let shape: Box<[Dim]> = self.shape(tid).into();
         let dtype = self.dtype(tid);
-        let scope = if self.is_variable_tensor(tid) {
-            MemScope::Variable
-        } else {
-            MemScope::Global
-        };
         let kernel_id = self.kernels.push(KernelData {
             outputs: vec![tid; handles],
             loads: Vec::new(),
@@ -502,7 +496,7 @@ impl Runtime {
     pub fn push_node(&mut self, graph_id: GraphId, node: Node) -> (NodeId, ClassId) {
         //println!("push node to graph_id={graph_id:?}");
         match node {
-            Node::Permute { x, ref axes } => {
+            Node::Permute { .. } => {
                 /*let in_shape = &self.shapes[self.graphs[graph_id].classes[x].shape];
                 assert_eq!(
                     axes.len(),
@@ -513,7 +507,7 @@ impl Runtime {
                     in_shape
                 );*/
             }
-            Node::Reshape { x, ref shape } => {
+            Node::Reshape { .. } => {
                 /*let in_shape = &self.shapes[self.graphs[graph_id].classes[x].shape];
                 let out_shape = &self.shapes[out_shape_id];
                 assert_eq!(
@@ -579,14 +573,14 @@ impl Runtime {
         self.push_node(graph_id, Node::Binary { x, y, bop }).1
     }
 
-    /// Returns whether `x` is a variable: its buffer (if any) is stored as a
-    /// scalar constant via `store_variable` rather than a real buffer.
-    fn is_variable_tensor(&mut self, x: TensorId) -> bool {
+    // Returns whether `x` is a variable: its buffer (if any) is stored as a
+    // scalar constant via `store_variable` rather than a real buffer.
+    /*fn is_variable_tensor(&mut self, x: TensorId) -> bool {
         match self.buffer_map.get(&x) {
             Some(&buf_id) => self.pools[buf_id.pool].get_variable(buf_id.buffer).is_some(),
             None => false,
         }
-    }
+    }*/
 
     pub fn new_eager_tensor(&mut self, shape: Vec<Dim>, dtype: DType, kind: ParamKind) -> TensorId {
         let mut kernel = Kernel::new(DeviceId::AUTO);
@@ -607,7 +601,6 @@ impl Runtime {
     }
 
     pub fn new_constant_tensor(&mut self, value: Constant) -> TensorId {
-        let dtype = value.dtype();
         let mut kernel = Kernel::new(DeviceId::AUTO);
         let op_id = kernel.push_back(Op::Const(value));
         let kernel_id = self.kernels.push(KernelData { outputs: Vec::new(), loads: Vec::new(), stores: Vec::new(), kernel });
@@ -1018,7 +1011,6 @@ impl Runtime {
     pub(super) fn reshape(&mut self, x: TensorId, shape: Vec<TensorId>) -> TensorId {
         #[cfg(feature = "debug_tensor_op")]
         println!("runtime::reshape(x={x}, shape={shape:?})");
-        let sh = self.shape(x).to_vec();
         /*debug_assert_eq!(
             shape.iter().product::<Dim>(),
             sh.iter().product::<Dim>(),
@@ -1812,12 +1804,6 @@ impl Runtime {
         let outputs_empty = self.kernels[kid].outputs.is_empty();
 
         // Create load kernel so the tensor remains usable (visited must point to a live kernel)
-        let scope = if self.is_variable_tensor(x) {
-            MemScope::Variable
-        } else {
-            MemScope::Global
-        };
-        let shape = self.shape(x);
         let mut kernel = Kernel::new(DeviceId::AUTO);
         let load_op_id = kernel.param(dtype, ParamKind::GlobalMut);
         let load_kid = self.kernels.push(KernelData { outputs: vec![x; count], loads: vec![x], stores: Vec::new(), kernel });
@@ -1876,7 +1862,8 @@ impl Runtime {
             kernel.debug();
         }
 
-        kernel.linearize();
+        let shape = Vec::new();
+        kernel.linearize(&shape);
         kernel.common_subexpression_elimination();
         kernel.dead_code_elimination();
         kernel.instruction_schedule();

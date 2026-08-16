@@ -61,7 +61,7 @@ impl Kernel {
     /// and LoadView/StoreView/ConstView are converted to Load/Store/Const in a single pass.
     // TODO Currently it only works if each define has a single move op chain.
     // Make it also work with move op chains when each define is accessed by multiple move ops.
-    pub fn linearize(&mut self) {
+    pub fn linearize(&mut self, shape: &[OpId]) {
         if !self.ops.values().any(|n| matches!(n.op, Op::Store { index: OpId::NULL, .. })) {
             return;
         }
