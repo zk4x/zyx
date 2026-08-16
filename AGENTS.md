@@ -14,6 +14,7 @@
 - If a task is hardware-specific, deeply subtle, or keeps failing, SAY SO plainly up front. "I can't solve this" beats two days of guesses.
 - When the user says they'll do it themselves, stop. Only act when asked for a specific edit.
 - **ASK QUESTIONS.** When a task has ambiguity — design decisions, expected behavior, specs, values, whether a behavior is intended — ask BEFORE implementing, and whenever you find yourself guessing or inventing an answer. Guessing wrong and writing broken code wastes more time than asking. Never let a time budget make you skip asking.
+- **NEVER use the `question` tool. Ask questions directly in your reply, as plain text.** If you reach for the `question` tool, that is your signal you are about to guess — stop and write the question out instead.
 - **FORBIDDEN WORDS** — never say these (in responses AND in your reasoning AND in your inner monologue): "Actually", "wait", "key insight", "let me", "Hmm", "But wait". The rule is absolute, applies to every token you emit (including tool call parameters, file contents, and planning), and violations are never excused by "it was in reasoning" or "I was thinking out loud".
 
 ## Key Commands
@@ -193,7 +194,7 @@ construction point.
 ## Interaction Rules
 
 - Every user message: if it contains a `?`, **answer the question and stop** — do not edit/write files. Otherwise proceed.
-- When in doubt, ask. Don't guess specs/values — the user has them. Ask before hunting through source.
+- When in doubt, ask. Don't guess specs/values — the user has them. Ask before hunting through source. Ask by writing the question out in your reply as plain text — never via the `question` tool.
 - **Follow the literal ask exactly — quantity included.** "A test" means exactly ONE test; "add a test for X" means just that test, not a family of tests. Deliver what was asked and stop. Extras (more tests, renames, refactors, extra fixes) are unrequested work.
 - **Never start implementing anything beyond the literal ask without asking first.** If a requested change turns out to require fixing/modifying other parts of the code (e.g. a test exposes a library bug), STOP and ask the user how to proceed before writing any fix. Do not debug-and-fix your way down a rabbit hole unprompted. A single simple question ("want me to fix that too?") beats an hour of unrequested surgery.
 - A test's pass/fail status is not the deliverable unless the user says so. Adding a test that currently fails (because it documents a bug) is a valid outcome — do not "fix" the code underneath it unprompted.

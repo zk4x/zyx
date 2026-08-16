@@ -310,7 +310,8 @@ impl Kernel {
                     }
                 }
                 Op::Store { dst, src, index, layout } => {
-                    debug_assert_eq!(index, OpId::NULL);
+                    todo!();
+                    /*debug_assert_eq!(index, OpId::NULL);
                     debug_assert_eq!(layout, MemLayout::Scalar);
                     debug_assert_eq!(self.shape(dst), self.shape(src));
                     let shape = self.shape(src);
@@ -352,14 +353,14 @@ impl Kernel {
                     );
                     self.ops[op_id].op = Op::Store { dst, src, index: OpId::NULL, layout: MemLayout::Scalar };
                     views.insert(src, view.clone());
-                    views.insert(dst, view);
+                    views.insert(dst, view);*/
                 }
                 Op::Reduce { x, rop, n_axes } => {
+                    todo!()
                     // Collect all transitive dependencies of the reduce input and the
                     // accumulator dtype. The loop that wraps the reduction is opened at
                     // the soonest dependency that appears in the graph.
-                    let mut reduce_loop_ops_set = Set::default();
-                    let shape = self.shape(x);
+                    /*let mut reduce_loop_ops_set = Set::default();
                     let mut params = vec![x];
                     let mut acc_dtype = None;
                     while let Some(param) = params.pop() {
@@ -456,16 +457,17 @@ impl Kernel {
                     // after its infrastructure. The op immediately after the loop
                     // opener is `loop_start`; insertions before it end up after the
                     // loop's own inserted ops.
-                    open_loops.push((loop_start, loop_start));
+                    open_loops.push((loop_start, loop_start));*/
                 }
                 Op::Move { x, ref mop } => {
                     match mop.as_ref() {
                         MoveOp::Reshape { shape } => {
+                            todo!()
                             // Reshape merges/splits contiguous dims, so axis indices don't
                             // align 1:1. Build a single flat index over the output view (all
                             // the arithmetic LoadView would do), then recover each input axis
                             // by successive div/mod against the input's contiguous strides.
-                            let out_view = views[&op_id].clone();
+                            /*let out_view = views[&op_id].clone();
                             let x_shape = self.shape(x);
                             let mut x_strides = vec![1; x_shape.len()];
                             let mut st = 1;
@@ -495,10 +497,11 @@ impl Kernel {
                                 let len_id = self.insert_const_idx_before(anchor, x_shape[a]);
                                 view.push((idx_expr, s_id, zero, zero, len_id));
                             }
-                            views.insert(x, view);
+                            views.insert(x, view);*/
                         }
                         MoveOp::Expand { shape } => {
-                            let x_shape = self.shape(x);
+                            todo!()
+                            /*let x_shape = self.shape(x);
                             let shape = shape.clone();
                             let view = &views[&op_id];
                             let mut x_strides = vec![1; x_shape.len()];
@@ -522,10 +525,11 @@ impl Kernel {
                                     (idx, stride, view[offset + a].2, view[offset + a].3, view[offset + a].4)
                                 })
                                 .collect();
-                            views.insert(x, view);
+                            views.insert(x, view);*/
                         }
                         MoveOp::Permute { axes } => {
-                            let view = &views[&op_id];
+                            todo!()
+                            /*let view = &views[&op_id];
                             let mut inv_axes = vec![0; axes.len()];
                             for (i, &a) in axes.iter().enumerate() {
                                 inv_axes[a] = i;
@@ -552,10 +556,11 @@ impl Kernel {
                                     (idx, stride, lp, rp, len)
                                 })
                                 .collect();
-                            views.insert(x, view);
+                            views.insert(x, view);*/
                         }
                         MoveOp::Flip { axes } => {
-                            let axes = axes.clone();
+                            todo!()
+                            /*let axes = axes.clone();
                             let x_shape = self.shape(x);
                             let view = &views[&op_id];
                             let zero = self.insert_const_idx_before(anchor, 0u32);
@@ -576,10 +581,11 @@ impl Kernel {
                                     }
                                 })
                                 .collect();
-                            views.insert(x, view);
+                            views.insert(x, view);*/
                         }
                         MoveOp::Pad { padding, .. } => {
-                            let x_shape = self.shape(x);
+                            todo!()
+                            /*let x_shape = self.shape(x);
                             let padding = padding.clone();
                             let view = &views[&op_id];
                             let mut x_strides = vec![1; x_shape.len()];
@@ -623,7 +629,7 @@ impl Kernel {
                                     (idx, stride, lp_id, rp_id, len_id)
                                 })
                                 .collect();
-                            views.insert(x, view);
+                            views.insert(x, view);*/
                         }
                         &MoveOp::Narrow { .. } => {
                             todo!()

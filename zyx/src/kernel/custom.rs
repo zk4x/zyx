@@ -178,26 +178,18 @@ impl Kernel {
     /// Flip tensor axes.
     pub fn flip(&mut self, x: OpId, axes: &[UAxis]) -> OpId {
         let axes = axes.to_vec();
-        let in_shape = self.shape(x);
         debug_assert!(!axes.is_empty(), "flip: axes must not be empty");
-        for &axis in &axes {
-            debug_assert!(axis < in_shape.len(), "flip: axis {axis} out of range for rank {}", in_shape.len());
-        }
         self.push_back(Op::Move { x, mop: Box::new(MoveOp::Flip { axes }) })
     }
 
     /// Sum over the last `n_axes` dimensions.
     pub fn reduce_sum(&mut self, x: OpId, n_axes: usize) -> OpId {
-        let in_shape = self.shape(x);
-        debug_assert!(n_axes <= in_shape.len(), "reduce_sum: n_axes {} > rank {}", n_axes, in_shape.len());
         debug_assert!(n_axes > 0, "reduce_sum: n_axes == 0");
         self.push_back(Op::Reduce { x, rop: BOp::Add, n_axes })
     }
 
     /// Max over the last `n_axes` dimensions.
     pub fn reduce_max(&mut self, x: OpId, n_axes: usize) -> OpId {
-        let in_shape = self.shape(x);
-        debug_assert!(n_axes <= in_shape.len(), "reduce_max: n_axes {} > rank {}", n_axes, in_shape.len());
         debug_assert!(n_axes > 0, "reduce_max: n_axes == 0");
         self.push_back(Op::Reduce { x, rop: BOp::Max, n_axes })
     }
@@ -497,11 +489,6 @@ impl Kernel {
     pub fn mad(&mut self, x: OpId, y: OpId, z: OpId) -> OpId {
         self.push_back(Op::Mad { x, y, z })
     }
-
-    /// shape
-    pub fn shape(&self, x: OpId) -> Vec<Dim> {
-        todo!()
-    }
 }
 
 impl CompiledKernel {
@@ -590,7 +577,7 @@ impl CompiledKernel {
         // Runtime::eagerify/add_store does), never a NULL op id. NULL op ids
         // break any eager op built on the forward result (e.g. a .cast()).
         let mut tensors = Vec::new();
-        for ((dtype, shape), buf_id) in self.outputs.iter().copied().zip(shapes).zip(output_bufs) {
+        for (dtype, buf_id) in self.outputs.iter().copied().zip(output_bufs) {
             let id = rt.tensors.push(TensorData {
                 kernel_id: KernelId::NULL,
                 op_id: OpId::NULL,

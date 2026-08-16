@@ -132,6 +132,7 @@ pub(crate) struct KernelData {
 }
 
 pub struct Runtime {
+    shapes: Map<TensorId, Vec<Dim>>,
     pub graphs: Slab<GraphId, Graph>,
     pub tensors: Slab<TensorId, TensorData>,
     pub kernels: Slab<KernelId, KernelData>,
@@ -157,6 +158,7 @@ pub struct Runtime {
 impl Runtime {
     pub const fn new() -> Self {
         Runtime {
+            shapes: Map::with_hasher(BuildHasherDefault::new()),
             graphs: Slab::new(),
             tensors: Slab::new(),
             kernels: Slab::new(),
@@ -179,12 +181,8 @@ impl Runtime {
         }
     }
 
-    pub fn rank(&self, x: TensorId) -> Dim {
-        todo!()
-    }
-
     pub fn shape(&self, x: TensorId) -> &[Dim] {
-        todo!()
+        &self.shapes[&x]
     }
 
     pub fn dtype(&self, x: TensorId) -> DType {

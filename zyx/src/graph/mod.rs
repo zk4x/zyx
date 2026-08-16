@@ -337,11 +337,11 @@ pub struct JitKernelData {
 
 #[derive(Debug)]
 pub struct Graph {
+    shapes: Map<ClassId, Vec<Dim>>,
     pub(crate) hashcons: Map<Node, NodeId>,
     pub(crate) nodes: Slab<NodeId, NodeData>,
     pub(crate) classes: Slab<ClassId, EClass>,
     pub(crate) jit_kernels: Slab<JitKernelId, JitKernelData>,
-    pub(crate) leaf_map: Map<ClassId, TensorId>,
     pub(crate) leaf_classes: Vec<ClassId>,
     pub(crate) max_leaf_id: u32,
     // Number of alive graph tensors (TensorState::Graph) referencing this graph.
@@ -352,6 +352,7 @@ pub struct Graph {
     // The graph is removed from the slab only when dead && ref_count == 0, which
     // guarantees no stale tensor ever observes a reused GraphId.
     pub(crate) dead: bool,
+    pub(crate) leaf_map: Map<ClassId, TensorId>,
 }
 
 impl Node {
@@ -380,6 +381,7 @@ impl Node {
 impl Graph {
     pub fn new() -> Self {
         Self {
+            shapes: Map::default(),
             hashcons: Map::default(),
             nodes: Slab::new(),
             classes: Slab::new(),
@@ -1035,8 +1037,27 @@ impl Graph {
         todo!()
     }
 
-    pub fn shape(&self, class: ClassId) -> Vec<Dim> {
-        todo!()
+    pub fn shape(&self, class: ClassId) -> &[Dim] {
+        if let Some(shape) = self.shapes.get(&class) {
+            return shape;
+        }
+        match &self.nodes[self.classes[class].nodes[0]].node {
+            Node::Const(_) => &[1],
+            Node::Expand { x, .. }
+            | Node::Cast { x, .. }
+            | Node::Permute { x, .. }
+            | Node::Reshape { x, .. }
+            | Node::PadZeros { x, .. }
+            | Node::Flip { x, .. }
+            | Node::Narrow { x, .. }
+            | Node::Reduce { x, .. }
+            | Node::Unary { x, .. }
+            | Node::After { x, .. }
+            | Node::ToDevice { x, .. }
+            | Node::Contiguous { x }
+            | Node::Binary { x, .. } => self.shape(*x),
+            _ => todo!(),
+        }
     }
 
     pub fn dtype(&self, class: ClassId) -> DType {
