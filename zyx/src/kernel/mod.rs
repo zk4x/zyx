@@ -373,8 +373,8 @@ impl Kernel {
 
     /// Resolve the dtype of an operation's result by walking the IR.
     pub(crate) fn dtype(&self, mut op_id: OpId) -> DType {
-        //println!("getting dtype of id: {op_id:?}'");
-        //self.debug();
+        println!("getting dtype of id: {op_id:?}'");
+        self.debug();
         for _ in 0..10000 {
             match self.ops[op_id].op {
                 Op::Const(c) => return c.dtype(),
@@ -1032,20 +1032,30 @@ impl Kernel {
             }
         }
 
-        // Partition loads: for each LoadView, dispatch to the set(s) that keep it
+        // Partition loads: for each kernel Param (Global/Variable), dispatch to
+        // the set(s) that keep it. `loads` is parallel to the Param ops. Kernels
+        // before linearize contain only Params — Storage (accumulators etc.) is
+        // resolved later, so none may appear here.
         let mut self_loads: Vec<T> = Vec::new();
         let mut new_loads: Vec<T> = Vec::new();
         let mut load_idx = 0;
         let mut oid = self.head;
         while !oid.is_null() {
-            if matches!(self.at(oid), Op::Storage { .. }) {
-                if other_required.contains(&oid) {
-                    self_loads.push(loads[load_idx]);
+            match self.at(oid) {
+                // Global and Variable Params are loads; GlobalMut is a store and
+                // is not part of the loads list.
+                Op::Param { kind: ParamKind::Global | ParamKind::Variable, .. } => {
+                    if other_required.contains(&oid) {
+                        self_loads.push(loads[load_idx]);
+                    }
+                    if root_required.contains(&oid) {
+                        new_loads.push(loads[load_idx]);
+                    }
+                    load_idx += 1;
                 }
-                if root_required.contains(&oid) {
-                    new_loads.push(loads[load_idx]);
-                }
-                load_idx += 1;
+                Op::Param { kind: ParamKind::GlobalMut, .. } => {}
+                Op::Storage { .. } => panic!("extract_subkernel: unexpected Op::Storage (pre-linearize kernels contain only Params)"),
+                _ => {}
             }
             oid = self.next_op(oid);
         }

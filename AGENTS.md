@@ -145,6 +145,12 @@ Automatic "STOP and ask" triggers (each one alone means you must ask, not invest
 
 **Never run a Read/Grep/Bash tool to investigate a bug until you have asked the user the question you are trying to answer.** Reading code to answer your own question IS the failure.
 
+**DO NOT SILENTLY ITERATE edit → test → edit → test while a feature is broken.** This is the failure from the reshape debugging: the test panicked, I patched, it panicked somewhere new, I patched again, on and on with no question in between — a whole session of unrequested surgery. The rules are:
+- Every time the test fails after you made a change, that failure is a **NEW task**. Stop. Report exactly what panicked and where. Ask the user how to proceed before touching any file again.
+- One fix per question. You may NOT run the test again and patch whatever breaks next without a question in between.
+- If you are about to run the test a second time in a row to see "what happens next", you are chaining fixes — stop and ask.
+- Adding any `eprintln`/`println` debug instrumentation during this loop requires asking first (per the trigger above); if you added some without asking, remove it and ask.
+
 ### ZYX_DEBUG (bitmask, `ENV_VARS.md`)
 
 | Value | Output |

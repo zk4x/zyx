@@ -184,9 +184,9 @@ impl Runtime {
     }
 
     /// Returns the shape of tensor `x`. A dimension of `0` is dynamic (its
-/// value is only known at launch), while any other value is a static
-/// dimension.
-pub fn shape(&self, x: TensorId) -> &[Dim] {
+    /// value is only known at launch), while any other value is a static
+    /// dimension.
+    pub fn shape(&self, x: TensorId) -> &[Dim] {
         &self.shapes[&x]
     }
 
@@ -194,7 +194,7 @@ pub fn shape(&self, x: TensorId) -> &[Dim] {
     fn const_dim(&self, kernel_id: KernelId, op_id: OpId) -> Option<Dim> {
         let kernel = &self.kernels[kernel_id].kernel;
         if let Op::Const(c) = kernel.ops[op_id].op {
-            return c.as_dim()
+            return c.as_dim();
         }
         None
     }
@@ -997,8 +997,6 @@ pub fn shape(&self, x: TensorId) -> &[Dim] {
                 0,
                 "input into reshape must have empty outputs before shape kernels are merged"
             );
-            self.kernels[kernel_id].loads.push(x);
-            self.retain_load(x);
             let mut new_shape = Vec::with_capacity(shape.len());
             let mut out_dims = Vec::with_capacity(shape.len());
             for tid in shape {
@@ -1034,30 +1032,27 @@ pub fn shape(&self, x: TensorId) -> &[Dim] {
             debug_assert_eq!(self.kernels[kernel_id].outputs.contains(&tid), false);
             self.kernels[kernel_id].outputs.push(tid);
 
+            self.shapes.insert(tid, out_dims);
+
+            self.kernels[kernel_id].kernel.debug();
+
             #[cfg(debug_assertions)]
             {
                 let n_param_loads = self.kernels[kernel_id]
                     .kernel
                     .ops
                     .values()
-                    .filter(|op| {
-                        matches!(
-                            op.op,
-                            Op::Param { kind: ParamKind::Global | ParamKind::Variable, .. }
-                        )
-                    })
+                    .filter(|op| matches!(op.op, Op::Param { kind: ParamKind::Global | ParamKind::Variable, .. }))
                     .count();
                 let n_loads = self.kernels[kernel_id].loads.len();
                 debug_assert_eq!(
-                    n_loads,
-                    n_param_loads,
+                    n_loads, n_param_loads,
                     "reshape: kernel {kernel_id:?} has {n_loads} loads but {n_param_loads} Global/Variable Params"
                 );
             }
 
             #[cfg(feature = "debug_tensor_op")]
             println!("  -> tid={tid}, kid={kernel_id_dup:?}, op_id={op_id:?}");
-            self.shapes.insert(tid, out_dims);
             Ok(tid)
         }
     }
@@ -1798,9 +1793,8 @@ impl Runtime {
             "merge_kernel: merge kernel {merge_kid:?} has stores; add_store them before merging"
         );
 
-        let KernelData { outputs: merge_outputs, loads: merge_loads, stores: merge_stores, kernel } = unsafe {
-            self.kernels.remove_and_return(merge_kid)
-        };
+        let KernelData { outputs: merge_outputs, loads: merge_loads, stores: merge_stores, kernel } =
+            unsafe { self.kernels.remove_and_return(merge_kid) };
         let Kernel { ops: merge_ops, head: merge_head, .. } = kernel;
 
         let mut op_map: Map<OpId, OpId> = Map::with_hasher(BuildHasherDefault::new());
@@ -1865,7 +1859,7 @@ impl Runtime {
 
         // Create load kernel so the tensor remains usable (visited must point to a live kernel)
         let mut kernel = Kernel::new(DeviceId::AUTO);
-        let load_op_id = kernel.param(dtype, ParamKind::GlobalMut);
+        let load_op_id = kernel.param(dtype, ParamKind::Global);
         let load_kid = self.kernels.push(KernelData { outputs: vec![x; count], loads: vec![x], stores: Vec::new(), kernel });
         self.tensors[x].kernel_id = load_kid;
         self.tensors[x].op_id = load_op_id;
@@ -1959,10 +1953,7 @@ impl Runtime {
                 .ops
                 .values()
                 .filter(|op| {
-                    matches!(
-                        op.op,
-                        Op::Param { kind: ParamKind::Global | ParamKind::GlobalMut | ParamKind::Variable, .. }
-                    )
+                    matches!(op.op, Op::Param { kind: ParamKind::Global | ParamKind::GlobalMut | ParamKind::Variable, .. })
                 })
                 .count();
             let n_buffers = buffers.iter().filter(|&&b| b != PoolBufferId::NULL).count();
@@ -2001,17 +1992,15 @@ impl Runtime {
     /// A kernel must never both load and store the same tensor (prevents aliasing).
     /// The debug_assert in the recursive materialization loop enforces this.
     fn materialize_kernel(&mut self, kid: KernelId) -> Result<(), ZyxError> {
+
+        println!("materialize kernel: {kid:?}");
+        self.kernels[kid].kernel.debug();
+
         // Resolve the dtypes of the loads and stores now, while this kernel (and any
         // tensor whose dtype resolves through it) is still alive. After remove_and_return
         // below, self.dtype on those tensors would panic on the removed kernel.
-        let mut load_stores = Vec::new();
-        for &tid in &self.kernels[kid].loads {
-            load_stores.push(tid);
-        }
-        for &tid in &self.kernels[kid].stores {
-            load_stores.push(tid);
-        }
-        let dtypes: Map<TensorId, DType> = load_stores.into_iter().map(|tid| (tid, self.dtype(tid))).collect();
+        let dtypes: Map<TensorId, DType> =
+            self.kernels[kid].loads.iter().chain(&self.kernels[kid].stores).map(|&tid| (tid, self.dtype(tid))).collect();
         let KernelData { outputs, loads, stores, mut kernel } = unsafe { self.kernels.remove_and_return(kid) };
 
         debug_assert!(outputs.is_empty(), "all outputs must be stored before materialize");
