@@ -26,6 +26,7 @@ use crate::kernel::{
     BOp, DeviceId, IdxKind, Kernel, MMADType, MMADims, MMALayout, MemLayout, MemScope, MoveOp, Op, OpId, ParamKind, UOp,
 };
 use crate::runtime::{KernelData, KernelId, TensorData};
+use crate::Set;
 use crate::shape::UAxis;
 use crate::slab::{Slab, SlabId};
 use crate::types::{TinyString, TinyVec};
@@ -588,7 +589,7 @@ impl CompiledKernel {
             });
             let mut kernel = Kernel::new(DeviceId::AUTO);
             let op_id = kernel.push_back(Op::Param { dtype, kind: ParamKind::Global });
-            let load_kid = rt.kernels.push(KernelData { outputs: vec![id], loads: vec![id], stores: Vec::new(), kernel });
+            let load_kid = rt.kernels.push(KernelData { outputs: Set::from_iter([id]), loads: vec![id], stores: Vec::new(), kernel });
             rt.tensors[id].kernel_id = load_kid;
             rt.tensors[id].op_id = op_id;
             rt.retain_load(id);

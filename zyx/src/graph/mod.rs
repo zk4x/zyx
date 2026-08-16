@@ -1164,7 +1164,7 @@ impl Runtime {
                                 KernelId::NULL
                             };
                             debug_assert!(!pending.is_null());
-                            let outputs: Vec<TensorId> = self.kernels[pending].outputs.clone();
+                            let outputs: Vec<TensorId> = self.kernels[pending].outputs.iter().copied().collect();
                             for &otid in &outputs {
                                 self.add_store(otid)?;
                             }

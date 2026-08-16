@@ -122,10 +122,11 @@ pub struct TensorData {
 
 #[derive(Debug)]
 pub(crate) struct KernelData {
-    /// Tensor reference count. Each entry is a tensor this kernel must produce.
-    /// When a tensor is consumed as input to a new op within the same kernel,
-    /// it is removed from outputs (since the kernel produces the new op's result instead).
-    pub outputs: Vec<TensorId>,
+    /// Tensors this kernel must produce. `rc` is the sole authority on a
+    /// tensor's reference count; this set only tracks which live tensors the
+    /// kernel produces. When the last output's rc reaches zero, the kernel is
+    /// removed (see `on_rc_zero`).
+    pub outputs: Set<TensorId>,
     pub loads: Vec<TensorId>,
     pub stores: Vec<TensorId>,
     pub kernel: Kernel,
@@ -254,7 +255,7 @@ impl Runtime {
         self.tensors[x].rc += 1;
         let kernel_id = self.tensors[x].kernel_id;
         if !kernel_id.is_null() {
-            self.kernels[kernel_id].outputs.push(x);
+            self.kernels[kernel_id].outputs.insert(x);
         }
     }
 
@@ -264,12 +265,6 @@ impl Runtime {
         let (kernel_id, op_id, pending, class_id) =
             (self.tensors[x].kernel_id, self.tensors[x].op_id, self.tensors[x].depends_on, self.tensors[x].class_id);
 
-        // Keep the eager kernel's outputs in sync with rc.
-        if !kernel_id.is_null() {
-            let kd = &mut self.kernels[kernel_id];
-            kd.outputs.iter().position(|e| *e == x).map(|i| kd.outputs.remove(i));
-        }
-
         if !class_id.is_null() {
             // Graph-affiliated tensor (pure graph or "both" while graph alive).
             if rc == 0 {
@@ -278,8 +273,9 @@ impl Runtime {
             return;
         }
 
-        // Eager tensor path.
-        // With custom kernels, op_id is null, so we have to skip the chain pruning.
+        // Eager tensor path. Prune ops no longer needed by the surviving
+        // outputs. x stays in its producing kernel's outputs while rc > 0; the
+        // kernel's lifetime is tied to its outputs' refcounts (see on_rc_zero).
         let pruned = if !op_id.is_null() {
             let kd = &mut self.kernels[kernel_id];
             if kd.outputs.contains(&x) {
@@ -299,25 +295,12 @@ impl Runtime {
         }
 
         // rc == 0 means no handles and no kernel loads reference x anymore.
-        // x is dead: remove it and free its buffer (unless a pending kernel is
-        // still producing it). Loads dropped by the prune above are released
-        // before this so that rc is accurate.
+        // x is dead: remove it, free its buffer, and drop its producing kernel
+        // if it was the last live output (unless a pending kernel still
+        // produces x). Loads dropped by the prune above are released before
+        // this so that rc is accurate.
         if rc == 0 && pending.is_null() {
             self.on_rc_zero(x);
-        }
-
-        // In case it was used in assign, all of graph_id and kernel_id and class_id and op_id are null
-        if kernel_id.is_null() {
-            return;
-        }
-
-        if self.kernels[kernel_id].outputs.is_empty() {
-            if !self.kernels[kernel_id].kernel.contains_stores() {
-                //eprintln!("A: kernels.remove({kid:?})");
-                self.remove_dead_eager_kernel(kernel_id);
-            } else {
-                self.materialize_kernel(kernel_id).unwrap();
-            }
         }
     }
 
@@ -373,14 +356,34 @@ impl Runtime {
                 self.pools[buf_id.pool].deallocate(buf_id.buffer, wait_list);
             }
         }
+
+        // Tie the producing kernel's lifetime to its outputs' refcounts: remove
+        // x from its producer's outputs, and if x was the last live output,
+        // remove the kernel (releasing its loads) or materialize it if it still
+        // holds stores.
+        let producer = self.tensors[x].kernel_id;
         println!("remove eager tensor tid={x}");
         self.tensors.remove(x);
+
+        if !producer.is_null() {
+            let (remove_kernel, materialize) = {
+                let kd = &mut self.kernels[producer];
+                kd.outputs.remove(&x);
+                (kd.outputs.is_empty() && !kd.kernel.contains_stores(), kd.outputs.is_empty() && kd.kernel.contains_stores())
+            };
+            if remove_kernel {
+                self.remove_dead_eager_kernel(producer);
+            } else if materialize {
+                self.materialize_kernel(producer).unwrap();
+            }
+        }
     }
 
     /// Remove a kernel that has no outputs and no stores, releasing its load
     /// references.
     fn remove_dead_eager_kernel(&mut self, kid: KernelId) {
         let loads = std::mem::take(&mut self.kernels[kid].loads);
+        println!("remove dead eager kernel {kid:?}");
         self.kernels.remove(kid);
         for tid in loads {
             self.release_load(tid);
@@ -409,21 +412,18 @@ impl Runtime {
         if self.tensors[tid].class_id.is_null() {
             return;
         }
-        let rc = self.tensors[tid].rc;
         let graph_id = self.tensors[tid].graph_id;
         let old_kernel_id = self.tensors[tid].kernel_id;
 
         // Release tid from its old eager kernel (if any): remove it from outputs,
         // prune the unused chain (releasing pruned loads), and drop the kernel if
         // nothing else uses it (releasing its remaining loads).
-        let mut handles = rc as usize;
         let mut pruned: Vec<TensorId> = Vec::new();
         if !old_kernel_id.is_null() {
             let old_op_id = self.tensors[tid].op_id;
             let kernel_died = {
                 let kd = &mut self.kernels[old_kernel_id];
-                handles = kd.outputs.iter().filter(|&&e| e == tid).count();
-                kd.outputs.retain(|&e| e != tid);
+                kd.outputs.remove(&tid);
                 if !old_op_id.is_null() {
                     let out_ops: Vec<OpId> = kd.outputs.iter().map(|&t| self.tensors[t].op_id).collect();
                     let old_loads = std::mem::take(&mut kd.loads);
@@ -449,7 +449,7 @@ impl Runtime {
         self.tensors[tid].graph_id = GraphId::NULL;
         let dtype = self.dtype(tid);
         let kernel_id = self.kernels.push(KernelData {
-            outputs: vec![tid; handles],
+            outputs: Set::from_iter([tid]),
             loads: Vec::new(),
             stores: Vec::new(),
             kernel: Kernel::new(DeviceId::AUTO),
@@ -592,7 +592,7 @@ impl Runtime {
     pub fn new_eager_tensor(&mut self, shape: Vec<Dim>, dtype: DType, kind: ParamKind) -> TensorId {
         let mut kernel = Kernel::new(DeviceId::AUTO);
         let op_id = kernel.push_back(Op::Param { dtype, kind });
-        let kernel_id = self.kernels.push(KernelData { outputs: Vec::new(), loads: Vec::new(), stores: Vec::new(), kernel });
+        let kernel_id = self.kernels.push(KernelData { outputs: Set::default(), loads: Vec::new(), stores: Vec::new(), kernel });
         let tid = self.tensors.push(TensorData {
             kernel_id,
             op_id,
@@ -602,7 +602,7 @@ impl Runtime {
             rc: 1,
         });
         self.kernels[kernel_id].loads.push(tid);
-        self.kernels[kernel_id].outputs.push(tid);
+        self.kernels[kernel_id].outputs.insert(tid);
         self.shapes.insert(tid, shape);
         tid
     }
@@ -610,7 +610,7 @@ impl Runtime {
     pub fn new_constant_tensor(&mut self, value: Constant) -> TensorId {
         let mut kernel = Kernel::new(DeviceId::AUTO);
         let op_id = kernel.push_back(Op::Const(value));
-        let kernel_id = self.kernels.push(KernelData { outputs: Vec::new(), loads: Vec::new(), stores: Vec::new(), kernel });
+        let kernel_id = self.kernels.push(KernelData { outputs: Set::default(), loads: Vec::new(), stores: Vec::new(), kernel });
         let tid = self.tensors.push(TensorData {
             kernel_id,
             op_id,
@@ -619,7 +619,7 @@ impl Runtime {
             graph_id: GraphId::NULL,
             rc: 1,
         });
-        self.kernels[kernel_id].outputs.push(tid);
+        self.kernels[kernel_id].outputs.insert(tid);
         self.shapes.insert(tid, vec![1]);
         tid
     }
@@ -735,7 +735,7 @@ impl Runtime {
                 graph_id: GraphId::NULL,
                 rc: 1,
             });
-            self.kernels[kernel_id].outputs.push(tid);
+            self.kernels[kernel_id].outputs.insert(tid);
             #[cfg(feature = "debug_tensor_op")]
             println!("  -> tid={tid}, kid={kernel_id:?}, op_id={op_id:?}");
             self.shapes.insert(tid, self.shape(x).to_vec());
@@ -766,7 +766,7 @@ impl Runtime {
                 graph_id: GraphId::NULL,
                 rc: 1,
             });
-            self.kernels[kernel_id].outputs.push(tid);
+            self.kernels[kernel_id].outputs.insert(tid);
             #[cfg(feature = "debug_tensor_op")]
             println!("  -> tid={tid}, kid={kernel_id:?}, op_id={op_id:?}");
             self.shapes.insert(tid, self.shape(x).to_vec());
@@ -795,7 +795,7 @@ impl Runtime {
                 graph_id: GraphId::NULL,
                 rc: 1,
             });
-            self.kernels[kernel_id].outputs.push(tid);
+            self.kernels[kernel_id].outputs.insert(tid);
             #[cfg(feature = "debug_tensor_op")]
             println!("  -> tid={tid}, kid={kernel_id:?}, op_id={op_id:?}");
             self.shapes.insert(tid, self.shape(x).to_vec());
@@ -874,7 +874,7 @@ impl Runtime {
                 graph_id: GraphId::NULL,
                 rc: 1,
             });
-            self.kernels[kernel_id].outputs.push(tid);
+            self.kernels[kernel_id].outputs.insert(tid);
 
             #[cfg(feature = "debug_tensor_op")]
             println!("  -> tid={tid}, kid={kernel_id:?}, op_id={op_id:?}");
@@ -972,7 +972,7 @@ impl Runtime {
             });
 
             debug_assert_eq!(self.kernels[kid].outputs.len(), 0, "input into reduce must have empty outputs");
-            self.kernels[kid].outputs.push(tid);
+            self.kernels[kid].outputs.insert(tid);
 
             #[cfg(feature = "debug_tensor_op")]
             println!("  -> tid={tid}, kid={kid:?}, op_id={op_id:?}");
@@ -1040,12 +1040,12 @@ impl Runtime {
             });
 
             debug_assert_eq!(self.kernels[kernel_id].outputs.contains(&tid), false);
-            self.kernels[kernel_id].outputs.push(tid);
+            self.kernels[kernel_id].outputs.insert(tid);
 
             self.shapes.insert(tid, out_dims);
 
             self.kernels[kernel_id].kernel.debug();
-            println!("post reshape x {:?}", self.eager_ids(x));
+            println!("post reshape x {:?}, tid {:?}", self.eager_ids(x), self.eager_ids(tid));
 
             #[cfg(debug_assertions)]
             {
@@ -1111,7 +1111,7 @@ impl Runtime {
             });
 
             debug_assert_eq!(self.kernels[kernel_id].outputs.len(), 0, "input into expand must have empty outputs");
-            self.kernels[kernel_id].outputs.push(tid);
+            self.kernels[kernel_id].outputs.insert(tid);
 
             #[cfg(feature = "debug_tensor_op")]
             println!("  -> tid={tid}, kid={kernel_id:?}, op_id={op_id:?}");
@@ -1156,7 +1156,7 @@ impl Runtime {
                 rc: 1,
             });
             debug_assert_eq!(self.kernels[kernel_id].outputs.len(), 0, "input into permute must have empty outputs");
-            self.kernels[kernel_id].outputs.push(tid);
+            self.kernels[kernel_id].outputs.insert(tid);
             #[cfg(feature = "debug_tensor_op")]
             println!("  -> tid={tid}, kid={kernel_id:?}, op_id={op_id:?}");
             self.shapes.insert(tid, permuted_shape);
@@ -1194,7 +1194,7 @@ impl Runtime {
                 rc: 1,
             });
             debug_assert_eq!(self.kernels[kernel_id].outputs.len(), 0, "input into pad must have empty outputs");
-            self.kernels[kernel_id].outputs.push(tid);
+            self.kernels[kernel_id].outputs.insert(tid);
             #[cfg(feature = "debug_tensor_op")]
             println!("  -> tid={tid}, kid={kernel_id:?}, op_id={op_id:?}");
             self.shapes.insert(tid, new_shape);
@@ -1240,7 +1240,7 @@ impl Runtime {
                 graph_id: GraphId::NULL,
                 rc: 1,
             });
-            self.kernels[kernel_id].outputs.push(tid);
+            self.kernels[kernel_id].outputs.insert(tid);
             #[cfg(feature = "debug_tensor_op")]
             println!("  -> tid={tid}, kid={kernel_id:?}, op_id={op_id:?}");
             let mut narrowed = sh.to_vec();
@@ -1290,7 +1290,7 @@ impl Runtime {
                 rc: 1,
             });
             debug_assert_eq!(self.kernels[kernel_id].outputs.len(), 0, "input into flip must have empty outputs");
-            self.kernels[kernel_id].outputs.push(tid);
+            self.kernels[kernel_id].outputs.insert(tid);
             #[cfg(feature = "debug_tensor_op")]
             println!("  -> tid={tid}, kid={kernel_id:?}, op_id={op_id:?}");
             self.shapes.insert(tid, sh.to_vec());
@@ -1573,7 +1573,7 @@ impl Runtime {
             // drops / releases target a live kernel instead of the store
             // kernel that gets consumed on materialization.
             self.tensors[dst].depends_on = src_kid;
-            self.kernels[src_kid].outputs.push(dst);
+            self.kernels[src_kid].outputs.insert(dst);
             self.tensors[dst].kernel_id = src_kid;
             self.tensors[dst].op_id = dst_op;
             self.add_store(dst)?;
@@ -1781,7 +1781,7 @@ impl Runtime {
             }
         }
 
-        kid = self.kernels.push(KernelData { outputs: Vec::new(), loads: new_loads, stores: Vec::new(), kernel });
+        kid = self.kernels.push(KernelData { outputs: Set::default(), loads: new_loads, stores: Vec::new(), kernel });
 
         Ok((kid, op_id))
     }
@@ -1823,6 +1823,7 @@ impl Runtime {
         for (_tid, t_data) in self.tensors.iter_mut() {
             if t_data.kernel_id == merge_kid {
                 debug_assert_ne!(keep_kid, merge_kid);
+                println!("assigning to tid={_tid} keep_id={keep_kid:?} to t_data.kernel_id={:?}, org op_id={:?}, assigned op_id={:?}", t_data.kernel_id, t_data.op_id, op_map[&t_data.op_id]);
                 t_data.kernel_id = keep_kid;
                 t_data.op_id = op_map[&t_data.op_id];
             }
@@ -1842,11 +1843,9 @@ impl Runtime {
             (kid, op_id, self.tensors[x].depends_on)
         };
 
-        // Remove ALL occurrences of x (handles reference counting from retain/clone)
-        let prev_len = self.kernels[kid].outputs.len();
-        self.kernels[kid].outputs.retain(|&e| e != x);
-        let count = prev_len - self.kernels[kid].outputs.len();
-        debug_assert!(count > 0, "add_store called for tid not in outputs");
+        // Remove x from the kernel's outputs (it is being stored).
+        debug_assert!(self.kernels[kid].outputs.contains(&x), "add_store called for tid not in outputs");
+        self.kernels[kid].outputs.remove(&x);
 
         // Only add StoreView if x isn't already realized or pending
         let dtype = self.dtype(x);
@@ -1868,7 +1867,7 @@ impl Runtime {
         // Create load kernel so the tensor remains usable (visited must point to a live kernel)
         let mut kernel = Kernel::new(DeviceId::AUTO);
         let load_op_id = kernel.param(dtype, ParamKind::Global);
-        let load_kid = self.kernels.push(KernelData { outputs: vec![x; count], loads: vec![x], stores: Vec::new(), kernel });
+        let load_kid = self.kernels.push(KernelData { outputs: Set::from_iter([x]), loads: vec![x], stores: Vec::new(), kernel });
         self.tensors[x].kernel_id = load_kid;
         self.tensors[x].op_id = load_op_id;
         self.tensors[x].depends_on = pending;
