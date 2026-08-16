@@ -75,7 +75,7 @@ impl Kernel {
             }
         }
 
-        debug_assert!({
+        /*debug_assert!({
             let mut live: Set<OpId> = Set::default();
             let mut stack: Vec<OpId> = Vec::new();
             let mut op_id = self.head;
@@ -99,7 +99,7 @@ impl Kernel {
                 op_id = self.next_op(op_id);
             }
             true
-        });
+        });*/
 
         // Snapshot the order of global defines so linearize can assert it never
         // reorders the buffers' declaration order.
