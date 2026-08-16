@@ -372,32 +372,37 @@ impl Kernel {
     }
 
     /// Resolve the dtype of an operation's result by walking the IR.
-    pub(crate) fn dtype(&self, op_id: OpId) -> DType {
-        match self.ops[op_id].op {
-            Op::Const(c) => c.dtype(),
-            Op::Param { dtype, .. } => dtype,
-            Op::Storage { dtype, .. } => dtype,
-            Op::Cast { dtype, .. } => dtype,
-            Op::Index { .. } => IDX_T,
-            Op::Load { src, .. } => self.dtype(src),
-            Op::Unary { x, .. } => self.dtype(x),
-            Op::Binary { x, .. } => self.dtype(x),
-            Op::Mad { x, .. } => self.dtype(x),
-            Op::Wmma { dtype, .. } => match dtype {
-                MMADType::f16_f16_f16_f32 => DType::F32,
-            },
-            Op::MatmulTile { x, .. } => self.dtype(x),
-            Op::TransposeTile { x } => self.dtype(x),
-            Op::Vectorize { ref ops } => self.dtype(ops[0]),
-            Op::Asm { ref ops, .. } => self.dtype(ops[0]),
-            Op::Devectorize { vec, .. } => self.dtype(vec),
-            Op::Store { src: x, .. } => self.dtype(x),
-            Op::Move { x, .. } => self.dtype(x),
-            Op::Reduce { x, .. } => self.dtype(x),
-            Op::ReduceTile { x, .. } => self.dtype(x),
-            Op::EndLoop | Op::Loop { .. } => IDX_T,
-            Op::Barrier | Op::If { .. } | Op::EndIf => todo!(),
+    pub(crate) fn dtype(&self, mut op_id: OpId) -> DType {
+        //println!("getting dtype of id: {op_id:?}'");
+        //self.debug();
+        for _ in 0..10000 {
+            match self.ops[op_id].op {
+                Op::Const(c) => return c.dtype(),
+                Op::Param { dtype, .. } => return dtype,
+                Op::Storage { dtype, .. } => return dtype,
+                Op::Cast { dtype, .. } => return dtype,
+                Op::Index { .. } => return IDX_T,
+                Op::Load { src, .. } => op_id = src,
+                Op::Unary { x, .. } => op_id = x,
+                Op::Binary { x, .. } => op_id = x,
+                Op::Mad { x, .. } => op_id = x,
+                Op::Wmma { dtype, .. } => match dtype {
+                    MMADType::f16_f16_f16_f32 => return DType::F32,
+                },
+                Op::MatmulTile { x, .. } => op_id = x,
+                Op::TransposeTile { x } => op_id = x,
+                Op::Vectorize { ref ops } => op_id = ops[0],
+                Op::Asm { ref ops, .. } => op_id = ops[0],
+                Op::Devectorize { vec, .. } => op_id = vec,
+                Op::Store { src: x, .. } => op_id = x,
+                Op::Move { x, .. } => op_id = x,
+                Op::Reduce { x, .. } => op_id = x,
+                Op::ReduceTile { x, .. } => op_id = x,
+                Op::EndLoop | Op::Loop { .. } => return IDX_T,
+                Op::Barrier | Op::If { .. } | Op::EndIf => todo!(),
+            }
         }
+        panic!("dtype not found for too long time");
     }
 
     #[track_caller]
