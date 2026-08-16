@@ -19,9 +19,21 @@
 use crate::{
     DType, Map, Set,
     backend::DeviceInfo,
-    kernel::{IDX_T, IdxKind, Kernel, MemLayout, MemScope, Op, OpId},
+    kernel::{IDX_T, IdxKind, Kernel, MemLayout, MemScope, Op, OpId, ParamKind},
 };
 use nanoserde::{DeBin, SerBin};
+
+/// The memory scope of a load source / store destination, which is either an
+/// `Op::Storage` (kernel-internal buffer) or an `Op::Param` (kernel parameter:
+/// a global or a variable).
+fn mem_scope(op: &Op) -> MemScope {
+    match op {
+        Op::Storage { scope, .. } => *scope,
+        Op::Param { kind: ParamKind::Variable, .. } => MemScope::Variable,
+        Op::Param { kind: ParamKind::Global | ParamKind::GlobalMut, .. } => MemScope::Global,
+        _ => unreachable!("load/store operand must be a Storage or Param define, got {op:?}"),
+    }
+}
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) struct Cost {
@@ -291,9 +303,7 @@ impl Kernel {
                     if !indexing_ops.contains(&op_id) {
                         wi_compute_ops += loop_mult;
                     }
-                    let Op::Storage { scope, .. } = self.ops[src].op else {
-                        unreachable!()
-                    };
+                    let scope = mem_scope(&self.ops[src].op);
                     let total_elements = loop_mult * layout.n_elements();
                     match scope {
                         MemScope::Variable => {
@@ -382,9 +392,7 @@ impl Kernel {
                     if !indexing_ops.contains(&op_id) {
                         wi_compute_ops += loop_mult * 3;
                     }
-                    let Op::Storage { scope, .. } = self.ops[dst].op else {
-                        unreachable!()
-                    };
+                    let scope = mem_scope(&self.ops[dst].op);
                     match scope {
                         MemScope::Variable => unreachable!("stores to MemScope::Variable are invalid"),
                         MemScope::Global => {
