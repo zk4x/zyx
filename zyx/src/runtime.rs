@@ -1901,7 +1901,12 @@ impl Runtime {
             let n_global_defines = kernel
                 .ops
                 .values()
-                .filter(|op| matches!(&op.op, Op::Storage { scope: MemScope::Global | MemScope::Variable, .. }))
+                .filter(|op| {
+                    matches!(
+                        op.op,
+                        Op::Param { kind: ParamKind::Global | ParamKind::GlobalMut | ParamKind::Variable, .. }
+                    )
+                })
                 .count();
             let n_buffers = buffers.iter().filter(|&&b| b != PoolBufferId::NULL).count();
             assert!(

@@ -115,13 +115,28 @@ impl Kernel {
             defines
         };
 
+        // Anchor for everything linearize inserts: the first op that is NOT one
+        // of the shape consts passed in. get_or_autotune prepends those shape
+        // consts to the head before calling us; the group-index/stride scaffolding
+        // built below is also prepended to the head. Any index arithmetic inserted
+        // by the handlers must land AFTER that whole scaffolding block (it depends
+        // on the shape consts and group indices) but BEFORE the original compute
+        // ops. Captured before `init_view` mutates the head.
+        let shape_set: Set<OpId> = output_shape.iter().copied().collect();
+        let mut start = self.head;
+        while shape_set.contains(&start) {
+            start = self.ops[start].next;
+        }
+
         let init_view = {
-            let head = self.head;
+            let head = start;
             let mut init_view = Vec::new();
             // Contiguous row-major stride: axis i has stride = product of the
             // symbolic output dims after it. Walk backwards carrying a running
             // suffix product (built with Mad), then reverse to keep axis order.
-            // The innermost axis gets a trailing Const(1) stride.
+            // The innermost axis gets a trailing Const(1) stride. All scaffolding
+            // is inserted right before `start` (the first original op), i.e. after
+            // the shape consts it depends on.
             let mut suffix = self.insert_before(head, Op::Const(Constant::idx(1)));
             for (axis, &len) in output_shape.iter().enumerate().rev() {
                 let idx = self.insert_before(head, Op::Index { len, axis: axis as u32, kind: IdxKind::Group });
@@ -163,7 +178,6 @@ impl Kernel {
         // have no view entry).
         let mut op_ids: Vec<OpId> = Vec::new();
         let mut scan = self.head;
-        let start = self.head;
         while !scan.is_null() {
             op_ids.push(scan);
             scan = self.next_op(scan);

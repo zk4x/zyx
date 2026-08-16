@@ -560,7 +560,7 @@ impl Kernel {
         #[cfg(feature = "time")]
         let _timer = crate::Timer::new("move_constants_to_beginning");
         let mut start = self.head;
-        while let Op::Storage { .. } = self.at(start) {
+        while matches!(self.at(start), Op::Storage { .. } | Op::Param { .. }) {
             start = self.next_op(start);
         }
 
@@ -578,7 +578,7 @@ impl Kernel {
 
         // Find position after last Op::Const (skip past all defines and consts)
         let mut start = self.head;
-        while let Op::Storage { .. } | Op::Const(_) = self.at(start) {
+        while matches!(self.at(start), Op::Storage { .. } | Op::Param { .. } | Op::Const(_)) {
             start = self.next_op(start);
         }
 
