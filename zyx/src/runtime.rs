@@ -33,7 +33,7 @@ use crate::{
     dtype::Constant,
     error::{BackendError, ErrorStatus},
     graph::{ClassId, EClass, ExecPlan, Graph, GraphId, Node, NodeData, NodeId, plan::drain_events_for_buf},
-    kernel::{BOp, DeviceId, Kernel, MemLayout, MemScope, MoveOp, Op, OpId, ParamKind, UOp, autotune::OptSeq},
+    kernel::{BOp, DeviceId, IDX_T, Kernel, MemLayout, MemScope, MoveOp, Op, OpId, ParamKind, UOp, autotune::OptSeq},
     rng::Rng,
     shape::{Dim, UAxis},
     slab::{Slab, SlabId},
@@ -181,7 +181,10 @@ impl Runtime {
         }
     }
 
-    pub fn shape(&self, x: TensorId) -> &[Dim] {
+    /// Returns the shape of tensor `x`. A dimension of `0` is dynamic (its
+/// value is only known at launch), while any other value is a static
+/// dimension.
+pub fn shape(&self, x: TensorId) -> &[Dim] {
         &self.shapes[&x]
     }
 
@@ -1826,6 +1829,7 @@ impl Runtime {
         read: u64,
         write: u64,
         buffers: &[PoolBufferId],
+        output_shape: &[Dim],
     ) -> Result<(DeviceProgramId, u64), ZyxError> {
         let kernel_id = if let Some(&cached_kid) = self.kernel_map.get(&kernel) {
             if let Some(&program_id) = self.programs.get(&cached_kid) {
@@ -1862,7 +1866,18 @@ impl Runtime {
             kernel.debug();
         }
 
-        let shape = Vec::new();
+        // Build the output shape as a list of index ops, one per output
+        // dimension. Static dims (value != 0) become constants; dynamic dims
+        // (value == 0) become variable params resolved at launch.
+        let mut shape = Vec::with_capacity(output_shape.len());
+        for &dim in output_shape {
+            let op_id = if dim == 0 {
+                kernel.insert_before(kernel.head, Op::Param { dtype: IDX_T, kind: ParamKind::Variable })
+            } else {
+                kernel.insert_before(kernel.head, Op::Const(Constant::idx(dim)))
+            };
+            shape.push(op_id);
+        }
         kernel.linearize(&shape);
         kernel.common_subexpression_elimination();
         kernel.dead_code_elimination();
@@ -2138,7 +2153,15 @@ impl Runtime {
 
         // Compile and launch (caches in kernel_map / programs)
         let (flop, read, write) = kernel.flop_mem_rw();
-        let (dev_prog, _timing) = self.get_or_autotune(kernel, pool_id, flop, read, write, &buffers)?;
+        let output_shape: Vec<Dim> = self.shape(stores[0]).to_vec();
+        #[cfg(debug_assertions)]
+        debug_assert!(
+            stores.iter().all(|&tid| self.shape(tid) == output_shape.as_slice()),
+            "all stores in a kernel must have the same shape: first {:?}, got {:?}",
+            output_shape,
+            stores.iter().map(|&tid| self.shape(tid)).collect::<Vec<_>>()
+        );
+        let (dev_prog, _timing) = self.get_or_autotune(kernel, pool_id, flop, read, write, &buffers, &output_shape)?;
 
         let event = self.devices[dev_id].launch(dev_prog, &mut self.pools[pool_id], &buffers, event_wait_list)?;
         self.events.insert(kernel_buffers, event);
