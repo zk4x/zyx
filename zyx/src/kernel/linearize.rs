@@ -176,7 +176,7 @@ impl Kernel {
             let anchor = open_loops.last().map(|&(_, a)| a).unwrap_or(start);
             match self.ops[op_id].op {
                 Op::Const(value) => {
-                    let view = views.remove(&op_id).unwrap();
+                    let Some(view) = views.remove(&op_id) else { continue };
                     // The constant is a scalar whose value must be nullified where the
                     // view's padding condition is false (padded regions read as zero).
                     let mut pc = self.insert_before(anchor, Op::Const(Constant::Bool(true)));
@@ -602,12 +602,17 @@ impl Kernel {
                     self.remove_op(op_id);
                 }
                 Op::Cast { x, .. } | Op::Unary { x, .. } => {
-                    views.insert(x, views[&op_id].clone());
+                    if let Some(view) = views.get(&op_id).cloned() {
+                        views.insert(x, view);
+                    }
                 }
                 Op::Binary { x, y, .. } => {
-                    views.insert(x, views[&op_id].clone());
-                    views.insert(y, views[&op_id].clone());
+                    if let Some(view) = views.get(&op_id).cloned() {
+                        views.insert(x, view.clone());
+                        views.insert(y, view);
+                    }
                 }
+                Op::Index { .. } => {}
                 ref op => {
                     self.debug();
                     unreachable!("{op:?}");

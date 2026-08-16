@@ -143,8 +143,8 @@ impl Kernel {
                     let dtype = dtypes.get(&src).copied().unwrap_or(DType::U8);
                     dtypes.insert(op_id, dtype);
                     let (lb, ub) = bounds.get(&index).copied().unwrap_or((0, 0));
-                    let src = id_map.get(&src).copied().unwrap_or(OpId::NULL);
-                    let index = id_map.get(&index).copied().unwrap_or(OpId::NULL);
+                    let src = id_map.get(&src).copied().unwrap_or(src);
+                    let index = id_map.get(&index).copied().unwrap_or(index);
                     println!(
                         "{indent}r{out_id}{grey}: {dtype}{reset} = {red}r{src}{reset}[r{index} @ {layout}]    // {lb}..={ub} {green}load{reset}"
                     );
@@ -153,14 +153,14 @@ impl Kernel {
                     let dtype = dtypes.get(&x).copied().unwrap_or(DType::U8);
                     dtypes.insert(op_id, dtype);
                     let (lb, ub) = bounds.get(&index).copied().unwrap_or((0, 0));
-                    let dst = id_map.get(&dst).copied().unwrap_or(OpId::NULL);
-                    let index = id_map.get(&index).copied().unwrap_or(OpId::NULL);
-                    let x = id_map.get(&x).copied().unwrap_or(OpId::NULL);
+                    let dst = id_map.get(&dst).copied().unwrap_or(dst);
+                    let index = id_map.get(&index).copied().unwrap_or(index);
+                    let x = id_map.get(&x).copied().unwrap_or(x);
                     println!("{indent}{red}r{dst}{reset}[r{index} @ {layout}] = r{x}    // {lb}..={ub} {red}store{reset}");
                 }
                 Op::Cast { x, dtype } => {
                     dtypes.insert(op_id, dtype);
-                    let x = id_map.get(&x).copied().unwrap_or(OpId::NULL);
+                    let x = id_map.get(&x).copied().unwrap_or(x);
                     if let Some((lb, ub)) = bounds.get(&op_id) {
                         println!("{indent}r{out_id}{grey}: {dtype}{reset} = {dtype}(r{x})    // {lb}..={ub}");
                     } else {
@@ -185,7 +185,7 @@ impl Kernel {
                         UOp::Trunc => ("trunc(", ")"),
                         UOp::Abs => ("abs(", ")"),
                     };
-                    let x = id_map.get(&x).copied().unwrap_or(OpId::NULL);
+                    let x = id_map.get(&x).copied().unwrap_or(x);
                     if let Some((lb, ub)) = bounds.get(&op_id) {
                         println!("{indent}r{out_id}{grey}: {dtype}{reset} = {op1}r{x}{op2}    // {lb}..={ub}");
                     } else {
@@ -220,8 +220,8 @@ impl Kernel {
                         BOp::NotEq => ("", " != ", ""),
                         BOp::Eq => ("", " == ", ""),
                     };
-                    let x_r = id_map.get(&x).copied().unwrap_or(OpId::NULL);
-                    let y_r = id_map.get(&y).copied().unwrap_or(OpId::NULL);
+                    let x_r = id_map.get(&x).copied().unwrap_or(x);
+                    let y_r = id_map.get(&y).copied().unwrap_or(y);
                     let x = if let Op::Const(c) = self.ops[x].op {
                         format!("{c}")
                     } else {
@@ -241,9 +241,9 @@ impl Kernel {
                 Op::Mad { x, y, z } => {
                     let dtype = dtypes.get(&x).copied().unwrap_or(DType::U8);
                     dtypes.insert(op_id, dtype);
-                    let x = id_map.get(&x).copied().unwrap_or(OpId::NULL);
-                    let y = id_map.get(&y).copied().unwrap_or(OpId::NULL);
-                    let z = id_map.get(&z).copied().unwrap_or(OpId::NULL);
+                    let x = id_map.get(&x).copied().unwrap_or(x);
+                    let y = id_map.get(&y).copied().unwrap_or(y);
+                    let z = id_map.get(&z).copied().unwrap_or(z);
                     if let Some((l, u)) = bounds.get(&op_id) {
                         println!("{indent}r{out_id}{grey}: {dtype}{reset} = r{x} * r{y} + r{z}    // {l}..={u}");
                     } else {
@@ -253,9 +253,9 @@ impl Kernel {
                 Op::Wmma { dims, layout, dtype, c, a, b } => {
                     let cdtype = dtypes.get(&c).copied().unwrap_or(DType::U8);
                     dtypes.insert(op_id, cdtype);
-                    let a = id_map.get(&a).copied().unwrap_or(OpId::NULL);
-                    let b = id_map.get(&b).copied().unwrap_or(OpId::NULL);
-                    let c = id_map.get(&c).copied().unwrap_or(OpId::NULL);
+                    let a = id_map.get(&a).copied().unwrap_or(a);
+                    let b = id_map.get(&b).copied().unwrap_or(b);
+                    let c = id_map.get(&c).copied().unwrap_or(c);
                     println!(
                         "{indent}r{out_id}{grey}: {cdtype}{reset} = {orange}wmma{reset}.{dims:?}.{layout:?}.{dtype:?}(c={c}, a={a}, b={b})",
                     );
