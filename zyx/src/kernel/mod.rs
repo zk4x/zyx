@@ -712,7 +712,7 @@ impl Kernel {
                 &Op::Store { .. } => Info { shape: vec![1], flops: 0, mem_read: 0, mem_write: 1 },
                 Op::Const(_) => Info { shape: vec![1], flops: 0, mem_read: 0, mem_write: 0 },
                 Op::Move { x, mop } => match mop.as_ref() {
-                    MoveOp::Reshape { shape, .. } => Info { shape: todo!(), flops: 0, mem_read: 0, mem_write: 0 },
+                    MoveOp::Reshape { shape, .. } => Info { shape: vec![1], flops: 0, mem_read: 0, mem_write: 0 },
                     MoveOp::Permute { .. } | MoveOp::Pad { .. } => todo!(),
                     MoveOp::Expand { shape } => Info { shape: shape.clone(), flops: 0, mem_read: 0, mem_write: 0 },
                     MoveOp::Flip { .. } => Info { shape: stack[x].shape.clone(), flops: 0, mem_read: 0, mem_write: 0 },
