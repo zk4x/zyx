@@ -132,6 +132,8 @@ pub(crate) struct KernelData {
 }
 
 pub struct Runtime {
+    /// Every tensor has an entry here. Each dim is the concrete value if that
+    /// dimension is static, or `0` if it is dynamic (symbolic).
     shapes: Map<TensorId, Vec<Dim>>,
     pub graphs: Slab<GraphId, Graph>,
     pub tensors: Slab<TensorId, TensorData>,
@@ -189,12 +191,12 @@ pub fn shape(&self, x: TensorId) -> &[Dim] {
     }
 
     /// Read the scalar value of a constant tensor as a dimension.
-    fn const_dim(&self, kernel_id: KernelId, op_id: OpId) -> Dim {
+    fn const_dim(&self, kernel_id: KernelId, op_id: OpId) -> Option<Dim> {
         let kernel = &self.kernels[kernel_id].kernel;
-        match &kernel.ops[op_id].op {
-            Op::Const(c) => c.as_dim().expect("constant shape must be non-negative"),
-            op => todo!("const_dim: {op:?} is not a constant"),
+        if let Op::Const(c) = kernel.ops[op_id].op {
+            return c.as_dim()
         }
+        None
     }
 
     pub fn dtype(&self, x: TensorId) -> DType {
@@ -852,41 +854,7 @@ pub fn shape(&self, x: TensorId) -> &[Dim] {
                     (kid_x, kid_y, op_id_x, op_id_y)
                 };
 
-                //println!("Remove kernel {merge_kid:?}");
-                let KernelData { outputs: merge_outputs, loads: merge_loads, stores: merge_stores, kernel } = unsafe {
-                    //eprintln!("C: kernels.remove_and_return({merge_kid:?})");
-                    self.kernels.remove_and_return(merge_kid)
-                };
-                let Kernel { ops: merge_ops, head: merge_head, .. } = kernel;
-
-                let mut op_map: Map<OpId, OpId> = Map::with_hasher(BuildHasherDefault::new());
-                let mut i = merge_head;
-                while !i.is_null() {
-                    let mut op = merge_ops[i].op.clone();
-                    for param in op.parameters_mut() {
-                        if let Some(&new_param) = op_map.get(param) {
-                            *param = new_param;
-                        }
-                    }
-                    let new_op_id = self.kernels[keep_kid].kernel.push_back(op);
-                    op_map.insert(i, new_op_id);
-                    i = merge_ops[i].next;
-                }
-
-                for (_tid, t_data) in self.tensors.iter_mut() {
-                    if t_data.kernel_id == merge_kid {
-                        t_data.kernel_id = keep_kid;
-                        if let Some(&new_op_id) = op_map.get(&t_data.op_id) {
-                            t_data.op_id = new_op_id;
-                        }
-                    }
-                }
-
-                //eprintln!("D: kernel_data.remove({merge_kid:?})");
-                let keep_data = &mut self.kernels[keep_kid];
-                keep_data.outputs.extend(merge_outputs);
-                keep_data.loads.extend(merge_loads);
-                keep_data.stores.extend(merge_stores);
+                let op_map = self.merge_kernel(keep_kid, merge_kid)?;
 
                 let op_id = if swap {
                     self.kernels[keep_kid].kernel.binary(op_map[&merge_op], keep_op, bop)
@@ -1011,33 +979,45 @@ pub fn shape(&self, x: TensorId) -> &[Dim] {
         }
     }
 
-    pub(super) fn reshape(&mut self, x: TensorId, shape: Vec<TensorId>) -> TensorId {
+    pub(super) fn reshape(&mut self, x: TensorId, shape: Vec<TensorId>) -> Result<TensorId, ZyxError> {
         #[cfg(feature = "debug_tensor_op")]
         println!("runtime::reshape(x={x}, shape={shape:?})");
-        /*debug_assert_eq!(
-            shape.iter().product::<Dim>(),
-            sh.iter().product::<Dim>(),
-            "reshape: element count mismatch: {:?} vs {:?}",
-            shape,
-            sh
-        );*/
         debug_assert!(!shape.is_empty(), "reshape: empty shape");
 
         if self.is_graph(x) {
             let (class_id, graph_id) = self.graph_ids(x);
             let shape = shape.iter().map(|&tid| self.tensors[tid].class_id).collect();
             let (_, class_id) = self.push_node(graph_id, Node::Reshape { x: class_id, shape });
-            self.new_graph_tensor(graph_id, class_id)
+            Ok(self.new_graph_tensor(graph_id, class_id))
         } else {
             let input_rank = self.shape(x).len();
-            let (kernel_id, op_id) = self.duplicate_or_store(x, false).unwrap();
-            let mut new_shape = Vec::new();
+            let (kernel_id, op_id) = self.duplicate_or_store(x, false)?;
+            debug_assert_eq!(
+                self.kernels[kernel_id].outputs.len(),
+                0,
+                "input into reshape must have empty outputs before shape kernels are merged"
+            );
+            let mut new_shape = Vec::with_capacity(shape.len());
             let mut out_dims = Vec::with_capacity(shape.len());
             for tid in shape {
-                // TODO deal with kernel merges and stores like in binary
-                let (kid, op_id) = self.eager_ids(tid);
-                new_shape.push(op_id);
-                out_dims.push(self.const_dim(kid, op_id));
+                // Resolve the shape dimension as an op id valid in `kernel_id`.
+                // The shape tensor usually lives in its own kernel; merge that
+                // kernel into the target (mirroring `binary`) so the op id is
+                // meaningful there. A merged shape kernel with stores must be
+                // realized before merging.
+                let (mut kid, mut sop) = self.eager_ids(tid);
+                if kid != kernel_id {
+                    if !self.kernels[kid].stores.is_empty() {
+                        self.add_store(tid)?;
+                        (kid, sop) = self.eager_ids(tid);
+                    }
+                    if kid != kernel_id {
+                        self.merge_kernel(kernel_id, kid)?;
+                        (_, sop) = self.eager_ids(tid);
+                    }
+                }
+                new_shape.push(sop);
+                out_dims.push(self.const_dim(kernel_id, sop).unwrap_or(0));
             }
             let op_id = self.kernels[kernel_id].kernel.reshape(op_id, new_shape, input_rank);
             let tid = self.tensors.push(TensorData {
@@ -1049,13 +1029,13 @@ pub fn shape(&self, x: TensorId) -> &[Dim] {
                 rc: 1,
             });
 
-            debug_assert_eq!(self.kernels[kernel_id].outputs.len(), 0, "input into reshape must have empty outputs");
+            debug_assert_eq!(self.kernels[kernel_id].outputs.contains(&tid), false);
             self.kernels[kernel_id].outputs.push(tid);
 
             #[cfg(feature = "debug_tensor_op")]
             println!("  -> tid={tid}, kid={kernel_id_dup:?}, op_id={op_id:?}");
             self.shapes.insert(tid, out_dims);
-            tid
+            Ok(tid)
         }
     }
 
@@ -1235,7 +1215,8 @@ pub fn shape(&self, x: TensorId) -> &[Dim] {
             #[cfg(feature = "debug_tensor_op")]
             println!("  -> tid={tid}, kid={kernel_id:?}, op_id={op_id:?}");
             let mut narrowed = sh.to_vec();
-            narrowed[axis as usize] = self.const_dim(len_kid, len_op);
+            // TODO remove const_dim, it is wrong here
+            narrowed[axis as usize] = self.const_dim(len_kid, len_op).unwrap();
             self.shapes.insert(tid, narrowed);
             tid
         }
@@ -1776,6 +1757,58 @@ impl Runtime {
         op_id = new_op_id;
 
         Ok((kid, op_id))
+    }
+
+    /// Merge `merge_kid`'s kernel into `keep_kid`'s kernel, repointing every
+    /// tensor and op that referenced `merge_kid` at its remapped `keep_kid`
+    /// equivalents, and folding `merge_kid`'s outputs/loads/stores into the
+    /// keep kernel's. Returns the op-id map (merge-kernel op -> keep-kernel op)
+    /// so callers can remap op ids they captured before the merge.
+    ///
+    /// The merge kernel must be store-free: any kernel with stores must be
+    /// realized (`add_store`) by the caller *before* merging. `keep_kid` and
+    /// `merge_kid` must differ.
+    fn merge_kernel(&mut self, keep_kid: KernelId, merge_kid: KernelId) -> Result<Map<OpId, OpId>, ZyxError> {
+        debug_assert_ne!(keep_kid, merge_kid, "merge_kernel: cannot merge a kernel into itself");
+        debug_assert!(
+            self.kernels[merge_kid].stores.is_empty(),
+            "merge_kernel: merge kernel {merge_kid:?} has stores; add_store them before merging"
+        );
+
+        let KernelData { outputs: merge_outputs, loads: merge_loads, stores: merge_stores, kernel } = unsafe {
+            self.kernels.remove_and_return(merge_kid)
+        };
+        let Kernel { ops: merge_ops, head: merge_head, .. } = kernel;
+
+        let mut op_map: Map<OpId, OpId> = Map::with_hasher(BuildHasherDefault::new());
+        let mut i = merge_head;
+        while !i.is_null() {
+            let mut op = merge_ops[i].op.clone();
+            for param in op.parameters_mut() {
+                if let Some(&new_param) = op_map.get(param) {
+                    *param = new_param;
+                }
+            }
+            let new_op_id = self.kernels[keep_kid].kernel.push_back(op);
+            op_map.insert(i, new_op_id);
+            i = merge_ops[i].next;
+        }
+
+        for (_tid, t_data) in self.tensors.iter_mut() {
+            if t_data.kernel_id == merge_kid {
+                t_data.kernel_id = keep_kid;
+                if let Some(&new_op_id) = op_map.get(&t_data.op_id) {
+                    t_data.op_id = new_op_id;
+                }
+            }
+        }
+
+        let keep_data = &mut self.kernels[keep_kid];
+        keep_data.outputs.extend(merge_outputs);
+        keep_data.loads.extend(merge_loads);
+        keep_data.stores.extend(merge_stores);
+
+        Ok(op_map)
     }
 
     pub fn add_store(&mut self, x: TensorId) -> Result<(), ZyxError> {

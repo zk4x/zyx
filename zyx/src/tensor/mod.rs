@@ -1256,7 +1256,7 @@ impl Tensor {
     pub fn reshape<D: Into<Tensor>>(&self, shape: impl IntoIterator<Item = D>) -> Result<Tensor, ZyxError> {
         let tensors: Vec<Tensor> = shape.into_iter().map(|x| x.into()).collect();
         let shape: Vec<TensorId> = tensors.iter().map(|x| x.id).collect();
-        let id = RT.lock().reshape(self.id, shape);
+        let id = RT.lock().reshape(self.id, shape)?;
         drop(tensors); // we need to keep tensors alive unitl after reshape is called
 
         /*let numel = self.numel();
