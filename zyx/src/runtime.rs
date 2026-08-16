@@ -205,6 +205,7 @@ impl Runtime {
             self.graphs[graph_id].dtype(class_id)
         } else {
             let (kid, op_id) = self.eager_ids(x);
+            println!("get dtype of tid={x} kid={kid:?} op_id={op_id:?}");
             self.kernels[kid].kernel.dtype(op_id)
         }
     }
@@ -372,6 +373,7 @@ impl Runtime {
                 self.pools[buf_id.pool].deallocate(buf_id.buffer, wait_list);
             }
         }
+        println!("remove eager tensor tid={x}");
         self.tensors.remove(x);
     }
 
@@ -992,6 +994,7 @@ impl Runtime {
         } else {
             let input_rank = self.shape(x).len();
             let (kernel_id, op_id) = self.duplicate_or_store(x, false)?;
+
             debug_assert_eq!(
                 self.kernels[kernel_id].outputs.len(),
                 0,
@@ -999,26 +1002,33 @@ impl Runtime {
             );
             let mut new_shape = Vec::with_capacity(shape.len());
             let mut out_dims = Vec::with_capacity(shape.len());
+
             for tid in shape {
                 // Resolve the shape dimension as an op id valid in `kernel_id`.
                 // The shape tensor usually lives in its own kernel; merge that
                 // kernel into the target (mirroring `binary`) so the op id is
                 // meaningful there. A merged shape kernel with stores must be
                 // realized before merging.
-                let (mut kid, mut sop) = self.eager_ids(tid);
+                let (mut kid, mut dim_id) = self.eager_ids(tid);
                 if kid != kernel_id {
                     if !self.kernels[kid].stores.is_empty() {
                         self.add_store(tid)?;
-                        (kid, sop) = self.eager_ids(tid);
+                        (kid, dim_id) = self.eager_ids(tid);
                     }
                     if kid != kernel_id {
-                        self.merge_kernel(kernel_id, kid)?;
-                        (_, sop) = self.eager_ids(tid);
+                        let op_map = self.merge_kernel(kernel_id, kid)?;
+                        dim_id = op_map[&dim_id];
                     }
                 }
-                new_shape.push(sop);
-                out_dims.push(self.const_dim(kernel_id, sop).unwrap_or(0));
+                new_shape.push(dim_id);
+                out_dims.push(self.const_dim(kernel_id, dim_id).unwrap_or(0));
             }
+
+            let kid = self.tensors[TensorId::ZERO].kernel_id;
+            println!("reshape, tensor 0, kid={kid:?}, op_id={:?}", self.tensors[TensorId::ZERO].op_id);
+            println!("loads={:?} stores={:?}", self.kernels[kid].loads, self.kernels[kid].stores);
+            self.kernels[kid].kernel.debug();
+
             let op_id = self.kernels[kernel_id].kernel.reshape(op_id, new_shape, input_rank);
             let tid = self.tensors.push(TensorData {
                 kernel_id,
@@ -1035,6 +1045,7 @@ impl Runtime {
             self.shapes.insert(tid, out_dims);
 
             self.kernels[kernel_id].kernel.debug();
+            println!("post reshape x {:?}", self.eager_ids(x));
 
             #[cfg(debug_assertions)]
             {
@@ -1737,7 +1748,7 @@ impl Runtime {
 
         let contains_stores = self.kernels[kid].kernel.contains_stores();
         let preceded_by_reduce = self.kernels[kid].kernel.is_preceded_by_reduce(op_id);
-        if force_store || contains_stores | preceded_by_reduce {
+        if force_store || contains_stores || preceded_by_reduce {
             self.add_store(x)?;
             (kid, op_id) = self.eager_ids(x);
             // We need to duplicate the new load kernel too, which we do below
@@ -1747,8 +1758,7 @@ impl Runtime {
 
         let old_loads = self.kernels[kid].loads.clone();
         let out_op_ids: Vec<OpId> = self.kernels[kid].outputs.iter().map(|&tid| self.tensors[tid].op_id).collect();
-        let (kernel, new_op_id, self_loads, new_loads) =
-            self.kernels[kid].kernel.extract_subkernel(op_id, &out_op_ids, &old_loads);
+        let (kernel, op_id, self_loads, new_loads) = self.kernels[kid].kernel.extract_subkernel(op_id, &out_op_ids, &old_loads);
         self.kernels[kid].loads = self_loads.clone();
 
         // Each kernel-load occurrence carries its own rc reference. The split
@@ -1772,7 +1782,6 @@ impl Runtime {
         }
 
         kid = self.kernels.push(KernelData { outputs: Vec::new(), loads: new_loads, stores: Vec::new(), kernel });
-        op_id = new_op_id;
 
         Ok((kid, op_id))
     }
@@ -1813,10 +1822,9 @@ impl Runtime {
 
         for (_tid, t_data) in self.tensors.iter_mut() {
             if t_data.kernel_id == merge_kid {
+                debug_assert_ne!(keep_kid, merge_kid);
                 t_data.kernel_id = keep_kid;
-                if let Some(&new_op_id) = op_map.get(&t_data.op_id) {
-                    t_data.op_id = new_op_id;
-                }
+                t_data.op_id = op_map[&t_data.op_id];
             }
         }
 
@@ -1865,6 +1873,8 @@ impl Runtime {
         self.tensors[x].op_id = load_op_id;
         self.tensors[x].depends_on = pending;
         self.retain_load(x);
+
+        println!("add_store for tid={x}");
 
         if outputs_empty {
             self.materialize_kernel(kid)?;
@@ -1992,8 +2002,7 @@ impl Runtime {
     /// A kernel must never both load and store the same tensor (prevents aliasing).
     /// The debug_assert in the recursive materialization loop enforces this.
     fn materialize_kernel(&mut self, kid: KernelId) -> Result<(), ZyxError> {
-
-        println!("materialize kernel: {kid:?}");
+        println!("materialize kernel: {kid:?} loads={:?}", self.kernels[kid].loads);
         self.kernels[kid].kernel.debug();
 
         // Resolve the dtypes of the loads and stores now, while this kernel (and any
