@@ -593,6 +593,7 @@ fn emit_binary_op(source: &mut String, indent: &str, reg: usize, lane: usize, x:
         BOp::Mod => writeln!(source, "{indent}{dst} = (int){x} % (int){y};"),
         BOp::Cmplt => writeln!(source, "{indent}{dst} = {x} < {y};"),
         BOp::Cmpgt => writeln!(source, "{indent}{dst} = {x} > {y};"),
+        BOp::Cmpge => writeln!(source, "{indent}{dst} = {x} >= {y};"),
         BOp::Max => writeln!(source, "{indent}{dst} = fmax({x}, {y});"),
         BOp::Or => writeln!(source, "{indent}{dst} = {x} || {y};"),
         BOp::And => writeln!(source, "{indent}{dst} = {x} && {y};"),

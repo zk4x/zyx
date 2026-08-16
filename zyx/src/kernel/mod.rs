@@ -649,6 +649,7 @@ impl Kernel {
                     BOp::Mod => "mod",
                     BOp::Cmplt => "cmplt",
                     BOp::Cmpgt => "cmpgt",
+                    BOp::Cmpge => "cmpge",
                     BOp::Max => "max",
                     BOp::Or => "or",
                     BOp::And => "and",

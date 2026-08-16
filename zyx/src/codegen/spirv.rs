@@ -131,8 +131,11 @@ pub enum OpCode {
     OpUGreaterThan = 172,
     OpSLessThan = 177,
     OpSGreaterThan = 173,
+    OpUGreaterThanEqual = 174,
+    OpSGreaterThanEqual = 175,
     OpFOrdLessThan = 184,
     OpFOrdGreaterThan = 186,
+    OpFOrdGreaterThanEqual = 190,
     OpFOrdEqual = 180,
     OpFOrdNotEqual = 182,
     OpConvertFToU = 109,
@@ -209,8 +212,11 @@ impl TryFrom<u16> for OpCode {
             172 => Ok(Self::OpUGreaterThan),
             177 => Ok(Self::OpSLessThan),
             173 => Ok(Self::OpSGreaterThan),
+            174 => Ok(Self::OpUGreaterThanEqual),
+            175 => Ok(Self::OpSGreaterThanEqual),
             184 => Ok(Self::OpFOrdLessThan),
             186 => Ok(Self::OpFOrdGreaterThan),
+            190 => Ok(Self::OpFOrdGreaterThanEqual),
             180 => Ok(Self::OpFOrdEqual),
             182 => Ok(Self::OpFOrdNotEqual),
             109 => Ok(Self::OpConvertFToU),
@@ -1482,6 +1488,17 @@ impl Kernel {
                                     Some(OpSGreaterThan)
                                 } else {
                                     Some(OpUGreaterThan)
+                                },
+                                None,
+                            ),
+                            BOp::Cmpge => (
+                                Some(OpFOrdGreaterThanEqual),
+                                if dt.is_float() {
+                                    None
+                                } else if matches!(dt, DType::I8 | DType::I16 | DType::I32 | DType::I64) {
+                                    Some(OpSGreaterThanEqual)
+                                } else {
+                                    Some(OpUGreaterThanEqual)
                                 },
                                 None,
                             ),

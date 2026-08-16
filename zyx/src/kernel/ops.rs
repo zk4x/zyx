@@ -226,6 +226,8 @@ pub enum BOp {
     Cmplt,
     /// Compare greater than: x > y
     Cmpgt,
+    /// Compare greater than or equal: x >= y
+    Cmpge,
     /// Maximum: max(x, y)
     Max,
     /// Bitwise OR: x | y
@@ -265,8 +267,8 @@ impl BOp {
 
     /// Returns true if the operation produces a boolean result.
     pub const fn returns_bool(self) -> bool {
-        use BOp::{And, Cmpgt, Cmplt, Eq, NotEq, Or};
-        matches!(self, Cmpgt | Cmplt | NotEq | Eq | And | Or)
+        use BOp::{And, Cmpge, Cmpgt, Cmplt, Eq, NotEq, Or};
+        matches!(self, Cmpgt | Cmpge | Cmplt | NotEq | Eq | And | Or)
     }
 }
 

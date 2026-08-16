@@ -162,6 +162,7 @@ impl Runtime {
                     }
                     BOp::Cmplt
                     | BOp::Cmpgt
+                    | BOp::Cmpge
                     | BOp::Eq
                     | BOp::NotEq
                     | BOp::Or

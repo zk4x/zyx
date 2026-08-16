@@ -208,6 +208,7 @@ impl Kernel {
                         BOp::Mod => ("", " % ", ""),
                         BOp::Cmplt => ("", " < ", ""),
                         BOp::Cmpgt => ("", " > ", ""),
+                        BOp::Cmpge => ("", " >= ", ""),
                         BOp::Max => ("max(", ", ", ")"),
                         BOp::Or => ("", " || ", ""),
                         BOp::And => ("", " && ", ""),

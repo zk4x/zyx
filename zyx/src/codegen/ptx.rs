@@ -112,6 +112,7 @@ impl Compiler {
             BOp::Mod => "rem",
             BOp::Cmplt => "setp.lt",
             BOp::Cmpgt => "setp.gt",
+            BOp::Cmpge => "setp.ge",
             BOp::Max => "max",
             BOp::Or => "or",
             BOp::And => "and",

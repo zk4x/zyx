@@ -545,6 +545,14 @@ impl Kernel {
                         let upper = u64::from(always || maybe);
                         (lower, upper)
                     }
+                    BOp::Cmpge => {
+                        let always = min_x >= max_y;
+                        let never = max_x < min_y;
+                        let maybe = !always && !never;
+                        let lower = u64::from(always);
+                        let upper = u64::from(always || maybe);
+                        (lower, upper)
+                    }
                     BOp::Cmplt => {
                         let always = max_x < min_y;
                         let never = max_y <= min_x;

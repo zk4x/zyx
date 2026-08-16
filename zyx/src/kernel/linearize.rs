@@ -204,14 +204,14 @@ impl Kernel {
                         self.ops[op_id].op = Op::Binary { x: pcd, y: z, bop: BOp::Mul };
                     }
                 }
-                Op::Param { dtype, kind } => {
+                Op::Param { dtype, kind } => match kind {
                     // Register-scope defines (e.g. reduce accumulators) are managed
                     // by the ops that create them; only global/variable defines are
                     // rangeified here. Writable globals are store destinations,
                     // read-only globals/variables are load sources. Writables with
                     // MemScope::Variable are left alone (stores to variables are
                     // invalid; the verifier rejects them).
-                    if kind == ParamKind::GlobalMut {
+                    ParamKind::GlobalMut => {
                         // Write path: this define is the destination of a store. The
                         // store's index is computed from the define's rangeified view
                         // and written back into the matching store op.
@@ -219,102 +219,69 @@ impl Kernel {
                         let view = views.remove(&op_id).unwrap();
                         let zero = self.insert_const_idx_before(anchor, 0u32);
                         let mut write_index = zero;
-                        let mut has_pad = false;
                         for (index_elem, stride, lp_id, rp_id, _len_op) in &view {
-                            let lp = pad_value(self, *lp_id);
-                            let rp = pad_value(self, *rp_id);
-                            has_pad |= lp > 0 || rp > 0;
-                            let src_idx = if lp == 0 {
-                                *index_elem
-                            } else {
-                                self.insert_before(anchor, Op::Binary { x: *index_elem, y: *lp_id, bop: BOp::Sub })
-                            };
+                            // A store cannot write padding: the store covers exactly the
+                            // define's writable extent. The index subtracts the left pad
+                            // unconditionally; any residual padding is invalid.
+                            let src_idx = self.insert_before(anchor, Op::Binary { x: *index_elem, y: *lp_id, bop: BOp::Sub });
                             write_index = self.insert_before(anchor, Op::Mad { x: src_idx, y: *stride, z: write_index });
                         }
-                        // A store cannot write padding: the store covers exactly the
-                        // define's writable extent, so padding here is invalid.
-                        debug_assert!(!has_pad, "store destination define has padding: {has_pad}");
                         match &mut self.ops[store_id].op {
                             Op::Store { index, .. } => *index = write_index,
                             _ => unreachable!("graph stores are the only stores at linearize time"),
                         }
-                        continue;
                     }
-                    if consumed_vars.contains(&op_id) {
-                        continue;
-                    }
-                    let shape = todo!();
-                    let view = views.remove(&op_id).unwrap();
-                    let zero = self.insert_const_idx_before(anchor, 0u32);
-                    if kind == ParamKind::Variable {
+                    ParamKind::Variable => {
+                        if consumed_vars.contains(&op_id) {
+                            continue;
+                        }
+                        let view = views.remove(&op_id).unwrap();
                         // Variables are single values (no indexing). Like constants,
                         // they only need the padding mask: where the view is out of
                         // bounds, the loaded value is zeroed.
                         let mut pc = self.insert_before(anchor, Op::Const(Constant::Bool(true)));
-                        let mut has_pad = false;
                         for &(idx, _st, lp_id, rp_id, len_op) in &view {
-                            let lp = pad_value(self, lp_id);
-                            let rp = pad_value(self, rp_id);
-                            if lp > 0 || rp > 0 {
-                                has_pad = true;
-                                if lp > 0 {
-                                    let lp_m1 = self.insert_const_idx_before(anchor, lp - 1);
-                                    let t = self.insert_before(anchor, Op::Binary { x: idx, y: lp_m1, bop: BOp::Cmpgt });
-                                    pc = self.insert_before(anchor, Op::Binary { x: t, y: pc, bop: BOp::And });
-                                }
-                                if rp > 0 {
-                                    let len_mr = self.insert_before(anchor, Op::Binary { x: len_op, y: rp_id, bop: BOp::Sub });
-                                    let t = self.insert_before(anchor, Op::Binary { x: idx, y: len_mr, bop: BOp::Cmplt });
-                                    pc = self.insert_before(anchor, Op::Binary { x: t, y: pc, bop: BOp::And });
-                                }
-                            }
+                            let len_mr = self.insert_before(anchor, Op::Binary { x: len_op, y: rp_id, bop: BOp::Sub });
+                            let t_lo = self.insert_before(anchor, Op::Binary { x: idx, y: lp_id, bop: BOp::Cmpge });
+                            pc = self.insert_before(anchor, Op::Binary { x: t_lo, y: pc, bop: BOp::And });
+                            let t_hi = self.insert_before(anchor, Op::Binary { x: idx, y: len_mr, bop: BOp::Cmplt });
+                            pc = self.insert_before(anchor, Op::Binary { x: t_hi, y: pc, bop: BOp::And });
                         }
                         // Insert the ro source define immediately before this op so the
                         // global/variable define order (which buffer args bind to) is
                         // preserved.
                         let src = self.insert_before(op_id, Op::Param { dtype, kind });
-                        if has_pad {
-                            let z = self.insert_before(anchor, Op::Load { src, index: zero, layout: MemLayout::Scalar });
-                            let pcd = self.insert_before(anchor, Op::Cast { x: pc, dtype });
-                            self.ops[op_id].op = Op::Binary { x: pcd, y: z, bop: BOp::Mul };
-                        } else {
-                            self.ops[op_id].op = Op::Load { src, index: zero, layout: MemLayout::Scalar };
-                        }
-                        continue;
+                        let zero = self.insert_before(anchor, Op::Const(Constant::idx(0)));
+                        let z = self.insert_before(anchor, Op::Load { src, index: zero, layout: MemLayout::Scalar });
+                        let pcd = self.insert_before(anchor, Op::Cast { x: pc, dtype });
+                        self.ops[op_id].op = Op::Binary { x: pcd, y: z, bop: BOp::Mul };
                     }
-                    // Padding condition: valid where index is within the source extent.
-                    // index = sum over axes of (idx - lp) * stride
-                    // pc = and over padded axes of idx > lp-1 && idx < len-rp
-                    let mut index = zero;
-                    let mut pc = self.insert_before(anchor, Op::Const(Constant::Bool(true)));
-                    let mut has_pad = false;
-                    for &(idx, st, lp_id, rp_id, len_op) in &view {
-                        let lp = pad_value(self, lp_id);
-                        let rp = pad_value(self, rp_id);
-                        let src_idx = if lp == 0 {
-                            idx
-                        } else {
-                            self.insert_before(anchor, Op::Binary { x: idx, y: lp_id, bop: BOp::Sub })
-                        };
-                        index = self.insert_before(anchor, Op::Mad { x: src_idx, y: st, z: index });
-                        if lp > 0 || rp > 0 {
-                            has_pad = true;
-                            if lp > 0 {
-                                let lp_m1 = self.insert_const_idx_before(anchor, lp - 1);
-                                let t = self.insert_before(anchor, Op::Binary { x: idx, y: lp_m1, bop: BOp::Cmpgt });
-                                pc = self.insert_before(anchor, Op::Binary { x: t, y: pc, bop: BOp::And });
-                            }
-                            if rp > 0 {
-                                let len_mr = self.insert_before(anchor, Op::Binary { x: len_op, y: rp_id, bop: BOp::Sub });
-                                let t = self.insert_before(anchor, Op::Binary { x: idx, y: len_mr, bop: BOp::Cmplt });
-                                pc = self.insert_before(anchor, Op::Binary { x: t, y: pc, bop: BOp::And });
-                            }
+                    ParamKind::Global => {
+                        if consumed_vars.contains(&op_id) {
+                            continue;
                         }
-                    }
-                    // Insert the ro source define immediately before this op so the
-                    // global define order (which buffer args bind to) is preserved.
-                    let src = self.insert_before(op_id, Op::Param { dtype, kind });
-                    if has_pad {
+                        let view = views.remove(&op_id).unwrap();
+                        // Padding condition: valid where index is within the source
+                        // extent, all symbolic and unconditional. Pads that are
+                        // Const(0) simply fold away in later passes.
+                        //   index = sum over axes of (idx - lp) * stride
+                        //   pc    = and over axes of (idx >= lp) && (idx < len - rp)
+                        let zero = self.insert_before(anchor, Op::Const(Constant::idx(0)));
+                        let one = self.insert_before(anchor, Op::Const(Constant::idx(1)));
+                        let mut index = zero;
+                        let mut pc = self.insert_before(anchor, Op::Const(Constant::Bool(true)));
+                        for &(idx, st, lp_id, rp_id, len_op) in &view {
+                            let src_idx = self.insert_before(anchor, Op::Binary { x: idx, y: lp_id, bop: BOp::Sub });
+                            index = self.insert_before(anchor, Op::Mad { x: src_idx, y: st, z: index });
+                            let t_lo = self.insert_before(anchor, Op::Binary { x: idx, y: lp_id, bop: BOp::Cmpge });
+                            pc = self.insert_before(anchor, Op::Binary { x: t_lo, y: pc, bop: BOp::And });
+                            let len_mr = self.insert_before(anchor, Op::Binary { x: len_op, y: rp_id, bop: BOp::Sub });
+                            let t_hi = self.insert_before(anchor, Op::Binary { x: idx, y: len_mr, bop: BOp::Cmplt });
+                            pc = self.insert_before(anchor, Op::Binary { x: t_hi, y: pc, bop: BOp::And });
+                        }
+                        // Insert the ro source define immediately before this op so the
+                        // global define order (which buffer args bind to) is preserved.
+                        let src = self.insert_before(op_id, Op::Param { dtype, kind });
                         // Zero the offset where the padding condition fails, so the load
                         // always reads in-bounds, then zero the loaded value itself.
                         let pcu = self.insert_before(anchor, Op::Cast { x: pc, dtype: IDX_T });
@@ -322,8 +289,6 @@ impl Kernel {
                         let z = self.insert_before(anchor, Op::Load { src, index: offset, layout: MemLayout::Scalar });
                         let pcd = self.insert_before(anchor, Op::Cast { x: pc, dtype });
                         self.ops[op_id].op = Op::Binary { x: pcd, y: z, bop: BOp::Mul };
-                    } else {
-                        self.ops[op_id].op = Op::Load { src, index, layout: MemLayout::Scalar };
                     }
                 }
                 Op::Store { dst, src, index, layout } => {
