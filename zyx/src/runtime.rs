@@ -997,6 +997,8 @@ pub fn shape(&self, x: TensorId) -> &[Dim] {
                 0,
                 "input into reshape must have empty outputs before shape kernels are merged"
             );
+            self.kernels[kernel_id].loads.push(x);
+            self.retain_load(x);
             let mut new_shape = Vec::with_capacity(shape.len());
             let mut out_dims = Vec::with_capacity(shape.len());
             for tid in shape {
@@ -1031,6 +1033,27 @@ pub fn shape(&self, x: TensorId) -> &[Dim] {
 
             debug_assert_eq!(self.kernels[kernel_id].outputs.contains(&tid), false);
             self.kernels[kernel_id].outputs.push(tid);
+
+            #[cfg(debug_assertions)]
+            {
+                let n_param_loads = self.kernels[kernel_id]
+                    .kernel
+                    .ops
+                    .values()
+                    .filter(|op| {
+                        matches!(
+                            op.op,
+                            Op::Param { kind: ParamKind::Global | ParamKind::Variable, .. }
+                        )
+                    })
+                    .count();
+                let n_loads = self.kernels[kernel_id].loads.len();
+                debug_assert_eq!(
+                    n_loads,
+                    n_param_loads,
+                    "reshape: kernel {kernel_id:?} has {n_loads} loads but {n_param_loads} Global/Variable Params"
+                );
+            }
 
             #[cfg(feature = "debug_tensor_op")]
             println!("  -> tid={tid}, kid={kernel_id_dup:?}, op_id={op_id:?}");

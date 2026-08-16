@@ -31,7 +31,7 @@ fn mem_scope(op: &Op) -> MemScope {
         Op::Storage { scope, .. } => *scope,
         Op::Param { kind: ParamKind::Variable, .. } => MemScope::Variable,
         Op::Param { kind: ParamKind::Global | ParamKind::GlobalMut, .. } => MemScope::Global,
-        _ => unreachable!("load/store operand must be a Storage or Param define, got {op:?}"),
+        _ => unreachable!("load/store operand must be a Storage or Param, got {op:?}"),
     }
 }
 

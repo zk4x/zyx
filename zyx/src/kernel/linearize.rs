@@ -314,19 +314,19 @@ impl Kernel {
                     // The store index is written back by the terminal define (as a
                     // writable global) when its walk reaches it. Walk dst through the
                     // movement ops (these are the only ops allowed between a store and
-                    // the define it writes) and record the mapping.
-                    let mut dst_define = dst;
-                    while let Op::Move { x, .. } = self.ops[dst_define].op {
-                        dst_define = x;
+                    // the Param it writes) and record the mapping.
+                    let mut dst_param = dst;
+                    while let Op::Move { x, .. } = self.ops[dst_param].op {
+                        dst_param = x;
                     }
-                    let dst_define_op = &self.ops[dst_define].op;
+                    let dst_param_op = &self.ops[dst_param].op;
                     assert!(
-                        matches!(dst_define_op, Op::Param { kind: ParamKind::GlobalMut, .. }),
-                        "store dst chain must terminate at a writable global define, got {dst_define_op:?}"
+                        matches!(dst_param_op, Op::Param { kind: ParamKind::GlobalMut, .. }),
+                        "store dst chain must terminate at a writable global Param, got {dst_param_op:?}"
                     );
                     assert!(
-                        dst_stores.insert(dst_define, op_id).is_none(),
-                        "store dst chain terminates at define {dst_define:?}, which is already a store destination"
+                        dst_stores.insert(dst_param, op_id).is_none(),
+                        "store dst chain terminates at Param {dst_param:?}, which is already a store destination"
                     );
                     self.ops[op_id].op = Op::Store { dst, src, index: OpId::NULL, layout: MemLayout::Scalar };
                     views.insert(src, view.clone());

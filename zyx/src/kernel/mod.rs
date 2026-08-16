@@ -584,14 +584,17 @@ impl Kernel {
             }
         }
 
-        // Collect input (ro global) define OpIds in op order (before removal).
-        // These are the defines that correspond 1:1 with `loads`.
-        let define_ops: Vec<OpId> = {
+        // Collect input (ro) Param OpIds in op order (before removal). These are
+        // the Params that correspond 1:1 with `loads`: Global and Variable Params
+        // are loads; GlobalMut Params are stores (mapped to `stores`, not `loads`).
+        let param_ops: Vec<OpId> = {
             let mut ops = Vec::new();
             let mut id = self.head;
             while !id.is_null() {
-                if let Op::Param { .. } = &self.ops[id].op {
-                    ops.push(id);
+                if let Op::Param { kind, .. } = &self.ops[id].op {
+                    if *kind != ParamKind::GlobalMut {
+                        ops.push(id);
+                    }
                 }
                 id = self.next_op(id);
             }
@@ -608,9 +611,9 @@ impl Kernel {
             op_id = next;
         }
 
-        // Keep only loads whose corresponding input define was not removed.
-        // `loads[i]` maps to the i-th ro global define in op order.
-        define_ops.iter().enumerate().filter(|&(_, &lv_id)| !to_remove.contains(&lv_id)).map(|(i, _)| loads[i]).collect()
+        // Keep only loads whose corresponding input Param was not removed.
+        // `loads[i]` maps to the i-th Global/Variable Param in op order.
+        param_ops.iter().enumerate().filter(|&(_, &lv_id)| !to_remove.contains(&lv_id)).map(|(i, _)| loads[i]).collect()
     }
 
     /// Iterate over all operations in the kernel.
@@ -1142,7 +1145,7 @@ impl Kernel {
     pub(crate) fn is_preceded_by_compute(&self, x: OpId) -> bool {
         let mut params = vec![x];
         let mut seen: Set<OpId> = Set::default();
-        let (mut has_compute, mut has_define) = (false, false);
+        let (mut has_compute, mut has_storage) = (false, false);
         while let Some(param) = params.pop() {
             if !seen.insert(param) {
                 continue;
@@ -1152,11 +1155,11 @@ impl Kernel {
                     has_compute = true;
                     params.extend(self.ops[param].op.parameters());
                 }
-                Op::Storage { .. } => has_define = true,
+                Op::Storage { .. } => has_storage = true,
                 Op::Const(_) => {}
                 _ => params.extend(self.ops[param].op.parameters()),
             }
         }
-        has_compute && has_define
+        has_compute && has_storage
     }
 }
