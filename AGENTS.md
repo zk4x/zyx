@@ -14,7 +14,10 @@
 - If a task is hardware-specific, deeply subtle, or keeps failing, SAY SO plainly up front. "I can't solve this" beats two days of guesses.
 - When the user says they'll do it themselves, stop. Only act when asked for a specific edit.
 - **ASK QUESTIONS.** When a task has ambiguity — design decisions, expected behavior, specs, values, whether a behavior is intended — ask BEFORE implementing, and whenever you find yourself guessing or inventing an answer. Guessing wrong and writing broken code wastes more time than asking. Never let a time budget make you skip asking.
+- **ASK EARLY AND OFTEN. You are NOT asking enough.** Default to asking: the first reply to a non-trivial task should usually contain questions, not edits. Do not begin implementing until the design/spec is clear. If the task references a `todo!()` or a stub, ask what the intended behavior/value/semantics are before guessing at them.
 - **NEVER use the `question` tool. Ask questions directly in your reply, as plain text.** If you reach for the `question` tool, that is your signal you are about to guess — stop and write the question out instead.
+- **Do not implement on top of your own guesses.** Researching the code to inform a question is good; implementing code to "find out" what should happen is not. Ask first, implement after the answer.
+- **Confirm whether values are symbolic or numeric before touching them.** Dims, shapes, lengths, and strides are usually `OpId`s (symbolic IR nodes), not `Dim`s you can multiply directly. If a computation would need numeric values (e.g. `index_len`/`as_dim` to multiply), that is a sign the design may intend symbolic ops instead — ASK which is intended, and how strides/shapes are meant to be expressed, before writing code.
 - **FORBIDDEN WORDS** — never say these (in responses AND in your reasoning AND in your inner monologue): "Actually", "wait", "key insight", "let me", "Hmm", "But wait". The rule is absolute, applies to every token you emit (including tool call parameters, file contents, and planning), and violations are never excused by "it was in reasoning" or "I was thinking out loud".
 
 ## Key Commands
@@ -194,6 +197,7 @@ construction point.
 ## Interaction Rules
 
 - Every user message: if it contains a `?`, **answer the question and stop** — do not edit/write files. Otherwise proceed.
+- **ASK QUESTIONS as your default first move.** For any task involving a `todo!()` stub, an ambiguous value, or a design decision, your first reply should be questions, not code. Do not implement until you have answers.
 - When in doubt, ask. Don't guess specs/values — the user has them. Ask before hunting through source. Ask by writing the question out in your reply as plain text — never via the `question` tool.
 - **Follow the literal ask exactly — quantity included.** "A test" means exactly ONE test; "add a test for X" means just that test, not a family of tests. Deliver what was asked and stop. Extras (more tests, renames, refactors, extra fixes) are unrequested work.
 - **Never start implementing anything beyond the literal ask without asking first.** If a requested change turns out to require fixing/modifying other parts of the code (e.g. a test exposes a library bug), STOP and ask the user how to proceed before writing any fix. Do not debug-and-fix your way down a rabbit hole unprompted. A single simple question ("want me to fix that too?") beats an hour of unrequested surgery.

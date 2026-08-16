@@ -118,16 +118,22 @@ impl Kernel {
         let init_view = {
             let head = self.head;
             let mut init_view = Vec::new();
-            let mut axis = 0;
-            for &len in output_shape {
-                let idx = self.insert_before(head, Op::Index { len, axis, kind: IdxKind::Group });
-                let st = todo!();
+            // Contiguous row-major stride: axis i has stride = product of the
+            // symbolic output dims after it. Walk backwards carrying a running
+            // suffix product (built with Mad), then reverse to keep axis order.
+            // The innermost axis gets a trailing Const(1) stride.
+            let mut suffix = self.insert_before(head, Op::Const(Constant::idx(1)));
+            for (axis, &len) in output_shape.iter().enumerate().rev() {
+                let idx = self.insert_before(head, Op::Index { len, axis: axis as u32, kind: IdxKind::Group });
+                let st = suffix;
                 let lp = self.insert_before(head, Op::Const(Constant::idx(0)));
                 let rp = self.insert_before(head, Op::Const(Constant::idx(0)));
                 init_view.push((idx, st, lp, rp, len));
-                axis += 1;
+                suffix = self.insert_before(head, Op::Binary { x: len, y: suffix, bop: BOp::Mul });
             }
-        }
+            init_view.reverse();
+            init_view
+        };
 
         // For each op, shape and strides: (index, stride, left pad, right pad, axis length)
         let mut views: Map<OpId, Vec<(OpId, OpId, OpId, OpId, OpId)>> = Map::default();
