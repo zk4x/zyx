@@ -74,7 +74,7 @@ pub enum Op {
     Index {
         len: OpId,
         axis: u32,
-        scope: IdxScope,
+        kind: IdxKind,
     },
     // Control flow
     Loop {
@@ -149,7 +149,7 @@ pub enum TileReduceKind {
 
 /// Scope of index. Index is like loop, but purely parallel acess
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, SerBin, DeBin)]
-pub enum IdxScope {
+pub enum IdxKind {
     /// Group scope. Represents blocks in cuda, cores in CPU and tenstorrent.
     Group,
     /// Local scope. Represents cuda threads.
@@ -158,12 +158,12 @@ pub enum IdxScope {
     Warp,
 }
 
-impl std::fmt::Display for IdxScope {
+impl std::fmt::Display for IdxKind {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(match self {
-            IdxScope::Group => "group",
-            IdxScope::Local => "local",
-            IdxScope::Warp => "warp",
+            IdxKind::Group => "group",
+            IdxKind::Local => "local",
+            IdxKind::Warp => "warp",
         })
     }
 }

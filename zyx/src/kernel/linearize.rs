@@ -41,7 +41,7 @@
 use crate::{
     DType, Map, Set,
     dtype::Constant,
-    kernel::{BOp, IDX_T, IdxScope, Kernel, MemLayout, MemScope, MoveOp, Op, OpId, ParamKind},
+    kernel::{BOp, IDX_T, IdxKind, Kernel, MemLayout, MemScope, MoveOp, Op, OpId, ParamKind},
     shape::{self, Dim, UAxis},
     slab::SlabId,
 };
@@ -61,14 +61,14 @@ impl Kernel {
     /// and LoadView/StoreView/ConstView are converted to Load/Store/Const in a single pass.
     // TODO Currently it only works if each define has a single move op chain.
     // Make it also work with move op chains when each define is accessed by multiple move ops.
-    pub fn linearize(&mut self, shape: &[OpId]) {
+    pub fn linearize(&mut self, output_shape: &[OpId]) {
         if !self.ops.values().any(|n| matches!(n.op, Op::Store { index: OpId::NULL, .. })) {
             return;
         }
 
         #[cfg(debug_assertions)]
         {
-            let has_gidx = self.ops.values().any(|n| matches!(n.op, Op::Index { scope: IdxScope::Group, .. }));
+            let has_gidx = self.ops.values().any(|n| matches!(n.op, Op::Index { kind: IdxKind::Group, .. }));
             let has_moves = self.ops.values().any(|n| matches!(n.op, Op::Move { .. }));
             if has_gidx && has_moves {
                 panic!("unfold_movement_ops: cannot have both explicit gidx and LoadView/StoreView/Move ops");
@@ -114,6 +114,20 @@ impl Kernel {
             }
             defines
         };
+
+        let init_view = {
+            let head = self.head;
+            let mut init_view = Vec::new();
+            let mut axis = 0;
+            for &len in output_shape {
+                let idx = self.insert_before(head, Op::Index { len, axis, kind: IdxKind::Group });
+                let st = todo!();
+                let lp = self.insert_before(head, Op::Const(Constant::idx(0)));
+                let rp = self.insert_before(head, Op::Const(Constant::idx(0)));
+                init_view.push((idx, st, lp, rp, len));
+                axis += 1;
+            }
+        }
 
         // For each op, shape and strides: (index, stride, left pad, right pad, axis length)
         let mut views: Map<OpId, Vec<(OpId, OpId, OpId, OpId, OpId)>> = Map::default();

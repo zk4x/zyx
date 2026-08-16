@@ -259,7 +259,7 @@ impl Kernel {
                         "{indent}r{out_id}{grey}: {cdtype}{reset} = {orange}wmma{reset}.{dims:?}.{layout:?}.{dtype:?}(c={c}, a={a}, b={b})",
                     );
                 }
-                Op::Index { len, axis, scope } => {
+                Op::Index { len, axis, kind: scope } => {
                     dtypes.insert(op_id, IDX_T);
                     let ub = self.index_len(len).saturating_sub(1);
                     println!("{indent}r{out_id}{grey}: {IDX_T}{reset} = {blue}{scope}_index({axis}){reset}    // 0..={ub}");

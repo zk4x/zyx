@@ -6,7 +6,7 @@
 use crate::{
     Map, Set,
     dtype::Constant,
-    kernel::{BOp, IDX_T, IdxScope, Kernel, MemLayout, MemScope, Op, OpId},
+    kernel::{BOp, IDX_T, IdxKind, Kernel, MemLayout, MemScope, Op, OpId},
     shape::Dim,
     slab::SlabId,
 };
@@ -58,8 +58,8 @@ impl Kernel {
         let mut gidxs: Vec<(OpId, u32, Dim)> = Vec::new();
         let mut op_id = self.head;
         while !op_id.is_null() {
-            if let &Op::Index { len, axis, scope } = self.at(op_id) {
-                if scope == IdxScope::Group {
+            if let &Op::Index { len, axis, kind: scope } = self.at(op_id) {
+                if scope == IdxKind::Group {
                     gidxs.push((op_id, axis, self.index_len(len)));
                 } else {
                     // Can't run this optimization on kernel that already has local indices
@@ -86,7 +86,7 @@ impl Kernel {
                 if pad > 0 {
                     self.pad_index(id, pad);
                 }
-                let new_len = if let Op::Index { len, scope: IdxScope::Group, .. } = self.at(id) {
+                let new_len = if let Op::Index { len, kind: IdxKind::Group, .. } = self.at(id) {
                     self.index_len(*len)
                 } else {
                     unreachable!()
@@ -102,8 +102,8 @@ impl Kernel {
                 self.split_dim(
                     id,
                     vec![
-                        Op::Index { len: f1_id, axis: 0, scope: IdxScope::Group },
-                        Op::Index { len: f2_id, axis: 1, scope: IdxScope::Group },
+                        Op::Index { len: f1_id, axis: 0, kind: IdxKind::Group },
+                        Op::Index { len: f2_id, axis: 1, kind: IdxKind::Group },
                     ],
                 );
             }
@@ -145,7 +145,7 @@ impl Kernel {
         // Split each GroupIndex into GroupIndex(len/32) + Local(32)
         let mut op_id = self.head;
         while !op_id.is_null() {
-            if let Op::Index { len, axis, scope: IdxScope::Group } = self.ops[op_id].op {
+            if let Op::Index { len, axis, kind: IdxKind::Group } = self.ops[op_id].op {
                 let len = self.index_len(len);
                 if len.is_multiple_of(32) && len >= 32 {
                     let f1 = len / 32;
@@ -154,8 +154,8 @@ impl Kernel {
                     self.split_dim(
                         op_id,
                         vec![
-                            Op::Index { len: f1_id, axis, scope: IdxScope::Group },
-                            Op::Index { len: local_id, axis, scope: IdxScope::Local },
+                            Op::Index { len: f1_id, axis, kind: IdxKind::Group },
+                            Op::Index { len: local_id, axis, kind: IdxKind::Local },
                         ],
                     );
                 } else {
@@ -169,7 +169,7 @@ impl Kernel {
         let mut lidxs = Vec::new();
         let mut op_id = self.head;
         while !op_id.is_null() {
-            if let Op::Index { len, axis, scope: IdxScope::Local } = self.at(op_id) {
+            if let Op::Index { len, axis, kind: IdxKind::Local } = self.at(op_id) {
                 if self.index_len(*len) != 32 {
                     return;
                 }
@@ -388,7 +388,7 @@ impl Kernel {
         let mut lidxs: Vec<(u32, OpId, u32)> = Vec::new();
         let mut op_id = self.head;
         while !op_id.is_null() {
-            if let Op::Index { len, axis, scope: IdxScope::Local } = self.at(op_id) {
+            if let Op::Index { len, axis, kind: IdxKind::Local } = self.at(op_id) {
                 lidxs.push((*axis, op_id, self.index_len(*len) as u32));
             }
             op_id = self.next_op(op_id);

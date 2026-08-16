@@ -307,7 +307,7 @@ impl Kernel {
                         _ => _ = writeln!(source, "{indent}r{reg} = {x} * {y} + {z};"),
                     }
                 }
-                Op::Index { len, axis, scope } => {
+                Op::Index { len, axis, kind: scope } => {
                     indices.insert(op_id, loop_id);
                     _ = writeln!(
                         source,

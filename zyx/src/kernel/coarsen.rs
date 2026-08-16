@@ -25,7 +25,7 @@ use super::autotune::Optimization;
 use crate::{
     Map, Set,
     dtype::Constant,
-    kernel::{BOp, IdxScope, Kernel, MemLayout, MemScope, Op, OpId},
+    kernel::{BOp, IdxKind, Kernel, MemLayout, MemScope, Op, OpId},
 };
 
 // ## Coalesced local+upcast access
@@ -74,7 +74,7 @@ impl Kernel {
         let mut factors = Vec::new();
         let mut op_id = self.head;
         while !op_id.is_null() {
-            if let Op::Index { len, scope: IdxScope::Group, .. } = self.ops[op_id].op {
+            if let Op::Index { len, kind: IdxKind::Group, .. } = self.ops[op_id].op {
                 let len = self.index_len(len);
                 for f in [16, 8, 4] {
                     //println!("len={len} f={f}");
@@ -95,7 +95,7 @@ impl Kernel {
     pub fn coarsen(&mut self, gidx_id: OpId, factor: u64) {
         #[cfg(feature = "time")]
         let _timer = crate::Timer::new("thread_coarse");
-        let Op::Index { len, axis, scope: IdxScope::Group } = self.ops[gidx_id].op else {
+        let Op::Index { len, axis, kind: IdxKind::Group } = self.ops[gidx_id].op else {
             unreachable!()
         };
         let len = self.index_len(len);
@@ -149,7 +149,7 @@ impl Kernel {
 
         // Group index now split into multiple indices with constant offsets
         let new_len = self.const_idx(len / factor);
-        let x = self.insert_before(gidx_id, Op::Index { len: new_len, axis, scope: IdxScope::Group });
+        let x = self.insert_before(gidx_id, Op::Index { len: new_len, axis, kind: IdxKind::Group });
         self.ops[gidx_id].op = Op::Binary { x, y: const_factor, bop: BOp::Mul };
         let mut ids = Vec::with_capacity((factor - 1) as usize);
         let mut id = gidx_id;
@@ -269,7 +269,7 @@ impl Kernel {
                     }
                 }
             }
-            if let Op::Index { len, scope: IdxScope::Group, .. } = self.ops[op_id].op
+            if let Op::Index { len, kind: IdxKind::Group, .. } = self.ops[op_id].op
                 && self.index_len(len) >= 8
             {
                 let len = self.index_len(len);

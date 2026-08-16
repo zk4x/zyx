@@ -18,7 +18,7 @@ use super::autotune::Optimization;
 use crate::{
     backend::DeviceInfo,
     dtype::Constant,
-    kernel::{BOp, IdxScope, Kernel, Op, OpId},
+    kernel::{BOp, IdxKind, Kernel, Op, OpId},
 };
 
 impl Kernel {
@@ -37,7 +37,7 @@ impl Kernel {
         }
         let mut local_axis_sizes: crate::Map<u32, u64> = crate::Map::default();
         for op in self.ops.values() {
-            if let Op::Index { axis, len, scope: IdxScope::Local } = op.op {
+            if let Op::Index { axis, len, kind: IdxKind::Local } = op.op {
                 let len = self.index_len(len);
                 if let Some(&existing) = local_axis_sizes.get(&axis) {
                     debug_assert_eq!(existing, len);
@@ -56,7 +56,7 @@ impl Kernel {
         let mut op_id = self.head;
         let mut factors = Vec::new();
         while !op_id.is_null() {
-            if let Op::Index { len, axis, scope: IdxScope::Group } = self.ops[op_id].op {
+            if let Op::Index { len, axis, kind: IdxKind::Group } = self.ops[op_id].op {
                 let mut l_factors: Vec<u64> = vec![64, 32, 16, 8, 4, 2];
                 if !local_axis_sizes.contains_key(&axis) {
                     let max_per_axis = dev_info.max_local_work_dims[axis as usize];

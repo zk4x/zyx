@@ -8,7 +8,7 @@ use crate::{
     backend::DeviceInfo,
     dtype::Constant,
     error::{BackendError, ErrorStatus},
-    kernel::{BOp, IDX_T, IdxScope, Kernel, MemScope, Op, OpId, ParamKind, UOp},
+    kernel::{BOp, IDX_T, IdxKind, Kernel, MemScope, Op, OpId, ParamKind, UOp},
     scalar::bf16,
     shape::Dim,
 };
@@ -247,12 +247,12 @@ impl Kernel {
         let mut lws = vec![1; 3];
         let mut op_id = self.head;
         while !op_id.is_null() {
-            if let Op::Index { len: len_id, axis, scope } = self.ops[op_id].op {
+            if let Op::Index { len: len_id, axis, kind: scope } = self.ops[op_id].op {
                 let len = self.index_len(len_id);
                 match scope {
-                    IdxScope::Group => gws[axis as usize] = len,
-                    IdxScope::Local => lws[axis as usize] = len,
-                    IdxScope::Warp => todo!(),
+                    IdxKind::Group => gws[axis as usize] = len,
+                    IdxKind::Local => lws[axis as usize] = len,
+                    IdxKind::Warp => todo!(),
                 }
             }
             op_id = self.next_op(op_id);
@@ -319,7 +319,7 @@ impl Kernel {
                         MemScope::Global => unreachable!("ptx only supports local or register storage"),
                     }
                 }
-                Op::Index { axis, scope, .. } => {
+                Op::Index { axis, kind: scope, .. } => {
                     let reg = comp.new_var(op_id, IDX_T, rcs[&op_id]);
                     _ = writeln!(
                         comp.body,
@@ -327,9 +327,9 @@ impl Kernel {
                         comp.indent,
                         if IDX_T == DType::U64 { "cvt.u64" } else { "mov" },
                         match scope {
-                            IdxScope::Group => "cta",
-                            IdxScope::Local => "t",
-                            IdxScope::Warp => todo!(),
+                            IdxKind::Group => "cta",
+                            IdxKind::Local => "t",
+                            IdxKind::Warp => todo!(),
                         },
                         ["x", "y", "z"][axis as usize],
                     );

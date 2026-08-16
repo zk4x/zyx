@@ -16,7 +16,7 @@ use std::sync::{
 use libloading::Library;
 use nanoserde::DeJson;
 
-use crate::kernel::{IdxScope, Op};
+use crate::kernel::{IdxKind, Op};
 use crate::{
     DType,
     dtype::Constant,
@@ -1326,12 +1326,12 @@ pub(super) fn initialize_device(
                             let mut lws: [Dim; 3] = [1; 3];
                             let mut op_id = kernel.head;
                             while !op_id.is_null() {
-                                if let Op::Index { len: len_id, axis, scope } = kernel.ops[op_id].op {
+                                if let Op::Index { len: len_id, axis, kind: scope } = kernel.ops[op_id].op {
                                     let len = kernel.index_len(len_id);
                                     match scope {
-                                        IdxScope::Group => gws[axis as usize] = len,
-                                        IdxScope::Local => lws[axis as usize] = len,
-                                        IdxScope::Warp => todo!(),
+                                        IdxKind::Group => gws[axis as usize] = len,
+                                        IdxKind::Local => lws[axis as usize] = len,
+                                        IdxKind::Warp => todo!(),
                                     }
                                 }
                                 op_id = kernel.next_op(op_id);

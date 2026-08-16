@@ -6,7 +6,7 @@ use crate::{
     backend::DeviceInfo,
     dtype::Constant,
     error::{BackendError, ErrorStatus},
-    kernel::{BOp, IdxScope, Kernel, MemLayout, MemScope, Op, OpId, UOp},
+    kernel::{BOp, IdxKind, Kernel, MemLayout, MemScope, Op, OpId, UOp},
     scalar::{bf16, f16},
 };
 use std::{fmt::Write, hash::BuildHasherDefault};
@@ -29,8 +29,8 @@ impl Kernel {
             let mut op_id = self.head;
             while !op_id.is_null() {
                 match self.ops[op_id].op {
-                    Op::Index { len: dim, axis, scope } => {
-                        if scope != IdxScope::Group {
+                    Op::Index { len: dim, axis, kind: scope } => {
+                        if scope != IdxKind::Group {
                             return Err(BackendError {
                                 status: ErrorStatus::KernelCompilation,
                                 context: "C codegen: C only supports group index".into(),
@@ -72,8 +72,8 @@ impl Kernel {
         let mut op_id = self.head;
         while !op_id.is_null() {
             match self.ops[op_id].op {
-                Op::Index { len, scope, .. } => {
-                    if scope != IdxScope::Group {
+                Op::Index { len, kind: scope, .. } => {
+                    if scope != IdxKind::Group {
                         return Err(BackendError {
                             status: ErrorStatus::KernelCompilation,
                             context: "C codegen: LocalIndex not expected".into(),

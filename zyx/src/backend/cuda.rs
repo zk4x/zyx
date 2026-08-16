@@ -112,7 +112,7 @@ use crate::{
     dtype::Constant,
     error::{BackendError, ErrorStatus},
     graph::{ClassId, Graph, Node, NodeData},
-    kernel::{IdxScope, Kernel, MMADType, MMADims, Op, OpId},
+    kernel::{IdxKind, Kernel, MMADType, MMADims, Op, OpId},
     runtime::ShapeId,
     shape::Dim,
     slab::{Slab, SlabId},
@@ -1836,12 +1836,12 @@ impl CUDADevice {
         let mut lws = vec![1; 3];
         let mut op_id = kernel.head;
         while !op_id.is_null() {
-            if let Op::Index { len: len_id, axis, scope } = kernel.ops[op_id].op {
+            if let Op::Index { len: len_id, axis, kind: scope } = kernel.ops[op_id].op {
                 let len = kernel.index_len(len_id);
                 match scope {
-                    IdxScope::Group => gws[axis as usize] = len,
-                    IdxScope::Local => lws[axis as usize] = len,
-                    IdxScope::Warp => todo!(),
+                    IdxKind::Group => gws[axis as usize] = len,
+                    IdxKind::Local => lws[axis as usize] = len,
+                    IdxKind::Warp => todo!(),
                 }
             }
             op_id = kernel.next_op(op_id);

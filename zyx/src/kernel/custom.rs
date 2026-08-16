@@ -23,7 +23,7 @@ use crate::dtype::Constant;
 use crate::error::BackendError;
 use crate::graph::{ClassId, GraphId};
 use crate::kernel::{
-    BOp, DeviceId, IdxScope, Kernel, MMADType, MMADims, MMALayout, MemLayout, MemScope, MoveOp, Op, OpId, ParamKind, UOp,
+    BOp, DeviceId, IdxKind, Kernel, MMADType, MMADims, MMALayout, MemLayout, MemScope, MoveOp, Op, OpId, ParamKind, UOp,
 };
 use crate::runtime::{KernelData, KernelId, TensorData};
 use crate::shape::UAxis;
@@ -229,13 +229,13 @@ impl Kernel {
     /// Group (block) index.
     pub fn group_index(&mut self, axis: u32, len: Dim) -> OpId {
         let len = self.const_idx(len);
-        self.push_back(Op::Index { len, axis, scope: IdxScope::Group })
+        self.push_back(Op::Index { len, axis, kind: IdxKind::Group })
     }
 
     /// Local thread index.
     pub fn local_index(&mut self, axis: u32, len: Dim) -> OpId {
         let len = self.const_idx(len);
-        self.push_back(Op::Index { len, axis, scope: IdxScope::Local })
+        self.push_back(Op::Index { len, axis, kind: IdxKind::Local })
     }
 
     /// Store `x` to `dst` at `index`.

@@ -174,11 +174,11 @@ impl Kernel {
             }
         }
 
-        let Op::Index { axis, scope, .. } = self.ops[first_id.unwrap()].op else {
+        let Op::Index { axis, kind: scope, .. } = self.ops[first_id.unwrap()].op else {
             unreachable!()
         };
         let len = self.insert_before(first_id.unwrap(), Op::Const(Constant::idx(acc)));
-        let mut x = self.insert_before(first_id.unwrap(), Op::Index { len, axis, scope });
+        let mut x = self.insert_before(first_id.unwrap(), Op::Index { len, axis, kind: scope });
 
         for (.., (loop_id, len)) in axes {
             let y = self.insert_before(loop_id, Op::Const(Constant::idx(len)));

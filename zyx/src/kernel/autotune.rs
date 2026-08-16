@@ -41,7 +41,7 @@ use crate::dtype::{Constant, DType};
 use crate::error::{BackendError, ErrorStatus};
 use crate::hashers::AHasher;
 use crate::kernel::cost::Cost;
-use crate::kernel::{IdxScope, Kernel, MemScope, Op, OpId, ParamKind};
+use crate::kernel::{IdxKind, Kernel, MemScope, Op, OpId, ParamKind};
 use crate::rng::Rng;
 use crate::scalar::{bf16, f16};
 use crate::shape::Dim;
@@ -237,7 +237,7 @@ impl Optimization {
                 #[cfg(feature = "time")]
                 let _timer = crate::Timer::new("SplitGlobalToLocal");
                 let (op_id, factor) = factors[config];
-                let Op::Index { len, axis, scope: IdxScope::Group } = kernel.ops[op_id].op else {
+                let Op::Index { len, axis, kind: IdxKind::Group } = kernel.ops[op_id].op else {
                     unreachable!()
                 };
                 let factor: Dim = factor;
@@ -247,8 +247,8 @@ impl Optimization {
                 kernel.split_dim(
                     op_id,
                     vec![
-                        Op::Index { len: group_len, axis, scope: IdxScope::Group },
-                        Op::Index { len: local_len, axis, scope: IdxScope::Local },
+                        Op::Index { len: group_len, axis, kind: IdxKind::Group },
+                        Op::Index { len: local_len, axis, kind: IdxKind::Local },
                     ],
                 );
             }

@@ -128,7 +128,7 @@ mod unroll_loops;
 mod vectorize;
 mod verify;
 
-pub(crate) use ops::{BOp, IdxScope, MoveOp, Op, OpId, OpNode, UOp};
+pub(crate) use ops::{BOp, IdxKind, MoveOp, Op, OpId, OpNode, UOp};
 pub use ops::{MMADType, MMADims, MMALayout, ParamKind};
 
 // TODO later make this dynamic u32 or u64 depending on max range
@@ -1077,7 +1077,7 @@ impl Kernel {
     pub(crate) fn get_group_indices(&self) -> std::collections::BTreeMap<u32, OpId> {
         let mut indices = std::collections::BTreeMap::new();
         for (op_id, op_node) in self.ops.iter() {
-            if let Op::Index { axis, scope: IdxScope::Group, .. } = op_node.op {
+            if let Op::Index { axis, kind: IdxKind::Group, .. } = op_node.op {
                 indices.insert(axis, op_id);
             }
         }
@@ -1090,21 +1090,21 @@ impl Kernel {
         let mut local_indices = BTreeMap::default();
         for (op_id, op_node) in self.ops.iter() {
             match op_node.op {
-                Op::Index { axis, scope: IdxScope::Group, .. } => group_indices.insert(axis, op_id),
-                Op::Index { axis, scope: IdxScope::Local, .. } => local_indices.insert(axis, op_id),
+                Op::Index { axis, kind: IdxKind::Group, .. } => group_indices.insert(axis, op_id),
+                Op::Index { axis, kind: IdxKind::Local, .. } => local_indices.insert(axis, op_id),
                 _ => None,
             };
         }
         let mut ax = 0;
         for &idx_id in group_indices.values() {
-            let Op::Index { axis, scope: IdxScope::Group, .. } = &mut self.ops[idx_id].op else {
+            let Op::Index { axis, kind: IdxKind::Group, .. } = &mut self.ops[idx_id].op else {
                 unreachable!()
             };
             *axis = ax;
             ax += 1;
         }
         for &idx_id in local_indices.values() {
-            let Op::Index { axis, scope: IdxScope::Local, .. } = &mut self.ops[idx_id].op else {
+            let Op::Index { axis, kind: IdxKind::Local, .. } = &mut self.ops[idx_id].op else {
                 unreachable!()
             };
             *axis = ax;

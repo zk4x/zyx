@@ -8,7 +8,7 @@ use crate::{
     DType, Map,
     dtype::Constant,
     error::{BackendError, ErrorStatus},
-    kernel::{BOp, IDX_T, IdxScope, Kernel, MemLayout, MemScope, Op, OpId, ParamKind, UOp},
+    kernel::{BOp, IDX_T, IdxKind, Kernel, MemLayout, MemScope, Op, OpId, ParamKind, UOp},
 };
 use std::hash::BuildHasherDefault;
 
@@ -851,20 +851,20 @@ impl Kernel {
                     _ => {}
                 }
                 // Track work sizes from Index ops
-                if let Op::Index { len: len_id, axis, scope } = self.ops[op_id].op {
+                if let Op::Index { len: len_id, axis, kind: scope } = self.ops[op_id].op {
                     let len = self.index_len(len_id);
                     match scope {
-                        IdxScope::Group => {
+                        IdxKind::Group => {
                             if axis < 3 {
                                 gws[axis as usize] = gws[axis as usize].max(len);
                             }
                         }
-                        IdxScope::Local => {
+                        IdxKind::Local => {
                             if axis < 3 {
                                 lws[axis as usize] = lws[axis as usize].max(len);
                             }
                         }
-                        IdxScope::Warp => todo!(),
+                        IdxKind::Warp => todo!(),
                     }
                 }
                 op_id = self.next_op(op_id);
@@ -1549,13 +1549,13 @@ impl Kernel {
                         }
                         spv_values.insert(op_id, rid);
                     }
-                    Op::Index { axis, scope, .. } => {
+                    Op::Index { axis, kind: scope, .. } => {
                         let result_type = emit_type(&mut asm, &mut type_cache, IDX_T);
                         let loaded = asm.id();
                         match scope {
-                            IdxScope::Group => asm.emit_typed(OpLoad, vec3_id, loaded, &[wg_id_var]),
-                            IdxScope::Local => asm.emit_typed(OpLoad, vec3_id, loaded, &[local_inv_var]),
-                            IdxScope::Warp => todo!(),
+                            IdxKind::Group => asm.emit_typed(OpLoad, vec3_id, loaded, &[wg_id_var]),
+                            IdxKind::Local => asm.emit_typed(OpLoad, vec3_id, loaded, &[local_inv_var]),
+                            IdxKind::Warp => todo!(),
                         }
                         let elem = asm.id();
                         asm.emit_typed(OpCompositeExtract, u32_id, elem, &[loaded, axis]);

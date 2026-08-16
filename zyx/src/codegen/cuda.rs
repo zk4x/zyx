@@ -6,7 +6,7 @@ use crate::{
     backend::DeviceInfo,
     dtype::Constant,
     error::{BackendError, ErrorStatus},
-    kernel::{BOp, IdxScope, Kernel, MemLayout, MemScope, Op, OpId, ParamKind, UOp},
+    kernel::{BOp, IdxKind, Kernel, MemLayout, MemScope, Op, OpId, ParamKind, UOp},
     scalar::{bf16, f16},
 };
 use std::hash::BuildHasherDefault;
@@ -24,11 +24,11 @@ impl Kernel {
         let mut lws = [1; 3];
         let mut op_id = self.head;
         while !op_id.is_null() {
-            if let Op::Index { len, axis, scope } = self.ops[op_id].op {
+            if let Op::Index { len, axis, kind: scope } = self.ops[op_id].op {
                 match scope {
-                    IdxScope::Group => gws[axis as usize] = self.index_len(len),
-                    IdxScope::Local => lws[axis as usize] = self.index_len(len),
-                    IdxScope::Warp => todo!(),
+                    IdxKind::Group => gws[axis as usize] = self.index_len(len),
+                    IdxKind::Local => lws[axis as usize] = self.index_len(len),
+                    IdxKind::Warp => todo!(),
                 }
             }
             op_id = self.next_op(op_id);
@@ -311,15 +311,15 @@ impl Kernel {
                         _ => _ = writeln!(source, "{indent}r{reg} = {x} * {y} + {z};"),
                     }
                 }
-                Op::Index { len, axis, scope } => {
+                Op::Index { len, axis, kind: scope } => {
                     indices.insert(op_id, loop_id);
                     _ = writeln!(
                         source,
                         "{indent}unsigned int idx{loop_id} = {}Idx.{}; // 0..={}",
                         match scope {
-                            IdxScope::Group => "block",
-                            IdxScope::Local => "thread",
-                            IdxScope::Warp => todo!(),
+                            IdxKind::Group => "block",
+                            IdxKind::Local => "thread",
+                            IdxKind::Warp => todo!(),
                         },
                         ["x", "y", "z"][axis as usize],
                         self.index_len(len).saturating_sub(1)
