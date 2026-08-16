@@ -12,12 +12,14 @@
 ## Know Your Limits
 
 - **ALWAYS ASK QUESTIONS FIRST. NO MATTER WHAT.** This is unconditional — not just when you perceive ambiguity. Before writing ANY code for a task, ask whatever needs clarifying in your reply as plain text (never the `question` tool). Do not skip asking because the task "seems clear" or you think you know the answer. Not asking is the failure. If you are about to start an edit and have not asked questions, stop and ask first.
+- **When the user gives you guidance/a hint, STOP and ask what they want you to do with it before investigating or editing.** Do not take a hint as a license to autonomously read code, form a plan, and edit. Ask: "do you want me to apply this to fix X, or is there a specific approach you have in mind?" If you are reading code to form a fix, that is a signal you should be asking questions instead of planning edits.
 - If a task is hardware-specific, deeply subtle, or keeps failing, SAY SO plainly up front. "I can't solve this" beats two days of guesses.
 - When the user says they'll do it themselves, stop. Only act when asked for a specific edit.
 - **ASK QUESTIONS.** When a task has ambiguity — design decisions, expected behavior, specs, values, whether a behavior is intended — ask BEFORE implementing, and whenever you find yourself guessing or inventing an answer. Guessing wrong and writing broken code wastes more time than asking. Never let a time budget make you skip asking.
 - **ASK EARLY AND OFTEN. You are NOT asking enough.** Default to asking: the first reply to a non-trivial task should usually contain questions, not edits. Do not begin implementing until the design/spec is clear. If the task references a `todo!()` or a stub, ask what the intended behavior/value/semantics are before guessing at them.
 - **NEVER use the `question` tool. Ask questions directly in your reply, as plain text.** If you reach for the `question` tool, that is your signal you are about to guess — stop and write the question out instead.
 - **Do not implement on top of your own guesses.** Researching the code to inform a question is good; implementing code to "find out" what should happen is not. Ask first, implement after the answer.
+- **Ask the user, don't investigate the answer yourself.** When you catch yourself forming a question in your reasoning and then going to read code to answer it, STOP and ask the user instead — they know the answer. Self-investigation to resolve a design question is wasted time and an implicit refusal to ask. Your internal "questions" are questions to the user, not research prompts.
 - **Confirm whether values are symbolic or numeric before touching them.** Dims, shapes, lengths, and strides are usually `OpId`s (symbolic IR nodes), not `Dim`s you can multiply directly. If a computation would need numeric values (e.g. `index_len`/`as_dim` to multiply), that is a sign the design may intend symbolic ops instead — ASK which is intended, and how strides/shapes are meant to be expressed, before writing code.
 - **FORBIDDEN WORDS** — never say these (in responses AND in your reasoning AND in your inner monologue): "Actually", "wait", "key insight", "let me", "Hmm", "But wait". The rule is absolute, applies to every token you emit (including tool call parameters, file contents, and planning), and violations are never excused by "it was in reasoning" or "I was thinking out loud".
 
@@ -123,6 +125,25 @@ All kernel optimizations live in `zyx/src/kernel/` (`autotune.rs` driver + one f
    `cd zyx && AGENT=1 cargo test --test 9_graph narrow`
 2. Use `ZYX_DEBUG` (below) to see the graph, kernel IR, and generated code instead of guessing.
 
+### Investigate the MINIMUM, then ASK — debug TOGETHER
+
+We debug **together**. You do NOT read code to find bugs; you ask the user and they answer. The fastest path to a fix is the user pasting the IR/debug output and walking through it with you — not you grepping files. Debugging this way finds and fixes a bug in minutes, not the hour you spent reading/instrumenting on your own.
+
+The user knows the answer to your design questions. Over-investigation is a hard failure. Follow this exact order:
+
+1. Reproduce with a test run (produces the backtrace).
+2. Read the **backtrace** and form the diagnosis directly from it. If the backtrace names a call chain (X calls Y at known lines), the bug is there — do NOT go digging deeper, and do NOT add `eprintln`.
+3. **Ask the user** the question the backtrace raises, in plain text, before touching any file.
+4. Iterate: the user answers / pastes debug output; you reason over what they gave you and ask the next question. Do not switch to reading source to "check" — stay in the ask-answer loop.
+
+Automatic "STOP and ask" triggers (each one alone means you must ask, not investigate):
+- You want to add instrumentation (`eprintln`/`println`) to diagnose → ask.
+- You want to read a second file to resolve a question → ask.
+- You've used more than ~2 investigative tool calls after the backtrace → ask.
+- You find yourself forming a question, then going to read code to answer it → that question is for the user; ask them.
+
+**Never run a Read/Grep/Bash tool to investigate a bug until you have asked the user the question you are trying to answer.** Reading code to answer your own question IS the failure.
+
 ### ZYX_DEBUG (bitmask, `ENV_VARS.md`)
 
 | Value | Output |
@@ -204,6 +225,7 @@ construction point.
 - When in doubt, ask. Don't guess specs/values — the user has them. Ask before hunting through source. Ask by writing the question out in your reply as plain text — never via the `question` tool.
 - **Follow the literal ask exactly — quantity included.** "A test" means exactly ONE test; "add a test for X" means just that test, not a family of tests. Deliver what was asked and stop. Extras (more tests, renames, refactors, extra fixes) are unrequested work.
 - **Never start implementing anything beyond the literal ask without asking first.** If a requested change turns out to require fixing/modifying other parts of the code (e.g. a test exposes a library bug), STOP and ask the user how to proceed before writing any fix. Do not debug-and-fix your way down a rabbit hole unprompted. A single simple question ("want me to fix that too?") beats an hour of unrequested surgery.
+- **NEVER chain fixes across modules/passes without asking between steps.** The forbidden pattern: `test fails → fix pass A → test fails → fix pass B → test fails → ...` with no question in between. You fix the literal ask, THEN the test's next failure is a NEW task — stop, report it, and ask whether to fix it before touching that file. Continuing to run the test and patching whatever breaks next (without a question) is the exact failure that keeps happening. One fix per question.
 - **Adding any helper method, function, or new API counts as unrequested work.** If an edit needs a helper that doesn't exist yet (e.g. a `broadcast` shape function), do NOT just write it — stop and ask whether the user wants it added (and where), or whether the result should be computed another way.
 - A test's pass/fail status is not the deliverable unless the user says so. Adding a test that currently fails (because it documents a bug) is a valid outcome — do not "fix" the code underneath it unprompted.
 - **Never leave temporary debug code behind** (eprintln!/println! debug blocks, commented-out scaffolding). If you add debug output while investigating, remove it before finishing. When reverting, revert completely — no stray debug prints, no leftover comments.

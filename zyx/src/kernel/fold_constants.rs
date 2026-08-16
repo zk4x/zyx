@@ -493,7 +493,7 @@ impl Kernel {
         let mut op_id = self.head;
         while !op_id.is_null() {
             match &mut self.ops[op_id].op {
-                Op::Barrier | Op::Storage { .. } => {} // skip define and barrier ops, these can not be deduplicated
+                Op::Param { .. } | Op::Barrier | Op::Storage { .. } => {} // skip define and barrier ops, these can not be deduplicated
                 Op::If { .. } | Op::Loop { .. } => {
                     stack.push(Map::with_capacity_and_hasher(20, BuildHasherDefault::default()));
                     stored_stack.push(Set::with_capacity_and_hasher(10, BuildHasherDefault::default()));

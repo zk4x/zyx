@@ -1879,6 +1879,7 @@ impl Runtime {
             shape.push(op_id);
         }
         kernel.linearize(&shape);
+        kernel.debug();
         kernel.common_subexpression_elimination();
         kernel.dead_code_elimination();
         kernel.instruction_schedule();
@@ -1944,6 +1945,17 @@ impl Runtime {
     /// A kernel must never both load and store the same tensor (prevents aliasing).
     /// The debug_assert in the recursive materialization loop enforces this.
     fn materialize_kernel(&mut self, kid: KernelId) -> Result<(), ZyxError> {
+        // Resolve the dtypes of the loads and stores now, while this kernel (and any
+        // tensor whose dtype resolves through it) is still alive. After remove_and_return
+        // below, self.dtype on those tensors would panic on the removed kernel.
+        let mut load_stores = Vec::new();
+        for &tid in &self.kernels[kid].loads {
+            load_stores.push(tid);
+        }
+        for &tid in &self.kernels[kid].stores {
+            load_stores.push(tid);
+        }
+        let dtypes: Map<TensorId, DType> = load_stores.into_iter().map(|tid| (tid, self.dtype(tid))).collect();
         let KernelData { outputs, loads, stores, mut kernel } = unsafe { self.kernels.remove_and_return(kid) };
 
         debug_assert!(outputs.is_empty(), "all outputs must be stored before materialize");
@@ -2046,8 +2058,8 @@ impl Runtime {
                     self.buffer_map.insert(tid, BufferId { pool: pool_id, buffer: dst });
                     continue;
                 }
-                let bytes = (self.shape(tid).iter().product::<Dim>() as usize * self.dtype(tid).bit_size() as usize).div_ceil(8);
-                let alloc_bytes = bytes + self.dtype(tid).bit_size() as usize / 8;
+                let bytes = (self.shape(tid).iter().product::<Dim>() as usize * dtypes[&tid].bit_size() as usize).div_ceil(8);
+                let alloc_bytes = bytes + dtypes[&tid].bit_size() as usize / 8;
 
                 // Gather the events that the source buffer depends on (prior
                 // writers), so the copy waits for them.
@@ -2098,8 +2110,8 @@ impl Runtime {
             };
             if buf_id.pool != pool_id {
                 let src = buf_id.buffer;
-                let bytes = (self.shape(tid).iter().product::<Dim>() as usize * self.dtype(tid).bit_size() as usize).div_ceil(8);
-                let alloc_bytes = bytes as Dim + Dim::from(self.dtype(tid).bit_size() / 8);
+                let bytes = (self.shape(tid).iter().product::<Dim>() as usize * dtypes[&tid].bit_size() as usize).div_ceil(8);
+                let alloc_bytes = bytes as Dim + Dim::from(dtypes[&tid].bit_size() / 8);
                 let mut byte_slice = vec![0u8; bytes];
 
                 let mut ev = Vec::new();
@@ -2136,8 +2148,8 @@ impl Runtime {
                 kernel_buffers.insert(buf_id);
                 self.tensors[tid].depends_on = KernelId::NULL;
             } else {
-                let bytes = (self.shape(tid).iter().product::<Dim>() as usize * self.dtype(tid).bit_size() as usize).div_ceil(8);
-                let alloc_bytes = bytes as Dim + Dim::from(self.dtype(tid).bit_size() / 8);
+                let bytes = (self.shape(tid).iter().product::<Dim>() as usize * dtypes[&tid].bit_size() as usize).div_ceil(8);
+                let alloc_bytes = bytes as Dim + Dim::from(dtypes[&tid].bit_size() / 8);
                 let (buf, event) = self.pools[pool_id].allocate(alloc_bytes)?;
                 let global_id = BufferId { pool: pool_id, buffer: buf };
                 self.buffer_map.insert(tid, global_id);
