@@ -1040,7 +1040,25 @@ impl Graph {
     }
 
     pub fn dtype(&self, class: ClassId) -> DType {
-        todo!()
+        match &self.nodes[self.classes[class].nodes[0]].node {
+            Node::Const(c) => c.dtype(),
+            Node::Leaf { dtype, .. } => *dtype,
+            Node::Cast { dtype, .. } => *dtype,
+            Node::Assign { dst, .. } => self.dtype(*dst),
+            Node::Kernel { outputs, .. } => self.dtype(outputs[0]),
+            Node::Expand { x, .. }
+            | Node::Permute { x, .. }
+            | Node::Reshape { x, .. }
+            | Node::PadZeros { x, .. }
+            | Node::Flip { x, .. }
+            | Node::Narrow { x, .. }
+            | Node::Reduce { x, .. }
+            | Node::Unary { x, .. }
+            | Node::After { x, .. }
+            | Node::ToDevice { x, .. }
+            | Node::Contiguous { x }
+            | Node::Binary { x, .. } => self.dtype(*x),
+        }
     }
 }
 

@@ -188,7 +188,13 @@ impl Runtime {
     }
 
     pub fn dtype(&self, x: TensorId) -> DType {
-        todo!()
+        if self.is_graph(x) {
+            let (class_id, graph_id) = self.graph_ids(x);
+            self.graphs[graph_id].dtype(class_id)
+        } else {
+            let (kid, op_id) = self.eager_ids(x);
+            self.kernels[kid].kernel.dtype(op_id)
+        }
     }
 
     pub fn is_realized(&self, x: TensorId) -> bool {
