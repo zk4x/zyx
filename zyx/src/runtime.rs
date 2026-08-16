@@ -33,7 +33,7 @@ use crate::{
     dtype::Constant,
     error::{BackendError, ErrorStatus},
     graph::{ClassId, EClass, ExecPlan, Graph, GraphId, Node, NodeData, NodeId, plan::drain_events_for_buf},
-    kernel::{BOp, DeviceId, IDX_T, Kernel, MemLayout, MemScope, MoveOp, Op, OpId, ParamKind, UOp, autotune::OptSeq},
+    kernel::{BOp, DeviceId, IDX_T, Kernel, MemLayout, MoveOp, Op, OpId, ParamKind, UOp, autotune::OptSeq},
     rng::Rng,
     shape::{Dim, UAxis},
     slab::{Slab, SlabId},
@@ -1029,6 +1029,7 @@ pub fn shape(&self, x: TensorId) -> &[Dim] {
             let (_, class_id) = self.push_node(graph_id, Node::Reshape { x: class_id, shape });
             self.new_graph_tensor(graph_id, class_id)
         } else {
+            let input_rank = self.shape(x).len();
             let (kernel_id, op_id) = self.duplicate_or_store(x, false).unwrap();
             let mut new_shape = Vec::new();
             let mut out_dims = Vec::with_capacity(shape.len());
@@ -1038,7 +1039,7 @@ pub fn shape(&self, x: TensorId) -> &[Dim] {
                 new_shape.push(op_id);
                 out_dims.push(self.const_dim(kid, op_id));
             }
-            let op_id = self.kernels[kernel_id].kernel.reshape(op_id, new_shape);
+            let op_id = self.kernels[kernel_id].kernel.reshape(op_id, new_shape, input_rank);
             let tid = self.tensors.push(TensorData {
                 kernel_id,
                 op_id,
@@ -1879,7 +1880,6 @@ impl Runtime {
             shape.push(op_id);
         }
         kernel.linearize(&shape);
-        kernel.debug();
         kernel.common_subexpression_elimination();
         kernel.dead_code_elimination();
         kernel.instruction_schedule();

@@ -438,43 +438,34 @@ impl Kernel {
                 }
                 Op::Move { x, ref mop } => {
                     match mop.as_ref() {
-                        MoveOp::Reshape { shape } => {
-                            todo!()
+                        MoveOp::Reshape { shape, input_rank } => {
+                            let shape = shape.clone();
+                            let input_rank = *input_rank;
                             // Reshape merges/splits contiguous dims, so axis indices don't
-                            // align 1:1. Build a single flat index over the output view (all
-                            // the arithmetic LoadView would do), then recover each input axis
-                            // by successive div/mod against the input's contiguous strides.
-                            /*let out_view = views[&op_id].clone();
-                            let x_shape = self.shape(x);
-                            let mut x_strides = vec![1; x_shape.len()];
-                            let mut st = 1;
-                            for a in (0..x_shape.len()).rev() {
-                                x_strides[a] = st;
-                                st *= x_shape[a];
-                            }
+                            // align 1:1. The input is read as a single flat index over the
+                            // whole (contiguous) input, which equals the flat index over the
+                            // output. Build `base` from the output view (all the arithmetic
+                            // LoadView would do), then expose `x` as an `input_rank`-axis view
+                            // whose axis 0 carries the flat index (stride 1) and whose remaining
+                            // axes are broadcast singletons (stride 0). No input shape is needed.
+                            let out_view = views.remove(&op_id).unwrap();
                             let zero = self.insert_const_idx_before(anchor, 0u32);
+                            let one = self.insert_const_idx_before(anchor, 1u32);
                             let mut base = zero;
                             for &(idx, drift, _, _, _) in &out_view {
                                 base = self.insert_before(anchor, Op::Mad { x: idx, y: drift, z: base });
                             }
-                            let n = x_shape.len();
-                            let mut view = Vec::with_capacity(n);
-                            let mut q = base;
-                            for a in 0..n {
-                                let s = x_strides[a];
-                                let s_id = self.insert_const_idx_before(anchor, s);
-                                let idx_expr = if a == n - 1 {
-                                    q
-                                } else {
-                                    let div = self.insert_before(anchor, Op::Binary { x: q, y: s_id, bop: BOp::Div });
-                                    let rem = self.insert_before(anchor, Op::Binary { x: q, y: s_id, bop: BOp::Mod });
-                                    q = rem;
-                                    div
-                                };
-                                let len_id = self.insert_const_idx_before(anchor, x_shape[a]);
-                                view.push((idx_expr, s_id, zero, zero, len_id));
+                            // The flat axis length is the output element count (== input count).
+                            let mut total = one;
+                            for &len in &shape {
+                                total = self.insert_before(anchor, Op::Binary { x: len, y: total, bop: BOp::Mul });
                             }
-                            views.insert(x, view);*/
+                            let mut view = Vec::with_capacity(input_rank);
+                            view.push((base, one, zero, zero, total));
+                            for _ in 1..input_rank {
+                                view.push((zero, zero, zero, zero, one));
+                            }
+                            views.insert(x, view);
                         }
                         MoveOp::Expand { shape } => {
                             todo!()

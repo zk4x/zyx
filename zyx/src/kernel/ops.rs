@@ -278,7 +278,7 @@ impl BOp {
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, SerBin, DeBin)]
 pub enum MoveOp {
     /// Reshape to a new shape.
-    Reshape { shape: Vec<OpId> },
+    Reshape { shape: Vec<OpId>, input_rank: usize },
     /// Expand dimensions.
     Expand { shape: Vec<Dim> },
     /// Permute axes.
@@ -297,7 +297,7 @@ impl MoveOp {
     /// assign replay's handling of the movement-chain head).
     pub(crate) fn remap(&self, op_map: &Map<OpId, OpId>, fallback: OpId) -> Box<Self> {
         match self {
-            MoveOp::Reshape { shape } => Box::new(MoveOp::Reshape { shape: shape.clone() }),
+            MoveOp::Reshape { shape, input_rank } => Box::new(MoveOp::Reshape { shape: shape.clone(), input_rank: *input_rank }),
             MoveOp::Expand { shape } => Box::new(MoveOp::Expand { shape: shape.clone() }),
             MoveOp::Permute { axes } => Box::new(MoveOp::Permute { axes: axes.clone() }),
             MoveOp::Pad { padding } => Box::new(MoveOp::Pad { padding: padding.clone() }),

@@ -1218,7 +1218,7 @@ impl Runtime {
                         let x_class = op_to_class[&x];
                         let in_shape = self.graphs[graph_id].shape(x_class);
                         match mop.as_ref() {
-                            MoveOp::Reshape { shape } => {
+                            MoveOp::Reshape { shape, .. } => {
                                 let mut new_shape = Vec::new();
                                 for cid in shape {
                                     new_shape.push(op_to_class[&cid]);

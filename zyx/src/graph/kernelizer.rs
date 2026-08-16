@@ -377,7 +377,7 @@ impl Graph {
                             let (_, op_id) = visited[&cid];
                             new_shape.push(op_id);
                         }
-                        self.add_move(cid, x, MoveOp::Reshape { shape: new_shape }, false, &mut visited, &mut rcs);
+                        self.add_move(cid, x, MoveOp::Reshape { shape: new_shape, input_rank: self.shape(x).len() }, false, &mut visited, &mut rcs);
                     }
                     Node::PadZeros { x, ref padding } => {
                         let (kid, op_id) = visited[&x];

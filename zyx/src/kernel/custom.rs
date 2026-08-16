@@ -160,8 +160,8 @@ impl Kernel {
     }
 
     /// Reshape tensor.
-    pub fn reshape(&mut self, x: OpId, shape: Vec<OpId>) -> OpId {
-        self.push_back(Op::Move { x, mop: Box::new(MoveOp::Reshape { shape }) })
+    pub fn reshape(&mut self, x: OpId, shape: Vec<OpId>, input_rank: usize) -> OpId {
+        self.push_back(Op::Move { x, mop: Box::new(MoveOp::Reshape { shape, input_rank }) })
     }
 
     /// Expand tensor (adds singleton dims).

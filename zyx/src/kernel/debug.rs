@@ -320,7 +320,7 @@ impl Kernel {
                     dtypes.insert(op_id, dtype);
                     let x = id_map.get(&x).copied().unwrap_or(OpId::NULL);
                     match mop.as_ref() {
-                        MoveOp::Reshape { shape } => {
+                        MoveOp::Reshape { shape, .. } => {
                             println!("{indent}r{out_id}{grey}: {dtype}{reset} = {cyan}reshape{reset} r{x} -> {shape:?}");
                         }
                         MoveOp::Expand { shape } => {
