@@ -1819,15 +1819,6 @@ impl Runtime {
         kernel.dead_code_elimination();
         kernel.instruction_schedule();
 
-        // After linearization the parameter shapes are no longer meaningful;
-        // clear them so later passes (verify) don't require shape consts to be
-        // ordered before the params that reference them.
-        for node in kernel.ops.values_mut() {
-            if let Op::Param { shape, .. } = &mut node.op {
-                *shape = OpId::NULL;
-            }
-        }
-
         {
             let device = &mut self.devices[kernel.device_id];
             let global_indices = kernel.get_group_indices();

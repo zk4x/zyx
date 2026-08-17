@@ -362,7 +362,7 @@ impl Kernel {
                         let pcd = self.insert_before(anchor, Op::Cast { x: pc, dtype });
                         self.ops[op_id].op = Op::Binary { x: pcd, y: z, bop: BOp::Mul };
                     }
-                }
+                },
                 Op::Store { dst, src, index, layout } => {
                     debug_assert_eq!(index, OpId::NULL);
                     debug_assert_eq!(layout, MemLayout::Scalar);
@@ -746,8 +746,7 @@ impl Kernel {
                         order.push(op);
                     } else if visited.insert(op) {
                         stack.push((op, true));
-                        let deps: Vec<OpId> =
-                            self.ops[op].op.parameters().filter(|&p| !p.is_null()).collect();
+                        let deps: Vec<OpId> = self.ops[op].op.parameters().filter(|&p| !p.is_null()).collect();
                         for dep in deps.into_iter().rev() {
                             if !visited.contains(&dep) {
                                 stack.push((dep, false));
@@ -796,6 +795,15 @@ impl Kernel {
             }
             true
         });
+
+        // After linearization the parameter shapes are no longer meaningful;
+        // clear them so the verify below (and later passes) don't require shape
+        // consts to be ordered before the params that reference them.
+        for node in self.ops.values_mut() {
+            if let Op::Param { shape, .. } = &mut node.op {
+                *shape = OpId::NULL;
+            }
+        }
 
         self.verify();
     }
