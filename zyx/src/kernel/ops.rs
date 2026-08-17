@@ -433,7 +433,10 @@ impl Op {
             Op::Const { .. } | Op::Storage { .. } | Op::EndLoop | Op::Barrier | Op::EndIf => {
                 vec![]
             }
-            &Op::Param { shape, .. } => vec![shape],
+            &Op::Param { shape, .. } => {
+                // Shape is null after linearize
+                if shape.is_null() { vec![] } else { vec![shape] }
+            }
             &Op::Index { len, .. } => vec![len],
             &Op::Loop { len, .. } => vec![len],
             &Op::Move { x, ref mop } => match mop.as_ref() {
@@ -465,7 +468,10 @@ impl Op {
     pub(crate) fn parameters_mut(&mut self) -> impl DoubleEndedIterator<Item = &mut OpId> {
         match self {
             Op::Const { .. } | Op::Storage { .. } | Op::EndLoop | Op::EndIf | Op::Barrier => vec![],
-            Op::Param { shape, .. } => vec![shape],
+            Op::Param { shape, .. } => {
+                // Shape is null after linearize
+                if shape.is_null() { vec![] } else { vec![shape] }
+            }
             Op::Index { len, .. } => vec![len],
             Op::Loop { len, .. } => vec![len],
             Op::Move { x, mop } => match mop.as_mut() {

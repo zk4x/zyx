@@ -764,16 +764,6 @@ impl Kernel {
             self.tail = order.last().copied().unwrap_or(OpId::NULL);
         }
 
-        // Phase 3: emit loops for reductions (reduce -> Op::Loop / Op::EndLoop
-        // plus the accumulator load/store). Not implemented yet: `Reduce` is
-        // still `todo!()` in Phase 1. Runs after the ordering in Phase 2.
-        //
-        // The move handlers may leave dead constants (e.g. unused `one`/`total`
-        // scaffold) and duplicate arithmetic behind; CSE and DCE clean those up
-        // now that the ops are ordered.
-        self.common_subexpression_elimination();
-        self.dead_code_elimination();
-
         // Verify the relative order of global defines is unchanged by linearize
         // (read-only defines first, then writable ones, both in original order).
         debug_assert!({
@@ -804,6 +794,16 @@ impl Kernel {
                 *shape = OpId::NULL;
             }
         }
+
+        // Phase 3: emit loops for reductions (reduce -> Op::Loop / Op::EndLoop
+        // plus the accumulator load/store). Not implemented yet: `Reduce` is
+        // still `todo!()` in Phase 1. Runs after the ordering in Phase 2.
+        //
+        // The move handlers may leave dead constants (e.g. unused `one`/`total`
+        // scaffold) and duplicate arithmetic behind; CSE and DCE clean those up
+        // now that the ops are ordered.
+        self.common_subexpression_elimination();
+        self.dead_code_elimination();
 
         self.verify();
     }
