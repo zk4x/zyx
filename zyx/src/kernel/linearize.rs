@@ -597,35 +597,19 @@ impl Kernel {
                             views.insert(x, view);*/
                         }
                         MoveOp::Permute { axes } => {
-                            todo!()
-                            /*let view = &views[&op_id];
+                            // output[a] reads input[axes[a]]. Input axis j is
+                            // consumed by output axis inv_axes[j]; copy that
+                            // output axis's SDim into input axis j's slot.
+                            let x_shape = self.shape(x);
                             let mut inv_axes = vec![0; axes.len()];
                             for (i, &a) in axes.iter().enumerate() {
                                 inv_axes[a] = i;
                             }
-                            let x_shape = self.shape(x);
-                            let mut x_strides = vec![1; x_shape.len()];
-                            let mut st = 1;
-                            for a in (0..x_shape.len()).rev() {
-                                x_strides[a] = st;
-                                st *= x_shape[a];
-                            }
-                            let zero = self.insert_const_idx_before(anchor, 0);
-                            // Input axis j's coordinate is output axis inv_axes[j]'s. Its
-                            // stride is the input's contiguous stride, unless the output
-                            // axis is broadcast (stride 0), in which case it stays 0.
-                            let view = (0..x_shape.len())
-                                .map(|j| {
-                                    let (idx, os, lp, rp, len) = view[inv_axes[j]];
-                                    let stride = if matches!(self.ops[os].op, Op::Const(c) if c.as_dim() == Some(0)) {
-                                        zero
-                                    } else {
-                                        self.insert_const_idx_before(anchor, x_strides[j])
-                                    };
-                                    (idx, stride, lp, rp, len)
-                                })
+                            let view = &views[&op_id];
+                            let view: Vec<SDim> = (0..x_shape.len())
+                                .map(|j| view[inv_axes[j]])
                                 .collect();
-                            views.insert(x, view);*/
+                            views.insert(x, view);
                         }
                         MoveOp::Flip { axes } => {
                             todo!()
