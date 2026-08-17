@@ -404,7 +404,13 @@ impl Runtime {
 
     pub fn new_eager_tensor(&mut self, shape: Vec<Dim>, dtype: DType, kind: ParamKind) -> TensorId {
         let mut kernel = Kernel::new(DeviceId::AUTO);
-        let op_id = kernel.push_back(Op::Param { dtype, kind, shape: todo!() });
+        let shape_op = if shape.len() == 1 {
+            kernel.const_idx(shape[0])
+        } else {
+            let dims: Vec<OpId> = shape.iter().map(|d| kernel.const_idx(*d)).collect();
+            kernel.stack(&dims)
+        };
+        let op_id = kernel.push_back(Op::Param { dtype, kind, shape: shape_op });
         let kernel_id = self.kernels.push(KernelData { outputs: Set::default(), loads: Vec::new(), stores: Vec::new(), kernel });
         let tid = self.tensors.push(TensorData {
             kernel_id,

@@ -269,15 +269,15 @@ impl BOp {
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, SerBin, DeBin)]
 pub enum MoveOp {
     /// Reshape to a new shape.
-    Reshape { shape: Vec<OpId>, input_rank: usize },
+    Reshape { shape: OpId, input_rank: usize },
     /// Expand dimensions.
-    Expand { shape: Vec<Dim> },
+    Expand { shape: OpId },
     /// Permute axes.
-    Permute { axes: Vec<UAxis> },
-    /// Pad dimensions.
-    Pad { padding: Vec<(i64, i64)> },
+    Permute { axes: Box<[UAxis]> },
     /// Flip axes
-    Flip { axes: Vec<UAxis> },
+    Flip { axes: Box<[UAxis]> },
+    /// Pad axis
+    Pad { axis: UAxis, lp: OpId, rp: OpId },
     /// Slice axis
     Narrow { axis: UAxis, start: OpId, len: OpId },
 }
@@ -434,13 +434,8 @@ impl Op {
             &Op::Index { len, .. } => vec![len],
             &Op::Loop { len, .. } => vec![len],
             &Op::Move { x, ref mop } => match mop.as_ref() {
-                MoveOp::Reshape { shape, .. } => {
-                    std::iter::once(x).chain(shape.iter().copied()).collect()
-                }
-                MoveOp::Expand { .. }
-                | MoveOp::Permute { .. }
-                | MoveOp::Pad { .. }
-                | MoveOp::Flip { .. } => vec![x],
+                MoveOp::Reshape { shape, .. } => std::iter::once(x).chain(shape.iter().copied()).collect(),
+                MoveOp::Expand { .. } | MoveOp::Permute { .. } | MoveOp::Pad { .. } | MoveOp::Flip { .. } => vec![x],
                 MoveOp::Narrow { start, len, .. } => vec![x, *start, *len],
             },
             Op::Reduce { x, .. } => vec![*x],
@@ -470,13 +465,8 @@ impl Op {
             Op::Index { len, .. } => vec![len],
             Op::Loop { len, .. } => vec![len],
             Op::Move { x, mop } => match mop.as_mut() {
-                MoveOp::Reshape { shape, .. } => {
-                    std::iter::once(x).chain(shape.iter_mut()).collect()
-                }
-                MoveOp::Expand { .. }
-                | MoveOp::Permute { .. }
-                | MoveOp::Pad { .. }
-                | MoveOp::Flip { .. } => vec![x],
+                MoveOp::Reshape { shape, .. } => std::iter::once(x).chain(shape.iter_mut()).collect(),
+                MoveOp::Expand { .. } | MoveOp::Permute { .. } | MoveOp::Pad { .. } | MoveOp::Flip { .. } => vec![x],
                 MoveOp::Narrow { start, len, .. } => vec![x, start, len],
             },
             Op::Reduce { x, .. } => vec![x],
