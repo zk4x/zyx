@@ -1264,6 +1264,7 @@ impl Tensor {
         let shape = RT.lock().stack(&ids)?;
         drop(tensors); // we need to keep tensors alive until after stack is called
         let id = RT.lock().reshape(self.id, shape)?;
+        RT.lock().release(shape);
 
         /*let numel = self.numel();
 

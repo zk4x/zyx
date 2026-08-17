@@ -363,6 +363,11 @@ impl Kernel {
                     let mut view = Vec::new();
                     let mut suffix = self.insert_before(start, Op::Const(Constant::idx(1)));
                     for (axis, &len) in dims.iter().enumerate().rev() {
+                        let len = if self.dtype(len) != IDX_T {
+                            self.insert_before(start, Op::Cast { x: len, dtype: IDX_T })
+                        } else {
+                            len
+                        };
                         let idx = self.insert_before(start, Op::Index { len, axis: axis as u32, kind: IdxKind::Group });
                         let st = suffix;
                         let lp = self.insert_before(start, Op::Const(Constant::idx(0)));
@@ -678,6 +683,7 @@ impl Kernel {
                     }
                 }
                 Op::Index { .. } => {}
+                Op::Stack { .. } => {}
                 ref op => {
                     self.debug();
                     unreachable!("{op:?}");
