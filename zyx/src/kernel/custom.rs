@@ -592,7 +592,7 @@ impl CompiledKernel {
             let load_kid = rt.kernels.push(KernelData { outputs: Set::from_iter([id]), loads: vec![id], stores: Vec::new(), kernel });
             rt.tensors[id].kernel_id = load_kid;
             rt.tensors[id].op_id = op_id;
-            rt.retain_load(id);
+            rt.retain(id);
             rt.buffer_map.insert(id, buf_id);
             tensors.push(Tensor { id })
         }

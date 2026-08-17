@@ -373,8 +373,7 @@ impl Kernel {
 
     /// Resolve the dtype of an operation's result by walking the IR.
     pub(crate) fn dtype(&self, mut op_id: OpId) -> DType {
-        println!("getting dtype of id: {op_id:?}'");
-        self.debug();
+        //println!("getting dtype of id: {op_id:?}'");
         for _ in 0..10000 {
             match self.ops[op_id].op {
                 Op::Const(c) => return c.dtype(),

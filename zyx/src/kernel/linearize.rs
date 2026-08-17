@@ -103,7 +103,7 @@ impl Kernel {
 
         // Snapshot the order of global defines so linearize can assert it never
         // reorders the buffers' declaration order.
-        let global_defines: Vec<(DType, ParamKind)> = {
+        let global_params: Vec<(DType, ParamKind)> = {
             let mut defines = Vec::new();
             let mut op_id = self.head;
             while !op_id.is_null() {
@@ -449,16 +449,20 @@ impl Kernel {
                             // whose axis 0 carries the flat index (stride 1) and whose remaining
                             // axes are broadcast singletons (stride 0). No input shape is needed.
                             let out_view = views.remove(&op_id).unwrap();
-                            let zero = self.insert_const_idx_before(anchor, 0u32);
-                            let one = self.insert_const_idx_before(anchor, 1u32);
+                            // Anchor the index math at the Move op itself (which
+                            // follows its shape dims) rather than the global
+                            // `anchor`, so the arithmetic is inserted AFTER the
+                            // shape dimensions it depends on, not before them.
+                            let zero = self.insert_const_idx_before(op_id, 0u32);
+                            let one = self.insert_const_idx_before(op_id, 1u32);
                             let mut base = zero;
                             for &(idx, drift, _, _, _) in &out_view {
-                                base = self.insert_before(anchor, Op::Mad { x: idx, y: drift, z: base });
+                                base = self.insert_before(op_id, Op::Mad { x: idx, y: drift, z: base });
                             }
                             // The flat axis length is the output element count (== input count).
                             let mut total = one;
                             for &len in &shape {
-                                total = self.insert_before(anchor, Op::Binary { x: len, y: total, bop: BOp::Mul });
+                                total = self.insert_before(op_id, Op::Binary { x: len, y: total, bop: BOp::Mul });
                             }
                             let mut view = Vec::with_capacity(input_rank);
                             view.push((base, one, zero, zero, total));
@@ -655,20 +659,20 @@ impl Kernel {
         // Verify the relative order of global defines is unchanged by linearize
         // (read-only defines first, then writable ones, both in original order).
         debug_assert!({
-            let mut defines = Vec::new();
+            let mut params = Vec::new();
             let mut op_id = self.head;
             while !op_id.is_null() {
                 if let Op::Param { dtype, kind } = self.ops[op_id].op {
-                    defines.push((dtype, kind));
+                    params.push((dtype, kind));
                 }
                 op_id = self.next_op(op_id);
             }
-            let mut expected = global_defines.clone();
+            let mut expected = global_params.clone();
             expected.sort_by_key(|(_, kind)| *kind == ParamKind::GlobalMut);
-            if defines != expected {
+            if params != expected {
                 self.debug();
                 panic!(
-                    "linearize: global define order changed:\n  original = {global_defines:?}\n  expected = {expected:?}\n  final = {defines:?}"
+                    "linearize: global define order changed:\n  original = {global_params:?}\n  expected = {expected:?}\n  final = {params:?}"
                 );
             }
             true

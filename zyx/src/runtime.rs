@@ -206,7 +206,6 @@ impl Runtime {
             self.graphs[graph_id].dtype(class_id)
         } else {
             let (kid, op_id) = self.eager_ids(x);
-            println!("get dtype of tid={x} kid={kid:?} op_id={op_id:?}");
             self.kernels[kid].kernel.dtype(op_id)
         }
     }
@@ -251,12 +250,7 @@ impl Runtime {
     }
 
     pub fn retain(&mut self, x: TensorId) {
-        //eprintln!("Retain tensor x={x}");
         self.tensors[x].rc += 1;
-        let kernel_id = self.tensors[x].kernel_id;
-        if !kernel_id.is_null() {
-            self.kernels[kernel_id].outputs.insert(x);
-        }
     }
 
     pub fn release(&mut self, x: TensorId) {
@@ -302,13 +296,6 @@ impl Runtime {
         if rc == 0 && pending.is_null() {
             self.on_rc_zero(x);
         }
-    }
-
-    /// A kernel-load reference on `x` was added (loads.push). Kernel loads are
-    /// counted in `rc` so that load tensors and their buffers are freed once
-    /// the last kernel referencing them dies.
-    pub(crate) fn retain_load(&mut self, x: TensorId) {
-        self.tensors[x].rc += 1;
     }
 
     /// A kernel-load reference on `x` was dropped (kernel removal or load
@@ -362,7 +349,6 @@ impl Runtime {
         // remove the kernel (releasing its loads) or materialize it if it still
         // holds stores.
         let producer = self.tensors[x].kernel_id;
-        println!("remove eager tensor tid={x}");
         self.tensors.remove(x);
 
         if !producer.is_null() {
@@ -383,7 +369,6 @@ impl Runtime {
     /// references.
     fn remove_dead_eager_kernel(&mut self, kid: KernelId) {
         let loads = std::mem::take(&mut self.kernels[kid].loads);
-        println!("remove dead eager kernel {kid:?}");
         self.kernels.remove(kid);
         for tid in loads {
             self.release_load(tid);
@@ -459,7 +444,7 @@ impl Runtime {
         self.tensors[tid].kernel_id = kernel_id;
         self.tensors[tid].op_id = op_id;
         self.tensors[tid].depends_on = KernelId::NULL;
-        self.retain_load(tid);
+        self.retain(tid);
         self.graphs[graph_id].ref_count -= 1;
     }
 
@@ -501,7 +486,6 @@ impl Runtime {
     }
 
     pub fn push_node(&mut self, graph_id: GraphId, node: Node) -> (NodeId, ClassId) {
-        //println!("push node to graph_id={graph_id:?}");
         match node {
             Node::Permute { .. } => {
                 /*let in_shape = &self.shapes[self.graphs[graph_id].classes[x].shape];
@@ -639,7 +623,7 @@ impl Runtime {
         let dtype = T::dtype();
         self.initialize_backends();
         let tid = self.new_eager_tensor(vec![1], dtype, ParamKind::Variable);
-        self.retain_load(tid);
+        self.retain(tid);
 
         let MemoryPool::Host(ref mut pool) = self.pools[PoolId::HOST] else {
             unreachable!("Host must exist.")
@@ -689,7 +673,7 @@ impl Runtime {
         let buffer_id = BufferId { pool: PoolId::HOST, buffer: pool.insert(buf) };
 
         let tid = self.new_eager_tensor(shape, dtype, ParamKind::Global);
-        self.retain_load(tid);
+        self.retain(tid);
 
         self.buffer_map.insert(tid, buffer_id);
 
@@ -715,7 +699,7 @@ impl Runtime {
         let buffer_id = BufferId { pool: PoolId::DISK, buffer: pool.buffer_from_path(bytes, path, offset_bytes) };
 
         let tid = self.new_eager_tensor(shape, dtype, ParamKind::Global);
-        self.retain_load(tid);
+        self.retain(tid);
         self.buffer_map.insert(tid, buffer_id);
         Ok(tid)
     }
@@ -829,7 +813,6 @@ impl Runtime {
         } else {
             let (mut kid_x, mut op_id_x) = self.eager_ids(x);
             let (mut kid_y, mut op_id_y) = self.eager_ids(y);
-            //println!("Binary input kernels: {kid_x:?} and {kid_y:?}");
 
             let (kernel_id, op_id) = if kid_x == kid_y {
                 let op_id = self.kernels[kid_x].kernel.binary(op_id_x, op_id_y, bop);
@@ -1024,11 +1007,6 @@ impl Runtime {
                 out_dims.push(self.const_dim(kernel_id, dim_id).unwrap_or(0));
             }
 
-            let kid = self.tensors[TensorId::ZERO].kernel_id;
-            println!("reshape, tensor 0, kid={kid:?}, op_id={:?}", self.tensors[TensorId::ZERO].op_id);
-            println!("loads={:?} stores={:?}", self.kernels[kid].loads, self.kernels[kid].stores);
-            self.kernels[kid].kernel.debug();
-
             let op_id = self.kernels[kernel_id].kernel.reshape(op_id, new_shape, input_rank);
             let tid = self.tensors.push(TensorData {
                 kernel_id,
@@ -1043,9 +1021,6 @@ impl Runtime {
             self.kernels[kernel_id].outputs.insert(tid);
 
             self.shapes.insert(tid, out_dims);
-
-            self.kernels[kernel_id].kernel.debug();
-            println!("post reshape x {:?}, tid {:?}", self.eager_ids(x), self.eager_ids(tid));
 
             #[cfg(debug_assertions)]
             {
@@ -1774,7 +1749,7 @@ impl Runtime {
             let new_c = self_c + new_loads.iter().filter(|&&t| t == tid).count();
             let delta = (new_c as i64) - (old_c as i64);
             for _ in 0..delta {
-                self.retain_load(tid);
+                self.retain(tid);
             }
             for _ in 0..(-delta) {
                 self.release_load(tid);
@@ -1823,7 +1798,6 @@ impl Runtime {
         for (_tid, t_data) in self.tensors.iter_mut() {
             if t_data.kernel_id == merge_kid {
                 debug_assert_ne!(keep_kid, merge_kid);
-                println!("assigning to tid={_tid} keep_id={keep_kid:?} to t_data.kernel_id={:?}, org op_id={:?}, assigned op_id={:?}", t_data.kernel_id, t_data.op_id, op_map[&t_data.op_id]);
                 t_data.kernel_id = keep_kid;
                 t_data.op_id = op_map[&t_data.op_id];
             }
@@ -1871,9 +1845,7 @@ impl Runtime {
         self.tensors[x].kernel_id = load_kid;
         self.tensors[x].op_id = load_op_id;
         self.tensors[x].depends_on = pending;
-        self.retain_load(x);
-
-        println!("add_store for tid={x}");
+        self.retain(x);
 
         if outputs_empty {
             self.materialize_kernel(kid)?;
@@ -2001,9 +1973,6 @@ impl Runtime {
     /// A kernel must never both load and store the same tensor (prevents aliasing).
     /// The debug_assert in the recursive materialization loop enforces this.
     fn materialize_kernel(&mut self, kid: KernelId) -> Result<(), ZyxError> {
-        println!("materialize kernel: {kid:?} loads={:?}", self.kernels[kid].loads);
-        self.kernels[kid].kernel.debug();
-
         // Resolve the dtypes of the loads and stores now, while this kernel (and any
         // tensor whose dtype resolves through it) is still alive. After remove_and_return
         // below, self.dtype on those tensors would panic on the removed kernel.

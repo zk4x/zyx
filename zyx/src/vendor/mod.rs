@@ -12,6 +12,8 @@
 //! generic zyx kernels. The graph measures both alternatives and picks the
 //! fastest path through extraction.
 
+#![allow(unused)]
+
 use crate::{
     graph::{ClassId, Graph, Node},
     kernel::BOp,
