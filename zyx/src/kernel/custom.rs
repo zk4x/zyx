@@ -104,7 +104,7 @@ impl Kernel {
     /// # Ok::<_, ZyxError>(())
     /// ```
     pub fn compile(mut self) -> Result<CompiledKernel, ZyxError> {
-        self.linearize(todo!());
+        self.linearize();
         self.instruction_schedule();
         self.dead_code_elimination();
         self.verify();

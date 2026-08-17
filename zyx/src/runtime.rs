@@ -1764,7 +1764,6 @@ impl Runtime {
         read: u64,
         write: u64,
         buffers: &[PoolBufferId],
-        output_shape: &[Dim],
     ) -> Result<(DeviceProgramId, u64), ZyxError> {
         let kernel_id = if let Some(&cached_kid) = self.kernel_map.get(&kernel) {
             if let Some(&program_id) = self.programs.get(&cached_kid) {
@@ -1801,20 +1800,9 @@ impl Runtime {
             kernel.debug();
         }
 
-        // Build the output shape as a list of index ops, one per output
-        // dimension. Static dims (value != 0) become constants; dynamic dims
-        // (value == 0) become variable params resolved at launch.
-        let mut shape = Vec::with_capacity(output_shape.len());
-        for &dim in output_shape {
-            let op_id = if dim == 0 {
-                let one = kernel.const_idx(1);
-                kernel.insert_before(kernel.head, Op::Param { dtype: IDX_T, kind: ParamKind::Variable, shape: one })
-            } else {
-                kernel.insert_before(kernel.head, Op::Const(Constant::idx(dim)))
-            };
-            shape.push(op_id);
-        }
-        kernel.linearize(&shape);
+        // linearize derives the output shape from each writable global's `shape`
+        // field, so no shape scaffolding needs to be prepended here.
+        kernel.linearize();
         kernel.common_subexpression_elimination();
         kernel.dead_code_elimination();
         kernel.instruction_schedule();
@@ -2104,7 +2092,7 @@ impl Runtime {
             output_shape,
             stores.iter().map(|&tid| self.shape(tid)).collect::<Vec<_>>()
         );
-        let (dev_prog, _timing) = self.get_or_autotune(kernel, pool_id, flop, read, write, &buffers, &output_shape)?;
+        let (dev_prog, _timing) = self.get_or_autotune(kernel, pool_id, flop, read, write, &buffers)?;
 
         let event = self.devices[dev_id].launch(dev_prog, &mut self.pools[pool_id], &buffers, event_wait_list)?;
         self.events.insert(kernel_buffers, event);

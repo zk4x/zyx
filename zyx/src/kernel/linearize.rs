@@ -61,7 +61,7 @@ impl Kernel {
     /// and LoadView/StoreView/ConstView are converted to Load/Store/Const in a single pass.
     // TODO Currently it only works if each define has a single move op chain.
     // Make it also work with move op chains when each define is accessed by multiple move ops.
-    pub fn linearize(&mut self, output_shape: &[OpId]) {
+    pub fn linearize(&mut self) {
         if !self.ops.values().any(|n| matches!(n.op, Op::Store { index: OpId::NULL, .. })) {
             return;
         }
@@ -168,40 +168,12 @@ impl Kernel {
             params
         };
 
-        // Anchor for everything linearize inserts: the first op that is NOT one
-        // of the shape consts passed in. get_or_autotune prepends those shape
-        // consts to the head before calling us; the group-index/stride scaffolding
-        // built below is also prepended to the head. Any index arithmetic inserted
-        // by the handlers must land AFTER that whole scaffolding block (it depends
-        // on the shape consts and group indices) but BEFORE the original compute
-        // ops. Captured before `init_view` mutates the head.
-        let shape_set: Set<OpId> = output_shape.iter().copied().collect();
-        let mut start = self.head;
-        while shape_set.contains(&start) {
-            start = self.ops[start].next;
-        }
-
-        let init_view = {
-            let head = start;
-            let mut init_view = Vec::new();
-            // Contiguous row-major stride: axis i has stride = product of the
-            // symbolic output dims after it. Walk backwards carrying a running
-            // suffix product (built with Mad), then reverse to keep axis order.
-            // The innermost axis gets a trailing Const(1) stride. All scaffolding
-            // is inserted right before `start` (the first original op), i.e. after
-            // the shape consts it depends on.
-            let mut suffix = self.insert_before(head, Op::Const(Constant::idx(1)));
-            for (axis, &len) in output_shape.iter().enumerate().rev() {
-                let idx = self.insert_before(head, Op::Index { len, axis: axis as u32, kind: IdxKind::Group });
-                let st = suffix;
-                let lp = self.insert_before(head, Op::Const(Constant::idx(0)));
-                let rp = self.insert_before(head, Op::Const(Constant::idx(0)));
-                init_view.push((idx, st, lp, rp, len));
-                suffix = self.insert_before(head, Op::Binary { x: len, y: suffix, bop: BOp::Mul });
-            }
-            init_view.reverse();
-            init_view
-        };
+        // Anchor for everything linearize inserts: the first original op of the
+        // kernel. The group-index/stride scaffolding for a writable global is
+        // inserted just before it; any index arithmetic inserted by the handlers
+        // must land AFTER that whole scaffolding block (it depends on the group
+        // indices) but BEFORE the original compute ops.
+        let start = self.head;
 
         // For each op, shape and strides: (index, stride, left pad, right pad, axis length)
         let mut views: Map<OpId, Vec<(OpId, OpId, OpId, OpId, OpId)>> = Map::default();
@@ -367,12 +339,9 @@ impl Kernel {
                     debug_assert_eq!(index, OpId::NULL);
                     debug_assert_eq!(layout, MemLayout::Scalar);
                     // The store writes the kernel's single contiguous output, so its
-                    // view is `init_view` (built from the symbolic `output_shape`).
-                    let view = init_view.clone();
-                    // The store index is written back by the terminal define (as a
-                    // writable global) when its walk reaches it. Walk dst through the
-                    // movement ops (these are the only ops allowed between a store and
-                    // the Param it writes) and record the mapping.
+                    // view is built from the writable global's shape (the dims live in
+                    // the dst Param's `shape`), with the group-index/stride scaffolding
+                    // inserted before `start`.
                     let mut dst_param = dst;
                     while let Op::Move { x, .. } = self.ops[dst_param].op {
                         dst_param = x;
@@ -382,11 +351,26 @@ impl Kernel {
                         matches!(dst_param_op, Op::Param { kind: ParamKind::GlobalMut, .. }),
                         "store dst chain must terminate at a writable global Param, got {dst_param_op:?}"
                     );
+                    let Op::Param { shape: dst_shape, .. } = *dst_param_op else {
+                        unreachable!()
+                    };
                     assert!(
                         dst_stores.insert(dst_param, op_id).is_none(),
                         "store dst chain terminates at Param {dst_param:?}, which is already a store destination"
                     );
                     self.ops[op_id].op = Op::Store { dst, src, index: OpId::NULL, layout: MemLayout::Scalar };
+                    let dims = self.shape_ids(dst_shape);
+                    let mut view = Vec::new();
+                    let mut suffix = self.insert_before(start, Op::Const(Constant::idx(1)));
+                    for (axis, &len) in dims.iter().enumerate().rev() {
+                        let idx = self.insert_before(start, Op::Index { len, axis: axis as u32, kind: IdxKind::Group });
+                        let st = suffix;
+                        let lp = self.insert_before(start, Op::Const(Constant::idx(0)));
+                        let rp = self.insert_before(start, Op::Const(Constant::idx(0)));
+                        view.push((idx, st, lp, rp, len));
+                        suffix = self.insert_before(start, Op::Binary { x: len, y: suffix, bop: BOp::Mul });
+                    }
+                    view.reverse();
                     views.insert(src, view.clone());
                     views.insert(dst, view);
                 }

@@ -776,9 +776,12 @@ impl Kernel {
                     let shape: Vec<Dim> = vec![len];
                     Info { shape, flops: 0, mem_read: 0, mem_write: 0 }
                 }
+                Op::Stack { .. } => {
+                    let shape: Vec<Dim> = vec![1];
+                    Info { shape, flops: 0, mem_read: 0, mem_write: 0 }
+                }
                 Op::Wmma { .. }
                 | Op::Asm { .. }
-                | Op::Stack { .. }
                 | Op::Devectorize { .. }
                 | Op::If { .. }
                 | Op::EndIf
@@ -864,35 +867,35 @@ impl Kernel {
         panic!("shape not found for too long time");
     }
 
+    /// Resolves a *shape* op (a `Stack`, a bare `Const` dim, or a `Param`'s
+    /// shape) into its per-dimension op ids.
+    pub(crate) fn shape_ids(&self, mut op_id: OpId) -> Vec<OpId> {
+        for _ in 0..10000 {
+            match self.ops[op_id].op {
+                Op::Const(_) => return vec![op_id],
+                Op::Stack { ref ops } => return ops.to_vec(),
+                Op::Param { shape, .. } => op_id = shape,
+                ref op => todo!("shape_ids of {op:?}"),
+            }
+        }
+        panic!("shape_ids not found for too long time");
+    }
+
     /// Builds a single shape op for the value produced by `op_id`, used to size
     /// a store/param buffer. Returns a `Stack` over per-dimension ops, or a bare
     /// const for a rank-1 shape. Padded/narrowed dimensions synthesize new
     /// arithmetic ops; scalars resolve to rank-1 `[1]`.
     pub(crate) fn generate_store_shape(&mut self, op_id: OpId) -> OpId {
-        /// Resolves a *shape* op (a `Stack`, a bare `Const` dim, or a `Param`'s
-        /// shape) into its per-dimension op ids.
-        fn shape_ids(kernel: &Kernel, mut op_id: OpId) -> Vec<OpId> {
-            for _ in 0..10000 {
-                match kernel.ops[op_id].op {
-                    Op::Const(_) => return vec![op_id],
-                    Op::Stack { ref ops } => return ops.to_vec(),
-                    Op::Param { shape, .. } => op_id = shape,
-                    ref op => todo!("shape_ids of {op:?}"),
-                }
-            }
-            panic!("shape_ids not found for too long time");
-        }
-
         /// Resolves the shape of a *value* op into per-dimension ops, following
         /// compute and movement ops and emitting arithmetic for padded dims.
         fn store_shape_ids(kernel: &mut Kernel, mut op_id: OpId) -> Vec<OpId> {
             for _ in 0..10000 {
                 match kernel.ops[op_id].op.clone() {
                     Op::Const(_) => return vec![],
-                    Op::Param { shape, .. } => return shape_ids(kernel, shape),
+                    Op::Param { shape, .. } => return kernel.shape_ids(shape),
                     Op::Stack { ref ops } => return vec![kernel.const_idx(ops.len() as u32)],
                     Op::Move { x, ref mop } => match mop.as_ref() {
-                        MoveOp::Reshape { shape, .. } | MoveOp::Expand { shape } => return shape_ids(kernel, *shape),
+                        MoveOp::Reshape { shape, .. } | MoveOp::Expand { shape } => return kernel.shape_ids(*shape),
                         MoveOp::Permute { axes } => return crate::shape::permute(&store_shape_ids(kernel, x), axes),
                         MoveOp::Flip { .. } => op_id = x,
                         MoveOp::Narrow { axis, len, .. } => {
