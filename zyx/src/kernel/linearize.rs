@@ -39,20 +39,19 @@
 //! from a `loads` list.
 
 /// A single symbolic dimension of a value's index view: the loop/group index
-/// (`idx`), row-major stride (`st`), left/right pad (`lp`/`rp`) and axis
-/// length (`len`). All are `OpId`s resolved lazily.
+/// (`idx`), left/right pad (`lp`/`rp`) and axis length (`len`). All are
+/// `OpId`s resolved lazily. Strides are recomputed by each consumer from `len`.
 #[derive(Clone, Copy)]
 pub(crate) struct SDim {
     pub(crate) idx: OpId,
-    pub(crate) st: OpId,
     pub(crate) lp: OpId,
     pub(crate) rp: OpId,
     pub(crate) len: OpId,
 }
 
 impl SDim {
-    pub(crate) fn new(idx: OpId, st: OpId, lp: OpId, rp: OpId, len: OpId) -> Self {
-        Self { idx, st, lp, rp, len }
+    pub(crate) fn new(idx: OpId, lp: OpId, rp: OpId, len: OpId) -> Self {
+        Self { idx, lp, rp, len }
     }
 }
 
@@ -285,9 +284,11 @@ impl Kernel {
                         let view = views.remove(&op_id).unwrap();
                         let zero = self.insert_const_idx_before(anchor, 0u32);
                         let mut write_index = zero;
-                        for d in &view {
+                        let mut suffix = self.insert_const_idx_before(anchor, 1u32);
+                        for d in view.iter().rev() {
                             let src_idx = self.insert_before(anchor, Op::Binary { x: d.idx, y: d.lp, bop: BOp::Sub });
-                            write_index = self.insert_before(anchor, Op::Mad { x: src_idx, y: d.st, z: write_index });
+                            write_index = self.insert_before(anchor, Op::Mad { x: src_idx, y: suffix, z: write_index });
+                            suffix = self.insert_before(anchor, Op::Binary { x: d.len, y: suffix, bop: BOp::Mul });
                         }
                         match &mut self.ops[store_id].op {
                             Op::Store { index, .. } => *index = write_index,
@@ -333,9 +334,11 @@ impl Kernel {
                         let one = self.insert_before(anchor, Op::Const(Constant::idx(1)));
                         let mut index = zero;
                         let mut pc = self.insert_before(anchor, Op::Const(Constant::Bool(true)));
-                        for d in &view {
+                        let mut suffix = self.insert_before(anchor, Op::Const(Constant::idx(1)));
+                        for d in view.iter().rev() {
                             let src_idx = self.insert_before(anchor, Op::Binary { x: d.idx, y: d.lp, bop: BOp::Sub });
-                            index = self.insert_before(anchor, Op::Mad { x: src_idx, y: d.st, z: index });
+                            index = self.insert_before(anchor, Op::Mad { x: src_idx, y: suffix, z: index });
+                            suffix = self.insert_before(anchor, Op::Binary { x: d.len, y: suffix, bop: BOp::Mul });
                             let t_lo = self.insert_before(anchor, Op::Binary { x: d.idx, y: d.lp, bop: BOp::Cmpge });
                             pc = self.insert_before(anchor, Op::Binary { x: t_lo, y: pc, bop: BOp::And });
                             let len_mr = self.insert_before(anchor, Op::Binary { x: d.len, y: d.rp, bop: BOp::Sub });
@@ -380,7 +383,6 @@ impl Kernel {
                     self.ops[op_id].op = Op::Store { dst, src, index: OpId::NULL, layout: MemLayout::Scalar };
                     let dims = self.shape_ids(dst_shape);
                     let mut view = Vec::new();
-                    let mut suffix = self.insert_before(start, Op::Const(Constant::idx(1)));
                     for (axis, &len) in dims.iter().enumerate().rev() {
                         let len = if self.dtype(len) != IDX_T {
                             self.insert_before(start, Op::Cast { x: len, dtype: IDX_T })
@@ -388,11 +390,9 @@ impl Kernel {
                             len
                         };
                         let idx = self.insert_before(start, Op::Index { len, axis: axis as u32, kind: IdxKind::Group });
-                        let st = suffix;
                         let lp = self.insert_before(start, Op::Const(Constant::idx(0)));
                         let rp = self.insert_before(start, Op::Const(Constant::idx(0)));
-                        view.push(SDim::new(idx, st, lp, rp, len));
-                        suffix = self.insert_before(start, Op::Binary { x: len, y: suffix, bop: BOp::Mul });
+                        view.push(SDim::new(idx, lp, rp, len));
                     }
                     view.reverse();
                     views.insert(src, view.clone());
@@ -529,8 +529,13 @@ impl Kernel {
                             let zero = self.insert_const_idx_before(op_id, 0u32);
                             let one = self.insert_const_idx_before(op_id, 1u32);
                             let mut base = zero;
-                            for d in &out_view {
-                                base = self.insert_before(op_id, Op::Mad { x: d.idx, y: d.st, z: base });
+                            let mut suffix = one;
+                            for d in out_view.iter().rev() {
+                                // Subtract the left pad so the flat base skips padded
+                                // leading regions of the output view.
+                                let src_idx = self.insert_before(op_id, Op::Binary { x: d.idx, y: d.lp, bop: BOp::Sub });
+                                base = self.insert_before(op_id, Op::Mad { x: src_idx, y: suffix, z: base });
+                                suffix = self.insert_before(op_id, Op::Binary { x: d.len, y: suffix, bop: BOp::Mul });
                             }
                             // The flat axis length is the output element count (== input count).
                             // Cast each shape dim to IDX_T so the bounds arithmetic matches the
@@ -545,9 +550,9 @@ impl Kernel {
                                 total = self.insert_before(op_id, Op::Binary { x: len, y: total, bop: BOp::Mul });
                             }
                             let mut view = Vec::with_capacity(input_rank);
-                            view.push(SDim::new(base, one, zero, zero, total));
+                            view.push(SDim::new(base, zero, zero, total));
                             for _ in 1..input_rank {
-                                view.push(SDim::new(zero, zero, zero, zero, one));
+                                view.push(SDim::new(zero, zero, zero, one));
                             }
                             views.insert(x, view);
                         }
