@@ -19,9 +19,16 @@ fn wmma_matmul() -> Result<(), ZyxError> {
 
     let mut kernel = Kernel::new(DeviceId::AUTO);
 
-    let a_buf = kernel.param(DType::F16, ParamKind::Global);
-    let b_buf = kernel.param(DType::F16, ParamKind::Global);
-    let c_buf = kernel.param(DType::F32, ParamKind::GlobalMut);
+    let m_c = kernel.const_idx(m);
+    let n_c = kernel.const_idx(n);
+    let k_c = kernel.const_idx(k);
+    let shape_mk = kernel.stack(&[m_c, k_c]);
+    let shape_kn = kernel.stack(&[k_c, n_c]);
+    let shape_mn = kernel.stack(&[m_c, n_c]);
+
+    let a_buf = kernel.param(DType::F16, ParamKind::Global, shape_mk);
+    let b_buf = kernel.param(DType::F16, ParamKind::Global, shape_kn);
+    let c_buf = kernel.param(DType::F32, ParamKind::GlobalMut, shape_mn);
 
     let gidx = kernel.group_index(0, m / 16);
     let gidy = kernel.group_index(1, n / 8);

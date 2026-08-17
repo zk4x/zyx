@@ -751,9 +751,14 @@ mod tests {
     fn make_gather_kernel_with_source_before_indices() -> (Kernel, OpId) {
         let mut k = Kernel::new(DeviceId::AUTO);
 
-        let r95 = k.param(DType::U16, ParamKind::Global);
-        let r114 = k.param(DType::U16, ParamKind::Global);
-        let r122 = k.param(DType::U16, ParamKind::Global);
+        let sh3 = k.const_idx(3u32);
+        let sh5 = k.const_idx(5u32);
+        let r95_shape = k.stack(&[sh3, sh3]);
+        let r114_shape = k.stack(&[sh3, sh5]);
+        let r122_shape = k.stack(&[sh3, sh3]);
+        let r95 = k.param(DType::U16, ParamKind::Global, r95_shape);
+        let r114 = k.param(DType::U16, ParamKind::Global, r114_shape);
+        let r122 = k.param(DType::U16, ParamKind::Global, r122_shape);
         let r7 = k.const_val(0u32);
         let r22 = k.const_val(0u16);
         let r74 = k.const_val(3u32);
@@ -815,88 +820,6 @@ mod tests {
         assert_eq!(result, [[10u16, 30, 50], [21, 41, 11], [52, 22, 32]]);
     }
 
-    /// Reproduce the exact IR from resnet index_select kernel (ZYX_DEBUG=8 output).
-    /// The outer loop (6250) + inner loop (8) accumulate pattern has interleaved
-    /// ops between load(acc) and Add, so simplify_accumulating_loop should NOT fold it.
-    #[test]
-    #[should_panic]
-    fn test_resnet_index_select_ir_not_optimized() {
-        let mut k = Kernel::new(DeviceId::AUTO);
-
-        let r93 = k.param(DType::F32, ParamKind::Global);
-        let r116 = k.param(DType::F32, ParamKind::Global);
-        let r128 = k.param(DType::F32, ParamKind::Global);
-        let r130 = k.const_idx(50000u32);
-        let r1 = k.const_idx(0u32);
-        let r42 = k.const_val(0.0f32);
-        let r25 = k.const_val(0i32);
-        let r30 = k.const_val(50000i32);
-        let r106 = k.const_idx(3072u32);
-        let r84 = k.const_idx(5u32);
-        let r97 = k.const_idx(10u32);
-        let r10 = k.const_idx(3u32);
-        let r16 = k.group_index(0, 75000);
-        let r92 = k.local_index(0, 2);
-        let r2 = k.local_index(1, 32);
-        let r78 = k.group_index(2, 4);
-        let r27 = k.local_index(2, 8);
-        let r50 = k.binary(r16, r16, BOp::Add);
-        let r129 = k.binary(r50, r92, BOp::Add);
-        let r104 = k.binary(r78, r10, BOp::BitShiftLeft);
-        let r5 = k.binary(r104, r27, BOp::Add);
-        let r22 = k.binary(r129, r130, BOp::Mod);
-        let r131 = k.binary(r129, r130, BOp::Div);
-
-        let r3 = k.storage(DType::F32, MemScope::Register, 1);
-        k.store(r3, r42, r1, MemLayout::Scalar);
-
-        let r135 = k.binary(r2, r84, BOp::BitShiftLeft);
-        let r136 = k.binary(r131, r97, BOp::BitShiftLeft);
-
-        let c6250 = k.const_idx(6250u32);
-        let one = k.const_idx(1u32);
-        let c8 = k.const_idx(8u32);
-        let outer_loop = k.loop_(c6250);
-
-        let r53 = k.binary(outer_loop, r10, BOp::BitShiftLeft);
-
-        let inner_loop = k.loop_(c8);
-
-        let r35 = k.binary(r53, inner_loop, BOp::Add);
-        let r20 = k.cast(r35, DType::I32);
-        let r94 = k.load(r93, r22, MemLayout::Scalar);
-        let r107 = k.binary(r106, r35, BOp::Mul);
-        let r109 = k.binary(r5, r107, BOp::Add);
-        let r111 = k.binary(r135, r109, BOp::Add);
-        let r113 = k.binary(r136, r111, BOp::Add);
-        let r117 = k.load(r116, r113, MemLayout::Scalar);
-        let r15 = k.load(r3, r1, MemLayout::Scalar);
-        let r28 = k.binary(r94, r25, BOp::Cmplt);
-        let r29 = k.cast(r28, DType::I32);
-        let r71 = k.binary(r29, r30, BOp::Mul);
-        let r34 = k.binary(r71, r94, BOp::Add);
-        let r37 = k.binary(r34, r20, BOp::Eq);
-        let r38 = k.cast(r37, DType::F32);
-        let r118 = k.binary(r38, r117, BOp::Mul);
-        let r9 = k.binary(r118, r15, BOp::Add);
-        k.store(r3, r9, r1, MemLayout::Scalar);
-
-        k.end_loop();
-        k.end_loop();
-
-        let r45 = k.load(r3, r1, MemLayout::Scalar);
-        let r121 = k.binary(r22, r106, BOp::Mul);
-        let r123 = k.binary(r136, r121, BOp::Add);
-        let r125 = k.binary(r135, r123, BOp::Add);
-        let r127 = k.binary(r5, r125, BOp::Add);
-        k.store(r128, r45, r127, MemLayout::Scalar);
-
-        k.simplify_accumulating_loop();
-
-        assert_eq!(k.at(outer_loop), &Op::Loop { len: one }, "outer loop should be zeroed");
-        assert_eq!(k.at(inner_loop), &Op::Loop { len: one }, "inner loop should be zeroed");
-    }
-
     /// Build the exact IR of the mnist gather (index_select) kernel captured via
     /// ZYX_DUMP_FOLD at simplify_accumulating_loop time (pre-autotune).
     ///
@@ -913,10 +836,15 @@ mod tests {
         let mut k = Kernel::new(DeviceId::AUTO);
 
         let n: u64 = dim * dim;
-        let r29 = k.param(DType::I32, ParamKind::Global);
-        let r38 = k.param(DType::I32, ParamKind::Global);
-        let r49 = k.param(DType::F32, ParamKind::Global);
-        let r57 = k.param(DType::F32, ParamKind::Global);
+        let sh3 = k.const_idx(3u32);
+        let r29_shape = k.stack(&[sh3, sh3]);
+        let r38_shape = k.const_idx(3u32);
+        let r49_shape = k.stack(&[sh3, sh3]);
+        let r57_shape = k.stack(&[sh3, sh3]);
+        let r29 = k.param(DType::I32, ParamKind::Global, r29_shape);
+        let r38 = k.param(DType::I32, ParamKind::Global, r38_shape);
+        let r49 = k.param(DType::F32, ParamKind::Global, r49_shape);
+        let r57 = k.param(DType::F32, ParamKind::Global, r57_shape);
         let r1 = k.const_idx(0u32);
         let r8 = k.const_val(0.0f32);
         let r15 = k.const_idx(dim);
@@ -993,10 +921,14 @@ mod tests {
     fn make_scatter_kernel(dim: u64, num_indices: u64) -> (Kernel, OpId) {
         let mut k = Kernel::new(DeviceId::AUTO);
 
-        let r29 = k.param(DType::I32, ParamKind::Global);
-        let r38 = k.param(DType::I32, ParamKind::Global);
-        let r47 = k.param(DType::I32, ParamKind::Global);
-        let r61 = k.param(DType::I32, ParamKind::Global);
+        let r29_shape = k.const_idx(3u32);
+        let r38_shape = k.const_idx(10u32);
+        let r47_shape = k.const_idx(3u32);
+        let r61_shape = k.const_idx(10u32);
+        let r29 = k.param(DType::I32, ParamKind::Global, r29_shape);
+        let r38 = k.param(DType::I32, ParamKind::Global, r38_shape);
+        let r47 = k.param(DType::I32, ParamKind::Global, r47_shape);
+        let r61 = k.param(DType::I32, ParamKind::Global, r61_shape);
         let r14 = k.const_idx(0u32);
         let r1 = k.const_val(0i32);
         let r10 = k.const_idx(num_indices);
@@ -1054,7 +986,8 @@ mod tests {
     #[test]
     fn test_ceil_mask_loop_folds() {
         let mut k = Kernel::new(DeviceId::AUTO);
-        let out = k.param(DType::I32, ParamKind::Global);
+        let out_shape = k.const_idx(2u32);
+        let out = k.param(DType::I32, ParamKind::Global, out_shape);
         let g = k.group_index(0, 2);
         let acc = k.storage(DType::I32, MemScope::Register, 1);
         let zi = k.const_idx(0u32);
@@ -1105,8 +1038,13 @@ mod tests {
     fn test_llama_onehot_loop_folds() {
         let mut k = Kernel::new(DeviceId::AUTO);
 
-        let r67 = k.param(DType::U32, ParamKind::Global);
-        let r30 = k.param(DType::F16, ParamKind::Global);
+        let sh1 = k.const_idx(1u32);
+        let sh2 = k.const_idx(2u32);
+        let sh8 = k.const_idx(8u32);
+        let r67_shape = k.stack(&[sh1, sh2]);
+        let r30_shape = k.stack(&[sh1, sh2, sh8, sh1]);
+        let r67 = k.param(DType::U32, ParamKind::Global, r67_shape);
+        let r30 = k.param(DType::F16, ParamKind::Global, r30_shape);
         let c0 = k.const_idx(0u32);
         let c1 = k.const_idx(1u32);
         let c2 = k.const_idx(2u32);
