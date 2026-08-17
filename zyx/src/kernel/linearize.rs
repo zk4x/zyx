@@ -182,6 +182,11 @@ impl Kernel {
             op_ids.push(scan);
             scan = self.next_op(scan);
         }
+        // Phase 1: unfold movement ops (reshape/narrow/...) into index
+        // arithmetic, converting LoadView/StoreView/ConstView into Load/Store/
+        // Const. The inserted arithmetic is appended at anchor positions; its
+        // relative order is fixed up in Phase 2. Reductions are left intact
+        // here (their loops are emitted in Phase 3).
         for &op_id in op_ids.iter().rev() {
             // Leave loop scopes as the reverse walk exits them. Popped after the
             // op is processed: the loop_start op itself sits inside the loop (it
@@ -635,6 +640,53 @@ impl Kernel {
                 open_loops.pop();
             }
         }
+
+        // Phase 2: topologically order the emitted index arithmetic so that
+        // every op's dependencies precede it. Linearize produces loop-free
+        // dataflow at this point (reduce -> loop emission happens in Phase 3),
+        // so a plain dependency sort is valid: post-order DFS pushes each op
+        // only after all of its parameters have been pushed.
+        {
+            let mut order: Vec<OpId> = Vec::new();
+            let mut visited: Set<OpId> = Set::default();
+            let mut roots: Vec<OpId> = Vec::new();
+            let mut scan = self.head;
+            while !scan.is_null() {
+                roots.push(scan);
+                scan = self.next_op(scan);
+            }
+            for root in roots {
+                if visited.contains(&root) {
+                    continue;
+                }
+                let mut stack: Vec<(OpId, bool)> = vec![(root, false)];
+                while let Some((op, expanded)) = stack.pop() {
+                    if expanded {
+                        order.push(op);
+                    } else if visited.insert(op) {
+                        stack.push((op, true));
+                        let deps: Vec<OpId> =
+                            self.ops[op].op.parameters().filter(|&p| !p.is_null()).collect();
+                        for dep in deps.into_iter().rev() {
+                            if !visited.contains(&dep) {
+                                stack.push((dep, false));
+                            }
+                        }
+                    }
+                }
+            }
+            // Rebuild the kernel's linked list in `order`.
+            for (i, &op) in order.iter().enumerate() {
+                self.ops[op].prev = if i == 0 { OpId::NULL } else { order[i - 1] };
+                self.ops[op].next = if i + 1 == order.len() { OpId::NULL } else { order[i + 1] };
+            }
+            self.head = order.first().copied().unwrap_or(OpId::NULL);
+            self.tail = order.last().copied().unwrap_or(OpId::NULL);
+        }
+
+        // Phase 3: emit loops for reductions (reduce -> Op::Loop / Op::EndLoop
+        // plus the accumulator load/store). Not implemented yet: `Reduce` is
+        // still `todo!()` in Phase 1. Runs after the ordering in Phase 2.
 
         // Put defines in the beginning
         let head = self.head;

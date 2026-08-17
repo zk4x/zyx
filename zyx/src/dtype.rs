@@ -91,32 +91,35 @@ impl DType {
     /// Is this dtype floating point?
     #[must_use]
     pub const fn is_float(self) -> bool {
+        use DType::*;
         match self {
-            Self::BF16 | Self::F16 | Self::F32 | Self::F64 => true,
-            Self::U8 | Self::U16 | Self::U32 | Self::U64 | Self::I8 | Self::I16 | Self::I32 | Self::I64 | Self::Bool => false,
+            BF16 | F16 | F32 | F64 => true,
+            U8 | U16 | U32 | U64 | I8 | I16 | I32 | I64 | Bool => false,
         }
     }
 
     /// Is this dtype integer?
     #[must_use]
     pub const fn is_int(self) -> bool {
+        use DType::*;
         match self {
-            Self::BF16 | Self::F16 | Self::F32 | Self::F64 | Self::Bool => false,
-            Self::U8 | Self::U16 | Self::U32 | Self::U64 | Self::I8 | Self::I16 | Self::I32 | Self::I64 => true,
+            BF16 | F16 | F32 | F64 | Bool => false,
+            U8 | U16 | U32 | U64 | I8 | I16 | I32 | I64 => true,
         }
     }
 
     /// Is this dtype unsigned integer?
     #[must_use]
     pub const fn is_uint(self) -> bool {
+        use DType::*;
         match self {
-            Self::BF16 | Self::F16 | Self::F32 | Self::F64 | Self::Bool | Self::I8 | Self::I16 | Self::I32 | Self::I64 => false,
-            Self::U8 | Self::U16 | Self::U32 | Self::U64 => true,
+            BF16 | F16 | F32 | F64 | Bool | I8 | I16 | I32 | I64 => false,
+            U8 | U16 | U32 | U64 => true,
         }
     }
 
     pub(crate) fn least_upper_dtype(self, rhs: DType) -> DType {
-        use DType::{BF16, Bool, F16, F32, F64, I8, I16, I32, I64, U8, U16, U32, U64};
+        use DType::*;
         // define an ordered list of "widening" priority
         let order = [Bool, U8, U16, U32, U64, I8, I16, I32, I64, BF16, F16, F32, F64];
 
@@ -128,11 +131,12 @@ impl DType {
     /// Get the size of this dtype in bits
     #[must_use]
     pub const fn bit_size(&self) -> u8 {
+        use DType::*;
         match self {
-            Self::U8 | Self::I8 | Self::Bool => 8,
-            Self::BF16 | Self::F16 | Self::I16 | Self::U16 => 16,
-            Self::F32 | Self::I32 | Self::U32 => 32,
-            Self::F64 | Self::I64 | Self::U64 => 64,
+            U8 | I8 | Bool => 8,
+            BF16 | F16 | I16 | U16 => 16,
+            F32 | I32 | U32 => 32,
+            F64 | I64 | U64 => 64,
         }
     }
 
