@@ -184,21 +184,19 @@ impl Kernel {
         self.push_back(Op::Move { x, mop: Box::new(MoveOp::Flip { axes }) })
     }
 
-    /// Sum over the last `n_axes` dimensions.
-    pub fn reduce_sum(&mut self, x: OpId, n_axes: usize) -> OpId {
-        debug_assert!(n_axes > 0, "reduce_sum: n_axes == 0");
-        self.push_back(Op::Reduce { x, rop: BOp::Add, n_axes })
+    /// Sum over the last dimension (given by `reduce_axis`).
+    pub fn reduce_sum(&mut self, x: OpId, reduce_axis: OpId) -> OpId {
+        self.push_back(Op::Reduce { x, rop: BOp::Add, reduce_axis })
     }
 
-    /// Max over the last `n_axes` dimensions.
-    pub fn reduce_max(&mut self, x: OpId, n_axes: usize) -> OpId {
-        debug_assert!(n_axes > 0, "reduce_max: n_axes == 0");
-        self.push_back(Op::Reduce { x, rop: BOp::Max, n_axes })
+    /// Max over the last dimension (given by `reduce_axis`).
+    pub fn reduce_max(&mut self, x: OpId, reduce_axis: OpId) -> OpId {
+        self.push_back(Op::Reduce { x, rop: BOp::Max, reduce_axis })
     }
 
-    /// Product over the last `n_axes` dimensions.
-    pub fn reduce_prod(&mut self, x: OpId, n_axes: usize) -> OpId {
-        self.push_back(Op::Reduce { x, rop: BOp::Mul, n_axes })
+    /// Product over the last dimension (given by `reduce_axis`).
+    pub fn reduce_prod(&mut self, x: OpId, reduce_axis: OpId) -> OpId {
+        self.push_back(Op::Reduce { x, rop: BOp::Mul, reduce_axis })
     }
 
     /// Constant data value (uses natural dtype).

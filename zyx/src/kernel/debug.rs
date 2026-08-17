@@ -79,24 +79,24 @@ impl Kernel {
                 op_id
             };
             match *self.at(op_id) {
-                Op::Reduce { x, rop, n_axes, .. } => {
+                Op::Reduce { x, rop, reduce_axis } => {
                     let dtype = dtypes.get(&x).copied().unwrap_or(DType::U8);
                     dtypes.insert(op_id, dtype);
                     let x = id_map[&x];
+                    let reduce_axis = id_map[&reduce_axis];
                     if has_loops {
-                        for _ in 0..n_axes * 2 {
-                            indent.pop();
-                        }
+                        indent.pop();
+                        indent.pop();
                     }
                     println!(
-                        "{indent}r{out_id}{grey}: {dtype}{reset} = {red}reduce {}{reset} r{x}, dims={n_axes:?} {}",
+                        "{indent}r{out_id}{grey}: {dtype}{reset} = {red}reduce {}{reset} r{x} over {reduce_axis}",
                         match rop {
                             BOp::Add => "sum",
                             BOp::Max => "max",
                             BOp::Mul => "prod",
                             _ => unreachable!(),
                         },
-                        dtypes.get(&op_id).copied().unwrap_or(DType::U8)
+                        reduce_axis = id_map[&reduce_axis]
                     );
                 }
                 Op::ReduceTile { x, rop, .. } => {

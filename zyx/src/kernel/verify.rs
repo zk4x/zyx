@@ -117,13 +117,11 @@ impl Kernel {
                     check(op_id, x, &stack);
                     dtypes.insert(op_id, dtype);
                 }
-                Op::Reduce { x, n_axes, .. } => {
+                Op::Reduce { x, .. } => {
                     check(op_id, x, &stack);
                     dtypes.insert(op_id, dtypes[&x]);
                     if stack.len() > 1 {
-                        for _ in 0..n_axes {
-                            stack.pop();
-                        }
+                        stack.pop();
                     }
                 }
                 Op::ReduceTile { x, .. } => {

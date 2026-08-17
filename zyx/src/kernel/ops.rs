@@ -127,7 +127,7 @@ pub enum Op {
     Reduce {
         x: OpId,
         rop: BOp,
-        n_axes: UAxis,
+        reduce_axis: OpId,
     },
 }
 

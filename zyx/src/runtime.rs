@@ -758,49 +758,47 @@ impl Runtime {
             println!("  -> tid={tid}, nid={_node_id:?}, cid={class_id:?}");
             Ok(tid)
         } else {
-            let (kid, mut op_id) = self.duplicate_or_store(x, false)?;
+            // Reduce one axis at a time, permuting each to be last. Reduce the
+            // highest axis first so lower indices stay valid as the rank shrinks.
+            let mut cur = x;
+            let rank0 = shape.len();
+            let n_axes = axes.len();
+            axes.sort_unstable_by(|a, b| b.cmp(a));
+            for axis in axes {
+                let rank = self.shape(cur).len();
+                let permute_axes: Vec<UAxis> =
+                    (0..rank as UAxis).filter(|&i| i != axis).chain([axis]).collect();
+                cur = self.permute(cur, permute_axes);
 
-            let n = shape.len();
-            let max_axis = *axes.last().unwrap();
-            let mut ai = 0;
-            let mut permute_axes = Vec::with_capacity(n);
-            for i in 0..=max_axis {
-                if axes[ai] == i {
-                    ai += 1;
-                } else {
-                    permute_axes.push(i as UAxis);
-                }
+                let (kid, op_id) = self.duplicate_or_store(cur, false)?;
+                let reduce_axis = self.kernels[kid].kernel.reduce_shape_ids(op_id);
+                let op_id = self.kernels[kid].kernel.push_back(Op::Reduce { x: op_id, rop, reduce_axis });
+
+                let tid = self.tensors.push(TensorData {
+                    kernel_id: kid,
+                    op_id,
+                    depends_on: KernelId::NULL,
+                    class_id: ClassId::NULL,
+                    graph_id: GraphId::NULL,
+                    rc: 1,
+                });
+
+                debug_assert_eq!(self.kernels[kid].outputs.len(), 0, "input into reduce must have empty outputs");
+                self.kernels[kid].outputs.insert(tid);
+                cur = tid;
             }
-            permute_axes.extend((max_axis + 1..n).map(|i| i as UAxis));
-            permute_axes.extend_from_slice(&axes);
 
-            if !permute_axes.iter().copied().eq(0..permute_axes.len() as UAxis) {
-                op_id = self.kernels[kid].kernel.permute(op_id, &permute_axes);
-            }
-
-            op_id = self.kernels[kid].kernel.push_back(Op::Reduce { x: op_id, rop, n_axes: axes.len() });
-
-            if shape.len() == axes.len() {
+            if rank0 == n_axes {
+                let (kid, op_id) = self.eager_ids(cur);
                 let one = self.kernels[kid].kernel.const_idx(1);
-                op_id = self.kernels[kid].kernel.reshape(op_id, one, 0);
+                let op_id = self.kernels[kid].kernel.reshape(op_id, one, 0);
+                self.tensors[cur].op_id = op_id;
             }
-
-            let tid = self.tensors.push(TensorData {
-                kernel_id: kid,
-                op_id,
-                depends_on: KernelId::NULL,
-                class_id: ClassId::NULL,
-                graph_id: GraphId::NULL,
-                rc: 1,
-            });
-
-            debug_assert_eq!(self.kernels[kid].outputs.len(), 0, "input into reduce must have empty outputs");
-            self.kernels[kid].outputs.insert(tid);
 
             #[cfg(feature = "debug_tensor_op")]
-            println!("  -> tid={tid}, kid={kid:?}, op_id={op_id:?}");
-            self.shapes.insert(tid, reduce_shape);
-            Ok(tid)
+            println!("  -> tid={cur}, op_id={:?}", self.tensors[cur].op_id);
+            self.shapes.insert(cur, reduce_shape);
+            Ok(cur)
         }
     }
 

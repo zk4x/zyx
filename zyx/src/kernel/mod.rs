@@ -734,10 +734,10 @@ impl Kernel {
                         todo!()
                     }
                 },
-                Op::Reduce { x, n_axes, .. } => {
+                Op::Reduce { x, .. } => {
                     let Info { mut shape, .. } = stack[x].clone();
-                    let rd: Dim = shape[shape.len() - n_axes..].iter().product();
-                    shape.truncate(shape.len() - n_axes);
+                    let rd: Dim = shape[shape.len() - 1];
+                    shape.truncate(shape.len() - 1);
                     let n: Dim = shape.iter().product();
                     let flops = n * (rd - 1);
                     let flops = flops as u64;
@@ -881,65 +881,162 @@ impl Kernel {
         panic!("shape_ids not found for too long time");
     }
 
+    /// Resolves the shape of a *value* op into per-dimension ops, following
+    /// compute and movement ops and emitting arithmetic for padded dims. The
+    /// result for a `Reduce` drops the (single) reduced trailing dim.
+    pub(crate) fn store_shape_ids(&mut self, mut op_id: OpId) -> Vec<OpId> {
+        for _ in 0..10000 {
+            match self.ops[op_id].op.clone() {
+                Op::Const(_) => return vec![],
+                Op::Param { shape, .. } => return self.shape_ids(shape),
+                Op::Stack { ref ops } => return vec![self.const_idx(ops.len() as u32)],
+                Op::Move { x, ref mop } => match mop.as_ref() {
+                    MoveOp::Reshape { shape, .. } | MoveOp::Expand { shape } => return self.shape_ids(*shape),
+                    MoveOp::Permute { axes } => return crate::shape::permute(&self.store_shape_ids(x), axes),
+                    MoveOp::Flip { .. } => op_id = x,
+                    MoveOp::Narrow { axis, len, .. } => {
+                        let mut dims = self.store_shape_ids(x);
+                        if dims.is_empty() {
+                            dims.push(self.const_idx(1));
+                        }
+                        dims[*axis] = *len;
+                        return dims;
+                    }
+                    MoveOp::Pad { axis, lp, rp } => {
+                        let mut dims = self.store_shape_ids(x);
+                        if dims.is_empty() {
+                            dims.push(self.const_idx(1));
+                        }
+                        let orig = dims[*axis];
+                        let sum = self.push_back(Op::Binary { x: orig, y: *lp, bop: BOp::Add });
+                        dims[*axis] = self.push_back(Op::Binary { x: sum, y: *rp, bop: BOp::Add });
+                        return dims;
+                    }
+                },
+                Op::Load { src: x, .. }
+                | Op::Cast { x, .. }
+                | Op::Unary { x, .. }
+                | Op::Binary { x, .. }
+                | Op::Mad { x, .. }
+                | Op::MatmulTile { x, .. }
+                | Op::ReduceTile { x, .. }
+                | Op::Devectorize { vec: x, .. }
+                | Op::TransposeTile { x }
+                | Op::Store { src: x, .. } => op_id = x,
+                Op::Reduce { x, .. } => {
+                    let mut dims = self.store_shape_ids(x);
+                    dims.truncate(dims.len().saturating_sub(1));
+                    return dims;
+                }
+                Op::Asm { ref ops, .. } => op_id = ops[0],
+                ref op => todo!("store shape of {op:?}"),
+            }
+        }
+        panic!("store shape not found for too long time");
+    }
+
+    /// Resolves the shape of a *value* op into the single `OpId` of its last
+    /// dimension (the trailing dim a `Reduce` would fold over). Follows nested
+    /// reduces by stepping to the second-to-last (etc.) dim and maps `Permute`
+    /// through its axes, emitting ops only for the trailing dim (never the full
+    /// shape).
+    pub(crate) fn reduce_shape_ids(&mut self, op_id: OpId) -> OpId {
+        self.reduce_shape_ids_at(op_id, 0)
+    }
+
+    /// Rank of a value op's output, without emitting any ops.
+    pub(crate) fn rank(&self, mut op_id: OpId) -> usize {
+        for _ in 0..10000 {
+            match self.ops[op_id].op {
+                Op::Const(_) => return 1,
+                Op::Stack { ref ops } => return ops.len(),
+                Op::Param { shape, .. } => return self.shape_ids(shape).len(),
+                Op::Move { x, ref mop } => match mop.as_ref() {
+                    MoveOp::Reshape { shape, .. } | MoveOp::Expand { shape } => return self.shape_ids(*shape).len(),
+                    MoveOp::Permute { .. } | MoveOp::Flip { .. } | MoveOp::Pad { .. } | MoveOp::Narrow { .. } => op_id = x,
+                },
+                Op::Reduce { x, .. } => return self.rank(x) - 1,
+                Op::Load { src: x, .. }
+                | Op::Cast { x, .. }
+                | Op::Unary { x, .. }
+                | Op::Binary { x, .. }
+                | Op::Mad { x, .. }
+                | Op::ReduceTile { x, .. }
+                | Op::Devectorize { vec: x, .. }
+                | Op::TransposeTile { x }
+                | Op::Store { src: x, .. } => op_id = x,
+                Op::Asm { ref ops, .. } => op_id = ops[0],
+                ref op => todo!("rank of {op:?}"),
+            }
+        }
+        panic!("rank not found for too long time");
+    }
+
+    /// Inner recursion of [`Kernel::reduce_shape_ids`], tracking how many dims
+    /// from the end the reduced axis sits (`from_end`: 0 = last, 1 = penultimate).
+    fn reduce_shape_ids_at(&mut self, mut op_id: OpId, mut from_end: usize) -> OpId {
+        for _ in 0..10000 {
+            match self.ops[op_id].op.clone() {
+                Op::Const(_) => return op_id,
+                Op::Stack { ref ops } => return ops[ops.len() - 1 - from_end],
+                Op::Param { shape, .. } => {
+                    let dims = self.shape_ids(shape);
+                    return dims[dims.len() - 1 - from_end];
+                }
+                Op::Move { x, ref mop } => match mop.as_ref() {
+                    MoveOp::Permute { axes } => {
+                        let p = axes[axes.len() - 1 - from_end];
+                        from_end = axes.len() - 1 - p as usize;
+                        op_id = x;
+                    }
+                    MoveOp::Flip { .. } => op_id = x,
+                    MoveOp::Reshape { shape, .. } | MoveOp::Expand { shape } => {
+                        let dims = self.shape_ids(*shape);
+                        return dims[dims.len() - 1 - from_end];
+                    }
+                    MoveOp::Pad { axis, lp, rp } => {
+                        let p = self.rank(x) - 1 - from_end;
+                        if p == *axis as usize {
+                            let orig = self.reduce_shape_ids_at(x, from_end);
+                            let sum = self.push_back(Op::Binary { x: orig, y: *lp, bop: BOp::Add });
+                            return self.push_back(Op::Binary { x: sum, y: *rp, bop: BOp::Add });
+                        }
+                        op_id = x;
+                    }
+                    MoveOp::Narrow { axis, len, .. } => {
+                        let p = self.rank(x) - 1 - from_end;
+                        if p == *axis as usize {
+                            return *len;
+                        }
+                        op_id = x;
+                    }
+                },
+                Op::Reduce { x, .. } => {
+                    from_end += 1;
+                    op_id = x;
+                }
+                Op::Load { src: x, .. }
+                | Op::Cast { x, .. }
+                | Op::Unary { x, .. }
+                | Op::Binary { x, .. }
+                | Op::Mad { x, .. }
+                | Op::ReduceTile { x, .. }
+                | Op::Devectorize { vec: x, .. }
+                | Op::TransposeTile { x }
+                | Op::Store { src: x, .. } => op_id = x,
+                Op::Asm { ref ops, .. } => op_id = ops[0],
+                ref op => todo!("reduce shape of {op:?}"),
+            }
+        }
+        panic!("reduce shape not found for too long time");
+    }
+
     /// Builds a single shape op for the value produced by `op_id`, used to size
     /// a store/param buffer. Returns a `Stack` over per-dimension ops, or a bare
     /// const for a rank-1 shape. Padded/narrowed dimensions synthesize new
     /// arithmetic ops; scalars resolve to rank-1 `[1]`.
     pub(crate) fn generate_store_shape(&mut self, op_id: OpId) -> OpId {
-        /// Resolves the shape of a *value* op into per-dimension ops, following
-        /// compute and movement ops and emitting arithmetic for padded dims.
-        fn store_shape_ids(kernel: &mut Kernel, mut op_id: OpId) -> Vec<OpId> {
-            for _ in 0..10000 {
-                match kernel.ops[op_id].op.clone() {
-                    Op::Const(_) => return vec![],
-                    Op::Param { shape, .. } => return kernel.shape_ids(shape),
-                    Op::Stack { ref ops } => return vec![kernel.const_idx(ops.len() as u32)],
-                    Op::Move { x, ref mop } => match mop.as_ref() {
-                        MoveOp::Reshape { shape, .. } | MoveOp::Expand { shape } => return kernel.shape_ids(*shape),
-                        MoveOp::Permute { axes } => return crate::shape::permute(&store_shape_ids(kernel, x), axes),
-                        MoveOp::Flip { .. } => op_id = x,
-                        MoveOp::Narrow { axis, len, .. } => {
-                            let mut dims = store_shape_ids(kernel, x);
-                            if dims.is_empty() {
-                                dims.push(kernel.const_idx(1));
-                            }
-                            dims[*axis] = *len;
-                            return dims;
-                        }
-                        MoveOp::Pad { axis, lp, rp } => {
-                            let mut dims = store_shape_ids(kernel, x);
-                            if dims.is_empty() {
-                                dims.push(kernel.const_idx(1));
-                            }
-                            let orig = dims[*axis];
-                            let sum = kernel.push_back(Op::Binary { x: orig, y: *lp, bop: BOp::Add });
-                            dims[*axis] = kernel.push_back(Op::Binary { x: sum, y: *rp, bop: BOp::Add });
-                            return dims;
-                        }
-                    },
-                    Op::Load { src: x, .. }
-                    | Op::Cast { x, .. }
-                    | Op::Unary { x, .. }
-                    | Op::Binary { x, .. }
-                    | Op::Mad { x, .. }
-                    | Op::MatmulTile { x, .. }
-                    | Op::ReduceTile { x, .. }
-                    | Op::Devectorize { vec: x, .. }
-                    | Op::TransposeTile { x }
-                    | Op::Store { src: x, .. } => op_id = x,
-                    Op::Reduce { x, n_axes, .. } => {
-                        let mut dims = store_shape_ids(kernel, x);
-                        dims.truncate(dims.len().saturating_sub(n_axes));
-                        return dims;
-                    }
-                    Op::Asm { ref ops, .. } => op_id = ops[0],
-                    ref op => todo!("store shape of {op:?}"),
-                }
-            }
-            panic!("store shape not found for too long time");
-        }
-
-        let dims = store_shape_ids(self, op_id);
+        let dims = self.store_shape_ids(op_id);
         match dims.len() {
             0 => self.const_idx(1),
             1 => dims[0],

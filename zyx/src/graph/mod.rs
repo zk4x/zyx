@@ -1229,12 +1229,11 @@ impl Runtime {
                         let (_, class_id) = self.push_node(graph_id, Node::Stack { ops });
                         class_id
                     }
-                    Op::Reduce { x, rop, n_axes } => {
+                    Op::Reduce { x, rop, .. } => {
                         let x_class = op_to_class[&x];
                         let rank = self.graphs[graph_id].rank(x_class);
-                        debug_assert!(n_axes <= rank, "Reduce: n_axes {} > input rank {}", n_axes, rank);
-                        let axes: Vec<UAxis> = (rank - n_axes..rank).collect();
-                        let (_, class_id) = self.push_node(graph_id, Node::Reduce { x: x_class, rop, axes: axes.into() });
+                        debug_assert!(rank >= 1, "Reduce: input rank must be >= 1");
+                        let (_, class_id) = self.push_node(graph_id, Node::Reduce { x: x_class, rop, axes: vec![rank - 1].into() });
                         class_id
                     }
                     Op::Move { x, ref mop } => {

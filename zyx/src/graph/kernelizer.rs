@@ -190,37 +190,7 @@ impl Graph {
                         self.push_outputs(kid, cid, rcs[&cid]);
                         visited.insert(cid, (kid, result_op));
                     }
-                    Node::Reduce { x, rop: bop, ref axes } => {
-                        let axes: Vec<UAxis> = axes.to_vec();
-                        let n_axes: UAxis = axes.len() as UAxis;
-                        let (mut kid, mut op_id) = visited[&x];
-                        (kid, op_id) = self.duplicate_or_store_class(x, kid, op_id, &mut visited, &rcs, false);
-                        self.consume(x, kid, &mut visited, &mut rcs);
-
-                        // Permute so that reduce dimensions are last
-                        let in_shape: Vec<Dim> = self.shape(x).into();
-                        let kernel = &mut self.jit_kernels[kid].kernel;
-                        let permuted = {
-                            let n = in_shape.len();
-                            let permute_axes: Vec<UAxis> =
-                                (0..n as UAxis).filter(|&i| !axes.contains(&i)).chain(axes.iter().copied()).collect();
-                            if permute_axes.iter().copied().ne(0..n as UAxis) {
-                                kernel.permute(op_id, &permute_axes)
-                            } else {
-                                op_id
-                            }
-                        };
-
-                        let mut result_op = kernel.push_back(Op::Reduce { x: permuted, rop: bop, n_axes });
-
-                        // TODO reshape if only 1 function remains
-                        /*if in_shape.len() == n_axes as usize {
-                            result_op = kernel.reshape(result_op, &[1]);
-                        }*/
-
-                        self.push_outputs(kid, cid, rcs[&cid]);
-                        visited.insert(cid, (kid, result_op));
-                    }
+                    Node::Reduce { .. } => todo!("kernelize Node::Reduce"),
                     Node::After { x, dep } => {
                         // dep (the assign) wrote the new value in-place into x's
                         // base leaf buffer; cid aliases that buffer. Consume dep

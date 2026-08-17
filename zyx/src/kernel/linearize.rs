@@ -379,7 +379,7 @@ impl Kernel {
                     views.insert(src, view.clone());
                     views.insert(dst, view);
                 }
-                Op::Reduce { x, rop, n_axes } => {
+                Op::Reduce { x, rop, reduce_axis } => {
                     todo!()
                     // Collect all transitive dependencies of the reduce input and the
                     // accumulator dtype. The loop that wraps the reduction is opened at
@@ -810,7 +810,7 @@ impl Kernel {
                     Op::Storage { .. } => {
                         todo!()
                     }
-                    Op::Reduce { n_axes, .. } => n_reduce_axes += n_axes,
+                    Op::Reduce { .. } => n_reduce_axes += 1,
                     Op::Move { ref mop, .. } => match mop.as_ref() {
                         MoveOp::Reshape { shape, .. } => {
                             todo!()
