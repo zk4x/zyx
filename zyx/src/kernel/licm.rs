@@ -40,7 +40,7 @@ impl Kernel {
                 }
                 Op::MatmulTile { x, y } => loop_dep[&x].max(loop_dep[&y]),
                 Op::TransposeTile { x } => loop_dep[&x],
-                Op::Asm { .. } | Op::Devectorize { .. } | Op::Wmma { .. } | Op::Vectorize { .. } => loop_depth,
+                Op::Asm { .. } | Op::Devectorize { .. } | Op::Wmma { .. } | Op::Stack { .. } => loop_depth,
                 Op::If { .. } | Op::Loop { .. } => {
                     loop_depth += 1;
                     loop_depth
@@ -102,7 +102,7 @@ impl Kernel {
                     }
                     max
                 }
-                Op::Vectorize { ops } => {
+                Op::Stack { ops } => {
                     let mut max = 0;
                     for op in ops.iter() {
                         max = max.max(loop_dep[op]);

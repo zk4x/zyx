@@ -322,7 +322,14 @@ impl Kernel {
                     *rcs.entry(x).or_insert(0) += 1;
                     *rcs.entry(y).or_insert(0) += 1;
                 }
-                Op::Asm { ref ops, .. } | Op::Vectorize { ref ops } => {
+                Op::Asm { ref ops, .. } => {
+                    let dtype = dtypes[&ops[0]];
+                    dtypes.insert(op_id, (dtype.0, MemLayout::Vector(ops.len().try_into().unwrap())));
+                    for &x in ops.iter() {
+                        *rcs.entry(x).or_insert(0) += 1;
+                    }
+                }
+                Op::Stack { ref ops } => {
                     let dtype = dtypes[&ops[0]];
                     dtypes.insert(op_id, (dtype.0, MemLayout::Vector(ops.len().try_into().unwrap())));
                     for &x in ops.iter() {
@@ -390,7 +397,7 @@ impl Kernel {
                 },
                 Op::MatmulTile { x, .. } => op_id = x,
                 Op::TransposeTile { x } => op_id = x,
-                Op::Vectorize { ref ops } => op_id = ops[0],
+                Op::Stack { ref ops } => op_id = ops[0],
                 Op::Asm { ref ops, .. } => op_id = ops[0],
                 Op::Devectorize { vec, .. } => op_id = vec,
                 Op::Store { src: x, .. } => op_id = x,
@@ -771,7 +778,7 @@ impl Kernel {
                 }
                 Op::Wmma { .. }
                 | Op::Asm { .. }
-                | Op::Vectorize { .. }
+                | Op::Stack { .. }
                 | Op::Devectorize { .. }
                 | Op::If { .. }
                 | Op::EndIf

@@ -253,7 +253,7 @@ impl Kernel {
         let index = self.insert_before(k_loop_id, Op::Binary { x: offset, y: idx, bop: BOp::Add });
         let a_load4 = self.insert_before(k_loop_id, Op::Load { src: stores[3].a, index, layout: MemLayout::Scalar });
 
-        let a_load = self.insert_before(k_loop_id, Op::Vectorize { ops: TinyVec::new(&[a_load1, a_load2, a_load3, a_load4]) });
+        let a_load = self.insert_before(k_loop_id, Op::Stack { ops: Box::new([a_load1, a_load2, a_load3, a_load4]) });
 
         // B load
         let mut idx = self.insert_before(k_loop_id, Op::Const(Constant::idx(0)));
@@ -266,7 +266,7 @@ impl Kernel {
         let offset = self.insert_before(k_loop_id, Op::Const(Constant::idx(stores[1].b_offset)));
         let index = self.insert_before(k_loop_id, Op::Binary { x: offset, y: idx, bop: BOp::Add });
         let b_load2 = self.insert_before(k_loop_id, Op::Load { src: stores[0].b, index, layout: MemLayout::Scalar });
-        let b_load = self.insert_before(k_loop_id, Op::Vectorize { ops: TinyVec::new(&[b_load1, b_load2]) });
+        let b_load = self.insert_before(k_loop_id, Op::Stack { ops: Box::new([b_load1, b_load2]) });
 
         // C load
         let index = self.insert_before(k_loop_id, Op::Const(Constant::idx(0)));

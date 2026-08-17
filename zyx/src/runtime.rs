@@ -32,7 +32,7 @@ use crate::{
     },
     dtype::Constant,
     error::{BackendError, ErrorStatus},
-    graph::{ClassId, EClass, ExecPlan, Graph, GraphId, Node, NodeData, NodeId, plan::drain_events_for_buf},
+    graph::{ClassId, ExecPlan, Graph, GraphId, Node, plan::drain_events_for_buf},
     kernel::{BOp, DeviceId, IDX_T, Kernel, MemLayout, MoveOp, Op, OpId, ParamKind, UOp, autotune::OptSeq},
     rng::Rng,
     shape::{Dim, UAxis},
@@ -41,7 +41,7 @@ use crate::{
 };
 
 /// Loads present in `old` but not in `new`, counting multiplicities.
-fn loads_dropped_by_prune(old: &[TensorId], new: &[TensorId]) -> Vec<TensorId> {
+pub fn loads_dropped_by_prune(old: &[TensorId], new: &[TensorId]) -> Vec<TensorId> {
     let mut dropped = Vec::new();
     let mut seen: Set<TensorId> = Set::default();
     for &tid in old {
@@ -135,7 +135,7 @@ pub(crate) struct KernelData {
 pub struct Runtime {
     /// Every tensor has an entry here. Each dim is the concrete value if that
     /// dimension is static, or `0` if it is dynamic (symbolic).
-    shapes: Map<TensorId, Vec<Dim>>,
+    pub shapes: Map<TensorId, Vec<Dim>>,
     pub graphs: Slab<GraphId, Graph>,
     pub tensors: Slab<TensorId, TensorData>,
     pub kernels: Slab<KernelId, KernelData>,
@@ -300,7 +300,7 @@ impl Runtime {
 
     /// A kernel-load reference on `x` was dropped (kernel removal or load
     /// pruning). If this was the last reference, `x` may be removed.
-    fn release_load(&mut self, x: TensorId) {
+    pub fn release_load(&mut self, x: TensorId) {
         let rc = self.tensors[x].rc - 1;
         self.tensors[x].rc = rc;
         if rc == 0 {
@@ -367,7 +367,7 @@ impl Runtime {
 
     /// Remove a kernel that has no outputs and no stores, releasing its load
     /// references.
-    fn remove_dead_eager_kernel(&mut self, kid: KernelId) {
+    pub fn remove_dead_eager_kernel(&mut self, kid: KernelId) {
         let loads = std::mem::take(&mut self.kernels[kid].loads);
         self.kernels.remove(kid);
         for tid in loads {
@@ -393,177 +393,6 @@ impl Runtime {
         self.graphs.remove(graph_id);
     }
 
-    pub fn eagerify(&mut self, tid: TensorId) {
-        if self.tensors[tid].class_id.is_null() {
-            return;
-        }
-        let graph_id = self.tensors[tid].graph_id;
-        let old_kernel_id = self.tensors[tid].kernel_id;
-
-        // Release tid from its old eager kernel (if any): remove it from outputs,
-        // prune the unused chain (releasing pruned loads), and drop the kernel if
-        // nothing else uses it (releasing its remaining loads).
-        let mut pruned: Vec<TensorId> = Vec::new();
-        if !old_kernel_id.is_null() {
-            let old_op_id = self.tensors[tid].op_id;
-            let kernel_died = {
-                let kd = &mut self.kernels[old_kernel_id];
-                kd.outputs.remove(&tid);
-                if !old_op_id.is_null() {
-                    let out_ops: Vec<OpId> = kd.outputs.iter().map(|&t| self.tensors[t].op_id).collect();
-                    let old_loads = std::mem::take(&mut kd.loads);
-                    let new_loads = kd.kernel.remove_unused_chain(old_op_id, &out_ops, &old_loads);
-                    kd.loads = new_loads.clone();
-                    pruned = loads_dropped_by_prune(&old_loads, &new_loads);
-                }
-                kd.outputs.is_empty()
-            };
-            for t in pruned {
-                self.release_load(t);
-            }
-            if kernel_died {
-                if !self.kernels[old_kernel_id].kernel.contains_stores() {
-                    self.remove_dead_eager_kernel(old_kernel_id);
-                } else {
-                    self.materialize_kernel(old_kernel_id).unwrap();
-                }
-            }
-        }
-
-        self.tensors[tid].class_id = ClassId::NULL;
-        self.tensors[tid].graph_id = GraphId::NULL;
-        let dtype = self.dtype(tid);
-        let kernel_id = self.kernels.push(KernelData {
-            outputs: Set::from_iter([tid]),
-            loads: Vec::new(),
-            stores: Vec::new(),
-            kernel: Kernel::new(DeviceId::AUTO),
-        });
-        let op_id = self.kernels[kernel_id].kernel.push_back(Op::Param { dtype, kind: ParamKind::Global });
-        self.kernels[kernel_id].loads.push(tid);
-        self.tensors[tid].kernel_id = kernel_id;
-        self.tensors[tid].op_id = op_id;
-        self.tensors[tid].depends_on = KernelId::NULL;
-        self.retain(tid);
-        self.graphs[graph_id].ref_count -= 1;
-    }
-
-    fn assert_graph_alive(&self, graph_id: GraphId) {
-        assert!(
-            !self.graphs[graph_id].dead,
-            "tape scope has ended (tensor belongs to a dead tape scope; Tape dropped or realized without this tensor being an output)"
-        );
-    }
-
-    pub fn push_leaf_node(&mut self, graph_id: GraphId, dtype: DType) -> (NodeId, ClassId) {
-        let g = &mut self.graphs[graph_id];
-        let leaf_id = g.max_leaf_id;
-        g.max_leaf_id += 1;
-        let node = Node::Leaf { dtype, leaf_id };
-        if let Some(&nid) = g.hashcons.get(&node) {
-            return (nid, g.nodes[nid].class_of);
-        }
-        let nid = g.nodes.push(NodeData { node: node.clone(), class_of: ClassId::NULL });
-        let cid = g.classes.push(EClass { nodes: vec![nid] });
-        g.nodes[nid].class_of = cid;
-        g.hashcons.insert(node, nid);
-        (nid, cid)
-    }
-
-    pub(crate) fn new_graph_tensor(&mut self, graph_id: GraphId, class_id: ClassId) -> TensorId {
-        self.graphs[graph_id].ref_count += 1;
-        let shape = self.graphs[graph_id].shape(class_id).to_vec();
-        let tid = self.tensors.push(TensorData {
-            kernel_id: KernelId::NULL,
-            op_id: OpId::NULL,
-            depends_on: KernelId::NULL,
-            class_id,
-            graph_id,
-            rc: 1,
-        });
-        self.shapes.insert(tid, shape);
-        tid
-    }
-
-    pub fn push_node(&mut self, graph_id: GraphId, node: Node) -> (NodeId, ClassId) {
-        match node {
-            Node::Permute { .. } => {
-                /*let in_shape = &self.shapes[self.graphs[graph_id].classes[x].shape];
-                assert_eq!(
-                    axes.len(),
-                    in_shape.len(),
-                    "Permute: axes length {} != input rank {} (shape {:?})",
-                    axes.len(),
-                    in_shape.len(),
-                    in_shape
-                );*/
-            }
-            Node::Reshape { .. } => {
-                /*let in_shape = &self.shapes[self.graphs[graph_id].classes[x].shape];
-                let out_shape = &self.shapes[out_shape_id];
-                assert_eq!(
-                    in_shape.iter().product::<Dim>(),
-                    out_shape.iter().product::<Dim>(),
-                    "Reshape: element count mismatch {:?} -> {:?}",
-                    in_shape,
-                    out_shape
-                );*/
-            }
-            Node::Expand { x, ref shape } => {
-                let in_shape = self.graphs[graph_id].shape(x);
-                assert!(
-                    in_shape.len() <= shape.len(),
-                    "Expand: input rank {} > output rank {}: {:?} -> {:?}",
-                    in_shape.len(),
-                    shape.len(),
-                    in_shape,
-                    shape
-                );
-                for (old, new) in in_shape.iter().copied().rev().zip(shape.iter().copied().rev()) {
-                    assert!(old == new || old == 1, "Expand: incompatible dims: {old} vs {new} in {:?} -> {:?}", in_shape, shape);
-                }
-            }
-            Node::Reduce { x, ref axes, .. } => {
-                let in_shape = self.graphs[graph_id].shape(x);
-                for &a in axes.iter() {
-                    assert!(
-                        a < in_shape.len(),
-                        "Reduce: axis {} out of range for input rank {} (shape {:?})",
-                        a,
-                        in_shape.len(),
-                        in_shape
-                    );
-                }
-            }
-            Node::PadZeros { x, ref padding } => {
-                let in_shape = self.graphs[graph_id].shape(x);
-                assert_eq!(
-                    padding.len(),
-                    in_shape.len(),
-                    "PadZeros: padding length {} != input rank {} (shape {:?})",
-                    padding.len(),
-                    in_shape.len(),
-                    in_shape
-                );
-            }
-            _ => {}
-        }
-        let g = &mut self.graphs[graph_id];
-        if let Some(&nid) = g.hashcons.get(&node) {
-            return (nid, g.nodes[nid].class_of);
-        }
-        let nid = g.nodes.push(NodeData { node: node.clone(), class_of: ClassId::NULL });
-        let cid = g.classes.push(EClass { nodes: vec![nid] });
-        g.nodes[nid].class_of = cid;
-        g.hashcons.insert(node, nid);
-        (nid, cid)
-    }
-
-    pub fn push_binary_node(&mut self, graph_id: GraphId, x: ClassId, y: ClassId, bop: BOp) -> ClassId {
-        debug_assert_eq!(self.graphs[graph_id].shape(x), self.graphs[graph_id].shape(y));
-        self.push_node(graph_id, Node::Binary { x, y, bop }).1
-    }
-
     // Returns whether `x` is a variable: its buffer (if any) is stored as a
     // scalar constant via `store_variable` rather than a real buffer.
     /*fn is_variable_tensor(&mut self, x: TensorId) -> bool {
@@ -575,7 +404,7 @@ impl Runtime {
 
     pub fn new_eager_tensor(&mut self, shape: Vec<Dim>, dtype: DType, kind: ParamKind) -> TensorId {
         let mut kernel = Kernel::new(DeviceId::AUTO);
-        let op_id = kernel.push_back(Op::Param { dtype, kind });
+        let op_id = kernel.push_back(Op::Param { dtype, kind, shape: todo!() });
         let kernel_id = self.kernels.push(KernelData { outputs: Set::default(), loads: Vec::new(), stores: Vec::new(), kernel });
         let tid = self.tensors.push(TensorData {
             kernel_id,
@@ -941,8 +770,8 @@ impl Runtime {
             op_id = self.kernels[kid].kernel.push_back(Op::Reduce { x: op_id, rop, n_axes: axes.len() });
 
             if shape.len() == axes.len() {
-                todo!()
-                //op_id = self.kernels[kid].kernel.reshape(op_id, &[1]);
+                let one = self.kernels[kid].kernel.const_idx(1);
+                op_id = self.kernels[kid].kernel.reshape(op_id, vec![one], 0);
             }
 
             let tid = self.tensors.push(TensorData {
@@ -1502,11 +1331,11 @@ impl Runtime {
                     let id = self.kernels[src_kid].kernel.push_back(Op::Const(value));
                     op_map.insert(op_id, id);
                 }
-                Op::Param { dtype, mut kind } => {
+                Op::Param { dtype, mut kind, shape } => {
                     if op_id == dst_define {
                         kind = ParamKind::GlobalMut;
                     }
-                    let id = self.kernels[src_kid].kernel.push_back(Op::Param { dtype, kind });
+                    let id = self.kernels[src_kid].kernel.push_back(Op::Param { dtype, kind, shape });
                     op_map.insert(op_id, id);
                 }
                 Op::Move { x, ref mop } => {
@@ -1828,7 +1657,7 @@ impl Runtime {
             // Invariant: a kernel must never both load and store the same tensor
             debug_assert!(!self.kernels[kid].loads.contains(&x), "kernel {kid:?} both loads and stores tid {x}");
 
-            let dst_id = self.kernels[kid].kernel.param(dtype, ParamKind::GlobalMut);
+            let dst_id = self.kernels[kid].kernel.param(dtype, ParamKind::GlobalMut, todo!());
             self.kernels[kid].kernel.store(dst_id, op_id, OpId::NULL, MemLayout::Scalar);
             self.kernels[kid].stores.push(x);
             kid
@@ -1840,7 +1669,7 @@ impl Runtime {
 
         // Create load kernel so the tensor remains usable (visited must point to a live kernel)
         let mut kernel = Kernel::new(DeviceId::AUTO);
-        let load_op_id = kernel.param(dtype, ParamKind::Global);
+        let load_op_id = kernel.param(dtype, ParamKind::Global, todo!());
         let load_kid = self.kernels.push(KernelData { outputs: Set::from_iter([x]), loads: vec![x], stores: Vec::new(), kernel });
         self.tensors[x].kernel_id = load_kid;
         self.tensors[x].op_id = load_op_id;
@@ -1904,7 +1733,7 @@ impl Runtime {
         let mut shape = Vec::with_capacity(output_shape.len());
         for &dim in output_shape {
             let op_id = if dim == 0 {
-                kernel.insert_before(kernel.head, Op::Param { dtype: IDX_T, kind: ParamKind::Variable })
+                kernel.insert_before(kernel.head, Op::Param { dtype: IDX_T, kind: ParamKind::Variable, shape: todo!() })
             } else {
                 kernel.insert_before(kernel.head, Op::Const(Constant::idx(dim)))
             };
@@ -1972,7 +1801,7 @@ impl Runtime {
     /// # Invariant
     /// A kernel must never both load and store the same tensor (prevents aliasing).
     /// The debug_assert in the recursive materialization loop enforces this.
-    fn materialize_kernel(&mut self, kid: KernelId) -> Result<(), ZyxError> {
+    pub fn materialize_kernel(&mut self, kid: KernelId) -> Result<(), ZyxError> {
         // Resolve the dtypes of the loads and stores now, while this kernel (and any
         // tensor whose dtype resolves through it) is still alive. After remove_and_return
         // below, self.dtype on those tensors would panic on the removed kernel.

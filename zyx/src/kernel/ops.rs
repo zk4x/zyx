@@ -18,16 +18,6 @@ pub enum ParamKind {
     GlobalMut,
 }
 
-impl std::fmt::Display for ParamKind {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(match self {
-            ParamKind::Variable => "var",
-            ParamKind::Global => "global",
-            ParamKind::GlobalMut => "global mut",
-        })
-    }
-}
-
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, SerBin)]
 pub enum Op {
     // ops that exist in both
@@ -52,6 +42,7 @@ pub enum Op {
     Param {
         dtype: DType,
         kind: ParamKind,
+        shape: OpId,
     },
     // Storage declared inside kernel
     Storage {
@@ -92,8 +83,8 @@ pub enum Op {
         z: OpId,
     },
     // Vectorization, YAY!
-    Vectorize {
-        ops: TinyVec<OpId>,
+    Stack {
+        ops: Box<[OpId]>,
     },
     Devectorize {
         vec: OpId,
@@ -436,9 +427,10 @@ impl Op {
     #[allow(clippy::match_same_arms)]
     pub(crate) fn parameters(&self) -> impl DoubleEndedIterator<Item = OpId> {
         match self {
-            Op::Param { .. } | Op::Const { .. } | Op::Storage { .. } | Op::EndLoop | Op::Barrier | Op::EndIf => {
+            Op::Const { .. } | Op::Storage { .. } | Op::EndLoop | Op::Barrier | Op::EndIf => {
                 vec![]
             }
+            &Op::Param { shape, .. } => vec![shape],
             &Op::Index { len, .. } => vec![len],
             &Op::Loop { len, .. } => vec![len],
             &Op::Move { x, ref mop } => match mop.as_ref() {
@@ -459,7 +451,8 @@ impl Op {
             &Op::Binary { x, y, .. } => vec![x, y],
             &Op::Load { src, index, .. } => vec![src, index],
             &Op::Mad { x, y, z } => vec![x, y, z],
-            Op::Asm { ops, .. } | Op::Vectorize { ops } => ops.iter().copied().collect(),
+            Op::Asm { ops, .. } => ops.iter().copied().collect(),
+            Op::Stack { ops } => ops.iter().copied().collect(),
             &Op::Devectorize { vec, .. } => vec![vec],
             &Op::Wmma { a, b, c, .. } => vec![a, b, c],
             Op::If { condition } => vec![*condition],
@@ -472,7 +465,8 @@ impl Op {
     #[allow(clippy::match_same_arms)]
     pub(crate) fn parameters_mut(&mut self) -> impl DoubleEndedIterator<Item = &mut OpId> {
         match self {
-            Op::Param { .. } | Op::Const { .. } | Op::Storage { .. } | Op::EndLoop | Op::EndIf | Op::Barrier => vec![],
+            Op::Const { .. } | Op::Storage { .. } | Op::EndLoop | Op::EndIf | Op::Barrier => vec![],
+            Op::Param { shape, .. } => vec![shape],
             Op::Index { len, .. } => vec![len],
             Op::Loop { len, .. } => vec![len],
             Op::Move { x, mop } => match mop.as_mut() {
@@ -493,7 +487,7 @@ impl Op {
             Op::Binary { x, y, .. } => vec![x, y],
             Op::Load { src, index, .. } => vec![src, index],
             Op::Mad { x, y, z } => vec![x, y, z],
-            Op::Vectorize { ops } => ops.iter_mut().collect(),
+            Op::Stack { ops } => ops.iter_mut().collect(),
             Op::Devectorize { vec, .. } => vec![vec],
             Op::Wmma { a, b, c, .. } => vec![a, b, c],
             Op::If { condition } => vec![condition],
@@ -532,6 +526,16 @@ impl std::fmt::Display for MemScope {
             MemScope::Local => "local",
             MemScope::Register => "reg",
             MemScope::Circular => "cb",
+        })
+    }
+}
+
+impl std::fmt::Display for ParamKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            ParamKind::Variable => "var",
+            ParamKind::Global => "global",
+            ParamKind::GlobalMut => "global mut",
         })
     }
 }

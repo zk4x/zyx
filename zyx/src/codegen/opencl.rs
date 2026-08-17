@@ -22,7 +22,7 @@ impl Kernel {
         let mut op_id = self.head;
         while !op_id.is_null() {
             let op = self.at(op_id);
-            if let &Op::Param { dtype, kind } = op {
+            if let &Op::Param { dtype, kind, .. } = op {
                 match kind {
                     ParamKind::Variable => _ = writeln!(global_args, "  const {} p{op_id},", dtype.ocl()),
                     ParamKind::Global => _ = writeln!(global_args, "  __global const {}* p{op_id},", dtype.ocl()),
@@ -198,7 +198,7 @@ impl Kernel {
                         }
                     }
                 }
-                Op::Vectorize { ref ops } => {
+                Op::Stack { ref ops } => {
                     let dtype = dtypes[&op_id];
                     let mut vars = String::new();
                     for &x in ops.iter() {

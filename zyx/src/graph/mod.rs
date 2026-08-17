@@ -18,8 +18,8 @@ use crate::{
     DType, Map, Set, ZyxError,
     backend::{BufferId, Device, PoolId, ProgramId},
     dtype::Constant,
-    kernel::{BOp, DeviceId, Kernel, MoveOp, Op, OpId, UOp},
-    runtime::{KernelId, Runtime},
+    kernel::{BOp, DeviceId, Kernel, MoveOp, Op, OpId, ParamKind, UOp},
+    runtime::{KernelData, KernelId, Runtime, TensorData, loads_dropped_by_prune},
     shape::{Dim, UAxis},
     slab::{Slab, SlabId},
     tensor::TensorId,
@@ -1462,5 +1462,177 @@ impl Runtime {
         }
 
         Ok(plan)
+    }
+
+    pub fn eagerify(&mut self, tid: TensorId) {
+        if self.tensors[tid].class_id.is_null() {
+            return;
+        }
+        let graph_id = self.tensors[tid].graph_id;
+        let old_kernel_id = self.tensors[tid].kernel_id;
+
+        // Release tid from its old eager kernel (if any): remove it from outputs,
+        // prune the unused chain (releasing pruned loads), and drop the kernel if
+        // nothing else uses it (releasing its remaining loads).
+        let mut pruned: Vec<TensorId> = Vec::new();
+        if !old_kernel_id.is_null() {
+            let old_op_id = self.tensors[tid].op_id;
+            let kernel_died = {
+                let kd = &mut self.kernels[old_kernel_id];
+                kd.outputs.remove(&tid);
+                if !old_op_id.is_null() {
+                    let out_ops: Vec<OpId> = kd.outputs.iter().map(|&t| self.tensors[t].op_id).collect();
+                    let old_loads = std::mem::take(&mut kd.loads);
+                    let new_loads = kd.kernel.remove_unused_chain(old_op_id, &out_ops, &old_loads);
+                    kd.loads = new_loads.clone();
+                    pruned = loads_dropped_by_prune(&old_loads, &new_loads);
+                }
+                kd.outputs.is_empty()
+            };
+            for t in pruned {
+                self.release_load(t);
+            }
+            if kernel_died {
+                if !self.kernels[old_kernel_id].kernel.contains_stores() {
+                    self.remove_dead_eager_kernel(old_kernel_id);
+                } else {
+                    self.materialize_kernel(old_kernel_id).unwrap();
+                }
+            }
+        }
+
+        self.tensors[tid].class_id = ClassId::NULL;
+        self.tensors[tid].graph_id = GraphId::NULL;
+        let dtype = self.dtype(tid);
+        let kernel_id = self.kernels.push(KernelData {
+            outputs: Set::from_iter([tid]),
+            loads: Vec::new(),
+            stores: Vec::new(),
+            kernel: Kernel::new(DeviceId::AUTO),
+        });
+        let shape = todo!();
+        let op_id = self.kernels[kernel_id].kernel.push_back(Op::Param { dtype, kind: ParamKind::Global, shape });
+        self.kernels[kernel_id].loads.push(tid);
+        self.tensors[tid].kernel_id = kernel_id;
+        self.tensors[tid].op_id = op_id;
+        self.tensors[tid].depends_on = KernelId::NULL;
+        self.retain(tid);
+        self.graphs[graph_id].ref_count -= 1;
+    }
+
+    pub fn assert_graph_alive(&self, graph_id: GraphId) {
+        assert!(
+            !self.graphs[graph_id].dead,
+            "tape scope has ended (tensor belongs to a dead tape scope; Tape dropped or realized without this tensor being an output)"
+        );
+    }
+
+    pub fn push_leaf_node(&mut self, graph_id: GraphId, dtype: DType) -> (NodeId, ClassId) {
+        let g = &mut self.graphs[graph_id];
+        let leaf_id = g.max_leaf_id;
+        g.max_leaf_id += 1;
+        let node = Node::Leaf { dtype, leaf_id };
+        if let Some(&nid) = g.hashcons.get(&node) {
+            return (nid, g.nodes[nid].class_of);
+        }
+        let nid = g.nodes.push(NodeData { node: node.clone(), class_of: ClassId::NULL });
+        let cid = g.classes.push(EClass { nodes: vec![nid] });
+        g.nodes[nid].class_of = cid;
+        g.hashcons.insert(node, nid);
+        (nid, cid)
+    }
+
+    pub fn new_graph_tensor(&mut self, graph_id: GraphId, class_id: ClassId) -> TensorId {
+        self.graphs[graph_id].ref_count += 1;
+        let shape = self.graphs[graph_id].shape(class_id).to_vec();
+        let tid = self.tensors.push(TensorData {
+            kernel_id: KernelId::NULL,
+            op_id: OpId::NULL,
+            depends_on: KernelId::NULL,
+            class_id,
+            graph_id,
+            rc: 1,
+        });
+        self.shapes.insert(tid, shape);
+        tid
+    }
+
+    pub fn push_node(&mut self, graph_id: GraphId, node: Node) -> (NodeId, ClassId) {
+        match node {
+            Node::Permute { .. } => {
+                /*let in_shape = &self.shapes[self.graphs[graph_id].classes[x].shape];
+                assert_eq!(
+                    axes.len(),
+                    in_shape.len(),
+                    "Permute: axes length {} != input rank {} (shape {:?})",
+                    axes.len(),
+                    in_shape.len(),
+                    in_shape
+                );*/
+            }
+            Node::Reshape { .. } => {
+                /*let in_shape = &self.shapes[self.graphs[graph_id].classes[x].shape];
+                let out_shape = &self.shapes[out_shape_id];
+                assert_eq!(
+                    in_shape.iter().product::<Dim>(),
+                    out_shape.iter().product::<Dim>(),
+                    "Reshape: element count mismatch {:?} -> {:?}",
+                    in_shape,
+                    out_shape
+                );*/
+            }
+            Node::Expand { x, ref shape } => {
+                let in_shape = self.graphs[graph_id].shape(x);
+                assert!(
+                    in_shape.len() <= shape.len(),
+                    "Expand: input rank {} > output rank {}: {:?} -> {:?}",
+                    in_shape.len(),
+                    shape.len(),
+                    in_shape,
+                    shape
+                );
+                for (old, new) in in_shape.iter().copied().rev().zip(shape.iter().copied().rev()) {
+                    assert!(old == new || old == 1, "Expand: incompatible dims: {old} vs {new} in {:?} -> {:?}", in_shape, shape);
+                }
+            }
+            Node::Reduce { x, ref axes, .. } => {
+                let in_shape = self.graphs[graph_id].shape(x);
+                for &a in axes.iter() {
+                    assert!(
+                        a < in_shape.len(),
+                        "Reduce: axis {} out of range for input rank {} (shape {:?})",
+                        a,
+                        in_shape.len(),
+                        in_shape
+                    );
+                }
+            }
+            Node::PadZeros { x, ref padding } => {
+                let in_shape = self.graphs[graph_id].shape(x);
+                assert_eq!(
+                    padding.len(),
+                    in_shape.len(),
+                    "PadZeros: padding length {} != input rank {} (shape {:?})",
+                    padding.len(),
+                    in_shape.len(),
+                    in_shape
+                );
+            }
+            _ => {}
+        }
+        let g = &mut self.graphs[graph_id];
+        if let Some(&nid) = g.hashcons.get(&node) {
+            return (nid, g.nodes[nid].class_of);
+        }
+        let nid = g.nodes.push(NodeData { node: node.clone(), class_of: ClassId::NULL });
+        let cid = g.classes.push(EClass { nodes: vec![nid] });
+        g.nodes[nid].class_of = cid;
+        g.hashcons.insert(node, nid);
+        (nid, cid)
+    }
+
+    pub fn push_binary_node(&mut self, graph_id: GraphId, x: ClassId, y: ClassId, bop: BOp) -> ClassId {
+        debug_assert_eq!(self.graphs[graph_id].shape(x), self.graphs[graph_id].shape(y));
+        self.push_node(graph_id, Node::Binary { x, y, bop }).1
     }
 }

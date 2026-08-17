@@ -57,7 +57,7 @@ impl Kernel {
                 | Op::Index { .. }
                 | Op::Loop { .. }
                 | Op::EndLoop => {}
-                Op::Vectorize { ref ops } => {
+                Op::Stack { ref ops } => {
                     // vectorize[devec(v,0), devec(v,1), ..., devec(v,n-1)] → v
                     if let Op::Devectorize { vec, idx: 0 } = self.at(ops[0]) {
                         let vec = *vec;

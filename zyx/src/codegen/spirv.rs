@@ -662,7 +662,7 @@ impl Kernel {
                         const_entries.push((st, cid, words));
                         spv_values.insert(op_id, cid);
                     }
-                    &Op::Param { dtype, kind } => {
+                    &Op::Param { dtype, kind, .. } => {
                         match kind {
                             ParamKind::Variable => variable_defs.push((op_id, dtype)),
                             ParamKind::Global | ParamKind::GlobalMut => {
@@ -1090,7 +1090,7 @@ impl Kernel {
                         });
                     }
                     Op::Asm { .. } => todo!(),
-                    Op::Vectorize { ref ops } => {
+                    Op::Stack { ref ops } => {
                         let (dt, layout) = dtypes[&op_id];
                         let result_type =
                             layout_type_id(&mut asm, &mut type_cache, &mut vec_type_cache, &mut type_entries, dt, layout);

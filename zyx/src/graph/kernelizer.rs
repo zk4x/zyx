@@ -3,7 +3,7 @@ use std::collections::BTreeSet;
 use crate::{
     Map, Set,
     graph::{ClassId, Graph, JitKernelData, JitKernelId, Node},
-    kernel::{DeviceId, IDX_T, Kernel, MemLayout, MoveOp, Op, OpId, ParamKind},
+    kernel::{DeviceId, Kernel, MemLayout, MoveOp, Op, OpId, ParamKind},
     shape::{Dim, UAxis},
     slab::{Slab, SlabId},
 };
@@ -304,11 +304,11 @@ impl Graph {
                                     let id = self.jit_kernels[kid].kernel.push_back(Op::Const(value));
                                     op_map.insert(op_id, id);
                                 }
-                                Op::Param { dtype, mut kind } => {
+                                Op::Param { dtype, mut kind, shape } => {
                                     if op_id == dst_define {
                                         kind = ParamKind::GlobalMut;
                                     }
-                                    let id = self.jit_kernels[kid].kernel.push_back(Op::Param { dtype, kind });
+                                    let id = self.jit_kernels[kid].kernel.push_back(Op::Param { dtype, kind, shape });
                                     op_map.insert(op_id, id);
                                 }
                                 Op::Move { x, ref mop } => {
@@ -548,7 +548,7 @@ impl Graph {
 
     fn new_load_kernel(&mut self, cid: ClassId, rc: u32) -> (JitKernelId, OpId) {
         let mut kernel = Kernel::new(DeviceId::NULL);
-        let op_id = kernel.param(self.dtype(cid), ParamKind::Global);
+        let op_id = kernel.param(self.dtype(cid), ParamKind::Global, todo!());
         let kid = self.jit_kernels.push(JitKernelData {
             kernel,
             outputs: vec![cid; rc as usize],
@@ -572,7 +572,7 @@ impl Graph {
 
         if !self.jit_kernels[kid].loads.contains(&cid) {
             let dtype = todo!();
-            let dst = self.jit_kernels[kid].kernel.param(dtype, ParamKind::Global);
+            let dst = self.jit_kernels[kid].kernel.param(dtype, ParamKind::Global, todo!());
             self.jit_kernels[kid].kernel.store(dst, op_id, OpId::NULL, MemLayout::Scalar);
             self.jit_kernels[kid].stores.push(cid);
             visited.remove(&cid);

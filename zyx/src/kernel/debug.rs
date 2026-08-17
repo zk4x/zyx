@@ -126,9 +126,9 @@ impl Kernel {
                     let x = id_map[&x];
                     println!("{indent}r{out_id}{grey}: {dtype}{reset} = {red}transpose_tile{reset} r{x}");
                 }
-                Op::Param { dtype, kind } => {
+                Op::Param { dtype, kind, shape } => {
                     dtypes.insert(op_id, dtype);
-                    println!("{indent}{red}r{out_id}{reset}{grey}: {dtype}{reset} = {yellow}param{reset} {kind}");
+                    println!("{indent}{red}r{out_id}{reset}{grey}: {dtype}{reset} = {yellow}param{reset} shape=r{shape} {kind}");
                 }
                 Op::Storage { dtype, scope, len } => {
                     dtypes.insert(op_id, dtype);
@@ -295,7 +295,7 @@ impl Kernel {
                     let ops: Vec<OpId> = ops.iter().map(|x| id_map.get(x).copied().unwrap_or(OpId::NULL)).collect();
                     println!("{indent}r{out_id}{grey}: {dtype}{reset} = {orange}asm{reset} {asm:?} {ops:?}");
                 }
-                Op::Vectorize { ref ops } => {
+                Op::Stack { ref ops } => {
                     let dtype = dtypes.get(&ops[0]).copied().unwrap_or(DType::U8);
                     dtypes.insert(op_id, dtype);
                     let ops: Vec<OpId> = ops.iter().map(|x| id_map.get(x).copied().unwrap_or(OpId::NULL)).collect();

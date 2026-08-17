@@ -100,7 +100,7 @@ impl Kernel {
                     Op::Move { .. } | Op::Reduce { .. } => {
                         unreachable!()
                     }
-                    Op::Vectorize { ref ops } => {
+                    Op::Stack { ref ops } => {
                         let dtype = dtypes[&ops[0]];
                         dtypes.insert(op_id, (dtype.0, MemLayout::Vector(ops.len().try_into().unwrap())));
                         for &x in ops.iter() {
@@ -223,7 +223,7 @@ impl Kernel {
                 | Op::Unary { .. }
                 | Op::Binary { .. }
                 | Op::Mad { .. }
-                | Op::Vectorize { .. }
+                | Op::Stack { .. }
                 | Op::Wmma { .. }
                 | Op::ReduceTile { .. }
                 | Op::MatmulTile { .. }
@@ -291,7 +291,7 @@ impl Kernel {
                 | Op::Storage { .. }
                 | Op::EndIf
                 | Op::Devectorize { .. }
-                | Op::Vectorize { .. }
+                | Op::Stack { .. }
                 | Op::Move { .. }
                 | Op::Reduce { .. }
                 | Op::ReduceTile { .. }

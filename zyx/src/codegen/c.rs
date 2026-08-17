@@ -299,7 +299,7 @@ impl Kernel {
                         },
                     }
                 }
-                Op::Vectorize { ref ops } => {
+                Op::Stack { ref ops } => {
                     let dtype = dtypes[&op_id];
                     let mut vars = String::new();
                     for &x in ops.iter() {

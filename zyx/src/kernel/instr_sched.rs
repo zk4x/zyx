@@ -192,7 +192,7 @@ impl Kernel {
                         add_param!(p);
                     }
                 }
-                Op::Vectorize { ops } => {
+                Op::Stack { ops } => {
                     for &p in ops.iter() {
                         add_param!(p);
                     }

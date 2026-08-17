@@ -156,7 +156,19 @@ impl Kernel {
                         dtypes.insert(op_id, dtypes[&x]);
                     }
                 }
-                Op::Asm { ref ops, .. } | Op::Vectorize { ref ops } => {
+                Op::Asm { ref ops, .. } => {
+                    let dtype = dtypes[&ops[0]];
+                    for &x in ops.iter() {
+                        check(op_id, x, &stack);
+                        if dtypes[&x] != dtype {
+                            println!("Vectorize dtype mismatch on op={op_id}.");
+                            self.debug();
+                            panic!();
+                        }
+                    }
+                    dtypes.insert(op_id, dtype);
+                }
+                Op::Stack { ref ops } => {
                     let dtype = dtypes[&ops[0]];
                     for &x in ops.iter() {
                         check(op_id, x, &stack);
@@ -198,9 +210,10 @@ impl Kernel {
                 Op::Const(v) => {
                     dtypes.insert(op_id, v.dtype());
                 }
-                Op::Param { dtype, kind } => {
+                Op::Param { dtype, kind, shape } => {
                     params.insert(op_id, kind);
                     dtypes.insert(op_id, dtype);
+                    check(op_id, shape, &stack);
                 }
                 Op::Storage { dtype, scope, len } => {
                     storages.insert(op_id, (scope, len));
@@ -392,7 +405,23 @@ impl Kernel {
                     let b = bounds_stack.last_mut().unwrap();
                     b.insert(op_id, (0, self.index_len(len).saturating_sub(1)));
                 }
-                Op::Asm { ref ops, .. } | Op::Vectorize { ref ops } => {
+                Op::Asm { ref ops, .. } => {
+                    let b = bounds_stack.last_mut().unwrap();
+                    let mut r = None;
+                    for x in ops.iter() {
+                        if let Some(&(xl, xu)) = b.get(x) {
+                            if let Some((l, u)) = r {
+                                r = Some((xl.min(l), xu.max(u)));
+                            } else {
+                                r = Some((xl, xu));
+                            }
+                        }
+                    }
+                    if let Some((xl, xu)) = r {
+                        b.insert(op_id, (xl, xu));
+                    }
+                }
+                Op::Stack { ref ops } => {
                     let b = bounds_stack.last_mut().unwrap();
                     let mut r = None;
                     for x in ops.iter() {

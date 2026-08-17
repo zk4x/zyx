@@ -364,7 +364,7 @@ impl Kernel {
         let mut op_id = self.head;
         while !op_id.is_null() {
             match self.ops[op_id].op {
-                Op::Param { kind, dtype } => {
+                Op::Param { kind, dtype, shape } => {
                     if buf_idx < buffers.len() && buffers[buf_idx] != PoolBufferId::NULL {
                         used_bufs.push(buffers[buf_idx]);
                     } else {

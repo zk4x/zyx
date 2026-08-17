@@ -156,16 +156,16 @@ impl Kernel {
 
         // Snapshot the order of global defines so linearize can assert it never
         // reorders the buffers' declaration order.
-        let global_params: Vec<(DType, ParamKind)> = {
-            let mut defines = Vec::new();
+        let global_params: Vec<(DType, ParamKind, OpId)> = {
+            let mut params = Vec::new();
             let mut op_id = self.head;
             while !op_id.is_null() {
-                if let Op::Param { dtype, kind } = self.ops[op_id].op {
-                    defines.push((dtype, kind));
+                if let Op::Param { dtype, kind, shape } = self.ops[op_id].op {
+                    params.push((dtype, kind, shape));
                 }
                 op_id = self.next_op(op_id);
             }
-            defines
+            params
         };
 
         // Anchor for everything linearize inserts: the first op that is NOT one
@@ -276,7 +276,7 @@ impl Kernel {
                         self.ops[op_id].op = Op::Binary { x: pcd, y: z, bop: BOp::Mul };
                     }
                 }
-                Op::Param { dtype, kind } => match kind {
+                Op::Param { dtype, kind, shape } => match kind {
                     // Register-scope defines (e.g. reduce accumulators) are managed
                     // by the ops that create them; only global/variable defines are
                     // rangeified here. Writable globals are store destinations,
@@ -322,7 +322,7 @@ impl Kernel {
                         // Insert the ro source define immediately before this op so the
                         // global/variable define order (which buffer args bind to) is
                         // preserved.
-                        let src = self.insert_before(op_id, Op::Param { dtype, kind });
+                        let src = self.insert_before(op_id, Op::Param { dtype, kind, shape });
                         let zero = self.insert_before(anchor, Op::Const(Constant::idx(0)));
                         let z = self.insert_before(anchor, Op::Load { src, index: zero, layout: MemLayout::Scalar });
                         let pcd = self.insert_before(anchor, Op::Cast { x: pc, dtype });
@@ -353,7 +353,7 @@ impl Kernel {
                         }
                         // Insert the ro source define immediately before this op so the
                         // global define order (which buffer args bind to) is preserved.
-                        let src = self.insert_before(op_id, Op::Param { dtype, kind });
+                        let src = self.insert_before(op_id, Op::Param { dtype, kind, shape });
                         // Zero the offset where the padding condition fails, so the load
                         // always reads in-bounds, then zero the loaded value itself.
                         let pcu = self.insert_before(anchor, Op::Cast { x: pc, dtype: IDX_T });
@@ -774,13 +774,13 @@ impl Kernel {
             let mut params = Vec::new();
             let mut op_id = self.head;
             while !op_id.is_null() {
-                if let Op::Param { dtype, kind } = self.ops[op_id].op {
-                    params.push((dtype, kind));
+                if let Op::Param { dtype, kind, shape } = self.ops[op_id].op {
+                    params.push((dtype, kind, shape));
                 }
                 op_id = self.next_op(op_id);
             }
             let mut expected = global_params.clone();
-            expected.sort_by_key(|(_, kind)| *kind == ParamKind::GlobalMut);
+            expected.sort_by_key(|(_, kind, _)| *kind == ParamKind::GlobalMut);
             if params != expected {
                 self.debug();
                 panic!(

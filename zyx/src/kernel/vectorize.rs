@@ -209,11 +209,10 @@ impl Kernel {
                 // Now that we know offsets are contiguous, replace scalar stores with a single vectorized store
                 if base_index.is_some() {
                     // Build vector values at correct offset positions
-                    let mut vec_values = Vec::with_capacity(vec_len as usize);
-                    vec_values.resize(vec_len as usize, OpId::NULL);
-                    vec_values[0] = stores[0].x;
+                    let mut ops = vec![OpId::NULL; vec_len as usize].into_boxed_slice();
+                    ops[0] = stores[0].x;
                     for (store, &off) in stores[1..].iter().zip(&offset_order) {
-                        vec_values[off as usize] = store.x;
+                        ops[off as usize] = store.x;
                     }
 
                     // stores is sorted by strides, not by kernel order.
@@ -229,8 +228,7 @@ impl Kernel {
                     }
 
                     // Insert Vectorize after the last store so all values are declared before it.
-                    let ops = TinyVec::new(&vec_values);
-                    let vstore = self.insert_after(last_id, Op::Vectorize { ops });
+                    let vstore = self.insert_after(last_id, Op::Stack { ops });
                     // Insert the vectorized store after the Vectorize and remove all scalar stores.
                     self.insert_after(
                         vstore,
@@ -382,25 +380,25 @@ impl Kernel {
                 // Apply vectorization
                 let vec_op_id = match op_type {
                     OpType::Unary(uop) => {
-                        let devec_ops: Vec<OpId> = selected
+                        let ops: Box<[OpId]> = selected
                             .iter()
                             .map(|&(c, _)| match &self.ops[c].op {
                                 Op::Unary { x, .. } => *x,
                                 _ => unreachable!(),
                             })
                             .collect();
-                        let vd = self.insert_before(first, Op::Vectorize { ops: TinyVec::new(&devec_ops) });
+                        let vd = self.insert_before(first, Op::Stack { ops });
                         self.insert_before(first, Op::Unary { x: vd, uop: *uop })
                     }
                     OpType::Cast(dtype) => {
-                        let devec_ops: Vec<OpId> = selected
+                        let ops: Box<[OpId]> = selected
                             .iter()
                             .map(|&(c, _)| match &self.ops[c].op {
                                 Op::Cast { x, .. } => *x,
                                 _ => unreachable!(),
                             })
                             .collect();
-                        let vd = self.insert_before(first, Op::Vectorize { ops: TinyVec::new(&devec_ops) });
+                        let vd = self.insert_before(first, Op::Stack { ops });
                         self.insert_before(first, Op::Cast { x: vd, dtype: *dtype })
                     }
                     OpType::Binary(bop, devec_pos) => {
@@ -420,8 +418,8 @@ impl Kernel {
                                 other_ops.push(x);
                             }
                         }
-                        let vd = self.insert_before(first, Op::Vectorize { ops: TinyVec::new(&devec_ops) });
-                        let vo = self.insert_before(first, Op::Vectorize { ops: TinyVec::new(&other_ops) });
+                        let vd = self.insert_before(first, Op::Stack { ops: devec_ops.into_boxed_slice() });
+                        let vo = self.insert_before(first, Op::Stack { ops: other_ops.into_boxed_slice() });
                         let (vx, vy) = if *devec_pos == 0 { (vd, vo) } else { (vo, vd) };
                         self.insert_before(first, Op::Binary { x: vx, y: vy, bop: *bop })
                     }
@@ -446,7 +444,7 @@ impl Kernel {
         let mut op_id = self.tail;
         while !op_id.is_null() {
             let ops = match &self.ops[op_id].op {
-                Op::Vectorize { ops } => ops.clone(),
+                Op::Stack { ops } => ops.clone(),
                 _ => {
                     op_id = self.prev_op(op_id);
                     continue;
@@ -480,7 +478,7 @@ impl Kernel {
                     }
                     if !sources.is_empty() && !sources.iter().any(|s| ops.contains(s)) {
                         let last = self.last_in_kernel_order(&sources);
-                        let v_src = self.insert_after(last, Op::Vectorize { ops: TinyVec::new(&sources) });
+                        let v_src = self.insert_after(last, Op::Stack { ops: sources.into_boxed_slice() });
                         let v_op = self.insert_after(v_src, Op::Unary { x: v_src, uop });
                         self.remap(op_id, v_op);
                     }
@@ -499,7 +497,7 @@ impl Kernel {
                     }
                     if !sources.is_empty() && !sources.iter().any(|s| ops.contains(s)) {
                         let last = self.last_in_kernel_order(&sources);
-                        let v_src = self.insert_after(last, Op::Vectorize { ops: TinyVec::new(&sources) });
+                        let v_src = self.insert_after(last, Op::Stack { ops: sources.into_boxed_slice() });
                         let v_op = self.insert_after(v_src, Op::Cast { x: v_src, dtype });
                         self.remap(op_id, v_op);
                     }
@@ -523,8 +521,8 @@ impl Kernel {
                     if !xs.is_empty() && !xs.iter().any(|x| ops.contains(x)) && !ys.iter().any(|y| ops.contains(y)) {
                         let all: Vec<OpId> = xs.iter().chain(ys.iter()).copied().collect();
                         let last = self.last_in_kernel_order(&all);
-                        let v_xs = self.insert_after(last, Op::Vectorize { ops: TinyVec::new(&xs) });
-                        let v_ys = self.insert_after(v_xs, Op::Vectorize { ops: TinyVec::new(&ys) });
+                        let v_xs = self.insert_after(last, Op::Stack { ops: xs.into_boxed_slice() });
+                        let v_ys = self.insert_after(v_xs, Op::Stack { ops: ys.into_boxed_slice() });
                         let v_op = self.insert_after(v_ys, Op::Binary { x: v_xs, y: v_ys, bop });
                         self.remap(op_id, v_op);
                     }
@@ -553,8 +551,8 @@ mod tests {
         let mut op_id = k.head;
         while !op_id.is_null() {
             match &k.ops[op_id].op {
-                Op::Vectorize { ops } if ops.len() == 2 => found_v = true,
-                Op::Unary { uop: UOp::Cos, x } if matches!(k.ops[*x].op, Op::Vectorize { .. }) => found_vop = true,
+                Op::Stack { ops } if ops.len() == 2 => found_v = true,
+                Op::Unary { uop: UOp::Cos, x } if matches!(k.ops[*x].op, Op::Stack { .. }) => found_vop = true,
                 _ => {}
             }
             op_id = k.next_op(op_id);
@@ -624,8 +622,8 @@ mod tests {
         let mut op_id = k.head;
         while !op_id.is_null() {
             match &k.ops[op_id].op {
-                Op::Vectorize { ops } if ops.len() == 4 => found_v = true,
-                Op::Unary { uop: UOp::Cos, x } if matches!(k.ops[*x].op, Op::Vectorize { .. }) => found_vop = true,
+                Op::Stack { ops } if ops.len() == 4 => found_v = true,
+                Op::Unary { uop: UOp::Cos, x } if matches!(k.ops[*x].op, Op::Stack { .. }) => found_vop = true,
                 Op::Unary { uop: UOp::Cos, .. } => found_cos_scalar = true,
                 _ => {}
             }
@@ -680,9 +678,9 @@ mod tests {
         let mut op_id = k.head;
         while !op_id.is_null() {
             match &k.ops[op_id].op {
-                Op::Vectorize { .. } => v_count += 1,
-                Op::Unary { uop: UOp::Cos, x } if matches!(k.ops[*x].op, Op::Vectorize { .. }) => vop_count += 1,
-                Op::Unary { uop: UOp::Sin, x } if matches!(k.ops[*x].op, Op::Vectorize { .. }) => vop_count += 1,
+                Op::Stack { .. } => v_count += 1,
+                Op::Unary { uop: UOp::Cos, x } if matches!(k.ops[*x].op, Op::Stack { .. }) => vop_count += 1,
+                Op::Unary { uop: UOp::Sin, x } if matches!(k.ops[*x].op, Op::Stack { .. }) => vop_count += 1,
                 _ => {}
             }
             op_id = k.next_op(op_id);
@@ -721,8 +719,8 @@ mod tests {
         let mut op_id = k.head;
         while !op_id.is_null() {
             if let Op::Binary { bop: BOp::Add, x, y } = &k.ops[op_id].op
-                && matches!(k.ops[*x].op, Op::Vectorize { .. })
-                && matches!(k.ops[*y].op, Op::Vectorize { .. })
+                && matches!(k.ops[*x].op, Op::Stack { .. })
+                && matches!(k.ops[*y].op, Op::Stack { .. })
             {
                 found_vec_bin = true;
             }
@@ -771,7 +769,7 @@ mod tests {
         let c1 = k.unary(s1, UOp::Cos);
         let c2 = k.unary(s2, UOp::Cos);
         let c3 = k.unary(s3, UOp::Cos);
-        let vec = k.vectorize(&[c0, c1, c2, c3]);
+        let vec = k.stack(&[c0, c1, c2, c3]);
         k.store(dst, vec, offset, MemLayout::Vector(4));
 
         k.vectorize_ops_backward(&[4]);
@@ -781,7 +779,7 @@ mod tests {
         let mut op_id = k.head;
         while !op_id.is_null() {
             match k.ops[op_id].op {
-                Op::Vectorize { .. } | Op::Devectorize { .. } => {
+                Op::Stack { .. } | Op::Devectorize { .. } => {
                     panic!("Found Vectorize/Devectorize op at {op_id} after passes");
                 }
                 _ => {}

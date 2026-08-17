@@ -113,7 +113,7 @@ impl Kernel {
         let mut outputs = Vec::new();
         let mut op_id = self.head;
         while !op_id.is_null() {
-            if let Op::Param { dtype, kind } = self.ops[op_id].op {
+            if let Op::Param { dtype, kind, shape } = self.ops[op_id].op {
                 match kind {
                     ParamKind::Variable | ParamKind::Global => inputs.push(dtype),
                     ParamKind::GlobalMut => outputs.push(dtype),
@@ -218,8 +218,8 @@ impl Kernel {
     }
 
     /// Define a kernel parameter.
-    pub fn param(&mut self, dtype: DType, kind: ParamKind) -> OpId {
-        self.push_back(Op::Param { dtype, kind })
+    pub fn param(&mut self, dtype: DType, kind: ParamKind, shape: OpId) -> OpId {
+        self.push_back(Op::Param { dtype, kind, shape })
     }
 
     /// Define a storage.
@@ -445,9 +445,8 @@ impl Kernel {
     }
 
     /// Vectorize ops into a single value.
-    pub fn vectorize(&mut self, ops: &[OpId]) -> OpId {
-        let ops = TinyVec::new(ops);
-        self.push_back(Op::Vectorize { ops })
+    pub fn stack(&mut self, ops: &[OpId]) -> OpId {
+        self.push_back(Op::Stack { ops: ops.into() })
     }
 
     /// Extract one element from a vectorized value.
@@ -588,7 +587,7 @@ impl CompiledKernel {
                 rc: 1,
             });
             let mut kernel = Kernel::new(DeviceId::AUTO);
-            let op_id = kernel.push_back(Op::Param { dtype, kind: ParamKind::Global });
+            let op_id = kernel.push_back(Op::Param { dtype, kind: ParamKind::Global, shape: todo!() });
             let load_kid = rt.kernels.push(KernelData { outputs: Set::from_iter([id]), loads: vec![id], stores: Vec::new(), kernel });
             rt.tensors[id].kernel_id = load_kid;
             rt.tensors[id].op_id = op_id;
