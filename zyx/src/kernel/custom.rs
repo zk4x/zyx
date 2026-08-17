@@ -18,6 +18,7 @@
 
 use std::collections::BTreeSet;
 
+use crate::Set;
 use crate::backend::{BufferId, DeviceInfo, MemoryPool, ProgramId};
 use crate::dtype::Constant;
 use crate::error::BackendError;
@@ -26,7 +27,6 @@ use crate::kernel::{
     BOp, DeviceId, IdxKind, Kernel, MMADType, MMADims, MMALayout, MemLayout, MemScope, MoveOp, Op, OpId, ParamKind, UOp,
 };
 use crate::runtime::{KernelData, KernelId, TensorData};
-use crate::Set;
 use crate::shape::UAxis;
 use crate::slab::{Slab, SlabId};
 use crate::types::{TinyString, TinyVec};
@@ -156,29 +156,30 @@ impl Kernel {
 
     /// Permute tensor axes.
     pub fn permute(&mut self, x: OpId, axes: &[UAxis]) -> OpId {
-        let axes = axes.to_vec();
+        let axes = axes.into();
         self.push_back(Op::Move { x, mop: Box::new(MoveOp::Permute { axes }) })
     }
 
-    /// Reshape tensor.
-    pub fn reshape(&mut self, x: OpId, shape: Vec<OpId>, input_rank: usize) -> OpId {
+    /// Reshape tensor. `shape` is the (pre-built) output shape op: a single
+    /// const for rank-1, or a `stack` of per-dimension ops otherwise.
+    pub fn reshape(&mut self, x: OpId, shape: OpId, input_rank: usize) -> OpId {
         self.push_back(Op::Move { x, mop: Box::new(MoveOp::Reshape { shape, input_rank }) })
     }
 
-    /// Expand tensor (adds singleton dims).
-    pub fn expand(&mut self, x: OpId, shape: Vec<Dim>) -> OpId {
+    /// Expand tensor (adds singleton dims). `shape` is the pre-built output
+    /// shape op (const for rank-1, or a `stack` of per-dimension ops).
+    pub fn expand(&mut self, x: OpId, shape: OpId) -> OpId {
         self.push_back(Op::Move { x, mop: Box::new(MoveOp::Expand { shape }) })
     }
 
-    /// Pad tensor with zeros.
-    pub fn pad(&mut self, x: OpId, padding: &[(i64, i64)]) -> OpId {
-        let padding = padding.to_vec();
-        self.push_back(Op::Move { x, mop: Box::new(MoveOp::Pad { padding }) })
+    /// Pad axis `axis` with `lp` zeros on the left and `rp` zeros on the right.
+    pub fn pad(&mut self, x: OpId, axis: UAxis, lp: OpId, rp: OpId) -> OpId {
+        self.push_back(Op::Move { x, mop: Box::new(MoveOp::Pad { axis, lp, rp }) })
     }
 
     /// Flip tensor axes.
     pub fn flip(&mut self, x: OpId, axes: &[UAxis]) -> OpId {
-        let axes = axes.to_vec();
+        let axes: Box<[UAxis]> = axes.into();
         debug_assert!(!axes.is_empty(), "flip: axes must not be empty");
         self.push_back(Op::Move { x, mop: Box::new(MoveOp::Flip { axes }) })
     }
@@ -588,7 +589,8 @@ impl CompiledKernel {
             });
             let mut kernel = Kernel::new(DeviceId::AUTO);
             let op_id = kernel.push_back(Op::Param { dtype, kind: ParamKind::Global, shape: todo!() });
-            let load_kid = rt.kernels.push(KernelData { outputs: Set::from_iter([id]), loads: vec![id], stores: Vec::new(), kernel });
+            let load_kid =
+                rt.kernels.push(KernelData { outputs: Set::from_iter([id]), loads: vec![id], stores: Vec::new(), kernel });
             rt.tensors[id].kernel_id = load_kid;
             rt.tensors[id].op_id = op_id;
             rt.retain(id);

@@ -728,7 +728,7 @@ impl Kernel {
                 Op::Move { x, mop } => match mop.as_ref() {
                     MoveOp::Reshape { shape, .. } => Info { shape: vec![1], flops: 0, mem_read: 0, mem_write: 0 },
                     MoveOp::Permute { .. } | MoveOp::Pad { .. } => todo!(),
-                    MoveOp::Expand { shape } => Info { shape: shape.clone(), flops: 0, mem_read: 0, mem_write: 0 },
+                    MoveOp::Expand { .. } => Info { shape: todo!(), flops: 0, mem_read: 0, mem_write: 0 },
                     MoveOp::Flip { .. } => Info { shape: stack[x].shape.clone(), flops: 0, mem_read: 0, mem_write: 0 },
                     MoveOp::Narrow { axis, len, .. } => {
                         todo!()
@@ -805,40 +805,64 @@ impl Kernel {
         self.ops.values().any(|x| matches!(x.op, Op::Reduce { .. } | Op::ReduceTile { .. }))
     }
 
-    /*fn shape(&self, op_id: OpId) -> Vec<Dim> {
-        match self.ops[op_id].op {
-            Op::Const(_) => vec![1],
-            Op::Load { src: x, .. }
-            | Op::Store { dst: x, .. }
-            | Op::Cast { x, .. }
-            | Op::Unary { x, .. }
-            | Op::Binary { x, .. }
-            | Op::Mad { x, .. } => self.shape(x),
-            Op::Reduce { x, n_axes, .. } => {
-                let mut s = self.shape(x);
-                s.truncate(s.len() - n_axes);
-                s
+    /// Shape of the value produced by `op_id`. Mirrors [`Self::dtype`]: value
+    /// ops resolve through their input, while a `Const` yields a single
+    /// dimension, a `Stack` yields one dimension per element (dynamic dims are
+    /// `0`), and movement ops apply their transformation to the input shape.
+    pub(crate) fn shape(&self, mut op_id: OpId) -> Vec<Dim> {
+        let const_dim = |id: OpId| -> Option<Dim> {
+            match self.ops[id].op {
+                Op::Const(c) => c.as_dim(),
+                _ => None,
             }
-            Op::ReduceTile { x, .. } => {
-                let _ = self.shape(x);
-                vec![1]
-            }
-            Op::Move { x, ref mop } => match mop.as_ref() {
-                MoveOp::Reshape { shape, .. }
-                | MoveOp::Expand { shape }
-                | MoveOp::Permute { shape, .. }
-                | MoveOp::Pad { shape, .. } => shape.clone(),
-                MoveOp::Flip { .. } => self.shape(x),
-                &MoveOp::Narrow { axis, len, .. } => {
-                    let mut shape = self.shape(x);
-                    shape[axis] = len;
-                    shape
+        };
+        for _ in 0..10000 {
+            match self.ops[op_id].op {
+                Op::Const(c) => return c.as_dim().map(|d| vec![d]).unwrap_or_else(|| vec![0]),
+                Op::Param { shape, .. } => return self.shape(shape),
+                Op::Stack { ref ops } => {
+                    return ops
+                        .iter()
+                        .map(|&o| match self.ops[o].op {
+                            Op::Const(c) => c.as_dim().unwrap_or(0),
+                            _ => 0,
+                        })
+                        .collect();
                 }
-            },
-            Op::Define { ref shape, .. } => shape.clone().into(),
-            ref op => todo!("{op:?}"),
+                Op::Move { x, ref mop } => match mop.as_ref() {
+                    MoveOp::Reshape { shape, .. } | MoveOp::Expand { shape } => return self.shape(*shape),
+                    MoveOp::Permute { axes } => return crate::shape::permute(&self.shape(x), axes),
+                    MoveOp::Flip { .. } => return self.shape(x),
+                    MoveOp::Pad { axis, lp, rp } => {
+                        let mut s = self.shape(x);
+                        match (const_dim(*lp), const_dim(*rp)) {
+                            (Some(l), Some(r)) => s[*axis] += l + r,
+                            _ => s[*axis] = 0,
+                        }
+                        return s;
+                    }
+                    MoveOp::Narrow { axis, len, .. } => {
+                        let mut s = self.shape(x);
+                        s[*axis] = const_dim(*len).unwrap_or(0);
+                        return s;
+                    }
+                },
+                Op::Load { src: x, .. } | Op::Store { src: x, .. } => op_id = x,
+                Op::Cast { x, .. }
+                | Op::Unary { x, .. }
+                | Op::Binary { x, .. }
+                | Op::Mad { x, .. }
+                | Op::MatmulTile { x, .. }
+                | Op::ReduceTile { x, .. }
+                | Op::Devectorize { vec: x, .. } => op_id = x,
+                Op::Asm { ref ops, .. } => op_id = ops[0],
+                Op::Reduce { x, .. } => op_id = x,
+                Op::TransposeTile { x } => op_id = x,
+                ref op => todo!("shape of {op:?}"),
+            }
         }
-    }*/
+        panic!("shape not found for too long time");
+    }
 
     /// Get index loop ids, dimensions and strides.
     ///
@@ -1060,7 +1084,9 @@ impl Kernel {
                     load_idx += 1;
                 }
                 Op::Param { kind: ParamKind::GlobalMut, .. } => {}
-                Op::Storage { .. } => panic!("extract_subkernel: unexpected Op::Storage (pre-linearize kernels contain only Params)"),
+                Op::Storage { .. } => {
+                    panic!("extract_subkernel: unexpected Op::Storage (pre-linearize kernels contain only Params)")
+                }
                 _ => {}
             }
             oid = self.next_op(oid);

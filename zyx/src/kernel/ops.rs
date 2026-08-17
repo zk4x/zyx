@@ -266,7 +266,7 @@ impl BOp {
 /// Movement operations for tensor shape transformations.
 ///
 /// These operations change the shape of tensors without changing their data.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, SerBin, DeBin)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, SerBin)]
 pub enum MoveOp {
     /// Reshape to a new shape.
     Reshape { shape: OpId, input_rank: usize },
@@ -288,13 +288,16 @@ impl MoveOp {
     /// assign replay's handling of the movement-chain head).
     pub(crate) fn remap(&self, op_map: &Map<OpId, OpId>, fallback: OpId) -> Box<Self> {
         match self {
-            MoveOp::Reshape { shape, input_rank } => Box::new(MoveOp::Reshape {
-                shape: shape.iter().map(|s| op_map.get(s).copied().unwrap_or(fallback)).collect(),
-                input_rank: *input_rank,
-            }),
-            MoveOp::Expand { shape } => Box::new(MoveOp::Expand { shape: shape.clone() }),
+            MoveOp::Reshape { shape, input_rank } => {
+                Box::new(MoveOp::Reshape { shape: op_map.get(shape).copied().unwrap_or(fallback), input_rank: *input_rank })
+            }
+            MoveOp::Expand { shape } => Box::new(MoveOp::Expand { shape: op_map.get(shape).copied().unwrap_or(fallback) }),
             MoveOp::Permute { axes } => Box::new(MoveOp::Permute { axes: axes.clone() }),
-            MoveOp::Pad { padding } => Box::new(MoveOp::Pad { padding: padding.clone() }),
+            MoveOp::Pad { axis, lp, rp } => Box::new(MoveOp::Pad {
+                axis: *axis,
+                lp: op_map.get(lp).copied().unwrap_or(fallback),
+                rp: op_map.get(rp).copied().unwrap_or(fallback),
+            }),
             MoveOp::Flip { axes } => Box::new(MoveOp::Flip { axes: axes.clone() }),
             MoveOp::Narrow { axis, start, len } => {
                 let start = op_map.get(start).copied().unwrap_or(fallback);
@@ -434,8 +437,9 @@ impl Op {
             &Op::Index { len, .. } => vec![len],
             &Op::Loop { len, .. } => vec![len],
             &Op::Move { x, ref mop } => match mop.as_ref() {
-                MoveOp::Reshape { shape, .. } => std::iter::once(x).chain(shape.iter().copied()).collect(),
-                MoveOp::Expand { .. } | MoveOp::Permute { .. } | MoveOp::Pad { .. } | MoveOp::Flip { .. } => vec![x],
+                MoveOp::Reshape { shape, .. } | MoveOp::Expand { shape } => vec![x, *shape],
+                MoveOp::Permute { .. } | MoveOp::Flip { .. } => vec![x],
+                MoveOp::Pad { lp, rp, .. } => vec![x, *lp, *rp],
                 MoveOp::Narrow { start, len, .. } => vec![x, *start, *len],
             },
             Op::Reduce { x, .. } => vec![*x],
@@ -465,8 +469,9 @@ impl Op {
             Op::Index { len, .. } => vec![len],
             Op::Loop { len, .. } => vec![len],
             Op::Move { x, mop } => match mop.as_mut() {
-                MoveOp::Reshape { shape, .. } => std::iter::once(x).chain(shape.iter_mut()).collect(),
-                MoveOp::Expand { .. } | MoveOp::Permute { .. } | MoveOp::Pad { .. } | MoveOp::Flip { .. } => vec![x],
+                MoveOp::Reshape { shape, .. } | MoveOp::Expand { shape } => vec![x, shape],
+                MoveOp::Permute { .. } | MoveOp::Flip { .. } => vec![x],
+                MoveOp::Pad { lp, rp, .. } => vec![x, lp, rp],
                 MoveOp::Narrow { start, len, .. } => vec![x, start, len],
             },
             Op::Reduce { x, .. } => vec![x],

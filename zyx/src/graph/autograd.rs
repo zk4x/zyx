@@ -249,7 +249,7 @@ impl Runtime {
                     let g = self.push_node(graph_id, Node::Permute { x: grad, axes: inv_axes.into_boxed_slice() }).1;
                     accum_grad(self, graph_id, &mut grads, x, g);
                 }
-                Node::PadZeros { .. } => {
+                Node::Pad { .. } => {
                     todo!()
                 }
                 Node::Narrow { .. } => {
@@ -393,7 +393,7 @@ impl Runtime {
                 Node::After { .. } => {
                     todo!()
                 }
-                Node::Leaf { .. } | Node::Const(_) | Node::Kernel { .. } => {}
+                Node::Leaf { .. } | Node::Const(_) | Node::Stack { .. } | Node::Kernel { .. } => {}
             }
         }
 
@@ -407,7 +407,16 @@ impl Runtime {
                     let shape: Vec<Dim> = self.shape(tid).into();
                     let dtype = self.dtype(tid);
                     let (_, zero_cid) = self.push_node(graph_id, Node::Const(Constant::new(0u8).cast(dtype)));
-                    let (_, cid) = self.push_node(graph_id, Node::Expand { x: zero_cid, shape });
+                    let ops: Box<[ClassId]> = shape
+                        .iter()
+                        .map(|&d| self.push_node(graph_id, Node::Const(Constant::idx(d))).1)
+                        .collect();
+                    let shape_cid = if ops.len() == 1 {
+                        ops[0]
+                    } else {
+                        self.push_node(graph_id, Node::Stack { ops }).1
+                    };
+                    let (_, cid) = self.push_node(graph_id, Node::Expand { x: zero_cid, shape: shape_cid });
                     self.new_graph_tensor(graph_id, cid)
                 }
             };

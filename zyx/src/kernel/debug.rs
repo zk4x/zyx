@@ -263,7 +263,10 @@ impl Kernel {
                 Op::Index { len, axis, kind: scope } => {
                     dtypes.insert(op_id, IDX_T);
                     let ub = self.index_len(len).saturating_sub(1);
-                    println!("{indent}r{out_id}{grey}: {IDX_T}{reset} = {blue}{scope}_index({axis}){reset}    // 0..={ub}");
+                    let len = id_map.get(&len).copied().unwrap_or(len);
+                    println!(
+                        "{indent}r{out_id}{grey}: {IDX_T}{reset} = {blue}{scope}_index({axis}){reset} len=r{len}    // 0..={ub}"
+                    );
                 }
                 Op::Loop { len } => {
                     has_loops = true;
@@ -320,19 +323,27 @@ impl Kernel {
                     dtypes.insert(op_id, dtype);
                     let x = id_map.get(&x).copied().unwrap_or(OpId::NULL);
                     match mop.as_ref() {
-                        MoveOp::Reshape { shape, .. } => {
+                        &MoveOp::Reshape { shape, .. } => {
+                            let shape = id_map.get(&shape).copied().unwrap_or(shape);
                             println!("{indent}r{out_id}{grey}: {dtype}{reset} = {cyan}reshape{reset} r{x} -> {shape:?}");
                         }
-                        MoveOp::Expand { shape } => {
+                        &MoveOp::Expand { shape } => {
+                            let shape = id_map.get(&shape).copied().unwrap_or(shape);
                             println!("{indent}r{out_id}{grey}: {dtype}{reset} = {cyan}expand{reset} r{x} -> {shape:?}");
                         }
                         MoveOp::Permute { axes } => {
                             println!("{indent}r{out_id}{grey}: {dtype}{reset} = {cyan}permute{reset} r{x} axes={axes:?}");
                         }
-                        MoveOp::Pad { padding } => {
-                            println!("{indent}r{out_id}{grey}: {dtype}{reset} = {cyan}pad{reset} r{x} padding={padding:?}",);
+                        &MoveOp::Pad { ref axis, lp, rp } => {
+                            let lp = id_map.get(&lp).copied().unwrap_or(lp);
+                            let rp = id_map.get(&rp).copied().unwrap_or(rp);
+                            println!(
+                                "{indent}r{out_id}{grey}: {dtype}{reset} = {cyan}pad{reset} r{x} axis={axis} lp=r{lp} rp={rp}",
+                            );
                         }
-                        MoveOp::Narrow { axis, start, len } => {
+                        &MoveOp::Narrow { ref axis, start, len } => {
+                            let start = id_map.get(&start).copied().unwrap_or(start);
+                            let len = id_map.get(&len).copied().unwrap_or(len);
                             println!(
                                 "{indent}r{out_id}{grey}: {dtype}{reset} = {cyan}narrow{reset} r{x} axis={axis} start=r{start} len={len}",
                             );

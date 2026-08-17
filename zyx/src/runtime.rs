@@ -447,8 +447,13 @@ impl Runtime {
         #[cfg(feature = "debug_tensor_op")]
         println!("runtime::new_full(shape={shape:?}, value={value:?})");
         let x = self.new_constant_tensor(value);
-        let expanded = self.expand(x, shape).unwrap();
+        let ids: Vec<TensorId> = shape.iter().map(|&d| self.new_constant_tensor(Constant::idx(d))).collect();
+        let shape_tid = self.stack(&ids).unwrap();
+        let expanded = self.expand(x, shape_tid).unwrap();
         self.release(x);
+        for t in ids {
+            self.release(t);
+        }
         #[cfg(feature = "debug_tensor_op")]
         println!("  -> tid={expanded}, {:?}", self.tensors[expanded]);
         expanded
@@ -777,7 +782,7 @@ impl Runtime {
 
             if shape.len() == axes.len() {
                 let one = self.kernels[kid].kernel.const_idx(1);
-                op_id = self.kernels[kid].kernel.reshape(op_id, vec![one], 0);
+                op_id = self.kernels[kid].kernel.reshape(op_id, one, 0);
             }
 
             let tid = self.tensors.push(TensorData {
@@ -799,15 +804,77 @@ impl Runtime {
         }
     }
 
-    pub(super) fn reshape(&mut self, x: TensorId, shape: Vec<TensorId>) -> Result<TensorId, ZyxError> {
+    pub(super) fn stack(&mut self, tensors: &[TensorId]) -> Result<TensorId, ZyxError> {
+        debug_assert!(!tensors.is_empty(), "stack: empty");
+        #[cfg(feature = "debug_tensor_op")]
+        println!("runtime::stack(tensors={tensors:?})");
+
+        if tensors.iter().any(|&t| self.is_graph(t)) {
+            let graph_id = tensors.iter().find(|&&t| self.is_graph(t)).map(|&t| self.graph_ids(t).1).unwrap();
+            self.assert_graph_alive(graph_id);
+            for &t in tensors {
+                if !self.is_graph(t) {
+                    self.promote_to_graph(t, graph_id)?;
+                }
+            }
+            let ops: Box<[ClassId]> = tensors.iter().map(|&t| self.graph_ids(t).0).collect();
+            let (_, class_id) = self.push_node(graph_id, Node::Stack { ops });
+            Ok(self.new_graph_tensor(graph_id, class_id))
+        } else {
+            let keep_kid = self.eager_ids(tensors[0]).0;
+            let mut ops = Vec::with_capacity(tensors.len());
+            for &t in tensors {
+                let (mut kid, mut op) = self.eager_ids(t);
+                if kid != keep_kid {
+                    if !self.kernels[kid].stores.is_empty() {
+                        self.add_store(t)?;
+                        (kid, op) = self.eager_ids(t);
+                    }
+                    if kid != keep_kid {
+                        let op_map = self.merge_kernel(keep_kid, kid)?;
+                        op = op_map[&op];
+                    }
+                }
+                ops.push(op);
+            }
+            let op_id = self.kernels[keep_kid].kernel.stack(&ops);
+            let tid = self.tensors.push(TensorData {
+                kernel_id: keep_kid,
+                op_id,
+                depends_on: KernelId::NULL,
+                class_id: ClassId::NULL,
+                graph_id: GraphId::NULL,
+                rc: 1,
+            });
+            self.kernels[keep_kid].outputs.insert(tid);
+            #[cfg(feature = "debug_tensor_op")]
+            println!("  -> tid={tid}, kid={keep_kid:?}, op_id={op_id:?}");
+            self.shapes.insert(tid, vec![tensors.len() as Dim]);
+            Ok(tid)
+        }
+    }
+
+    pub(super) fn reshape(&mut self, x: TensorId, shape: TensorId) -> Result<TensorId, ZyxError> {
         #[cfg(feature = "debug_tensor_op")]
         println!("runtime::reshape(x={x}, shape={shape:?})");
-        debug_assert!(!shape.is_empty(), "reshape: empty shape");
 
-        if self.is_graph(x) {
-            let (class_id, graph_id) = self.graph_ids(x);
-            let shape = shape.iter().map(|&tid| self.tensors[tid].class_id).collect();
-            let (_, class_id) = self.push_node(graph_id, Node::Reshape { x: class_id, shape });
+        if self.is_graph(x) || self.is_graph(shape) {
+            let graph_id = if self.is_graph(x) {
+                self.graph_ids(x).1
+            } else {
+                self.graph_ids(shape).1
+            };
+            self.assert_graph_alive(graph_id);
+            if !self.is_graph(x) {
+                self.promote_to_graph(x, graph_id)?;
+            }
+            if !self.is_graph(shape) {
+                self.promote_to_graph(shape, graph_id)?;
+            }
+            let x_class = self.graph_ids(x).0;
+            let shape_class = self.graph_ids(shape).0;
+            let input_rank = self.graphs[graph_id].shape(x_class).len();
+            let (_, class_id) = self.push_node(graph_id, Node::Reshape { x: x_class, shape: shape_class, input_rank });
             Ok(self.new_graph_tensor(graph_id, class_id))
         } else {
             let input_rank = self.shape(x).len();
@@ -816,33 +883,22 @@ impl Runtime {
             debug_assert_eq!(
                 self.kernels[kernel_id].outputs.len(),
                 0,
-                "input into reshape must have empty outputs before shape kernels are merged"
+                "input into reshape must have empty outputs before the shape kernel is merged"
             );
-            let mut new_shape = Vec::with_capacity(shape.len());
-            let mut out_dims = Vec::with_capacity(shape.len());
-
-            for tid in shape {
-                // Resolve the shape dimension as an op id valid in `kernel_id`.
-                // The shape tensor usually lives in its own kernel; merge that
-                // kernel into the target (mirroring `binary`) so the op id is
-                // meaningful there. A merged shape kernel with stores must be
-                // realized before merging.
-                let (mut kid, mut dim_id) = self.eager_ids(tid);
-                if kid != kernel_id {
-                    if !self.kernels[kid].stores.is_empty() {
-                        self.add_store(tid)?;
-                        (kid, dim_id) = self.eager_ids(tid);
-                    }
-                    if kid != kernel_id {
-                        let op_map = self.merge_kernel(kernel_id, kid)?;
-                        dim_id = op_map[&dim_id];
-                    }
+            let (mut skid, mut shape_op) = self.eager_ids(shape);
+            if skid != kernel_id {
+                if !self.kernels[skid].stores.is_empty() {
+                    self.add_store(shape)?;
+                    (skid, shape_op) = self.eager_ids(shape);
                 }
-                new_shape.push(dim_id);
-                out_dims.push(self.const_dim(kernel_id, dim_id).unwrap_or(0));
+                if skid != kernel_id {
+                    let op_map = self.merge_kernel(kernel_id, skid)?;
+                    shape_op = op_map[&shape_op];
+                }
             }
+            let out_dims = self.kernels[kernel_id].kernel.shape(shape_op);
 
-            let op_id = self.kernels[kernel_id].kernel.reshape(op_id, new_shape, input_rank);
+            let op_id = self.kernels[kernel_id].kernel.reshape(op_id, shape_op, input_rank);
             let tid = self.tensors.push(TensorData {
                 kernel_id,
                 op_id,
@@ -857,60 +913,51 @@ impl Runtime {
 
             self.shapes.insert(tid, out_dims);
 
-            #[cfg(debug_assertions)]
-            {
-                let n_param_loads = self.kernels[kernel_id]
-                    .kernel
-                    .ops
-                    .values()
-                    .filter(|op| matches!(op.op, Op::Param { kind: ParamKind::Global | ParamKind::Variable, .. }))
-                    .count();
-                let n_loads = self.kernels[kernel_id].loads.len();
-                debug_assert_eq!(
-                    n_loads, n_param_loads,
-                    "reshape: kernel {kernel_id:?} has {n_loads} loads but {n_param_loads} Global/Variable Params"
-                );
-            }
-
             #[cfg(feature = "debug_tensor_op")]
-            println!("  -> tid={tid}, kid={kernel_id_dup:?}, op_id={op_id:?}");
+            println!("  -> tid={tid}, kid={kernel_id:?}, op_id={op_id:?}");
             Ok(tid)
         }
     }
 
-    pub fn expand(&mut self, x: TensorId, shape: Vec<Dim>) -> Result<TensorId, ZyxError> {
+    pub fn expand(&mut self, x: TensorId, shape: TensorId) -> Result<TensorId, ZyxError> {
         #[cfg(feature = "debug_tensor_op")]
         println!("runtime::expand(x={x}, shape={shape:?})");
 
-        let sh = self.shape(x);
-        debug_assert!(
-            sh.len() <= shape.len(),
-            "expand: input rank {} > target rank {}: {:?} -> {:?}",
-            sh.len(),
-            shape.len(),
-            sh,
-            shape
-        );
-        for (old, new) in sh.iter().copied().rev().zip(shape.iter().copied().rev()) {
-            debug_assert!(old == new || old == 1, "expand: incompatible dims: {old} vs {new} in {:?} -> {:?}", sh, shape);
-        }
-
-        if shape == sh {
-            self.retain(x);
-            return Ok(x);
-        }
-
-        if self.is_graph(x) {
-            let (class_id, graph_id) = self.graph_ids(x);
-            let (_, class_id) = self.push_node(graph_id, Node::Expand { x: class_id, shape });
+        if self.is_graph(x) || self.is_graph(shape) {
+            let graph_id = if self.is_graph(x) {
+                self.graph_ids(x).1
+            } else {
+                self.graph_ids(shape).1
+            };
+            self.assert_graph_alive(graph_id);
+            if !self.is_graph(x) {
+                self.promote_to_graph(x, graph_id)?;
+            }
+            if !self.is_graph(shape) {
+                self.promote_to_graph(shape, graph_id)?;
+            }
+            let x_class = self.graph_ids(x).0;
+            let shape_class = self.graph_ids(shape).0;
+            let (_, class_id) = self.push_node(graph_id, Node::Expand { x: x_class, shape: shape_class });
             Ok(self.new_graph_tensor(graph_id, class_id))
         } else {
             let (kernel_id, op_id) = self.eager_ids(x);
             let force_store = self.kernels[kernel_id].kernel.is_preceded_by_compute(op_id);
             let (kernel_id, op_id) = self.duplicate_or_store(x, force_store)?;
 
-            let out_shape = shape.clone();
-            let op_id = self.kernels[kernel_id].kernel.expand(op_id, shape);
+            let (mut skid, mut shape_op) = self.eager_ids(shape);
+            if skid != kernel_id {
+                if !self.kernels[skid].stores.is_empty() {
+                    self.add_store(shape)?;
+                    (skid, shape_op) = self.eager_ids(shape);
+                }
+                if skid != kernel_id {
+                    let op_map = self.merge_kernel(kernel_id, skid)?;
+                    shape_op = op_map[&shape_op];
+                }
+            }
+            let out_shape = self.kernels[kernel_id].kernel.shape(shape_op);
+            let op_id = self.kernels[kernel_id].kernel.expand(op_id, shape_op);
             let tid = self.tensors.push(TensorData {
                 kernel_id,
                 op_id,
@@ -956,7 +1003,7 @@ impl Runtime {
         } else {
             let (kernel_id, op_id) = self.duplicate_or_store(x, false).unwrap();
             let permuted_shape = crate::shape::permute(&sh, &axes);
-            let op_id = self.kernels[kernel_id].kernel.push_back(Op::Move { x: op_id, mop: Box::new(MoveOp::Permute { axes }) });
+            let op_id = self.kernels[kernel_id].kernel.push_back(Op::Move { x: op_id, mop: Box::new(MoveOp::Permute { axes: axes.into() }) });
             let tid = self.tensors.push(TensorData {
                 kernel_id,
                 op_id,
@@ -988,13 +1035,25 @@ impl Runtime {
 
         if self.is_graph(x) {
             let (class_id, graph_id) = self.graph_ids(x);
-            let (_, class_id) = self.push_node(graph_id, Node::PadZeros { x: class_id, padding: padding.into_boxed_slice() });
-            self.new_graph_tensor(graph_id, class_id)
+            let mut cur = class_id;
+            for (axis, (lp, rp)) in padding.iter().enumerate() {
+                let lp = self.push_node(graph_id, Node::Const(crate::dtype::Constant::idx(*lp))).1;
+                let rp = self.push_node(graph_id, Node::Const(crate::dtype::Constant::idx(*rp))).1;
+                let (_, nc) = self.push_node(graph_id, Node::Pad { x: cur, axis: axis as UAxis, lp, rp });
+                cur = nc;
+            }
+            self.new_graph_tensor(graph_id, cur)
         } else {
             let (kernel_id, op_id) = self.eager_ids(x);
             let force_store = pad_n > child_n && self.kernels[kernel_id].kernel.is_preceded_by_compute(op_id);
             let (kernel_id, op_id) = self.duplicate_or_store(x, force_store).unwrap();
-            let op_id = self.kernels[kernel_id].kernel.push_back(Op::Move { x: op_id, mop: Box::new(MoveOp::Pad { padding }) });
+            let mut cur = op_id;
+            for (axis, (lp, rp)) in padding.iter().enumerate() {
+                let lp = self.kernels[kernel_id].kernel.const_idx(*lp);
+                let rp = self.kernels[kernel_id].kernel.const_idx(*rp);
+                cur = self.kernels[kernel_id].kernel.pad(cur, axis as UAxis, lp, rp);
+            }
+            let op_id = cur;
             let tid = self.tensors.push(TensorData {
                 kernel_id,
                 op_id,
@@ -1241,7 +1300,7 @@ impl Runtime {
             let graph = &self.graphs[graph_id];
             loop {
                 match graph.nodes[graph.classes[dst_define_cid].nodes[0]].node {
-                    Node::PadZeros { x, .. }
+                    Node::Pad { x, .. }
                     | Node::Flip { x, .. }
                     | Node::Expand { x, .. }
                     | Node::Reshape { x, .. }

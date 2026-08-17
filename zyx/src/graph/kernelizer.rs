@@ -146,6 +146,9 @@ impl Graph {
                         });
                         visited.insert(cid, (kid, op_id));
                     }
+                    Node::Stack { .. } => {
+                        todo!("kernelize Node::Stack")
+                    }
                     Node::Unary { x, uop } => {
                         let (kid, op_id) = visited[&x];
                         self.consume(x, kid, &mut visited, &mut rcs);
@@ -360,53 +363,26 @@ impl Graph {
                         println!("stores={:?}", self.jit_kernels[kid].stores);
                         self.jit_kernels[kid].kernel.debug();*/
                     }
-                    Node::Expand { x, ref shape } => {
-                        let (kid, op_id) = visited[&x];
-                        let force_store = self.jit_kernels[kid].kernel.is_preceded_by_compute(op_id);
-                        let shape = shape.clone();
-                        self.add_move(cid, x, MoveOp::Expand { shape }, force_store, &mut visited, &mut rcs);
+                    Node::Expand { .. } => {
+                        todo!("kernelize Node::Expand")
                     }
                     Node::Permute { x, ref axes } => {
-                        self.add_move(cid, x, MoveOp::Permute { axes: axes.to_vec() }, false, &mut visited, &mut rcs);
+                        self.add_move(cid, x, MoveOp::Permute { axes: axes.clone() }, false, &mut visited, &mut rcs);
                     }
-                    Node::Reshape { x, ref shape } => {
-                        let shape = shape.clone();
-                        let mut new_shape = Vec::new();
-                        for cid in shape {
-                            // TODO deal with kernel merges and stores like in binary
-                            let (_, op_id) = visited[&cid];
-                            new_shape.push(op_id);
-                        }
-                        self.add_move(cid, x, MoveOp::Reshape { shape: new_shape, input_rank: self.shape(x).len() }, false, &mut visited, &mut rcs);
+                    Node::Reshape { .. } => {
+                        todo!("kernelize Node::Reshape")
                     }
-                    Node::PadZeros { x, ref padding } => {
-                        let (kid, op_id) = visited[&x];
-                        let child_n: Dim = self.shape(x).iter().product();
-                        let shape = self.shape(cid);
-                        // if shape after expand is larger than original and is compute kernel
-                        let force_store =
-                            shape.iter().product::<Dim>() > child_n && self.jit_kernels[kid].kernel.is_preceded_by_compute(op_id);
-                        self.add_move(cid, x, MoveOp::Pad { padding: padding.to_vec() }, force_store, &mut visited, &mut rcs);
+                    Node::Pad { .. } => {
+                        todo!("kernelize Node::Pad")
                     }
-                    Node::Narrow { x, axis, start, len } => {
-                        // The start class is a leaf holding the crop offset (see
-                        // runtime::narrow). Mirror the eager path: load it as a
-                        // read-only variable define in this kernel, backed by the
-                        // leaf's host buffer.
-                        let (mut kid, mut op_id) = visited[&x];
-                        (kid, op_id) = self.duplicate_or_store_class(x, kid, op_id, &mut visited, &mut rcs, false);
-                        // TODO binary like handling for start and length
-                        let (_, start) = visited[&start];
-                        let (_, len) = visited[&len];
-                        let result_op = self.jit_kernels[kid]
-                            .kernel
-                            .push_back(Op::Move { x: op_id, mop: Box::new(MoveOp::Narrow { axis, start, len }) });
-                        self.consume(x, kid, &mut visited, &mut rcs);
-                        self.push_outputs(kid, cid, *rcs.get(&cid).unwrap());
-                        visited.insert(cid, (kid, result_op));
+                    Node::Narrow { .. } => {
+                        todo!("kernelize Node::Narrow")
                     }
                     Node::Flip { x, ref axes } => {
-                        self.add_move(cid, x, MoveOp::Flip { axes: axes.to_vec() }, false, &mut visited, &mut rcs);
+                        self.add_move(cid, x, MoveOp::Flip { axes: axes.clone() }, false, &mut visited, &mut rcs);
+                    }
+                    Node::Flip { x, ref axes } => {
+                        self.add_move(cid, x, MoveOp::Flip { axes: axes.clone() }, false, &mut visited, &mut rcs);
                     }
                     Node::ToDevice { x, .. } => {
                         let (kid, op_id) = visited[&x];

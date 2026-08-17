@@ -497,8 +497,15 @@ impl Kernel {
                 Op::Move { x, ref mop } => {
                     match mop.as_ref() {
                         MoveOp::Reshape { shape, input_rank } => {
-                            let shape = shape.clone();
                             let input_rank = *input_rank;
+                            let shape = *shape;
+                            // Unpack the shape op into per-dimension length ops: a
+                            // `Stack` contributes one op per dim, a bare const is a
+                            // rank-1 shape.
+                            let shape_len_ops: Vec<OpId> = match self.ops[shape].op {
+                                Op::Stack { ref ops } => ops.to_vec(),
+                                _ => vec![shape],
+                            };
                             // Reshape merges/splits contiguous dims, so axis indices don't
                             // align 1:1. The input is read as a single flat index over the
                             // whole (contiguous) input, which equals the flat index over the
@@ -521,7 +528,7 @@ impl Kernel {
                             // Cast each shape dim to IDX_T so the bounds arithmetic matches the
                             // u32 index math (the shape consts themselves may be i32).
                             let mut total = one;
-                            for &len in &shape {
+                            for len in shape_len_ops {
                                 let len = if self.dtype(len) != IDX_T {
                                     self.insert_before(op_id, Op::Cast { x: len, dtype: IDX_T })
                                 } else {
@@ -620,7 +627,7 @@ impl Kernel {
                                 .collect();
                             views.insert(x, view);*/
                         }
-                        MoveOp::Pad { padding, .. } => {
+                        MoveOp::Pad { .. } => {
                             todo!()
                             /*let x_shape = self.shape(x);
                             let padding = padding.clone();

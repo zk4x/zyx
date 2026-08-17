@@ -302,7 +302,7 @@ fn b_sftmx1() -> Result<(), ZyxError> {
 fn b_sftmx2() -> Result<(), ZyxError> {
     let x = Tensor::rand([1, 320], DType::F32)?;
     let y = x.sum([-1])?;
-    let y = y.expand(1024)?;
+    let y = y.expand([1024])?;
     assert_eq!(y.shape(), &[1024]);
     Ok(())
 }

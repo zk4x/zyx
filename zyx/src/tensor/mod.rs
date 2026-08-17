@@ -984,9 +984,12 @@ impl Tensor {
     /// ```
     /// # Errors
     /// Returns error if self cannot be expanded into shape.
-    pub fn expand(&self, shape: impl IntoShape) -> Result<Tensor, ZyxError> {
-        //println!("Expand from {sh:?} to {shape:?}");
-        let id = RT.lock().expand(self.id, shape.into_shape().collect())?;
+    pub fn expand<D: Into<Tensor>>(&self, shape: impl IntoIterator<Item = D>) -> Result<Tensor, ZyxError> {
+        let tensors: Vec<Tensor> = shape.into_iter().map(|x| x.into()).collect();
+        let ids: Vec<TensorId> = tensors.iter().map(|x| x.id).collect();
+        let shape = RT.lock().stack(&ids)?;
+        drop(tensors); // we need to keep tensors alive until after stack is called
+        let id = RT.lock().expand(self.id, shape)?;
         Ok(Tensor { id })
     }
 
@@ -1015,6 +1018,8 @@ impl Tensor {
         let mut shape = self.shape();
         let axis = into_axis(axis, shape.len())?;
         shape[axis] = dim;
+        let ids: Vec<TensorId> = shape.iter().map(|&d| Tensor::from(d).id).collect();
+        let shape = RT.lock().stack(&ids)?;
         let id = RT.lock().expand(self.id, shape)?;
         Ok(Tensor { id })
     }
@@ -1255,9 +1260,10 @@ impl Tensor {
     /// Returns error if self cannot be reshaped to shape.
     pub fn reshape<D: Into<Tensor>>(&self, shape: impl IntoIterator<Item = D>) -> Result<Tensor, ZyxError> {
         let tensors: Vec<Tensor> = shape.into_iter().map(|x| x.into()).collect();
-        let shape: Vec<TensorId> = tensors.iter().map(|x| x.id).collect();
+        let ids: Vec<TensorId> = tensors.iter().map(|x| x.id).collect();
+        let shape = RT.lock().stack(&ids)?;
+        drop(tensors); // we need to keep tensors alive until after stack is called
         let id = RT.lock().reshape(self.id, shape)?;
-        drop(tensors); // we need to keep tensors alive unitl after reshape is called
 
         /*let numel = self.numel();
 
@@ -3018,14 +3024,14 @@ impl Tensor {
             eshape.push(*x.max(y));
         }
         if x_shape != eshape {
-            x = x.expand(&eshape)?;
+            x = x.expand(eshape.iter().copied())?;
         }
         //println!("Second broadcast operand {y}");
         //println!("{x_shape:?}, {y_shape:?}, {eshape:?}");
         //println!("After reshape second broadcast operand {y}");
         //Tensor::plot_graph([], "graph");
         if y_shape != eshape {
-            y = y.expand(&eshape)?;
+            y = y.expand(eshape.iter().copied())?;
         }
         //println!("Second broadcast operand {y}");
         //println!("Broadcasted to {eshape:?}");

@@ -105,7 +105,7 @@ pub(crate) enum Node {
     },
     Expand {
         x: ClassId,
-        shape: Vec<Dim>,
+        shape: ClassId,
     },
     Permute {
         x: ClassId,
@@ -113,11 +113,14 @@ pub(crate) enum Node {
     },
     Reshape {
         x: ClassId,
-        shape: Vec<ClassId>,
+        shape: ClassId,
+        input_rank: usize,
     },
-    PadZeros {
+    Pad {
         x: ClassId,
-        padding: Box<[(i64, i64)]>,
+        axis: UAxis,
+        lp: ClassId,
+        rp: ClassId,
     },
     Flip {
         x: ClassId,
@@ -128,6 +131,9 @@ pub(crate) enum Node {
         axis: UAxis,
         start: ClassId,
         len: ClassId,
+    },
+    Stack {
+        ops: Box<[ClassId]>,
     },
     Reduce {
         x: ClassId,
@@ -178,8 +184,10 @@ impl PartialEq for Node {
             (Self::Leaf { leaf_id: a, .. }, Self::Leaf { leaf_id: b, .. }) => a == b,
             (Self::Expand { x: a, shape: as_ }, Self::Expand { x: b, shape: bs }) => a == b && as_ == bs,
             (Self::Permute { x: a, axes: aa }, Self::Permute { x: b, axes: ba }) => a == b && aa == ba,
-            (Self::Reshape { x: a, shape: as_ }, Self::Reshape { x: b, shape: bs }) => a == b && as_ == bs,
-            (Self::PadZeros { x: a, padding: ap }, Self::PadZeros { x: b, padding: bp }) => a == b && ap == bp,
+            (Self::Reshape { x: a, shape: as_, .. }, Self::Reshape { x: b, shape: bs, .. }) => a == b && as_ == bs,
+            (Self::Pad { x: a, axis: aa, lp: al, rp: ar }, Self::Pad { x: b, axis: ba, lp: bl, rp: br }) => {
+                a == b && aa == ba && al == bl && ar == br
+            }
             (Self::Flip { x: a, axes: aa }, Self::Flip { x: b, axes: ba }) => a == b && aa == ba,
             (Self::Reduce { x: a, rop: ar, axes: aa }, Self::Reduce { x: b, rop: br, axes: ba }) => {
                 a == b && ar == br && aa == ba
@@ -222,15 +230,21 @@ impl std::hash::Hash for Node {
                 x.hash(state);
                 axes.hash(state);
             }
-            Self::Reshape { x, shape } => {
+            Self::Reshape { x, shape, .. } => {
                 4u8.hash(state);
                 x.hash(state);
                 shape.hash(state);
             }
-            Self::PadZeros { x, padding } => {
+            Self::Pad { x, axis, lp, rp } => {
                 5u8.hash(state);
                 x.hash(state);
-                padding.hash(state);
+                axis.hash(state);
+                lp.hash(state);
+                rp.hash(state);
+            }
+            Self::Stack { ops } => {
+                13u8.hash(state);
+                ops.hash(state);
             }
             Self::Flip { x, axes } => {
                 12u8.hash(state);
@@ -359,12 +373,13 @@ impl Node {
     fn class_params(&self) -> Vec<ClassId> {
         match self {
             Self::Const(_) | Self::Leaf { .. } => vec![],
-            Self::Expand { x, .. } => vec![*x],
+            Self::Expand { x, shape } => vec![*x, *shape],
             Self::Permute { x, .. } => vec![*x],
-            Self::Reshape { x, .. } => vec![*x],
-            Self::PadZeros { x, .. } => vec![*x],
-            Self::Narrow { x, .. } => vec![*x],
+            Self::Reshape { x, shape, .. } => vec![*x, *shape],
+            Self::Pad { x, lp, rp, .. } => vec![*x, *lp, *rp],
+            Self::Narrow { x, axis: _, start, len } => vec![*x, *start, *len],
             Self::Flip { x, .. } => vec![*x],
+            Self::Stack { ops } => ops.to_vec(),
             Self::Reduce { x, .. } => vec![*x],
             Self::Cast { x, .. } => vec![*x],
             Self::Unary { x, .. } => vec![*x],
@@ -412,7 +427,7 @@ impl Graph {
                     Node::Expand { x, .. }
                     | Node::Permute { x, .. }
                     | Node::Reshape { x, .. }
-                    | Node::PadZeros { x, .. }
+                    | Node::Pad { x, .. }
                     | Node::Flip { x, .. }
                     | Node::Narrow { x, .. }
                     | Node::ToDevice { x, .. }
@@ -588,10 +603,11 @@ impl Graph {
                     Node::Kernel { program_id, time, .. } => format!("Kernel prog={:?} time={}", program_id, time),
                     Node::Expand { .. } => "Expand".into(),
                     Node::Permute { axes, .. } => format!("Permute {:?}", axes),
-                    Node::Reshape { shape, .. } => format!("Reshape {shape:?}"),
-                    Node::PadZeros { padding, .. } => format!("Pad {:?}", padding),
+                    Node::Reshape { shape, .. } => format!("Reshape shape={shape:?}"),
+                    Node::Pad { axis, lp, rp, .. } => format!("Pad axis={axis:?} lp={lp:?} rp={rp:?}"),
                     Node::Narrow { axis, start, len, x } => format!("Narrow {x:?} axis={axis:?} start={start:?} len={len:?}"),
                     Node::Flip { axes, .. } => format!("Flip {:?}", axes),
+                    Node::Stack { ops } => format!("Stack {:?}", ops),
                     Node::ToDevice { device, time, .. } => format!("ToDevice {:?} time={}", device, time),
                     Node::Contiguous { .. } => "Contiguous".into(),
                     Node::Const(v) => format!("Const {:?}", v),
@@ -1047,7 +1063,7 @@ impl Graph {
             | Node::Cast { x, .. }
             | Node::Permute { x, .. }
             | Node::Reshape { x, .. }
-            | Node::PadZeros { x, .. }
+            | Node::Pad { x, .. }
             | Node::Flip { x, .. }
             | Node::Narrow { x, .. }
             | Node::Reduce { x, .. }
@@ -1056,6 +1072,7 @@ impl Graph {
             | Node::ToDevice { x, .. }
             | Node::Contiguous { x }
             | Node::Binary { x, .. } => self.shape(*x),
+            Node::Stack { .. } => &[],
             _ => todo!(),
         }
     }
@@ -1067,10 +1084,11 @@ impl Graph {
             Node::Cast { dtype, .. } => *dtype,
             Node::Assign { dst, .. } => self.dtype(*dst),
             Node::Kernel { outputs, .. } => self.dtype(outputs[0]),
+            Node::Stack { ops } => self.dtype(ops[0]),
             Node::Expand { x, .. }
             | Node::Permute { x, .. }
             | Node::Reshape { x, .. }
-            | Node::PadZeros { x, .. }
+            | Node::Pad { x, .. }
             | Node::Flip { x, .. }
             | Node::Narrow { x, .. }
             | Node::Reduce { x, .. }
@@ -1206,6 +1224,11 @@ impl Runtime {
                         let (_, class_id) = self.push_node(graph_id, Node::Cast { x: x_class, dtype });
                         class_id
                     }
+                    Op::Stack { ref ops } => {
+                        let ops: Box<[ClassId]> = ops.iter().map(|o| op_to_class[o]).collect();
+                        let (_, class_id) = self.push_node(graph_id, Node::Stack { ops });
+                        class_id
+                    }
                     Op::Reduce { x, rop, n_axes } => {
                         let x_class = op_to_class[&x];
                         let rank = self.graphs[graph_id].rank(x_class);
@@ -1218,22 +1241,14 @@ impl Runtime {
                         let x_class = op_to_class[&x];
                         let in_shape = self.graphs[graph_id].shape(x_class);
                         match mop.as_ref() {
-                            MoveOp::Reshape { shape, .. } => {
-                                let mut new_shape = Vec::new();
-                                for cid in shape {
-                                    new_shape.push(op_to_class[&cid]);
-                                }
-                                let (_, class_id) = self.push_node(graph_id, Node::Reshape { x: x_class, shape: new_shape });
+                            MoveOp::Reshape { shape, input_rank } => {
+                                let shape = op_to_class[&shape];
+                                let (_, class_id) = self.push_node(graph_id, Node::Reshape { x: x_class, shape, input_rank: *input_rank });
                                 class_id
                             }
                             MoveOp::Expand { shape } => {
-                                debug_assert!(
-                                    shape.len() >= in_shape.len(),
-                                    "Expand: output rank {} < input rank {}",
-                                    shape.len(),
-                                    in_shape.len()
-                                );
-                                let (_, class_id) = self.push_node(graph_id, Node::Expand { x: x_class, shape: shape.clone() });
+                                let shape = op_to_class[&shape];
+                                let (_, class_id) = self.push_node(graph_id, Node::Expand { x: x_class, shape });
                                 class_id
                             }
                             MoveOp::Permute { axes } => {
@@ -1257,21 +1272,17 @@ impl Runtime {
                                 let (_, class_id) = self.push_node(graph_id, Node::Permute { x: x_class, axes });
                                 class_id
                             }
-                            MoveOp::Pad { padding } => {
-                                debug_assert_eq!(
-                                    padding.len(),
-                                    in_shape.len(),
-                                    "Pad: padding length {} != input rank {} (shape {:?})",
-                                    padding.len(),
-                                    in_shape.len(),
-                                    in_shape
-                                );
-                                let padding = padding.clone().into();
-                                let (_, class_id) = self.push_node(graph_id, Node::PadZeros { x: x_class, padding });
+                            MoveOp::Pad { axis, lp, rp } => {
+                                let lp = op_to_class[&lp];
+                                let rp = op_to_class[&rp];
+                                let (_, class_id) = self.push_node(graph_id, Node::Pad { x: x_class, axis: *axis, lp, rp });
                                 class_id
                             }
-                            MoveOp::Narrow { .. } => {
-                                todo!()
+                            MoveOp::Narrow { axis, start, len } => {
+                                let start = op_to_class[&start];
+                                let len = op_to_class[&len];
+                                let (_, class_id) = self.push_node(graph_id, Node::Narrow { x: x_class, axis: *axis, start, len });
+                                class_id
                             }
                             MoveOp::Flip { axes } => {
                                 debug_assert!(
@@ -1581,19 +1592,8 @@ impl Runtime {
                     out_shape
                 );*/
             }
-            Node::Expand { x, ref shape } => {
-                let in_shape = self.graphs[graph_id].shape(x);
-                assert!(
-                    in_shape.len() <= shape.len(),
-                    "Expand: input rank {} > output rank {}: {:?} -> {:?}",
-                    in_shape.len(),
-                    shape.len(),
-                    in_shape,
-                    shape
-                );
-                for (old, new) in in_shape.iter().copied().rev().zip(shape.iter().copied().rev()) {
-                    assert!(old == new || old == 1, "Expand: incompatible dims: {old} vs {new} in {:?} -> {:?}", in_shape, shape);
-                }
+            Node::Expand { .. } => {
+                /* shape dims not yet resolved (Stack). Re-enable once shape() resolves Stack. */
             }
             Node::Reduce { x, ref axes, .. } => {
                 let in_shape = self.graphs[graph_id].shape(x);
@@ -1607,13 +1607,12 @@ impl Runtime {
                     );
                 }
             }
-            Node::PadZeros { x, ref padding } => {
+            Node::Pad { x, axis, .. } => {
                 let in_shape = self.graphs[graph_id].shape(x);
-                assert_eq!(
-                    padding.len(),
-                    in_shape.len(),
-                    "PadZeros: padding length {} != input rank {} (shape {:?})",
-                    padding.len(),
+                assert!(
+                    axis < in_shape.len(),
+                    "Pad: axis {} out of range for input rank {} (shape {:?})",
+                    axis,
                     in_shape.len(),
                     in_shape
                 );
