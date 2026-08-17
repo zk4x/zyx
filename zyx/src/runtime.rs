@@ -748,7 +748,6 @@ impl Runtime {
         println!("runtime::reduce(x={x}, axes={axes:?}, rop={rop:?})");
         let shape = self.shape(x).to_vec();
         axes.sort_unstable();
-        let reduce_shape = crate::shape::reduce(&shape, &axes);
 
         if self.is_graph(x) {
             let (class_id, graph_id) = self.graph_ids(x);
@@ -760,15 +759,20 @@ impl Runtime {
         } else {
             // Reduce one axis at a time, permuting each to be last. Reduce the
             // highest axis first so lower indices stay valid as the rank shrinks.
+            // Track the running shape explicitly (intermediate reduce outputs
+            // don't get a `shapes` entry until the loop ends).
             let mut cur = x;
-            let rank0 = shape.len();
+            let mut cur_shape = shape;
+            let rank0 = cur_shape.len();
             let n_axes = axes.len();
             axes.sort_unstable_by(|a, b| b.cmp(a));
             for axis in axes {
-                let rank = self.shape(cur).len();
+                let rank = cur_shape.len();
                 let permute_axes: Vec<UAxis> =
                     (0..rank as UAxis).filter(|&i| i != axis).chain([axis]).collect();
-                cur = self.permute(cur, permute_axes);
+                cur = self.permute(cur, permute_axes.clone());
+                let permuted_shape = crate::shape::permute(&cur_shape, &permute_axes);
+                let out_shape: Vec<Dim> = permuted_shape[..permuted_shape.len() - 1].to_vec();
 
                 let (kid, op_id) = self.duplicate_or_store(cur, false)?;
                 let reduce_axis = self.kernels[kid].kernel.reduce_shape_ids(op_id);
@@ -785,7 +789,9 @@ impl Runtime {
 
                 debug_assert_eq!(self.kernels[kid].outputs.len(), 0, "input into reduce must have empty outputs");
                 self.kernels[kid].outputs.insert(tid);
+                self.shapes.insert(tid, out_shape.clone());
                 cur = tid;
+                cur_shape = out_shape;
             }
 
             if rank0 == n_axes {
@@ -793,11 +799,12 @@ impl Runtime {
                 let one = self.kernels[kid].kernel.const_idx(1);
                 let op_id = self.kernels[kid].kernel.reshape(op_id, one, 0);
                 self.tensors[cur].op_id = op_id;
+                cur_shape = vec![1];
             }
 
             #[cfg(feature = "debug_tensor_op")]
             println!("  -> tid={cur}, op_id={:?}", self.tensors[cur].op_id);
-            self.shapes.insert(cur, reduce_shape);
+            self.shapes.insert(cur, cur_shape);
             Ok(cur)
         }
     }

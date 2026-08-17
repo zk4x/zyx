@@ -399,7 +399,19 @@ impl Kernel {
                     views.insert(dst, view);
                 }
                 Op::Reduce { x, rop, reduce_axis } => {
-                    todo!()
+                    // Build the reduce input x's view with all dims: the non-reduced
+                    // dims come from the reduce output's view (set by the Store
+                    // handler), and the reduced (last) dim is a freshly-opened loop
+                    // over `reduce_axis`. The reduce's `reduce_axis` is repointed at
+                    // that loop so the loop gets ordered before the reduce's input
+                    // computation in Phase 2 (outer loops before inner ones).
+                    let out_view = views.remove(&op_id).unwrap();
+                    let loop_id = self.insert_before(anchor, Op::Loop { len: reduce_axis });
+                    let zero = self.insert_const_idx_before(anchor, 0u32);
+                    let mut view = out_view;
+                    view.push(SDim::new(loop_id, zero, zero, reduce_axis));
+                    views.insert(x, view);
+                    self.ops[op_id].op = Op::Reduce { x, rop, reduce_axis: loop_id };
                     // Collect all transitive dependencies of the reduce input and the
                     // accumulator dtype. The loop that wraps the reduction is opened at
                     // the soonest dependency that appears in the graph.
@@ -761,7 +773,7 @@ impl Kernel {
                     } else if visited.insert(op) {
                         stack.push((op, true));
                         let deps: Vec<OpId> = self.ops[op].op.parameters().filter(|&p| !p.is_null()).collect();
-                        for dep in deps.into_iter().rev() {
+                        for dep in deps {
                             if !visited.contains(&dep) {
                                 stack.push((dep, false));
                             }
@@ -809,9 +821,51 @@ impl Kernel {
             }
         }
 
-        // Phase 3: emit loops for reductions (reduce -> Op::Loop / Op::EndLoop
-        // plus the accumulator load/store). Not implemented yet: `Reduce` is
-        // still `todo!()` in Phase 1. Runs after the ordering in Phase 2.
+        // Phase 3: lower reductions. Phase 1 opened each reduce's loop (and
+        // repointed its `reduce_axis` at that loop), and Phase 2 ordered the
+        // loops outer-first. Here we emit each reduce's register accumulator
+        // (initialized before the loop, folded inside it), close the loop with
+        // an `EndLoop`, and replace the reduce with a load of the accumulator.
+        let reduce_ids: Vec<OpId> = {
+            let mut v = Vec::new();
+            let mut op_id = self.head;
+            while !op_id.is_null() {
+                if matches!(self.ops[op_id].op, Op::Reduce { .. }) {
+                    v.push(op_id);
+                }
+                op_id = self.next_op(op_id);
+            }
+            v
+        };
+        for op_id in reduce_ids {
+            let Op::Reduce { x, rop, reduce_axis } = self.ops[op_id].op else {
+                unreachable!()
+            };
+            let loop_id = reduce_axis;
+            let acc_dtype = self.dtype(x);
+            let zero = self.insert_const_idx_before(loop_id, 0u32);
+            let acc_init = self.insert_before(
+                loop_id,
+                Op::Const(match rop {
+                    BOp::Add => acc_dtype.zero_constant(),
+                    BOp::Max => acc_dtype.min_constant(),
+                    BOp::Mul => acc_dtype.one_constant(),
+                    _ => unreachable!(),
+                }),
+            );
+            let acc = self.insert_before(
+                loop_id,
+                Op::Storage { dtype: acc_dtype, scope: MemScope::Register, len: 1 },
+            );
+            self.insert_before(loop_id, Op::Store { dst: acc, src: acc_init, index: zero, layout: MemLayout::Scalar });
+
+            // Accumulate inside the loop, then close it, then read the result.
+            let load_acc = self.insert_before(op_id, Op::Load { src: acc, index: zero, layout: MemLayout::Scalar });
+            let bin_acc = self.insert_before(op_id, Op::Binary { x, y: load_acc, bop: rop });
+            self.insert_before(op_id, Op::Store { dst: acc, src: bin_acc, index: zero, layout: MemLayout::Scalar });
+            self.insert_before(op_id, Op::EndLoop);
+            self.ops[op_id].op = Op::Load { src: acc, index: zero, layout: MemLayout::Scalar };
+        }
         //
         // The move handlers may leave dead constants (e.g. unused `one`/`total`
         // scaffold) and duplicate arithmetic behind; CSE and DCE clean those up
