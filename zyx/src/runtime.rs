@@ -950,6 +950,11 @@ impl Runtime {
             let force_store = self.kernels[kernel_id].kernel.is_preceded_by_compute(op_id);
             let (kernel_id, op_id) = self.duplicate_or_store(x, force_store)?;
 
+            debug_assert_eq!(
+                self.kernels[kernel_id].outputs.len(),
+                0,
+                "input into expand must have empty outputs before the shape kernel is merged"
+            );
             let (mut skid, mut shape_op) = self.eager_ids(shape);
             if skid != kernel_id {
                 if !self.kernels[skid].stores.is_empty() {
@@ -972,7 +977,7 @@ impl Runtime {
                 rc: 1,
             });
 
-            debug_assert_eq!(self.kernels[kernel_id].outputs.len(), 0, "input into expand must have empty outputs");
+            debug_assert_eq!(self.kernels[kernel_id].outputs.contains(&tid), false);
             self.kernels[kernel_id].outputs.insert(tid);
 
             #[cfg(feature = "debug_tensor_op")]
@@ -2089,14 +2094,6 @@ impl Runtime {
 
         // Compile and launch (caches in kernel_map / programs)
         let (flop, read, write) = kernel.flop_mem_rw();
-        let output_shape: Vec<Dim> = self.shape(stores[0]).to_vec();
-        #[cfg(debug_assertions)]
-        debug_assert!(
-            stores.iter().all(|&tid| self.shape(tid) == output_shape.as_slice()),
-            "all stores in a kernel must have the same shape: first {:?}, got {:?}",
-            output_shape,
-            stores.iter().map(|&tid| self.shape(tid)).collect::<Vec<_>>()
-        );
         let (dev_prog, _timing) = self.get_or_autotune(kernel, pool_id, flop, read, write, &buffers)?;
 
         let event = self.devices[dev_id].launch(dev_prog, &mut self.pools[pool_id], &buffers, event_wait_list)?;

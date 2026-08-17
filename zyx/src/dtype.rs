@@ -381,6 +381,14 @@ impl Constant {
                     Self::U32(idx as u32)
                 }
             }
+            DType::I64 => {
+                let idx: i64 = unsafe { t(&idx) };
+                if IDX_T == DType::U64 {
+                    Self::U64((idx as u64).to_le_bytes())
+                } else {
+                    Self::U32(idx as u32)
+                }
+            }
             x => unreachable!("{x}"),
         }
     }

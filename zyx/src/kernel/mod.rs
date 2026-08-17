@@ -728,12 +728,10 @@ impl Kernel {
                 Op::Move { x, mop } => match mop.as_ref() {
                     MoveOp::Reshape { shape, .. } => Info { shape: vec![1], flops: 0, mem_read: 0, mem_write: 0 },
                     MoveOp::Permute { .. } => Info { shape: stack[x].shape.clone(), flops: 0, mem_read: 0, mem_write: 0 },
-                    MoveOp::Pad { .. } => todo!(),
-                    MoveOp::Expand { .. } => Info { shape: todo!(), flops: 0, mem_read: 0, mem_write: 0 },
+                    MoveOp::Pad { .. } => Info { shape: stack[x].shape.clone(), flops: 0, mem_read: 0, mem_write: 0 },
+                    MoveOp::Expand { .. } => Info { shape: stack[x].shape.clone(), flops: 0, mem_read: 0, mem_write: 0 },
                     MoveOp::Flip { .. } => Info { shape: stack[x].shape.clone(), flops: 0, mem_read: 0, mem_write: 0 },
-                    MoveOp::Narrow { axis, len, .. } => {
-                        todo!()
-                    }
+                    MoveOp::Narrow { .. } => Info { shape: stack[x].shape.clone(), flops: 0, mem_read: 0, mem_write: 0 },
                 },
                 Op::Reduce { x, .. } => {
                     // TODO: track real shapes; stack shapes are approximate

@@ -179,16 +179,6 @@ pub fn permute<T: Clone>(shape: &[T], axes: &[UAxis]) -> Vec<T> {
     axes.iter().map(|a| shape[*a].clone()).collect()
 }
 
-pub fn reduce(shape: &[Dim], axes: &[UAxis]) -> Vec<Dim> {
-    let res: Vec<_> = shape
-        .iter()
-        .copied()
-        .enumerate()
-        .filter_map(|(i, d)| if axes.contains(&(i as UAxis)) { None } else { Some(d) })
-        .collect();
-    if res.is_empty() { vec![1] } else { res }
-}
-
 pub fn pad(shape: &mut [Dim], padding: &[(i64, i64)]) {
     let mut i = 0;
     for d in shape.iter_mut() {

@@ -569,32 +569,25 @@ impl Kernel {
                             views.insert(x, view);
                         }
                         MoveOp::Expand { shape } => {
-                            todo!()
-                            /*let x_shape = self.shape(x);
-                            let shape = shape.clone();
-                            let view = &views[&op_id];
-                            let mut x_strides = vec![1; x_shape.len()];
-                            let mut st = 1;
-                            for a in (0..x_shape.len()).rev() {
-                                x_strides[a] = st;
-                                st *= x_shape[a];
-                            }
-                            let zero = self.insert_const_idx_before(anchor, 0);
+                            let x_shape = self.shape(x);
+                            let shape = self.shape(*shape);
+                            let view = views[&op_id].clone();
+                            let zero = self.insert_const_idx_before(anchor, 0u32);
+                            let one = self.insert_const_idx_before(anchor, 1u32);
                             // New leading axes are prepended broadcasts; the input axes
-                            // align to the tail of the output shape.
+                            // align to the tail of the output shape. A broadcast input
+                            // axis reads a single constant element.
                             let offset = shape.len() - x_shape.len();
-                            let view = (0..x_shape.len())
+                            let view: Vec<SDim> = (0..x_shape.len())
                                 .map(|a| {
-                                    let idx = view[offset + a].0;
-                                    let stride = if x_shape[a] != shape[offset + a] {
-                                        zero
+                                    if x_shape[a] == shape[offset + a] {
+                                        view[offset + a]
                                     } else {
-                                        self.insert_const_idx_before(anchor, x_strides[a])
-                                    };
-                                    (idx, stride, view[offset + a].2, view[offset + a].3, view[offset + a].4)
+                                        SDim::new(zero, zero, zero, one)
+                                    }
                                 })
                                 .collect();
-                            views.insert(x, view);*/
+                            views.insert(x, view);
                         }
                         MoveOp::Permute { axes } => {
                             // output[a] reads input[axes[a]]. Input axis j is
@@ -612,80 +605,64 @@ impl Kernel {
                             views.insert(x, view);
                         }
                         MoveOp::Flip { axes } => {
-                            todo!()
-                            /*let axes = axes.clone();
-                            let x_shape = self.shape(x);
-                            let view = &views[&op_id];
-                            let zero = self.insert_const_idx_before(anchor, 0u32);
+                            let axes = axes.clone();
+                            let view = views[&op_id].clone();
                             let one = self.insert_const_idx_before(anchor, 1u32);
-                            let view = (0..x_shape.len())
-                                .map(|a| {
-                                    let (idx, stride, lp_id, rp_id, len_id) = view[a];
-                                    if axes.contains(&(a as UAxis)) {
-                                        // Reverse the axis: the input coordinate is
-                                        // `extent - 1 - out_idx`. The extent is the
-                                        // coordinate range of the padded axis.
-                                        let len_m1 = self.insert_before(anchor, Op::Binary { x: len_id, y: one, bop: BOp::Sub });
-                                        let idx = self.insert_before(anchor, Op::Binary { x: len_m1, y: idx, bop: BOp::Sub });
-                                        // Padding swaps sides under a flip.
-                                        (idx, stride, rp_id, lp_id, len_id)
-                                    } else {
-                                        (idx, stride, lp_id, rp_id, len_id)
-                                    }
-                                })
-                                .collect();
-                            views.insert(x, view);*/
-                        }
-                        MoveOp::Pad { .. } => {
-                            todo!()
-                            /*let x_shape = self.shape(x);
-                            let padding = padding.clone();
-                            let view = &views[&op_id];
-                            let mut x_strides = vec![1; x_shape.len()];
-                            let mut st = 1;
-                            for a in (0..x_shape.len()).rev() {
-                                x_strides[a] = st;
-                                st *= x_shape[a];
+                            let mut new_view = Vec::with_capacity(view.len());
+                            for (a, d) in view.into_iter().enumerate() {
+                                if axes.contains(&(a as UAxis)) {
+                                    // Reverse the axis: input coord = len - 1 - out_idx.
+                                    let len_m1 = self.insert_before(anchor, Op::Binary { x: d.len, y: one, bop: BOp::Sub });
+                                    let idx = self.insert_before(anchor, Op::Binary { x: len_m1, y: d.idx, bop: BOp::Sub });
+                                    // Padding swaps sides under a flip.
+                                    new_view.push(SDim::new(idx, d.rp, d.lp, d.len));
+                                } else {
+                                    new_view.push(d);
+                                }
                             }
-                            let zero = self.insert_const_idx_before(anchor, 0u32);
-                            let view = (0..x_shape.len())
-                                .map(|a| {
-                                    let idx = view[a].0;
-                                    let lp = padding[a].0;
-                                    let rp = padding[a].1;
-                                    let stride = self.insert_const_idx_before(anchor, x_strides[a]);
-                                    // Negative left padding is a slice offset:
-                                    // input index = output index - lp.
-                                    let idx = if lp < 0 {
-                                        let off = self.insert_const_idx_before(anchor, (-lp) as u64);
-                                        self.insert_before(anchor, Op::Binary { x: idx, y: off, bop: BOp::Add })
-                                    } else {
-                                        idx
-                                    };
-                                    // The input-view index ranges over the padded
-                                    // coordinates (length x_shape + lp + rp), which is
-                                    // this axis' extent for pad-condition bounds -- NOT
-                                    // the consumer's view extent (that is the slice
-                                    // output length when the pad is a slice).
-                                    let len_id =
-                                        self.insert_const_idx_before(anchor, ((x_shape[a] as i64) + lp + rp).max(0) as u64);
-                                    let lp_id = if lp > 0 {
-                                        self.insert_const_idx_before(anchor, lp as u64)
-                                    } else {
-                                        zero
-                                    };
-                                    let rp_id = if rp > 0 {
-                                        self.insert_const_idx_before(anchor, rp as u64)
-                                    } else {
-                                        zero
-                                    };
-                                    (idx, stride, lp_id, rp_id, len_id)
-                                })
-                                .collect();
-                            views.insert(x, view);*/
+                            views.insert(x, new_view);
                         }
-                        &MoveOp::Narrow { .. } => {
-                            todo!()
+                        MoveOp::Pad { axis, lp, rp } => {
+                            let axis = *axis;
+                            let lp = *lp;
+                            let rp = *rp;
+                            let x_shape = self.shape(x);
+                            let view = views[&op_id].clone();
+                            let zero = self.insert_const_idx_before(anchor, 0u32);
+                            let lp_val = pad_value(self, lp);
+                            let rp_val = pad_value(self, rp);
+                            let mut new_view = Vec::with_capacity(view.len());
+                            for (a, d) in view.into_iter().enumerate() {
+                                if a as UAxis == axis {
+                                    // The input-view index ranges over the padded
+                                    // coordinates (length x_shape + lp + rp); the pad
+                                    // condition zeros everything outside the interior.
+                                    let len = self.insert_const_idx_before(anchor, (x_shape[a] + lp_val + rp_val) as u64);
+                                    let lp_id = if lp_val > 0 { lp } else { zero };
+                                    let rp_id = if rp_val > 0 { rp } else { zero };
+                                    new_view.push(SDim::new(d.idx, lp_id, rp_id, len));
+                                } else {
+                                    new_view.push(d);
+                                }
+                            }
+                            views.insert(x, new_view);
+                        }
+                        &MoveOp::Narrow { axis, start, .. } => {
+                            let x_shape = self.shape(x);
+                            let view = views[&op_id].clone();
+                            // Narrow slices one axis: the input coordinate along the
+                            // narrowed axis is `start + out_idx`. Padding is unchanged
+                            // (inherited from the parent's view), only the offset shifts.
+                            let mut new_view = Vec::with_capacity(view.len());
+                            for (a, d) in view.into_iter().enumerate() {
+                                if a as UAxis == axis {
+                                    let idx = self.insert_before(anchor, Op::Binary { x: d.idx, y: start, bop: BOp::Add });
+                                    new_view.push(SDim::new(idx, d.lp, d.rp, d.len));
+                                } else {
+                                    new_view.push(d);
+                                }
+                            }
+                            views.insert(x, new_view);
                         }
                     }
                     self.remap(op_id, x);

@@ -8,7 +8,6 @@ use crate::{
     kernel::{BOp, Kernel, MemLayout, Op, OpId, UOp},
     shape::Dim,
     slab::SlabId,
-    types::TinyVec,
 };
 
 #[derive(Debug)]

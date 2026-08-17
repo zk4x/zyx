@@ -128,7 +128,7 @@ impl Kernel {
                 }
                 Op::Param { dtype, kind, shape } => {
                     dtypes.insert(op_id, dtype);
-                    println!("{indent}{red}r{out_id}{reset}{grey}: {dtype}{reset} = {yellow}param{reset} shape=r{shape} {kind}");
+                    println!("{indent}{red}r{out_id}{reset}{grey}: {dtype}{reset} = {yellow}param{reset} {kind} shape=r{shape}");
                 }
                 Op::Storage { dtype, scope, len } => {
                     dtypes.insert(op_id, dtype);
@@ -303,9 +303,9 @@ impl Kernel {
                     dtypes.insert(op_id, dtype);
                     let ops: Vec<OpId> = ops.iter().map(|x| id_map.get(x).copied().unwrap_or(OpId::NULL)).collect();
                     if let Some((lb, ub)) = bounds.get(&op_id) {
-                        println!("{indent}r{out_id}{grey}: {dtype}{reset} = {orange}vec{reset}{ops:?}    // {lb}..={ub}");
+                        println!("{indent}r{out_id}{grey}: {dtype}{reset} = {orange}stack{reset}{ops:?}    // {lb}..={ub}");
                     } else {
-                        println!("{indent}r{out_id}{grey}: {dtype}{reset} = {orange}vec{reset}{ops:?}");
+                        println!("{indent}r{out_id}{grey}: {dtype}{reset} = {orange}stack{reset}{ops:?}");
                     }
                 }
                 Op::Devectorize { vec, idx } => {

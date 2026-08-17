@@ -990,6 +990,7 @@ impl Tensor {
         let shape = RT.lock().stack(&ids)?;
         drop(tensors); // we need to keep tensors alive until after stack is called
         let id = RT.lock().expand(self.id, shape)?;
+        RT.lock().release(shape);
         Ok(Tensor { id })
     }
 
@@ -1021,6 +1022,7 @@ impl Tensor {
         let ids: Vec<TensorId> = shape.iter().map(|&d| Tensor::from(d).id).collect();
         let shape = RT.lock().stack(&ids)?;
         let id = RT.lock().expand(self.id, shape)?;
+        RT.lock().release(shape);
         Ok(Tensor { id })
     }
 
