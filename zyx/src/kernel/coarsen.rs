@@ -125,6 +125,7 @@ impl Kernel {
             && matches!(
                 self.ops[op_id].op,
                 Op::Storage { scope: MemScope::Global | MemScope::Local | MemScope::Variable, .. }
+                    | Op::Param { .. }
                     | Op::Index { .. }
                     | Op::Const(_)
             )

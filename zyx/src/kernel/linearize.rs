@@ -75,6 +75,59 @@ impl Kernel {
             }
         }
 
+        // Phase 0: auto-cast mixed-dtype constants in binary ops so the emitted
+        // arithmetic is well-typed. For every Binary in list order: if both
+        // operands are constants of differing dtype, cast each to their
+        // `least_upper_dtype`; if exactly one operand is a constant, cast that
+        // constant to the other (non-const) operand's dtype. Runs before Phase 1
+        // so the index arithmetic produced by the move handlers is type-correct.
+        {
+            let binaries: Vec<OpId> = {
+                let mut v = Vec::new();
+                let mut scan = self.head;
+                while !scan.is_null() {
+                    v.push(scan);
+                    scan = self.next_op(scan);
+                }
+                v
+            };
+            for bin in binaries {
+                let Op::Binary { x, y, .. } = self.ops[bin].op else {
+                    continue;
+                };
+                let dx = self.dtype(x);
+                let dy = self.dtype(y);
+                if dx == dy {
+                    continue;
+                }
+                let cx = matches!(self.ops[x].op, Op::Const(_));
+                let cy = matches!(self.ops[y].op, Op::Const(_));
+                let mut rewrites: Vec<(OpId, OpId)> = Vec::new();
+                match (cx, cy) {
+                    (true, true) => {
+                        let lu = dx.least_upper_dtype(dy);
+                        if dx != lu {
+                            rewrites.push((x, self.insert_before(bin, Op::Cast { x, dtype: lu })));
+                        }
+                        if dy != lu {
+                            rewrites.push((y, self.insert_before(bin, Op::Cast { x: y, dtype: lu })));
+                        }
+                    }
+                    (true, false) => {
+                        rewrites.push((x, self.insert_before(bin, Op::Cast { x, dtype: dy })));
+                    }
+                    (false, true) => {
+                        rewrites.push((y, self.insert_before(bin, Op::Cast { x: y, dtype: dx })));
+                    }
+                    (false, false) => {}
+                }
+                if !rewrites.is_empty() {
+                    let map: Map<OpId, OpId> = rewrites.into_iter().collect();
+                    self.ops[bin].op.remap_params(&map);
+                }
+            }
+        }
+
         /*debug_assert!({
             let mut live: Set<OpId> = Set::default();
             let mut stack: Vec<OpId> = Vec::new();
@@ -461,12 +514,19 @@ impl Kernel {
                             let zero = self.insert_const_idx_before(op_id, 0u32);
                             let one = self.insert_const_idx_before(op_id, 1u32);
                             let mut base = zero;
-                            for &(idx, drift, _, _, _) in &out_view {
-                                base = self.insert_before(op_id, Op::Mad { x: idx, y: drift, z: base });
+                            for &(idx, st, _, _, _) in &out_view {
+                                base = self.insert_before(op_id, Op::Mad { x: idx, y: st, z: base });
                             }
                             // The flat axis length is the output element count (== input count).
+                            // Cast each shape dim to IDX_T so the bounds arithmetic matches the
+                            // u32 index math (the shape consts themselves may be i32).
                             let mut total = one;
                             for &len in &shape {
+                                let len = if self.dtype(len) != IDX_T {
+                                    self.insert_before(op_id, Op::Cast { x: len, dtype: IDX_T })
+                                } else {
+                                    len
+                                };
                                 total = self.insert_before(op_id, Op::Binary { x: len, y: total, bop: BOp::Mul });
                             }
                             let mut view = Vec::with_capacity(input_rank);
@@ -641,20 +701,34 @@ impl Kernel {
             }
         }
 
-        // Phase 2: topologically order the emitted index arithmetic so that
-        // every op's dependencies precede it. Linearize produces loop-free
-        // dataflow at this point (reduce -> loop emission happens in Phase 3),
-        // so a plain dependency sort is valid: post-order DFS pushes each op
-        // only after all of its parameters have been pushed.
+        // Phase 2: topologically order the emitted index arithmetic so that every
+        // op's dependencies precede it. All Param defines are placed first, in
+        // their existing relative order, so buffers are declared before any
+        // use; the remaining (non-param) ops are ordered with a post-order DFS
+        // (deps before users). Linearize produces loop-free dataflow here
+        // (reduce -> loop emission happens in Phase 3), so a plain dependency
+        // sort is valid.
         {
             let mut order: Vec<OpId> = Vec::new();
-            let mut visited: Set<OpId> = Set::default();
+            // 1. Params first, preserving their current relative order.
+            let mut scan = self.head;
+            while !scan.is_null() {
+                if matches!(self.ops[scan].op, Op::Param { .. }) {
+                    order.push(scan);
+                }
+                scan = self.next_op(scan);
+            }
+            let mut placed: Set<OpId> = order.iter().copied().collect();
+            // 2. Topo-sort the remaining ops (post-order DFS from each root).
             let mut roots: Vec<OpId> = Vec::new();
             let mut scan = self.head;
             while !scan.is_null() {
-                roots.push(scan);
+                if !placed.contains(&scan) {
+                    roots.push(scan);
+                }
                 scan = self.next_op(scan);
             }
+            let mut visited: Set<OpId> = placed.clone();
             for root in roots {
                 if visited.contains(&root) {
                     continue;
@@ -687,26 +761,12 @@ impl Kernel {
         // Phase 3: emit loops for reductions (reduce -> Op::Loop / Op::EndLoop
         // plus the accumulator load/store). Not implemented yet: `Reduce` is
         // still `todo!()` in Phase 1. Runs after the ordering in Phase 2.
-
-        // Put defines in the beginning
-        let head = self.head;
-        let mut op_id = head;
-        let mut first_mut_global = head;
-        while !op_id.is_null() {
-            let next = self.next_op(op_id);
-            if let Op::Param { kind, .. } = self.ops[op_id].op {
-                match kind {
-                    ParamKind::Variable | ParamKind::Global => self.move_op_before(op_id, first_mut_global),
-                    ParamKind::GlobalMut => {
-                        self.move_op_before(op_id, head);
-                        if first_mut_global == head {
-                            first_mut_global = op_id;
-                        }
-                    }
-                }
-            }
-            op_id = next;
-        }
+        //
+        // The move handlers may leave dead constants (e.g. unused `one`/`total`
+        // scaffold) and duplicate arithmetic behind; CSE and DCE clean those up
+        // now that the ops are ordered.
+        self.common_subexpression_elimination();
+        self.dead_code_elimination();
 
         // Verify the relative order of global defines is unchanged by linearize
         // (read-only defines first, then writable ones, both in original order).
