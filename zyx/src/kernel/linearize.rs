@@ -1,6 +1,8 @@
 // Copyright (C) 2025 zk4x
 // SPDX-License-Identifier: LGPL-3.0-only
 
+#![allow(unused)]
+
 //! Rangeify movement operations.
 //!
 //! Reimplements unfold_movement_ops using tinygrad's rangeify approach,
@@ -36,7 +38,23 @@
 //! buffers: pre-linearize, map from the global `Define` ops (in op order), not
 //! from a `loads` list.
 
-#![allow(unused)]
+/// A single symbolic dimension of a value's index view: the loop/group index
+/// (`idx`), row-major stride (`st`), left/right pad (`lp`/`rp`) and axis
+/// length (`len`). All are `OpId`s resolved lazily.
+#[derive(Clone, Copy)]
+pub(crate) struct SDim {
+    pub(crate) idx: OpId,
+    pub(crate) st: OpId,
+    pub(crate) lp: OpId,
+    pub(crate) rp: OpId,
+    pub(crate) len: OpId,
+}
+
+impl SDim {
+    pub(crate) fn new(idx: OpId, st: OpId, lp: OpId, rp: OpId, len: OpId) -> Self {
+        Self { idx, st, lp, rp, len }
+    }
+}
 
 use crate::{
     DType, Map, Set,
@@ -176,7 +194,7 @@ impl Kernel {
         let start = self.head;
 
         // For each op, shape and strides: (index, stride, left pad, right pad, axis length)
-        let mut views: Map<OpId, Vec<(OpId, OpId, OpId, OpId, OpId)>> = Map::default();
+        let mut views: Map<OpId, Vec<SDim>> = Map::default();
 
         // Maps a writable global define to the store that writes into it. The
         // store handler records the entry (walking dst through any moves to the
@@ -225,7 +243,11 @@ impl Kernel {
                     // view's padding condition is false (padded regions read as zero).
                     let mut pc = self.insert_before(anchor, Op::Const(Constant::Bool(true)));
                     let mut has_pad = false;
-                    for &(idx, _st, lp_id, rp_id, len_op) in &view {
+                    for d in &view {
+                        let idx = d.idx;
+                        let lp_id = d.lp;
+                        let rp_id = d.rp;
+                        let len_op = d.len;
                         let lp = pad_value(self, lp_id);
                         let rp = pad_value(self, rp_id);
                         if lp > 0 || rp > 0 {
@@ -263,12 +285,9 @@ impl Kernel {
                         let view = views.remove(&op_id).unwrap();
                         let zero = self.insert_const_idx_before(anchor, 0u32);
                         let mut write_index = zero;
-                        for (index_elem, stride, lp_id, rp_id, _len_op) in &view {
-                            // A store cannot write padding: the store covers exactly the
-                            // define's writable extent. The index subtracts the left pad
-                            // unconditionally; any residual padding is invalid.
-                            let src_idx = self.insert_before(anchor, Op::Binary { x: *index_elem, y: *lp_id, bop: BOp::Sub });
-                            write_index = self.insert_before(anchor, Op::Mad { x: src_idx, y: *stride, z: write_index });
+                        for d in &view {
+                            let src_idx = self.insert_before(anchor, Op::Binary { x: d.idx, y: d.lp, bop: BOp::Sub });
+                            write_index = self.insert_before(anchor, Op::Mad { x: src_idx, y: d.st, z: write_index });
                         }
                         match &mut self.ops[store_id].op {
                             Op::Store { index, .. } => *index = write_index,
@@ -284,11 +303,11 @@ impl Kernel {
                         // they only need the padding mask: where the view is out of
                         // bounds, the loaded value is zeroed.
                         let mut pc = self.insert_before(anchor, Op::Const(Constant::Bool(true)));
-                        for &(idx, _st, lp_id, rp_id, len_op) in &view {
-                            let len_mr = self.insert_before(anchor, Op::Binary { x: len_op, y: rp_id, bop: BOp::Sub });
-                            let t_lo = self.insert_before(anchor, Op::Binary { x: idx, y: lp_id, bop: BOp::Cmpge });
+                        for d in &view {
+                            let len_mr = self.insert_before(anchor, Op::Binary { x: d.len, y: d.rp, bop: BOp::Sub });
+                            let t_lo = self.insert_before(anchor, Op::Binary { x: d.idx, y: d.lp, bop: BOp::Cmpge });
                             pc = self.insert_before(anchor, Op::Binary { x: t_lo, y: pc, bop: BOp::And });
-                            let t_hi = self.insert_before(anchor, Op::Binary { x: idx, y: len_mr, bop: BOp::Cmplt });
+                            let t_hi = self.insert_before(anchor, Op::Binary { x: d.idx, y: len_mr, bop: BOp::Cmplt });
                             pc = self.insert_before(anchor, Op::Binary { x: t_hi, y: pc, bop: BOp::And });
                         }
                         // Insert the ro source define immediately before this op so the
@@ -314,13 +333,13 @@ impl Kernel {
                         let one = self.insert_before(anchor, Op::Const(Constant::idx(1)));
                         let mut index = zero;
                         let mut pc = self.insert_before(anchor, Op::Const(Constant::Bool(true)));
-                        for &(idx, st, lp_id, rp_id, len_op) in &view {
-                            let src_idx = self.insert_before(anchor, Op::Binary { x: idx, y: lp_id, bop: BOp::Sub });
-                            index = self.insert_before(anchor, Op::Mad { x: src_idx, y: st, z: index });
-                            let t_lo = self.insert_before(anchor, Op::Binary { x: idx, y: lp_id, bop: BOp::Cmpge });
+                        for d in &view {
+                            let src_idx = self.insert_before(anchor, Op::Binary { x: d.idx, y: d.lp, bop: BOp::Sub });
+                            index = self.insert_before(anchor, Op::Mad { x: src_idx, y: d.st, z: index });
+                            let t_lo = self.insert_before(anchor, Op::Binary { x: d.idx, y: d.lp, bop: BOp::Cmpge });
                             pc = self.insert_before(anchor, Op::Binary { x: t_lo, y: pc, bop: BOp::And });
-                            let len_mr = self.insert_before(anchor, Op::Binary { x: len_op, y: rp_id, bop: BOp::Sub });
-                            let t_hi = self.insert_before(anchor, Op::Binary { x: idx, y: len_mr, bop: BOp::Cmplt });
+                            let len_mr = self.insert_before(anchor, Op::Binary { x: d.len, y: d.rp, bop: BOp::Sub });
+                            let t_hi = self.insert_before(anchor, Op::Binary { x: d.idx, y: len_mr, bop: BOp::Cmplt });
                             pc = self.insert_before(anchor, Op::Binary { x: t_hi, y: pc, bop: BOp::And });
                         }
                         // Insert the ro source define immediately before this op so the
@@ -372,7 +391,7 @@ impl Kernel {
                         let st = suffix;
                         let lp = self.insert_before(start, Op::Const(Constant::idx(0)));
                         let rp = self.insert_before(start, Op::Const(Constant::idx(0)));
-                        view.push((idx, st, lp, rp, len));
+                        view.push(SDim::new(idx, st, lp, rp, len));
                         suffix = self.insert_before(start, Op::Binary { x: len, y: suffix, bop: BOp::Mul });
                     }
                     view.reverse();
@@ -510,8 +529,8 @@ impl Kernel {
                             let zero = self.insert_const_idx_before(op_id, 0u32);
                             let one = self.insert_const_idx_before(op_id, 1u32);
                             let mut base = zero;
-                            for &(idx, st, _, _, _) in &out_view {
-                                base = self.insert_before(op_id, Op::Mad { x: idx, y: st, z: base });
+                            for d in &out_view {
+                                base = self.insert_before(op_id, Op::Mad { x: d.idx, y: d.st, z: base });
                             }
                             // The flat axis length is the output element count (== input count).
                             // Cast each shape dim to IDX_T so the bounds arithmetic matches the
@@ -526,9 +545,9 @@ impl Kernel {
                                 total = self.insert_before(op_id, Op::Binary { x: len, y: total, bop: BOp::Mul });
                             }
                             let mut view = Vec::with_capacity(input_rank);
-                            view.push((base, one, zero, zero, total));
+                            view.push(SDim::new(base, one, zero, zero, total));
                             for _ in 1..input_rank {
-                                view.push((zero, zero, zero, zero, one));
+                                view.push(SDim::new(zero, zero, zero, zero, one));
                             }
                             views.insert(x, view);
                         }
