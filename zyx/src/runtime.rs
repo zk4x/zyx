@@ -1003,7 +1003,9 @@ impl Runtime {
         } else {
             let (kernel_id, op_id) = self.duplicate_or_store(x, false).unwrap();
             let permuted_shape = crate::shape::permute(&sh, &axes);
-            let op_id = self.kernels[kernel_id].kernel.push_back(Op::Move { x: op_id, mop: Box::new(MoveOp::Permute { axes: axes.into() }) });
+            let op_id = self.kernels[kernel_id]
+                .kernel
+                .push_back(Op::Move { x: op_id, mop: Box::new(MoveOp::Permute { axes: axes.into() }) });
             let tid = self.tensors.push(TensorData {
                 kernel_id,
                 op_id,
@@ -1722,7 +1724,8 @@ impl Runtime {
             // Invariant: a kernel must never both load and store the same tensor
             debug_assert!(!self.kernels[kid].loads.contains(&x), "kernel {kid:?} both loads and stores tid {x}");
 
-            let dst_id = self.kernels[kid].kernel.param(dtype, ParamKind::GlobalMut, todo!());
+            let store_shape_id = self.kernels[kid].kernel.generate_store_shape(op_id);
+            let dst_id = self.kernels[kid].kernel.param(dtype, ParamKind::GlobalMut, store_shape_id);
             self.kernels[kid].kernel.store(dst_id, op_id, OpId::NULL, MemLayout::Scalar);
             self.kernels[kid].stores.push(x);
             kid
@@ -1734,7 +1737,13 @@ impl Runtime {
 
         // Create load kernel so the tensor remains usable (visited must point to a live kernel)
         let mut kernel = Kernel::new(DeviceId::AUTO);
-        let load_op_id = kernel.param(dtype, ParamKind::Global, todo!());
+        let dims: Vec<OpId> = self.shape(x).iter().map(|&d| kernel.const_idx(d)).collect();
+        let load_shape = match dims.len() {
+            0 => kernel.const_idx(1),
+            1 => dims[0],
+            _ => kernel.stack(&dims),
+        };
+        let load_op_id = kernel.param(dtype, ParamKind::Global, load_shape);
         let load_kid = self.kernels.push(KernelData { outputs: Set::from_iter([x]), loads: vec![x], stores: Vec::new(), kernel });
         self.tensors[x].kernel_id = load_kid;
         self.tensors[x].op_id = load_op_id;
@@ -1798,7 +1807,8 @@ impl Runtime {
         let mut shape = Vec::with_capacity(output_shape.len());
         for &dim in output_shape {
             let op_id = if dim == 0 {
-                kernel.insert_before(kernel.head, Op::Param { dtype: IDX_T, kind: ParamKind::Variable, shape: todo!() })
+                let one = kernel.const_idx(1);
+                kernel.insert_before(kernel.head, Op::Param { dtype: IDX_T, kind: ParamKind::Variable, shape: one })
             } else {
                 kernel.insert_before(kernel.head, Op::Const(Constant::idx(dim)))
             };
@@ -1808,6 +1818,15 @@ impl Runtime {
         kernel.common_subexpression_elimination();
         kernel.dead_code_elimination();
         kernel.instruction_schedule();
+
+        // After linearization the parameter shapes are no longer meaningful;
+        // clear them so later passes (verify) don't require shape consts to be
+        // ordered before the params that reference them.
+        for node in kernel.ops.values_mut() {
+            if let Op::Param { shape, .. } = &mut node.op {
+                *shape = OpId::NULL;
+            }
+        }
 
         {
             let device = &mut self.devices[kernel.device_id];

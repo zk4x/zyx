@@ -6,6 +6,7 @@ use std::ops::RangeInclusive;
 use crate::{
     DType, Map, Set,
     kernel::{BOp, IDX_T, IdxKind, Kernel, MemScope, Op, OpId, ParamKind},
+    slab::SlabId,
     shape::Dim,
 };
 
@@ -213,7 +214,9 @@ impl Kernel {
                 Op::Param { dtype, kind, shape } => {
                     params.insert(op_id, kind);
                     dtypes.insert(op_id, dtype);
-                    check(op_id, shape, &stack);
+                    if shape != OpId::NULL {
+                        check(op_id, shape, &stack);
+                    }
                 }
                 Op::Storage { dtype, scope, len } => {
                     storages.insert(op_id, (scope, len));

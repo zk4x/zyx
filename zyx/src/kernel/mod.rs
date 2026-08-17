@@ -864,6 +864,86 @@ impl Kernel {
         panic!("shape not found for too long time");
     }
 
+    /// Builds a single shape op for the value produced by `op_id`, used to size
+    /// a store/param buffer. Returns a `Stack` over per-dimension ops, or a bare
+    /// const for a rank-1 shape. Padded/narrowed dimensions synthesize new
+    /// arithmetic ops; scalars resolve to rank-1 `[1]`.
+    pub(crate) fn generate_store_shape(&mut self, op_id: OpId) -> OpId {
+        /// Resolves a *shape* op (a `Stack`, a bare `Const` dim, or a `Param`'s
+        /// shape) into its per-dimension op ids.
+        fn shape_ids(kernel: &Kernel, mut op_id: OpId) -> Vec<OpId> {
+            for _ in 0..10000 {
+                match kernel.ops[op_id].op {
+                    Op::Const(_) => return vec![op_id],
+                    Op::Stack { ref ops } => return ops.to_vec(),
+                    Op::Param { shape, .. } => op_id = shape,
+                    ref op => todo!("shape_ids of {op:?}"),
+                }
+            }
+            panic!("shape_ids not found for too long time");
+        }
+
+        /// Resolves the shape of a *value* op into per-dimension ops, following
+        /// compute and movement ops and emitting arithmetic for padded dims.
+        fn store_shape_ids(kernel: &mut Kernel, mut op_id: OpId) -> Vec<OpId> {
+            for _ in 0..10000 {
+                match kernel.ops[op_id].op.clone() {
+                    Op::Const(_) => return vec![],
+                    Op::Param { shape, .. } => return shape_ids(kernel, shape),
+                    Op::Stack { ref ops } => return vec![kernel.const_idx(ops.len() as u32)],
+                    Op::Move { x, ref mop } => match mop.as_ref() {
+                        MoveOp::Reshape { shape, .. } | MoveOp::Expand { shape } => return shape_ids(kernel, *shape),
+                        MoveOp::Permute { axes } => return crate::shape::permute(&store_shape_ids(kernel, x), axes),
+                        MoveOp::Flip { .. } => op_id = x,
+                        MoveOp::Narrow { axis, len, .. } => {
+                            let mut dims = store_shape_ids(kernel, x);
+                            if dims.is_empty() {
+                                dims.push(kernel.const_idx(1));
+                            }
+                            dims[*axis] = *len;
+                            return dims;
+                        }
+                        MoveOp::Pad { axis, lp, rp } => {
+                            let mut dims = store_shape_ids(kernel, x);
+                            if dims.is_empty() {
+                                dims.push(kernel.const_idx(1));
+                            }
+                            let orig = dims[*axis];
+                            let sum = kernel.push_back(Op::Binary { x: orig, y: *lp, bop: BOp::Add });
+                            dims[*axis] = kernel.push_back(Op::Binary { x: sum, y: *rp, bop: BOp::Add });
+                            return dims;
+                        }
+                    },
+                    Op::Load { src: x, .. }
+                    | Op::Cast { x, .. }
+                    | Op::Unary { x, .. }
+                    | Op::Binary { x, .. }
+                    | Op::Mad { x, .. }
+                    | Op::MatmulTile { x, .. }
+                    | Op::ReduceTile { x, .. }
+                    | Op::Devectorize { vec: x, .. }
+                    | Op::TransposeTile { x }
+                    | Op::Store { src: x, .. } => op_id = x,
+                    Op::Reduce { x, n_axes, .. } => {
+                        let mut dims = store_shape_ids(kernel, x);
+                        dims.truncate(dims.len().saturating_sub(n_axes));
+                        return dims;
+                    }
+                    Op::Asm { ref ops, .. } => op_id = ops[0],
+                    ref op => todo!("store shape of {op:?}"),
+                }
+            }
+            panic!("store shape not found for too long time");
+        }
+
+        let dims = store_shape_ids(self, op_id);
+        match dims.len() {
+            0 => self.const_idx(1),
+            1 => dims[0],
+            _ => self.stack(&dims),
+        }
+    }
+
     /// Get index loop ids, dimensions and strides.
     ///
     /// Returns `loop_id` -> (dimension, stride) where NULL means unknown stride.
