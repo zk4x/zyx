@@ -813,7 +813,6 @@ impl Kernel {
             self.head = order.first().copied().unwrap_or(OpId::NULL);
             self.tail = order.last().copied().unwrap_or(OpId::NULL);
         }
-        self.debug();
 
         // Verify the relative order of global defines is unchanged by linearize
         // (read-only defines first, then writable ones, both in original order).
@@ -846,69 +845,41 @@ impl Kernel {
             }
         }
 
-        // Phase 3: lower reductions. Phase 1 opened each reduce's loop (and
-        // repointed its `reduce_axis` at that loop), and Phase 2 ordered the
-        // loops outer-first. Here we emit each reduce's register accumulator
-        // (initialized before the loop, folded inside it), close the loop with
-        // an `EndLoop`, and replace the reduce with a load of the accumulator.
-        let reduce_ids: Vec<OpId> = {
-            let mut v = Vec::new();
-            let mut op_id = self.head;
-            while !op_id.is_null() {
-                if matches!(self.ops[op_id].op, Op::Reduce { .. }) {
-                    v.push(op_id);
+        // Phase 3: move each loop immediately before its first direct user.
+        let mut loop_stack = Vec::new();
+        let mut first_users = Map::default();
+        let mut scan = self.head;
+        while !scan.is_null() {
+            let next = self.next_op(scan);
+            match self.ops[scan].op {
+                Op::Loop { .. } => loop_stack.push(scan),
+                Op::EndLoop => {}
+                _ => {
+                    if let Some(pos) =
+                        loop_stack.iter().rposition(|&loop_id| self.ops[scan].op.parameters().any(|p| p == loop_id))
+                    {
+                        let loop_id = loop_stack.remove(pos);
+                        first_users.insert(loop_id, scan);
+                    }
                 }
-                op_id = self.next_op(op_id);
             }
-            v
-        };
+            scan = next;
+        }
+        for (loop_id, first_user) in first_users {
+            self.move_op_before(loop_id, first_user);
+        }
+
+        self.debug();
+
+        // Phase 4: insert accumulators immediately before their exact loops.
+        // No loop movement occurs after this point.
+        let reduce_ids: Vec<OpId> =
+            self.iter_unordered().filter(|(_, op)| matches!(op, Op::Reduce { .. })).map(|(id, _)| id).collect();
         for op_id in reduce_ids {
             let Op::Reduce { x, rop, reduce_axis } = self.ops[op_id].op else {
                 unreachable!()
             };
             let loop_id = reduce_axis;
-
-            // Phase 1 may open the loop before all of the reduction input's
-            // independent prerequisites. Move it as late as possible without
-            // placing loop-dependent operations outside its scope.
-            let mut deps = Set::default();
-            let mut pending = vec![x];
-            while let Some(dep) = pending.pop() {
-                if deps.insert(dep) {
-                    pending.extend(self.at(dep).parameters().filter(|p| *p != loop_id && !p.is_null()));
-                }
-            }
-            let mut loop_deps = Set::default();
-            for &dep in &deps {
-                let mut closure = vec![dep];
-                let mut seen = Set::default();
-                while let Some(id) = closure.pop() {
-                    if seen.insert(id) {
-                        if id == loop_id {
-                            loop_deps.insert(dep);
-                            break;
-                        }
-                        closure.extend(self.at(id).parameters().filter(|p| !p.is_null()));
-                    }
-                }
-            }
-            let mut latest_independent = OpId::NULL;
-            let mut first_loop_dependent = OpId::NULL;
-            let mut scan = self.head;
-            while !scan.is_null() {
-                if loop_deps.contains(&scan) && first_loop_dependent.is_null() {
-                    first_loop_dependent = scan;
-                }
-                if deps.contains(&scan) && !loop_deps.contains(&scan) {
-                    latest_independent = scan;
-                }
-                scan = self.next_op(scan);
-            }
-            if !first_loop_dependent.is_null() && !latest_independent.is_null() {
-                self.move_op_before(loop_id, first_loop_dependent);
-            } else if first_loop_dependent.is_null() && !latest_independent.is_null() {
-                self.move_op_after(loop_id, latest_independent);
-            }
 
             let acc_dtype = self.dtype(x);
             let zero = self.insert_const_idx_before(loop_id, 0u32);
