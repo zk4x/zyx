@@ -2267,7 +2267,7 @@ impl Tensor {
         let tensors: Vec<Tensor> = tensors.into_iter().cloned().collect();
         let ret = Tensor::stack(&tensors)?;
         let rank = ret.rank();
-        let dim = into_axis(dim, (rank - 1) as usize)?;
+        let dim = into_axis(dim, rank as usize)?;
         if dim == 0 {
             Ok(ret)
         } else {

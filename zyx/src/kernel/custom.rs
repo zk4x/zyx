@@ -477,6 +477,21 @@ impl Kernel {
         self.push_back(Op::Cast { x, dtype })
     }
 
+    /// Branchless select: `cond ? a : b` as `a*sel + b*(1-sel)` where `sel` is
+    /// `cond` cast to `a`'s dtype. `cond` must be bool; `a` and `b` must share a
+    /// dtype (taken from `a`).
+    pub fn branchless_where(&mut self, cond: OpId, a: OpId, b: OpId) -> OpId {
+        let dtype = self.dtype(a);
+        debug_assert_eq!(self.dtype(cond), DType::Bool, "branchless_where: cond must be bool");
+        debug_assert_eq!(self.dtype(b), dtype, "branchless_where: a and b must share a dtype");
+        let sel = self.cast(cond, dtype);
+        let one = self.push_back(Op::Const(dtype.one_constant()));
+        let term_a = self.push_back(Op::Binary { x: a, y: sel, bop: BOp::Mul });
+        let not_sel = self.push_back(Op::Binary { x: one, y: sel, bop: BOp::Sub });
+        let term_b = self.push_back(Op::Binary { x: b, y: not_sel, bop: BOp::Mul });
+        self.push_back(Op::Binary { x: term_a, y: term_b, bop: BOp::Add })
+    }
+
     /// Bitcast to a different dtype.
     pub fn bitcast(&mut self, _x: OpId, _dtype: DType) -> OpId {
         todo!()

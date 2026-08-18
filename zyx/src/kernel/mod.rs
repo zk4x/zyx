@@ -390,7 +390,12 @@ impl Kernel {
                 Op::Index { .. } => return IDX_T,
                 Op::Load { src, .. } => op_id = src,
                 Op::Unary { x, .. } => op_id = x,
-                Op::Binary { x, .. } => op_id = x,
+                Op::Binary { x, y, bop } => {
+                     if bop.returns_bool() {
+                         return DType::Bool;
+                     }
+                     op_id = x;
+                 }
                 Op::Mad { x, .. } => op_id = x,
                 Op::Wmma { dtype, .. } => match dtype {
                     MMADType::f16_f16_f16_f32 => return DType::F32,
@@ -883,7 +888,11 @@ impl Kernel {
             match self.ops[op_id].op.clone() {
                 Op::Const(_) => return vec![],
                 Op::Param { shape, .. } => return self.shape_ids(shape),
-                Op::Stack { ref ops } => return vec![self.const_idx(ops.len() as u32)],
+                Op::Stack { ref ops } => {
+                    let mut dims = self.store_shape_ids(ops[0]);
+                    dims.insert(0, self.const_idx(ops.len() as u32));
+                    return dims;
+                }
                 Op::Move { x, ref mop } => match mop.as_ref() {
                     MoveOp::Reshape { shape, .. } | MoveOp::Expand { shape } => return self.shape_ids(*shape),
                     MoveOp::Permute { axes } => return crate::shape::permute(&self.store_shape_ids(x), axes),

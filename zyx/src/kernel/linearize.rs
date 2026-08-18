@@ -739,7 +739,36 @@ impl Kernel {
                     }
                 }
                 Op::Index { .. } => {}
-                Op::Stack { .. } => {}
+                Op::Stack { ref ops } => {
+                    // Stack produces `[n] + first_shape`: output element at leading
+                    // index `i` and trailing indices `t` reads input `i` at `t`. So
+                    // each input reads at the trailing axes of the output view (the
+                    // leading axis selects which source). Assign each stacked input
+                    // the output view with the leading SDim dropped, then resolve the
+                    // op into a chain of branchless selects on the leading group
+                    // index: where(lead==n-1, src_{n-1}, ... where(lead==1, src_1,
+                    // src_0)). The src_{k} are the input op ids; when the reverse
+                    // walk reaches their Param define they are remapped to loads and
+                    // this chain follows automatically.
+                    let stacked = ops.to_vec();
+                    if let Some(view) = views.get(&op_id).cloned() {
+                        debug_assert!(!view.is_empty(), "Stack: empty output view");
+                        let leading = view[0].idx;
+                        let trailing = &view[1..];
+                        for &input in stacked.iter() {
+                            views.insert(input, trailing.to_vec());
+                        }
+                        let n = stacked.len();
+                        let mut ret = stacked[n - 1];
+                        for k in (0..n - 1).rev() {
+                            let k_const = self.insert_before(op_id, Op::Const(Constant::idx(k as u32)));
+                            let eq = self.insert_before(op_id, Op::Binary { x: leading, y: k_const, bop: BOp::Eq });
+                            ret = self.branchless_where(eq, stacked[k], ret);
+                        }
+                        self.remap(op_id, ret);
+                        self.remove_op(op_id);
+                    }
+                }
                 ref op => {
                     self.debug();
                     unreachable!("{op:?}");
