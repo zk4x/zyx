@@ -815,41 +815,89 @@ impl Kernel {
             }
         }
 
-        // Phase 2: topologically order the emitted index arithmetic so that every
-        // op's dependencies precede it. All Param defines are placed first, in
-        // their existing relative order, so buffers are declared before any
-        // use; the remaining (non-param) ops are ordered with a post-order DFS
-        // (deps before users). Linearize produces loop-free dataflow here
-        // (reduce -> loop emission happens in Phase 3), so a plain dependency
-        // sort is valid.
+        // Phase 2: collect reachable ops from the stores and scope markers, then
+        // topologically order their dependencies. Phase 1 may leave the linked
+        // list temporarily invalid while inserting and replacing ops, so the slab
+        // is the source of truth until this phase rebuilds the list.
         {
-            let mut order: Vec<OpId> = Vec::new();
-            // 1. Params first, preserving their current relative order.
-            let mut scan = self.head;
-            while !scan.is_null() {
-                if matches!(self.ops[scan].op, Op::Param { .. }) {
-                    order.push(scan);
+            let mut roots = Vec::new();
+            for (op_id, op) in self.iter_unordered() {
+                match op {
+                    Op::Store { .. } | Op::Loop { .. } => roots.push(op_id),
+                    Op::Param { .. }
+                    | Op::Const(_)
+                    | Op::Binary { .. }
+                    | Op::Unary { .. }
+                    | Op::Cast { .. }
+                    | Op::Mad { .. }
+                    | Op::Load { .. }
+                    | Op::Index { .. }
+                    | Op::Reduce { .. } => {}
+                    Op::Storage { .. } | Op::Wmma { .. } | Op::Barrier | Op::If { .. } | Op::EndIf | Op::EndLoop => {
+                        debug_assert!(false, "unexpected root operation after Phase 1: {op:?}");
+                    }
+                    _ => {}
                 }
-                scan = self.next_op(scan);
+            }
+
+            let mut reachable = Set::default();
+            let mut pending = roots;
+            while let Some(op_id) = pending.pop() {
+                if reachable.insert(op_id) {
+                    pending.extend(self.at(op_id).parameters().filter(|p| !p.is_null()));
+                }
+            }
+
+            for op_id in self.ops.ids().collect::<Vec<_>>() {
+                if !reachable.contains(&op_id) {
+                    self.remove_op(op_id);
+                }
+            }
+
+            let mut order: Vec<OpId> = Vec::new();
+            // Params must precede their users. Recover their original argument
+            // order from the Phase 1 snapshot, since neither the temporary links
+            // nor slab iteration order represent kernel argument order anymore.
+            let mut used_params = Set::default();
+            let mut expected_params = global_params.clone();
+            expected_params.sort_by_key(|(_, kind, _)| *kind == ParamKind::GlobalMut);
+            for (dtype, kind, shape) in expected_params {
+                let found = self.iter_unordered().find_map(|(op_id, op)| {
+                    if used_params.contains(&op_id) {
+                        return None;
+                    }
+                    match op {
+                        Op::Param { dtype: d, kind: k, shape: s } if *d == dtype && *k == kind && *s == shape => Some(op_id),
+                        _ => None,
+                    }
+                });
+                let op_id = found.expect("linearize lost a parameter during Phase 1");
+                order.push(op_id);
+                used_params.insert(op_id);
+            }
+            // Any newly-created parameters not represented by the original
+            // snapshot are appended in slab order.
+            for (op_id, op) in self.iter_unordered() {
+                if matches!(op, Op::Param { .. }) && used_params.insert(op_id) {
+                    order.push(op_id);
+                }
             }
             let mut placed: Set<OpId> = order.iter().copied().collect();
-            // 2. Append only operations whose dependencies have already been
+            // Append only operations whose dependencies have already been
             // emitted. Marking nodes visited during DFS is insufficient here:
             // a discovered dependency can be skipped by another traversal before
             // it has actually been appended to the order.
             loop {
                 let mut progress = false;
-                let mut scan = self.head;
-                while !scan.is_null() {
-                    if !placed.contains(&scan) {
-                        let ready = self.ops[scan].op.parameters().filter(|&p| !p.is_null()).all(|p| placed.contains(&p));
+                for (op_id, op) in self.iter_unordered() {
+                    if !placed.contains(&op_id) {
+                        let ready = op.parameters().filter(|p| !p.is_null()).all(|p| placed.contains(&p));
                         if ready {
-                            order.push(scan);
-                            placed.insert(scan);
+                            order.push(op_id);
+                            placed.insert(op_id);
                             progress = true;
                         }
                     }
-                    scan = self.next_op(scan);
                 }
                 if placed.len() == self.ops.values().count() {
                     break;
@@ -864,6 +912,7 @@ impl Kernel {
             self.head = order.first().copied().unwrap_or(OpId::NULL);
             self.tail = order.last().copied().unwrap_or(OpId::NULL);
         }
+        self.debug();
 
         // Verify the relative order of global defines is unchanged by linearize
         // (read-only defines first, then writable ones, both in original order).
@@ -917,6 +966,49 @@ impl Kernel {
                 unreachable!()
             };
             let loop_id = reduce_axis;
+
+            // Phase 1 may open the loop before all of the reduction input's
+            // independent prerequisites. Move it as late as possible without
+            // placing loop-dependent operations outside its scope.
+            let mut deps = Set::default();
+            let mut pending = vec![x];
+            while let Some(dep) = pending.pop() {
+                if deps.insert(dep) {
+                    pending.extend(self.at(dep).parameters().filter(|p| *p != loop_id && !p.is_null()));
+                }
+            }
+            let mut loop_deps = Set::default();
+            for &dep in &deps {
+                let mut closure = vec![dep];
+                let mut seen = Set::default();
+                while let Some(id) = closure.pop() {
+                    if seen.insert(id) {
+                        if id == loop_id {
+                            loop_deps.insert(dep);
+                            break;
+                        }
+                        closure.extend(self.at(id).parameters().filter(|p| !p.is_null()));
+                    }
+                }
+            }
+            let mut latest_independent = OpId::NULL;
+            let mut first_loop_dependent = OpId::NULL;
+            let mut scan = self.head;
+            while !scan.is_null() {
+                if loop_deps.contains(&scan) && first_loop_dependent.is_null() {
+                    first_loop_dependent = scan;
+                }
+                if deps.contains(&scan) && !loop_deps.contains(&scan) {
+                    latest_independent = scan;
+                }
+                scan = self.next_op(scan);
+            }
+            if !first_loop_dependent.is_null() && !latest_independent.is_null() {
+                self.move_op_before(loop_id, first_loop_dependent);
+            } else if first_loop_dependent.is_null() && !latest_independent.is_null() {
+                self.move_op_after(loop_id, latest_independent);
+            }
+
             let acc_dtype = self.dtype(x);
             let zero = self.insert_const_idx_before(loop_id, 0u32);
             let acc_init = self.insert_before(
