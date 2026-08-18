@@ -577,22 +577,22 @@ impl Kernel {
                             // `anchor`, so the arithmetic is inserted AFTER the
                             // shape dimensions it depends on, not before them.
                             let zero = self.insert_const_idx_before(op_id, 0u32);
-                             let one = self.insert_const_idx_before(op_id, 1u32);
-                             let mut base = zero;
-                             let mut valid = self.insert_before(op_id, Op::Const(Constant::Bool(true)));
-                             for d in &out_view {
-                                 let lo = self.insert_before(op_id, Op::Binary { x: d.idx, y: d.lp, bop: BOp::Cmpge });
-                                 let len = if self.dtype(d.len) != IDX_T {
-                                     self.insert_before(op_id, Op::Cast { x: d.len, dtype: IDX_T })
-                                 } else {
-                                     d.len
-                                 };
-                                 let interior_len = self.insert_before(op_id, Op::Binary { x: len, y: d.rp, bop: BOp::Sub });
-                                 let hi = self.insert_before(op_id, Op::Binary { x: d.idx, y: interior_len, bop: BOp::Cmplt });
-                                 let in_axis = self.insert_before(op_id, Op::Binary { x: lo, y: hi, bop: BOp::And });
-                                 valid = self.insert_before(op_id, Op::Binary { x: valid, y: in_axis, bop: BOp::And });
-                             }
-                             let mut suffix = one;
+                            let one = self.insert_const_idx_before(op_id, 1u32);
+                            let mut base = zero;
+                            let mut valid = self.insert_before(op_id, Op::Const(Constant::Bool(true)));
+                            for d in &out_view {
+                                let lo = self.insert_before(op_id, Op::Binary { x: d.idx, y: d.lp, bop: BOp::Cmpge });
+                                let len = if self.dtype(d.len) != IDX_T {
+                                    self.insert_before(op_id, Op::Cast { x: d.len, dtype: IDX_T })
+                                } else {
+                                    d.len
+                                };
+                                let interior_len = self.insert_before(op_id, Op::Binary { x: len, y: d.rp, bop: BOp::Sub });
+                                let hi = self.insert_before(op_id, Op::Binary { x: d.idx, y: interior_len, bop: BOp::Cmplt });
+                                let in_axis = self.insert_before(op_id, Op::Binary { x: lo, y: hi, bop: BOp::And });
+                                valid = self.insert_before(op_id, Op::Binary { x: valid, y: in_axis, bop: BOp::And });
+                            }
+                            let mut suffix = one;
                             for d in out_view.iter().rev() {
                                 // Subtract the left pad so the flat base skips padded
                                 // leading regions of the output view.
@@ -637,14 +637,14 @@ impl Kernel {
                                     q = rem;
                                     div
                                 };
-                                 let len = if self.dtype(x_shape[a]) != IDX_T {
-                                     self.insert_before(op_id, Op::Cast { x: x_shape[a], dtype: IDX_T })
-                                 } else {
-                                     x_shape[a]
-                                 };
-                                 let invalid = self.insert_before(op_id, Op::Binary { x: len, y: one, bop: BOp::Add });
-                                 let idx_expr = self.branchless_where(valid, idx_expr, invalid);
-                                 view.push(SDim::new(idx_expr, zero, zero, len));
+                                let len = if self.dtype(x_shape[a]) != IDX_T {
+                                    self.insert_before(op_id, Op::Cast { x: x_shape[a], dtype: IDX_T })
+                                } else {
+                                    x_shape[a]
+                                };
+                                let invalid = self.insert_before(op_id, Op::Binary { x: len, y: one, bop: BOp::Add });
+                                let idx_expr = self.branchless_where(valid, idx_expr, invalid);
+                                view.push(SDim::new(idx_expr, zero, zero, len));
                             }
                             views.insert(x, view);
                         }
@@ -679,9 +679,7 @@ impl Kernel {
                                 inv_axes[a] = i;
                             }
                             let view = &views[&op_id];
-                            let view: Vec<SDim> = (0..x_shape.len())
-                                .map(|j| view[inv_axes[j]])
-                                .collect();
+                            let view: Vec<SDim> = (0..x_shape.len()).map(|j| view[inv_axes[j]]).collect();
                             views.insert(x, view);
                         }
                         MoveOp::Flip { axes } => {
@@ -794,14 +792,14 @@ impl Kernel {
                         }
                         let n = stacked.len();
                         let mut ret = stacked[n - 1];
-                         for k in (0..n - 1).rev() {
-                             let k_const = self.insert_before(op_id, Op::Const(Constant::idx(k as u32)));
-                             let eq = self.insert_before(op_id, Op::Binary { x: leading, y: k_const, bop: BOp::Eq });
-                             ret = self.branchless_where(eq, stacked[k], ret);
-                         }
-                         self.remap(op_id, ret);
-                     }
-                     self.remove_op(op_id);
+                        for k in (0..n - 1).rev() {
+                            let k_const = self.insert_before(op_id, Op::Const(Constant::idx(k as u32)));
+                            let eq = self.insert_before(op_id, Op::Binary { x: leading, y: k_const, bop: BOp::Eq });
+                            ret = self.branchless_where(eq, stacked[k], ret);
+                        }
+                        self.remap(op_id, ret);
+                    }
+                    self.remove_op(op_id);
                 }
                 ref op => {
                     self.debug();
@@ -835,34 +833,28 @@ impl Kernel {
                 scan = self.next_op(scan);
             }
             let mut placed: Set<OpId> = order.iter().copied().collect();
-            // 2. Topo-sort the remaining ops (post-order DFS from each root).
-            let mut roots: Vec<OpId> = Vec::new();
-            let mut scan = self.head;
-            while !scan.is_null() {
-                if !placed.contains(&scan) {
-                    roots.push(scan);
-                }
-                scan = self.next_op(scan);
-            }
-            let mut visited: Set<OpId> = placed.clone();
-            for root in roots {
-                if visited.contains(&root) {
-                    continue;
-                }
-                let mut stack: Vec<(OpId, bool)> = vec![(root, false)];
-                while let Some((op, expanded)) = stack.pop() {
-                    if expanded {
-                        order.push(op);
-                    } else if visited.insert(op) {
-                        stack.push((op, true));
-                        let deps: Vec<OpId> = self.ops[op].op.parameters().filter(|&p| !p.is_null()).collect();
-                        for dep in deps {
-                            if !visited.contains(&dep) {
-                                stack.push((dep, false));
-                            }
+            // 2. Append only operations whose dependencies have already been
+            // emitted. Marking nodes visited during DFS is insufficient here:
+            // a discovered dependency can be skipped by another traversal before
+            // it has actually been appended to the order.
+            loop {
+                let mut progress = false;
+                let mut scan = self.head;
+                while !scan.is_null() {
+                    if !placed.contains(&scan) {
+                        let ready = self.ops[scan].op.parameters().filter(|&p| !p.is_null()).all(|p| placed.contains(&p));
+                        if ready {
+                            order.push(scan);
+                            placed.insert(scan);
+                            progress = true;
                         }
                     }
+                    scan = self.next_op(scan);
                 }
+                if placed.len() == self.ops.values().count() {
+                    break;
+                }
+                assert!(progress, "linearize dependency ordering contains a cycle or missing operation");
             }
             // Rebuild the kernel's linked list in `order`.
             for (i, &op) in order.iter().enumerate() {
@@ -936,10 +928,7 @@ impl Kernel {
                     _ => unreachable!(),
                 }),
             );
-            let acc = self.insert_before(
-                loop_id,
-                Op::Storage { dtype: acc_dtype, scope: MemScope::Register, len: 1 },
-            );
+            let acc = self.insert_before(loop_id, Op::Storage { dtype: acc_dtype, scope: MemScope::Register, len: 1 });
             self.insert_before(loop_id, Op::Store { dst: acc, src: acc_init, index: zero, layout: MemLayout::Scalar });
 
             // Accumulate inside the loop, then close it, then read the result.
@@ -958,12 +947,10 @@ impl Kernel {
             "linearize left a movement or stack operation in the kernel"
         );
 
+        self.verify();
+
         self.common_subexpression_elimination();
         self.dead_code_elimination();
-
-        self.debug();
-
-        self.verify();
     }
 
     pub(crate) fn reduce_dims(&self, op_id: OpId) -> Vec<Dim> {
