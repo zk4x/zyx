@@ -33,6 +33,9 @@
 //!   inserted source `Define`,
 //! - writable global defines stay in place as `Store` destinations.
 //!
+//! `Storage` is a post-linearization operation. It must not be expected in
+//! pre-linearization movement kernels or used as a movement-chain marker.
+//!
 //! Only after linearize does the kernel have `Load` ops, so the `loads` list only
 //! becomes meaningful then. This matters for any pass that maps kernel args to
 //! buffers: pre-linearize, map from the global `Define` ops (in op order), not
@@ -579,7 +582,12 @@ impl Kernel {
                              let mut valid = self.insert_before(op_id, Op::Const(Constant::Bool(true)));
                              for d in &out_view {
                                  let lo = self.insert_before(op_id, Op::Binary { x: d.idx, y: d.lp, bop: BOp::Cmpge });
-                                 let interior_len = self.insert_before(op_id, Op::Binary { x: d.len, y: d.rp, bop: BOp::Sub });
+                                 let len = if self.dtype(d.len) != IDX_T {
+                                     self.insert_before(op_id, Op::Cast { x: d.len, dtype: IDX_T })
+                                 } else {
+                                     d.len
+                                 };
+                                 let interior_len = self.insert_before(op_id, Op::Binary { x: len, y: d.rp, bop: BOp::Sub });
                                  let hi = self.insert_before(op_id, Op::Binary { x: d.idx, y: interior_len, bop: BOp::Cmplt });
                                  let in_axis = self.insert_before(op_id, Op::Binary { x: lo, y: hi, bop: BOp::And });
                                  valid = self.insert_before(op_id, Op::Binary { x: valid, y: in_axis, bop: BOp::And });
@@ -594,7 +602,12 @@ impl Kernel {
                                 // inflate `len`; the flat base must not include them, or
                                 // it would over-step the source).
                                 let psum = self.insert_before(op_id, Op::Binary { x: d.lp, y: d.rp, bop: BOp::Add });
-                                let compact = self.insert_before(op_id, Op::Binary { x: d.len, y: psum, bop: BOp::Sub });
+                                let len = if self.dtype(d.len) != IDX_T {
+                                    self.insert_before(op_id, Op::Cast { x: d.len, dtype: IDX_T })
+                                } else {
+                                    d.len
+                                };
+                                let compact = self.insert_before(op_id, Op::Binary { x: len, y: psum, bop: BOp::Sub });
                                 suffix = self.insert_before(op_id, Op::Binary { x: compact, y: suffix, bop: BOp::Mul });
                             }
                             // The input's contiguous strides: the running product of the
@@ -781,14 +794,14 @@ impl Kernel {
                         }
                         let n = stacked.len();
                         let mut ret = stacked[n - 1];
-                        for k in (0..n - 1).rev() {
-                            let k_const = self.insert_before(op_id, Op::Const(Constant::idx(k as u32)));
-                            let eq = self.insert_before(op_id, Op::Binary { x: leading, y: k_const, bop: BOp::Eq });
-                            ret = self.branchless_where(eq, stacked[k], ret);
-                        }
-                        self.remap(op_id, ret);
-                        self.remove_op(op_id);
-                    }
+                         for k in (0..n - 1).rev() {
+                             let k_const = self.insert_before(op_id, Op::Const(Constant::idx(k as u32)));
+                             let eq = self.insert_before(op_id, Op::Binary { x: leading, y: k_const, bop: BOp::Eq });
+                             ret = self.branchless_where(eq, stacked[k], ret);
+                         }
+                         self.remap(op_id, ret);
+                     }
+                     self.remove_op(op_id);
                 }
                 ref op => {
                     self.debug();
@@ -940,6 +953,11 @@ impl Kernel {
         // The move handlers may leave dead constants (e.g. unused `one`/`total`
         // scaffold) and duplicate arithmetic behind; CSE and DCE clean those up
         // now that the ops are ordered.
+        assert!(
+            self.ops.values().all(|node| !matches!(node.op, Op::Move { .. } | Op::Stack { .. })),
+            "linearize left a movement or stack operation in the kernel"
+        );
+
         self.common_subexpression_elimination();
         self.dead_code_elimination();
 

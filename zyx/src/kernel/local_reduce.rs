@@ -15,7 +15,12 @@
 
 use super::autotune::Optimization;
 use crate::{
-    Map, backend::DeviceInfo, dtype::Constant, kernel::{BOp, IdxKind, Kernel, MemLayout, MemScope, Op, OpId}, shape::Dim, slab::SlabId
+    Map,
+    backend::DeviceInfo,
+    dtype::Constant,
+    kernel::{BOp, IdxKind, Kernel, MemLayout, MemScope, Op, OpId},
+    shape::Dim,
+    slab::SlabId,
 };
 
 impl Kernel {
@@ -93,7 +98,9 @@ impl Kernel {
         } else {
             return;
         };
-        let Some(loop_len) = self.resolve_dim(loop_len_id) else { return };
+        let Some(loop_len) = self.resolve_dim(loop_len_id) else {
+            return;
+        };
 
         // Get new free axis for the local dimension
         let laxis = self
@@ -172,7 +179,7 @@ impl Kernel {
         let mut last_global = None;
         let mut op_id = self.head;
         while !op_id.is_null() {
-            if matches!(self.ops[op_id].op, Op::Storage { scope: MemScope::Global, .. }) {
+            if matches!(self.ops[op_id].op, Op::Param { .. }) {
                 last_global = Some(op_id);
             }
             op_id = self.next_op(op_id);
@@ -186,10 +193,7 @@ impl Kernel {
             }
             None => self.head,
         };
-        let loc_acc = self.insert_before(
-            insert_at,
-            Op::Storage { dtype: acc_dtype, scope: MemScope::Local, len: factor as Dim },
-        );
+        let loc_acc = self.insert_before(insert_at, Op::Storage { dtype: acc_dtype, scope: MemScope::Local, len: factor as Dim });
         let lidx = self.insert_before(insert_at, Op::Index { axis: laxis, kind: IdxKind::Local(factor) });
 
         // Divide reduce loop by factor

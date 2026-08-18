@@ -4,7 +4,6 @@ use crate::{
     Map, Set,
     graph::{ClassId, Graph, JitKernelData, JitKernelId, Node},
     kernel::{DeviceId, Kernel, MemLayout, MoveOp, Op, OpId, ParamKind},
-    shape::{Dim, UAxis},
     slab::{Slab, SlabId},
 };
 

@@ -1223,6 +1223,13 @@ impl Runtime {
         let Some(mut buffer_id) = self.buffer_map.get(&x).copied() else {
             let this = &mut *self;
             this.initialize_backends();
+            let pending = this.tensors[x].depends_on;
+            if !pending.is_null() {
+                let outputs: Set<TensorId> = this.kernels[pending].outputs.iter().copied().collect();
+                for tid in outputs {
+                    this.add_store(tid)?;
+                }
+            }
             let kid = if this.is_graph(x) {
                 return Err(ZyxError::graph_tensor_not_realized(x));
             } else {
@@ -1379,7 +1386,7 @@ impl Runtime {
             ));
         }
         for op in self.kernels[dst_kid].kernel.ops.values() {
-            if !matches!(op.op, Op::Storage { .. } | Op::Move { .. } | Op::Const(_)) {
+            if !matches!(op.op, Op::Param { .. } | Op::Move { .. } | Op::Const(_)) {
                 return Err(ZyxError::ShapeError(
                     format!("assign: dst kernel {dst_kid:?} has unsupported op {:?}, only movement ops allowed", op.op).into(),
                 ));
