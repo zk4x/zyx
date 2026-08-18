@@ -517,23 +517,52 @@ impl Kernel {
                 Op::Move { x, ref mop } => {
                     match mop.as_ref() {
                         MoveOp::Reshape { shape, input_rank } => {
-                            let input_rank = *input_rank;
-                            let shape = *shape;
-                            // Unpack the shape op into per-dimension length ops: a
-                            // `Stack` contributes one op per dim, a bare const is a
-                            // rank-1 shape.
-                            let shape_len_ops: Vec<OpId> = match self.ops[shape].op {
-                                Op::Stack { ref ops } => ops.to_vec(),
-                                _ => vec![shape],
-                            };
+                            // CORRECT (div/mod) VERSION:
+                            // Reshape merges/splits contiguous dims, so axis indices don't
+                            // align 1:1. Build a single flat index over the output view (all
+                            // the arithmetic LoadView would do), then recover each input axis
+                            // by successive div/mod against the input's contiguous strides.
+                            //
+                            //     let out_view = views[&op_id].clone();
+                            //     let x_shape = self.shape(x);
+                            //     let mut x_strides = vec![1; x_shape.len()];
+                            //     let mut st = 1;
+                            //     for a in (0..x_shape.len()).rev() {
+                            //         x_strides[a] = st;
+                            //         st *= x_shape[a];
+                            //     }
+                            //     let zero = self.insert_const_idx_before(anchor, 0u32);
+                            //     let mut base = zero;
+                            //     for &(idx, drift, _, _, _) in &out_view {
+                            //         base = self.insert_before(anchor, Op::Mad { x: idx, y: drift, z: base });
+                            //     }
+                            //     let n = x_shape.len();
+                            //     let mut view = Vec::with_capacity(n);
+                            //     let mut q = base;
+                            //     for a in 0..n {
+                            //         let s = x_strides[a];
+                            //         let s_id = self.insert_const_idx_before(anchor, s);
+                            //         let idx_expr = if a == n - 1 {
+                            //             q
+                            //         } else {
+                            //             let div = self.insert_before(anchor, Op::Binary { x: q, y: s_id, bop: BOp::Div });
+                            //             let rem = self.insert_before(anchor, Op::Binary { x: q, y: s_id, bop: BOp::Mod });
+                            //             q = rem;
+                            //             div
+                            //         };
+                            //         let len_id = self.insert_const_idx_before(anchor, x_shape[a]);
+                            //         view.push((idx_expr, s_id, zero, zero, len_id));
+                            //     }
+                            //     views.insert(x, view);
                             // Reshape merges/splits contiguous dims, so axis indices don't
                             // align 1:1. The input is read as a single flat index over the
                             // whole (contiguous) input, which equals the flat index over the
                             // output. Build `base` from the output view (all the arithmetic
-                            // LoadView would do), then expose `x` as an `input_rank`-axis view
-                            // whose axis 0 carries the flat index (stride 1) and whose remaining
-                            // axes are broadcast singletons (stride 0). No input shape is needed.
-                            let out_view = views.remove(&op_id).unwrap();
+                            // LoadView would do), then recover each input axis by successive
+                            // div/mod against the input's contiguous strides. The input view
+                            // is built fully contiguous here; any movement ops upstream of `x`
+                            // (processed later, in reverse) apply their own transforms on it.
+                            let out_view = views[&op_id].clone();
                             // Anchor the index math at the Move op itself (which
                             // follows its shape dims) rather than the global
                             // `anchor`, so the arithmetic is inserted AFTER the
@@ -549,22 +578,39 @@ impl Kernel {
                                 base = self.insert_before(op_id, Op::Mad { x: src_idx, y: suffix, z: base });
                                 suffix = self.insert_before(op_id, Op::Binary { x: d.len, y: suffix, bop: BOp::Mul });
                             }
-                            // The flat axis length is the output element count (== input count).
-                            // Cast each shape dim to IDX_T so the bounds arithmetic matches the
-                            // u32 index math (the shape consts themselves may be i32).
-                            let mut total = one;
-                            for len in shape_len_ops {
-                                let len = if self.dtype(len) != IDX_T {
-                                    self.insert_before(op_id, Op::Cast { x: len, dtype: IDX_T })
+                            // The input's contiguous strides: the running product of the
+                            // trailing dims' lengths, resolved symbolically from `x`.
+                            let x_shape = self.store_shape_ids(x);
+                            let n = x_shape.len();
+                            let mut x_strides = vec![one; n];
+                            let mut st = one;
+                            for a in (0..n).rev() {
+                                x_strides[a] = st;
+                                let len = if self.dtype(x_shape[a]) != IDX_T {
+                                    self.insert_before(op_id, Op::Cast { x: x_shape[a], dtype: IDX_T })
                                 } else {
-                                    len
+                                    x_shape[a]
                                 };
-                                total = self.insert_before(op_id, Op::Binary { x: len, y: total, bop: BOp::Mul });
+                                st = self.insert_before(op_id, Op::Binary { x: len, y: st, bop: BOp::Mul });
                             }
-                            let mut view = Vec::with_capacity(input_rank);
-                            view.push(SDim::new(base, zero, zero, total));
-                            for _ in 1..input_rank {
-                                view.push(SDim::new(zero, zero, zero, one));
+                            let mut view = Vec::with_capacity(n);
+                            let mut q = base;
+                            for a in 0..n {
+                                let s = x_strides[a];
+                                let idx_expr = if a == n - 1 {
+                                    q
+                                } else {
+                                    let div = self.insert_before(op_id, Op::Binary { x: q, y: s, bop: BOp::Div });
+                                    let rem = self.insert_before(op_id, Op::Binary { x: q, y: s, bop: BOp::Mod });
+                                    q = rem;
+                                    div
+                                };
+                                let len = if self.dtype(x_shape[a]) != IDX_T {
+                                    self.insert_before(op_id, Op::Cast { x: x_shape[a], dtype: IDX_T })
+                                } else {
+                                    x_shape[a]
+                                };
+                                view.push(SDim::new(idx_expr, zero, zero, len));
                             }
                             views.insert(x, view);
                         }
