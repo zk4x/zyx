@@ -1,7 +1,7 @@
 // Copyright (C) 2025 zk4x
 // SPDX-License-Identifier: LGPL-3.0-only
 
-use super::{BackendError, Device, DeviceId, DeviceInfo, ErrorStatus, Event, MemoryPool, PoolId};
+use super::{gws_from_kernel, BackendError, Device, DeviceId, DeviceInfo, ErrorStatus, Event, GwsDim, MemoryPool, PoolId};
 use crate::{
     DType,
     backend::{DTypeCapability, DeviceProgramId, PoolBufferId},
@@ -61,6 +61,7 @@ pub(super) struct WGPUProgram {
     shader: ShaderModule,
     pipeline: ComputePipeline,
     bind_group_layout: BindGroupLayout,
+    gws: Vec<GwsDim>,
 }
 
 pub(super) fn initialize_device(
@@ -469,7 +470,8 @@ impl WGPUDevice {
             compilation_options: wgpu::PipelineCompilationOptions::default(),
         });
 
-        let id = self.programs.push(WGPUProgram { name, arg_ro_flags, shader: shader_module, pipeline, bind_group_layout });
+        let gws = gws_from_kernel(kernel);
+        let id = self.programs.push(WGPUProgram { name, arg_ro_flags, shader: shader_module, pipeline, bind_group_layout, gws });
 
         Ok(id)
     }
@@ -483,7 +485,6 @@ impl WGPUDevice {
         &mut self,
         program_id: DeviceProgramId,
         memory_pool: &mut WGPUMemoryPool,
-        gws: &[Dim],
         args: &[PoolBufferId],
         event_wait_list: Vec<Event>,
     ) -> Result<Event, BackendError> {
@@ -510,10 +511,16 @@ impl WGPUDevice {
             cpass.set_pipeline(&program.pipeline);
             cpass.set_bind_group(0, &set, &[]);
             cpass.insert_debug_marker(&program.name);
+            let grid = |gdim: GwsDim| -> u32 {
+                match gdim {
+                    GwsDim::Const(d) => u32::try_from(d).unwrap(),
+                    GwsDim::Param(_) => todo!("wgpu: gws from scalar variable param"),
+                }
+            };
             cpass.dispatch_workgroups(
-                u32::try_from(gws.first().copied().unwrap_or(1)).unwrap(),
-                u32::try_from(gws.get(1).copied().unwrap_or(1)).unwrap(),
-                u32::try_from(gws.get(2).copied().unwrap_or(1)).unwrap(),
+                grid(program.gws.first().copied().unwrap_or(GwsDim::Const(1))),
+                grid(program.gws.get(1).copied().unwrap_or(GwsDim::Const(1))),
+                grid(program.gws.get(2).copied().unwrap_or(GwsDim::Const(1))),
             );
         }
         let submission_index = Some(self.queue.submit(Some(encoder.finish())));

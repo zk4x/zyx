@@ -566,8 +566,7 @@ impl CompiledKernel {
         }
         let pool_ptr = &mut rt.pools[pool_id] as *mut MemoryPool;
         let device = &mut rt.devices[device_id];
-        let gws = todo!();
-        let event = unsafe { device.launch(self.program.program, &mut *pool_ptr, gws, &args, event_wait_list)? };
+        let event = unsafe { device.launch(self.program.program, &mut *pool_ptr, &args, event_wait_list)? };
         rt.events.insert(all_bufs, event);
 
         // Put to tensors. Each output gets its own load kernel: a realized

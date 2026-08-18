@@ -6,7 +6,7 @@ use crate::{
     backend::DeviceInfo,
     dtype::Constant,
     error::{BackendError, ErrorStatus},
-    kernel::{BOp, IdxKind, Kernel, MemLayout, MemScope, Op, OpId, UOp},
+    kernel::{BOp, IdxKind, Kernel, MemLayout, MemScope, Op, OpId, ParamKind, UOp},
     scalar::{bf16, f16},
 };
 use std::{fmt::Write, hash::BuildHasherDefault};
@@ -47,7 +47,7 @@ impl Kernel {
                         }
                         n_global_defines += 1;
                     }
-                    Op::Storage { dtype, scope: MemScope::Variable, .. } => {
+                    Op::Param { kind: ParamKind::Variable, dtype, .. } => {
                         if matches!(dtype, DType::F16 | DType::BF16) {
                             _ = writeln!(global_cast, "  unsigned short p{op_id} = *(unsigned short*)args[{n_global_defines}];");
                         } else {
@@ -80,10 +80,10 @@ impl Kernel {
                     if index_loop_depth == 0 && has_openmp {
                         _ = writeln!(source, "{indent}#pragma omp parallel for");
                     }
+                    let len = get_var(len, &constants, &indices, &reg_map, &mut registers, loop_id)?;
                     _ = writeln!(
                         source,
-                        "{indent}for (unsigned int idx{loop_id} = 0; idx{loop_id} < {}; ++idx{loop_id}) {{",
-                        self.resolve_dim(len).unwrap()
+                        "{indent}for (unsigned int idx{loop_id} = 0; idx{loop_id} < {len}; ++idx{loop_id}) {{"
                     );
                     indent += "  ";
                     index_loop_depth += 1;

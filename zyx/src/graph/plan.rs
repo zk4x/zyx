@@ -257,9 +257,8 @@ impl Runtime {
                     if self.debug.dev() {
                         println!("launching kernel {program_id:?}");
                     }
-                    let gws = todo!();
                     let event =
-                        self.devices[program_id.device].launch(program_id.program, &mut self.pools[pool_id], gws, &args, wait_list)?;
+                        self.devices[program_id.device].launch(program_id.program, &mut self.pools[pool_id], &args, wait_list)?;
                     self.events.insert(kernel_bufs, event);
                 }
                 ExecNode::Copy { dst_class, src_class } => {

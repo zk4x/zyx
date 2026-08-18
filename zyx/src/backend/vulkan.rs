@@ -26,7 +26,7 @@ use crate::{
     slab::Slab,
 };
 
-use super::{DTypeCapability, DeviceInfo, DeviceProgramId, Event, MemoryPool, PoolBufferId, PoolId};
+use super::{gws_from_kernel, DTypeCapability, DeviceInfo, DeviceProgramId, Event, GwsDim, MemoryPool, PoolBufferId, PoolId};
 
 // ── Vulkan FFI types ─────────────────────────────────────────────────────────
 
@@ -419,7 +419,6 @@ enum VulkanCommand {
     },
     Launch {
         program_id: DeviceProgramId,
-        gws: Vec<Dim>,
         args: Vec<PoolBufferId>,
         event_wait_list: Vec<Event>,
         reply: Sender<Result<Event, BackendError>>,
@@ -542,6 +541,7 @@ struct VulkanProgram {
     pipeline_layout: VkPipelineLayout,
     desc_layout: VkDescriptorSetLayout,
     push_constants_size: u32,
+    gws: Vec<GwsDim>,
 }
 
 // ── Buffer ───────────────────────────────────────────────────────────────────
@@ -596,12 +596,11 @@ impl VulkanDevice {
         &mut self,
         program_id: DeviceProgramId,
         _memory_pool: &mut VulkanMemoryPool,
-        gws: &[Dim],
         args: &[PoolBufferId],
         event_wait_list: Vec<Event>,
     ) -> Result<Event, BackendError> {
         let (reply, rx) = channel();
-        self.tx.send(VulkanCommand::Launch { program_id, gws: gws.into(), args: args.to_vec(), event_wait_list, reply }).unwrap();
+        self.tx.send(VulkanCommand::Launch { program_id, args: args.to_vec(), event_wait_list, reply }).unwrap();
         rx.recv().unwrap()
     }
 }
@@ -1499,10 +1498,10 @@ pub(super) fn initialize_device(
                             unsafe { vkDestroyShaderModule(device, shader, std::ptr::null()) };
 
                             let id =
-                                programs.push(VulkanProgram { pipeline, pipeline_layout, desc_layout, push_constants_size });
+                                programs.push(VulkanProgram { pipeline, pipeline_layout, desc_layout, push_constants_size, gws: gws_from_kernel(&kernel) });
                             let _ = reply.send(Ok(id));
                         }
-                        VulkanCommand::Launch { program_id, gws, args, mut event_wait_list, reply } => {
+                        VulkanCommand::Launch { program_id, args, mut event_wait_list, reply } => {
                             while let Some(Event::Vulkan(ev)) = event_wait_list.pop() {
                                 if !ev.fence.is_null() {
                                     unsafe {
@@ -1615,9 +1614,18 @@ pub(super) fn initialize_device(
                                 continue;
                             }
 
-                            let gx = gws.first().copied().unwrap_or(1) as u32;
-                            let gy = gws.get(1).copied().unwrap_or(1) as u32;
-                            let gz = gws.get(2).copied().unwrap_or(1) as u32;
+                            let grid = |gdim: GwsDim| -> u32 {
+                                match gdim {
+                                    GwsDim::Const(d) => u32::try_from(d).unwrap_or(1),
+                                    GwsDim::Param(ordinal) => match &buffers[args[ordinal]] {
+                                        VulkanBuffer::Variable(c) => u32::try_from(c.as_dim().unwrap()).unwrap_or(1),
+                                        _ => unreachable!("gws param must be a Variable buffer"),
+                                    },
+                                }
+                            };
+                            let gx = grid(prog.gws.first().copied().unwrap_or(GwsDim::Const(1)));
+                            let gy = grid(prog.gws.get(1).copied().unwrap_or(GwsDim::Const(1)));
+                            let gz = grid(prog.gws.get(2).copied().unwrap_or(GwsDim::Const(1)));
 
                             if gx == 0 || gy == 0 || gz == 0 {
                                 let _ = reply.send(Err(BackendError {

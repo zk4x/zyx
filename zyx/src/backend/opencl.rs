@@ -9,7 +9,7 @@
 #![allow(clippy::needless_pass_by_ref_mut)]
 #![allow(clippy::unused_self)]
 
-use super::{DTypeCapability, Device, DeviceId, DeviceInfo, DeviceProgramId, Event, MemoryPool, PoolBufferId, PoolId};
+use super::{gws_from_kernel, DTypeCapability, Device, DeviceId, DeviceInfo, DeviceProgramId, Event, GwsDim, MemoryPool, PoolBufferId, PoolId};
 use crate::{
     DType,
     dtype::Constant,
@@ -67,6 +67,7 @@ pub(super) struct OpenCLProgram {
     program: *mut c_void,
     kernel: *mut c_void,
     lws: Vec<Dim>,
+    gws: Vec<GwsDim>,
 }
 
 #[derive(Debug)]
@@ -115,12 +116,12 @@ enum Command {
         name: Box<str>,
         source: String,
         lws: Vec<Dim>,
+        gws: Vec<GwsDim>,
         reply: Sender<Result<DeviceProgramId, BackendError>>,
     },
     Launch {
         device_id: usize,
         program_id: DeviceProgramId,
-        gws: Vec<Dim>,
         args: Vec<PoolBufferId>,
         event_wait_list: Vec<OpenCLEvent>,
         reply: Sender<Result<OpenCLEvent, BackendError>>,
@@ -590,7 +591,7 @@ pub(super) fn initialize_device(
                             };
                             let _ = reply.send(result);
                         }
-                        Command::Compile { name, source, lws, reply } => {
+                        Command::Compile { name, source, lws, gws, reply } => {
                             let sources: &[&str] = &[source.as_str()];
                             let mut status = OpenCLStatus::CL_SUCCESS;
                             let program = unsafe {
@@ -638,11 +639,11 @@ pub(super) fn initialize_device(
                                 let _ = reply.send(Err(e));
                                 continue 'work_thread_loop;
                             }
-                            let program_id = programs.push(OpenCLProgram { program, kernel, lws });
+                            let program_id = programs.push(OpenCLProgram { program, kernel, lws, gws });
                             //println!("Pushed program_id={program_id:?}'");
                             let _ = reply.send(Ok(program_id));
                         }
-                        Command::Launch { device_id: device_idx, program_id, gws, args, event_wait_list, reply } => {
+                        Command::Launch { device_id: device_idx, program_id, args, event_wait_list, reply } => {
                             // Sync events
                             let events: Vec<*mut c_void> =
                                 event_wait_list.into_iter().map(|e| e.event).filter(|event| !event.is_null()).collect();
@@ -692,7 +693,16 @@ pub(super) fn initialize_device(
                                 continue 'work_thread_loop;
                             }
                             let mut event: *mut c_void = ptr::null_mut();
-                            let global_size: Vec<Dim> = gws.iter().zip(program.lws.iter()).map(|(g, l)| g * l).collect();
+                            let global_size: Vec<Dim> = program.gws.iter().zip(program.lws.iter()).map(|(gdim, l)| {
+                                let g = match gdim {
+                                    GwsDim::Const(d) => *d,
+                                    GwsDim::Param(ordinal) => match &buffers[args[*ordinal]] {
+                                        OpenCLBuffer::Variable(c) => c.as_dim().unwrap(),
+                                        _ => unreachable!("gws param must be a Variable buffer"),
+                                    },
+                                };
+                                g * *l
+                            }).collect();
                             let lws_ptr = if program.lws.is_empty() {
                                 ptr::null()
                             } else {
@@ -904,8 +914,9 @@ impl OpenCLDevice {
             println!("{source}");
         }
 
+        let gws = gws_from_kernel(kernel);
         let (reply, reply_rx) = channel();
-        self.tx.send(Command::Compile { name: name.into(), source, lws, reply }).unwrap();
+        self.tx.send(Command::Compile { name: name.into(), source, lws, gws, reply }).unwrap();
         reply_rx.recv().unwrap()
     }
 
@@ -913,7 +924,6 @@ impl OpenCLDevice {
         &mut self,
         program_id: DeviceProgramId,
         _memory_pool: &mut OpenCLMemoryPool,
-        gws: &[Dim],
         args: &[PoolBufferId],
         event_wait_list: Vec<Event>,
     ) -> Result<Event, BackendError> {
@@ -926,7 +936,7 @@ impl OpenCLDevice {
             .collect();
         let (reply, reply_rx) = channel();
         self.tx
-            .send(Command::Launch { device_id: self.device_idx, program_id, gws: gws.into(), args: args.to_vec(), event_wait_list: events, reply })
+            .send(Command::Launch { device_id: self.device_idx, program_id, args: args.to_vec(), event_wait_list: events, reply })
             .unwrap();
         reply_rx.recv().unwrap().map(Event::OpenCL)
     }

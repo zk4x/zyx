@@ -18,7 +18,7 @@ use crate::{
     dtype::{Constant, DType},
     error::{BackendError, ErrorStatus},
     graph::{ClassId, Graph},
-    kernel::Kernel,
+    kernel::{IdxKind, Kernel, Op, ParamKind},
     shape::Dim,
     slab::{Slab, SlabId},
 };
@@ -53,6 +53,49 @@ mod wgpu;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct PoolBufferId(u32);
+
+/// Per-gws-axis launch size for a compiled kernel. Backends store one of these
+/// per gws axis at compile time and derive the actual grid at launch from it +
+/// the bound `args`. See AGENTS.md "gws (Global Work Size)".
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GwsDim {
+    /// The group length is an `Op::Const`; use this size directly.
+    Const(Dim),
+    /// The group length is an `Op::Param { kind: Variable }`; read
+    /// `args[ordinal]` from the pool (`get_variable` → `Constant::as_dim()`).
+    Param(usize),
+}
+
+/// Walk the kernel's `Op::Index` ops and return one `GwsDim` per gws axis.
+///
+/// Each group length `op_id` is either an `Op::Const` (→ `Const`) or an
+/// `Op::Param { kind: Variable }` (→ `Param`, ordinal = its head-order position
+/// counting every `Op::Param`); anything else is unreachable.
+fn gws_from_kernel(kernel: &Kernel) -> Vec<GwsDim> {
+    let mut gws = Vec::new();
+    let mut param_idx = 0usize;
+    let mut op_id = kernel.head;
+    while !op_id.is_null() {
+        match &kernel.ops[op_id].op {
+            Op::Param { .. } => param_idx += 1,
+            Op::Index { axis, kind: IdxKind::Group(len) } => {
+                let gdim = match &kernel.ops[*len].op {
+                    Op::Const(c) => GwsDim::Const(c.as_dim().unwrap()),
+                    Op::Param { kind: ParamKind::Variable, .. } => GwsDim::Param(param_idx - 1),
+                    _ => unreachable!("group length must be Const or Param Variable"),
+                };
+                let axis = *axis as usize;
+                if gws.len() <= axis {
+                    gws.resize(axis + 1, GwsDim::Const(1));
+                }
+                gws[axis] = gdim;
+            }
+            _ => {}
+        }
+        op_id = kernel.next_op(op_id);
+    }
+    gws
+}
 
 impl From<usize> for PoolBufferId {
     fn from(value: usize) -> Self {
@@ -921,60 +964,64 @@ impl Device {
     /// before submitting to the GPU queue (ensures input buffers are ready).
     /// Returns an event that signals when the kernel completes.
     ///
-    /// The `args` are the PoolBufferIds for the kernel's input and output buffers
-    /// in the order they appear in the kernel IR (inputs first, then outputs).
+    /// The `args` are the PoolBufferIds for the kernel's buffers in the order the
+    /// `Param` ops appear in the kernel IR given to compile (flat, head order, all
+    /// kinds: `Variable`/`Global`/`GlobalMut`). `Op::Storage` is NOT a kernel
+    /// parameter. The grid (gws) is NOT passed here — each backend derives it at
+    /// launch from the per-axis `GwsDim` it stored at compile: `Const(size)` uses
+    /// the size; `Param(ordinal)` reads `args[ordinal]` from the pool via
+    /// `get_variable` → `Constant::as_dim()`.
     pub fn launch(
         &mut self,
         program_id: DeviceProgramId,
         memory_pool: &mut MemoryPool,
-        gws: &[Dim],
         args: &[PoolBufferId],
         event_wait_list: Vec<Event>,
     ) -> Result<Event, BackendError> {
         match self {
             Device::C(dev) => {
                 let MemoryPool::Host(pool) = memory_pool else { unreachable!() };
-                dev.launch(program_id, pool, gws, args, event_wait_list)
+                dev.launch(program_id, pool, args, event_wait_list)
             }
             Device::Cblas(dev) => {
                 let MemoryPool::Host(pool) = memory_pool else { unreachable!() };
-                dev.launch(program_id, pool, gws, args, event_wait_list)
+                dev.launch(program_id, pool, args, event_wait_list)
             }
             Device::Dummy(dev) => {
                 let MemoryPool::Dummy(pool) = memory_pool else {
                     unreachable!()
                 };
-                dev.launch(program_id, pool, gws, args, event_wait_list)
+                dev.launch(program_id, pool, args, event_wait_list)
             }
             Device::CUDA(dev) => {
                 let MemoryPool::CUDA(pool) = memory_pool else { unreachable!() };
-                dev.launch(program_id, pool, gws, args, event_wait_list)
+                dev.launch(program_id, pool, args, event_wait_list)
             }
             Device::OpenCL(dev) => {
                 let MemoryPool::OpenCL(pool) = memory_pool else {
                     unreachable!()
                 };
-                dev.launch(program_id, pool, gws, args, event_wait_list)
+                dev.launch(program_id, pool, args, event_wait_list)
             }
             Device::HIP(dev) => {
                 let MemoryPool::HIP(pool) = memory_pool else { unreachable!() };
-                dev.launch(program_id, pool, gws, args, event_wait_list)
+                dev.launch(program_id, pool, args, event_wait_list)
             }
             #[cfg(feature = "tenstorrent")]
             Device::TT(dev) => {
                 let MemoryPool::TT(pool) = memory_pool else { unreachable!() };
-                dev.launch(program_id, pool, gws, args, event_wait_list)
+                dev.launch(program_id, pool, args, event_wait_list)
             }
             Device::Vulkan(dev) => {
                 let MemoryPool::Vulkan(pool) = memory_pool else {
                     unreachable!()
                 };
-                dev.launch(program_id, pool, gws, args, event_wait_list)
+                dev.launch(program_id, pool, args, event_wait_list)
             }
             #[cfg(feature = "wgpu")]
             Device::WGPU(dev) => {
                 let MemoryPool::WGPU(pool) = memory_pool else { unreachable!() };
-                dev.launch(program_id, pool, gws, args, event_wait_list)
+                dev.launch(program_id, pool, args, event_wait_list)
             }
         }
     }

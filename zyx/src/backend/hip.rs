@@ -9,7 +9,7 @@
 #![allow(non_camel_case_types)]
 #![allow(unused)]
 
-use super::{DTypeCapability, Device, DeviceInfo, MemoryPool};
+use super::{gws_from_kernel, DTypeCapability, Device, DeviceInfo, GwsDim, MemoryPool};
 use crate::DType;
 use crate::backend::{DeviceId, DeviceProgramId, Event, PoolBufferId, PoolId};
 use crate::dtype::Constant;
@@ -97,6 +97,7 @@ pub(super) struct HIPProgram {
     function: HIPfunction,
     global_work_size: [usize; 3],
     local_work_size: [usize; 3],
+    gws: Vec<GwsDim>,
 }
 
 #[derive(Debug)]
@@ -654,7 +655,6 @@ impl HIPDevice {
         &mut self,
         program_id: DeviceProgramId,
         memory_pool: &mut HIPMemoryPool,
-        gws: &[Dim],
         args: &[PoolBufferId],
         mut event_wait_list: Vec<Event>,
     ) -> Result<Event, BackendError> {
@@ -683,12 +683,23 @@ impl HIPDevice {
 
         let mut event = ptr::null_mut();
         unsafe { (self.hipEventCreate)(&raw mut event, 0) }.check(ErrorStatus::KernelLaunch)?;
+        let grid = |gdim: GwsDim| -> u32 {
+            match gdim {
+                GwsDim::Const(d) => u32::try_from(d).unwrap(),
+                GwsDim::Param(_) => todo!("HIP: gws from scalar variable param"),
+            }
+        };
+        let (gx, gy, gz) = (
+            grid(program.gws.first().copied().unwrap_or(GwsDim::Const(1))),
+            grid(program.gws.get(1).copied().unwrap_or(GwsDim::Const(1))),
+            grid(program.gws.get(2).copied().unwrap_or(GwsDim::Const(1))),
+        );
         unsafe {
             (self.hipLaunchKernel)(
                 program.function,
-                u32::try_from(gws.first().copied().unwrap_or(1)).unwrap(),
-                u32::try_from(gws.get(1).copied().unwrap_or(1)).unwrap(),
-                u32::try_from(gws.get(2).copied().unwrap_or(1)).unwrap(),
+                gx,
+                gy,
+                gz,
                 u32::try_from(program.local_work_size[0]).unwrap(),
                 u32::try_from(program.local_work_size[1]).unwrap(),
                 u32::try_from(program.local_work_size[2]).unwrap(),

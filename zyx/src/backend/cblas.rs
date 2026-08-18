@@ -242,11 +242,10 @@ impl CblasDevice {
         &mut self,
         program_id: DeviceProgramId,
         memory_pool: &mut super::host::HostMemoryPool,
-        gws: &[Dim],
         args: &[PoolBufferId],
         event_wait_list: Vec<Event>,
     ) -> Result<Event, BackendError> {
-        let _ = (gws, event_wait_list); // sync not needed for sequential CPU
+        let _ = event_wait_list; // sync not needed for sequential CPU
 
         let program = &self.programs[program_id];
         let kernel = &self.kernels[program.kernel];

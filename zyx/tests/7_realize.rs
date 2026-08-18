@@ -19,9 +19,9 @@ fn wmma_matmul() -> Result<(), ZyxError> {
 
     let mut kernel = Kernel::new(DeviceId::AUTO);
 
-    let m_c = kernel.const_idx(m);
-    let n_c = kernel.const_idx(n);
-    let k_c = kernel.const_idx(k);
+    let m_c = kernel.const_idx(m as u32);
+    let n_c = kernel.const_idx(n as u32);
+    let k_c = kernel.const_idx(k as u32);
     let shape_mk = kernel.stack(&[m_c, k_c]);
     let shape_kn = kernel.stack(&[k_c, n_c]);
     let shape_mn = kernel.stack(&[m_c, n_c]);
@@ -30,14 +30,16 @@ fn wmma_matmul() -> Result<(), ZyxError> {
     let b_buf = kernel.param(DType::F16, ParamKind::Global, shape_kn);
     let c_buf = kernel.param(DType::F32, ParamKind::GlobalMut, shape_mn);
 
-    let gidx = kernel.group_index(0, m / 16);
-    let gidy = kernel.group_index(1, n / 8);
+    let gidx_len = kernel.const_idx((m / 16) as u32);
+    let gidy_len = kernel.const_idx((n / 8) as u32);
+    let gidx = kernel.group_index(0, gidx_len);
+    let gidy = kernel.group_index(1, gidy_len);
     let wid = kernel.local_index(0, 32);
 
     let [c0, c1, c2, c4, c8, c16] = kernel.const_idxs([0u32, 1, 2, 4, 8, 16]);
-    let n_const = kernel.const_idx(n);
-    let k_const = kernel.const_idx(k);
-    let k_div_8 = kernel.const_idx(k / 8);
+    let n_const = kernel.const_idx(n as u32);
+    let k_const = kernel.const_idx(k as u32);
+    let k_div_8 = kernel.const_idx((k / 8) as u32);
 
     // wid >> 2  -> row index within tile (0..7)
     let row_in_tile = kernel.div(wid, c4);

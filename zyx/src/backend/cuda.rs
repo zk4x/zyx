@@ -130,7 +130,7 @@ macro_rules! send_or_continue {
     };
 }
 
-use super::{DTypeCapability, Device, DeviceId, DeviceInfo, DeviceProgramId, Event, MemoryPool, PoolBufferId, PoolId, ProgramId};
+use super::{gws_from_kernel, DTypeCapability, Device, DeviceId, DeviceInfo, DeviceProgramId, Event, GwsDim, MemoryPool, PoolBufferId, PoolId, ProgramId};
 
 /// CUDA configuration
 #[allow(clippy::question_mark)]
@@ -173,6 +173,7 @@ pub(super) enum CUDAProgram {
         module: CUmodule,
         function: CUfunction,
         lws: Vec<Dim>,
+        gws: Vec<GwsDim>,
     },
     /// A compiled cuDNN graph execution plan. Workspace is a raw device pointer
     /// allocated alongside the plan (cuDNN owns it, not the memory pool).
@@ -281,6 +282,7 @@ enum CUDACommand {
     },
     Compile {
         lws: Vec<Dim>,
+        gws: Vec<GwsDim>,
         name: Box<str>,
         ptx: Vec<u8>,
         reply: Sender<Result<DeviceProgramId, BackendError>>,
@@ -295,7 +297,6 @@ enum CUDACommand {
     },
     Launch {
         program_id: DeviceProgramId,
-        gws: Vec<Dim>,
         args: Vec<PoolBufferId>,
         event_wait_list: Vec<Event>,
         reply: Sender<Result<Event, BackendError>>,
@@ -639,7 +640,7 @@ pub(super) fn initialize_device(
                             send_or_continue!(unsafe { (cuEventDestroy)(event) }.check(ErrorStatus::MemoryCopyP2H), reply);
                             _ = reply.send(Ok(()));
                         }
-                        CUDACommand::Compile { lws, name, ptx, reply } => {
+                        CUDACommand::Compile { lws, gws, name, ptx, reply } => {
                             //println!("name {name}, gws {gws:?}, lws {lws:?} ptx:\n{}", std::ffi::CString::from_vec_with_nul(ptx.clone()).unwrap().into_string().unwrap());
 
                             let mut module = ptr::null_mut();
@@ -667,7 +668,7 @@ pub(super) fn initialize_device(
                                 continue;
                             }
 
-                            let program_id = programs.push(CUDAProgram::Module { module, function, lws });
+                            let program_id = programs.push(CUDAProgram::Module { module, function, lws, gws });
                             _ = reply.send(Ok(program_id));
                         }
                         CUDACommand::CompileCudnn { graph, reply } => {
@@ -688,7 +689,7 @@ pub(super) fn initialize_device(
                                 }
                             }
                         }
-                        CUDACommand::Launch { program_id, gws, args, mut event_wait_list, reply } => {
+                        CUDACommand::Launch { program_id, args, mut event_wait_list, reply } => {
                             let stream = next_stream(&mut streams, cuStreamSynchronize);
 
                             while let Some(Event::CUDA(CUDAEvent { event })) = event_wait_list.pop() {
@@ -708,7 +709,7 @@ pub(super) fn initialize_device(
                             };
 
                             let result = match &programs[program_id] {
-                                CUDAProgram::Module { function, lws, .. } => {
+                                CUDAProgram::Module { function, lws, gws, .. } => {
                                     let mut kernel_params: Vec<*mut core::ffi::c_void> = Vec::new();
                                     let mut scalar_values: Vec<Vec<u8>> = Vec::new();
                                     for (i, arg) in args.iter().enumerate() {
@@ -725,12 +726,26 @@ pub(super) fn initialize_device(
                                             }
                                         }
                                     }
+                                    let grid = |gdim: GwsDim| -> u32 {
+                                        match gdim {
+                                            GwsDim::Const(d) => u32::try_from(d).unwrap(),
+                                            GwsDim::Param(ordinal) => match &buffers[args[ordinal]] {
+                                                CUDABuffer::Variable(c) => u32::try_from(c.as_dim().unwrap()).unwrap(),
+                                                _ => unreachable!("gws param must be a Variable buffer"),
+                                            },
+                                        }
+                                    };
+                                    let (gx, gy, gz) = (
+                                        grid(gws.first().copied().unwrap_or(GwsDim::Const(1))),
+                                        grid(gws.get(1).copied().unwrap_or(GwsDim::Const(1))),
+                                        grid(gws.get(2).copied().unwrap_or(GwsDim::Const(1))),
+                                    );
                                     unsafe {
                                         (cuLaunchKernel)(
                                             *function,
-                                            u32::try_from(gws.first().copied().unwrap_or(1)).unwrap(),
-                                            u32::try_from(gws.get(1).copied().unwrap_or(1)).unwrap(),
-                                            u32::try_from(gws.get(2).copied().unwrap_or(1)).unwrap(),
+                                            gx,
+                                            gy,
+                                            gz,
                                             u32::try_from(lws.first().copied().unwrap_or(1)).unwrap(),
                                             u32::try_from(lws.get(1).copied().unwrap_or(1)).unwrap(),
                                             u32::try_from(lws.get(2).copied().unwrap_or(1)).unwrap(),
@@ -987,8 +1002,9 @@ impl CUDADevice {
     pub fn compile(&mut self, kernel: &Kernel, debug_asm: bool) -> Result<DeviceProgramId, BackendError> {
         let (lws, name, ptx) = self.compile_cuda(kernel, debug_asm)?;
         //let (lws, name, ptx) = self.compile_ptx(kernel, debug_asm)?;
+        let gws = gws_from_kernel(kernel);
         let (reply, reply_rx) = channel();
-        self.tx.send(CUDACommand::Compile { lws, name, ptx, reply }).unwrap();
+        self.tx.send(CUDACommand::Compile { lws, gws, name, ptx, reply }).unwrap();
         reply_rx.recv().unwrap()
     }
 
@@ -997,14 +1013,13 @@ impl CUDADevice {
         &mut self,
         program_id: DeviceProgramId,
         _memory_pool: &mut CUDAMemoryPool,
-        gws: &[Dim],
         args: &[PoolBufferId],
         // If sync is empty, kernel will be immediatelly synchronized
         event_wait_list: Vec<Event>,
     ) -> Result<Event, BackendError> {
         let (reply, reply_rx) = channel();
         self.tx
-            .send(CUDACommand::Launch { program_id, gws: gws.into(), args: args.into(), event_wait_list, reply })
+            .send(CUDACommand::Launch { program_id, args: args.into(), event_wait_list, reply })
             .unwrap();
         reply_rx.recv().unwrap()
     }

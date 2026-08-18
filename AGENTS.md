@@ -5,6 +5,9 @@
 # ⚠️  "git checkout" IS FORBIDDEN. NEVER USE.     ⚠️
 # ⚠️  Use "git restore" instead.                   ⚠️
 # ⚠️  VIOLATIONS = BROKEN. REPEATEDLY. FOREVER.   ⚠️
+# ⚠️  ASK OR EDIT. DO NOT THINK.                   ⚠️
+# ⚠️  (asking questions, editing, or both; never
+# ⚠️   burn context on internal deliberation)      ⚠️
 # ⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️
 
 # Agent Guidelines for zyx
@@ -94,6 +97,28 @@ How to work with it:
 - **NEVER touch `~/.config/zyx/config.json`** (never read/write/create/modify/delete it). Backends are chosen by the user. If a test needs a specific backend, ask the user to configure it.
 - Only two backends need cargo features: `--features wgpu` and `--features tenstorrent`.
 - Defaults with no config: C on, Dummy off, CUDA/HIP/Vulkan/OpenCL try to init and silently skip if the driver is missing, HIP always tries (ignores config; skipped only if `libamdhip64.so` is missing). If all backends fail, tests print nothing.
+
+## gws (Global Work Size)
+
+`gws` is **not** a launch argument and is **not** a kernel concept. It is purely
+backend-specific (`GwsDim` lives in `src/backend/mod.rs`). Dynamic (`Param`-backed)
+group lengths MUST work — this is not a future nicety.
+
+- Each gws dimension is a `Group` index length. Its length `op_id` is either
+  `Op::Param { kind: Variable }` (dtype `IDX_T`) or `Op::Const`; **anything else is
+  unreachable**.
+- Backends walk their own `Op::Index` ops themselves — **no kernel helpers**. For each
+  `IdxKind::Group(op_id)`:
+  - `Op::Const(c)` → `GwsDim::Const(size)`
+  - `Op::Param { Variable }` → `GwsDim::Param(ordinal)`
+- At compile each backend stores one `GwsDim` per gws axis in its program struct.
+- At launch each backend derives the actual grid from the stored `GwsDim` + `args`:
+  `Const(size)` uses the size directly; `Param(ordinal)` reads `args[ordinal]` from the
+  pool (a scalar `Variable`, via `get_variable` → `Constant::as_dim()`).
+- **Arg-ordering guarantee:** `args` passed to launch are in the SAME order as `Param`
+  defines in the kernel IR given to compile — flat, head order, all kinds
+  (`Variable`/`Global`/`GlobalMut`). `Op::Storage` is NOT a kernel parameter. A `Param`'s
+  ordinal is its position counting every `Op::Param` from head.
 
 ## Optimization Passes
 
@@ -229,6 +254,7 @@ construction point.
 
 ## Interaction Rules
 
+- **ALWAYS ASK BEFORE ADDING ANY FUNCTION.** You are NOT allowed to add new functions, methods, or helper functions without the user's approval — this includes private/`pub(crate)` helpers and backend-side free functions. Any new function is a design change: ask first, get approval, then write it. Never write a new function on your own.
 - Every user message: if it contains a `?`, **answer the question and stop** — do not edit/write files. Otherwise proceed.
 - **ASK QUESTIONS as your default first move.** For any task involving a `todo!()` stub, an ambiguous value, or a design decision, your first reply should be questions, not code. Do not implement until you have answers.
 - When in doubt, ask. Don't guess specs/values — the user has them. Ask before hunting through source. Ask by writing the question out in your reply as plain text — never via the `question` tool.
