@@ -288,7 +288,10 @@ impl Kernel {
                         for d in view.iter().rev() {
                             let src_idx = self.insert_before(anchor, Op::Binary { x: d.idx, y: d.lp, bop: BOp::Sub });
                             write_index = self.insert_before(anchor, Op::Mad { x: src_idx, y: suffix, z: write_index });
-                            suffix = self.insert_before(anchor, Op::Binary { x: d.len, y: suffix, bop: BOp::Mul });
+                            // Stride by the compact length (see reshape handler).
+                            let psum = self.insert_before(anchor, Op::Binary { x: d.lp, y: d.rp, bop: BOp::Add });
+                            let compact = self.insert_before(anchor, Op::Binary { x: d.len, y: psum, bop: BOp::Sub });
+                            suffix = self.insert_before(anchor, Op::Binary { x: compact, y: suffix, bop: BOp::Mul });
                         }
                         match &mut self.ops[store_id].op {
                             Op::Store { index, .. } => *index = write_index,
@@ -338,7 +341,10 @@ impl Kernel {
                         for d in view.iter().rev() {
                             let src_idx = self.insert_before(anchor, Op::Binary { x: d.idx, y: d.lp, bop: BOp::Sub });
                             index = self.insert_before(anchor, Op::Mad { x: src_idx, y: suffix, z: index });
-                            suffix = self.insert_before(anchor, Op::Binary { x: d.len, y: suffix, bop: BOp::Mul });
+                            // Stride by the compact length (see reshape handler).
+                            let psum = self.insert_before(anchor, Op::Binary { x: d.lp, y: d.rp, bop: BOp::Add });
+                            let compact = self.insert_before(anchor, Op::Binary { x: d.len, y: psum, bop: BOp::Sub });
+                            suffix = self.insert_before(anchor, Op::Binary { x: compact, y: suffix, bop: BOp::Mul });
                             let t_lo = self.insert_before(anchor, Op::Binary { x: d.idx, y: d.lp, bop: BOp::Cmpge });
                             pc = self.insert_before(anchor, Op::Binary { x: t_lo, y: pc, bop: BOp::And });
                             let len_mr = self.insert_before(anchor, Op::Binary { x: d.len, y: d.rp, bop: BOp::Sub });
@@ -568,15 +574,28 @@ impl Kernel {
                             // `anchor`, so the arithmetic is inserted AFTER the
                             // shape dimensions it depends on, not before them.
                             let zero = self.insert_const_idx_before(op_id, 0u32);
-                            let one = self.insert_const_idx_before(op_id, 1u32);
-                            let mut base = zero;
-                            let mut suffix = one;
+                             let one = self.insert_const_idx_before(op_id, 1u32);
+                             let mut base = zero;
+                             let mut valid = self.insert_before(op_id, Op::Const(Constant::Bool(true)));
+                             for d in &out_view {
+                                 let lo = self.insert_before(op_id, Op::Binary { x: d.idx, y: d.lp, bop: BOp::Cmpge });
+                                 let interior_len = self.insert_before(op_id, Op::Binary { x: d.len, y: d.rp, bop: BOp::Sub });
+                                 let hi = self.insert_before(op_id, Op::Binary { x: d.idx, y: interior_len, bop: BOp::Cmplt });
+                                 let in_axis = self.insert_before(op_id, Op::Binary { x: lo, y: hi, bop: BOp::And });
+                                 valid = self.insert_before(op_id, Op::Binary { x: valid, y: in_axis, bop: BOp::And });
+                             }
+                             let mut suffix = one;
                             for d in out_view.iter().rev() {
                                 // Subtract the left pad so the flat base skips padded
                                 // leading regions of the output view.
                                 let src_idx = self.insert_before(op_id, Op::Binary { x: d.idx, y: d.lp, bop: BOp::Sub });
                                 base = self.insert_before(op_id, Op::Mad { x: src_idx, y: suffix, z: base });
-                                suffix = self.insert_before(op_id, Op::Binary { x: d.len, y: suffix, bop: BOp::Mul });
+                                // Stride by the *compact* length (padding `lp`/`rp`
+                                // inflate `len`; the flat base must not include them, or
+                                // it would over-step the source).
+                                let psum = self.insert_before(op_id, Op::Binary { x: d.lp, y: d.rp, bop: BOp::Add });
+                                let compact = self.insert_before(op_id, Op::Binary { x: d.len, y: psum, bop: BOp::Sub });
+                                suffix = self.insert_before(op_id, Op::Binary { x: compact, y: suffix, bop: BOp::Mul });
                             }
                             // The input's contiguous strides: the running product of the
                             // trailing dims' lengths, resolved symbolically from `x`.
@@ -605,12 +624,14 @@ impl Kernel {
                                     q = rem;
                                     div
                                 };
-                                let len = if self.dtype(x_shape[a]) != IDX_T {
-                                    self.insert_before(op_id, Op::Cast { x: x_shape[a], dtype: IDX_T })
-                                } else {
-                                    x_shape[a]
-                                };
-                                view.push(SDim::new(idx_expr, zero, zero, len));
+                                 let len = if self.dtype(x_shape[a]) != IDX_T {
+                                     self.insert_before(op_id, Op::Cast { x: x_shape[a], dtype: IDX_T })
+                                 } else {
+                                     x_shape[a]
+                                 };
+                                 let invalid = self.insert_before(op_id, Op::Binary { x: len, y: one, bop: BOp::Add });
+                                 let idx_expr = self.branchless_where(valid, idx_expr, invalid);
+                                 view.push(SDim::new(idx_expr, zero, zero, len));
                             }
                             views.insert(x, view);
                         }
@@ -679,7 +700,7 @@ impl Kernel {
                             let rp_val = pad_value(self, rp);
                             let mut new_view = Vec::with_capacity(view.len());
                             for (a, d) in view.into_iter().enumerate() {
-                                if a as UAxis == axis {
+                                if a == axis as usize {
                                     // The input-view index ranges over the padded
                                     // coordinates (length x_shape + lp + rp); the pad
                                     // condition zeros everything outside the interior.
@@ -921,6 +942,8 @@ impl Kernel {
         // now that the ops are ordered.
         self.common_subexpression_elimination();
         self.dead_code_elimination();
+
+        self.debug();
 
         self.verify();
     }
