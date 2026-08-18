@@ -26,7 +26,7 @@ use crate::{
     slab::Slab,
 };
 
-use super::{gws_from_kernel, DTypeCapability, DeviceInfo, DeviceProgramId, Event, GwsDim, MemoryPool, PoolBufferId, PoolId};
+use super::{DTypeCapability, DeviceInfo, DeviceProgramId, Event, GwsDim, MemoryPool, PoolBufferId, PoolId, gws_from_kernel};
 
 // ── Vulkan FFI types ─────────────────────────────────────────────────────────
 
@@ -1382,8 +1382,9 @@ pub(super) fn initialize_device(
                                 let mut n_vars = 0u32;
                                 let mut op = kernel.head;
                                 while !op.is_null() {
-                                    if let crate::kernel::Op::Storage { dtype, scope: crate::kernel::MemScope::Variable, .. } =
-                                        kernel.at(op)
+                                    if let crate::kernel::Op::Storage {
+                                        dtype, scope: crate::kernel::MemScope::Variable, ..
+                                    } = kernel.at(op)
                                     {
                                         let storage_bits = if *dtype == crate::DType::Bool { 32 } else { dtype.bit_size() };
                                         let size = storage_bits as u32 / 8;
@@ -1458,10 +1459,7 @@ pub(super) fn initialize_device(
                                 }
                             }
 
-                            let ep_name = format!(
-                                "k_lws_{}",
-                                lws.iter().map(|v| v.to_string()).collect::<Vec<_>>().join("_"),
-                            );
+                            let ep_name = format!("k_lws_{}", lws.iter().map(|v| v.to_string()).collect::<Vec<_>>().join("_"),);
                             let entry_name = CString::new(ep_name).unwrap();
                             let stage = VkPipelineShaderStageCreateInfo {
                                 sType: VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
@@ -1497,8 +1495,13 @@ pub(super) fn initialize_device(
 
                             unsafe { vkDestroyShaderModule(device, shader, std::ptr::null()) };
 
-                            let id =
-                                programs.push(VulkanProgram { pipeline, pipeline_layout, desc_layout, push_constants_size, gws: gws_from_kernel(&kernel) });
+                            let id = programs.push(VulkanProgram {
+                                pipeline,
+                                pipeline_layout,
+                                desc_layout,
+                                push_constants_size,
+                                gws: gws_from_kernel(&kernel),
+                            });
                             let _ = reply.send(Ok(id));
                         }
                         VulkanCommand::Launch { program_id, args, mut event_wait_list, reply } => {
@@ -1729,7 +1732,7 @@ pub(super) fn initialize_device(
                             let _ = reply.send(Ok(()));
                         }
                         VulkanCommand::ReleaseProgram(program_id) => {
-                            if programs.contains_key(program_id) {
+                            if programs.contains_id(program_id) {
                                 let prog = unsafe { programs.remove_and_return(program_id) };
                                 unsafe {
                                     vkDestroyPipeline(device, prog.pipeline, std::ptr::null());

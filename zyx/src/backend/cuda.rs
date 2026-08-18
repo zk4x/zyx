@@ -130,7 +130,10 @@ macro_rules! send_or_continue {
     };
 }
 
-use super::{gws_from_kernel, DTypeCapability, Device, DeviceId, DeviceInfo, DeviceProgramId, Event, GwsDim, MemoryPool, PoolBufferId, PoolId, ProgramId};
+use super::{
+    DTypeCapability, Device, DeviceId, DeviceInfo, DeviceProgramId, Event, GwsDim, MemoryPool, PoolBufferId, PoolId, ProgramId,
+    gws_from_kernel,
+};
 
 /// CUDA configuration
 #[allow(clippy::question_mark)]
@@ -519,14 +522,10 @@ pub(super) fn initialize_device(
                             let _ = reply.send(buffer_id);
                         }
                         CUDACommand::GetVariable { buffer_id, reply } => {
-                            let variable = if !buffers.contains_key(buffer_id) {
-                                None
-                            } else {
-                                match &buffers[buffer_id] {
-                                    CUDABuffer::Variable(constant) => Some(constant.clone()),
-                                    CUDABuffer::Buffer { .. } => None,
-                                }
-                            };
+                            let variable = buffers.get(buffer_id).and_then(|buffer| match buffer {
+                                CUDABuffer::Variable(constant) => Some(constant.clone()),
+                                CUDABuffer::Buffer { .. } => None,
+                            });
                             let _ = reply.send(variable);
                         }
                         CUDACommand::Allocate { bytes, reply } => {
@@ -565,7 +564,7 @@ pub(super) fn initialize_device(
                                     _ = unsafe { (cuEventDestroy)(event) }.check(ErrorStatus::MemoryCopyP2H);
                                 }
                             }
-                            if !buffers.contains_key(buffer_id) {
+                            if !buffers.contains_id(buffer_id) {
                                 continue;
                             }
                             match buffers[buffer_id] {
@@ -1018,9 +1017,7 @@ impl CUDADevice {
         event_wait_list: Vec<Event>,
     ) -> Result<Event, BackendError> {
         let (reply, reply_rx) = channel();
-        self.tx
-            .send(CUDACommand::Launch { program_id, args: args.into(), event_wait_list, reply })
-            .unwrap();
+        self.tx.send(CUDACommand::Launch { program_id, args: args.into(), event_wait_list, reply }).unwrap();
         reply_rx.recv().unwrap()
     }
 
@@ -1844,11 +1841,7 @@ impl CUDAStatus {
 
 impl CUDADevice {
     #[allow(unused)]
-    pub fn compile_cuda(
-        &mut self,
-        kernel: &Kernel,
-        debug_asm: bool,
-    ) -> Result<(Vec<Dim>, Box<str>, Vec<u8>), BackendError> {
+    pub fn compile_cuda(&mut self, kernel: &Kernel, debug_asm: bool) -> Result<(Vec<Dim>, Box<str>, Vec<u8>), BackendError> {
         let mut lws = vec![1; 3];
         let mut op_id = kernel.head;
         while !op_id.is_null() {
@@ -1867,10 +1860,7 @@ impl CUDADevice {
         }
 
         // --- Codegen ---
-        let mut name = format!(
-            "k_{}",
-            lws.iter().map(ToString::to_string).collect::<Vec<_>>().join("_"),
-        );
+        let mut name = format!("k_{}", lws.iter().map(ToString::to_string).collect::<Vec<_>>().join("_"),);
 
         let source = kernel.generate_cuda(&self.dev_info, &name)?;
 
@@ -1978,11 +1968,7 @@ impl CUDADevice {
         Ok((lws, name.into_boxed_str(), ptx_vec))
     }
 
-    pub fn compile_ptx(
-        &mut self,
-        kernel: &Kernel,
-        debug_asm: bool,
-    ) -> Result<(Vec<Dim>, Box<str>, Vec<u8>), BackendError> {
+    pub fn compile_ptx(&mut self, kernel: &Kernel, debug_asm: bool) -> Result<(Vec<Dim>, Box<str>, Vec<u8>), BackendError> {
         let (mut ptx, name, lws) = kernel.generate_ptx(self.compute_capability, &self.dev_info)?;
         if debug_asm {
             eprintln!("{}", std::str::from_utf8(&ptx).unwrap_or("<invalid utf8>"));

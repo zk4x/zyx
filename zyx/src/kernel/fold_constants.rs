@@ -321,7 +321,7 @@ impl Kernel {
                     if dst == define_id {
                         self.remove_op(op_id);
                         // x may have been removed as a previous load. If that was the case, the load was redundant
-                        if self.ops.contains_key(x) {
+                        if self.ops.contains_id(x) {
                             let Op::Const(index) = self.ops[index].op else {
                                 unreachable!()
                             };

@@ -161,7 +161,7 @@ impl Tape {
         let output_tids: Vec<TensorId> = output_pairs.iter().map(|(tid, _)| *tid).collect();
         let output_classes: Vec<ClassId> = output_pairs.iter().map(|(_, cid)| *cid).collect();
 
-        debug_assert!(rt.graphs.contains_key(graph_id));
+        debug_assert!(rt.graphs.contains_id(graph_id));
         rt.debug_assert_pre_realize(graph_id);
 
         let output_set: BTreeSet<ClassId> = output_classes.iter().copied().collect();
@@ -276,7 +276,7 @@ impl Tape {
             })
             .collect();
 
-        debug_assert!(rt.graphs.contains_key(graph_id));
+        debug_assert!(rt.graphs.contains_id(graph_id));
         rt.debug_assert_pre_realize(graph_id);
 
         let output_set: BTreeSet<ClassId> = outputs.iter().map(|x| x.0).collect();

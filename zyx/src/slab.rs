@@ -115,7 +115,7 @@ impl<Id: SlabId, T> Slab<Id, T> {
 
     #[allow(unused)]
     pub(crate) fn get(&self, id: Id) -> Option<&T> {
-        if !self.contains_key(id) {
+        if !self.contains_id(id) {
             return None;
         }
         let idx = id.into();
@@ -150,7 +150,7 @@ impl<Id: SlabId, T> Slab<Id, T> {
             .map(|(id, x)| (Id::from(id), unsafe { x.assume_init_ref() }))
     }
 
-    pub(crate) fn contains_key(&self, id: Id) -> bool {
+    pub(crate) fn contains_id(&self, id: Id) -> bool {
         id < Id::from(self.values.len()) && !self.empty.contains(&id)
     }
 

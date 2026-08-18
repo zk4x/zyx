@@ -69,7 +69,7 @@ impl DiskMemoryPool {
     pub fn deallocate(&mut self, buffer_id: PoolBufferId, event_wait_list: Vec<Event>) {
         //println!("Deallocate buffer={buffer_id:?} from the disk");
         let _ = event_wait_list;
-        if self.buffers.contains_key(buffer_id) {
+        if self.buffers.contains_id(buffer_id) {
             let buffer = unsafe { self.buffers.remove_and_return(buffer_id) };
             self.free_bytes += buffer.bytes;
         }

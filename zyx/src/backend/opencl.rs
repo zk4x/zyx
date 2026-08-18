@@ -9,7 +9,10 @@
 #![allow(clippy::needless_pass_by_ref_mut)]
 #![allow(clippy::unused_self)]
 
-use super::{gws_from_kernel, DTypeCapability, Device, DeviceId, DeviceInfo, DeviceProgramId, Event, GwsDim, MemoryPool, PoolBufferId, PoolId};
+use super::{
+    DTypeCapability, Device, DeviceId, DeviceInfo, DeviceProgramId, Event, GwsDim, MemoryPool, PoolBufferId, PoolId,
+    gws_from_kernel,
+};
 use crate::{
     DType,
     dtype::Constant,
@@ -453,7 +456,7 @@ pub(super) fn initialize_device(
                             let _ = reply.send(buffer_id);
                         }
                         Command::GetVariable { buffer_id, reply } => {
-                            let variable = if !buffers.contains_key(buffer_id) {
+                            let variable = if !buffers.contains_id(buffer_id) {
                                 None
                             } else {
                                 match &buffers[buffer_id] {
@@ -492,7 +495,7 @@ pub(super) fn initialize_device(
                                 }
                                 .check(ErrorStatus::Deinitialization);
                             }
-                            if buffers.contains_key(buffer_id) {
+                            if buffers.contains_id(buffer_id) {
                                 match buffers[buffer_id] {
                                     OpenCLBuffer::Variable(_) => {}
                                     OpenCLBuffer::Buffer { ptr, bytes } => {
@@ -655,7 +658,7 @@ pub(super) fn initialize_device(
                             }
 
                             let queue_id = next_queue(&mut queues[device_idx], clFinish);
-                            if !programs.contains_key(program_id) {
+                            if !programs.contains_id(program_id) {
                                 //println!("[OPENCL] launching program_id={program_id:?}, NOT FOUND, programs={programs:?}");
                                 let _ = reply.send(Err(BackendError {
                                     status: ErrorStatus::KernelLaunch,
@@ -693,16 +696,21 @@ pub(super) fn initialize_device(
                                 continue 'work_thread_loop;
                             }
                             let mut event: *mut c_void = ptr::null_mut();
-                            let global_size: Vec<Dim> = program.gws.iter().zip(program.lws.iter()).map(|(gdim, l)| {
-                                let g = match gdim {
-                                    GwsDim::Const(d) => *d,
-                                    GwsDim::Param(ordinal) => match &buffers[args[*ordinal]] {
-                                        OpenCLBuffer::Variable(c) => c.as_dim().unwrap(),
-                                        _ => unreachable!("gws param must be a Variable buffer"),
-                                    },
-                                };
-                                g * *l
-                            }).collect();
+                            let global_size: Vec<Dim> = program
+                                .gws
+                                .iter()
+                                .zip(program.lws.iter())
+                                .map(|(gdim, l)| {
+                                    let g = match gdim {
+                                        GwsDim::Const(d) => *d,
+                                        GwsDim::Param(ordinal) => match &buffers[args[*ordinal]] {
+                                            OpenCLBuffer::Variable(c) => c.as_dim().unwrap(),
+                                            _ => unreachable!("gws param must be a Variable buffer"),
+                                        },
+                                    };
+                                    g * *l
+                                })
+                                .collect();
                             let lws_ptr = if program.lws.is_empty() {
                                 ptr::null()
                             } else {
@@ -903,10 +911,7 @@ impl OpenCLDevice {
             return Err(BackendError { status: ErrorStatus::KernelCompilation, context: "Invalid local work size.".into() });
         }
 
-        let name = format!(
-            "k_{}",
-            lws.iter().map(ToString::to_string).collect::<Vec<_>>().join("_"),
-        );
+        let name = format!("k_{}", lws.iter().map(ToString::to_string).collect::<Vec<_>>().join("_"),);
 
         let source = kernel.generate_opencl(&self.dev_info, &name)?;
         if debug_asm {

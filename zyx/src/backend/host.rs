@@ -98,7 +98,7 @@ impl HostMemoryPool {
     #[allow(clippy::needless_pass_by_value)]
     pub fn deallocate(&mut self, buffer_id: PoolBufferId, event_wait_list: Vec<Event>) {
         let _ = event_wait_list;
-        if self.buffers.contains_key(buffer_id) {
+        if self.buffers.contains_id(buffer_id) {
             match unsafe { self.buffers.remove_and_return(buffer_id) } {
                 HostBuffer::Variable { .. } => {}
                 HostBuffer::Buffer(buffer) => self.free_bytes += buffer.len() as Dim,

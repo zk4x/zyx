@@ -316,7 +316,7 @@ impl Runtime {
 
         if !class_id.is_null() {
             // Graph-affiliated tensor (pure graph or "both" while graph alive).
-            if self.graphs.contains_key(graph_id) {
+            if self.graphs.contains_id(graph_id) {
                 if !self.graphs[graph_id].is_leaf(class_id) {
                     debug_assert!(!self.buffer_map.contains_key(&x), "dead non-leaf graph tensor holds a buffer");
                     self.tensors.remove(x);
@@ -379,7 +379,7 @@ impl Runtime {
         let leaf_tids: Vec<TensorId> = self.graphs[graph_id].leaf_map.values().copied().collect();
         for tid in leaf_tids {
             // Dead leaves may already have been removed by Tape::drop.
-            if !self.tensors.contains_key(tid) {
+            if !self.tensors.contains_id(tid) {
                 continue;
             }
             if self.tensors[tid].graph_id == graph_id {
@@ -768,8 +768,7 @@ impl Runtime {
             axes.sort_unstable_by(|a, b| b.cmp(a));
             for axis in axes {
                 let rank = cur_shape.len();
-                let permute_axes: Vec<UAxis> =
-                    (0..rank as UAxis).filter(|&i| i != axis).chain([axis]).collect();
+                let permute_axes: Vec<UAxis> = (0..rank as UAxis).filter(|&i| i != axis).chain([axis]).collect();
                 cur = self.permute(cur, permute_axes.clone());
                 let permuted_shape = crate::shape::permute(&cur_shape, &permute_axes);
                 let out_shape: Vec<Dim> = permuted_shape[..permuted_shape.len() - 1].to_vec();

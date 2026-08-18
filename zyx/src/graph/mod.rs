@@ -1233,7 +1233,8 @@ impl Runtime {
                         let x_class = op_to_class[&x];
                         let rank = self.graphs[graph_id].rank(x_class);
                         debug_assert!(rank >= 1, "Reduce: input rank must be >= 1");
-                        let (_, class_id) = self.push_node(graph_id, Node::Reduce { x: x_class, rop, axes: vec![rank - 1].into() });
+                        let (_, class_id) =
+                            self.push_node(graph_id, Node::Reduce { x: x_class, rop, axes: vec![rank - 1].into() });
                         class_id
                     }
                     Op::Move { x, ref mop } => {
@@ -1242,7 +1243,8 @@ impl Runtime {
                         match mop.as_ref() {
                             MoveOp::Reshape { shape, input_rank } => {
                                 let shape = op_to_class[&shape];
-                                let (_, class_id) = self.push_node(graph_id, Node::Reshape { x: x_class, shape, input_rank: *input_rank });
+                                let (_, class_id) =
+                                    self.push_node(graph_id, Node::Reshape { x: x_class, shape, input_rank: *input_rank });
                                 class_id
                             }
                             MoveOp::Expand { shape } => {
@@ -1280,7 +1282,8 @@ impl Runtime {
                             MoveOp::Narrow { axis, start, len } => {
                                 let start = op_to_class[&start];
                                 let len = op_to_class[&len];
-                                let (_, class_id) = self.push_node(graph_id, Node::Narrow { x: x_class, axis: *axis, start, len });
+                                let (_, class_id) =
+                                    self.push_node(graph_id, Node::Narrow { x: x_class, axis: *axis, start, len });
                                 class_id
                             }
                             MoveOp::Flip { axes } => {
@@ -1400,7 +1403,7 @@ impl Runtime {
     /// kernelizes the remaining structural nodes, autotunes the fused kernels,
     /// extracts the cheapest kernel path, and returns the resulting plan.
     pub(crate) fn compile_graph(&mut self, graph_id: GraphId, output_set: &BTreeSet<ClassId>) -> Result<ExecPlan, ZyxError> {
-        debug_assert!(self.graphs.contains_key(graph_id));
+        debug_assert!(self.graphs.contains_id(graph_id));
         self.debug_assert_pre_realize(graph_id);
 
         for cid in self.graphs[graph_id].classes.ids() {
@@ -1591,9 +1594,7 @@ impl Runtime {
                     out_shape
                 );*/
             }
-            Node::Expand { .. } => {
-                /* shape dims not yet resolved (Stack). Re-enable once shape() resolves Stack. */
-            }
+            Node::Expand { .. } => { /* shape dims not yet resolved (Stack). Re-enable once shape() resolves Stack. */ }
             Node::Reduce { x, ref axes, .. } => {
                 let in_shape = self.graphs[graph_id].shape(x);
                 for &a in axes.iter() {

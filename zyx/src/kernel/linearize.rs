@@ -421,107 +421,6 @@ impl Kernel {
                     view.push(SDim::new(loop_id, zero, zero, reduce_axis));
                     views.insert(x, view);
                     self.ops[op_id].op = Op::Reduce { x, rop, reduce_axis: loop_id };
-                    // Collect all transitive dependencies of the reduce input and the
-                    // accumulator dtype. The loop that wraps the reduction is opened at
-                    // the soonest dependency that appears in the graph.
-                    /*let mut reduce_loop_ops_set = Set::default();
-                    let mut params = vec![x];
-                    let mut acc_dtype = None;
-                    while let Some(param) = params.pop() {
-                        if reduce_loop_ops_set.insert(param) {
-                            params.extend(self.at(param).parameters());
-                            if acc_dtype.is_none() {
-                                match self.at(param) {
-                                    &Op::Storage { dtype, .. } | &Op::Cast { dtype, .. } => acc_dtype = Some(dtype),
-                                    Op::Const(v) => acc_dtype = Some(v.dtype()),
-                                    _ => {}
-                                }
-                            }
-                        }
-                    }
-                    let acc_dtype = acc_dtype.unwrap();
-
-                    let mut loop_start = OpId::NULL;
-                    let mut scan = self.head;
-                    while !scan.is_null() {
-                        if reduce_loop_ops_set.contains(&scan) {
-                            loop_start = scan;
-                            break;
-                        }
-                        scan = self.next_op(scan);
-                    }
-
-                    // const zero + init accumulator constant.
-                    let const_zero = self.insert_const_idx_before(loop_start, 0u32);
-                    let acc_init_id = self.insert_before(
-                        loop_start,
-                        Op::Const(match rop {
-                            BOp::Add => acc_dtype.zero_constant(),
-                            BOp::Max => acc_dtype.min_constant(),
-                            BOp::Mul => acc_dtype.one_constant(),
-                            _ => unreachable!(),
-                        }),
-                    );
-                    let acc = self.insert_before(loop_start, Op::Storage { dtype: acc_dtype, scope: MemScope::Register, len: 1 });
-                    self.insert_before(
-                        loop_start,
-                        Op::Store { dst: acc, src: acc_init_id, index: const_zero, layout: MemLayout::Scalar },
-                    );
-
-                    // Open the reduce loops over the reduced dims, keeping the loop ids.
-                    let dims = self.reduce_dims(op_id);
-                    let mut loop_ids = Vec::with_capacity(n_axes);
-                    let mut loop_lens = Vec::with_capacity(n_axes);
-                    for &dim in &dims[..n_axes] {
-                        let len = self.insert_const_idx_before(loop_start, dim);
-                        loop_lens.push(len);
-                        loop_ids.push(self.insert_before(loop_start, Op::Loop { len }));
-                    }
-
-                    // x's view uses the reduce input's row-major strides for the
-                    // non-reduced axes, plus the newly opened loops for the reduced
-                    // axes with contiguous strides and zero padding.
-                    let out_view = views.remove(&op_id).unwrap();
-                    let rank = shape.len();
-                    let non_reduce = rank - n_axes;
-                    let mut strides = vec![1; rank];
-                    let mut st = 1;
-                    for a in (0..rank).rev() {
-                        strides[a] = st;
-                        st *= shape[a];
-                    }
-                    let zero = self.insert_const_idx_before(loop_start, 0u32);
-                    let mut view = Vec::with_capacity(rank);
-                    for e in 0..non_reduce {
-                        let (idx, _st, lp, rp, len) = out_view[e];
-                        let stride = self.insert_const_idx_before(loop_start, strides[e]);
-                        view.push((idx, stride, lp, rp, len));
-                    }
-                    for (i, &lid) in loop_ids.iter().enumerate() {
-                        let stride = self.insert_const_idx_before(loop_start, strides[non_reduce + i]);
-                        view.push((lid, stride, zero, zero, loop_lens[i]));
-                    }
-                    views.insert(x, view);
-
-                    // Accumulate just before the reduce op (which is inside the loop).
-                    let load_acc = self.insert_before(op_id, Op::Load { src: acc, index: const_zero, layout: MemLayout::Scalar });
-                    let bin_acc = self.insert_before(op_id, Op::Binary { x, y: load_acc, bop: rop });
-                    self.insert_before(op_id, Op::Store { dst: acc, src: bin_acc, index: const_zero, layout: MemLayout::Scalar });
-
-                    // Close the reduce loop.
-                    for _ in 0..n_axes {
-                        self.insert_before(op_id, Op::EndLoop);
-                    }
-
-                    // Replace the reduce with a load of the accumulator result.
-                    self.ops[op_id].op = Op::Load { src: acc, index: const_zero, layout: MemLayout::Scalar };
-
-                    // Upstream ops (walked later, in reverse) that depend on the loop
-                    // ids/strides just inserted must land inside this loop, right
-                    // after its infrastructure. The op immediately after the loop
-                    // opener is `loop_start`; insertions before it end up after the
-                    // loop's own inserted ops.
-                    open_loops.push((loop_start, loop_start));*/
                 }
                 Op::Move { x, ref mop } => {
                     match mop.as_ref() {
@@ -844,7 +743,9 @@ impl Kernel {
             let mut pending = roots;
             while let Some(op_id) = pending.pop() {
                 if reachable.insert(op_id) {
-                    pending.extend(self.at(op_id).parameters().filter(|p| !p.is_null()));
+                    if self.ops.contains_id(op_id) {
+                        pending.extend(self.at(op_id).parameters());
+                    }
                 }
             }
 
