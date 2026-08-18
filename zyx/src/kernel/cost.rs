@@ -193,7 +193,7 @@ impl Kernel {
         let mut n_scoped_store_bits = [0u64; 3];
         let mut wi_barriers = 0u64;
         let mut gws = [1u64; 3];
-        let mut lws = [1u64; 3];
+        let mut lws = [1u32; 3];
         let mut loop_mult = 1u64;
         let mut latest_loop_lengths: Vec<u64> = Vec::new();
         let mut max_loop_depth = 0u64;
@@ -473,19 +473,20 @@ impl Kernel {
                         }
                     }
                 }
-                Op::Index { len, axis, kind: scope } => match scope {
-                    IdxKind::Group => gws[axis as usize] = self.index_len(len),
-                    IdxKind::Local => lws[axis as usize] = self.index_len(len),
-                    IdxKind::Warp => todo!(),
+                Op::Index { axis, kind: scope } => match scope {
+                    IdxKind::Group(len) => gws[axis as usize] = self.resolve_dim(len).unwrap(),
+                    IdxKind::Local(len) => lws[axis as usize] = len,
+                    IdxKind::Warp(_) => todo!(),
                 },
                 Op::Loop { len: len_id } => {
-                    let len = self.loop_len_dim(len_id);
                     wi_ops += loop_mult * 3;
                     if !indexing_ops.contains(&op_id) {
                         wi_compute_ops += loop_mult * 3;
                     }
-                    loop_mult *= len;
-                    latest_loop_lengths.push(len);
+                    if let Some(len) = self.resolve_dim(len_id) {
+                        loop_mult *= len;
+                        latest_loop_lengths.push(len);
+                    }
                     let depth = latest_loop_lengths.len() as u64;
                     if depth > max_loop_depth {
                         max_loop_depth = depth;
@@ -533,8 +534,8 @@ impl Kernel {
         let wi_local_store_bits = n_scoped_store_bits[1];
         let wi_register_store_bits = n_scoped_store_bits[2];
 
-        let num_groups = gws.iter().product::<u64>();
-        let wi_per_group = lws.iter().product::<u64>();
+        let num_groups: u64 = gws.iter().product();
+        let wi_per_group: u32 = lws.iter().product();
 
         let glb_load_lidx_stride = if glb_load_lidx_stride_weight > 0 {
             glb_load_lidx_stride_weighted as f64 / glb_load_lidx_stride_weight as f64

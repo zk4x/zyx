@@ -22,7 +22,7 @@
 /// ZYX_DEBUG=8 cargo run  # Print IR during kernel compilation
 /// ZYX_DEBUG=16 cargo run # Print generated assembly
 /// ```
-use crate::kernel::{BOp, IDX_T, MoveOp, UOp};
+use crate::kernel::{BOp, IDX_T, IdxKind, MoveOp, UOp};
 use crate::slab::SlabId;
 use crate::{BLUE, BOLD, CYAN, GREEN, GREY, MAGENTA, ORANGE, RED, RESET, YELLOW};
 use crate::{
@@ -260,12 +260,15 @@ impl Kernel {
                         "{indent}r{out_id}{grey}: {cdtype}{reset} = {orange}wmma{reset}.{dims:?}.{layout:?}.{dtype:?}(c={c}, a={a}, b={b})",
                     );
                 }
-                Op::Index { len, axis, kind: scope } => {
+                Op::Index { axis, kind } => {
                     dtypes.insert(op_id, IDX_T);
-                    let ub = self.index_len(len).saturating_sub(1);
-                    let len = id_map.get(&len).copied().unwrap_or(len);
+                    let ub = match kind {
+                        IdxKind::Group(len) => self.resolve_dim(len).unwrap_or(u64::MAX).saturating_sub(1),
+                        IdxKind::Local(len) => len as u64 - 1,
+                        IdxKind::Warp(len) => len as u64 - 1,
+                    };
                     println!(
-                        "{indent}r{out_id}{grey}: {IDX_T}{reset} = {blue}{scope}_index({axis}){reset} len=r{len}    // 0..={ub}"
+                        "{indent}r{out_id}{grey}: {IDX_T}{reset} = {blue}{kind}_index({axis}){reset}    // 0..={ub}"
                     );
                 }
                 Op::Loop { len } => {

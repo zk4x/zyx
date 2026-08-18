@@ -647,9 +647,6 @@ fn extract_json_str(json: &str, key: &str) -> Option<String> {
 struct TTProgram {
     input_dtypes: Vec<DType>,
     output_dtypes: Vec<DType>,
-    /// Grid dimensions for gidx0 (rows) and gidx1 (cols).
-    /// Each dimension defaults to 1 if no corresponding gidx is used.
-    grid_dims: [u32; 2],
 }
 
 // ---------------------------------------------------------------------------
@@ -681,12 +678,11 @@ impl TTDevice {
 
     #[allow(unused_must_use)]
     pub fn compile(&mut self, kernel: &Kernel, debug_asm: bool) -> Result<DeviceProgramId, BackendError> {
-        // Build CB maps, dtypes, and grid_dims from the kernel
+        // Build CB maps and dtypes from the kernel
         let mut input_cb_map: Map<OpId, u32> = Map::default();
         let mut output_cb_map: Map<OpId, u32> = Map::default();
         let mut input_dtypes: Vec<DType> = Vec::new();
         let mut output_dtypes: Vec<DType> = Vec::new();
-        let mut grid_dims = [1u32, 1u32];
         {
             let mut max_cb = 0;
             let mut scan = kernel.head;
@@ -694,7 +690,6 @@ impl TTDevice {
                 match &kernel.ops[scan].op {
                     Op::Define { dtype, scope: MemScope::Global, ro: true, .. } => input_dtypes.push(*dtype),
                     Op::Define { dtype, scope: MemScope::Global, ro: false, .. } => output_dtypes.push(*dtype),
-                    Op::Index { len, axis, scope: IdxScope::Group } => grid_dims[*axis as usize] = *len as u32,
                     Op::Store { dst, x, .. } => {
                         if let Op::Define { scope: MemScope::Circular, .. } = kernel.ops[*dst].op {
                             if let Op::Load { src, .. } = kernel.ops[*x].op {
@@ -719,7 +714,7 @@ impl TTDevice {
         let (reader, compute, writer) =
             kernel.generate_tenstorrent(debug_asm, input_dtypes.len(), output_dtypes.len(), &input_cb_map, &output_cb_map)?;
 
-        let prog_id = self.programs.push(TTProgram { input_dtypes, output_dtypes, grid_dims });
+        let prog_id = self.programs.push(TTProgram { input_dtypes, output_dtypes });
 
         {
             let mut cb_config = Vec::with_capacity(input_cb_map.len() + output_cb_map.len());
@@ -785,6 +780,7 @@ impl TTDevice {
         &mut self,
         program_id: DeviceProgramId,
         memory_pool: &mut TTMemoryPool,
+        gws: &[Dim],
         args: &[PoolBufferId],
         event_wait_list: Vec<Event>,
     ) -> Result<Event, BackendError> {
@@ -825,7 +821,11 @@ impl TTDevice {
         }
 
         let mut rt_guard = rt.lock().unwrap();
-        rt_guard.run(program_id.0, &src_indices, &dst_indices, prog.grid_dims)?;
+        let grid_dims = [
+            u32::try_from(gws.first().copied().unwrap_or(1)).unwrap_or(1),
+            u32::try_from(gws.get(1).copied().unwrap_or(1)).unwrap_or(1),
+        ];
+        rt_guard.run(program_id.0, &src_indices, &dst_indices, grid_dims)?;
 
         Ok(Event::TT(TTEvent))
     }

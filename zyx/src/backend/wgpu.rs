@@ -5,7 +5,7 @@ use super::{BackendError, Device, DeviceId, DeviceInfo, ErrorStatus, Event, Memo
 use crate::{
     DType,
     backend::{DTypeCapability, DeviceProgramId, PoolBufferId},
-    kernel::{IdxScope, Kernel, MemScope, Op},
+    kernel::{IdxKind, Kernel, MemScope, Op},
     shape::Dim,
     slab::Slab,
 };
@@ -57,7 +57,6 @@ pub struct WGPUEvent {
 #[allow(dead_code)]
 pub(super) struct WGPUProgram {
     name: String,
-    gws: Vec<u64>,
     arg_ro_flags: Vec<bool>,
     shader: ShaderModule,
     pipeline: ComputePipeline,
@@ -397,15 +396,14 @@ impl WGPUDevice {
     }
 
     pub fn compile(&mut self, kernel: &Kernel, debug_asm: bool) -> Result<DeviceProgramId, BackendError> {
-        let mut gws = vec![Dim::from(1u64); 3];
         let mut lws = [Dim::from(1u64); 3];
         let mut op_id = kernel.head;
         while !op_id.is_null() {
-            if let Op::Index { len, axis, scope } = kernel.ops[op_id].op {
+            if let Op::Index { axis, kind: scope } = kernel.ops[op_id].op {
                 match scope {
-                    IdxScope::Group => gws[axis as usize] = len,
-                    IdxScope::Local => lws[axis as usize] = len,
-                    IdxScope::Warp => todo!(),
+                    IdxKind::Group(_) => {}
+                    IdxKind::Local(len) => lws[axis as usize] = Dim::from(u64::from(len)),
+                    IdxKind::Warp(_) => todo!(),
                 }
             }
             op_id = kernel.next_op(op_id);
@@ -423,8 +421,7 @@ impl WGPUDevice {
         }
 
         let name = format!(
-            "k_{}__{}",
-            gws.iter().map(ToString::to_string).collect::<Vec<_>>().join("_"),
+            "k_{}",
             lws.iter().map(ToString::to_string).collect::<Vec<_>>().join("_"),
         );
 
@@ -472,7 +469,7 @@ impl WGPUDevice {
             compilation_options: wgpu::PipelineCompilationOptions::default(),
         });
 
-        let id = self.programs.push(WGPUProgram { name, gws, arg_ro_flags, shader: shader_module, pipeline, bind_group_layout });
+        let id = self.programs.push(WGPUProgram { name, arg_ro_flags, shader: shader_module, pipeline, bind_group_layout });
 
         Ok(id)
     }
@@ -486,6 +483,7 @@ impl WGPUDevice {
         &mut self,
         program_id: DeviceProgramId,
         memory_pool: &mut WGPUMemoryPool,
+        gws: &[Dim],
         args: &[PoolBufferId],
         event_wait_list: Vec<Event>,
     ) -> Result<Event, BackendError> {
@@ -513,9 +511,9 @@ impl WGPUDevice {
             cpass.set_bind_group(0, &set, &[]);
             cpass.insert_debug_marker(&program.name);
             cpass.dispatch_workgroups(
-                u32::try_from(program.gws.first().copied().unwrap_or(1)).unwrap(),
-                u32::try_from(program.gws.get(1).copied().unwrap_or(1)).unwrap(),
-                u32::try_from(program.gws.get(2).copied().unwrap_or(1)).unwrap(),
+                u32::try_from(gws.first().copied().unwrap_or(1)).unwrap(),
+                u32::try_from(gws.get(1).copied().unwrap_or(1)).unwrap(),
+                u32::try_from(gws.get(2).copied().unwrap_or(1)).unwrap(),
             );
         }
         let submission_index = Some(self.queue.submit(Some(encoder.finish())));

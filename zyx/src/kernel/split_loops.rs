@@ -35,10 +35,9 @@ impl Kernel {
             let factors = Vec::new();
             return (Optimization::SplitLoop { factors }, 0);
         }
-        let mut local_axis_sizes: crate::Map<u32, u64> = crate::Map::default();
+        let mut local_axis_sizes: crate::Map<u32, u32> = crate::Map::default();
         for op in self.ops.values() {
-            if let Op::Index { axis, len, kind: IdxKind::Local } = op.op {
-                let len = self.index_len(len);
+            if let Op::Index { axis, kind: IdxKind::Local(len) } = op.op {
                 if let Some(&existing) = local_axis_sizes.get(&axis) {
                     debug_assert_eq!(existing, len);
                 } else {
@@ -46,7 +45,7 @@ impl Kernel {
                 }
             }
         }
-        let used_threads: u64 = local_axis_sizes.values().product::<u64>();
+        let used_threads: u32 = local_axis_sizes.values().product();
         let remaining_threads = if local_axis_sizes.is_empty() {
             dev_info.max_local_threads
         } else {
@@ -56,12 +55,14 @@ impl Kernel {
         let mut op_id = self.head;
         let mut factors = Vec::new();
         while !op_id.is_null() {
-            if let Op::Index { len, axis, kind: IdxKind::Group } = self.ops[op_id].op {
-                let mut l_factors: Vec<u64> = vec![64, 32, 16, 8, 4, 2];
+            if let Op::Index { axis, kind: IdxKind::Group(len) } = self.ops[op_id].op {
+                let mut l_factors: Vec<u32> = vec![64, 32, 16, 8, 4, 2];
                 if !local_axis_sizes.contains_key(&axis) {
                     let max_per_axis = dev_info.max_local_work_dims[axis as usize];
-                    let len = self.index_len(len);
-                    l_factors.retain(|&f| len.is_multiple_of(f) && f <= remaining_threads && f <= max_per_axis);
+                    let Some(len) = self.resolve_dim(len) else {
+                        continue;
+                    };
+                    l_factors.retain(|&f| len.is_multiple_of(f as u64) && f <= remaining_threads && f <= max_per_axis);
                     for &f in &l_factors {
                         factors.push((op_id, f));
                     }
@@ -87,7 +88,9 @@ impl Kernel {
         let mut op_id = self.head;
         while !op_id.is_null() {
             if let Op::Loop { len: len_id } = self.ops[op_id].op {
-                let len = self.loop_len_dim(len_id);
+                let Some(len) = self.resolve_dim(len_id) else {
+                    continue;
+                };
                 if len >= 16 {
                     for &factor in &candidates {
                         if len.is_multiple_of(factor as u64) {
@@ -112,17 +115,52 @@ impl Kernel {
         #[cfg(debug_assertions)]
         {
             let mut dim = 1;
+            let mut ok = true;
             for op in splits.iter() {
-                match op {
-                    Op::Loop { len, .. } => dim *= self.loop_len_dim(*len),
-                    Op::Index { len, .. } => dim *= self.index_len(*len),
+                use crate::shape::Dim;
+
+                match *op {
+                    Op::Loop { len, .. } => match self.resolve_dim(len) {
+                        Some(l) => dim *= l,
+                        None => {
+                            ok = false;
+                            break;
+                        }
+                    },
+                    Op::Index { kind, .. } => match kind {
+                        IdxKind::Group(len) => match self.resolve_dim(len) {
+                            Some(l) => dim *= l,
+                            None => {
+                                ok = false;
+                                break;
+                            }
+                        },
+                        IdxKind::Local(len) => dim *= len as Dim,
+                        IdxKind::Warp(len) => dim *= len as Dim,
+                    },
                     _ => unreachable!("split can be only index or loop"),
                 }
             }
-            match self.ops[dim_id].op {
-                Op::Index { len, .. } => debug_assert_eq!(self.index_len(len), dim),
-                Op::Loop { len, .. } => debug_assert_eq!(self.loop_len_dim(len), dim),
-                _ => {}
+            if ok {
+                match self.ops[dim_id].op {
+                    Op::Index { kind, .. } => {
+                        use crate::shape::Dim;
+
+                        match kind {
+                            IdxKind::Group(len) => if let Some(l) = self.resolve_dim(len) {
+                                debug_assert_eq!(l, dim);
+                            }
+                            IdxKind::Local(l) => debug_assert_eq!(l as Dim, dim),
+                            IdxKind::Warp(l) => debug_assert_eq!(l as Dim, dim),
+                        }
+                    }
+                    Op::Loop { len, .. } => {
+                        if let Some(l) = self.resolve_dim(len) {
+                            debug_assert_eq!(l, dim);
+                        }
+                    }
+                    _ => {}
+                }
             }
         }
 
@@ -142,9 +180,13 @@ impl Kernel {
         for op in splits.iter().rev() {
             strides.push(st);
             match op {
-                Op::Loop { len, .. } => st *= self.loop_len_dim(*len),
-                Op::Index { len, .. } => st *= self.index_len(*len),
-                _ => unreachable!(),
+                Op::Loop { len, .. } => st *= self.resolve_dim(*len).unwrap(),
+                Op::Index { kind, .. } => match kind {
+                    IdxKind::Group(len) => st *= self.resolve_dim(*len).unwrap(),
+                    IdxKind::Local(len) => st *= u64::from(*len),
+                    IdxKind::Warp(len) => st *= u64::from(*len),
+                },
+                _ => unreachable!("split can be only index or loop"),
             }
         }
         strides.reverse();

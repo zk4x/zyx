@@ -187,11 +187,13 @@ impl DummyDevice {
         &mut self,
         program_id: DeviceProgramId,
         memory_pool: &mut DummyMemoryPool,
+        gws: &[Dim],
         args: &[PoolBufferId],
         event_wait_list: Vec<Event>,
     ) -> Result<Event, BackendError> {
         let _ = self;
         let _ = program_id;
+        let _ = gws;
         let _ = event_wait_list;
         for &arg in args {
             let _ = memory_pool.buffers[arg];

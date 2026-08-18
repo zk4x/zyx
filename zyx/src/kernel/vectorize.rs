@@ -567,7 +567,8 @@ mod tests {
         let dst_shape = k.const_idx(8u32);
         let src = k.param(DType::F32, ParamKind::Global, src_shape);
         let dst = k.param(DType::F32, ParamKind::Global, dst_shape);
-        let g0 = k.group_index(0, 4);
+        let g0_len = k.const_idx(4);
+        let g0 = k.group_index(0, g0_len);
         let two = k.const_idx(2u32);
         let offset = k.binary(g0, two, BOp::BitShiftLeft);
         let vec_load = k.load(src, offset, MemLayout::Vector(2));
@@ -593,7 +594,8 @@ mod tests {
         let dst_shape = k.const_idx(4u32);
         let src = k.param(DType::F32, ParamKind::Global, src_shape);
         let dst = k.param(DType::F32, ParamKind::Global, dst_shape);
-        let g0 = k.group_index(0, 4);
+        let g0_len = k.const_idx(4);
+        let g0 = k.group_index(0, g0_len);
         let two = k.const_idx(2u32);
         let offset = k.binary(g0, two, BOp::BitShiftLeft);
         let vec_load = k.load(src, offset, MemLayout::Vector(4));
@@ -647,7 +649,8 @@ mod tests {
         let dst_shape = k.const_idx(4u32);
         let src = k.param(DType::F32, ParamKind::Global, src_shape);
         let dst = k.param(DType::F32, ParamKind::Global, dst_shape);
-        let g0 = k.group_index(0, 4);
+        let g0_len = k.const_idx(4);
+        let g0 = k.group_index(0, g0_len);
         let two = k.const_idx(2u32);
         let offset = k.binary(g0, two, BOp::BitShiftLeft);
         let vec_load = k.load(src, offset, MemLayout::Vector(4));
@@ -701,7 +704,8 @@ mod tests {
         let dst_shape = k.const_idx(8u32);
         let src = k.param(DType::F32, ParamKind::Global, src_shape);
         let dst = k.param(DType::F32, ParamKind::Global, dst_shape);
-        let g0 = k.group_index(0, 4);
+        let g0_len = k.const_idx(4);
+        let g0 = k.group_index(0, g0_len);
         let two = k.const_idx(2u32);
         let offset = k.binary(g0, two, BOp::BitShiftLeft);
         let vec_load = k.load(src, offset, MemLayout::Vector(2));
@@ -744,7 +748,8 @@ mod tests {
         let dst_shape = k.const_idx(8u32);
         let src = k.param(DType::F32, ParamKind::Global, src_shape);
         let dst = k.param(DType::F32, ParamKind::Global, dst_shape);
-        let g0 = k.group_index(0, 4);
+        let g0_len = k.const_idx(4);
+        let g0 = k.group_index(0, g0_len);
         let two = k.const_idx(2u32);
         let offset = k.binary(g0, two, BOp::BitShiftLeft);
         let vec_load = k.load(src, offset, MemLayout::Vector(2));
@@ -771,7 +776,8 @@ mod tests {
         let dst_shape = k.const_idx(16u32);
         let src = k.param(DType::F32, ParamKind::Global, src_shape);
         let dst = k.param(DType::F32, ParamKind::Global, dst_shape);
-        let g0 = k.group_index(0, 4);
+        let g0_len = k.const_idx(4);
+        let g0 = k.group_index(0, g0_len);
         let two = k.const_idx(2u32);
         let offset = k.binary(g0, two, BOp::BitShiftLeft);
         let vec_load = k.load(src, offset, MemLayout::Vector(4));

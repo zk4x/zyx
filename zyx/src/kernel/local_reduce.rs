@@ -15,10 +15,7 @@
 
 use super::autotune::Optimization;
 use crate::{
-    backend::DeviceInfo,
-    dtype::Constant,
-    kernel::{BOp, IdxKind, Kernel, MemLayout, MemScope, Op, OpId},
-    slab::SlabId,
+    Map, backend::DeviceInfo, dtype::Constant, kernel::{BOp, IdxKind, Kernel, MemLayout, MemScope, Op, OpId}, shape::Dim, slab::SlabId
 };
 
 impl Kernel {
@@ -27,7 +24,7 @@ impl Kernel {
         let _timer = crate::Timer::new("opt_tiled_reduce");
         // Let's not tile reduce kernel with barriers for now
         // Don't apply tiled reduce if there's already a barrier or local index
-        if self.ops.values().any(|node| matches!(node.op, Op::Barrier | Op::Index { kind: IdxKind::Local, .. })) {
+        if self.ops.values().any(|node| matches!(node.op, Op::Barrier | Op::Index { kind: IdxKind::Local(_), .. })) {
             return (Optimization::TiledReduce { factors: Vec::new() }, 0);
         }
         // Only apply tiled reduce if there's exactly one loop in the kernel
@@ -36,10 +33,9 @@ impl Kernel {
             return (Optimization::TiledReduce { factors: Vec::new() }, 0);
         }
 
-        let mut local_axis_sizes: crate::Map<u32, u64> = crate::Map::default();
+        let mut local_axis_sizes: Map<u32, u32> = crate::Map::default();
         for op in self.ops.values() {
-            if let Op::Index { axis, len, kind: IdxKind::Local } = op.op {
-                let len = self.index_len(len);
+            if let Op::Index { axis, kind: IdxKind::Local(len) } = op.op {
                 if let Some(&existing) = local_axis_sizes.get(&axis) {
                     debug_assert_eq!(existing, len);
                 } else {
@@ -47,7 +43,7 @@ impl Kernel {
                 }
             }
         }
-        let used_threads: u64 = local_axis_sizes.values().product::<u64>();
+        let used_threads: u32 = local_axis_sizes.values().product();
         let remaining_threads = if local_axis_sizes.is_empty() {
             dev_info.max_local_threads
         } else {
@@ -59,11 +55,12 @@ impl Kernel {
         let mut factors = Vec::new();
         let mut op_id = self.head;
         while !op_id.is_null() {
+            let next = self.next_op(op_id);
             if let Op::Loop { len: len_id } = self.ops[op_id].op {
-                let len = self.loop_len_dim(len_id);
+                let Some(len) = self.resolve_dim(len_id) else { continue };
                 if len >= 16 {
                     for &factor in &candidates {
-                        if len.is_multiple_of(factor) && len / factor >= 4 && remaining_threads >= factor {
+                        if len.is_multiple_of(factor) && len / factor >= 4 && remaining_threads as u64 >= factor {
                             for &tree_branch in &tree_branch_candidates {
                                 factors.push((op_id, factor, tree_branch));
                             }
@@ -71,7 +68,7 @@ impl Kernel {
                     }
                 }
             }
-            op_id = self.next_op(op_id);
+            op_id = next;
         }
         let n = factors.len();
         (Optimization::TiledReduce { factors }, n)
@@ -88,7 +85,7 @@ impl Kernel {
     /// * `loop_start` - The loop operation to parallelize
     /// * `factor` - The factor for splitting the loop
     /// * `tree_branch` - The tree reduction branching factor
-    pub(crate) fn local_reduce(&mut self, loop_start: OpId, factor: u64, tree_branch: u64) {
+    pub(crate) fn local_reduce(&mut self, loop_start: OpId, factor: u32, tree_branch: u32) {
         #[cfg(feature = "time")]
         let _timer = crate::Timer::new("tiled_reduce");
         let loop_len_id = if let Op::Loop { len } = self.at(loop_start) {
@@ -96,14 +93,14 @@ impl Kernel {
         } else {
             return;
         };
-        let loop_len = self.loop_len_dim(loop_len_id);
+        let Some(loop_len) = self.resolve_dim(loop_len_id) else { return };
 
         // Get new free axis for the local dimension
         let laxis = self
             .ops
             .values()
             .filter_map(|node| {
-                if let Op::Index { axis, kind: IdxKind::Local, .. } = node.op {
+                if let Op::Index { axis, kind: IdxKind::Local(_), .. } = node.op {
                     Some(axis + 1)
                 } else {
                     None
@@ -191,14 +188,13 @@ impl Kernel {
         };
         let loc_acc = self.insert_before(
             insert_at,
-            Op::Storage { dtype: acc_dtype, scope: MemScope::Local, len: factor },
+            Op::Storage { dtype: acc_dtype, scope: MemScope::Local, len: factor as Dim },
         );
-        let lidx_len = self.insert_before(insert_at, Op::Const(Constant::idx(factor)));
-        let lidx = self.insert_before(insert_at, Op::Index { len: lidx_len, axis: laxis, kind: IdxKind::Local });
+        let lidx = self.insert_before(insert_at, Op::Index { axis: laxis, kind: IdxKind::Local(factor) });
 
         // Divide reduce loop by factor
         let factor_const = self.insert_before(loop_start, Op::Const(Constant::idx(factor)));
-        let new_len = self.insert_const_idx_before(loop_start, loop_len / factor);
+        let new_len = self.insert_const_idx_before(loop_start, loop_len / factor as Dim);
         let ridx = self.insert_before(loop_start, Op::Loop { len: new_len });
         self.ops[loop_start].op = Op::Mad { x: ridx, y: factor_const, z: lidx };
 

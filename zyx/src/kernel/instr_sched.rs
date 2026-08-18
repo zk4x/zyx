@@ -417,7 +417,8 @@ mod tests {
         let global_rw_shape = k.const_idx(4u32);
         let global_rw = k.param(DType::F32, ParamKind::GlobalMut, global_rw_shape);
 
-        let gidx = k.group_index(0, 4);
+        let gidx_len = k.const_idx(4);
+        let gidx = k.group_index(0, gidx_len);
         let c = k.const_val(1.0f32);
         let load = k.load(global_ro, gidx, MemLayout::Scalar);
         let add = k.add(load, c);
@@ -473,7 +474,8 @@ mod tests {
         let buf_shape = k.const_idx(4u32);
         let buf = k.param(DType::F32, ParamKind::Global, buf_shape);
 
-        let gidx = k.group_index(0, 4);
+        let gidx_len = k.const_idx(4);
+        let gidx = k.group_index(0, gidx_len);
         let val = k.const_val(1.0f32);
         k.store(buf, val, gidx, MemLayout::Scalar);
         let load = k.load(buf, gidx, MemLayout::Scalar);
@@ -494,7 +496,8 @@ mod tests {
         let mut k = Kernel::new(DeviceId::AUTO);
         let buf = k.storage(DType::F32, MemScope::Local, 4);
 
-        let gidx = k.group_index(0, 4);
+        let gidx_len = k.const_idx(4);
+        let gidx = k.group_index(0, gidx_len);
         let val = k.const_val(1.0f32);
         k.barrier();
         k.store(buf, val, gidx, MemLayout::Scalar);
@@ -516,7 +519,8 @@ mod tests {
         let src = k.param(DType::F32, ParamKind::Global, src_shape);
         let dst = k.param(DType::F32, ParamKind::GlobalMut, dst_shape);
 
-        let gidx = k.group_index(0, 4);
+        let gidx_len = k.const_idx(4);
+        let gidx = k.group_index(0, gidx_len);
         let a = k.load(src, gidx, MemLayout::Scalar);
         let b = k.load(src, gidx, MemLayout::Scalar);
         let add = k.add(a, b);
@@ -575,7 +579,8 @@ mod tests {
         let a = k.param(DType::F32, ParamKind::Global, a_shape);
         let b = k.param(DType::F32, ParamKind::Global, b_shape);
         let out = k.param(DType::F32, ParamKind::GlobalMut, out_shape);
-        let gidx = k.group_index(0, 1024);
+        let gidx_len = k.const_idx(1024);
+        let gidx = k.group_index(0, gidx_len);
         let mut acc = k.load(a, gidx, MemLayout::Scalar);
         for _ in 0..200 {
             let x = k.load(b, gidx, MemLayout::Scalar);

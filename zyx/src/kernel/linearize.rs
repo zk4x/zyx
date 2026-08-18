@@ -85,7 +85,7 @@ impl Kernel {
 
         #[cfg(debug_assertions)]
         {
-            let has_gidx = self.ops.values().any(|n| matches!(n.op, Op::Index { kind: IdxKind::Group, .. }));
+            let has_gidx = self.ops.values().any(|n| matches!(n.op, Op::Index { kind: IdxKind::Group(_), .. }));
             let has_moves = self.ops.values().any(|n| matches!(n.op, Op::Move { .. }));
             if has_gidx && has_moves {
                 panic!("unfold_movement_ops: cannot have both explicit gidx and LoadView/StoreView/Move ops");
@@ -389,7 +389,7 @@ impl Kernel {
                         } else {
                             len
                         };
-                        let idx = self.insert_before(start, Op::Index { len, axis: axis as u32, kind: IdxKind::Group });
+                        let idx = self.insert_before(start, Op::Index { axis: axis as u32, kind: IdxKind::Group(len) });
                         let lp = self.insert_before(start, Op::Const(Constant::idx(0)));
                         let rp = self.insert_before(start, Op::Const(Constant::idx(0)));
                         view.push(SDim::new(idx, lp, rp, len));

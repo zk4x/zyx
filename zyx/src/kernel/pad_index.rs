@@ -16,7 +16,7 @@
 use crate::{
     Set,
     dtype::Constant,
-    kernel::{BOp, IDX_T, Kernel, MemLayout, MemScope, Op, OpId},
+    kernel::{BOp, IDX_T, IdxKind, Kernel, MemLayout, Op, OpId},
     shape::Dim,
 };
 
@@ -42,14 +42,29 @@ impl Kernel {
         }
 
         // 1. Extend the index length
-        let Op::Index { len, .. } = &self.ops[gidx_id].op else {
+        let Op::Index { axis, kind } = self.ops[gidx_id].op else {
             panic!("pad_index: op is not an Index");
         };
-        let current_len = self.index_len(*len);
-        let new_len = self.insert_before(gidx_id, Op::Const(Constant::idx(current_len + pad_len)));
-        if let Op::Index { len, .. } = &mut self.ops[gidx_id].op {
-            *len = new_len;
-        }
+        let (current_len, new_kind) = match kind {
+            IdxKind::Group(len) => match self.resolve_dim(len) {
+                Some(current_len) => {
+                    let new_len = self.insert_before(gidx_id, Op::Const(Constant::idx(current_len + pad_len)));
+                    (current_len, IdxKind::Group(new_len))
+                }
+                None => return,
+            },
+            IdxKind::Local(len) => {
+                let current_len = Dim::from(len);
+                let new_len = len + u32::try_from(pad_len).expect("pad_len too large for local index");
+                (current_len, IdxKind::Local(new_len))
+            }
+            IdxKind::Warp(len) => {
+                let current_len = Dim::from(len);
+                let new_len = len + u8::try_from(pad_len).expect("pad_len too large for warp index");
+                (current_len, IdxKind::Warp(new_len))
+            }
+        };
+        self.ops[gidx_id].op = Op::Index { axis, kind: new_kind };
 
         // 2. Create limit constant for comparison
         let limit = self.insert_before(gidx_id, Op::Const(Constant::idx(current_len)));
@@ -64,10 +79,7 @@ impl Kernel {
                 && self.depends_on(store_idx, gidx_id, &mut Set::default())
             {
                 let buf_len: Option<Dim> = match &self.ops[dst].op {
-                    Op::Param { .. } => {
-                        let shape: Vec<Dim> = todo!();
-                        Some(shape.iter().product())
-                    }
+                    Op::Param { .. } => Some(self.shape(dst).iter().product()),
                     _ => None,
                 };
                 if let Some(buf_len) = buf_len {
@@ -113,7 +125,7 @@ impl Kernel {
         let Op::Loop { len } = &self.ops[loop_id].op else {
             panic!("pad_loop: op is not a Loop");
         };
-        let current_len = self.loop_len_dim(*len);
+        let current_len = self.resolve_dim(*len).unwrap();
         let new_len = self.insert_before(loop_id, Op::Const(Constant::idx(current_len + pad_len)));
         self.ops[loop_id].op = Op::Loop { len: new_len };
 
@@ -171,13 +183,23 @@ impl Kernel {
         let mut factors = Vec::new();
         let mut op_id = self.head;
         while !op_id.is_null() {
-            if let Op::Index { len, .. } = self.ops[op_id].op {
-                let len = self.index_len(len);
-                if !len.is_multiple_of(32) {
-                    factors.push((op_id, 32));
+            let next = self.next_op(op_id);
+            if let Op::Index { kind, .. } = self.ops[op_id].op {
+                let len = match kind {
+                    IdxKind::Group(len) => match self.resolve_dim(len) {
+                        Some(len) => len,
+                        None => continue,
+                    },
+                    IdxKind::Local(len) => Dim::from(len),
+                    IdxKind::Warp(len) => Dim::from(len),
+                };
+                for pad_to in [8, 16, 32] {
+                    if !len.is_multiple_of(pad_to) {
+                        factors.push((op_id, pad_to));
+                    }
                 }
             }
-            op_id = self.next_op(op_id);
+            op_id = next;
         }
         let n_configs = factors.len();
         (Optimization::PadIndex { factors }, n_configs)

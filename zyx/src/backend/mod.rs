@@ -466,9 +466,9 @@ pub struct DeviceInfo {
     /// Biggest kernel dimensions
     pub max_global_work_dims: Vec<Dim>,
     /// Maximum local work size threads
-    pub max_local_threads: Dim,
+    pub max_local_threads: u32,
     /// Maximum local work size dimensions
-    pub max_local_work_dims: Vec<Dim>,
+    pub max_local_work_dims: Vec<u32>,
     /// Preferred vector size in bytes
     pub preferred_vector_size: u8,
     /// Local memory size in bytes
@@ -927,53 +927,54 @@ impl Device {
         &mut self,
         program_id: DeviceProgramId,
         memory_pool: &mut MemoryPool,
+        gws: &[Dim],
         args: &[PoolBufferId],
         event_wait_list: Vec<Event>,
     ) -> Result<Event, BackendError> {
         match self {
             Device::C(dev) => {
                 let MemoryPool::Host(pool) = memory_pool else { unreachable!() };
-                dev.launch(program_id, pool, args, event_wait_list)
+                dev.launch(program_id, pool, gws, args, event_wait_list)
             }
             Device::Cblas(dev) => {
                 let MemoryPool::Host(pool) = memory_pool else { unreachable!() };
-                dev.launch(program_id, pool, args, event_wait_list)
+                dev.launch(program_id, pool, gws, args, event_wait_list)
             }
             Device::Dummy(dev) => {
                 let MemoryPool::Dummy(pool) = memory_pool else {
                     unreachable!()
                 };
-                dev.launch(program_id, pool, args, event_wait_list)
+                dev.launch(program_id, pool, gws, args, event_wait_list)
             }
             Device::CUDA(dev) => {
                 let MemoryPool::CUDA(pool) = memory_pool else { unreachable!() };
-                dev.launch(program_id, pool, args, event_wait_list)
+                dev.launch(program_id, pool, gws, args, event_wait_list)
             }
             Device::OpenCL(dev) => {
                 let MemoryPool::OpenCL(pool) = memory_pool else {
                     unreachable!()
                 };
-                dev.launch(program_id, pool, args, event_wait_list)
+                dev.launch(program_id, pool, gws, args, event_wait_list)
             }
             Device::HIP(dev) => {
                 let MemoryPool::HIP(pool) = memory_pool else { unreachable!() };
-                dev.launch(program_id, pool, args, event_wait_list)
+                dev.launch(program_id, pool, gws, args, event_wait_list)
             }
             #[cfg(feature = "tenstorrent")]
             Device::TT(dev) => {
                 let MemoryPool::TT(pool) = memory_pool else { unreachable!() };
-                dev.launch(program_id, pool, args, event_wait_list)
+                dev.launch(program_id, pool, gws, args, event_wait_list)
             }
             Device::Vulkan(dev) => {
                 let MemoryPool::Vulkan(pool) = memory_pool else {
                     unreachable!()
                 };
-                dev.launch(program_id, pool, args, event_wait_list)
+                dev.launch(program_id, pool, gws, args, event_wait_list)
             }
             #[cfg(feature = "wgpu")]
             Device::WGPU(dev) => {
                 let MemoryPool::WGPU(pool) = memory_pool else { unreachable!() };
-                dev.launch(program_id, pool, args, event_wait_list)
+                dev.launch(program_id, pool, gws, args, event_wait_list)
             }
         }
     }

@@ -20,20 +20,6 @@ impl Kernel {
     pub fn generate_cuda(&self, _device_info: &DeviceInfo, name: &str) -> Result<String, BackendError> {
         use std::fmt::Write;
 
-        let mut gws = [1; 3];
-        let mut lws = [1; 3];
-        let mut op_id = self.head;
-        while !op_id.is_null() {
-            if let Op::Index { len, axis, kind: scope } = self.ops[op_id].op {
-                match scope {
-                    IdxKind::Group => gws[axis as usize] = self.index_len(len),
-                    IdxKind::Local => lws[axis as usize] = self.index_len(len),
-                    IdxKind::Warp => todo!(),
-                }
-            }
-            op_id = self.next_op(op_id);
-        }
-
         let mut global_args = String::new();
         let mut op_id = self.head;
         while !op_id.is_null() {
@@ -313,18 +299,22 @@ impl Kernel {
                         _ => _ = writeln!(source, "{indent}r{reg} = {x} * {y} + {z};"),
                     }
                 }
-                Op::Index { len, axis, kind: scope } => {
+                Op::Index { axis, kind: scope } => {
                     indices.insert(op_id, loop_id);
+                    let max_idx = match scope {
+                        IdxKind::Group(len_id) => self.resolve_dim(len_id).unwrap().saturating_sub(1),
+                        IdxKind::Local(len) => u64::from(len).saturating_sub(1),
+                        IdxKind::Warp(_) => todo!(),
+                    };
                     _ = writeln!(
                         source,
-                        "{indent}unsigned int idx{loop_id} = {}Idx.{}; // 0..={}",
+                        "{indent}unsigned int idx{loop_id} = {}Idx.{}; // 0..={max_idx}",
                         match scope {
-                            IdxKind::Group => "block",
-                            IdxKind::Local => "thread",
-                            IdxKind::Warp => todo!(),
+                            IdxKind::Group(_) => "block",
+                            IdxKind::Local(_) => "thread",
+                            IdxKind::Warp(_) => todo!(),
                         },
                         ["x", "y", "z"][axis as usize],
-                        self.index_len(len).saturating_sub(1)
                     );
                     loop_id += 1;
                 }

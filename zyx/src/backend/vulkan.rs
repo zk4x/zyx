@@ -419,6 +419,7 @@ enum VulkanCommand {
     },
     Launch {
         program_id: DeviceProgramId,
+        gws: Vec<Dim>,
         args: Vec<PoolBufferId>,
         event_wait_list: Vec<Event>,
         reply: Sender<Result<Event, BackendError>>,
@@ -537,7 +538,6 @@ impl std::fmt::Debug for VulkanEvent {
 // ── Program ──────────────────────────────────────────────────────────────────
 
 struct VulkanProgram {
-    gws: [Dim; 3],
     pipeline: VkPipeline,
     pipeline_layout: VkPipelineLayout,
     desc_layout: VkDescriptorSetLayout,
@@ -596,11 +596,12 @@ impl VulkanDevice {
         &mut self,
         program_id: DeviceProgramId,
         _memory_pool: &mut VulkanMemoryPool,
+        gws: &[Dim],
         args: &[PoolBufferId],
         event_wait_list: Vec<Event>,
     ) -> Result<Event, BackendError> {
         let (reply, rx) = channel();
-        self.tx.send(VulkanCommand::Launch { program_id, args: args.to_vec(), event_wait_list, reply }).unwrap();
+        self.tx.send(VulkanCommand::Launch { program_id, gws: gws.into(), args: args.to_vec(), event_wait_list, reply }).unwrap();
         rx.recv().unwrap()
     }
 }
@@ -1322,16 +1323,14 @@ pub(super) fn initialize_device(
                             }
                         }
                         VulkanCommand::Compile { kernel, debug_asm, reply } => {
-                            let mut gws: [Dim; 3] = [1; 3];
-                            let mut lws: [Dim; 3] = [1; 3];
+                            let mut lws: [u32; 3] = [1; 3];
                             let mut op_id = kernel.head;
                             while !op_id.is_null() {
-                                if let Op::Index { len: len_id, axis, kind: scope } = kernel.ops[op_id].op {
-                                    let len = kernel.index_len(len_id);
+                                if let Op::Index { axis, kind: scope } = kernel.ops[op_id].op {
                                     match scope {
-                                        IdxKind::Group => gws[axis as usize] = len,
-                                        IdxKind::Local => lws[axis as usize] = len,
-                                        IdxKind::Warp => todo!(),
+                                        IdxKind::Group(_) => {}
+                                        IdxKind::Local(len) => lws[axis as usize] = len,
+                                        IdxKind::Warp(_) => todo!(),
                                     }
                                 }
                                 op_id = kernel.next_op(op_id);
@@ -1461,8 +1460,7 @@ pub(super) fn initialize_device(
                             }
 
                             let ep_name = format!(
-                                "k_{}__{}",
-                                gws.iter().map(|v| v.to_string()).collect::<Vec<_>>().join("_"),
+                                "k_lws_{}",
                                 lws.iter().map(|v| v.to_string()).collect::<Vec<_>>().join("_"),
                             );
                             let entry_name = CString::new(ep_name).unwrap();
@@ -1501,10 +1499,10 @@ pub(super) fn initialize_device(
                             unsafe { vkDestroyShaderModule(device, shader, std::ptr::null()) };
 
                             let id =
-                                programs.push(VulkanProgram { gws, pipeline, pipeline_layout, desc_layout, push_constants_size });
+                                programs.push(VulkanProgram { pipeline, pipeline_layout, desc_layout, push_constants_size });
                             let _ = reply.send(Ok(id));
                         }
-                        VulkanCommand::Launch { program_id, args, mut event_wait_list, reply } => {
+                        VulkanCommand::Launch { program_id, gws, args, mut event_wait_list, reply } => {
                             while let Some(Event::Vulkan(ev)) = event_wait_list.pop() {
                                 if !ev.fence.is_null() {
                                     unsafe {
@@ -1617,9 +1615,9 @@ pub(super) fn initialize_device(
                                 continue;
                             }
 
-                            let gx = prog.gws.first().copied().unwrap_or(1) as u32;
-                            let gy = prog.gws.get(1).copied().unwrap_or(1) as u32;
-                            let gz = prog.gws.get(2).copied().unwrap_or(1) as u32;
+                            let gx = gws.first().copied().unwrap_or(1) as u32;
+                            let gy = gws.get(1).copied().unwrap_or(1) as u32;
+                            let gz = gws.get(2).copied().unwrap_or(1) as u32;
 
                             if gx == 0 || gy == 0 || gz == 0 {
                                 let _ = reply.send(Err(BackendError {
@@ -1794,8 +1792,8 @@ pub(super) fn initialize_device(
             dev_info: DeviceInfo {
                 compute: 1_000_000_000_000,
                 max_global_work_dims: vec![Dim::from(max_wg_count[0]); max_wg_count.len()],
-                max_local_threads: Dim::from(max_wg_invocations),
-                max_local_work_dims: vec![Dim::from(max_wg_size[0]); max_wg_size.len()],
+                max_local_threads: max_wg_invocations,
+                max_local_work_dims: vec![u32::from(max_wg_size[0]); max_wg_size.len()],
                 preferred_vector_size: 4,
                 local_mem_size: Dim::from(props.max_compute_shared_memory_size),
                 max_register_bytes: 1024,

@@ -20,7 +20,7 @@ use crate::kernel::MemLayout;
 use crate::{
     Map, Set,
     dtype::Constant,
-    kernel::{BOp, Kernel, MemScope, Op, OpId},
+    kernel::{BOp, IdxKind, Kernel, MemScope, Op, OpId},
     shape::Dim,
 };
 
@@ -51,7 +51,11 @@ impl Kernel {
         let node_ids: Vec<OpId> = self.ops.ids().collect();
         for id in node_ids.iter().copied() {
             let is_len1 = match &self.ops[id].op {
-                Op::Index { len, .. } => self.index_len(*len) == 1,
+                Op::Index { kind, .. } => match kind {
+                    IdxKind::Group(len) => self.resolve_dim(*len) == Some(1),
+                    IdxKind::Local(len) => *len == 1,
+                    IdxKind::Warp(len) => *len == 1,
+                },
                 _ => false,
             };
             if is_len1 {
@@ -71,7 +75,7 @@ impl Kernel {
             let next = self.next_op(op_id);
             if let Op::Loop { len: len_id, .. } = self.ops[op_id].op {
                 depth += 1;
-                if self.loop_len_dim(len_id) == 1 {
+                if self.resolve_dim(len_id) == Some(1) {
                     self.ops[op_id].op = Op::Const(Constant::idx(0));
                     deleted.push(depth);
                 }
@@ -92,11 +96,12 @@ impl Kernel {
         let mut endloop_ids = Vec::new();
         let mut op_id = self.tail;
         while !op_id.is_null() {
+            let prev = self.prev_op(op_id);
             if self.ops[op_id].op == Op::EndLoop {
                 endloop_ids.push(op_id);
             }
             if let Op::Loop { len: len_id, .. } = self.ops[op_id].op {
-                let len = self.loop_len_dim(len_id);
+                let Some(len) = self.resolve_dim(len_id) else { continue };
                 let _ = endloop_ids.pop().unwrap();
                 if len as usize <= unroll_dim as usize
                     && self.ops.len().0 as usize + (self.n_ops_in_loop(op_id) * (len as usize - 1)) < 5_000
@@ -104,7 +109,7 @@ impl Kernel {
                     self.unroll_loop(op_id);
                 }
             }
-            op_id = self.prev_op(op_id);
+            op_id = prev;
         }
     }
 
@@ -145,7 +150,7 @@ impl Kernel {
                     constant_loops.push(true);
                 }
                 Op::Loop { len: len_id, .. } => {
-                    let len = self.loop_len_dim(len_id);
+                    let Some(len) = self.resolve_dim(len_id) else { continue };
                     endloop_ids.pop().unwrap();
                     let is_const = constant_loops.pop().unwrap();
                     if !is_const && let Some(inner_loop) = constant_loops.last_mut() {
@@ -187,7 +192,7 @@ impl Kernel {
         let Op::Loop { len: len_id } = self.ops[loop_id].op else {
             return;
         };
-        let len = self.loop_len_dim(len_id);
+        let Some(len) = self.resolve_dim(len_id) else { return };
         //println!("UNROLL len={} limit={}", len, len > 64);
         if len == 0 || len > 64 {
             return;
@@ -272,7 +277,7 @@ impl Kernel {
         let Op::Loop { len: len_id } = self.ops[loop_id].op else {
             return;
         };
-        let len = self.loop_len_dim(len_id);
+        let Some(len) = self.resolve_dim(len_id) else { return };
         if factor < 2 || !len.is_multiple_of(factor) {
             return;
         }

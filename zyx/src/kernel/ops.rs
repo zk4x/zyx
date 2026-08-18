@@ -21,6 +21,13 @@ pub enum ParamKind {
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, SerBin)]
 pub enum Op {
     // ops that exist in both
+    Const(Constant),
+    // For things that are kernel parameters
+    Param {
+        dtype: DType,
+        kind: ParamKind,
+        shape: OpId,
+    },
     Cast {
         x: OpId,
         dtype: DType,
@@ -35,15 +42,12 @@ pub enum Op {
         y: OpId,
         bop: BOp,
     },
+    // Vectorization, YAY!
+    Stack {
+        ops: Box<[OpId]>,
+    },
 
     // ops that only exist after unfolding views and reduces
-    Const(Constant),
-    // For things that are kernel parameters
-    Param {
-        dtype: DType,
-        kind: ParamKind,
-        shape: OpId,
-    },
     // Storage declared inside kernel
     Storage {
         dtype: DType,
@@ -63,7 +67,6 @@ pub enum Op {
     },
     // Like loop, but for dimensions always executed in parallel
     Index {
-        len: OpId,
         axis: u32,
         kind: IdxKind,
     },
@@ -81,10 +84,6 @@ pub enum Op {
         x: OpId,
         y: OpId,
         z: OpId,
-    },
-    // Vectorization, YAY!
-    Stack {
-        ops: Box<[OpId]>,
     },
     Devectorize {
         vec: OpId,
@@ -142,20 +141,20 @@ pub enum TileReduceKind {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, SerBin, DeBin)]
 pub enum IdxKind {
     /// Group scope. Represents blocks in cuda, cores in CPU and tenstorrent.
-    Group,
+    Group(OpId),
     /// Local scope. Represents cuda threads.
-    Local,
+    Local(u32),
     /// Warp scope. Represents warps and wavefronts.
-    Warp,
+    Warp(u8),
 }
 
 impl std::fmt::Display for IdxKind {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(match self {
-            IdxKind::Group => "group",
-            IdxKind::Local => "local",
-            IdxKind::Warp => "warp",
-        })
+        match self {
+            IdxKind::Group(x) => f.write_fmt(format_args!("group r{x}")),
+            IdxKind::Local(x) => f.write_fmt(format_args!("local len={x}")),
+            IdxKind::Warp(x) => f.write_fmt(format_args!("warp{x}")),
+        }
     }
 }
 
@@ -437,7 +436,11 @@ impl Op {
                 // Shape is null after linearize
                 if shape.is_null() { vec![] } else { vec![shape] }
             }
-            &Op::Index { len, .. } => vec![len],
+            &Op::Index { kind, .. } => match kind {
+                IdxKind::Group(len) => vec![len],
+                IdxKind::Local(_) => vec![],
+                IdxKind::Warp(_) => vec![],
+            },
             &Op::Loop { len, .. } => vec![len],
             &Op::Move { x, ref mop } => match mop.as_ref() {
                 MoveOp::Reshape { shape, .. } | MoveOp::Expand { shape } => vec![x, *shape],
@@ -472,7 +475,11 @@ impl Op {
                 // Shape is null after linearize
                 if shape.is_null() { vec![] } else { vec![shape] }
             }
-            Op::Index { len, .. } => vec![len],
+            Op::Index { kind, .. } => match kind {
+                IdxKind::Group(len) => vec![len],
+                IdxKind::Local(_) => vec![],
+                IdxKind::Warp(_) => vec![],
+            },
             Op::Loop { len, .. } => vec![len],
             Op::Move { x, mop } => match mop.as_mut() {
                 MoveOp::Reshape { shape, .. } | MoveOp::Expand { shape } => vec![x, shape],

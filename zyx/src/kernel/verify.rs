@@ -233,21 +233,21 @@ impl Kernel {
                 }
                 Op::Index { axis, kind: scope, .. } => {
                     match scope {
-                        IdxKind::Group => {
+                        IdxKind::Group(_) => {
                             if !gids.insert(axis) {
                                 println!("index={op_id} is using {scope} axis={axis} for the second time");
                                 self.debug();
                                 panic!();
                             }
                         }
-                        IdxKind::Local => {
+                        IdxKind::Local(_) => {
                             if !lids.insert(axis) {
                                 println!("index={op_id} is using {scope} axis={axis} for the second time");
                                 self.debug();
                                 panic!();
                             }
                         }
-                        IdxKind::Warp => todo!(),
+                        IdxKind::Warp(_) => todo!(),
                     }
                     dtypes.insert(op_id, IDX_T);
                 }
@@ -402,9 +402,14 @@ impl Kernel {
                 Op::EndIf => {
                     bounds_stack.pop();
                 }
-                Op::Index { len, .. } => {
+                Op::Index { kind: scope, .. } => {
                     let b = bounds_stack.last_mut().unwrap();
-                    b.insert(op_id, (0, self.index_len(len).saturating_sub(1)));
+                    let len = match scope {
+                        IdxKind::Group(len) => self.resolve_dim(len).unwrap_or(u64::MAX),
+                        IdxKind::Local(len) => u64::from(len),
+                        IdxKind::Warp(len) => u64::from(len),
+                    };
+                    b.insert(op_id, (0, len.saturating_sub(1)));
                 }
                 Op::Asm { ref ops, .. } => {
                     let b = bounds_stack.last_mut().unwrap();

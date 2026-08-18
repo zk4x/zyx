@@ -96,7 +96,7 @@ impl Kernel {
                         let Loop { len: len_id, .. } = self.ops[k_loop_id].op else {
                             unreachable!()
                         };
-                        if self.loop_len_dim(len_id) == 8
+                        if self.resolve_dim(len_id).unwrap() == 8
                             && let Some(store_info) = self.mma_store_info(op_id, k_loop_id)
                         {
                             stores.last_mut().unwrap().push(store_info);
@@ -300,8 +300,8 @@ impl Kernel {
         let mut local_loops = Vec::new();
         let mut op_id = self.head;
         while !op_id.is_null() {
-            if let Op::Index { len: dim, axis, kind: IdxKind::Local } = self.ops[op_id].op {
-                local_dims.push(self.index_len(dim));
+            if let Op::Index { axis, kind: IdxKind::Local(dim) } = self.ops[op_id].op {
+                local_dims.push(dim);
                 local_loops.push(op_id);
             }
             op_id = self.next_op(op_id);
@@ -318,8 +318,7 @@ impl Kernel {
             return false;
         }
 
-        let warp_len = self.insert_before(local_loops[0], Op::Const(Constant::idx(local_dims[0] * n)));
-        let warp_loop = self.insert_before(local_loops[0], Op::Index { len: warp_len, axis: 0, kind: IdxKind::Warp });
+        let warp_loop = self.insert_before(local_loops[0], Op::Index { axis: 0, kind: IdxKind::Warp((local_dims[0] * n) as u8) });
         let y = self.insert_before(warp_loop, Op::Const(Constant::idx(n)));
         self.ops[local_loops[0]].op = Op::Binary { x: warp_loop, y, bop: BOp::Div };
         let y = self.insert_before(warp_loop, Op::Const(Constant::idx(n)));

@@ -364,7 +364,7 @@ impl Kernel {
         let &Op::Loop { len: loop_len_id } = self.at(loop_id) else {
             return false;
         };
-        let loop_len = self.loop_len_dim(loop_len_id);
+        let Some(loop_len) = self.resolve_dim(loop_len_id) else { return false };
         let &Op::Storage { dtype, scope: MemScope::Register, len } = self.at(acc_id) else {
             return false;
         };
@@ -426,7 +426,7 @@ impl Kernel {
     /// For example, if accumulating `i` (the loop index directly):
     ///   a=1, b=1, c=n, `mul_const`=1, gidx is the loop index variable
     fn trace_to_linear_comparison(&self, accumulated_value_id: OpId, loop_id: OpId) -> Option<(u64, u64, u64, u64, OpId)> {
-        if let Op::Index { kind: IdxKind::Group, .. } = self.at(accumulated_value_id) {
+        if let Op::Index { kind: IdxKind::Group(_), .. } = self.at(accumulated_value_id) {
             return None;
         }
 
@@ -765,8 +765,8 @@ mod tests {
         let r26 = k.const_val(0i32);
         let r31 = k.const_val(5i32);
         let r110 = k.const_val(5u32);
-        let r37 = k.group_index(0, 3);
-        let r5 = k.group_index(1, 3);
+        let r37 = k.group_index(0, sh3);
+        let r5 = k.group_index(1, sh3);
         let r1 = k.storage(DType::U16, MemScope::Register, 1);
         k.store(r1, r22, r7, MemLayout::Scalar);
         let r123 = k.binary(r37, r74, BOp::Mul);
@@ -849,8 +849,8 @@ mod tests {
         let r8 = k.const_val(0.0f32);
         let r15 = k.const_idx(dim);
         let r25 = k.const_idx(dim);
-        let r7 = k.group_index(0, dim);
-        let r10 = k.group_index(1, dim);
+        let r7 = k.group_index(0, r15);
+        let r10 = k.group_index(1, r25);
 
         let r3 = k.storage(DType::F32, MemScope::Register, 1);
         k.store(r3, r8, r1, MemLayout::Scalar);
@@ -932,7 +932,8 @@ mod tests {
         let r14 = k.const_idx(0u32);
         let r1 = k.const_val(0i32);
         let r10 = k.const_idx(num_indices);
-        let r7 = k.group_index(0, dim);
+        let sh_dim = k.const_idx(dim);
+        let r7 = k.group_index(0, sh_dim);
 
         let r9 = k.storage(DType::I32, MemScope::Register, 1);
         k.store(r9, r1, r14, MemLayout::Scalar);
@@ -988,7 +989,7 @@ mod tests {
         let mut k = Kernel::new(DeviceId::AUTO);
         let out_shape = k.const_idx(2u32);
         let out = k.param(DType::I32, ParamKind::Global, out_shape);
-        let g = k.group_index(0, 2);
+        let g = k.group_index(0, out_shape);
         let acc = k.storage(DType::I32, MemScope::Register, 1);
         let zi = k.const_idx(0u32);
         let ziv = k.const_val(0i32);
@@ -1056,9 +1057,12 @@ mod tests {
         let c0i = k.const_val(0i64);
         let c1i = k.const_val(1i64);
 
-        let r97 = k.group_index(0, 2);
-        let r37 = k.group_index(1, 8);
-        let r34 = k.group_index(2, 1);
+        let r97_len = k.const_idx(2);
+        let r97 = k.group_index(0, r97_len);
+        let r37_len = k.const_idx(8);
+        let r37 = k.group_index(1, r37_len);
+        let r34_len = k.const_idx(1);
+        let r34 = k.group_index(2, r34_len);
 
         let r43 = k.mod_(r97, c1);
         let r3 = k.div(r97, c1);

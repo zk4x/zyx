@@ -6,7 +6,7 @@ use crate::{
     backend::DeviceInfo,
     dtype::Constant,
     error::{BackendError, ErrorStatus},
-    kernel::{BOp, Kernel, MemLayout, MemScope, Op, OpId, ParamKind, UOp},
+    kernel::{BOp, IdxKind, Kernel, MemLayout, MemScope, Op, OpId, ParamKind, UOp},
     scalar::{bf16, f16},
 };
 use std::{fmt::Write, hash::BuildHasherDefault};
@@ -309,12 +309,21 @@ impl Kernel {
                         _ => _ = writeln!(source, "{indent}r{reg} = {x} * {y} + {z};"),
                     }
                 }
-                Op::Index { len, axis, kind: scope } => {
+                Op::Index { axis, kind: scope } => {
                     indices.insert(op_id, loop_id);
+                    let id_fn = match scope {
+                        IdxKind::Group(_) => "get_group_id",
+                        IdxKind::Local(_) => "get_local_id",
+                        IdxKind::Warp(_) => todo!(),
+                    };
+                    let max_idx = match scope {
+                        IdxKind::Group(len_id) => self.resolve_dim(len_id).unwrap().saturating_sub(1),
+                        IdxKind::Local(len) => u64::from(len).saturating_sub(1),
+                        IdxKind::Warp(_) => todo!(),
+                    };
                     _ = writeln!(
                         source,
-                        "{indent}unsigned int idx{loop_id} = get_{scope}_id({axis}); // 0..={}",
-                        self.index_len(len).saturating_sub(1)
+                        "{indent}unsigned int idx{loop_id} = {id_fn}({axis}); // 0..={max_idx}",
                     );
                     loop_id += 1;
                 }

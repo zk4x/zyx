@@ -58,9 +58,9 @@ impl Kernel {
         let mut gidxs: Vec<(OpId, u32, Dim)> = Vec::new();
         let mut op_id = self.head;
         while !op_id.is_null() {
-            if let &Op::Index { len, axis, kind: scope } = self.at(op_id) {
-                if scope == IdxKind::Group {
-                    gidxs.push((op_id, axis, self.index_len(len)));
+            if let Op::Index { axis, kind } = *self.at(op_id) {
+                if let IdxKind::Group(len) = kind {
+                    gidxs.push((op_id, axis, self.resolve_dim(len).unwrap()));
                 } else {
                     // Can't run this optimization on kernel that already has local indices
                     continue;
@@ -86,8 +86,8 @@ impl Kernel {
                 if pad > 0 {
                     self.pad_index(id, pad);
                 }
-                let new_len = if let Op::Index { len, kind: IdxKind::Group, .. } = self.at(id) {
-                    self.index_len(*len)
+                let new_len = if let Op::Index { kind: IdxKind::Group(len), .. } = self.ops[id].op {
+                    self.resolve_dim(len).unwrap()
                 } else {
                     unreachable!()
                 };
@@ -102,8 +102,8 @@ impl Kernel {
                 self.split_dim(
                     id,
                     vec![
-                        Op::Index { len: f1_id, axis: 0, kind: IdxKind::Group },
-                        Op::Index { len: f2_id, axis: 1, kind: IdxKind::Group },
+                        Op::Index { axis: 0, kind: IdxKind::Group(f1_id) },
+                        Op::Index { axis: 1, kind: IdxKind::Group(f2_id) },
                     ],
                 );
             }
@@ -132,7 +132,7 @@ impl Kernel {
             let Op::Loop { len: len_id } = self.ops[loop_id].op else {
                 continue;
             };
-            let len = self.loop_len_dim(len_id);
+            let len = self.resolve_dim(len_id).unwrap();
             let pad = round_up(len, 1024);
             if pad > 0 {
                 self.pad_loop(loop_id, pad);
@@ -145,17 +145,16 @@ impl Kernel {
         // Split each GroupIndex into GroupIndex(len/32) + Local(32)
         let mut op_id = self.head;
         while !op_id.is_null() {
-            if let Op::Index { len, axis, kind: IdxKind::Group } = self.ops[op_id].op {
-                let len = self.index_len(len);
+            if let Op::Index { axis, kind: IdxKind::Group(len) } = self.ops[op_id].op {
+                let len = self.resolve_dim(len).unwrap();
                 if len.is_multiple_of(32) && len >= 32 {
                     let f1 = len / 32;
                     let f1_id = self.const_idx(f1);
-                    let local_id = self.const_idx(32);
                     self.split_dim(
                         op_id,
                         vec![
-                            Op::Index { len: f1_id, axis, kind: IdxKind::Group },
-                            Op::Index { len: local_id, axis, kind: IdxKind::Local },
+                            Op::Index { axis, kind: IdxKind::Group(f1_id) },
+                            Op::Index { axis, kind: IdxKind::Local(32) },
                         ],
                     );
                 } else {
@@ -169,11 +168,11 @@ impl Kernel {
         let mut lidxs = Vec::new();
         let mut op_id = self.head;
         while !op_id.is_null() {
-            if let Op::Index { len, axis, kind: IdxKind::Local } = self.at(op_id) {
-                if self.index_len(*len) != 32 {
+            if let Op::Index { axis, kind: IdxKind::Local(len) } = self.ops[op_id].op {
+                if len != 32 {
                     return;
                 }
-                lidxs.push((*axis, op_id));
+                lidxs.push((axis, op_id));
             }
             op_id = self.next_op(op_id);
         }
@@ -388,8 +387,8 @@ impl Kernel {
         let mut lidxs: Vec<(u32, OpId, u32)> = Vec::new();
         let mut op_id = self.head;
         while !op_id.is_null() {
-            if let Op::Index { len, axis, kind: IdxKind::Local } = self.at(op_id) {
-                lidxs.push((*axis, op_id, self.index_len(*len) as u32));
+            if let Op::Index { axis, kind: IdxKind::Local(len) } = self.ops[op_id].op {
+                lidxs.push((axis, op_id, len));
             }
             op_id = self.next_op(op_id);
         }

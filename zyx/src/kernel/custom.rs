@@ -227,15 +227,13 @@ impl Kernel {
     }
 
     /// Group (block) index.
-    pub fn group_index(&mut self, axis: u32, len: Dim) -> OpId {
-        let len = self.const_idx(len);
-        self.push_back(Op::Index { len, axis, kind: IdxKind::Group })
+    pub fn group_index(&mut self, axis: u32, len: OpId) -> OpId {
+        self.push_back(Op::Index { axis, kind: IdxKind::Group(len) })
     }
 
     /// Local thread index.
-    pub fn local_index(&mut self, axis: u32, len: Dim) -> OpId {
-        let len = self.const_idx(len);
-        self.push_back(Op::Index { len, axis, kind: IdxKind::Local })
+    pub fn local_index(&mut self, axis: u32, len: u32) -> OpId {
+        self.push_back(Op::Index { axis, kind: IdxKind::Local(len) })
     }
 
     /// Store `x` to `dst` at `index`.
@@ -568,7 +566,8 @@ impl CompiledKernel {
         }
         let pool_ptr = &mut rt.pools[pool_id] as *mut MemoryPool;
         let device = &mut rt.devices[device_id];
-        let event = unsafe { device.launch(self.program.program, &mut *pool_ptr, &args, event_wait_list)? };
+        let gws = todo!();
+        let event = unsafe { device.launch(self.program.program, &mut *pool_ptr, gws, &args, event_wait_list)? };
         rt.events.insert(all_bufs, event);
 
         // Put to tensors. Each output gets its own load kernel: a realized

@@ -81,7 +81,7 @@ pub(crate) enum Optimization {
     /// Split a global index into local factors for parallelization.
     SplitGlobalToLocal {
         /// Pairs of (operation_id, split_factor) for each split.
-        factors: Vec<(OpId, u64)>,
+        factors: Vec<(OpId, u32)>,
     },
     /// Coarsen thread-level parallelism by grouping operations.
     ThreadCoarse {
@@ -237,18 +237,17 @@ impl Optimization {
                 #[cfg(feature = "time")]
                 let _timer = crate::Timer::new("SplitGlobalToLocal");
                 let (op_id, factor) = factors[config];
-                let Op::Index { len, axis, kind: IdxKind::Group } = kernel.ops[op_id].op else {
+                let Op::Index { axis, kind: IdxKind::Group(len) } = kernel.ops[op_id].op else {
                     unreachable!()
                 };
-                let factor: Dim = factor;
-                let len = kernel.index_len(len);
-                let group_len = kernel.const_idx(len / factor);
-                let local_len = kernel.const_idx(factor);
+                // valid factors are checked by opt init
+                let len = kernel.resolve_dim(len).unwrap();
+                let group_len = kernel.const_idx(len / factor as u64);
                 kernel.split_dim(
                     op_id,
                     vec![
-                        Op::Index { len: group_len, axis, kind: IdxKind::Group },
-                        Op::Index { len: local_len, axis, kind: IdxKind::Local },
+                        Op::Index { axis, kind: IdxKind::Group(group_len) },
+                        Op::Index { axis, kind: IdxKind::Local(factor) },
                     ],
                 );
             }
@@ -267,14 +266,14 @@ impl Optimization {
             }
             Optimization::TiledReduce { factors } => {
                 let (op_id, factor, tree_branch) = factors[config];
-                kernel.local_reduce(op_id, factor, tree_branch);
+                kernel.local_reduce(op_id, factor as u32, tree_branch as u32);
             }
             Optimization::SplitLoop { factors } => {
                 let (op_id, factor) = factors[config];
                 let Op::Loop { len: len_id } = kernel.ops[op_id].op else {
                     unreachable!()
                 };
-                let len = kernel.loop_len_dim(len_id);
+                let Some(len) = kernel.resolve_dim(len_id) else { return; };
                 let len1 = kernel.const_idx(len / factor);
                 let len2 = kernel.const_idx(factor);
                 kernel.split_dim(op_id, vec![Op::Loop { len: len1 }, Op::Loop { len: len2 }]);
@@ -284,10 +283,14 @@ impl Optimization {
                     return;
                 }
                 let (idx_id, pad_to) = factors[config];
-                let Op::Index { len: current_len, .. } = kernel.ops[idx_id].op else {
+                let Op::Index { kind, .. } = kernel.ops[idx_id].op else {
                     unreachable!()
                 };
-                let current_len = kernel.index_len(current_len);
+                let current_len = match kind {
+                    IdxKind::Group(len) => kernel.resolve_dim(len).unwrap(),
+                    IdxKind::Local(len) => len as u64,
+                    IdxKind::Warp(_) => todo!(),
+                };
                 let pad_len = (pad_to - current_len % pad_to) % pad_to;
                 if pad_len > 0 {
                     kernel.pad_index(idx_id, pad_len);
@@ -742,7 +745,8 @@ impl Kernel {
     ) -> Result<(DeviceProgramId, u64), BackendError> {
         let program_id = device.compile(self, debug.asm())?;
         let begin = std::time::Instant::now();
-        let event = device.launch(program_id, memory_pool, buffers, Vec::new())?;
+        let gws = todo!();
+        let event = device.launch(program_id, memory_pool, gws, buffers, Vec::new())?;
         memory_pool.sync_events(vec![event])?;
         let nanos = begin.elapsed().as_nanos() as u64;
         let perf = crate::runtime::get_perf(flops, bytes_read, bytes_written, nanos);

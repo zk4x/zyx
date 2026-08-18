@@ -172,7 +172,6 @@ pub(super) enum CUDAProgram {
     Module {
         module: CUmodule,
         function: CUfunction,
-        gws: Vec<Dim>,
         lws: Vec<Dim>,
     },
     /// A compiled cuDNN graph execution plan. Workspace is a raw device pointer
@@ -281,7 +280,6 @@ enum CUDACommand {
         reply: Sender<Result<(), BackendError>>,
     },
     Compile {
-        gws: Vec<Dim>,
         lws: Vec<Dim>,
         name: Box<str>,
         ptx: Vec<u8>,
@@ -297,6 +295,7 @@ enum CUDACommand {
     },
     Launch {
         program_id: DeviceProgramId,
+        gws: Vec<Dim>,
         args: Vec<PoolBufferId>,
         event_wait_list: Vec<Event>,
         reply: Sender<Result<Event, BackendError>>,
@@ -640,7 +639,7 @@ pub(super) fn initialize_device(
                             send_or_continue!(unsafe { (cuEventDestroy)(event) }.check(ErrorStatus::MemoryCopyP2H), reply);
                             _ = reply.send(Ok(()));
                         }
-                        CUDACommand::Compile { gws, lws, name, ptx, reply } => {
+                        CUDACommand::Compile { lws, name, ptx, reply } => {
                             //println!("name {name}, gws {gws:?}, lws {lws:?} ptx:\n{}", std::ffi::CString::from_vec_with_nul(ptx.clone()).unwrap().into_string().unwrap());
 
                             let mut module = ptr::null_mut();
@@ -668,7 +667,7 @@ pub(super) fn initialize_device(
                                 continue;
                             }
 
-                            let program_id = programs.push(CUDAProgram::Module { module, function, gws, lws });
+                            let program_id = programs.push(CUDAProgram::Module { module, function, lws });
                             _ = reply.send(Ok(program_id));
                         }
                         CUDACommand::CompileCudnn { graph, reply } => {
@@ -689,7 +688,7 @@ pub(super) fn initialize_device(
                                 }
                             }
                         }
-                        CUDACommand::Launch { program_id, args, mut event_wait_list, reply } => {
+                        CUDACommand::Launch { program_id, gws, args, mut event_wait_list, reply } => {
                             let stream = next_stream(&mut streams, cuStreamSynchronize);
 
                             while let Some(Event::CUDA(CUDAEvent { event })) = event_wait_list.pop() {
@@ -709,7 +708,7 @@ pub(super) fn initialize_device(
                             };
 
                             let result = match &programs[program_id] {
-                                CUDAProgram::Module { function, gws, lws, .. } => {
+                                CUDAProgram::Module { function, lws, .. } => {
                                     let mut kernel_params: Vec<*mut core::ffi::c_void> = Vec::new();
                                     let mut scalar_values: Vec<Vec<u8>> = Vec::new();
                                     for (i, arg) in args.iter().enumerate() {
@@ -841,11 +840,11 @@ pub(super) fn initialize_device(
                 Dim::try_from(dev.get(CUdevice_attribute::CU_DEVICE_ATTRIBUTE_MAX_GRID_DIM_Y, cuDeviceGetAttribute)?).unwrap(),
                 Dim::try_from(dev.get(CUdevice_attribute::CU_DEVICE_ATTRIBUTE_MAX_GRID_DIM_Z, cuDeviceGetAttribute)?).unwrap(),
             ],
-            max_local_threads: Dim::try_from(max_threads_per_block).unwrap(),
+            max_local_threads: u32::try_from(max_threads_per_block).unwrap(),
             max_local_work_dims: vec![
-                Dim::try_from(dev.get(CUdevice_attribute::CU_DEVICE_ATTRIBUTE_MAX_BLOCK_DIM_X, cuDeviceGetAttribute)?).unwrap(),
-                Dim::try_from(dev.get(CUdevice_attribute::CU_DEVICE_ATTRIBUTE_MAX_BLOCK_DIM_Y, cuDeviceGetAttribute)?).unwrap(),
-                Dim::try_from(dev.get(CUdevice_attribute::CU_DEVICE_ATTRIBUTE_MAX_BLOCK_DIM_Z, cuDeviceGetAttribute)?).unwrap(),
+                u32::try_from(dev.get(CUdevice_attribute::CU_DEVICE_ATTRIBUTE_MAX_BLOCK_DIM_X, cuDeviceGetAttribute)?).unwrap(),
+                u32::try_from(dev.get(CUdevice_attribute::CU_DEVICE_ATTRIBUTE_MAX_BLOCK_DIM_Y, cuDeviceGetAttribute)?).unwrap(),
+                u32::try_from(dev.get(CUdevice_attribute::CU_DEVICE_ATTRIBUTE_MAX_BLOCK_DIM_Z, cuDeviceGetAttribute)?).unwrap(),
             ],
             local_mem_size: Dim::try_from(
                 dev.get(CUdevice_attribute::CU_DEVICE_ATTRIBUTE_MAX_SHARED_MEMORY_PER_BLOCK, cuDeviceGetAttribute)?,
@@ -986,10 +985,10 @@ impl CUDADevice {
 
     #[allow(clippy::needless_pass_by_ref_mut)]
     pub fn compile(&mut self, kernel: &Kernel, debug_asm: bool) -> Result<DeviceProgramId, BackendError> {
-        let (gws, lws, name, ptx) = self.compile_cuda(kernel, debug_asm)?;
-        //let (gws, lws, name, ptx) = self.compile_ptx(kernel, debug_asm)?;
+        let (lws, name, ptx) = self.compile_cuda(kernel, debug_asm)?;
+        //let (lws, name, ptx) = self.compile_ptx(kernel, debug_asm)?;
         let (reply, reply_rx) = channel();
-        self.tx.send(CUDACommand::Compile { gws, lws, name, ptx, reply }).unwrap();
+        self.tx.send(CUDACommand::Compile { lws, name, ptx, reply }).unwrap();
         reply_rx.recv().unwrap()
     }
 
@@ -998,12 +997,15 @@ impl CUDADevice {
         &mut self,
         program_id: DeviceProgramId,
         _memory_pool: &mut CUDAMemoryPool,
+        gws: &[Dim],
         args: &[PoolBufferId],
         // If sync is empty, kernel will be immediatelly synchronized
         event_wait_list: Vec<Event>,
     ) -> Result<Event, BackendError> {
         let (reply, reply_rx) = channel();
-        self.tx.send(CUDACommand::Launch { program_id, args: args.into(), event_wait_list, reply }).unwrap();
+        self.tx
+            .send(CUDACommand::Launch { program_id, gws: gws.into(), args: args.into(), event_wait_list, reply })
+            .unwrap();
         reply_rx.recv().unwrap()
     }
 
@@ -1831,30 +1833,27 @@ impl CUDADevice {
         &mut self,
         kernel: &Kernel,
         debug_asm: bool,
-    ) -> Result<(Vec<Dim>, Vec<Dim>, Box<str>, Vec<u8>), BackendError> {
-        let mut gws = vec![1; 3];
+    ) -> Result<(Vec<Dim>, Box<str>, Vec<u8>), BackendError> {
         let mut lws = vec![1; 3];
         let mut op_id = kernel.head;
         while !op_id.is_null() {
-            if let Op::Index { len: len_id, axis, kind: scope } = kernel.ops[op_id].op {
-                let len = kernel.index_len(len_id);
+            if let Op::Index { axis, kind: scope } = kernel.ops[op_id].op {
                 match scope {
-                    IdxKind::Group => gws[axis as usize] = len,
-                    IdxKind::Local => lws[axis as usize] = len,
-                    IdxKind::Warp => todo!(),
+                    IdxKind::Group(_) => {}
+                    IdxKind::Local(len) => lws[axis as usize] = u64::from(len),
+                    IdxKind::Warp(_) => todo!(),
                 }
             }
             op_id = kernel.next_op(op_id);
         }
 
-        if lws.iter().product::<u64>() > self.dev_info.max_local_threads {
+        if lws.iter().product::<u64>() > u64::from(self.dev_info.max_local_threads) {
             return Err(BackendError { status: ErrorStatus::KernelCompilation, context: "Invalid local work size.".into() });
         }
 
         // --- Codegen ---
         let mut name = format!(
-            "k_{}__{}",
-            gws.iter().map(ToString::to_string).collect::<Vec<_>>().join("_"),
+            "k_{}",
             lws.iter().map(ToString::to_string).collect::<Vec<_>>().join("_"),
         );
 
@@ -1961,22 +1960,22 @@ impl CUDADevice {
         unsafe { nvrtcDestroyProgram(&raw mut program) }.check(ErrorStatus::KernelCompilation)?;
 
         name += "\0";
-        Ok((gws, lws, name.into_boxed_str(), ptx_vec))
+        Ok((lws, name.into_boxed_str(), ptx_vec))
     }
 
     pub fn compile_ptx(
         &mut self,
         kernel: &Kernel,
         debug_asm: bool,
-    ) -> Result<(Vec<Dim>, Vec<Dim>, Box<str>, Vec<u8>), BackendError> {
-        let (mut ptx, name, gws, lws) = kernel.generate_ptx(self.compute_capability, &self.dev_info)?;
+    ) -> Result<(Vec<Dim>, Box<str>, Vec<u8>), BackendError> {
+        let (mut ptx, name, lws) = kernel.generate_ptx(self.compute_capability, &self.dev_info)?;
         if debug_asm {
             eprintln!("{}", std::str::from_utf8(&ptx).unwrap_or("<invalid utf8>"));
         }
         ptx.push(0);
         let mut name = String::from(name.as_ref());
         name += "\0";
-        Ok((gws, lws, name.into_boxed_str(), ptx))
+        Ok((lws, name.into_boxed_str(), ptx))
     }
 }
 

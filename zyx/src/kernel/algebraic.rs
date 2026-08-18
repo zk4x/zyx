@@ -840,7 +840,7 @@ mod tests {
         let c4 = k.const_idx(4u32);
         let c7 = k.const_idx(7u32);
 
-        let r37 = k.group_index(0, 4);
+        let r37 = k.group_index(0, c4);
 
         // Outer loop r47 (0..4), inner loop r81 (0..4).
         let r47 = k.loop_(c4);

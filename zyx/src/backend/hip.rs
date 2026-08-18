@@ -307,14 +307,14 @@ pub(super) fn initialize_device(
                 Dim::try_from(dev.get(HIPdevice_attribute::hipDeviceAttributeMaxGridDimY, hipDeviceGetAttribute)?).unwrap(),
                 Dim::try_from(dev.get(HIPdevice_attribute::hipDeviceAttributeMaxGridDimZ, hipDeviceGetAttribute)?).unwrap(),
             ],
-            max_local_threads: Dim::try_from(
+            max_local_threads: u32::try_from(
                 dev.get(HIPdevice_attribute::hipDeviceAttributeMaxThreadsPerBlock, hipDeviceGetAttribute)?,
             )
             .unwrap(),
             max_local_work_dims: vec![
-                Dim::try_from(dev.get(HIPdevice_attribute::hipDeviceAttributeMaxBlockDimX, hipDeviceGetAttribute)?).unwrap(),
-                Dim::try_from(dev.get(HIPdevice_attribute::hipDeviceAttributeMaxBlockDimY, hipDeviceGetAttribute)?).unwrap(),
-                Dim::try_from(dev.get(HIPdevice_attribute::hipDeviceAttributeMaxBlockDimZ, hipDeviceGetAttribute)?).unwrap(),
+                u32::try_from(dev.get(HIPdevice_attribute::hipDeviceAttributeMaxBlockDimX, hipDeviceGetAttribute)?).unwrap(),
+                u32::try_from(dev.get(HIPdevice_attribute::hipDeviceAttributeMaxBlockDimY, hipDeviceGetAttribute)?).unwrap(),
+                u32::try_from(dev.get(HIPdevice_attribute::hipDeviceAttributeMaxBlockDimZ, hipDeviceGetAttribute)?).unwrap(),
             ],
             local_mem_size: Dim::try_from(
                 dev.get(HIPdevice_attribute::hipDeviceAttributeMaxSharedMemoryPerBlock, hipDeviceGetAttribute)?,
@@ -654,6 +654,7 @@ impl HIPDevice {
         &mut self,
         program_id: DeviceProgramId,
         memory_pool: &mut HIPMemoryPool,
+        gws: &[Dim],
         args: &[PoolBufferId],
         mut event_wait_list: Vec<Event>,
     ) -> Result<Event, BackendError> {
@@ -685,9 +686,9 @@ impl HIPDevice {
         unsafe {
             (self.hipLaunchKernel)(
                 program.function,
-                u32::try_from(program.global_work_size[0]).unwrap(),
-                u32::try_from(program.global_work_size[1]).unwrap(),
-                u32::try_from(program.global_work_size[2]).unwrap(),
+                u32::try_from(gws.first().copied().unwrap_or(1)).unwrap(),
+                u32::try_from(gws.get(1).copied().unwrap_or(1)).unwrap(),
+                u32::try_from(gws.get(2).copied().unwrap_or(1)).unwrap(),
                 u32::try_from(program.local_work_size[0]).unwrap(),
                 u32::try_from(program.local_work_size[1]).unwrap(),
                 u32::try_from(program.local_work_size[2]).unwrap(),

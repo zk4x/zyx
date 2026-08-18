@@ -14,12 +14,12 @@ use super::{
 };
 use crate::DType;
 use crate::error::{BackendError, ErrorStatus};
-use crate::kernel::{IdxKind, Kernel, Op};
+use crate::kernel::Kernel;
 use crate::shape::Dim;
 use crate::slab::Slab;
-use libloading::{Library, Symbol};
+use libloading::Library;
 use nanoserde::DeJson;
-use std::{ffi::CString, path::PathBuf, process::Command};
+use std::{path::PathBuf, process::Command};
 
 #[derive(Debug, DeJson)]
 #[nserde(default)]
@@ -185,18 +185,6 @@ impl CDevice {
             }
         }
 
-        // --- Compute global work size ---
-        let mut gws0 = 1u64;
-        let mut op_id = kernel.head;
-        while !op_id.is_null() {
-            if let Op::Index { len, axis, kind: IdxKind::Group } = kernel.ops[op_id].op
-                && axis == 0
-            {
-                gws0 = kernel.index_len(len).max(1);
-            }
-            op_id = kernel.next_op(op_id);
-        }
-
         // --- Codegen ---
         let tmp_dir = std::env::temp_dir().join(format!("zyx_c_{}", std::process::id()));
         let _ = std::fs::create_dir_all(&tmp_dir);
@@ -222,7 +210,7 @@ impl CDevice {
             .arg(&so_path)
             .arg(&c_path)
             .arg("-lm");
-        if self.has_openmp && gws0 > 1 {
+        if self.has_openmp {
             cmd.arg(if is_clang { "-fopenmp=libgomp" } else { "-fopenmp" });
         }
         let output = cmd.output().map_err(|e| BackendError {
@@ -267,31 +255,14 @@ impl CDevice {
         &mut self,
         program_id: DeviceProgramId,
         memory_pool: &mut HostMemoryPool,
+        gws: &[Dim],
         args: &[PoolBufferId],
         event_wait_list: Vec<Event>,
     ) -> Result<Event, BackendError> {
-        let _ = event_wait_list; // sync not needed for sequential CPU
-
-        let program = &self.programs[program_id];
-
-        // Get buffer pointers
-        let mut ptrs: Vec<*mut u8> = Vec::with_capacity(args.len());
-        for &arg in args {
-            let ptr = memory_pool.buffer_ptr_mut(arg);
-            ptrs.push(ptr);
-        }
-
-        let func_name = CString::new(program.name.as_str()).unwrap();
-        unsafe {
-            let func: Symbol<unsafe extern "C" fn(*const *mut std::ffi::c_void, usize)> =
-                program.lib.get(func_name.as_bytes()).map_err(|e| BackendError {
-                    status: ErrorStatus::KernelCompilation,
-                    context: format!("Failed to find kernel symbol: {e}").into(),
-                })?;
-            let ptrs_raw: Vec<*mut std::ffi::c_void> = ptrs.iter().map(|p| (*p).cast::<std::ffi::c_void>()).collect();
-            func(ptrs_raw.as_ptr(), ptrs_raw.len());
-        }
-
-        Ok(Event::Host(super::host::HostEvent))
+        // TODO: the C backend needs special handling for gws: dynamic group
+        // iteration counts (a new kernel optimization pass is planned). Not
+        // wired up yet, so fail loudly.
+        let _ = (program_id, memory_pool, gws, args, event_wait_list);
+        todo!("C backend: gws-driven group loop not implemented")
     }
 }

@@ -66,7 +66,6 @@ pub struct OpenCLDevice {
 pub(super) struct OpenCLProgram {
     program: *mut c_void,
     kernel: *mut c_void,
-    gws: Vec<Dim>,
     lws: Vec<Dim>,
 }
 
@@ -115,13 +114,13 @@ enum Command {
     Compile {
         name: Box<str>,
         source: String,
-        gws: Vec<Dim>,
         lws: Vec<Dim>,
         reply: Sender<Result<DeviceProgramId, BackendError>>,
     },
     Launch {
         device_id: usize,
         program_id: DeviceProgramId,
+        gws: Vec<Dim>,
         args: Vec<PoolBufferId>,
         event_wait_list: Vec<OpenCLEvent>,
         reply: Sender<Result<OpenCLEvent, BackendError>>,
@@ -591,7 +590,7 @@ pub(super) fn initialize_device(
                             };
                             let _ = reply.send(result);
                         }
-                        Command::Compile { name, source, gws, lws, reply } => {
+                        Command::Compile { name, source, lws, reply } => {
                             let sources: &[&str] = &[source.as_str()];
                             let mut status = OpenCLStatus::CL_SUCCESS;
                             let program = unsafe {
@@ -639,11 +638,11 @@ pub(super) fn initialize_device(
                                 let _ = reply.send(Err(e));
                                 continue 'work_thread_loop;
                             }
-                            let program_id = programs.push(OpenCLProgram { program, kernel, gws, lws });
+                            let program_id = programs.push(OpenCLProgram { program, kernel, lws });
                             //println!("Pushed program_id={program_id:?}'");
                             let _ = reply.send(Ok(program_id));
                         }
-                        Command::Launch { device_id: device_idx, program_id, args, event_wait_list, reply } => {
+                        Command::Launch { device_id: device_idx, program_id, gws, args, event_wait_list, reply } => {
                             // Sync events
                             let events: Vec<*mut c_void> =
                                 event_wait_list.into_iter().map(|e| e.event).filter(|event| !event.is_null()).collect();
@@ -693,6 +692,7 @@ pub(super) fn initialize_device(
                                 continue 'work_thread_loop;
                             }
                             let mut event: *mut c_void = ptr::null_mut();
+                            let global_size: Vec<Dim> = gws.iter().zip(program.lws.iter()).map(|(g, l)| g * l).collect();
                             let lws_ptr = if program.lws.is_empty() {
                                 ptr::null()
                             } else {
@@ -702,9 +702,9 @@ pub(super) fn initialize_device(
                                 clEnqueueNDRangeKernel(
                                     queues[device_idx][queue_id].queue,
                                     program.kernel,
-                                    u32::try_from(program.gws.len()).expect("So many programs..."),
+                                    u32::try_from(global_size.len()).expect("So many programs..."),
                                     ptr::null(),
-                                    program.gws.as_ptr().cast(),
+                                    global_size.as_ptr().cast(),
                                     lws_ptr,
                                     0,
                                     ptr::null(),
@@ -876,28 +876,25 @@ impl OpenCLDevice {
 
     pub fn compile(&mut self, kernel: &Kernel, debug_asm: bool) -> Result<DeviceProgramId, BackendError> {
         // --- Codegen ---
-        let mut gws = vec![1; 3];
         let mut lws = vec![1; 3];
         let mut op_id = kernel.head;
         while !op_id.is_null() {
-            if let Op::Index { len: len_id, axis, kind: scope } = kernel.ops[op_id].op {
-                let len = kernel.index_len(len_id);
+            if let Op::Index { axis, kind: scope } = kernel.ops[op_id].op {
                 match scope {
-                    IdxKind::Group => gws[axis as usize] = len,
-                    IdxKind::Local => lws[axis as usize] = len,
-                    IdxKind::Warp => todo!(),
+                    IdxKind::Group(_) => {}
+                    IdxKind::Local(len) => lws[axis as usize] = u64::from(len),
+                    IdxKind::Warp(_) => todo!(),
                 }
             }
             op_id = kernel.next_op(op_id);
         }
 
-        if lws.iter().product::<u64>() > self.dev_info.max_local_threads {
+        if lws.iter().product::<u64>() > u64::from(self.dev_info.max_local_threads) {
             return Err(BackendError { status: ErrorStatus::KernelCompilation, context: "Invalid local work size.".into() });
         }
 
         let name = format!(
-            "k_{}__{}",
-            gws.iter().map(ToString::to_string).collect::<Vec<_>>().join("_"),
+            "k_{}",
             lws.iter().map(ToString::to_string).collect::<Vec<_>>().join("_"),
         );
 
@@ -907,12 +904,8 @@ impl OpenCLDevice {
             println!("{source}");
         }
 
-        for (i, lwd) in lws.iter().enumerate() {
-            gws[i] *= lwd;
-        }
-
         let (reply, reply_rx) = channel();
-        self.tx.send(Command::Compile { name: name.into(), source, gws, lws, reply }).unwrap();
+        self.tx.send(Command::Compile { name: name.into(), source, lws, reply }).unwrap();
         reply_rx.recv().unwrap()
     }
 
@@ -920,6 +913,7 @@ impl OpenCLDevice {
         &mut self,
         program_id: DeviceProgramId,
         _memory_pool: &mut OpenCLMemoryPool,
+        gws: &[Dim],
         args: &[PoolBufferId],
         event_wait_list: Vec<Event>,
     ) -> Result<Event, BackendError> {
@@ -932,7 +926,7 @@ impl OpenCLDevice {
             .collect();
         let (reply, reply_rx) = channel();
         self.tx
-            .send(Command::Launch { device_id: self.device_idx, program_id, args: args.to_vec(), event_wait_list: events, reply })
+            .send(Command::Launch { device_id: self.device_idx, program_id, gws: gws.into(), args: args.to_vec(), event_wait_list: events, reply })
             .unwrap();
         reply_rx.recv().unwrap().map(Event::OpenCL)
     }
@@ -971,7 +965,7 @@ fn query_device_info(
     }
     let max_work_item_dims = u32::from_ne_bytes(max_work_item_dims.try_into().unwrap()) as usize;
     let mwis = get_device_data(device, clGetDeviceInfo, CL_DEVICE_MAX_WORK_ITEM_SIZES)?;
-    let mut max_local_work_dims = vec![0; max_work_item_dims];
+    let mut max_local_work_dims: Vec<u32> = vec![0; max_work_item_dims];
     for i in 0..max_work_item_dims {
         let max_dim_size: usize = usize::from_ne_bytes([
             mwis[i * 8],
@@ -983,7 +977,7 @@ fn query_device_info(
             mwis[i * 8 + 6],
             mwis[i * 8 + 7],
         ]);
-        max_local_work_dims[i] = max_dim_size as Dim;
+        max_local_work_dims[i] = max_dim_size as u32;
     }
     let mlt = 256;
     *dev_info = DeviceInfo {

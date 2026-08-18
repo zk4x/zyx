@@ -648,7 +648,6 @@ impl Kernel {
         let glsl_set = 1; // GLSL extension set number
 
         // === Pass 1: scan for work sizes, collect info ===
-        let mut gws: Vec<u64> = vec![1; 3];
         let mut lws: Vec<u64> = vec![1; 3];
         {
             let mut op_id = self.head;
@@ -821,7 +820,7 @@ impl Kernel {
                         });
                     }
                     Op::Loop { len } => {
-                        let len = self.loop_len_dim(len);
+                        let len = self.resolve_dim(len).unwrap();
                         for &val in &[0u32, 1, len as u32] {
                             let key = match IDX_T {
                                 DType::U32 => Constant::U32(val),
@@ -857,20 +856,15 @@ impl Kernel {
                     _ => {}
                 }
                 // Track work sizes from Index ops
-                if let Op::Index { len: len_id, axis, kind: scope } = self.ops[op_id].op {
-                    let len = self.index_len(len_id);
+                if let Op::Index { axis, kind: scope } = self.ops[op_id].op {
                     match scope {
-                        IdxKind::Group => {
+                        IdxKind::Group(_) => {}
+                        IdxKind::Local(len) => {
                             if axis < 3 {
-                                gws[axis as usize] = gws[axis as usize].max(len);
+                                lws[axis as usize] = lws[axis as usize].max(u64::from(len));
                             }
                         }
-                        IdxKind::Local => {
-                            if axis < 3 {
-                                lws[axis as usize] = lws[axis as usize].max(len);
-                            }
-                        }
-                        IdxKind::Warp => todo!(),
+                        IdxKind::Warp(_) => todo!(),
                     }
                 }
                 op_id = self.next_op(op_id);
@@ -982,8 +976,7 @@ impl Kernel {
 
         // Entry point: GLCompute %func_id "name" %interfaces...
         let ep_name = format!(
-            "k_{}__{}",
-            gws.iter().map(|v| v.to_string()).collect::<Vec<_>>().join("_"),
+            "k_{}",
             lws.iter().map(|v| v.to_string()).collect::<Vec<_>>().join("_"),
         );
         {
@@ -1570,9 +1563,9 @@ impl Kernel {
                         let result_type = emit_type(&mut asm, &mut type_cache, IDX_T);
                         let loaded = asm.id();
                         match scope {
-                            IdxKind::Group => asm.emit_typed(OpLoad, vec3_id, loaded, &[wg_id_var]),
-                            IdxKind::Local => asm.emit_typed(OpLoad, vec3_id, loaded, &[local_inv_var]),
-                            IdxKind::Warp => todo!(),
+                            IdxKind::Group(_) => asm.emit_typed(OpLoad, vec3_id, loaded, &[wg_id_var]),
+                            IdxKind::Local(_) => asm.emit_typed(OpLoad, vec3_id, loaded, &[local_inv_var]),
+                            IdxKind::Warp(_) => todo!(),
                         }
                         let elem = asm.id();
                         asm.emit_typed(OpCompositeExtract, u32_id, elem, &[loaded, axis]);
@@ -1591,7 +1584,7 @@ impl Kernel {
                         let continue_lbl = asm.id();
                         let merge = asm.id();
                         let idx_type = emit_type(&mut asm, &mut type_cache, IDX_T);
-                        let len = self.loop_len_dim(len);
+                        let len = self.resolve_dim(len).unwrap();
 
                         // Pre-header: allocate counter var and store 0, then branch to header
                         let counter_ptr_type = push_ptr_type(&mut asm, &mut ptr_cache, &mut type_entries, SC_FUNCTION, idx_type);

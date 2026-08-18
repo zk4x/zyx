@@ -231,7 +231,7 @@ impl Kernel {
         &self,
         cc: [i32; 2],
         _dev_info: &DeviceInfo,
-    ) -> Result<(Vec<u8>, Box<str>, Vec<Dim>, Vec<Dim>), BackendError> {
+    ) -> Result<(Vec<u8>, Box<str>, Vec<Dim>), BackendError> {
         let mut comp = Compiler {
             var_map: Map::default(),
             loops: Vec::new(),
@@ -244,26 +244,23 @@ impl Kernel {
             scopes: Map::default(),
         };
 
-        let mut gws = vec![1; 3];
         let mut lws = vec![1; 3];
         let mut op_id = self.head;
         while !op_id.is_null() {
-            if let Op::Index { len: len_id, axis, kind: scope } = self.ops[op_id].op {
-                let len = self.index_len(len_id);
+            if let Op::Index { axis, kind: scope } = self.ops[op_id].op {
                 match scope {
-                    IdxKind::Group => gws[axis as usize] = len,
-                    IdxKind::Local => lws[axis as usize] = len,
-                    IdxKind::Warp => todo!(),
+                    IdxKind::Group(_) => {}
+                    IdxKind::Local(len) => lws[axis as usize] = u64::from(len),
+                    IdxKind::Warp(_) => todo!(),
                 }
             }
             op_id = self.next_op(op_id);
         }
-        if lws.iter().product::<Dim>() > _dev_info.max_local_threads {
+        if lws.iter().product::<Dim>() > u64::from(_dev_info.max_local_threads) {
             return Err(BackendError { status: ErrorStatus::KernelCompilation, context: "Invalid local work size.".into() });
         }
         let name = format!(
-            "k_{}__{}",
-            gws.iter().map(ToString::to_string).collect::<Vec<_>>().join("_"),
+            "k_{}",
             lws.iter().map(ToString::to_string).collect::<Vec<_>>().join("_"),
         )
         .into_boxed_str();
@@ -328,9 +325,9 @@ impl Kernel {
                         comp.indent,
                         if IDX_T == DType::U64 { "cvt.u64" } else { "mov" },
                         match scope {
-                            IdxKind::Group => "cta",
-                            IdxKind::Local => "t",
-                            IdxKind::Warp => todo!(),
+                            IdxKind::Group(_) => "cta",
+                            IdxKind::Local(_) => "t",
+                            IdxKind::Warp(_) => todo!(),
                         },
                         ["x", "y", "z"][axis as usize],
                     );
@@ -673,6 +670,6 @@ impl Kernel {
 
         comp.header.push_str(&comp.body);
 
-        Ok((comp.header.into_bytes(), name, gws, lws))
+        Ok((comp.header.into_bytes(), name, lws))
     }
 }

@@ -74,8 +74,9 @@ impl Kernel {
         let mut factors = Vec::new();
         let mut op_id = self.head;
         while !op_id.is_null() {
-            if let Op::Index { len, kind: IdxKind::Group, .. } = self.ops[op_id].op {
-                let len = self.index_len(len);
+            let next = self.next_op(op_id);
+            if let Op::Index { kind: IdxKind::Group(len), .. } = self.ops[op_id].op {
+                let Some(len) = self.resolve_dim(len) else { continue; };
                 for f in [16, 8, 4] {
                     //println!("len={len} f={f}");
                     if len.is_multiple_of(f) {
@@ -83,7 +84,7 @@ impl Kernel {
                     }
                 }
             }
-            op_id = self.next_op(op_id);
+            op_id = next;
         }
         let n_configs = factors.len();
         (Optimization::ThreadCoarse { factors }, n_configs)
@@ -95,10 +96,10 @@ impl Kernel {
     pub fn coarsen(&mut self, gidx_id: OpId, factor: u64) {
         #[cfg(feature = "time")]
         let _timer = crate::Timer::new("thread_coarse");
-        let Op::Index { len, axis, kind: IdxKind::Group } = self.ops[gidx_id].op else {
+        let Op::Index { axis, kind: IdxKind::Group(len) } = self.ops[gidx_id].op else {
             unreachable!()
         };
-        let len = self.index_len(len);
+        let Some(len) = self.resolve_dim(len) else { return };
         debug_assert!(len.is_multiple_of(factor));
 
         //println!("thread coarse gidx_id={gidx_id} by factor={factor}");
@@ -150,7 +151,7 @@ impl Kernel {
 
         // Group index now split into multiple indices with constant offsets
         let new_len = self.const_idx(len / factor);
-        let x = self.insert_before(gidx_id, Op::Index { len: new_len, axis, kind: IdxKind::Group });
+        let x = self.insert_before(gidx_id, Op::Index { axis, kind: IdxKind::Group(new_len) });
         self.ops[gidx_id].op = Op::Binary { x, y: const_factor, bop: BOp::Mul };
         let mut ids = Vec::with_capacity((factor - 1) as usize);
         let mut id = gidx_id;
@@ -260,8 +261,9 @@ impl Kernel {
 
         let mut op_id = self.head;
         while !op_id.is_null() {
+            let next = self.next_op(op_id);
             if let Op::Loop { len: len_id } = self.ops[op_id].op {
-                let len = self.loop_len_dim(len_id);
+                let Some(len) = self.resolve_dim(len_id) else { continue; };
                 if len >= 16 {
                     let applicable: Vec<u64> =
                         candidates.iter().copied().filter(|&f| len.is_multiple_of(f) && len / f >= 4).collect();
@@ -270,17 +272,15 @@ impl Kernel {
                     }
                 }
             }
-            if let Op::Index { len, kind: IdxKind::Group, .. } = self.ops[op_id].op
-                && self.index_len(len) >= 8
-            {
-                let len = self.index_len(len);
+            if let Op::Index { kind: IdxKind::Group(len), .. } = self.ops[op_id].op {
+                let Some(len) = self.resolve_dim(len) else { continue };
                 let applicable: Vec<u64> =
                     candidates.iter().copied().filter(|&f| len.is_multiple_of(f) && len / f >= 4).collect();
                 if !applicable.is_empty() {
                     global_upcasts.insert(op_id, applicable);
                 }
             }
-            op_id = self.next_op(op_id);
+            op_id = next;
         }
 
         if global_upcasts.is_empty() || reduce_factors.is_empty() {

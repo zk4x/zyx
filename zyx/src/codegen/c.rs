@@ -16,7 +16,6 @@ impl Kernel {
     pub fn generate_c(&self, device_info: &DeviceInfo, has_openmp: bool, name: &str) -> Result<String, BackendError> {
         let (dtypes, rcs) = self.compute_dtypes_and_rcs();
 
-        let mut gws = [1u64; 3];
         let mut reg_map: Map<OpId, usize> = Map::with_capacity_and_hasher(self.ops.len().into(), BuildHasherDefault::new());
         let mut registers: Vec<((DType, MemLayout), u32, u8)> = Vec::new();
         let mut constants: Map<OpId, Constant> = Map::with_capacity_and_hasher(100, BuildHasherDefault::new());
@@ -29,14 +28,13 @@ impl Kernel {
             let mut op_id = self.head;
             while !op_id.is_null() {
                 match self.ops[op_id].op {
-                    Op::Index { len: dim, axis, kind: scope } => {
-                        if scope != IdxKind::Group {
+                    Op::Index { kind: scope, .. } => {
+                        if !matches!(scope, IdxKind::Group(_)) {
                             return Err(BackendError {
                                 status: ErrorStatus::KernelCompilation,
                                 context: "C codegen: C only supports group index".into(),
                             });
                         }
-                        gws[axis as usize] = self.index_len(dim).max(1u64);
                         indices.insert(op_id, loop_id);
                         loop_id = loop_id.checked_add(1).expect("C: too many loops (>255)");
                     }
@@ -72,20 +70,20 @@ impl Kernel {
         let mut op_id = self.head;
         while !op_id.is_null() {
             match self.ops[op_id].op {
-                Op::Index { len, kind: scope, .. } => {
-                    if scope != IdxKind::Group {
+                Op::Index { kind: scope, .. } => {
+                    let IdxKind::Group(len) = scope else {
                         return Err(BackendError {
                             status: ErrorStatus::KernelCompilation,
                             context: "C codegen: LocalIndex not expected".into(),
                         });
-                    }
-                    if index_loop_depth == 0 && gws[0] > 1 && has_openmp {
+                    };
+                    if index_loop_depth == 0 && has_openmp {
                         _ = writeln!(source, "{indent}#pragma omp parallel for");
                     }
                     _ = writeln!(
                         source,
                         "{indent}for (unsigned int idx{loop_id} = 0; idx{loop_id} < {}; ++idx{loop_id}) {{",
-                        self.index_len(len)
+                        self.resolve_dim(len).unwrap()
                     );
                     indent += "  ";
                     index_loop_depth += 1;

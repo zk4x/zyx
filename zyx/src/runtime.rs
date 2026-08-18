@@ -33,7 +33,7 @@ use crate::{
     dtype::Constant,
     error::{BackendError, ErrorStatus},
     graph::{ClassId, ExecPlan, Graph, GraphId, Node, plan::drain_events_for_buf},
-    kernel::{BOp, DeviceId, IDX_T, Kernel, MemLayout, MoveOp, Op, OpId, ParamKind, UOp, autotune::OptSeq},
+    kernel::{BOp, DeviceId, Kernel, MemLayout, MoveOp, Op, OpId, ParamKind, UOp, autotune::OptSeq},
     rng::Rng,
     shape::{Dim, UAxis},
     slab::{Slab, SlabId},
