@@ -694,16 +694,29 @@ impl Kernel {
                             views.insert(x, new_view);
                         }
                         &MoveOp::Narrow { axis, start, .. } => {
-                            let x_shape = self.shape(x);
+                            let x_shape = self.store_shape_ids(x);
                             let view = views[&op_id].clone();
                             // Narrow slices one axis: the input coordinate along the
                             // narrowed axis is `start + out_idx`. Padding is unchanged
                             // (inherited from the parent's view), only the offset shifts.
+                            // The axis length must be the *input's* length on that axis
+                            // (not the narrow's output length), so the stride and the
+                            // padding bound `idx < len - rp` cover the shifted index.
                             let mut new_view = Vec::with_capacity(view.len());
                             for (a, d) in view.into_iter().enumerate() {
                                 if a as UAxis == axis {
+                                    let start = if self.dtype(start) != IDX_T {
+                                        self.insert_before(anchor, Op::Cast { x: start, dtype: IDX_T })
+                                    } else {
+                                        start
+                                    };
                                     let idx = self.insert_before(anchor, Op::Binary { x: d.idx, y: start, bop: BOp::Add });
-                                    new_view.push(SDim::new(idx, d.lp, d.rp, d.len));
+                                    let len = if self.dtype(x_shape[a]) != IDX_T {
+                                        self.insert_before(anchor, Op::Cast { x: x_shape[a], dtype: IDX_T })
+                                    } else {
+                                        x_shape[a]
+                                    };
+                                    new_view.push(SDim::new(idx, d.lp, d.rp, len));
                                 } else {
                                     new_view.push(d);
                                 }

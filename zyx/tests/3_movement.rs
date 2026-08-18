@@ -140,6 +140,17 @@ fn narrow_1() -> Result<(), ZyxError> {
 }
 
 #[test]
+fn stack_1() -> Result<(), ZyxError> {
+    let t0 = Tensor::from([1, 2]);
+    let t1 = Tensor::from([3, 4]);
+    let s = Tensor::stack_axis([&t0, &t1], 0)?;
+    assert_eq!(s, [[1, 2], [3, 4]]);
+    let s1 = Tensor::stack_axis([&t0, &t1], 1)?;
+    assert_eq!(s1, [[1, 3], [2, 4]]);
+    Ok(())
+}
+
+#[test]
 fn assign_narrow_same_root() -> Result<(), ZyxError> {
     let base = Tensor::from([0f32, 0f32, 0f32, 0f32, 0f32, 0f32]);
     let src1 = Tensor::from([1f32, 2f32]);

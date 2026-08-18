@@ -893,7 +893,12 @@ impl Kernel {
                         if dims.is_empty() {
                             dims.push(self.const_idx(1));
                         }
-                        dims[*axis] = *len;
+                        let len = if self.dtype(*len) != IDX_T {
+                            self.push_back(Op::Cast { x: *len, dtype: IDX_T })
+                        } else {
+                            *len
+                        };
+                        dims[*axis] = len;
                         return dims;
                     }
                     MoveOp::Pad { axis, lp, rp } => {

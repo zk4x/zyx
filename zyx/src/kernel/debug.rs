@@ -267,9 +267,7 @@ impl Kernel {
                         IdxKind::Local(len) => len as u64 - 1,
                         IdxKind::Warp(len) => len as u64 - 1,
                     };
-                    println!(
-                        "{indent}r{out_id}{grey}: {IDX_T}{reset} = {blue}{kind}_index({axis}){reset}    // 0..={ub}"
-                    );
+                    println!("{indent}r{out_id}{grey}: {IDX_T}{reset} = {blue}{kind}_index({axis}){reset}    // 0..={ub}");
                 }
                 Op::Loop { len } => {
                     has_loops = true;
@@ -348,7 +346,7 @@ impl Kernel {
                             let start = id_map.get(&start).copied().unwrap_or(start);
                             let len = id_map.get(&len).copied().unwrap_or(len);
                             println!(
-                                "{indent}r{out_id}{grey}: {dtype}{reset} = {cyan}narrow{reset} r{x} axis={axis} start=r{start} len={len}",
+                                "{indent}r{out_id}{grey}: {dtype}{reset} = {cyan}narrow{reset} r{x} axis={axis} start=r{start} len=r{len}",
                             );
                         }
                         MoveOp::Flip { axes } => {

@@ -986,11 +986,8 @@ impl Tensor {
     /// Returns error if self cannot be expanded into shape.
     pub fn expand<D: Into<Tensor>>(&self, shape: impl IntoIterator<Item = D>) -> Result<Tensor, ZyxError> {
         let tensors: Vec<Tensor> = shape.into_iter().map(|x| x.into()).collect();
-        let ids: Vec<TensorId> = tensors.iter().map(|x| x.id).collect();
-        let shape = RT.lock().stack(&ids)?;
-        drop(tensors); // we need to keep tensors alive until after stack is called
-        let id = RT.lock().expand(self.id, shape)?;
-        RT.lock().release(shape);
+        let shape = Tensor::stack(&tensors)?;
+        let id = RT.lock().expand(self.id, shape.id)?;
         Ok(Tensor { id })
     }
 
@@ -1019,10 +1016,9 @@ impl Tensor {
         let mut shape = self.shape();
         let axis = into_axis(axis, shape.len())?;
         shape[axis] = dim;
-        let ids: Vec<TensorId> = shape.iter().map(|&d| Tensor::from(d).id).collect();
-        let shape = RT.lock().stack(&ids)?;
-        let id = RT.lock().expand(self.id, shape)?;
-        RT.lock().release(shape);
+        let tensors: Vec<Tensor> = shape.iter().map(|&d| Tensor::from(d)).collect();
+        let shape = Tensor::stack(&tensors)?;
+        let id = RT.lock().expand(self.id, shape.id)?;
         Ok(Tensor { id })
     }
 
@@ -1262,11 +1258,9 @@ impl Tensor {
     /// Returns error if self cannot be reshaped to shape.
     pub fn reshape<D: Into<Tensor>>(&self, shape: impl IntoIterator<Item = D>) -> Result<Tensor, ZyxError> {
         let tensors: Vec<Tensor> = shape.into_iter().map(|x| x.into()).collect();
-        let ids: Vec<TensorId> = tensors.iter().map(|x| x.id).collect();
-        let shape = RT.lock().stack(&ids)?;
-        drop(tensors); // we need to keep tensors alive until after stack is called
-        let id = RT.lock().reshape(self.id, shape)?;
-        RT.lock().release(shape);
+        let shape = Tensor::stack(&tensors)?;
+        let id = RT.lock().reshape(self.id, shape.id)?;
+        Ok(Tensor { id })
 
         /*let numel = self.numel();
 
@@ -1302,7 +1296,6 @@ impl Tensor {
             ));
         }*/
 
-        Ok(Tensor { id })
     }
 
     /// Transpose (swap) the last two dimensions of this tensor.
@@ -2270,10 +2263,35 @@ impl Tensor {
     ///
     /// [`unsqueeze`](Tensor::unsqueeze), [`cat`](Tensor::cat)
     #[allow(clippy::missing_panics_doc)]
-    pub fn stack<'a>(tensors: impl IntoIterator<Item = &'a Tensor>, dim: Axis) -> Result<Tensor, ZyxError> {
-        // TODO handle dim corretly
-        let tensors: Vec<Tensor> = tensors.into_iter().map(|t| t.unsqueeze(dim).unwrap()).collect();
-        Tensor::cat(&tensors, dim)
+    pub fn stack_axis<'a>(tensors: impl IntoIterator<Item = &'a Tensor>, dim: Axis) -> Result<Tensor, ZyxError> {
+        let tensors: Vec<Tensor> = tensors.into_iter().cloned().collect();
+        let ret = Tensor::stack(&tensors)?;
+        let rank = ret.rank();
+        let dim = into_axis(dim, (rank - 1) as usize)?;
+        if dim == 0 {
+            Ok(ret)
+        } else {
+            let axes: Vec<Axis> = (1..=dim as Axis).chain(0..1).chain((dim as Axis + 1)..rank as Axis).collect();
+            ret.permute(axes)
+        }
+    }
+
+    /// Stacks the given tensors along a new leading axis.
+    pub fn stack(tensors: &[Tensor]) -> Result<Tensor, ZyxError> {
+        if tensors.is_empty() {
+            return Err(ZyxError::shape_error("stack: empty".into()));
+        }
+        let first_shape = tensors[0].shape();
+        for t in tensors {
+            if t.shape() != first_shape {
+                return Err(ZyxError::shape_error(
+                    format!("stack: all shapes must match, got {first_shape:?} and {:?}", t.shape()).into(),
+                ));
+            }
+        }
+        let ids: Vec<TensorId> = tensors.iter().map(|x| x.id).collect();
+        let id = RT.lock().stack(&ids)?;
+        Ok(Tensor { id })
     }
 
     /// Split tensor into multiple tensors at given dim/axis

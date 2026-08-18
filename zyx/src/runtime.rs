@@ -854,7 +854,11 @@ impl Runtime {
             self.kernels[keep_kid].outputs.insert(tid);
             #[cfg(feature = "debug_tensor_op")]
             println!("  -> tid={tid}, kid={keep_kid:?}, op_id={op_id:?}");
-            self.shapes.insert(tid, vec![tensors.len() as Dim]);
+            let first_shape = self.shape(tensors[0]);
+            let mut shape = Vec::with_capacity(first_shape.len() + 1);
+            shape.push(tensors.len() as Dim);
+            shape.extend_from_slice(first_shape);
+            self.shapes.insert(tid, shape);
             Ok(tid)
         }
     }
@@ -1106,13 +1110,33 @@ impl Runtime {
             let (kernel_id, x) = self.duplicate_or_store(x, false).unwrap();
             debug_assert_eq!(self.kernels[kernel_id].outputs.len(), 0, "input into slice must have empty outputs");
 
-            let (_, start) = self.eager_ids(start);
-            let (len_kid, len_op) = self.eager_ids(len);
+            let (mut skid, mut start_op) = self.eager_ids(start);
+            if skid != kernel_id {
+                if !self.kernels[skid].stores.is_empty() {
+                    self.add_store(start).unwrap();
+                    (skid, start_op) = self.eager_ids(start);
+                }
+                if skid != kernel_id {
+                    let op_map = self.merge_kernel(kernel_id, skid).unwrap();
+                    start_op = op_map[&start_op];
+                }
+            }
+            let (mut lkid, mut len_op) = self.eager_ids(len);
+            if lkid != kernel_id {
+                if !self.kernels[lkid].stores.is_empty() {
+                    self.add_store(len).unwrap();
+                    (lkid, len_op) = self.eager_ids(len);
+                }
+                if lkid != kernel_id {
+                    let op_map = self.merge_kernel(kernel_id, lkid).unwrap();
+                    len_op = op_map[&len_op];
+                }
+            }
 
             // Move op
             let op_id = self.kernels[kernel_id]
                 .kernel
-                .push_back(Op::Move { x, mop: Box::new(MoveOp::Narrow { axis, start, len: len_op }) });
+                .push_back(Op::Move { x, mop: Box::new(MoveOp::Narrow { axis, start: start_op, len: len_op }) });
             let tid = self.tensors.push(TensorData {
                 kernel_id,
                 op_id,
@@ -1125,8 +1149,7 @@ impl Runtime {
             #[cfg(feature = "debug_tensor_op")]
             println!("  -> tid={tid}, kid={kernel_id:?}, op_id={op_id:?}");
             let mut narrowed = sh.to_vec();
-            // TODO remove const_dim, it is wrong here
-            narrowed[axis as usize] = self.const_dim(len_kid, len_op).unwrap();
+            narrowed[axis as usize] = self.const_dim(kernel_id, len_op).unwrap();
             self.shapes.insert(tid, narrowed);
             tid
         }
