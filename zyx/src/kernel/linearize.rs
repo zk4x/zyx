@@ -505,9 +505,15 @@ impl Kernel {
                             }
                             views.insert(x, view);
                         }
-                        MoveOp::Expand { shape } => {
-                            let x_shape = self.shape(x);
-                            let shape = self.shape_values(*shape);
+                        &MoveOp::Expand { shape } => {
+                            // Broadcast determination is symbolic: an input axis is
+                            // broadcast iff its dim resolves to 1 and the output dim
+                            // resolves to something != 1 (mirrors tinygrad's
+                            // broadcast_axes/resolve). A dynamic dim resolves to None
+                            // and is treated as non-broadcast (identity), the safe
+                            // default. No concrete shape() lookup is required.
+                            let x_shape = self.store_shape_ids(x);
+                            let shape = self.shape_ids(shape);
                             let view = views[&op_id].clone();
                             let zero = self.insert_const_idx_before(anchor, 0u32);
                             let one = self.insert_const_idx_before(anchor, 1u32);
@@ -517,10 +523,13 @@ impl Kernel {
                             let offset = shape.len() - x_shape.len();
                             let view: Vec<SDim> = (0..x_shape.len())
                                 .map(|a| {
-                                    if x_shape[a] == shape[offset + a] {
-                                        view[offset + a]
-                                    } else {
+                                    let broadcast = self.resolve_dim(x_shape[a]) == Some(1)
+                                        && self.resolve_dim(shape[offset + a]) != Some(1);
+                                    if broadcast {
                                         SDim::new(zero, zero, zero, one)
+                                    } else {
+                                        // Don't broadcast if can't be resolved
+                                        view[offset + a]
                                     }
                                 })
                                 .collect();
