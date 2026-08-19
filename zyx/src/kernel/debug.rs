@@ -89,7 +89,7 @@ impl Kernel {
                         indent.pop();
                     }
                     println!(
-                        "{indent}r{out_id}{grey}: {dtype}{reset} = {red}reduce {}{reset} r{x} over {reduce_axis}",
+                        "{indent}r{out_id}{grey}: {dtype}{reset} = {red}reduce {}{reset} r{x} over r{reduce_axis}",
                         match rop {
                             BOp::Add => "sum",
                             BOp::Max => "max",
