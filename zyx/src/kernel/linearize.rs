@@ -5,7 +5,7 @@
 
 //! Rangeify movement operations.
 //!
-//! Reimplements unfold_movement_ops using tinygrad's rangeify approach,
+//! Reimplements unfold_movement_ops
 //! without the View abstraction for movement op propagation.
 //! Movement ops are applied directly to axis indices, and
 //! LoadView/StoreView/ConstView are converted to Load/Store/Const in a single pass.
@@ -77,7 +77,7 @@ fn pad_value(k: &Kernel, id: OpId) -> u64 {
 }
 
 impl Kernel {
-    /// Unfold movement operations into index-based operations using tinygrad's rangeify approach.
+    /// Unfold movement operations into index-based operations
     ///
     /// Movement ops (Reshape, Expand, Permute, Pad) are applied directly to axis indices,
     /// and LoadView/StoreView/ConstView are converted to Load/Store/Const in a single pass.
@@ -787,25 +787,16 @@ impl Kernel {
                 }
             }
 
-            // tinygrad-style toposort with priority: assign each op an "ideal
-            // order" key (priority, op_id), then run a reverse-Kahn pass seeded
-            // from the sinks (store roots) that forces the output as close to
-            // that ideal order as the dependency constraints allow. Params are
-            // placed at the front afterward, so they are not specially ordered
-            // here.
-            let priority = |op: &Op| -> i32 {
-                match op {
+            let mut ideal: Vec<OpId> = reachable.iter().copied().collect();
+            ideal.sort_by_key(|&op_id| {
+                let op_priority = match self.ops[op_id].op {
                     Op::Param { .. } => -20,
                     Op::Const(_) => -10,
                     Op::Loop { .. } => 5,
                     Op::Reduce { .. } => -5,
                     _ => 0,
-                }
-            };
-            let mut ideal: Vec<OpId> = reachable.iter().copied().collect();
-            ideal.sort_by_key(|&op_id| {
-                let op = &self.ops[op_id].op;
-                let pri = priority(op);
+                };
+                let pri = op_priority;
                 (pri, op_id)
             });
             let nkey: Map<OpId, u64> = ideal.iter().enumerate().map(|(i, &id)| (id, i as u64)).collect();
