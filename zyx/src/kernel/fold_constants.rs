@@ -448,6 +448,7 @@ impl Kernel {
             if matches!(
                 op,
                 Op::Store { .. }
+                    | Op::Param { .. }
                     | Op::Storage { .. }
                     | Op::Wmma { .. }
                     | Op::Barrier

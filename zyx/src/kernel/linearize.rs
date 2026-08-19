@@ -219,6 +219,8 @@ impl Kernel {
             }
         }
 
+        self.debug();
+
         self.common_subexpression_elimination();
         self.dead_code_elimination();
     }
@@ -257,10 +259,32 @@ impl Kernel {
         // before `start` or the innermost open-loop anchor; walking a snapshot in
         // reverse avoids processing those inserted ops (they are not view ops and
         // have no view entry).
+        // Collect ops reachable from the store roots. Ops not on any store's
+        // dependency chain are dead and must be skipped during the reverse walk
+        // (their views are never seeded, and touching them would panic).
+        let mut roots: Vec<OpId> = Vec::new();
+        let mut op_id = self.head;
+        while !op_id.is_null() {
+            if matches!(self.ops[op_id].op, Op::Store { .. }) {
+                roots.push(op_id);
+            }
+            op_id = self.next_op(op_id);
+        }
+        let mut reachable = Set::default();
+        let mut pending = roots;
+        while let Some(op_id) = pending.pop() {
+            if self.ops.contains_id(op_id) {
+                if reachable.insert(op_id) {
+                    pending.extend(self.at(op_id).parameters());
+                }
+            }
+        }
         let mut op_ids: Vec<OpId> = Vec::new();
         let mut op_id = self.head;
         while !op_id.is_null() {
-            op_ids.push(op_id);
+            if reachable.contains(&op_id) {
+                op_ids.push(op_id);
+            }
             op_id = self.next_op(op_id);
         }
         // Phase 1: unfold movement ops (reshape/narrow/...) into index
@@ -719,7 +743,7 @@ impl Kernel {
             }
 
             for op_id in self.ops.ids().collect::<Vec<_>>() {
-                if !reachable.contains(&op_id) {
+                if !reachable.contains(&op_id) && !matches!(self.ops[op_id].op, Op::Param { .. }) {
                     self.remove_op(op_id);
                 }
             }
