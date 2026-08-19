@@ -207,12 +207,7 @@ impl Kernel {
                 if let Op::Index { axis, kind: IdxKind::Group(len) } = self.ops[op_id].op {
                     let len_dim = self.resolve_dim(len).unwrap_or(u64::MAX);
                     if let Some(&l) = lengths.get(&axis) {
-                        assert!(
-                            len_dim == l,
-                            "group index axis={axis} has inconsistent lengths ({} vs {})",
-                            l,
-                            len_dim
-                        );
+                        assert!(len_dim == l, "group index axis={axis} has inconsistent lengths ({} vs {})", l, len_dim);
                         self.remap(op_id, canonical[&axis]);
                         self.remove_op(op_id);
                     } else {
@@ -553,18 +548,24 @@ impl Kernel {
                             // align to the tail of the output shape. A broadcast input
                             // axis reads a single constant element.
                             let offset = shape.len() - x_shape.len();
-                            let view: Vec<SDim> = (0..x_shape.len())
-                                .map(|a| {
-                                    let broadcast = self.resolve_dim(x_shape[a]) == Some(1)
-                                        && self.resolve_dim(shape[offset + a]) != Some(1);
-                                    if broadcast {
-                                        SDim::new(zero, zero, zero, one)
-                                    } else {
-                                        // Don't broadcast if can't be resolved
-                                        view[offset + a]
-                                    }
-                                })
-                                .collect();
+                            let view: Vec<SDim> = if x_shape.is_empty() {
+                                // Scalar input broadcasts to every axis: the input view
+                                // is the whole output view, so the pad mask propagates.
+                                view
+                            } else {
+                                (0..x_shape.len())
+                                    .map(|a| {
+                                        let broadcast = self.resolve_dim(x_shape[a]) == Some(1)
+                                            && self.resolve_dim(shape[offset + a]) != Some(1);
+                                        if broadcast {
+                                            SDim::new(zero, zero, zero, one)
+                                        } else {
+                                            // Else don't broadcast - todo perhaps make the check symbolic too?
+                                            view[offset + a]
+                                        }
+                                    })
+                                    .collect()
+                            };
                             views.insert(x, view);
                         }
                         MoveOp::Permute { axes } => {
