@@ -82,7 +82,6 @@ impl Kernel {
     // TODO Currently it only works if each define has a single move op chain.
     // Make it also work with move op chains when each define is accessed by multiple move ops.
     pub fn linearize(&mut self) {
-
         if !self.ops.values().any(|n| matches!(n.op, Op::Store { index: OpId::NULL, .. })) {
             return;
         }
@@ -282,9 +281,8 @@ impl Kernel {
                         }
                     }
                     if has_pad {
-                        let pcd = self.insert_before(anchor, Op::Cast { x: pc, dtype: value.dtype() });
                         let z = self.insert_before(anchor, Op::Const(value));
-                        self.ops[op_id].op = Op::Binary { x: pcd, y: z, bop: BOp::Mul };
+                        self.ops[op_id].op = Op::Binary { x: pc, y: z, bop: BOp::Mul };
                     }
                 }
                 Op::Param { dtype, kind, shape } => match kind {
@@ -335,8 +333,7 @@ impl Kernel {
                         let src = self.insert_before(op_id, Op::Param { dtype, kind, shape });
                         let zero = self.insert_before(anchor, Op::Const(Constant::idx(0)));
                         let z = self.insert_before(anchor, Op::Load { src, index: zero, layout: MemLayout::Scalar });
-                        let pcd = self.insert_before(anchor, Op::Cast { x: pc, dtype });
-                        self.ops[op_id].op = Op::Binary { x: pcd, y: z, bop: BOp::Mul };
+                        self.ops[op_id].op = Op::Binary { x: pc, y: z, bop: BOp::Mul };
                     }
                     ParamKind::Global => {
                         let view = views.remove(&op_id).unwrap();
@@ -367,11 +364,9 @@ impl Kernel {
                         let src = self.insert_before(op_id, Op::Param { dtype, kind, shape });
                         // Zero the offset where the padding condition fails, so the load
                         // always reads in-bounds, then zero the loaded value itself.
-                        let pcu = self.insert_before(anchor, Op::Cast { x: pc, dtype: IDX_T });
-                        let offset = self.insert_before(anchor, Op::Binary { x: pcu, y: index, bop: BOp::Mul });
+                        let offset = self.insert_before(anchor, Op::Binary { x: pc, y: index, bop: BOp::Mul });
                         let z = self.insert_before(anchor, Op::Load { src, index: offset, layout: MemLayout::Scalar });
-                        let pcd = self.insert_before(anchor, Op::Cast { x: pc, dtype });
-                        self.ops[op_id].op = Op::Binary { x: pcd, y: z, bop: BOp::Mul };
+                        self.ops[op_id].op = Op::Binary { x: pc, y: z, bop: BOp::Mul };
                     }
                 },
                 Op::Store { dst, src, index, layout } => {
@@ -401,11 +396,6 @@ impl Kernel {
                     let dims = self.shape_ids(dst_shape);
                     let mut view = Vec::new();
                     for (axis, &len) in dims.iter().enumerate().rev() {
-                        let len = if self.dtype(len) != IDX_T {
-                            self.insert_before(start, Op::Cast { x: len, dtype: IDX_T })
-                        } else {
-                            len
-                        };
                         let idx = self.insert_before(start, Op::Index { axis: axis as u32, kind: IdxKind::Group(len) });
                         let lp = self.insert_before(start, Op::Const(Constant::idx(0)));
                         let rp = self.insert_before(start, Op::Const(Constant::idx(0)));
@@ -489,12 +479,7 @@ impl Kernel {
                             let mut valid = self.insert_before(op_id, Op::Const(Constant::Bool(true)));
                             for d in &out_view {
                                 let lo = self.insert_before(op_id, Op::Binary { x: d.idx, y: d.lp, bop: BOp::Cmpge });
-                                let len = if self.dtype(d.len) != IDX_T {
-                                    self.insert_before(op_id, Op::Cast { x: d.len, dtype: IDX_T })
-                                } else {
-                                    d.len
-                                };
-                                let interior_len = self.insert_before(op_id, Op::Binary { x: len, y: d.rp, bop: BOp::Sub });
+                                let interior_len = self.insert_before(op_id, Op::Binary { x: d.len, y: d.rp, bop: BOp::Sub });
                                 let hi = self.insert_before(op_id, Op::Binary { x: d.idx, y: interior_len, bop: BOp::Cmplt });
                                 let in_axis = self.insert_before(op_id, Op::Binary { x: lo, y: hi, bop: BOp::And });
                                 valid = self.insert_before(op_id, Op::Binary { x: valid, y: in_axis, bop: BOp::And });
@@ -509,12 +494,7 @@ impl Kernel {
                                 // inflate `len`; the flat base must not include them, or
                                 // it would over-step the source).
                                 let psum = self.insert_before(op_id, Op::Binary { x: d.lp, y: d.rp, bop: BOp::Add });
-                                let len = if self.dtype(d.len) != IDX_T {
-                                    self.insert_before(op_id, Op::Cast { x: d.len, dtype: IDX_T })
-                                } else {
-                                    d.len
-                                };
-                                let compact = self.insert_before(op_id, Op::Binary { x: len, y: psum, bop: BOp::Sub });
+                                let compact = self.insert_before(op_id, Op::Binary { x: d.len, y: psum, bop: BOp::Sub });
                                 suffix = self.insert_before(op_id, Op::Binary { x: compact, y: suffix, bop: BOp::Mul });
                             }
                             // The input's contiguous strides: the running product of the
@@ -525,12 +505,7 @@ impl Kernel {
                             let mut st = one;
                             for a in (0..n).rev() {
                                 x_strides[a] = st;
-                                let len = if self.dtype(x_shape[a]) != IDX_T {
-                                    self.insert_before(op_id, Op::Cast { x: x_shape[a], dtype: IDX_T })
-                                } else {
-                                    x_shape[a]
-                                };
-                                st = self.insert_before(op_id, Op::Binary { x: len, y: st, bop: BOp::Mul });
+                                st = self.insert_before(op_id, Op::Binary { x: x_shape[a], y: st, bop: BOp::Mul });
                             }
                             let mut view = Vec::with_capacity(n);
                             let mut q = base;
@@ -916,12 +891,8 @@ impl Kernel {
                 continue;
             }
             // Scalars are operands whose value shape is `[]`.
-            let scalars: Vec<(OpId, DType)> = operands
-                .iter()
-                .copied()
-                .zip(dtypes.iter().copied())
-                .filter(|&(o, _)| self.shape(o).is_empty())
-                .collect();
+            let scalars: Vec<(OpId, DType)> =
+                operands.iter().copied().zip(dtypes.iter().copied()).filter(|&(o, _)| self.shape(o).is_empty()).collect();
             if scalars.is_empty() {
                 self.debug();
                 panic!("autocast_scalars: mixed-dtype op {op_id} has no scalar operand to cast");
