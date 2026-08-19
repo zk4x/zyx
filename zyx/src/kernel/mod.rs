@@ -133,7 +133,7 @@ pub use ops::{MMADType, MMADims, MMALayout, ParamKind};
 
 // TODO later make this dynamic u32 or u64 depending on max range
 /// Type used for indexing into arrays within kernels.
-pub(crate) const IDX_T: DType = DType::U32;
+pub(crate) const IDX_T: DType = DType::I64;
 
 /// Kernel builder for constructing custom compute kernels.
 ///
@@ -899,6 +899,24 @@ impl Kernel {
                 _ => 0,
             })
             .collect()
+    }
+
+    /// Reads an index constant op as a signed `i64` (padding may be negative).
+    pub(crate) fn as_i64(&self, op_id: OpId) -> i64 {
+        let Op::Const(c) = self.ops[op_id].op else {
+            unreachable!("as_i64: expected a constant, got {:?}", self.ops[op_id].op)
+        };
+        match c {
+            Constant::I8(d) => i64::from(d),
+            Constant::I16(d) => i64::from(d),
+            Constant::I32(d) => i64::from(d),
+            Constant::I64(d) => i64::from_le_bytes(d),
+            Constant::U8(d) => i64::from(d),
+            Constant::U16(d) => i64::from(d),
+            Constant::U32(d) => i64::from(d),
+            Constant::U64(d) => u64::from_le_bytes(d) as i64,
+            c => unreachable!("as_i64: {c:?} is not an integer constant"),
+        }
     }
 
     /// Resolves the shape of a *value* op into per-dimension ops, following

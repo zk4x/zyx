@@ -66,14 +66,6 @@ use crate::{
     slab::SlabId,
 };
 
-/// Extract the value of an index constant op.
-fn pad_value(k: &Kernel, id: OpId) -> u64 {
-    let Op::Const(c) = k.ops[id].op else {
-        unreachable!("pad constant expected, got {:?}", k.ops[id].op)
-    };
-    c.as_dim().expect("pad constant must be a non-negative dim")
-}
-
 impl Kernel {
     /// Unfold movement operations into index-based operations
     ///
@@ -264,8 +256,8 @@ impl Kernel {
                         let lp_id = d.lp;
                         let rp_id = d.rp;
                         let len_op = d.len;
-                        let lp = pad_value(self, lp_id);
-                        let rp = pad_value(self, rp_id);
+                        let lp = self.as_i64(lp_id);
+                        let rp = self.as_i64(rp_id);
                         if lp > 0 || rp > 0 {
                             has_pad = true;
                             if lp > 0 {
@@ -588,15 +580,16 @@ impl Kernel {
                             let x_shape = self.shape(x);
                             let view = views[&op_id].clone();
                             let zero = self.insert_const_idx_before(anchor, 0u32);
-                            let lp_val = pad_value(self, lp);
-                            let rp_val = pad_value(self, rp);
+                            let lp_val = self.as_i64(lp);
+                            let rp_val = self.as_i64(rp);
                             let mut new_view = Vec::with_capacity(view.len());
                             for (a, d) in view.into_iter().enumerate() {
                                 if a == axis as usize {
                                     // The input-view index ranges over the padded
                                     // coordinates (length x_shape + lp + rp); the pad
                                     // condition zeros everything outside the interior.
-                                    let len = self.insert_const_idx_before(anchor, (x_shape[a] + lp_val + rp_val) as u64);
+                                    let padded_len = (x_shape[a] as i64 + lp_val + rp_val).max(0) as u64;
+                                    let len = self.insert_const_idx_before(anchor, padded_len);
                                     let lp_id = if lp_val > 0 { lp } else { zero };
                                     let rp_id = if rp_val > 0 { rp } else { zero };
                                     new_view.push(SDim::new(d.idx, lp_id, rp_id, len));
@@ -884,6 +877,17 @@ impl Kernel {
             let operands: Vec<OpId> = match self.ops[op_id].op {
                 Op::Binary { x, y, .. } => vec![x, y],
                 Op::Mad { x, y, z } => vec![x, y, z],
+                Op::Load { index, .. } | Op::Store { index, .. } => {
+                    if index.is_null() || self.dtype(index) == IDX_T {
+                        continue;
+                    }
+                    let cast = self.insert_before(op_id, Op::Cast { x: index, dtype: IDX_T });
+                    match &mut self.ops[op_id].op {
+                        Op::Load { index, .. } | Op::Store { index, .. } => *index = cast,
+                        _ => unreachable!(),
+                    }
+                    continue;
+                }
                 _ => continue,
             };
             let dtypes: Vec<DType> = operands.iter().map(|&o| self.dtype(o)).collect();

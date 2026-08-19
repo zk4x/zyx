@@ -355,40 +355,10 @@ impl Constant {
 
     // Create new constant for indexing purposes
     pub(crate) fn idx<T: Scalar>(idx: T) -> Self {
-        use core::mem::transmute_copy as t;
-        match T::dtype() {
-            DType::I32 => {
-                let idx: i32 = unsafe { t(&idx) };
-                if IDX_T == DType::U64 {
-                    Self::U64((idx as u64).to_le_bytes())
-                } else {
-                    Self::U32(idx as u32)
-                }
-            }
-            DType::U32 => {
-                let idx: u32 = unsafe { t(&idx) };
-                if IDX_T == DType::U64 {
-                    Self::U64(u64::from(idx).to_le_bytes())
-                } else {
-                    Self::U32(idx)
-                }
-            }
-            DType::U64 => {
-                let idx: u64 = unsafe { t(&idx) };
-                if IDX_T == DType::U64 {
-                    Self::U64(idx.to_le_bytes())
-                } else {
-                    Self::U32(idx as u32)
-                }
-            }
-            DType::I64 => {
-                let idx: i64 = unsafe { t(&idx) };
-                if IDX_T == DType::U64 {
-                    Self::U64((idx as u64).to_le_bytes())
-                } else {
-                    Self::U32(idx as u32)
-                }
-            }
+        match IDX_T {
+            DType::U32 => Self::U32(idx.cast::<u32>()),
+            DType::U64 => Self::U64(idx.cast::<u64>().to_le_bytes()),
+            DType::I64 => Self::I64(idx.cast::<i64>().to_le_bytes()),
             x => unreachable!("{x}"),
         }
     }
