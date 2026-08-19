@@ -306,14 +306,15 @@ impl Kernel {
                         IdxKind::Local(len) => u64::from(len).saturating_sub(1),
                         IdxKind::Warp(_) => todo!(),
                     };
+                    let idx_type = self.dtype(op_id).cu();
+                    let idx_src = match scope {
+                        IdxKind::Group(_) => "block",
+                        IdxKind::Local(_) => "thread",
+                        IdxKind::Warp(_) => todo!(),
+                    };
                     _ = writeln!(
                         source,
-                        "{indent}unsigned int idx{loop_id} = {}Idx.{}; // 0..={max_idx}",
-                        match scope {
-                            IdxKind::Group(_) => "block",
-                            IdxKind::Local(_) => "thread",
-                            IdxKind::Warp(_) => todo!(),
-                        },
+                        "{indent}{idx_type} idx{loop_id} = {idx_src}Idx.{}; // 0..={max_idx}",
                         ["x", "y", "z"][axis as usize],
                     );
                     loop_id += 1;
@@ -321,7 +322,7 @@ impl Kernel {
                 Op::Loop { len, .. } => {
                     indices.insert(op_id, loop_id);
                     let len = get_var(len, &constants, &indices, &reg_map, &mut registers, loop_id)?;
-                    _ = writeln!(source, "{indent}for (unsigned int idx{loop_id} = 0; idx{loop_id} < {len}; ++idx{loop_id}) {{");
+                    _ = writeln!(source, "{indent}for ({idx_type} idx{loop_id} = 0; idx{loop_id} < {len}; ++idx{loop_id}) {{", idx_type = self.dtype(op_id).cu());
                     indent += "  ";
                     loop_id += 1;
                 }
@@ -447,7 +448,7 @@ fn get_var(
 }
 
 impl DType {
-    pub(super) const fn cu(&self) -> &str {
+    pub(super) const fn cu(&self) -> &'static str {
         match self {
             Self::BF16 => "__nv_bfloat16",
             Self::F16 => "half",

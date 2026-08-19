@@ -323,14 +323,15 @@ impl Kernel {
                     };
                     _ = writeln!(
                         source,
-                        "{indent}unsigned int idx{loop_id} = {id_fn}({axis}); // 0..={max_idx}",
+                        "{indent}{idx_type} idx{loop_id} = {id_fn}({axis}); // 0..={max_idx}",
+                        idx_type = self.dtype(op_id).ocl(),
                     );
                     loop_id += 1;
                 }
                 Op::Loop { len, .. } => {
                     indices.insert(op_id, loop_id);
                     let len = get_var(len, &constants, &indices, &reg_map, &mut registers, loop_id)?;
-                    _ = writeln!(source, "{indent}for (unsigned int idx{loop_id} = 0; idx{loop_id} < {len}; ++idx{loop_id}) {{");
+                    _ = writeln!(source, "{indent}for ({idx_type} idx{loop_id} = 0; idx{loop_id} < {len}; ++idx{loop_id}) {{", idx_type = self.dtype(op_id).ocl());
                     indent += "  ";
                     loop_id += 1;
                 }

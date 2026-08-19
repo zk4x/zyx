@@ -83,7 +83,8 @@ impl Kernel {
                     let len = get_var(len, &constants, &indices, &reg_map, &mut registers, loop_id)?;
                     _ = writeln!(
                         source,
-                        "{indent}for (unsigned int idx{loop_id} = 0; idx{loop_id} < {len}; ++idx{loop_id}) {{"
+                        "{indent}for ({idx_type} idx{loop_id} = 0; idx{loop_id} < {len}; ++idx{loop_id}) {{",
+                        idx_type = self.dtype(op_id).c_type(),
                     );
                     indent += "  ";
                     index_loop_depth += 1;
@@ -92,7 +93,7 @@ impl Kernel {
                 Op::Loop { len, .. } => {
                     indices.insert(op_id, loop_id);
                     let len = get_var(len, &constants, &indices, &reg_map, &mut registers, loop_id)?;
-                    _ = writeln!(source, "{indent}for (unsigned int idx{loop_id} = 0; idx{loop_id} < {len}; ++idx{loop_id}) {{");
+                    _ = writeln!(source, "{indent}for ({idx_type} idx{loop_id} = 0; idx{loop_id} < {len}; ++idx{loop_id}) {{", idx_type = self.dtype(op_id).c_type());
                     indent += "  ";
                     loop_id += 1;
                 }
