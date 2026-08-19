@@ -260,13 +260,6 @@ impl<T: Copy> TinyVec<T> {
         }
     }
 
-    pub fn contains(&self, value: &T) -> bool
-    where
-        T: PartialEq,
-    {
-        self.iter().any(|x| x == value)
-    }
-
     pub fn get_mut(&mut self, index: usize) -> Option<&mut T> {
         if index >= self.len() {
             return None;
