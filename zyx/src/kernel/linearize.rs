@@ -231,6 +231,11 @@ impl Kernel {
         // indices) but BEFORE the original compute ops.
         let start = self.head;
 
+        // Shared zero/one index constants used throughout the handlers, hoisted
+        // once so every branch reuses them instead of inserting fresh constants.
+        let zero = self.insert_const_idx_before(start, 0u32);
+        let one = self.insert_const_idx_before(start, 1u32);
+
         // For each op, shape and strides: (index, stride, left pad, right pad, axis length)
         let mut views: Map<OpId, Vec<SDim>> = Map::default();
 
@@ -300,9 +305,8 @@ impl Kernel {
                         // and written back into the matching store op.
                         let store_id = dst_stores.remove(&op_id).unwrap();
                         let view = views.remove(&op_id).unwrap();
-                        let zero = self.insert_const_idx_before(anchor, 0u32);
                         let mut write_index = zero;
-                        let mut suffix = self.insert_const_idx_before(anchor, 1u32);
+                        let mut suffix = one;
                         for d in view.iter().rev() {
                             let src_idx = self.insert_before(anchor, Op::Binary { x: d.idx, y: d.lp, bop: BOp::Sub });
                             write_index = self.insert_before(anchor, Op::Mad { x: src_idx, y: suffix, z: write_index });
@@ -416,7 +420,6 @@ impl Kernel {
                     // computation in Phase 2 (outer loops before inner ones).
                     let out_view = views.remove(&op_id).unwrap();
                     let loop_id = self.insert_before(anchor, Op::Loop { len: reduce_axis });
-                    let zero = self.insert_const_idx_before(anchor, 0u32);
                     let mut view = out_view;
                     view.push(SDim::new(loop_id, zero, zero, reduce_axis));
                     views.insert(x, view);
@@ -425,43 +428,6 @@ impl Kernel {
                 Op::Move { x, ref mop } => {
                     match mop.as_ref() {
                         MoveOp::Reshape { .. } => {
-                            // CORRECT (div/mod) VERSION:
-                            // Reshape merges/splits contiguous dims, so axis indices don't
-                            // align 1:1. Build a single flat index over the output view (all
-                            // the arithmetic LoadView would do), then recover each input axis
-                            // by successive div/mod against the input's contiguous strides.
-                            //
-                            //     let out_view = views[&op_id].clone();
-                            //     let x_shape = self.shape(x);
-                            //     let mut x_strides = vec![1; x_shape.len()];
-                            //     let mut st = 1;
-                            //     for a in (0..x_shape.len()).rev() {
-                            //         x_strides[a] = st;
-                            //         st *= x_shape[a];
-                            //     }
-                            //     let zero = self.insert_const_idx_before(anchor, 0u32);
-                            //     let mut base = zero;
-                            //     for &(idx, drift, _, _, _) in &out_view {
-                            //         base = self.insert_before(anchor, Op::Mad { x: idx, y: drift, z: base });
-                            //     }
-                            //     let n = x_shape.len();
-                            //     let mut view = Vec::with_capacity(n);
-                            //     let mut q = base;
-                            //     for a in 0..n {
-                            //         let s = x_strides[a];
-                            //         let s_id = self.insert_const_idx_before(anchor, s);
-                            //         let idx_expr = if a == n - 1 {
-                            //             q
-                            //         } else {
-                            //             let div = self.insert_before(anchor, Op::Binary { x: q, y: s_id, bop: BOp::Div });
-                            //             let rem = self.insert_before(anchor, Op::Binary { x: q, y: s_id, bop: BOp::Mod });
-                            //             q = rem;
-                            //             div
-                            //         };
-                            //         let len_id = self.insert_const_idx_before(anchor, x_shape[a]);
-                            //         view.push((idx_expr, s_id, zero, zero, len_id));
-                            //     }
-                            //     views.insert(x, view);
                             // Reshape merges/splits contiguous dims, so axis indices don't
                             // align 1:1. The input is read as a single flat index over the
                             // whole (contiguous) input, which equals the flat index over the
@@ -475,8 +441,6 @@ impl Kernel {
                             // follows its shape dims) rather than the global
                             // `anchor`, so the arithmetic is inserted AFTER the
                             // shape dimensions it depends on, not before them.
-                            let zero = self.insert_const_idx_before(op_id, 0u32);
-                            let one = self.insert_const_idx_before(op_id, 1u32);
                             let mut base = zero;
                             let mut valid = self.insert_before(op_id, Op::Const(Constant::Bool(true)));
                             for d in &out_view {
@@ -542,8 +506,6 @@ impl Kernel {
                             let x_shape = self.store_shape_ids(x);
                             let shape = self.shape_ids(shape);
                             let view = views[&op_id].clone();
-                            let zero = self.insert_const_idx_before(anchor, 0u32);
-                            let one = self.insert_const_idx_before(anchor, 1u32);
                             // New leading axes are prepended broadcasts; the input axes
                             // align to the tail of the output shape. A broadcast input
                             // axis reads a single constant element.
@@ -583,7 +545,6 @@ impl Kernel {
                         MoveOp::Flip { axes } => {
                             let axes = axes.clone();
                             let view = views[&op_id].clone();
-                            let one = self.insert_const_idx_before(anchor, 1u32);
                             let mut new_view = Vec::with_capacity(view.len());
                             for (a, d) in view.into_iter().enumerate() {
                                 if axes.contains(&(a as UAxis)) {
@@ -815,6 +776,7 @@ impl Kernel {
             ideal.sort_by_key(|&op_id| {
                 let op_priority = match self.ops[op_id].op {
                     Op::Param { .. } => -20,
+                    Op::Index { .. } => -15,
                     Op::Const(_) => -10,
                     Op::Loop { .. } => 5,
                     Op::Reduce { .. } => -5,
