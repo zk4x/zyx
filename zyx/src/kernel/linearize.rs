@@ -62,7 +62,7 @@ use crate::{
     DType, Map, Set,
     dtype::Constant,
     kernel::{BOp, IDX_T, IdxKind, Kernel, MemLayout, MemScope, MoveOp, Op, OpId, ParamKind},
-    shape::UAxis,
+    shape::{Dim, UAxis},
     slab::SlabId,
 };
 
@@ -192,6 +192,38 @@ impl Kernel {
             "linearize left a movement or stack operation in the kernel"
         );
 
+        // Dedup group-index ops: every store handler emits its own set of
+        // `Op::Index { kind: Group }` per output axis, so N stores of the same
+        // shape produce N duplicate group indices per axis. Keep the first in
+        // linked-list order as canonical and remap the rest onto it. All
+        // duplicates for an axis must agree on the length, or the kernel is
+        // malformed.
+        {
+            let mut canonical: Map<u32, OpId> = Map::default();
+            let mut lengths: Map<u32, Dim> = Map::default();
+            let mut op_id = self.head;
+            while !op_id.is_null() {
+                let next = self.next_op(op_id);
+                if let Op::Index { axis, kind: IdxKind::Group(len) } = self.ops[op_id].op {
+                    let len_dim = self.resolve_dim(len).unwrap_or(u64::MAX);
+                    if let Some(&l) = lengths.get(&axis) {
+                        assert!(
+                            len_dim == l,
+                            "group index axis={axis} has inconsistent lengths ({} vs {})",
+                            l,
+                            len_dim
+                        );
+                        self.remap(op_id, canonical[&axis]);
+                        self.remove_op(op_id);
+                    } else {
+                        lengths.insert(axis, len_dim);
+                        canonical.insert(axis, op_id);
+                    }
+                }
+                op_id = next;
+            }
+        }
+
         self.common_subexpression_elimination();
         self.dead_code_elimination();
     }
@@ -226,10 +258,10 @@ impl Kernel {
         // reverse avoids processing those inserted ops (they are not view ops and
         // have no view entry).
         let mut op_ids: Vec<OpId> = Vec::new();
-        let mut scan = self.head;
-        while !scan.is_null() {
-            op_ids.push(scan);
-            scan = self.next_op(scan);
+        let mut op_id = self.head;
+        while !op_id.is_null() {
+            op_ids.push(op_id);
+            op_id = self.next_op(op_id);
         }
         // Phase 1: unfold movement ops (reshape/narrow/...) into index
         // arithmetic, converting LoadView/StoreView/ConstView into Load/Store/
@@ -861,10 +893,10 @@ impl Kernel {
     fn autocast_scalars(&mut self) {
         let ops: Vec<OpId> = {
             let mut v = Vec::new();
-            let mut scan = self.head;
-            while !scan.is_null() {
-                v.push(scan);
-                scan = self.next_op(scan);
+            let mut op_id = self.head;
+            while !op_id.is_null() {
+                v.push(op_id);
+                op_id = self.next_op(op_id);
             }
             v
         };
