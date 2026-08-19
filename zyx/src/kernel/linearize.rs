@@ -743,6 +743,8 @@ impl Kernel {
             }
         }
 
+        self.debug();
+
         // Phase 2: collect reachable ops from the store roots, then topologically
         // order their dependencies. Phase 1 may leave the linked list temporarily
         // invalid while inserting and replacing ops, so the slab is the source of
@@ -787,6 +789,54 @@ impl Kernel {
                 }
             }
 
+            // Get reduce ids in sorted order, from innermost to outermost
+            let mut reduce_ids: Vec<OpId> = Vec::new();
+            let mut op_id = self.head;
+            while !op_id.is_null() {
+                if matches!(self.ops[op_id].op, Op::Reduce { .. }) {
+                    reduce_ids.push(op_id);
+                }
+                op_id = self.next_op(op_id);
+            }
+
+            let mut region_depth: Map<OpId, u32> = reachable.iter().map(|&x| (x, 0)).collect();
+            // Generate region depth for all ops in reduce ids
+            let mut n = reduce_ids.len() as u32;
+            for reduce_id in reduce_ids {
+                let Op::Reduce { x, rop, reduce_axis } = self.ops[reduce_id].op else {
+                    unreachable!()
+                };
+                // Backward
+                let mut stack = vec![x];
+                let mut descendants: Map<OpId, Set<OpId>> = Map::default();
+                while let Some(parent) = stack.pop() {
+                    if reachable.contains(&parent) {
+                        for child in self.ops[parent].op.parameters() {
+                            if let Some(parents) = descendants.get_mut(&child) {
+                                parents.insert(parent);
+                            } else {
+                                stack.push(child);
+                                descendants.insert(child, [parent].into_iter().collect());
+                            }
+                        }
+                    }
+                }
+                // Forward
+                let mut stack = vec![reduce_axis];
+                let mut visited: Set<OpId> = Set::default();
+                while let Some(child) = stack.pop() {
+                    if visited.insert(child) {
+                        if let Some(parents) = descendants.get(&child) {
+                            stack.extend(parents);
+                        }
+                    }
+                }
+                for x in visited {
+                    *region_depth.get_mut(&x).unwrap() += n;
+                }
+                n -= 1;
+            }
+
             let mut ideal: Vec<OpId> = reachable.iter().copied().collect();
             ideal.sort_by_key(|&op_id| {
                 let op_priority = match self.ops[op_id].op {
@@ -796,7 +846,7 @@ impl Kernel {
                     Op::Reduce { .. } => -5,
                     _ => 0,
                 };
-                let pri = op_priority;
+                let pri = op_priority + region_depth.get(&op_id).copied().unwrap_or(0) as i32;
                 (pri, op_id)
             });
             let nkey: Map<OpId, u64> = ideal.iter().enumerate().map(|(i, &id)| (id, i as u64)).collect();
@@ -884,7 +934,7 @@ impl Kernel {
             true
         });
 
-        // Phase 4: insert accumulators immediately before their exact loops.
+        // Phase 3: insert accumulators immediately before their exact loops.
         // No loop movement occurs after this point.
         let reduce_ids: Vec<OpId> =
             self.iter_unordered().filter(|(_, op)| matches!(op, Op::Reduce { .. })).map(|(id, _)| id).collect();
