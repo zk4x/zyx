@@ -828,19 +828,14 @@ impl Kernel {
                     if shape.is_null() {
                         return vec![0];
                     }
-                    return self.shape(shape);
+                    return self.shape_values(shape);
                 }
-                Op::Stack { ref ops } => {
-                    return ops
-                        .iter()
-                        .map(|&o| match self.ops[o].op {
-                            Op::Const(c) => c.as_dim().unwrap_or(0),
-                            _ => 0,
-                        })
-                        .collect();
-                }
+                // A `Stack` of N scalars is a rank-1 tensor of shape `[N]`; its
+                // per-element *values* (the dims, when used as a shape descriptor)
+                // are resolved by [`Self::shape_values`], not here.
+                Op::Stack { ref ops } => return vec![ops.len() as Dim],
                 Op::Move { x, ref mop } => match mop.as_ref() {
-                    MoveOp::Reshape { shape, .. } | MoveOp::Expand { shape } => return self.shape(*shape),
+                    MoveOp::Reshape { shape, .. } | MoveOp::Expand { shape } => return self.shape_values(*shape),
                     MoveOp::Permute { axes } => return crate::shape::permute(&self.shape(x), axes),
                     MoveOp::Flip { .. } => return self.shape(x),
                     MoveOp::Pad { axis, lp, rp } => {
@@ -891,6 +886,19 @@ impl Kernel {
             }
         }
         panic!("shape_ids not found for too long time");
+    }
+
+    /// Resolves a *shape descriptor* (`Op::Const` or `Op::Stack`) into the
+    /// dimension values it holds. Used where a shape tensor's values (the dims
+    /// it encodes) are needed, as opposed to the tensor's own shape.
+    pub(crate) fn shape_values(&self, op_id: OpId) -> Vec<Dim> {
+        self.shape_ids(op_id)
+            .iter()
+            .map(|&id| match self.ops[id].op {
+                Op::Const(c) => c.as_dim().unwrap_or(0),
+                _ => 0,
+            })
+            .collect()
     }
 
     /// Resolves the shape of a *value* op into per-dimension ops, following

@@ -404,7 +404,9 @@ impl Runtime {
 
     pub fn new_eager_tensor(&mut self, shape: Vec<Dim>, dtype: DType, kind: ParamKind) -> TensorId {
         let mut kernel = Kernel::new(DeviceId::AUTO);
-        let shape_op = if shape.len() == 1 {
+        let shape_op = if shape.is_empty() {
+            OpId::NULL
+        } else if shape.len() == 1 {
             kernel.const_idx(shape[0])
         } else {
             let dims: Vec<OpId> = shape.iter().map(|d| kernel.const_idx(*d)).collect();
@@ -439,7 +441,7 @@ impl Runtime {
             rc: 1,
         });
         self.kernels[kernel_id].outputs.insert(tid);
-        self.shapes.insert(tid, vec![1]);
+        self.shapes.insert(tid, vec![]);
         tid
     }
 
@@ -462,7 +464,7 @@ impl Runtime {
     pub fn new_variable_tensor<T: Scalar>(&mut self, x: T) -> TensorId {
         let dtype = T::dtype();
         self.initialize_backends();
-        let tid = self.new_eager_tensor(vec![1], dtype, ParamKind::Variable);
+        let tid = self.new_eager_tensor(vec![], dtype, ParamKind::Variable);
         self.retain(tid);
 
         let MemoryPool::Host(ref mut pool) = self.pools[PoolId::HOST] else {
@@ -479,7 +481,7 @@ impl Runtime {
         #[cfg(feature = "debug_tensor_op")]
         println!("runtime::new_host_tensor(shape={shape:?})");
 
-        if data.len() == 1 && shape.len() == 1 {
+        if data.len() == 1 && shape.is_empty() {
             let tid = self.new_constant_tensor(Constant::new(data[0]));
             return Ok(tid);
         }
@@ -903,7 +905,7 @@ impl Runtime {
                     shape_op = op_map[&shape_op];
                 }
             }
-            let out_dims = self.kernels[kernel_id].kernel.shape(shape_op);
+            let out_dims = self.kernels[kernel_id].kernel.shape_values(shape_op);
 
             let op_id = self.kernels[kernel_id].kernel.reshape(op_id, shape_op, input_rank);
             let tid = self.tensors.push(TensorData {
@@ -968,7 +970,7 @@ impl Runtime {
                     shape_op = op_map[&shape_op];
                 }
             }
-            let out_shape = self.kernels[kernel_id].kernel.shape(shape_op);
+            let out_shape = self.kernels[kernel_id].kernel.shape_values(shape_op);
             let op_id = self.kernels[kernel_id].kernel.expand(op_id, shape_op);
             let tid = self.tensors.push(TensorData {
                 kernel_id,

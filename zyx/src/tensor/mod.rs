@@ -3398,7 +3398,7 @@ impl From<&Tensor> for Tensor {
 
 impl<T: Scalar> From<T> for Tensor {
     fn from(value: T) -> Self {
-        Tensor { id: RT.lock().new_host_tensor(vec![1 as Dim], Box::new([value])).unwrap() }
+        Tensor { id: RT.lock().new_host_tensor(vec![], Box::new([value])).unwrap() }
     }
 }
 

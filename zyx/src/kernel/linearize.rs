@@ -557,7 +557,7 @@ impl Kernel {
                         }
                         MoveOp::Expand { shape } => {
                             let x_shape = self.shape(x);
-                            let shape = self.shape(*shape);
+                            let shape = self.shape_values(*shape);
                             let view = views[&op_id].clone();
                             let zero = self.insert_const_idx_before(anchor, 0u32);
                             let one = self.insert_const_idx_before(anchor, 1u32);
@@ -580,13 +580,12 @@ impl Kernel {
                             // output[a] reads input[axes[a]]. Input axis j is
                             // consumed by output axis inv_axes[j]; copy that
                             // output axis's SDim into input axis j's slot.
-                            let x_shape = self.shape(x);
                             let mut inv_axes = vec![0; axes.len()];
                             for (i, &a) in axes.iter().enumerate() {
                                 inv_axes[a] = i;
                             }
                             let view = &views[&op_id];
-                            let view: Vec<SDim> = (0..x_shape.len()).map(|j| view[inv_axes[j]]).collect();
+                            let view: Vec<SDim> = (0..axes.len()).map(|j| view[inv_axes[j]]).collect();
                             views.insert(x, view);
                         }
                         MoveOp::Flip { axes } => {
