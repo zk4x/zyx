@@ -58,6 +58,8 @@ impl SDim {
     }
 }
 
+use std::collections::BinaryHeap;
+
 use crate::{
     DType, Map, Set,
     dtype::Constant,
@@ -714,15 +716,33 @@ impl Kernel {
             }
         }
 
-        // Phase 2: collect reachable ops from the stores and scope markers, then
-        // topologically order their dependencies. Phase 1 may leave the linked
-        // list temporarily invalid while inserting and replacing ops, so the slab
-        // is the source of truth until this phase rebuilds the list.
+        // Read-only (Variable + Global) and writable (GlobalMut) params in
+        // linked-list order. Since Phase 1 does not reorder params, forward order
+        // is the correct kernel argument order.
+        let mut ro_params: Vec<OpId> = Vec::new();
+        let mut rw_params: Vec<OpId> = Vec::new();
+        {
+            let mut op_id = self.head;
+            while !op_id.is_null() {
+                if let Op::Param { kind, .. } = self.ops[op_id].op {
+                    match kind {
+                        ParamKind::Variable | ParamKind::Global => ro_params.push(op_id),
+                        ParamKind::GlobalMut => rw_params.push(op_id),
+                    }
+                }
+                op_id = self.next_op(op_id);
+            }
+        }
+
+        // Phase 2: collect reachable ops from the store roots, then topologically
+        // order their dependencies. Phase 1 may leave the linked list temporarily
+        // invalid while inserting and replacing ops, so the slab is the source of
+        // truth until this phase rebuilds the list.
         {
             let mut roots = Vec::new();
             for (op_id, op) in self.iter_unordered() {
                 match op {
-                    Op::Store { .. } | Op::Loop { .. } => roots.push(op_id),
+                    Op::Store { .. } => roots.push(op_id),
                     Op::Param { .. }
                     | Op::Const(_)
                     | Op::Binary { .. }
@@ -731,7 +751,8 @@ impl Kernel {
                     | Op::Mad { .. }
                     | Op::Load { .. }
                     | Op::Index { .. }
-                    | Op::Reduce { .. } => {}
+                    | Op::Reduce { .. }
+                    | Op::Loop { .. } => {}
                     Op::Storage { .. } | Op::Wmma { .. } | Op::Barrier | Op::If { .. } | Op::EndIf | Op::EndLoop => {
                         debug_assert!(false, "unexpected root operation after Phase 1: {op:?}");
                     }
@@ -739,11 +760,13 @@ impl Kernel {
                 }
             }
 
+            // Reachability from the store roots. Any op not on a store's dependency
+            // chain is dead and removed.
             let mut reachable = Set::default();
             let mut pending = roots;
             while let Some(op_id) = pending.pop() {
-                if reachable.insert(op_id) {
-                    if self.ops.contains_id(op_id) {
+                if self.ops.contains_id(op_id) {
+                    if reachable.insert(op_id) {
                         pending.extend(self.at(op_id).parameters());
                     }
                 }
@@ -755,64 +778,89 @@ impl Kernel {
                 }
             }
 
-            let mut order: Vec<OpId> = Vec::new();
-            // Params must precede their users. Recover their original argument
-            // order from the Phase 1 snapshot, since neither the temporary links
-            // nor slab iteration order represent kernel argument order anymore.
-            let mut used_params = Set::default();
-            let mut expected_params = global_params.clone();
-            expected_params.sort_by_key(|(_, kind, _)| *kind == ParamKind::GlobalMut);
-            for (dtype, kind, shape) in expected_params {
-                let found = self.iter_unordered().find_map(|(op_id, op)| {
-                    if used_params.contains(&op_id) {
-                        return None;
-                    }
-                    match op {
-                        Op::Param { dtype: d, kind: k, shape: s } if *d == dtype && *k == kind && *s == shape => Some(op_id),
-                        _ => None,
-                    }
-                });
-                let op_id = found.expect("linearize lost a parameter during Phase 1");
-                order.push(op_id);
-                used_params.insert(op_id);
-            }
-            // Any newly-created parameters not represented by the original
-            // snapshot are appended in slab order.
+            // tinygrad-style toposort with priority: assign each op an "ideal
+            // order" key (priority, op_id), then run a reverse-Kahn pass seeded
+            // from the sinks (store roots) that forces the output as close to
+            // that ideal order as the dependency constraints allow. Params are
+            // placed at the front afterward, so they are not specially ordered
+            // here.
+            let priority = |op: &Op| -> i32 {
+                match op {
+                    Op::Param { .. } => -20,
+                    Op::Const(_) => -10,
+                    Op::Loop { .. } => 5,
+                    Op::EndLoop => -5,
+                    _ => 0,
+                }
+            };
+            let mut ideal: Vec<OpId> = reachable.iter().copied().collect();
+            ideal.sort_by_key(|&op_id| {
+                let op = &self.ops[op_id].op;
+                let pri = priority(op);
+                (pri, op_id)
+            });
+            let nkey: Map<OpId, u64> = ideal.iter().enumerate().map(|(i, &id)| (id, i as u64)).collect();
+
+            // out_degree[u] = number of consumers of u (ops referencing u).
+            let mut out_degree: Map<OpId, u32> = Map::default();
             for (op_id, op) in self.iter_unordered() {
-                if matches!(op, Op::Param { .. }) && used_params.insert(op_id) {
-                    order.push(op_id);
+                if !reachable.contains(&op_id) {
+                    continue;
                 }
-            }
-            let mut placed: Set<OpId> = order.iter().copied().collect();
-            // Append only operations whose dependencies have already been
-            // emitted. Marking nodes visited during DFS is insufficient here:
-            // a discovered dependency can be skipped by another traversal before
-            // it has actually been appended to the order.
-            loop {
-                let mut progress = false;
-                for (op_id, op) in self.iter_unordered() {
-                    if !placed.contains(&op_id) {
-                        let ready = op.parameters().filter(|p| !p.is_null()).all(|p| placed.contains(&p));
-                        if ready {
-                            order.push(op_id);
-                            placed.insert(op_id);
-                            progress = true;
-                        }
+                for p in op.parameters() {
+                    if !p.is_null() {
+                        *out_degree.entry(p).or_default() += 1;
                     }
                 }
-                if placed.len() == self.ops.values().count() {
-                    break;
+            }
+
+            // Seed with the sinks (out_degree 0), pop the highest ideal-order key
+            // first, and emit each op once all its consumers are emitted.
+            let mut heap: BinaryHeap<(u64, OpId)> = BinaryHeap::new();
+            for &op_id in &reachable {
+                if out_degree.get(&op_id).copied().unwrap_or(0) == 0 {
+                    heap.push((nkey[&op_id], op_id));
                 }
-                assert!(progress, "linearize dependency ordering contains a cycle or missing operation");
             }
-            // Rebuild the kernel's linked list in `order`.
-            for (i, &op) in order.iter().enumerate() {
-                self.ops[op].prev = if i == 0 { OpId::NULL } else { order[i - 1] };
-                self.ops[op].next = if i + 1 == order.len() { OpId::NULL } else { order[i + 1] };
+            let mut order = Vec::new();
+            while let Some((_, op_id)) = heap.pop() {
+                order.push(op_id);
+                for p in self.at(op_id).parameters() {
+                    if p.is_null() {
+                        continue;
+                    }
+                    let d = out_degree.get_mut(&p).expect("consumer of a reachable op must have an out_degree entry");
+                    *d -= 1;
+                    if *d == 0 {
+                        heap.push((nkey[&p], p));
+                    }
+                }
             }
-            self.head = order.first().copied().unwrap_or(OpId::NULL);
-            self.tail = order.last().copied().unwrap_or(OpId::NULL);
+            assert!(order.len() == reachable.len(), "linearize dependency ordering contains a cycle or missing operation");
+            order.reverse();
+
+            // Move the params to the front: read-only (Variable + Global) first,
+            // then writable (GlobalMut), each in linked-list order.
+            order.retain(|op| !matches!(self.ops[*op].op, Op::Param { .. }));
+            let mut final_order = Vec::with_capacity(order.len() + ro_params.len() + rw_params.len());
+            final_order.extend(ro_params.iter().copied());
+            final_order.extend(rw_params.iter().copied());
+            final_order.extend(order);
+
+            // Rebuild the kernel's linked list in `final_order`.
+            for (i, &op) in final_order.iter().enumerate() {
+                self.ops[op].prev = if i == 0 { OpId::NULL } else { final_order[i - 1] };
+                self.ops[op].next = if i + 1 == final_order.len() {
+                    OpId::NULL
+                } else {
+                    final_order[i + 1]
+                };
+            }
+            self.head = final_order.first().copied().unwrap_or(OpId::NULL);
+            self.tail = final_order.last().copied().unwrap_or(OpId::NULL);
         }
+
+        self.debug();
 
         // Verify the relative order of global defines is unchanged by linearize
         // (read-only defines first, then writable ones, both in original order).
@@ -844,32 +892,6 @@ impl Kernel {
                 *shape = OpId::NULL;
             }
         }
-
-        // Phase 3: move each loop immediately before its first direct user.
-        let mut loop_stack = Vec::new();
-        let mut first_users = Map::default();
-        let mut scan = self.head;
-        while !scan.is_null() {
-            let next = self.next_op(scan);
-            match self.ops[scan].op {
-                Op::Loop { .. } => loop_stack.push(scan),
-                Op::EndLoop => {}
-                _ => {
-                    if let Some(pos) =
-                        loop_stack.iter().rposition(|&loop_id| self.ops[scan].op.parameters().any(|p| p == loop_id))
-                    {
-                        let loop_id = loop_stack.remove(pos);
-                        first_users.insert(loop_id, scan);
-                    }
-                }
-            }
-            scan = next;
-        }
-        for (loop_id, first_user) in first_users {
-            self.move_op_before(loop_id, first_user);
-        }
-
-        self.debug();
 
         // Phase 4: insert accumulators immediately before their exact loops.
         // No loop movement occurs after this point.
