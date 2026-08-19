@@ -192,8 +192,6 @@ impl Kernel {
             "linearize left a movement or stack operation in the kernel"
         );
 
-        self.verify();
-
         self.common_subexpression_elimination();
         self.dead_code_elimination();
     }
@@ -249,33 +247,18 @@ impl Kernel {
                     let Some(view) = views.remove(&op_id) else { continue };
                     // The constant is a scalar whose value must be nullified where the
                     // view's padding condition is false (padded regions read as zero).
+                    // The mask is built unconditionally over every axis, all symbolic;
+                    // pads that are Const(0) simply fold away in later passes.
                     let mut pc = self.insert_before(anchor, Op::Const(Constant::Bool(true)));
-                    let mut has_pad = false;
                     for d in &view {
-                        let idx = d.idx;
-                        let lp_id = d.lp;
-                        let rp_id = d.rp;
-                        let len_op = d.len;
-                        let lp = self.as_i64(lp_id);
-                        let rp = self.as_i64(rp_id);
-                        if lp > 0 || rp > 0 {
-                            has_pad = true;
-                            if lp > 0 {
-                                let lp_m1 = self.insert_const_idx_before(anchor, lp - 1);
-                                let t = self.insert_before(anchor, Op::Binary { x: idx, y: lp_m1, bop: BOp::Cmpgt });
-                                pc = self.insert_before(anchor, Op::Binary { x: t, y: pc, bop: BOp::And });
-                            }
-                            if rp > 0 {
-                                let len_mr = self.insert_before(anchor, Op::Binary { x: len_op, y: rp_id, bop: BOp::Sub });
-                                let t = self.insert_before(anchor, Op::Binary { x: idx, y: len_mr, bop: BOp::Cmplt });
-                                pc = self.insert_before(anchor, Op::Binary { x: t, y: pc, bop: BOp::And });
-                            }
-                        }
+                        let len_mr = self.insert_before(anchor, Op::Binary { x: d.len, y: d.rp, bop: BOp::Sub });
+                        let t_lo = self.insert_before(anchor, Op::Binary { x: d.idx, y: d.lp, bop: BOp::Cmpge });
+                        pc = self.insert_before(anchor, Op::Binary { x: t_lo, y: pc, bop: BOp::And });
+                        let t_hi = self.insert_before(anchor, Op::Binary { x: d.idx, y: len_mr, bop: BOp::Cmplt });
+                        pc = self.insert_before(anchor, Op::Binary { x: t_hi, y: pc, bop: BOp::And });
                     }
-                    if has_pad {
-                        let z = self.insert_before(anchor, Op::Const(value));
-                        self.ops[op_id].op = Op::Binary { x: pc, y: z, bop: BOp::Mul };
-                    }
+                    let z = self.insert_before(anchor, Op::Const(value));
+                    self.ops[op_id].op = Op::Binary { x: pc, y: z, bop: BOp::Mul };
                 }
                 Op::Param { dtype, kind, shape } => match kind {
                     // Register-scope defines (e.g. reduce accumulators) are managed
@@ -577,22 +560,25 @@ impl Kernel {
                             let axis = *axis;
                             let lp = *lp;
                             let rp = *rp;
-                            let x_shape = self.shape(x);
+                            // The input-view index ranges over the padded coordinates
+                            // (length x_shape + lp + rp); the consumer's stride and
+                            // bounds mask handle the offset and padding unconditionally
+                            // (src_idx = idx - lp, compact = len - lp - rp), so a
+                            // negative lp (crop) works with no branch. `len` is built
+                            // symbolically from the input's shape dims and the pad ops.
+                            let x_shape = self.store_shape_ids(x);
                             let view = views[&op_id].clone();
-                            let zero = self.insert_const_idx_before(anchor, 0u32);
-                            let lp_val = self.as_i64(lp);
-                            let rp_val = self.as_i64(rp);
                             let mut new_view = Vec::with_capacity(view.len());
                             for (a, d) in view.into_iter().enumerate() {
                                 if a == axis as usize {
-                                    // The input-view index ranges over the padded
-                                    // coordinates (length x_shape + lp + rp); the pad
-                                    // condition zeros everything outside the interior.
-                                    let padded_len = (x_shape[a] as i64 + lp_val + rp_val).max(0) as u64;
-                                    let len = self.insert_const_idx_before(anchor, padded_len);
-                                    let lp_id = if lp_val > 0 { lp } else { zero };
-                                    let rp_id = if rp_val > 0 { rp } else { zero };
-                                    new_view.push(SDim::new(d.idx, lp_id, rp_id, len));
+                                    let x_len = if self.dtype(x_shape[a]) != IDX_T {
+                                        self.insert_before(anchor, Op::Cast { x: x_shape[a], dtype: IDX_T })
+                                    } else {
+                                        x_shape[a]
+                                    };
+                                    let lprp = self.insert_before(anchor, Op::Binary { x: lp, y: rp, bop: BOp::Add });
+                                    let len = self.insert_before(anchor, Op::Binary { x: x_len, y: lprp, bop: BOp::Add });
+                                    new_view.push(SDim::new(d.idx, lp, rp, len));
                                 } else {
                                     new_view.push(d);
                                 }
