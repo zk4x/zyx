@@ -882,6 +882,7 @@ impl Kernel {
                 Op::Const(_) => return vec![op_id],
                 Op::Stack { ref ops } => return ops.to_vec(),
                 Op::Param { shape, .. } => op_id = shape,
+                Op::Cast { .. } | Op::Unary { .. } | Op::Binary { .. } | Op::Mad { .. } => return vec![op_id],
                 ref op => todo!("shape_ids of {op:?}"),
             }
         }
@@ -899,24 +900,6 @@ impl Kernel {
                 _ => 0,
             })
             .collect()
-    }
-
-    /// Reads an index constant op as a signed `i64` (padding may be negative).
-    pub(crate) fn as_i64(&self, op_id: OpId) -> i64 {
-        let Op::Const(c) = self.ops[op_id].op else {
-            unreachable!("as_i64: expected a constant, got {:?}", self.ops[op_id].op)
-        };
-        match c {
-            Constant::I8(d) => i64::from(d),
-            Constant::I16(d) => i64::from(d),
-            Constant::I32(d) => i64::from(d),
-            Constant::I64(d) => i64::from_le_bytes(d),
-            Constant::U8(d) => i64::from(d),
-            Constant::U16(d) => i64::from(d),
-            Constant::U32(d) => i64::from(d),
-            Constant::U64(d) => u64::from_le_bytes(d) as i64,
-            c => unreachable!("as_i64: {c:?} is not an integer constant"),
-        }
     }
 
     /// Resolves the shape of a *value* op into per-dimension ops, following
