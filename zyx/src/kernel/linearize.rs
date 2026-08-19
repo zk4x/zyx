@@ -178,12 +178,12 @@ impl Kernel {
 
         // Snapshot the order of global defines so linearize can assert it never
         // reorders the buffers' declaration order.
-        let global_params: Vec<(DType, ParamKind, OpId)> = {
+        let global_params: Vec<(DType, ParamKind)> = {
             let mut params = Vec::new();
             let mut op_id = self.head;
             while !op_id.is_null() {
-                if let Op::Param { dtype, kind, shape } = self.ops[op_id].op {
-                    params.push((dtype, kind, shape));
+                if let Op::Param { dtype, kind, .. } = self.ops[op_id].op {
+                    params.push((dtype, kind));
                 }
                 op_id = self.next_op(op_id);
             }
@@ -716,6 +716,15 @@ impl Kernel {
             }
         }
 
+        // After linearization the parameter shapes are no longer meaningful;
+        // clear them so the verify below (and later passes) don't require shape
+        // consts to be ordered before the params that reference them.
+        for node in self.ops.values_mut() {
+            if let Op::Param { shape, .. } = &mut node.op {
+                *shape = OpId::NULL;
+            }
+        }
+
         // Read-only (Variable + Global) and writable (GlobalMut) params in
         // linked-list order. Since Phase 1 does not reorder params, forward order
         // is the correct kernel argument order.
@@ -868,13 +877,13 @@ impl Kernel {
             let mut params = Vec::new();
             let mut op_id = self.head;
             while !op_id.is_null() {
-                if let Op::Param { dtype, kind, shape } = self.ops[op_id].op {
-                    params.push((dtype, kind, shape));
+                if let Op::Param { dtype, kind, .. } = self.ops[op_id].op {
+                    params.push((dtype, kind));
                 }
                 op_id = self.next_op(op_id);
             }
             let mut expected = global_params.clone();
-            expected.sort_by_key(|(_, kind, _)| *kind == ParamKind::GlobalMut);
+            expected.sort_by_key(|(_, kind)| *kind == ParamKind::GlobalMut);
             if params != expected {
                 self.debug();
                 panic!(
@@ -883,15 +892,6 @@ impl Kernel {
             }
             true
         });
-
-        // After linearization the parameter shapes are no longer meaningful;
-        // clear them so the verify below (and later passes) don't require shape
-        // consts to be ordered before the params that reference them.
-        for node in self.ops.values_mut() {
-            if let Op::Param { shape, .. } = &mut node.op {
-                *shape = OpId::NULL;
-            }
-        }
 
         // Phase 4: insert accumulators immediately before their exact loops.
         // No loop movement occurs after this point.
