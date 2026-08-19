@@ -1,8 +1,6 @@
 // Copyright (C) 2025 zk4x
 // SPDX-License-Identifier: LGPL-3.0-only
 
-#![allow(unused)]
-
 //! Rangeify movement operations.
 //!
 //! Reimplements unfold_movement_ops
@@ -64,7 +62,7 @@ use crate::{
     DType, Map, Set,
     dtype::Constant,
     kernel::{BOp, IDX_T, IdxKind, Kernel, MemLayout, MemScope, MoveOp, Op, OpId, ParamKind},
-    shape::{self, Dim, UAxis},
+    shape::UAxis,
     slab::SlabId,
 };
 
@@ -84,6 +82,7 @@ impl Kernel {
     // TODO Currently it only works if each define has a single move op chain.
     // Make it also work with move op chains when each define is accessed by multiple move ops.
     pub fn linearize(&mut self) {
+
         if !self.ops.values().any(|n| matches!(n.op, Op::Store { index: OpId::NULL, .. })) {
             return;
         }
@@ -94,59 +93,6 @@ impl Kernel {
             let has_moves = self.ops.values().any(|n| matches!(n.op, Op::Move { .. }));
             if has_gidx && has_moves {
                 panic!("unfold_movement_ops: cannot have both explicit gidx and LoadView/StoreView/Move ops");
-            }
-        }
-
-        // Phase 0: auto-cast mixed-dtype constants in binary ops so the emitted
-        // arithmetic is well-typed. For every Binary in list order: if both
-        // operands are constants of differing dtype, cast each to their
-        // `least_upper_dtype`; if exactly one operand is a constant, cast that
-        // constant to the other (non-const) operand's dtype. Runs before Phase 1
-        // so the index arithmetic produced by the move handlers is type-correct.
-        {
-            let binaries: Vec<OpId> = {
-                let mut v = Vec::new();
-                let mut scan = self.head;
-                while !scan.is_null() {
-                    v.push(scan);
-                    scan = self.next_op(scan);
-                }
-                v
-            };
-            for bin in binaries {
-                let Op::Binary { x, y, .. } = self.ops[bin].op else {
-                    continue;
-                };
-                let dx = self.dtype(x);
-                let dy = self.dtype(y);
-                if dx == dy {
-                    continue;
-                }
-                let cx = matches!(self.ops[x].op, Op::Const(_));
-                let cy = matches!(self.ops[y].op, Op::Const(_));
-                let mut rewrites: Vec<(OpId, OpId)> = Vec::new();
-                match (cx, cy) {
-                    (true, true) => {
-                        let lu = dx.least_upper_dtype(dy);
-                        if dx != lu {
-                            rewrites.push((x, self.insert_before(bin, Op::Cast { x, dtype: lu })));
-                        }
-                        if dy != lu {
-                            rewrites.push((y, self.insert_before(bin, Op::Cast { x: y, dtype: lu })));
-                        }
-                    }
-                    (true, false) => {
-                        rewrites.push((x, self.insert_before(bin, Op::Cast { x, dtype: dy })));
-                    }
-                    (false, true) => {
-                        rewrites.push((y, self.insert_before(bin, Op::Cast { x: y, dtype: dx })));
-                    }
-                    (false, false) => {}
-                }
-                if !rewrites.is_empty() {
-                    let map: Map<OpId, OpId> = rewrites.into_iter().collect();
-                    self.ops[bin].op.remap_params(&map);
-                }
             }
         }
 
@@ -190,6 +136,78 @@ impl Kernel {
             params
         };
 
+        self.add_indexing();
+
+        // After linearization the parameter shapes are no longer meaningful;
+        // clear them so the verify below (and later passes) don't require shape
+        // consts to be ordered before the params that reference them.
+        for node in self.ops.values_mut() {
+            if let Op::Param { shape, .. } = &mut node.op {
+                *shape = OpId::NULL;
+            }
+        }
+
+        // Read-only (Variable + Global) and writable (GlobalMut) params in
+        // linked-list order. Since Phase 1 does not reorder params, forward order
+        // is the correct kernel argument order.
+        let mut ro_params: Vec<OpId> = Vec::new();
+        let mut rw_params: Vec<OpId> = Vec::new();
+        {
+            let mut op_id = self.head;
+            while !op_id.is_null() {
+                if let Op::Param { kind, .. } = self.ops[op_id].op {
+                    match kind {
+                        ParamKind::Variable | ParamKind::Global => ro_params.push(op_id),
+                        ParamKind::GlobalMut => rw_params.push(op_id),
+                    }
+                }
+                op_id = self.next_op(op_id);
+            }
+        }
+        self.toposort(&ro_params, &rw_params);
+
+        // Verify the relative order of global defines is unchanged by linearize
+        // (read-only defines first, then writable ones, both in original order).
+        debug_assert!({
+            let mut params = Vec::new();
+            let mut op_id = self.head;
+            while !op_id.is_null() {
+                if let Op::Param { dtype, kind, .. } = self.ops[op_id].op {
+                    params.push((dtype, kind));
+                }
+                op_id = self.next_op(op_id);
+            }
+            let mut expected = global_params.clone();
+            expected.sort_by_key(|(_, kind)| *kind == ParamKind::GlobalMut);
+            if params != expected {
+                self.debug();
+                panic!(
+                    "linearize: global define order changed:\n  original = {global_params:?}\n  expected = {expected:?}\n  final = {params:?}"
+                );
+            }
+            true
+        });
+
+        self.autocast_scalars();
+
+        self.add_control_flow();
+
+        //
+        // The move handlers may leave dead constants (e.g. unused `one`/`total`
+        // scaffold) and duplicate arithmetic behind; CSE and DCE clean those up
+        // now that the ops are ordered.
+        assert!(
+            self.ops.values().all(|node| !matches!(node.op, Op::Move { .. } | Op::Stack { .. })),
+            "linearize left a movement or stack operation in the kernel"
+        );
+
+        self.verify();
+
+        self.common_subexpression_elimination();
+        self.dead_code_elimination();
+    }
+
+    fn add_indexing(&mut self) {
         // Anchor for everything linearize inserts: the first original op of the
         // kernel. The group-index/stride scaffolding for a writable global is
         // inserted just before it; any index arithmetic inserted by the handlers
@@ -205,11 +223,6 @@ impl Kernel {
         // terminal define); the define handler uses it to write back the store's
         // computed index.
         let mut dst_stores: Map<OpId, OpId> = Map::default();
-
-        // Variable defines already materialized as a load by a move handler (e.g.
-        // the narrow offset). The Define handler must skip them, otherwise it would
-        // emit a duplicate load after the arithmetic that consumes it.
-        let mut consumed_vars: Set<OpId> = Set::default();
 
         // Stack of open reduce loops, as `(loop_start, anchor)`. `loop_start` is
         // the first dependency of the reduce (where its loop opener is inserted
@@ -304,9 +317,6 @@ impl Kernel {
                         }
                     }
                     ParamKind::Variable => {
-                        if consumed_vars.contains(&op_id) {
-                            continue;
-                        }
                         let view = views.remove(&op_id).unwrap();
                         // Variables are single values (no indexing). Like constants,
                         // they only need the padding mask: where the view is out of
@@ -329,9 +339,6 @@ impl Kernel {
                         self.ops[op_id].op = Op::Binary { x: pcd, y: z, bop: BOp::Mul };
                     }
                     ParamKind::Global => {
-                        if consumed_vars.contains(&op_id) {
-                            continue;
-                        }
                         let view = views.remove(&op_id).unwrap();
                         // Padding condition: valid where index is within the source
                         // extent, all symbolic and unconditional. Pads that are
@@ -339,7 +346,6 @@ impl Kernel {
                         //   index = sum over axes of (idx - lp) * stride
                         //   pc    = and over axes of (idx >= lp) && (idx < len - rp)
                         let zero = self.insert_before(anchor, Op::Const(Constant::idx(0)));
-                        let one = self.insert_before(anchor, Op::Const(Constant::idx(1)));
                         let mut index = zero;
                         let mut pc = self.insert_before(anchor, Op::Const(Constant::Bool(true)));
                         let mut suffix = self.insert_before(anchor, Op::Const(Constant::idx(1)));
@@ -426,7 +432,7 @@ impl Kernel {
                 }
                 Op::Move { x, ref mop } => {
                     match mop.as_ref() {
-                        MoveOp::Reshape { shape, input_rank } => {
+                        MoveOp::Reshape { .. } => {
                             // CORRECT (div/mod) VERSION:
                             // Reshape merges/splits contiguous dims, so axis indices don't
                             // align 1:1. Build a single flat index over the output view (all
@@ -715,36 +721,9 @@ impl Kernel {
                 open_loops.pop();
             }
         }
+    }
 
-        // After linearization the parameter shapes are no longer meaningful;
-        // clear them so the verify below (and later passes) don't require shape
-        // consts to be ordered before the params that reference them.
-        for node in self.ops.values_mut() {
-            if let Op::Param { shape, .. } = &mut node.op {
-                *shape = OpId::NULL;
-            }
-        }
-
-        // Read-only (Variable + Global) and writable (GlobalMut) params in
-        // linked-list order. Since Phase 1 does not reorder params, forward order
-        // is the correct kernel argument order.
-        let mut ro_params: Vec<OpId> = Vec::new();
-        let mut rw_params: Vec<OpId> = Vec::new();
-        {
-            let mut op_id = self.head;
-            while !op_id.is_null() {
-                if let Op::Param { kind, .. } = self.ops[op_id].op {
-                    match kind {
-                        ParamKind::Variable | ParamKind::Global => ro_params.push(op_id),
-                        ParamKind::GlobalMut => rw_params.push(op_id),
-                    }
-                }
-                op_id = self.next_op(op_id);
-            }
-        }
-
-        self.debug();
-
+    fn toposort(&mut self, ro_params: &[OpId], rw_params: &[OpId]) {
         // Phase 2: collect reachable ops from the store roots, then topologically
         // order their dependencies. Phase 1 may leave the linked list temporarily
         // invalid while inserting and replacing ops, so the slab is the source of
@@ -803,7 +782,7 @@ impl Kernel {
             // Generate region depth for all ops in reduce ids
             let mut n = reduce_ids.len() as u32;
             for reduce_id in reduce_ids {
-                let Op::Reduce { x, rop, reduce_axis } = self.ops[reduce_id].op else {
+                let Op::Reduce { x, reduce_axis, .. } = self.ops[reduce_id].op else {
                     unreachable!()
                 };
                 // Backward
@@ -909,31 +888,83 @@ impl Kernel {
             self.head = final_order.first().copied().unwrap_or(OpId::NULL);
             self.tail = final_order.last().copied().unwrap_or(OpId::NULL);
         }
+    }
 
-        self.debug();
-
-        // Verify the relative order of global defines is unchanged by linearize
-        // (read-only defines first, then writable ones, both in original order).
-        debug_assert!({
-            let mut params = Vec::new();
-            let mut op_id = self.head;
-            while !op_id.is_null() {
-                if let Op::Param { dtype, kind, .. } = self.ops[op_id].op {
-                    params.push((dtype, kind));
-                }
-                op_id = self.next_op(op_id);
+    // Auto-cast scalar operands in arithmetic so mixed-dtype binaries are
+    // well-typed. Runs after toposort so it sees every Binary/Mad in the final
+    // op list. Symmetric over all operands: if dtypes differ, every operand
+    // with shape `[]` (constants, variables, and index/loop scalars) is cast so
+    // the operation is well-typed; if no operand is scalar, the kernel is
+    // broken and this panics.
+    fn autocast_scalars(&mut self) {
+        let ops: Vec<OpId> = {
+            let mut v = Vec::new();
+            let mut scan = self.head;
+            while !scan.is_null() {
+                v.push(scan);
+                scan = self.next_op(scan);
             }
-            let mut expected = global_params.clone();
-            expected.sort_by_key(|(_, kind)| *kind == ParamKind::GlobalMut);
-            if params != expected {
+            v
+        };
+        for op_id in ops {
+            let operands: Vec<OpId> = match self.ops[op_id].op {
+                Op::Binary { x, y, .. } => vec![x, y],
+                Op::Mad { x, y, z } => vec![x, y, z],
+                _ => continue,
+            };
+            let dtypes: Vec<DType> = operands.iter().map(|&o| self.dtype(o)).collect();
+            if dtypes.iter().all(|&d| d == dtypes[0]) {
+                continue;
+            }
+            // Scalars are operands whose value shape is `[]`.
+            let scalars: Vec<(OpId, DType)> = operands
+                .iter()
+                .copied()
+                .zip(dtypes.iter().copied())
+                .filter(|&(o, _)| self.shape(o).is_empty())
+                .collect();
+            if scalars.is_empty() {
                 self.debug();
-                panic!(
-                    "linearize: global define order changed:\n  original = {global_params:?}\n  expected = {expected:?}\n  final = {params:?}"
-                );
+                panic!("autocast_scalars: mixed-dtype op {op_id} has no scalar operand to cast");
             }
-            true
-        });
+            let target = if scalars.len() == operands.len() {
+                // All operands are scalars: fold least_upper_dtype over the distinct dtypes.
+                let mut target = dtypes[0];
+                for &d in &dtypes[1..] {
+                    target = target.least_upper_dtype(d);
+                }
+                target
+            } else {
+                // Mixed: every non-scalar operand must share one dtype; cast the
+                // scalars to it.
+                let nonscalar: Vec<DType> = operands
+                    .iter()
+                    .copied()
+                    .zip(dtypes.iter().copied())
+                    .filter(|&(o, _)| !self.shape(o).is_empty())
+                    .map(|(_, d)| d)
+                    .collect();
+                let target = nonscalar[0];
+                if nonscalar.iter().any(|&d| d != target) {
+                    self.debug();
+                    panic!("autocast_scalars: mixed-dtype op {op_id} has non-scalar operands of differing dtype");
+                }
+                target
+            };
+            let mut rewrites: Vec<(OpId, OpId)> = Vec::new();
+            for &(o, d) in &scalars {
+                if d != target {
+                    rewrites.push((o, self.insert_before(op_id, Op::Cast { x: o, dtype: target })));
+                }
+            }
+            if !rewrites.is_empty() {
+                let map: Map<OpId, OpId> = rewrites.into_iter().collect();
+                self.ops[op_id].op.remap_params(&map);
+            }
+        }
+    }
 
+    fn add_control_flow(&mut self) {
         // Phase 3: insert accumulators immediately before their exact loops.
         // No loop movement occurs after this point.
         let reduce_ids: Vec<OpId> =
@@ -965,49 +996,5 @@ impl Kernel {
             self.insert_before(op_id, Op::EndLoop);
             self.ops[op_id].op = Op::Load { src: acc, index: zero, layout: MemLayout::Scalar };
         }
-        //
-        // The move handlers may leave dead constants (e.g. unused `one`/`total`
-        // scaffold) and duplicate arithmetic behind; CSE and DCE clean those up
-        // now that the ops are ordered.
-        assert!(
-            self.ops.values().all(|node| !matches!(node.op, Op::Move { .. } | Op::Stack { .. })),
-            "linearize left a movement or stack operation in the kernel"
-        );
-
-        self.verify();
-
-        self.common_subexpression_elimination();
-        self.dead_code_elimination();
-    }
-
-    pub(crate) fn reduce_dims(&self, op_id: OpId) -> Vec<Dim> {
-        let mut params = vec![op_id];
-        let mut n_reduce_axes = 0;
-        let mut visited = Set::default();
-        while let Some(param) = params.pop() {
-            if visited.insert(param) {
-                match self.ops[param].op {
-                    Op::Const(_) => return vec![1],
-                    Op::Param { .. } => todo!(),
-                    Op::Storage { .. } => {
-                        todo!()
-                    }
-                    Op::Reduce { .. } => n_reduce_axes += 1,
-                    Op::Move { ref mop, .. } => match mop.as_ref() {
-                        MoveOp::Reshape { shape, .. } => {
-                            todo!()
-                        }
-                        MoveOp::Expand { .. } | MoveOp::Permute { .. } | MoveOp::Pad { .. } => {
-                            todo!()
-                        }
-                        MoveOp::Narrow { .. } => {}
-                        MoveOp::Flip { .. } => {}
-                    },
-                    _ => {}
-                }
-                params.extend(self.at(param).parameters());
-            }
-        }
-        unreachable!();
     }
 }

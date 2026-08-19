@@ -113,7 +113,7 @@ impl Kernel {
         let mut outputs = Vec::new();
         let mut op_id = self.head;
         while !op_id.is_null() {
-            if let Op::Param { dtype, kind, shape } = self.ops[op_id].op {
+            if let Op::Param { dtype, kind, .. } = self.ops[op_id].op {
                 match kind {
                     ParamKind::Variable | ParamKind::Global => inputs.push(dtype),
                     ParamKind::GlobalMut => outputs.push(dtype),
@@ -163,7 +163,7 @@ impl Kernel {
     /// Reshape tensor. `shape` is the (pre-built) output shape op: a single
     /// const for rank-1, or a `stack` of per-dimension ops otherwise.
     pub fn reshape(&mut self, x: OpId, shape: OpId, input_rank: usize) -> OpId {
-        self.push_back(Op::Move { x, mop: Box::new(MoveOp::Reshape { shape, input_rank }) })
+        self.push_back(Op::Move { x, mop: Box::new(MoveOp::Reshape { shape }) })
     }
 
     /// Expand tensor (adds singleton dims). `shape` is the pre-built output

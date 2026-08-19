@@ -33,12 +33,7 @@
 //!   [`GraphId`]. Using a tensor from a dead graph panics with "tape scope has
 //!   ended".
 //!
-//! ## Caching with Merkle hashes
-//!
-//! Each graph node carries a Merkle hash of its structural subgraph (node kind, dtype,
-//! shape, input hashes — no TensorIds). `realize` uses the output tensors' Merkle
-//! hashes as the cache key:
-//!
+
 //! - **Cache miss** (first pass): compile the subgraph, store the compiled kernel with
 //!   its static leaf→buffer bindings.
 //! - **Cache hit** (subsequent passes): structural hash match means the same kernel
@@ -63,7 +58,6 @@ use crate::{
 ///
 /// Promotes tensors to graph mode for autograd and egraph optimization.
 /// All alive tensors are realized when the tape is dropped.
-/// The Merkle hash cache avoids recompilation on structurally identical iterations.
 #[cfg_attr(feature = "py", pyo3::pyclass)]
 pub struct Tape {
     graph_id: GraphId,

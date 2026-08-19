@@ -114,7 +114,6 @@ pub(crate) enum Node {
     Reshape {
         x: ClassId,
         shape: ClassId,
-        input_rank: usize,
     },
     Pad {
         x: ClassId,
@@ -1241,10 +1240,10 @@ impl Runtime {
                         let x_class = op_to_class[&x];
                         let in_shape = self.graphs[graph_id].shape(x_class);
                         match mop.as_ref() {
-                            MoveOp::Reshape { shape, input_rank } => {
+                            MoveOp::Reshape { shape } => {
                                 let shape = op_to_class[&shape];
                                 let (_, class_id) =
-                                    self.push_node(graph_id, Node::Reshape { x: x_class, shape, input_rank: *input_rank });
+                                    self.push_node(graph_id, Node::Reshape { x: x_class, shape });
                                 class_id
                             }
                             MoveOp::Expand { shape } => {

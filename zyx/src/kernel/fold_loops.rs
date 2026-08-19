@@ -835,7 +835,6 @@ mod tests {
     fn make_mnist_gather_kernel(dim: u64) -> (Kernel, OpId) {
         let mut k = Kernel::new(DeviceId::AUTO);
 
-        let n: u64 = dim * dim;
         let sh3 = k.const_idx(3u32);
         let r29_shape = k.stack(&[sh3, sh3]);
         let r38_shape = k.const_idx(3u32);

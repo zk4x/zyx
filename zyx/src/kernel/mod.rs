@@ -390,7 +390,7 @@ impl Kernel {
                 Op::Index { .. } => return IDX_T,
                 Op::Load { src, .. } => op_id = src,
                 Op::Unary { x, .. } => op_id = x,
-                Op::Binary { x, y, bop } => {
+                Op::Binary { x, bop, .. } => {
                      if bop.returns_bool() {
                          return DType::Bool;
                      }
@@ -731,7 +731,7 @@ impl Kernel {
                 &Op::Store { .. } => Info { shape: vec![1], flops: 0, mem_read: 0, mem_write: 1 },
                 Op::Const(_) => Info { shape: vec![1], flops: 0, mem_read: 0, mem_write: 0 },
                 Op::Move { x, mop } => match mop.as_ref() {
-                    MoveOp::Reshape { shape, .. } => Info { shape: vec![1], flops: 0, mem_read: 0, mem_write: 0 },
+                    MoveOp::Reshape { .. } => Info { shape: vec![1], flops: 0, mem_read: 0, mem_write: 0 },
                     MoveOp::Permute { .. } => Info { shape: stack[x].shape.clone(), flops: 0, mem_read: 0, mem_write: 0 },
                     MoveOp::Pad { .. } => Info { shape: stack[x].shape.clone(), flops: 0, mem_read: 0, mem_write: 0 },
                     MoveOp::Expand { .. } => Info { shape: stack[x].shape.clone(), flops: 0, mem_read: 0, mem_write: 0 },
@@ -820,8 +820,16 @@ impl Kernel {
         };
         for _ in 0..10000 {
             match self.ops[op_id].op {
-                Op::Const(c) => return c.as_dim().map(|d| vec![d]).unwrap_or_else(|| vec![0]),
-                Op::Param { shape, .. } => return self.shape(shape),
+                Op::Const(_) => return vec![],
+                Op::Param { kind, shape, .. } => {
+                    if kind == ParamKind::Variable {
+                        return vec![];
+                    }
+                    if shape.is_null() {
+                        return vec![0];
+                    }
+                    return self.shape(shape);
+                }
                 Op::Stack { ref ops } => {
                     return ops
                         .iter()
@@ -849,6 +857,11 @@ impl Kernel {
                         return s;
                     }
                 },
+                Op::Index { .. } => return vec![],
+                Op::Loop { .. } => return vec![],
+                Op::Storage { len, .. } => {
+                    return if len == 1 { vec![] } else { vec![len] };
+                }
                 Op::Load { src: x, .. } | Op::Store { src: x, .. } => op_id = x,
                 Op::Cast { x, .. }
                 | Op::Unary { x, .. }

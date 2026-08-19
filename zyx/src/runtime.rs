@@ -880,9 +880,8 @@ impl Runtime {
                 self.promote_to_graph(shape, graph_id)?;
             }
             let x_class = self.graph_ids(x).0;
-            let shape_class = self.graph_ids(shape).0;
-            let input_rank = self.graphs[graph_id].shape(x_class).len();
-            let (_, class_id) = self.push_node(graph_id, Node::Reshape { x: x_class, shape: shape_class, input_rank });
+            let shape = self.graph_ids(shape).0;
+            let (_, class_id) = self.push_node(graph_id, Node::Reshape { x: x_class, shape });
             Ok(self.new_graph_tensor(graph_id, class_id))
         } else {
             let input_rank = self.shape(x).len();
