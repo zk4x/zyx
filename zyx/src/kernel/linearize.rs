@@ -313,7 +313,6 @@ impl Kernel {
                         let store_id = dst_stores.remove(&op_id).unwrap();
                         let view = views.remove(&op_id).unwrap();
                         let mut write_index = zero;
-                        let mut suffix = one;
                         for d in view.iter().rev() {
                             let src_idx = self.sub(d.idx, d.lp);
                             write_index = self.mad(src_idx, d.stride, write_index);
@@ -506,7 +505,6 @@ impl Kernel {
                             // default. No concrete shape() lookup is required.
                             let x_shape = self.store_shape_ids(x);
                             let shape = self.shape_ids(shape);
-                            let view = views[&op_id].clone();
                             // New leading axes are prepended broadcasts; the input axes
                             // align to the tail of the output shape. A broadcast input
                             // axis reads a single constant element (stride 0); a
@@ -521,23 +519,31 @@ impl Kernel {
                                 x_strides[a] = st;
                                 st = self.mul(x_shape[a], st);
                             }
-                            let view: Vec<SDim> = if x_shape.is_empty() {
+                            let out_view = views[&op_id].clone();
+                            let view = if n == 0 {
                                 // Scalar input broadcasts to every axis: the input view
                                 // is the whole output view, so the pad mask propagates.
-                                view
+                                out_view
                             } else {
-                                (0..x_shape.len())
-                                    .map(|a| {
-                                        let broadcast = self.resolve_dim(x_shape[a]) == Some(1)
-                                            && self.resolve_dim(shape[offset + a]) != Some(1);
-                                        let d = view[offset + a];
-                                        if broadcast {
-                                            SDim::new(d.idx, zero, d.lp, d.rp, d.len)
-                                        } else {
-                                            SDim::new(d.idx, x_strides[a], d.lp, d.rp, d.len)
-                                        }
-                                    })
-                                    .collect()
+                                let mut v = Vec::with_capacity(n);
+                                for a in 0..n {
+                                    let broadcast = self.resolve_dim(x_shape[a]) == Some(1)
+                                        && self.resolve_dim(shape[offset + a]) != Some(1);
+                                    let d = out_view[offset + a];
+                                    let stride = if broadcast {
+                                        zero
+                                    } else if matches!(self.ops[d.stride].op, Op::Const(c) if c.as_dim() == Some(0)) {
+                                        // A downstream op already broadcasts this axis
+                                        // (stride 0); keep it zero instead of falling back
+                                        // to the input's contiguous stride, which would
+                                        // leak a loop index into a broadcast axis.
+                                        zero
+                                    } else {
+                                        x_strides[a]
+                                    };
+                                    v.push(SDim::new(d.idx, stride, d.lp, d.rp, d.len));
+                                }
+                                v
                             };
                             views.insert(x, view);
                         }
