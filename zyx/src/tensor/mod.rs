@@ -3000,7 +3000,12 @@ impl Tensor {
         let x_shape = x.shape();
         let y_shape = y.shape();
         if x_dtype != y_dtype {
-            if RT.lock().implicit_casts && ((x_shape == [1] && y_shape == [1]) || (x_shape != [1] && y_shape != [1])) {
+            // Only a rank-0 tensor (shape []) is a scalar; it is cast to the other
+            // operand's dtype rather than upcasting the tensor. A shape-[1] tensor
+            // is a normal 1-D tensor and participates in implicit autocast.
+            let x_scalar = x_shape.is_empty();
+            let y_scalar = y_shape.is_empty();
+            if RT.lock().implicit_casts && !x_scalar && !y_scalar {
                 let common_dtype = x_dtype.least_upper_dtype(y_dtype);
                 if x_dtype != common_dtype {
                     x = x.cast(common_dtype);
@@ -3008,9 +3013,9 @@ impl Tensor {
                 if y_dtype != common_dtype {
                     y = y.cast(common_dtype);
                 }
-            } else if x_shape == [1] && y_shape != [1] {
+            } else if x_scalar && !y_scalar {
                 x = x.cast(y_dtype);
-            } else if x_shape != [1] && y_shape == [1] {
+            } else if !x_scalar && y_scalar {
                 y = y.cast(x_dtype);
             } else {
                 return Err(ZyxError::dtype_error(
