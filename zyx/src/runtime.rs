@@ -357,16 +357,28 @@ impl Runtime {
         // Tie the producing kernel's lifetime to its outputs' refcounts: remove
         // x from its producer's outputs, and if x was the last live output,
         // remove the kernel (releasing its loads) or materialize it if it still
-        // holds stores.
+        // holds stores. Otherwise prune the op chain that only x referenced.
         let producer = self.tensors[x].kernel_id;
+        let op_id = self.tensors[x].op_id;
         self.tensors.remove(x);
 
         if !producer.is_null() {
-            let (remove_kernel, materialize) = {
+            let (remove_kernel, materialize, pruned) = {
                 let kd = &mut self.kernels[producer];
                 kd.outputs.remove(&x);
-                (kd.outputs.is_empty() && !kd.kernel.contains_stores(), kd.outputs.is_empty() && kd.kernel.contains_stores())
+                let mut pruned = Vec::new();
+                if !kd.outputs.is_empty() && !op_id.is_null() {
+                    let out_ops: Vec<OpId> = kd.outputs.iter().map(|&tid| self.tensors[tid].op_id).collect();
+                    let old_loads = std::mem::take(&mut kd.loads);
+                    let new_loads = kd.kernel.remove_unused_chain(op_id, &out_ops, &old_loads);
+                    kd.loads = new_loads.clone();
+                    pruned = loads_dropped_by_prune(&old_loads, &new_loads);
+                }
+                (kd.outputs.is_empty() && !kd.kernel.contains_stores(), kd.outputs.is_empty() && kd.kernel.contains_stores(), pruned)
             };
+            for tid in pruned {
+                self.release_load(tid);
+            }
             if remove_kernel {
                 self.remove_dead_eager_kernel(producer);
             } else if materialize {
@@ -1397,7 +1409,7 @@ impl Runtime {
             ));
         }
         for op in self.kernels[dst_kid].kernel.ops.values() {
-            if !matches!(op.op, Op::Param { .. } | Op::Move { .. } | Op::Const(_)) {
+            if !matches!(op.op, Op::Param { .. } | Op::Move { .. } | Op::Const(_) | Op::Stack { .. }) {
                 return Err(ZyxError::ShapeError(
                     format!("assign: dst kernel {dst_kid:?} has unsupported op {:?}, only movement ops allowed", op.op).into(),
                 ));
@@ -1465,6 +1477,11 @@ impl Runtime {
                     };
                     let mop = mop.remap(&op_map, op_map[&dst_define]);
                     let id = self.kernels[src_kid].kernel.push_back(Op::Move { x, mop });
+                    op_map.insert(op_id, id);
+                }
+                Op::Stack { ref ops } => {
+                    let mapped: Box<[OpId]> = ops.iter().map(|&o| op_map[&o]).collect();
+                    let id = self.kernels[src_kid].kernel.push_back(Op::Stack { ops: mapped });
                     op_map.insert(op_id, id);
                 }
                 _ => unreachable!("should've already returned error"),
