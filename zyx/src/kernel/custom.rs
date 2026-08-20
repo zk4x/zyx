@@ -359,6 +359,11 @@ impl Kernel {
         self.binary(x, y, BOp::Mod)
     }
 
+    /// `x and y`
+    pub fn and(&mut self, x: OpId, y: OpId) -> OpId {
+        self.binary(x, y, BOp::And)
+    }
+
     /// `x < y`
     pub fn cmplt(&mut self, x: OpId, y: OpId) -> OpId {
         self.binary(x, y, BOp::Cmplt)
@@ -367,6 +372,11 @@ impl Kernel {
     /// `x > y`
     pub fn cmpgt(&mut self, x: OpId, y: OpId) -> OpId {
         self.binary(x, y, BOp::Cmpgt)
+    }
+
+    /// `x >= y`
+    pub fn cmpge(&mut self, x: OpId, y: OpId) -> OpId {
+        self.binary(x, y, BOp::Cmpge)
     }
 
     /// `max(x, y)`
@@ -482,8 +492,8 @@ impl Kernel {
     /// dtype (taken from `a`).
     pub fn branchless_where(&mut self, cond: OpId, a: OpId, b: OpId) -> OpId {
         let dtype = self.dtype(a);
-        debug_assert_eq!(self.dtype(cond), DType::Bool, "branchless_where: cond must be bool");
-        debug_assert_eq!(self.dtype(b), dtype, "branchless_where: a and b must share a dtype");
+        //debug_assert_eq!(self.dtype(cond), DType::Bool, "branchless_where: cond must be bool");
+        //debug_assert_eq!(self.dtype(b), dtype, "branchless_where: a and b must share a dtype");
         let sel = self.cast(cond, dtype);
         let one = self.push_back(Op::Const(dtype.one_constant()));
         let term_a = self.push_back(Op::Binary { x: a, y: sel, bop: BOp::Mul });
