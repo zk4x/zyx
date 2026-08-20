@@ -916,7 +916,29 @@ impl Kernel {
                     return dims;
                 }
                 Op::Move { x, ref mop } => match mop.as_ref() {
-                    MoveOp::Reshape { shape, .. } | MoveOp::Expand { shape } => return self.shape_ids(*shape),
+                    MoveOp::Reshape { shape, .. } => {
+                        // A `0` in the reshape target means "infer": resolve it to
+                        // numel(x) / product(other dims), mirroring tinygrad and the
+                        // eager reshape. Without this the unresolved `0` leaks into
+                        // recovered-coordinate lengths, zeroing loads.
+                        let target = self.shape_ids(*shape);
+                        if target.iter().any(|id| self.resolve_dim(*id) == Some(0)) {
+                            let num_dims = self.store_shape_ids(x);
+                            let one_const = self.const_idx(1);
+                            let numel = num_dims.iter().fold(one_const, |acc, &d| self.mul(acc, d));
+                            let mut prod = one_const;
+                            for &id in &target {
+                                if self.resolve_dim(id) == Some(0) {
+                                    continue;
+                                }
+                                prod = self.mul(prod, id);
+                            }
+                            let inferred_dim = self.div(numel, prod);
+                            return target.iter().map(|&id| if self.resolve_dim(id) == Some(0) { inferred_dim } else { id }).collect();
+                        }
+                        return target;
+                    }
+                    MoveOp::Expand { shape } => return self.shape_ids(*shape),
                     MoveOp::Permute { axes } => return crate::shape::permute(&self.store_shape_ids(x), axes),
                     MoveOp::Flip { .. } => op_id = x,
                     MoveOp::Narrow { axis, len, .. } => {
