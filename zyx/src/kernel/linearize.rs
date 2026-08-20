@@ -500,14 +500,35 @@ impl Kernel {
                         }
                         MoveOp::Permute { axes } => {
                             // output[a] reads input[axes[a]]. Input axis j is
-                            // consumed by output axis inv_axes[j]; copy that
-                            // output axis's SDim into input axis j's slot.
+                            // consumed by output axis inv_axes[j]; copy that output
+                            // axis's SDim into input axis j's slot, but recompute the
+                            // stride to the input's contiguous stride (unless the
+                            // output axis is broadcast, stride 0).
                             let mut inv_axes = vec![0; axes.len()];
                             for (i, &a) in axes.iter().enumerate() {
                                 inv_axes[a] = i;
                             }
+                            let x_shape = self.store_shape_ids(x);
+                            let n = x_shape.len();
+                            let mut x_strides = vec![one; n];
+                            let mut st = one;
+                            for a in (0..n).rev() {
+                                x_strides[a] = st;
+                                st = self.mul(x_shape[a], st);
+                            }
                             let view = &views[&op_id];
-                            let view: Vec<SDim> = (0..axes.len()).map(|j| view[inv_axes[j]]).collect();
+                            let zero = self.const_idx(0);
+                            let view: Vec<SDim> = (0..n)
+                                .map(|j| {
+                                    let d = view[inv_axes[j]];
+                                    let stride = if matches!(self.ops[d.stride].op, Op::Const(c) if c.as_dim() == Some(0)) {
+                                        zero
+                                    } else {
+                                        x_strides[j]
+                                    };
+                                    SDim::new(d.idx, stride, d.lp, d.rp, d.len)
+                                })
+                                .collect();
                             views.insert(x, view);
                         }
                         MoveOp::Flip { axes } => {
