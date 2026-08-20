@@ -340,7 +340,6 @@ impl Kernel {
                         // global/variable define order (which buffer args bind to) is
                         // preserved.
                         let src = self.insert_before(op_id, Op::Param { dtype, kind, shape });
-                        let zero = self.const_idx(0);
                         let z = self.load(src, zero, MemLayout::Scalar);
                         self.ops[op_id].op = Op::Binary { x: pc, y: z, bop: BOp::Mul };
                     }
@@ -443,6 +442,19 @@ impl Kernel {
                                 x_strides[a] = st;
                                 st = self.mul(x_shape[a], st);
                             }
+                            // Validity mask over the output view: a recovered input
+                            // coordinate is only meaningful where the output is within
+                            // its own source extent (idx >= lp && idx < len - rp).
+                            // Padded output regions must read as zero, so invalid
+                            // recovered indices are clamped to len + 1 (out of bounds).
+                            let mut valid = self.const_val(true);
+                            for d in &out_view {
+                                let lo = self.cmpge(d.idx, d.lp);
+                                let interior_len = self.sub(d.len, d.rp);
+                                let hi = self.cmplt(d.idx, interior_len);
+                                let in_axis = self.and(lo, hi);
+                                valid = self.and(valid, in_axis);
+                            }
                             let mut base = zero;
                             for d in &out_view {
                                 base = self.mad(d.idx, d.stride, base);
@@ -459,7 +471,10 @@ impl Kernel {
                                     q = rem;
                                     div
                                 };
-                                view.push(SDim::new(idx_expr, x_strides[a], zero, zero, x_shape[a]));
+                                let len = x_shape[a];
+                                let invalid = self.add(len, one);
+                                let idx_expr = self.branchless_where(valid, idx_expr, invalid);
+                                view.push(SDim::new(idx_expr, x_strides[a], zero, zero, len));
                             }
                             views.insert(x, view);
                         }
@@ -475,8 +490,18 @@ impl Kernel {
                             let view = views[&op_id].clone();
                             // New leading axes are prepended broadcasts; the input axes
                             // align to the tail of the output shape. A broadcast input
-                            // axis reads a single constant element.
+                            // axis reads a single constant element (stride 0); a
+                            // non-broadcast axis keeps the input's own contiguous
+                            // stride (not the output view's), so the load indexes the
+                            // compact input.
                             let offset = shape.len() - x_shape.len();
+                            let n = x_shape.len();
+                            let mut x_strides = vec![one; n];
+                            let mut st = one;
+                            for a in (0..n).rev() {
+                                x_strides[a] = st;
+                                st = self.mul(x_shape[a], st);
+                            }
                             let view: Vec<SDim> = if x_shape.is_empty() {
                                 // Scalar input broadcasts to every axis: the input view
                                 // is the whole output view, so the pad mask propagates.
@@ -486,12 +511,11 @@ impl Kernel {
                                     .map(|a| {
                                         let broadcast = self.resolve_dim(x_shape[a]) == Some(1)
                                             && self.resolve_dim(shape[offset + a]) != Some(1);
+                                        let d = view[offset + a];
                                         if broadcast {
-                                            SDim::new(zero, zero, zero, zero, one)
+                                            SDim::new(d.idx, zero, d.lp, d.rp, d.len)
                                         } else {
-                                            // Else don't broadcast - todo perhaps make the check symbolic too?
-                                            //todo!("expand dim couldn't be resolved")
-                                            view[offset + a]
+                                            SDim::new(d.idx, x_strides[a], d.lp, d.rp, d.len)
                                         }
                                     })
                                     .collect()
@@ -517,7 +541,6 @@ impl Kernel {
                                 st = self.mul(x_shape[a], st);
                             }
                             let view = &views[&op_id];
-                            let zero = self.const_idx(0);
                             let view: Vec<SDim> = (0..n)
                                 .map(|j| {
                                     let d = view[inv_axes[j]];
@@ -558,7 +581,6 @@ impl Kernel {
                             //   len = max(x_shape[a] + lp + rp, 0)
                             let x_shape = self.store_shape_ids(x);
                             let view = views[&op_id].clone();
-                            let zero = self.const_idx(0);
                             let n = x_shape.len();
                             let mut x_strides = vec![one; n];
                             let mut st = one;
