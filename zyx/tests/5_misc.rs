@@ -1,7 +1,7 @@
 // Copyright (C) 2025 zk4x
 // SPDX-License-Identifier: LGPL-3.0-only
 
-use zyx::{DType, Scalar, Tape, Tensor, ZyxError};
+use zyx::{DType, Scalar, Tensor, ZyxError};
 
 #[allow(unused)]
 fn matmul(a: &[f32], b: &[f32], m: usize, k: usize, n: usize) -> Vec<f32> {
@@ -1356,88 +1356,6 @@ fn rope_2() -> Result<(), ZyxError> {
 
     Ok(())
 }*/
-
-#[test]
-fn zz_bw_relu_matmul() -> Result<(), ZyxError> {
-    let x = Tensor::randn([64, 784], DType::F32)?;
-    let w1 = Tensor::randn([128, 784], DType::F32)?;
-    let b1 = Tensor::randn([128], DType::F32)?;
-    let w2 = Tensor::randn([10, 128], DType::F32)?;
-    let b2 = Tensor::randn([10], DType::F32)?;
-    let tape = Tape::new([&w1, &b1, &w2, &b2])?;
-    let l1 = (x.matmul(w1.t())? + &b1).relu();
-    let logits = l1.matmul(w2.t())? + &b2;
-    let loss = logits.sum_all();
-    let grads = tape.gradient(&loss, [&w1, &b1, &w2, &b2, &loss]);
-    let lr = 0.01f32;
-    let n1 = &w1 - &grads[0] * lr;
-    let n2 = &b1 - &grads[1] * lr;
-    let n3 = &w2 - &grads[2] * lr;
-    let n4 = &b2 - &grads[3] * lr;
-    tape.realize([&n1, &n2, &n3, &n4, &loss])?;
-    let v: Vec<f32> = loss.try_into()?;
-    println!("loss {}", v[0]);
-    Ok(())
-}
-
-#[test]
-fn zz_bw_relu_matmul_manual() -> Result<(), ZyxError> {
-    let x = Tensor::randn([64, 784], DType::F32)?;
-    let w1 = Tensor::randn([128, 784], DType::F32)?;
-    let b1 = Tensor::randn([128], DType::F32)?;
-    let w2 = Tensor::randn([10, 128], DType::F32)?;
-    let b2 = Tensor::randn([10], DType::F32)?;
-    let tape = Tape::new([&w1, &b1, &w2, &b2])?;
-
-    // Forward.
-    let z1 = x.matmul(w1.t())? + &b1;
-    let l1 = z1.relu();
-    let logits = l1.matmul(w2.t())? + &b2;
-    let loss = logits.sum_all();
-
-    // Manual backprop replicating autograd's outer-product broadcast pattern.
-    // gw2[j,k] = sum_i g_logits[i,j] * l1[i,k]
-    let g_logits = Tensor::ones_like(&logits);
-    let gl1 = g_logits.matmul(&w2)?;
-
-    // relu backward, exact autograd structure:
-    //   s1 = z1 > 0 (bool)
-    //   gb = gl1 as bool ; gm = (1 - gb) ; gz1 = gb*mask + gm*z1
-    let relu_mask = z1.cmpgt(Tensor::from(0f32))?.cast(DType::F32);
-    let gl1_as_bool = gl1.cast(DType::Bool).cast(DType::F32);
-    let one_minus = Tensor::ones_like(&gl1) - &gl1.cast(DType::Bool).cast(DType::F32);
-    let gz1n = &relu_mask * &gl1_as_bool;
-    let gz1 = gz1n + &(&one_minus * &z1);
-
-    // gw2: expand g_logits to [64,10,128], expand l1 to [64,10,128], mul, reduce over batch.
-    let gl3 = g_logits.reshape([64, 10, 1])?.expand([64, 10, 128])?;
-    let l1_3 = l1.reshape([64, 1, 128])?.expand([64, 10, 128])?;
-    let prod = gl3 * &l1_3;
-    let gw2 = prod.sum([0])?;
-
-    // gb2: sum over batch.
-    let gb2 = g_logits.sum([0])?;
-
-    // gw1: gz1 [128,64] outer x. autograd: Permute[128,64]->Reshape[128,1,64]->Expand[128,784,64]
-    //   times x [128,784,64], reduce -> [128,784].
-    let gz1_t = gz1.t();
-    let gz1_3 = gz1_t.reshape([128, 1, 64])?.expand([128, 784, 64])?;
-    let x_3 = x.t().reshape([1, 784, 64])?.expand([128, 784, 64])?;
-    let gw1 = (gz1_3 * &x_3).sum([2])?;
-
-    // gb1: sum over batch.
-    let gb1 = gz1.sum([0])?;
-
-    let lr = 0.01f32;
-    let n1 = &w1 - &gw1 * lr;
-    let n2 = &b1 - &gb1 * lr;
-    let n3 = &w2 - &gw2 * lr;
-    let n4 = &b2 - &gb2 * lr;
-    tape.realize([&n1, &n2, &n3, &n4, &loss])?;
-    let v: Vec<f32> = loss.try_into()?;
-    println!("loss {}", v[0]);
-    Ok(())
-}
 
 #[test]
 fn assign_no_movement_dst() -> Result<(), ZyxError> {

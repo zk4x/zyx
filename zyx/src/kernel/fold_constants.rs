@@ -325,8 +325,10 @@ impl Kernel {
                             let Op::Const(index) = self.ops[index].op else {
                                 unreachable!()
                             };
-                            let Constant::U32(index) = index else { unreachable!() };
-                            latest_stores[index as usize] = x;
+                            // Indices may be any integer dtype, so extract the dim
+                            // value regardless of the constant's concrete type.
+                            let index = index.as_dim().expect("store index must be a non-negative integer constant") as usize;
+                            latest_stores[index] = x;
                             //println!("Latest stores = {latest_stores:?}");
                         }
                         op_id = next;
@@ -338,8 +340,10 @@ impl Kernel {
                     let Op::Const(index) = self.ops[index].op else {
                         unreachable!()
                     };
-                    let Constant::U32(index) = index else { unreachable!() };
-                    remaps.insert(op_id, latest_stores[index as usize]);
+                    // Indices may be any integer dtype, so extract the dim value
+                    // regardless of the constant's concrete type.
+                    let index = index.as_dim().expect("load index must be a non-negative integer constant") as usize;
+                    remaps.insert(op_id, latest_stores[index]);
                     op_id = next;
                     continue;
                 }
