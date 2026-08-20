@@ -219,8 +219,6 @@ impl Kernel {
             }
         }
 
-        self.debug();
-
         self.common_subexpression_elimination();
         self.dead_code_elimination();
     }
@@ -598,14 +596,29 @@ impl Kernel {
                             let mut new_view = Vec::with_capacity(view.len());
                             for (a, d) in view.into_iter().enumerate() {
                                 if a == axis as usize {
-                                    let x_len = if self.dtype(x_shape[a]) != IDX_T {
-                                        self.insert_before(anchor, Op::Cast { x: x_shape[a], dtype: IDX_T })
-                                    } else {
-                                        x_shape[a]
-                                    };
-                                    let lprp = self.insert_before(anchor, Op::Binary { x: lp, y: rp, bop: BOp::Add });
-                                    let len = self.insert_before(anchor, Op::Binary { x: x_len, y: lprp, bop: BOp::Add });
-                                    new_view.push(SDim::new(d.idx, lp, rp, len));
+                                     let x_len = if self.dtype(x_shape[a]) != IDX_T {
+                                         self.insert_before(anchor, Op::Cast { x: x_shape[a], dtype: IDX_T })
+                                     } else {
+                                         x_shape[a]
+                                     };
+                                     let idx = match self.ops[lp].op {
+                                         Op::Const(Constant::I64(bytes))
+                                             if i64::from_le_bytes(bytes) < 0 => {
+                                             let offset = self.insert_before(
+                                                 anchor,
+                                                 Op::Const(Constant::idx(-i64::from_le_bytes(bytes))),
+                                             );
+                                             self.insert_before(anchor, Op::Binary {
+                                                 x: d.idx,
+                                                 y: offset,
+                                                 bop: BOp::Add,
+                                             })
+                                         }
+                                         _ => d.idx,
+                                     };
+                                     let lprp = self.insert_before(anchor, Op::Binary { x: lp, y: rp, bop: BOp::Add });
+                                     let len = self.insert_before(anchor, Op::Binary { x: x_len, y: lprp, bop: BOp::Add });
+                                     new_view.push(SDim::new(idx, lp, rp, len));
                                 } else {
                                     new_view.push(d);
                                 }
