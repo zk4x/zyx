@@ -45,15 +45,14 @@
 #[derive(Clone, Copy)]
 pub(crate) struct SDim {
     pub(crate) idx: OpId,
-    pub(crate) stride: OpId,
     pub(crate) lp: OpId,
     pub(crate) rp: OpId,
     pub(crate) len: OpId,
 }
 
 impl SDim {
-    pub(crate) fn new(idx: OpId, stride: OpId, lp: OpId, rp: OpId, len: OpId) -> Self {
-        Self { idx, stride, lp, rp, len }
+    pub(crate) fn new(idx: OpId, lp: OpId, rp: OpId, len: OpId) -> Self {
+        Self { idx, lp, rp, len }
     }
 }
 
@@ -222,6 +221,7 @@ impl Kernel {
 
         self.common_subexpression_elimination();
         self.dead_code_elimination();
+        self.debug();
     }
 
     fn add_indexing(&mut self) {
@@ -315,7 +315,7 @@ impl Kernel {
                         let mut write_index = zero;
                         for d in view.iter().rev() {
                             let src_idx = self.sub(d.idx, d.lp);
-                            write_index = self.mad(src_idx, d.stride, write_index);
+                            write_index = self.mad(src_idx, d.st, write_index);
                         }
                         match &mut self.ops[store_id].op {
                             Op::Store { index, .. } => *index = write_index,
@@ -353,11 +353,23 @@ impl Kernel {
                         let mut pc = self.const_val(true);
                         for d in view.iter().rev() {
                             let src_idx = self.sub(d.idx, d.lp);
-                            index = self.mad(src_idx, d.stride, index);
-                            let t_lo = self.cmpge(d.idx, d.lp);
+                            index = self.mad(src_idx, d.st, index);
+                            // An axis is only actually padded when its clamped lp/rp are
+                            // nonzero. A slice clamps both to 0 (its output length is not
+                            // the source extent), so the bounds checks must not apply
+                            // there -- otherwise idx < len - rp wrongly rejects the
+                            // shifted index. branchless_where keeps this fully symbolic.
+                            let lp_gt = self.cmpgt(d.lp, zero);
+                            let rp_gt = self.cmpgt(d.rp, zero);
+                            let padded = self.or_(lp_gt, rp_gt);
+                            let ge = self.cmpge(d.idx, d.lp);
+                            let tv = self.const_val(true);
+                            let t_lo = self.branchless_where(padded, ge, tv);
                             pc = self.and(t_lo, pc);
                             let len_mr = self.sub(d.len, d.rp);
-                            let t_hi = self.cmplt(d.idx, len_mr);
+                            let lt = self.cmplt(d.idx, len_mr);
+                            let tv2 = self.const_val(true);
+                            let t_hi = self.branchless_where(padded, lt, tv2);
                             pc = self.and(t_hi, pc);
                         }
                         // Insert the ro source define immediately before this op so the
@@ -475,7 +487,7 @@ impl Kernel {
                             }
                             let mut base = zero;
                             for d in &out_view {
-                                base = self.mad(d.idx, d.stride, base);
+                                base = self.mad(d.idx, d.st, base);
                             }
                             let mut view = Vec::with_capacity(n);
                             let mut q = base;
@@ -532,7 +544,7 @@ impl Kernel {
                                     let d = out_view[offset + a];
                                     let stride = if broadcast {
                                         zero
-                                    } else if matches!(self.ops[d.stride].op, Op::Const(c) if c.as_dim() == Some(0)) {
+                                    } else if matches!(self.ops[d.st].op, Op::Const(c) if c.as_dim() == Some(0)) {
                                         // A downstream op already broadcasts this axis
                                         // (stride 0); keep it zero instead of falling back
                                         // to the input's contiguous stride, which would
@@ -548,35 +560,18 @@ impl Kernel {
                             views.insert(x, view);
                         }
                         MoveOp::Permute { axes } => {
-                            // output[a] reads input[axes[a]]. Input axis j is
-                            // consumed by output axis inv_axes[j]; copy that output
-                            // axis's SDim into input axis j's slot, but recompute the
-                            // stride to the input's contiguous stride (unless the
-                            // output axis is broadcast, stride 0).
+                            // Pure backwards permutation: input axis j is consumed by
+                            // output axis inv_axes[j], so the input view's axis j is
+                            // exactly the output view's axis inv_axes[j]. No shape
+                            // lookup or stride recomputation is needed -- the SDims are
+                            // simply reordered.
+                            let axes = axes.clone();
+                            let view = views[&op_id].clone();
                             let mut inv_axes = vec![0; axes.len()];
                             for (i, &a) in axes.iter().enumerate() {
                                 inv_axes[a] = i;
                             }
-                            let x_shape = self.store_shape_ids(x);
-                            let n = x_shape.len();
-                            let mut x_strides = vec![one; n];
-                            let mut st = one;
-                            for a in (0..n).rev() {
-                                x_strides[a] = st;
-                                st = self.mul(x_shape[a], st);
-                            }
-                            let view = &views[&op_id];
-                            let view: Vec<SDim> = (0..n)
-                                .map(|j| {
-                                    let d = view[inv_axes[j]];
-                                    let stride = if matches!(self.ops[d.stride].op, Op::Const(c) if c.as_dim() == Some(0)) {
-                                        zero
-                                    } else {
-                                        x_strides[j]
-                                    };
-                                    SDim::new(d.idx, stride, d.lp, d.rp, d.len)
-                                })
-                                .collect();
+                            let view: Vec<SDim> = inv_axes.iter().map(|&j| view[j]).collect();
                             views.insert(x, view);
                         }
                         MoveOp::Flip { axes } => {
@@ -589,7 +584,7 @@ impl Kernel {
                                     let len_m1 = self.sub(d.len, one);
                                     let idx = self.sub(len_m1, d.idx);
                                     // Padding swaps sides under a flip.
-                                    new_view.push(SDim::new(idx, d.stride, d.rp, d.lp, d.len));
+                                    new_view.push(SDim::new(idx, d.st, d.rp, d.lp, d.len));
                                 } else {
                                     new_view.push(d);
                                 }
@@ -604,32 +599,14 @@ impl Kernel {
                             //   lp  = max(lp, 0)
                             //   rp  = max(rp, 0)
                             //   len = max(x_shape[a] + lp + rp, 0)
-                            let x_shape = self.store_shape_ids(x);
-                            let view = views[&op_id].clone();
-                            let n = x_shape.len();
-                            let mut x_strides = vec![one; n];
-                            let mut st = one;
-                            for a in (0..n).rev() {
-                                x_strides[a] = st;
-                                st = self.mul(x_shape[a], st);
-                            }
-                            let mut new_view = Vec::with_capacity(view.len());
-                            for (a, d) in view.into_iter().enumerate() {
-                                if a == axis as usize {
-                                    let neg_lp = self.neg(lp);
-                                    let shift = self.max(neg_lp, zero);
-                                    let idx = self.add(d.idx, shift);
-                                    let lp_id = self.max(lp, zero);
-                                    let rp_id = self.max(rp, zero);
-                                    let lprp = self.add(lp, rp);
-                                    let sum = self.add(x_shape[a], lprp);
-                                    let len = self.max(sum, zero);
-                                    new_view.push(SDim::new(idx, x_strides[a], lp_id, rp_id, len));
-                                } else {
-                                    new_view.push(SDim::new(d.idx, x_strides[a], d.lp, d.rp, d.len));
-                                }
-                            }
-                            views.insert(x, new_view);
+                            let mut view = views[&op_id].clone();
+                            let d = view[axis].clone();
+                            let len = self.sub(d.len, lp);
+                            let len = self.sub(len, rp);
+                            let lp = self.sub(d.lp, lp);
+                            let rp = self.sub(d.rp, rp);
+                            view[axis] = SDim { idx: d.idx, st: OpId::NULL, lp, rp, len  };
+                            views.insert(x, view);
                         }
                         &MoveOp::Narrow { axis, start, .. } => {
                             let x_shape = self.store_shape_ids(x);
