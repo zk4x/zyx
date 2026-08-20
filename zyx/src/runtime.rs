@@ -255,6 +255,14 @@ impl Runtime {
 
     pub fn release(&mut self, x: TensorId) {
         let rc = self.tensors[x].rc - 1;
+        #[cfg(feature = "debug_tensor_op")]
+        println!(
+            "runtime::release(tid={x}) rc {} -> {rc} shape={:?} kernel={:?} op={:?}",
+            self.tensors[x].rc,
+            self.shapes.get(&x),
+            self.tensors[x].kernel_id,
+            self.tensors[x].op_id
+        );
         self.tensors[x].rc = rc;
         let (kernel_id, op_id, pending, class_id) =
             (self.tensors[x].kernel_id, self.tensors[x].op_id, self.tensors[x].depends_on, self.tensors[x].class_id);
@@ -312,6 +320,8 @@ impl Runtime {
     /// reference it. Remove it, freeing its buffer if no other tensor maps to
     /// the same buffer. Graph-affiliated tensors may be kept by their graph.
     fn on_rc_zero(&mut self, x: TensorId) {
+        #[cfg(feature = "debug_tensor_op")]
+        println!("runtime::on_rc_zero(tid={x}) shape={:?}", self.shapes.get(&x));
         let (pending, class_id, graph_id) = (self.tensors[x].depends_on, self.tensors[x].class_id, self.tensors[x].graph_id);
 
         if !class_id.is_null() {
@@ -453,6 +463,7 @@ impl Runtime {
         let shape_tid = self.stack(&ids).unwrap();
         let expanded = self.expand(x, shape_tid).unwrap();
         self.release(x);
+        self.release(shape_tid);
         for t in ids {
             self.release(t);
         }
@@ -1369,7 +1380,7 @@ impl Runtime {
             self.tensors[dst_define].class_id = self.push_node(graph_id, Node::After { x: dst_define_cid, dep: assign_cid }).1;
             self.tensors[dst].class_id = self.push_node(graph_id, Node::After { x: dst_cid, dep: assign_cid }).1;
             #[cfg(feature = "debug_tensor_op")]
-            println!("  -> cid={cid:?}");
+            println!("  -> assign_cid={assign_cid:?}");
             return Ok(());
         }
         // Merge dst's (movement-only) kernel into src's kernel, then store src's
