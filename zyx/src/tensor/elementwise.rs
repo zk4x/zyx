@@ -112,7 +112,7 @@ impl Tensor {
     /// where `α` is a given scaling factor. This function helps mitigate the "dying `ReLU`" problem.
     #[must_use]
     pub fn elu(&self, alpha: impl Scalar) -> Tensor {
-        self.relu() - (Tensor::ones(1, self.dtype()) - self.exp()).relu() * alpha
+        self.relu() - (self.exp().neg() + 1).relu() * alpha
     }
 
     /// Returns a new tensor with the exponential of 2 raised to the power of each element in self.
@@ -318,7 +318,7 @@ impl Tensor {
     #[must_use]
     pub fn selu(&self) -> Tensor {
         let dtype = self.dtype();
-        1.050_701_f32 * (self.relu() - (1.673_263_2_f32 * (Tensor::ones(1, dtype) - self.exp())).relu())
+        1.050_701_f32 * (self.relu() - (1.673_263_2_f32 * (self.exp().neg() + 1)).relu())
     }
 
     /// Rounds each element of the input tensor to the nearest integer.
@@ -456,9 +456,8 @@ impl Tensor {
     /// **Returns:** A new tensor with the same shape as the input, but with each element computed as `sigmoid(input_element)`.
     #[must_use]
     pub fn sigmoid(&self) -> Tensor {
-        let one = Tensor::ones(1, self.dtype());
         let exp_x = self.exp();
-        exp_x.clone() / (one + exp_x)
+        exp_x.clone() / (exp_x + 1)
     }
 
     /// Applies the hard sigmoid activation function to each element in the input tensor.

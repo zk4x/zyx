@@ -649,6 +649,7 @@ mod tests {
     use crate::dtype::Constant;
     use crate::dtype::DType;
     use crate::kernel::{BOp, DeviceId, Kernel, MemLayout, MemScope, Op, OpId, ParamKind};
+    use crate::slab::SlabId;
 
     /// Build a kernel matching the REAL index_select IR pattern
     /// where the accumulated value is computed AFTER load(acc).
@@ -986,8 +987,8 @@ mod tests {
     #[test]
     fn test_ceil_mask_loop_folds() {
         let mut k = Kernel::new(DeviceId::AUTO);
+        let out = k.param(DType::I32, ParamKind::GlobalMut, OpId::NULL);
         let out_shape = k.const_idx(2u32);
-        let out = k.param(DType::I32, ParamKind::Global, out_shape);
         let g = k.group_index(0, out_shape);
         let acc = k.storage(DType::I32, MemScope::Register, 1);
         let zi = k.const_idx(0u32);

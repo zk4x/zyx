@@ -430,71 +430,61 @@ impl Tensor {
     /// fails to realize self.
     pub fn detach(self) -> Result<Tensor, ZyxError> {
         // TODO remove realization from here
+        let dims: Vec<Tensor> = self.shape().iter().map(|&d| Tensor::from(d)).collect();
+        let shape = if dims.is_empty() { None } else { Some(Tensor::stack(&dims)?) };
+        let shape_id = match &shape { Some(s) => s.id, None => TensorId::NULL };
         let id = match self.dtype() {
             DType::BF16 => {
-                let shape = self.shape();
                 let data: Vec<bf16> = self.try_into()?;
-                RT.lock().new_host_tensor(shape, data.into())
+                RT.lock().new_host_tensor(shape_id, data.into())
             }
             DType::F16 => {
-                let shape = self.shape();
                 let data: Vec<f16> = self.try_into()?;
-                RT.lock().new_host_tensor(shape, data.into())
+                RT.lock().new_host_tensor(shape_id, data.into())
             }
             DType::F32 => {
-                let shape = self.shape();
                 let data: Vec<f32> = self.try_into()?;
-                RT.lock().new_host_tensor(shape, data.into())
+                RT.lock().new_host_tensor(shape_id, data.into())
             }
             DType::F64 => {
-                let shape = self.shape();
                 let data: Vec<f64> = self.try_into()?;
-                RT.lock().new_host_tensor(shape, data.into())
+                RT.lock().new_host_tensor(shape_id, data.into())
             }
             DType::U8 => {
-                let shape = self.shape();
                 let data: Vec<u8> = self.try_into()?;
-                RT.lock().new_host_tensor(shape, data.into())
+                RT.lock().new_host_tensor(shape_id, data.into())
             }
             DType::U16 => {
-                let shape = self.shape();
                 let data: Vec<u16> = self.try_into()?;
-                RT.lock().new_host_tensor(shape, data.into())
+                RT.lock().new_host_tensor(shape_id, data.into())
             }
             DType::U32 => {
-                let shape = self.shape();
                 let data: Vec<u32> = self.try_into()?;
-                RT.lock().new_host_tensor(shape, data.into())
+                RT.lock().new_host_tensor(shape_id, data.into())
             }
             DType::U64 => {
-                let shape = self.shape();
                 let data: Vec<u64> = self.try_into()?;
-                RT.lock().new_host_tensor(shape, data.into())
+                RT.lock().new_host_tensor(shape_id, data.into())
             }
             DType::I8 => {
-                let shape = self.shape();
                 let data: Vec<i8> = self.try_into()?;
-                RT.lock().new_host_tensor(shape, data.into())
+                RT.lock().new_host_tensor(shape_id, data.into())
             }
             DType::I16 => {
-                let shape = self.shape();
                 let data: Vec<i16> = self.try_into()?;
-                RT.lock().new_host_tensor(shape, data.into())
+                RT.lock().new_host_tensor(shape_id, data.into())
             }
             DType::I32 => {
-                let shape = self.shape();
                 let data: Vec<i32> = self.try_into()?;
-                RT.lock().new_host_tensor(shape, data.into())
+                RT.lock().new_host_tensor(shape_id, data.into())
             }
             DType::I64 => {
-                let shape = self.shape();
                 let data: Vec<i64> = self.try_into()?;
-                RT.lock().new_host_tensor(shape, data.into())
+                RT.lock().new_host_tensor(shape_id, data.into())
             }
             DType::Bool => {
-                let shape = self.shape();
                 let data: Vec<bool> = self.try_into()?;
-                RT.lock().new_host_tensor(shape, data.into())
+                RT.lock().new_host_tensor(shape_id, data.into())
             }
         }?;
         Ok(Tensor { id })
@@ -523,76 +513,85 @@ impl Tensor {
     /// # Errors
     /// Returns device error if the device fails to allocate memory for tensor.
     #[allow(clippy::missing_panics_doc, reason = "all panics are checked ahead")]
-    pub fn rand(shape: impl IntoShape, dtype: DType) -> Result<Tensor, ZyxError> {
-        let shape: Vec<Dim> = shape.into_shape().collect();
-        let n = shape.iter().product();
-        if dtype.is_float() {
-            // TODO later use threefry
+    pub fn rand(shape: impl IntoIterator<Item = impl Into<Tensor>>, dtype: DType) -> Result<Tensor, ZyxError> {
+        let tensors: Vec<Tensor> = shape.into_iter().map(|x| x.into()).collect();
+        let shape = if tensors.is_empty() { None } else { Some(Tensor::stack(&tensors)?) };
+        {
             let mut rt = RT.lock();
-            match dtype {
-                DType::BF16 => {
-                    let data: Vec<bf16> = (0..n).map(|_| rt.rng.rand()).collect();
-                    Ok(Tensor { id: rt.new_host_tensor(shape.clone(), data.into())? })
+            let n: Dim = match &shape {
+                Some(s) => rt.resolve_shape(s.id).into_iter().product(),
+                None => 1,
+            };
+            let shape_id = match &shape {
+                Some(s) => s.id,
+                None => TensorId::NULL,
+            };
+            if dtype.is_float() {
+                // TODO later use threefry
+                match dtype {
+                    DType::BF16 => {
+                        let data: Vec<bf16> = (0..n).map(|_| rt.rng.rand()).collect();
+                        Ok(Tensor { id: rt.new_host_tensor(shape_id, data.into())? })
+                    }
+                    DType::F16 => {
+                        let data: Vec<f16> = (0..n).map(|_| rt.rng.rand()).collect();
+                        Ok(Tensor { id: rt.new_host_tensor(shape_id, data.into())? })
+                    }
+                    DType::F32 => {
+                        let data: Vec<f32> = (0..n).map(|_| rt.rng.rand()).collect();
+                        Ok(Tensor { id: rt.new_host_tensor(shape_id, data.into())? })
+                    }
+                    DType::F64 => {
+                        let data: Vec<f64> = (0..n).map(|_| rt.rng.rand()).collect();
+                        Ok(Tensor { id: rt.new_host_tensor(shape_id, data.into())? })
+                    }
+                    DType::U8
+                    | DType::U16
+                    | DType::U32
+                    | DType::U64
+                    | DType::I8
+                    | DType::I16
+                    | DType::I32
+                    | DType::I64
+                    | DType::Bool => panic!(),
                 }
-                DType::F16 => {
-                    let data: Vec<f16> = (0..n).map(|_| rt.rng.rand()).collect();
-                    Ok(Tensor { id: rt.new_host_tensor(shape.clone(), data.into())? })
+            } else {
+                match dtype {
+                    DType::U8 => {
+                        let data: Vec<u8> = (0..n).map(|_| rt.rng.rand()).collect();
+                        Ok(Tensor { id: rt.new_host_tensor(shape_id, data.into())? })
+                    }
+                    DType::U16 => {
+                        let data: Vec<u16> = (0..n).map(|_| rt.rng.rand()).collect();
+                        Ok(Tensor { id: rt.new_host_tensor(shape_id, data.into())? })
+                    }
+                    DType::U32 => {
+                        let data: Vec<u32> = (0..n).map(|_| rt.rng.rand()).collect();
+                        Ok(Tensor { id: rt.new_host_tensor(shape_id, data.into())? })
+                    }
+                    DType::U64 => {
+                        let data: Vec<u64> = (0..n).map(|_| rt.rng.rand()).collect();
+                        Ok(Tensor { id: rt.new_host_tensor(shape_id, data.into())? })
+                    }
+                    DType::I8 => {
+                        let data: Vec<i8> = (0..n).map(|_| rt.rng.rand()).collect();
+                        Ok(Tensor { id: rt.new_host_tensor(shape_id, data.into())? })
+                    }
+                    DType::I16 => {
+                        let data: Vec<i16> = (0..n).map(|_| rt.rng.rand()).collect();
+                        Ok(Tensor { id: rt.new_host_tensor(shape_id, data.into())? })
+                    }
+                    DType::I32 => {
+                        let data: Vec<i32> = (0..n).map(|_| rt.rng.rand()).collect();
+                        Ok(Tensor { id: rt.new_host_tensor(shape_id, data.into())? })
+                    }
+                    DType::I64 => {
+                        let data: Vec<i64> = (0..n).map(|_| rt.rng.rand()).collect();
+                        Ok(Tensor { id: rt.new_host_tensor(shape_id, data.into())? })
+                    }
+                    DType::Bool => Err(ZyxError::dtype_error("Uniform is not supported for bool".into())),
+                    DType::BF16 | DType::F16 | DType::F32 | DType::F64 => unreachable!(),
                 }
-                DType::F32 => {
-                    let data: Vec<f32> = (0..n).map(|_| rt.rng.rand()).collect();
-                    Ok(Tensor { id: rt.new_host_tensor(shape.clone(), data.into())? })
-                }
-                DType::F64 => {
-                    let data: Vec<f64> = (0..n).map(|_| rt.rng.rand()).collect();
-                    Ok(Tensor { id: rt.new_host_tensor(shape.clone(), data.into())? })
-                }
-                DType::U8
-                | DType::U16
-                | DType::U32
-                | DType::U64
-                | DType::I8
-                | DType::I16
-                | DType::I32
-                | DType::I64
-                | DType::Bool => panic!(),
-            }
-        } else {
-            let mut rt = RT.lock();
-            match dtype {
-                DType::U8 => {
-                    let data: Vec<u8> = (0..n).map(|_| rt.rng.rand()).collect();
-                    Ok(Tensor { id: rt.new_host_tensor(shape.clone(), data.into())? })
-                }
-                DType::U16 => {
-                    let data: Vec<u16> = (0..n).map(|_| rt.rng.rand()).collect();
-                    Ok(Tensor { id: rt.new_host_tensor(shape.clone(), data.into())? })
-                }
-                DType::U32 => {
-                    let data: Vec<u32> = (0..n).map(|_| rt.rng.rand()).collect();
-                    Ok(Tensor { id: rt.new_host_tensor(shape.clone(), data.into())? })
-                }
-                DType::U64 => {
-                    let data: Vec<u64> = (0..n).map(|_| rt.rng.rand()).collect();
-                    Ok(Tensor { id: rt.new_host_tensor(shape.clone(), data.into())? })
-                }
-                DType::I8 => {
-                    let data: Vec<i8> = (0..n).map(|_| rt.rng.rand()).collect();
-                    Ok(Tensor { id: rt.new_host_tensor(shape.clone(), data.into())? })
-                }
-                DType::I16 => {
-                    let data: Vec<i16> = (0..n).map(|_| rt.rng.rand()).collect();
-                    Ok(Tensor { id: rt.new_host_tensor(shape.clone(), data.into())? })
-                }
-                DType::I32 => {
-                    let data: Vec<i32> = (0..n).map(|_| rt.rng.rand()).collect();
-                    Ok(Tensor { id: rt.new_host_tensor(shape.clone(), data.into())? })
-                }
-                DType::I64 => {
-                    let data: Vec<i64> = (0..n).map(|_| rt.rng.rand()).collect();
-                    Ok(Tensor { id: rt.new_host_tensor(shape.clone(), data.into())? })
-                }
-                DType::Bool => Err(ZyxError::dtype_error("Uniform is not supported for bool".into())),
-                DType::BF16 | DType::F16 | DType::F32 | DType::F64 => unreachable!(),
             }
         }
     }
@@ -601,10 +600,12 @@ impl Tensor {
     /// Create tensor sampled from standard distribution.
     /// # Errors
     /// Retuns device error if device fails to allocate memory for given tensor.
-    pub fn randn(shape: impl IntoShape, dtype: DType) -> Result<Tensor, ZyxError> {
+    pub fn randn(shape: impl IntoIterator<Item = impl Into<Tensor>>, dtype: DType) -> Result<Tensor, ZyxError> {
         // https://en.wikipedia.org/wiki/Box%E2%80%93Muller_transform
-        let shape: Vec<Dim> = shape.into_shape().collect();
-        let nshape: Vec<Dim> = once(2).chain(shape).collect();
+        let dims: Vec<Tensor> = shape.into_iter().map(Into::into).collect();
+        let mut nshape = Vec::with_capacity(dims.len() + 1);
+        nshape.push(Tensor::from(2));
+        nshape.extend(dims);
         let src = Tensor::rand(nshape, DType::F32)?;
         let x1 = src.slice(0)?.mul(2f32 * std::f32::consts::PI).cos();
         let x2 = (1f32 - src.slice(1)?).ln().mul(-2f32).sqrt();
@@ -633,7 +634,7 @@ impl Tensor {
     /// Start of the range must be less than the end of the range.
     /// # Errors
     /// Returns device error if the device fails to allocate memory for tensor.
-    pub fn uniform<T: Scalar>(shape: impl IntoShape, range: impl core::ops::RangeBounds<T>) -> Result<Tensor, ZyxError> {
+    pub fn uniform<T: Scalar>(shape: impl IntoIterator<Item = impl Into<Tensor>>, range: impl core::ops::RangeBounds<T>) -> Result<Tensor, ZyxError> {
         use core::ops::Bound;
         let low: f32 = match range.start_bound() {
             Bound::Included(value) | Bound::Excluded(value) => value.cast(),
@@ -649,73 +650,107 @@ impl Tensor {
     /// Create tensor of discrete uniform integers in range [low, high).
     /// # Errors
     /// Returns device error if the device fails to allocate memory for tensor.
-    pub fn randint<T: Scalar>(shape: impl IntoShape, range: impl core::ops::RangeBounds<T> + Clone) -> Result<Tensor, ZyxError> {
-        let shape: Vec<Dim> = shape.into_shape().collect();
-        let n = shape.iter().product();
+    pub fn randint<T: Scalar>(shape: impl IntoIterator<Item = impl Into<Tensor>>, range: impl core::ops::RangeBounds<T> + Clone) -> Result<Tensor, ZyxError> {
+        let dims: Vec<Tensor> = shape.into_iter().map(Into::into).collect();
+        let shape = Tensor::stack(&dims)?;
         let mut rt = RT.lock();
+        let n: Dim = rt.resolve_shape(shape.id).into_iter().product();
         let data: Vec<T> = (0..n).map(|_| rt.rng.range(range.clone())).collect();
-        Ok(Tensor { id: rt.new_host_tensor(shape.clone(), data.into())? })
+        Ok(Tensor { id: rt.new_host_tensor(shape.id, data.into())? })
     }
 
     /// Create tensor sampled from kaiming uniform distribution.
     /// # Errors
     /// Returns device error if the device fails to allocate memory for tensor.
     #[allow(clippy::missing_panics_doc)]
-    pub fn kaiming_uniform<T: Float>(shape: impl IntoShape, a: T) -> Result<Tensor, ZyxError> {
-        let n = T::from_i64(shape.clone().into_shape().skip(1).product::<Dim>().try_into().unwrap());
-        let one = T::one();
-        let x = Scalar::add(one, Scalar::mul(a, a));
-        let two = Scalar::add(one, one);
-        let three = Scalar::add(two, one);
-        let x = Scalar::div(two, x).sqrt();
-        let bound = Scalar::mul(three.sqrt(), Scalar::div(x, n));
-        Tensor::uniform(shape, bound.neg()..bound)
+    pub fn kaiming_uniform<T: Float>(shape: impl IntoIterator<Item = impl Into<Tensor>>, a: T) -> Result<Tensor, ZyxError> {
+        let dims: Vec<Tensor> = shape.into_iter().map(Into::into).collect();
+        {
+            let rt = RT.lock();
+            let shape_st = Tensor::stack(&dims).ok();
+            let resolved: Vec<Dim> = shape_st.as_ref().map(|s| rt.resolve_shape(s.id)).unwrap_or_default();
+            let n = T::from_i64(resolved.iter().skip(1).product::<Dim>().try_into().unwrap());
+            let one = T::one();
+            let x = Scalar::add(one, Scalar::mul(a, a));
+            let two = Scalar::add(one, one);
+            let three = Scalar::add(two, one);
+            let x = Scalar::div(two, x).sqrt();
+            let bound = Scalar::mul(three.sqrt(), Scalar::div(x, n));
+            drop(rt);
+            Tensor::uniform(dims, bound.neg()..bound)
+        }
     }
 
     /// Create tensor sampled from glorot uniform distribution.
     /// # Errors
     /// Returns device error if the device fails to allocate memory for tensor.
     #[allow(clippy::cast_precision_loss)]
-    pub fn glorot_uniform(shape: impl IntoShape, dtype: DType) -> Result<Tensor, ZyxError> {
-        let shape: Vec<_> = shape.into_shape().collect();
-        let c = 6. / (shape[0] + shape.iter().skip(1).product::<Dim>()) as f32;
-        let mut x = Tensor::uniform(shape, -1f32..1f32)?;
+    pub fn glorot_uniform(shape: impl IntoIterator<Item = impl Into<Tensor>>, dtype: DType) -> Result<Tensor, ZyxError> {
+        let dims: Vec<Tensor> = shape.into_iter().map(Into::into).collect();
+        let c = {
+            let rt = RT.lock();
+            let shape_st = Tensor::stack(&dims).ok();
+            let resolved: Vec<Dim> = shape_st.as_ref().map(|s| rt.resolve_shape(s.id)).unwrap_or_default();
+            6. / (resolved[0] + resolved.iter().skip(1).product::<Dim>()) as f32
+        };
+        let mut x = Tensor::uniform(dims, -1f32..1f32)?;
         x = x * c.pow(0.5);
         Ok(x.cast(dtype))
     }
 
     /// Create tensor filled with zeros.
     #[must_use]
-    pub fn zeros(shape: impl IntoShape, dtype: DType) -> Tensor {
-        Tensor { id: RT.lock().new_full(shape.into_shape().collect(), dtype.zero_constant()) }
+    pub fn zeros(shape: impl IntoIterator<Item = impl Into<Tensor>>, dtype: DType) -> Tensor {
+        let dims: Vec<Tensor> = shape.into_iter().map(Into::into).collect();
+        let shape = if dims.is_empty() { None } else { Some(Tensor::stack(&dims).unwrap()) };
+        let id = {
+            let mut rt = RT.lock();
+            let shape_id = shape.as_ref().map(|s| s.id).unwrap_or(TensorId::NULL);
+            rt.new_full(shape_id, dtype.zero_constant())
+        };
+        Tensor { id }
     }
 
     /// Create tensor filled with zeros with the same shape and dtype as input.
     #[must_use]
     pub fn zeros_like(input: impl Into<Tensor>) -> Tensor {
         let input = input.into();
-        Tensor::zeros(input.shape(), input.dtype())
+        Tensor::zeros(input.shape().iter().map(|d| Tensor::from(*d)), input.dtype())
     }
 
     /// Create tensor filled with ones.
     #[must_use]
-    pub fn ones(shape: impl IntoShape, dtype: DType) -> Tensor {
-        Tensor { id: RT.lock().new_full(shape.into_shape().collect(), dtype.one_constant()) }
+    pub fn ones(shape: impl IntoIterator<Item = impl Into<Tensor>>, dtype: DType) -> Tensor {
+        let dims: Vec<Tensor> = shape.into_iter().map(Into::into).collect();
+        let shape = if dims.is_empty() { None } else { Some(Tensor::stack(&dims).unwrap()) };
+        let id = {
+            let mut rt = RT.lock();
+            let shape_id = shape.as_ref().map(|s| s.id).unwrap_or(TensorId::NULL);
+            rt.new_full(shape_id, dtype.one_constant())
+        };
+        Tensor { id }
     }
 
     /// Create tensor filled with ones with the same shape and dtype as input.
     #[must_use]
     pub fn ones_like(input: impl Into<Tensor>) -> Tensor {
         let input = input.into();
-        Tensor::ones(input.shape(), input.dtype())
+        Tensor::ones(input.shape().iter().map(|d| Tensor::from(*d)), input.dtype())
     }
 
     /// Create tensor filled with value.
     /// # Errors
     /// Returns device error if the device failed to allocate memory for tensor.
     #[allow(clippy::missing_panics_doc)]
-    pub fn full(shape: impl IntoShape, value: impl Scalar) -> Tensor {
-        Tensor { id: RT.lock().new_full(shape.into_shape().collect(), Constant::new(value)) }
+    pub fn full(shape: impl IntoIterator<Item = impl Into<Tensor>>, value: impl Scalar) -> Tensor {
+        let dims: Vec<Tensor> = shape.into_iter().map(Into::into).collect();
+        let shape = if dims.is_empty() { None } else { Some(Tensor::stack(&dims).unwrap()) };
+        let id = {
+            let mut rt = RT.lock();
+            let shape_id = shape.as_ref().map(|s| s.id).unwrap_or(TensorId::NULL);
+            rt.new_full(shape_id, Constant::new(value))
+        };
+        Tensor { id }
     }
 
     /// Create square tensor with ones on the main diagonal and all other values set to zero.
@@ -740,7 +775,7 @@ impl Tensor {
         // return (Tensor.full((math.ceil((stop-start)/step),), step, dtype=dtype, **kwargs)._cumsum() + (start - step)).cast(dtype)
         //println!("Arange {start:?}, {stop:?}, {step:?}");
         let n: i64 = stop.sub(start).div(step).cast();
-        let x = Tensor::full(Dim::try_from(n).unwrap(), step);
+        let x = Tensor::full([Dim::try_from(n).unwrap()], step);
         let x = x.cumsum(0)?;
         Ok(x + start - step)
     }
@@ -748,9 +783,10 @@ impl Tensor {
     /// Create tensor from vec and shape
     /// # Errors
     /// Returns allocation failure or backend initialization failure
-    pub fn from_vec<T: Scalar>(data: Vec<T>, shape: impl IntoShape) -> Result<Tensor, ZyxError> {
-        let shape = shape.into_shape().collect();
-        let id = RT.lock().new_host_tensor(shape, data.into_boxed_slice())?;
+    pub fn from_vec<T: Scalar>(data: Vec<T>, shape: impl IntoIterator<Item = impl Into<Tensor>>) -> Result<Tensor, ZyxError> {
+        let dims: Vec<Tensor> = shape.into_iter().map(Into::into).collect();
+        let shape = Tensor::stack(&dims)?;
+        let id = RT.lock().new_host_tensor(shape.id, data.into_boxed_slice())?;
         Ok(Tensor { id })
     }
 
@@ -1695,7 +1731,7 @@ impl Tensor {
             ext_vals.push(t);
             ext_vals.push(blank as i32);
         }
-        let ext_labels = Tensor::from_vec(ext_vals, [n_ext])?;
+        let ext_labels = Tensor::from_vec(ext_vals, [n_ext as u64])?;
 
         // Gather extended log-probs: [T, 2L+1]
         let ext_labels_exp = ext_labels.expand([t_dim, n_ext as u64])?;
@@ -1705,11 +1741,10 @@ impl Tensor {
         let log_add = |a: &Tensor, b: &Tensor| -> Tensor {
             let max_val = a.maximum(b).unwrap();
             let min_val = a.minimum(b).unwrap();
-            let one = Tensor::ones(max_val.shape(), dtype);
-            max_val.clone() + (one + (min_val - &max_val).exp()).ln()
+            max_val.clone() + ((min_val - &max_val).exp() + 1).ln()
         };
 
-        let neg_inf_tensor = Tensor::full([n_ext], neg_inf).cast(dtype);
+        let neg_inf_tensor = Tensor::full([n_ext as u64], neg_inf).cast(dtype);
         let neg_inf_val = Tensor::from(neg_inf).cast(dtype);
 
         // Initialize alpha[0]: [-inf, ..., -inf] with first two set
@@ -2854,7 +2889,17 @@ impl Tensor {
 
     /// Create new tensor from file on disk.
     pub(crate) fn from_path(shape: Vec<Dim>, dtype: DType, path: impl AsRef<Path>, offset: u64) -> Result<Tensor, ZyxError> {
-        Ok(Tensor { id: RT.lock().new_disk_tensor(shape, dtype, path.as_ref(), offset)? })
+        let shape_st = if shape.is_empty() {
+            None
+        } else {
+            Some(Tensor::stack(&shape.iter().map(|&d| Tensor::from(d)).collect::<Vec<_>>())?)
+        };
+        let id = {
+            let mut rt = RT.lock();
+            let shape_id = shape_st.as_ref().map(|s| s.id).unwrap_or(TensorId::NULL);
+            rt.new_disk_tensor(shape_id, dtype, path.as_ref(), offset)?
+        };
+        Ok(Tensor { id })
     }
 
     /// All tensor elements as contiguous `le_bytes` vector in row major order
@@ -3403,20 +3448,24 @@ impl From<&Tensor> for Tensor {
 
 impl<T: Scalar> From<T> for Tensor {
     fn from(value: T) -> Self {
-        Tensor { id: RT.lock().new_host_tensor(vec![], Box::new([value])).unwrap() }
+        let mut rt = RT.lock();
+        let id = rt.new_host_tensor(TensorId::NULL, Box::new([value])).unwrap();
+        Tensor { id }
     }
 }
 
 impl<T: Scalar, const D0: usize> From<[T; D0]> for Tensor {
     fn from(data: [T; D0]) -> Self {
-        Tensor { id: RT.lock().new_host_tensor(vec![D0 as Dim], Box::from(data)).unwrap() }
+        let shape = Tensor::stack(&[Tensor::from(D0 as Dim)]).unwrap();
+        Tensor { id: RT.lock().new_host_tensor(shape.id, Box::from(data)).unwrap() }
     }
 }
 
 impl<T: Scalar> From<Vec<T>> for Tensor {
     fn from(data: Vec<T>) -> Self {
         let len = data.len() as Dim;
-        Tensor { id: RT.lock().new_host_tensor(vec![len], data.into_boxed_slice()).unwrap() }
+        let shape = Tensor::stack(&[Tensor::from(len)]).unwrap();
+        Tensor { id: RT.lock().new_host_tensor(shape.id, data.into_boxed_slice()).unwrap() }
     }
 }
 
@@ -3425,7 +3474,8 @@ impl<T: Scalar + Clone> From<Vec<Vec<T>>> for Tensor {
         let rows = data.len() as Dim;
         let cols = data.first().map_or(0, Vec::len) as Dim;
         let flat: Vec<T> = data.into_iter().flatten().collect();
-        Tensor { id: RT.lock().new_host_tensor(vec![rows, cols], flat.into_boxed_slice()).unwrap() }
+        let shape = Tensor::stack(&[Tensor::from(rows), Tensor::from(cols)]).unwrap();
+        Tensor { id: RT.lock().new_host_tensor(shape.id, flat.into_boxed_slice()).unwrap() }
     }
 }
 
@@ -3435,7 +3485,8 @@ impl<T: Scalar + Clone> From<Vec<Vec<Vec<T>>>> for Tensor {
         let rows = data.first().map_or(0, Vec::len) as Dim;
         let cols = data.first().and_then(|v| v.first()).map_or(0, Vec::len) as Dim;
         let flat: Vec<T> = data.into_iter().flatten().flatten().collect();
-        Tensor { id: RT.lock().new_host_tensor(vec![depth, rows, cols], flat.into_boxed_slice()).unwrap() }
+        let shape = Tensor::stack(&[Tensor::from(depth), Tensor::from(rows), Tensor::from(cols)]).unwrap();
+        Tensor { id: RT.lock().new_host_tensor(shape.id, flat.into_boxed_slice()).unwrap() }
     }
 }
 
@@ -3443,21 +3494,24 @@ impl<T: Scalar, const D0: usize, const D1: usize> From<[[T; D1]; D0]> for Tensor
     fn from(data: [[T; D1]; D0]) -> Self {
         let data = unsafe { core::slice::from_raw_parts(data[0].as_ptr(), D0 * D1) };
         let data = Box::from(data);
-        Tensor { id: RT.lock().new_host_tensor(vec![D0 as Dim, D1 as Dim], data).unwrap() }
+        let shape = Tensor::stack(&[Tensor::from(D0 as Dim), Tensor::from(D1 as Dim)]).unwrap();
+        Tensor { id: RT.lock().new_host_tensor(shape.id, data).unwrap() }
     }
 }
 
 impl<T: Scalar, const D0: usize, const D1: usize, const D2: usize> From<[[[T; D2]; D1]; D0]> for Tensor {
     fn from(data: [[[T; D2]; D1]; D0]) -> Self {
         let data = unsafe { core::slice::from_raw_parts(data[0][0].as_ptr(), D0 * D1 * D2) };
-        Tensor { id: RT.lock().new_host_tensor(vec![D0 as Dim, D1 as Dim, D2 as Dim], Box::from(data)).unwrap() }
+        let shape = Tensor::stack(&[Tensor::from(D0 as Dim), Tensor::from(D1 as Dim), Tensor::from(D2 as Dim)]).unwrap();
+        Tensor { id: RT.lock().new_host_tensor(shape.id, Box::from(data)).unwrap() }
     }
 }
 
 impl<T: Scalar, const D0: usize, const D1: usize, const D2: usize, const D3: usize> From<[[[[T; D3]; D2]; D1]; D0]> for Tensor {
     fn from(data: [[[[T; D3]; D2]; D1]; D0]) -> Self {
         let data = unsafe { core::slice::from_raw_parts(data[0][0][0].as_ptr(), D0 * D1 * D2 * D3) };
-        Tensor { id: RT.lock().new_host_tensor(vec![D0 as Dim, D1 as Dim, D2 as Dim, D3 as Dim], Box::from(data)).unwrap() }
+        let shape = Tensor::stack(&[Tensor::from(D0 as Dim), Tensor::from(D1 as Dim), Tensor::from(D2 as Dim), Tensor::from(D3 as Dim)]).unwrap();
+        Tensor { id: RT.lock().new_host_tensor(shape.id, Box::from(data)).unwrap() }
     }
 }
 

@@ -124,7 +124,8 @@ impl Tape {
                 let id = match grads.get(&x) {
                     Some(&id) => id,
                     None => {
-                        let shape = rt.shape(x).into();
+                        let x_shape: Vec<Dim> = rt.shape(x).to_vec();
+                        let shape = rt.shape_tensor(&x_shape);
                         let dtype = rt.dtype(x);
                         rt.new_full(shape, dtype.zero_constant())
                     }
@@ -307,7 +308,8 @@ impl FrozenTape {
 
         let mut outputs = Vec::new();
         for (cid, shape, dtype) in self.outputs.iter() {
-            let tid = rt.new_eager_tensor(shape.clone(), *dtype, ParamKind::Global);
+            let shape = rt.shape_tensor(shape);
+            let tid = rt.new_eager_tensor(shape, *dtype, ParamKind::Global);
             rt.buffer_map.insert(tid, class_buf[cid]);
             outputs.push(Tensor::from_id(tid));
         }

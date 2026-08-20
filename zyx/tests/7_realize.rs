@@ -267,7 +267,7 @@ fn b_sftmx1() -> Result<(), ZyxError> {
 
     let shape: [usize; 2] = [2048, 320];
 
-    let x = Tensor::rand(shape, DType::F32)?;
+    let x = Tensor::rand(shape.map(|d| d as u64), DType::F32)?;
     let y = x.softmax([-1])?;
     let y_host: Vec<f32> = y.try_into()?;
 
@@ -316,7 +316,7 @@ fn sftmx3() -> Result<(), ZyxError> {
     let shape: [usize; 2] = [2048, 320];
 
     // Input
-    let x = Tensor::rand(shape, DType::F32)?;
+    let x = Tensor::rand(shape.map(|d| d as u64), DType::F32)?;
 
     // Compute using your implementation
     let y = x.softmax([-1])?;

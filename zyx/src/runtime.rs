@@ -200,6 +200,22 @@ impl Runtime {
         None
     }
 
+    /// Resolve a shape tensor (a stack of scalar dims, or NULL for scalar) to
+    /// concrete dimensions. Any dimension whose value cannot be resolved to a
+    /// constant falls back to 0.
+    pub(crate) fn resolve_shape(&self, shape: TensorId) -> Vec<Dim> {
+        if shape.is_null() {
+            return vec![];
+        }
+        let (kid, op_id) = self.eager_ids(shape);
+        let kernel = &self.kernels[kid].kernel;
+        match &kernel.ops[op_id].op {
+            Op::Stack { ops } => ops.iter().map(|&o| self.const_dim(kid, o).unwrap_or(0)).collect(),
+            Op::Const(_) => vec![self.const_dim(kid, op_id).unwrap_or(0)],
+            _ => vec![0],
+        }
+    }
+
     pub fn dtype(&self, x: TensorId) -> DType {
         if self.is_graph(x) {
             let (class_id, graph_id) = self.graph_ids(x);
@@ -208,6 +224,20 @@ impl Runtime {
             let (kid, op_id) = self.eager_ids(x);
             self.kernels[kid].kernel.dtype(op_id)
         }
+    }
+
+    /// Build a shape tensor (a stack of constant dims) from concrete dimensions.
+    /// An empty dims list produces a NULL (scalar) shape.
+    pub(crate) fn shape_tensor(&mut self, dims: &[Dim]) -> TensorId {
+        if dims.is_empty() {
+            return TensorId::NULL;
+        }
+        let ids: Vec<TensorId> = dims.iter().map(|&d| self.new_constant_tensor(Constant::idx(d))).collect();
+        let tid = self.stack(&ids).unwrap();
+        for id in &ids {
+            self.release(*id);
+        }
+        tid
     }
 
     pub fn is_realized(&self, x: TensorId) -> bool {
@@ -424,14 +454,15 @@ impl Runtime {
         }
     }*/
 
-    pub fn new_eager_tensor(&mut self, shape: Vec<Dim>, dtype: DType, kind: ParamKind) -> TensorId {
+    pub fn new_eager_tensor(&mut self, shape: TensorId, dtype: DType, kind: ParamKind) -> TensorId {
+        let resolved = self.resolve_shape(shape);
         let mut kernel = Kernel::new(DeviceId::AUTO);
-        let shape_op = if shape.is_empty() {
+        let shape_op = if resolved.is_empty() {
             OpId::NULL
-        } else if shape.len() == 1 {
-            kernel.const_idx(shape[0])
+        } else if resolved.len() == 1 {
+            kernel.const_idx(resolved[0])
         } else {
-            let dims: Vec<OpId> = shape.iter().map(|d| kernel.const_idx(*d)).collect();
+            let dims: Vec<OpId> = resolved.iter().map(|d| kernel.const_idx(*d)).collect();
             kernel.stack(&dims)
         };
         let op_id = kernel.push_back(Op::Param { dtype, kind, shape: shape_op });
@@ -446,7 +477,7 @@ impl Runtime {
         });
         self.kernels[kernel_id].loads.push(tid);
         self.kernels[kernel_id].outputs.insert(tid);
-        self.shapes.insert(tid, shape);
+        self.shapes.insert(tid, resolved);
         tid
     }
 
@@ -467,18 +498,16 @@ impl Runtime {
         tid
     }
 
-    pub fn new_full(&mut self, shape: Vec<Dim>, value: Constant) -> TensorId {
+    pub fn new_full(&mut self, shape: TensorId, value: Constant) -> TensorId {
         #[cfg(feature = "debug_tensor_op")]
         println!("runtime::new_full(shape={shape:?}, value={value:?})");
         let x = self.new_constant_tensor(value);
-        let ids: Vec<TensorId> = shape.iter().map(|&d| self.new_constant_tensor(Constant::idx(d))).collect();
-        let shape_tid = self.stack(&ids).unwrap();
-        let expanded = self.expand(x, shape_tid).unwrap();
-        self.release(x);
-        self.release(shape_tid);
-        for t in ids {
-            self.release(t);
+        if shape.is_null() {
+            self.shapes.insert(x, vec![]);
+            return x;
         }
+        let expanded = self.expand(x, shape).unwrap();
+        self.release(x);
         #[cfg(feature = "debug_tensor_op")]
         println!("  -> tid={expanded}, {:?}", self.tensors[expanded]);
         expanded
@@ -487,7 +516,7 @@ impl Runtime {
     pub fn new_variable_tensor<T: Scalar>(&mut self, x: T) -> TensorId {
         let dtype = T::dtype();
         self.initialize_backends();
-        let tid = self.new_eager_tensor(vec![], dtype, ParamKind::Variable);
+        let tid = self.new_eager_tensor(TensorId::NULL, dtype, ParamKind::Variable);
         self.retain(tid);
 
         let MemoryPool::Host(ref mut pool) = self.pools[PoolId::HOST] else {
@@ -500,11 +529,11 @@ impl Runtime {
     }
 
     // Creates new tensor in host memory
-    pub fn new_host_tensor<T: Scalar>(&mut self, shape: Vec<Dim>, data: Box<[T]>) -> Result<TensorId, ZyxError> {
+    pub fn new_host_tensor<T: Scalar>(&mut self, shape: TensorId, data: Box<[T]>) -> Result<TensorId, ZyxError> {
         #[cfg(feature = "debug_tensor_op")]
         println!("runtime::new_host_tensor(shape={shape:?})");
 
-        if data.len() == 1 && shape.is_empty() {
+        if data.len() == 1 && shape.is_null() {
             let tid = self.new_constant_tensor(Constant::new(data[0]));
             return Ok(tid);
         }
@@ -512,7 +541,7 @@ impl Runtime {
         let dtype = T::dtype();
         self.initialize_backends();
 
-        debug_assert_eq!(shape.iter().product::<Dim>(), data.len() as Dim);
+        debug_assert_eq!(self.resolve_shape(shape).iter().product::<Dim>(), data.len() as Dim);
         let bytes = (data.len() * dtype.bit_size() as usize).div_ceil(8);
         debug_assert_eq!(data.len() * std::mem::size_of::<T>(), bytes);
 
@@ -550,13 +579,14 @@ impl Runtime {
     // Creates new tensor in disk
     pub fn new_disk_tensor(
         &mut self,
-        shape: Vec<Dim>,
+        shape: TensorId,
         dtype: DType,
         path: &Path,
         offset_bytes: u64,
     ) -> Result<TensorId, ZyxError> {
         self.initialize_backends();
-        let bytes: Dim = (shape.iter().product::<Dim>() * dtype.bit_size() as Dim).div_ceil(8);
+        let resolved = self.resolve_shape(shape);
+        let bytes: Dim = (resolved.iter().product::<Dim>() * dtype.bit_size() as Dim).div_ceil(8);
 
         let pool = self.pools[PoolId::DISK]
             .disk_pool()
