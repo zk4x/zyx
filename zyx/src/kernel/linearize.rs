@@ -40,19 +40,17 @@
 //! from a `loads` list.
 
 /// A single symbolic dimension of a value's index view: the loop/group index
-/// (`idx`), contiguous row-major stride (`stride`), left/right pad
-/// (`lp`/`rp`) and axis length (`len`). All are `OpId`s resolved lazily.
+/// (`idx`) and axis length (`len`). `len` is the literal shape of the op the
+/// view belongs to. All are `OpId`s resolved lazily.
 #[derive(Clone, Copy)]
 pub(crate) struct SDim {
     pub(crate) idx: OpId,
-    pub(crate) lp: OpId,
-    pub(crate) rp: OpId,
     pub(crate) len: OpId,
 }
 
 impl SDim {
-    pub(crate) fn new(idx: OpId, lp: OpId, rp: OpId, len: OpId) -> Self {
-        Self { idx, lp, rp, len }
+    pub(crate) fn new(idx: OpId, len: OpId) -> Self {
+        Self { idx, len }
     }
 }
 
@@ -285,15 +283,15 @@ impl Kernel {
                 Op::Const(value) => {
                     let Some(view) = views.remove(&op_id) else { continue };
                     // The constant is a scalar whose value must be nullified where the
-                    // view's padding condition is false (padded regions read as zero).
-                    // The mask is built unconditionally over every axis, all symbolic;
-                    // pads that are Const(0) simply fold away in later passes.
+                    // view's bounds condition is false (padded regions read as zero).
+                    // len is the op's literal shape, so the plain bounds check
+                    // idx >= 0 && idx < len is exact; pads that are Const(0) simply
+                    // fold away in later passes.
                     let mut pc = self.const_val(true);
                     for d in &view {
-                        let len_mr = self.sub(d.len, d.rp);
-                        let t_lo = self.cmpge(d.idx, d.lp);
+                        let t_lo = self.cmpge(d.idx, zero);
                         pc = self.and(t_lo, pc);
-                        let t_hi = self.cmplt(d.idx, len_mr);
+                        let t_hi = self.cmplt(d.idx, d.len);
                         pc = self.and(t_hi, pc);
                     }
                     let z = self.push_back(Op::Const(value));
@@ -323,8 +321,7 @@ impl Kernel {
                         }
                         strides.reverse();
                         for (d, s) in view.iter().zip(strides) {
-                            let src_idx = self.sub(d.idx, d.lp);
-                            write_index = self.mad(src_idx, s, write_index);
+                            write_index = self.mad(d.idx, s, write_index);
                         }
                         match &mut self.ops[store_id].op {
                             Op::Store { index, .. } => *index = write_index,
@@ -338,10 +335,9 @@ impl Kernel {
                         // bounds, the loaded value is zeroed.
                         let mut pc = self.const_val(true);
                         for d in &view {
-                            let len_mr = self.sub(d.len, d.rp);
-                            let t_lo = self.cmpge(d.idx, d.lp);
+                            let t_lo = self.cmpge(d.idx, zero);
                             pc = self.and(t_lo, pc);
-                            let t_hi = self.cmplt(d.idx, len_mr);
+                            let t_hi = self.cmplt(d.idx, d.len);
                             pc = self.and(t_hi, pc);
                         }
                         // Insert the ro source define immediately before this op so the
@@ -353,12 +349,13 @@ impl Kernel {
                     }
                     ParamKind::Global => {
                         let view = views.remove(&op_id).unwrap();
-                        // Padding condition: valid where index is within the source
-                        // extent. `len` is the true input extent and lp/rp the true
-                        // composed pads, so this is exact for every axis; non-padded
-                        // axes fold lp=rp=0 to trivially-true bounds in later passes.
-                        //   index = sum over axes of (idx - lp) * stride
-                        //   pc    = and over axes of (idx >= lp) && (idx < len - rp)
+                        // Bounds condition: valid where index is within the source
+                        // extent. `len` is the literal shape, so the plain bounds
+                        // check idx >= 0 && idx < len is exact; every movement op
+                        // bakes its shift into `idx` and adjusts `len` (tinygrad's
+                        // model), so no separate pad terms are needed.
+                        //   index = sum over axes of idx * stride
+                        //   pc    = and over axes of (idx >= 0) && (idx < len)
                         let mut index = self.const_idx(0);
                         let mut pc = self.const_val(true);
                         let mut stride = one;
@@ -369,12 +366,10 @@ impl Kernel {
                         }
                         strides.reverse();
                         for (d, s) in view.iter().zip(strides) {
-                            let src_idx = self.sub(d.idx, d.lp);
-                            index = self.mad(src_idx, s, index);
-                            let ge = self.cmpge(d.idx, d.lp);
+                            index = self.mad(d.idx, s, index);
+                            let ge = self.cmpge(d.idx, zero);
                             pc = self.and(ge, pc);
-                            let len_mr = self.sub(d.len, d.rp);
-                            let lt = self.cmplt(d.idx, len_mr);
+                            let lt = self.cmplt(d.idx, d.len);
                             pc = self.and(lt, pc);
                         }
                         // Insert the ro source define immediately before this op so the
@@ -415,7 +410,7 @@ impl Kernel {
                     let mut view = Vec::new();
                     for (axis, &len) in dims.iter().enumerate().rev() {
                         let idx = self.group_index(axis as u32, len);
-                        view.push(SDim::new(idx, zero, zero, len));
+                        view.push(SDim::new(idx, len));
                     }
                     view.reverse();
                     views.insert(src, view.clone());
@@ -439,11 +434,11 @@ impl Kernel {
                     let n = x_shape.len();
                     let non_reduce = out_view.len();
                     let mut view = Vec::with_capacity(n);
-                    for (e, d) in out_view.iter().enumerate() {
-                        view.push(SDim::new(d.idx, d.lp, d.rp, d.len));
+                    for d in out_view {
+                        view.push(SDim::new(d.idx, d.len));
                     }
                     for a in non_reduce..n {
-                        view.push(SDim::new(loop_id, zero, zero, x_shape[a]));
+                        view.push(SDim::new(loop_id, x_shape[a]));
                     }
                     views.insert(x, view);
                     self.ops[op_id].op = Op::Reduce { x, rop, reduce_axis: loop_id };
@@ -471,14 +466,13 @@ impl Kernel {
                             }
                             // Validity mask over the output view: a recovered input
                             // coordinate is only meaningful where the output is within
-                            // its own source extent (idx >= lp && idx < len - rp).
+                            // its own source extent (idx >= 0 && idx < len).
                             // Padded output regions must read as zero, so invalid
                             // recovered indices are clamped to len + 1 (out of bounds).
                             let mut valid = self.const_val(true);
                             for d in &out_view {
-                                let lo = self.cmpge(d.idx, d.lp);
-                                let interior_len = self.sub(d.len, d.rp);
-                                let hi = self.cmplt(d.idx, interior_len);
+                                let lo = self.cmpge(d.idx, zero);
+                                let hi = self.cmplt(d.idx, d.len);
                                 let in_axis = self.and(lo, hi);
                                 valid = self.and(valid, in_axis);
                             }
@@ -508,7 +502,7 @@ impl Kernel {
                                 let len = x_shape[a];
                                 let invalid = self.add(len, one);
                                 let idx_expr = self.branchless_where(valid, idx_expr, invalid);
-                                view.push(SDim::new(idx_expr, zero, zero, len));
+                                view.push(SDim::new(idx_expr, len));
                             }
                             views.insert(x, view);
                         }
@@ -540,9 +534,9 @@ impl Kernel {
                                         && self.resolve_dim(shape[offset + a]) != Some(1);
                                     let d = out_view[offset + a];
                                     let d = if broadcast {
-                                        SDim::new(zero, d.lp, d.rp, x_shape[a])
+                                        SDim::new(zero, x_shape[a])
                                     } else {
-                                        SDim::new(d.idx, d.lp, d.rp, x_shape[a])
+                                        SDim::new(d.idx, x_shape[a])
                                     };
                                     v.push(d);
                                 }
@@ -574,8 +568,7 @@ impl Kernel {
                                     // Reverse the axis: input coord = len - 1 - out_idx.
                                     let len_m1 = self.sub(d.len, one);
                                     let idx = self.sub(len_m1, d.idx);
-                                    // Padding swaps sides under a flip.
-                                    new_view.push(SDim::new(idx, d.rp, d.lp, d.len));
+                                    new_view.push(SDim::new(idx, d.len));
                                 } else {
                                     new_view.push(d);
                                 }
@@ -583,40 +576,34 @@ impl Kernel {
                             views.insert(x, new_view);
                         }
                         &MoveOp::Pad { axis, lp, rp } => {
-                            // Negative left pad is a slice offset: the input index
-                            // shifts right by `-lp`. Positive pads are true padding.
-                            // All offset/clamp logic is branchless and fully symbolic:
-                            //   idx = idx + max(-lp, 0)
-                            //   lp  = max(lp, 0)
-                            //   rp  = max(rp, 0)
-                            //   len = max(x_shape[a] + lp + rp, 0)
+                            // Pure backward pad (tinygrad): the input coordinate is
+                            // the output coordinate shifted left by `lp` (a negative
+                            // `lp` is a slice, shifting right), and the input extent
+                            // is the output extent minus both pads. The resulting
+                            // `idx >= 0 && idx < len` bounds check at the load is the
+                            // exact validity mask -- no separate pad terms.
                             let mut view = views[&op_id].clone();
                             let d = view[axis].clone();
+                            let idx = self.sub(d.idx, lp);
                             let len = self.sub(d.len, lp);
                             let len = self.sub(len, rp);
-let lp = self.sub(d.lp, lp);
-                            let rp = self.sub(d.rp, rp);
-                            view[axis] = SDim::new(d.idx, lp, rp, len);
+                            view[axis] = SDim::new(idx, len);
                             views.insert(x, view);
                         }
                         &MoveOp::Narrow { axis, start, .. } => {
                             let x_shape = self.store_shape_ids(x);
                             let view = views[&op_id].clone();
-                            // Narrow slices one axis: the input coordinate along the
-                            // narrowed axis is `start + out_idx`. Padding is unchanged
-                            // (inherited from the parent's view), only the offset shifts.
-                            // The axis length must be the *input's* length on that axis
-                            // (not the narrow's output length), so the stride (derived
-                            // from len at load time) and the padding bound `idx < len -
-                            // rp` cover the shifted index.
-                            let n = x_shape.len();
+                            // Pure backward narrow: the input coordinate along the
+                            // narrowed axis is `start + out_idx`, and the axis length
+                            // is the input's own length on that axis. Other axes pass
+                            // through unchanged.
                             let mut new_view = Vec::with_capacity(view.len());
                             for (a, d) in view.into_iter().enumerate() {
                                 if a as UAxis == axis {
                                     let idx = self.add(d.idx, start);
-                                    new_view.push(SDim::new(idx, d.lp, d.rp, x_shape[a]));
+                                    new_view.push(SDim::new(idx, x_shape[a]));
                                 } else {
-                                    new_view.push(SDim::new(d.idx, d.lp, d.rp, d.len));
+                                    new_view.push(d);
                                 }
                             }
                             views.insert(x, new_view);
