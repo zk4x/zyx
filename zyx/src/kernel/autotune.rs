@@ -455,11 +455,11 @@ impl Kernel {
             kernel.opt_tenstorrent_tile();
         }*/
 
-        kernel.run_always_on_optimizations();
+        /*kernel.run_always_on_optimizations();
         kernel.run_always_on_optimizations();
         kernel.fuse_mad();
         kernel.run_always_on_optimizations();
-        kernel.run_always_on_optimizations();
+        kernel.run_always_on_optimizations();*/
 
         kernel.dead_code_elimination();
 

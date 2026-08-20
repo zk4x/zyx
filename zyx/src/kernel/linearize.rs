@@ -40,19 +40,20 @@
 //! from a `loads` list.
 
 /// A single symbolic dimension of a value's index view: the loop/group index
-/// (`idx`), left/right pad (`lp`/`rp`) and axis length (`len`). All are
-/// `OpId`s resolved lazily. Strides are recomputed by each consumer from `len`.
+/// (`idx`), contiguous row-major stride (`stride`), left/right pad
+/// (`lp`/`rp`) and axis length (`len`). All are `OpId`s resolved lazily.
 #[derive(Clone, Copy)]
 pub(crate) struct SDim {
     pub(crate) idx: OpId,
+    pub(crate) stride: OpId,
     pub(crate) lp: OpId,
     pub(crate) rp: OpId,
     pub(crate) len: OpId,
 }
 
 impl SDim {
-    pub(crate) fn new(idx: OpId, lp: OpId, rp: OpId, len: OpId) -> Self {
-        Self { idx, lp, rp, len }
+    pub(crate) fn new(idx: OpId, stride: OpId, lp: OpId, rp: OpId, len: OpId) -> Self {
+        Self { idx, stride, lp, rp, len }
     }
 }
 
@@ -315,11 +316,7 @@ impl Kernel {
                         let mut suffix = one;
                         for d in view.iter().rev() {
                             let src_idx = self.sub(d.idx, d.lp);
-                            write_index = self.mad(src_idx, suffix, write_index);
-                            // Stride by the compact length (see reshape handler).
-                            let psum = self.add(d.lp, d.rp);
-                            let compact = self.sub(d.len, psum);
-                            suffix = self.mul(compact, suffix);
+                            write_index = self.mad(src_idx, d.stride, write_index);
                         }
                         match &mut self.ops[store_id].op {
                             Op::Store { index, .. } => *index = write_index,
@@ -356,14 +353,9 @@ impl Kernel {
                         //   pc    = and over axes of (idx >= lp) && (idx < len - rp)
                         let mut index = self.const_idx(0);
                         let mut pc = self.const_val(true);
-                        let mut suffix = self.const_idx(1);
                         for d in view.iter().rev() {
                             let src_idx = self.sub(d.idx, d.lp);
-                            index = self.mad(src_idx, suffix, index);
-                            // Stride by the compact length (see reshape handler).
-                            let psum = self.add(d.lp, d.rp);
-                            let compact = self.sub(d.len, psum);
-                            suffix = self.mul(compact, suffix);
+                            index = self.mad(src_idx, d.stride, index);
                             let t_lo = self.cmpge(d.idx, d.lp);
                             pc = self.and(t_lo, pc);
                             let len_mr = self.sub(d.len, d.rp);
@@ -406,9 +398,11 @@ impl Kernel {
                     self.ops[op_id].op = Op::Store { dst, src, index: OpId::NULL, layout: MemLayout::Scalar };
                     let dims = self.shape_ids(dst_shape);
                     let mut view = Vec::new();
+                    let mut st = one;
                     for (axis, &len) in dims.iter().enumerate().rev() {
                         let idx = self.group_index(axis as u32, len);
-                        view.push(SDim::new(idx, zero, zero, len));
+                        view.push(SDim::new(idx, st, zero, zero, len));
+                        st = self.mul(st, len);
                     }
                     view.reverse();
                     views.insert(src, view.clone());
@@ -424,7 +418,7 @@ impl Kernel {
                     let out_view = views.remove(&op_id).unwrap();
                     let loop_id = self.loop_(reduce_axis);
                     let mut view = out_view;
-                    view.push(SDim::new(loop_id, zero, zero, reduce_axis));
+                    view.push(SDim::new(loop_id, one, zero, zero, reduce_axis));
                     views.insert(x, view);
                     self.ops[op_id].op = Op::Reduce { x, rop, reduce_axis: loop_id };
                 }
@@ -434,36 +428,13 @@ impl Kernel {
                             // Reshape merges/splits contiguous dims, so axis indices don't
                             // align 1:1. The input is read as a single flat index over the
                             // whole (contiguous) input, which equals the flat index over the
-                            // output. Build `base` from the output view (all the arithmetic
-                            // LoadView would do), then recover each input axis by successive
-                            // div/mod against the input's contiguous strides. The input view
-                            // is built fully contiguous here; any movement ops upstream of `x`
-                            // (processed later, in reverse) apply their own transforms on it.
+                            // output. Build `base` from the output view using each axis's
+                            // stored stride, then recover each input axis by successive
+                            // div/mod against the input's contiguous strides. Any pad/crop
+                            // offsets on the reshape output's axes have already been baked
+                            // into `d.idx` by the pad handlers, so no lp handling is needed
+                            // here.
                             let out_view = views[&op_id].clone();
-                            let mut base = zero;
-                            let mut valid = self.const_val(true);
-                            for d in &out_view {
-                                let lo = self.cmpge(d.idx, d.lp);
-                                let interior_len = self.sub(d.len, d.rp);
-                                let hi = self.cmplt(d.idx, interior_len);
-                                let in_axis = self.and(lo, hi);
-                                valid = self.and(valid, in_axis);
-                            }
-                            let mut suffix = one;
-                            for d in out_view.iter().rev() {
-                                // Subtract the left pad so the flat base skips padded
-                                // leading regions of the output view.
-                                let src_idx = self.sub(d.idx, d.lp);
-                                base = self.mad(src_idx, suffix, base);
-                                // Stride by the *compact* length (padding `lp`/`rp`
-                                // inflate `len`; the flat base must not include them, or
-                                // it would over-step the source).
-                                let psum = self.add(d.lp, d.rp);
-                                let compact = self.sub(d.len, psum);
-                                suffix = self.mul(compact, suffix);
-                            }
-                            // The input's contiguous strides: the running product of the
-                            // trailing dims' lengths, resolved symbolically from `x`.
                             let x_shape = self.store_shape_ids(x);
                             let n = x_shape.len();
                             let mut x_strides = vec![one; n];
@@ -471,6 +442,10 @@ impl Kernel {
                             for a in (0..n).rev() {
                                 x_strides[a] = st;
                                 st = self.mul(x_shape[a], st);
+                            }
+                            let mut base = zero;
+                            for d in &out_view {
+                                base = self.mad(d.idx, d.stride, base);
                             }
                             let mut view = Vec::with_capacity(n);
                             let mut q = base;
@@ -484,10 +459,7 @@ impl Kernel {
                                     q = rem;
                                     div
                                 };
-                                let len = x_shape[a];
-                                let invalid = self.add(len, one);
-                                let idx_expr = self.branchless_where(valid, idx_expr, invalid);
-                                view.push(SDim::new(idx_expr, zero, zero, len));
+                                view.push(SDim::new(idx_expr, x_strides[a], zero, zero, x_shape[a]));
                             }
                             views.insert(x, view);
                         }
@@ -515,7 +487,7 @@ impl Kernel {
                                         let broadcast = self.resolve_dim(x_shape[a]) == Some(1)
                                             && self.resolve_dim(shape[offset + a]) != Some(1);
                                         if broadcast {
-                                            SDim::new(zero, zero, zero, one)
+                                            SDim::new(zero, zero, zero, zero, one)
                                         } else {
                                             // Else don't broadcast - todo perhaps make the check symbolic too?
                                             //todo!("expand dim couldn't be resolved")
@@ -548,7 +520,7 @@ impl Kernel {
                                     let len_m1 = self.sub(d.len, one);
                                     let idx = self.sub(len_m1, d.idx);
                                     // Padding swaps sides under a flip.
-                                    new_view.push(SDim::new(idx, d.rp, d.lp, d.len));
+                                    new_view.push(SDim::new(idx, d.stride, d.rp, d.lp, d.len));
                                 } else {
                                     new_view.push(d);
                                 }
@@ -566,6 +538,13 @@ impl Kernel {
                             let x_shape = self.store_shape_ids(x);
                             let view = views[&op_id].clone();
                             let zero = self.const_idx(0);
+                            let n = x_shape.len();
+                            let mut x_strides = vec![one; n];
+                            let mut st = one;
+                            for a in (0..n).rev() {
+                                x_strides[a] = st;
+                                st = self.mul(x_shape[a], st);
+                            }
                             let mut new_view = Vec::with_capacity(view.len());
                             for (a, d) in view.into_iter().enumerate() {
                                 if a == axis as usize {
@@ -577,9 +556,9 @@ impl Kernel {
                                     let lprp = self.add(lp, rp);
                                     let sum = self.add(x_shape[a], lprp);
                                     let len = self.max(sum, zero);
-                                    new_view.push(SDim::new(idx, lp_id, rp_id, len));
+                                    new_view.push(SDim::new(idx, x_strides[a], lp_id, rp_id, len));
                                 } else {
-                                    new_view.push(d);
+                                    new_view.push(SDim::new(d.idx, x_strides[a], d.lp, d.rp, d.len));
                                 }
                             }
                             views.insert(x, new_view);
@@ -593,13 +572,20 @@ impl Kernel {
                             // The axis length must be the *input's* length on that axis
                             // (not the narrow's output length), so the stride and the
                             // padding bound `idx < len - rp` cover the shifted index.
+                            let n = x_shape.len();
+                            let mut x_strides = vec![one; n];
+                            let mut st = one;
+                            for a in (0..n).rev() {
+                                x_strides[a] = st;
+                                st = self.mul(x_shape[a], st);
+                            }
                             let mut new_view = Vec::with_capacity(view.len());
                             for (a, d) in view.into_iter().enumerate() {
                                 if a as UAxis == axis {
                                     let idx = self.add(d.idx, start);
-                                    new_view.push(SDim::new(idx, d.lp, d.rp, x_shape[a]));
+                                    new_view.push(SDim::new(idx, x_strides[a], d.lp, d.rp, x_shape[a]));
                                 } else {
-                                    new_view.push(d);
+                                    new_view.push(SDim::new(d.idx, x_strides[a], d.lp, d.rp, d.len));
                                 }
                             }
                             views.insert(x, new_view);
