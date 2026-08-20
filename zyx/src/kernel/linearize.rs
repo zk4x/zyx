@@ -416,8 +416,27 @@ impl Kernel {
                     // computation in Phase 2 (outer loops before inner ones).
                     let out_view = views.remove(&op_id).unwrap();
                     let loop_id = self.loop_(reduce_axis);
-                    let mut view = out_view;
-                    view.push(SDim::new(loop_id, one, zero, zero, reduce_axis));
+                    // Non-reduced axes must use the reduce input `x`'s row-major
+                    // strides (idx/lp/rp/len come from the output view, stride is
+                    // recomputed from the input shape, which includes the reduced
+                    // axis). The reduced axis is the freshly-opened loop with the
+                    // input's contiguous stride and zero padding.
+                    let x_shape = self.store_shape_ids(x);
+                    let n = x_shape.len();
+                    let mut x_strides = vec![one; n];
+                    let mut st = one;
+                    for a in (0..n).rev() {
+                        x_strides[a] = st;
+                        st = self.mul(x_shape[a], st);
+                    }
+                    let non_reduce = out_view.len();
+                    let mut view = Vec::with_capacity(n);
+                    for (e, d) in out_view.iter().enumerate() {
+                        view.push(SDim::new(d.idx, x_strides[e], d.lp, d.rp, d.len));
+                    }
+                    for a in non_reduce..n {
+                        view.push(SDim::new(loop_id, x_strides[a], zero, zero, x_shape[a]));
+                    }
                     views.insert(x, view);
                     self.ops[op_id].op = Op::Reduce { x, rop, reduce_axis: loop_id };
                 }
