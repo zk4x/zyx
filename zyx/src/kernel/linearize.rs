@@ -40,20 +40,19 @@
 //! from a `loads` list.
 
 /// A single symbolic dimension of a value's index view: the loop/group index
-/// (`idx`), stride, left/right pad (`lp`/`rp`) and axis length (`len`). All are
-/// `OpId`s resolved lazily.
+/// (`idx`), left/right pad (`lp`/`rp`) and axis length (`len`). All are
+/// `OpId`s resolved lazily. Strides are recomputed by each consumer from `len`.
 #[derive(Clone, Copy)]
 pub(crate) struct SDim {
     pub(crate) idx: OpId,
-    pub(crate) stride: OpId,
     pub(crate) lp: OpId,
     pub(crate) rp: OpId,
     pub(crate) len: OpId,
 }
 
 impl SDim {
-    pub(crate) fn new(idx: OpId, stride: OpId, lp: OpId, rp: OpId, len: OpId) -> Self {
-        Self { idx, stride, lp, rp, len }
+    pub(crate) fn new(idx: OpId, lp: OpId, rp: OpId, len: OpId) -> Self {
+        Self { idx, lp, rp, len }
     }
 }
 
@@ -423,18 +422,12 @@ impl Kernel {
                     );
                     self.ops[op_id].op = Op::Store { dst, src, index: OpId::NULL, layout: MemLayout::Scalar };
                     let dims = self.shape_ids(dst_shape);
-                    let mut strides = vec![one; dims.len()];
-                    let mut st = one;
-                    for (a, &len) in dims.iter().enumerate().rev() {
-                        strides[a] = st;
-                        st = self.insert_before(start, Op::Binary { x: len, y: st, bop: BOp::Mul });
-                    }
                     let mut view = Vec::new();
                     for (axis, &len) in dims.iter().enumerate().rev() {
                         let idx = self.insert_before(start, Op::Index { axis: axis as u32, kind: IdxKind::Group(len) });
                         let lp = self.insert_before(start, Op::Const(Constant::idx(0)));
                         let rp = self.insert_before(start, Op::Const(Constant::idx(0)));
-                        view.push(SDim::new(idx, strides[axis], lp, rp, len));
+                        view.push(SDim::new(idx, lp, rp, len));
                     }
                     view.reverse();
                     views.insert(src, view.clone());
@@ -450,7 +443,7 @@ impl Kernel {
                     let out_view = views.remove(&op_id).unwrap();
                     let loop_id = self.insert_before(anchor, Op::Loop { len: reduce_axis });
                     let mut view = out_view;
-                    view.push(SDim::new(loop_id, one, zero, zero, reduce_axis));
+                    view.push(SDim::new(loop_id, zero, zero, reduce_axis));
                     views.insert(x, view);
                     self.ops[op_id].op = Op::Reduce { x, rop, reduce_axis: loop_id };
                 }
@@ -471,8 +464,26 @@ impl Kernel {
                             // `anchor`, so the arithmetic is inserted AFTER the
                             // shape dimensions it depends on, not before them.
                             let mut base = zero;
+                            let mut valid = self.insert_before(op_id, Op::Const(Constant::Bool(true)));
                             for d in &out_view {
-                                base = self.insert_before(op_id, Op::Mad { x: d.idx, y: d.stride, z: base });
+                                let lo = self.insert_before(op_id, Op::Binary { x: d.idx, y: d.lp, bop: BOp::Cmpge });
+                                let interior_len = self.insert_before(op_id, Op::Binary { x: d.len, y: d.rp, bop: BOp::Sub });
+                                let hi = self.insert_before(op_id, Op::Binary { x: d.idx, y: interior_len, bop: BOp::Cmplt });
+                                let in_axis = self.insert_before(op_id, Op::Binary { x: lo, y: hi, bop: BOp::And });
+                                valid = self.insert_before(op_id, Op::Binary { x: valid, y: in_axis, bop: BOp::And });
+                            }
+                            let mut suffix = one;
+                            for d in out_view.iter().rev() {
+                                // Subtract the left pad so the flat base skips padded
+                                // leading regions of the output view.
+                                let src_idx = self.insert_before(op_id, Op::Binary { x: d.idx, y: d.lp, bop: BOp::Sub });
+                                base = self.insert_before(op_id, Op::Mad { x: src_idx, y: suffix, z: base });
+                                // Stride by the *compact* length (padding `lp`/`rp`
+                                // inflate `len`; the flat base must not include them, or
+                                // it would over-step the source).
+                                let psum = self.insert_before(op_id, Op::Binary { x: d.lp, y: d.rp, bop: BOp::Add });
+                                let compact = self.insert_before(op_id, Op::Binary { x: d.len, y: psum, bop: BOp::Sub });
+                                suffix = self.insert_before(op_id, Op::Binary { x: compact, y: suffix, bop: BOp::Mul });
                             }
                             // The input's contiguous strides: the running product of the
                             // trailing dims' lengths, resolved symbolically from `x`.
@@ -501,7 +512,9 @@ impl Kernel {
                                 } else {
                                     x_shape[a]
                                 };
-                                view.push(SDim::new(idx_expr, s, zero, zero, len));
+                                let invalid = self.insert_before(op_id, Op::Binary { x: len, y: one, bop: BOp::Add });
+                                let idx_expr = self.branchless_where(valid, idx_expr, invalid);
+                                view.push(SDim::new(idx_expr, zero, zero, len));
                             }
                             views.insert(x, view);
                         }
@@ -529,7 +542,7 @@ impl Kernel {
                                         let broadcast = self.resolve_dim(x_shape[a]) == Some(1)
                                             && self.resolve_dim(shape[offset + a]) != Some(1);
                                         if broadcast {
-                                            SDim::new(zero, zero, zero, zero, one)
+                                            SDim::new(zero, zero, zero, one)
                                         } else {
                                             // Else don't broadcast - todo perhaps make the check symbolic too?
                                             view[offset + a]
@@ -548,17 +561,7 @@ impl Kernel {
                                 inv_axes[a] = i;
                             }
                             let view = &views[&op_id];
-                            let view: Vec<SDim> = (0..axes.len())
-                                .map(|j| {
-                                    let d = view[inv_axes[j]];
-                                    let stride = if matches!(self.ops[d.stride].op, Op::Const(c) if c.as_dim() == Some(0)) {
-                                        zero
-                                    } else {
-                                        d.stride
-                                    };
-                                    SDim::new(d.idx, stride, d.lp, d.rp, d.len)
-                                })
-                                .collect();
+                            let view: Vec<SDim> = (0..axes.len()).map(|j| view[inv_axes[j]]).collect();
                             views.insert(x, view);
                         }
                         MoveOp::Flip { axes } => {
@@ -571,7 +574,7 @@ impl Kernel {
                                     let len_m1 = self.insert_before(anchor, Op::Binary { x: d.len, y: one, bop: BOp::Sub });
                                     let idx = self.insert_before(anchor, Op::Binary { x: len_m1, y: d.idx, bop: BOp::Sub });
                                     // Padding swaps sides under a flip.
-                                    new_view.push(SDim::new(idx, d.stride, d.rp, d.lp, d.len));
+                                    new_view.push(SDim::new(idx, d.rp, d.lp, d.len));
                                 } else {
                                     new_view.push(d);
                                 }
@@ -589,25 +592,13 @@ impl Kernel {
                             // negative lp (crop) works with no branch. `len` is built
                             // symbolically from the input's shape dims and the pad ops.
                             let x_shape = self.store_shape_ids(x);
-                            let mut x_strides = vec![one; x_shape.len()];
-                            let mut st = one;
-                            for a in (0..x_shape.len()).rev() {
-                                x_strides[a] = st;
-                                st = self.insert_before(anchor, Op::Binary { x: x_shape[a], y: st, bop: BOp::Mul });
-                            }
                             let view = views[&op_id].clone();
                             let mut new_view = Vec::with_capacity(view.len());
                             for (a, d) in view.into_iter().enumerate() {
                                 if a == axis as usize {
-                                    // Input index = output index - lp (works for both
-                                    // positive padding and negative left padding/crop).
-                                    let idx = self.insert_before(anchor, Op::Binary { x: d.idx, y: lp, bop: BOp::Sub });
-                                    // The input-view index ranges over the padded
-                                    // coordinates (length x_shape + lp + rp), which is
-                                    // this axis' extent for pad-condition bounds.
-                                    let lprp = self.insert_before(anchor, Op::Binary { x: lp, y: rp, bop: BOp::Add });
-                                    let len = self.insert_before(anchor, Op::Binary { x: x_shape[a], y: lprp, bop: BOp::Add });
-                                    new_view.push(SDim::new(idx, x_strides[a], lp, rp, len));
+                                     let lprp = self.insert_before(anchor, Op::Binary { x: lp, y: rp, bop: BOp::Add });
+                                     let len = self.insert_before(anchor, Op::Binary { x: x_shape[a], y: lprp, bop: BOp::Add });
+                                     new_view.push(SDim::new(d.idx, lp, rp, len));
                                 } else {
                                     new_view.push(d);
                                 }
@@ -637,7 +628,7 @@ impl Kernel {
                                     } else {
                                         x_shape[a]
                                     };
-                                    new_view.push(SDim::new(idx, d.stride, d.lp, d.rp, len));
+                                    new_view.push(SDim::new(idx, d.lp, d.rp, len));
                                 } else {
                                     new_view.push(d);
                                 }
