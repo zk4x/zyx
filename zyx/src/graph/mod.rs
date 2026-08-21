@@ -1222,7 +1222,21 @@ impl Runtime {
                     }
                     Op::Cast { x, .. } => stack.push(*x),
                     Op::Reduce { x, .. } => stack.push(*x),
-                    Op::Move { x, .. } => stack.push(*x),
+                    Op::Move { x, mop } => {
+                        stack.push(*x);
+                        match mop.as_ref() {
+                            MoveOp::Reshape { shape } | MoveOp::Expand { shape } => stack.push(*shape),
+                            MoveOp::Pad { lp, len, .. } => {
+                                stack.push(*lp);
+                                stack.push(*len);
+                            }
+                            MoveOp::Narrow { start, len, .. } => {
+                                stack.push(*start);
+                                stack.push(*len);
+                            }
+                            MoveOp::Permute { .. } | MoveOp::Flip { .. } => {}
+                        }
+                    }
                     Op::Stack { ops } => stack.extend(ops.iter().copied()),
                     op => unreachable!("promote_to_graph: eager kernel op {op:?}"),
                 }
@@ -1237,7 +1251,7 @@ impl Runtime {
         while !op_id.is_null() {
             if relevant.contains(&op_id) {
                 let class_id = match self.kernels[kernel_id].kernel.ops[op_id].op {
-                    Op::Param { .. } => {
+                    Op::Param { shape, dtype, .. } => {
                         let load_tid = loads[storage_idx];
                         if !self.buffer_map.contains_key(&load_tid) {
                             let pending = if self.tensors[load_tid].class_id.is_null() {
@@ -1259,14 +1273,40 @@ impl Runtime {
                             // load_tid is already a leaf of this graph: reuse its class.
                             self.tensors[load_tid].class_id
                         } else {
-                            todo!()
-                            /*let (_, class_id) = self.push_leaf_node(graph_id);
+                            // Create load_tid's leaf, with the symbolic shape
+                            // class built from this Param's own shape stack
+                            // (const dims → Const classes, dynamic dims →
+                            // symbolic dim leaves).
+                            let dim_entries: Vec<OpId> = if shape.is_null() {
+                                Vec::new()
+                            } else {
+                                match &self.kernels[kernel_id].kernel.ops[shape].op {
+                                    Op::Stack { ops } => ops.as_ref().to_vec(),
+                                    _ => vec![shape],
+                                }
+                            };
+                            let mut dim_classes = Vec::with_capacity(dim_entries.len());
+                            for entry in dim_entries {
+                                dim_classes.push(match self.kernels[kernel_id].kernel.ops[entry].op {
+                                    Op::Const(c) => self.push_node(graph_id, Node::Const(c)).1,
+                                    Op::Param { kind: ParamKind::Variable, .. } => {
+                                        self.push_leaf_node(graph_id, IDX_T, ClassId::NULL).1
+                                    }
+                                    ref op => unreachable!("promote_to_graph: dim op {op:?} in param shape stack"),
+                                });
+                            }
+                            let shape_class = match dim_classes.len() {
+                                0 => ClassId::NULL,
+                                1 => dim_classes[0],
+                                _ => self.push_node(graph_id, Node::Stack { ops: dim_classes.into_boxed_slice() }).1,
+                            };
+                            let (_, class_id) = self.push_leaf_node(graph_id, dtype, shape_class);
                             self.graphs[graph_id].leaf_map.insert(class_id, load_tid);
                             self.graphs[graph_id].leaf_classes.push(class_id);
                             self.graphs[graph_id].ref_count += 1;
                             self.tensors[load_tid].class_id = class_id;
                             self.tensors[load_tid].graph_id = graph_id;
-                            class_id*/
+                            class_id
                         }
                     }
                     Op::Const(x) => {
@@ -1717,7 +1757,14 @@ impl Runtime {
     }
 
     pub fn push_binary_node(&mut self, graph_id: GraphId, x: ClassId, y: ClassId, bop: BOp) -> ClassId {
-        debug_assert_eq!(self.graphs[graph_id].shape(x), self.graphs[graph_id].shape(y));
+        // With symbolic shapes we can only check rank — dim classes may differ
+        // yet resolve equal (e.g. dims built from user tensors). Numeric
+        // broadcastability is validated upstream by Tensor::broadcast.
+        let (rx, ry) = (self.graphs[graph_id].rank(x), self.graphs[graph_id].rank(y));
+        debug_assert!(
+            rx == ry || rx == 0 || ry == 0,
+            "binary operand ranks must match (scalars broadcast implicitly): {rx} vs {ry}"
+        );
         self.push_node(graph_id, Node::Binary { x, y, bop }).1
     }
 }

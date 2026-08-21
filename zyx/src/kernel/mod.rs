@@ -986,7 +986,7 @@ impl Kernel {
     /// reduces by stepping to the second-to-last (etc.) dim and maps `Permute`
     /// through its axes, emitting ops only for the trailing dim (never the full
     /// shape).
-    pub(crate) fn reduce_shape_ids(&mut self, op_id: OpId) -> OpId {
+    pub(crate) fn reduce_shape_ids(&self, op_id: OpId) -> OpId {
         self.reduce_shape_ids_at(op_id, 0)
     }
 
@@ -1020,7 +1020,7 @@ impl Kernel {
 
     /// Inner recursion of [`Kernel::reduce_shape_ids`], tracking how many dims
     /// from the end the reduced axis sits (`from_end`: 0 = last, 1 = penultimate).
-    fn reduce_shape_ids_at(&mut self, mut op_id: OpId, mut from_end: usize) -> OpId {
+    fn reduce_shape_ids_at(&self, mut op_id: OpId, mut from_end: usize) -> OpId {
         for _ in 0..10000 {
             match self.ops[op_id].op.clone() {
                 Op::Const(_) => return op_id,

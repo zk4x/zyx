@@ -1257,7 +1257,24 @@ impl Runtime {
         let sh = self.shape(x).to_vec();
         debug_assert!(axis < sh.len() as UAxis, "narrow: axis {axis} out of range for rank {}", sh.len());
 
-        if self.is_graph(x) {
+        if self.is_graph(x) || self.is_graph(start) || self.is_graph(len) {
+            let graph_id = if self.is_graph(x) {
+                self.graph_ids(x).1
+            } else if self.is_graph(start) {
+                self.graph_ids(start).1
+            } else {
+                self.graph_ids(len).1
+            };
+            self.assert_graph_alive(graph_id);
+            if !self.is_graph(x) {
+                self.promote_to_graph(x, graph_id).unwrap();
+            }
+            if !self.is_graph(start) {
+                self.promote_to_graph(start, graph_id).unwrap();
+            }
+            if !self.is_graph(len) {
+                self.promote_to_graph(len, graph_id).unwrap();
+            }
             let (class_id, graph_id_x) = self.graph_ids(x);
             let (start, graph_id_start) = self.graph_ids(start);
             let (len, graph_id_len) = self.graph_ids(len);
