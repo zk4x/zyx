@@ -327,7 +327,6 @@ impl Graph {
                         let JitKernelData { kernel: dst_kernel, loads, stores, outputs } =
                             unsafe { self.jit_kernels.remove_and_return(dst_kid) };
                         debug_assert!(stores.is_empty());
-                        debug_assert!(outputs.iter().all(|&x| x == dst));
 
                         // Backtrace to dst's base param.
                         let mut dst_param = dst_op;
@@ -367,6 +366,21 @@ impl Graph {
                                 _ => unreachable!("assign: dst kernel must be movement-only"),
                             }
                             op_id = dst_kernel.next_op(op_id);
+                        }
+
+                        // Classes still living in the removed dst kernel (e.g.
+                        // shape consts merged into the movement chain) move to
+                        // the replayed kernel: remap visited and carry their
+                        // outstanding output entries over, keeping rc balanced.
+                        for (&vclass, (vkid, vop)) in visited.iter_mut() {
+                            if *vkid == dst_kid && vclass != dst {
+                                let count = outputs.iter().filter(|&&c| c == vclass).count() as u32;
+                                self.jit_kernels[kid].outputs.extend(std::iter::repeat_n(vclass, count as usize));
+                                *vkid = kid;
+                                if let Some(&new_op) = op_map.get(vop) {
+                                    *vop = new_op;
+                                }
+                            }
                         }
 
                         let dst_op = op_map.get(&dst_op).copied().unwrap_or(op_map[&dst_param]);
@@ -651,7 +665,6 @@ impl Graph {
                 let kernel = &self.jit_kernels[kid];
                 debug_assert!(kernel.outputs.is_empty());
                 if kernel.stores.is_empty() {
-                    kernel.kernel.debug();
                     panic!("encountered kernel without stores");
                 }
                 // A kernel must never load a class it also stores — that would
@@ -847,7 +860,7 @@ impl Graph {
                 remove_first_output(&mut self.jit_kernels, kid, child);
                 let out_op_ids: Vec<OpId> = self.jit_kernels[kid].outputs.iter().map(|&cid| visited[&cid].1).collect();
                 let loads = self.jit_kernels[kid].loads.clone();
-                let (new_kernel, new_op_id, self_loads, new_loads) =
+                let (new_kernel, new_op_id, self_loads, new_loads, remap) =
                     self.jit_kernels[kid].kernel.extract_subkernel(op_id, &out_op_ids, &loads);
                 self.jit_kernels[kid].loads = self_loads;
 
@@ -859,13 +872,38 @@ impl Graph {
                     loads: new_loads,
                     stores: Vec::new(),
                 });
+                // Classes whose ops moved into the extracted subkernel (e.g.
+                // shape consts merged into the chain earlier) must follow:
+                // re-point visited and carry their outstanding output entries
+                // over, keeping rc balanced.
+                let mut moved: Vec<ClassId> = Vec::new();
+                for (&vclass, (vkid, vop)) in visited.iter_mut() {
+                    if *vkid == kid && vclass != child && let Some(&new_op) = remap.get(vop) {
+                        moved.push(vclass);
+                        *vkid = new_kid;
+                        *vop = new_op;
+                    }
+                }
+                for &vclass in &moved {
+                    while remove_first_output(&mut self.jit_kernels, kid, vclass) {
+                        self.jit_kernels[new_kid].outputs.push(vclass);
+                    }
+                }
+                // Carrying entries out can leave the old kernel with neither
+                // outputs nor stores — nothing references it anymore.
+                if self.jit_kernels[kid].outputs.is_empty() && self.jit_kernels[kid].stores.is_empty() {
+                    self.jit_kernels.remove(kid);
+                }
                 op_id = new_op_id;
                 kid = new_kid;
             }
         }
 
-        debug_assert_eq!(self.jit_kernels[kid].outputs.len(), 1);
-
+        // The old kernel keeps child's remaining (rcs-1) entries plus any
+        // outstanding entries of OTHER classes merged in earlier (e.g. shape
+        // consts with pending uses) — their ops stayed behind by construction
+        // (only root_required moved). Child's count is asserted in the extract
+        // branch above; no len==1 guarantee exists anymore.
         (kid, op_id)
     }
 
@@ -989,8 +1027,12 @@ impl Graph {
     }
 }
 
-fn remove_first_output(kernels: &mut Slab<JitKernelId, JitKernelData>, kid: JitKernelId, cid: ClassId) {
-    if let Some(pos) = kernels[kid].outputs.iter().position(|&x| x == cid) {
-        kernels[kid].outputs.remove(pos);
+fn remove_first_output(kernels: &mut Slab<JitKernelId, JitKernelData>, kid: JitKernelId, cid: ClassId) -> bool {
+    match kernels[kid].outputs.iter().position(|&x| x == cid) {
+        Some(pos) => {
+            kernels[kid].outputs.remove(pos);
+            true
+        }
+        None => false,
     }
 }

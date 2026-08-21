@@ -1,7 +1,7 @@
 // Copyright (C) 2025 zk4x
 // SPDX-License-Identifier: LGPL-3.0-only
 
-use zyx::{DType, Tape, Tensor, ZyxError};
+use zyx::{DType, ReduceOp, Tape, Tensor, ZyxError};
 
 #[test]
 fn grad_relu_1() -> Result<(), ZyxError> {
@@ -855,3 +855,74 @@ fn grad_orphan_then_use_directly() {
 
     let _z = y.ln();
 }*/
+
+#[test]
+fn promote_and_gradient() -> Result<(), ZyxError> {
+    let gt = Tensor::randn([2, 4, 1, 1], DType::F32)?;
+    let tape = Tape::new([&gt])?;
+
+    let a = Tensor::ones([4], DType::F32);
+    let shape = [2, 4, 1, 1];
+    let b = a.reshape([1, 4, 1, 1])?;
+    let c = b.expand(shape)?;
+    let d = &c + 1e-5f32;
+    let e = d.rsqrt();
+
+    let result = &e + &gt;
+    let _g = tape.gradient(&result, [&gt]);
+    Ok(())
+}
+
+// Reproducer for orphan kernel outputs: forward+backward through a 2-layer
+// net with weight transpose, cross-entropy loss, and SGD update; then realize
+// all params. This pattern triggers fill_remaining's force-seal bug where
+// orphan kernel outputs not in the output_set prevent kernel sealing.
+#[test]
+fn small_net() -> Result<(), ZyxError> {
+    let w1 = Tensor::randn([3, 4], DType::F32)?;
+    let b1 = Tensor::randn([3], DType::F32)?;
+    let w2 = Tensor::randn([2, 3], DType::F32)?;
+    let b2 = Tensor::randn([2], DType::F32)?;
+
+    for _ in 0..3 {
+        let tape = Tape::new([&w1, &b1, &w2, &b2])?;
+        let x = Tensor::randn([2, 4], DType::F32)?;
+        let y = Tensor::from([0u32, 1]);
+        let h = (x.dot(w1.t())? + &b1).relu();
+        let logits = h.dot(w2.t())? + &b2;
+        let loss = logits.cross_entropy(y, ReduceOp::Mean)?;
+        let grads = tape.gradient(&loss, [&w1, &b1, &w2, &b2]);
+
+        let lr = 0.01f32;
+        let new_w1 = &w1 - &grads[0] * lr;
+        let new_b1 = &b1 - &grads[1] * lr;
+        let new_w2 = &w2 - &grads[2] * lr;
+        let new_b2 = &b2 - &grads[3] * lr;
+
+        tape.realize([&new_w1, &new_b1, &new_w2, &new_b2])?;
+    }
+    Ok(())
+}
+
+#[test]
+fn zz_bw_relu_matmul() -> Result<(), ZyxError> {
+    let x = Tensor::randn([64, 784], DType::F32)?;
+    let w1 = Tensor::randn([128, 784], DType::F32)?;
+    let b1 = Tensor::randn([128], DType::F32)?;
+    let w2 = Tensor::randn([10, 128], DType::F32)?;
+    let b2 = Tensor::randn([10], DType::F32)?;
+    let tape = Tape::new([&w1, &b1, &w2, &b2])?;
+    let l1 = (x.matmul(w1.t())? + &b1).relu();
+    let logits = l1.matmul(w2.t())? + &b2;
+    let loss = logits.sum_all();
+    let grads = tape.gradient(&loss, [&w1, &b1, &w2, &b2, &loss]);
+    let lr = 0.01f32;
+    let n1 = &w1 - &grads[0] * lr;
+    let n2 = &b1 - &grads[1] * lr;
+    let n3 = &w2 - &grads[2] * lr;
+    let n4 = &b2 - &grads[3] * lr;
+    tape.realize([&n1, &n2, &n3, &n4, &loss])?;
+    let v: Vec<f32> = loss.try_into()?;
+    println!("loss {}", v[0]);
+    Ok(())
+}

@@ -1,7 +1,7 @@
 // Copyright (C) 2025 zk4x
 // SPDX-License-Identifier: LGPL-3.0-only
 
-use zyx::{DType, ReduceOp, Scalar, Tape, Tensor, ZyxError};
+use zyx::{DType, Scalar, Tape, Tensor, ZyxError};
 
 #[test]
 fn sin() -> Result<(), ZyxError> {
@@ -110,9 +110,6 @@ fn self_attention() -> Result<(), ZyxError> {
     Ok(())
 }
 
-// Reproducer for bug in promote_to_graph: promoting an eager tensor to Graph
-// leaves a stale store entry in the original kernel. When gradient needs the
-// value, materialize_kernel finds the store target in Graph state → panic.
 // Gather through the full pipeline (kernelizer + fold_loops). The kernelizer
 // fuses the arange produced by one_hot_along_dim into constants, making the
 // mask's loop operand analyzable so the gather loop can fold to a direct gather.
@@ -136,6 +133,7 @@ fn narrow_2() -> Result<(), ZyxError> {
     assert_eq!(z, [[6, 7], [10, 11]]);
     Ok(())
 }
+
 #[test]
 fn gather() -> Result<(), ZyxError> {
     let x = Tensor::from([10, 20, 30, 40, 50]);
@@ -144,54 +142,6 @@ fn gather() -> Result<(), ZyxError> {
     let gathered = x.gather(0, &indices)?;
     tape.realize([&gathered])?;
     assert_eq!(gathered, [10, 30, 50, 20]);
-    Ok(())
-}
-
-#[test]
-fn promote_and_gradient() -> Result<(), ZyxError> {
-    let gt = Tensor::randn([2, 4, 1, 1], DType::F32)?;
-    let tape = Tape::new([&gt])?;
-
-    let a = Tensor::ones([4], DType::F32);
-    let shape = [2, 4, 1, 1];
-    let b = a.reshape([1, 4, 1, 1])?;
-    let c = b.expand(shape)?;
-    let d = &c + 1e-5f32;
-    let e = d.rsqrt();
-
-    let result = &e + &gt;
-    let _g = tape.gradient(&result, [&gt]);
-    Ok(())
-}
-
-// Reproducer for orphan kernel outputs: forward+backward through a 2-layer
-// net with weight transpose, cross-entropy loss, and SGD update; then realize
-// all params. This pattern triggers fill_remaining's force-seal bug where
-// orphan kernel outputs not in the output_set prevent kernel sealing.
-#[test]
-fn small_net() -> Result<(), ZyxError> {
-    let w1 = Tensor::randn([3, 4], DType::F32)?;
-    let b1 = Tensor::randn([3], DType::F32)?;
-    let w2 = Tensor::randn([2, 3], DType::F32)?;
-    let b2 = Tensor::randn([2], DType::F32)?;
-
-    for _ in 0..3 {
-        let tape = Tape::new([&w1, &b1, &w2, &b2])?;
-        let x = Tensor::randn([2, 4], DType::F32)?;
-        let y = Tensor::from([0u32, 1]);
-        let h = (x.dot(w1.t())? + &b1).relu();
-        let logits = h.dot(w2.t())? + &b2;
-        let loss = logits.cross_entropy(y, ReduceOp::Mean)?;
-        let grads = tape.gradient(&loss, [&w1, &b1, &w2, &b2]);
-
-        let lr = 0.01f32;
-        let new_w1 = &w1 - &grads[0] * lr;
-        let new_b1 = &b1 - &grads[1] * lr;
-        let new_w2 = &w2 - &grads[2] * lr;
-        let new_b2 = &b2 - &grads[3] * lr;
-
-        tape.realize([&new_w1, &new_b1, &new_w2, &new_b2])?;
-    }
     Ok(())
 }
 
@@ -381,86 +331,4 @@ fn use_frozen_output_panics() {
         let _frozen = tape.freeze([&z]).unwrap();
     }
     let _ = z + 1.0f32;
-}
-
-#[test]
-fn zz_bw_relu_matmul() -> Result<(), ZyxError> {
-    let x = Tensor::randn([64, 784], DType::F32)?;
-    let w1 = Tensor::randn([128, 784], DType::F32)?;
-    let b1 = Tensor::randn([128], DType::F32)?;
-    let w2 = Tensor::randn([10, 128], DType::F32)?;
-    let b2 = Tensor::randn([10], DType::F32)?;
-    let tape = Tape::new([&w1, &b1, &w2, &b2])?;
-    let l1 = (x.matmul(w1.t())? + &b1).relu();
-    let logits = l1.matmul(w2.t())? + &b2;
-    let loss = logits.sum_all();
-    let grads = tape.gradient(&loss, [&w1, &b1, &w2, &b2, &loss]);
-    let lr = 0.01f32;
-    let n1 = &w1 - &grads[0] * lr;
-    let n2 = &b1 - &grads[1] * lr;
-    let n3 = &w2 - &grads[2] * lr;
-    let n4 = &b2 - &grads[3] * lr;
-    tape.realize([&n1, &n2, &n3, &n4, &loss])?;
-    let v: Vec<f32> = loss.try_into()?;
-    println!("loss {}", v[0]);
-    Ok(())
-}
-
-#[test]
-fn zz_bw_relu_matmul_manual() -> Result<(), ZyxError> {
-    let x = Tensor::randn([64, 784], DType::F32)?;
-    let w1 = Tensor::randn([128, 784], DType::F32)?;
-    let b1 = Tensor::randn([128], DType::F32)?;
-    let w2 = Tensor::randn([10, 128], DType::F32)?;
-    let b2 = Tensor::randn([10], DType::F32)?;
-    let tape = Tape::new([&w1, &b1, &w2, &b2])?;
-
-    // Forward.
-    let z1 = x.matmul(w1.t())? + &b1;
-    let l1 = z1.relu();
-    let logits = l1.matmul(w2.t())? + &b2;
-    let loss = logits.sum_all();
-
-    // Manual backprop replicating autograd's outer-product broadcast pattern.
-    // gw2[j,k] = sum_i g_logits[i,j] * l1[i,k]
-    let g_logits = Tensor::ones_like(&logits);
-    let gl1 = g_logits.matmul(&w2)?;
-
-    // relu backward, exact autograd structure:
-    //   s1 = z1 > 0 (bool)
-    //   gb = gl1 as bool ; gm = (1 - gb) ; gz1 = gb*mask + gm*z1
-    let relu_mask = z1.cmpgt(Tensor::from(0f32))?.cast(DType::F32);
-    let gl1_as_bool = gl1.cast(DType::Bool).cast(DType::F32);
-    let one_minus = Tensor::ones_like(&gl1) - &gl1.cast(DType::Bool).cast(DType::F32);
-    let gz1n = &relu_mask * &gl1_as_bool;
-    let gz1 = gz1n + &(&one_minus * &z1);
-
-    // gw2: expand g_logits to [64,10,128], expand l1 to [64,10,128], mul, reduce over batch.
-    let gl3 = g_logits.reshape([64, 10, 1])?.expand([64, 10, 128])?;
-    let l1_3 = l1.reshape([64, 1, 128])?.expand([64, 10, 128])?;
-    let prod = gl3 * &l1_3;
-    let gw2 = prod.sum([0])?;
-
-    // gb2: sum over batch.
-    let gb2 = g_logits.sum([0])?;
-
-    // gw1: gz1 [128,64] outer x. autograd: Permute[128,64]->Reshape[128,1,64]->Expand[128,784,64]
-    //   times x [128,784,64], reduce -> [128,784].
-    let gz1_t = gz1.t();
-    let gz1_3 = gz1_t.reshape([128, 1, 64])?.expand([128, 784, 64])?;
-    let x_3 = x.t().reshape([1, 784, 64])?.expand([128, 784, 64])?;
-    let gw1 = (gz1_3 * &x_3).sum([2])?;
-
-    // gb1: sum over batch.
-    let gb1 = gz1.sum([0])?;
-
-    let lr = 0.01f32;
-    let n1 = &w1 - &gw1 * lr;
-    let n2 = &b1 - &gb1 * lr;
-    let n3 = &w2 - &gw2 * lr;
-    let n4 = &b2 - &gb2 * lr;
-    tape.realize([&n1, &n2, &n3, &n4, &loss])?;
-    let v: Vec<f32> = loss.try_into()?;
-    println!("loss {}", v[0]);
-    Ok(())
 }

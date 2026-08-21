@@ -1853,7 +1853,7 @@ impl Runtime {
 
         let old_loads = self.kernels[kid].loads.clone();
         let out_op_ids: Vec<OpId> = self.kernels[kid].outputs.iter().map(|&tid| self.tensors[tid].op_id).collect();
-        let (kernel, op_id, self_loads, new_loads) = self.kernels[kid].kernel.extract_subkernel(op_id, &out_op_ids, &old_loads);
+        let (kernel, op_id, self_loads, new_loads, _) = self.kernels[kid].kernel.extract_subkernel(op_id, &out_op_ids, &old_loads);
         self.kernels[kid].loads = self_loads.clone();
 
         // Each kernel-load occurrence carries its own rc reference. The split
