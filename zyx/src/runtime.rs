@@ -1837,7 +1837,7 @@ impl Runtime {
         let mut kernel = Kernel::new(DeviceId::AUTO);
         let dims: Vec<OpId> = self.shape(x).iter().map(|&d| kernel.const_idx(d)).collect();
         let load_shape = match dims.len() {
-            0 => kernel.const_idx(1),
+            0 => OpId::NULL,
             1 => dims[0],
             _ => kernel.stack(&dims),
         };
