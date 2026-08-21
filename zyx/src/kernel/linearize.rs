@@ -771,7 +771,7 @@ impl Kernel {
                     Op::Param { .. } => -20,
                     Op::Index { .. } => -15,
                     Op::Const(_) => -10,
-                    Op::Loop { .. } => 5,
+                    Op::Loop { .. } => -100,
                     Op::Reduce { .. } => -5,
                     _ => 0,
                 };
@@ -837,6 +837,8 @@ impl Kernel {
             }
             self.head = final_order.first().copied().unwrap_or(OpId::NULL);
             self.tail = final_order.last().copied().unwrap_or(OpId::NULL);
+            //println!("DBG toposort final order:");
+            //self.debug();
         }
     }
 
