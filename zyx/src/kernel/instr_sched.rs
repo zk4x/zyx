@@ -384,13 +384,19 @@ impl Kernel {
 mod tests {
     use crate::DType;
     use crate::kernel::{DeviceId, Kernel, MemLayout, MemScope, Op, OpId, ParamKind};
+    use crate::slab::SlabId;
 
     fn defines_in_order(k: &Kernel) -> Vec<(MemScope, bool)> {
         let mut order = Vec::new();
         let mut op_id = k.head;
         while !op_id.is_null() {
-            if let Op::Storage { scope, .. } = k.at(op_id) {
-                order.push((*scope, false));
+            match k.at(op_id) {
+                Op::Param { kind, .. } => match kind {
+                    ParamKind::Global | ParamKind::Variable => order.push((MemScope::Global, true)),
+                    ParamKind::GlobalMut => order.push((MemScope::Global, false)),
+                },
+                Op::Storage { scope, .. } => order.push((*scope, false)),
+                _ => {}
             }
             op_id = k.next_op(op_id);
         }
@@ -411,11 +417,9 @@ mod tests {
     fn test_instruction_schedule_orders_defines() {
         let mut k = Kernel::new(DeviceId::AUTO);
         let _local_rw = k.storage(DType::F32, MemScope::Local, 4);
-        let global_ro_shape = k.const_idx(4u32);
-        let global_ro = k.param(DType::F32, ParamKind::Global, global_ro_shape);
+        let global_ro = k.param(DType::F32, ParamKind::Global, OpId::NULL);
         let _local_ro = k.storage(DType::F32, MemScope::Local, 4);
-        let global_rw_shape = k.const_idx(4u32);
-        let global_rw = k.param(DType::F32, ParamKind::GlobalMut, global_rw_shape);
+        let global_rw = k.param(DType::F32, ParamKind::GlobalMut, OpId::NULL);
 
         let gidx_len = k.const_idx(4);
         let gidx = k.group_index(0, gidx_len);
@@ -431,7 +435,7 @@ mod tests {
             vec![
                 (MemScope::Global, true),
                 (MemScope::Global, false),
-                (MemScope::Local, true),
+                (MemScope::Local, false),
                 (MemScope::Local, false),
             ]
         );
@@ -446,10 +450,8 @@ mod tests {
     #[test]
     fn test_instruction_schedule_keeps_stores_in_loops() {
         let mut k = Kernel::new(DeviceId::AUTO);
-        let src_shape = k.const_idx(4u32);
-        let dst_shape = k.const_idx(4u32);
-        let src = k.param(DType::F32, ParamKind::Global, src_shape);
-        let dst = k.param(DType::F32, ParamKind::GlobalMut, dst_shape);
+        let src = k.param(DType::F32, ParamKind::Global, OpId::NULL);
+        let dst = k.param(DType::F32, ParamKind::GlobalMut, OpId::NULL);
 
         let len = k.const_idx(4u32);
         let loop_id = k.loop_(len);
@@ -471,8 +473,7 @@ mod tests {
     #[test]
     fn test_instruction_schedule_keeps_memory_order_per_define() {
         let mut k = Kernel::new(DeviceId::AUTO);
-        let buf_shape = k.const_idx(4u32);
-        let buf = k.param(DType::F32, ParamKind::Global, buf_shape);
+        let buf = k.param(DType::F32, ParamKind::Global, OpId::NULL);
 
         let gidx_len = k.const_idx(4);
         let gidx = k.group_index(0, gidx_len);
@@ -514,10 +515,8 @@ mod tests {
     #[test]
     fn test_instruction_schedule_topological() {
         let mut k = Kernel::new(DeviceId::AUTO);
-        let src_shape = k.const_idx(4u32);
-        let dst_shape = k.const_idx(4u32);
-        let src = k.param(DType::F32, ParamKind::Global, src_shape);
-        let dst = k.param(DType::F32, ParamKind::GlobalMut, dst_shape);
+        let src = k.param(DType::F32, ParamKind::Global, OpId::NULL);
+        let dst = k.param(DType::F32, ParamKind::GlobalMut, OpId::NULL);
 
         let gidx_len = k.const_idx(4);
         let gidx = k.group_index(0, gidx_len);
@@ -537,10 +536,8 @@ mod tests {
     #[test]
     fn test_instruction_schedule_never_sinks_across_loops() {
         let mut k = Kernel::new(DeviceId::AUTO);
-        let src_shape = k.const_idx(4u32);
-        let dst_shape = k.const_idx(4u32);
-        let src = k.param(DType::F32, ParamKind::Global, src_shape);
-        let dst = k.param(DType::F32, ParamKind::GlobalMut, dst_shape);
+        let src = k.param(DType::F32, ParamKind::Global, OpId::NULL);
+        let dst = k.param(DType::F32, ParamKind::GlobalMut, OpId::NULL);
         let local = k.storage(DType::F32, MemScope::Local, 4);
 
         let c0 = k.const_idx(0u32);
@@ -573,12 +570,9 @@ mod tests {
     #[test]
     fn _bench_instruction_schedule_large_kernel() {
         let mut k = Kernel::new(DeviceId::AUTO);
-        let a_shape = k.const_idx(1024u32);
-        let b_shape = k.const_idx(1024u32);
-        let out_shape = k.const_idx(1024u32);
-        let a = k.param(DType::F32, ParamKind::Global, a_shape);
-        let b = k.param(DType::F32, ParamKind::Global, b_shape);
-        let out = k.param(DType::F32, ParamKind::GlobalMut, out_shape);
+        let a = k.param(DType::F32, ParamKind::Global, OpId::NULL);
+        let b = k.param(DType::F32, ParamKind::Global, OpId::NULL);
+        let out = k.param(DType::F32, ParamKind::GlobalMut, OpId::NULL);
         let gidx_len = k.const_idx(1024);
         let gidx = k.group_index(0, gidx_len);
         let mut acc = k.load(a, gidx, MemLayout::Scalar);

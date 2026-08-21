@@ -162,7 +162,7 @@ impl Kernel {
 
     /// Reshape tensor. `shape` is the (pre-built) output shape op: a single
     /// const for rank-1, or a `stack` of per-dimension ops otherwise.
-    pub fn reshape(&mut self, x: OpId, shape: OpId, input_rank: usize) -> OpId {
+    pub fn reshape(&mut self, x: OpId, shape: OpId) -> OpId {
         self.push_back(Op::Move { x, mop: Box::new(MoveOp::Reshape { shape }) })
     }
 
@@ -609,7 +609,7 @@ impl CompiledKernel {
                 rc: 1,
             });
             let mut kernel = Kernel::new(DeviceId::AUTO);
-            let op_id = kernel.push_back(Op::Param { dtype, kind: ParamKind::Global, shape: todo!() });
+            let op_id = kernel.push_back(Op::Param { dtype, kind: ParamKind::Global, shape: OpId::NULL });
             let load_kid =
                 rt.kernels.push(KernelData { outputs: Set::from_iter([id]), loads: vec![id], stores: Vec::new(), kernel });
             rt.tensors[id].kernel_id = load_kid;

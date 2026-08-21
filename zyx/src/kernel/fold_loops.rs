@@ -752,20 +752,17 @@ mod tests {
     fn make_gather_kernel_with_source_before_indices() -> (Kernel, OpId) {
         let mut k = Kernel::new(DeviceId::AUTO);
 
+        let r95 = k.param(DType::U16, ParamKind::Global, OpId::NULL);
+        let r114 = k.param(DType::U16, ParamKind::Global, OpId::NULL);
+        let r122 = k.param(DType::U16, ParamKind::GlobalMut, OpId::NULL);
         let sh3 = k.const_idx(3u32);
         let sh5 = k.const_idx(5u32);
-        let r95_shape = k.stack(&[sh3, sh3]);
-        let r114_shape = k.stack(&[sh3, sh5]);
-        let r122_shape = k.stack(&[sh3, sh3]);
-        let r95 = k.param(DType::U16, ParamKind::Global, r95_shape);
-        let r114 = k.param(DType::U16, ParamKind::Global, r114_shape);
-        let r122 = k.param(DType::U16, ParamKind::Global, r122_shape);
-        let r7 = k.const_val(0u32);
+        let r7 = k.const_idx(0u32);
         let r22 = k.const_val(0u16);
-        let r74 = k.const_val(3u32);
+        let r74 = k.const_idx(3u32);
         let r26 = k.const_val(0i32);
         let r31 = k.const_val(5i32);
-        let r110 = k.const_val(5u32);
+        let r110 = k.const_idx(5u32);
         let r37 = k.group_index(0, sh3);
         let r5 = k.group_index(1, sh3);
         let r1 = k.storage(DType::U16, MemScope::Register, 1);
@@ -836,15 +833,11 @@ mod tests {
     fn make_mnist_gather_kernel(dim: u64) -> (Kernel, OpId) {
         let mut k = Kernel::new(DeviceId::AUTO);
 
+        let r29 = k.param(DType::I32, ParamKind::Global, OpId::NULL);
+        let r38 = k.param(DType::I32, ParamKind::Global, OpId::NULL);
+        let r49 = k.param(DType::F32, ParamKind::Global, OpId::NULL);
+        let r57 = k.param(DType::F32, ParamKind::GlobalMut, OpId::NULL);
         let sh3 = k.const_idx(3u32);
-        let r29_shape = k.stack(&[sh3, sh3]);
-        let r38_shape = k.const_idx(3u32);
-        let r49_shape = k.stack(&[sh3, sh3]);
-        let r57_shape = k.stack(&[sh3, sh3]);
-        let r29 = k.param(DType::I32, ParamKind::Global, r29_shape);
-        let r38 = k.param(DType::I32, ParamKind::Global, r38_shape);
-        let r49 = k.param(DType::F32, ParamKind::Global, r49_shape);
-        let r57 = k.param(DType::F32, ParamKind::Global, r57_shape);
         let r1 = k.const_idx(0u32);
         let r8 = k.const_val(0.0f32);
         let r15 = k.const_idx(dim);
@@ -921,14 +914,10 @@ mod tests {
     fn make_scatter_kernel(dim: u64, num_indices: u64) -> (Kernel, OpId) {
         let mut k = Kernel::new(DeviceId::AUTO);
 
-        let r29_shape = k.const_idx(3u32);
-        let r38_shape = k.const_idx(10u32);
-        let r47_shape = k.const_idx(3u32);
-        let r61_shape = k.const_idx(10u32);
-        let r29 = k.param(DType::I32, ParamKind::Global, r29_shape);
-        let r38 = k.param(DType::I32, ParamKind::Global, r38_shape);
-        let r47 = k.param(DType::I32, ParamKind::Global, r47_shape);
-        let r61 = k.param(DType::I32, ParamKind::Global, r61_shape);
+        let r29 = k.param(DType::I32, ParamKind::Global, OpId::NULL);
+        let r38 = k.param(DType::I32, ParamKind::Global, OpId::NULL);
+        let r47 = k.param(DType::I32, ParamKind::Global, OpId::NULL);
+        let r61 = k.param(DType::I32, ParamKind::GlobalMut, OpId::NULL);
         let r14 = k.const_idx(0u32);
         let r1 = k.const_val(0i32);
         let r10 = k.const_idx(num_indices);
@@ -1039,13 +1028,11 @@ mod tests {
     fn test_llama_onehot_loop_folds() {
         let mut k = Kernel::new(DeviceId::AUTO);
 
+        let r67 = k.param(DType::U32, ParamKind::Global, OpId::NULL);
+        let r30 = k.param(DType::F16, ParamKind::GlobalMut, OpId::NULL);
         let sh1 = k.const_idx(1u32);
         let sh2 = k.const_idx(2u32);
         let sh8 = k.const_idx(8u32);
-        let r67_shape = k.stack(&[sh1, sh2]);
-        let r30_shape = k.stack(&[sh1, sh2, sh8, sh1]);
-        let r67 = k.param(DType::U32, ParamKind::Global, r67_shape);
-        let r30 = k.param(DType::F16, ParamKind::Global, r30_shape);
         let c0 = k.const_idx(0u32);
         let c1 = k.const_idx(1u32);
         let c2 = k.const_idx(2u32);

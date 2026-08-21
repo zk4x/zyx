@@ -538,7 +538,8 @@ impl Kernel {
 mod tests {
     use crate::{
         DType,
-        kernel::{BOp, DeviceId, Kernel, MemLayout, Op, UOp, ParamKind},
+        kernel::{BOp, DeviceId, Kernel, MemLayout, Op, OpId, UOp, ParamKind},
+        slab::SlabId,
     };
 
     // Helper to verify c0/c1 were replaced with devecs, find vectorize + vector op
@@ -563,10 +564,8 @@ mod tests {
     #[test]
     fn vectorize_ops_forward_2_lane() {
         let mut k = Kernel::new(DeviceId::AUTO);
-        let src_shape = k.const_idx(8u32);
-        let dst_shape = k.const_idx(8u32);
-        let src = k.param(DType::F32, ParamKind::Global, src_shape);
-        let dst = k.param(DType::F32, ParamKind::Global, dst_shape);
+        let src = k.param(DType::F32, ParamKind::Global, OpId::NULL);
+        let dst = k.param(DType::F32, ParamKind::Global, OpId::NULL);
         let g0_len = k.const_idx(4);
         let g0 = k.group_index(0, g0_len);
         let two = k.const_idx(2u32);
@@ -590,10 +589,8 @@ mod tests {
     #[test]
     fn vectorize_ops_forward_4_lane() {
         let mut k = Kernel::new(DeviceId::AUTO);
-        let src_shape = k.const_idx(16u32);
-        let dst_shape = k.const_idx(4u32);
-        let src = k.param(DType::F32, ParamKind::Global, src_shape);
-        let dst = k.param(DType::F32, ParamKind::Global, dst_shape);
+        let src = k.param(DType::F32, ParamKind::Global, OpId::NULL);
+        let dst = k.param(DType::F32, ParamKind::Global, OpId::NULL);
         let g0_len = k.const_idx(4);
         let g0 = k.group_index(0, g0_len);
         let two = k.const_idx(2u32);
@@ -645,10 +642,8 @@ mod tests {
         // After first pass: cos(2) is vectorized
         // After second pass: sin(2) is vectorized
         let mut k = Kernel::new(DeviceId::AUTO);
-        let src_shape = k.const_idx(16u32);
-        let dst_shape = k.const_idx(4u32);
-        let src = k.param(DType::F32, ParamKind::Global, src_shape);
-        let dst = k.param(DType::F32, ParamKind::Global, dst_shape);
+        let src = k.param(DType::F32, ParamKind::Global, OpId::NULL);
+        let dst = k.param(DType::F32, ParamKind::Global, OpId::NULL);
         let g0_len = k.const_idx(4);
         let g0 = k.group_index(0, g0_len);
         let two = k.const_idx(2u32);
@@ -700,10 +695,8 @@ mod tests {
     #[test]
     fn vectorize_ops_forward_binary() {
         let mut k = Kernel::new(DeviceId::AUTO);
-        let src_shape = k.const_idx(8u32);
-        let dst_shape = k.const_idx(8u32);
-        let src = k.param(DType::F32, ParamKind::Global, src_shape);
-        let dst = k.param(DType::F32, ParamKind::Global, dst_shape);
+        let src = k.param(DType::F32, ParamKind::Global, OpId::NULL);
+        let dst = k.param(DType::F32, ParamKind::Global, OpId::NULL);
         let g0_len = k.const_idx(4);
         let g0 = k.group_index(0, g0_len);
         let two = k.const_idx(2u32);
@@ -744,10 +737,8 @@ mod tests {
     fn vectorize_ops_forward_binary_y_pos() {
         // devec in Y position: c + devec(v, i)
         let mut k = Kernel::new(DeviceId::AUTO);
-        let src_shape = k.const_idx(8u32);
-        let dst_shape = k.const_idx(8u32);
-        let src = k.param(DType::F32, ParamKind::Global, src_shape);
-        let dst = k.param(DType::F32, ParamKind::Global, dst_shape);
+        let src = k.param(DType::F32, ParamKind::Global, OpId::NULL);
+        let dst = k.param(DType::F32, ParamKind::Global, OpId::NULL);
         let g0_len = k.const_idx(4);
         let g0 = k.group_index(0, g0_len);
         let two = k.const_idx(2u32);
@@ -772,10 +763,8 @@ mod tests {
     fn vectorize_ops_and_constfold_clears_vectorize_devectorize() {
         let mut k = Kernel::new(DeviceId::AUTO);
 
-        let src_shape = k.const_idx(16u32);
-        let dst_shape = k.const_idx(16u32);
-        let src = k.param(DType::F32, ParamKind::Global, src_shape);
-        let dst = k.param(DType::F32, ParamKind::Global, dst_shape);
+        let src = k.param(DType::F32, ParamKind::Global, OpId::NULL);
+        let dst = k.param(DType::F32, ParamKind::Global, OpId::NULL);
         let g0_len = k.const_idx(4);
         let g0 = k.group_index(0, g0_len);
         let two = k.const_idx(2u32);

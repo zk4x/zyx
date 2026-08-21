@@ -851,7 +851,7 @@ impl Runtime {
             if rank0 == n_axes {
                 let (kid, op_id) = self.eager_ids(cur);
                 let one = self.kernels[kid].kernel.const_idx(1);
-                let op_id = self.kernels[kid].kernel.reshape(op_id, one, 0);
+                let op_id = self.kernels[kid].kernel.reshape(op_id, one);
                 self.tensors[cur].op_id = op_id;
                 cur_shape = vec![1];
             }
@@ -960,7 +960,7 @@ impl Runtime {
             }
             let out_dims = self.kernels[kernel_id].kernel.shape_values(shape_op);
 
-            let op_id = self.kernels[kernel_id].kernel.reshape(op_id, shape_op, input_rank);
+            let op_id = self.kernels[kernel_id].kernel.reshape(op_id, shape_op);
             let tid = self.tensors.push(TensorData {
                 kernel_id,
                 op_id,
