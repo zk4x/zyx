@@ -574,19 +574,26 @@ impl Kernel {
                             }
                             views.insert(x, new_view);
                         }
-                        &MoveOp::Pad { axis, lp, rp } => {
+                        &MoveOp::Pad { axis, lp, len } => {
                             // Pure backward pad (tinygrad): the input coordinate is
                             // the output coordinate shifted left by `lp` (a negative
                             // `lp` is a slice, shifting right), and the input extent
-                            // is the output extent minus both pads. The resulting
+                            // is `len - lp - rp`, with `rp = len - lp - orig_len`
+                            // recovered from x's own axis length. The resulting
                             // `idx >= 0 && idx < len` bounds check at the load is the
                             // exact validity mask -- no separate pad terms.
                             let mut view = views[&op_id].clone();
                             let d = view[axis].clone();
                             let idx = self.sub(d.idx, lp);
-                            let len = self.sub(d.len, lp);
-                            let len = self.sub(len, rp);
-                            view[axis] = SDim::new(idx, len);
+                            let orig = {
+                                let dims = self.store_shape_ids(x);
+                                dims[axis as usize]
+                            };
+                            let rp = self.sub(len, lp);
+                            let rp = self.sub(rp, orig);
+                            let in_len = self.sub(d.len, lp);
+                            let in_len = self.sub(in_len, rp);
+                            view[axis] = SDim::new(idx, in_len);
                             views.insert(x, view);
                         }
                         &MoveOp::Narrow { axis, start, .. } => {

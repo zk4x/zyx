@@ -1163,39 +1163,74 @@ impl Runtime {
         }
     }
 
-    pub fn pad_zeros(&mut self, x: TensorId, padding: Vec<(i64, i64)>) -> TensorId {
+    /// Pad axis `axis` with zeros: `lp` zeros on the left, up to total
+    /// length `len` (tinygrad convention; right padding is
+    /// `len - lp - orig_len`). `lp` and `len` are scalar tensors.
+    pub fn pad_zeros(&mut self, x: TensorId, axis: UAxis, lp: TensorId, len: TensorId) -> TensorId {
         #[cfg(feature = "debug_tensor_op")]
-        println!("runtime::pad_zeros(x={x}, padding={padding:?})");
+        println!("runtime::pad_zeros(x={x}, axis={axis}, lp={lp}, len={len})");
 
-        let sh = self.shape(x);
-        debug_assert_eq!(padding.len(), sh.len(), "pad_zeros: padding length {} != rank {}", padding.len(), sh.len());
+        let sh = self.shape(x).to_vec();
+        debug_assert!(axis < sh.len() as UAxis, "pad_zeros: axis {axis} out of range for rank {}", sh.len());
 
-        let child_n: Dim = sh.iter().product();
-        let mut new_shape = sh.to_vec();
-        crate::shape::pad(&mut new_shape, &padding);
-        let pad_n: Dim = new_shape.iter().product();
-
-        if self.is_graph(x) {
-            let (class_id, graph_id) = self.graph_ids(x);
-            let mut cur = class_id;
-            for (axis, (lp, rp)) in padding.iter().enumerate() {
-                let lp = self.push_node(graph_id, Node::Const(crate::dtype::Constant::idx(*lp))).1;
-                let rp = self.push_node(graph_id, Node::Const(crate::dtype::Constant::idx(*rp))).1;
-                let (_, nc) = self.push_node(graph_id, Node::Pad { x: cur, axis: axis as UAxis, lp, rp });
-                cur = nc;
+        if self.is_graph(x) || self.is_graph(lp) || self.is_graph(len) {
+            let graph_id = if self.is_graph(x) {
+                self.graph_ids(x).1
+            } else if self.is_graph(lp) {
+                self.graph_ids(lp).1
+            } else {
+                self.graph_ids(len).1
+            };
+            self.assert_graph_alive(graph_id);
+            if !self.is_graph(x) {
+                self.promote_to_graph(x, graph_id).unwrap();
             }
-            self.new_graph_tensor(graph_id, cur)
+            if !self.is_graph(lp) {
+                self.promote_to_graph(lp, graph_id).unwrap();
+            }
+            if !self.is_graph(len) {
+                self.promote_to_graph(len, graph_id).unwrap();
+            }
+            let (x_class, graph_id_x) = self.graph_ids(x);
+            let (lp_class, graph_id_lp) = self.graph_ids(lp);
+            let (len_class, graph_id_len) = self.graph_ids(len);
+
+            debug_assert_eq!(graph_id_x, graph_id_lp);
+            debug_assert_eq!(graph_id_x, graph_id_len);
+
+            let (_, class_id) = self.push_node(graph_id_x, Node::Pad { x: x_class, axis, lp: lp_class, len: len_class });
+            self.new_graph_tensor(graph_id_x, class_id)
         } else {
-            let (kernel_id, op_id) = self.eager_ids(x);
-            let force_store = pad_n > child_n && self.kernels[kernel_id].kernel.is_preceded_by_compute(op_id);
-            let (kernel_id, op_id) = self.duplicate_or_store(x, force_store).unwrap();
-            let mut cur = op_id;
-            for (axis, (lp, rp)) in padding.iter().enumerate() {
-                let lp = self.kernels[kernel_id].kernel.const_idx(*lp);
-                let rp = self.kernels[kernel_id].kernel.const_idx(*rp);
-                cur = self.kernels[kernel_id].kernel.pad(cur, axis as UAxis, lp, rp);
+            let (kernel_id, x) = self.duplicate_or_store(x, false).unwrap();
+            debug_assert_eq!(self.kernels[kernel_id].outputs.len(), 0, "input into pad must have empty outputs");
+
+            let (mut lkid, mut lp_op) = self.eager_ids(lp);
+            if lkid != kernel_id {
+                if !self.kernels[lkid].stores.is_empty() {
+                    self.add_store(lp).unwrap();
+                    (lkid, lp_op) = self.eager_ids(lp);
+                }
+                if lkid != kernel_id {
+                    let op_map = self.merge_kernel(kernel_id, lkid).unwrap();
+                    lp_op = op_map[&lp_op];
+                }
             }
-            let op_id = cur;
+            let (mut lkid2, mut len_op) = self.eager_ids(len);
+            if lkid2 != kernel_id {
+                if !self.kernels[lkid2].stores.is_empty() {
+                    self.add_store(len).unwrap();
+                    (lkid2, len_op) = self.eager_ids(len);
+                }
+                if lkid2 != kernel_id {
+                    let op_map = self.merge_kernel(kernel_id, lkid2).unwrap();
+                    len_op = op_map[&len_op];
+                }
+            }
+
+            // Move op
+            let op_id = self.kernels[kernel_id]
+                .kernel
+                .push_back(Op::Move { x, mop: Box::new(MoveOp::Pad { axis, lp: lp_op, len: len_op }) });
             let tid = self.tensors.push(TensorData {
                 kernel_id,
                 op_id,
@@ -1204,11 +1239,12 @@ impl Runtime {
                 graph_id: GraphId::NULL,
                 rc: 1,
             });
-            debug_assert_eq!(self.kernels[kernel_id].outputs.len(), 0, "input into pad must have empty outputs");
             self.kernels[kernel_id].outputs.insert(tid);
             #[cfg(feature = "debug_tensor_op")]
             println!("  -> tid={tid}, kid={kernel_id:?}, op_id={op_id:?}");
-            self.shapes.insert(tid, new_shape);
+            let mut padded = sh.to_vec();
+            padded[axis as usize] = self.const_dim(kernel_id, len_op).unwrap();
+            self.shapes.insert(tid, padded);
             tid
         }
     }

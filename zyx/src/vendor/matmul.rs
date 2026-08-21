@@ -41,7 +41,7 @@ impl Graph {
     /// - `b` is found by looking through the expand source's `Reshape` for the
     ///   `Permute [1, 0]` and returning its `[k, n]` source.
     pub(crate) fn match_matmul(&self, cid: ClassId) -> Option<MatMul> {
-        let out_shape: Vec<Dim> = todo!();
+        let out_shape = self.const_shape(cid)?;
         if out_shape.len() != 2 {
             return None;
         }
@@ -58,7 +58,7 @@ impl Graph {
         }
 
         let b = self.transpose_src(bt)?;
-        if self.shape(b) != [k, n] {
+        if self.const_shape(b).as_deref() != Some(&[k, n][..]) {
             return None;
         }
 

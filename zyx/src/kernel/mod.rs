@@ -831,12 +831,9 @@ impl Kernel {
                     MoveOp::Reshape { shape, .. } | MoveOp::Expand { shape } => return self.shape_values(*shape),
                     MoveOp::Permute { axes } => return crate::shape::permute(&self.shape(x), axes),
                     MoveOp::Flip { .. } => return self.shape(x),
-                    MoveOp::Pad { axis, lp, rp } => {
+                    MoveOp::Pad { axis, len, .. } => {
                         let mut s = self.shape(x);
-                        match (const_dim(*lp), const_dim(*rp)) {
-                            (Some(l), Some(r)) => s[*axis] += l + r,
-                            _ => s[*axis] = 0,
-                        }
+                        s[*axis] = const_dim(*len).unwrap_or(0);
                         return s;
                     }
                     MoveOp::Narrow { axis, len, .. } => {
@@ -953,14 +950,12 @@ impl Kernel {
                         dims[*axis] = len;
                         return dims;
                     }
-                    MoveOp::Pad { axis, lp, rp } => {
+                    MoveOp::Pad { axis, len, .. } => {
                         let mut dims = self.store_shape_ids(x);
                         if dims.is_empty() {
                             dims.push(self.const_idx(1));
                         }
-                        let orig = dims[*axis];
-                        let sum = self.push_back(Op::Binary { x: orig, y: *lp, bop: BOp::Add });
-                        dims[*axis] = self.push_back(Op::Binary { x: sum, y: *rp, bop: BOp::Add });
+                        dims[*axis] = *len;
                         return dims;
                     }
                 },
@@ -1045,12 +1040,10 @@ impl Kernel {
                         let dims = self.shape_ids(*shape);
                         return dims[dims.len() - 1 - from_end];
                     }
-                    MoveOp::Pad { axis, lp, rp } => {
+                    MoveOp::Pad { axis, len, .. } => {
                         let p = self.rank(x) - 1 - from_end;
                         if p == *axis as usize {
-                            let orig = self.reduce_shape_ids_at(x, from_end);
-                            let sum = self.push_back(Op::Binary { x: orig, y: *lp, bop: BOp::Add });
-                            return self.push_back(Op::Binary { x: sum, y: *rp, bop: BOp::Add });
+                            return *len;
                         }
                         op_id = x;
                     }

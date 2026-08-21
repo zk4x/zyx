@@ -173,9 +173,10 @@ impl Kernel {
         self.push_back(Op::Move { x, mop: Box::new(MoveOp::Expand { shape }) })
     }
 
-    /// Pad axis `axis` with `lp` zeros on the left and `rp` zeros on the right.
-    pub fn pad(&mut self, x: OpId, axis: UAxis, lp: OpId, rp: OpId) -> OpId {
-        self.push_back(Op::Move { x, mop: Box::new(MoveOp::Pad { axis, lp, rp }) })
+    /// Pad axis `axis` with `lp` zeros on the left, to total length `len`
+    /// (tinygrad convention; right padding is `len - lp - orig_len`).
+    pub fn pad(&mut self, x: OpId, axis: UAxis, lp: OpId, len: OpId) -> OpId {
+        self.push_back(Op::Move { x, mop: Box::new(MoveOp::Pad { axis, lp, len }) })
     }
 
     /// Flip tensor axes.

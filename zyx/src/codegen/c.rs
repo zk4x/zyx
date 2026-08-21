@@ -56,6 +56,15 @@ impl Kernel {
                         }
                         n_params += 1;
                     }
+                    Op::Param { kind: ParamKind::Global | ParamKind::GlobalMut, dtype, .. } => {
+                        if matches!(dtype, DType::F16 | DType::BF16) {
+                            _ = writeln!(global_cast, "  unsigned short* p{op_id} = (unsigned short*)args[{n_params}];");
+                        } else {
+                            let ct = dtype.c_type();
+                            _ = writeln!(global_cast, "  {ct}* p{op_id} = ({ct}*)args[{n_params}];");
+                        }
+                        n_params += 1;
+                    }
                     _ => {}
                 }
                 op_id = self.next_op(op_id);
@@ -637,7 +646,7 @@ impl Constant {
             Self::I16(x) => format!("{x}"),
             Self::I32(x) => format!("(int){x}"),
             Self::I64(x) => format!("{}l", i64::from_le_bytes(x)),
-            Self::Bool(x) => format!("{x}"),
+            Self::Bool(x) => format!("{}", x as i32),
             Self::F16(x) => format!("{:.16}f", f16::from_le_bytes(x).to_f32()),
             Self::BF16(x) => format!("{:.16}f", bf16::from_le_bytes(x).to_f32()),
         }

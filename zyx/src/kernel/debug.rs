@@ -335,11 +335,11 @@ impl Kernel {
                         MoveOp::Permute { axes } => {
                             println!("{indent}r{out_id}{grey}: {dtype}{reset} = {cyan}permute{reset} r{x} axes={axes:?}");
                         }
-                        &MoveOp::Pad { ref axis, lp, rp } => {
+                        &MoveOp::Pad { ref axis, lp, len } => {
                             let lp = id_map.get(&lp).copied().unwrap_or(lp);
-                            let rp = id_map.get(&rp).copied().unwrap_or(rp);
+                            let len = id_map.get(&len).copied().unwrap_or(len);
                             println!(
-                                "{indent}r{out_id}{grey}: {dtype}{reset} = {cyan}pad{reset} r{x} axis={axis} lp=r{lp} rp={rp}",
+                                "{indent}r{out_id}{grey}: {dtype}{reset} = {cyan}pad{reset} r{x} axis={axis} lp=r{lp} len=r{len}",
                             );
                         }
                         &MoveOp::Narrow { ref axis, start, len } => {

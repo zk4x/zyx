@@ -20,24 +20,24 @@ impl Kernel {
             return;
         }
 
-        // Detect the kernel's linearization state from its params: the
-        // pre-linearize IR is a pure DAG whose params carry shape stacks;
-        // linearize nulls those shapes and lowers Move/Reduce into
-        // loops/indices/loads/stores over storages.
-        let mut shaped_params = false;
+        // Detect the kernel's linearization state from its stores — the rule
+        // that always holds: a pre-linearize store writes a whole view and has
+        // a NULL index; post-linearize the store carries the actual index op.
+        // (Param shapes can NOT be used for detection: `Variable` params have
+        // null shapes even pre-linearization.)
+        let mut null_index_stores = 0u32;
+        let mut indexed_stores = 0u32;
         let mut has_post_linearize_ops = false;
         let mut has_move_or_reduce = false;
         {
             let mut scan = self.head;
             while !scan.is_null() {
                 match self.at(scan) {
-                    Op::Param { shape, .. } if !shape.is_null() => shaped_params = true,
-                    // Stores exist in both forms; their index distinguishes them:
-                    // pre-linearize stores write whole views (index NULL),
-                    // post-linearize stores carry the actual index op.
                     Op::Store { index, .. } => {
-                        if shaped_params {
-                            debug_assert!(index.is_null(), "pre-linearize store must have a NULL index");
+                        if index.is_null() {
+                            null_index_stores += 1;
+                        } else {
+                            indexed_stores += 1;
                         }
                     }
                     Op::Load { .. }
@@ -61,15 +61,16 @@ impl Kernel {
                 scan = self.next_op(scan);
             }
         }
-        if shaped_params && has_post_linearize_ops {
-            println!("Invalid mixed kernel: pre-linearize params (non-null shapes) alongside post-linearize ops.");
+        debug_assert!(null_index_stores + indexed_stores > 0, "kernel must contain at least one store");
+        if null_index_stores > 0 && indexed_stores > 0 {
+            println!("Invalid mixed kernel: stores with both NULL and actual indices.");
             self.debug();
             panic!();
         }
 
         // Verify param/storage ordering: global params (RO) → GlobalMut params → local storages → everything else.
         // Only meaningful post-linearization; skipped for pre-linearize DAGs.
-        if !shaped_params {
+        if null_index_stores == 0 {
             debug_assert!(
                 !has_move_or_reduce,
                 "post-linearize kernel must not contain Move/Reduce ops"
@@ -123,6 +124,12 @@ impl Kernel {
                 }
                 scan = self.next_op(scan);
             }
+        } else {
+            // Pre-linearize DAG: no lowered memory/control ops may exist.
+            debug_assert!(
+                !has_post_linearize_ops,
+                "pre-linearize kernel must not contain Load/Storage/Index/Loop ops"
+            );
         }
 
         let mut stack = Vec::new();
@@ -152,10 +159,13 @@ impl Kernel {
                         self.debug();
                         panic!();
                     }
-                    debug_assert_eq!(dtypes[&index], IDX_T);
                     check(op_id, dst, &stack);
                     check(op_id, x, &stack);
-                    check(op_id, index, &stack);
+                    // Pre-linearize stores have a NULL index (whole-view write).
+                    if !index.is_null() {
+                        debug_assert_eq!(dtypes[&index], IDX_T, "store index must be {IDX_T}");
+                        check(op_id, index, &stack);
+                    }
                     dtypes.insert(op_id, dtypes[&x]);
                 }
                 Op::Cast { x, dtype } => {

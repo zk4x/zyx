@@ -1110,6 +1110,33 @@ impl Tensor {
         Ok(Tensor { id: RT.lock().flip(self.id, axes)? })
     }
 
+    /// Pads a single axis with zeros: `lp` zeros on the left, up to total
+    /// length `len` (tinygrad convention; right padding is
+    /// `len - lp - orig_len`). `lp` and `len` are scalar tensors.
+    ///
+    /// # Errors
+    /// Returns error if the axis is out of range or the padding is invalid.
+    #[track_caller]
+    pub fn pad_zeros_axis(&self, axis: UAxis, lp: Tensor, len: Tensor) -> Result<Tensor, ZyxError> {
+        Ok(Tensor { id: RT.lock().pad_zeros(self.id, axis, lp.id, len.id) })
+    }
+
+    /// Applies `(lp, len)` zero padding to a single axis, validating against
+    /// this tensor's shape.
+    fn pad_axis(&self, axis: UAxis, l: i64, r: i64) -> Result<Tensor, ZyxError> {
+        let shape = self.shape();
+        let orig = shape[axis as usize] as i64;
+        let removed = (if l < 0 { -l } else { 0 }) + (if r < 0 { -r } else { 0 });
+        if orig + l + r < 0 || removed >= orig {
+            return Err(ZyxError::shape_error(
+                format!("Invalid padding left={l}, right={r} on dimension size {orig}").into(),
+            ));
+        }
+        let lp = Tensor::from(l);
+        let len = Tensor::from((orig + l + r) as u32);
+        self.pad_zeros_axis(axis, lp, len)
+    }
+
     /// Creates a new tensor by padding zeros around this tensor based on the specified padding configuration.
     /// First padding tuple pads first dimension, second pads second dimension, etc.
     ///
@@ -1133,33 +1160,22 @@ impl Tensor {
     #[track_caller]
     pub fn pad_zeros(&self, padding: impl IntoIterator<Item = (i64, i64)>) -> Result<Tensor, ZyxError> {
         let mut padding: Vec<(i64, i64)> = padding.into_iter().collect();
-        let shape = self.shape();
-        let rank = shape.len();
+        let rank = self.shape().len();
 
         if padding.len() > rank {
             return Err(ZyxError::shape_error(
                 format!("Padding with {} dimensions, but tensor only has rank {rank}", padding.len()).into(),
             ));
         }
-
         padding.extend(std::iter::repeat_n((0i64, 0i64), rank - padding.len()));
 
+        let mut cur = self.clone();
         for (i, &(l, r)) in padding.iter().enumerate() {
-            let mut total: i64 = 0;
-            if l < 0 {
-                total -= l;
-            }
-            if r < 0 {
-                total -= r;
-            }
-            if shape[i] as i64 + l + r < 0 {
-                return Err(ZyxError::shape_error(format!("Invalid padding {padding:?} on shape {shape:?}, on dim {i}").into()));
-            }
-            if Dim::try_from(total).unwrap() >= shape[i] {
-                return Err(ZyxError::shape_error(format!("Invalid padding {padding:?} on shape {shape:?}, on dim {i}").into()));
+            if l != 0 || r != 0 {
+                cur = cur.pad_axis(i as UAxis, l, r)?;
             }
         }
-        Ok(Tensor { id: RT.lock().pad_zeros(self.id, padding) })
+        Ok(cur)
     }
 
     /// Creates a new tensor by padding zeros around this tensor based on the specified padding configuration.
@@ -1185,8 +1201,7 @@ impl Tensor {
     #[track_caller]
     pub fn rpad_zeros(&self, padding: impl IntoIterator<Item = (i64, i64)>) -> Result<Tensor, ZyxError> {
         let mut padding: Vec<(i64, i64)> = padding.into_iter().collect();
-        let shape = self.shape();
-        let rank = shape.len();
+        let rank = self.shape().len();
 
         if padding.len() > rank {
             return Err(ZyxError::shape_error(
@@ -1196,27 +1211,14 @@ impl Tensor {
 
         padding.extend(std::iter::repeat_n((0i64, 0i64), rank - padding.len()));
         padding.reverse();
-        //println!("padding={padding:?}");
 
+        let mut cur = self.clone();
         for (i, &(l, r)) in padding.iter().enumerate() {
-            let mut total: i64 = 0;
-            if l < 0 {
-                total -= l;
-            }
-            if r < 0 {
-                total -= r;
-            }
-            if shape[i] as i64 + l + r < 0 {
-                return Err(ZyxError::shape_error(
-                    format!("Invalid padding left={l}, right={r} on dimension size {}", shape[i]).into(),
-                ));
-            }
-            if Dim::try_from(total).unwrap() >= shape[i] {
-                return Err(ZyxError::shape_error(format!("Invalid padding {padding:?} on shape {shape:?}").into()));
+            if l != 0 || r != 0 {
+                cur = cur.pad_axis(i as UAxis, l, r)?;
             }
         }
-
-        Ok(Tensor { id: RT.lock().pad_zeros(self.id, padding) })
+        Ok(cur)
     }
 
     /// Constant padding

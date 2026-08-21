@@ -3,7 +3,7 @@ use std::collections::BTreeSet;
 use crate::{
     Map, Set,
     graph::{ClassId, Graph, JitKernelData, JitKernelId, Node},
-    kernel::{DeviceId, Kernel, MemLayout, MoveOp, Op, OpId, ParamKind},
+    kernel::{DeviceId, IDX_T, Kernel, MemLayout, MoveOp, Op, OpId, ParamKind},
     shape::{Dim, UAxis},
     slab::{Slab, SlabId},
 };
@@ -466,11 +466,11 @@ impl Graph {
                         self.push_outputs(kid, cid, *rcs.get(&cid).unwrap());
                         visited.insert(cid, (kid, result_op));
                     }
-                    Node::Pad { x, axis, lp, rp } => {
+                    Node::Pad { x, axis, lp, len } => {
                         let (mut kid, mut op_id) = visited[&x];
                         (kid, op_id) = self.duplicate_or_store_class(x, kid, op_id, &mut visited, &mut rcs, false);
                         let mut pads: [Option<OpId>; 2] = [None, None];
-                        for (i, pad) in [lp, rp].into_iter().enumerate() {
+                        for (i, pad) in [lp, len].into_iter().enumerate() {
                             let (mut pkid, mut pop) = visited[&pad];
                             if pkid != kid {
                                 let kid_stores = self.jit_kernels[kid].kernel.contains_stores();
@@ -493,7 +493,7 @@ impl Graph {
                         self.consume(x, kid, &mut visited, &mut rcs);
                         let result_op = self.jit_kernels[kid].kernel.push_back(Op::Move {
                             x: op_id,
-                            mop: Box::new(MoveOp::Pad { axis, lp: pads[0].unwrap(), rp: pads[1].unwrap() }),
+                            mop: Box::new(MoveOp::Pad { axis, lp: pads[0].unwrap(), len: pads[1].unwrap() }),
                         });
                         self.push_outputs(kid, cid, *rcs.get(&cid).unwrap());
                         visited.insert(cid, (kid, result_op));
@@ -675,9 +675,57 @@ impl Graph {
         panic!();*/
     }
 
+    /// Build a kernel-IR shape stack from a class's symbolic shape: const
+    /// dim classes become const indices, symbolic dim leaves become scalar
+    /// `Param { kind: Variable }` of `IDX_T`.
+    fn add_class_shape(&mut self, kid: JitKernelId, cid: ClassId) -> OpId {
+        let consts: Vec<Option<crate::dtype::Constant>> = self
+            .shape(cid)
+            .into_iter()
+            .map(|dim| match &self.nodes[self.classes[dim].nodes[0]].node {
+                Node::Const(c) => Some(*c),
+                _ => None,
+            })
+            .collect();
+        let kernel = &mut self.jit_kernels[kid].kernel;
+        let dim_ops: Vec<OpId> = consts
+            .into_iter()
+            .map(|c| match c {
+                Some(c) => kernel.push_back(Op::Const(c)),
+                None => kernel.param(IDX_T, ParamKind::Variable, OpId::NULL),
+            })
+            .collect();
+        match dim_ops.len() {
+            0 => OpId::NULL,
+            1 => dim_ops[0],
+            _ => kernel.stack(&dim_ops),
+        }
+    }
+
     fn new_load_kernel(&mut self, cid: ClassId, rc: u32) -> (JitKernelId, OpId) {
         let mut kernel = Kernel::new(DeviceId::NULL);
-        let shape = kernel.add_shape(self.shape(cid));
+        let shape = {
+            let dim_consts: Vec<Option<crate::dtype::Constant>> = self
+                .shape(cid)
+                .into_iter()
+                .map(|dim| match &self.nodes[self.classes[dim].nodes[0]].node {
+                    Node::Const(c) => Some(*c),
+                    _ => None,
+                })
+                .collect();
+            let dim_ops: Vec<OpId> = dim_consts
+                .into_iter()
+                .map(|c| match c {
+                    Some(c) => kernel.push_back(Op::Const(c)),
+                    None => kernel.param(IDX_T, ParamKind::Variable, OpId::NULL),
+                })
+                .collect();
+            match dim_ops.len() {
+                0 => OpId::NULL,
+                1 => dim_ops[0],
+                _ => kernel.stack(&dim_ops),
+            }
+        };
         let op_id = kernel.param(self.dtype(cid), ParamKind::Global, shape);
         let kid = self.jit_kernels.push(JitKernelData {
             kernel,
@@ -702,9 +750,8 @@ impl Graph {
 
         if !self.jit_kernels[kid].loads.contains(&cid) {
             let dtype = self.dtype(cid);
-            let dims: Vec<Dim> = self.shape(cid).to_vec();
+            let shape = self.add_class_shape(kid, cid);
             let kernel = &mut self.jit_kernels[kid].kernel;
-            let shape = kernel.add_shape(&dims);
             let dst = kernel.param(dtype, ParamKind::GlobalMut, shape);
             kernel.store(dst, op_id, OpId::NULL, MemLayout::Scalar);
             self.jit_kernels[kid].stores.push(cid);

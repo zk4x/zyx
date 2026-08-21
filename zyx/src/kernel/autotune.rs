@@ -568,8 +568,7 @@ impl Kernel {
         let mut items = Vec::new();
         let mut visited = Set::default();
 
-        // Initial seed
-        let mut kernel = self.clone();
+        // Initial seed (`kernel` was cloned and linearized above)
         kernel.delete_zero_len_indices();
         kernel.renumber_indices();
         kernel.run_always_on_optimizations();

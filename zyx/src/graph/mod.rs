@@ -18,7 +18,7 @@ use crate::{
     DType, Map, Set, ZyxError,
     backend::{BufferId, Device, PoolId, ProgramId},
     dtype::Constant,
-    kernel::{BOp, DeviceId, Kernel, MoveOp, Op, OpId, ParamKind, UOp},
+    kernel::{BOp, DeviceId, IDX_T, Kernel, MoveOp, Op, OpId, ParamKind, UOp},
     runtime::{KernelData, KernelId, Runtime, TensorData, loads_dropped_by_prune},
     shape::{Dim, UAxis},
     slab::{Slab, SlabId},
@@ -102,6 +102,9 @@ pub(crate) enum Node {
     Leaf {
         dtype: DType,
         leaf_id: u32,
+        /// Shape of the leaf as a class: a Stack of dim classes (Const dims or
+        /// symbolic dim leaves). `ClassId::NULL` for scalars (`[]` shape).
+        shape: ClassId,
     },
     Expand {
         x: ClassId,
@@ -118,8 +121,11 @@ pub(crate) enum Node {
     Pad {
         x: ClassId,
         axis: UAxis,
+        /// Left padding amount, as a dim class.
         lp: ClassId,
-        rp: ClassId,
+        /// Total padded length of `axis` (`orig_len + lp + rp`), as a dim
+        /// class (tinygrad convention). Right padding is `len - lp - orig_len`.
+        len: ClassId,
     },
     Flip {
         x: ClassId,
@@ -180,12 +186,14 @@ impl PartialEq for Node {
     fn eq(&self, other: &Self) -> bool {
         match (self, other) {
             (Self::Const(a), Self::Const(b)) => a == b,
-            (Self::Leaf { leaf_id: a, .. }, Self::Leaf { leaf_id: b, .. }) => a == b,
+            (Self::Leaf { leaf_id: a, dtype: ad, shape: as_ }, Self::Leaf { leaf_id: b, dtype: bd, shape: bs }) => {
+                a == b && ad == bd && as_ == bs
+            }
             (Self::Expand { x: a, shape: as_ }, Self::Expand { x: b, shape: bs }) => a == b && as_ == bs,
             (Self::Permute { x: a, axes: aa }, Self::Permute { x: b, axes: ba }) => a == b && aa == ba,
             (Self::Reshape { x: a, shape: as_, .. }, Self::Reshape { x: b, shape: bs, .. }) => a == b && as_ == bs,
-            (Self::Pad { x: a, axis: aa, lp: al, rp: ar }, Self::Pad { x: b, axis: ba, lp: bl, rp: br }) => {
-                a == b && aa == ba && al == bl && ar == br
+            (Self::Pad { x: a, axis: aa, lp: al, len: aln }, Self::Pad { x: b, axis: ba, lp: bl, len: bln }) => {
+                a == b && aa == ba && al == bl && aln == bln
             }
             (Self::Flip { x: a, axes: aa }, Self::Flip { x: b, axes: ba }) => a == b && aa == ba,
             (Self::Reduce { x: a, rop: ar, axes: aa }, Self::Reduce { x: b, rop: br, axes: ba }) => {
@@ -215,9 +223,10 @@ impl std::hash::Hash for Node {
                 0u8.hash(state);
                 v.hash(state);
             }
-            Self::Leaf { leaf_id, .. } => {
+            Self::Leaf { leaf_id, shape, .. } => {
                 1u8.hash(state);
                 leaf_id.hash(state);
+                shape.hash(state);
             }
             Self::Expand { x, shape } => {
                 2u8.hash(state);
@@ -234,12 +243,12 @@ impl std::hash::Hash for Node {
                 x.hash(state);
                 shape.hash(state);
             }
-            Self::Pad { x, axis, lp, rp } => {
+            Self::Pad { x, axis, lp, len } => {
                 5u8.hash(state);
                 x.hash(state);
                 axis.hash(state);
                 lp.hash(state);
-                rp.hash(state);
+                len.hash(state);
             }
             Self::Stack { ops } => {
                 13u8.hash(state);
@@ -350,7 +359,6 @@ pub struct JitKernelData {
 
 #[derive(Debug)]
 pub struct Graph {
-    shapes: Map<ClassId, Vec<Dim>>,
     pub(crate) hashcons: Map<Node, NodeId>,
     pub(crate) nodes: Slab<NodeId, NodeData>,
     pub(crate) classes: Slab<ClassId, EClass>,
@@ -375,7 +383,7 @@ impl Node {
             Self::Expand { x, shape } => vec![*x, *shape],
             Self::Permute { x, .. } => vec![*x],
             Self::Reshape { x, shape, .. } => vec![*x, *shape],
-            Self::Pad { x, lp, rp, .. } => vec![*x, *lp, *rp],
+            Self::Pad { x, lp, len, .. } => vec![*x, *lp, *len],
             Self::Narrow { x, axis: _, start, len } => vec![*x, *start, *len],
             Self::Flip { x, .. } => vec![*x],
             Self::Stack { ops } => ops.to_vec(),
@@ -395,7 +403,6 @@ impl Node {
 impl Graph {
     pub fn new() -> Self {
         Self {
-            shapes: Map::default(),
             hashcons: Map::default(),
             nodes: Slab::new(),
             classes: Slab::new(),
@@ -603,7 +610,7 @@ impl Graph {
                     Node::Expand { .. } => "Expand".into(),
                     Node::Permute { axes, .. } => format!("Permute {:?}", axes),
                     Node::Reshape { shape, .. } => format!("Reshape shape={shape:?}"),
-                    Node::Pad { axis, lp, rp, .. } => format!("Pad axis={axis:?} lp={lp:?} rp={rp:?}"),
+                    Node::Pad { axis, lp, len, .. } => format!("Pad axis={axis:?} lp={lp:?} len={len:?}"),
                     Node::Narrow { axis, start, len, x } => format!("Narrow {x:?} axis={axis:?} start={start:?} len={len:?}"),
                     Node::Flip { axes, .. } => format!("Flip {:?}", axes),
                     Node::Stack { ops } => format!("Stack {:?}", ops),
@@ -1052,29 +1059,54 @@ impl Graph {
         self.shape(class).len() as UAxis
     }
 
-    pub fn shape(&self, class: ClassId) -> &[Dim] {
-        if let Some(shape) = self.shapes.get(&class) {
-            return shape;
-        }
+    /// Shape of a class as dim classes (tinygrad-style symbolic shapes):
+    /// each element is a class evaluating to a dimension value — a `Const`
+    /// for static dims or a symbolic dim leaf otherwise. Empty vec for
+    /// scalars.
+    pub fn shape(&self, class: ClassId) -> Vec<ClassId> {
         match &self.nodes[self.classes[class].nodes[0]].node {
-            Node::Const(_) => &[1],
-            Node::Expand { x, .. }
+            Node::Const(_) | Node::Stack { .. } => Vec::new(),
+            Node::Leaf { shape, .. } => self.dims(*shape),
+            Node::Expand { shape, .. } | Node::Reshape { shape, .. } => self.dims(*shape),
+            Node::Permute { x, axes } => {
+                let s = self.shape(*x);
+                axes.iter().map(|&a| s[a as usize]).collect()
+            }
+            Node::Pad { x, axis, len, .. } => {
+                let mut s = self.shape(*x);
+                s[*axis as usize] = *len;
+                s
+            }
+            Node::Narrow { x, axis, len, .. } => {
+                let mut s = self.shape(*x);
+                s[*axis as usize] = *len;
+                s
+            }
+            Node::Flip { x, .. }
             | Node::Cast { x, .. }
-            | Node::Permute { x, .. }
-            | Node::Reshape { x, .. }
-            | Node::Pad { x, .. }
-            | Node::Flip { x, .. }
-            | Node::Narrow { x, .. }
-            | Node::Reduce { x, .. }
             | Node::Unary { x, .. }
             | Node::After { x, .. }
             | Node::ToDevice { x, .. }
             | Node::Contiguous { x }
             | Node::Binary { x, .. } => self.shape(*x),
-            Node::Stack { .. } => &[],
+            Node::Reduce { x, axes, .. } => {
+                let s = self.shape(*x);
+                s.into_iter().enumerate().filter(|(i, _)| !axes.contains(&*i)).map(|(_, d)| d).collect()
+            }
             Node::Assign { dst, .. } => self.shape(*dst),
             Node::Kernel { outputs, .. } => self.shape(outputs[0]),
-            op => todo!("shape for {op:?}"),
+        }
+    }
+
+    /// Interpret a shape class: `NULL` is `[]`, a `Stack` of dim classes is
+    /// its ops, anything else is a single bare dim class (rank-1 convention).
+    pub fn dims(&self, shape: ClassId) -> Vec<ClassId> {
+        if shape.is_null() {
+            return Vec::new();
+        }
+        match &self.nodes[self.classes[shape].nodes[0]].node {
+            Node::Stack { ops } => ops.to_vec(),
+            _ => vec![shape],
         }
     }
 
@@ -1132,8 +1164,37 @@ impl Runtime {
         // count the handles), so the tensor reverts to eager when the graph dies.
         if self.buffer_map.contains_key(&tid) {
             let dtype = self.dtype(tid);
-            let shape = self.shape(tid).to_vec();
-            let (_, class_id) = self.push_leaf_node(graph_id, dtype, shape);
+            // Build the leaf's symbolic shape class from the eager kernel's
+            // own Param shape stack: const dims become Const classes, dynamic
+            // dims (`Param { kind: Variable }`) become symbolic dim leaves.
+            let shape_op = match self.kernels[kernel_id].kernel.ops[my_op_id].op {
+                Op::Param { shape, .. } => shape,
+                ref op => unreachable!("promote_to_graph: realized tensor op {op:?} is not a Param"),
+            };
+            let dim_entries: Vec<OpId> = if shape_op.is_null() {
+                Vec::new()
+            } else {
+                match &self.kernels[kernel_id].kernel.ops[shape_op].op {
+                    Op::Stack { ops } => ops.as_ref().to_vec(),
+                    _ => vec![shape_op],
+                }
+            };
+            let mut dim_classes = Vec::with_capacity(dim_entries.len());
+            for entry in dim_entries {
+                dim_classes.push(match self.kernels[kernel_id].kernel.ops[entry].op {
+                    Op::Const(c) => self.push_node(graph_id, Node::Const(c)).1,
+                    Op::Param { kind: ParamKind::Variable, .. } => {
+                        self.push_leaf_node(graph_id, IDX_T, ClassId::NULL).1
+                    }
+                    ref op => unreachable!("promote_to_graph: dim op {op:?} in param shape stack"),
+                });
+            }
+            let shape_class = match dim_classes.len() {
+                0 => ClassId::NULL,
+                1 => dim_classes[0],
+                _ => self.push_node(graph_id, Node::Stack { ops: dim_classes.into_boxed_slice() }).1,
+            };
+            let (_, class_id) = self.push_leaf_node(graph_id, dtype, shape_class);
             self.graphs[graph_id].leaf_map.insert(class_id, tid);
             self.graphs[graph_id].leaf_classes.push(class_id);
             self.graphs[graph_id].ref_count += 1;
@@ -1275,10 +1336,10 @@ impl Runtime {
                                 let (_, class_id) = self.push_node(graph_id, Node::Permute { x: x_class, axes });
                                 class_id
                             }
-                            MoveOp::Pad { axis, lp, rp } => {
+                            MoveOp::Pad { axis, lp, len } => {
                                 let lp = op_to_class[&lp];
-                                let rp = op_to_class[&rp];
-                                let (_, class_id) = self.push_node(graph_id, Node::Pad { x: x_class, axis: *axis, lp, rp });
+                                let len = op_to_class[&len];
+                                let (_, class_id) = self.push_node(graph_id, Node::Pad { x: x_class, axis: *axis, lp, len });
                                 class_id
                             }
                             MoveOp::Narrow { axis, start, len } => {
@@ -1516,16 +1577,39 @@ impl Runtime {
             }
         }
 
+        // Capture dtype and symbolic shape while tid is still graph-affiliated.
+        let dtype = self.dtype(tid);
+        let dim_consts: Vec<Option<Constant>> = self.graphs[graph_id]
+            .shape(self.tensors[tid].class_id)
+            .into_iter()
+            .map(|dim| match &self.graphs[graph_id].nodes[self.graphs[graph_id].classes[dim].nodes[0]].node {
+                Node::Const(c) => Some(*c),
+                _ => None,
+            })
+            .collect();
+
         self.tensors[tid].class_id = ClassId::NULL;
         self.tensors[tid].graph_id = GraphId::NULL;
-        let dtype = self.dtype(tid);
         let kernel_id = self.kernels.push(KernelData {
             outputs: Set::from_iter([tid]),
             loads: Vec::new(),
             stores: Vec::new(),
             kernel: Kernel::new(DeviceId::AUTO),
         });
-        let shape = todo!();
+        let dim_ops: Vec<OpId> = dim_consts
+            .into_iter()
+            .map(|c| match c {
+                Some(c) => self.kernels[kernel_id].kernel.push_back(Op::Const(c)),
+                None => self.kernels[kernel_id]
+                    .kernel
+                    .param(crate::kernel::IDX_T, ParamKind::Variable, OpId::NULL),
+            })
+            .collect();
+        let shape = match dim_ops.len() {
+            0 => OpId::NULL,
+            1 => dim_ops[0],
+            _ => self.kernels[kernel_id].kernel.stack(&dim_ops),
+        };
         let op_id = self.kernels[kernel_id].kernel.push_back(Op::Param { dtype, kind: ParamKind::Global, shape });
         self.kernels[kernel_id].loads.push(tid);
         self.tensors[tid].kernel_id = kernel_id;
@@ -1542,11 +1626,11 @@ impl Runtime {
         );
     }
 
-    pub fn push_leaf_node(&mut self, graph_id: GraphId, dtype: DType, shape: Vec<Dim>) -> (NodeId, ClassId) {
+    pub fn push_leaf_node(&mut self, graph_id: GraphId, dtype: DType, shape: ClassId) -> (NodeId, ClassId) {
         let g = &mut self.graphs[graph_id];
         let leaf_id = g.max_leaf_id;
         g.max_leaf_id += 1;
-        let node = Node::Leaf { dtype, leaf_id };
+        let node = Node::Leaf { dtype, leaf_id, shape };
         if let Some(&nid) = g.hashcons.get(&node) {
             return (nid, g.nodes[nid].class_of);
         }
@@ -1554,13 +1638,25 @@ impl Runtime {
         let cid = g.classes.push(EClass { nodes: vec![nid] });
         g.nodes[nid].class_of = cid;
         g.hashcons.insert(node, nid);
-        g.shapes.insert(cid, shape);
         (nid, cid)
+    }
+
+    /// Numeric shape of a class for the runtime's `shapes` cache: static dim
+    /// classes resolve to their const value, symbolic dims to `0`.
+    fn resolved_shape(&self, graph_id: GraphId, class: ClassId) -> Vec<Dim> {
+        self.graphs[graph_id]
+            .shape(class)
+            .into_iter()
+            .map(|dim| match &self.graphs[graph_id].nodes[self.graphs[graph_id].classes[dim].nodes[0]].node {
+                Node::Const(c) => c.as_dim().unwrap_or(0),
+                _ => 0,
+            })
+            .collect()
     }
 
     pub fn new_graph_tensor(&mut self, graph_id: GraphId, class_id: ClassId) -> TensorId {
         self.graphs[graph_id].ref_count += 1;
-        let shape = self.graphs[graph_id].shape(class_id).to_vec();
+        let shape = self.resolved_shape(graph_id, class_id);
         let tid = self.tensors.push(TensorData {
             kernel_id: KernelId::NULL,
             op_id: OpId::NULL,
@@ -1599,64 +1695,16 @@ impl Runtime {
             }
             Node::Expand { .. } => { /* shape dims not yet resolved (Stack). Re-enable once shape() resolves Stack. */ }
             Node::Pad { x, axis, .. } => {
-                let in_shape = self.graphs[graph_id].shape(x);
+                let in_rank = self.graphs[graph_id].rank(x);
                 assert!(
-                    axis < in_shape.len(),
-                    "Pad: axis {} out of range for input rank {} (shape {:?})",
+                    axis < in_rank,
+                    "Pad: axis {} out of range for input rank {}",
                     axis,
-                    in_shape.len(),
-                    in_shape
+                    in_rank
                 );
             }
             _ => {}
         }
-        let dim_of = |class: ClassId| -> Dim {
-            match &self.graphs[graph_id].nodes[self.graphs[graph_id].classes[class].nodes[0]].node {
-                Node::Const(c) => c.as_dim().unwrap_or_else(|| panic!("dim class {class:?} is not a constant")),
-                op => todo!("symbolic dim class {op:?}"),
-            }
-        };
-        let out_shape: Option<Vec<Dim>> = match &node {
-            Node::Permute { x, axes } => Some(crate::shape::permute(self.graphs[graph_id].shape(*x), axes)),
-            Node::Flip { x, .. } => Some(self.graphs[graph_id].shape(*x).to_vec()),
-            Node::Pad { x, axis, lp, rp } => {
-                let mut s = self.graphs[graph_id].shape(*x).to_vec();
-                s[*axis as usize] += dim_of(*lp) + dim_of(*rp);
-                Some(s)
-            }
-            Node::Narrow { x, axis, len, .. } => {
-                let mut s = self.graphs[graph_id].shape(*x).to_vec();
-                s[*axis as usize] = dim_of(*len);
-                Some(s)
-            }
-            Node::Reshape { shape, .. } | Node::Expand { shape, .. } => {
-                let sc = *shape;
-                match &self.graphs[graph_id].nodes[self.graphs[graph_id].classes[sc].nodes[0]].node {
-                    Node::Stack { ops } => Some(ops.iter().map(|&o| dim_of(o)).collect()),
-                    op => todo!("shape class is not a Stack: {op:?}"),
-                }
-            }
-            Node::Reduce { x, axes, .. } => {
-                let in_shape = self.graphs[graph_id].shape(*x);
-                for &a in axes.iter() {
-                    assert!(
-                        a < in_shape.len(),
-                        "Reduce: axis {} out of range for input rank {} (shape {:?})",
-                        a,
-                        in_shape.len(),
-                        in_shape
-                    );
-                }
-                let mut s: Vec<Dim> =
-                    in_shape.iter().enumerate().filter(|(i, _)| !axes.contains(&*i)).map(|(_, &d)| d).collect();
-                if s.is_empty() {
-                    // All dims reduced: kernelizer reshapes the scalar to [1].
-                    s.push(1);
-                }
-                Some(s)
-            }
-            _ => None,
-        };
         let g = &mut self.graphs[graph_id];
         if let Some(&nid) = g.hashcons.get(&node) {
             return (nid, g.nodes[nid].class_of);
@@ -1665,9 +1713,6 @@ impl Runtime {
         let cid = g.classes.push(EClass { nodes: vec![nid] });
         g.nodes[nid].class_of = cid;
         g.hashcons.insert(node, nid);
-        if let Some(shape) = out_shape {
-            g.shapes.insert(cid, shape);
-        }
         (nid, cid)
     }
 

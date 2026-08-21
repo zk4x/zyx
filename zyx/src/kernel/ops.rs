@@ -296,7 +296,9 @@ pub enum MoveOp {
     /// Flip axes
     Flip { axes: Box<[UAxis]> },
     /// Pad axis
-    Pad { axis: UAxis, lp: OpId, rp: OpId },
+    /// Pad with `lp` zeros on the left, to total axis length `len`
+    /// (tinygrad convention). Right padding is `len - lp - orig_len`.
+    Pad { axis: UAxis, lp: OpId, len: OpId },
     /// Slice axis
     Narrow { axis: UAxis, start: OpId, len: OpId },
 }
@@ -310,10 +312,10 @@ impl MoveOp {
             MoveOp::Reshape { shape } => Box::new(MoveOp::Reshape { shape: op_map.get(shape).copied().unwrap_or(fallback) }),
             MoveOp::Expand { shape } => Box::new(MoveOp::Expand { shape: op_map.get(shape).copied().unwrap_or(fallback) }),
             MoveOp::Permute { axes } => Box::new(MoveOp::Permute { axes: axes.clone() }),
-            MoveOp::Pad { axis, lp, rp } => Box::new(MoveOp::Pad {
+            MoveOp::Pad { axis, lp, len } => Box::new(MoveOp::Pad {
                 axis: *axis,
                 lp: op_map.get(lp).copied().unwrap_or(fallback),
-                rp: op_map.get(rp).copied().unwrap_or(fallback),
+                len: op_map.get(len).copied().unwrap_or(fallback),
             }),
             MoveOp::Flip { axes } => Box::new(MoveOp::Flip { axes: axes.clone() }),
             MoveOp::Narrow { axis, start, len } => {
@@ -466,12 +468,19 @@ impl Op {
             &Op::Move { x, ref mop } => match mop.as_ref() {
                 MoveOp::Reshape { shape, .. } | MoveOp::Expand { shape } => vec![x, *shape],
                 MoveOp::Permute { .. } | MoveOp::Flip { .. } => vec![x],
-                MoveOp::Pad { lp, rp, .. } => vec![x, *lp, *rp],
+                MoveOp::Pad { lp, len, .. } => vec![x, *lp, *len],
                 MoveOp::Narrow { start, len, .. } => vec![x, *start, *len],
             },
             Op::Reduce { x, reduce_axis, .. } => vec![*x, *reduce_axis],
             Op::ReduceTile { x, .. } => vec![*x],
-            &Op::Store { dst, src, index, .. } => vec![dst, src, index],
+            &Op::Store { dst, src, index, .. } => {
+                // Pre-linearize stores carry a NULL index (whole-view write).
+                if index.is_null() {
+                    vec![dst, src]
+                } else {
+                    vec![dst, src, index]
+                }
+            }
             Op::Cast { x, .. } => vec![*x],
             Op::Unary { x, .. } => vec![*x],
             &Op::Binary { x, y, .. } => vec![x, y],
@@ -505,12 +514,19 @@ impl Op {
             Op::Move { x, mop } => match mop.as_mut() {
                 MoveOp::Reshape { shape, .. } | MoveOp::Expand { shape } => vec![x, shape],
                 MoveOp::Permute { .. } | MoveOp::Flip { .. } => vec![x],
-                MoveOp::Pad { lp, rp, .. } => vec![x, lp, rp],
+                MoveOp::Pad { lp, len, .. } => vec![x, lp, len],
                 MoveOp::Narrow { start, len, .. } => vec![x, start, len],
             },
             Op::Reduce { x, reduce_axis, .. } => vec![x, reduce_axis],
             Op::ReduceTile { x, .. } => vec![x],
-            Op::Store { dst, src: x, index, .. } => vec![dst, x, index],
+            Op::Store { dst, src: x, index, .. } => {
+                // Pre-linearize stores carry a NULL index (whole-view write).
+                if index.is_null() {
+                    vec![dst, x]
+                } else {
+                    vec![dst, x, index]
+                }
+            }
             Op::Cast { x, .. } => vec![x],
             Op::Unary { x, .. } => vec![x],
             Op::Binary { x, y, .. } => vec![x, y],

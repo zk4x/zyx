@@ -23,12 +23,24 @@ use crate::{
 mod matmul;
 
 impl Graph {
+    /// Resolves a class's symbolic shape to numeric dims, or `None` if any
+    /// dim is not a constant.
+    fn const_shape(&self, cid: ClassId) -> Option<Vec<Dim>> {
+        self.shape(cid)
+            .into_iter()
+            .map(|dim| match &self.nodes[self.classes[dim].nodes[0]].node {
+                Node::Const(c) => c.as_dim(),
+                _ => None,
+            })
+            .collect()
+    }
+
     /// Finds a `Reduce(Add)` over the single trailing axis of a 3D product.
     /// Returns the product class and the contraction dim `k`.
     fn reduce_add_last(&self, cid: ClassId) -> Option<(ClassId, Dim)> {
         self.classes[cid].nodes.iter().find_map(|&nid| match &self.nodes[nid].node {
             Node::Reduce { x, rop: BOp::Add, axes } => {
-                let prod_shape: Vec<Dim> = todo!();
+                let prod_shape = self.const_shape(*x)?;
                 if prod_shape.len() == 3 && axes.len() == 1 && axes[0] == prod_shape.len() - 1 {
                     Some((*x, prod_shape[2]))
                 } else {
@@ -68,7 +80,7 @@ impl Graph {
             Node::Expand { x, .. } => Some(*x),
             _ => None,
         })?;
-        Some((x, todo!()))
+        Some((x, self.const_shape(x)?))
     }
 
     /// Finds the source of a 2D `Permute [1, 0]` (a `[n, k]` transposed from

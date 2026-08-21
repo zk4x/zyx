@@ -571,7 +571,8 @@ impl Kernel {
         // Move Op::Const ops right after the leading param/storage ops
         let mut op_id = start;
         let mut start = self.prev_op(start);
-        while !op_id.is_null() {
+        // start == NULL means the consts already sit at the very beginning.
+        while !op_id.is_null() && !start.is_null() {
             let next = self.next_op(op_id);
             if let Op::Const(_) = self.at(op_id) {
                 self.move_op_after(op_id, start);
@@ -589,7 +590,7 @@ impl Kernel {
         // Move Op::Index ops right after Op::Const ops
         let mut op_id = start;
         let mut start = self.prev_op(start);
-        while !op_id.is_null() {
+        while !op_id.is_null() && !start.is_null() {
             let next = self.next_op(op_id);
             if let Op::Index { .. } = self.at(op_id) {
                 self.move_op_after(op_id, start);
