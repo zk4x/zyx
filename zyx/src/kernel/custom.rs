@@ -599,7 +599,7 @@ impl CompiledKernel {
         // Runtime::eagerify/add_store does), never a NULL op id. NULL op ids
         // break any eager op built on the forward result (e.g. a .cast()).
         let mut tensors = Vec::new();
-        for (dtype, buf_id) in self.outputs.iter().copied().zip(output_bufs) {
+        for ((dtype, buf_id), shape) in self.outputs.iter().copied().zip(output_bufs).zip(shapes) {
             let id = rt.tensors.push(TensorData {
                 kernel_id: KernelId::NULL,
                 op_id: OpId::NULL,
@@ -616,6 +616,7 @@ impl CompiledKernel {
             rt.tensors[id].op_id = op_id;
             rt.retain(id);
             rt.buffer_map.insert(id, buf_id);
+            rt.shapes.insert(id, shape.clone());
             tensors.push(Tensor { id })
         }
 

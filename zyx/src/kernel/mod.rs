@@ -877,6 +877,7 @@ impl Kernel {
     /// Resolves a *shape* op (a `Stack`, a bare `Const` dim, or a `Param`'s
     /// shape) into its per-dimension op ids.
     pub(crate) fn shape_ids(&self, mut op_id: OpId) -> Vec<OpId> {
+        debug_assert!(!op_id.is_null());
         for _ in 0..10000 {
             match self.ops[op_id].op {
                 Op::Const(_) => return vec![op_id],

@@ -364,7 +364,9 @@ impl Kernel {
         let &Op::Loop { len: loop_len_id } = self.at(loop_id) else {
             return false;
         };
-        let Some(loop_len) = self.resolve_dim(loop_len_id) else { return false };
+        let Some(loop_len) = self.resolve_dim(loop_len_id) else {
+            return false;
+        };
         let &Op::Storage { dtype, scope: MemScope::Register, len } = self.at(acc_id) else {
             return false;
         };
@@ -756,7 +758,6 @@ mod tests {
         let r114 = k.param(DType::U16, ParamKind::Global, OpId::NULL);
         let r122 = k.param(DType::U16, ParamKind::GlobalMut, OpId::NULL);
         let sh3 = k.const_idx(3u32);
-        let sh5 = k.const_idx(5u32);
         let r7 = k.const_idx(0u32);
         let r22 = k.const_val(0u16);
         let r74 = k.const_idx(3u32);
@@ -837,7 +838,6 @@ mod tests {
         let r38 = k.param(DType::I32, ParamKind::Global, OpId::NULL);
         let r49 = k.param(DType::F32, ParamKind::Global, OpId::NULL);
         let r57 = k.param(DType::F32, ParamKind::GlobalMut, OpId::NULL);
-        let sh3 = k.const_idx(3u32);
         let r1 = k.const_idx(0u32);
         let r8 = k.const_val(0.0f32);
         let r15 = k.const_idx(dim);
@@ -1030,9 +1030,6 @@ mod tests {
 
         let r67 = k.param(DType::U32, ParamKind::Global, OpId::NULL);
         let r30 = k.param(DType::F16, ParamKind::GlobalMut, OpId::NULL);
-        let sh1 = k.const_idx(1u32);
-        let sh2 = k.const_idx(2u32);
-        let sh8 = k.const_idx(8u32);
         let c0 = k.const_idx(0u32);
         let c1 = k.const_idx(1u32);
         let c2 = k.const_idx(2u32);
