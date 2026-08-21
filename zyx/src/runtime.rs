@@ -279,6 +279,44 @@ impl Runtime {
         caps
     }
 
+    /// Tensor lifetime architecture.
+    ///
+    /// A tensor lives in one of three states:
+    /// - **eager-only** (`class_id` null): the tensor is an output op of its
+    ///   producing kernel (`kernel_id`/`op_id`). Its lifetime is tied to its
+    ///   refcount (`rc` = handles + kernel loads referencing it).
+    /// - **graph-only** (`class_id` set, `kernel_id` null): created directly as
+    ///   a graph tensor via `new_graph_tensor`.
+    /// - **both** (promoted): an eager tensor that entered a tape scope via
+    ///   `promote_to_graph`. It keeps its `kernel_id`/`op_id` AND gains a
+    ///   `class_id`. The graph has precedence while alive; the eager kernel is
+    ///   left completely untouched (rc/outputs still count this tensor's
+    ///   handles). This is what makes graph death seamless:
+    ///
+    ///   ```text
+    ///   y = x.exp()            // eager kernel: Param -> Exp -> y
+    ///   promote(y)             // replays the kernel into graph nodes;
+    ///                          // y keeps kernel_id, x becomes a leaf
+    ///   ... graph dies ...
+    ///   ```
+    ///
+    ///   Without the kept kernel, y would be dead once the graph dies. Instead
+    ///   y simply reverts to eager mode with zero issues: its kernel and buffer
+    ///   are exactly as they were before promotion.
+    ///
+    /// Death paths (`on_rc_zero`):
+    /// - eager branch: detach from the producer kernel's outputs (pruning ops
+    ///   no surviving output needs), free the buffer, drop the kernel if it was
+    ///   the last live output.
+    /// - graph branch: remove the slab entry; the graph's `ref_count` tracks
+    ///   affiliated tensors and tears the graph down when it hits zero.
+    ///
+    /// Invariants:
+    /// - while a tensor exists in the slab, every non-null `kernel_id` it holds
+    ///   lists that tensor in the kernel's `outputs`;
+    /// - a promoted ("both") tensor is removed only through its graph branch,
+    ///   which must therefore also restore eager consistency for any surviving
+    ///   siblings of its producer kernel.
     pub fn retain(&mut self, x: TensorId) {
         self.tensors[x].rc += 1;
     }
@@ -359,6 +397,38 @@ impl Runtime {
             if self.graphs.contains_id(graph_id) {
                 if !self.graphs[graph_id].is_leaf(class_id) {
                     debug_assert!(!self.buffer_map.contains_key(&x), "dead non-leaf graph tensor holds a buffer");
+                    // A promoted ("both") tensor still counts as an output of
+                    // its producer kernel. Detach it exactly like the eager
+                    // branch below so that surviving siblings keep a consistent
+                    // kernel for their revert-to-eager once the graph dies.
+                    let (producer, op_id) = (self.tensors[x].kernel_id, self.tensors[x].op_id);
+                    if !producer.is_null() {
+                        let (remove_kernel, materialize, pruned) = {
+                            let kd = &mut self.kernels[producer];
+                            kd.outputs.remove(&x);
+                            let mut pruned = Vec::new();
+                            if !kd.outputs.is_empty() && !op_id.is_null() {
+                                let out_ops: Vec<OpId> = kd.outputs.iter().map(|&tid| self.tensors[tid].op_id).collect();
+                                let old_loads = std::mem::take(&mut kd.loads);
+                                let new_loads = kd.kernel.remove_unused_chain(op_id, &out_ops, &old_loads);
+                                kd.loads = new_loads.clone();
+                                pruned = loads_dropped_by_prune(&old_loads, &new_loads);
+                            }
+                            (
+                                kd.outputs.is_empty() && !kd.kernel.contains_stores(),
+                                kd.outputs.is_empty() && kd.kernel.contains_stores(),
+                                pruned,
+                            )
+                        };
+                        for tid in pruned {
+                            self.release_load(tid);
+                        }
+                        if remove_kernel {
+                            self.remove_dead_eager_kernel(producer);
+                        } else if materialize {
+                            self.materialize_kernel(producer).unwrap();
+                        }
+                    }
                     self.tensors.remove(x);
                 }
                 self.graphs[graph_id].ref_count -= 1;

@@ -4,6 +4,7 @@ use crate::{
     Map, Set,
     graph::{ClassId, Graph, JitKernelData, JitKernelId, Node},
     kernel::{DeviceId, Kernel, MemLayout, MoveOp, Op, OpId, ParamKind},
+    shape::Dim,
     slab::{Slab, SlabId},
 };
 
@@ -145,8 +146,41 @@ impl Graph {
                         });
                         visited.insert(cid, (kid, op_id));
                     }
-                    Node::Stack { .. } => {
-                        todo!("kernelize Node::Stack")
+                    Node::Stack { ref ops } => {
+                        // Copy the element list out of the node so the shared
+                        // borrow of self.nodes ends before we mutate kernels.
+                        let ops: Vec<ClassId> = ops.iter().copied().collect();
+                        // Merge every element into the first element's kernel
+                        // (same dance as Binary), then emit a single stack op.
+                        let first = ops[0];
+                        let (mut kid, mut first_op) = visited[&first];
+                        let mut op_ids: Vec<OpId> = Vec::with_capacity(ops.len());
+                        op_ids.push(first_op);
+                        for &elem in ops.iter().skip(1) {
+                            let (mut ekid, mut eop) = visited[&elem];
+                            if ekid != kid {
+                                let kid_stores = self.jit_kernels[kid].kernel.contains_stores();
+                                let ekid_stores = self.jit_kernels[ekid].kernel.contains_stores();
+                                match (kid_stores, ekid_stores) {
+                                    (true, true) => {
+                                        (kid, _) = self.add_store(first, kid, first_op, &mut visited, &rcs);
+                                        (ekid, _) = self.add_store(elem, ekid, eop, &mut visited, &rcs);
+                                    }
+                                    (true, false) => (kid, _) = self.add_store(first, kid, first_op, &mut visited, &rcs),
+                                    (false, true) => (ekid, _) = self.add_store(elem, ekid, eop, &mut visited, &rcs),
+                                    (false, false) => {}
+                                }
+                                self.merge_kernels(ekid, kid, &mut visited);
+                                (_, eop) = visited[&elem];
+                            }
+                            op_ids.push(eop);
+                        }
+                        for &elem in ops.iter() {
+                            self.consume(elem, kid, &mut visited, &mut rcs);
+                        }
+                        let result_op = self.jit_kernels[kid].kernel.stack(&op_ids);
+                        self.push_outputs(kid, cid, rcs[&cid]);
+                        visited.insert(cid, (kid, result_op));
                     }
                     Node::Unary { x, uop } => {
                         let (kid, op_id) = visited[&x];
@@ -493,7 +527,8 @@ impl Graph {
 
     fn new_load_kernel(&mut self, cid: ClassId, rc: u32) -> (JitKernelId, OpId) {
         let mut kernel = Kernel::new(DeviceId::NULL);
-        let op_id = kernel.param(self.dtype(cid), ParamKind::Global, todo!());
+        let shape = kernel.add_shape(self.shape(cid));
+        let op_id = kernel.param(self.dtype(cid), ParamKind::Global, shape);
         let kid = self.jit_kernels.push(JitKernelData {
             kernel,
             outputs: vec![cid; rc as usize],
@@ -516,9 +551,12 @@ impl Graph {
         //println!("outputs={:?}", self.ekernels[kid].outputs);
 
         if !self.jit_kernels[kid].loads.contains(&cid) {
-            let dtype = todo!();
-            let dst = self.jit_kernels[kid].kernel.param(dtype, ParamKind::Global, todo!());
-            self.jit_kernels[kid].kernel.store(dst, op_id, OpId::NULL, MemLayout::Scalar);
+            let dtype = self.dtype(cid);
+            let dims: Vec<Dim> = self.shape(cid).to_vec();
+            let kernel = &mut self.jit_kernels[kid].kernel;
+            let shape = kernel.add_shape(&dims);
+            let dst = kernel.param(dtype, ParamKind::Global, shape);
+            kernel.store(dst, op_id, OpId::NULL, MemLayout::Scalar);
             self.jit_kernels[kid].stores.push(cid);
             visited.remove(&cid);
         }

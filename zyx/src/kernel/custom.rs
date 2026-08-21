@@ -24,7 +24,8 @@ use crate::dtype::Constant;
 use crate::error::BackendError;
 use crate::graph::{ClassId, GraphId};
 use crate::kernel::{
-    BOp, DeviceId, IdxKind, Kernel, MMADType, MMADims, MMALayout, MemLayout, MemScope, MoveOp, Op, OpId, ParamKind, UOp,
+    BOp, DeviceId, IdxKind, IDX_T, Kernel, MMADType, MMADims, MMALayout, MemLayout, MemScope, MoveOp, Op, OpId,
+    ParamKind, UOp,
 };
 use crate::runtime::{KernelData, KernelId, TensorData};
 use crate::shape::UAxis;
@@ -219,6 +220,30 @@ impl Kernel {
     /// Define a kernel parameter.
     pub fn param(&mut self, dtype: DType, kind: ParamKind, shape: OpId) -> OpId {
         self.push_back(Op::Param { dtype, kind, shape })
+    }
+
+    /// Build a shape op from dimension values.
+    ///
+    /// A dim of `0` marks a dynamic/symbolic dimension and becomes a scalar
+    /// `Param { kind: Variable }` of `IDX_T`; any other dim becomes a const
+    /// index. Returns `OpId::NULL` for rank-0, the single dim op for rank-1,
+    /// or a `Stack` for higher ranks.
+    pub fn add_shape(&mut self, shape: &[Dim]) -> OpId {
+        let dim_ops: Vec<OpId> = shape
+            .iter()
+            .map(|&d| {
+                if d == 0 {
+                    self.param(IDX_T, ParamKind::Variable, OpId::NULL)
+                } else {
+                    self.const_idx(d)
+                }
+            })
+            .collect();
+        match dim_ops.len() {
+            0 => OpId::NULL,
+            1 => dim_ops[0],
+            _ => self.stack(&dim_ops),
+        }
     }
 
     /// Define a storage.
@@ -609,12 +634,7 @@ impl CompiledKernel {
                 rc: 1,
             });
             let mut kernel = Kernel::new(DeviceId::AUTO);
-            let dims: Vec<OpId> = shape.iter().map(|&d| kernel.const_idx(d)).collect();
-            let shape_op = match dims.len() {
-                0 => OpId::NULL,
-                1 => dims[0],
-                _ => kernel.stack(&dims),
-            };
+            let shape_op = kernel.add_shape(&shape);
             let op_id = kernel.push_back(Op::Param { dtype, kind: ParamKind::Global, shape: shape_op });
             let load_kid =
                 rt.kernels.push(KernelData { outputs: Set::from_iter([id]), loads: vec![id], stores: Vec::new(), kernel });

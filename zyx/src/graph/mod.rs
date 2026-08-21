@@ -1049,7 +1049,7 @@ impl Graph {
     }
 
     pub fn rank(&self, class: ClassId) -> UAxis {
-        todo!()
+        self.shape(class).len() as UAxis
     }
 
     pub fn shape(&self, class: ClassId) -> &[Dim] {
@@ -1072,7 +1072,9 @@ impl Graph {
             | Node::Contiguous { x }
             | Node::Binary { x, .. } => self.shape(*x),
             Node::Stack { .. } => &[],
-            _ => todo!(),
+            Node::Assign { dst, .. } => self.shape(*dst),
+            Node::Kernel { outputs, .. } => self.shape(outputs[0]),
+            op => todo!("shape for {op:?}"),
         }
     }
 
@@ -1130,7 +1132,8 @@ impl Runtime {
         // count the handles), so the tensor reverts to eager when the graph dies.
         if self.buffer_map.contains_key(&tid) {
             let dtype = self.dtype(tid);
-            let (_, class_id) = self.push_leaf_node(graph_id, dtype);
+            let shape = self.shape(tid).to_vec();
+            let (_, class_id) = self.push_leaf_node(graph_id, dtype, shape);
             self.graphs[graph_id].leaf_map.insert(class_id, tid);
             self.graphs[graph_id].leaf_classes.push(class_id);
             self.graphs[graph_id].ref_count += 1;
@@ -1149,17 +1152,18 @@ impl Runtime {
                 if !relevant.insert(oid) {
                     continue;
                 }
-                match kernel.ops[oid].op {
-                    Op::Storage { .. } | Op::Const(_) => {}
-                    Op::Unary { x, .. } => stack.push(x),
+                match &kernel.ops[oid].op {
+                    Op::Storage { .. } | Op::Const(_) | Op::Param { .. } => {}
+                    Op::Unary { x, .. } => stack.push(*x),
                     Op::Binary { x, y, .. } => {
-                        stack.push(x);
-                        stack.push(y);
+                        stack.push(*x);
+                        stack.push(*y);
                     }
-                    Op::Cast { x, .. } => stack.push(x),
-                    Op::Reduce { x, .. } => stack.push(x),
-                    Op::Move { x, .. } => stack.push(x),
-                    _ => unreachable!(),
+                    Op::Cast { x, .. } => stack.push(*x),
+                    Op::Reduce { x, .. } => stack.push(*x),
+                    Op::Move { x, .. } => stack.push(*x),
+                    Op::Stack { ops } => stack.extend(ops.iter().copied()),
+                    op => unreachable!("promote_to_graph: eager kernel op {op:?}"),
                 }
             }
             relevant
@@ -1242,8 +1246,7 @@ impl Runtime {
                         match mop.as_ref() {
                             MoveOp::Reshape { shape } => {
                                 let shape = op_to_class[&shape];
-                                let (_, class_id) =
-                                    self.push_node(graph_id, Node::Reshape { x: x_class, shape });
+                                let (_, class_id) = self.push_node(graph_id, Node::Reshape { x: x_class, shape });
                                 class_id
                             }
                             MoveOp::Expand { shape } => {
@@ -1539,7 +1542,7 @@ impl Runtime {
         );
     }
 
-    pub fn push_leaf_node(&mut self, graph_id: GraphId, dtype: DType) -> (NodeId, ClassId) {
+    pub fn push_leaf_node(&mut self, graph_id: GraphId, dtype: DType, shape: Vec<Dim>) -> (NodeId, ClassId) {
         let g = &mut self.graphs[graph_id];
         let leaf_id = g.max_leaf_id;
         g.max_leaf_id += 1;
@@ -1551,6 +1554,7 @@ impl Runtime {
         let cid = g.classes.push(EClass { nodes: vec![nid] });
         g.nodes[nid].class_of = cid;
         g.hashcons.insert(node, nid);
+        g.shapes.insert(cid, shape);
         (nid, cid)
     }
 
@@ -1618,6 +1622,34 @@ impl Runtime {
             }
             _ => {}
         }
+        let dim_of = |class: ClassId| -> Dim {
+            match &self.graphs[graph_id].nodes[self.graphs[graph_id].classes[class].nodes[0]].node {
+                Node::Const(c) => c.as_dim().unwrap_or_else(|| panic!("dim class {class:?} is not a constant")),
+                op => todo!("symbolic dim class {op:?}"),
+            }
+        };
+        let out_shape: Option<Vec<Dim>> = match &node {
+            Node::Permute { x, axes } => Some(crate::shape::permute(self.graphs[graph_id].shape(*x), axes)),
+            Node::Flip { x, .. } => Some(self.graphs[graph_id].shape(*x).to_vec()),
+            Node::Pad { x, axis, lp, rp } => {
+                let mut s = self.graphs[graph_id].shape(*x).to_vec();
+                s[*axis as usize] += dim_of(*lp) + dim_of(*rp);
+                Some(s)
+            }
+            Node::Narrow { x, axis, len, .. } => {
+                let mut s = self.graphs[graph_id].shape(*x).to_vec();
+                s[*axis as usize] = dim_of(*len);
+                Some(s)
+            }
+            Node::Reshape { shape, .. } | Node::Expand { shape, .. } => {
+                let sc = *shape;
+                match &self.graphs[graph_id].nodes[self.graphs[graph_id].classes[sc].nodes[0]].node {
+                    Node::Stack { ops } => Some(ops.iter().map(|&o| dim_of(o)).collect()),
+                    op => todo!("shape class is not a Stack: {op:?}"),
+                }
+            }
+            _ => None,
+        };
         let g = &mut self.graphs[graph_id];
         if let Some(&nid) = g.hashcons.get(&node) {
             return (nid, g.nodes[nid].class_of);
@@ -1626,6 +1658,9 @@ impl Runtime {
         let cid = g.classes.push(EClass { nodes: vec![nid] });
         g.nodes[nid].class_of = cid;
         g.hashcons.insert(node, nid);
+        if let Some(shape) = out_shape {
+            g.shapes.insert(cid, shape);
+        }
         (nid, cid)
     }
 
