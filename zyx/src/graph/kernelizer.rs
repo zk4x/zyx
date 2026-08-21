@@ -4,7 +4,7 @@ use crate::{
     Map, Set,
     graph::{ClassId, Graph, JitKernelData, JitKernelId, Node},
     kernel::{DeviceId, IDX_T, Kernel, MemLayout, MoveOp, Op, OpId, ParamKind},
-    shape::{Dim, UAxis},
+    shape::UAxis,
     slab::{Slab, SlabId},
 };
 
@@ -108,7 +108,7 @@ impl Graph {
 
         let mut visited: Map<ClassId, (JitKernelId, OpId)> = Map::default();
 
-        //println!("order={:?}", order);
+        println!("order={:?}", order);
 
         for (i, &cid) in order.iter().enumerate() {
             debug_assert!(!visited.contains_key(&cid), "class {cid:?} already visited");
@@ -153,7 +153,7 @@ impl Graph {
                         // Merge every element into the first element's kernel
                         // (same dance as Binary), then emit a single stack op.
                         let first = ops[0];
-                        let (mut kid, mut first_op) = visited[&first];
+                        let (mut kid, first_op) = visited[&first];
                         let mut op_ids: Vec<OpId> = Vec::with_capacity(ops.len());
                         op_ids.push(first_op);
                         for &elem in ops.iter().skip(1) {
@@ -363,7 +363,12 @@ impl Graph {
                                     let id = self.jit_kernels[kid].kernel.push_back(Op::Move { x, mop });
                                     op_map.insert(op_id, id);
                                 }
-                                _ => unreachable!("assign: dst kernel must be movement-only"),
+                                Op::Stack { ref ops } => {
+                                    let mapped: Box<[OpId]> = ops.iter().map(|&o| op_map[&o]).collect();
+                                    let id = self.jit_kernels[kid].kernel.push_back(Op::Stack { ops: mapped });
+                                    op_map.insert(op_id, id);
+                                }
+                                _ => unreachable!("assign: dst kernel must be movement-only, got {:?}", dst_kernel.ops[op_id].op),
                             }
                             op_id = dst_kernel.next_op(op_id);
                         }

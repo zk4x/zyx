@@ -101,7 +101,6 @@ pub(crate) enum Node {
     Const(Constant),
     Leaf {
         dtype: DType,
-        leaf_id: u32,
         /// Shape of the leaf as a class: a Stack of dim classes (Const dims or
         /// symbolic dim leaves). `ClassId::NULL` for scalars (`[]` shape).
         shape: ClassId,
@@ -186,9 +185,7 @@ impl PartialEq for Node {
     fn eq(&self, other: &Self) -> bool {
         match (self, other) {
             (Self::Const(a), Self::Const(b)) => a == b,
-            (Self::Leaf { leaf_id: a, dtype: ad, shape: as_ }, Self::Leaf { leaf_id: b, dtype: bd, shape: bs }) => {
-                a == b && ad == bd && as_ == bs
-            }
+            (Self::Leaf { dtype: ad, shape: as_ }, Self::Leaf { dtype: bd, shape: bs }) => ad == bd && as_ == bs,
             (Self::Expand { x: a, shape: as_ }, Self::Expand { x: b, shape: bs }) => a == b && as_ == bs,
             (Self::Permute { x: a, axes: aa }, Self::Permute { x: b, axes: ba }) => a == b && aa == ba,
             (Self::Reshape { x: a, shape: as_, .. }, Self::Reshape { x: b, shape: bs, .. }) => a == b && as_ == bs,
@@ -223,9 +220,8 @@ impl std::hash::Hash for Node {
                 0u8.hash(state);
                 v.hash(state);
             }
-            Self::Leaf { leaf_id, shape, .. } => {
+            Self::Leaf { shape, .. } => {
                 1u8.hash(state);
-                leaf_id.hash(state);
                 shape.hash(state);
             }
             Self::Expand { x, shape } => {
@@ -364,7 +360,6 @@ pub struct Graph {
     pub(crate) classes: Slab<ClassId, EClass>,
     pub(crate) jit_kernels: Slab<JitKernelId, JitKernelData>,
     pub(crate) leaf_classes: Vec<ClassId>,
-    pub(crate) max_leaf_id: u32,
     // Number of alive graph tensors (TensorState::Graph) referencing this graph.
     // Incremented at every graph-tensor birth, decremented when a tensor dies
     // (release), is eagerified, or is dropped.
@@ -409,7 +404,6 @@ impl Graph {
             jit_kernels: Slab::new(),
             leaf_map: Map::default(),
             leaf_classes: Vec::new(),
-            max_leaf_id: 0,
             ref_count: 0,
             dead: false,
         }
@@ -1667,17 +1661,12 @@ impl Runtime {
     }
 
     pub fn push_leaf_node(&mut self, graph_id: GraphId, dtype: DType, shape: ClassId) -> (NodeId, ClassId) {
+        // Leaves are never hashconsed: each buffer keeps its own class.
+        let node = Node::Leaf { dtype, shape };
         let g = &mut self.graphs[graph_id];
-        let leaf_id = g.max_leaf_id;
-        g.max_leaf_id += 1;
-        let node = Node::Leaf { dtype, leaf_id, shape };
-        if let Some(&nid) = g.hashcons.get(&node) {
-            return (nid, g.nodes[nid].class_of);
-        }
-        let nid = g.nodes.push(NodeData { node: node.clone(), class_of: ClassId::NULL });
+        let nid = g.nodes.push(NodeData { node, class_of: ClassId::NULL });
         let cid = g.classes.push(EClass { nodes: vec![nid] });
         g.nodes[nid].class_of = cid;
-        g.hashcons.insert(node, nid);
         (nid, cid)
     }
 
@@ -1746,13 +1735,20 @@ impl Runtime {
             _ => {}
         }
         let g = &mut self.graphs[graph_id];
-        if let Some(&nid) = g.hashcons.get(&node) {
+        // Const and Leaf have value semantics: each creation site gets a fresh
+        // class so no class is ever shared between use sites (a shared class
+        // would get pinned to whichever kernel materialized it first, wrongly
+        // entangling unrelated consumers in merges/stores).
+        let hashconsable = !matches!(node, Node::Const(_) | Node::Leaf { .. });
+        if hashconsable && let Some(&nid) = g.hashcons.get(&node) {
             return (nid, g.nodes[nid].class_of);
         }
         let nid = g.nodes.push(NodeData { node: node.clone(), class_of: ClassId::NULL });
         let cid = g.classes.push(EClass { nodes: vec![nid] });
         g.nodes[nid].class_of = cid;
-        g.hashcons.insert(node, nid);
+        if hashconsable {
+            g.hashcons.insert(node, nid);
+        }
         (nid, cid)
     }
 
