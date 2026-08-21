@@ -7,7 +7,6 @@ use crate::{
     backend::DeviceInfo,
     kernel::{BOp, Kernel, MemLayout, Op, OpId, UOp},
     shape::Dim,
-    slab::SlabId,
 };
 
 #[derive(Debug)]
@@ -538,8 +537,7 @@ impl Kernel {
 mod tests {
     use crate::{
         DType,
-        kernel::{BOp, DeviceId, Kernel, MemLayout, Op, OpId, UOp, ParamKind},
-        slab::SlabId,
+        kernel::{BOp, DeviceId, Kernel, MemLayout, Op, OpId, ParamKind, UOp},
     };
 
     // Helper to verify c0/c1 were replaced with devecs, find vectorize + vector op

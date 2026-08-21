@@ -317,7 +317,6 @@ impl Tensor {
     /// **Returns:** A new tensor with the same shape as the input, but with each element computed as `Selu(input_element)`.
     #[must_use]
     pub fn selu(&self) -> Tensor {
-        let dtype = self.dtype();
         1.050_701_f32 * (self.relu() - (1.673_263_2_f32 * (self.exp().neg() + 1)).relu())
     }
 

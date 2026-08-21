@@ -287,9 +287,7 @@ impl MoveOp {
     /// assign replay's handling of the movement-chain head).
     pub(crate) fn remap(&self, op_map: &Map<OpId, OpId>, fallback: OpId) -> Box<Self> {
         match self {
-            MoveOp::Reshape { shape } => {
-                Box::new(MoveOp::Reshape { shape: op_map.get(shape).copied().unwrap_or(fallback)})
-            }
+            MoveOp::Reshape { shape } => Box::new(MoveOp::Reshape { shape: op_map.get(shape).copied().unwrap_or(fallback) }),
             MoveOp::Expand { shape } => Box::new(MoveOp::Expand { shape: op_map.get(shape).copied().unwrap_or(fallback) }),
             MoveOp::Permute { axes } => Box::new(MoveOp::Permute { axes: axes.clone() }),
             MoveOp::Pad { axis, lp, rp } => Box::new(MoveOp::Pad {
@@ -370,6 +368,9 @@ pub struct OpNode {
 pub struct OpId(pub(crate) u32);
 
 impl OpId {
+    /// NULL
+    pub const NULL: Self = Self(u32::MAX);
+
     /// Check if this OpId is null.
     pub const fn is_null(self) -> bool {
         self.0 == u32::MAX

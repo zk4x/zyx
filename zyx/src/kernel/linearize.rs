@@ -61,7 +61,6 @@ use crate::{
     dtype::Constant,
     kernel::{BOp, IDX_T, IdxKind, Kernel, MemLayout, MemScope, MoveOp, Op, OpId, ParamKind},
     shape::{Dim, UAxis},
-    slab::SlabId,
 };
 
 impl Kernel {
@@ -530,8 +529,8 @@ impl Kernel {
                             } else {
                                 let mut v = Vec::with_capacity(n);
                                 for a in 0..n {
-                                    let broadcast = self.resolve_dim(x_shape[a]) == Some(1)
-                                        && self.resolve_dim(shape[offset + a]) != Some(1);
+                                    let broadcast =
+                                        self.resolve_dim(x_shape[a]) == Some(1) && self.resolve_dim(shape[offset + a]) != Some(1);
                                     let d = out_view[offset + a];
                                     let d = if broadcast {
                                         SDim::new(zero, x_shape[a])

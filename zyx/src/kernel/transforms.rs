@@ -10,7 +10,6 @@
 use std::f64::consts::{LN_2, LOG2_E};
 
 use crate::scalar::{bf16, f16};
-use crate::slab::SlabId;
 use crate::{
     dtype::Constant,
     kernel::{BOp, Kernel, Op, OpId, UOp},

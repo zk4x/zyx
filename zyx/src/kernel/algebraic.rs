@@ -18,7 +18,6 @@ use crate::{
     dtype::Constant,
     kernel::{BOp, Kernel, Op, OpId},
     shape::Dim,
-    slab::SlabId,
 };
 
 impl Kernel {
@@ -830,7 +829,6 @@ fn mad(k: &Kernel, x: OpId) -> Option<(OpId, u64, OpId)> {
 mod tests {
     use super::*;
     use crate::kernel::{DeviceId, MemLayout, MemScope, ParamKind};
-    use crate::slab::SlabId;
 
     /// Build the cumsum-window mask kernel exactly as linearize produces it
     /// for the gather_f32_dtype one-hot reduce: thread index r47 (outer loop)

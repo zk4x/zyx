@@ -6,7 +6,6 @@ use std::ops::RangeInclusive;
 use crate::{
     DType, Map, Set,
     kernel::{BOp, IDX_T, IdxKind, Kernel, MemScope, Op, OpId, ParamKind},
-    slab::SlabId,
     shape::Dim,
 };
 
@@ -54,8 +53,7 @@ impl Kernel {
                             }
                         }
                     },
-                    Op::Storage { scope: MemScope::Local, .. }
-                    | Op::Storage { scope: MemScope::Circular, .. } => {
+                    Op::Storage { scope: MemScope::Local, .. } | Op::Storage { scope: MemScope::Circular, .. } => {
                         if phase == Phase::GlobalRo || phase == Phase::GlobalRw || phase == Phase::LocalRo {
                             phase = Phase::LocalRw;
                         }
@@ -221,7 +219,7 @@ impl Kernel {
                     dtypes.insert(op_id, dtype);
                 }
                 Op::Load { src, index, .. } => {
-                    if !params.contains_key(&src) && ! storages.contains_key(&src) {
+                    if !params.contains_key(&src) && !storages.contains_key(&src) {
                         println!("load={op_id} is trying to load from undefined variable");
                         self.debug();
                         panic!();

@@ -20,7 +20,6 @@ use crate::{
     dtype::Constant,
     kernel::{BOp, IdxKind, Kernel, MemLayout, MemScope, Op, OpId},
     shape::Dim,
-    slab::SlabId,
 };
 
 impl Kernel {

@@ -404,7 +404,11 @@ impl Runtime {
                     kd.loads = new_loads.clone();
                     pruned = loads_dropped_by_prune(&old_loads, &new_loads);
                 }
-                (kd.outputs.is_empty() && !kd.kernel.contains_stores(), kd.outputs.is_empty() && kd.kernel.contains_stores(), pruned)
+                (
+                    kd.outputs.is_empty() && !kd.kernel.contains_stores(),
+                    kd.outputs.is_empty() && kd.kernel.contains_stores(),
+                    pruned,
+                )
             };
             for tid in pruned {
                 self.release_load(tid);
@@ -939,7 +943,6 @@ impl Runtime {
             let (_, class_id) = self.push_node(graph_id, Node::Reshape { x: x_class, shape });
             Ok(self.new_graph_tensor(graph_id, class_id))
         } else {
-            let input_rank = self.shape(x).len();
             let (kernel_id, op_id) = self.duplicate_or_store(x, false)?;
 
             debug_assert_eq!(

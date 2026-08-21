@@ -1,7 +1,7 @@
 // Copyright (C) 2025 zk4x
 // SPDX-License-Identifier: LGPL-3.0-only
 
-use zyx::kernel::{DeviceId, Kernel, MMADType, MMADims, MMALayout, MemLayout, MemScope, ParamKind};
+use zyx::kernel::{DeviceId, Kernel, MMADType, MMADims, MMALayout, MemLayout, MemScope, OpId, ParamKind};
 use zyx::{DType, ReduceOp, Scalar, Tensor, ZyxError};
 
 /// Tensor-core matmul: C = A @ B where A(M×K, FP16), B(K×N, FP16), C(M×N, FP32).
@@ -19,16 +19,16 @@ fn wmma_matmul() -> Result<(), ZyxError> {
 
     let mut kernel = Kernel::new(DeviceId::AUTO);
 
-    let m_c = kernel.const_idx(m as u32);
-    let n_c = kernel.const_idx(n as u32);
-    let k_c = kernel.const_idx(k as u32);
-    let shape_mk = kernel.stack(&[m_c, k_c]);
-    let shape_kn = kernel.stack(&[k_c, n_c]);
-    let shape_mn = kernel.stack(&[m_c, n_c]);
+    //let m_c = kernel.const_idx(m as u32);
+    //let n_c = kernel.const_idx(n as u32);
+    //let k_c = kernel.const_idx(k as u32);
+    //let shape_mk = kernel.stack(&[m_c, k_c]);
+    //let shape_kn = kernel.stack(&[k_c, n_c]);
+    //let shape_mn = kernel.stack(&[m_c, n_c]);
 
-    let a_buf = kernel.param(DType::F16, ParamKind::Global, shape_mk);
-    let b_buf = kernel.param(DType::F16, ParamKind::Global, shape_kn);
-    let c_buf = kernel.param(DType::F32, ParamKind::GlobalMut, shape_mn);
+    let a_buf = kernel.param(DType::F16, ParamKind::Global, OpId::NULL);
+    let b_buf = kernel.param(DType::F16, ParamKind::Global, OpId::NULL);
+    let c_buf = kernel.param(DType::F32, ParamKind::GlobalMut, OpId::NULL);
 
     let gidx_len = kernel.const_idx((m / 16) as u32);
     let gidy_len = kernel.const_idx((n / 8) as u32);

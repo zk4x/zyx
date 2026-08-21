@@ -19,7 +19,6 @@ use crate::{
     DType, Map, Set,
     dtype::Constant,
     kernel::{BOp, IDX_T, Kernel, MemLayout, MemScope, Op, OpId, ParamKind, UOp},
-    slab::SlabId,
 };
 use std::hash::BuildHasherDefault;
 

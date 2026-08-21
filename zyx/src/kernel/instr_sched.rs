@@ -18,7 +18,6 @@ use std::collections::BinaryHeap;
 use crate::{
     Map,
     kernel::{Kernel, MemScope, Op, OpId, ParamKind},
-    slab::SlabId,
 };
 
 impl Kernel {
@@ -57,8 +56,7 @@ impl Kernel {
 
         let sorted_rest = self.schedule_rest(&rest);
 
-        let mut order =
-            Vec::with_capacity(global_ro.len() + global_rw.len() + local_rw.len() + sorted_rest.len());
+        let mut order = Vec::with_capacity(global_ro.len() + global_rw.len() + local_rw.len() + sorted_rest.len());
         order.extend(global_ro);
         order.extend(global_rw);
         order.extend(local_rw);
@@ -165,7 +163,13 @@ impl Kernel {
                     add_param!(x);
                     add_param!(y);
                 }
-                Op::Param { .. } | Op::Const(_) | Op::Storage { .. } | Op::Index { .. } | Op::EndLoop | Op::Barrier | Op::EndIf => {}
+                Op::Param { .. }
+                | Op::Const(_)
+                | Op::Storage { .. }
+                | Op::Index { .. }
+                | Op::EndLoop
+                | Op::Barrier
+                | Op::EndIf => {}
                 Op::Store { dst, src: x, index, .. } => {
                     add_param!(dst);
                     add_param!(x);
@@ -384,7 +388,6 @@ impl Kernel {
 mod tests {
     use crate::DType;
     use crate::kernel::{DeviceId, Kernel, MemLayout, MemScope, Op, OpId, ParamKind};
-    use crate::slab::SlabId;
 
     fn defines_in_order(k: &Kernel) -> Vec<(MemScope, bool)> {
         let mut order = Vec::new();

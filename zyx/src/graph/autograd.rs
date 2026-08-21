@@ -177,7 +177,7 @@ impl Runtime {
                     let g = self.push_node(graph_id, Node::Cast { x: grad, dtype: self.graphs[graph_id].dtype(x) }).1;
                     accum_grad(self, graph_id, &mut grads, x, g);
                 }
-                Node::Reshape { x, .. } => {
+                Node::Reshape { .. } => {
                     /*let x_shape = self.graphs[graph_id].classes[x].shape;
                     let g = self
                         .push_node(
@@ -190,7 +190,7 @@ impl Runtime {
                     accum_grad(self, graph_id, &mut grads, x, g);*/
                     todo!()
                 }
-                Node::Expand { x, .. } => {
+                Node::Expand { .. } => {
                     todo!()
                     /*let x_shape = self.graphs[graph_id].classes[x].shape;
                     let out_shape = self.shapes[self.graphs[graph_id].classes[cid].shape].clone();
@@ -261,8 +261,8 @@ impl Runtime {
                     let g = self.push_node(graph_id, Node::Flip { x: grad, axes: axes.clone() }).1;
                     accum_grad(self, graph_id, &mut grads, x, g);
                 }
-                Node::Reduce { x, rop: bop, ref axes } => {
-                    let axes = axes.clone();
+                Node::Reduce { x: _, rop: bop, axes: _ } => {
+                    //let axes = axes.clone();
                     match bop {
                         BOp::Add => {
                             todo!();
@@ -407,10 +407,8 @@ impl Runtime {
                     let shape: Vec<Dim> = self.shape(tid).into();
                     let dtype = self.dtype(tid);
                     let (_, zero_cid) = self.push_node(graph_id, Node::Const(Constant::new(0u8).cast(dtype)));
-                    let ops: Box<[ClassId]> = shape
-                        .iter()
-                        .map(|&d| self.push_node(graph_id, Node::Const(Constant::idx(d))).1)
-                        .collect();
+                    let ops: Box<[ClassId]> =
+                        shape.iter().map(|&d| self.push_node(graph_id, Node::Const(Constant::idx(d))).1).collect();
                     let shape_cid = if ops.len() == 1 {
                         ops[0]
                     } else {

@@ -30,7 +30,6 @@ use crate::{
     Set,
     dtype::{Constant, DType},
     kernel::{BOp, IDX_T, IdxKind, Kernel, MemLayout, MemScope, Op, OpId},
-    slab::SlabId,
 };
 
 impl Kernel {
@@ -651,7 +650,6 @@ mod tests {
     use crate::dtype::Constant;
     use crate::dtype::DType;
     use crate::kernel::{BOp, DeviceId, Kernel, MemLayout, MemScope, Op, OpId, ParamKind};
-    use crate::slab::SlabId;
 
     /// Build a kernel matching the REAL index_select IR pattern
     /// where the accumulated value is computed AFTER load(acc).

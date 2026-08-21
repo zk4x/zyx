@@ -91,12 +91,7 @@
 
 pub use crate::backend::DeviceId;
 
-use crate::{
-    DType, Map, Set,
-    dtype::Constant,
-    shape::Dim,
-    slab::{Slab, SlabId},
-};
+use crate::{DType, Map, Set, dtype::Constant, shape::Dim, slab::Slab};
 use nanoserde::{DeBin, SerBin};
 use std::collections::BTreeMap;
 use std::{hash::BuildHasherDefault, hash::Hash};
@@ -128,8 +123,8 @@ mod unroll_loops;
 mod vectorize;
 mod verify;
 
-pub(crate) use ops::{BOp, IdxKind, MoveOp, Op, OpId, OpNode, UOp};
-pub use ops::{MMADType, MMADims, MMALayout, ParamKind};
+pub(crate) use ops::{BOp, IdxKind, MoveOp, Op, OpNode, UOp};
+pub use ops::{MMADType, MMADims, MMALayout, OpId, ParamKind};
 
 // TODO later make this dynamic u32 or u64 depending on max range
 /// Type used for indexing into arrays within kernels.
@@ -391,11 +386,11 @@ impl Kernel {
                 Op::Load { src, .. } => op_id = src,
                 Op::Unary { x, .. } => op_id = x,
                 Op::Binary { x, bop, .. } => {
-                     if bop.returns_bool() {
-                         return DType::Bool;
-                     }
-                     op_id = x;
-                 }
+                    if bop.returns_bool() {
+                        return DType::Bool;
+                    }
+                    op_id = x;
+                }
                 Op::Mad { x, .. } => op_id = x,
                 Op::Wmma { dtype, .. } => match dtype {
                     MMADType::f16_f16_f16_f32 => return DType::F32,
@@ -937,7 +932,10 @@ impl Kernel {
                                 prod = self.mul(prod, id);
                             }
                             let inferred_dim = self.div(numel, prod);
-                            return target.iter().map(|&id| if self.resolve_dim(id) == Some(0) { inferred_dim } else { id }).collect();
+                            return target
+                                .iter()
+                                .map(|&id| if self.resolve_dim(id) == Some(0) { inferred_dim } else { id })
+                                .collect();
                         }
                         return target;
                     }
@@ -1233,12 +1231,14 @@ impl Kernel {
             // A cast preserves the integer value of a length.
             Op::Cast { x, .. } => self.resolve_dim(*x),
             Op::Unary { x, uop } => Some(crate::dtype::Constant::idx(self.resolve_dim(*x)?).unary(*uop).as_dim()?),
-            Op::Binary { x, y, bop } => Some(crate::dtype::Constant::binary(
-                crate::dtype::Constant::idx(self.resolve_dim(*x)?),
-                crate::dtype::Constant::idx(self.resolve_dim(*y)?),
-                *bop,
-            )
-            .as_dim()?),
+            Op::Binary { x, y, bop } => Some(
+                crate::dtype::Constant::binary(
+                    crate::dtype::Constant::idx(self.resolve_dim(*x)?),
+                    crate::dtype::Constant::idx(self.resolve_dim(*y)?),
+                    *bop,
+                )
+                .as_dim()?,
+            ),
             Op::Loop { len } => self.resolve_dim(*len),
             &Op::Index { kind, .. } => match kind {
                 IdxKind::Group(len) => self.resolve_dim(len),
