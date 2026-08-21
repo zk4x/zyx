@@ -609,7 +609,13 @@ impl CompiledKernel {
                 rc: 1,
             });
             let mut kernel = Kernel::new(DeviceId::AUTO);
-            let op_id = kernel.push_back(Op::Param { dtype, kind: ParamKind::Global, shape: OpId::NULL });
+            let dims: Vec<OpId> = shape.iter().map(|&d| kernel.const_idx(d)).collect();
+            let shape_op = match dims.len() {
+                0 => OpId::NULL,
+                1 => dims[0],
+                _ => kernel.stack(&dims),
+            };
+            let op_id = kernel.push_back(Op::Param { dtype, kind: ParamKind::Global, shape: shape_op });
             let load_kid =
                 rt.kernels.push(KernelData { outputs: Set::from_iter([id]), loads: vec![id], stores: Vec::new(), kernel });
             rt.tensors[id].kernel_id = load_kid;
