@@ -303,6 +303,19 @@ impl Kernel {
 
             let root_width = bounds.get(&root).map_or(64, |&(_, max)| if max == 0 { 1 } else { (max.ilog2() + 1) as u64 });
 
+            // Filter zero-width slices (e.g. x%1 == 0) — they are constant 0, not a partition piece.
+            slices.retain(|s| s.width != 0);
+            if slices.is_empty() {
+                op_id = next;
+                continue;
+            }
+            // Re-derive k_val after filtering (in case the zero-width slice was the first)
+            let k_val = slices[0].shift.wrapping_sub(slices[0].lo);
+            if slices.iter().any(|s| s.shift.wrapping_sub(s.lo) != k_val) {
+                op_id = next;
+                continue;
+            }
+
             // Sort by lo, fill in MAX widths from bounds, verify partition
             slices.sort_by_key(|s| s.lo);
             let mut cursor = 0u64;
