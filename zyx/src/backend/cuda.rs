@@ -598,12 +598,8 @@ pub(super) fn initialize_device(
                             let &CUDABuffer::Buffer { ptr, .. } = dst else {
                                 unreachable!()
                             };
-                            send_or_continue!(
-                                unsafe { (cuMemcpyHtoDAsync)(ptr, src.cast(), bytes as usize, stream) }
-                                    .check(ErrorStatus::MemoryCopyH2P),
-                                reply
-                            );
-                            //unsafe { (self.cuMemcpyHtoD)(dst.ptr, src.as_ptr().cast(), src.len()) }.check(ErrorStatus::MemoryCopyH2P)?;
+                            let status = unsafe { (cuMemcpyHtoDAsync)(ptr, src.cast(), bytes as usize, stream) };
+                            send_or_continue!(status.check(ErrorStatus::MemoryCopyH2P), reply);
                             send_or_continue!(unsafe { (cuEventRecord)(event, stream) }.check(ErrorStatus::MemoryCopyH2P), reply);
                             //unsafe { (cuStreamSynchronize)(stream) }.check(ErrorStatus::MemoryCopyH2P).unwrap();
                             _ = reply.send(Ok(Event::CUDA(CUDAEvent { event })));

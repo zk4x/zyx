@@ -133,7 +133,7 @@ impl Graph {
                         let (kid, op_id) = self.new_load_kernel(cid, rcs[&cid]);
                         visited.insert(cid, (kid, op_id));
                     }
-                    Node::Const(value) => {
+                    Node::Const { value, .. } => {
                         let rc = *rcs.get(&cid).unwrap();
                         let mut kernel = Kernel::new(DeviceId::NULL);
                         kernel.push_back(Op::Const(value));
@@ -701,7 +701,7 @@ impl Graph {
             .shape(cid)
             .into_iter()
             .map(|dim| match &self.nodes[self.classes[dim].nodes[0]].node {
-                Node::Const(c) => Some(*c),
+                Node::Const { value: c, .. } => Some(*c),
                 _ => None,
             })
             .collect();
@@ -727,7 +727,7 @@ impl Graph {
                 .shape(cid)
                 .into_iter()
                 .map(|dim| match &self.nodes[self.classes[dim].nodes[0]].node {
-                    Node::Const(c) => Some(*c),
+                    Node::Const { value: c, .. } => Some(*c),
                     _ => None,
                 })
                 .collect();

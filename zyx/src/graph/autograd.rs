@@ -28,7 +28,7 @@ impl Runtime {
 
         let mut grads: Map<ClassId, ClassId> = Map::default();
 
-        let one_cid = self.push_node(graph_id, Node::Const(Constant::new(1u8).cast(self.graphs[graph_id].dtype(target_class)))).1;
+        let one_cid = self.push_const(graph_id, Constant::new(1u8).cast(self.graphs[graph_id].dtype(target_class)));
         grads.insert(target_class, one_cid);
 
         for &cid in &topo {
@@ -37,7 +37,7 @@ impl Runtime {
             };
 
             let nid = match self.graphs[graph_id].classes[cid].nodes.iter().copied().find(|&nid| {
-                !matches!(&self.graphs[graph_id].nodes[nid].node, Node::Leaf { .. } | Node::Const(_) | Node::Kernel { .. })
+                !matches!(&self.graphs[graph_id].nodes[nid].node, Node::Leaf { .. } | Node::Const { .. } | Node::Kernel { .. })
             }) {
                 Some(nid) => nid,
                 None => continue,
@@ -56,19 +56,19 @@ impl Runtime {
                         accum_grad(self, graph_id, &mut grads, x, g);
                     }
                     UOp::Exp2 => {
-                        let ln2_cid = self.push_node(graph_id, Node::Const(Constant::new(std::f64::consts::LN_2))).1;
+                        let ln2_cid = self.push_const(graph_id, Constant::new(std::f64::consts::LN_2));
                         let z_ln2 = self.push_binary_node(graph_id, cid, ln2_cid, BOp::Mul);
                         let g = self.push_binary_node(graph_id, grad, z_ln2, BOp::Mul);
                         accum_grad(self, graph_id, &mut grads, x, g);
                     }
                     UOp::Log2 => {
-                        let ln2_cid = self.push_node(graph_id, Node::Const(Constant::new(std::f64::consts::LN_2))).1;
+                        let ln2_cid = self.push_const(graph_id, Constant::new(std::f64::consts::LN_2));
                         let x_ln2 = self.push_binary_node(graph_id, x, ln2_cid, BOp::Mul);
                         let g = self.push_binary_node(graph_id, grad, x_ln2, BOp::Div);
                         accum_grad(self, graph_id, &mut grads, x, g);
                     }
                     UOp::Sqrt => {
-                        let two_cid = self.push_node(graph_id, Node::Const(Constant::new(2))).1;
+                        let two_cid = self.push_const(graph_id, Constant::new(2));
                         let z2 = self.push_binary_node(graph_id, cid, two_cid, BOp::Mul);
                         let g = self.push_binary_node(graph_id, grad, z2, BOp::Div);
                         accum_grad(self, graph_id, &mut grads, x, g);
@@ -94,9 +94,9 @@ impl Runtime {
                         accum_grad(self, graph_id, &mut grads, x, g);
                     }
                     UOp::Abs => {
-                        let zero = self.push_node(graph_id, Node::Const(Constant::new(0u8))).1;
-                        let one = self.push_node(graph_id, Node::Const(Constant::new(1u8))).1;
-                        let neg_one = self.push_node(graph_id, Node::Const(Constant::new(-1i8))).1;
+                        let zero = self.push_const(graph_id, Constant::new(0u8));
+                        let one = self.push_const(graph_id, Constant::new(1u8));
+                        let neg_one = self.push_const(graph_id, Constant::new(-1i8));
                         let is_pos = self.push_binary_node(graph_id, x, zero, BOp::Cmpgt);
                         let is_neg = self.push_binary_node(graph_id, x, zero, BOp::Cmplt);
                         let sign_pos = self.push_binary_node(graph_id, is_pos, one, BOp::Mul);
@@ -133,7 +133,7 @@ impl Runtime {
                         accum_grad(self, graph_id, &mut grads, y, gy);
                     }
                     BOp::Pow => {
-                        let one = self.push_node(graph_id, Node::Const(Constant::new(1u8))).1;
+                        let one = self.push_const(graph_id, Constant::new(1u8));
                         let y_1 = self.push_binary_node(graph_id, y, one, BOp::Sub);
                         let x_pow_ym1 = self.push_binary_node(graph_id, x, y_1, BOp::Pow);
                         let y_mul = self.push_binary_node(graph_id, y, x_pow_ym1, BOp::Mul);
@@ -335,7 +335,7 @@ impl Runtime {
                             let one = self
                                 .push_node(
                                     graph_id,
-                                    Node::Const(Constant::new(1u8).cast(self.graphs[graph_id].classes[x].dtype)),
+                                    Node::Const { cons_id: 0, value: Constant::new(1u8).cast(self.graphs[graph_id].classes[x].dtype) },
                                     scalar_shape,
                                     self.graphs[graph_id].classes[x].dtype,
                                 )
@@ -393,7 +393,7 @@ impl Runtime {
                 Node::After { .. } => {
                     todo!()
                 }
-                Node::Leaf { .. } | Node::Const(_) | Node::Stack { .. } | Node::Kernel { .. } => {}
+                Node::Leaf { .. } | Node::Const { .. } | Node::Stack { .. } | Node::Kernel { .. } => {}
             }
         }
 
@@ -406,9 +406,9 @@ impl Runtime {
                 None => {
                     let shape: Vec<Dim> = self.shape(tid).into();
                     let dtype = self.dtype(tid);
-                    let (_, zero_cid) = self.push_node(graph_id, Node::Const(Constant::new(0u8).cast(dtype)));
+                    let zero_cid = self.push_const(graph_id, Constant::new(0u8).cast(dtype));
                     let ops: Box<[ClassId]> =
-                        shape.iter().map(|&d| self.push_node(graph_id, Node::Const(Constant::idx(d))).1).collect();
+                        shape.iter().map(|&d| self.push_const(graph_id, Constant::idx(d))).collect();
                     let shape_cid = if ops.len() == 1 {
                         ops[0]
                     } else {

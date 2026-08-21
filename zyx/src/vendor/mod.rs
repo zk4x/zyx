@@ -29,7 +29,7 @@ impl Graph {
         self.shape(cid)
             .into_iter()
             .map(|dim| match &self.nodes[self.classes[dim].nodes[0]].node {
-                Node::Const(c) => c.as_dim(),
+                Node::Const { value: c, .. } => c.as_dim(),
                 _ => None,
             })
             .collect()

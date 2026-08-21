@@ -98,8 +98,44 @@ impl SlabId for ClassId {
 
 #[derive(Debug, Clone)]
 pub(crate) enum Node {
-    Const(Constant),
+    /// A compile-time constant.
+    ///
+    /// `cons_id` is **mandatory** and must never be removed. It is assigned by
+    /// `push_node` (constructors pass 0) so that every const is *structurally
+    /// unique*: hashconsing compares it, two consts never compare equal, and
+    /// therefore two consts never merge into one e-class.
+    ///
+    /// # Why this id exists (bug history — read before deleting!)
+    ///
+    /// This bug has already happened **twice**:
+    ///
+    /// 1. Leaves used to be hashconsed without such an id, so two buffers with
+    ///    identical dtype+shape collapsed into one class; `leaf_id` was added
+    ///    to fix it, but the documentation did not explain the underlying
+    ///    invariant, and the same mistake was then repeated for `Const`.
+    /// 2. Consts without an id were hashconsed, so e.g. a narrow's `start=2`
+    ///    and another op's `len=2` merged into ONE class. The class gets pinned
+    ///    to whichever kernel materialized it first; the second consumer then
+    ///    inherits that placement and the kernelizer materializes the constant
+    ///    into a foreign kernel (or skips duplication), producing invalid or
+    ///    silently wrong kernels. Worse, `Graph::cache_key` hashes the
+    ///    hashcons map — without const nodes in it, two graphs differing only
+    ///    in const values (f32[3] vs f32[10] relu) collide on the same plan
+    ///    cache entry and execute with the first graph's allocation sizes.
+    ///
+    /// The invariant: **a class must have exactly one creation site.** Value
+    /// nodes (consts) and buffer nodes (leaves) have value semantics — equal
+    /// values must still stay distinct classes, because classes carry
+    /// identity: placement (which kernel materialized them), refcounts, and
+    /// plan/kernel cache keys all assume it.
+    Const {
+        cons_id: u32,
+        value: Constant,
+    },
+    /// A realized input buffer. See [`Node::Const`] for why `cons_id` exists
+    /// and must not be removed — the exact same reasoning applies here.
     Leaf {
+        cons_id: u32,
         dtype: DType,
         /// Shape of the leaf as a class: a Stack of dim classes (Const dims or
         /// symbolic dim leaves). `ClassId::NULL` for scalars (`[]` shape).
@@ -184,8 +220,8 @@ pub(crate) enum Node {
 impl PartialEq for Node {
     fn eq(&self, other: &Self) -> bool {
         match (self, other) {
-            (Self::Const(a), Self::Const(b)) => a == b,
-            (Self::Leaf { dtype: ad, shape: as_ }, Self::Leaf { dtype: bd, shape: bs }) => ad == bd && as_ == bs,
+            (Self::Const { cons_id: a, value: av }, Self::Const { cons_id: b, value: bv }) => a == b && av == bv,
+            (Self::Leaf { cons_id: a, .. }, Self::Leaf { cons_id: b, .. }) => a == b,
             (Self::Expand { x: a, shape: as_ }, Self::Expand { x: b, shape: bs }) => a == b && as_ == bs,
             (Self::Permute { x: a, axes: aa }, Self::Permute { x: b, axes: ba }) => a == b && aa == ba,
             (Self::Reshape { x: a, shape: as_, .. }, Self::Reshape { x: b, shape: bs, .. }) => a == b && as_ == bs,
@@ -216,12 +252,15 @@ impl Eq for Node {}
 impl std::hash::Hash for Node {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
         match self {
-            Self::Const(v) => {
+            Self::Const { cons_id, value } => {
                 0u8.hash(state);
-                v.hash(state);
+                cons_id.hash(state);
+                value.hash(state);
             }
-            Self::Leaf { shape, .. } => {
+            Self::Leaf { cons_id, dtype, shape } => {
                 1u8.hash(state);
+                cons_id.hash(state);
+                dtype.hash(state);
                 shape.hash(state);
             }
             Self::Expand { x, shape } => {
@@ -369,12 +408,14 @@ pub struct Graph {
     // guarantees no stale tensor ever observes a reused GraphId.
     pub(crate) dead: bool,
     pub(crate) leaf_map: Map<ClassId, TensorId>,
+    /// Allocator for [`Node::Const`]/[`Node::Leaf`] `cons_id`s.
+    pub(crate) max_cons_id: u32,
 }
 
 impl Node {
     fn class_params(&self) -> Vec<ClassId> {
         match self {
-            Self::Const(_) | Self::Leaf { .. } => vec![],
+            Self::Const { .. } | Self::Leaf { .. } => vec![],
             Self::Expand { x, shape } => vec![*x, *shape],
             Self::Permute { x, .. } => vec![*x],
             Self::Reshape { x, shape, .. } => vec![*x, *shape],
@@ -406,6 +447,7 @@ impl Graph {
             leaf_classes: Vec::new(),
             ref_count: 0,
             dead: false,
+            max_cons_id: 0,
         }
     }
 
@@ -610,7 +652,7 @@ impl Graph {
                     Node::Stack { ops } => format!("Stack {:?}", ops),
                     Node::ToDevice { device, time, .. } => format!("ToDevice {:?} time={}", device, time),
                     Node::Contiguous { .. } => "Contiguous".into(),
-                    Node::Const(v) => format!("Const {:?}", v),
+                    Node::Const { value: v, .. } => format!("Const {:?}", v),
                     Node::Leaf { dtype, .. } => format!("Leaf {:?}", dtype),
                 };
                 println!("  {name} {nid:?}: inputs={inputs:?}");
@@ -1059,7 +1101,7 @@ impl Graph {
     /// scalars.
     pub fn shape(&self, class: ClassId) -> Vec<ClassId> {
         match &self.nodes[self.classes[class].nodes[0]].node {
-            Node::Const(_) | Node::Stack { .. } => Vec::new(),
+            Node::Const { .. } | Node::Stack { .. } => Vec::new(),
             Node::Leaf { shape, .. } => self.dims(*shape),
             Node::Expand { shape, .. } | Node::Reshape { shape, .. } => self.dims(*shape),
             Node::Permute { x, axes } => {
@@ -1106,7 +1148,7 @@ impl Graph {
 
     pub fn dtype(&self, class: ClassId) -> DType {
         match &self.nodes[self.classes[class].nodes[0]].node {
-            Node::Const(c) => c.dtype(),
+            Node::Const { value: c, .. } => c.dtype(),
             Node::Leaf { dtype, .. } => *dtype,
             Node::Cast { dtype, .. } => *dtype,
             Node::Assign { dst, .. } => self.dtype(*dst),
@@ -1176,7 +1218,7 @@ impl Runtime {
             let mut dim_classes = Vec::with_capacity(dim_entries.len());
             for entry in dim_entries {
                 dim_classes.push(match self.kernels[kernel_id].kernel.ops[entry].op {
-                    Op::Const(c) => self.push_node(graph_id, Node::Const(c)).1,
+                    Op::Const(c) => self.push_const(graph_id, c),
                     Op::Param { kind: ParamKind::Variable, .. } => {
                         self.push_leaf_node(graph_id, IDX_T, ClassId::NULL).1
                     }
@@ -1282,7 +1324,7 @@ impl Runtime {
                             let mut dim_classes = Vec::with_capacity(dim_entries.len());
                             for entry in dim_entries {
                                 dim_classes.push(match self.kernels[kernel_id].kernel.ops[entry].op {
-                                    Op::Const(c) => self.push_node(graph_id, Node::Const(c)).1,
+                                    Op::Const(c) => self.push_const(graph_id, c),
                                     Op::Param { kind: ParamKind::Variable, .. } => {
                                         self.push_leaf_node(graph_id, IDX_T, ClassId::NULL).1
                                     }
@@ -1304,7 +1346,7 @@ impl Runtime {
                         }
                     }
                     Op::Const(x) => {
-                        let (_, class_id) = self.push_node(graph_id, Node::Const(x));
+                        let class_id = self.push_const(graph_id, x);
                         class_id
                     }
                     Op::Unary { x, uop } => {
@@ -1617,7 +1659,7 @@ impl Runtime {
             .shape(self.tensors[tid].class_id)
             .into_iter()
             .map(|dim| match &self.graphs[graph_id].nodes[self.graphs[graph_id].classes[dim].nodes[0]].node {
-                Node::Const(c) => Some(*c),
+                Node::Const { value: c, .. } => Some(*c),
                 _ => None,
             })
             .collect();
@@ -1660,13 +1702,26 @@ impl Runtime {
         );
     }
 
+    /// Pushes a constant node into the graph and returns its class.
+    ///
+    /// The preferred way to create consts: `push_node` assigns the fresh
+    /// `cons_id` that keeps every const in its own class (see
+    /// [`Node::Const`] for why that is load-bearing).
+    pub fn push_const(&mut self, graph_id: GraphId, value: Constant) -> ClassId {
+        self.push_node(graph_id, Node::Const { cons_id: 0, value }).1
+    }
+
     pub fn push_leaf_node(&mut self, graph_id: GraphId, dtype: DType, shape: ClassId) -> (NodeId, ClassId) {
-        // Leaves are never hashconsed: each buffer keeps its own class.
-        let node = Node::Leaf { dtype, shape };
+        // Fresh cons_id: leaves hashcons but never merge (each buffer keeps
+        // its own class).
+        let cons_id = self.graphs[graph_id].max_cons_id;
+        self.graphs[graph_id].max_cons_id += 1;
+        let node = Node::Leaf { cons_id, dtype, shape };
         let g = &mut self.graphs[graph_id];
-        let nid = g.nodes.push(NodeData { node, class_of: ClassId::NULL });
+        let nid = g.nodes.push(NodeData { node: node.clone(), class_of: ClassId::NULL });
         let cid = g.classes.push(EClass { nodes: vec![nid] });
         g.nodes[nid].class_of = cid;
+        g.hashcons.insert(node, nid);
         (nid, cid)
     }
 
@@ -1677,7 +1732,7 @@ impl Runtime {
             .shape(class)
             .into_iter()
             .map(|dim| match &self.graphs[graph_id].nodes[self.graphs[graph_id].classes[dim].nodes[0]].node {
-                Node::Const(c) => c.as_dim().unwrap_or(0),
+                Node::Const { value: c, .. } => c.as_dim().unwrap_or(0),
                 _ => 0,
             })
             .collect()
@@ -1735,20 +1790,26 @@ impl Runtime {
             _ => {}
         }
         let g = &mut self.graphs[graph_id];
-        // Const and Leaf have value semantics: each creation site gets a fresh
-        // class so no class is ever shared between use sites (a shared class
-        // would get pinned to whichever kernel materialized it first, wrongly
-        // entangling unrelated consumers in merges/stores).
-        let hashconsable = !matches!(node, Node::Const(_) | Node::Leaf { .. });
-        if hashconsable && let Some(&nid) = g.hashcons.get(&node) {
+        // Const and Leaf carry a fresh cons_id (assigned here; constructors
+        // pass 0): they hashcons like everything else, but the unique id means
+        // two consts/leaves never merge into one class — no class is ever
+        // shared between creation sites, so none gets pinned to whichever
+        // kernel materialized it first.
+        let node = match node {
+            Node::Const { value, .. } => {
+                let cons_id = g.max_cons_id;
+                g.max_cons_id += 1;
+                Node::Const { cons_id, value }
+            }
+            node => node,
+        };
+        if let Some(&nid) = g.hashcons.get(&node) {
             return (nid, g.nodes[nid].class_of);
         }
         let nid = g.nodes.push(NodeData { node: node.clone(), class_of: ClassId::NULL });
         let cid = g.classes.push(EClass { nodes: vec![nid] });
         g.nodes[nid].class_of = cid;
-        if hashconsable {
-            g.hashcons.insert(node, nid);
-        }
+        g.hashcons.insert(node, nid);
         (nid, cid)
     }
 
