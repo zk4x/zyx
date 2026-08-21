@@ -1278,7 +1278,7 @@ impl Kernel {
         root_op: OpId,
         all_outputs: &[OpId],
         loads: &[T],
-    ) -> (Self, OpId, Vec<T>, Vec<T>, Map<OpId, OpId>) {
+    ) -> (Self, OpId, Vec<T>, Vec<T>) {
         // Walk 1: from root_op
         let mut root_required = Set::default();
         let mut stack = vec![root_op];
@@ -1349,7 +1349,8 @@ impl Kernel {
             old_id = self.next_op(old_id);
         }
 
-        // Remove from self ops not needed by other outputs
+        // Remove from self ops not needed by other outputs: they were only
+        // kept alive by root, which has moved to the new kernel.
         let mut old_id = self.head;
         while !old_id.is_null() {
             let next = self.next_op(old_id);
@@ -1359,7 +1360,7 @@ impl Kernel {
             old_id = next;
         }
 
-        (new_kernel, new_root_op, self_loads, new_loads, remap)
+        (new_kernel, new_root_op, self_loads, new_loads)
     }
 
     /// Get all group indices used in the kernel.

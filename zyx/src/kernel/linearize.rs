@@ -771,7 +771,7 @@ impl Kernel {
                     Op::Param { .. } => -20,
                     Op::Index { .. } => -15,
                     Op::Const(_) => -10,
-                    Op::Loop { .. } => -100,
+                    Op::Loop { .. } => 10,
                     Op::Reduce { .. } => -5,
                     _ => 0,
                 };

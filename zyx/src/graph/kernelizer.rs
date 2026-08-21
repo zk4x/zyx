@@ -865,7 +865,7 @@ impl Graph {
                 remove_first_output(&mut self.jit_kernels, kid, child);
                 let out_op_ids: Vec<OpId> = self.jit_kernels[kid].outputs.iter().map(|&cid| visited[&cid].1).collect();
                 let loads = self.jit_kernels[kid].loads.clone();
-                let (new_kernel, new_op_id, self_loads, new_loads, remap) =
+                let (new_kernel, new_op_id, self_loads, new_loads) =
                     self.jit_kernels[kid].kernel.extract_subkernel(op_id, &out_op_ids, &loads);
                 self.jit_kernels[kid].loads = self_loads;
 
@@ -877,38 +877,13 @@ impl Graph {
                     loads: new_loads,
                     stores: Vec::new(),
                 });
-                // Classes whose ops moved into the extracted subkernel (e.g.
-                // shape consts merged into the chain earlier) must follow:
-                // re-point visited and carry their outstanding output entries
-                // over, keeping rc balanced.
-                let mut moved: Vec<ClassId> = Vec::new();
-                for (&vclass, (vkid, vop)) in visited.iter_mut() {
-                    if *vkid == kid && vclass != child && let Some(&new_op) = remap.get(vop) {
-                        moved.push(vclass);
-                        *vkid = new_kid;
-                        *vop = new_op;
-                    }
-                }
-                for &vclass in &moved {
-                    while remove_first_output(&mut self.jit_kernels, kid, vclass) {
-                        self.jit_kernels[new_kid].outputs.push(vclass);
-                    }
-                }
-                // Carrying entries out can leave the old kernel with neither
-                // outputs nor stores — nothing references it anymore.
-                if self.jit_kernels[kid].outputs.is_empty() && self.jit_kernels[kid].stores.is_empty() {
-                    self.jit_kernels.remove(kid);
-                }
                 op_id = new_op_id;
                 kid = new_kid;
             }
         }
 
-        // The old kernel keeps child's remaining (rcs-1) entries plus any
-        // outstanding entries of OTHER classes merged in earlier (e.g. shape
-        // consts with pending uses) — their ops stayed behind by construction
-        // (only root_required moved). Child's count is asserted in the extract
-        // branch above; no len==1 guarantee exists anymore.
+        debug_assert_eq!(self.jit_kernels[kid].outputs.len(), 1);
+
         (kid, op_id)
     }
 
