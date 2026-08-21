@@ -171,9 +171,9 @@ pub enum IdxKind {
 impl std::fmt::Display for IdxKind {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            IdxKind::Group(x) => f.write_fmt(format_args!("group r{x}")),
-            IdxKind::Local(x) => f.write_fmt(format_args!("local len={x}")),
-            IdxKind::Warp(x) => f.write_fmt(format_args!("warp{x}")),
+            IdxKind::Group(x) => f.write_fmt(format_args!("group_r{x}")),
+            IdxKind::Local(x) => f.write_fmt(format_args!("local_{x}")),
+            IdxKind::Warp(x) => f.write_fmt(format_args!("warp_{x}")),
         }
     }
 }

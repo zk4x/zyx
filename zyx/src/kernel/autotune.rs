@@ -421,7 +421,10 @@ impl Kernel {
                     // register arrays) — the kernel allocates it itself, it is
                     // never a launch argument and needs no pool allocation.
                 }
-                _ => break,
+                // Shape stacks and other value ops may sit anywhere in the
+                // list (symbolic dims are pushed before their param); only
+                // Param ops consume launch arguments, so keep walking.
+                _ => {}
             }
             op_id = self.next_op(op_id);
         }

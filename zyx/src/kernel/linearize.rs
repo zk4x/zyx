@@ -347,11 +347,7 @@ impl Kernel {
                         self.ops[op_id].op = Op::Binary { x: pc, y: z, bop: BOp::Mul };
                     }
                     ParamKind::Global => {
-                        let Some(view) = views.remove(&op_id) else {
-                            eprintln!("DBG global param without view: op_id={op_id:?} op={:?}", self.ops[op_id].op);
-                            self.debug();
-                            panic!("no view");
-                        };
+                        let view = views.remove(&op_id).unwrap();
                         // Bounds condition: valid where index is within the source
                         // extent. `len` is the literal shape, so the plain bounds
                         // check idx >= 0 && idx < len is exact; every movement op
@@ -837,8 +833,6 @@ impl Kernel {
             }
             self.head = final_order.first().copied().unwrap_or(OpId::NULL);
             self.tail = final_order.last().copied().unwrap_or(OpId::NULL);
-            //println!("DBG toposort final order:");
-            //self.debug();
         }
     }
 

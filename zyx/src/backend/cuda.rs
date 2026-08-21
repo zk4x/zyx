@@ -710,16 +710,17 @@ pub(super) fn initialize_device(
                             let result = match &programs[program_id] {
                                 CUDAProgram::Module { function, lws, gws, .. } => {
                                     let mut kernel_params: Vec<*mut core::ffi::c_void> = Vec::new();
-                                    let mut scalar_values: Vec<Vec<u8>> = Vec::new();
-                                    for (i, arg) in args.iter().enumerate() {
+                                    // Boxed so reallocs of this vec can never dangle the
+                                    // pointers handed to cuLaunchKernel.
+                                    let mut scalar_values: Vec<Box<[u8]>> = Vec::new();
+                                    for arg in args.iter() {
                                         match &buffers[*arg] {
                                             CUDABuffer::Buffer { ptr, .. } => {
                                                 let slot: *const u64 = &raw const *ptr;
                                                 kernel_params.push(slot.cast_mut().cast());
                                             }
                                             CUDABuffer::Variable(constant) => {
-                                                let bytes = constant.to_le_bytes();
-                                                scalar_values.push(bytes);
+                                                scalar_values.push(constant.to_le_bytes().into());
                                                 let value = scalar_values.last().unwrap();
                                                 kernel_params.push(value.as_ptr().cast_mut().cast());
                                             }

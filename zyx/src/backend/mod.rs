@@ -978,6 +978,10 @@ impl Device {
         args: &[PoolBufferId],
         event_wait_list: Vec<Event>,
     ) -> Result<Event, BackendError> {
+        // A kernel always has at least one Param (its output); launching with
+        // no args means buffer binding failed upstream — backends would pass
+        // garbage param pointers to the driver.
+        debug_assert!(!args.is_empty(), "launch with empty args: buffer binding failed upstream");
         match self {
             Device::C(dev) => {
                 let MemoryPool::Host(pool) = memory_pool else { unreachable!() };

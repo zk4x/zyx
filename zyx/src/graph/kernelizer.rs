@@ -108,7 +108,7 @@ impl Graph {
 
         let mut visited: Map<ClassId, (JitKernelId, OpId)> = Map::default();
 
-        println!("order={:?}", order);
+        //println!("order={:?}", order);
 
         for (i, &cid) in order.iter().enumerate() {
             debug_assert!(!visited.contains_key(&cid), "class {cid:?} already visited");
