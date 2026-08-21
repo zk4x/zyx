@@ -1463,17 +1463,17 @@ impl Runtime {
             } else {
                 self.promote_to_graph(src, graph_id)?;
             }
-            let mut dst_define_cid = dst_cid;
+            let mut dst_leaf_cid = dst_cid;
             // Walk graph to find the source of the lvalue
             let graph = &self.graphs[graph_id];
             loop {
-                match graph.nodes[graph.classes[dst_define_cid].nodes[0]].node {
+                match graph.nodes[graph.classes[dst_leaf_cid].nodes[0]].node {
                     Node::Pad { x, .. }
                     | Node::Flip { x, .. }
                     | Node::Expand { x, .. }
                     | Node::Reshape { x, .. }
                     | Node::Narrow { x, .. }
-                    | Node::Permute { x, .. } => dst_define_cid = x,
+                    | Node::Permute { x, .. } => dst_leaf_cid = x,
                     Node::After { .. } | Node::Leaf { .. } => break,
                     _ => unreachable!(),
                 }
@@ -1481,18 +1481,18 @@ impl Runtime {
             // Resolve the base leaf through any After chain (a previous assign on
             // the same buffer) to find the base tensor. The After for this assign
             // threads onto the previous After, not the original buffer.
-            let mut leaf_cid = dst_define_cid;
+            let mut leaf_cid = dst_leaf_cid;
             while let Node::After { x, .. } = &graph.nodes[graph.classes[leaf_cid].nodes[0]].node {
                 leaf_cid = *x;
             }
-            let dst_define = graph.leaf_map[&leaf_cid];
+            let dst_leaf = graph.leaf_map[&leaf_cid];
 
             // The Assign node keeps the ORIGINAL dst-chain and src classes; the
             // output class cid is what any later use of dst or src resolves to,
             // so both tensors are re-pointed at it.
             let src_cid = self.graph_ids(src).0;
             let (_node_id, assign_cid) = self.push_node(graph_id, Node::Assign { dst: dst_cid, src: src_cid });
-            self.tensors[dst_define].class_id = self.push_node(graph_id, Node::After { x: dst_define_cid, dep: assign_cid }).1;
+            self.tensors[dst_leaf].class_id = self.push_node(graph_id, Node::After { x: dst_leaf_cid, dep: assign_cid }).1;
             self.tensors[dst].class_id = self.push_node(graph_id, Node::After { x: dst_cid, dep: assign_cid }).1;
             #[cfg(feature = "debug_tensor_op")]
             println!("  -> assign_cid={assign_cid:?}");
@@ -1540,11 +1540,11 @@ impl Runtime {
         let dst_org = loads[0];
         self.release_load(dst_org);
 
-        let mut dst_define = dst_op;
+        let mut dst_param = dst_op;
         for _ in 0..100 {
-            match kernel.ops[dst_define].op {
+            match kernel.ops[dst_param].op {
                 Op::Move { x, .. } => {
-                    dst_define = x;
+                    dst_param = x;
                 }
                 Op::Storage { .. } => {
                     break;
@@ -1554,7 +1554,7 @@ impl Runtime {
         }
 
         // Replay dst's movement chain into src's kernel. The replayed base
-        // define becomes the (mutable) store target; the last replayed
+        // param becomes the (mutable) store target; the last replayed
         // movement op yields dst's final value within src's kernel.
         let mut op_map = Map::default();
         let mut op_id = kernel.head;
@@ -1565,7 +1565,7 @@ impl Runtime {
                     op_map.insert(op_id, id);
                 }
                 Op::Param { dtype, mut kind, shape } => {
-                    if op_id == dst_define {
+                    if op_id == dst_param {
                         kind = ParamKind::GlobalMut;
                     }
                     let id = self.kernels[src_kid].kernel.push_back(Op::Param { dtype, kind, shape });
@@ -1576,9 +1576,9 @@ impl Runtime {
                         *x
                     } else {
                         // this is the move on the load
-                        op_map[&dst_define]
+                        op_map[&dst_param]
                     };
-                    let mop = mop.remap(&op_map, op_map[&dst_define]);
+                    let mop = mop.remap(&op_map, op_map[&dst_param]);
                     let id = self.kernels[src_kid].kernel.push_back(Op::Move { x, mop });
                     op_map.insert(op_id, id);
                 }
@@ -1592,7 +1592,7 @@ impl Runtime {
             op_id = kernel.next_op(op_id);
         }
 
-        let dst_op = op_map.get(&dst_op).copied().unwrap_or(op_map[&dst_define]);
+        let dst_op = op_map.get(&dst_op).copied().unwrap_or(op_map[&dst_param]);
         // Store src's value into dst's base buffer through the replayed chain.
         self.kernels[src_kid].kernel.store(dst_op, src_op, OpId::NULL, MemLayout::Scalar);
         self.kernels[src_kid].stores.push(dst_org);
@@ -1947,6 +1947,23 @@ impl Runtime {
             let dev_info_id = self.get_or_add_dev_info(&dev_info);
 
             if let Some(opt_seq) = self.optimizations.get(&(cached_kid, dev_info_id)) {
+                // Kernel arrives pre-linearization; the saved opt sequence
+                // operates on linearized IR.
+                kernel.linearize();
+                kernel.common_subexpression_elimination();
+                kernel.dead_code_elimination();
+                kernel.instruction_schedule();
+                {
+                    let global_indices = kernel.get_group_indices();
+                    let max_global_dims = self.devices[kernel.device_id].info().max_global_work_dims.len();
+                    if global_indices.len() > max_global_dims {
+                        let n = global_indices.len() + 1 - max_global_dims;
+                        let indices: Vec<OpId> = global_indices.values().copied().take(n).collect();
+                        kernel.merge_indices(&indices);
+                    }
+                    kernel.renumber_indices();
+                    kernel.verify();
+                }
                 opt_seq.apply(&mut kernel, &dev_info);
                 let program_id = {
                     let device = &mut self.devices[kernel.device_id];
@@ -1971,43 +1988,10 @@ impl Runtime {
             kernel.debug();
         }
 
-        // linearize derives the output shape from each writable global's `shape`
-        // field, so no shape scaffolding needs to be prepended here.
-        kernel.linearize();
-        kernel.common_subexpression_elimination();
-        kernel.dead_code_elimination();
-        kernel.instruction_schedule();
-
-        {
-            let device = &mut self.devices[kernel.device_id];
-            let global_indices = kernel.get_group_indices();
-            let max_global_dims = device.info().max_global_work_dims.len();
-            if global_indices.len() > max_global_dims {
-                let n = global_indices.len() + 1 - max_global_dims;
-                let indices: Vec<OpId> = global_indices.values().copied().take(n).collect();
-                kernel.merge_indices(&indices);
-            }
-            kernel.renumber_indices();
-            kernel.verify();
-        }
-
-        #[cfg(debug_assertions)]
-        {
-            let n_global_defines = kernel
-                .ops
-                .values()
-                .filter(|op| {
-                    matches!(op.op, Op::Param { kind: ParamKind::Global | ParamKind::GlobalMut | ParamKind::Variable, .. })
-                })
-                .count();
-            let n_buffers = buffers.iter().filter(|&&b| b != PoolBufferId::NULL).count();
-            assert!(
-                n_buffers <= n_global_defines,
-                "buffers len ({}) must not exceed number of global/scalar defines ({}) in kernel",
-                n_buffers,
-                n_global_defines,
-            );
-        }
+        // The kernel is handed to autotune_ PRE-linearization: alloc_buffers
+        // resolves buffer sizes from the param shape stacks, which linearize
+        // nulls. Linearization and the post-linearize passes now live in
+        // autotune_.
 
         let (program_id, opts, timing) = kernel.autotune_(
             &mut self.devices[kernel.device_id],

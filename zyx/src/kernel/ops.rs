@@ -22,7 +22,20 @@ pub enum ParamKind {
 pub enum Op {
     // ops that exist in both
     Const(Constant),
-    // For things that are kernel parameters
+    /// A kernel parameter — one of the arguments passed to the compiled GPU
+    /// kernel at launch.
+    ///
+    /// Pre-linearization the kernel is a pure DAG and Params are its leaves.
+    /// Post-linearization the kernel is a linear SSA construct; Params remain
+    /// as leaves and — together with [`Op::Storage`] — act as the SSA escape
+    /// hatches: the mutable stuff values are read from and written to.
+    /// Linearize only nulls a Param's `shape` field, so buffer sizes must be
+    /// resolved BEFORE linearization (see `Kernel::alloc_buffers`).
+    ///
+    /// - [`ParamKind::Variable`] — a single scalar argument (e.g. a dynamic
+    ///   dim), passed by value.
+    /// - [`ParamKind::Global`] / [`ParamKind::GlobalMut`] — a read-only /
+    ///   read-write buffer argument, passed by pointer.
     Param {
         dtype: DType,
         kind: ParamKind,
@@ -48,7 +61,14 @@ pub enum Op {
     },
 
     // ops that only exist after unfolding views and reduces
-    // Storage declared inside kernel
+    /// Memory internal to the kernel — NOT a launch argument. Used for
+    /// accumulators, shared/local memory, Tenstorrent circular buffers,
+    /// arrays of values in registers, etc.
+    ///
+    /// Storage ops only exist post-linearization: in the linear SSA construct
+    /// they — together with [`Op::Param`] — are the escape hatches, the
+    /// mutable stuff that values are written to and read back from across the
+    /// linear order. A `MemScope::Variable` storage holds a single scalar.
     Storage {
         dtype: DType,
         scope: MemScope,
@@ -530,7 +550,6 @@ impl Op {
 impl std::fmt::Display for MemScope {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(match self {
-            MemScope::Variable => "var",
             MemScope::Global => "global",
             MemScope::Local => "local",
             MemScope::Register => "reg",

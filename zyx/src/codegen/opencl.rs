@@ -80,7 +80,7 @@ impl Kernel {
                     if rcs.contains_key(&op_id) {
                         let dtype = dtypes[&op_id];
                         let reg = new_reg(op_id, &mut reg_map, &mut registers, dtype, rcs[&op_id], loop_id);
-                        if matches!(self.ops[src].op, Op::Storage { scope: MemScope::Variable, .. }) {
+                        if matches!(self.ops[src].op, Op::Param { kind: ParamKind::Variable, .. }) {
                             _ = writeln!(source, "{indent}r{reg} = p{src};");
                         } else {
                             let idx = get_var(index, &constants, &indices, &reg_map, &mut registers, loop_id)?;

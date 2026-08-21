@@ -1382,8 +1382,8 @@ pub(super) fn initialize_device(
                                 let mut n_vars = 0u32;
                                 let mut op = kernel.head;
                                 while !op.is_null() {
-                                    if let crate::kernel::Op::Storage {
-                                        dtype, scope: crate::kernel::MemScope::Variable, ..
+                                    if let crate::kernel::Op::Param {
+                                        dtype, kind: crate::kernel::ParamKind::Variable, ..
                                     } = kernel.at(op)
                                     {
                                         let storage_bits = if *dtype == crate::DType::Bool { 32 } else { dtype.bit_size() };
@@ -1541,8 +1541,8 @@ pub(super) fn initialize_device(
                             }
                             let n = args.len();
                             // Separate buffer args (descriptors) from variable args (push constants).
-                            // Buffer bindings are 0..nbuffers in define order; push-constant members
-                            // use the same std140 layout as the SPIR-V block, in define order.
+                            // Buffer bindings are 0..nbuffers in param order; push-constant members
+                            // use the same std140 layout as the SPIR-V block, in param order.
                             let mut buf_infos: Vec<VkDescriptorBufferInfo> = Vec::with_capacity(n);
                             let mut push_constants: Vec<u8> = vec![0u8; prog.push_constants_size as usize];
                             let mut push_off: u32 = 0;

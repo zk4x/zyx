@@ -601,11 +601,11 @@ impl Kernel {
         let mut reg_arrays: Map<OpId, (u32, u32)> = Map::with_capacity_and_hasher(8, BuildHasherDefault::new());
         let mut cast_u32_consts: Map<OpId, (u32, u32)> = Map::with_capacity_and_hasher(4, BuildHasherDefault::new());
         let mut const_pool: Map<Constant, u32> = Map::with_capacity_and_hasher(16, BuildHasherDefault::new());
-        // Scalar variables (MemScope::Variable): collected in define order and
+        // Scalar variables (Param { kind: Variable }): collected in param order and
         // exposed through a single push-constant block (SPIR-V has no by-value
-        // kernel params). Maps kernel define op_id -> member index.
+        // kernel params). Maps kernel param op_id -> member index.
         let mut variable_defs: Vec<(OpId, DType)> = Vec::new();
-        // Maps kernel define op_id -> (member index, member storage type id, is_bool)
+        // Maps kernel param op_id -> (member index, member storage type id, is_bool)
         let mut variable_members: Map<OpId, (u32, u32, bool)> = Map::with_capacity_and_hasher(4, BuildHasherDefault::new());
 
         // Pre-define common types
@@ -705,7 +705,6 @@ impl Kernel {
                     }
                     &Op::Storage { dtype, scope, len } => {
                         match scope {
-                            MemScope::Variable => unreachable!(),
                             MemScope::Circular => unreachable!(),
                             MemScope::Global => {
                                 unreachable!()
@@ -881,8 +880,8 @@ impl Kernel {
         push_ptr_type(&mut asm, &mut ptr_cache, &mut type_entries, SC_FUNCTION, idx_type);
 
         // === Push-constant block for scalar variables ===
-        // SPIR-V has no by-value kernel params, so MemScope::Variable defines are
-        // exposed through a single push-constant block struct (define order).
+        // SPIR-V has no by-value kernel params, so Param { kind: Variable } args are
+        // exposed through a single push-constant block struct (param order).
         // Layout: std140 scalar alignment (8 for 64-bit types, 4 otherwise),
         // total padded to a multiple of 4. The Vulkan backend mirrors this layout
         // at launch (it must satisfy Vulkan push-constant layout rules).
@@ -913,8 +912,8 @@ impl Kernel {
             let mut idx = 0u32;
             let mut off = 0u32;
             while !op_id.is_null() && idx < variable_defs.len() as u32 {
-                if let &Op::Storage { dtype, scope: MemScope::Variable, .. } = self.at(op_id) {
-                    let storage_dt = if dtype == DType::Bool { DType::U32 } else { dtype };
+                if let Op::Param { kind: ParamKind::Variable, dtype, .. } = self.at(op_id) {
+                    let storage_dt = if *dtype == DType::Bool { DType::U32 } else { *dtype };
                     let size = elem_stride(storage_dt) as u32;
                     let align = if size >= 8 { 8 } else { 4 };
                     off = off.next_multiple_of(align);
@@ -1106,9 +1105,6 @@ impl Kernel {
                     }
                     Op::Storage { scope, .. } => {
                         match scope {
-                            MemScope::Variable => {
-                                // Exposed through the push-constant block; loaded on access
-                            }
                             MemScope::Circular => unreachable!(),
                             MemScope::Global | MemScope::Local => {
                                 // Already declared as module-level variable

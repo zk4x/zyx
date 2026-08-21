@@ -101,6 +101,7 @@
       - [x] of ops
   - [x] register tiling (needs improvement)
   - [x] variable op for dynamic constants (that is scalars that should be kernel args, not baked)
+  - [ ] fully symbolic shapes
   - [ ] local memory tiling for matmul like kernels
   - [ ] wmma optimization pass
   - [ ] tiling optimization passes for tenstorrent

@@ -174,7 +174,7 @@ impl Kernel {
 
         // ***** IMPLEMENTATION ***** //
 
-        // Find the last global define to insert local memory after it
+        // Find the last global param to insert local memory after it
         let mut last_global = None;
         let mut op_id = self.head;
         while !op_id.is_null() {
@@ -184,7 +184,7 @@ impl Kernel {
             op_id = self.next_op(op_id);
         }
 
-        // Insert local memory definitions right after the last global define
+        // Insert local memory storages right after the last global param
         let insert_at = match last_global {
             Some(g) => {
                 let n = self.next_op(g);

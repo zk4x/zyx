@@ -29,7 +29,7 @@ use nanoserde::{DeBin, SerBin};
 fn mem_scope(op: &Op) -> MemScope {
     match op {
         Op::Storage { scope, .. } => *scope,
-        Op::Param { kind: ParamKind::Variable, .. } => MemScope::Variable,
+        Op::Param { kind: ParamKind::Variable, .. } => MemScope::Register,
         Op::Param { kind: ParamKind::Global | ParamKind::GlobalMut, .. } => MemScope::Global,
         _ => unreachable!("load/store operand must be a Storage or Param, got {op:?}"),
     }
@@ -306,9 +306,6 @@ impl Kernel {
                     let scope = mem_scope(&self.ops[src].op);
                     let total_elements = loop_mult * layout.n_elements();
                     match scope {
-                        MemScope::Variable => {
-                            n_scoped_load_bits[2] += total_elements * dtypes[&op_id].0.bit_size() as u64;
-                        }
                         MemScope::Global => {
                             let n_bits = total_elements * dtypes[&op_id].0.bit_size() as u64;
                             n_scoped_load_bits[0] += n_bits;
@@ -394,7 +391,6 @@ impl Kernel {
                     }
                     let scope = mem_scope(&self.ops[dst].op);
                     match scope {
-                        MemScope::Variable => unreachable!("stores to MemScope::Variable are invalid"),
                         MemScope::Global => {
                             let n_bits = loop_mult * layout.n_elements() * dtypes[&op_id].0.bit_size() as u64;
                             n_scoped_store_bits[0] += n_bits;

@@ -4,7 +4,7 @@ use crate::{
     Map, Set,
     graph::{ClassId, Graph, JitKernelData, JitKernelId, Node},
     kernel::{DeviceId, Kernel, MemLayout, MoveOp, Op, OpId, ParamKind},
-    shape::Dim,
+    shape::{Dim, UAxis},
     slab::{Slab, SlabId},
 };
 
@@ -223,7 +223,48 @@ impl Graph {
                         self.push_outputs(kid, cid, rcs[&cid]);
                         visited.insert(cid, (kid, result_op));
                     }
-                    Node::Reduce { .. } => todo!("kernelize Node::Reduce"),
+                    Node::Reduce { x, rop, ref axes } => {
+                        // Assumed unique (backed by debug_assert) and in range
+                        // (asserted by push_node).
+                        debug_assert!(
+                            axes.iter().collect::<BTreeSet<_>>().len() == axes.len(),
+                            "Reduce: duplicate axes {axes:?}"
+                        );
+                        let axes: Vec<UAxis> = axes.to_vec();
+                        let rank = self.shape(x).len();
+                        let (mut kid, mut op_id) = visited[&x];
+                        (kid, op_id) = self.duplicate_or_store_class(x, kid, op_id, &mut visited, &mut rcs, false);
+                        // Single permute: non-reduced axes first, reduced axes
+                        // trailing (order preserved), so each reduce in the
+                        // sequence below sees its axis last.
+                        let perm: Vec<UAxis> =
+                            (0..rank).filter(|i| !axes.contains(i)).chain(axes.iter().copied()).collect();
+                        if !perm.iter().copied().eq(0..rank) {
+                            let kernel = &mut self.jit_kernels[kid].kernel;
+                            op_id = kernel.push_back(Op::Move {
+                                x: op_id,
+                                mop: Box::new(MoveOp::Permute { axes: perm.into() }),
+                            });
+                        }
+                        // Sequence of single trailing-axis reduces.
+                        for _ in 0..axes.len() {
+                            let kernel = &mut self.jit_kernels[kid].kernel;
+                            let reduce_axis = kernel.reduce_shape_ids(op_id);
+                            op_id = kernel.push_back(Op::Reduce { x: op_id, rop, reduce_axis });
+                        }
+                        // All dims reduced: reshape the scalar to [1].
+                        if axes.len() == rank {
+                            let kernel = &mut self.jit_kernels[kid].kernel;
+                            let shape_op = kernel.add_shape(&[1]);
+                            op_id = kernel.push_back(Op::Move {
+                                x: op_id,
+                                mop: Box::new(MoveOp::Reshape { shape: shape_op }),
+                            });
+                        }
+                        self.consume(x, kid, &mut visited, &mut rcs);
+                        self.push_outputs(kid, cid, rcs[&cid]);
+                        visited.insert(cid, (kid, op_id));
+                    }
                     Node::After { x, dep } => {
                         // dep (the assign) wrote the new value in-place into x's
                         // base leaf buffer; cid aliases that buffer. Consume dep
@@ -288,18 +329,18 @@ impl Graph {
                         debug_assert!(stores.is_empty());
                         debug_assert!(outputs.iter().all(|&x| x == dst));
 
-                        // Backtrace to dst's base define.
-                        let mut dst_define = dst_op;
+                        // Backtrace to dst's base param.
+                        let mut dst_param = dst_op;
                         for _ in 0..100 {
-                            match dst_kernel.ops[dst_define].op {
-                                Op::Move { x, .. } => dst_define = x,
+                            match dst_kernel.ops[dst_param].op {
+                                Op::Move { x, .. } => dst_param = x,
                                 Op::Storage { .. } => break,
                                 _ => {}
                             }
                         }
 
                         // Replay dst's movement chain into src's kernel. The
-                        // replayed base define becomes the mutable (ro=false)
+                        // replayed base param becomes the mutable (GlobalMut)
                         // store target; the last replayed move yields dst's final
                         // position.
                         let mut op_map: Map<OpId, OpId> = Map::default();
@@ -311,15 +352,15 @@ impl Graph {
                                     op_map.insert(op_id, id);
                                 }
                                 Op::Param { dtype, mut kind, shape } => {
-                                    if op_id == dst_define {
+                                    if op_id == dst_param {
                                         kind = ParamKind::GlobalMut;
                                     }
                                     let id = self.jit_kernels[kid].kernel.push_back(Op::Param { dtype, kind, shape });
                                     op_map.insert(op_id, id);
                                 }
                                 Op::Move { x, ref mop } => {
-                                    let x = op_map.get(&x).copied().unwrap_or(op_map[&dst_define]);
-                                    let mop = mop.remap(&op_map, dst_define);
+                                    let x = op_map.get(&x).copied().unwrap_or(op_map[&dst_param]);
+                                    let mop = mop.remap(&op_map, dst_param);
                                     let id = self.jit_kernels[kid].kernel.push_back(Op::Move { x, mop });
                                     op_map.insert(op_id, id);
                                 }
@@ -328,11 +369,11 @@ impl Graph {
                             op_id = dst_kernel.next_op(op_id);
                         }
 
-                        let dst_op = op_map.get(&dst_op).copied().unwrap_or(op_map[&dst_define]);
+                        let dst_op = op_map.get(&dst_op).copied().unwrap_or(op_map[&dst_param]);
                         self.jit_kernels[kid].kernel.store(dst_op, src_op, OpId::NULL, MemLayout::Scalar);
                         self.jit_kernels[kid].stores.push(dst_leaf);
-                        // Extra loads (variable defines like a narrow start, all
-                        // but the base define) are replayed as new defines in
+                        // Extra loads (Variable params like a narrow start, all
+                        // but the base param) are replayed as new params in
                         // src's kernel and must be passed at launch too.
                         self.jit_kernels[kid].loads.extend(loads.iter().skip(1).copied());
 
@@ -341,7 +382,7 @@ impl Graph {
                         if rcs[&dst] > 0 {
                             // The After(s) still consume dst: after the in-place
                             // store, dst's value lives in the (replayed) base
-                            // define inside src's kernel. Point the remaining
+                            // param inside src's kernel. Point the remaining
                             // consumers at it — the assign already removed dst's
                             // old kernel, so the After arm cannot resolve it
                             // otherwise.
@@ -366,23 +407,132 @@ impl Graph {
                         println!("stores={:?}", self.jit_kernels[kid].stores);
                         self.jit_kernels[kid].kernel.debug();*/
                     }
-                    Node::Expand { .. } => {
-                        todo!("kernelize Node::Expand")
+                    Node::Expand { x, shape } => {
+                        let (mut kid, mut op_id) = visited[&x];
+                        (kid, op_id) = self.duplicate_or_store_class(x, kid, op_id, &mut visited, &mut rcs, false);
+                        let (mut skid, mut sop) = visited[&shape];
+                        if skid != kid {
+                            let kid_stores = self.jit_kernels[kid].kernel.contains_stores();
+                            let skid_stores = self.jit_kernels[skid].kernel.contains_stores();
+                            match (kid_stores, skid_stores) {
+                                (true, true) => {
+                                    (kid, op_id) = self.add_store(x, kid, op_id, &mut visited, &rcs);
+                                    (skid, _) = self.add_store(shape, skid, sop, &mut visited, &rcs);
+                                }
+                                (true, false) => (kid, op_id) = self.add_store(x, kid, op_id, &mut visited, &rcs),
+                                (false, true) => (skid, _) = self.add_store(shape, skid, sop, &mut visited, &rcs),
+                                (false, false) => {}
+                            }
+                            self.merge_kernels(skid, kid, &mut visited);
+                            (_, sop) = visited[&shape];
+                        }
+                        self.consume(x, kid, &mut visited, &mut rcs);
+                        self.consume(shape, kid, &mut visited, &mut rcs);
+                        let result_op = self.jit_kernels[kid].kernel.push_back(Op::Move {
+                            x: op_id,
+                            mop: Box::new(MoveOp::Expand { shape: sop }),
+                        });
+                        self.push_outputs(kid, cid, *rcs.get(&cid).unwrap());
+                        visited.insert(cid, (kid, result_op));
                     }
                     Node::Permute { x, ref axes } => {
                         self.add_move(cid, x, MoveOp::Permute { axes: axes.clone() }, false, &mut visited, &mut rcs);
                     }
-                    Node::Reshape { .. } => {
-                        todo!("kernelize Node::Reshape")
+                    Node::Reshape { x, shape } => {
+                        let (mut kid, mut op_id) = visited[&x];
+                        (kid, op_id) = self.duplicate_or_store_class(x, kid, op_id, &mut visited, &mut rcs, false);
+                        let (mut skid, mut sop) = visited[&shape];
+                        if skid != kid {
+                            let kid_stores = self.jit_kernels[kid].kernel.contains_stores();
+                            let skid_stores = self.jit_kernels[skid].kernel.contains_stores();
+                            match (kid_stores, skid_stores) {
+                                (true, true) => {
+                                    (kid, op_id) = self.add_store(x, kid, op_id, &mut visited, &rcs);
+                                    (skid, _) = self.add_store(shape, skid, sop, &mut visited, &rcs);
+                                }
+                                (true, false) => (kid, op_id) = self.add_store(x, kid, op_id, &mut visited, &rcs),
+                                (false, true) => (skid, _) = self.add_store(shape, skid, sop, &mut visited, &rcs),
+                                (false, false) => {}
+                            }
+                            self.merge_kernels(skid, kid, &mut visited);
+                            (_, sop) = visited[&shape];
+                        }
+                        self.consume(x, kid, &mut visited, &mut rcs);
+                        self.consume(shape, kid, &mut visited, &mut rcs);
+                        let result_op = self.jit_kernels[kid].kernel.push_back(Op::Move {
+                            x: op_id,
+                            mop: Box::new(MoveOp::Reshape { shape: sop }),
+                        });
+                        self.push_outputs(kid, cid, *rcs.get(&cid).unwrap());
+                        visited.insert(cid, (kid, result_op));
                     }
-                    Node::Pad { .. } => {
-                        todo!("kernelize Node::Pad")
+                    Node::Pad { x, axis, lp, rp } => {
+                        let (mut kid, mut op_id) = visited[&x];
+                        (kid, op_id) = self.duplicate_or_store_class(x, kid, op_id, &mut visited, &mut rcs, false);
+                        let mut pads: [Option<OpId>; 2] = [None, None];
+                        for (i, pad) in [lp, rp].into_iter().enumerate() {
+                            let (mut pkid, mut pop) = visited[&pad];
+                            if pkid != kid {
+                                let kid_stores = self.jit_kernels[kid].kernel.contains_stores();
+                                let pkid_stores = self.jit_kernels[pkid].kernel.contains_stores();
+                                match (kid_stores, pkid_stores) {
+                                    (true, true) => {
+                                        (kid, op_id) = self.add_store(x, kid, op_id, &mut visited, &rcs);
+                                        (pkid, _) = self.add_store(pad, pkid, pop, &mut visited, &rcs);
+                                    }
+                                    (true, false) => (kid, op_id) = self.add_store(x, kid, op_id, &mut visited, &rcs),
+                                    (false, true) => (pkid, _) = self.add_store(pad, pkid, pop, &mut visited, &rcs),
+                                    (false, false) => {}
+                                }
+                                self.merge_kernels(pkid, kid, &mut visited);
+                                (_, pop) = visited[&pad];
+                            }
+                            pads[i] = Some(pop);
+                            self.consume(pad, kid, &mut visited, &mut rcs);
+                        }
+                        self.consume(x, kid, &mut visited, &mut rcs);
+                        let result_op = self.jit_kernels[kid].kernel.push_back(Op::Move {
+                            x: op_id,
+                            mop: Box::new(MoveOp::Pad { axis, lp: pads[0].unwrap(), rp: pads[1].unwrap() }),
+                        });
+                        self.push_outputs(kid, cid, *rcs.get(&cid).unwrap());
+                        visited.insert(cid, (kid, result_op));
                     }
-                    Node::Narrow { .. } => {
-                        todo!("kernelize Node::Narrow")
-                    }
-                    Node::Flip { x, ref axes } => {
-                        self.add_move(cid, x, MoveOp::Flip { axes: axes.clone() }, false, &mut visited, &mut rcs);
+                    Node::Narrow { x, axis, start, len } => {
+                        let (mut kid, mut op_id) = visited[&x];
+                        (kid, op_id) = self.duplicate_or_store_class(x, kid, op_id, &mut visited, &mut rcs, false);
+                        let mut bounds: [Option<OpId>; 2] = [None, None];
+                        for (i, bound) in [start, len].into_iter().enumerate() {
+                            let (mut bkid, mut bop) = visited[&bound];
+                            if bkid != kid {
+                                let kid_stores = self.jit_kernels[kid].kernel.contains_stores();
+                                let bkid_stores = self.jit_kernels[bkid].kernel.contains_stores();
+                                match (kid_stores, bkid_stores) {
+                                    (true, true) => {
+                                        (kid, op_id) = self.add_store(x, kid, op_id, &mut visited, &rcs);
+                                        (bkid, _) = self.add_store(bound, bkid, bop, &mut visited, &rcs);
+                                    }
+                                    (true, false) => (kid, op_id) = self.add_store(x, kid, op_id, &mut visited, &rcs),
+                                    (false, true) => (bkid, _) = self.add_store(bound, bkid, bop, &mut visited, &rcs),
+                                    (false, false) => {}
+                                }
+                                self.merge_kernels(bkid, kid, &mut visited);
+                                (_, bop) = visited[&bound];
+                            }
+                            bounds[i] = Some(bop);
+                            self.consume(bound, kid, &mut visited, &mut rcs);
+                        }
+                        self.consume(x, kid, &mut visited, &mut rcs);
+                        let result_op = self.jit_kernels[kid].kernel.push_back(Op::Move {
+                            x: op_id,
+                            mop: Box::new(MoveOp::Narrow {
+                                axis,
+                                start: bounds[0].unwrap(),
+                                len: bounds[1].unwrap(),
+                            }),
+                        });
+                        self.push_outputs(kid, cid, *rcs.get(&cid).unwrap());
+                        visited.insert(cid, (kid, result_op));
                     }
                     Node::Flip { x, ref axes } => {
                         self.add_move(cid, x, MoveOp::Flip { axes: axes.clone() }, false, &mut visited, &mut rcs);
@@ -555,7 +705,7 @@ impl Graph {
             let dims: Vec<Dim> = self.shape(cid).to_vec();
             let kernel = &mut self.jit_kernels[kid].kernel;
             let shape = kernel.add_shape(&dims);
-            let dst = kernel.param(dtype, ParamKind::Global, shape);
+            let dst = kernel.param(dtype, ParamKind::GlobalMut, shape);
             kernel.store(dst, op_id, OpId::NULL, MemLayout::Scalar);
             self.jit_kernels[kid].stores.push(cid);
             visited.remove(&cid);

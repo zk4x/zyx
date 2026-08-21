@@ -7,7 +7,7 @@
 //! computation. The classic pattern this transforms is:
 //!
 //! ```c
-//! acc = 0           // register define, length 1
+//! acc = 0           // register storage, length 1
 //! acc[0] = 0       // store init value at index 0
 //! for (i = 0; i < n; i++) {
 //!     tmp = acc[0]            // load accumulator
@@ -49,11 +49,11 @@ impl Kernel {
         self.verify();
     }
 
-    /// Attempts to fold a specific accumulating loop starting at the given define.
+    /// Attempts to fold a specific accumulating loop starting at the given accumulator storage.
     ///
     /// This is the main pattern matcher for `fold_loops`. It looks for:
     ///
-    /// 1. A register define with length 1 (the accumulator variable)
+    /// 1. A register storage with length 1 (the accumulator variable)
     /// 2. An initial store to index 0 (the init value)
     /// 3. A Loop (the accumulating iteration)
     /// 4. The accumulate pattern inside the loop (load, add, store)
@@ -62,7 +62,7 @@ impl Kernel {
     /// Returns true if the loop was successfully folded, false otherwise.
     /// On success, the loop and accumulator are removed and replaced with closed-form ops.
     fn fold_loop(&mut self, acc_id: OpId) -> bool {
-        // Check that acc_id is a register define with length 1 (scalar accumulator)
+        // Check that acc_id is a register storage with length 1 (scalar accumulator)
         let &Op::Storage { dtype: acc_dtype, scope, len } = self.at(acc_id) else {
             return false;
         };
@@ -394,7 +394,7 @@ impl Kernel {
 
         self.ops[after_loop_load_id].op = Op::Cast { x: result_id, dtype };
 
-        // Remove the now-obsolete loop operations (Loop, body, EndLoop, init store, define)
+        // Remove the now-obsolete loop operations (Loop, body, EndLoop, init store, accumulator storage)
         let mut current = self.next_op(loop_id);
         while !current.is_null() {
             let next = self.next_op(current);

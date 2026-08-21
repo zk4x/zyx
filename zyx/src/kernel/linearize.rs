@@ -11,9 +11,9 @@
 //! # Kernel structure before and after linearize
 //!
 //! Before [`linearize`](Kernel::linearize), kernels contain only high-level ops:
-//! `Define`, `Move` (reshape/expand/permute/pad/flip), `Reduce`, `Binary`, and
+//! `Param`, `Move` (reshape/expand/permute/pad/flip), `Reduce`, `Binary`, and
 //! `Store`. Notably, they contain **no `Load`s**. All inputs to a kernel are
-//! `Define` ops with `MemScope::Global` scope, and every global define is either:
+//! `Op::Param` with `ParamKind::Global`/`GlobalMut` kind, and every global param is either:
 //!
 //! - **read-only** (`ro: true`) — an input, later turned into a `Load`
 //! - **not read-only** (`ro: false`) — a `Store` destination (an output)
@@ -27,16 +27,16 @@
 //! - it **inserts `Load`s**, `Loop`s, and the indexing computation (`Index`,
 //!   `Mad`, `Binary` on loop/group indices),
 //! - it computes each `Store`'s index from the shape it writes,
-//! - read-only global defines become `Load { src, .. }` referencing a freshly
-//!   inserted source `Define`,
-//! - writable global defines stay in place as `Store` destinations.
+//! - read-only global params become `Load { src, .. }` referencing a freshly
+//!   inserted source `Storage`,
+//! - writable global params stay in place as `Store` destinations.
 //!
 //! `Storage` is a post-linearization operation. It must not be expected in
 //! pre-linearization movement kernels or used as a movement-chain marker.
 //!
 //! Only after linearize does the kernel have `Load` ops, so the `loads` list only
 //! becomes meaningful then. This matters for any pass that maps kernel args to
-//! buffers: pre-linearize, map from the global `Define` ops (in op order), not
+//! buffers: pre-linearize, map from the global `Param` ops (in op order), not
 //! from a `loads` list.
 
 /// A single symbolic dimension of a value's index view: the loop/group index
@@ -68,8 +68,8 @@ impl Kernel {
     ///
     /// Movement ops (Reshape, Expand, Permute, Pad) are applied directly to axis indices,
     /// and LoadView/StoreView/ConstView are converted to Load/Store/Const in a single pass.
-    // TODO Currently it only works if each define has a single move op chain.
-    // Make it also work with move op chains when each define is accessed by multiple move ops.
+    // TODO Currently it only works if each param has a single move op chain.
+    // Make it also work with move op chains when each param is accessed by multiple move ops.
     pub fn linearize(&mut self) {
         if !self.ops.values().any(|n| matches!(n.op, Op::Store { index: OpId::NULL, .. })) {
             return;
@@ -110,7 +110,7 @@ impl Kernel {
             true
         });*/
 
-        // Snapshot the order of global defines so linearize can assert it never
+        // Snapshot the order of global params so linearize can assert it never
         // reorders the buffers' declaration order.
         let global_params: Vec<(DType, ParamKind)> = {
             let mut params = Vec::new();
@@ -154,8 +154,8 @@ impl Kernel {
         }
         self.toposort(&ro_params, &rw_params);
 
-        // Verify the relative order of global defines is unchanged by linearize
-        // (read-only defines first, then writable ones, both in original order).
+        // Verify the relative order of global params is unchanged by linearize
+        // (read-only params first, then writable ones, both in original order).
         debug_assert!({
             let mut params = Vec::new();
             let mut op_id = self.head;
@@ -170,7 +170,7 @@ impl Kernel {
             if params != expected {
                 self.debug();
                 panic!(
-                    "linearize: global define order changed:\n  original = {global_params:?}\n  expected = {expected:?}\n  final = {params:?}"
+                    "linearize: global param order changed:\n  original = {global_params:?}\n  expected = {expected:?}\n  final = {params:?}"
                 );
             }
             true
@@ -230,9 +230,9 @@ impl Kernel {
         // For each op, shape and strides: (index, stride, left pad, right pad, axis length)
         let mut views: Map<OpId, Vec<SDim>> = Map::default();
 
-        // Maps a writable global define to the store that writes into it. The
+        // Maps a writable global param to the store that writes into it. The
         // store handler records the entry (walking dst through any moves to the
-        // terminal define); the define handler uses it to write back the store's
+        // terminal storage); the param handler uses it to write back the store's
         // computed index.
         let mut dst_stores: Map<OpId, OpId> = Map::default();
 
@@ -297,15 +297,15 @@ impl Kernel {
                     self.ops[op_id].op = Op::Binary { x: pc, y: z, bop: BOp::Mul };
                 }
                 Op::Param { dtype, kind, shape } => match kind {
-                    // Register-scope defines (e.g. reduce accumulators) are managed
-                    // by the ops that create them; only global/variable defines are
+                    // Register-scope storages (e.g. reduce accumulators) are managed
+                    // by the ops that create them; only global params are
                     // rangeified here. Writable globals are store destinations,
                     // read-only globals/variables are load sources. Writables with
                     // MemScope::Variable are left alone (stores to variables are
                     // invalid; the verifier rejects them).
                     ParamKind::GlobalMut => {
-                        // Write path: this define is the destination of a store. The
-                        // store's index is computed from the define's rangeified view
+                        // Write path: this param is the destination of a store. The
+                        // store's index is computed from the param's rangeified view
                         // and written back into the matching store op.
                         let store_id = dst_stores.remove(&op_id).unwrap();
                         let view = views.remove(&op_id).unwrap();
@@ -339,8 +339,8 @@ impl Kernel {
                             let t_hi = self.cmplt(d.idx, d.len);
                             pc = self.and(t_hi, pc);
                         }
-                        // Insert the ro source define immediately before this op so the
-                        // global/variable define order (which buffer args bind to) is
+                        // Insert the ro source storage immediately before this op so the
+                        // global param order (which buffer args bind to) is
                         // preserved.
                         let src = self.insert_before(op_id, Op::Param { dtype, kind, shape });
                         let z = self.load(src, zero, MemLayout::Scalar);
@@ -371,8 +371,8 @@ impl Kernel {
                             let lt = self.cmplt(d.idx, d.len);
                             pc = self.and(lt, pc);
                         }
-                        // Insert the ro source define immediately before this op so the
-                        // global define order (which buffer args bind to) is preserved.
+                        // Insert the ro source storage immediately before this op so the
+                        // global param order (which buffer args bind to) is preserved.
                         let src = self.insert_before(op_id, Op::Param { dtype, kind, shape });
                         // Zero the offset where the padding condition fails, so the load
                         // always reads in-bounds, then zero the loaded value itself.
@@ -632,7 +632,7 @@ impl Kernel {
                     // op into a chain of branchless selects on the leading group
                     // index: where(lead==n-1, src_{n-1}, ... where(lead==1, src_1,
                     // src_0)). The src_{k} are the input op ids; when the reverse
-                    // walk reaches their Param define they are remapped to loads and
+                    // walk reaches their Param they are remapped to loads and
                     // this chain follows automatically.
                     let stacked = ops.to_vec();
                     if let Some(view) = views.get(&op_id).cloned() {

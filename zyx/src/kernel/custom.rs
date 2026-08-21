@@ -45,22 +45,22 @@ impl Kernel {
     /// Create a new custom kernel targeting a specific device.
     ///
     /// Two approaches for inputs:
-    /// - **Manual gidx**: `define(dtype, MemScope::Global, true, len)` + [`Kernel::gidx`]
+    /// - **Manual gidx**: `param(dtype, ParamKind::Global, shape)` + [`Kernel::gidx`]
     /// - **LoadView**: `push_back(Op::LoadView(...))` — `compile()` adds thread indices.
     ///
     /// # Example
     ///
     /// ```rust
-    /// use zyx::kernel::{Kernel, MemScope, MemLayout, DeviceId};
+    /// use zyx::kernel::{Kernel, MemLayout, DeviceId, ParamKind};
     /// use zyx::DType;
     ///
     /// let mut kernel = Kernel::new(DeviceId::AUTO);
     /// let n = 4;
-    /// let inp = kernel.define(DType::F32, MemScope::Global, true, &[n]);
+    /// let inp = kernel.param(DType::F32, ParamKind::Global, kernel.add_shape(&[n]));
     /// let gidx = kernel.group_index(0, n);
     /// let loaded = kernel.load(inp, gidx, MemLayout::Scalar);
     /// let doubled = kernel.add(loaded, loaded);
-    /// let out = kernel.define(DType::F32, MemScope::Global, false, &[n]);
+    /// let out = kernel.param(DType::F32, ParamKind::GlobalMut, kernel.add_shape(&[n]));
     /// kernel.store(out, doubled, gidx, MemLayout::Scalar);
     /// ```
     pub fn new(device_id: DeviceId) -> Self {
@@ -85,16 +85,16 @@ impl Kernel {
     /// let the runtime pick the first available device:
     ///
     /// ```rust
-    /// use zyx::kernel::{Kernel, MemScope, MemLayout, DeviceId};
+    /// use zyx::kernel::{Kernel, MemLayout, DeviceId, ParamKind};
     /// use zyx::{DType, Tensor, ZyxError};
     ///
     /// let mut kernel = Kernel::new(DeviceId::AUTO);
     /// let n = 4;
-    /// let inp = kernel.define(DType::F32, MemScope::Global, true, &[n]);
+    /// let inp = kernel.param(DType::F32, ParamKind::Global, kernel.add_shape(&[n]));
     /// let gidx = kernel.group_index(0, n);
     /// let loaded = kernel.load(inp, gidx, MemLayout::Scalar);
     /// let doubled = kernel.add(loaded, loaded);
-    /// let out = kernel.define(DType::F32, MemScope::Global, false, &[n]);
+    /// let out = kernel.param(DType::F32, ParamKind::GlobalMut, kernel.add_shape(&[n]));
     /// kernel.store(out, doubled, gidx, MemLayout::Scalar);
     ///
     /// let compiled = kernel.compile()?;
@@ -217,7 +217,7 @@ impl Kernel {
         core::array::from_fn(|i| self.const_idx(vals[i]))
     }
 
-    /// Define a kernel parameter.
+    /// Define a kernel param (a launch argument).
     pub fn param(&mut self, dtype: DType, kind: ParamKind, shape: OpId) -> OpId {
         self.push_back(Op::Param { dtype, kind, shape })
     }
@@ -246,7 +246,7 @@ impl Kernel {
         }
     }
 
-    /// Define a storage.
+    /// Define a storage (kernel-internal memory).
     pub fn storage(&mut self, dtype: DType, scope: MemScope, len: Dim) -> OpId {
         self.push_back(Op::Storage { dtype, scope, len })
     }
@@ -620,7 +620,7 @@ impl CompiledKernel {
         rt.events.insert(all_bufs, event);
 
         // Put to tensors. Each output gets its own load kernel: a realized
-        // tensor is referenced through a read-only global Define (like
+        // tensor is referenced through a read-only global Param (like
         // Runtime::eagerify/add_store does), never a NULL op id. NULL op ids
         // break any eager op built on the forward result (e.g. a .cast()).
         let mut tensors = Vec::new();

@@ -263,21 +263,21 @@ impl Kernel {
         let _timer = crate::Timer::new("fold_accs");
         // We have to do constant folding before folding accs to guarantee indices are constants
         self.constant_folding();
-        // Check if a define exists without a loop that stores into that define
-        let mut defines = Map::default();
+        // Check if an accumulator storage exists without a loop that stores into it
+        let mut accumulators = Map::default();
         let mut loop_level = 0u32;
         let mut op_id = self.head;
         while !op_id.is_null() {
             match *self.at(op_id) {
                 Op::Storage { scope: MemScope::Register, .. } => {
-                    defines.insert(op_id, loop_level);
+                    accumulators.insert(op_id, loop_level);
                 }
                 Op::Store { dst, .. } => {
                     //println!("Store to {dst}, loop_level={loop_level}");
-                    if let Some(level) = defines.get(&dst)
+                    if let Some(level) = accumulators.get(&dst)
                         && loop_level > *level
                     {
-                        defines.remove(&dst);
+                        accumulators.remove(&dst);
                     }
                 }
                 Op::Loop { .. } => {
@@ -290,9 +290,9 @@ impl Kernel {
             }
             op_id = self.next_op(op_id);
         }
-        //println!("defines: {defines:?}");
-        for (define, _) in defines {
-            self.fold_acc(define);
+        //println!("accumulators: {accumulators:?}");
+        for (acc, _) in accumulators {
+            self.fold_acc(acc);
         }
     }
 
@@ -300,13 +300,13 @@ impl Kernel {
     ///
     /// This method simplifies accumulator operations by folding
     /// constant values and eliminating redundant computations.
-    pub(crate) fn fold_acc(&mut self, define_id: OpId) {
-        //println!("Folding acc {define_id}");
-        let Op::Storage { ref len, .. } = self.ops[define_id].op else {
+    pub(crate) fn fold_acc(&mut self, storage_id: OpId) {
+        //println!("Folding acc {storage_id}");
+        let Op::Storage { ref len, .. } = self.ops[storage_id].op else {
             unreachable!()
         };
         let mut latest_stores = vec![OpId::NULL; *len as usize];
-        self.remove_op(define_id);
+        self.remove_op(storage_id);
 
         let mut remaps = Map::default();
         let mut op_id = self.head;
@@ -317,7 +317,7 @@ impl Kernel {
                     if layout != MemLayout::Scalar {
                         continue;
                     }
-                    if dst == define_id {
+                    if dst == storage_id {
                         self.remove_op(op_id);
                         // x may have been removed as a previous load. If that was the case, the load was redundant
                         if self.ops.contains_id(x) {
@@ -334,7 +334,7 @@ impl Kernel {
                         continue;
                     }
                 }
-                Op::Load { src, index, .. } if src == define_id => {
+                Op::Load { src, index, .. } if src == storage_id => {
                     self.remove_op(op_id);
                     let Op::Const(index) = self.ops[index].op else {
                         unreachable!()
@@ -364,8 +364,8 @@ impl Kernel {
         let _timer = crate::Timer::new("delete_empty_loops");
 
         let mut dead = Set::default();
-        let mut defines_stack: Vec<Set<OpId>> = Vec::new();
-        defines_stack.push(Set::default());
+        let mut store_targets_stack: Vec<Set<OpId>> = Vec::new();
+        store_targets_stack.push(Set::default());
         let mut ops_stack: Vec<Set<OpId>> = Vec::new();
         ops_stack.push(Set::default());
         let mut delete_stack: Vec<bool> = Vec::new();
@@ -376,7 +376,7 @@ impl Kernel {
             match self.at(op_id) {
                 Op::Loop { .. } | Op::If { .. } => {
                     ops_stack.push(Set::default());
-                    defines_stack.push(Set::default());
+                    store_targets_stack.push(Set::default());
                     delete_stack.push(true);
                     for slice in &mut ops_stack {
                         slice.insert(op_id);
@@ -384,15 +384,15 @@ impl Kernel {
                 }
                 &Op::Param { kind, .. } => {
                     if kind == ParamKind::GlobalMut {
-                        defines_stack.last_mut().unwrap().insert(op_id);
+                        store_targets_stack.last_mut().unwrap().insert(op_id);
                     }
                 }
                 Op::Storage { .. } => {
-                    defines_stack.last_mut().unwrap().insert(op_id);
+                    store_targets_stack.last_mut().unwrap().insert(op_id);
                 }
                 Op::Store { dst, .. } => {
-                    for (i, defines_set) in defines_stack.iter().enumerate().take(defines_stack.len() - 1) {
-                        if defines_set.contains(dst) {
+                    for (i, targets) in store_targets_stack.iter().enumerate().take(store_targets_stack.len() - 1) {
+                        if targets.contains(dst) {
                             for delete_flag in delete_stack.iter_mut().skip(i + 1) {
                                 *delete_flag = false;
                             }
@@ -407,7 +407,7 @@ impl Kernel {
                     for slice in &mut ops_stack {
                         slice.insert(op_id);
                     }
-                    defines_stack.pop();
+                    store_targets_stack.pop();
                     if let Some(delete_slice) = delete_stack.pop() {
                         if delete_slice {
                             dead.extend(ops_stack.pop().unwrap());
@@ -446,7 +446,7 @@ impl Kernel {
 
         let mut params = Vec::new();
         let mut visited = Set::default();
-        // We go backward from Stores and gather all needed ops, but we can't remove Loop and Define ops
+        // We go backward from Stores and gather all needed ops, but we can't remove Loop, Param and Storage ops
         for (op_id, op) in self.iter_unordered() {
             if matches!(
                 op,
@@ -497,7 +497,7 @@ impl Kernel {
         let mut op_id = self.head;
         while !op_id.is_null() {
             match &mut self.ops[op_id].op {
-                Op::Param { .. } | Op::Barrier | Op::Storage { .. } => {} // skip define and barrier ops, these can not be deduplicated
+                Op::Param { .. } | Op::Barrier | Op::Storage { .. } => {} // skip param/barrier/storage ops, these can not be deduplicated
                 Op::If { .. } | Op::Loop { .. } => {
                     stack.push(Map::with_capacity_and_hasher(20, BuildHasherDefault::default()));
                     stored_stack.push(Set::with_capacity_and_hasher(10, BuildHasherDefault::default()));
@@ -568,7 +568,7 @@ impl Kernel {
             start = self.next_op(start);
         }
 
-        // Move Op::Const ops right after Op::Define ops
+        // Move Op::Const ops right after the leading param/storage ops
         let mut op_id = start;
         let mut start = self.prev_op(start);
         while !op_id.is_null() {
@@ -580,7 +580,7 @@ impl Kernel {
             op_id = next;
         }
 
-        // Find position after last Op::Const (skip past all defines and consts)
+        // Find position after last Op::Const (skip past all params, storages and consts)
         let mut start = self.head;
         while matches!(self.at(start), Op::Storage { .. } | Op::Param { .. } | Op::Const(_)) {
             start = self.next_op(start);

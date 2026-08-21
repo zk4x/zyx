@@ -125,7 +125,7 @@ impl Kernel {
         while !op_id.is_null()
             && matches!(
                 self.ops[op_id].op,
-                Op::Storage { scope: MemScope::Global | MemScope::Local | MemScope::Variable, .. }
+                Op::Storage { scope: MemScope::Global | MemScope::Local, .. }
                     | Op::Param { .. }
                     | Op::Index { .. }
                     | Op::Const(_)
@@ -162,19 +162,19 @@ impl Kernel {
         remaps.insert(gidx_id, ids);
 
         // Now loop over remaining ops and duplicate as needed
-        let mut acc_defines = Set::default();
+        let mut accumulator_storages = Set::default();
         while !op_id.is_null() {
             let next_op_id = self.next_op(op_id);
             match self.ops[op_id].op {
                 Op::Storage { scope: MemScope::Register, ref mut len, .. } => {
                     *len *= factor;
-                    acc_defines.insert(op_id);
+                    accumulator_storages.insert(op_id);
                 }
                 Op::Index { .. } | Op::Loop { .. } | Op::EndLoop | Op::If { .. } | Op::EndIf | Op::Barrier => {}
                 Op::Store { dst, src: x, index, layout } => {
                     let mut ids = Vec::with_capacity((factor - 1) as usize);
                     let mut id = op_id;
-                    if acc_defines.contains(&dst) {
+                    if accumulator_storages.contains(&dst) {
                         for i in 0..(factor - 1) as usize {
                             let mut x = x;
                             if let Some(remap) = remaps.get(&x) {
@@ -205,7 +205,7 @@ impl Kernel {
                 Op::Load { src, index, layout } => {
                     let mut ids = Vec::with_capacity((factor - 1) as usize);
                     let mut id = op_id;
-                    if acc_defines.contains(&src) {
+                    if accumulator_storages.contains(&src) {
                         for &offset in &offsets {
                             let index = self.insert_before(id, Op::Mad { x: index, y: const_factor, z: offset });
                             id = self.insert_after(index, Op::Load { src, index, layout });

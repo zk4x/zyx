@@ -186,7 +186,7 @@ impl Kernel {
         let lidx0 = lidxs[0].1;
         let lidx1 = lidxs[1].1;
 
-        // Find all scalar loads from global defines
+        // Find all scalar loads from global params
         let global_loads: Vec<(OpId, OpId, OpId)> = {
             let mut loads = Vec::new();
             let mut op_id = self.head;
@@ -213,7 +213,7 @@ impl Kernel {
         let combined_idx = self.insert_before(first_load, Op::Binary { x: scaled, y: lidx1, bop: BOp::Add });
         let zero = self.insert_before(first_load, Op::Const(Constant::idx(0u32)));
 
-        // Find the last global define to insert locals after it
+        // Find the last global param to insert locals after it
         let mut last_global = self.head;
         let mut scan = self.head;
         while !scan.is_null() {
@@ -260,7 +260,7 @@ impl Kernel {
             self.ops[load_op].op = Op::Load { src: local, index: zero, layout: MemLayout::Tile { x: 32, y: 32, stride: 32 } };
         }
 
-        // Find all scalar stores to global defines
+        // Find all scalar stores to global params
         let global_stores: Vec<(OpId, OpId, OpId, OpId)> = {
             let mut stores = Vec::new();
             let mut op_id = self.head;
@@ -524,8 +524,8 @@ impl Kernel {
     /// The transformation works as follows:
     /// 1. Find the single loop in the kernel and all global scalar loads
     ///    inside its body. Assert that no global loads exist past the loop.
-    /// 2. For each unique global source, define a circular buffer (len=1024)
-    ///    right after the last global define.
+    /// 2. For each unique global source, create a circular buffer storage (len=1024)
+    ///    right after the last global param.
     /// 3. Insert two nested loops of length 32. The original loop index is
     ///    reconstructed as `mad(outer_loop, 32, inner_loop)`.
     /// 4. Replay each load's indexing chain, replacing the original loop id
@@ -534,7 +534,7 @@ impl Kernel {
     /// 5. Close both loops with EndLoop.
     ///
     /// The original loop and all computation ops remain untouched; this pass
-    /// only inserts new ops after the last global define.
+    /// only inserts new ops after the last global param.
     ///
     /// Step 2: compute kernel.
     ///
@@ -622,7 +622,7 @@ impl Kernel {
             op_id = self.next_op(op_id);
         }
 
-        // Find last global define
+        // Find last global param
         let mut last_global = self.head;
         let mut scan = self.head;
         while !scan.is_null() {
@@ -632,7 +632,7 @@ impl Kernel {
             scan = self.next_op(scan);
         }
 
-        // Define circular buffers for each unique global source
+        // Create circular buffer storages for each unique global source
         let mut src_to_cb: Map<OpId, OpId> = Map::default();
         for &(_, src, _) in &global_loads {
             if src_to_cb.contains_key(&src) {
@@ -741,7 +741,7 @@ impl Kernel {
             }
         }
 
-        // Find the accumulator register Define inside the loop
+        // Find the accumulator register storage inside the loop
         let mut accumulator = OpId::NULL;
         let mut op_id = self.next_op(loop_id);
         while op_id != endloop_id {

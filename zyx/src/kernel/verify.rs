@@ -20,8 +20,60 @@ impl Kernel {
             return;
         }
 
-        // Verify define ordering: Global RO → Global RW → Local RO → Local RW → everything else.
+        // Detect the kernel's linearization state from its params: the
+        // pre-linearize IR is a pure DAG whose params carry shape stacks;
+        // linearize nulls those shapes and lowers Move/Reduce into
+        // loops/indices/loads/stores over storages.
+        let mut shaped_params = false;
+        let mut has_post_linearize_ops = false;
+        let mut has_move_or_reduce = false;
         {
+            let mut scan = self.head;
+            while !scan.is_null() {
+                match self.at(scan) {
+                    Op::Param { shape, .. } if !shape.is_null() => shaped_params = true,
+                    // Stores exist in both forms; their index distinguishes them:
+                    // pre-linearize stores write whole views (index NULL),
+                    // post-linearize stores carry the actual index op.
+                    Op::Store { index, .. } => {
+                        if shaped_params {
+                            debug_assert!(index.is_null(), "pre-linearize store must have a NULL index");
+                        }
+                    }
+                    Op::Load { .. }
+                    | Op::Storage { .. }
+                    | Op::Index { .. }
+                    | Op::Loop { .. }
+                    | Op::EndLoop
+                    | Op::If { .. }
+                    | Op::EndIf
+                    | Op::Mad { .. }
+                    | Op::Devectorize { .. }
+                    | Op::Barrier
+                    | Op::Wmma { .. }
+                    | Op::ReduceTile { .. }
+                    | Op::MatmulTile { .. }
+                    | Op::TransposeTile { .. }
+                    | Op::Asm { .. } => has_post_linearize_ops = true,
+                    Op::Move { .. } | Op::Reduce { .. } => has_move_or_reduce = true,
+                    _ => {}
+                }
+                scan = self.next_op(scan);
+            }
+        }
+        if shaped_params && has_post_linearize_ops {
+            println!("Invalid mixed kernel: pre-linearize params (non-null shapes) alongside post-linearize ops.");
+            self.debug();
+            panic!();
+        }
+
+        // Verify param/storage ordering: global params (RO) → GlobalMut params → local storages → everything else.
+        // Only meaningful post-linearization; skipped for pre-linearize DAGs.
+        if !shaped_params {
+            debug_assert!(
+                !has_move_or_reduce,
+                "post-linearize kernel must not contain Move/Reduce ops"
+            );
             #[derive(PartialEq, Eq)]
             enum Phase {
                 GlobalRo,
@@ -37,7 +89,7 @@ impl Kernel {
                     Op::Param { kind, .. } => match kind {
                         ParamKind::Variable | ParamKind::Global => {
                             if phase != Phase::GlobalRo {
-                                println!("Global read-only defines must come first.");
+                                println!("Global read-only params must come first.");
                                 self.debug();
                                 panic!();
                             }
@@ -47,7 +99,7 @@ impl Kernel {
                                 phase = Phase::GlobalRw;
                             }
                             if phase != Phase::GlobalRw {
-                                println!("Global read-write defines must come before local defines.");
+                                println!("Global read-write params must come before local storages.");
                                 self.debug();
                                 panic!();
                             }
@@ -58,7 +110,7 @@ impl Kernel {
                             phase = Phase::LocalRw;
                         }
                         if phase != Phase::LocalRw {
-                            println!("Local read-write defines must come after local read-only defines.");
+                            println!("Local read-write storages must come after local read-only storages.");
                             self.debug();
                             panic!();
                         }
@@ -100,11 +152,6 @@ impl Kernel {
                         self.debug();
                         panic!();
                     }
-                    /*if matches!(defines[&dst].0, MemScope::Variable) {
-                        println!("store={op_id} is trying to store to a MemScope::Variable variable, which is invalid");
-                        self.debug();
-                        panic!();
-                    }*/
                     debug_assert_eq!(dtypes[&index], IDX_T);
                     check(op_id, dst, &stack);
                     check(op_id, x, &stack);
@@ -292,29 +339,29 @@ impl Kernel {
     }
 
     pub(crate) fn check_oob(&self) {
-        let mut defines = Map::default();
+        let mut storages = Map::default();
         let mut op_id = self.head;
         while !op_id.is_null() {
             match *self.at(op_id) {
                 Op::Storage { len, .. } => {
-                    defines.insert(op_id, len);
+                    storages.insert(op_id, len);
                 }
                 Op::Load { src, index, .. } => {
                     let idx_range = Self::get_bounds(index);
                     if let Some(range) = idx_range
-                        && *range.end() >= defines[&src]
+                        && *range.end() >= storages[&src]
                     {
                         self.debug();
-                        panic!("OOB detected in op {}: index {:?} exceeds buffer length {:?}", op_id, range, defines[&src]);
+                        panic!("OOB detected in op {}: index {:?} exceeds buffer length {:?}", op_id, range, storages[&src]);
                     }
                 }
                 Op::Store { dst, index, .. } => {
                     let idx_range = Self::get_bounds(index);
                     if let Some(range) = idx_range
-                        && *range.start() > defines[&dst] + 1
+                        && *range.start() > storages[&dst] + 1
                     {
                         self.debug();
-                        panic!("OOB detected in op {}: index {:?} exceeds buffer length {:?}", op_id, range, defines[&dst]);
+                        panic!("OOB detected in op {}: index {:?} exceeds buffer length {:?}", op_id, range, storages[&dst]);
                     }
                 }
                 _ => {}

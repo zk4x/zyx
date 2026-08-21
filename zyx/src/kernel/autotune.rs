@@ -370,8 +370,30 @@ impl Kernel {
                 Op::Param { kind, dtype, shape } => {
                     if buf_idx < buffers.len() && buffers[buf_idx] != PoolBufferId::NULL {
                         used_bufs.push(buffers[buf_idx]);
+                    } else if kind == ParamKind::Variable {
+                        // Scalar argument: not a buffer, stored in the pool's
+                        // variable slot (backends pass it by value at launch).
+                        let one: Vec<u8> = match dtype {
+                            DType::BF16 => bf16::ONE.to_le_bytes().to_vec(),
+                            DType::F16 => f16::ONE.to_le_bytes().to_vec(),
+                            DType::F32 => 1f32.to_le_bytes().to_vec(),
+                            DType::F64 => 1f64.to_le_bytes().to_vec(),
+                            DType::U8 | DType::I8 | DType::Bool => vec![1],
+                            DType::U16 | DType::I16 => 1u16.to_le_bytes().to_vec(),
+                            DType::U32 | DType::I32 => 1u32.to_le_bytes().to_vec(),
+                            DType::U64 | DType::I64 => 1u64.to_le_bytes().to_vec(),
+                        };
+                        let scalar = Constant::from_le_bytes(&one, dtype);
+                        let buf = memory_pool.store_variable(scalar);
+                        used_bufs.push(buf);
+                        new_bufs.push(buf);
                     } else {
-                        let len: Dim = todo!();
+                        // Buffer argument. This runs PRE-linearization, so the
+                        // param's shape stack is intact. Dynamic dims are `0`
+                        // (see the `Dim` docs); autotune substitutes 42.
+                        debug_assert!(!shape.is_null(), "buffer param must have a shape");
+                        let len: Dim =
+                            self.shape_values(shape).iter().map(|&d| if d == 0 { 42 } else { d }).product();
                         let bytes_alloc = (dtype.bit_size() as Dim * (len + 1)) / 8;
                         let (buf, ev) = memory_pool.allocate(bytes_alloc)?;
                         used_bufs.push(buf);
@@ -394,29 +416,10 @@ impl Kernel {
                     }
                     buf_idx += 1;
                 }
-                Op::Storage { dtype, scope: MemScope::Variable, .. } => {
-                    if buf_idx < buffers.len() && buffers[buf_idx] != PoolBufferId::NULL {
-                        used_bufs.push(buffers[buf_idx]);
-                    } else {
-                        let one: Vec<u8> = match dtype {
-                            DType::BF16 => bf16::ONE.to_le_bytes().to_vec(),
-                            DType::F16 => f16::ONE.to_le_bytes().to_vec(),
-                            DType::F32 => 1f32.to_le_bytes().to_vec(),
-                            DType::F64 => 1f64.to_le_bytes().to_vec(),
-                            DType::U8 | DType::I8 | DType::Bool => vec![1],
-                            DType::U16 | DType::I16 => 1u16.to_le_bytes().to_vec(),
-                            DType::U32 | DType::I32 => 1u32.to_le_bytes().to_vec(),
-                            DType::U64 | DType::I64 => 1u64.to_le_bytes().to_vec(),
-                        };
-                        let scalar = Constant::from_le_bytes(&one, dtype);
-                        let buf = memory_pool.store_variable(scalar);
-                        used_bufs.push(buf);
-                        new_bufs.push(buf);
-                    }
-                    buf_idx += 1;
-                }
                 Op::Storage { .. } => {
-                    // Skip non-Global defines (e.g. local buffer defines from tile_local)
+                    // Storage is kernel-internal (accumulators, shared memory,
+                    // register arrays) — the kernel allocates it itself, it is
+                    // never a launch argument and needs no pool allocation.
                 }
                 _ => break,
             }
@@ -523,6 +526,44 @@ impl Kernel {
         let n_added_per_step = config.n_added_per_step;
         let n_removed_per_step = config.n_removed_per_step;
         let n_total_opts = config.n_total_opts;
+
+        // The kernel arrives PRE-linearization (buffer sizes in alloc_buffers
+        // are resolved from `self`'s intact param shape stacks). Linearize the
+        // working clone into the SSA form the passes and launches expect.
+        let mut kernel = self.clone();
+        kernel.linearize();
+        kernel.common_subexpression_elimination();
+        kernel.dead_code_elimination();
+        kernel.instruction_schedule();
+        {
+            let global_indices = kernel.get_group_indices();
+            let max_global_dims = device.info().max_global_work_dims.len();
+            if global_indices.len() > max_global_dims {
+                let n = global_indices.len() + 1 - max_global_dims;
+                let indices: Vec<OpId> = global_indices.values().copied().take(n).collect();
+                kernel.merge_indices(&indices);
+            }
+            kernel.renumber_indices();
+            kernel.verify();
+        }
+
+        #[cfg(debug_assertions)]
+        {
+            let n_params = kernel
+                .ops
+                .values()
+                .filter(|op| {
+                    matches!(op.op, Op::Param { kind: ParamKind::Global | ParamKind::GlobalMut | ParamKind::Variable, .. })
+                })
+                .count();
+            let n_buffers = buffers.iter().filter(|&&b| b != PoolBufferId::NULL).count();
+            assert!(
+                n_buffers <= n_params,
+                "buffers len ({}) must not exceed number of params ({}) in kernel",
+                n_buffers,
+                n_params,
+            );
+        }
 
         let mut items = Vec::new();
         let mut visited = Set::default();

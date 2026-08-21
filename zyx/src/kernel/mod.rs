@@ -12,15 +12,15 @@
 //! Requires CUDA with tensor cores (compute capability ≥ 7.0).
 //!
 //! ```rust
-//! use zyx::kernel::{DeviceId, Kernel, MMADType, MMADims, MMALayout, MemLayout, MemScope};
+//! use zyx::kernel::{DeviceId, Kernel, MMADType, MMADims, MMALayout, MemLayout, MemScope, ParamKind};
 //! use zyx::DType;
 //!
 //! let (m, n, k) = (1024, 1024, 1024);
 //! let mut kernel = Kernel::new(DeviceId::AUTO);
 //!
-//! let a_buf = kernel.define(DType::F16, MemScope::Global, true, &[m, k]);
-//! let b_buf = kernel.define(DType::F16, MemScope::Global, true, &[k, n]);
-//! let c_buf = kernel.define(DType::F32, MemScope::Global, false, &[m, n]);
+//! let a_buf = kernel.param(DType::F16, ParamKind::Global, kernel.add_shape(&[m, k]));
+//! let b_buf = kernel.param(DType::F16, ParamKind::Global, kernel.add_shape(&[k, n]));
+//! let c_buf = kernel.param(DType::F32, ParamKind::GlobalMut, kernel.add_shape(&[m, n]));
 //!
 //! let gidx = kernel.group_index(0, m / 16);
 //! let gidy = kernel.group_index(1, n / 8);
@@ -38,7 +38,7 @@
 //! let b_col = kernel.mad(gidy, c8, row_in_tile);
 //! let tile_base_col = kernel.mul(gidy, c8);
 //!
-//! let acc = kernel.define(DType::F32, MemScope::Register, false, &[4]);
+//! let acc = kernel.storage(DType::F32, MemScope::Register, 4);
 //! let zf = kernel.const_val(0.0f32);
 //! let zero_acc = kernel.vectorize(&[zf, zf, zf, zf]);
 //! kernel.store(acc, zero_acc, c0, MemLayout::Vector(4));
@@ -147,18 +147,18 @@ pub(crate) const IDX_T: DType = DType::I64;
 /// Build a kernel that computes `sin(x) + cos(x)` element-wise:
 ///
 /// ```
-/// use zyx::kernel::{Kernel, MemScope, MemLayout, DeviceId};
+/// use zyx::kernel::{Kernel, MemLayout, DeviceId, ParamKind};
 /// use zyx::DType;
 ///
 /// let mut kernel = Kernel::new(DeviceId::AUTO);
 /// let n = 256;
-/// let inp = kernel.define(DType::F32, MemScope::Global, true, &[n]);
+/// let inp = kernel.param(DType::F32, ParamKind::Global, kernel.add_shape(&[n]));
 /// let gidx = kernel.group_index(0, n);
 /// let loaded = kernel.load(inp, gidx, MemLayout::Scalar);
 /// let s = kernel.sin(loaded);
 /// let c = kernel.cos(loaded);
 /// let result = kernel.add(s, c);
-/// let out = kernel.define(DType::F32, MemScope::Global, false, &[n]);
+/// let out = kernel.param(DType::F32, ParamKind::GlobalMut, kernel.add_shape(&[n]));
 /// kernel.store(out, result, gidx, MemLayout::Scalar);
 /// ```
 ///
@@ -167,16 +167,16 @@ pub(crate) const IDX_T: DType = DType::I64;
 /// Build a kernel using fused multiply-add and compile it:
 ///
 /// ```
-/// use zyx::kernel::{Kernel, MemScope, MemLayout, DeviceId};
+/// use zyx::kernel::{Kernel, MemLayout, DeviceId, ParamKind};
 /// use zyx::{DType, Tensor, ZyxError};
 ///
 /// let mut kernel = Kernel::new(DeviceId::AUTO);
 /// let n = 4;
-/// let inp = kernel.define(DType::F32, MemScope::Global, true, &[n]);
+/// let inp = kernel.param(DType::F32, ParamKind::Global, kernel.add_shape(&[n]));
 /// let gidx = kernel.group_index(0, n);
 /// let loaded = kernel.load(inp, gidx, MemLayout::Scalar);
 /// let result = kernel.mad(loaded, loaded, loaded); // x*x + x
-/// let out = kernel.define(DType::F32, MemScope::Global, false, &[n]);
+/// let out = kernel.param(DType::F32, ParamKind::GlobalMut, kernel.add_shape(&[n]));
 /// kernel.store(out, result, gidx, MemLayout::Scalar);
 ///
 /// let compiled = kernel.compile()?;
@@ -209,8 +209,6 @@ pub enum MemScope {
     Register,
     /// Circular buffer, SRAM (tenstorrent)
     Circular,
-    /// Single scalar variable
-    Variable,
 }
 
 /// Memory layout for kernel operations.

@@ -6,7 +6,7 @@
 //! This module provides instruction scheduling optimizations for kernels,
 //! including:
 //!
-//! - Ordering defines (global read-only, global read-write, local read-only,
+//! - Ordering params and storages (global read-only, global read-write, local read-only,
 //!   local read-write) at the beginning of the kernel.
 //! - Topologically sorting the remaining operations by dependency so that
 //!   operations which depend on the fewest other operations come first.
@@ -26,14 +26,14 @@ impl Kernel {
     /// This method reorders kernel operations to improve instruction
     /// scheduling. The final order is:
     ///
-    /// 1. All global read-only defines, preserving their order.
-    /// 2. All global read-write defines, preserving their order.
-    /// 3. All local read-only defines, preserving their order.
-    /// 4. All local read-write defines, preserving their order.
+    /// 1. All global read-only params, preserving their order.
+    /// 2. All GlobalMut params, preserving their order.
+    /// 3. All local read-only storages, preserving their order.
+    /// 4. All local read-write storages, preserving their order.
     /// 5. The remaining operations, topologically sorted by dependency with
     ///    operations that depend on the fewest other operations first.
     ///
-    /// Memory operations that share a define keep their relative order, stores
+    /// Memory operations that share a param or storage keep their relative order, stores
     /// are never moved out of the loops or if blocks that contain them, and
     /// stores and loads are never moved before barriers.
     pub fn instruction_schedule(&mut self) {
@@ -80,12 +80,12 @@ impl Kernel {
         self.verify();
     }
 
-    /// Topologically sort the non-define operations by dependency.
+    /// Topologically sort the non-memory operations by dependency.
     ///
     /// The sort respects the following precedence constraints:
     ///
     /// - A use must come after its declaration.
-    /// - Loads and stores that share a define keep their relative order, so
+    /// - Loads and stores that share a param or storage keep their relative order, so
     ///   memory hazards (RAW, WAR, WAW) on the same buffer are preserved.
     /// - Stores never leave the loops or if blocks that contain them and never
     ///   cross barriers.
@@ -102,7 +102,7 @@ impl Kernel {
         }
 
         // OpId → position in rest. OpId is u32 so we can use a Vec. Size to the
-        // full slab range so rest ops can reference defines (or ops removed to
+        // full slab range so rest ops can reference params/storages (or ops removed to
         // the front) without an out-of-bounds access.
         let max_id = self.ops.max_id().0 as usize;
         let mut idx = vec![usize::MAX; max_id + 1];
@@ -206,16 +206,16 @@ impl Kernel {
             n_params[i] = count;
         }
 
-        // Loads and stores to the same define keep their relative order.
-        let mut by_define: Map<OpId, Vec<usize>> = Map::default();
+        // Loads and stores to the same param or storage keep their relative order.
+        let mut by_memory_target: Map<OpId, Vec<usize>> = Map::default();
         for (i, &id) in rest.iter().enumerate() {
             match self.at(id) {
-                Op::Load { src, .. } => by_define.entry(*src).or_default().push(i),
-                Op::Store { dst, .. } => by_define.entry(*dst).or_default().push(i),
+                Op::Load { src, .. } => by_memory_target.entry(*src).or_default().push(i),
+                Op::Store { dst, .. } => by_memory_target.entry(*dst).or_default().push(i),
                 _ => {}
             }
         }
-        for group in by_define.values() {
+        for group in by_memory_target.values() {
             for pair in group.windows(2) {
                 edges.push((pair[0], pair[1]));
                 in_degree[pair[1]] += 1;
@@ -289,11 +289,11 @@ impl Kernel {
             }
         }
 
-        // Hoisting prevention: a define must never leave the scope it was
+        // Hoisting prevention: a param/storage must never leave the scope it was
         // defined in. Hoisting a register define out of a loop breaks
         // per-iteration register reset semantics that downstream passes (e.g.
         // `merge_nested_loops`) rely on to keep nested reduce loops intact. So
-        // a define must stay after every opener that precedes it and before
+        // a param/storage must stay after every opener that precedes it and before
         // every closer that follows it.
         for i in (0..n).filter(|&i| matches!(self.at(rest[i]), Op::Storage { .. })) {
             for &j in &openers {
@@ -389,7 +389,7 @@ mod tests {
     use crate::DType;
     use crate::kernel::{DeviceId, Kernel, MemLayout, MemScope, Op, OpId, ParamKind};
 
-    fn defines_in_order(k: &Kernel) -> Vec<(MemScope, bool)> {
+    fn params_storages_in_order(k: &Kernel) -> Vec<(MemScope, bool)> {
         let mut order = Vec::new();
         let mut op_id = k.head;
         while !op_id.is_null() {
@@ -417,7 +417,7 @@ mod tests {
     }
 
     #[test]
-    fn test_instruction_schedule_orders_defines() {
+    fn test_instruction_schedule_orders_params_and_storages() {
         let mut k = Kernel::new(DeviceId::AUTO);
         let _local_rw = k.storage(DType::F32, MemScope::Local, 4);
         let global_ro = k.param(DType::F32, ParamKind::Global, OpId::NULL);
@@ -434,7 +434,7 @@ mod tests {
         k.instruction_schedule();
 
         assert_eq!(
-            defines_in_order(&k),
+            params_storages_in_order(&k),
             vec![
                 (MemScope::Global, true),
                 (MemScope::Global, false),
@@ -474,7 +474,7 @@ mod tests {
     }
 
     #[test]
-    fn test_instruction_schedule_keeps_memory_order_per_define() {
+    fn test_instruction_schedule_keeps_memory_order_per_target() {
         let mut k = Kernel::new(DeviceId::AUTO);
         let buf = k.param(DType::F32, ParamKind::Global, OpId::NULL);
 
@@ -491,8 +491,8 @@ mod tests {
         let stores: Vec<OpId> = order.iter().copied().filter(|&id| matches!(k.at(id), Op::Store { .. })).collect();
         let pos = |target: OpId| order.iter().position(|&id| id == target).unwrap();
         assert_eq!(stores.len(), 2);
-        assert!(pos(stores[0]) < pos(load), "load to a define must stay after prior store to it");
-        assert!(pos(load) < pos(stores[1]), "load to a define must stay before later store to it");
+        assert!(pos(stores[0]) < pos(load), "load to a target must stay after prior store to it");
+        assert!(pos(load) < pos(stores[1]), "load to a target must stay before later store to it");
     }
 
     #[test]

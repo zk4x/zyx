@@ -1171,13 +1171,13 @@ impl Runtime {
 
         let loads = self.kernels[kernel_id].loads.clone();
         let mut op_to_class: Map<OpId, ClassId> = Map::default();
-        let mut define_idx = 0;
+        let mut storage_idx = 0;
         let mut op_id = self.kernels[kernel_id].kernel.head;
         while !op_id.is_null() {
             if relevant.contains(&op_id) {
                 let class_id = match self.kernels[kernel_id].kernel.ops[op_id].op {
                     Op::Param { .. } => {
-                        let load_tid = loads[define_idx];
+                        let load_tid = loads[storage_idx];
                         if !self.buffer_map.contains_key(&load_tid) {
                             let pending = if self.tensors[load_tid].class_id.is_null() {
                                 self.tensors[load_tid].depends_on
@@ -1307,7 +1307,7 @@ impl Runtime {
             }
 
             if matches!(self.kernels[kernel_id].kernel.at(op_id), Op::Storage { .. }) {
-                define_idx += 1;
+                storage_idx += 1;
             }
             op_id = self.kernels[kernel_id].kernel.next_op(op_id);
         }
@@ -1598,18 +1598,6 @@ impl Runtime {
                 );*/
             }
             Node::Expand { .. } => { /* shape dims not yet resolved (Stack). Re-enable once shape() resolves Stack. */ }
-            Node::Reduce { x, ref axes, .. } => {
-                let in_shape = self.graphs[graph_id].shape(x);
-                for &a in axes.iter() {
-                    assert!(
-                        a < in_shape.len(),
-                        "Reduce: axis {} out of range for input rank {} (shape {:?})",
-                        a,
-                        in_shape.len(),
-                        in_shape
-                    );
-                }
-            }
             Node::Pad { x, axis, .. } => {
                 let in_shape = self.graphs[graph_id].shape(x);
                 assert!(
@@ -1647,6 +1635,25 @@ impl Runtime {
                     Node::Stack { ops } => Some(ops.iter().map(|&o| dim_of(o)).collect()),
                     op => todo!("shape class is not a Stack: {op:?}"),
                 }
+            }
+            Node::Reduce { x, axes, .. } => {
+                let in_shape = self.graphs[graph_id].shape(*x);
+                for &a in axes.iter() {
+                    assert!(
+                        a < in_shape.len(),
+                        "Reduce: axis {} out of range for input rank {} (shape {:?})",
+                        a,
+                        in_shape.len(),
+                        in_shape
+                    );
+                }
+                let mut s: Vec<Dim> =
+                    in_shape.iter().enumerate().filter(|(i, _)| !axes.contains(&*i)).map(|(_, &d)| d).collect();
+                if s.is_empty() {
+                    // All dims reduced: kernelizer reshapes the scalar to [1].
+                    s.push(1);
+                }
+                Some(s)
             }
             _ => None,
         };

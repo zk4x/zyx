@@ -70,7 +70,7 @@ impl Kernel {
         // result. Refuse to merge such groups.
         //
         // The register may be defined outside the outer loop (linearize hoists
-        // accumulator defines to the top of the kernel and resets them via
+        // accumulator storages to the top of the kernel and resets them via
         // Store inside the loop), so also refuse when a Register is stored or
         // loaded anywhere in the region — its value crosses the inner/outer
         // boundary either way.
