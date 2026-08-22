@@ -1123,8 +1123,18 @@ impl Graph {
             | Node::Unary { x, .. }
             | Node::After { x, .. }
             | Node::ToDevice { x, .. }
-            | Node::Contiguous { x }
-            | Node::Binary { x, .. } => self.shape(*x),
+            | Node::Contiguous { x } => self.shape(*x),
+            // Scalars broadcast implicitly (see `push_binary_node`): the
+            // result takes the shape of the non-scalar operand. Both scalars
+            // → rank 0.
+            Node::Binary { x, y, .. } => {
+                let sx = self.shape(*x);
+                if !sx.is_empty() {
+                    sx
+                } else {
+                    self.shape(*y)
+                }
+            }
             Node::Reduce { x, axes, .. } => {
                 let s = self.shape(*x);
                 s.into_iter().enumerate().filter(|(i, _)| !axes.contains(&*i)).map(|(_, d)| d).collect()

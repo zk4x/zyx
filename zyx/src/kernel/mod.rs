@@ -962,13 +962,21 @@ impl Kernel {
                 Op::Load { src: x, .. }
                 | Op::Cast { x, .. }
                 | Op::Unary { x, .. }
-                | Op::Binary { x, .. }
                 | Op::Mad { x, .. }
                 | Op::MatmulTile { x, .. }
                 | Op::ReduceTile { x, .. }
                 | Op::Devectorize { vec: x, .. }
                 | Op::TransposeTile { x }
                 | Op::Store { src: x, .. } => op_id = x,
+                // Scalars broadcast implicitly: if `x` is a scalar (empty
+                // shape), the binary takes `y`'s shape.
+                Op::Binary { x, y, .. } => {
+                    let dims = self.store_shape_ids(x);
+                    if !dims.is_empty() {
+                        return dims;
+                    }
+                    op_id = y;
+                }
                 Op::Reduce { x, .. } => {
                     let mut dims = self.store_shape_ids(x);
                     dims.truncate(dims.len().saturating_sub(1));

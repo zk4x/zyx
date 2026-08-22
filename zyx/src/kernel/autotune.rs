@@ -391,7 +391,10 @@ impl Kernel {
                         // Buffer argument. This runs PRE-linearization, so the
                         // param's shape stack is intact. Dynamic dims are `0`
                         // (see the `Dim` docs); autotune substitutes 42.
-                        debug_assert!(!shape.is_null(), "buffer param must have a shape");
+                        if shape.is_null() {
+                            self.debug();
+                            panic!("DBG buffer param with null shape: kind={kind:?} dtype={dtype}");
+                        }
                         let len: Dim =
                             self.shape_values(shape).iter().map(|&d| if d == 0 { 42 } else { d }).product();
                         let bytes_alloc = (dtype.bit_size() as Dim * (len + 1)) / 8;

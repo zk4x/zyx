@@ -28,8 +28,19 @@ impl Runtime {
 
         let mut grads: Map<ClassId, ClassId> = Map::default();
 
-        let one_cid = self.push_const(graph_id, Constant::new(1u8).cast(self.graphs[graph_id].dtype(target_class)));
-        grads.insert(target_class, one_cid);
+        // Seed gradient: ones expanded to the target's shape. Never a bare
+        // const — a const class has no producer path, so it cannot be realized
+        // as a tape output on its own.
+        let target_dtype = self.graphs[graph_id].dtype(target_class);
+        let one_cid = self.push_const(graph_id, Constant::new(1u8).cast(target_dtype));
+        let target_dims = self.graphs[graph_id].shape(target_class);
+        let shape_class = match target_dims.len() {
+            0 => ClassId::NULL,
+            1 => target_dims[0],
+            _ => self.push_node(graph_id, Node::Stack { ops: target_dims.into_boxed_slice() }).1,
+        };
+        let ones = self.push_node(graph_id, Node::Expand { x: one_cid, shape: shape_class }).1;
+        grads.insert(target_class, ones);
 
         for &cid in &topo {
             let Some(&grad) = grads.get(&cid) else {

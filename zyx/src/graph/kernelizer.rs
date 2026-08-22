@@ -666,8 +666,14 @@ impl Graph {
             }
             debug_assert!(rcs.values().all(|&r| r == 0), "all rcs must be zero");
             debug_assert!(visited.is_empty(), "visited must be empty");
-            for kid in self.jit_kernels.ids() {
+            for kid in self.jit_kernels.ids().collect::<Vec<_>>() {
                 let kernel = &self.jit_kernels[kid];
+                // Fully-consumed pure value kernels (e.g. private const
+                // kernels) are dead: nothing references them.
+                if kernel.outputs.is_empty() && kernel.loads.is_empty() && kernel.stores.is_empty() {
+                    self.jit_kernels.remove(kid);
+                    continue;
+                }
                 debug_assert!(kernel.outputs.is_empty());
                 if kernel.stores.is_empty() {
                     panic!("encountered kernel without stores");
@@ -697,8 +703,14 @@ impl Graph {
     /// dim classes become const indices, symbolic dim leaves become scalar
     /// `Param { kind: Variable }` of `IDX_T`.
     fn add_class_shape(&mut self, kid: JitKernelId, cid: ClassId) -> OpId {
-        let consts: Vec<Option<crate::dtype::Constant>> = self
-            .shape(cid)
+        let shape = self.shape(cid);
+        if shape.is_empty() {
+            panic!(
+                "DBG add_class_shape: class {cid:?} has empty shape; nodes={:?}",
+                self.classes[cid].nodes.iter().map(|&nid| &self.nodes[nid].node).collect::<Vec<_>>()
+            );
+        }
+        let consts: Vec<Option<crate::dtype::Constant>> = shape
             .into_iter()
             .map(|dim| match &self.nodes[self.classes[dim].nodes[0]].node {
                 Node::Const { value: c, .. } => Some(*c),
@@ -765,6 +777,26 @@ impl Graph {
     ) -> (JitKernelId, OpId) {
         //println!("add store cid={cid:?} kid={kid:?} op_id={op_id:?} rc={}", rcs.get(&cid).unwrap());
         //println!("outputs={:?}", self.ekernels[kid].outputs);
+
+        // Consts are values, never stored to memory (see Node::Const docs).
+        // If a const class ended up inside a storing kernel (via merges), give
+        // the consumer a private const kernel instead of buffering it.
+        if let Node::Const { value, .. } = &self.nodes[self.classes[cid].nodes[0]].node {
+            let value = *value;
+            self.jit_kernels[kid].outputs.retain(|&x| x != cid);
+            let rc = rcs[&cid];
+            let mut kernel = Kernel::new(DeviceId::NULL);
+            kernel.push_back(Op::Const(value));
+            let op_id = kernel.head;
+            let new_kid = self.jit_kernels.push(JitKernelData {
+                kernel,
+                outputs: vec![cid; rc as usize],
+                loads: Vec::new(),
+                stores: Vec::new(),
+            });
+            visited.insert(cid, (new_kid, op_id));
+            return (new_kid, op_id);
+        }
 
         if !self.jit_kernels[kid].loads.contains(&cid) {
             let dtype = self.dtype(cid);
