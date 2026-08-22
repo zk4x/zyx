@@ -76,7 +76,9 @@ impl Kernel {
         while !op_id.is_null() {
             let next = self.next_op(op_id);
             if let Op::Index { kind: IdxKind::Group(len), .. } = self.ops[op_id].op {
-                let Some(len) = self.resolve_dim(len) else { continue; };
+                let Some(len) = self.resolve_dim(len) else {
+                    continue;
+                };
                 for f in [16, 8, 4] {
                     //println!("len={len} f={f}");
                     if len.is_multiple_of(f) {
@@ -263,7 +265,9 @@ impl Kernel {
         while !op_id.is_null() {
             let next = self.next_op(op_id);
             if let Op::Loop { len: len_id } = self.ops[op_id].op {
-                let Some(len) = self.resolve_dim(len_id) else { continue; };
+                let Some(len) = self.resolve_dim(len_id) else {
+                    continue;
+                };
                 if len >= 16 {
                     let applicable: Vec<u64> =
                         candidates.iter().copied().filter(|&f| len.is_multiple_of(f) && len / f >= 4).collect();

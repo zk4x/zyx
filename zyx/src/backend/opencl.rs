@@ -896,7 +896,12 @@ impl OpenCLDevice {
         // --- Codegen ---
         let mut lws = vec![1; 3];
         let mut op_id = kernel.head;
+        let mut steps_op_id = 0usize;
         while !op_id.is_null() {
+            steps_op_id += 1;
+            if steps_op_id > 10_000 {
+                panic!("compile did not finish in 10000 steps");
+            }
             if let Op::Index { axis, kind: scope } = kernel.ops[op_id].op {
                 match scope {
                     IdxKind::Group(_) => {}

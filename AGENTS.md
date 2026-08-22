@@ -35,7 +35,7 @@ The repo root has **no `Cargo.toml`** — crates (`zyx`, `zyx-nn`, ...) are inde
 ```bash
 cd zyx && cargo build                      # build
 cd zyx && AGENT=1 cargo test               # test (AGENT=1 strips ANSI colors)
-cd zyx && AGENT=1 cargo test relu_1        # single test
+cd zyx && AGENT=1 cargo test <name>        # single test
 cd zyx && AGENT=1 cargo test --test 1_unary  # one test file
 cd zyx && AGENT=1 cargo test -- --nocapture   # with output
 cd zyx && AGENT=1 cargo test --doc         # doc tests
@@ -151,7 +151,7 @@ All kernel optimizations live in `zyx/src/kernel/` (`autotune.rs` driver + one f
 ### First steps
 
 1. Run the failing test in isolation, pointing at its test file so the other tests aren't recompiled:
-   `cd zyx && AGENT=1 cargo test --test 9_graph narrow`
+   `cd zyx && AGENT=1 cargo test --test <file> <name>`
 2. Use `ZYX_DEBUG` (below) to see the graph, kernel IR, and generated code instead of guessing.
 
 ### Investigate the MINIMUM, then ASK — debug TOGETHER

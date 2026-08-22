@@ -903,7 +903,9 @@ impl Runtime {
                 let out_shape: Vec<Dim> = permuted_shape[..permuted_shape.len() - 1].to_vec();
 
                 let (kid, op_id) = self.duplicate_or_store(cur, false)?;
-                let reduce_axis = self.kernels[kid].kernel.reduce_shape_ids(op_id);
+                let dims = self.kernels[kid].kernel.shape_ids(op_id);
+                debug_assert!(!dims.is_empty(), "reduce of scalar");
+                let reduce_axis = *dims.last().unwrap();
                 let op_id = self.kernels[kid].kernel.push_back(Op::Reduce { x: op_id, rop, reduce_axis });
 
                 let tid = self.tensors.push(TensorData {
@@ -1031,7 +1033,7 @@ impl Runtime {
                     shape_op = op_map[&shape_op];
                 }
             }
-            let out_dims = self.kernels[kernel_id].kernel.shape_values(shape_op);
+            let out_dims = self.resolve_shape(shape);
 
             let op_id = self.kernels[kernel_id].kernel.reshape(op_id, shape_op);
             let tid = self.tensors.push(TensorData {
@@ -1096,7 +1098,7 @@ impl Runtime {
                     shape_op = op_map[&shape_op];
                 }
             }
-            let out_shape = self.kernels[kernel_id].kernel.shape_values(shape_op);
+            let out_shape = self.resolve_shape(shape);
             let op_id = self.kernels[kernel_id].kernel.expand(op_id, shape_op);
             let tid = self.tensors.push(TensorData {
                 kernel_id,
@@ -1948,7 +1950,7 @@ impl Runtime {
             // Invariant: a kernel must never both load and store the same tensor
             debug_assert!(!self.kernels[kid].loads.contains(&x), "kernel {kid:?} both loads and stores tid {x}");
 
-            let store_shape_id = self.kernels[kid].kernel.generate_store_shape(op_id);
+            let store_shape_id = self.kernels[kid].kernel.stack_shape_dims(op_id);
             let dst_id = self.kernels[kid].kernel.param(dtype, ParamKind::GlobalMut, store_shape_id);
             self.kernels[kid].kernel.store(dst_id, op_id, OpId::NULL, MemLayout::Scalar);
             self.kernels[kid].stores.push(x);

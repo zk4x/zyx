@@ -415,7 +415,12 @@ impl Kernel {
         let needs_u8 = {
             let mut op_id = self.head;
             let mut found = false;
+            let mut steps_op_id = 0usize;
             while !op_id.is_null() {
+                steps_op_id += 1;
+                if steps_op_id > 10_000 {
+                    panic!("generate_spirv did not finish in 10000 steps");
+                }
                 if let Op::Storage { dtype: DType::Bool, scope: MemScope::Global, .. } = self.at(op_id) {
                     found = true;
                     break;
@@ -429,7 +434,12 @@ impl Kernel {
         let needs_bf16 = {
             let mut op_id = self.head;
             let mut found = false;
+            let mut steps_op_id = 0usize;
             while !op_id.is_null() {
+                steps_op_id += 1;
+                if steps_op_id > 10_000 {
+                    panic!("generate_spirv did not finish in 10000 steps");
+                }
                 if let Op::Storage { dtype: DType::BF16, .. } = self.at(op_id) {
                     found = true;
                     break;
@@ -651,7 +661,12 @@ impl Kernel {
         let mut lws: Vec<u64> = vec![1; 3];
         {
             let mut op_id = self.head;
+            let mut steps_op_id = 0usize;
             while !op_id.is_null() {
+                steps_op_id += 1;
+                if steps_op_id > 10_000 {
+                    panic!("generate_spirv did not finish in 10000 steps");
+                }
                 match self.at(op_id) {
                     Op::Const(c) => {
                         let dt = c.dtype();
@@ -942,7 +957,12 @@ impl Kernel {
         let needs_global = {
             let mut op_id = self.head;
             let mut found = false;
+            let mut steps_op_id = 0usize;
             while !op_id.is_null() {
+                steps_op_id += 1;
+                if steps_op_id > 10_000 {
+                    panic!("generate_spirv did not finish in 10000 steps");
+                }
                 if let &Op::Index { .. } = self.at(op_id) {
                     found = true;
                     break;
@@ -974,10 +994,7 @@ impl Kernel {
         let func_id = asm.id();
 
         // Entry point: GLCompute %func_id "name" %interfaces...
-        let ep_name = format!(
-            "k_{}",
-            lws.iter().map(|v| v.to_string()).collect::<Vec<_>>().join("_"),
-        );
+        let ep_name = format!("k_{}", lws.iter().map(|v| v.to_string()).collect::<Vec<_>>().join("_"),);
         {
             let mut ep_words = vec![EXEC_GL_COMPUTE, func_id];
             let name_bytes: Vec<u8> = ep_name.bytes().chain(std::iter::once(0)).collect();
@@ -1068,7 +1085,12 @@ impl Kernel {
 
         {
             let mut op_id = self.head;
+            let mut steps_op_id = 0usize;
             while !op_id.is_null() {
+                steps_op_id += 1;
+                if steps_op_id > 10_000 {
+                    panic!("generate_spirv did not finish in 10000 steps");
+                }
                 match self.ops[op_id].op {
                     Op::ReduceTile { .. }
                     | Op::Move { .. }

@@ -17,7 +17,8 @@ use std::collections::BTreeMap;
 use super::autotune::Optimization;
 use crate::{
     dtype::Constant,
-    kernel::{BOp, IdxKind, Kernel, Op, OpId}, shape::Dim,
+    kernel::{BOp, IdxKind, Kernel, Op, OpId},
+    shape::Dim,
 };
 
 impl Kernel {
@@ -184,9 +185,7 @@ impl Kernel {
             unreachable!()
         };
         let kind = match kind {
-            IdxKind::Group(_) => {
-                IdxKind::Group(self.insert_before(first_id.unwrap(), Op::Const(Constant::idx(acc))))
-            }
+            IdxKind::Group(_) => IdxKind::Group(self.insert_before(first_id.unwrap(), Op::Const(Constant::idx(acc)))),
             IdxKind::Local(_) => IdxKind::Local(acc as u32),
             IdxKind::Warp(_) => IdxKind::Warp(acc as u8),
         };

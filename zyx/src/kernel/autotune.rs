@@ -273,7 +273,9 @@ impl Optimization {
                 let Op::Loop { len: len_id } = kernel.ops[op_id].op else {
                     unreachable!()
                 };
-                let Some(len) = kernel.resolve_dim(len_id) else { return; };
+                let Some(len) = kernel.resolve_dim(len_id) else {
+                    return;
+                };
                 let len1 = kernel.const_idx(len / factor);
                 let len2 = kernel.const_idx(factor);
                 kernel.split_dim(op_id, vec![Op::Loop { len: len1 }, Op::Loop { len: len2 }]);
@@ -395,7 +397,7 @@ impl Kernel {
                         let len: Dim = if shape.is_null() {
                             1
                         } else {
-                            self.shape_values(shape).iter().map(|&d| if d == 0 { 42 } else { d }).product()
+                            self.shape(op_id).iter().map(|&d| if d == 0 { 42 } else { d }).product()
                         };
                         let bytes_alloc = (dtype.bit_size() as Dim * (len + 1)) / 8;
                         let (buf, ev) = memory_pool.allocate(bytes_alloc)?;

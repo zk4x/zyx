@@ -197,10 +197,14 @@ impl Runtime {
                 Node::Expand { x, .. } => {
                     let out_dims = self.graphs[graph_id].shape(cid);
                     let in_dims = self.graphs[graph_id].shape(x);
-                    let out_shape: Vec<Dim> =
-                        out_dims.iter().map(|&d| self.graph_const_dim(graph_id, d).expect("expand backward with symbolic dim")).collect();
-                    let in_shape: Vec<Dim> =
-                        in_dims.iter().map(|&d| self.graph_const_dim(graph_id, d).expect("expand backward with symbolic dim")).collect();
+                    let out_shape: Vec<Dim> = out_dims
+                        .iter()
+                        .map(|&d| self.graph_const_dim(graph_id, d).expect("expand backward with symbolic dim"))
+                        .collect();
+                    let in_shape: Vec<Dim> = in_dims
+                        .iter()
+                        .map(|&d| self.graph_const_dim(graph_id, d).expect("expand backward with symbolic dim"))
+                        .collect();
                     // Right-align the input against the expanded output per broadcast
                     // semantics. The input is broadcast to the output by (a) leading
                     // `pad` dims that the input did not have at all (implicitly size 1)
@@ -227,10 +231,8 @@ impl Runtime {
                             .filter(|(i, _)| !sum_axes.contains(&(*i as UAxis)))
                             .map(|(_, &d)| d)
                             .collect();
-                        let reduced = self.push_node(
-                            graph_id,
-                            Node::Reduce { x: grad, rop: BOp::Add, axes: sum_axes.into_boxed_slice() },
-                        );
+                        let reduced =
+                            self.push_node(graph_id, Node::Reduce { x: grad, rop: BOp::Add, axes: sum_axes.into_boxed_slice() });
                         // The graph reduce drops the reduced dims; restore the
                         // original shape (keepdim) with an explicit reshape.
                         let reduced = if reduced_dims == in_dims {
@@ -342,8 +344,7 @@ impl Runtime {
                     let shape: Vec<Dim> = self.shape(tid).into();
                     let dtype = self.dtype(tid);
                     let zero_cid = self.push_const(graph_id, Constant::new(0u8).cast(dtype));
-                    let ops: Box<[ClassId]> =
-                        shape.iter().map(|&d| self.push_const(graph_id, Constant::idx(d))).collect();
+                    let ops: Box<[ClassId]> = shape.iter().map(|&d| self.push_const(graph_id, Constant::idx(d))).collect();
                     let shape_cid = if ops.len() == 1 {
                         ops[0]
                     } else {

@@ -26,7 +26,12 @@ impl Kernel {
         let mut n_params: usize = 0;
         {
             let mut op_id = self.head;
+            let mut steps_op_id = 0usize;
             while !op_id.is_null() {
+                steps_op_id += 1;
+                if steps_op_id > 10_000 {
+                    panic!("generate_c did not finish in 10000 steps");
+                }
                 match self.ops[op_id].op {
                     Op::Index { kind: scope, .. } => {
                         if !matches!(scope, IdxKind::Group(_)) {
@@ -77,7 +82,12 @@ impl Kernel {
         let mut index_loop_depth: u8 = 0;
         loop_id = 0;
         let mut op_id = self.head;
+        let mut steps_op_id = 0usize;
         while !op_id.is_null() {
+            steps_op_id += 1;
+            if steps_op_id > 10_000 {
+                panic!("generate_c did not finish in 10000 steps");
+            }
             match self.ops[op_id].op {
                 Op::Index { kind: scope, .. } => {
                     let IdxKind::Group(len) = scope else {
@@ -102,7 +112,11 @@ impl Kernel {
                 Op::Loop { len, .. } => {
                     indices.insert(op_id, loop_id);
                     let len = get_var(len, &constants, &indices, &reg_map, &mut registers, loop_id)?;
-                    _ = writeln!(source, "{indent}for ({idx_type} idx{loop_id} = 0; idx{loop_id} < {len}; ++idx{loop_id}) {{", idx_type = self.dtype(op_id).c_type());
+                    _ = writeln!(
+                        source,
+                        "{indent}for ({idx_type} idx{loop_id} = 0; idx{loop_id} < {len}; ++idx{loop_id}) {{",
+                        idx_type = self.dtype(op_id).c_type()
+                    );
                     indent += "  ";
                     loop_id += 1;
                 }
@@ -378,11 +392,7 @@ impl Kernel {
                 Op::Param { .. } => {}
                 Op::Storage { dtype, scope, len } => {
                     debug_assert_eq!(scope, MemScope::Register, "C backend only supports register scoped storage");
-                    _ = writeln!(
-                        source,
-                        "{indent}{} p{op_id}[{len}] __attribute__((aligned));",
-                        dtype.c_type(),
-                    );
+                    _ = writeln!(source, "{indent}{} p{op_id}[{len}] __attribute__((aligned));", dtype.c_type(),);
                 }
                 Op::Barrier => {}
                 Op::Asm { .. } => todo!(),

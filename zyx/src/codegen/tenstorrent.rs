@@ -95,7 +95,12 @@ impl Kernel {
         // so downstream codegen never has to reason about f64 tiles.
         {
             let mut scan = self.head;
+            let mut steps_scan = 0usize;
             while !scan.is_null() {
+                steps_scan += 1;
+                if steps_scan > 10_000 {
+                    panic!("tt_binary_init did not finish in 10000 steps");
+                }
                 if let Op::Load { src, layout: MemLayout::Tile { .. }, .. } = &self.ops[scan].op {
                     if self.dtype(*src) == DType::F64 {
                         return Err(BackendError {
@@ -124,7 +129,12 @@ impl Kernel {
             const PAGE_SIZE: u32 = 4096;
             let mut input_arg_idx = 0u32;
             let mut loop_depth = 0u32;
+            let mut steps_op_id = 0usize;
             while !op_id.is_null() {
+                steps_op_id += 1;
+                if steps_op_id > 10_000 {
+                    panic!("tt_binary_init did not finish in 10000 steps");
+                }
                 match self.ops[op_id].op {
                     Op::Define { dtype: _, scope, ro, .. } => match scope {
                         MemScope::Global => {
@@ -293,7 +303,12 @@ impl Kernel {
             let compute_stores: Vec<OpId> = {
                 let mut stores = Vec::new();
                 let mut scan = op_id;
+                let mut steps_scan = 0usize;
                 while !scan.is_null() {
+                    steps_scan += 1;
+                    if steps_scan > 10_000 {
+                        panic!("tt_binary_init did not finish in 10000 steps");
+                    }
                     if let Op::Barrier = self.ops[scan].op {
                         break;
                     }
@@ -317,7 +332,12 @@ impl Kernel {
             };
             {
                 let mut scan = self.head;
+                let mut steps_scan = 0usize;
                 while scan != op_id {
+                    steps_scan += 1;
+                    if steps_scan > 10_000 {
+                        panic!("tt_codegen did not finish in 10000 steps");
+                    }
                     if compute_deps.contains(&scan) {
                         match &self.ops[scan].op {
                             Op::Index { axis, scope: IdxScope::Local, .. } => {
@@ -354,7 +374,12 @@ impl Kernel {
 
             // First pass: collect init headers from ops
             let mut scan = op_id;
+            let mut steps_scan = 0usize;
             while !scan.is_null() {
+                steps_scan += 1;
+                if steps_scan > 10_000 {
+                    panic!("tt_binary_init did not finish in 10000 steps");
+                }
                 match self.ops[scan].op {
                     Op::Cast { x, .. } => {
                         if matches!(self.ops[x].op, Op::Const(_)) {
@@ -410,7 +435,12 @@ impl Kernel {
 
             let mut load_input_cbs: Vec<u32> = Vec::new();
             let mut pre_scan = op_id;
+            let mut steps_pre_scan = 0usize;
             while !pre_scan.is_null() {
+                steps_pre_scan += 1;
+                if steps_pre_scan > 10_000 {
+                    panic!("tt_binary_init did not finish in 10000 steps");
+                }
                 match self.ops[pre_scan].op {
                     Op::Load { src, layout: MemLayout::Tile { .. }, .. } => {
                         if let Some(&cb_id) = input_cb_map.get(&src) {
@@ -450,7 +480,12 @@ impl Kernel {
                     dst_slots.insert(target, slots);
                 };
                 let mut scan = op_id;
+                let mut steps_scan = 0usize;
                 while !scan.is_null() {
+                    steps_scan += 1;
+                    if steps_scan > 10_000 {
+                        panic!("tt_binary_init did not finish in 10000 steps");
+                    }
                     match self.ops[scan].op {
                         Op::Cast { x, .. } | Op::Unary { x, .. } | Op::Store { x, .. } => materialize_const(x),
                         Op::Binary { x, y, .. } => {
@@ -464,7 +499,12 @@ impl Kernel {
                 }
             }
 
+            let mut steps_op_id = 0usize;
             while !op_id.is_null() {
+                steps_op_id += 1;
+                if steps_op_id > 10_000 {
+                    panic!("tt_binary_init did not finish in 10000 steps");
+                }
                 match self.ops[op_id].op {
                     Op::Load { src, index: _, layout: MemLayout::Tile { .. } } => {
                         if self.dtype(src) == DType::F64 {
@@ -614,7 +654,12 @@ impl Kernel {
         let mut out_global_count = 0u32;
         {
             let mut scan = self.head;
+            let mut steps_scan = 0usize;
             while !scan.is_null() {
+                steps_scan += 1;
+                if steps_scan > 10_000 {
+                    panic!("tt_binary_init did not finish in 10000 steps");
+                }
                 if let Op::Define { scope: MemScope::Global, ro: false, .. } = self.ops[scan].op {
                     writeln!(writer, "{indent}uint32_t out{scan} = get_arg_val<uint32_t>({out_global_count});");
                     writeln!(
@@ -635,7 +680,12 @@ impl Kernel {
             let mut scan = op_id;
             let mut depth = 0u32;
             let mut in_loop_cbs: Vec<u32> = Vec::new();
+            let mut steps_scan = 0usize;
             while !scan.is_null() {
+                steps_scan += 1;
+                if steps_scan > 10_000 {
+                    panic!("tt_binary_init did not finish in 10000 steps");
+                }
                 match self.ops[scan].op {
                     Op::Loop { .. } => depth += 1,
                     Op::EndLoop => depth -= 1,
@@ -664,7 +714,12 @@ impl Kernel {
             let writer_stores: Vec<OpId> = {
                 let mut stores = Vec::new();
                 let mut scan = op_id;
+                let mut steps_scan = 0usize;
                 while !scan.is_null() {
+                    steps_scan += 1;
+                    if steps_scan > 10_000 {
+                        panic!("tt_binary_init did not finish in 10000 steps");
+                    }
                     if let Op::Barrier = self.ops[scan].op {
                         break;
                     }
@@ -688,7 +743,12 @@ impl Kernel {
             };
 
             let mut scan = self.head;
+            let mut steps_scan = 0usize;
             while scan != op_id {
+                steps_scan += 1;
+                if steps_scan > 10_000 {
+                    panic!("tt_codegen did not finish in 10000 steps");
+                }
                 if writer_deps.contains(&scan) {
                     match &self.ops[scan].op {
                         Op::Index { axis, scope: IdxScope::Group, .. } => {
@@ -721,7 +781,12 @@ impl Kernel {
         }
 
         let mut loop_depth = 0u32;
+        let mut steps_op_id = 0usize;
         while !op_id.is_null() {
+            steps_op_id += 1;
+            if steps_op_id > 10_000 {
+                panic!("tt_binary_init did not finish in 10000 steps");
+            }
             match self.ops[op_id].op {
                 Op::Store { dst, x, index: st_idx, layout } => {
                     if layout != MemLayout::Scalar {

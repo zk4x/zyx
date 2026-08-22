@@ -686,7 +686,12 @@ impl TTDevice {
         {
             let mut max_cb = 0;
             let mut scan = kernel.head;
+            let mut steps_scan = 0usize;
             while !scan.is_null() {
+                steps_scan += 1;
+                if steps_scan > 10_000 {
+                    panic!("compile did not finish in 10000 steps");
+                }
                 match &kernel.ops[scan].op {
                     Op::Define { dtype, scope: MemScope::Global, ro: true, .. } => input_dtypes.push(*dtype),
                     Op::Define { dtype, scope: MemScope::Global, ro: false, .. } => output_dtypes.push(*dtype),

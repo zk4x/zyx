@@ -227,11 +227,7 @@ impl Compiler {
 impl Kernel {
     /// Compile kernel to PTX assembly.
     #[allow(clippy::type_complexity)] // complex return type inherent to PTX backend API
-    pub fn generate_ptx(
-        &self,
-        cc: [i32; 2],
-        _dev_info: &DeviceInfo,
-    ) -> Result<(Vec<u8>, Box<str>, Vec<Dim>), BackendError> {
+    pub fn generate_ptx(&self, cc: [i32; 2], _dev_info: &DeviceInfo) -> Result<(Vec<u8>, Box<str>, Vec<Dim>), BackendError> {
         let mut comp = Compiler {
             var_map: Map::default(),
             loops: Vec::new(),
@@ -246,7 +242,12 @@ impl Kernel {
 
         let mut lws = vec![1; 3];
         let mut op_id = self.head;
+        let mut steps_op_id = 0usize;
         while !op_id.is_null() {
+            steps_op_id += 1;
+            if steps_op_id > 10_000 {
+                panic!("generate_ptx did not finish in 10000 steps");
+            }
             if let Op::Index { axis, kind: scope } = self.ops[op_id].op {
                 match scope {
                     IdxKind::Group(_) => {}
@@ -259,15 +260,16 @@ impl Kernel {
         if lws.iter().product::<Dim>() > u64::from(_dev_info.max_local_threads) {
             return Err(BackendError { status: ErrorStatus::KernelCompilation, context: "Invalid local work size.".into() });
         }
-        let name = format!(
-            "k_{}",
-            lws.iter().map(ToString::to_string).collect::<Vec<_>>().join("_"),
-        )
-        .into_boxed_str();
+        let name = format!("k_{}", lws.iter().map(ToString::to_string).collect::<Vec<_>>().join("_"),).into_boxed_str();
 
         _ = writeln!(comp.header, ".version {0}.{1}\n.target sm_{0}{1}\n.address_size 64\n.visible .entry {name}(", cc[0], cc[1]);
         let mut op_id = self.head;
+        let mut steps_op_id = 0usize;
         while !op_id.is_null() {
+            steps_op_id += 1;
+            if steps_op_id > 10_000 {
+                panic!("generate_ptx did not finish in 10000 steps");
+            }
             if matches!(self.ops[op_id].op, Op::Storage { scope: MemScope::Global, .. }) {
                 writeln!(comp.header, "{}.param .u64 g{op_id},", comp.indent).unwrap();
             }
@@ -283,7 +285,12 @@ impl Kernel {
         let (dtypes, rcs) = self.compute_dtypes_and_rcs();
         let mut loop_id: u8 = 0;
         let mut op_id = self.head;
+        let mut steps_op_id = 0usize;
         while !op_id.is_null() {
+            steps_op_id += 1;
+            if steps_op_id > 10_000 {
+                panic!("generate_ptx did not finish in 10000 steps");
+            }
             match self.ops[op_id].op {
                 Op::Param { kind, .. } => match kind {
                     ParamKind::Variable => todo!(),
@@ -312,8 +319,7 @@ impl Kernel {
                                 dtype.ptx()
                             );
                         }
-                        MemScope::Circular |
-                        MemScope::Global => unreachable!("ptx only supports local or register storage"),
+                        MemScope::Circular | MemScope::Global => unreachable!("ptx only supports local or register storage"),
                     }
                 }
                 Op::Index { axis, kind: scope, .. } => {
@@ -653,7 +659,12 @@ impl Kernel {
         _ = writeln!(comp.body, "{}ret;\n}}", comp.indent);
 
         let mut op_id = self.head;
+        let mut steps_op_id = 0usize;
         while !op_id.is_null() {
+            steps_op_id += 1;
+            if steps_op_id > 10_000 {
+                panic!("generate_ptx did not finish in 10000 steps");
+            }
             if matches!(self.ops[op_id].op, Op::Storage { scope: MemScope::Global, .. }) {
                 _ = writeln!(comp.header, "{}.reg .s64 %p{op_id};", comp.indent);
             }

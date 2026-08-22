@@ -91,7 +91,7 @@
 
 pub use crate::backend::DeviceId;
 
-use crate::{DType, Map, Set, dtype::Constant, shape::Dim, slab::Slab};
+use crate::{DType, Map, Set, dtype::Constant, shape::Dim, shape::UAxis, slab::Slab};
 use nanoserde::{DeBin, SerBin};
 use std::collections::BTreeMap;
 use std::{hash::BuildHasherDefault, hash::Hash};
@@ -272,7 +272,10 @@ impl Kernel {
         let mut dtypes: Map<OpId, (DType, MemLayout)> = Map::with_capacity_and_hasher(100, BuildHasherDefault::new());
 
         let mut op_id = self.head;
-        while !op_id.is_null() {
+        for _ in 0..10_000 {
+            if op_id.is_null() {
+                break;
+            }
             match self.ops[op_id].op {
                 Op::Move { .. } | Op::Reduce { .. } | Op::ReduceTile { .. } => {
                     unreachable!()
@@ -367,6 +370,9 @@ impl Kernel {
                 Op::Barrier | Op::EndIf | Op::EndLoop => {}
             }
             op_id = self.next_op(op_id);
+        }
+        if !op_id.is_null() {
+            panic!("compute_dtypes_and_rcs did not finish in 10000 steps");
         }
         (dtypes, rcs)
     }
@@ -572,25 +578,39 @@ impl Kernel {
     ) -> Vec<crate::tensor::TensorId> {
         let mut chain: Set<OpId> = Set::default();
         let mut stack = vec![x];
-        while let Some(op) = stack.pop() {
+        for _ in 0..10_000 {
+            let Some(op) = stack.pop() else { break };
             if chain.insert(op) {
                 stack.extend(self.ops[op].op.parameters().filter(|&p| !p.is_null()));
             }
+        }
+        if !stack.is_empty() {
+            panic!("remove_unused_chain did not finish in 10000 steps");
         }
 
         let mut live: Set<OpId> = Set::default();
         stack.extend_from_slice(keep_alive);
         let mut op_id = self.head;
-        while !op_id.is_null() {
+        for _ in 0..10_000 {
+            if op_id.is_null() {
+                break;
+            }
             if matches!(self.ops[op_id].op, Op::Store { .. }) {
                 stack.push(op_id);
             }
             op_id = self.next_op(op_id);
         }
-        while let Some(op) = stack.pop() {
+        if !op_id.is_null() {
+            panic!("remove_unused_chain did not finish in 10000 steps");
+        }
+        for _ in 0..10_000 {
+            let Some(op) = stack.pop() else { break };
             if live.insert(op) {
                 stack.extend(self.ops[op].op.parameters().filter(|&p| !p.is_null()));
             }
+        }
+        if !stack.is_empty() {
+            panic!("remove_unused_chain did not finish in 10000 steps");
         }
 
         // Collect input (ro) Param OpIds in op order (before removal). These are
@@ -599,7 +619,10 @@ impl Kernel {
         let param_ops: Vec<OpId> = {
             let mut ops = Vec::new();
             let mut id = self.head;
-            while !id.is_null() {
+            for _ in 0..10_000 {
+                if id.is_null() {
+                    break;
+                }
                 if let Op::Param { kind, .. } = &self.ops[id].op {
                     if *kind != ParamKind::GlobalMut {
                         ops.push(id);
@@ -607,17 +630,26 @@ impl Kernel {
                 }
                 id = self.next_op(id);
             }
+            if !id.is_null() {
+                panic!("remove_unused_chain did not finish in 10000 steps");
+            }
             ops
         };
 
         let to_remove: Set<OpId> = chain.difference(&live).copied().collect();
         let mut op_id = self.head;
-        while !op_id.is_null() {
+        for _ in 0..10_000 {
+            if op_id.is_null() {
+                break;
+            }
             let next = self.next_op(op_id);
             if to_remove.contains(&op_id) {
                 self.remove_op(op_id);
             }
             op_id = next;
+        }
+        if !op_id.is_null() {
+            panic!("remove_unused_chain did not finish in 10000 steps");
         }
 
         // Keep only loads whose corresponding input Param was not removed.
@@ -635,7 +667,10 @@ impl Kernel {
     pub(crate) fn name(&self) -> String {
         let mut parts: Vec<&str> = Vec::new();
         let mut op_id = self.head;
-        while !op_id.is_null() {
+        for _ in 0..10_000 {
+            if op_id.is_null() {
+                break;
+            }
             match self.at(op_id) {
                 Op::Unary { uop, .. } => parts.push(match uop {
                     UOp::Neg => "neg",
@@ -692,6 +727,9 @@ impl Kernel {
             }
             op_id = self.next_op(op_id);
         }
+        if !op_id.is_null() {
+            panic!("name did not finish in 10000 steps");
+        }
         parts.dedup();
         if parts.is_empty() {
             return "copy".into();
@@ -714,7 +752,10 @@ impl Kernel {
         let mut stack: Map<OpId, Info> = Map::default();
 
         let mut op_id = self.head;
-        while !op_id.is_null() {
+        for _ in 0..10_000 {
+            if op_id.is_null() {
+                break;
+            }
             let info = match self.at(op_id) {
                 // TODO implement
                 Op::Param { .. } => Info { shape: vec![1], flops: 0, mem_read: 0, mem_write: 0 },
@@ -786,6 +827,9 @@ impl Kernel {
             stack.insert(op_id, info);
             op_id = self.next_op(op_id);
         }
+        if !op_id.is_null() {
+            panic!("flop_mem_rw did not finish in 10000 steps");
+        }
 
         stack.into_values().fold((0, 0, 0), |acc, info| (acc.0 + info.flops, acc.1 + info.mem_read, acc.2 + info.mem_write))
     }
@@ -800,299 +844,375 @@ impl Kernel {
         self.ops.values().any(|x| matches!(x.op, Op::Reduce { .. } | Op::ReduceTile { .. }))
     }
 
-    /// Shape of the value produced by `op_id`. Mirrors [`Self::dtype`]: value
-    /// ops resolve through their input, while a `Const` yields a single
-    /// dimension, a `Stack` yields one dimension per element (dynamic dims are
-    /// `0`), and movement ops apply their transformation to the input shape.
-    pub(crate) fn shape(&self, mut op_id: OpId) -> Vec<Dim> {
-        let const_dim = |id: OpId| -> Option<Dim> {
-            match self.ops[id].op {
-                Op::Const(c) => c.as_dim(),
-                _ => None,
+    /// Tensor shape of the value produced by `op_id`, as per-dimension op
+    /// ids. Symbolic walk over existing ops. A `Stack` accessed *directly*
+    /// (as a value) produces `[len] + first_element_shape`: its length is
+    /// emitted as a const dim. A `Stack` referenced as a *shape descriptor*
+    /// (through `Param { shape }`, `Reshape { shape }`, `Expand { shape }`)
+    /// yields its element ops directly. Movement ops apply their
+    /// transformation (`Permute` reorders, `Pad`/`Narrow` substitute their
+    /// stored `len`); a scalar value (`Const`, scalar `Param`) has an empty
+    /// shape.
+    #[must_use]
+    pub(crate) fn shape_ids(&mut self, op_id: OpId) -> Vec<OpId> {
+        // Unpacks a shape descriptor (a `Stack` of dims or a bare `Const`
+        // dim, as stored in `Param { shape }`, `Reshape { shape }`,
+        // `Expand { shape }`) into its dimension op ids.
+        fn descriptor(k: &Kernel, id: OpId) -> Vec<OpId> {
+            if id.is_null() {
+                return Vec::new();
             }
-        };
-        for _ in 0..10000 {
-            match self.ops[op_id].op {
-                Op::Const(_) => return vec![],
-                Op::Param { kind, shape, .. } => {
-                    if kind == ParamKind::Variable {
-                        return vec![];
-                    }
-                    if shape.is_null() {
-                        return vec![0];
-                    }
-                    return self.shape_values(shape);
-                }
-                // A `Stack` of N scalars is a rank-1 tensor of shape `[N]`; its
-                // per-element *values* (the dims, when used as a shape descriptor)
-                // are resolved by [`Self::shape_values`], not here.
-                Op::Stack { ref ops } => return vec![ops.len() as Dim],
-                Op::Move { x, ref mop } => match mop.as_ref() {
-                    MoveOp::Reshape { shape, .. } | MoveOp::Expand { shape } => return self.shape_values(*shape),
-                    MoveOp::Permute { axes } => return crate::shape::permute(&self.shape(x), axes),
-                    MoveOp::Flip { .. } => return self.shape(x),
-                    MoveOp::Pad { axis, len, .. } => {
-                        let mut s = self.shape(x);
-                        s[*axis] = const_dim(*len).unwrap_or(0);
-                        return s;
-                    }
-                    MoveOp::Narrow { axis, len, .. } => {
-                        let mut s = self.shape(x);
-                        s[*axis] = const_dim(*len).unwrap_or(0);
-                        return s;
-                    }
-                },
-                Op::Index { .. } => return vec![],
-                Op::Loop { .. } => return vec![],
-                Op::Storage { len, .. } => {
-                    return if len == 1 { vec![] } else { vec![len] };
-                }
-                Op::Load { src: x, .. } | Op::Store { src: x, .. } => op_id = x,
-                Op::Cast { x, .. }
-                | Op::Unary { x, .. }
-                | Op::Binary { x, .. }
-                | Op::Mad { x, .. }
-                | Op::MatmulTile { x, .. }
-                | Op::ReduceTile { x, .. }
-                | Op::Devectorize { vec: x, .. } => op_id = x,
-                Op::Asm { ref ops, .. } => op_id = ops[0],
-                Op::Reduce { x, .. } => op_id = x,
-                Op::TransposeTile { x } => op_id = x,
-                ref op => todo!("shape of {op:?}"),
+            match k.ops[id].op {
+                Op::Stack { ref ops } => ops.to_vec(),
+                Op::Const(_) => vec![id],
+                // A shape held in memory (global param): dims unknowable
+                // statically; treated as unknown.
+                Op::Param { .. } => Vec::new(),
+                ref op => todo!("shape_ids: invalid shape descriptor {op:?}"),
             }
         }
-        panic!("shape not found for too long time");
-    }
-
-    /// Resolves a *shape* op (a `Stack`, a bare `Const` dim, or a `Param`'s
-    /// shape) into its per-dimension op ids.
-    pub(crate) fn shape_ids(&self, mut op_id: OpId) -> Vec<OpId> {
+        #[derive(Clone)]
+        enum Task {
+            Shape(OpId),
+            Pass,
+            StackHead(u32),
+            Permute(Box<[UAxis]>),
+            Narrow(UAxis, OpId),
+            Pad(UAxis, OpId),
+            Reduce,
+            BinaryElse(OpId),
+            Memo(OpId),
+        }
         if op_id.is_null() {
             return Vec::new();
         }
+        let mut tasks: Vec<Task> = vec![Task::Shape(op_id)];
+        let mut out: Vec<Vec<OpId>> = Vec::new();
+        // Memoize per op: shared sub-DAGs are re-entered by many parents and
+        // re-walking them is exponential without this.
+        let mut memo: Map<OpId, Vec<OpId>> = Map::default();
         for _ in 0..10000 {
-            match self.ops[op_id].op {
-                Op::Const(_) => return vec![op_id],
-                Op::Stack { ref ops } => return ops.to_vec(),
-                Op::Param { shape, .. } => op_id = shape,
-                Op::Cast { .. } | Op::Unary { .. } | Op::Binary { .. } | Op::Mad { .. } => return vec![op_id],
-                ref op => todo!("shape_ids of {op:?}"),
+            let Some(task) = tasks.pop() else { return out.pop().unwrap() };
+            match task {
+                Task::Pass => {}
+                Task::Memo(id) => {
+                    let dims = out.last().unwrap().clone();
+                    memo.insert(id, dims);
+                }
+                Task::StackHead(n) => {
+                    let mut dims = out.pop().unwrap();
+                    dims.insert(0, self.const_idx(n));
+                    out.push(match dims.as_slice() {
+                        [_] => vec![dims[0]],
+                        _ => dims,
+                    });
+                }
+                Task::Permute(axes) => {
+                    let dims = crate::shape::permute(&out.pop().unwrap(), &axes);
+                    out.push(dims);
+                }
+                Task::Narrow(axis, len) => {
+                    let mut dims = out.pop().unwrap();
+                    if dims.is_empty() {
+                        out.push(vec![len]);
+                    } else {
+                        dims[axis as usize] = len;
+                        out.push(dims);
+                    }
+                }
+                Task::Pad(axis, len) => {
+                    let mut dims = out.pop().unwrap();
+                    if dims.is_empty() {
+                        out.push(vec![len]);
+                    } else {
+                        dims[axis as usize] = len;
+                        out.push(dims);
+                    }
+                }
+                Task::Reduce => {
+                    let mut dims = out.pop().unwrap();
+                    dims.truncate(dims.len().saturating_sub(1));
+                    out.push(dims);
+                }
+                Task::BinaryElse(y) => {
+                    let dims = out.pop().unwrap();
+                    // Scalars broadcast implicitly: if `x` is a scalar (empty
+                    // shape), the binary takes `y`'s shape.
+                    if !dims.is_empty() {
+                        out.push(dims);
+                    } else {
+                        tasks.push(Task::Pass);
+                        tasks.push(Task::Shape(y));
+                    }
+                }
+                Task::Shape(id) => match self.ops[id].op.clone() {
+                    Op::Const(_) => {
+                        memo.insert(id, vec![]);
+                        out.push(vec![]);
+                    }
+                    Op::Param { shape, .. } => {
+                        let dims = descriptor(self, shape);
+                        memo.insert(id, dims.clone());
+                        out.push(dims);
+                    }
+                    // Direct access of a stack op: it is a rank-1+ tensor whose
+                    // leading dim is the element count (emitted as a const).
+                    Op::Stack { ref ops } => {
+                        let n = ops.len() as u32;
+                        if ops.is_empty() {
+                            memo.insert(id, vec![]);
+                            out.push(Vec::new());
+                        } else {
+                            tasks.push(Task::Memo(id));
+                            tasks.push(Task::StackHead(n));
+                            tasks.push(Task::Shape(ops[0]));
+                        }
+                    }
+                    Op::Move { x, ref mop } => match mop.as_ref() {
+                        MoveOp::Reshape { shape, .. } | MoveOp::Expand { shape } => {
+                            let dims = descriptor(self, *shape);
+                            memo.insert(id, dims.clone());
+                            out.push(dims);
+                        }
+                        MoveOp::Permute { axes } => {
+                            tasks.push(Task::Permute(axes.clone()));
+                            tasks.push(Task::Shape(x));
+                        }
+                        MoveOp::Flip { .. } => {
+                            tasks.push(Task::Pass);
+                            tasks.push(Task::Shape(x));
+                        }
+                        MoveOp::Narrow { axis, len, .. } => {
+                            tasks.push(Task::Narrow(*axis, *len));
+                            tasks.push(Task::Shape(x));
+                        }
+                        MoveOp::Pad { axis, len, .. } => {
+                            tasks.push(Task::Pad(*axis, *len));
+                            tasks.push(Task::Shape(x));
+                        }
+                    },
+                    Op::Binary { x, y, .. } => {
+                        tasks.push(Task::BinaryElse(y));
+                        tasks.push(Task::Shape(x));
+                    }
+                    Op::Reduce { x, .. } => {
+                        tasks.push(Task::Reduce);
+                        tasks.push(Task::Shape(x));
+                    }
+                    Op::Load { src: x, .. }
+                    | Op::Store { src: x, .. }
+                    | Op::Cast { x, .. }
+                    | Op::Unary { x, .. }
+                    | Op::Mad { x, .. }
+                    | Op::MatmulTile { x, .. }
+                    | Op::ReduceTile { x, .. }
+                    | Op::Devectorize { vec: x, .. }
+                    | Op::TransposeTile { x } => {
+                        tasks.push(Task::Pass);
+                        tasks.push(Task::Shape(x));
+                    }
+                    Op::Asm { ref ops, .. } => {
+                        tasks.push(Task::Pass);
+                        tasks.push(Task::Shape(ops[0]));
+                    }
+                    // Group/loop indices and scalar storages are scalar values.
+                    Op::Index { .. } | Op::Loop { .. } => out.push(vec![]),
+                    Op::Storage { len, .. } if len == 1 => out.push(vec![]),
+                    ref op => todo!("shape_ids of {op:?}"),
+                },
             }
         }
-        panic!("shape_ids not found for too long time");
+        panic!("shape_ids did not resolve in 10000 steps");
     }
 
-    /// Resolves a *shape descriptor* (`Op::Const` or `Op::Stack`) into the
-    /// dimension values it holds. Used where a shape tensor's values (the dims
-    /// it encodes) are needed, as opposed to the tensor's own shape.
-    pub(crate) fn shape_values(&self, op_id: OpId) -> Vec<Dim> {
-        self.shape_ids(op_id)
-            .iter()
-            .map(|&id| match self.ops[id].op {
+    /// Numeric tensor shape of the value produced by `op_id`: each dim of
+    /// [`Self::shape_ids`] resolved to its const value, `0` where resolution
+    /// fails (symbolic). Immutable — unlike [`Self::shape_ids`] this never
+    /// emits ops; a directly accessed `Stack` contributes its element count
+    /// as a plain number instead of a const dim op.
+    pub(crate) fn shape(&self, op_id: OpId) -> Vec<Dim> {
+        let resolve = |id: OpId| -> Dim {
+            match self.ops[id].op {
                 Op::Const(c) => c.as_dim().unwrap_or(0),
                 _ => 0,
-            })
-            .collect()
-    }
-
-    /// Resolves the shape of a *value* op into per-dimension ops, following
-    /// compute and movement ops and emitting arithmetic for padded dims. The
-    /// result for a `Reduce` drops the (single) reduced trailing dim.
-    pub(crate) fn store_shape_ids(&mut self, mut op_id: OpId) -> Vec<OpId> {
+            }
+        };
+        fn descriptor(k: &Kernel, id: OpId) -> Vec<OpId> {
+            if id.is_null() {
+                return Vec::new();
+            }
+            match k.ops[id].op {
+                Op::Stack { ref ops } => ops.to_vec(),
+                Op::Const(_) => vec![id],
+                Op::Param { .. } => Vec::new(),
+                ref op => todo!("shape: invalid shape descriptor {op:?}"),
+            }
+        }
+        #[derive(Clone)]
+        enum Task {
+            Shape(OpId),
+            Pass,
+            StackHead(u32),
+            Permute(Box<[UAxis]>),
+            Narrow(UAxis, OpId),
+            Pad(UAxis, OpId),
+            Reduce,
+            BinaryElse(OpId),
+            Memo(OpId),
+        }
+        if op_id.is_null() {
+            return Vec::new();
+        }
+        let mut tasks: Vec<Task> = vec![Task::Shape(op_id)];
+        let mut out: Vec<Vec<Dim>> = Vec::new();
+        // Memoize per op: shared sub-DAGs are re-entered by many parents and
+        // re-walking them is exponential without this.
+        let mut memo: Map<OpId, Vec<Dim>> = Map::default();
         for _ in 0..10000 {
-            match self.ops[op_id].op.clone() {
-                Op::Const(_) => return vec![],
-                Op::Param { shape, .. } => return self.shape_ids(shape),
-                Op::Stack { ref ops } => {
-                    let mut dims = self.store_shape_ids(ops[0]);
-                    dims.insert(0, self.const_idx(ops.len() as u32));
-                    return dims;
+            let Some(task) = tasks.pop() else { return out.pop().unwrap() };
+            match task {
+                Task::Pass => {}
+                Task::Memo(id) => {
+                    let dims = out.last().unwrap().clone();
+                    memo.insert(id, dims);
                 }
-                Op::Move { x, ref mop } => match mop.as_ref() {
-                    MoveOp::Reshape { shape, .. } => {
-                        // A `0` in the reshape target means "infer": resolve it to
-                        // numel(x) / product(other dims), mirroring tinygrad and the
-                        // eager reshape. Without this the unresolved `0` leaks into
-                        // recovered-coordinate lengths, zeroing loads.
-                        let target = self.shape_ids(*shape);
-                        if target.iter().any(|id| self.resolve_dim(*id) == Some(0)) {
-                            let num_dims = self.store_shape_ids(x);
-                            let one_const = self.const_idx(1);
-                            let numel = num_dims.iter().fold(one_const, |acc, &d| self.mul(acc, d));
-                            let mut prod = one_const;
-                            for &id in &target {
-                                if self.resolve_dim(id) == Some(0) {
-                                    continue;
-                                }
-                                prod = self.mul(prod, id);
-                            }
-                            let inferred_dim = self.div(numel, prod);
-                            return target
-                                .iter()
-                                .map(|&id| if self.resolve_dim(id) == Some(0) { inferred_dim } else { id })
-                                .collect();
-                        }
-                        return target;
-                    }
-                    MoveOp::Expand { shape } => return self.shape_ids(*shape),
-                    MoveOp::Permute { axes } => return crate::shape::permute(&self.store_shape_ids(x), axes),
-                    MoveOp::Flip { .. } => op_id = x,
-                    MoveOp::Narrow { axis, len, .. } => {
-                        let mut dims = self.store_shape_ids(x);
-                        if dims.is_empty() {
-                            dims.push(self.const_idx(1));
-                        }
-                        let len = if self.dtype(*len) != IDX_T {
-                            self.push_back(Op::Cast { x: *len, dtype: IDX_T })
-                        } else {
-                            *len
-                        };
-                        dims[*axis] = len;
-                        return dims;
-                    }
-                    MoveOp::Pad { axis, len, .. } => {
-                        let mut dims = self.store_shape_ids(x);
-                        if dims.is_empty() {
-                            dims.push(self.const_idx(1));
-                        }
-                        dims[*axis] = *len;
-                        return dims;
-                    }
-                },
-                Op::Load { src: x, .. }
-                | Op::Cast { x, .. }
-                | Op::Unary { x, .. }
-                | Op::Mad { x, .. }
-                | Op::MatmulTile { x, .. }
-                | Op::ReduceTile { x, .. }
-                | Op::Devectorize { vec: x, .. }
-                | Op::TransposeTile { x }
-                | Op::Store { src: x, .. } => op_id = x,
-                // Scalars broadcast implicitly: if `x` is a scalar (empty
-                // shape), the binary takes `y`'s shape.
-                Op::Binary { x, y, .. } => {
-                    let dims = self.store_shape_ids(x);
-                    if !dims.is_empty() {
-                        return dims;
-                    }
-                    op_id = y;
+                Task::StackHead(n) => {
+                    let mut s = out.pop().unwrap();
+                    s.insert(0, n as Dim);
+                    out.push(s);
                 }
-                Op::Reduce { x, .. } => {
-                    let mut dims = self.store_shape_ids(x);
+                Task::Permute(axes) => {
+                    let dims = crate::shape::permute(&out.pop().unwrap(), &axes);
+                    out.push(dims);
+                }
+                Task::Narrow(axis, len) => {
+                    let mut dims = out.pop().unwrap();
+                    if dims.is_empty() {
+                        out.push(vec![resolve(len)]);
+                    } else {
+                        dims[axis as usize] = resolve(len);
+                        out.push(dims);
+                    }
+                }
+                Task::Pad(axis, len) => {
+                    let mut dims = out.pop().unwrap();
+                    if dims.is_empty() {
+                        out.push(vec![resolve(len)]);
+                    } else {
+                        dims[axis as usize] = resolve(len);
+                        out.push(dims);
+                    }
+                }
+                Task::Reduce => {
+                    let mut dims = out.pop().unwrap();
                     dims.truncate(dims.len().saturating_sub(1));
-                    return dims;
+                    out.push(dims);
                 }
-                Op::Asm { ref ops, .. } => op_id = ops[0],
-                ref op => todo!("store shape of {op:?}"),
-            }
-        }
-        panic!("store shape not found for too long time");
-    }
-
-    /// Resolves the shape of a *value* op into the single `OpId` of its last
-    /// dimension (the trailing dim a `Reduce` would fold over). Follows nested
-    /// reduces by stepping to the second-to-last (etc.) dim and maps `Permute`
-    /// through its axes, emitting ops only for the trailing dim (never the full
-    /// shape).
-    pub(crate) fn reduce_shape_ids(&self, op_id: OpId) -> OpId {
-        self.reduce_shape_ids_at(op_id, 0)
-    }
-
-    /// Rank of a value op's output, without emitting any ops.
-    pub(crate) fn rank(&self, mut op_id: OpId) -> usize {
-        for _ in 0..10000 {
-            match self.ops[op_id].op {
-                Op::Const(_) => return 1,
-                Op::Stack { ref ops } => return ops.len(),
-                Op::Param { shape, .. } => return self.shape_ids(shape).len(),
-                Op::Move { x, ref mop } => match mop.as_ref() {
-                    MoveOp::Reshape { shape, .. } | MoveOp::Expand { shape } => return self.shape_ids(*shape).len(),
-                    MoveOp::Permute { .. } | MoveOp::Flip { .. } | MoveOp::Pad { .. } | MoveOp::Narrow { .. } => op_id = x,
-                },
-                Op::Reduce { x, .. } => return self.rank(x) - 1,
-                Op::Load { src: x, .. }
-                | Op::Cast { x, .. }
-                | Op::Unary { x, .. }
-                | Op::Binary { x, .. }
-                | Op::Mad { x, .. }
-                | Op::ReduceTile { x, .. }
-                | Op::Devectorize { vec: x, .. }
-                | Op::TransposeTile { x }
-                | Op::Store { src: x, .. } => op_id = x,
-                Op::Asm { ref ops, .. } => op_id = ops[0],
-                ref op => todo!("rank of {op:?}"),
-            }
-        }
-        panic!("rank not found for too long time");
-    }
-
-    /// Inner recursion of [`Kernel::reduce_shape_ids`], tracking how many dims
-    /// from the end the reduced axis sits (`from_end`: 0 = last, 1 = penultimate).
-    fn reduce_shape_ids_at(&self, mut op_id: OpId, mut from_end: usize) -> OpId {
-        for _ in 0..10000 {
-            match self.ops[op_id].op.clone() {
-                Op::Const(_) => return op_id,
-                Op::Stack { ref ops } => return ops[ops.len() - 1 - from_end],
-                Op::Param { shape, .. } => {
-                    let dims = self.shape_ids(shape);
-                    return dims[dims.len() - 1 - from_end];
+                Task::BinaryElse(y) => {
+                    let dims = out.pop().unwrap();
+                    if !dims.is_empty() {
+                        out.push(dims);
+                    } else {
+                        tasks.push(Task::Pass);
+                        tasks.push(Task::Shape(y));
+                    }
                 }
-                Op::Move { x, ref mop } => match mop.as_ref() {
-                    MoveOp::Permute { axes } => {
-                        let p = axes[axes.len() - 1 - from_end];
-                        from_end = axes.len() - 1 - p as usize;
-                        op_id = x;
+                Task::Shape(id) => {
+                    if let Some(dims) = memo.get(&id) {
+                        out.push(dims.clone());
+                        continue;
                     }
-                    MoveOp::Flip { .. } => op_id = x,
-                    MoveOp::Reshape { shape, .. } | MoveOp::Expand { shape } => {
-                        let dims = self.shape_ids(*shape);
-                        return dims[dims.len() - 1 - from_end];
+                    match self.ops[id].op.clone() {
+                    Op::Const(_) => {
+                        memo.insert(id, vec![]);
+                        out.push(vec![]);
                     }
-                    MoveOp::Pad { axis, len, .. } => {
-                        let p = self.rank(x) - 1 - from_end;
-                        if p == *axis as usize {
-                            return *len;
+                    Op::Param { shape, .. } => {
+                        let dims: Vec<Dim> = descriptor(self, shape).into_iter().map(resolve).collect();
+                        memo.insert(id, dims.clone());
+                        out.push(dims);
+                    }
+                    Op::Stack { ref ops } => {
+                        if ops.is_empty() {
+                            let dims = vec![ops.len() as Dim];
+                            memo.insert(id, dims.clone());
+                            out.push(dims);
+                        } else {
+                            tasks.push(Task::Memo(id));
+                            tasks.push(Task::StackHead(ops.len() as u32));
+                            tasks.push(Task::Shape(ops[0]));
                         }
-                        op_id = x;
                     }
-                    MoveOp::Narrow { axis, len, .. } => {
-                        let p = self.rank(x) - 1 - from_end;
-                        if p == *axis as usize {
-                            return *len;
+                    Op::Move { x, ref mop } => match mop.as_ref() {
+                        MoveOp::Reshape { shape, .. } | MoveOp::Expand { shape } => {
+                            let dims: Vec<Dim> = descriptor(self, *shape).into_iter().map(resolve).collect();
+                            memo.insert(id, dims.clone());
+                            out.push(dims);
                         }
-                        op_id = x;
+                        MoveOp::Permute { axes } => {
+                            tasks.push(Task::Permute(axes.clone()));
+                            tasks.push(Task::Shape(x));
+                        }
+                        MoveOp::Flip { .. } => {
+                            tasks.push(Task::Pass);
+                            tasks.push(Task::Shape(x));
+                        }
+                        MoveOp::Narrow { axis, len, .. } => {
+                            tasks.push(Task::Narrow(*axis, *len));
+                            tasks.push(Task::Shape(x));
+                        }
+                        MoveOp::Pad { axis, len, .. } => {
+                            tasks.push(Task::Pad(*axis, *len));
+                            tasks.push(Task::Shape(x));
+                        }
+                    },
+                    Op::Binary { x, y, .. } => {
+                        tasks.push(Task::BinaryElse(y));
+                        tasks.push(Task::Shape(x));
                     }
-                },
-                Op::Reduce { x, .. } => {
-                    from_end += 1;
-                    op_id = x;
+                    Op::Reduce { x, .. } => {
+                        tasks.push(Task::Reduce);
+                        tasks.push(Task::Shape(x));
+                    }
+                    Op::Load { src: x, .. }
+                    | Op::Store { src: x, .. }
+                    | Op::Cast { x, .. }
+                    | Op::Unary { x, .. }
+                    | Op::Mad { x, .. }
+                    | Op::MatmulTile { x, .. }
+                    | Op::ReduceTile { x, .. }
+                    | Op::Devectorize { vec: x, .. }
+                    | Op::TransposeTile { x } => {
+                        tasks.push(Task::Pass);
+                        tasks.push(Task::Shape(x));
+                    }
+                    Op::Asm { ref ops, .. } => {
+                        tasks.push(Task::Pass);
+                        tasks.push(Task::Shape(ops[0]));
+                    }
+                    Op::Index { .. } | Op::Loop { .. } => out.push(vec![]),
+                    Op::Storage { len, .. } if len == 1 => out.push(vec![]),
+                    ref op => todo!("shape of {op:?}"),
+                    }
                 }
-                Op::Load { src: x, .. }
-                | Op::Cast { x, .. }
-                | Op::Unary { x, .. }
-                | Op::Binary { x, .. }
-                | Op::Mad { x, .. }
-                | Op::ReduceTile { x, .. }
-                | Op::Devectorize { vec: x, .. }
-                | Op::TransposeTile { x }
-                | Op::Store { src: x, .. } => op_id = x,
-                Op::Asm { ref ops, .. } => op_id = ops[0],
-                ref op => todo!("reduce shape of {op:?}"),
             }
         }
-        panic!("reduce shape not found for too long time");
+        panic!(
+            "shape did not resolve in 10000 steps: n_tasks={} out_depth={} start={op_id:?}",
+            tasks.len(),
+            out.len()
+        );
     }
 
-    /// Builds a single shape op for the value produced by `op_id`, used to size
-    /// a store/param buffer. Returns a `Stack` over per-dimension ops, or a bare
-    /// const for a rank-1 shape. Padded/narrowed dimensions synthesize new
-    /// arithmetic ops; scalars resolve to rank-1 `[1]`.
-    pub(crate) fn generate_store_shape(&mut self, op_id: OpId) -> OpId {
-        let dims = self.store_shape_ids(op_id);
-        match dims.len() {
-            0 => OpId::NULL,
-            1 => dims[0],
-            _ => self.stack(&dims),
+    /// Builds a single shape-descriptor op for the value produced by
+    /// `op_id`, used to size a store/param buffer: `NULL` for scalars, the
+    /// bare dim for rank-1, a `Stack` otherwise.
+    #[must_use]
+    pub(crate) fn stack_shape_dims(&mut self, op_id: OpId) -> OpId {
+        match self.shape_ids(op_id).as_slice() {
+            [] => OpId::NULL,
+            [dim] => *dim,
+            dims => self.stack(dims),
         }
     }
 
@@ -1116,7 +1236,8 @@ impl Kernel {
         let mut params = vec![(index, 1u64)];
         let mut indices = Map::default();
 
-        while let Some((param, scale)) = params.pop() {
+        for _ in 0..10_000 {
+            let Some((param, scale)) = params.pop() else { break };
             match self.ops[param].op {
                 Op::Binary { x, y, bop } => {
                     if bop == BOp::Add {
@@ -1213,6 +1334,9 @@ impl Kernel {
                 _ => {}
             }
         }
+        if !params.is_empty() {
+            panic!("get_strides did not finish in 10000 steps");
+        }
 
         indices
     }
@@ -1225,29 +1349,67 @@ impl Kernel {
     /// when it is genuinely dynamic (e.g. involves a `Param` variable). Callers
     /// must bail (not optimize) on `None`.
     pub(crate) fn resolve_dim(&self, op_id: OpId) -> Option<Dim> {
-        match &self.ops[op_id].op {
-            Op::Const(c) => c.as_dim(),
-            // A cast preserves the integer value of a length.
-            Op::Cast { x, .. } => self.resolve_dim(*x),
-            Op::Unary { x, uop } => Some(crate::dtype::Constant::idx(self.resolve_dim(*x)?).unary(*uop).as_dim()?),
-            Op::Binary { x, y, bop } => Some(
-                crate::dtype::Constant::binary(
-                    crate::dtype::Constant::idx(self.resolve_dim(*x)?),
-                    crate::dtype::Constant::idx(self.resolve_dim(*y)?),
-                    *bop,
-                )
-                .as_dim()?,
-            ),
-            Op::Loop { len } => self.resolve_dim(*len),
-            &Op::Index { kind, .. } => match kind {
-                IdxKind::Group(len) => self.resolve_dim(len),
-                IdxKind::Local(len) => Some(len as Dim),
-                IdxKind::Warp(len) => Some(len as Dim),
-            },
-            // Param is dynamic
-            Op::Param { .. } => None,
-            _ => todo!(),
+        // Collect the constant-expression subgraph reachable through `Cast`,
+        // `Unary`, `Binary`, `Loop`, and `Index` operands, then evaluate it
+        // bottom-up (iteratively, no recursion).
+        let mut seen: Set<OpId> = Set::default();
+        let mut order: Vec<OpId> = Vec::new();
+        let mut stack = vec![op_id];
+        for _ in 0..10_000 {
+            let Some(id) = stack.pop() else { break };
+            if id.is_null() || !seen.insert(id) {
+                continue;
+            }
+            order.push(id);
+            match &self.ops[id].op {
+                Op::Cast { x, .. } => stack.push(*x),
+                Op::Unary { x, .. } => stack.push(*x),
+                Op::Binary { x, y, .. } => {
+                    stack.push(*x);
+                    stack.push(*y);
+                }
+                Op::Loop { len } => stack.push(*len),
+                &Op::Index { kind, .. } => match kind {
+                    IdxKind::Group(len) => stack.push(len),
+                    IdxKind::Local(_) | IdxKind::Warp(_) => {}
+                },
+                _ => {}
+            }
         }
+        if !stack.is_empty() {
+            panic!("resolve_dim did not finish in 10000 steps");
+        }
+
+        let mut values: Map<OpId, Option<Dim>> = Map::default();
+        for &id in order.iter().rev() {
+            let v = match &self.ops[id].op {
+                Op::Const(c) => c.as_dim(),
+                // A cast preserves the integer value of a length.
+                Op::Cast { x, .. } => values[x],
+                Op::Unary { x, uop } => {
+                    Some(crate::dtype::Constant::idx(values[x]?).unary(*uop).as_dim()?)
+                }
+                Op::Binary { x, y, bop } => Some(
+                    crate::dtype::Constant::binary(
+                        crate::dtype::Constant::idx(values[x]?),
+                        crate::dtype::Constant::idx(values[y]?),
+                        *bop,
+                    )
+                    .as_dim()?,
+                ),
+                Op::Loop { len } => values[len],
+                &Op::Index { kind, .. } => match kind {
+                    IdxKind::Group(len) => values[&len],
+                    IdxKind::Local(len) => Some(len as Dim),
+                    IdxKind::Warp(len) => Some(len as Dim),
+                },
+                // Param is dynamic
+                Op::Param { .. } => None,
+                _ => todo!(),
+            };
+            values.insert(id, v);
+        }
+        values[&op_id]
     }
 
     /// Remap slab indices from x to y
@@ -1290,10 +1452,14 @@ impl Kernel {
         // Walk 1: from root_op
         let mut root_required = Set::default();
         let mut stack = vec![root_op];
-        while let Some(op) = stack.pop() {
+        for _ in 0..10_000 {
+            let Some(op) = stack.pop() else { break };
             if root_required.insert(op) {
                 stack.extend(self.at(op).parameters());
             }
+        }
+        if !stack.is_empty() {
+            panic!("extract_subkernel did not finish in 10000 steps");
         }
 
         // Walk 2: from other outputs
@@ -1302,10 +1468,14 @@ impl Kernel {
         for &out in all_outputs {
             stack.push(out);
         }
-        while let Some(op) = stack.pop() {
+        for _ in 0..10_000 {
+            let Some(op) = stack.pop() else { break };
             if other_required.insert(op) {
                 stack.extend(self.at(op).parameters());
             }
+        }
+        if !stack.is_empty() {
+            panic!("extract_subkernel did not finish in 10000 steps");
         }
 
         // Partition loads: for each kernel Param (Global/Variable), dispatch to
@@ -1316,7 +1486,10 @@ impl Kernel {
         let mut new_loads: Vec<T> = Vec::new();
         let mut load_idx = 0;
         let mut oid = self.head;
-        while !oid.is_null() {
+        for _ in 0..10_000 {
+            if oid.is_null() {
+                break;
+            }
             match self.at(oid) {
                 // Global and Variable Params are loads; GlobalMut is a store and
                 // is not part of the loads list.
@@ -1337,6 +1510,9 @@ impl Kernel {
             }
             oid = self.next_op(oid);
         }
+        if !oid.is_null() {
+            panic!("extract_subkernel did not finish in 10000 steps");
+        }
 
         // Build new kernel by cloning root's ops (in topo order) with remapped OpIds
         let mut new_kernel = Kernel::new(self.device_id);
@@ -1344,7 +1520,10 @@ impl Kernel {
             Map::with_capacity_and_hasher(root_required.len(), core::hash::BuildHasherDefault::default());
         let mut new_root_op = OpId::NULL;
         let mut old_id = self.head;
-        while !old_id.is_null() {
+        for _ in 0..10_000 {
+            if old_id.is_null() {
+                break;
+            }
             if root_required.contains(&old_id) {
                 let mut op = self.at(old_id).clone();
                 op.remap_params(&remap);
@@ -1356,16 +1535,25 @@ impl Kernel {
             }
             old_id = self.next_op(old_id);
         }
+        if !old_id.is_null() {
+            panic!("extract_subkernel did not finish in 10000 steps");
+        }
 
         // Remove from self ops not needed by other outputs: they were only
         // kept alive by root, which has moved to the new kernel.
         let mut old_id = self.head;
-        while !old_id.is_null() {
+        for _ in 0..10_000 {
+            if old_id.is_null() {
+                break;
+            }
             let next = self.next_op(old_id);
             if !other_required.contains(&old_id) {
                 self.remove_op(old_id);
             }
             old_id = next;
+        }
+        if !old_id.is_null() {
+            panic!("extract_subkernel did not finish in 10000 steps");
         }
 
         (new_kernel, new_root_op, self_loads, new_loads)
@@ -1413,18 +1601,25 @@ impl Kernel {
     pub(crate) fn is_preceded_by_reduce(&self, x: OpId) -> bool {
         //if self.ops.values().filter(|node| matches!(node.op, Op::Reduce { .. })).count() > 1 { return true; }
         let mut params = vec![x];
-        while let Some(param) = params.pop() {
+        let mut found = false;
+        for _ in 0..10_000 {
+            let Some(param) = params.pop() else { break };
             if let &Op::Reduce { x, .. } = self.at(param) {
                 params = vec![x];
+                found = true;
                 break;
             }
             params.extend(self.ops[param].op.parameters());
+        }
+        if !found && !params.is_empty() {
+            panic!("is_preceded_by_reduce did not finish in 10000 steps");
         }
         //if params.is_empty() { return false; }
         //println!("Found reduce at {params:?}");
         // If there is a load (non constant reduce) or multiple reduces, return true
         let mut seen: Set<OpId> = Set::default();
-        while let Some(param) = params.pop() {
+        for _ in 0..10_000 {
+            let Some(param) = params.pop() else { break };
             if !seen.insert(param) {
                 continue;
             }
@@ -1433,6 +1628,9 @@ impl Kernel {
             }
             params.extend(self.ops[param].op.parameters());
         }
+        if !params.is_empty() {
+            panic!("is_preceded_by_reduce did not finish in 10000 steps");
+        }
         false
     }
 
@@ -1440,7 +1638,8 @@ impl Kernel {
         let mut params = vec![x];
         let mut seen: Set<OpId> = Set::default();
         let (mut has_compute, mut has_storage) = (false, false);
-        while let Some(param) = params.pop() {
+        for _ in 0..10_000 {
+            let Some(param) = params.pop() else { break };
             if !seen.insert(param) {
                 continue;
             }
@@ -1453,6 +1652,9 @@ impl Kernel {
                 Op::Const(_) => {}
                 _ => params.extend(self.ops[param].op.parameters()),
             }
+        }
+        if !params.is_empty() {
+            panic!("is_preceded_by_compute did not finish in 10000 steps");
         }
         has_compute && has_storage
     }

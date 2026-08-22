@@ -115,11 +115,17 @@ impl Kernel {
         let global_params: Vec<(DType, ParamKind)> = {
             let mut params = Vec::new();
             let mut op_id = self.head;
-            while !op_id.is_null() {
+            for _ in 0..10_000 {
+                if op_id.is_null() {
+                    break;
+                }
                 if let Op::Param { dtype, kind, .. } = self.ops[op_id].op {
                     params.push((dtype, kind));
                 }
                 op_id = self.next_op(op_id);
+            }
+            if !op_id.is_null() {
+                panic!("linearize did not finish in 10000 steps");
             }
             params
         };
@@ -142,7 +148,10 @@ impl Kernel {
         let mut rw_params: Vec<OpId> = Vec::new();
         {
             let mut op_id = self.head;
-            while !op_id.is_null() {
+            for _ in 0..10_000 {
+                if op_id.is_null() {
+                    break;
+                }
                 if let Op::Param { kind, .. } = self.ops[op_id].op {
                     match kind {
                         ParamKind::Variable | ParamKind::Global => ro_params.push(op_id),
@@ -150,6 +159,9 @@ impl Kernel {
                     }
                 }
                 op_id = self.next_op(op_id);
+            }
+            if !op_id.is_null() {
+                panic!("linearize did not finish in 10000 steps");
             }
         }
         self.toposort(&ro_params, &rw_params);
@@ -159,7 +171,10 @@ impl Kernel {
         debug_assert!({
             let mut params = Vec::new();
             let mut op_id = self.head;
-            while !op_id.is_null() {
+            for _ in 0..10_000 {
+                if op_id.is_null() {
+                    break;
+                }
                 if let Op::Param { dtype, kind, .. } = self.ops[op_id].op {
                     params.push((dtype, kind));
                 }
@@ -199,7 +214,10 @@ impl Kernel {
             let mut canonical: Map<u32, OpId> = Map::default();
             let mut lengths: Map<u32, Dim> = Map::default();
             let mut op_id = self.head;
-            while !op_id.is_null() {
+            for _ in 0..10_000 {
+                if op_id.is_null() {
+                    break;
+                }
                 let next = self.next_op(op_id);
                 if let Op::Index { axis, kind: IdxKind::Group(len) } = self.ops[op_id].op {
                     let len_dim = self.resolve_dim(len).unwrap_or(u64::MAX);
@@ -214,13 +232,21 @@ impl Kernel {
                 }
                 op_id = next;
             }
+            if !op_id.is_null() {
+                panic!("linearize did not finish in 10000 steps");
+            }
         }
 
         self.common_subexpression_elimination();
         self.dead_code_elimination();
-        self.debug();
     }
 
+    /// Inserts index arithmetic (views, strides, pads, bounds checks) for
+    /// every op. Runs after phase 1: from here on shapes are not parameters
+    /// of ops anymore — at the end of `add_indexing` every `Param { shape }`
+    /// is set to null, because indexing replaces explicit shape stacks and
+    /// they are not needed anymore. Operand dtypes may also be inconsistent
+    /// at this point; `autocast_scalars` resolves them later.
     fn add_indexing(&mut self) {
         // Shared zero/one index constants used throughout the handlers, hoisted
         // once so every branch reuses them instead of inserting fresh constants.
@@ -245,28 +271,44 @@ impl Kernel {
         // (their views are never seeded, and touching them would panic).
         let mut roots: Vec<OpId> = Vec::new();
         let mut op_id = self.head;
-        while !op_id.is_null() {
+        for _ in 0..10_000 {
+            if op_id.is_null() {
+                break;
+            }
             if matches!(self.ops[op_id].op, Op::Store { .. }) {
                 roots.push(op_id);
             }
             op_id = self.next_op(op_id);
         }
+        if !op_id.is_null() {
+            panic!("add_indexing did not finish in 10000 steps");
+        }
         let mut reachable = Set::default();
         let mut pending = roots;
-        while let Some(op_id) = pending.pop() {
+        for _ in 0..10_000 {
+            let Some(op_id) = pending.pop() else { break };
             if self.ops.contains_id(op_id) {
                 if reachable.insert(op_id) {
                     pending.extend(self.at(op_id).parameters());
                 }
             }
         }
+        if !pending.is_empty() {
+            panic!("add_indexing did not finish in 10000 steps");
+        }
         let mut op_ids: Vec<OpId> = Vec::new();
         let mut op_id = self.head;
-        while !op_id.is_null() {
+        for _ in 0..10_000 {
+            if op_id.is_null() {
+                break;
+            }
             if reachable.contains(&op_id) {
                 op_ids.push(op_id);
             }
             op_id = self.next_op(op_id);
+        }
+        if !op_id.is_null() {
+            panic!("add_indexing did not finish in 10000 steps");
         }
         // Phase 1: unfold movement ops (reshape/narrow/...) into index
         // arithmetic, converting LoadView/StoreView/ConstView into Load/Store/
@@ -389,8 +431,12 @@ impl Kernel {
                     // the dst Param's `shape`), with the group-index/stride scaffolding
                     // inserted before `start`.
                     let mut dst_param = dst;
-                    while let Op::Move { x, .. } = self.ops[dst_param].op {
+                    for _ in 0..10_000 {
+                        let Op::Move { x, .. } = self.ops[dst_param].op else { break };
                         dst_param = x;
+                    }
+                    if matches!(self.ops[dst_param].op, Op::Move { .. }) {
+                        panic!("add_indexing store dst chain did not finish in 10000 steps");
                     }
                     let dst_param_op = &self.ops[dst_param].op;
                     assert!(
@@ -405,7 +451,7 @@ impl Kernel {
                         "store dst chain terminates at Param {dst_param:?}, which is already a store destination"
                     );
                     self.ops[op_id].op = Op::Store { dst, src, index: OpId::NULL, layout: MemLayout::Scalar };
-                    let dims = self.shape_ids(dst_shape);
+                    let dims = self.shape_ids(dst_param);
                     let mut view = Vec::new();
                     for (axis, &len) in dims.iter().enumerate().rev() {
                         let idx = self.group_index(axis as u32, len);
@@ -429,7 +475,7 @@ impl Kernel {
                     // recomputed from the input shape, which includes the reduced
                     // axis). The reduced axis is the freshly-opened loop with the
                     // input's contiguous stride and zero padding.
-                    let x_shape = self.store_shape_ids(x);
+                    let x_shape = self.shape_ids(x);
                     let n = x_shape.len();
                     let non_reduce = out_view.len();
                     let mut view = Vec::with_capacity(n);
@@ -455,7 +501,7 @@ impl Kernel {
                             // into `d.idx` by the pad handlers, so no lp handling is needed
                             // here.
                             let out_view = views[&op_id].clone();
-                            let x_shape = self.store_shape_ids(x);
+                            let x_shape = self.shape_ids(x);
                             let n = x_shape.len();
                             let mut x_strides = vec![one; n];
                             let mut st = one;
@@ -512,8 +558,18 @@ impl Kernel {
                             // broadcast_axes/resolve). A dynamic dim resolves to None
                             // and is treated as non-broadcast (identity), the safe
                             // default. No concrete shape() lookup is required.
-                            let x_shape = self.store_shape_ids(x);
-                            let shape = self.shape_ids(shape);
+                            let x_shape = self.shape_ids(x);
+                            let shape = match &self.ops[op_id].op {
+                                Op::Move { mop, .. } => match mop.as_ref() {
+                                    MoveOp::Reshape { shape, .. } | MoveOp::Expand { shape } => match &self.ops[*shape].op {
+                                        Op::Stack { ops } => ops.to_vec(),
+                                        Op::Const(_) => vec![*shape],
+                                        op => todo!("invalid shape descriptor {op:?}"),
+                                    },
+                                    _ => unreachable!(),
+                                },
+                                _ => unreachable!(),
+                            };
                             // New leading axes are prepended broadcasts; the input axes
                             // align to the tail of the output shape. A broadcast input
                             // axis reads a single constant element (index 0 over an
@@ -586,7 +642,7 @@ impl Kernel {
                             let d = view[axis].clone();
                             let idx = self.sub(d.idx, lp);
                             let orig = {
-                                let dims = self.store_shape_ids(x);
+                                let dims = self.shape_ids(x);
                                 dims[axis as usize]
                             };
                             let rp = self.sub(len, lp);
@@ -597,7 +653,7 @@ impl Kernel {
                             views.insert(x, view);
                         }
                         &MoveOp::Narrow { axis, start, .. } => {
-                            let x_shape = self.store_shape_ids(x);
+                            let x_shape = self.shape_ids(x);
                             let view = views[&op_id].clone();
                             // Pure backward narrow: the input coordinate along the
                             // narrowed axis is `start + out_idx`, and the axis length
@@ -699,12 +755,16 @@ impl Kernel {
             // chain is dead and removed.
             let mut reachable = Set::default();
             let mut pending = roots;
-            while let Some(op_id) = pending.pop() {
+            for _ in 0..10_000 {
+                let Some(op_id) = pending.pop() else { break };
                 if self.ops.contains_id(op_id) {
                     if reachable.insert(op_id) {
                         pending.extend(self.at(op_id).parameters());
                     }
                 }
+            }
+            if !pending.is_empty() {
+                panic!("toposort did not finish in 10000 steps");
             }
 
             for op_id in self.ops.ids().collect::<Vec<_>>() {
@@ -716,11 +776,17 @@ impl Kernel {
             // Get reduce ids in sorted order, from innermost to outermost
             let mut reduce_ids: Vec<OpId> = Vec::new();
             let mut op_id = self.head;
-            while !op_id.is_null() {
+            for _ in 0..10_000 {
+                if op_id.is_null() {
+                    break;
+                }
                 if matches!(self.ops[op_id].op, Op::Reduce { .. }) {
                     reduce_ids.push(op_id);
                 }
                 op_id = self.next_op(op_id);
+            }
+            if !op_id.is_null() {
+                panic!("toposort did not finish in 10000 steps");
             }
 
             let mut region_depth: Map<OpId, u32> = reachable.iter().map(|&x| (x, 0)).collect();
@@ -733,7 +799,8 @@ impl Kernel {
                 // Backward
                 let mut stack = vec![x];
                 let mut descendants: Map<OpId, Set<OpId>> = Map::default();
-                while let Some(parent) = stack.pop() {
+                for _ in 0..10_000 {
+                    let Some(parent) = stack.pop() else { break };
                     if reachable.contains(&parent) {
                         for child in self.ops[parent].op.parameters() {
                             if let Some(parents) = descendants.get_mut(&child) {
@@ -745,15 +812,22 @@ impl Kernel {
                         }
                     }
                 }
+                if !stack.is_empty() {
+                    panic!("toposort did not finish in 100000 steps");
+                }
                 // Forward
                 let mut stack = vec![reduce_axis];
                 let mut visited: Set<OpId> = Set::default();
-                while let Some(child) = stack.pop() {
+                for _ in 0..10_000 {
+                    let Some(child) = stack.pop() else { break };
                     if visited.insert(child) {
                         if let Some(parents) = descendants.get(&child) {
                             stack.extend(parents);
                         }
                     }
+                }
+                if !stack.is_empty() {
+                    panic!("toposort did not finish in 100000 steps");
                 }
                 for x in visited {
                     *region_depth.get_mut(&x).unwrap() += n;
@@ -798,7 +872,8 @@ impl Kernel {
                 }
             }
             let mut order = Vec::new();
-            while let Some((_, op_id)) = heap.pop() {
+            for _ in 0..10_000 {
+                let Some((_, op_id)) = heap.pop() else { break };
                 order.push(op_id);
                 for p in self.at(op_id).parameters() {
                     if p.is_null() {
@@ -811,7 +886,23 @@ impl Kernel {
                     }
                 }
             }
-            assert!(order.len() == reachable.len(), "linearize dependency ordering contains a cycle or missing operation");
+            if !heap.is_empty() {
+                panic!("toposort did not finish in 10000 steps");
+            }
+            if order.len() != reachable.len() {
+                let placed: Set<OpId> = order.iter().copied().collect();
+                for &op_id in &reachable {
+                    if !placed.contains(&op_id) {
+                        eprintln!("STUCK op {op_id:?}: {:?}", self.ops[op_id].op);
+                        for p in self.at(op_id).parameters() {
+                            if !p.is_null() {
+                                eprintln!("  param {p:?}: out_degree={:?}", out_degree.get(&p));
+                            }
+                        }
+                    }
+                }
+                panic!("linearize dependency ordering contains a cycle or missing operation");
+            }
             order.reverse();
 
             // Move the params to the front: read-only (Variable + Global) first,
@@ -846,9 +937,15 @@ impl Kernel {
         let ops: Vec<OpId> = {
             let mut v = Vec::new();
             let mut op_id = self.head;
-            while !op_id.is_null() {
+            for _ in 0..10_000 {
+                if op_id.is_null() {
+                    break;
+                }
                 v.push(op_id);
                 op_id = self.next_op(op_id);
+            }
+            if !op_id.is_null() {
+                panic!("autocast_scalars did not finish in 10000 steps");
             }
             v
         };

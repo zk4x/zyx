@@ -432,7 +432,10 @@ impl Tensor {
         // TODO remove realization from here
         let dims: Vec<Tensor> = self.shape().iter().map(|&d| Tensor::from(d)).collect();
         let shape = if dims.is_empty() { None } else { Some(Tensor::stack(&dims)?) };
-        let shape_id = match &shape { Some(s) => s.id, None => TensorId::NULL };
+        let shape_id = match &shape {
+            Some(s) => s.id,
+            None => TensorId::NULL,
+        };
         let id = match self.dtype() {
             DType::BF16 => {
                 let data: Vec<bf16> = self.try_into()?;
@@ -515,7 +518,11 @@ impl Tensor {
     #[allow(clippy::missing_panics_doc, reason = "all panics are checked ahead")]
     pub fn rand(shape: impl IntoIterator<Item = impl Into<Tensor>>, dtype: DType) -> Result<Tensor, ZyxError> {
         let tensors: Vec<Tensor> = shape.into_iter().map(|x| x.into()).collect();
-        let shape = if tensors.is_empty() { None } else { Some(Tensor::stack(&tensors)?) };
+        let shape = if tensors.is_empty() {
+            None
+        } else {
+            Some(Tensor::stack(&tensors)?)
+        };
         {
             let mut rt = RT.lock();
             let n: Dim = match &shape {
@@ -634,7 +641,10 @@ impl Tensor {
     /// Start of the range must be less than the end of the range.
     /// # Errors
     /// Returns device error if the device fails to allocate memory for tensor.
-    pub fn uniform<T: Scalar>(shape: impl IntoIterator<Item = impl Into<Tensor>>, range: impl core::ops::RangeBounds<T>) -> Result<Tensor, ZyxError> {
+    pub fn uniform<T: Scalar>(
+        shape: impl IntoIterator<Item = impl Into<Tensor>>,
+        range: impl core::ops::RangeBounds<T>,
+    ) -> Result<Tensor, ZyxError> {
         use core::ops::Bound;
         let low: f32 = match range.start_bound() {
             Bound::Included(value) | Bound::Excluded(value) => value.cast(),
@@ -650,7 +660,10 @@ impl Tensor {
     /// Create tensor of discrete uniform integers in range [low, high).
     /// # Errors
     /// Returns device error if the device fails to allocate memory for tensor.
-    pub fn randint<T: Scalar>(shape: impl IntoIterator<Item = impl Into<Tensor>>, range: impl core::ops::RangeBounds<T> + Clone) -> Result<Tensor, ZyxError> {
+    pub fn randint<T: Scalar>(
+        shape: impl IntoIterator<Item = impl Into<Tensor>>,
+        range: impl core::ops::RangeBounds<T> + Clone,
+    ) -> Result<Tensor, ZyxError> {
         let dims: Vec<Tensor> = shape.into_iter().map(Into::into).collect();
         let shape = Tensor::stack(&dims)?;
         let mut rt = RT.lock();
@@ -702,7 +715,11 @@ impl Tensor {
     #[must_use]
     pub fn zeros(shape: impl IntoIterator<Item = impl Into<Tensor>>, dtype: DType) -> Tensor {
         let dims: Vec<Tensor> = shape.into_iter().map(Into::into).collect();
-        let shape = if dims.is_empty() { None } else { Some(Tensor::stack(&dims).unwrap()) };
+        let shape = if dims.is_empty() {
+            None
+        } else {
+            Some(Tensor::stack(&dims).unwrap())
+        };
         let id = {
             let mut rt = RT.lock();
             let shape_id = shape.as_ref().map(|s| s.id).unwrap_or(TensorId::NULL);
@@ -722,7 +739,11 @@ impl Tensor {
     #[must_use]
     pub fn ones(shape: impl IntoIterator<Item = impl Into<Tensor>>, dtype: DType) -> Tensor {
         let dims: Vec<Tensor> = shape.into_iter().map(Into::into).collect();
-        let shape = if dims.is_empty() { None } else { Some(Tensor::stack(&dims).unwrap()) };
+        let shape = if dims.is_empty() {
+            None
+        } else {
+            Some(Tensor::stack(&dims).unwrap())
+        };
         let id = {
             let mut rt = RT.lock();
             let shape_id = shape.as_ref().map(|s| s.id).unwrap_or(TensorId::NULL);
@@ -744,7 +765,11 @@ impl Tensor {
     #[allow(clippy::missing_panics_doc)]
     pub fn full(shape: impl IntoIterator<Item = impl Into<Tensor>>, value: impl Scalar) -> Tensor {
         let dims: Vec<Tensor> = shape.into_iter().map(Into::into).collect();
-        let shape = if dims.is_empty() { None } else { Some(Tensor::stack(&dims).unwrap()) };
+        let shape = if dims.is_empty() {
+            None
+        } else {
+            Some(Tensor::stack(&dims).unwrap())
+        };
         let id = {
             let mut rt = RT.lock();
             let shape_id = shape.as_ref().map(|s| s.id).unwrap_or(TensorId::NULL);
@@ -1128,9 +1153,7 @@ impl Tensor {
         let orig = shape[axis as usize] as i64;
         let removed = (if l < 0 { -l } else { 0 }) + (if r < 0 { -r } else { 0 });
         if orig + l + r < 0 || removed >= orig {
-            return Err(ZyxError::shape_error(
-                format!("Invalid padding left={l}, right={r} on dimension size {orig}").into(),
-            ));
+            return Err(ZyxError::shape_error(format!("Invalid padding left={l}, right={r} on dimension size {orig}").into()));
         }
         let lp = Tensor::from(l);
         let len = Tensor::from((orig + l + r) as u32);
@@ -1333,7 +1356,6 @@ impl Tensor {
                 .into(),
             ));
         }*/
-
     }
 
     /// Transpose (swap) the last two dimensions of this tensor.
@@ -3517,7 +3539,13 @@ impl<T: Scalar, const D0: usize, const D1: usize, const D2: usize> From<[[[T; D2
 impl<T: Scalar, const D0: usize, const D1: usize, const D2: usize, const D3: usize> From<[[[[T; D3]; D2]; D1]; D0]> for Tensor {
     fn from(data: [[[[T; D3]; D2]; D1]; D0]) -> Self {
         let data = unsafe { core::slice::from_raw_parts(data[0][0][0].as_ptr(), D0 * D1 * D2 * D3) };
-        let shape = Tensor::stack(&[Tensor::from(D0 as Dim), Tensor::from(D1 as Dim), Tensor::from(D2 as Dim), Tensor::from(D3 as Dim)]).unwrap();
+        let shape = Tensor::stack(&[
+            Tensor::from(D0 as Dim),
+            Tensor::from(D1 as Dim),
+            Tensor::from(D2 as Dim),
+            Tensor::from(D3 as Dim),
+        ])
+        .unwrap();
         Tensor { id: RT.lock().new_host_tensor(shape.id, Box::from(data)).unwrap() }
     }
 }

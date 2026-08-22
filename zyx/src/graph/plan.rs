@@ -89,15 +89,19 @@ impl ExecPlan {
         fn alloc_spec(graph: &Graph, class: ClassId) -> (Dim, Dim, Vec<ClassId>) {
             fn dim_value(graph: &Graph, dim: ClassId, dynamic_dims: &mut Vec<ClassId>) -> Option<Dim> {
                 match &graph.nodes[graph.classes[dim].nodes[0]].node {
-                    Node::Const { value: c, .. } => Some(c.as_dim().unwrap_or_else(|| panic!("dim class {dim:?} is not a constant"))),
+                    Node::Const { value: c, .. } => {
+                        Some(c.as_dim().unwrap_or_else(|| panic!("dim class {dim:?} is not a constant")))
+                    }
                     Node::Leaf { .. } => {
                         dynamic_dims.push(dim);
                         None
                     }
-                    Node::Binary { x, y, bop: BOp::Add } => match (dim_value(graph, *x, dynamic_dims), dim_value(graph, *y, dynamic_dims)) {
-                        (Some(a), Some(b)) => Some(a + b),
-                        _ => None,
-                    },
+                    Node::Binary { x, y, bop: BOp::Add } => {
+                        match (dim_value(graph, *x, dynamic_dims), dim_value(graph, *y, dynamic_dims)) {
+                            (Some(a), Some(b)) => Some(a + b),
+                            _ => None,
+                        }
+                    }
                     op => todo!("alloc_spec: computed dim class {dim:?} via {op:?}"),
                 }
             }

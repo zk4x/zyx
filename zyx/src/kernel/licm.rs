@@ -63,9 +63,13 @@ impl Kernel {
                     loop_dep[&x].max(loop_dep[&y])
                 }
                 Op::Mad { x, y, z } => loop_dep[&x].max(loop_dep[&y]).max(loop_dep[&z]),
-                Op::Param { .. } | Op::Barrier | Op::Index { .. } | Op::Load { .. } | Op::Store { .. } | Op::Const(_) | Op::Storage { .. } => {
-                    loop_depth
-                }
+                Op::Param { .. }
+                | Op::Barrier
+                | Op::Index { .. }
+                | Op::Load { .. }
+                | Op::Store { .. }
+                | Op::Const(_)
+                | Op::Storage { .. } => loop_depth,
             };
             loop_dep.insert(op_id, depth);
             op_id = self.next_op(op_id);

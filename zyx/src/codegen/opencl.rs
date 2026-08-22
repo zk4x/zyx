@@ -20,7 +20,12 @@ impl Kernel {
     pub fn generate_opencl(&self, _device_info: &DeviceInfo, name: &str) -> Result<String, BackendError> {
         let mut global_args = String::new();
         let mut op_id = self.head;
+        let mut steps_op_id = 0usize;
         while !op_id.is_null() {
+            steps_op_id += 1;
+            if steps_op_id > 10_000 {
+                panic!("generate_opencl did not finish in 10000 steps");
+            }
             let op = self.at(op_id);
             if let &Op::Param { dtype, kind, .. } = op {
                 match kind {
@@ -50,7 +55,12 @@ impl Kernel {
         let mut source = String::with_capacity(1000);
 
         let mut op_id = self.head;
+        let mut steps_op_id = 0usize;
         while !op_id.is_null() {
+            steps_op_id += 1;
+            if steps_op_id > 10_000 {
+                panic!("generate_opencl did not finish in 10000 steps");
+            }
             match self.ops[op_id].op {
                 Op::ReduceTile { .. }
                 | Op::MatmulTile { .. }
@@ -331,7 +341,11 @@ impl Kernel {
                 Op::Loop { len, .. } => {
                     indices.insert(op_id, loop_id);
                     let len = get_var(len, &constants, &indices, &reg_map, &mut registers, loop_id)?;
-                    _ = writeln!(source, "{indent}for ({idx_type} idx{loop_id} = 0; idx{loop_id} < {len}; ++idx{loop_id}) {{", idx_type = self.dtype(op_id).ocl());
+                    _ = writeln!(
+                        source,
+                        "{indent}for ({idx_type} idx{loop_id} = 0; idx{loop_id} < {len}; ++idx{loop_id}) {{",
+                        idx_type = self.dtype(op_id).ocl()
+                    );
                     indent += "  ";
                     loop_id += 1;
                 }

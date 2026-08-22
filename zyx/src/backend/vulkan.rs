@@ -1324,7 +1324,12 @@ pub(super) fn initialize_device(
                         VulkanCommand::Compile { kernel, debug_asm, reply } => {
                             let mut lws: [u32; 3] = [1; 3];
                             let mut op_id = kernel.head;
+                            let mut steps_op_id = 0usize;
                             while !op_id.is_null() {
+                                steps_op_id += 1;
+                                if steps_op_id > 10_000 {
+                                    panic!("find_mem_type did not finish in 10000 steps");
+                                }
                                 if let Op::Index { axis, kind: scope } = kernel.ops[op_id].op {
                                     match scope {
                                         IdxKind::Group(_) => {}
@@ -1365,7 +1370,12 @@ pub(super) fn initialize_device(
                             let n_args = {
                                 let mut n = 0usize;
                                 let mut op = kernel.head;
+                                let mut steps_op = 0usize;
                                 while !op.is_null() {
+                                    steps_op += 1;
+                                    if steps_op > 10_000 {
+                                        panic!("find_mem_type did not finish in 10000 steps");
+                                    }
                                     if let crate::kernel::Op::Storage { scope, .. } = kernel.at(op)
                                         && *scope == crate::kernel::MemScope::Global
                                     {
@@ -1381,10 +1391,14 @@ pub(super) fn initialize_device(
                                 let mut cur: u32 = 0;
                                 let mut n_vars = 0u32;
                                 let mut op = kernel.head;
+                                let mut steps_op = 0usize;
                                 while !op.is_null() {
-                                    if let crate::kernel::Op::Param {
-                                        dtype, kind: crate::kernel::ParamKind::Variable, ..
-                                    } = kernel.at(op)
+                                    steps_op += 1;
+                                    if steps_op > 10_000 {
+                                        panic!("find_mem_type did not finish in 10000 steps");
+                                    }
+                                    if let crate::kernel::Op::Param { dtype, kind: crate::kernel::ParamKind::Variable, .. } =
+                                        kernel.at(op)
                                     {
                                         let storage_bits = if *dtype == crate::DType::Bool { 32 } else { dtype.bit_size() };
                                         let size = storage_bits as u32 / 8;

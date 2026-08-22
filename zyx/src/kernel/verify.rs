@@ -71,10 +71,7 @@ impl Kernel {
         // Verify param/storage ordering: global params (RO) → GlobalMut params → local storages → everything else.
         // Only meaningful post-linearization; skipped for pre-linearize DAGs.
         if null_index_stores == 0 {
-            debug_assert!(
-                !has_move_or_reduce,
-                "post-linearize kernel must not contain Move/Reduce ops"
-            );
+            debug_assert!(!has_move_or_reduce, "post-linearize kernel must not contain Move/Reduce ops");
             #[derive(PartialEq, Eq)]
             enum Phase {
                 GlobalRo,
@@ -126,10 +123,7 @@ impl Kernel {
             }
         } else {
             // Pre-linearize DAG: no lowered memory/control ops may exist.
-            debug_assert!(
-                !has_post_linearize_ops,
-                "pre-linearize kernel must not contain Load/Storage/Index/Loop ops"
-            );
+            debug_assert!(!has_post_linearize_ops, "pre-linearize kernel must not contain Load/Storage/Index/Loop ops");
         }
 
         let mut stack = Vec::new();

@@ -1,7 +1,7 @@
 // Copyright (C) 2025 zk4x
 // SPDX-License-Identifier: LGPL-3.0-only
 
-use super::{gws_from_kernel, BackendError, Device, DeviceId, DeviceInfo, ErrorStatus, Event, GwsDim, MemoryPool, PoolId};
+use super::{BackendError, Device, DeviceId, DeviceInfo, ErrorStatus, Event, GwsDim, MemoryPool, PoolId, gws_from_kernel};
 use crate::{
     DType,
     backend::{DTypeCapability, DeviceProgramId, PoolBufferId},
@@ -399,7 +399,12 @@ impl WGPUDevice {
     pub fn compile(&mut self, kernel: &Kernel, debug_asm: bool) -> Result<DeviceProgramId, BackendError> {
         let mut lws = [Dim::from(1u64); 3];
         let mut op_id = kernel.head;
+        let mut steps_op_id = 0usize;
         while !op_id.is_null() {
+            steps_op_id += 1;
+            if steps_op_id > 10_000 {
+                panic!("compile did not finish in 10000 steps");
+            }
             if let Op::Index { axis, kind: scope } = kernel.ops[op_id].op {
                 match scope {
                     IdxKind::Group(_) => {}
@@ -421,15 +426,17 @@ impl WGPUDevice {
             return Err(BackendError { status: ErrorStatus::KernelCompilation, context: "Invalid local work size.".into() });
         }
 
-        let name = format!(
-            "k_{}",
-            lws.iter().map(ToString::to_string).collect::<Vec<_>>().join("_"),
-        );
+        let name = format!("k_{}", lws.iter().map(ToString::to_string).collect::<Vec<_>>().join("_"),);
 
         // Read only flags
         let mut arg_ro_flags = Vec::new();
         let mut op_id = kernel.head;
+        let mut steps_op_id = 0usize;
         while !op_id.is_null() {
+            steps_op_id += 1;
+            if steps_op_id > 10_000 {
+                panic!("compile did not finish in 10000 steps");
+            }
             if let &Op::Define { dtype: _, scope, ro, len: _ } = kernel.at(op_id)
                 && scope == MemScope::Global
             {

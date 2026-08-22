@@ -1129,11 +1129,7 @@ impl Graph {
             // → rank 0.
             Node::Binary { x, y, .. } => {
                 let sx = self.shape(*x);
-                if !sx.is_empty() {
-                    sx
-                } else {
-                    self.shape(*y)
-                }
+                if !sx.is_empty() { sx } else { self.shape(*y) }
             }
             Node::Reduce { x, axes, .. } => {
                 let s = self.shape(*x);
@@ -1229,9 +1225,7 @@ impl Runtime {
             for entry in dim_entries {
                 dim_classes.push(match self.kernels[kernel_id].kernel.ops[entry].op {
                     Op::Const(c) => self.push_const(graph_id, c),
-                    Op::Param { kind: ParamKind::Variable, .. } => {
-                        self.push_leaf_node(graph_id, IDX_T, ClassId::NULL).1
-                    }
+                    Op::Param { kind: ParamKind::Variable, .. } => self.push_leaf_node(graph_id, IDX_T, ClassId::NULL).1,
                     ref op => unreachable!("promote_to_graph: dim op {op:?} in param shape stack"),
                 });
             }
@@ -1686,9 +1680,7 @@ impl Runtime {
             .into_iter()
             .map(|c| match c {
                 Some(c) => self.kernels[kernel_id].kernel.push_back(Op::Const(c)),
-                None => self.kernels[kernel_id]
-                    .kernel
-                    .param(crate::kernel::IDX_T, ParamKind::Variable, OpId::NULL),
+                None => self.kernels[kernel_id].kernel.param(crate::kernel::IDX_T, ParamKind::Variable, OpId::NULL),
             })
             .collect();
         let shape = match dim_ops.len() {
@@ -1790,12 +1782,7 @@ impl Runtime {
             Node::Expand { .. } => { /* shape dims not yet resolved (Stack). Re-enable once shape() resolves Stack. */ }
             Node::Pad { x, axis, .. } => {
                 let in_rank = self.graphs[graph_id].rank(x);
-                assert!(
-                    axis < in_rank,
-                    "Pad: axis {} out of range for input rank {}",
-                    axis,
-                    in_rank
-                );
+                assert!(axis < in_rank, "Pad: axis {} out of range for input rank {}", axis, in_rank);
             }
             _ => {}
         }

@@ -229,10 +229,8 @@ impl Kernel {
             if src_to_local.contains_key(&src) {
                 continue;
             }
-            let local = self.insert_after(
-                last_global,
-                Op::Storage { dtype: self.dtype(src), scope: MemScope::Circular, len: 1024 },
-            );
+            let local =
+                self.insert_after(last_global, Op::Storage { dtype: self.dtype(src), scope: MemScope::Circular, len: 1024 });
             last_global = local;
             src_to_local.insert(src, local);
         }
@@ -286,10 +284,8 @@ impl Kernel {
             if dst_to_local.contains_key(&dst) {
                 continue;
             }
-            let local = self.insert_after(
-                last_local,
-                Op::Storage { dtype: self.dtype(dst), scope: MemScope::Circular, len: 1024 },
-            );
+            let local =
+                self.insert_after(last_local, Op::Storage { dtype: self.dtype(dst), scope: MemScope::Circular, len: 1024 });
             last_local = local;
             dst_to_local.insert(dst, local);
         }
@@ -360,7 +356,8 @@ impl Kernel {
         let set1 = gather_deps(self, &stores1);
         let set2 = gather_deps(self, &stores2);
 
-        let is_sticky = |k: &Kernel, id: OpId| -> bool { matches!(k.ops[id].op, Op::Storage { .. } | Op::Const(_) | Op::Barrier) };
+        let is_sticky =
+            |k: &Kernel, id: OpId| -> bool { matches!(k.ops[id].op, Op::Storage { .. } | Op::Const(_) | Op::Barrier) };
 
         let mut order_rev = Vec::new();
         let mut op_id = self.tail;
@@ -638,10 +635,7 @@ impl Kernel {
             if src_to_cb.contains_key(&src) {
                 continue;
             }
-            let cb = self.insert_after(
-                last_global,
-                Op::Storage { dtype: self.dtype(src), scope: MemScope::Circular, len: 1024 },
-            );
+            let cb = self.insert_after(last_global, Op::Storage { dtype: self.dtype(src), scope: MemScope::Circular, len: 1024 });
             last_global = cb;
             src_to_cb.insert(src, cb);
         }

@@ -147,8 +147,10 @@ impl Kernel {
                         use crate::shape::Dim;
 
                         match kind {
-                            IdxKind::Group(len) => if let Some(l) = self.resolve_dim(len) {
-                                debug_assert_eq!(l, dim);
+                            IdxKind::Group(len) => {
+                                if let Some(l) = self.resolve_dim(len) {
+                                    debug_assert_eq!(l, dim);
+                                }
                             }
                             IdxKind::Local(l) => debug_assert_eq!(l as Dim, dim),
                             IdxKind::Warp(l) => debug_assert_eq!(l as Dim, dim),

@@ -521,11 +521,7 @@ impl Op {
             Op::ReduceTile { x, .. } => vec![x],
             Op::Store { dst, src: x, index, .. } => {
                 // Pre-linearize stores carry a NULL index (whole-view write).
-                if index.is_null() {
-                    vec![dst, x]
-                } else {
-                    vec![dst, x, index]
-                }
+                if index.is_null() { vec![dst, x] } else { vec![dst, x, index] }
             }
             Op::Cast { x, .. } => vec![x],
             Op::Unary { x, .. } => vec![x],

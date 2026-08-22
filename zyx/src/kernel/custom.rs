@@ -24,8 +24,7 @@ use crate::dtype::Constant;
 use crate::error::BackendError;
 use crate::graph::{ClassId, GraphId};
 use crate::kernel::{
-    BOp, DeviceId, IdxKind, IDX_T, Kernel, MMADType, MMADims, MMALayout, MemLayout, MemScope, MoveOp, Op, OpId,
-    ParamKind, UOp,
+    BOp, DeviceId, IDX_T, IdxKind, Kernel, MMADType, MMADims, MMALayout, MemLayout, MemScope, MoveOp, Op, OpId, ParamKind, UOp,
 };
 use crate::runtime::{KernelData, KernelId, TensorData};
 use crate::shape::UAxis;

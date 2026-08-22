@@ -9,7 +9,7 @@
 #![allow(non_camel_case_types)]
 #![allow(unused)]
 
-use super::{gws_from_kernel, DTypeCapability, Device, DeviceInfo, GwsDim, MemoryPool};
+use super::{DTypeCapability, Device, DeviceInfo, GwsDim, MemoryPool, gws_from_kernel};
 use crate::DType;
 use crate::backend::{DeviceId, DeviceProgramId, Event, PoolBufferId, PoolId};
 use crate::dtype::Constant;

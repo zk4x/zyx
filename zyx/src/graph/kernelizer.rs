@@ -237,29 +237,24 @@ impl Graph {
                         // Single permute: non-reduced axes first, reduced axes
                         // trailing (order preserved), so each reduce in the
                         // sequence below sees its axis last.
-                        let perm: Vec<UAxis> =
-                            (0..rank).filter(|i| !axes.contains(i)).chain(axes.iter().copied()).collect();
+                        let perm: Vec<UAxis> = (0..rank).filter(|i| !axes.contains(i)).chain(axes.iter().copied()).collect();
                         if !perm.iter().copied().eq(0..rank) {
                             let kernel = &mut self.jit_kernels[kid].kernel;
-                            op_id = kernel.push_back(Op::Move {
-                                x: op_id,
-                                mop: Box::new(MoveOp::Permute { axes: perm.into() }),
-                            });
+                            op_id = kernel.push_back(Op::Move { x: op_id, mop: Box::new(MoveOp::Permute { axes: perm.into() }) });
                         }
                         // Sequence of single trailing-axis reduces.
                         for _ in 0..axes.len() {
                             let kernel = &mut self.jit_kernels[kid].kernel;
-                            let reduce_axis = kernel.reduce_shape_ids(op_id);
+                            let dims = kernel.shape_ids(op_id);
+                            debug_assert!(!dims.is_empty(), "reduce of scalar");
+                            let reduce_axis = *dims.last().unwrap();
                             op_id = kernel.push_back(Op::Reduce { x: op_id, rop, reduce_axis });
                         }
                         // All dims reduced: reshape the scalar to [1].
                         if axes.len() == rank {
                             let kernel = &mut self.jit_kernels[kid].kernel;
                             let shape_op = kernel.add_shape(&[1]);
-                            op_id = kernel.push_back(Op::Move {
-                                x: op_id,
-                                mop: Box::new(MoveOp::Reshape { shape: shape_op }),
-                            });
+                            op_id = kernel.push_back(Op::Move { x: op_id, mop: Box::new(MoveOp::Reshape { shape: shape_op }) });
                         }
                         self.consume(x, kid, &mut visited, &mut rcs);
                         self.push_outputs(kid, cid, rcs[&cid]);
@@ -447,10 +442,9 @@ impl Graph {
                         }
                         self.consume(x, kid, &mut visited, &mut rcs);
                         self.consume(shape, kid, &mut visited, &mut rcs);
-                        let result_op = self.jit_kernels[kid].kernel.push_back(Op::Move {
-                            x: op_id,
-                            mop: Box::new(MoveOp::Expand { shape: sop }),
-                        });
+                        let result_op = self.jit_kernels[kid]
+                            .kernel
+                            .push_back(Op::Move { x: op_id, mop: Box::new(MoveOp::Expand { shape: sop }) });
                         self.push_outputs(kid, cid, *rcs.get(&cid).unwrap());
                         visited.insert(cid, (kid, result_op));
                     }
@@ -478,10 +472,9 @@ impl Graph {
                         }
                         self.consume(x, kid, &mut visited, &mut rcs);
                         self.consume(shape, kid, &mut visited, &mut rcs);
-                        let result_op = self.jit_kernels[kid].kernel.push_back(Op::Move {
-                            x: op_id,
-                            mop: Box::new(MoveOp::Reshape { shape: sop }),
-                        });
+                        let result_op = self.jit_kernels[kid]
+                            .kernel
+                            .push_back(Op::Move { x: op_id, mop: Box::new(MoveOp::Reshape { shape: sop }) });
                         self.push_outputs(kid, cid, *rcs.get(&cid).unwrap());
                         visited.insert(cid, (kid, result_op));
                     }
@@ -544,11 +537,7 @@ impl Graph {
                         self.consume(x, kid, &mut visited, &mut rcs);
                         let result_op = self.jit_kernels[kid].kernel.push_back(Op::Move {
                             x: op_id,
-                            mop: Box::new(MoveOp::Narrow {
-                                axis,
-                                start: bounds[0].unwrap(),
-                                len: bounds[1].unwrap(),
-                            }),
+                            mop: Box::new(MoveOp::Narrow { axis, start: bounds[0].unwrap(), len: bounds[1].unwrap() }),
                         });
                         self.push_outputs(kid, cid, *rcs.get(&cid).unwrap());
                         visited.insert(cid, (kid, result_op));
@@ -699,49 +688,12 @@ impl Graph {
         panic!();*/
     }
 
-    /// Build a kernel-IR shape stack from a class's symbolic shape: const
-    /// dim classes become const indices, symbolic dim leaves become scalar
-    /// `Param { kind: Variable }` of `IDX_T`.
-    fn add_class_shape(&mut self, kid: JitKernelId, cid: ClassId) -> OpId {
-        let shape = self.shape(cid);
-        let consts: Vec<Option<crate::dtype::Constant>> = shape
-            .iter()
-            .map(|dim| match &self.nodes[self.classes[*dim].nodes[0]].node {
-                Node::Const { value: c, .. } => Some(*c),
-                _ => None,
-            })
-            .collect();
-        // Symbolic dims become scalar `Param { kind: Variable }` of IDX_T.
-        // `loads` stays parallel to all Global+Variable params in head order
-        // (see extract_subkernel), so each shape param appends its dim class.
-        let mut dim_loads: Vec<ClassId> = Vec::new();
-        let (dim_ops, stack) = {
-            let kernel = &mut self.jit_kernels[kid].kernel;
-            let dim_ops: Vec<OpId> = shape
-                .iter()
-                .zip(consts)
-                .map(|(dim, c)| match c {
-                    Some(c) => kernel.push_back(Op::Const(c)),
-                    None => {
-                        dim_loads.push(*dim);
-                        kernel.param(IDX_T, ParamKind::Variable, OpId::NULL)
-                    }
-                })
-                .collect();
-            let stack = match dim_ops.len() {
-                0 => OpId::NULL,
-                1 => dim_ops[0],
-                _ => kernel.stack(&dim_ops),
-            };
-            (dim_ops, stack)
-        };
-        self.jit_kernels[kid].loads.extend(dim_loads);
-        stack
-    }
-
     fn new_load_kernel(&mut self, cid: ClassId, rc: u32) -> (JitKernelId, OpId) {
         let mut kernel = Kernel::new(DeviceId::NULL);
-        let mut dim_loads: Vec<ClassId> = Vec::new();
+        // TODO: class dims are re-emitted here as const indices / scalar
+        // `Param { Variable }` of IDX_T. This is the unresolved part of the
+        // kernelizer shape story — the eager path takes shapes from the
+        // runtime cache instead. Revisit once the graph-side design settles.
         let shape = {
             let dims: Vec<ClassId> = self.shape(cid);
             let dim_consts: Vec<Option<crate::dtype::Constant>> = dims
@@ -751,17 +703,12 @@ impl Graph {
                     _ => None,
                 })
                 .collect();
-            // Shape params append their dim class to `loads` to keep it
-            // parallel to all Global+Variable params in head order.
             let dim_ops: Vec<OpId> = dims
                 .iter()
                 .zip(dim_consts)
-                .map(|(dim, c)| match c {
+                .map(|(_, c)| match c {
                     Some(c) => kernel.push_back(Op::Const(c)),
-                    None => {
-                        dim_loads.push(*dim);
-                        kernel.param(IDX_T, ParamKind::Variable, OpId::NULL)
-                    }
+                    None => kernel.param(IDX_T, ParamKind::Variable, OpId::NULL),
                 })
                 .collect();
             match dim_ops.len() {
@@ -771,11 +718,10 @@ impl Graph {
             }
         };
         let op_id = kernel.param(self.dtype(cid), ParamKind::Global, shape);
-        dim_loads.push(cid);
         let kid = self.jit_kernels.push(JitKernelData {
             kernel,
             outputs: vec![cid; rc as usize],
-            loads: dim_loads,
+            loads: vec![cid],
             stores: Vec::new(),
         });
         (kid, op_id)
@@ -795,8 +741,8 @@ impl Graph {
 
         if !self.jit_kernels[kid].loads.contains(&cid) {
             let dtype = self.dtype(cid);
-            let shape = self.add_class_shape(kid, cid);
             let kernel = &mut self.jit_kernels[kid].kernel;
+            let shape = kernel.stack_shape_dims(op_id);
             let dst = kernel.param(dtype, ParamKind::GlobalMut, shape);
             kernel.store(dst, op_id, OpId::NULL, MemLayout::Scalar);
             self.jit_kernels[kid].stores.push(cid);

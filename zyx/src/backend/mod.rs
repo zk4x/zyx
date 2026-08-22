@@ -75,7 +75,12 @@ fn gws_from_kernel(kernel: &Kernel) -> Vec<GwsDim> {
     let mut gws = Vec::new();
     let mut param_idx = 0usize;
     let mut op_id = kernel.head;
+    let mut steps_op_id = 0usize;
     while !op_id.is_null() {
+        steps_op_id += 1;
+        if steps_op_id > 10_000 {
+            panic!("gws_from_kernel did not finish in 10000 steps");
+        }
         match &kernel.ops[op_id].op {
             Op::Param { .. } => param_idx += 1,
             Op::Index { axis, kind: IdxKind::Group(len) } => {

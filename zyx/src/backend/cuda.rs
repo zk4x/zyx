@@ -1841,7 +1841,12 @@ impl CUDADevice {
     pub fn compile_cuda(&mut self, kernel: &Kernel, debug_asm: bool) -> Result<(Vec<Dim>, Box<str>, Vec<u8>), BackendError> {
         let mut lws = vec![1; 3];
         let mut op_id = kernel.head;
+        let mut steps_op_id = 0usize;
         while !op_id.is_null() {
+            steps_op_id += 1;
+            if steps_op_id > 10_000 {
+                panic!("compile_cuda did not finish in 10000 steps");
+            }
             if let Op::Index { axis, kind: scope } = kernel.ops[op_id].op {
                 match scope {
                     IdxKind::Group(_) => {}
