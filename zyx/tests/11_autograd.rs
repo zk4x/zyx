@@ -493,7 +493,7 @@ fn grad_t7() -> Result<(), ZyxError> {
     let g = grads[0].clone();
     tape.realize([&g])?;
 
-    assert_eq!(g, [1f32]);
+    assert_eq!(g, 1f32);
 
     Ok(())
 }

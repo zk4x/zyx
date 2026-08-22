@@ -3405,6 +3405,11 @@ fn tensor_to_string<T: core::fmt::Display>(data: &[T], shape: &[Dim], precision:
     }
     // get maximal width of single value
     let w = width.unwrap_or_else(|| data.iter().map(|x| format!("{x:>.precision$}").len()).max().unwrap_or(0));
+    // Rank-0 (scalar): just the value, no brackets.
+    if rank == 0 {
+        let _ = write!(res, "{:>w$.precision$}", data[0]);
+        return res;
+    }
     let d0 = shape[rank - 1];
     for (i, x) in data.iter().enumerate() {
         {

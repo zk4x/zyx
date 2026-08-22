@@ -30,16 +30,17 @@ impl Runtime {
 
         // Seed gradient: ones expanded to the target's shape. Never a bare
         // const — a const class has no producer path, so it cannot be realized
-        // as a tape output on its own.
+        // as a tape output on its own. (Rank-0 targets keep the bare const;
+        // the kernelizer stores consts like any other value.)
         let target_dtype = self.graphs[graph_id].dtype(target_class);
         let one_cid = self.push_const(graph_id, Constant::new(1u8).cast(target_dtype));
         let target_dims = self.graphs[graph_id].shape(target_class);
-        let shape_class = match target_dims.len() {
-            0 => ClassId::NULL,
-            1 => target_dims[0],
-            _ => self.push_node(graph_id, Node::Stack { ops: target_dims.into_boxed_slice() }).1,
+        let ones = if target_dims.is_empty() {
+            one_cid
+        } else {
+            let shape_class = self.shape_class(graph_id, target_dims);
+            self.push_node(graph_id, Node::Expand { x: one_cid, shape: shape_class }).1
         };
-        let ones = self.push_node(graph_id, Node::Expand { x: one_cid, shape: shape_class }).1;
         grads.insert(target_class, ones);
 
         for &cid in &topo {
@@ -188,24 +189,18 @@ impl Runtime {
                     let g = self.push_node(graph_id, Node::Cast { x: grad, dtype: self.graphs[graph_id].dtype(x) }).1;
                     accum_grad(self, graph_id, &mut grads, x, g);
                 }
-                Node::Reshape { .. } => {
-                    /*let x_shape = self.graphs[graph_id].classes[x].shape;
-                    let g = self
-                        .push_node(
-                            graph_id,
-                            Node::Reshape { x: grad, shape: x_shape },
-                            x_shape,
-                            self.graphs[graph_id].classes[grad].dtype,
-                        )
-                        .1;
-                    accum_grad(self, graph_id, &mut grads, x, g);*/
-                    todo!()
+                Node::Reshape { x, .. } => {
+                    let x_shape = self.shape_class(graph_id, self.graphs[graph_id].shape(x));
+                    let g = self.push_node(graph_id, Node::Reshape { x: grad, shape: x_shape }).1;
+                    accum_grad(self, graph_id, &mut grads, x, g);
                 }
-                Node::Expand { .. } => {
-                    todo!()
-                    /*let x_shape = self.graphs[graph_id].classes[x].shape;
-                    let out_shape = self.shapes[self.graphs[graph_id].classes[cid].shape].clone();
-                    let in_shape = self.shapes[x_shape].clone();
+                Node::Expand { x, .. } => {
+                    let out_dims = self.graphs[graph_id].shape(cid);
+                    let in_dims = self.graphs[graph_id].shape(x);
+                    let out_shape: Vec<Dim> =
+                        out_dims.iter().map(|&d| self.graph_const_dim(graph_id, d).expect("expand backward with symbolic dim")).collect();
+                    let in_shape: Vec<Dim> =
+                        in_dims.iter().map(|&d| self.graph_const_dim(graph_id, d).expect("expand backward with symbolic dim")).collect();
                     // Right-align the input against the expanded output per broadcast
                     // semantics. The input is broadcast to the output by (a) leading
                     // `pad` dims that the input did not have at all (implicitly size 1)
@@ -226,31 +221,26 @@ impl Runtime {
                     if sum_axes.is_empty() {
                         accum_grad(self, graph_id, &mut grads, x, grad);
                     } else {
-                        let grad_shape = self.shapes[self.graphs[graph_id].classes[grad].shape].to_vec();
-                        let reduce_shape_id = self.push_shape(crate::shape::reduce(&grad_shape, &sum_axes));
-                        let reduced = self
-                            .push_node(
-                                graph_id,
-                                Node::Reduce { x: grad, rop: BOp::Add, axes: sum_axes.into_boxed_slice() },
-                                reduce_shape_id,
-                                self.graphs[graph_id].classes[grad].dtype,
-                            )
-                            .1;
+                        let reduced_dims: Vec<ClassId> = out_dims
+                            .iter()
+                            .enumerate()
+                            .filter(|(i, _)| !sum_axes.contains(&(*i as UAxis)))
+                            .map(|(_, &d)| d)
+                            .collect();
+                        let reduced = self.push_node(
+                            graph_id,
+                            Node::Reduce { x: grad, rop: BOp::Add, axes: sum_axes.into_boxed_slice() },
+                        );
                         // The graph reduce drops the reduced dims; restore the
                         // original shape (keepdim) with an explicit reshape.
-                        let reduced = if reduce_shape_id == x_shape {
-                            reduced
+                        let reduced = if reduced_dims == in_dims {
+                            reduced.1
                         } else {
-                            self.push_node(
-                                graph_id,
-                                Node::Reshape { x: reduced, shape: x_shape },
-                                x_shape,
-                                self.graphs[graph_id].classes[grad].dtype,
-                            )
-                            .1
+                            let xs = self.shape_class(graph_id, in_dims);
+                            self.push_node(graph_id, Node::Reshape { x: reduced.1, shape: xs }).1
                         };
                         accum_grad(self, graph_id, &mut grads, x, reduced);
-                    }*/
+                    }
                 }
                 Node::Permute { x, ref axes } => {
                     let mut inv_axes: Vec<UAxis> = vec![0; axes.len()];
@@ -260,11 +250,18 @@ impl Runtime {
                     let g = self.push_node(graph_id, Node::Permute { x: grad, axes: inv_axes.into_boxed_slice() }).1;
                     accum_grad(self, graph_id, &mut grads, x, g);
                 }
-                Node::Pad { .. } => {
-                    todo!()
+                Node::Pad { x, axis, lp, .. } => {
+                    // Pad backward: narrow the gradient back to the original extent.
+                    let orig_len = self.graphs[graph_id].shape(x)[axis as usize];
+                    let g = self.push_node(graph_id, Node::Narrow { x: grad, axis, start: lp, len: orig_len }).1;
+                    accum_grad(self, graph_id, &mut grads, x, g);
                 }
-                Node::Narrow { .. } => {
-                    todo!()
+                Node::Narrow { x, axis, start, .. } => {
+                    // Narrow backward: pad the gradient with zeros back to the
+                    // original extent.
+                    let orig_len = self.graphs[graph_id].shape(x)[axis as usize];
+                    let g = self.push_node(graph_id, Node::Pad { x: grad, axis, lp: start, len: orig_len }).1;
+                    accum_grad(self, graph_id, &mut grads, x, g);
                 }
                 Node::Flip { x, ref axes } => {
                     // Flip is its own inverse: the gradient back-propagates by
@@ -272,122 +269,49 @@ impl Runtime {
                     let g = self.push_node(graph_id, Node::Flip { x: grad, axes: axes.clone() }).1;
                     accum_grad(self, graph_id, &mut grads, x, g);
                 }
-                Node::Reduce { x: _, rop: bop, axes: _ } => {
-                    //let axes = axes.clone();
+                Node::Reduce { x, rop: bop, ref axes } => {
+                    let axes = axes.clone();
                     match bop {
                         BOp::Add => {
-                            todo!();
-                            /*let x_shape_id = self.graphs[graph_id].classes[x].shape;
-                            let x_shape_vec: Vec<Dim> = self.shapes[x_shape_id].clone();
-                            let mut grad_shape_vec: Vec<Dim> = self.shapes[self.graphs[graph_id].classes[cid].shape].clone();
-                            for &axis in axes.iter() {
-                                grad_shape_vec.insert(axis, 1);
-                            }
-                            if axes.len() == x_shape_vec.len() {
-                                grad_shape_vec.remove(0);
-                            }
-                            let gs = self.push_shape(grad_shape_vec);
-                            let grad_r = self
-                                .push_node(
-                                    graph_id,
-                                    Node::Reshape { x: grad, shape: gs },
-                                    gs,
-                                    self.graphs[graph_id].classes[grad].dtype,
-                                )
-                                .1;
-                            let g = self
-                                .push_node(
-                                    graph_id,
-                                    Node::Expand { x: grad_r, shape: x_shape_id },
-                                    x_shape_id,
-                                    self.graphs[graph_id].classes[grad].dtype,
-                                )
-                                .1;
-                            accum_grad(self, graph_id, &mut grads, x, g);*/
+                            // Reshape the gradient to x's dims with 1 at each
+                            // reduced axis, then broadcast back to x's shape.
+                            let x_dims = self.graphs[graph_id].shape(x);
+                            let dtype = self.graphs[graph_id].dtype(x);
+                            let one = self.push_const(graph_id, Constant::new(1u8).cast(dtype));
+                            let kept: Vec<ClassId> = x_dims
+                                .iter()
+                                .enumerate()
+                                .map(|(i, &d)| if axes.contains(&(i as UAxis)) { one } else { d })
+                                .collect();
+                            let kept_shape = self.shape_class(graph_id, kept);
+                            let grad_r = self.push_node(graph_id, Node::Reshape { x: grad, shape: kept_shape }).1;
+                            let x_shape = self.shape_class(graph_id, x_dims);
+                            let g = self.push_node(graph_id, Node::Expand { x: grad_r, shape: x_shape }).1;
+                            accum_grad(self, graph_id, &mut grads, x, g);
                         }
                         BOp::Max => {
-                            todo!();
-                            /*let x_shape_id = self.graphs[graph_id].classes[x].shape;
-                            let x_shape_vec: Vec<Dim> = self.shapes[x_shape_id].clone();
-
-                            let mut z_shape_vec: Vec<Dim> = self.shapes[self.graphs[graph_id].classes[cid].shape].clone();
-                            for &axis in axes.iter() {
-                                z_shape_vec.insert(axis, 1);
-                            }
-                            if axes.len() == x_shape_vec.len() {
-                                z_shape_vec.remove(0);
-                            }
-                            let zs = self.push_shape(z_shape_vec);
-                            let z_reshaped = self
-                                .push_node(
-                                    graph_id,
-                                    Node::Reshape { x: cid, shape: zs },
-                                    zs,
-                                    self.graphs[graph_id].classes[cid].dtype,
-                                )
-                                .1;
-                            let z_broadcasted = self
-                                .push_node(
-                                    graph_id,
-                                    Node::Expand { x: z_reshaped, shape: x_shape_id },
-                                    x_shape_id,
-                                    self.graphs[graph_id].classes[cid].dtype,
-                                )
-                                .1;
+                            // Mask of positions that attained the max (1 - (x < z)),
+                            // multiplied by the broadcast gradient.
+                            let x_dims = self.graphs[graph_id].shape(x);
+                            let dtype = self.graphs[graph_id].dtype(x);
+                            let one = self.push_const(graph_id, Constant::new(1u8).cast(dtype));
+                            let kept: Vec<ClassId> = x_dims
+                                .iter()
+                                .enumerate()
+                                .map(|(i, &d)| if axes.contains(&(i as UAxis)) { one } else { d })
+                                .collect();
+                            let kept_shape = self.shape_class(graph_id, kept);
+                            let x_shape = self.shape_class(graph_id, x_dims);
+                            let z_reshaped = self.push_node(graph_id, Node::Reshape { x: cid, shape: kept_shape }).1;
+                            let z_broadcasted = self.push_node(graph_id, Node::Expand { x: z_reshaped, shape: x_shape }).1;
                             let cmp = self.push_binary_node(graph_id, x, z_broadcasted, BOp::Cmplt);
-                            let cmp_f = self
-                                .push_node(
-                                    graph_id,
-                                    Node::Cast { x: cmp, dtype: self.graphs[graph_id].classes[x].dtype },
-                                    self.graphs[graph_id].classes[cmp].shape,
-                                    self.graphs[graph_id].classes[x].dtype,
-                                )
-                                .1;
-                            let one = self
-                                .push_node(
-                                    graph_id,
-                                    Node::Const { cons_id: 0, value: Constant::new(1u8).cast(self.graphs[graph_id].classes[x].dtype) },
-                                    scalar_shape,
-                                    self.graphs[graph_id].classes[x].dtype,
-                                )
-                                .1;
-                            let one_e = self
-                                .push_node(
-                                    graph_id,
-                                    Node::Expand { x: one, shape: x_shape_id },
-                                    x_shape_id,
-                                    self.graphs[graph_id].classes[x].dtype,
-                                )
-                                .1;
+                            let cmp_f = self.push_node(graph_id, Node::Cast { x: cmp, dtype }).1;
+                            let one_e = self.push_node(graph_id, Node::Expand { x: one, shape: x_shape }).1;
                             let mask = self.push_binary_node(graph_id, one_e, cmp_f, BOp::Sub);
-
-                            let mut grad_shape_vec: Vec<Dim> = self.shapes[self.graphs[graph_id].classes[grad].shape].clone();
-                            for &axis in axes.iter() {
-                                grad_shape_vec.insert(axis, 1);
-                            }
-                            if axes.len() == x_shape_vec.len() {
-                                grad_shape_vec.remove(0);
-                            }
-                            let gs = self.push_shape(grad_shape_vec);
-                            let grad_r = self
-                                .push_node(
-                                    graph_id,
-                                    Node::Reshape { x: grad, shape: gs },
-                                    gs,
-                                    self.graphs[graph_id].classes[grad].dtype,
-                                )
-                                .1;
-                            let grad_e = self
-                                .push_node(
-                                    graph_id,
-                                    Node::Expand { x: grad_r, shape: x_shape_id },
-                                    x_shape_id,
-                                    self.graphs[graph_id].classes[grad].dtype,
-                                )
-                                .1;
-
+                            let grad_r = self.push_node(graph_id, Node::Reshape { x: grad, shape: kept_shape }).1;
+                            let grad_e = self.push_node(graph_id, Node::Expand { x: grad_r, shape: x_shape }).1;
                             let grad_x = self.push_binary_node(graph_id, mask, grad_e, BOp::Mul);
-                            accum_grad(self, graph_id, &mut grads, x, grad_x);*/
+                            accum_grad(self, graph_id, &mut grads, x, grad_x);
                         }
                         _ => {}
                     }
@@ -401,8 +325,8 @@ impl Runtime {
                 Node::Assign { dst: _, src, .. } => {
                     accum_grad(self, graph_id, &mut grads, src, grad);
                 }
-                Node::After { .. } => {
-                    todo!()
+                Node::After { x, .. } => {
+                    accum_grad(self, graph_id, &mut grads, x, grad);
                 }
                 Node::Leaf { .. } | Node::Const { .. } | Node::Stack { .. } | Node::Kernel { .. } => {}
             }
@@ -520,6 +444,27 @@ fn accum_grad(rt: &mut Runtime, graph_id: GraphId, grads: &mut Map<ClassId, Clas
         std::collections::hash_map::Entry::Occupied(mut e) => {
             let sum = rt.push_binary_node(graph_id, *e.get(), grad, BOp::Add);
             e.insert(sum);
+        }
+    }
+}
+
+impl Runtime {
+    /// Build a shape class from dim classes: rank-1 uses the dim directly,
+    /// higher ranks get a `Stack`, rank-0 is `NULL`.
+    fn shape_class(&mut self, graph_id: GraphId, dims: Vec<ClassId>) -> ClassId {
+        match dims.len() {
+            0 => ClassId::NULL,
+            1 => dims[0],
+            _ => self.push_node(graph_id, Node::Stack { ops: dims.into_boxed_slice() }).1,
+        }
+    }
+
+    /// Numeric value of a dim class, only if it is a constant. Symbolic dims
+    /// return `None` — callers must not guess.
+    fn graph_const_dim(&self, graph_id: GraphId, dim: ClassId) -> Option<Dim> {
+        match &self.graphs[graph_id].nodes[self.graphs[graph_id].classes[dim].nodes[0]].node {
+            Node::Const { value: c, .. } => c.as_dim(),
+            _ => None,
         }
     }
 }

@@ -704,50 +704,64 @@ impl Graph {
     /// `Param { kind: Variable }` of `IDX_T`.
     fn add_class_shape(&mut self, kid: JitKernelId, cid: ClassId) -> OpId {
         let shape = self.shape(cid);
-        if shape.is_empty() {
-            panic!(
-                "DBG add_class_shape: class {cid:?} has empty shape; nodes={:?}",
-                self.classes[cid].nodes.iter().map(|&nid| &self.nodes[nid].node).collect::<Vec<_>>()
-            );
-        }
         let consts: Vec<Option<crate::dtype::Constant>> = shape
-            .into_iter()
-            .map(|dim| match &self.nodes[self.classes[dim].nodes[0]].node {
+            .iter()
+            .map(|dim| match &self.nodes[self.classes[*dim].nodes[0]].node {
                 Node::Const { value: c, .. } => Some(*c),
                 _ => None,
             })
             .collect();
-        let kernel = &mut self.jit_kernels[kid].kernel;
-        let dim_ops: Vec<OpId> = consts
-            .into_iter()
-            .map(|c| match c {
-                Some(c) => kernel.push_back(Op::Const(c)),
-                None => kernel.param(IDX_T, ParamKind::Variable, OpId::NULL),
-            })
-            .collect();
-        match dim_ops.len() {
-            0 => OpId::NULL,
-            1 => dim_ops[0],
-            _ => kernel.stack(&dim_ops),
-        }
+        // Symbolic dims become scalar `Param { kind: Variable }` of IDX_T.
+        // `loads` stays parallel to all Global+Variable params in head order
+        // (see extract_subkernel), so each shape param appends its dim class.
+        let mut dim_loads: Vec<ClassId> = Vec::new();
+        let (dim_ops, stack) = {
+            let kernel = &mut self.jit_kernels[kid].kernel;
+            let dim_ops: Vec<OpId> = shape
+                .iter()
+                .zip(consts)
+                .map(|(dim, c)| match c {
+                    Some(c) => kernel.push_back(Op::Const(c)),
+                    None => {
+                        dim_loads.push(*dim);
+                        kernel.param(IDX_T, ParamKind::Variable, OpId::NULL)
+                    }
+                })
+                .collect();
+            let stack = match dim_ops.len() {
+                0 => OpId::NULL,
+                1 => dim_ops[0],
+                _ => kernel.stack(&dim_ops),
+            };
+            (dim_ops, stack)
+        };
+        self.jit_kernels[kid].loads.extend(dim_loads);
+        stack
     }
 
     fn new_load_kernel(&mut self, cid: ClassId, rc: u32) -> (JitKernelId, OpId) {
         let mut kernel = Kernel::new(DeviceId::NULL);
+        let mut dim_loads: Vec<ClassId> = Vec::new();
         let shape = {
-            let dim_consts: Vec<Option<crate::dtype::Constant>> = self
-                .shape(cid)
-                .into_iter()
-                .map(|dim| match &self.nodes[self.classes[dim].nodes[0]].node {
+            let dims: Vec<ClassId> = self.shape(cid);
+            let dim_consts: Vec<Option<crate::dtype::Constant>> = dims
+                .iter()
+                .map(|dim| match &self.nodes[self.classes[*dim].nodes[0]].node {
                     Node::Const { value: c, .. } => Some(*c),
                     _ => None,
                 })
                 .collect();
-            let dim_ops: Vec<OpId> = dim_consts
-                .into_iter()
-                .map(|c| match c {
+            // Shape params append their dim class to `loads` to keep it
+            // parallel to all Global+Variable params in head order.
+            let dim_ops: Vec<OpId> = dims
+                .iter()
+                .zip(dim_consts)
+                .map(|(dim, c)| match c {
                     Some(c) => kernel.push_back(Op::Const(c)),
-                    None => kernel.param(IDX_T, ParamKind::Variable, OpId::NULL),
+                    None => {
+                        dim_loads.push(*dim);
+                        kernel.param(IDX_T, ParamKind::Variable, OpId::NULL)
+                    }
                 })
                 .collect();
             match dim_ops.len() {
@@ -757,10 +771,11 @@ impl Graph {
             }
         };
         let op_id = kernel.param(self.dtype(cid), ParamKind::Global, shape);
+        dim_loads.push(cid);
         let kid = self.jit_kernels.push(JitKernelData {
             kernel,
             outputs: vec![cid; rc as usize],
-            loads: vec![cid],
+            loads: dim_loads,
             stores: Vec::new(),
         });
         (kid, op_id)
@@ -777,26 +792,6 @@ impl Graph {
     ) -> (JitKernelId, OpId) {
         //println!("add store cid={cid:?} kid={kid:?} op_id={op_id:?} rc={}", rcs.get(&cid).unwrap());
         //println!("outputs={:?}", self.ekernels[kid].outputs);
-
-        // Consts are values, never stored to memory (see Node::Const docs).
-        // If a const class ended up inside a storing kernel (via merges), give
-        // the consumer a private const kernel instead of buffering it.
-        if let Node::Const { value, .. } = &self.nodes[self.classes[cid].nodes[0]].node {
-            let value = *value;
-            self.jit_kernels[kid].outputs.retain(|&x| x != cid);
-            let rc = rcs[&cid];
-            let mut kernel = Kernel::new(DeviceId::NULL);
-            kernel.push_back(Op::Const(value));
-            let op_id = kernel.head;
-            let new_kid = self.jit_kernels.push(JitKernelData {
-                kernel,
-                outputs: vec![cid; rc as usize],
-                loads: Vec::new(),
-                stores: Vec::new(),
-            });
-            visited.insert(cid, (new_kid, op_id));
-            return (new_kid, op_id);
-        }
 
         if !self.jit_kernels[kid].loads.contains(&cid) {
             let dtype = self.dtype(cid);
