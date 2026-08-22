@@ -845,14 +845,15 @@ impl Kernel {
     }
 
     /// Tensor shape of the value produced by `op_id`, as per-dimension op
-    /// ids. Symbolic walk over existing ops. A `Stack` accessed *directly*
-    /// (as a value) produces `[len] + first_element_shape`: its length is
-    /// emitted as a const dim. A `Stack` referenced as a *shape descriptor*
-    /// (through `Param { shape }`, `Reshape { shape }`, `Expand { shape }`)
-    /// yields its element ops directly. Movement ops apply their
-    /// transformation (`Permute` reorders, `Pad`/`Narrow` substitute their
-    /// stored `len`); a scalar value (`Const`, scalar `Param`) has an empty
-    /// shape.
+    /// ids. Symbolic walk over existing ops with a per-op memo (shared
+    /// sub-DAGs are re-entered by many parents; re-walking them is
+    /// exponential without the memo). A `Stack` accessed *directly* (as a
+    /// value) produces `[len] + first_element_shape`: its length is emitted
+    /// as a const dim. A `Stack` referenced as a *shape descriptor* (through
+    /// `Param { shape }`, `Reshape { shape }`, `Expand { shape }`) yields
+    /// its element ops directly. Movement ops apply their transformation
+    /// (`Permute` reorders, `Pad`/`Narrow` substitute their stored `len`);
+    /// a scalar value (`Const`, scalar `Param`) has an empty shape.
     #[must_use]
     pub(crate) fn shape_ids(&mut self, op_id: OpId) -> Vec<OpId> {
         // Unpacks a shape descriptor (a `Stack` of dims or a bare `Const`
@@ -871,172 +872,147 @@ impl Kernel {
                 ref op => todo!("shape_ids: invalid shape descriptor {op:?}"),
             }
         }
-        #[derive(Clone)]
-        enum Task {
-            Shape(OpId),
-            Pass,
-            StackHead(u32),
-            Permute(Box<[UAxis]>),
-            Narrow(UAxis, OpId),
-            Pad(UAxis, OpId),
-            Reduce,
-            BinaryElse(OpId),
-            Memo(OpId),
-        }
         if op_id.is_null() {
             return Vec::new();
         }
-        let mut tasks: Vec<Task> = vec![Task::Shape(op_id)];
-        let mut out: Vec<Vec<OpId>> = Vec::new();
-        // Memoize per op: shared sub-DAGs are re-entered by many parents and
-        // re-walking them is exponential without this.
-        let mut memo: Map<OpId, Vec<OpId>> = Map::default();
-        for _ in 0..10000 {
-            let Some(task) = tasks.pop() else { return out.pop().unwrap() };
-            match task {
-                Task::Pass => {}
-                Task::Memo(id) => {
-                    let dims = out.last().unwrap().clone();
-                    memo.insert(id, dims);
+        let mut stack = vec![op_id];
+        let mut visited: Map<OpId, Vec<OpId>> = Map::default();
+        for _ in 0..10_000 {
+            let Some(op_id) = stack.pop() else {
+                return visited.remove(&op_id).unwrap();
+            };
+            if visited.contains_key(&op_id) {
+                continue;
+            }
+            match self.ops[op_id].op {
+                Op::Const(_) => {
+                    visited.insert(op_id, vec![]);
                 }
-                Task::StackHead(n) => {
-                    let mut dims = out.pop().unwrap();
-                    dims.insert(0, self.const_idx(n));
-                    out.push(match dims.as_slice() {
-                        [_] => vec![dims[0]],
-                        _ => dims,
-                    });
+                Op::Param { shape, .. } => {
+                    visited.insert(op_id, descriptor(self, shape));
                 }
-                Task::Permute(axes) => {
-                    let dims = crate::shape::permute(&out.pop().unwrap(), &axes);
-                    out.push(dims);
-                }
-                Task::Narrow(axis, len) => {
-                    let mut dims = out.pop().unwrap();
-                    if dims.is_empty() {
-                        out.push(vec![len]);
+                // Direct access of a stack op: it is a rank-1+ tensor whose
+                // leading dim is the element count (emitted as a const).
+                Op::Stack { ref ops } => {
+                    if ops.is_empty() {
+                        visited.insert(op_id, vec![]);
+                    } else if let Some(mut dims) = visited.get(&ops[0]).cloned() {
+                        dims.insert(0, self.const_idx(ops.len() as u32));
+                        visited.insert(op_id, dims);
                     } else {
-                        dims[axis as usize] = len;
-                        out.push(dims);
+                        stack.push(op_id);
+                        stack.push(ops[0]);
                     }
                 }
-                Task::Pad(axis, len) => {
-                    let mut dims = out.pop().unwrap();
-                    if dims.is_empty() {
-                        out.push(vec![len]);
-                    } else {
-                        dims[axis as usize] = len;
-                        out.push(dims);
+                Op::Move { x, ref mop } => match mop.as_ref() {
+                    MoveOp::Reshape { shape, .. } | MoveOp::Expand { shape } => {
+                        visited.insert(op_id, descriptor(self, *shape));
                     }
-                }
-                Task::Reduce => {
-                    let mut dims = out.pop().unwrap();
-                    dims.truncate(dims.len().saturating_sub(1));
-                    out.push(dims);
-                }
-                Task::BinaryElse(y) => {
-                    let dims = out.pop().unwrap();
-                    // Scalars broadcast implicitly: if `x` is a scalar (empty
-                    // shape), the binary takes `y`'s shape.
-                    if !dims.is_empty() {
-                        out.push(dims);
-                    } else {
-                        tasks.push(Task::Pass);
-                        tasks.push(Task::Shape(y));
-                    }
-                }
-                Task::Shape(id) => match self.ops[id].op.clone() {
-                    Op::Const(_) => {
-                        memo.insert(id, vec![]);
-                        out.push(vec![]);
-                    }
-                    Op::Param { shape, .. } => {
-                        let dims = descriptor(self, shape);
-                        memo.insert(id, dims.clone());
-                        out.push(dims);
-                    }
-                    // Direct access of a stack op: it is a rank-1+ tensor whose
-                    // leading dim is the element count (emitted as a const).
-                    Op::Stack { ref ops } => {
-                        let n = ops.len() as u32;
-                        if ops.is_empty() {
-                            memo.insert(id, vec![]);
-                            out.push(Vec::new());
-                        } else {
-                            tasks.push(Task::Memo(id));
-                            tasks.push(Task::StackHead(n));
-                            tasks.push(Task::Shape(ops[0]));
+                    MoveOp::Permute { axes } => match visited.get(&x) {
+                        Some(dims) => {
+                            visited.insert(op_id, crate::shape::permute(dims, axes));
                         }
-                    }
-                    Op::Move { x, ref mop } => match mop.as_ref() {
-                        MoveOp::Reshape { shape, .. } | MoveOp::Expand { shape } => {
-                            let dims = descriptor(self, *shape);
-                            memo.insert(id, dims.clone());
-                            out.push(dims);
-                        }
-                        MoveOp::Permute { axes } => {
-                            tasks.push(Task::Permute(axes.clone()));
-                            tasks.push(Task::Shape(x));
-                        }
-                        MoveOp::Flip { .. } => {
-                            tasks.push(Task::Pass);
-                            tasks.push(Task::Shape(x));
-                        }
-                        MoveOp::Narrow { axis, len, .. } => {
-                            tasks.push(Task::Narrow(*axis, *len));
-                            tasks.push(Task::Shape(x));
-                        }
-                        MoveOp::Pad { axis, len, .. } => {
-                            tasks.push(Task::Pad(*axis, *len));
-                            tasks.push(Task::Shape(x));
+                        None => {
+                            stack.push(op_id);
+                            stack.push(x);
                         }
                     },
-                    Op::Binary { x, y, .. } => {
-                        tasks.push(Task::BinaryElse(y));
-                        tasks.push(Task::Shape(x));
-                    }
-                    Op::Reduce { x, .. } => {
-                        tasks.push(Task::Reduce);
-                        tasks.push(Task::Shape(x));
-                    }
-                    Op::Load { src: x, .. }
-                    | Op::Store { src: x, .. }
-                    | Op::Cast { x, .. }
-                    | Op::Unary { x, .. }
-                    | Op::Mad { x, .. }
-                    | Op::MatmulTile { x, .. }
-                    | Op::ReduceTile { x, .. }
-                    | Op::Devectorize { vec: x, .. }
-                    | Op::TransposeTile { x } => {
-                        tasks.push(Task::Pass);
-                        tasks.push(Task::Shape(x));
-                    }
-                    Op::Asm { ref ops, .. } => {
-                        tasks.push(Task::Pass);
-                        tasks.push(Task::Shape(ops[0]));
-                    }
-                    // Group/loop indices and scalar storages are scalar values.
-                    Op::Index { .. } | Op::Loop { .. } => out.push(vec![]),
-                    Op::Storage { len, .. } if len == 1 => out.push(vec![]),
-                    ref op => todo!("shape_ids of {op:?}"),
+                    MoveOp::Flip { .. } => match visited.get(&x) {
+                        Some(dims) => {
+                            visited.insert(op_id, dims.clone());
+                        }
+                        None => {
+                            stack.push(op_id);
+                            stack.push(x);
+                        }
+                    },
+                    &MoveOp::Narrow { axis, len, .. } | &MoveOp::Pad { axis, len, .. } => match visited.get(&x).cloned() {
+                        Some(mut dims) => {
+                            if dims.is_empty() {
+                                dims = vec![len];
+                            } else {
+                                dims[axis as usize] = len;
+                            }
+                            visited.insert(op_id, dims);
+                        }
+                        None => {
+                            stack.push(op_id);
+                            stack.push(x);
+                        }
+                    },
                 },
+                // Scalars broadcast implicitly: if `x` is a scalar (empty
+                // shape), the binary takes `y`'s shape.
+                Op::Binary { x, y, .. } => {
+                    let x_done = visited.contains_key(&x);
+                    if x_done && !visited[&x].is_empty() {
+                        visited.insert(op_id, visited[&x].clone());
+                    } else if visited.contains_key(&y) {
+                        visited.insert(op_id, visited[&y].clone());
+                    } else {
+                        stack.push(op_id);
+                        if !x_done {
+                            stack.push(x);
+                        }
+                        stack.push(y);
+                    }
+                }
+                Op::Reduce { x, .. } => match visited.get(&x).cloned() {
+                    Some(mut dims) => {
+                        dims.truncate(dims.len().saturating_sub(1));
+                        visited.insert(op_id, dims);
+                    }
+                    None => {
+                        stack.push(op_id);
+                        stack.push(x);
+                    }
+                },
+                Op::Load { src: x, .. }
+                | Op::Store { src: x, .. }
+                | Op::Cast { x, .. }
+                | Op::Unary { x, .. }
+                | Op::Mad { x, .. }
+                | Op::MatmulTile { x, .. }
+                | Op::ReduceTile { x, .. }
+                | Op::Devectorize { vec: x, .. }
+                | Op::TransposeTile { x } => match visited.get(&x) {
+                    Some(dims) => {
+                        visited.insert(op_id, dims.clone());
+                    }
+                    None => {
+                        stack.push(op_id);
+                        stack.push(x);
+                    }
+                },
+                Op::Asm { ref ops, .. } => match visited.get(&ops[0]) {
+                    Some(dims) => {
+                        visited.insert(op_id, dims.clone());
+                    }
+                    None => {
+                        stack.push(op_id);
+                        stack.push(ops[0]);
+                    }
+                },
+                // Group/loop indices and scalar storages are scalar values.
+                Op::Index { .. } | Op::Loop { .. } => {
+                    visited.insert(op_id, vec![]);
+                }
+                Op::Storage { len, .. } if len == 1 => {
+                    visited.insert(op_id, vec![]);
+                }
+                ref op => todo!("shape_ids of {op:?}"),
             }
         }
         panic!("shape_ids did not resolve in 10000 steps");
     }
 
-    /// Numeric tensor shape of the value produced by `op_id`: each dim of
-    /// [`Self::shape_ids`] resolved to its const value, `0` where resolution
-    /// fails (symbolic). Immutable — unlike [`Self::shape_ids`] this never
-    /// emits ops; a directly accessed `Stack` contributes its element count
-    /// as a plain number instead of a const dim op.
+    /// Numeric tensor shape of the value produced by `op_id`: each dim
+    /// resolved to its const value, `0` where resolution fails (symbolic).
+    /// Immutable — unlike [`Self::shape_ids`] this never emits ops; a
+    /// directly accessed `Stack` contributes its element count as a plain
+    /// number instead of a const dim op.
     pub(crate) fn shape(&self, op_id: OpId) -> Vec<Dim> {
-        let resolve = |id: OpId| -> Dim {
-            match self.ops[id].op {
-                Op::Const(c) => c.as_dim().unwrap_or(0),
-                _ => 0,
-            }
-        };
+        // Unpacks a shape descriptor into its dimension op ids.
         fn descriptor(k: &Kernel, id: OpId) -> Vec<OpId> {
             if id.is_null() {
                 return Vec::new();
@@ -1048,160 +1024,143 @@ impl Kernel {
                 ref op => todo!("shape: invalid shape descriptor {op:?}"),
             }
         }
-        #[derive(Clone)]
-        enum Task {
-            Shape(OpId),
-            Pass,
-            StackHead(u32),
-            Permute(Box<[UAxis]>),
-            Narrow(UAxis, OpId),
-            Pad(UAxis, OpId),
-            Reduce,
-            BinaryElse(OpId),
-            Memo(OpId),
-        }
+        let resolve = |id: OpId| -> Dim {
+            match self.ops[id].op {
+                Op::Const(c) => c.as_dim().unwrap_or(0),
+                _ => 0,
+            }
+        };
         if op_id.is_null() {
             return Vec::new();
         }
-        let mut tasks: Vec<Task> = vec![Task::Shape(op_id)];
-        let mut out: Vec<Vec<Dim>> = Vec::new();
-        // Memoize per op: shared sub-DAGs are re-entered by many parents and
-        // re-walking them is exponential without this.
-        let mut memo: Map<OpId, Vec<Dim>> = Map::default();
-        for _ in 0..10000 {
-            let Some(task) = tasks.pop() else { return out.pop().unwrap() };
-            match task {
-                Task::Pass => {}
-                Task::Memo(id) => {
-                    let dims = out.last().unwrap().clone();
-                    memo.insert(id, dims);
+        let mut stack = vec![op_id];
+        let mut visited: Map<OpId, Vec<Dim>> = Map::default();
+        for _ in 0..10_000 {
+            let Some(id) = stack.pop() else {
+                return visited[&op_id].clone();
+            };
+            if visited.contains_key(&id) {
+                continue;
+            }
+            match self.ops[id].op {
+                Op::Const(_) => {
+                    visited.insert(id, vec![]);
                 }
-                Task::StackHead(n) => {
-                    let mut s = out.pop().unwrap();
-                    s.insert(0, n as Dim);
-                    out.push(s);
+                Op::Param { shape, .. } => {
+                    visited.insert(id, descriptor(self, shape).iter().map(|&d| resolve(d)).collect());
                 }
-                Task::Permute(axes) => {
-                    let dims = crate::shape::permute(&out.pop().unwrap(), &axes);
-                    out.push(dims);
-                }
-                Task::Narrow(axis, len) => {
-                    let mut dims = out.pop().unwrap();
-                    if dims.is_empty() {
-                        out.push(vec![resolve(len)]);
+                // Direct access of a stack op: `[len] + first_element_shape`.
+                Op::Stack { ref ops } => {
+                    if ops.is_empty() {
+                        visited.insert(id, vec![]);
+                    } else if let Some(mut dims) = visited.get(&ops[0]).cloned() {
+                        dims.insert(0, ops.len() as Dim);
+                        visited.insert(id, dims);
                     } else {
-                        dims[axis as usize] = resolve(len);
-                        out.push(dims);
+                        stack.push(id);
+                        stack.push(ops[0]);
                     }
                 }
-                Task::Pad(axis, len) => {
-                    let mut dims = out.pop().unwrap();
-                    if dims.is_empty() {
-                        out.push(vec![resolve(len)]);
-                    } else {
-                        dims[axis as usize] = resolve(len);
-                        out.push(dims);
+                Op::Move { x, ref mop } => match mop.as_ref() {
+                    MoveOp::Reshape { shape, .. } | MoveOp::Expand { shape } => {
+                        visited.insert(id, descriptor(self, *shape).iter().map(|&d| resolve(d)).collect());
                     }
-                }
-                Task::Reduce => {
-                    let mut dims = out.pop().unwrap();
-                    dims.truncate(dims.len().saturating_sub(1));
-                    out.push(dims);
-                }
-                Task::BinaryElse(y) => {
-                    let dims = out.pop().unwrap();
-                    if !dims.is_empty() {
-                        out.push(dims);
-                    } else {
-                        tasks.push(Task::Pass);
-                        tasks.push(Task::Shape(y));
-                    }
-                }
-                Task::Shape(id) => {
-                    if let Some(dims) = memo.get(&id) {
-                        out.push(dims.clone());
-                        continue;
-                    }
-                    match self.ops[id].op.clone() {
-                    Op::Const(_) => {
-                        memo.insert(id, vec![]);
-                        out.push(vec![]);
-                    }
-                    Op::Param { shape, .. } => {
-                        let dims: Vec<Dim> = descriptor(self, shape).into_iter().map(resolve).collect();
-                        memo.insert(id, dims.clone());
-                        out.push(dims);
-                    }
-                    Op::Stack { ref ops } => {
-                        if ops.is_empty() {
-                            let dims = vec![ops.len() as Dim];
-                            memo.insert(id, dims.clone());
-                            out.push(dims);
-                        } else {
-                            tasks.push(Task::Memo(id));
-                            tasks.push(Task::StackHead(ops.len() as u32));
-                            tasks.push(Task::Shape(ops[0]));
+                    MoveOp::Permute { axes } => match visited.get(&x) {
+                        Some(dims) => {
+                            visited.insert(id, crate::shape::permute(dims, axes));
                         }
-                    }
-                    Op::Move { x, ref mop } => match mop.as_ref() {
-                        MoveOp::Reshape { shape, .. } | MoveOp::Expand { shape } => {
-                            let dims: Vec<Dim> = descriptor(self, *shape).into_iter().map(resolve).collect();
-                            memo.insert(id, dims.clone());
-                            out.push(dims);
-                        }
-                        MoveOp::Permute { axes } => {
-                            tasks.push(Task::Permute(axes.clone()));
-                            tasks.push(Task::Shape(x));
-                        }
-                        MoveOp::Flip { .. } => {
-                            tasks.push(Task::Pass);
-                            tasks.push(Task::Shape(x));
-                        }
-                        MoveOp::Narrow { axis, len, .. } => {
-                            tasks.push(Task::Narrow(*axis, *len));
-                            tasks.push(Task::Shape(x));
-                        }
-                        MoveOp::Pad { axis, len, .. } => {
-                            tasks.push(Task::Pad(*axis, *len));
-                            tasks.push(Task::Shape(x));
+                        None => {
+                            stack.push(id);
+                            stack.push(x);
                         }
                     },
-                    Op::Binary { x, y, .. } => {
-                        tasks.push(Task::BinaryElse(y));
-                        tasks.push(Task::Shape(x));
-                    }
-                    Op::Reduce { x, .. } => {
-                        tasks.push(Task::Reduce);
-                        tasks.push(Task::Shape(x));
-                    }
-                    Op::Load { src: x, .. }
-                    | Op::Store { src: x, .. }
-                    | Op::Cast { x, .. }
-                    | Op::Unary { x, .. }
-                    | Op::Mad { x, .. }
-                    | Op::MatmulTile { x, .. }
-                    | Op::ReduceTile { x, .. }
-                    | Op::Devectorize { vec: x, .. }
-                    | Op::TransposeTile { x } => {
-                        tasks.push(Task::Pass);
-                        tasks.push(Task::Shape(x));
-                    }
-                    Op::Asm { ref ops, .. } => {
-                        tasks.push(Task::Pass);
-                        tasks.push(Task::Shape(ops[0]));
-                    }
-                    Op::Index { .. } | Op::Loop { .. } => out.push(vec![]),
-                    Op::Storage { len, .. } if len == 1 => out.push(vec![]),
-                    ref op => todo!("shape of {op:?}"),
+                    MoveOp::Flip { .. } => match visited.get(&x) {
+                        Some(dims) => {
+                            visited.insert(id, dims.clone());
+                        }
+                        None => {
+                            stack.push(id);
+                            stack.push(x);
+                        }
+                    },
+                    &MoveOp::Narrow { axis, len, .. } | &MoveOp::Pad { axis, len, .. } => match visited.get(&x).cloned() {
+                        Some(mut dims) => {
+                            if dims.is_empty() {
+                                dims = vec![resolve(len)];
+                            } else {
+                                dims[axis as usize] = resolve(len);
+                            }
+                            visited.insert(id, dims);
+                        }
+                        None => {
+                            stack.push(id);
+                            stack.push(x);
+                        }
+                    },
+                },
+                // Scalars broadcast implicitly: if `x` is a scalar (empty
+                // shape), the binary takes `y`'s shape.
+                Op::Binary { x, y, .. } => {
+                    let x_done = visited.contains_key(&x);
+                    if x_done && !visited[&x].is_empty() {
+                        visited.insert(id, visited[&x].clone());
+                    } else if visited.contains_key(&y) {
+                        visited.insert(id, visited[&y].clone());
+                    } else {
+                        stack.push(id);
+                        if !x_done {
+                            stack.push(x);
+                        }
+                        stack.push(y);
                     }
                 }
+                Op::Reduce { x, .. } => match visited.get(&x).cloned() {
+                    Some(mut dims) => {
+                        dims.truncate(dims.len().saturating_sub(1));
+                        visited.insert(id, dims);
+                    }
+                    None => {
+                        stack.push(id);
+                        stack.push(x);
+                    }
+                },
+                Op::Load { src: x, .. }
+                | Op::Store { src: x, .. }
+                | Op::Cast { x, .. }
+                | Op::Unary { x, .. }
+                | Op::Mad { x, .. }
+                | Op::MatmulTile { x, .. }
+                | Op::ReduceTile { x, .. }
+                | Op::Devectorize { vec: x, .. }
+                | Op::TransposeTile { x } => match visited.get(&x) {
+                    Some(dims) => {
+                        visited.insert(id, dims.clone());
+                    }
+                    None => {
+                        stack.push(id);
+                        stack.push(x);
+                    }
+                },
+                Op::Asm { ref ops, .. } => match visited.get(&ops[0]) {
+                    Some(dims) => {
+                        visited.insert(id, dims.clone());
+                    }
+                    None => {
+                        stack.push(id);
+                        stack.push(ops[0]);
+                    }
+                },
+                // Group/loop indices and scalar storages are scalar values.
+                Op::Index { .. } | Op::Loop { .. } => {
+                    visited.insert(id, vec![]);
+                }
+                Op::Storage { len, .. } if len == 1 => {
+                    visited.insert(id, vec![]);
+                }
+                ref op => todo!("shape of {op:?}"),
             }
         }
-        panic!(
-            "shape did not resolve in 10000 steps: n_tasks={} out_depth={} start={op_id:?}",
-            tasks.len(),
-            out.len()
-        );
+        panic!("shape did not resolve in 10000 steps");
     }
 
     /// Builds a single shape-descriptor op for the value produced by
@@ -1386,9 +1345,7 @@ impl Kernel {
                 Op::Const(c) => c.as_dim(),
                 // A cast preserves the integer value of a length.
                 Op::Cast { x, .. } => values[x],
-                Op::Unary { x, uop } => {
-                    Some(crate::dtype::Constant::idx(values[x]?).unary(*uop).as_dim()?)
-                }
+                Op::Unary { x, uop } => Some(crate::dtype::Constant::idx(values[x]?).unary(*uop).as_dim()?),
                 Op::Binary { x, y, bop } => Some(
                     crate::dtype::Constant::binary(
                         crate::dtype::Constant::idx(values[x]?),
