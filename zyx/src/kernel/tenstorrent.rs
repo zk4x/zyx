@@ -60,7 +60,7 @@ impl Kernel {
         while !op_id.is_null() {
             if let Op::Index { axis, kind } = *self.at(op_id) {
                 if let IdxKind::Group(len) = kind {
-                    gidxs.push((op_id, axis, self.resolve_dim(len).unwrap()));
+                    gidxs.push((op_id, axis, self.resolve_const(len).and_then(crate::dtype::Constant::as_dim).unwrap()));
                 } else {
                     // Can't run this optimization on kernel that already has local indices
                     continue;
@@ -87,7 +87,7 @@ impl Kernel {
                     self.pad_index(id, pad);
                 }
                 let new_len = if let Op::Index { kind: IdxKind::Group(len), .. } = self.ops[id].op {
-                    self.resolve_dim(len).unwrap()
+                    self.resolve_const(len).and_then(crate::dtype::Constant::as_dim).unwrap()
                 } else {
                     unreachable!()
                 };
@@ -132,7 +132,7 @@ impl Kernel {
             let Op::Loop { len: len_id } = self.ops[loop_id].op else {
                 continue;
             };
-            let len = self.resolve_dim(len_id).unwrap();
+            let len = self.resolve_const(len_id).and_then(crate::dtype::Constant::as_dim).unwrap();
             let pad = round_up(len, 1024);
             if pad > 0 {
                 self.pad_loop(loop_id, pad);
@@ -146,7 +146,7 @@ impl Kernel {
         let mut op_id = self.head;
         while !op_id.is_null() {
             if let Op::Index { axis, kind: IdxKind::Group(len) } = self.ops[op_id].op {
-                let len = self.resolve_dim(len).unwrap();
+                let len = self.resolve_const(len).and_then(crate::dtype::Constant::as_dim).unwrap();
                 if len.is_multiple_of(32) && len >= 32 {
                     let f1 = len / 32;
                     let f1_id = self.const_idx(f1);

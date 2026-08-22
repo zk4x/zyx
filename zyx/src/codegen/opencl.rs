@@ -327,7 +327,7 @@ impl Kernel {
                         IdxKind::Warp(_) => todo!(),
                     };
                     let max_idx = match scope {
-                        IdxKind::Group(len_id) => self.resolve_dim(len_id).unwrap().saturating_sub(1),
+                        IdxKind::Group(len_id) => self.resolve_const(len_id).and_then(crate::dtype::Constant::as_dim).unwrap().saturating_sub(1),
                         IdxKind::Local(len) => u64::from(len).saturating_sub(1),
                         IdxKind::Warp(_) => todo!(),
                     };

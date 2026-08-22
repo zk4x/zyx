@@ -96,7 +96,7 @@ impl Kernel {
                         let Loop { len: len_id, .. } = self.ops[k_loop_id].op else {
                             unreachable!()
                         };
-                        if self.resolve_dim(len_id).unwrap() == 8
+                        if self.resolve_const(len_id).and_then(crate::dtype::Constant::as_dim).unwrap() == 8
                             && let Some(store_info) = self.mma_store_info(op_id, k_loop_id)
                         {
                             stores.last_mut().unwrap().push(store_info);

@@ -59,7 +59,7 @@ impl Kernel {
                 let mut l_factors: Vec<u32> = vec![64, 32, 16, 8, 4, 2];
                 if !local_axis_sizes.contains_key(&axis) {
                     let max_per_axis = dev_info.max_local_work_dims[axis as usize];
-                    let Some(len) = self.resolve_dim(len) else {
+                    let Some(len) = self.resolve_const(len).and_then(crate::dtype::Constant::as_dim) else {
                         continue;
                     };
                     l_factors.retain(|&f| len.is_multiple_of(f as u64) && f <= remaining_threads && f <= max_per_axis);
@@ -88,7 +88,7 @@ impl Kernel {
         let mut op_id = self.head;
         while !op_id.is_null() {
             if let Op::Loop { len: len_id } = self.ops[op_id].op {
-                let Some(len) = self.resolve_dim(len_id) else {
+                let Some(len) = self.resolve_const(len_id).and_then(crate::dtype::Constant::as_dim) else {
                     continue;
                 };
                 if len >= 16 {
@@ -120,7 +120,7 @@ impl Kernel {
                 use crate::shape::Dim;
 
                 match *op {
-                    Op::Loop { len, .. } => match self.resolve_dim(len) {
+                    Op::Loop { len, .. } => match self.resolve_const(len).and_then(crate::dtype::Constant::as_dim) {
                         Some(l) => dim *= l,
                         None => {
                             ok = false;
@@ -128,7 +128,7 @@ impl Kernel {
                         }
                     },
                     Op::Index { kind, .. } => match kind {
-                        IdxKind::Group(len) => match self.resolve_dim(len) {
+                        IdxKind::Group(len) => match self.resolve_const(len).and_then(crate::dtype::Constant::as_dim) {
                             Some(l) => dim *= l,
                             None => {
                                 ok = false;
@@ -148,7 +148,7 @@ impl Kernel {
 
                         match kind {
                             IdxKind::Group(len) => {
-                                if let Some(l) = self.resolve_dim(len) {
+                                if let Some(l) = self.resolve_const(len).and_then(crate::dtype::Constant::as_dim) {
                                     debug_assert_eq!(l, dim);
                                 }
                             }
@@ -157,7 +157,7 @@ impl Kernel {
                         }
                     }
                     Op::Loop { len, .. } => {
-                        if let Some(l) = self.resolve_dim(len) {
+                        if let Some(l) = self.resolve_const(len).and_then(crate::dtype::Constant::as_dim) {
                             debug_assert_eq!(l, dim);
                         }
                     }
@@ -182,9 +182,9 @@ impl Kernel {
         for op in splits.iter().rev() {
             strides.push(st);
             match op {
-                Op::Loop { len, .. } => st *= self.resolve_dim(*len).unwrap(),
+                Op::Loop { len, .. } => st *= self.resolve_const(*len).and_then(crate::dtype::Constant::as_dim).unwrap(),
                 Op::Index { kind, .. } => match kind {
-                    IdxKind::Group(len) => st *= self.resolve_dim(*len).unwrap(),
+                    IdxKind::Group(len) => st *= self.resolve_const(*len).and_then(crate::dtype::Constant::as_dim).unwrap(),
                     IdxKind::Local(len) => st *= u64::from(*len),
                     IdxKind::Warp(len) => st *= u64::from(*len),
                 },

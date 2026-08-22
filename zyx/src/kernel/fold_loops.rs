@@ -363,7 +363,7 @@ impl Kernel {
         let &Op::Loop { len: loop_len_id } = self.at(loop_id) else {
             return false;
         };
-        let Some(loop_len) = self.resolve_dim(loop_len_id) else {
+        let Some(loop_len) = self.resolve_const(loop_len_id).and_then(crate::dtype::Constant::as_dim) else {
             return false;
         };
         let &Op::Storage { dtype, scope: MemScope::Register, len } = self.at(acc_id) else {

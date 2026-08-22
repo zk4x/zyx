@@ -1184,7 +1184,7 @@ impl Kernel {
         let index_len_of = |op: &Op| -> Dim {
             match op {
                 Op::Index { kind, .. } => match kind {
-                    IdxKind::Group(len) => self.resolve_dim(*len).unwrap(),
+                    IdxKind::Group(len) => self.resolve_const(*len).and_then(crate::dtype::Constant::as_dim).unwrap(),
                     IdxKind::Local(len) => u64::from(*len),
                     IdxKind::Warp(len) => u64::from(*len),
                 },
@@ -1201,13 +1201,13 @@ impl Kernel {
                 Op::Binary { x, y, bop } => {
                     if bop == BOp::Add {
                         if let Op::Loop { len, .. } = self.ops[x].op {
-                            indices.insert(x, (self.resolve_dim(len).unwrap(), 1));
+                            indices.insert(x, (self.resolve_const(len).and_then(crate::dtype::Constant::as_dim).unwrap(), 1));
                             params.push((y, scale));
                         } else if let Op::Index { .. } = self.ops[x].op {
                             indices.insert(x, (index_len_of(&self.ops[x].op), 1));
                             params.push((y, scale));
                         } else if let Op::Loop { len, .. } = self.ops[y].op {
-                            indices.insert(y, (self.resolve_dim(len).unwrap(), 1));
+                            indices.insert(y, (self.resolve_const(len).and_then(crate::dtype::Constant::as_dim).unwrap(), 1));
                             params.push((x, scale));
                         } else if let Op::Index { .. } = self.ops[y].op {
                             indices.insert(y, (index_len_of(&self.ops[y].op), 1));
@@ -1220,10 +1220,10 @@ impl Kernel {
                     if bop == BOp::Mul {
                         match (&self.ops[x].op, &self.ops[y].op) {
                             (Op::Loop { len, .. }, Op::Const(c)) => {
-                                indices.insert(x, (self.resolve_dim(*len).unwrap(), c.as_dim().unwrap() * scale));
+                                indices.insert(x, (self.resolve_const(*len).and_then(crate::dtype::Constant::as_dim).unwrap(), c.as_dim().unwrap() * scale));
                             }
                             (Op::Const(c), Op::Loop { len, .. }) => {
-                                indices.insert(y, (self.resolve_dim(*len).unwrap(), c.as_dim().unwrap() * scale));
+                                indices.insert(y, (self.resolve_const(*len).and_then(crate::dtype::Constant::as_dim).unwrap(), c.as_dim().unwrap() * scale));
                             }
                             (Op::Index { .. }, Op::Const(c)) => {
                                 indices.insert(x, (index_len_of(&self.ops[x].op), c.as_dim().unwrap() * scale));
@@ -1237,7 +1237,7 @@ impl Kernel {
                     if bop == BOp::BitShiftLeft {
                         match (&self.ops[x].op, &self.ops[y].op) {
                             (Op::Loop { len, .. }, Op::Const(c)) => {
-                                indices.insert(x, (self.resolve_dim(*len).unwrap(), (1u64 << c.as_dim().unwrap()) * scale));
+                                indices.insert(x, (self.resolve_const(*len).and_then(crate::dtype::Constant::as_dim).unwrap(), (1u64 << c.as_dim().unwrap()) * scale));
                             }
                             (Op::Index { .. }, Op::Const(c)) => {
                                 indices.insert(x, (index_len_of(&self.ops[x].op), (1u64 << c.as_dim().unwrap()) * scale));
@@ -1246,7 +1246,7 @@ impl Kernel {
                                 indices.insert(y, (index_len_of(&self.ops[y].op), (1u64 << c.as_dim().unwrap()) * scale));
                             }
                             (Op::Const(c), Op::Loop { len, .. }) => {
-                                indices.insert(y, (self.resolve_dim(*len).unwrap(), (1u64 << c.as_dim().unwrap()) * scale));
+                                indices.insert(y, (self.resolve_const(*len).and_then(crate::dtype::Constant::as_dim).unwrap(), (1u64 << c.as_dim().unwrap()) * scale));
                             }
                             _ => {
                                 if let Op::Const(c) = self.ops[y].op {
@@ -1259,7 +1259,7 @@ impl Kernel {
                 Op::Mad { x, y, z } => {
                     match &self.ops[z].op {
                         Op::Loop { len, .. } => {
-                            indices.insert(z, (self.resolve_dim(*len).unwrap(), 1));
+                            indices.insert(z, (self.resolve_const(*len).and_then(crate::dtype::Constant::as_dim).unwrap(), 1));
                         }
                         Op::Index { .. } => {
                             indices.insert(z, (index_len_of(&self.ops[z].op), 1));
@@ -1270,13 +1270,13 @@ impl Kernel {
                     }
                     match (&self.ops[x].op, &self.ops[y].op) {
                         (Op::Loop { len, .. }, Op::Const(c)) => {
-                            indices.insert(x, (self.resolve_dim(*len).unwrap(), c.as_dim().unwrap() * scale));
+                            indices.insert(x, (self.resolve_const(*len).and_then(crate::dtype::Constant::as_dim).unwrap(), c.as_dim().unwrap() * scale));
                         }
                         (Op::Index { .. }, Op::Const(c)) => {
                             indices.insert(x, (index_len_of(&self.ops[x].op), c.as_dim().unwrap() * scale));
                         }
                         (Op::Const(c), Op::Loop { len, .. }) => {
-                            indices.insert(y, (self.resolve_dim(*len).unwrap(), c.as_dim().unwrap() * scale));
+                            indices.insert(y, (self.resolve_const(*len).and_then(crate::dtype::Constant::as_dim).unwrap(), c.as_dim().unwrap() * scale));
                         }
                         (Op::Const(c), Op::Index { .. }) => {
                             indices.insert(y, (index_len_of(&self.ops[y].op), c.as_dim().unwrap() * scale));
@@ -1307,7 +1307,7 @@ impl Kernel {
     /// Returns `Some(dim)` when the value depends only on constants, and `None`
     /// when it is genuinely dynamic (e.g. involves a `Param` variable). Callers
     /// must bail (not optimize) on `None`.
-    pub(crate) fn resolve_dim(&self, op_id: OpId) -> Option<Dim> {
+    pub(crate) fn resolve_const(&self, op_id: OpId) -> Option<Constant> {
         // Collect the constant-expression subgraph reachable through `Cast`,
         // `Unary`, `Binary`, `Loop`, and `Index` operands, then evaluate it
         // bottom-up (iteratively, no recursion).
@@ -1336,29 +1336,24 @@ impl Kernel {
             }
         }
         if !stack.is_empty() {
-            panic!("resolve_dim did not finish in 10000 steps");
+            panic!("resolve_const did not finish in 10000 steps");
         }
 
-        let mut values: Map<OpId, Option<Dim>> = Map::default();
+        let mut values: Map<OpId, Option<Constant>> = Map::default();
         for &id in order.iter().rev() {
             let v = match &self.ops[id].op {
-                Op::Const(c) => c.as_dim(),
+                Op::Const(c) => Some(*c),
                 // A cast preserves the integer value of a length.
-                Op::Cast { x, .. } => values[x],
-                Op::Unary { x, uop } => Some(crate::dtype::Constant::idx(values[x]?).unary(*uop).as_dim()?),
-                Op::Binary { x, y, bop } => Some(
-                    crate::dtype::Constant::binary(
-                        crate::dtype::Constant::idx(values[x]?),
-                        crate::dtype::Constant::idx(values[y]?),
-                        *bop,
-                    )
-                    .as_dim()?,
-                ),
+                Op::Cast { x, dtype } => values[x].map(|v| v.cast(*dtype)),
+                Op::Unary { x, uop } => values[x].map(|v| v.unary(*uop)),
+                Op::Binary { x, y, bop } => {
+                    values[x].zip(values[y]).map(|(a, b)| Constant::binary(a, b, *bop))
+                }
                 Op::Loop { len } => values[len],
                 &Op::Index { kind, .. } => match kind {
                     IdxKind::Group(len) => values[&len],
-                    IdxKind::Local(len) => Some(len as Dim),
-                    IdxKind::Warp(len) => Some(len as Dim),
+                    IdxKind::Local(len) => Some(Constant::U32(len)),
+                    IdxKind::Warp(len) => Some(Constant::U32(len as u32)),
                 },
                 // Param is dynamic
                 Op::Param { .. } => None,
@@ -1559,8 +1554,12 @@ impl Kernel {
         //if self.ops.values().filter(|node| matches!(node.op, Op::Reduce { .. })).count() > 1 { return true; }
         let mut params = vec![x];
         let mut found = false;
+        let mut seen: Set<OpId> = Set::default();
         for _ in 0..10_000 {
             let Some(param) = params.pop() else { break };
+            if !seen.insert(param) {
+                continue;
+            }
             if let &Op::Reduce { x, .. } = self.at(param) {
                 params = vec![x];
                 found = true;

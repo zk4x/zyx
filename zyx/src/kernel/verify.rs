@@ -454,7 +454,7 @@ impl Kernel {
                 Op::Index { kind: scope, .. } => {
                     let b = bounds_stack.last_mut().unwrap();
                     let len = match scope {
-                        IdxKind::Group(len) => self.resolve_dim(len).unwrap_or(u64::MAX),
+                        IdxKind::Group(len) => self.resolve_const(len).and_then(crate::dtype::Constant::as_dim).unwrap_or(u64::MAX),
                         IdxKind::Local(len) => u64::from(len),
                         IdxKind::Warp(len) => u64::from(len),
                     };

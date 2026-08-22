@@ -1299,63 +1299,71 @@ impl Tensor {
 
     /// Applies a new shape to this tensor while preserving its total number of elements.
     ///
-    /// A single `0` in the shape will be inferred automatically. All other dimensions
-    /// must be >= 1.
+    /// A single `-1` in the shape will be inferred automatically, like in
+    /// torch. Inference requires all other dimensions to be statically
+    /// known; otherwise an error is returned. All other dimensions must
+    /// be >= 1.
     ///
     /// # Examples
     ///
     /// ```rust
     /// use zyx::Tensor;
     /// let t = Tensor::from([1, 2, 3, 4]);
-    /// assert_eq!(t.reshape((2, 2))?, [[1, 2], [3, 4]]);
+    /// assert_eq!(t.reshape([2, 2])?, [[1, 2], [3, 4]]);
     ///
     /// // Infer dimension automatically
     /// let t = Tensor::from([1, 2, 3, 4]);
-    /// assert_eq!(t.reshape((2, 0))?, [[1, 2], [3, 4]]);
+    /// assert_eq!(t.reshape([2, -1])?, [[1, 2], [3, 4]]);
     /// # Ok::<(), zyx::ZyxError>(())
     /// ```
     ///
     /// # Errors
     /// Returns error if self cannot be reshaped to shape.
     pub fn reshape<D: Into<Tensor>>(&self, shape: impl IntoIterator<Item = D>) -> Result<Tensor, ZyxError> {
-        let tensors: Vec<Tensor> = shape.into_iter().map(|x| x.into()).collect();
+        let mut tensors: Vec<Tensor> = shape.into_iter().map(|x| x.into()).collect();
+        // Resolve -1 (infer) user-side: runtime knows nothing of sentinels.
+        let resolved: Vec<Option<i64>> = tensors
+            .iter()
+            .map(|t| {
+                RT.lock().resolve_const(t.id).and_then(|c| match c.cast(DType::I64) {
+                    crate::dtype::Constant::I64(b) => Some(i64::from_le_bytes(b)),
+                    _ => None,
+                })
+            })
+            .collect();
+        let infer_count = resolved.iter().filter(|&&d| d == Some(-1)).count();
+        if infer_count > 1 {
+            return Err(ZyxError::shape_error("Can only infer one dimension (-1).".into()));
+        }
+        if resolved.iter().any(|&d| d.is_some_and(|v| v < -1)) {
+            return Err(ZyxError::shape_error("Reshape dimensions must be >= -1.".into()));
+        }
+        if infer_count == 1 {
+            if resolved.iter().any(Option::is_none) {
+                return Err(ZyxError::shape_error(
+                    "Cannot infer dimension (-1): all other dimensions must be static.".into(),
+                ));
+            }
+            let numel: Dim = self.shape().iter().product();
+            let product: Dim = resolved.iter().filter_map(|&d| u64::try_from(d.unwrap()).ok()).product();
+            if product == 0 {
+                return Err(ZyxError::shape_error("Cannot infer dimension (-1): other dimensions include a zero.".into()));
+            }
+            let inferred_dim = numel / product;
+            if inferred_dim.saturating_mul(product) != numel {
+                return Err(ZyxError::shape_error(
+                    format!("Cannot infer dimension: total elements {numel} not divisible by product of specified dims {product}").into(),
+                ));
+            }
+            for (t, r) in tensors.iter_mut().zip(&resolved) {
+                if *r == Some(-1) {
+                    *t = Tensor::from(inferred_dim);
+                }
+            }
+        }
         let shape = Tensor::stack(&tensors)?;
         let id = RT.lock().reshape(self.id, shape.id)?;
         Ok(Tensor { id })
-
-        /*let numel = self.numel();
-
-        // count how many dimensions to infer
-        let infer_count = shape.iter().filter(|&&d| d == 0).count();
-        if infer_count > 1 {
-            return Err(ZyxError::shape_error("Can only infer one dimension (0).".into()));
-        }
-
-        // infer the dimension if needed
-        if infer_count > 0 {
-            let product_other: Dim = shape.iter().map(|&d| if d == 0 { 1 } else { d }).product();
-            let inferred_dim = numel / product_other;
-            if inferred_dim * product_other != numel {
-                return Err(ZyxError::shape_error(
-                    format!(
-                        "Cannot infer dimension: total elements {numel} not divisible by product of specified dims {product_other}"
-                    )
-                    .into(),
-                ));
-            }
-            shape = shape.into_iter().map(|d| if d == 0 { inferred_dim } else { d }).collect();
-        }
-
-        // final check
-        let final_product: Dim = shape.iter().product();
-        if final_product != numel {
-            return Err(ZyxError::shape_error(
-                format!(
-                    "Invalid reshape: tensor has {numel} elements, but requested shape {shape:?} has {final_product} elements"
-                )
-                .into(),
-            ));
-        }*/
     }
 
     /// Transpose (swap) the last two dimensions of this tensor.

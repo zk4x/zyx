@@ -46,7 +46,7 @@ impl Kernel {
             panic!("pad_index: op is not an Index");
         };
         let (current_len, new_kind) = match kind {
-            IdxKind::Group(len) => match self.resolve_dim(len) {
+            IdxKind::Group(len) => match self.resolve_const(len).and_then(crate::dtype::Constant::as_dim) {
                 Some(current_len) => {
                     let new_len = self.insert_before(gidx_id, Op::Const(Constant::idx(current_len + pad_len)));
                     (current_len, IdxKind::Group(new_len))
@@ -125,7 +125,7 @@ impl Kernel {
         let Op::Loop { len } = &self.ops[loop_id].op else {
             panic!("pad_loop: op is not a Loop");
         };
-        let current_len = self.resolve_dim(*len).unwrap();
+        let current_len = self.resolve_const(*len).and_then(crate::dtype::Constant::as_dim).unwrap();
         let new_len = self.insert_before(loop_id, Op::Const(Constant::idx(current_len + pad_len)));
         self.ops[loop_id].op = Op::Loop { len: new_len };
 
@@ -186,7 +186,7 @@ impl Kernel {
             let next = self.next_op(op_id);
             if let Op::Index { kind, .. } = self.ops[op_id].op {
                 let len = match kind {
-                    IdxKind::Group(len) => match self.resolve_dim(len) {
+                    IdxKind::Group(len) => match self.resolve_const(len).and_then(crate::dtype::Constant::as_dim) {
                         Some(len) => len,
                         None => continue,
                     },

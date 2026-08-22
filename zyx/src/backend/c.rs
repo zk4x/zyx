@@ -197,7 +197,7 @@ impl CDevice {
             if let Op::Index { axis, kind: IdxKind::Group(len) } = kernel.ops[op_id].op
                 && axis == 0
             {
-                gws0 = kernel.resolve_dim(len).unwrap_or(1).max(1);
+                gws0 = kernel.resolve_const(len).and_then(crate::dtype::Constant::as_dim).unwrap_or(1).max(1);
             }
             op_id = kernel.next_op(op_id);
         }

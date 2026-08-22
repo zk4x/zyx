@@ -241,7 +241,7 @@ impl Optimization {
                     unreachable!()
                 };
                 // valid factors are checked by opt init
-                let len = kernel.resolve_dim(len).unwrap();
+                let len = kernel.resolve_const(len).and_then(crate::dtype::Constant::as_dim).unwrap();
                 let group_len = kernel.const_idx(len / factor as u64);
                 kernel.split_dim(
                     op_id,
@@ -273,7 +273,7 @@ impl Optimization {
                 let Op::Loop { len: len_id } = kernel.ops[op_id].op else {
                     unreachable!()
                 };
-                let Some(len) = kernel.resolve_dim(len_id) else {
+                let Some(len) = kernel.resolve_const(len_id).and_then(crate::dtype::Constant::as_dim) else {
                     return;
                 };
                 let len1 = kernel.const_idx(len / factor);
@@ -289,7 +289,7 @@ impl Optimization {
                     unreachable!()
                 };
                 let current_len = match kind {
-                    IdxKind::Group(len) => kernel.resolve_dim(len).unwrap(),
+                    IdxKind::Group(len) => kernel.resolve_const(len).and_then(crate::dtype::Constant::as_dim).unwrap(),
                     IdxKind::Local(len) => len as u64,
                     IdxKind::Warp(_) => todo!(),
                 };

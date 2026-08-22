@@ -834,7 +834,7 @@ impl Kernel {
                         });
                     }
                     Op::Loop { len } => {
-                        let len = self.resolve_dim(len).unwrap();
+                        let len = self.resolve_const(len).and_then(crate::dtype::Constant::as_dim).unwrap();
                         for &val in &[0u32, 1, len as u32] {
                             let key = match IDX_T {
                                 DType::U32 => Constant::U32(val),
@@ -1602,7 +1602,7 @@ impl Kernel {
                         let continue_lbl = asm.id();
                         let merge = asm.id();
                         let idx_type = emit_type(&mut asm, &mut type_cache, IDX_T);
-                        let len = self.resolve_dim(len).unwrap();
+                        let len = self.resolve_const(len).and_then(crate::dtype::Constant::as_dim).unwrap();
 
                         // Pre-header: allocate counter var and store 0, then branch to header
                         let counter_ptr_type = push_ptr_type(&mut asm, &mut ptr_cache, &mut type_entries, SC_FUNCTION, idx_type);

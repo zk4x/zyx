@@ -1174,6 +1174,66 @@ impl Graph {
             | Node::Binary { x, .. } => self.dtype(*x),
         }
     }
+
+    /// Tries to resolve the value of a scalar class by walking its const
+    /// expression: `Const` leaves evaluated through `Cast`, `Unary` and
+    /// `Binary` nodes (iteratively, no recursion). Returns `None` if the
+    /// class is not a scalar, the walk exceeds 10 000 steps, or any leaf
+    /// is not a `Const`.
+    pub(crate) fn resolve_const(&self, class: ClassId) -> Option<Constant> {
+        // Preorder of the const-expression subgraph reachable through
+        // `Cast`, `Unary` and `Binary`; non-const leaves abort. Expression
+        // entries carry a dummy seed replaced during evaluation.
+        let mut visited: Set<NodeId> = Set::default();
+        let mut order: Vec<(NodeId, Constant)> = Vec::new();
+        let mut stack = vec![class];
+        for _ in 0..10_000 {
+            let Some(id) = stack.pop() else { break };
+            let node_id = self.classes[id].nodes[0];
+            if !visited.insert(node_id) {
+                continue;
+            }
+            match &self.nodes[node_id].node {
+                Node::Cast { x, dtype } => {
+                    stack.push(*x);
+                    order.push((node_id, Constant::Bool(false).cast(*dtype)));
+                }
+                Node::Unary { x, .. } => {
+                    stack.push(*x);
+                    order.push((node_id, Constant::U8(0)));
+                }
+                Node::Binary { x, y, .. } => {
+                    stack.push(*y);
+                    stack.push(*x);
+                    order.push((node_id, Constant::U8(0)));
+                }
+                Node::Const { value, .. } => order.push((node_id, *value)),
+                _ => return None,
+            }
+        }
+        if !stack.is_empty() {
+            panic!("resolve_const did not finish in 10000 steps");
+        }
+        // Evaluate bottom-up: `order` is a preorder (parents before their
+        // operands), so reversing it evaluates every operand before its
+        // consumer.
+        let mut values: Map<NodeId, Constant> = Map::default();
+        for &(node_id, leaf_or_seed) in order.iter().rev() {
+            let value = match &self.nodes[node_id].node {
+                Node::Const { .. } => leaf_or_seed,
+                Node::Cast { x, dtype } => values[&self.classes[*x].nodes[0]].cast(*dtype),
+                Node::Unary { x, uop } => values[&self.classes[*x].nodes[0]].unary(*uop),
+                Node::Binary { x, y, bop } => Constant::binary(
+                    values[&self.classes[*x].nodes[0]],
+                    values[&self.classes[*y].nodes[0]],
+                    *bop,
+                ),
+                _ => unreachable!("non-expression node in const walk"),
+            };
+            values.insert(node_id, value);
+        }
+        Some(values[&self.classes[class].nodes[0]])
+    }
 }
 
 impl Runtime {

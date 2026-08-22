@@ -993,6 +993,24 @@ impl Runtime {
         }
     }
 
+    /// Tries to resolve the constant value of a scalar tensor:
+    /// `Some(value)` for statically known scalars, `None` if the tensor is
+    /// not a scalar (`[]` shape) or its value cannot be resolved statically
+    /// (symbolic graph node, dynamic kernel expression).
+    #[must_use]
+    pub(crate) fn resolve_const(&self, id: TensorId) -> Option<Constant> {
+        if !self.shape(id).is_empty() {
+            return None;
+        }
+        if self.is_graph(id) {
+            let (class_id, graph_id) = self.graph_ids(id);
+            self.graphs[graph_id].resolve_const(class_id)
+        } else {
+            let (kernel_id, op_id) = self.eager_ids(id);
+            self.kernels[kernel_id].kernel.resolve_const(op_id)
+        }
+    }
+
     pub(super) fn reshape(&mut self, x: TensorId, shape: TensorId) -> Result<TensorId, ZyxError> {
         #[cfg(feature = "debug_tensor_op")]
         println!("runtime::reshape(x={x}, shape={shape:?})");

@@ -61,7 +61,7 @@ impl Kernel {
         while !op_id.is_null() {
             let next = self.next_op(op_id);
             if let Op::Loop { len: len_id } = self.ops[op_id].op {
-                let Some(len) = self.resolve_dim(len_id) else { continue };
+                let Some(len) = self.resolve_const(len_id).and_then(crate::dtype::Constant::as_dim) else { continue };
                 if len >= 16 {
                     for &factor in &candidates {
                         if len.is_multiple_of(factor) && len / factor >= 4 && remaining_threads as u64 >= factor {
@@ -97,7 +97,7 @@ impl Kernel {
         } else {
             return;
         };
-        let Some(loop_len) = self.resolve_dim(loop_len_id) else {
+        let Some(loop_len) = self.resolve_const(loop_len_id).and_then(crate::dtype::Constant::as_dim) else {
             return;
         };
 

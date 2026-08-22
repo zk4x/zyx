@@ -470,7 +470,7 @@ impl Kernel {
                     }
                 }
                 Op::Index { axis, kind: scope } => match scope {
-                    IdxKind::Group(len) => gws[axis as usize] = self.resolve_dim(len).unwrap(),
+                    IdxKind::Group(len) => gws[axis as usize] = self.resolve_const(len).and_then(crate::dtype::Constant::as_dim).unwrap(),
                     IdxKind::Local(len) => lws[axis as usize] = len,
                     IdxKind::Warp(_) => todo!(),
                 },
@@ -479,7 +479,7 @@ impl Kernel {
                     if !indexing_ops.contains(&op_id) {
                         wi_compute_ops += loop_mult * 3;
                     }
-                    if let Some(len) = self.resolve_dim(len_id) {
+                    if let Some(len) = self.resolve_const(len_id).and_then(crate::dtype::Constant::as_dim) {
                         loop_mult *= len;
                         latest_loop_lengths.push(len);
                     }

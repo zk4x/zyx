@@ -438,7 +438,7 @@ impl Tensor {
 
         shape[dim] = index.shape()[0];
         let mut view_shape: Vec<Dim> = vec![1; rank];
-        view_shape[dim] = 0;
+        view_shape[dim] = index.shape()[0];
         let index_expanded = index.reshape(view_shape)?.expand(shape)?;
 
         self.gather(dim as Axis, index_expanded)

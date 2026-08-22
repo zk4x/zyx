@@ -76,7 +76,7 @@ impl Kernel {
         while !op_id.is_null() {
             let next = self.next_op(op_id);
             if let Op::Index { kind: IdxKind::Group(len), .. } = self.ops[op_id].op {
-                let Some(len) = self.resolve_dim(len) else {
+                let Some(len) = self.resolve_const(len).and_then(crate::dtype::Constant::as_dim) else {
                     continue;
                 };
                 for f in [16, 8, 4] {
@@ -101,7 +101,7 @@ impl Kernel {
         let Op::Index { axis, kind: IdxKind::Group(len) } = self.ops[gidx_id].op else {
             unreachable!()
         };
-        let Some(len) = self.resolve_dim(len) else { return };
+        let Some(len) = self.resolve_const(len).and_then(crate::dtype::Constant::as_dim) else { return };
         debug_assert!(len.is_multiple_of(factor));
 
         //println!("thread coarse gidx_id={gidx_id} by factor={factor}");
@@ -265,7 +265,7 @@ impl Kernel {
         while !op_id.is_null() {
             let next = self.next_op(op_id);
             if let Op::Loop { len: len_id } = self.ops[op_id].op {
-                let Some(len) = self.resolve_dim(len_id) else {
+                let Some(len) = self.resolve_const(len_id).and_then(crate::dtype::Constant::as_dim) else {
                     continue;
                 };
                 if len >= 16 {
@@ -277,7 +277,7 @@ impl Kernel {
                 }
             }
             if let Op::Index { kind: IdxKind::Group(len), .. } = self.ops[op_id].op {
-                let Some(len) = self.resolve_dim(len) else { continue };
+                let Some(len) = self.resolve_const(len).and_then(crate::dtype::Constant::as_dim) else { continue };
                 let applicable: Vec<u64> =
                     candidates.iter().copied().filter(|&f| len.is_multiple_of(f) && len / f >= 4).collect();
                 if !applicable.is_empty() {

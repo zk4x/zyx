@@ -88,7 +88,7 @@ impl Kernel {
         let mut total_len: u64 = 1;
         for &id in loop_ids {
             if let Op::Loop { len: len_id } = self.ops[id].op {
-                let Some(len) = self.resolve_dim(len_id) else { return };
+                let Some(len) = self.resolve_const(len_id).and_then(crate::dtype::Constant::as_dim) else { return };
                 total_len *= len;
             }
         }
@@ -126,7 +126,7 @@ impl Kernel {
             let Op::Loop { len: len_id } = self.ops[loop_ids[i]].op else {
                 unreachable!()
             };
-            let len = self.resolve_dim(len_id).unwrap();
+            let len = self.resolve_const(len_id).and_then(crate::dtype::Constant::as_dim).unwrap();
             let y = self.insert_before(anchor, Op::Const(Constant::idx(len)));
             self.ops[loop_ids[i]].op = Op::Binary { x, y, bop: BOp::Mod };
             x = self.insert_before(anchor, Op::Binary { x, y, bop: BOp::Div });
@@ -153,7 +153,7 @@ impl Kernel {
                     unreachable!()
                 };
                 let len = match kind {
-                    IdxKind::Group(op_id) => self.resolve_dim(op_id),
+                    IdxKind::Group(op_id) => self.resolve_const(op_id).and_then(crate::dtype::Constant::as_dim),
                     IdxKind::Local(len) => Some(len as Dim),
                     IdxKind::Warp(len) => Some(len as Dim),
                 };

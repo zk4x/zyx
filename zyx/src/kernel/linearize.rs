@@ -220,7 +220,7 @@ impl Kernel {
                 }
                 let next = self.next_op(op_id);
                 if let Op::Index { axis, kind: IdxKind::Group(len) } = self.ops[op_id].op {
-                    let len_dim = self.resolve_dim(len).unwrap_or(u64::MAX);
+                    let len_dim = self.resolve_const(len).and_then(crate::dtype::Constant::as_dim).unwrap_or(u64::MAX);
                     if let Some(&l) = lengths.get(&axis) {
                         assert!(len_dim == l, "group index axis={axis} has inconsistent lengths ({} vs {})", l, len_dim);
                         self.remap(op_id, canonical[&axis]);
@@ -586,7 +586,7 @@ impl Kernel {
                                 let mut v = Vec::with_capacity(n);
                                 for a in 0..n {
                                     let broadcast =
-                                        self.resolve_dim(x_shape[a]) == Some(1) && self.resolve_dim(shape[offset + a]) != Some(1);
+                                        self.resolve_const(x_shape[a]).and_then(crate::dtype::Constant::as_dim) == Some(1) && self.resolve_const(shape[offset + a]).and_then(crate::dtype::Constant::as_dim) != Some(1);
                                     let d = out_view[offset + a];
                                     let d = if broadcast {
                                         SDim::new(zero, x_shape[a])
