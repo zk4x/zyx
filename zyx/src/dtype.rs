@@ -578,7 +578,6 @@ impl Constant {
             Constant::Bool(x) => Constant::Bool(unary_func(x, uop)),
         }
     }
-
     // Assumes both constants are the same dtype
     pub(super) fn binary(x: Constant, y: Constant, bop: BOp) -> Constant {
         fn binary_func<T: Scalar>(x: T, y: T, bop: BOp) -> Constant {
@@ -605,7 +604,7 @@ impl Constant {
             }
         }
         debug_assert_eq!(x.dtype(), y.dtype());
-        match x {
+        let res = match x {
             Constant::BF16(x) => {
                 let Constant::BF16(y) = y else { unreachable!() };
                 binary_func(bf16::from_le_bytes(x), bf16::from_le_bytes(y), bop)
@@ -658,6 +657,25 @@ impl Constant {
                 let Constant::Bool(y) = y else { unreachable!() };
                 binary_func(x, y, bop)
             }
+        };
+        // A folded NaN is always a bug: some rewrite proved a guard
+        // degenerate and produced e.g. 0/0. Fail loudly at the fold site.
+        if Self::is_nan_const(&res) {
+            panic!("constant folding produced NaN: {bop:?}({x:?}, {y:?})");
+        }
+        res
+    }
+
+    fn is_nan_const(c: &Constant) -> bool {
+        match c {
+            Constant::F32(x) => f32::from_le_bytes(*x).is_nan(),
+            Constant::F64(x) => f64::from_le_bytes(*x).is_nan(),
+            Constant::BF16(x) => u16::from_le_bytes(*x) & 0x7fff > 0x7f80,
+            Constant::F16(x) => {
+                let b = u16::from_le_bytes(*x);
+                b & 0x7c00 == 0x7c00 && b & 0x03ff != 0
+            }
+            _ => false,
         }
     }
 }

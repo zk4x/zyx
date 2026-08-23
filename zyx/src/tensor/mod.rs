@@ -1338,6 +1338,12 @@ impl Tensor {
         if resolved.iter().any(|&d| d.is_some_and(|v| v < -1)) {
             return Err(ZyxError::shape_error("Reshape dimensions must be >= -1.".into()));
         }
+        // 0 is reserved as the internal inferred-dim marker; users infer with -1.
+        if resolved.iter().any(|&d| d == Some(0)) {
+            return Err(ZyxError::shape_error(
+                "Reshape dimensions must be nonzero; use -1 to infer a dimension.".into(),
+            ));
+        }
         if infer_count == 1 {
             if resolved.iter().any(Option::is_none) {
                 return Err(ZyxError::shape_error(

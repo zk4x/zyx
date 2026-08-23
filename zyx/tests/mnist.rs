@@ -16,7 +16,7 @@ fn mnist() -> Result<(), ZyxError> {
 
     impl MnistNet {
         fn forward(&self, x: &Tensor) -> Tensor {
-            let x = x.reshape([0, 784]).unwrap();
+            let x = x.reshape([-1, 784]).unwrap();
             let x = x.matmul(self.l1_weight.t()).unwrap() + &self.l1_bias;
             let x = x.relu();
 

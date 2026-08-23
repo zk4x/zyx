@@ -36,6 +36,12 @@ pub enum Op {
     ///   dim), passed by value.
     /// - [`ParamKind::Global`] / [`ParamKind::GlobalMut`] — a read-only /
     ///   read-write buffer argument, passed by pointer.
+    ///
+    /// # Null operands
+    ///
+    /// Data operands (`x`, `y`, ...) of any op can never be null — only shape
+    /// operands may be, where null means scalar shape (rank 0). A null data
+    /// operand is always a bug.
     Param {
         dtype: DType,
         kind: ParamKind,

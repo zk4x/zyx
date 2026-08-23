@@ -147,6 +147,19 @@ impl Graph {
                         // per element; a source kernel with stores is stored
                         // and re-read, anything still foreign is merged in.
                         let (kid, _) = visited[&ops[0]];
+                        // All inputs merge into one kernel with one shared gws
+                        // grid derived from the elements' shapes — they must agree.
+                        if cfg!(debug_assertions) {
+                            let s0 = self.shape(ops[0]);
+                            for &e in ops.iter().skip(1) {
+                                debug_assert_eq!(
+                                    self.shape(e),
+                                    s0,
+                                    "Stack inputs must have identical shapes: {s0:?} vs {:?}",
+                                    self.shape(e)
+                                );
+                            }
+                        }
                         let mut op_ids: Vec<OpId> = Vec::with_capacity(ops.len());
                         for &elem in ops.iter() {
                             let (mut ekid, mut eop) = visited[&elem];
@@ -187,6 +200,42 @@ impl Graph {
                         let (mut kidy, mut op_idy) = visited[&y];
 
                         if kid != kidy {
+                            // Two kernels whose inputs disagree on dynamism can
+                            // never merge: one kernel runs on ONE global work
+                            // grid, and a static grid length cannot drive a
+                            // dynamic computation (or vice versa). Materialize
+                            // the STATIC side; `add_store` returns a fresh load
+                            // kernel which becomes the merge destination, so the
+                            // result (whose broadcast shape is the dynamic one)
+                            // stays inside the dynamic kernel.
+                            // Kernel-level dynamism, straight from the kernel
+                            // IR: a kernel is dynamic if ANY param's shape has
+                            // an unresolved (zero) dim.
+                            let is_dynamic = |kid: JitKernelId| -> bool {
+                                let kernel = &self.jit_kernels[kid].kernel;
+                                let mut oid = kernel.head;
+                                for _ in 0..10_000 {
+                                    if oid.is_null() {
+                                        return false;
+                                    }
+                                    if matches!(&kernel.ops[oid].op, Op::Param { .. }) && kernel.shape(oid).contains(&0) {
+                                        return true;
+                                    }
+                                    oid = kernel.ops[oid].next;
+                                }
+                                panic!("is_dynamic did not finish in 10000 steps");
+                            };
+                            match (is_dynamic(kid), is_dynamic(kidy)) {
+                                (false, true) => {
+                                    (kid, op_id) = self.add_store(x, kid, op_id, &mut visited, &rcs);
+                                    std::mem::swap(&mut kid, &mut kidy);
+                                }
+                                (true, false) => {
+                                    (kidy, op_idy) = self.add_store(y, kidy, op_idy, &mut visited, &rcs);
+                                }
+                                (_, _) => {}
+                            }
+
                             let kid_stores = self.jit_kernels[kid].kernel.contains_stores();
                             let kidy_stores = self.jit_kernels[kidy].kernel.contains_stores();
                             match (kid_stores, kidy_stores) {
@@ -408,8 +457,21 @@ impl Graph {
                         self.jit_kernels[kid].kernel.debug();*/
                     }
                     Node::Expand { x, shape } => {
+                        // Dtypes are fully static: every dim of the result
+                        // must be integer-typed.
+                        if cfg!(debug_assertions) {
+                            for dim in self.shape(cid) {
+                                let dt = self.dtype(dim);
+                                debug_assert!(dt.is_int(), "Expand {cid:?} has non-integer dim dtype {dt:?}");
+                            }
+                        }
                         let (mut kid, mut op_id) = visited[&x];
-                        (kid, op_id) = self.duplicate_or_store_class(x, kid, op_id, &mut visited, &mut rcs, false);
+                        // Expand can change dynamism (e.g. broadcast to a
+                        // dynamic dim): a dynamic-shaped result must not live
+                        // in a static kernel — force it into its own kernel.
+                        let force_store = self.jit_kernels[kid].kernel.is_preceded_by_compute(op_id);
+                        let force_store = force_store || self.jit_kernels[kid].kernel.has_dynamic_shape(op_id);
+                        (kid, op_id) = self.duplicate_or_store_class(x, kid, op_id, &mut visited, &mut rcs, force_store);
                         let (mut skid, mut sop) = visited[&shape];
                         if skid != kid {
                             let kid_stores = self.jit_kernels[kid].kernel.contains_stores();
@@ -435,8 +497,21 @@ impl Graph {
                         self.add_move(cid, x, MoveOp::Permute { axes: axes.clone() }, false, &mut visited, &mut rcs);
                     }
                     Node::Reshape { x, shape } => {
+                        // Dtypes are fully static: every dim of the result
+                        // must be integer-typed.
+                        if cfg!(debug_assertions) {
+                            for dim in self.shape(cid) {
+                                let dt = self.dtype(dim);
+                                debug_assert!(dt.is_int(), "Reshape {cid:?} has non-integer dim dtype {dt:?}");
+                            }
+                        }
                         let (mut kid, mut op_id) = visited[&x];
-                        (kid, op_id) = self.duplicate_or_store_class(x, kid, op_id, &mut visited, &mut rcs, false);
+                        // Reshape can change dynamism (e.g. a dynamic dim
+                        // inferred from a runtime slice length): a
+                        // dynamic-shaped result must not live in a static
+                        // kernel — force it into its own kernel.
+                        let force_store = self.jit_kernels[kid].kernel.has_dynamic_shape(op_id);
+                        (kid, op_id) = self.duplicate_or_store_class(x, kid, op_id, &mut visited, &mut rcs, force_store);
                         let (mut skid, mut sop) = visited[&shape];
                         if skid != kid {
                             if self.jit_kernels[kid].kernel.contains_stores() {
@@ -459,7 +534,12 @@ impl Graph {
                     }
                     Node::Pad { x, axis, lp, len } => {
                         let (mut kid, mut op_id) = visited[&x];
-                        (kid, op_id) = self.duplicate_or_store_class(x, kid, op_id, &mut visited, &mut rcs, false);
+                        // Pad with negative padding IS slice: it can change
+                        // dynamism (e.g. crop to a runtime length). A
+                        // dynamic-shaped result must not live in a static
+                        // kernel — force it into its own kernel.
+                        let force_store = self.jit_kernels[kid].kernel.has_dynamic_shape(op_id);
+                        (kid, op_id) = self.duplicate_or_store_class(x, kid, op_id, &mut visited, &mut rcs, force_store);
                         let mut pads: [Option<OpId>; 2] = [None, None];
                         for (i, pad) in [lp, len].into_iter().enumerate() {
                             let (mut pkid, mut pop) = visited[&pad];
@@ -485,7 +565,11 @@ impl Graph {
                     }
                     Node::Narrow { x, axis, start, len } => {
                         let (mut kid, mut op_id) = visited[&x];
-                        (kid, op_id) = self.duplicate_or_store_class(x, kid, op_id, &mut visited, &mut rcs, false);
+                        // Narrow with a runtime bound (e.g. a sliced length)
+                        // makes the result dynamic: it must not live in a
+                        // static kernel — force it into its own kernel.
+                        let force_store = self.jit_kernels[kid].kernel.has_dynamic_shape(op_id);
+                        (kid, op_id) = self.duplicate_or_store_class(x, kid, op_id, &mut visited, &mut rcs, force_store);
                         let mut bounds: [Option<OpId>; 2] = [None, None];
                         for (i, bound) in [start, len].into_iter().enumerate() {
                             let (mut bkid, mut bop) = visited[&bound];
@@ -702,11 +786,18 @@ impl Graph {
         // runtime cache instead. Revisit once the graph-side design settles.
         let shape = {
             let dims: Vec<ClassId> = self.shape(cid);
+            // Fold dim expressions (e.g. pad/slice arithmetic over consts):
+            // a dim that resolves to a constant becomes a Const op; only
+            // genuinely dynamic dims become Variable params.
             let dim_consts: Vec<Option<crate::dtype::Constant>> = dims
                 .iter()
-                .map(|dim| match &self.nodes[self.classes[*dim].nodes[0]].node {
-                    Node::Const { value: c, .. } => Some(*c),
-                    _ => None,
+                .map(|dim| {
+                    // Dtypes are fully static: shape dims must be integer-typed.
+                    if cfg!(debug_assertions) {
+                        let dt = self.dtype(*dim);
+                        debug_assert!(dt.is_int(), "param dim must be integer-typed, got {dt:?}");
+                    }
+                    self.resolve_const(*dim)
                 })
                 .collect();
             let dim_ops: Vec<OpId> = dims
@@ -960,7 +1051,6 @@ impl Graph {
     /// kernelized independently, so the gaps between AOT kernels get filled
     /// while each AOT kernel keeps its own subgraph.
     pub fn fill_gaps(&mut self, active_outputs: &Set<ClassId>, outputs: &BTreeSet<ClassId>) {
-
         let mut producer_boundaries: Set<ClassId> = self.leaf_classes.iter().copied().collect();
         producer_boundaries.extend(active_outputs.iter().copied());
 
@@ -1064,5 +1154,12 @@ fn remove_first_output(kernels: &mut Slab<JitKernelId, JitKernelData>, kid: JitK
             true
         }
         None => false,
+    }
+}
+
+impl Kernel {
+    fn has_dynamic_shape(&mut self, op_id: OpId) -> bool {
+        let shape_ids = self.shape_ids(op_id);
+        shape_ids.into_iter().any(|dim_id| self.resolve_const(dim_id).is_none())
     }
 }

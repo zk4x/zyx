@@ -220,7 +220,7 @@ impl Kernel {
                 }
                 let next = self.next_op(op_id);
                 if let Op::Index { axis, kind: IdxKind::Group(len) } = self.ops[op_id].op {
-                    let len_dim = self.resolve_const(len).and_then(crate::dtype::Constant::as_dim).unwrap_or(u64::MAX);
+                    let len_dim = self.resolve_const(len).and_then(crate::dtype::Constant::as_dim).unwrap_or(i64::MAX as Dim);
                     if let Some(&l) = lengths.get(&axis) {
                         assert!(len_dim == l, "group index axis={axis} has inconsistent lengths ({} vs {})", l, len_dim);
                         self.remap(op_id, canonical[&axis]);
@@ -336,6 +336,12 @@ impl Kernel {
                     for d in &view {
                         let t_lo = self.cmpge(d.idx, zero);
                         pc = self.and(t_lo, pc);
+                        // A dim length of 0 is the inferred-dim marker and must
+                        // never reach the kernel IR (Tensor::reshape rejects it).
+                        debug_assert!(
+                            self.resolve_const(d.len).and_then(Constant::as_dim) != Some(0),
+                            "inferred dim (0) must not reach linearize"
+                        );
                         let t_hi = self.cmplt(d.idx, d.len);
                         pc = self.and(t_hi, pc);
                     }
@@ -395,6 +401,12 @@ impl Kernel {
                         for d in &view {
                             let t_lo = self.cmpge(d.idx, zero);
                             pc = self.and(t_lo, pc);
+                            // A dim length of 0 is the inferred-dim marker and must
+                            // never reach the kernel IR (Tensor::reshape rejects it).
+                            debug_assert!(
+                                self.resolve_const(d.len).and_then(Constant::as_dim) != Some(0),
+                                "inferred dim (0) must not reach linearize"
+                            );
                             let t_hi = self.cmplt(d.idx, d.len);
                             pc = self.and(t_hi, pc);
                         }
@@ -427,6 +439,12 @@ impl Kernel {
                             index = self.mad(d.idx, s, index);
                             let ge = self.cmpge(d.idx, zero);
                             pc = self.and(ge, pc);
+                            // A dim length of 0 is the inferred-dim marker and must
+                            // never reach the kernel IR (Tensor::reshape rejects it).
+                            debug_assert!(
+                                self.resolve_const(d.len).and_then(Constant::as_dim) != Some(0),
+                                "inferred dim (0) must not reach linearize"
+                            );
                             let lt = self.cmplt(d.idx, d.len);
                             pc = self.and(lt, pc);
                         }
@@ -533,6 +551,12 @@ impl Kernel {
                             let mut valid = self.const_val(true);
                             for d in &out_view {
                                 let lo = self.cmpge(d.idx, zero);
+                                // A dim length of 0 is the inferred-dim marker and must
+                                // never reach the kernel IR (Tensor::reshape rejects it).
+                                debug_assert!(
+                                    self.resolve_const(d.len).and_then(Constant::as_dim) != Some(0),
+                                    "inferred dim (0) must not reach linearize"
+                                );
                                 let hi = self.cmplt(d.idx, d.len);
                                 let in_axis = self.and(lo, hi);
                                 valid = self.and(valid, in_axis);

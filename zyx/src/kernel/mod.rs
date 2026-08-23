@@ -1256,10 +1256,22 @@ impl Kernel {
                     if bop == BOp::Mul {
                         match (&self.ops[x].op, &self.ops[y].op) {
                             (Op::Loop { len, .. }, Op::Const(c)) => {
-                                indices.insert(x, (self.resolve_const(*len).and_then(crate::dtype::Constant::as_dim).unwrap(), c.as_dim().unwrap() * scale));
+                                indices.insert(
+                                    x,
+                                    (
+                                        self.resolve_const(*len).and_then(crate::dtype::Constant::as_dim).unwrap(),
+                                        c.as_dim().unwrap() * scale,
+                                    ),
+                                );
                             }
                             (Op::Const(c), Op::Loop { len, .. }) => {
-                                indices.insert(y, (self.resolve_const(*len).and_then(crate::dtype::Constant::as_dim).unwrap(), c.as_dim().unwrap() * scale));
+                                indices.insert(
+                                    y,
+                                    (
+                                        self.resolve_const(*len).and_then(crate::dtype::Constant::as_dim).unwrap(),
+                                        c.as_dim().unwrap() * scale,
+                                    ),
+                                );
                             }
                             (Op::Index { .. }, Op::Const(c)) => {
                                 indices.insert(x, (index_len_of(&self.ops[x].op), c.as_dim().unwrap() * scale));
@@ -1273,7 +1285,13 @@ impl Kernel {
                     if bop == BOp::BitShiftLeft {
                         match (&self.ops[x].op, &self.ops[y].op) {
                             (Op::Loop { len, .. }, Op::Const(c)) => {
-                                indices.insert(x, (self.resolve_const(*len).and_then(crate::dtype::Constant::as_dim).unwrap(), (1u64 << c.as_dim().unwrap()) * scale));
+                                indices.insert(
+                                    x,
+                                    (
+                                        self.resolve_const(*len).and_then(crate::dtype::Constant::as_dim).unwrap(),
+                                        (1u64 << c.as_dim().unwrap()) * scale,
+                                    ),
+                                );
                             }
                             (Op::Index { .. }, Op::Const(c)) => {
                                 indices.insert(x, (index_len_of(&self.ops[x].op), (1u64 << c.as_dim().unwrap()) * scale));
@@ -1282,7 +1300,13 @@ impl Kernel {
                                 indices.insert(y, (index_len_of(&self.ops[y].op), (1u64 << c.as_dim().unwrap()) * scale));
                             }
                             (Op::Const(c), Op::Loop { len, .. }) => {
-                                indices.insert(y, (self.resolve_const(*len).and_then(crate::dtype::Constant::as_dim).unwrap(), (1u64 << c.as_dim().unwrap()) * scale));
+                                indices.insert(
+                                    y,
+                                    (
+                                        self.resolve_const(*len).and_then(crate::dtype::Constant::as_dim).unwrap(),
+                                        (1u64 << c.as_dim().unwrap()) * scale,
+                                    ),
+                                );
                             }
                             _ => {
                                 if let Op::Const(c) = self.ops[y].op {
@@ -1306,13 +1330,25 @@ impl Kernel {
                     }
                     match (&self.ops[x].op, &self.ops[y].op) {
                         (Op::Loop { len, .. }, Op::Const(c)) => {
-                            indices.insert(x, (self.resolve_const(*len).and_then(crate::dtype::Constant::as_dim).unwrap(), c.as_dim().unwrap() * scale));
+                            indices.insert(
+                                x,
+                                (
+                                    self.resolve_const(*len).and_then(crate::dtype::Constant::as_dim).unwrap(),
+                                    c.as_dim().unwrap() * scale,
+                                ),
+                            );
                         }
                         (Op::Index { .. }, Op::Const(c)) => {
                             indices.insert(x, (index_len_of(&self.ops[x].op), c.as_dim().unwrap() * scale));
                         }
                         (Op::Const(c), Op::Loop { len, .. }) => {
-                            indices.insert(y, (self.resolve_const(*len).and_then(crate::dtype::Constant::as_dim).unwrap(), c.as_dim().unwrap() * scale));
+                            indices.insert(
+                                y,
+                                (
+                                    self.resolve_const(*len).and_then(crate::dtype::Constant::as_dim).unwrap(),
+                                    c.as_dim().unwrap() * scale,
+                                ),
+                            );
                         }
                         (Op::Const(c), Op::Index { .. }) => {
                             indices.insert(y, (index_len_of(&self.ops[y].op), c.as_dim().unwrap() * scale));
@@ -1363,6 +1399,7 @@ impl Kernel {
                     stack.push(*x);
                     stack.push(*y);
                 }
+                Op::Stack { ops } => stack.extend(ops.iter().copied()),
                 Op::Loop { len } => stack.push(*len),
                 &Op::Index { kind, .. } => match kind {
                     IdxKind::Group(len) => stack.push(len),
@@ -1380,20 +1417,26 @@ impl Kernel {
             let v = match &self.ops[id].op {
                 Op::Const(c) => Some(*c),
                 // A cast preserves the integer value of a length.
-                Op::Cast { x, dtype } => values[x].map(|v| v.cast(*dtype)),
-                Op::Unary { x, uop } => values[x].map(|v| v.unary(*uop)),
+                Op::Cast { x, dtype } => values.get(x).copied().flatten().map(|v| v.cast(*dtype)),
+                Op::Unary { x, uop } => values.get(x).copied().flatten().map(|v| v.unary(*uop)),
                 Op::Binary { x, y, bop } => {
-                    values[x].zip(values[y]).map(|(a, b)| Constant::binary(a, b, *bop))
+                    values.get(x).copied().flatten().zip(values.get(y).copied().flatten()).map(|(a, b)| {
+                        // Shape expressions may mix dtypes (e.g. a U32 group
+                        // index with an I64 pad constant); evaluate in their
+                        // least upper dtype.
+                        let dt = a.dtype().least_upper_dtype(b.dtype());
+                        Constant::binary(a.cast(dt), b.cast(dt), *bop)
+                    })
                 }
-                Op::Loop { len } => values[len],
+                Op::Loop { len } => values.get(len).copied().flatten(),
                 &Op::Index { kind, .. } => match kind {
-                    IdxKind::Group(len) => values[&len],
+                    IdxKind::Group(len) => values.get(&len).copied().flatten(),
                     IdxKind::Local(len) => Some(Constant::U32(len)),
                     IdxKind::Warp(len) => Some(Constant::U32(len as u32)),
                 },
                 // Param is dynamic
                 Op::Param { .. } => None,
-                _ => todo!(),
+                ref op => todo!("{op:?}"),
             };
             values.insert(id, v);
         }

@@ -209,6 +209,19 @@ impl Runtime {
         }
         let (kid, op_id) = self.eager_ids(shape);
         let kernel = &self.kernels[kid].kernel;
+        // Dtypes are fully static: shape dims must be integer-typed consts.
+        if cfg!(debug_assertions) {
+            let dims: Vec<OpId> = match &kernel.ops[op_id].op {
+                Op::Stack { ops } => ops.to_vec(),
+                Op::Const(_) => vec![op_id],
+                _ => Vec::new(),
+            };
+            for &d in &dims {
+                if let Op::Const(c) = kernel.ops[d].op {
+                    debug_assert!(c.as_dim().is_some(), "shape dim must be an integer const, got {c:?}");
+                }
+            }
+        }
         match &kernel.ops[op_id].op {
             Op::Stack { ops } => ops.iter().map(|&o| self.const_dim(kid, o).unwrap_or(0)).collect(),
             Op::Const(_) => vec![self.const_dim(kid, op_id).unwrap_or(0)],
@@ -1014,6 +1027,8 @@ impl Runtime {
     pub(super) fn reshape(&mut self, x: TensorId, shape: TensorId) -> Result<TensorId, ZyxError> {
         #[cfg(feature = "debug_tensor_op")]
         println!("runtime::reshape(x={x}, shape={shape:?})");
+        // Dtypes are fully static: shape descriptors must be integer-typed.
+        debug_assert!(self.dtype(shape).is_int(), "reshape target must be an integer dtype, got {:?}", self.dtype(shape));
 
         if self.is_graph(x) || self.is_graph(shape) {
             let graph_id = if self.is_graph(x) {
@@ -1077,6 +1092,8 @@ impl Runtime {
     pub fn expand(&mut self, x: TensorId, shape: TensorId) -> Result<TensorId, ZyxError> {
         #[cfg(feature = "debug_tensor_op")]
         println!("runtime::expand(x={x}, shape={shape:?})");
+        // Dtypes are fully static: shape descriptors must be integer-typed.
+        debug_assert!(self.dtype(shape).is_int(), "expand target must be an integer dtype, got {:?}", self.dtype(shape));
 
         if self.is_graph(x) || self.is_graph(shape) {
             let graph_id = if self.is_graph(x) {
@@ -1189,6 +1206,8 @@ impl Runtime {
     pub fn pad_zeros(&mut self, x: TensorId, axis: UAxis, lp: TensorId, len: TensorId) -> TensorId {
         #[cfg(feature = "debug_tensor_op")]
         println!("runtime::pad_zeros(x={x}, axis={axis}, lp={lp}, len={len})");
+        // Dtypes are fully static: shape descriptors must be integer-typed.
+        debug_assert!(self.dtype(lp).is_int() && self.dtype(len).is_int(), "pad_zeros bounds must be integer-typed, got lp={:?} len={:?}", self.dtype(lp), self.dtype(len));
 
         let sh = self.shape(x).to_vec();
         debug_assert!(axis < sh.len() as UAxis, "pad_zeros: axis {axis} out of range for rank {}", sh.len());
@@ -1273,6 +1292,8 @@ impl Runtime {
     pub fn narrow(&mut self, x: TensorId, axis: UAxis, start: TensorId, len: TensorId) -> TensorId {
         #[cfg(feature = "debug_tensor_op")]
         println!("runtime::narrow(x={x}, axis={axis}, start={start}, len={len})");
+        // Dtypes are fully static: shape descriptors must be integer-typed.
+        debug_assert!(self.dtype(start).is_int() && self.dtype(len).is_int(), "narrow bounds must be integer-typed, got start={:?} len={:?}", self.dtype(start), self.dtype(len));
 
         let sh = self.shape(x).to_vec();
         debug_assert!(axis < sh.len() as UAxis, "narrow: axis {axis} out of range for rank {}", sh.len());

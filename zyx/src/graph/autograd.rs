@@ -274,17 +274,18 @@ impl Runtime {
                 Node::Reduce { x, rop: bop, ref axes } => {
                     let axes = axes.clone();
                     match bop {
-                        BOp::Add => {
-                            // Reshape the gradient to x's dims with 1 at each
-                            // reduced axis, then broadcast back to x's shape.
-                            let x_dims = self.graphs[graph_id].shape(x);
-                            let dtype = self.graphs[graph_id].dtype(x);
-                            let one = self.push_const(graph_id, Constant::new(1u8).cast(dtype));
-                            let kept: Vec<ClassId> = x_dims
-                                .iter()
-                                .enumerate()
-                                .map(|(i, &d)| if axes.contains(&(i as UAxis)) { one } else { d })
-                                .collect();
+                    BOp::Add => {
+                        // Reshape the gradient to x's dims with 1 at each
+                        // reduced axis, then broadcast back to x's shape.
+                        let x_dims = self.graphs[graph_id].shape(x);
+                        // Shape dims are lengths: always integer-typed,
+                        // never the tensor's data dtype.
+                        let one_dim = self.push_const(graph_id, Constant::new(1u64));
+                        let kept: Vec<ClassId> = x_dims
+                            .iter()
+                            .enumerate()
+                            .map(|(i, &d)| if axes.contains(&(i as UAxis)) { one_dim } else { d })
+                            .collect();
                             let kept_shape = self.shape_class(graph_id, kept);
                             let grad_r = self.push_node(graph_id, Node::Reshape { x: grad, shape: kept_shape }).1;
                             let x_shape = self.shape_class(graph_id, x_dims);
@@ -297,10 +298,13 @@ impl Runtime {
                             let x_dims = self.graphs[graph_id].shape(x);
                             let dtype = self.graphs[graph_id].dtype(x);
                             let one = self.push_const(graph_id, Constant::new(1u8).cast(dtype));
+                            // Shape dims are lengths: always integer-typed,
+                            // never the tensor's data dtype.
+                            let one_dim = self.push_const(graph_id, Constant::new(1u64));
                             let kept: Vec<ClassId> = x_dims
                                 .iter()
                                 .enumerate()
-                                .map(|(i, &d)| if axes.contains(&(i as UAxis)) { one } else { d })
+                                .map(|(i, &d)| if axes.contains(&(i as UAxis)) { one_dim } else { d })
                                 .collect();
                             let kept_shape = self.shape_class(graph_id, kept);
                             let x_shape = self.shape_class(graph_id, x_dims);

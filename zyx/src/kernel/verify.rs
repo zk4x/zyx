@@ -5,6 +5,7 @@ use std::ops::RangeInclusive;
 
 use crate::{
     DType, Map, Set,
+    dtype::Constant,
     kernel::{BOp, IDX_T, IdxKind, Kernel, MemScope, Op, OpId, ParamKind},
     shape::Dim,
 };
@@ -33,6 +34,24 @@ impl Kernel {
             let mut scan = self.head;
             while !scan.is_null() {
                 match self.at(scan) {
+                    // No compile-time NaN may enter the IR: a folded NaN is
+                    // always a bug (invalid folding or invalid input data).
+                    Op::Const(c) => {
+                        let is_nan = match c {
+                            Constant::F32(x) => f32::from_le_bytes(*x).is_nan(),
+                            Constant::F64(x) => f64::from_le_bytes(*x).is_nan(),
+                            Constant::BF16(x) => u16::from_le_bytes(*x) & 0x7fff > 0x7f80,
+                            Constant::F16(x) => {
+                                let b = u16::from_le_bytes(*x);
+                                b & 0x7c00 == 0x7c00 && b & 0x03ff != 0
+                            }
+                            _ => false,
+                        };
+                        if is_nan {
+                            self.debug();
+                        }
+                        debug_assert!(!is_nan, "kernel contains a NaN constant at op {scan:?}");
+                    }
                     Op::Store { index, .. } => {
                         if index.is_null() {
                             null_index_stores += 1;
@@ -454,11 +473,18 @@ impl Kernel {
                 Op::Index { kind: scope, .. } => {
                     let b = bounds_stack.last_mut().unwrap();
                     let len = match scope {
-                        IdxKind::Group(len) => self.resolve_const(len).and_then(crate::dtype::Constant::as_dim).unwrap_or(u64::MAX),
-                        IdxKind::Local(len) => u64::from(len),
-                        IdxKind::Warp(len) => u64::from(len),
+                        IdxKind::Group(len) => self.resolve_const(len).and_then(crate::dtype::Constant::as_dim),
+                        IdxKind::Local(len) => Some(u64::from(len)),
+                        IdxKind::Warp(len) => Some(u64::from(len)),
                     };
-                    b.insert(op_id, (0, len.saturating_sub(1)));
+                    // An unresolved (dynamic) group length is UNKNOWN: no
+                    // bounds must be fabricated for it. A huge sentinel here
+                    // would wrap around in downstream arithmetic and produce
+                    // false tight ranges (-> provably-false guards -> wrong
+                    // constant folding).
+                    if let Some(len) = len {
+                        b.insert(op_id, (0, len.saturating_sub(1)));
+                    }
                 }
                 Op::Asm { ref ops, .. } => {
                     let b = bounds_stack.last_mut().unwrap();
@@ -582,28 +608,30 @@ impl Kernel {
                 let Some(&(min_x, max_x)) = prev.get(&x) else { return };
                 let Some(&(min_y, max_y)) = prev.get(&y) else { return };
                 let range = match bop {
-                    BOp::Add => (min_x.wrapping_add(min_y), max_x.wrapping_add(max_y)),
-                    BOp::Sub => (min_x.wrapping_sub(max_y), max_x.wrapping_sub(min_y)),
-                    BOp::Mul => (min_x.wrapping_mul(min_y), max_x.wrapping_mul(max_y)),
+                    // Saturating, never wrapping: an overflow must not
+                    // fabricate a small upper bound out of huge ones.
+                    BOp::Add => (min_x.saturating_add(min_y), max_x.saturating_add(max_y)),
+                    BOp::Sub => (min_x.saturating_sub(max_y), max_x.saturating_sub(min_y)),
+                    BOp::Mul => (min_x.saturating_mul(min_y), max_x.saturating_mul(max_y)),
                     BOp::Div | BOp::Mod if min_y == 0 || max_y == 0 => (0, Dim::MAX),
                     BOp::Div => (min_x / min_y, max_x / max_y),
                     BOp::Mod => (0, max_y - 1),
-                    BOp::BitShiftLeft => (min_x << min_y, max_x << max_y),
-                    BOp::BitShiftRight => (min_x >> min_y, max_x >> max_y),
+                    BOp::BitShiftLeft => (min_x << min_y.min(63), max_x << max_y.min(63)),
+                    BOp::BitShiftRight => (min_x >> min_y.min(63), max_x >> max_y.min(63)),
                     BOp::Pow => {
                         let min_val = if min_y == 0 {
                             1
                         } else if min_x == 0 {
                             0
                         } else {
-                            min_x.pow(min_y as u32)
+                            min_x.saturating_pow(min_y.min(u32::MAX as u64) as u32)
                         };
                         let max_val = if max_y == 0 {
                             1
                         } else if max_x == 0 {
                             0
                         } else {
-                            max_x.pow(max_y as u32)
+                            max_x.saturating_pow(max_y.min(u32::MAX as u64) as u32)
                         };
                         (min_val, max_val)
                     }
@@ -671,7 +699,13 @@ impl Kernel {
                 let Some(&(xl, xu)) = prev.get(&x) else { return };
                 let Some(&(yl, yu)) = prev.get(&y) else { return };
                 let Some(&(zl, zu)) = prev.get(&z) else { return };
-                prev.insert(op_id, (xl.wrapping_mul(yl).wrapping_add(zl), xu.wrapping_mul(yu).wrapping_add(zu)));
+                prev.insert(
+                    op_id,
+                    (
+                        xl.saturating_mul(yl).saturating_add(zl),
+                        xu.saturating_mul(yu).saturating_add(zu),
+                    ),
+                );
             }
             _ => {}
         }
