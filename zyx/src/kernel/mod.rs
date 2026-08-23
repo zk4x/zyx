@@ -91,7 +91,7 @@
 
 pub use crate::backend::DeviceId;
 
-use crate::{DType, Map, Set, dtype::Constant, shape::Dim, shape::UAxis, slab::Slab};
+use crate::{DType, Map, Set, dtype::Constant, shape::Dim, slab::Slab};
 use nanoserde::{DeBin, SerBin};
 use std::collections::BTreeMap;
 use std::{hash::BuildHasherDefault, hash::Hash};
@@ -1388,7 +1388,15 @@ impl Kernel {
         op_id
     }
 
-    /// Extract ops reachable from `root_op` into a new kernel.
+    /// Extracts `root_op` and *only* its exclusively-used operands into a
+    /// new kernel.
+    ///
+    /// The root op plus every op reachable from it that is **not** also
+    /// required by any of `all_outputs` moves into the returned kernel (with
+    /// remapped op ids); everything else stays in `self` untouched — the old
+    /// kernel keeps existing and its remaining outputs keep their op ids,
+    /// so caller-side bookkeeping (`visited` entries etc.) for them does
+    /// NOT change.
     ///
     /// `all_outputs` contains all output OpIds in this kernel (including `root_op`).
     /// `loads` — parallel to LoadView ops in linked-list order — is split into

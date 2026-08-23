@@ -114,15 +114,14 @@ impl Graph {
             debug_assert!(!visited.contains_key(&cid), "class {cid:?} already visited");
 
             let nid = self.classes[cid].nodes[0];
-            /*println!(
-                "cid={} nid={} rc={} shape={:?}, {:?}, n_kernels={:?}",
+            println!(
+                "cid={} nid={} rc={} {:?}, n_kernels={:?}",
                 cid.0,
                 nid.0,
                 rcs[&cid],
-                shapes[self.classes[cid].shape],
                 self.nodes[nid].node,
                 self.jit_kernels.len()
-            );*/
+            );
             if inputs.contains(&cid) {
                 // Boundary input: load the class from storage, same as a leaf.
                 let (kid, op_id) = self.new_load_kernel(cid, rcs[&cid]);
@@ -150,28 +149,22 @@ impl Graph {
                         // Copy the element list out of the node so the shared
                         // borrow of self.nodes ends before we mutate kernels.
                         let ops: Vec<ClassId> = ops.iter().copied().collect();
-                        // Merge every element into the first element's kernel
-                        // (same dance as Binary), then emit a single stack op.
-                        let first = ops[0];
-                        let (mut kid, first_op) = visited[&first];
+                        // Merge every element into the first element's kernel,
+                        // mirroring `Runtime::stack`: fresh `(kid, op)` read
+                        // per element; a source kernel with stores is stored
+                        // and re-read, anything still foreign is merged in.
+                        let (kid, _) = visited[&ops[0]];
                         let mut op_ids: Vec<OpId> = Vec::with_capacity(ops.len());
-                        op_ids.push(first_op);
-                        for &elem in ops.iter().skip(1) {
+                        for &elem in ops.iter() {
                             let (mut ekid, mut eop) = visited[&elem];
                             if ekid != kid {
-                                let kid_stores = self.jit_kernels[kid].kernel.contains_stores();
-                                let ekid_stores = self.jit_kernels[ekid].kernel.contains_stores();
-                                match (kid_stores, ekid_stores) {
-                                    (true, true) => {
-                                        (kid, _) = self.add_store(first, kid, first_op, &mut visited, &rcs);
-                                        (ekid, _) = self.add_store(elem, ekid, eop, &mut visited, &rcs);
-                                    }
-                                    (true, false) => (kid, _) = self.add_store(first, kid, first_op, &mut visited, &rcs),
-                                    (false, true) => (ekid, _) = self.add_store(elem, ekid, eop, &mut visited, &rcs),
-                                    (false, false) => {}
+                                if self.jit_kernels[ekid].kernel.contains_stores() {
+                                    (ekid, eop) = self.add_store(elem, ekid, eop, &mut visited, &rcs);
                                 }
-                                self.merge_kernels(ekid, kid, &mut visited);
-                                (_, eop) = visited[&elem];
+                                if ekid != kid {
+                                    self.merge_kernels(ekid, kid, &mut visited);
+                                    (_, eop) = visited[&elem];
+                                }
                             }
                             op_ids.push(eop);
                         }
@@ -675,6 +668,29 @@ impl Graph {
                         "kernel {kid:?} loads and stores class {load:?}: loads={:?} stores={:?}",
                         kernel.loads,
                         kernel.stores,
+                    );
+                }
+                // Invariant: `loads` is parallel to the Global/Variable Param
+                // ops in head order (extract_subkernel and launch both rely on
+                // this).
+                let mut n_params = 0;
+                let mut oid = kernel.kernel.head;
+                for _ in 0..10_000 {
+                    if oid.is_null() {
+                        break;
+                    }
+                    if matches!(kernel.kernel.at(oid), Op::Param { kind: ParamKind::Global | ParamKind::Variable, .. }) {
+                        n_params += 1;
+                    }
+                    oid = kernel.kernel.next_op(oid);
+                }
+                assert!(!oid.is_null() || true);
+                if n_params != kernel.loads.len() {
+                    panic!(
+                        "DEBUG kernelize invariant broken: kernel {kid:?} has {n_params} Global/Variable params but {} loads entries. stores={:?} outputs={:?}",
+                        kernel.loads.len(),
+                        kernel.stores,
+                        kernel.outputs,
                     );
                 }
             }

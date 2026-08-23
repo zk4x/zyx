@@ -36,8 +36,8 @@ The repo root has **no `Cargo.toml`** — crates (`zyx`, `zyx-nn`, ...) are inde
 cd zyx && cargo build                      # build
 cd zyx && AGENT=1 cargo test               # test (AGENT=1 strips ANSI colors)
 cd zyx && AGENT=1 cargo test <name>        # single test
-cd zyx && AGENT=1 cargo test --test 1_unary  # one test file
-cd zyx && AGENT=1 cargo test -- --nocapture   # with output
+cd zyx && AGENT=1 cargo test --test <file> <name>  # one test in one file
+cd zyx && AGENT=1 cargo test -- --nocapture   # with output (ALWAYS add -- --nocapture when capturing debug/env-var output, e.g. ZYX_DEBUG)
 cd zyx && AGENT=1 cargo test --doc         # doc tests
 cd zyx && cargo fmt                        # format
 ```

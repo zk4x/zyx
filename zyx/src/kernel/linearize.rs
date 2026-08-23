@@ -443,9 +443,7 @@ impl Kernel {
                         matches!(dst_param_op, Op::Param { kind: ParamKind::GlobalMut, .. }),
                         "store dst chain must terminate at a writable global Param, got {dst_param_op:?}"
                     );
-                    let Op::Param { shape: dst_shape, .. } = *dst_param_op else {
-                        unreachable!()
-                    };
+                    let Op::Param { .. } = *dst_param_op else { unreachable!() };
                     assert!(
                         dst_stores.insert(dst_param, op_id).is_none(),
                         "store dst chain terminates at Param {dst_param:?}, which is already a store destination"
@@ -551,7 +549,7 @@ impl Kernel {
                             }
                             views.insert(x, view);
                         }
-                        &MoveOp::Expand { shape } => {
+                        &MoveOp::Expand { .. } => {
                             // Broadcast determination is symbolic: an input axis is
                             // broadcast iff its dim resolves to 1 and the output dim
                             // resolves to something != 1 (mirrors tinygrad's
@@ -563,7 +561,9 @@ impl Kernel {
                                 Op::Move { mop, .. } => match mop.as_ref() {
                                     MoveOp::Reshape { shape, .. } | MoveOp::Expand { shape } => match &self.ops[*shape].op {
                                         Op::Stack { ops } => ops.to_vec(),
-                                        Op::Const(_) => vec![*shape],
+                                        // Bare descriptor: a single dim value (const
+                                        // or runtime-loaded scalar).
+                                        Op::Const(_) | Op::Param { .. } => vec![*shape],
                                         op => todo!("invalid shape descriptor {op:?}"),
                                     },
                                     _ => unreachable!(),
@@ -585,8 +585,8 @@ impl Kernel {
                             } else {
                                 let mut v = Vec::with_capacity(n);
                                 for a in 0..n {
-                                    let broadcast =
-                                        self.resolve_const(x_shape[a]).and_then(crate::dtype::Constant::as_dim) == Some(1) && self.resolve_const(shape[offset + a]).and_then(crate::dtype::Constant::as_dim) != Some(1);
+                                    let broadcast = self.resolve_const(x_shape[a]).and_then(Constant::as_dim) == Some(1)
+                                        && self.resolve_const(shape[offset + a]).and_then(Constant::as_dim) != Some(1);
                                     let d = out_view[offset + a];
                                     let d = if broadcast {
                                         SDim::new(zero, x_shape[a])
