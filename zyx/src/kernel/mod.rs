@@ -1424,21 +1424,24 @@ impl Kernel {
         op_id
     }
 
-    /// Extracts `root_op` and *only* its exclusively-used operands into a
-    /// new kernel.
+    /// Extracts the single `root_op` into a fresh kernel.
     ///
-    /// The root op plus every op reachable from it that is **not** also
-    /// required by any of `all_outputs` moves into the returned kernel (with
-    /// remapped op ids); everything else stays in `self` untouched — the old
-    /// kernel keeps existing and its remaining outputs keep their op ids,
-    /// so caller-side bookkeeping (`visited` entries etc.) for them does
-    /// NOT change.
+    /// Semantics — there is exactly ONE remapped op:
+    /// - The root op is **cloned** into the returned kernel under a NEW
+    ///   OpId (the returned one). It is removed from `self`.
+    /// - Every op reachable from the root that is not needed for any other
+    ///   reason in `self` (another output, or a store chain) is deleted
+    ///   from `self`; it exists only in the new kernel now.
+    /// - **Everything else stays in `self` with its ORIGINAL OpId.** There
+    ///   is no remapping of non-root ops and no remap map; caller-side
+    ///   bookkeeping (`visited` entries etc.) for them does NOT change.
+    /// - Loads are the exception to "ids stay": each load op is cloned into
+    ///   whichever kernel still needs it, which is why `loads` is split
+    ///   into `self_loads` / `new_loads` (parallel to the LoadView ops,
+    ///   linked-list order) and must be assigned by the caller.
     ///
     /// `all_outputs` contains all output OpIds in this kernel (including `root_op`).
-    /// `loads` — parallel to LoadView ops in linked-list order — is split into
-    /// `self_loads` and `new_loads` based on which kernel retains each LoadView.
     /// The new kernel contains only ops that `root_op` transitively depends on.
-    /// Removes from `self` ops that are only needed by `root_op` and no other output.
     pub(crate) fn extract_subkernel<T: Copy>(
         &mut self,
         root_op: OpId,

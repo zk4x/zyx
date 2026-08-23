@@ -197,20 +197,6 @@ impl ExecPlan {
                         store_classes: outputs.clone(),
                     });
                     for &ic in &**inputs {
-                        if !allocated.contains(&ic) && !graph.leaf_map.contains_key(&ic) && !alias_classes.contains(&ic) {
-                            let producer_nodes: Vec<NodeId> = graph
-                                .classes
-                                .ids()
-                                .flat_map(|c| graph.classes[c].nodes.iter().copied())
-                                .filter(|&nid| {
-                                    matches!(&graph.nodes[nid].node, crate::graph::Node::Kernel { outputs, .. } if outputs.contains(&ic))
-                                })
-                                .collect();
-                            let in_nodes = producer_nodes.iter().any(|n| nodes.contains(n));
-                            eprintln!(
-                                "DEBUG plan: launch input {ic:?} unallocated; producer kernel nodes={producer_nodes:?}; in_nodes={in_nodes}"
-                            );
-                        }
                         let c = rc.get_mut(&ic).unwrap();
                         *c -= 1;
                         if *c == 0

@@ -114,14 +114,7 @@ impl Graph {
             debug_assert!(!visited.contains_key(&cid), "class {cid:?} already visited");
 
             let nid = self.classes[cid].nodes[0];
-            println!(
-                "cid={} nid={} rc={} {:?}, n_kernels={:?}",
-                cid.0,
-                nid.0,
-                rcs[&cid],
-                self.nodes[nid].node,
-                self.jit_kernels.len()
-            );
+
             if inputs.contains(&cid) {
                 // Boundary input: load the class from storage, same as a leaf.
                 let (kid, op_id) = self.new_load_kernel(cid, rcs[&cid]);
@@ -426,7 +419,7 @@ impl Graph {
                             // A shape descriptor is pure metadata — never store it.
                             // If its kernel has stores, extract the shape's subgraph
                             // into a store-free kernel and merge that in instead.
-                            skid = self.extract_shape_kernel(shape, skid, sop, &mut visited, &rcs);
+                            skid = self.extract_shape_kernel(shape, skid, sop, &mut visited);
                             self.merge_kernels(skid, kid, &mut visited);
                             (_, sop) = visited[&shape];
                         }
@@ -452,7 +445,7 @@ impl Graph {
                             // A shape descriptor is pure metadata — never store it.
                             // If its kernel has stores, extract the shape's subgraph
                             // into a store-free kernel and merge that in instead.
-                            skid = self.extract_shape_kernel(shape, skid, sop, &mut visited, &rcs);
+                            skid = self.extract_shape_kernel(shape, skid, sop, &mut visited);
                             self.merge_kernels(skid, kid, &mut visited);
                             (_, sop) = visited[&shape];
                         }
@@ -475,7 +468,7 @@ impl Graph {
                                     (kid, op_id) = self.add_store(x, kid, op_id, &mut visited, &rcs);
                                 }
                                 // Bounds are pure metadata — never store them.
-                                pkid = self.extract_shape_kernel(pad, pkid, pop, &mut visited, &rcs);
+                                pkid = self.extract_shape_kernel(pad, pkid, pop, &mut visited);
                                 self.merge_kernels(pkid, kid, &mut visited);
                                 (_, pop) = visited[&pad];
                             }
@@ -501,7 +494,7 @@ impl Graph {
                                     (kid, op_id) = self.add_store(x, kid, op_id, &mut visited, &rcs);
                                 }
                                 // Bounds are pure metadata — never store them.
-                                bkid = self.extract_shape_kernel(bound, bkid, bop, &mut visited, &rcs);
+                                bkid = self.extract_shape_kernel(bound, bkid, bop, &mut visited);
                                 self.merge_kernels(bkid, kid, &mut visited);
                                 (_, bop) = visited[&bound];
                             }
@@ -532,14 +525,6 @@ impl Graph {
                         visited.insert(cid, (kid, op_id));
                     }
                     Node::Kernel { .. } => {}
-                }
-            }
-
-            eprintln!("=== after cid={cid:?} ===");
-            for (j, (_, k)) in self.jit_kernels.iter().enumerate() {
-                eprintln!("--- kid={j} outputs={:?} stores={:?} loads={:?}", k.outputs, k.stores, k.loads);
-                for (oid, node) in k.kernel.ops.iter() {
-                    eprintln!("    op{:?}: {:?}", oid, node.op);
                 }
             }
 
@@ -759,13 +744,6 @@ impl Graph {
     ) -> (JitKernelId, OpId) {
         //println!("add store cid={cid:?} kid={kid:?} op_id={op_id:?} rc={}", rcs.get(&cid).unwrap());
         //println!("outputs={:?}", self.ekernels[kid].outputs);
-        if cfg!(debug_assertions) && cid == ClassId(119) {
-            eprintln!(
-                "DEBUG add_store: storing class 119 ({:?}) into kernel {kid:?}\n{}",
-                self.nodes[self.classes[cid].nodes[0]].node,
-                std::backtrace::Backtrace::force_capture()
-            );
-        }
 
         if !self.jit_kernels[kid].loads.contains(&cid) {
             let dtype = self.dtype(cid);
@@ -808,21 +786,24 @@ impl Graph {
         skid: JitKernelId,
         sop: OpId,
         visited: &mut Map<ClassId, (JitKernelId, OpId)>,
-        rcs: &Map<ClassId, u32>,
     ) -> JitKernelId {
         if !self.jit_kernels[skid].kernel.contains_stores() {
             return skid;
         }
-        remove_first_output(&mut self.jit_kernels, skid, shape);
-        let out_op_ids: Vec<OpId> = self.jit_kernels[skid].outputs.iter().map(|&cid| visited[&cid].1).collect();
+        // ALL occurrences of `shape` leave `skid`: the root moved to the
+        // extracted kernel, so every remaining use moves with it. The
+        // extracted kernel carries them until consumers `consume()` them off
+        // (post-merge, from the consumer kernel).
+        let n_uses = self.jit_kernels[skid].outputs.iter().filter(|&&c| c == shape).count();
+        self.jit_kernels[skid].outputs.retain(|&c| c != shape);
         let loads = self.jit_kernels[skid].loads.clone();
+        let out_op_ids: Vec<OpId> = self.jit_kernels[skid].outputs.iter().map(|&cid| visited[&cid].1).collect();
         let (new_kernel, new_op_id, self_loads, new_loads) =
             self.jit_kernels[skid].kernel.extract_subkernel(sop, &out_op_ids, &loads);
         self.jit_kernels[skid].loads = self_loads;
-        debug_assert_eq!(self.jit_kernels[skid].outputs.iter().filter(|&&x| x == shape).count(), rcs[&shape] as usize - 1);
         let new_kid = self.jit_kernels.push(JitKernelData {
             kernel: new_kernel,
-            outputs: vec![shape],
+            outputs: vec![shape; n_uses],
             loads: new_loads,
             stores: Vec::new(),
         });
@@ -979,19 +960,7 @@ impl Graph {
     /// kernelized independently, so the gaps between AOT kernels get filled
     /// while each AOT kernel keeps its own subgraph.
     pub fn fill_gaps(&mut self, active_outputs: &Set<ClassId>, outputs: &BTreeSet<ClassId>) {
-        let n_kernels = self
-            .classes
-            .ids()
-            .map(|cid| self.classes[cid].nodes.iter().filter(|&&nid| matches!(self.nodes[nid].node, Node::Kernel { .. })).count())
-            .sum::<usize>();
-        let n_kernel_classes = self
-            .classes
-            .ids()
-            .filter(|&cid| self.classes[cid].nodes.iter().any(|&nid| matches!(self.nodes[nid].node, Node::Kernel { .. })))
-            .count();
-        eprintln!(
-            "DEBUG fill_gaps: {n_kernels} Node::Kernel ops on {n_kernel_classes} classes; active_outputs={active_outputs:?}"
-        );
+
         let mut producer_boundaries: Set<ClassId> = self.leaf_classes.iter().copied().collect();
         producer_boundaries.extend(active_outputs.iter().copied());
 
@@ -1036,18 +1005,6 @@ impl Graph {
 
         // Region id per structural class.
         let region_of: Map<ClassId, usize> = structural.iter().map(|&c| (c, find(&mut parent, idx[&c]))).collect();
-        for (&cid, &r) in &region_of {
-            if matches!(self.nodes[self.classes[cid].nodes[0]].node, Node::Binary { .. }) {
-                let consumers: Vec<(ClassId, usize)> = structural
-                    .iter()
-                    .filter_map(|&c| {
-                        let has = self.classes[c].nodes.iter().any(|&nid| self.nodes[nid].node.class_params().any(|p| p == cid));
-                        has.then(|| (c, region_of[&c]))
-                    })
-                    .collect();
-                eprintln!("DEBUG fill_gaps: Binary dim class {cid:?} in region {r}, consumers={consumers:?}");
-            }
-        }
         // A class consumed by a node in a *different* region must be stored —
         // the consumer region loads it through a global param ("a shape
         // dimension is a result of a kernel now and loaded into a new one").
@@ -1091,11 +1048,6 @@ impl Graph {
                 region_outputs.extend(extra);
             }
 
-            for &o in &region_outputs {
-                if matches!(self.nodes[self.classes[o].nodes[0]].node, Node::Binary { .. }) {
-                    eprintln!("DEBUG fill_gaps: region output {o:?} is a Binary (computed dim)");
-                }
-            }
             if region_outputs.is_empty() {
                 continue;
             }
