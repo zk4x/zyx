@@ -196,6 +196,10 @@ pub struct Kernel {
     pub(crate) tail: OpId,
     /// Target device for compilation.
     pub(crate) device_id: DeviceId,
+    /// Memoized [`Self::shape_ids`] results. Only valid pre-linearization —
+    /// [`linearize`](crate::kernel::linearize) clears it so kernels stay
+    /// lightweight during autotuning.
+    pub(crate) shape_cache: Map<OpId, Vec<OpId>>,
 }
 
 /// Scope for memory.
@@ -214,6 +218,14 @@ pub enum MemScope {
 /// Memory layout for kernel operations.
 ///
 /// Specifies how data is laid out in memory for efficient access.
+///
+/// The layout also determines how much a **single** [`Op::Store`] / load op
+/// writes (reads): it is the *indexing granularity* of the op, not the rank
+/// or scalarity of the value being moved. `Scalar` means the op writes one
+/// single element per op; `Vector` writes a full vector with a single op;
+/// `Tile` writes a large tile with a single op. A multi-element tensor can
+/// perfectly well be stored through repeated `Scalar`-layout store ops (one
+/// per element) — that says nothing about the value's shape.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, SerBin, DeBin)]
 pub enum MemLayout {
     /// Scalar layout: one element per memory location
@@ -856,35 +868,60 @@ impl Kernel {
     /// a scalar value (`Const`, scalar `Param`) has an empty shape.
     #[must_use]
     pub(crate) fn shape_ids(&mut self, op_id: OpId) -> Vec<OpId> {
-        // Unpacks a shape descriptor (a `Stack` of dims or a bare `Const`
-        // dim, as stored in `Param { shape }`, `Reshape { shape }`,
-        // `Expand { shape }`) into its dimension op ids.
-        fn descriptor(k: &Kernel, id: OpId) -> Vec<OpId> {
-            if id.is_null() {
-                return Vec::new();
-            }
-            match k.ops[id].op {
-                Op::Stack { ref ops } => ops.to_vec(),
-                Op::Const(_) => vec![id],
-                // A shape held in memory (global param): dims unknowable
-                // statically; treated as unknown.
-                Op::Param { .. } => Vec::new(),
-                ref op => todo!("shape_ids: invalid shape descriptor {op:?}"),
-            }
-        }
         if op_id.is_null() {
             return Vec::new();
         }
+        if let Some(cached) = self.shape_cache.get(&op_id) {
+            return cached.clone();
+        }
+        // Unpacks a shape descriptor (a `Stack` of dims or a bare `Const`
+        // dim, as stored in `Param { shape }`, `Reshape { shape }`,
+        // `Expand { shape }`) into its dimension op ids.
+        //
+        // Each returned entry is the op computing that dim's length. A
+        // dynamic (runtime-known only) dim length is [`OpId::NULL`]: rank is
+        // always statically known, individual lengths may not be. An empty
+        // vec means a scalar (rank 0).
+        //
+        // A Param as a shape descriptor is a shape *tensor*: scalar
+        // (`shape == NULL`) → one dynamic dim; 1d vector → one dynamic dim
+        // per element, loaded element-wise from the param. Higher rank is
+        // invalid. Shape tensors must be [`IDX_T`].
+        fn descriptor(k: &mut Kernel, id: OpId) -> Vec<OpId> {
+            if id.is_null() {
+                return Vec::new();
+            }
+            let (shape, dtype) = match k.ops[id].op {
+                Op::Stack { ref ops } => return ops.to_vec(),
+                // A bare Const is a single concrete dim length.
+                Op::Const(_) => return vec![id],
+                Op::Param { shape, dtype, .. } => (shape, dtype),
+                ref op => todo!("shape_ids: invalid shape descriptor {op:?}"),
+            };
+            debug_assert!(dtype == IDX_T, "shape tensor must be {IDX_T:?}, got {dtype:?}");
+            let rank = if shape.is_null() { 1 } else { k.shape(shape).len() };
+            debug_assert!(rank <= 1, "shape_ids: param shape descriptor must be 0d or 1d, got rank {rank}");
+            let mut dims = Vec::with_capacity(rank);
+            for i in 0..rank as u32 {
+                let idx = k.const_idx(i);
+                dims.push(k.push_back(Op::Load { src: id, index: idx, layout: MemLayout::Scalar }));
+            }
+            dims
+        }
+        let root = op_id;
         let mut stack = vec![op_id];
         let mut visited: Map<OpId, Vec<OpId>> = Map::default();
         for _ in 0..10_000 {
             let Some(op_id) = stack.pop() else {
-                return visited.remove(&op_id).unwrap();
+                let shape = visited.remove(&op_id).unwrap();
+                self.shape_cache.insert(root, shape.clone());
+                return shape;
             };
             if visited.contains_key(&op_id) {
                 continue;
             }
-            match self.ops[op_id].op {
+            let node_op = self.ops[op_id].op.clone();
+            match node_op {
                 Op::Const(_) => {
                     visited.insert(op_id, vec![]);
                 }
@@ -1019,8 +1056,7 @@ impl Kernel {
             }
             match k.ops[id].op {
                 Op::Stack { ref ops } => ops.to_vec(),
-                Op::Const(_) => vec![id],
-                Op::Param { .. } => Vec::new(),
+                Op::Const(_) | Op::Param { shape: OpId::NULL, .. } => vec![id],
                 ref op => todo!("shape: invalid shape descriptor {op:?}"),
             }
         }
@@ -1427,6 +1463,27 @@ impl Kernel {
         let mut stack = Vec::new();
         for &out in all_outputs {
             stack.push(out);
+        }
+        // Stores (and the value/param chains feeding them) always stay in this
+        // kernel: extraction must never pull a store into the extracted
+        // subkernel, nor delete a store that external kernels still load.
+        let mut oid = self.head;
+        for _ in 0..10_000 {
+            if oid.is_null() {
+                break;
+            }
+            if matches!(self.at(oid), Op::Store { .. }) && !other_required.contains(&oid) {
+                let mut deps = vec![oid];
+                while let Some(op) = deps.pop() {
+                    if other_required.insert(op) {
+                        deps.extend(self.at(op).parameters().filter(|&p| !p.is_null()));
+                    }
+                }
+            }
+            oid = self.next_op(oid);
+        }
+        if !oid.is_null() {
+            panic!("extract_subkernel did not finish in 10000 steps");
         }
         for _ in 0..10_000 {
             let Some(op) = stack.pop() else { break };

@@ -68,7 +68,7 @@ impl Graph {
     ///    exactly one entry in `visited` mapping it to the kernel where its computation lives.
     ///    [`add_store`] removes the entry and restores it via a load kernel if consumers remain.
     pub fn kernelize(&mut self, inputs: &Set<ClassId>, outputs: &BTreeSet<ClassId>, allowed: Option<&Set<ClassId>>) {
-        //self.debug(shapes);
+        self.debug();
         // A class can't be both a boundary input and a region output — that
         // would make a fused kernel load and store the same class.
         if cfg!(debug_assertions) {
@@ -420,16 +420,13 @@ impl Graph {
                         let (mut skid, mut sop) = visited[&shape];
                         if skid != kid {
                             let kid_stores = self.jit_kernels[kid].kernel.contains_stores();
-                            let skid_stores = self.jit_kernels[skid].kernel.contains_stores();
-                            match (kid_stores, skid_stores) {
-                                (true, true) => {
-                                    (kid, op_id) = self.add_store(x, kid, op_id, &mut visited, &rcs);
-                                    (skid, _) = self.add_store(shape, skid, sop, &mut visited, &rcs);
-                                }
-                                (true, false) => (kid, op_id) = self.add_store(x, kid, op_id, &mut visited, &rcs),
-                                (false, true) => (skid, _) = self.add_store(shape, skid, sop, &mut visited, &rcs),
-                                (false, false) => {}
+                            if kid_stores {
+                                (kid, op_id) = self.add_store(x, kid, op_id, &mut visited, &rcs);
                             }
+                            // A shape descriptor is pure metadata — never store it.
+                            // If its kernel has stores, extract the shape's subgraph
+                            // into a store-free kernel and merge that in instead.
+                            skid = self.extract_shape_kernel(shape, skid, sop, &mut visited, &rcs);
                             self.merge_kernels(skid, kid, &mut visited);
                             (_, sop) = visited[&shape];
                         }
@@ -449,17 +446,13 @@ impl Graph {
                         (kid, op_id) = self.duplicate_or_store_class(x, kid, op_id, &mut visited, &mut rcs, false);
                         let (mut skid, mut sop) = visited[&shape];
                         if skid != kid {
-                            let kid_stores = self.jit_kernels[kid].kernel.contains_stores();
-                            let skid_stores = self.jit_kernels[skid].kernel.contains_stores();
-                            match (kid_stores, skid_stores) {
-                                (true, true) => {
-                                    (kid, op_id) = self.add_store(x, kid, op_id, &mut visited, &rcs);
-                                    (skid, _) = self.add_store(shape, skid, sop, &mut visited, &rcs);
-                                }
-                                (true, false) => (kid, op_id) = self.add_store(x, kid, op_id, &mut visited, &rcs),
-                                (false, true) => (skid, _) = self.add_store(shape, skid, sop, &mut visited, &rcs),
-                                (false, false) => {}
+                            if self.jit_kernels[kid].kernel.contains_stores() {
+                                (kid, op_id) = self.add_store(x, kid, op_id, &mut visited, &rcs);
                             }
+                            // A shape descriptor is pure metadata — never store it.
+                            // If its kernel has stores, extract the shape's subgraph
+                            // into a store-free kernel and merge that in instead.
+                            skid = self.extract_shape_kernel(shape, skid, sop, &mut visited, &rcs);
                             self.merge_kernels(skid, kid, &mut visited);
                             (_, sop) = visited[&shape];
                         }
@@ -478,17 +471,11 @@ impl Graph {
                         for (i, pad) in [lp, len].into_iter().enumerate() {
                             let (mut pkid, mut pop) = visited[&pad];
                             if pkid != kid {
-                                let kid_stores = self.jit_kernels[kid].kernel.contains_stores();
-                                let pkid_stores = self.jit_kernels[pkid].kernel.contains_stores();
-                                match (kid_stores, pkid_stores) {
-                                    (true, true) => {
-                                        (kid, op_id) = self.add_store(x, kid, op_id, &mut visited, &rcs);
-                                        (pkid, _) = self.add_store(pad, pkid, pop, &mut visited, &rcs);
-                                    }
-                                    (true, false) => (kid, op_id) = self.add_store(x, kid, op_id, &mut visited, &rcs),
-                                    (false, true) => (pkid, _) = self.add_store(pad, pkid, pop, &mut visited, &rcs),
-                                    (false, false) => {}
+                                if self.jit_kernels[kid].kernel.contains_stores() {
+                                    (kid, op_id) = self.add_store(x, kid, op_id, &mut visited, &rcs);
                                 }
+                                // Bounds are pure metadata — never store them.
+                                pkid = self.extract_shape_kernel(pad, pkid, pop, &mut visited, &rcs);
                                 self.merge_kernels(pkid, kid, &mut visited);
                                 (_, pop) = visited[&pad];
                             }
@@ -510,17 +497,11 @@ impl Graph {
                         for (i, bound) in [start, len].into_iter().enumerate() {
                             let (mut bkid, mut bop) = visited[&bound];
                             if bkid != kid {
-                                let kid_stores = self.jit_kernels[kid].kernel.contains_stores();
-                                let bkid_stores = self.jit_kernels[bkid].kernel.contains_stores();
-                                match (kid_stores, bkid_stores) {
-                                    (true, true) => {
-                                        (kid, op_id) = self.add_store(x, kid, op_id, &mut visited, &rcs);
-                                        (bkid, _) = self.add_store(bound, bkid, bop, &mut visited, &rcs);
-                                    }
-                                    (true, false) => (kid, op_id) = self.add_store(x, kid, op_id, &mut visited, &rcs),
-                                    (false, true) => (bkid, _) = self.add_store(bound, bkid, bop, &mut visited, &rcs),
-                                    (false, false) => {}
+                                if self.jit_kernels[kid].kernel.contains_stores() {
+                                    (kid, op_id) = self.add_store(x, kid, op_id, &mut visited, &rcs);
                                 }
+                                // Bounds are pure metadata — never store them.
+                                bkid = self.extract_shape_kernel(bound, bkid, bop, &mut visited, &rcs);
                                 self.merge_kernels(bkid, kid, &mut visited);
                                 (_, bop) = visited[&bound];
                             }
@@ -551,6 +532,14 @@ impl Graph {
                         visited.insert(cid, (kid, op_id));
                     }
                     Node::Kernel { .. } => {}
+                }
+            }
+
+            eprintln!("=== after cid={cid:?} ===");
+            for (j, (_, k)) in self.jit_kernels.iter().enumerate() {
+                eprintln!("--- kid={j} outputs={:?} stores={:?} loads={:?}", k.outputs, k.stores, k.loads);
+                for (oid, node) in k.kernel.ops.iter() {
+                    eprintln!("    op{:?}: {:?}", oid, node.op);
                 }
             }
 
@@ -698,8 +687,8 @@ impl Graph {
                 for load in &kernel.loads {
                     let stored = self.jit_kernels.values().any(|k| k.stores.contains(load));
                     let in_outputs = self.jit_kernels.values().any(|k| k.outputs.contains(load));
-                    let is_input = inputs.contains(load)
-                        || matches!(self.nodes[self.classes[*load].nodes[0]].node, Node::Leaf { .. });
+                    let is_input =
+                        inputs.contains(load) || matches!(self.nodes[self.classes[*load].nodes[0]].node, Node::Leaf { .. });
                     if !stored && !is_input {
                         panic!(
                             "DEBUG kernelize: load class {load:?} (node {:?}) of kernel {kid:?} is not stored anywhere (in_outputs={in_outputs}) and is not an input",
@@ -802,6 +791,49 @@ impl Graph {
         } else {
             (kid, op_id)
         }
+    }
+
+    /// Ensures the shape/bounds descriptor class `shape` (currently materialized
+    /// as `sop` in kernel `skid`) lives in a **store-free** kernel, so it can be
+    /// merged into a consumer instead of being stored and reloaded as a scalar.
+    ///
+    /// Shape descriptors are pure metadata (`Stack` of consts / IDX_T param
+    /// loads): if `skid`'s kernel has stores, the shape's subgraph is extracted
+    /// into its own store-free kernel (mirroring the extraction in
+    /// [`Self::duplicate_or_store_class`]) and that kernel is returned;
+    /// otherwise `skid` is returned unchanged.
+    fn extract_shape_kernel(
+        &mut self,
+        shape: ClassId,
+        skid: JitKernelId,
+        sop: OpId,
+        visited: &mut Map<ClassId, (JitKernelId, OpId)>,
+        rcs: &Map<ClassId, u32>,
+    ) -> JitKernelId {
+        if !self.jit_kernels[skid].kernel.contains_stores() {
+            return skid;
+        }
+        remove_first_output(&mut self.jit_kernels, skid, shape);
+        let out_op_ids: Vec<OpId> = self.jit_kernels[skid].outputs.iter().map(|&cid| visited[&cid].1).collect();
+        let loads = self.jit_kernels[skid].loads.clone();
+        let (new_kernel, new_op_id, self_loads, new_loads) =
+            self.jit_kernels[skid].kernel.extract_subkernel(sop, &out_op_ids, &loads);
+        self.jit_kernels[skid].loads = self_loads;
+        debug_assert_eq!(self.jit_kernels[skid].outputs.iter().filter(|&&x| x == shape).count(), rcs[&shape] as usize - 1);
+        let new_kid = self.jit_kernels.push(JitKernelData {
+            kernel: new_kernel,
+            outputs: vec![shape],
+            loads: new_loads,
+            stores: Vec::new(),
+        });
+        // Extraction can empty the source kernel (the shape was its only
+        // output); drop the dead husk like `consume` does.
+        let src = &self.jit_kernels[skid];
+        if src.outputs.is_empty() && src.stores.is_empty() {
+            self.jit_kernels.remove(skid);
+        }
+        visited.insert(shape, (new_kid, new_op_id));
+        new_kid
     }
 
     fn merge_kernels(&mut self, src: JitKernelId, dst: JitKernelId, visited: &mut Map<ClassId, (JitKernelId, OpId)>) {
@@ -957,7 +989,9 @@ impl Graph {
             .ids()
             .filter(|&cid| self.classes[cid].nodes.iter().any(|&nid| matches!(self.nodes[nid].node, Node::Kernel { .. })))
             .count();
-        eprintln!("DEBUG fill_gaps: {n_kernels} Node::Kernel ops on {n_kernel_classes} classes; active_outputs={active_outputs:?}");
+        eprintln!(
+            "DEBUG fill_gaps: {n_kernels} Node::Kernel ops on {n_kernel_classes} classes; active_outputs={active_outputs:?}"
+        );
         let mut producer_boundaries: Set<ClassId> = self.leaf_classes.iter().copied().collect();
         producer_boundaries.extend(active_outputs.iter().copied());
 
@@ -1001,16 +1035,13 @@ impl Graph {
         }
 
         // Region id per structural class.
-        let region_of: Map<ClassId, usize> =
-            structural.iter().map(|&c| (c, find(&mut parent, idx[&c]))).collect();
+        let region_of: Map<ClassId, usize> = structural.iter().map(|&c| (c, find(&mut parent, idx[&c]))).collect();
         for (&cid, &r) in &region_of {
             if matches!(self.nodes[self.classes[cid].nodes[0]].node, Node::Binary { .. }) {
                 let consumers: Vec<(ClassId, usize)> = structural
                     .iter()
                     .filter_map(|&c| {
-                        let has = self.classes[c].nodes.iter().any(|&nid| {
-                            self.nodes[nid].node.class_params().any(|p| p == cid)
-                        });
+                        let has = self.classes[c].nodes.iter().any(|&nid| self.nodes[nid].node.class_params().any(|p| p == cid));
                         has.then(|| (c, region_of[&c]))
                     })
                     .collect();

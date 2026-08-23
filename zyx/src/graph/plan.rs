@@ -198,7 +198,6 @@ impl ExecPlan {
                     });
                     for &ic in &**inputs {
                         if !allocated.contains(&ic) && !graph.leaf_map.contains_key(&ic) && !alias_classes.contains(&ic) {
-                            let node_id = graph.classes[ic].nodes[0];
                             let producer_nodes: Vec<NodeId> = graph
                                 .classes
                                 .ids()
@@ -333,7 +332,9 @@ impl Runtime {
                     let mut kernel_bufs = BTreeSet::new();
                     for c in load_classes.iter().chain(store_classes.iter()) {
                         let Some(buf) = class_buf.get(c) else {
-                            panic!("DEBUG launch: class {c:?} (program {program_id:?}) has no allocated buffer; load_classes={load_classes:?}, store_classes={store_classes:?}");
+                            panic!(
+                                "DEBUG launch: class {c:?} (program {program_id:?}) has no allocated buffer; load_classes={load_classes:?}, store_classes={store_classes:?}"
+                            );
                         };
                         args.push(buf.buffer);
                         kernel_bufs.insert(*buf);

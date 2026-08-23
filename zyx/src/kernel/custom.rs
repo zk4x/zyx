@@ -18,6 +18,7 @@
 
 use std::collections::BTreeSet;
 
+use crate::Map;
 use crate::Set;
 use crate::backend::{BufferId, DeviceInfo, MemoryPool, ProgramId};
 use crate::dtype::Constant;
@@ -63,7 +64,7 @@ impl Kernel {
     /// kernel.store(out, doubled, gidx, MemLayout::Scalar);
     /// ```
     pub fn new(device_id: DeviceId) -> Self {
-        Self { ops: Slab::new(), head: OpId::NULL, tail: OpId::NULL, device_id }
+        Self { ops: Slab::new(), head: OpId::NULL, tail: OpId::NULL, device_id, shape_cache: Map::default() }
     }
 
     /// Compile the kernel. Consumes `self`.

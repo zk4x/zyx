@@ -239,6 +239,10 @@ impl Kernel {
 
         self.common_subexpression_elimination();
         self.dead_code_elimination();
+
+        // The shape_ids cache is only valid pre-linearization; drop it so
+        // autotuned kernels stay free of cached shape scaffolding.
+        self.shape_cache = Map::default();
     }
 
     /// Inserts index arithmetic (views, strides, pads, bounds checks) for
