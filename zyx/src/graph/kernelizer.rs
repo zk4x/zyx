@@ -80,7 +80,7 @@ impl Graph {
             }
         }
 
-        let order = self.topo_sort_classes_without_kernels(inputs, outputs, allowed);
+        let order = self.topo_sort_classes::<true>(inputs, outputs, allowed);
 
         let mut rcs: Map<ClassId, u32> = Map::default();
         for &cid in &order {
@@ -693,6 +693,20 @@ impl Graph {
                         kernel.outputs,
                     );
                 }
+                // Every load class must be produced (stored) by some kernel, or
+                // be a graph input / leaf.
+                for load in &kernel.loads {
+                    let stored = self.jit_kernels.values().any(|k| k.stores.contains(load));
+                    let in_outputs = self.jit_kernels.values().any(|k| k.outputs.contains(load));
+                    let is_input = inputs.contains(load)
+                        || matches!(self.nodes[self.classes[*load].nodes[0]].node, Node::Leaf { .. });
+                    if !stored && !is_input {
+                        panic!(
+                            "DEBUG kernelize: load class {load:?} (node {:?}) of kernel {kid:?} is not stored anywhere (in_outputs={in_outputs}) and is not an input",
+                            self.nodes[self.classes[*load].nodes[0]].node
+                        );
+                    }
+                }
             }
         }
 
@@ -702,6 +716,8 @@ impl Graph {
             kernel.kernel.debug();
         }
         panic!();*/
+
+        self.verify();
     }
 
     fn new_load_kernel(&mut self, cid: ClassId, rc: u32) -> (JitKernelId, OpId) {
@@ -754,6 +770,13 @@ impl Graph {
     ) -> (JitKernelId, OpId) {
         //println!("add store cid={cid:?} kid={kid:?} op_id={op_id:?} rc={}", rcs.get(&cid).unwrap());
         //println!("outputs={:?}", self.ekernels[kid].outputs);
+        if cfg!(debug_assertions) && cid == ClassId(119) {
+            eprintln!(
+                "DEBUG add_store: storing class 119 ({:?}) into kernel {kid:?}\n{}",
+                self.nodes[self.classes[cid].nodes[0]].node,
+                std::backtrace::Backtrace::force_capture()
+            );
+        }
 
         if !self.jit_kernels[kid].loads.contains(&cid) {
             let dtype = self.dtype(cid);
@@ -924,6 +947,17 @@ impl Graph {
     /// kernelized independently, so the gaps between AOT kernels get filled
     /// while each AOT kernel keeps its own subgraph.
     pub fn fill_gaps(&mut self, active_outputs: &Set<ClassId>, outputs: &BTreeSet<ClassId>) {
+        let n_kernels = self
+            .classes
+            .ids()
+            .map(|cid| self.classes[cid].nodes.iter().filter(|&&nid| matches!(self.nodes[nid].node, Node::Kernel { .. })).count())
+            .sum::<usize>();
+        let n_kernel_classes = self
+            .classes
+            .ids()
+            .filter(|&cid| self.classes[cid].nodes.iter().any(|&nid| matches!(self.nodes[nid].node, Node::Kernel { .. })))
+            .count();
+        eprintln!("DEBUG fill_gaps: {n_kernels} Node::Kernel ops on {n_kernel_classes} classes; active_outputs={active_outputs:?}");
         let mut producer_boundaries: Set<ClassId> = self.leaf_classes.iter().copied().collect();
         producer_boundaries.extend(active_outputs.iter().copied());
 
@@ -938,7 +972,7 @@ impl Graph {
             }
         }
 
-        let order = self.topo_sort_classes_without_kernels(&producer_boundaries, outputs, None);
+        let order = self.topo_sort_classes::<true>(&producer_boundaries, outputs, None);
 
         // Union-find the structural classes into connected regions.
         let structural: Vec<ClassId> = order.iter().copied().filter(|&c| !producer_boundaries.contains(&c)).collect();
@@ -966,7 +1000,43 @@ impl Graph {
             regions.entry(find(&mut parent, i)).or_default().push(cid);
         }
 
-        for region_classes in regions.values() {
+        // Region id per structural class.
+        let region_of: Map<ClassId, usize> =
+            structural.iter().map(|&c| (c, find(&mut parent, idx[&c]))).collect();
+        for (&cid, &r) in &region_of {
+            if matches!(self.nodes[self.classes[cid].nodes[0]].node, Node::Binary { .. }) {
+                let consumers: Vec<(ClassId, usize)> = structural
+                    .iter()
+                    .filter_map(|&c| {
+                        let has = self.classes[c].nodes.iter().any(|&nid| {
+                            self.nodes[nid].node.class_params().any(|p| p == cid)
+                        });
+                        has.then(|| (c, region_of[&c]))
+                    })
+                    .collect();
+                eprintln!("DEBUG fill_gaps: Binary dim class {cid:?} in region {r}, consumers={consumers:?}");
+            }
+        }
+        // A class consumed by a node in a *different* region must be stored —
+        // the consumer region loads it through a global param ("a shape
+        // dimension is a result of a kernel now and loaded into a new one").
+        let mut cross_region_outputs: Map<usize, BTreeSet<ClassId>> = Map::default();
+        for (i, &cid) in structural.iter().enumerate() {
+            for nid in &self.classes[cid].nodes {
+                for p in self.nodes[*nid].node.class_params() {
+                    if producer_boundaries.contains(&p) {
+                        continue;
+                    }
+                    if let Some(&pr) = region_of.get(&p)
+                        && pr != find(&mut parent, i)
+                    {
+                        cross_region_outputs.entry(pr).or_default().insert(p);
+                    }
+                }
+            }
+        }
+
+        for (root, region_classes) in regions.iter_mut() {
             let region: Set<ClassId> = region_classes.iter().copied().collect();
 
             let mut region_inputs: Set<ClassId> = Set::default();
@@ -986,7 +1056,15 @@ impl Graph {
                     region_outputs.insert(cid);
                 }
             }
+            if let Some(extra) = cross_region_outputs.remove(root) {
+                region_outputs.extend(extra);
+            }
 
+            for &o in &region_outputs {
+                if matches!(self.nodes[self.classes[o].nodes[0]].node, Node::Binary { .. }) {
+                    eprintln!("DEBUG fill_gaps: region output {o:?} is a Binary (computed dim)");
+                }
+            }
             if region_outputs.is_empty() {
                 continue;
             }

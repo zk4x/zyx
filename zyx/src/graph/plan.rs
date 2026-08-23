@@ -197,6 +197,21 @@ impl ExecPlan {
                         store_classes: outputs.clone(),
                     });
                     for &ic in &**inputs {
+                        if !allocated.contains(&ic) && !graph.leaf_map.contains_key(&ic) && !alias_classes.contains(&ic) {
+                            let node_id = graph.classes[ic].nodes[0];
+                            let producer_nodes: Vec<NodeId> = graph
+                                .classes
+                                .ids()
+                                .flat_map(|c| graph.classes[c].nodes.iter().copied())
+                                .filter(|&nid| {
+                                    matches!(&graph.nodes[nid].node, crate::graph::Node::Kernel { outputs, .. } if outputs.contains(&ic))
+                                })
+                                .collect();
+                            let in_nodes = producer_nodes.iter().any(|n| nodes.contains(n));
+                            eprintln!(
+                                "DEBUG plan: launch input {ic:?} unallocated; producer kernel nodes={producer_nodes:?}; in_nodes={in_nodes}"
+                            );
+                        }
                         let c = rc.get_mut(&ic).unwrap();
                         *c -= 1;
                         if *c == 0
@@ -317,9 +332,11 @@ impl Runtime {
                     let mut args = Vec::new();
                     let mut kernel_bufs = BTreeSet::new();
                     for c in load_classes.iter().chain(store_classes.iter()) {
-                        let buf = class_buf[c];
+                        let Some(buf) = class_buf.get(c) else {
+                            panic!("DEBUG launch: class {c:?} (program {program_id:?}) has no allocated buffer; load_classes={load_classes:?}, store_classes={store_classes:?}");
+                        };
                         args.push(buf.buffer);
-                        kernel_bufs.insert(buf);
+                        kernel_bufs.insert(*buf);
                     }
                     let wait_list = drain_events_for_bufs(&mut self.events, &kernel_bufs);
                     if self.debug.dev() {

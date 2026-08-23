@@ -413,9 +413,12 @@ pub struct Graph {
 }
 
 impl Node {
-    fn class_params(&self) -> Vec<ClassId> {
-        match self {
-            Self::Const { .. } | Self::Leaf { .. } => vec![],
+    /// Classes this node references: operands, and metadata like shape
+    /// descriptors (a leaf's shape is a parameter of the leaf).
+    fn class_params(&self) -> impl Iterator<Item = ClassId> {
+        let v = match self {
+            Self::Const { .. } => vec![],
+            Self::Leaf { shape, .. } => vec![*shape],
             Self::Expand { x, shape } => vec![*x, *shape],
             Self::Permute { x, .. } => vec![*x],
             Self::Reshape { x, shape, .. } => vec![*x, *shape],
@@ -432,7 +435,8 @@ impl Node {
             Self::ToDevice { x, .. } => vec![*x],
             Self::Contiguous { x, .. } => vec![*x],
             Self::Kernel { inputs, .. } => inputs.to_vec(),
-        }
+        };
+        v.into_iter()
     }
 }
 
@@ -499,68 +503,35 @@ impl Graph {
         cid
     }
 
-    pub fn topo_sort_classes(&self, outputs: &BTreeSet<ClassId>) -> Vec<ClassId> {
-        let mut rcs: Map<ClassId, u32> = Map::default();
-        let mut stack: Vec<ClassId> = outputs.iter().copied().collect();
-        while let Some(cid) = stack.pop() {
-            rcs.entry(cid).and_modify(|rc| *rc += 1).or_insert_with(|| {
-                let mut deps = Vec::new();
-                for nid in &self.classes[cid].nodes {
-                    for p in self.nodes[*nid].node.class_params() {
-                        if !deps.contains(&p) {
-                            deps.push(p);
-                        }
-                    }
-                }
-                stack.extend(deps);
-                1
-            });
-        }
-
-        let mut order = Vec::new();
-        let mut internal_rcs: Map<ClassId, u32> = Map::default();
-        let mut stack: Vec<ClassId> = outputs.iter().copied().collect();
-        while let Some(cid) = stack.pop() {
-            if let Some(&rc) = rcs.get(&cid) {
-                let visited = internal_rcs.entry(cid).and_modify(|c| *c += 1).or_insert(1);
-                if rc == *visited {
-                    order.push(cid);
-                    let mut deps = Vec::new();
-                    for nid in &self.classes[cid].nodes {
-                        for p in self.nodes[*nid].node.class_params() {
-                            if !deps.contains(&p) {
-                                deps.push(p);
-                            }
-                        }
-                    }
-                    stack.extend(deps);
-                }
-            }
-        }
-        order.reverse();
-        order
-    }
-
-    /// Like [`Self::topo_sort_classes`], but ignores [`Node::Kernel`] nodes when
-    /// collecting dependencies and stops the walk at the classes in `inputs`.
-    /// Used when iterating the structural graph — e.g. fusing remaining ops into
-    /// kernels — where kernel nodes would add spurious input dependencies between
-    /// classes and boundary classes must not be walked through into other regions.
-    /// When `allowed` is `Some`, the walk never leaves that set, so a
-    /// region-restricted sort stays inside its own region even if
-    /// [`Self::deps_stopping_at`] would follow a boundary kernel's inputs.
-    pub fn topo_sort_classes_without_kernels(
+    /// Topologically sorts the classes reachable from `outputs` (consumers
+    /// first, the returned vector is reversed into dependency order).
+    ///
+    /// With `WITHOUT_KERNELS`, [`Node::Kernel`] nodes are ignored when
+    /// collecting dependencies and the walk stops at the classes in `inputs`
+    /// (a boundary input contributes only its non-boundary kernel inputs).
+    /// Used when iterating the structural graph — e.g. fusing remaining ops
+    /// into kernels — where kernel nodes would add spurious input
+    /// dependencies between classes and boundary classes must not be walked
+    /// through into other regions. When `allowed` is `Some`, the walk never
+    /// leaves that set.
+    pub fn topo_sort_classes<const WITHOUT_KERNELS: bool>(
         &self,
         inputs: &Set<ClassId>,
         outputs: &BTreeSet<ClassId>,
         allowed: Option<&Set<ClassId>>,
     ) -> Vec<ClassId> {
-        //println!("topo sort inputs={inputs:?} outputs={outputs:?}");
+        // Dead classes (unconsumed, not an output) are harmless: traversal
+        // never reaches them, so they neither appear in `rcs` nor stall
+        // anything. What must NEVER happen is a *reachable* class failing
+        // to emit — that would mean its consumers' token accounting is
+        // broken and everything depending on it silently drops out of the
+        // order. Checked only in the global sort: region-restricted walks
+        // legitimately cannot see consumers outside their boundary.
         let mut rcs: Map<ClassId, u32> = Map::default();
         let mut stack: Vec<ClassId> = outputs.iter().copied().collect();
         while let Some(cid) = stack.pop() {
             rcs.entry(cid).and_modify(|rc| *rc += 1).or_insert_with(|| {
-                let deps = self.deps_stopping_at(inputs, cid);
+                let deps = self.deps::<WITHOUT_KERNELS>(inputs, cid);
                 stack.extend(deps.into_iter().filter(|d| allowed.is_none_or(|a| a.contains(d))));
                 1
             });
@@ -574,28 +545,135 @@ impl Graph {
                 let visited = internal_rcs.entry(cid).and_modify(|c| *c += 1).or_insert(1);
                 if rc == *visited {
                     order.push(cid);
-                    let deps = self.deps_stopping_at(inputs, cid);
+                    let deps = self.deps::<WITHOUT_KERNELS>(inputs, cid);
                     stack.extend(deps.into_iter().filter(|d| allowed.is_none_or(|a| a.contains(d))));
                 }
+            }
+        }
+        if cfg!(debug_assertions) && !WITHOUT_KERNELS && allowed.is_none() {
+            for (cid, &rc) in rcs.iter() {
+                let visited = internal_rcs.get(cid).copied().unwrap_or(0);
+                if visited == rc {
+                    continue;
+                }
+                let mut report = String::new();
+                let mut frontier = vec![*cid];
+                let mut seen: Set<ClassId> = Set::default();
+                while let Some(c) = frontier.pop() {
+                    if !seen.insert(c) {
+                        continue;
+                    }
+                    let v = internal_rcs.get(&c).copied().unwrap_or(0);
+                    let r = rcs.get(&c).copied().unwrap_or(0);
+                    let types: Vec<String> = self.classes[c]
+                        .nodes
+                        .iter()
+                        .map(|n| format!("{:?}", self.nodes[*n].node))
+                        .map(|s| s.split(" NodeId").next().unwrap_or(&s).to_string())
+                        .collect();
+                    report.push_str(&format!("\n  {c:?} rc={r} visited={v} types={types:?}"));
+                    for p in self.classes.ids().filter(|p| {
+                        self.classes[*p].nodes.iter().any(|n| self.nodes[*n].node.class_params().any(|q| q == c))
+                            && rcs.contains_key(p)
+                    }) {
+                        let pv = internal_rcs.get(&p).copied().unwrap_or(0);
+                        let pr = rcs.get(&p).copied().unwrap_or(0);
+                        report.push_str(&format!(" <- {p:?}(rc={pr},visited={pv})"));
+                        if pv != pr && !seen.contains(&p) {
+                            frontier.push(p);
+                        }
+                    }
+                }
+                panic!(
+                    "topo sort: reachable class {cid:?} did not emit (visited {visited} of rc {rc}) — token accounting broken. Chain:{report}"
+                );
             }
         }
         order.reverse();
         order
     }
 
-    /// kernel output follows only its kernel-node inputs (so classes feeding an
-    /// AOT kernel still get covered), an input leaf has no dependencies, and any
-    /// other class uses its structural dependencies.
-    fn deps_stopping_at(&self, inputs: &Set<ClassId>, cid: ClassId) -> Vec<ClassId> {
-        if !inputs.contains(&cid) {
-            return self.deps_without_kernels(cid);
+    /// Verifies that the class dependency graph under the extraction view
+    /// ([`Self::extract_deps`]) is acyclic. A cycle means some kernel stores a
+    /// value whose structural descendants are consumed by earlier kernels —
+    /// no valid execution order exists.
+    ///
+    /// # Panics
+    ///
+    /// Panics with the offending dependency chain if a cycle is found, or if
+    /// the walk exceeds 10 000 steps.
+    pub(crate) fn verify(&self) {
+        // Iterative colored DFS: 1 = on stack (gray), 2 = done (black).
+        let mut color: Map<ClassId, u8> = Map::default();
+        let mut parent: Map<ClassId, ClassId> = Map::default();
+        for root in self.classes.ids() {
+            let mut steps = 0;
+            let mut stack = vec![(root, false)];
+            while let Some((cid, processed)) = stack.pop() {
+                steps += 1;
+                if steps > 10_000 {
+                    panic!("graph::verify did not finish in 10000 steps");
+                }
+                if processed {
+                    color.insert(cid, 2);
+                    continue;
+                }
+                match color.get(&cid).copied() {
+                    Some(2) => continue,
+                    // 1 = gray: the class is on the current DFS path — cycle.
+                    Some(1) | Some(_) => {
+                        let mut chain = vec![cid];
+                        let mut cur = cid;
+                        while let Some(&p) = parent.get(&cur) {
+                            chain.push(p);
+                            cur = p;
+                            if cur == cid || chain.len() > 100 {
+                                break;
+                            }
+                        }
+                        panic!("graph::verify: dependency cycle through classes {chain:?}");
+                    }
+                    None => {}
+                }
+                color.insert(cid, 1);
+                stack.push((cid, true));
+                for d in self.extract_deps(cid) {
+                    if !d.is_null() && color.get(&d) != Some(&2) {
+                        parent.insert(d, cid);
+                        stack.push((d, false));
+                    }
+                }
+            }
         }
+    }
+
+    /// Dependencies of class `cid` for [`Self::topo_sort_classes`].
+    ///
+    /// With `WITHOUT_KERNELS`, [`Node::Kernel`] nodes are ignored and a
+    /// boundary class (in `inputs`) contributes only its non-boundary kernel
+    /// inputs; otherwise every node's [`Node::class_params`] is used.
+    fn deps<const WITHOUT_KERNELS: bool>(&self, inputs: &Set<ClassId>, cid: ClassId) -> Vec<ClassId> {
         let mut deps = Vec::new();
         for nid in &self.classes[cid].nodes {
-            if let Node::Kernel { inputs: kin, .. } = &self.nodes[*nid].node {
-                for &p in kin.iter() {
-                    if !inputs.contains(&p) {
-                        deps.push(p);
+            match &self.nodes[*nid].node {
+                Node::Kernel { inputs: kin, .. } => {
+                    if WITHOUT_KERNELS && !inputs.contains(&cid) {
+                        continue;
+                    }
+                    for p in kin.iter() {
+                        if !deps.contains(p) && !(WITHOUT_KERNELS && inputs.contains(p)) {
+                            deps.push(*p);
+                        }
+                    }
+                }
+                node => {
+                    if WITHOUT_KERNELS && inputs.contains(&cid) {
+                        continue;
+                    }
+                    for p in node.class_params() {
+                        if !deps.contains(&p) {
+                            deps.push(p);
+                        }
                     }
                 }
             }
@@ -603,20 +681,92 @@ impl Graph {
         deps
     }
 
-    /// Union of `class_params` of all non-Kernel nodes in class `cid`.
-    fn deps_without_kernels(&self, cid: ClassId) -> Vec<ClassId> {
-        let mut deps = Vec::new();
+    /// Dependencies of class `cid` under the **extraction** view: once a
+    /// class is produced by a jit/AOT kernel (or [`Node::ToDevice`]), its
+    /// scheduling dependencies are exactly those producers' inputs. The
+    /// e-graph keeps competing derivations on the class, and following them
+    /// alongside kernel inputs creates false cycles (a kernel may recompute
+    /// a value whose structural path runs through another kernel's stores).
+    ///
+    /// [`Node::After`] and [`Node::Assign`] edges are kept regardless: they
+    /// encode store *ordering* between in-place writes, not an alternative
+    /// derivation.
+    ///
+    /// Used by [`Self::topo_sort_for_extract`] and [`Self::verify`].
+    fn extract_deps(&self, cid: ClassId) -> Vec<ClassId> {
+        let mut kdeps: Vec<ClassId> = Vec::new();
         for nid in &self.classes[cid].nodes {
-            if matches!(&self.nodes[*nid].node, Node::Kernel { .. }) {
-                continue;
+            match &self.nodes[*nid].node {
+                Node::Kernel { inputs, .. } => {
+                    for p in inputs.iter() {
+                        if !kdeps.contains(p) {
+                            kdeps.push(*p);
+                        }
+                    }
+                }
+                Node::ToDevice { x, .. } => {
+                    if !kdeps.contains(x) {
+                        kdeps.push(*x);
+                    }
+                }
+                _ => {}
             }
-            for p in self.nodes[*nid].node.class_params() {
-                if !deps.contains(&p) {
-                    deps.push(p);
+        }
+        if kdeps.is_empty() {
+            return self.deps::<false>(&Set::default(), cid);
+        }
+        for nid in &self.classes[cid].nodes {
+            if let Node::After { x, dep } = &self.nodes[*nid].node {
+                for p in [x, dep] {
+                    if !kdeps.contains(p) {
+                        kdeps.push(*p);
+                    }
+                }
+            }
+            if let Node::Assign { dst, src } = &self.nodes[*nid].node {
+                for p in [dst, src] {
+                    if !kdeps.contains(p) {
+                        kdeps.push(*p);
+                    }
                 }
             }
         }
-        deps
+        kdeps
+    }
+
+    /// Topological order of classes for [`Self::extract`]: like
+    /// [`Self::topo_sort_classes`] but using the extraction view
+    /// ([`Self::extract_deps`]) for dependencies.
+    fn topo_sort_for_extract(&self, outputs: &BTreeSet<ClassId>) -> Vec<ClassId> {
+        let mut rcs: Map<ClassId, u32> = Map::default();
+        let mut stack: Vec<ClassId> = outputs.iter().copied().collect();
+        while let Some(cid) = stack.pop() {
+            rcs.entry(cid).and_modify(|rc| *rc += 1).or_insert_with(|| {
+                stack.extend(self.extract_deps(cid));
+                1
+            });
+        }
+
+        let mut order = Vec::new();
+        let mut internal_rcs: Map<ClassId, u32> = Map::default();
+        let mut stack: Vec<ClassId> = outputs.iter().copied().collect();
+        while let Some(cid) = stack.pop() {
+            if let Some(&rc) = rcs.get(&cid) {
+                let visited = internal_rcs.entry(cid).and_modify(|c| *c += 1).or_insert(1);
+                if rc == *visited {
+                    order.push(cid);
+                    stack.extend(self.extract_deps(cid));
+                }
+            }
+        }
+        if cfg!(debug_assertions) {
+            for (cid, &rc) in rcs.iter() {
+                let visited = internal_rcs.get(cid).copied().unwrap_or(0);
+                assert_eq!(visited, rc, "extraction topo: reachable class {cid:?} did not emit (visited {visited} of rc {rc})");
+            }
+        }
+        order.reverse();
+        order
     }
 
     pub fn debug(&self) {
@@ -633,7 +783,7 @@ impl Graph {
                 let kind = &self.nodes[nid].node;
                 let inputs: Vec<ClassId> = match kind {
                     Node::Kernel { inputs, .. } => inputs.to_vec(),
-                    _ => kind.class_params(),
+                    _ => kind.class_params().collect(),
                 };
                 let name = match kind {
                     Node::Reduce { rop: bop, .. } => format!("Reduce {:?}", bop),
@@ -802,7 +952,7 @@ impl Graph {
     /// Panics if any output class lacks a producer path through Kernel or ToDevice nodes.
     #[must_use]
     pub fn extract(&self, outputs: &BTreeSet<ClassId>) -> Vec<NodeId> {
-        let order = self.topo_sort_classes(outputs);
+        let order = self.topo_sort_for_extract(outputs);
 
         let n = self.classes.ids().count();
         let is_leaf: Vec<bool> = (0..n)
@@ -1223,11 +1373,9 @@ impl Graph {
                 Node::Const { .. } => leaf_or_seed,
                 Node::Cast { x, dtype } => values[&self.classes[*x].nodes[0]].cast(*dtype),
                 Node::Unary { x, uop } => values[&self.classes[*x].nodes[0]].unary(*uop),
-                Node::Binary { x, y, bop } => Constant::binary(
-                    values[&self.classes[*x].nodes[0]],
-                    values[&self.classes[*y].nodes[0]],
-                    *bop,
-                ),
+                Node::Binary { x, y, bop } => {
+                    Constant::binary(values[&self.classes[*x].nodes[0]], values[&self.classes[*y].nodes[0]], *bop)
+                }
                 _ => unreachable!("non-expression node in const walk"),
             };
             values.insert(node_id, value);
@@ -1654,6 +1802,7 @@ impl Runtime {
 
         // Autotunes custom zyx kernels for all devices and adds kernel nodes for all of them
         self.autotune_jit_kernels(graph_id)?;
+        self.graphs[graph_id].verify();
 
         // After all kernels nodes are added, this adds movement ops so extract can pick fastest path
         let devices_ptr: *const Slab<DeviceId, Device> = &self.devices;

@@ -338,7 +338,20 @@ impl Kernel {
                     let z = self.push_back(Op::Const(value));
                     self.ops[op_id].op = Op::Binary { x: pc, y: z, bop: BOp::Mul };
                 }
-                Op::Param { dtype, kind, shape } => match kind {
+                Op::Param { dtype, kind, shape } => {
+                    // Metadata-only param: referenced only as a shape descriptor
+                    // (never loaded as data), so no view was seeded for it.
+                    // Load paths only — a shaped param must always be loaded.
+                    if matches!(kind, ParamKind::Global | ParamKind::Variable)
+                        && !views.contains_key(&op_id)
+                    {
+                        debug_assert!(
+                            shape.is_null(),
+                            "viewless param must be a scalar, got {shape:?}"
+                        );
+                        continue;
+                    }
+                    match kind {
                     // Register-scope storages (e.g. reduce accumulators) are managed
                     // by the ops that create them; only global params are
                     // rangeified here. Writable globals are store destinations,
@@ -422,7 +435,8 @@ impl Kernel {
                         let z = self.load(src, offset, MemLayout::Scalar);
                         self.ops[op_id].op = Op::Binary { x: pc, y: z, bop: BOp::Mul };
                     }
-                },
+                    }
+                }
                 Op::Store { dst, src, index, layout } => {
                     debug_assert_eq!(index, OpId::NULL);
                     debug_assert_eq!(layout, MemLayout::Scalar);

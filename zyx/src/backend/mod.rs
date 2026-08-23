@@ -963,6 +963,9 @@ impl Device {
             Device::CUDA(dev) => dev.match_graph(graph, outputs),
             _ => {}
         }
+        // A vendor pass adds Node::Kernel nodes with input edges; those must
+        // never close a dependency cycle over the class graph.
+        graph.verify();
     }
 
     /// Launch a kernel on the device. Waits on all events in `event_wait_list`
