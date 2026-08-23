@@ -220,7 +220,12 @@ impl Graph {
                                 (true, false) => {
                                     (kidy, op_idy) = self.add_store(y, kidy, op_idy, &mut visited, &rcs);
                                 }
-                                (_, _) => {}
+                                (_, _) => {
+                                    debug_assert_eq!(
+                                        self.jit_kernels[kid].kernel.shape(op_id),
+                                        self.jit_kernels[kidy].kernel.shape(op_idy)
+                                    );
+                                }
                             }
 
                             let kid_stores = self.jit_kernels[kid].kernel.contains_stores();
@@ -720,10 +725,7 @@ impl Graph {
                 }
                 debug_assert!(kernel.outputs.is_empty());
                 if kernel.stores.is_empty() {
-                    eprintln!(
-                        "DEBUG kernel {kid:?} without stores: outputs={:?} loads={:?}",
-                        kernel.outputs, kernel.loads
-                    );
+                    eprintln!("DEBUG kernel {kid:?} without stores: outputs={:?} loads={:?}", kernel.outputs, kernel.loads);
                     kernel.kernel.debug();
                     panic!("encountered kernel without stores");
                 }
@@ -844,6 +846,29 @@ impl Graph {
     ) -> (JitKernelId, OpId) {
         //println!("add store cid={cid:?} kid={kid:?} op_id={op_id:?} rc={}", rcs.get(&cid).unwrap());
         //println!("outputs={:?}", self.ekernels[kid].outputs);
+
+        // If the kernel already consumes `cid` as a plain load and stores
+        // nothing, there is nothing to materialize. Mirror zyx2: strip this
+        // class's output slots and re-point `cid` at a fresh loader so the
+        // consumer boundary is preserved (prevents over-fusion) without
+        // abandoning the old loader.
+        if self.jit_kernels[kid].loads.contains(&cid) && !self.jit_kernels[kid].kernel.contains_stores() {
+            self.jit_kernels[kid].outputs.retain(|&x| x != cid);
+            if let Some(rc) = rcs.get(&cid).copied()
+                && rc > 0
+            {
+                let (new_kid, new_op) = self.new_load_kernel(cid, rc);
+                visited.insert(cid, (new_kid, new_op));
+                // The old loader is now an empty husk (no stores, output
+                // stripped) — drop it so it doesn't trip the no-stores assert.
+                if self.jit_kernels[kid].outputs.is_empty() {
+                    self.jit_kernels.remove(kid);
+                }
+                return (new_kid, new_op);
+            } else {
+                return (kid, op_id);
+            }
+        }
 
         if !self.jit_kernels[kid].loads.contains(&cid) {
             let dtype = self.dtype(cid);

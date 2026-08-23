@@ -1690,7 +1690,7 @@ impl Kernel {
             if !seen.insert(param) {
                 continue;
             }
-            if matches!(self.ops[param].op, Op::Storage { .. } | Op::Reduce { .. }) {
+            if matches!(self.ops[param].op, Op::Param { .. } | Op::Reduce { .. }) {
                 return true;
             }
             params.extend(self.ops[param].op.parameters());
@@ -1704,7 +1704,7 @@ impl Kernel {
     pub(crate) fn is_preceded_by_compute(&self, x: OpId) -> bool {
         let mut params = vec![x];
         let mut seen: Set<OpId> = Set::default();
-        let (mut has_compute, mut has_storage) = (false, false);
+        let (mut has_compute, mut has_param) = (false, false);
         for _ in 0..10_000 {
             let Some(param) = params.pop() else { break };
             if !seen.insert(param) {
@@ -1715,7 +1715,7 @@ impl Kernel {
                     has_compute = true;
                     params.extend(self.ops[param].op.parameters());
                 }
-                Op::Storage { .. } => has_storage = true,
+                Op::Param { .. } => has_param = true,
                 Op::Const(_) => {}
                 _ => params.extend(self.ops[param].op.parameters()),
             }
@@ -1723,6 +1723,6 @@ impl Kernel {
         if !params.is_empty() {
             panic!("is_preceded_by_compute did not finish in 10000 steps");
         }
-        has_compute && has_storage
+        has_compute && has_param
     }
 }
