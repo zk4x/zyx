@@ -456,7 +456,7 @@ fn accum_grad(rt: &mut Runtime, graph_id: GraphId, grads: &mut Map<ClassId, Clas
 impl Runtime {
     /// Build a shape class from dim classes: rank-1 uses the dim directly,
     /// higher ranks get a `Stack`, rank-0 is `NULL`.
-    fn shape_class(&mut self, graph_id: GraphId, dims: Vec<ClassId>) -> ClassId {
+    pub(crate) fn shape_class(&mut self, graph_id: GraphId, dims: Vec<ClassId>) -> ClassId {
         match dims.len() {
             0 => ClassId::NULL,
             1 => dims[0],

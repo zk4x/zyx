@@ -2028,6 +2028,20 @@ impl Runtime {
             rx == ry || rx == 0 || ry == 0,
             "binary operand ranks must match (scalars broadcast implicitly): {rx} vs {ry}"
         );
+        // Scalars broadcast implicitly — make the expand an explicit graph node
+        let (x, y) = match (rx, ry) {
+            (_, 0) if rx > 0 => {
+                let shape = self.shape_class(graph_id, self.graphs[graph_id].shape(x));
+                let y = self.push_node(graph_id, Node::Expand { x: y, shape }).1;
+                (x, y)
+            }
+            (0, _) if ry > 0 => {
+                let shape = self.shape_class(graph_id, self.graphs[graph_id].shape(y));
+                let x = self.push_node(graph_id, Node::Expand { x, shape }).1;
+                (x, y)
+            }
+            _ => (x, y),
+        };
         self.push_node(graph_id, Node::Binary { x, y, bop }).1
     }
 }
