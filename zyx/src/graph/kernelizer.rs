@@ -68,7 +68,6 @@ impl Graph {
     ///    exactly one entry in `visited` mapping it to the kernel where its computation lives.
     ///    [`add_store`] removes the entry and restores it via a load kernel if consumers remain.
     pub fn kernelize(&mut self, inputs: &Set<ClassId>, outputs: &BTreeSet<ClassId>, allowed: Option<&Set<ClassId>>) {
-        self.debug();
         // A class can't be both a boundary input and a region output — that
         // would make a fused kernel load and store the same class.
         if cfg!(debug_assertions) {
@@ -211,24 +210,12 @@ impl Graph {
                             // Kernel-level dynamism, straight from the kernel
                             // IR: a kernel is dynamic if ANY param's shape has
                             // an unresolved (zero) dim.
-                            let is_dynamic = |kid: JitKernelId| -> bool {
-                                let kernel = &self.jit_kernels[kid].kernel;
-                                let mut oid = kernel.head;
-                                for _ in 0..10_000 {
-                                    if oid.is_null() {
-                                        return false;
-                                    }
-                                    if matches!(&kernel.ops[oid].op, Op::Param { .. }) && kernel.shape(oid).contains(&0) {
-                                        return true;
-                                    }
-                                    oid = kernel.ops[oid].next;
-                                }
-                                panic!("is_dynamic did not finish in 10000 steps");
-                            };
-                            match (is_dynamic(kid), is_dynamic(kidy)) {
+                            match (
+                                self.jit_kernels[kid].kernel.shape(op_id).contains(&0),
+                                self.jit_kernels[kidy].kernel.shape(op_idy).contains(&0),
+                            ) {
                                 (false, true) => {
                                     (kid, op_id) = self.add_store(x, kid, op_id, &mut visited, &rcs);
-                                    std::mem::swap(&mut kid, &mut kidy);
                                 }
                                 (true, false) => {
                                     (kidy, op_idy) = self.add_store(y, kidy, op_idy, &mut visited, &rcs);
@@ -248,8 +235,25 @@ impl Graph {
                                 (false, false) => {}
                             }
 
+                            // Restore of the original Binary merge rule
+                            // (commit 7786c15): the reduce kernel must be the
+                            // merge DESTINATION — a reduce's output grid is
+                            // smaller than its input's, so pulling plain
+                            // compute ops into it is safe, while merging a
+                            // reduce into a plain compute kernel corrupts the
+                            // gws. If x's kernel reduces and y's does not,
+                            // swap the two slots so `merge_kernels` below pulls
+                            // the non-reduce side into the reduce kernel.
+                            // Operand order is preserved: both op ids are
+                            // re-read from `visited` after the merge.
+                            if self.jit_kernels[kid].kernel.is_reduce() && !self.jit_kernels[kidy].kernel.is_reduce() {
+                                std::mem::swap(&mut kid, &mut kidy);
+                                std::mem::swap(&mut op_id, &mut op_idy);
+                            }
+
                             self.merge_kernels(kidy, kid, &mut visited);
-                            (_, op_idy) = visited[&y];
+                            (kid, op_idy) = visited[&y];
+                            op_id = visited[&x].1;
                         }
 
                         self.consume(x, kid, &mut visited, &mut rcs);
@@ -716,6 +720,11 @@ impl Graph {
                 }
                 debug_assert!(kernel.outputs.is_empty());
                 if kernel.stores.is_empty() {
+                    eprintln!(
+                        "DEBUG kernel {kid:?} without stores: outputs={:?} loads={:?}",
+                        kernel.outputs, kernel.loads
+                    );
+                    kernel.kernel.debug();
                     panic!("encountered kernel without stores");
                 }
                 // A kernel must never load a class it also stores — that would

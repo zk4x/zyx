@@ -352,111 +352,106 @@ impl Kernel {
                     // Metadata-only param: referenced only as a shape descriptor
                     // (never loaded as data), so no view was seeded for it.
                     // Load paths only — a shaped param must always be loaded.
-                    if matches!(kind, ParamKind::Global | ParamKind::Variable)
-                        && !views.contains_key(&op_id)
-                    {
-                        debug_assert!(
-                            shape.is_null(),
-                            "viewless param must be a scalar, got {shape:?}"
-                        );
+                    if matches!(kind, ParamKind::Global | ParamKind::Variable) && !views.contains_key(&op_id) {
+                        debug_assert!(shape.is_null(), "viewless param must be a scalar, got {shape:?}");
                         continue;
                     }
                     match kind {
-                    // Register-scope storages (e.g. reduce accumulators) are managed
-                    // by the ops that create them; only global params are
-                    // rangeified here. Writable globals are store destinations,
-                    // read-only globals/variables are load sources. Writables with
-                    // MemScope::Variable are left alone (stores to variables are
-                    // invalid; the verifier rejects them).
-                    ParamKind::GlobalMut => {
-                        // Write path: this param is the destination of a store. The
-                        // store's index is computed from the param's rangeified view
-                        // and written back into the matching store op.
-                        let store_id = dst_stores.remove(&op_id).unwrap();
-                        let view = views.remove(&op_id).unwrap();
-                        // len is the literal shape of this op, so row-major contiguous
-                        // strides are derived directly from it (no stored stride).
-                        let mut write_index = zero;
-                        let mut stride = one;
-                        let mut strides = Vec::with_capacity(view.len());
-                        for d in view.iter().rev() {
-                            strides.push(stride);
-                            stride = self.mul(stride, d.len);
+                        // Register-scope storages (e.g. reduce accumulators) are managed
+                        // by the ops that create them; only global params are
+                        // rangeified here. Writable globals are store destinations,
+                        // read-only globals/variables are load sources. Writables with
+                        // MemScope::Variable are left alone (stores to variables are
+                        // invalid; the verifier rejects them).
+                        ParamKind::GlobalMut => {
+                            // Write path: this param is the destination of a store. The
+                            // store's index is computed from the param's rangeified view
+                            // and written back into the matching store op.
+                            let store_id = dst_stores.remove(&op_id).unwrap();
+                            let view = views.remove(&op_id).unwrap();
+                            // len is the literal shape of this op, so row-major contiguous
+                            // strides are derived directly from it (no stored stride).
+                            let mut write_index = zero;
+                            let mut stride = one;
+                            let mut strides = Vec::with_capacity(view.len());
+                            for d in view.iter().rev() {
+                                strides.push(stride);
+                                stride = self.mul(stride, d.len);
+                            }
+                            strides.reverse();
+                            for (d, s) in view.iter().zip(strides) {
+                                write_index = self.mad(d.idx, s, write_index);
+                            }
+                            match &mut self.ops[store_id].op {
+                                Op::Store { index, .. } => *index = write_index,
+                                _ => unreachable!("graph stores are the only stores at linearize time"),
+                            }
                         }
-                        strides.reverse();
-                        for (d, s) in view.iter().zip(strides) {
-                            write_index = self.mad(d.idx, s, write_index);
+                        ParamKind::Variable => {
+                            let view = views.remove(&op_id).unwrap();
+                            // Variables are single values (no indexing). Like constants,
+                            // they only need the padding mask: where the view is out of
+                            // bounds, the loaded value is zeroed.
+                            let mut pc = self.const_val(true);
+                            for d in &view {
+                                let t_lo = self.cmpge(d.idx, zero);
+                                pc = self.and(t_lo, pc);
+                                // A dim length of 0 is the inferred-dim marker and must
+                                // never reach the kernel IR (Tensor::reshape rejects it).
+                                debug_assert!(
+                                    self.resolve_const(d.len).and_then(Constant::as_dim) != Some(0),
+                                    "inferred dim (0) must not reach linearize"
+                                );
+                                let t_hi = self.cmplt(d.idx, d.len);
+                                pc = self.and(t_hi, pc);
+                            }
+                            // Insert the ro source storage immediately before this op so the
+                            // global param order (which buffer args bind to) is
+                            // preserved.
+                            let src = self.insert_before(op_id, Op::Param { dtype, kind, shape });
+                            let z = self.load(src, zero, MemLayout::Scalar);
+                            self.ops[op_id].op = Op::Binary { x: pc, y: z, bop: BOp::Mul };
                         }
-                        match &mut self.ops[store_id].op {
-                            Op::Store { index, .. } => *index = write_index,
-                            _ => unreachable!("graph stores are the only stores at linearize time"),
+                        ParamKind::Global => {
+                            let view = views.remove(&op_id).unwrap();
+                            // Bounds condition: valid where index is within the source
+                            // extent. `len` is the literal shape, so the plain bounds
+                            // check idx >= 0 && idx < len is exact; every movement op
+                            // bakes its shift into `idx` and adjusts `len` (tinygrad's
+                            // model), so no separate pad terms are needed.
+                            //   index = sum over axes of idx * stride
+                            //   pc    = and over axes of (idx >= 0) && (idx < len)
+                            let mut index = self.const_idx(0);
+                            let mut pc = self.const_val(true);
+                            let mut stride = one;
+                            let mut strides = Vec::with_capacity(view.len());
+                            for d in view.iter().rev() {
+                                strides.push(stride);
+                                stride = self.mul(stride, d.len);
+                            }
+                            strides.reverse();
+                            for (d, s) in view.iter().zip(strides) {
+                                index = self.mad(d.idx, s, index);
+                                let ge = self.cmpge(d.idx, zero);
+                                pc = self.and(ge, pc);
+                                // A dim length of 0 is the inferred-dim marker and must
+                                // never reach the kernel IR (Tensor::reshape rejects it).
+                                debug_assert!(
+                                    self.resolve_const(d.len).and_then(Constant::as_dim) != Some(0),
+                                    "inferred dim (0) must not reach linearize"
+                                );
+                                let lt = self.cmplt(d.idx, d.len);
+                                pc = self.and(lt, pc);
+                            }
+                            // Insert the ro source storage immediately before this op so the
+                            // global param order (which buffer args bind to) is preserved.
+                            let src = self.insert_before(op_id, Op::Param { dtype, kind, shape });
+                            // Zero the offset where the padding condition fails, so the load
+                            // always reads in-bounds, then zero the loaded value itself.
+                            let offset = self.mul(pc, index);
+                            let z = self.load(src, offset, MemLayout::Scalar);
+                            self.ops[op_id].op = Op::Binary { x: pc, y: z, bop: BOp::Mul };
                         }
-                    }
-                    ParamKind::Variable => {
-                        let view = views.remove(&op_id).unwrap();
-                        // Variables are single values (no indexing). Like constants,
-                        // they only need the padding mask: where the view is out of
-                        // bounds, the loaded value is zeroed.
-                        let mut pc = self.const_val(true);
-                        for d in &view {
-                            let t_lo = self.cmpge(d.idx, zero);
-                            pc = self.and(t_lo, pc);
-                            // A dim length of 0 is the inferred-dim marker and must
-                            // never reach the kernel IR (Tensor::reshape rejects it).
-                            debug_assert!(
-                                self.resolve_const(d.len).and_then(Constant::as_dim) != Some(0),
-                                "inferred dim (0) must not reach linearize"
-                            );
-                            let t_hi = self.cmplt(d.idx, d.len);
-                            pc = self.and(t_hi, pc);
-                        }
-                        // Insert the ro source storage immediately before this op so the
-                        // global param order (which buffer args bind to) is
-                        // preserved.
-                        let src = self.insert_before(op_id, Op::Param { dtype, kind, shape });
-                        let z = self.load(src, zero, MemLayout::Scalar);
-                        self.ops[op_id].op = Op::Binary { x: pc, y: z, bop: BOp::Mul };
-                    }
-                    ParamKind::Global => {
-                        let view = views.remove(&op_id).unwrap();
-                        // Bounds condition: valid where index is within the source
-                        // extent. `len` is the literal shape, so the plain bounds
-                        // check idx >= 0 && idx < len is exact; every movement op
-                        // bakes its shift into `idx` and adjusts `len` (tinygrad's
-                        // model), so no separate pad terms are needed.
-                        //   index = sum over axes of idx * stride
-                        //   pc    = and over axes of (idx >= 0) && (idx < len)
-                        let mut index = self.const_idx(0);
-                        let mut pc = self.const_val(true);
-                        let mut stride = one;
-                        let mut strides = Vec::with_capacity(view.len());
-                        for d in view.iter().rev() {
-                            strides.push(stride);
-                            stride = self.mul(stride, d.len);
-                        }
-                        strides.reverse();
-                        for (d, s) in view.iter().zip(strides) {
-                            index = self.mad(d.idx, s, index);
-                            let ge = self.cmpge(d.idx, zero);
-                            pc = self.and(ge, pc);
-                            // A dim length of 0 is the inferred-dim marker and must
-                            // never reach the kernel IR (Tensor::reshape rejects it).
-                            debug_assert!(
-                                self.resolve_const(d.len).and_then(Constant::as_dim) != Some(0),
-                                "inferred dim (0) must not reach linearize"
-                            );
-                            let lt = self.cmplt(d.idx, d.len);
-                            pc = self.and(lt, pc);
-                        }
-                        // Insert the ro source storage immediately before this op so the
-                        // global param order (which buffer args bind to) is preserved.
-                        let src = self.insert_before(op_id, Op::Param { dtype, kind, shape });
-                        // Zero the offset where the padding condition fails, so the load
-                        // always reads in-bounds, then zero the loaded value itself.
-                        let offset = self.mul(pc, index);
-                        let z = self.load(src, offset, MemLayout::Scalar);
-                        self.ops[op_id].op = Op::Binary { x: pc, y: z, bop: BOp::Mul };
-                    }
                     }
                 }
                 Op::Store { dst, src, index, layout } => {
