@@ -2042,6 +2042,26 @@ impl Runtime {
             }
             _ => (x, y),
         };
+        // After scalar broadcasting the two operands must already have the same
+        // shape: any non-scalar broadcasting is performed upstream by
+        // `Tensor::broadcast` (and the eager binary path must call it before
+        // reaching here). `Node::Binary` in the kernelizer does NOT broadcast.
+        // Shapes are symbolic `Vec<ClassId>`; compare their *concrete* dims
+        // (unresolved/dynamic dims are `0` and skipped) so that two operands
+        // with the same concrete shape but distinct dim classes still compare
+        // equal.
+        let concrete = |s: &[ClassId]| -> Vec<Dim> {
+            s.iter()
+                .map(|&d| self.graphs[graph_id].resolve_const(d).and_then(Constant::as_dim).unwrap_or(0))
+                .collect()
+        };
+        let sx = self.graphs[graph_id].shape(x);
+        let sy = self.graphs[graph_id].shape(y);
+        debug_assert_eq!(
+            concrete(&sx),
+            concrete(&sy),
+            "binary operands must be broadcast to equal shapes before Node::Binary (broadcasting is performed upstream); got {sx:?} vs {sy:?}"
+        );
         self.push_node(graph_id, Node::Binary { x, y, bop }).1
     }
 }

@@ -71,6 +71,7 @@ impl Kernel {
     // TODO Currently it only works if each param has a single move op chain.
     // Make it also work with move op chains when each param is accessed by multiple move ops.
     pub fn linearize(&mut self) {
+        eprintln!("LIN-START {:?} nops={}", std::ptr::from_ref(self), self.ops.values().count());
         if !self.ops.values().any(|n| matches!(n.op, Op::Store { index: OpId::NULL, .. })) {
             return;
         }
@@ -237,9 +238,11 @@ impl Kernel {
             }
         }
 
+        self.verify();
         self.common_subexpression_elimination();
         self.dead_code_elimination();
 
+        eprintln!("LIN-END OK {:?} ", std::ptr::from_ref(self));
         // The shape_ids cache is only valid pre-linearization; drop it so
         // autotuned kernels stay free of cached shape scaffolding.
         self.shape_cache = Map::default();
@@ -826,125 +829,98 @@ impl Kernel {
                 panic!("toposort did not finish in 10000 steps");
             }
 
-            let mut region_depth: Map<OpId, u32> = reachable.iter().map(|&x| (x, 0)).collect();
-            // Generate region depth for all ops in reduce ids
-            let mut n = reduce_ids.len() as u32;
-            for reduce_id in reduce_ids {
-                let Op::Reduce { x, reduce_axis, .. } = self.ops[reduce_id].op else {
+            // Structural edges between loops, derived purely from reduce
+            // dependencies. If reduce `d` is a transitive dependency of reduce
+            // `r` (d feeds r directly or indirectly), then `r` is the outer
+            // region: its loop must open before `d`'s loop. Together with the
+            // natural data dependency R_d -> ... -> R_r this makes partially
+            // overlapping regions impossible.
+            let mut extra_deps: Vec<(OpId, OpId)> = Vec::new(); // (producer, consumer)
+            for &r in &reduce_ids {
+                let Op::Reduce { x, reduce_axis: r_axis, .. } = self.ops[r].op else {
                     unreachable!()
                 };
-                // Backward
-                let mut stack = vec![x];
-                let mut descendants: Map<OpId, Set<OpId>> = Map::default();
+                let mut stack: Vec<OpId> = vec![x];
+                let mut seen: Set<OpId> = Set::default();
                 for _ in 0..10_000 {
-                    let Some(parent) = stack.pop() else { break };
-                    if reachable.contains(&parent) {
-                        for child in self.ops[parent].op.parameters() {
-                            if let Some(parents) = descendants.get_mut(&child) {
-                                parents.insert(parent);
-                            } else {
-                                stack.push(child);
-                                descendants.insert(child, [parent].into_iter().collect());
-                            }
-                        }
+                    let Some(p) = stack.pop() else { break };
+                    if p.is_null() || !seen.insert(p) {
+                        continue;
                     }
-                }
-                if !stack.is_empty() {
-                    panic!("toposort did not finish in 100000 steps");
-                }
-                // Forward
-                let mut stack = vec![reduce_axis];
-                let mut visited: Set<OpId> = Set::default();
-                for _ in 0..10_000 {
-                    let Some(child) = stack.pop() else { break };
-                    if visited.insert(child) {
-                        if let Some(parents) = descendants.get(&child) {
-                            stack.extend(parents);
-                        }
+                    if let Op::Reduce { reduce_axis: d_axis, .. } = self.ops[p].op {
+                        extra_deps.push((r_axis, d_axis));
                     }
+                    stack.extend(self.ops[p].op.parameters());
                 }
-                if !stack.is_empty() {
-                    panic!("toposort did not finish in 100000 steps");
-                }
-                for x in visited {
-                    *region_depth.get_mut(&x).unwrap() += n;
-                }
-                n -= 1;
+                debug_assert!(stack.is_empty(), "dependency walk did not finish");
             }
 
-            let mut ideal: Vec<OpId> = reachable.iter().copied().collect();
-            ideal.sort_by_key(|&op_id| {
-                let op_priority = match self.ops[op_id].op {
-                    Op::Param { .. } => -20,
-                    Op::Index { .. } => -15,
-                    Op::Const(_) => -10,
-                    Op::Loop { .. } => 10,
-                    Op::Reduce { .. } => -5,
-                    _ => 0,
+            // Loop trip lengths, for sibling ordering (bigger loops first).
+            let loop_size = |axis: OpId| -> u64 {
+                let Op::Loop { len } = self.ops[axis].op else {
+                    unreachable!("reduce_axis must point at a Loop")
                 };
-                let pri = op_priority + region_depth.get(&op_id).copied().unwrap_or(0) as i32;
-                (pri, op_id)
-            });
-            let nkey: Map<OpId, u64> = ideal.iter().enumerate().map(|(i, &id)| (id, i as u64)).collect();
+                match self.ops[len].op {
+                    Op::Const(c) => c.as_dim().unwrap_or(0),
+                    _ => 0,
+                }
+            };
 
-            // out_degree[u] = number of consumers of u (ops referencing u).
-            let mut out_degree: Map<OpId, u32> = Map::default();
+            // ASAP Kahn: emit an op as soon as all its producers are placed,
+            // preferring non-loops over loops (loops go last among ready ops,
+            // so loop-invariant computation hoists above the loop headers)
+            // and bigger loops before smaller ones among ready siblings.
+            let mut in_degree: Map<OpId, u32> = Map::default();
+            let mut consumers: Map<OpId, Vec<OpId>> = Map::default();
             for (op_id, op) in self.iter_unordered() {
                 if !reachable.contains(&op_id) {
                     continue;
                 }
                 for p in op.parameters() {
                     if !p.is_null() {
-                        *out_degree.entry(p).or_default() += 1;
+                        *in_degree.entry(op_id).or_default() += 1;
+                        consumers.entry(p).or_default().push(op_id);
                     }
                 }
+            }
+            for &(prod, cons) in &extra_deps {
+                *in_degree.entry(cons).or_default() += 1;
+                consumers.entry(prod).or_default().push(cons);
             }
 
-            // Seed with the sinks (out_degree 0), pop the highest ideal-order key
-            // first, and emit each op once all its consumers are emitted.
-            let mut heap: BinaryHeap<(u64, OpId)> = BinaryHeap::new();
-            for &op_id in &reachable {
-                if out_degree.get(&op_id).copied().unwrap_or(0) == 0 {
-                    heap.push((nkey[&op_id], op_id));
+            let mut heap: BinaryHeap<std::cmp::Reverse<(u8, u64, OpId)>> = BinaryHeap::new();
+            for &id in &reachable {
+                if in_degree.get(&id).copied().unwrap_or(0) == 0 {
+                    let is_loop = matches!(self.ops[id].op, Op::Loop { .. });
+                    let size = if is_loop { loop_size(id) } else { 0 };
+                    heap.push(std::cmp::Reverse((u8::from(is_loop), u64::MAX - size, id)));
                 }
             }
-            let mut order = Vec::new();
+            let mut order = Vec::with_capacity(reachable.len());
             for _ in 0..10_000 {
-                let Some((_, op_id)) = heap.pop() else { break };
+                let Some(std::cmp::Reverse((_, _, op_id))) = heap.pop() else { break };
                 order.push(op_id);
-                for p in self.at(op_id).parameters() {
-                    if p.is_null() {
-                        continue;
-                    }
-                    let d = out_degree.get_mut(&p).expect("consumer of a reachable op must have an out_degree entry");
-                    *d -= 1;
-                    if *d == 0 {
-                        heap.push((nkey[&p], p));
-                    }
-                }
-            }
-            if !heap.is_empty() {
-                panic!("toposort did not finish in 10000 steps");
-            }
-            if order.len() != reachable.len() {
-                let placed: Set<OpId> = order.iter().copied().collect();
-                for &op_id in &reachable {
-                    if !placed.contains(&op_id) {
-                        eprintln!("STUCK op {op_id:?}: {:?}", self.ops[op_id].op);
-                        for p in self.at(op_id).parameters() {
-                            if !p.is_null() {
-                                eprintln!("  param {p:?}: out_degree={:?}", out_degree.get(&p));
-                            }
+                if let Some(cs) = consumers.get(&op_id) {
+                    for &c in cs {
+                        let d = in_degree.get_mut(&c).expect("consumer must have an in_degree entry");
+                        *d -= 1;
+                        if *d == 0 {
+                            let is_loop = matches!(self.ops[c].op, Op::Loop { .. });
+                            let size = if is_loop { loop_size(c) } else { 0 };
+                            heap.push(std::cmp::Reverse((u8::from(is_loop), u64::MAX - size, c)));
                         }
                     }
                 }
+            }
+            if order.len() != reachable.len() {
                 panic!("linearize dependency ordering contains a cycle or missing operation");
             }
-            order.reverse();
+            order.retain(|op| !matches!(self.ops[*op].op, Op::Param { .. }));
 
             // Move the params to the front: read-only (Variable + Global) first,
-            // then writable (GlobalMut), each in linked-list order.
-            order.retain(|op| !matches!(self.ops[*op].op, Op::Param { .. }));
+            // then writable (GlobalMut), each in linked-list order. Unused
+            // params never enter the Kahn order at all; used ones are dropped
+            // here and reinserted.
             let mut final_order = Vec::with_capacity(order.len() + ro_params.len() + rw_params.len());
             final_order.extend(ro_params.iter().copied());
             final_order.extend(rw_params.iter().copied());

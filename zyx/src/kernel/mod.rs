@@ -1087,6 +1087,7 @@ impl Kernel {
                 }
                 // Direct access of a stack op: `[len] + first_element_shape`.
                 Op::Stack { ref ops } => {
+                    // Shape of a stacked value: `[len] + first element's shape`.
                     if ops.is_empty() {
                         visited.insert(id, vec![]);
                     } else if let Some(mut dims) = visited.get(&ops[0]).cloned() {

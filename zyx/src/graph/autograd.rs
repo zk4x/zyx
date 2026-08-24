@@ -190,7 +190,13 @@ impl Runtime {
                     accum_grad(self, graph_id, &mut grads, x, g);
                 }
                 Node::Reshape { x, .. } => {
-                    let x_shape = self.shape_class(graph_id, self.graphs[graph_id].shape(x));
+                    let in_dims = self.graphs[graph_id].shape(x);
+                    let x_shape = self.shape_class(graph_id, in_dims.clone());
+                    let in_conc: Vec<Dim> = in_dims.iter().map(|&d| self.graphs[graph_id].resolve_const(d).and_then(Constant::as_dim).unwrap_or(0)).collect();
+                    let xc_conc: Vec<Dim> = self.graphs[graph_id].shape(x_shape).iter().map(|&d| self.graphs[graph_id].resolve_const(d).and_then(Constant::as_dim).unwrap_or(0)).collect();
+                    if in_conc.iter().any(|&v| v != 0) && xc_conc.iter().any(|&v| v != 0) && in_conc != xc_conc {
+                        eprintln!("RESGRAD in={:?} x_shape={:?}", in_conc, xc_conc);
+                    }
                     let g = self.push_node(graph_id, Node::Reshape { x: grad, shape: x_shape }).1;
                     accum_grad(self, graph_id, &mut grads, x, g);
                 }
@@ -205,6 +211,8 @@ impl Runtime {
                         .iter()
                         .map(|&d| self.graph_const_dim(graph_id, d).expect("expand backward with symbolic dim"))
                         .collect();
+                    if in_shape.contains(&3) && in_shape.contains(&2) {
+                    }
                     // Right-align the input against the expanded output per broadcast
                     // semantics. The input is broadcast to the output by (a) leading
                     // `pad` dims that the input did not have at all (implicitly size 1)
@@ -447,7 +455,8 @@ fn accum_grad(rt: &mut Runtime, graph_id: GraphId, grads: &mut Map<ClassId, Clas
             e.insert(grad);
         }
         std::collections::hash_map::Entry::Occupied(mut e) => {
-            let sum = rt.push_binary_node(graph_id, *e.get(), grad, BOp::Add);
+            let eg = *e.get();
+            let sum = rt.push_binary_node(graph_id, eg, grad, BOp::Add);
             e.insert(sum);
         }
     }

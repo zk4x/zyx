@@ -5,6 +5,7 @@ use crate::{
     graph::{ClassId, Graph, JitKernelData, JitKernelId, Node},
     kernel::{DeviceId, IDX_T, Kernel, MemLayout, MoveOp, Op, OpId, ParamKind},
     shape::UAxis,
+    graph::Constant,
     slab::{Slab, SlabId},
 };
 
@@ -195,6 +196,11 @@ impl Graph {
                         visited.insert(cid, (kid, result_op));
                     }
                     Node::Binary { x, y, bop } => {
+                        // NOTE: `Node::Binary` does NOT broadcast. Broadcasting is
+                        // performed upstream by `Tensor::broadcast` / `Graph::push_binary_node`,
+                        // so by the time a binary node reaches the kernelizer its
+                        // two operands already have the same (broadcast-compatible)
+                        // shape. The kernelizer must never attempt to broadcast here.
                         let (mut kid, mut op_id) = visited[&x];
                         let (mut kidy, mut op_idy) = visited[&y];
 
@@ -221,9 +227,17 @@ impl Graph {
                                     (kidy, op_idy) = self.add_store(y, kidy, op_idy, &mut visited, &rcs);
                                 }
                                 (_, _) => {
-                                    debug_assert_eq!(
-                                        self.jit_kernels[kid].kernel.shape(op_id),
-                                        self.jit_kernels[kidy].kernel.shape(op_idy)
+                                    // Both operands share the same dynamism, so they
+                                    // must already be broadcast-compatible (broadcasting
+                                    // is performed upstream by `Tensor::broadcast` /
+                                    // `Graph::push_binary_node`); the kernelizer's
+                                    // `Node::Binary` does NOT broadcast — except that
+                                    // scalars broadcast implicitly in kernel IR.
+                                    let sx = self.jit_kernels[kid].kernel.shape(op_id);
+                                    let sy = self.jit_kernels[kidy].kernel.shape(op_idy);
+                                    debug_assert!(
+                                        sx == sy || sx.is_empty() || sy.is_empty(),
+                                        "binary operands {sx:?} vs {sy:?} are not broadcast-compatible"
                                     );
                                 }
                             }
@@ -475,24 +489,17 @@ impl Graph {
                             }
                         }
                         let (mut kid, mut op_id) = visited[&x];
-                        // Expand can change dynamism (e.g. broadcast to a
-                        // dynamic dim): a dynamic-shaped result must not live
-                        // in a static kernel — force it into its own kernel.
                         let force_store = self.jit_kernels[kid].kernel.is_preceded_by_compute(op_id);
-                        let force_store = force_store || self.jit_kernels[kid].kernel.has_dynamic_shape(op_id);
                         (kid, op_id) = self.duplicate_or_store_class(x, kid, op_id, &mut visited, &mut rcs, force_store);
                         let (mut skid, mut sop) = visited[&shape];
                         if skid != kid {
-                            let kid_stores = self.jit_kernels[kid].kernel.contains_stores();
-                            if kid_stores {
-                                (kid, op_id) = self.add_store(x, kid, op_id, &mut visited, &rcs);
-                            }
                             // A shape descriptor is pure metadata — never store it.
-                            // If its kernel has stores, extract the shape's subgraph
-                            // into a store-free kernel and merge that in instead.
+                            // Duplicate its calculation into the data kernel so every
+                            // consumer recomputes it.
                             skid = self.extract_shape_kernel(shape, skid, sop, &mut visited);
-                            self.merge_kernels(skid, kid, &mut visited);
-                            (_, sop) = visited[&shape];
+                            // Extraction may move the shape root into a new kernel.
+                            sop = visited[&shape].1;
+                            sop = self.duplicate_shape_into(kid, skid, sop, shape, &mut visited);
                         }
                         self.consume(x, kid, &mut visited, &mut rcs);
                         self.consume(shape, kid, &mut visited, &mut rcs);
@@ -515,51 +522,50 @@ impl Graph {
                             }
                         }
                         let (mut kid, mut op_id) = visited[&x];
-                        // Reshape can change dynamism (e.g. a dynamic dim
-                        // inferred from a runtime slice length): a
-                        // dynamic-shaped result must not live in a static
-                        // kernel — force it into its own kernel.
-                        let force_store = self.jit_kernels[kid].kernel.has_dynamic_shape(op_id);
+                        let force_store = false;
                         (kid, op_id) = self.duplicate_or_store_class(x, kid, op_id, &mut visited, &mut rcs, force_store);
                         let (mut skid, mut sop) = visited[&shape];
-                        if skid != kid {
-                            if self.jit_kernels[kid].kernel.contains_stores() {
-                                (kid, op_id) = self.add_store(x, kid, op_id, &mut visited, &rcs);
+                        if cfg!(debug_assertions) {
+                            let src_shape: Vec<u64> = self.jit_kernels[skid].kernel.shape(sop);
+                            let graph_shape: Vec<u64> = self.shape(shape).iter().map(|&d| self.resolve_const(d).and_then(Constant::as_dim).unwrap_or(0)).collect();
+                            if src_shape != graph_shape {
                             }
+                        }
+                        if skid != kid {
                             // A shape descriptor is pure metadata — never store it.
-                            // If its kernel has stores, extract the shape's subgraph
-                            // into a store-free kernel and merge that in instead.
+                            // Duplicate its calculation into the data kernel so every
+                            // consumer recomputes it.
                             skid = self.extract_shape_kernel(shape, skid, sop, &mut visited);
-                            self.merge_kernels(skid, kid, &mut visited);
-                            (_, sop) = visited[&shape];
+                            // Extraction may move the shape root into a new kernel.
+                            sop = visited[&shape].1;
+                            sop = self.duplicate_shape_into(kid, skid, sop, shape, &mut visited);
                         }
                         self.consume(x, kid, &mut visited, &mut rcs);
                         self.consume(shape, kid, &mut visited, &mut rcs);
                         let result_op = self.jit_kernels[kid]
                             .kernel
                             .push_back(Op::Move { x: op_id, mop: Box::new(MoveOp::Reshape { shape: sop }) });
+                        if cfg!(debug_assertions) {
+                            let gs: Vec<u64> = self.shape(cid).iter().map(|&d| self.resolve_const(d).and_then(Constant::as_dim).unwrap_or(0)).collect();
+                            let ks: Vec<u64> = self.jit_kernels[kid].kernel.shape(result_op);
+                            if gs != ks {
+                            }
+                        }
                         self.push_outputs(kid, cid, *rcs.get(&cid).unwrap());
                         visited.insert(cid, (kid, result_op));
                     }
                     Node::Pad { x, axis, lp, len } => {
                         let (mut kid, mut op_id) = visited[&x];
-                        // Pad with negative padding IS slice: it can change
-                        // dynamism (e.g. crop to a runtime length). A
-                        // dynamic-shaped result must not live in a static
-                        // kernel — force it into its own kernel.
-                        let force_store = self.jit_kernels[kid].kernel.has_dynamic_shape(op_id);
+                        let force_store = false;
                         (kid, op_id) = self.duplicate_or_store_class(x, kid, op_id, &mut visited, &mut rcs, force_store);
                         let mut pads: [Option<OpId>; 2] = [None, None];
                         for (i, pad) in [lp, len].into_iter().enumerate() {
                             let (mut pkid, mut pop) = visited[&pad];
                             if pkid != kid {
-                                if self.jit_kernels[kid].kernel.contains_stores() {
-                                    (kid, op_id) = self.add_store(x, kid, op_id, &mut visited, &rcs);
-                                }
                                 // Bounds are pure metadata — never store them.
+                                // Duplicate their calculation into the data kernel.
                                 pkid = self.extract_shape_kernel(pad, pkid, pop, &mut visited);
-                                self.merge_kernels(pkid, kid, &mut visited);
-                                (_, pop) = visited[&pad];
+                                pop = self.duplicate_shape_into(kid, pkid, pop, pad, &mut visited);
                             }
                             pads[i] = Some(pop);
                             self.consume(pad, kid, &mut visited, &mut rcs);
@@ -574,22 +580,16 @@ impl Graph {
                     }
                     Node::Narrow { x, axis, start, len } => {
                         let (mut kid, mut op_id) = visited[&x];
-                        // Narrow with a runtime bound (e.g. a sliced length)
-                        // makes the result dynamic: it must not live in a
-                        // static kernel — force it into its own kernel.
-                        let force_store = self.jit_kernels[kid].kernel.has_dynamic_shape(op_id);
+                        let force_store = false;
                         (kid, op_id) = self.duplicate_or_store_class(x, kid, op_id, &mut visited, &mut rcs, force_store);
                         let mut bounds: [Option<OpId>; 2] = [None, None];
                         for (i, bound) in [start, len].into_iter().enumerate() {
                             let (mut bkid, mut bop) = visited[&bound];
                             if bkid != kid {
-                                if self.jit_kernels[kid].kernel.contains_stores() {
-                                    (kid, op_id) = self.add_store(x, kid, op_id, &mut visited, &rcs);
-                                }
                                 // Bounds are pure metadata — never store them.
+                                // Duplicate their calculation into the data kernel.
                                 bkid = self.extract_shape_kernel(bound, bkid, bop, &mut visited);
-                                self.merge_kernels(bkid, kid, &mut visited);
-                                (_, bop) = visited[&bound];
+                                bop = self.duplicate_shape_into(kid, bkid, bop, bound, &mut visited);
                             }
                             bounds[i] = Some(bop);
                             self.consume(bound, kid, &mut visited, &mut rcs);
@@ -978,6 +978,67 @@ impl Graph {
         }
     }
 
+    /// Duplicates the ops of `src` (a store-free shape subkernel produced by
+    /// [`Self::extract_shape_kernel`]) into `dst`, so the consumer `dst`
+    /// recomputes the shape instead of sharing/loading it. Unlike
+    /// [`Self::merge_kernels`], `src` is left intact so every consumer gets its
+    /// own copy — shapes are never stored.
+    fn duplicate_shape_into(
+        &mut self,
+        dst: JitKernelId,
+        src: JitKernelId,
+        root: OpId,
+        shape: ClassId,
+        visited: &mut Map<ClassId, (JitKernelId, OpId)>,
+    ) -> OpId {
+        // Snapshot src ops (head order) and loads before mutating dst.
+        let src_kernel = &self.jit_kernels[src].kernel;
+        let mut pairs: Vec<(OpId, Op)> = Vec::new();
+        let mut i = src_kernel.head;
+        while !i.is_null() {
+            pairs.push((i, src_kernel.ops[i].op.clone()));
+            i = src_kernel.ops[i].next;
+        }
+        let src_loads = self.jit_kernels[src].loads.clone();
+
+        let mut op_map: Map<OpId, OpId> = Map::default();
+        for (orig, mut op) in pairs {
+            for param in op.parameters_mut() {
+                if !param.is_null() {
+                    if let Some(&new_param) = op_map.get(param) {
+                        *param = new_param;
+                    }
+                }
+            }
+            let new_id = self.jit_kernels[dst].kernel.push_back(op);
+            op_map.insert(orig, new_id);
+        }
+        // Every copied Param op appends to dst's signature, so each needs its
+        // own parallel `loads` entry — do NOT dedup against existing loads.
+        self.jit_kernels[dst].loads.extend(src_loads);
+        let new_root = *op_map.get(&root).expect("shape root must be in subkernel");
+        if cfg!(debug_assertions) {
+            let src_shape: Vec<u64> = self.jit_kernels[src].kernel.shape(root);
+            let dst_shape: Vec<u64> = self.jit_kernels[dst].kernel.shape(new_root);
+            if src_shape != dst_shape {
+            }
+        }
+        visited.insert(shape, (dst, new_root));
+        // The shape value is now recomputed inline in `dst`; it is no longer an
+        // output of `src`. Drop it from src's outputs, and retire src if it
+        // becomes a dead husk (no outputs and no stores) that no other class
+        // still references — killing a kernel whose ops are still cited by
+        // `visited` would leave dangling OpIds behind.
+        self.jit_kernels[src].outputs.retain(|&c| c != shape);
+        let src_dead = self.jit_kernels[src].outputs.is_empty()
+            && self.jit_kernels[src].stores.is_empty()
+            && !visited.values().any(|&(k, _)| k == src);
+        if src_dead {
+            self.jit_kernels.remove(src);
+        }
+        new_root
+    }
+
     /// Duplicate or store is heuristics that checks if it's better to store and create new load kernel
     /// or duplicate the original kernel. If force_store is set to true, it always stores.
     /// The original kernel is left with one fewer child class in it's outputs.
@@ -999,6 +1060,15 @@ impl Graph {
 
         // if kernel has multiple outputs, duplicate the kernel
         //println!("n_outputs={}", self.ekernels[kid].outputs.len());
+        let log = std::env::var("ZYX_KERN_TRACE").is_ok();
+        if log {
+            eprintln!(
+                "DOS child={child:?} kid={kid:?} n_out={} force_store={force_store} preced_red={} node={:?}",
+                self.jit_kernels[kid].outputs.len(),
+                self.jit_kernels[kid].kernel.is_preceded_by_reduce(op_id),
+                self.nodes[*self.classes[child].nodes.last().unwrap()].node
+            );
+        }
         if self.jit_kernels[kid].outputs.len() > 1 || force_store {
             if force_store || self.jit_kernels[kid].kernel.is_preceded_by_reduce(op_id) {
                 (kid, op_id) = self.add_store(child, kid, op_id, visited, rcs);
@@ -1188,12 +1258,5 @@ fn remove_first_output(kernels: &mut Slab<JitKernelId, JitKernelData>, kid: JitK
             true
         }
         None => false,
-    }
-}
-
-impl Kernel {
-    fn has_dynamic_shape(&mut self, op_id: OpId) -> bool {
-        let shape_ids = self.shape_ids(op_id);
-        shape_ids.into_iter().any(|dim_id| self.resolve_const(dim_id).is_none())
     }
 }

@@ -743,6 +743,7 @@ impl Runtime {
     pub fn unary(&mut self, x: TensorId, uop: UOp) -> TensorId {
         #[cfg(feature = "debug_tensor_op")]
         println!("runtime::unary(x={x}, uop={uop:?})");
+        debug_assert!(!self.shape(x).is_empty(), "unary input must have at least one dim");
         if self.is_graph(x) {
             let (class_id, graph_id) = self.graph_ids(x);
             let (_node_id, class_id) = self.push_node(graph_id, Node::Unary { x: class_id, uop });
@@ -772,6 +773,19 @@ impl Runtime {
     pub fn binary(&mut self, x: TensorId, y: TensorId, bop: BOp) -> Result<TensorId, ZyxError> {
         #[cfg(feature = "debug_tensor_op")]
         println!("runtime::binary(x={x}, y={y}, bop={bop:?})");
+        // Scalars broadcast implicitly. Non-scalar operands must already be
+        // broadcast to equal shapes by the time they reach a binary op: any
+        // non-scalar broadcasting is performed upstream by `Tensor::broadcast`.
+        // `Node::Binary` / `Kernel::binary` do NOT broadcast.
+        let rx = self.shape(x).len();
+        let ry = self.shape(y).len();
+        if !(rx == 0 || ry == 0) {
+            debug_assert_eq!(
+                self.shape(x),
+                self.shape(y),
+                "binary operands must be broadcast to equal shapes before runtime.binary (broadcasting is performed upstream by Tensor::broadcast)"
+            );
+        }
         let x_is_graph = self.is_graph(x);
         let y_is_graph = self.is_graph(y);
         if x_is_graph || y_is_graph {
@@ -889,6 +903,10 @@ impl Runtime {
         #[cfg(feature = "debug_tensor_op")]
         println!("runtime::reduce(x={x}, axes={axes:?}, rop={rop:?})");
         let shape = self.shape(x).to_vec();
+        let rank = shape.len();
+        debug_assert!(!axes.is_empty(), "reduce must specify at least one axis");
+        debug_assert!(axes.iter().all(|&a| (a as usize) < rank), "reduce axis {axes:?} out of bounds for rank {rank}");
+        debug_assert!(axes.len() == axes.iter().collect::<std::collections::BTreeSet<_>>().len(), "reduce axes must be unique: {axes:?}");
         axes.sort_unstable();
 
         if self.is_graph(x) {
@@ -1206,6 +1224,10 @@ impl Runtime {
     pub fn pad_zeros(&mut self, x: TensorId, axis: UAxis, lp: TensorId, len: TensorId) -> TensorId {
         #[cfg(feature = "debug_tensor_op")]
         println!("runtime::pad_zeros(x={x}, axis={axis}, lp={lp}, len={len})");
+        let rank = self.shape(x).len();
+        debug_assert!((axis as usize) < rank, "pad_zeros axis {axis} out of bounds for rank {rank}");
+        debug_assert!(self.shape(lp).is_empty() || self.shape(lp) == [1], "pad_zeros lp must be scalar, got {:?}", self.shape(lp));
+        debug_assert!(self.shape(len).is_empty() || self.shape(len) == [1], "pad_zeros len must be scalar, got {:?}", self.shape(len));
         // Dtypes are fully static: shape descriptors must be integer-typed.
         debug_assert!(self.dtype(lp).is_int() && self.dtype(len).is_int(), "pad_zeros bounds must be integer-typed, got lp={:?} len={:?}", self.dtype(lp), self.dtype(len));
 
@@ -1294,6 +1316,8 @@ impl Runtime {
         println!("runtime::narrow(x={x}, axis={axis}, start={start}, len={len})");
         // Dtypes are fully static: shape descriptors must be integer-typed.
         debug_assert!(self.dtype(start).is_int() && self.dtype(len).is_int(), "narrow bounds must be integer-typed, got start={:?} len={:?}", self.dtype(start), self.dtype(len));
+        debug_assert!(self.shape(start).is_empty() || self.shape(start) == [1], "narrow start must be scalar, got {:?}", self.shape(start));
+        debug_assert!(self.shape(len).is_empty() || self.shape(len) == [1], "narrow len must be scalar, got {:?}", self.shape(len));
 
         let sh = self.shape(x).to_vec();
         debug_assert!(axis < sh.len() as UAxis, "narrow: axis {axis} out of range for rank {}", sh.len());
