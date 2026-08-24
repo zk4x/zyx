@@ -36,11 +36,11 @@ impl BatchNorm {
             eps: 1e-5,
             momentum: 0.1,
             track_running_stats: true,
-            weight: Some(Tensor::ones(num_features, dtype)),
-            bias: Some(Tensor::zeros(num_features, dtype)),
-            running_mean: Tensor::zeros(num_features, dtype),
-            running_var: Tensor::ones(num_features, dtype),
-            num_batches_tracked: Tensor::zeros(1, dtype),
+            weight: Some(Tensor::ones([num_features], dtype)),
+            bias: Some(Tensor::zeros([num_features], dtype)),
+            running_mean: Tensor::zeros([num_features], dtype),
+            running_var: Tensor::ones([num_features], dtype),
+            num_batches_tracked: Tensor::zeros([1], dtype),
         }
     }
 

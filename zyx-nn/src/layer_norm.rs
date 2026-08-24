@@ -50,13 +50,13 @@ impl LayerNorm {
 
         // Optional learnable parameters
         let weight = if elementwise_affine {
-            Some(Tensor::ones(&normalized_shape, dtype))
+            Some(Tensor::ones(normalized_shape.iter().copied(), dtype))
         } else {
             None
         };
 
         let bias_tensor = if bias {
-            Some(Tensor::zeros(&normalized_shape, dtype))
+            Some(Tensor::zeros(normalized_shape.iter().copied(), dtype))
         } else {
             None
         };

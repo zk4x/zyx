@@ -210,6 +210,10 @@ impl Tensor {
     /// # Returns
     ///
     /// A `Vec<usize>` containing the shape of the tensor.
+    ///
+    /// Dimensions that are symbolic (backed by a runtime variable, e.g. a
+    /// narrow with a [`Tensor::variable`] length) resolve to `0` here, since
+    /// no concrete value is known until realize.
     #[must_use]
     pub fn shape(&self) -> Vec<Dim> {
         RT.lock().shape(self.id).to_vec()

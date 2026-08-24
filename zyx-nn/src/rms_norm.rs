@@ -18,7 +18,7 @@ impl RMSNorm {
     /// Initialize RMSNorm layer
     pub fn new(dim: u64, dtype: DType) -> RMSNorm {
         RMSNorm {
-            scale: Tensor::ones(dim, dtype),
+            scale: Tensor::ones([dim], dtype),
             eps: 1e-6,
         }
     }

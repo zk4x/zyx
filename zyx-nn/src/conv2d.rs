@@ -46,9 +46,9 @@ impl Conv2d {
             dilation: dilation.into_shape().collect(),
             groups,
             padding: padding.into_shape().collect(),
-            weight: Tensor::uniform(weight_shape, -scale..scale)?.cast(dtype),
+            weight: Tensor::uniform(weight_shape.iter().copied(), -scale..scale)?.cast(dtype),
             bias: if bias {
-                Some(Tensor::uniform(out_channels, -scale..scale)?.cast(dtype))
+                Some(Tensor::uniform([out_channels], -scale..scale)?.cast(dtype))
             } else {
                 None
             },
