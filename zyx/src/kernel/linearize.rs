@@ -898,7 +898,9 @@ impl Kernel {
             }
             let mut order = Vec::with_capacity(reachable.len());
             for _ in 0..10_000 {
-                let Some(std::cmp::Reverse((_, _, op_id))) = heap.pop() else { break };
+                let Some(std::cmp::Reverse((_, _, op_id))) = heap.pop() else {
+                    break;
+                };
                 order.push(op_id);
                 if let Some(cs) = consumers.get(&op_id) {
                     for &c in cs {

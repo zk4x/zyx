@@ -2051,9 +2051,7 @@ impl Runtime {
         // with the same concrete shape but distinct dim classes still compare
         // equal.
         let concrete = |s: &[ClassId]| -> Vec<Dim> {
-            s.iter()
-                .map(|&d| self.graphs[graph_id].resolve_const(d).and_then(Constant::as_dim).unwrap_or(0))
-                .collect()
+            s.iter().map(|&d| self.graphs[graph_id].resolve_const(d).and_then(Constant::as_dim).unwrap_or(0)).collect()
         };
         let sx = self.graphs[graph_id].shape(x);
         let sy = self.graphs[graph_id].shape(y);

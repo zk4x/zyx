@@ -699,13 +699,7 @@ impl Kernel {
                 let Some(&(xl, xu)) = prev.get(&x) else { return };
                 let Some(&(yl, yu)) = prev.get(&y) else { return };
                 let Some(&(zl, zu)) = prev.get(&z) else { return };
-                prev.insert(
-                    op_id,
-                    (
-                        xl.saturating_mul(yl).saturating_add(zl),
-                        xu.saturating_mul(yu).saturating_add(zu),
-                    ),
-                );
+                prev.insert(op_id, (xl.saturating_mul(yl).saturating_add(zl), xu.saturating_mul(yu).saturating_add(zu)));
             }
             _ => {}
         }

@@ -56,11 +56,13 @@ impl Kernel {
     ///
     /// let mut kernel = Kernel::new(DeviceId::AUTO);
     /// let n = 4;
-    /// let inp = kernel.param(DType::F32, ParamKind::Global, kernel.add_shape(&[n]));
-    /// let gidx = kernel.group_index(0, n);
+    /// let shape = kernel.add_shape(&[n]);
+    /// let len = kernel.const_idx(n);
+    /// let inp = kernel.param(DType::F32, ParamKind::Global, shape);
+    /// let gidx = kernel.group_index(0, len);
     /// let loaded = kernel.load(inp, gidx, MemLayout::Scalar);
     /// let doubled = kernel.add(loaded, loaded);
-    /// let out = kernel.param(DType::F32, ParamKind::GlobalMut, kernel.add_shape(&[n]));
+    /// let out = kernel.param(DType::F32, ParamKind::GlobalMut, shape);
     /// kernel.store(out, doubled, gidx, MemLayout::Scalar);
     /// ```
     pub fn new(device_id: DeviceId) -> Self {
@@ -90,11 +92,13 @@ impl Kernel {
     ///
     /// let mut kernel = Kernel::new(DeviceId::AUTO);
     /// let n = 4;
-    /// let inp = kernel.param(DType::F32, ParamKind::Global, kernel.add_shape(&[n]));
-    /// let gidx = kernel.group_index(0, n);
+    /// let shape = kernel.add_shape(&[n]);
+    /// let len = kernel.const_idx(n);
+    /// let inp = kernel.param(DType::F32, ParamKind::Global, shape);
+    /// let gidx = kernel.group_index(0, len);
     /// let loaded = kernel.load(inp, gidx, MemLayout::Scalar);
     /// let doubled = kernel.add(loaded, loaded);
-    /// let out = kernel.param(DType::F32, ParamKind::GlobalMut, kernel.add_shape(&[n]));
+    /// let out = kernel.param(DType::F32, ParamKind::GlobalMut, shape);
     /// kernel.store(out, doubled, gidx, MemLayout::Scalar);
     ///
     /// let compiled = kernel.compile()?;
@@ -106,6 +110,16 @@ impl Kernel {
     /// ```
     pub fn compile(mut self) -> Result<CompiledKernel, ZyxError> {
         self.linearize();
+        // After linearization the parameter shapes are no longer meaningful
+        // (the same clear happens inside `linearize` for kernels it processes);
+        // clear them here too so kernels that skip linearization (already
+        // lowered by hand) don't require shape consts to be ordered before the
+        // params that reference them.
+        for node in self.ops.values_mut() {
+            if let Op::Param { shape, .. } = &mut node.op {
+                *shape = OpId::NULL;
+            }
+        }
         self.instruction_schedule();
         self.dead_code_elimination();
         self.verify();

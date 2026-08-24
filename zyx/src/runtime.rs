@@ -906,7 +906,10 @@ impl Runtime {
         let rank = shape.len();
         debug_assert!(!axes.is_empty(), "reduce must specify at least one axis");
         debug_assert!(axes.iter().all(|&a| (a as usize) < rank), "reduce axis {axes:?} out of bounds for rank {rank}");
-        debug_assert!(axes.len() == axes.iter().collect::<std::collections::BTreeSet<_>>().len(), "reduce axes must be unique: {axes:?}");
+        debug_assert!(
+            axes.len() == axes.iter().collect::<std::collections::BTreeSet<_>>().len(),
+            "reduce axes must be unique: {axes:?}"
+        );
         axes.sort_unstable();
 
         if self.is_graph(x) {
@@ -1226,10 +1229,23 @@ impl Runtime {
         println!("runtime::pad_zeros(x={x}, axis={axis}, lp={lp}, len={len})");
         let rank = self.shape(x).len();
         debug_assert!((axis as usize) < rank, "pad_zeros axis {axis} out of bounds for rank {rank}");
-        debug_assert!(self.shape(lp).is_empty() || self.shape(lp) == [1], "pad_zeros lp must be scalar, got {:?}", self.shape(lp));
-        debug_assert!(self.shape(len).is_empty() || self.shape(len) == [1], "pad_zeros len must be scalar, got {:?}", self.shape(len));
+        debug_assert!(
+            self.shape(lp).is_empty() || self.shape(lp) == [1],
+            "pad_zeros lp must be scalar, got {:?}",
+            self.shape(lp)
+        );
+        debug_assert!(
+            self.shape(len).is_empty() || self.shape(len) == [1],
+            "pad_zeros len must be scalar, got {:?}",
+            self.shape(len)
+        );
         // Dtypes are fully static: shape descriptors must be integer-typed.
-        debug_assert!(self.dtype(lp).is_int() && self.dtype(len).is_int(), "pad_zeros bounds must be integer-typed, got lp={:?} len={:?}", self.dtype(lp), self.dtype(len));
+        debug_assert!(
+            self.dtype(lp).is_int() && self.dtype(len).is_int(),
+            "pad_zeros bounds must be integer-typed, got lp={:?} len={:?}",
+            self.dtype(lp),
+            self.dtype(len)
+        );
 
         let sh = self.shape(x).to_vec();
         debug_assert!(axis < sh.len() as UAxis, "pad_zeros: axis {axis} out of range for rank {}", sh.len());
@@ -1315,9 +1331,22 @@ impl Runtime {
         #[cfg(feature = "debug_tensor_op")]
         println!("runtime::narrow(x={x}, axis={axis}, start={start}, len={len})");
         // Dtypes are fully static: shape descriptors must be integer-typed.
-        debug_assert!(self.dtype(start).is_int() && self.dtype(len).is_int(), "narrow bounds must be integer-typed, got start={:?} len={:?}", self.dtype(start), self.dtype(len));
-        debug_assert!(self.shape(start).is_empty() || self.shape(start) == [1], "narrow start must be scalar, got {:?}", self.shape(start));
-        debug_assert!(self.shape(len).is_empty() || self.shape(len) == [1], "narrow len must be scalar, got {:?}", self.shape(len));
+        debug_assert!(
+            self.dtype(start).is_int() && self.dtype(len).is_int(),
+            "narrow bounds must be integer-typed, got start={:?} len={:?}",
+            self.dtype(start),
+            self.dtype(len)
+        );
+        debug_assert!(
+            self.shape(start).is_empty() || self.shape(start) == [1],
+            "narrow start must be scalar, got {:?}",
+            self.shape(start)
+        );
+        debug_assert!(
+            self.shape(len).is_empty() || self.shape(len) == [1],
+            "narrow len must be scalar, got {:?}",
+            self.shape(len)
+        );
 
         let sh = self.shape(x).to_vec();
         debug_assert!(axis < sh.len() as UAxis, "narrow: axis {axis} out of range for rank {}", sh.len());

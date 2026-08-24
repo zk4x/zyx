@@ -192,8 +192,15 @@ impl Runtime {
                 Node::Reshape { x, .. } => {
                     let in_dims = self.graphs[graph_id].shape(x);
                     let x_shape = self.shape_class(graph_id, in_dims.clone());
-                    let in_conc: Vec<Dim> = in_dims.iter().map(|&d| self.graphs[graph_id].resolve_const(d).and_then(Constant::as_dim).unwrap_or(0)).collect();
-                    let xc_conc: Vec<Dim> = self.graphs[graph_id].shape(x_shape).iter().map(|&d| self.graphs[graph_id].resolve_const(d).and_then(Constant::as_dim).unwrap_or(0)).collect();
+                    let in_conc: Vec<Dim> = in_dims
+                        .iter()
+                        .map(|&d| self.graphs[graph_id].resolve_const(d).and_then(Constant::as_dim).unwrap_or(0))
+                        .collect();
+                    let xc_conc: Vec<Dim> = self.graphs[graph_id]
+                        .shape(x_shape)
+                        .iter()
+                        .map(|&d| self.graphs[graph_id].resolve_const(d).and_then(Constant::as_dim).unwrap_or(0))
+                        .collect();
                     if in_conc.iter().any(|&v| v != 0) && xc_conc.iter().any(|&v| v != 0) && in_conc != xc_conc {
                         eprintln!("RESGRAD in={:?} x_shape={:?}", in_conc, xc_conc);
                     }
@@ -211,8 +218,7 @@ impl Runtime {
                         .iter()
                         .map(|&d| self.graph_const_dim(graph_id, d).expect("expand backward with symbolic dim"))
                         .collect();
-                    if in_shape.contains(&3) && in_shape.contains(&2) {
-                    }
+                    if in_shape.contains(&3) && in_shape.contains(&2) {}
                     // Right-align the input against the expanded output per broadcast
                     // semantics. The input is broadcast to the output by (a) leading
                     // `pad` dims that the input did not have at all (implicitly size 1)
@@ -282,18 +288,18 @@ impl Runtime {
                 Node::Reduce { x, rop: bop, ref axes } => {
                     let axes = axes.clone();
                     match bop {
-                    BOp::Add => {
-                        // Reshape the gradient to x's dims with 1 at each
-                        // reduced axis, then broadcast back to x's shape.
-                        let x_dims = self.graphs[graph_id].shape(x);
-                        // Shape dims are lengths: always integer-typed,
-                        // never the tensor's data dtype.
-                        let one_dim = self.push_const(graph_id, Constant::new(1u64));
-                        let kept: Vec<ClassId> = x_dims
-                            .iter()
-                            .enumerate()
-                            .map(|(i, &d)| if axes.contains(&(i as UAxis)) { one_dim } else { d })
-                            .collect();
+                        BOp::Add => {
+                            // Reshape the gradient to x's dims with 1 at each
+                            // reduced axis, then broadcast back to x's shape.
+                            let x_dims = self.graphs[graph_id].shape(x);
+                            // Shape dims are lengths: always integer-typed,
+                            // never the tensor's data dtype.
+                            let one_dim = self.push_const(graph_id, Constant::new(1u64));
+                            let kept: Vec<ClassId> = x_dims
+                                .iter()
+                                .enumerate()
+                                .map(|(i, &d)| if axes.contains(&(i as UAxis)) { one_dim } else { d })
+                                .collect();
                             let kept_shape = self.shape_class(graph_id, kept);
                             let grad_r = self.push_node(graph_id, Node::Reshape { x: grad, shape: kept_shape }).1;
                             let x_shape = self.shape_class(graph_id, x_dims);

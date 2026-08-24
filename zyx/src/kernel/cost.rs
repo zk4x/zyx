@@ -470,7 +470,9 @@ impl Kernel {
                     }
                 }
                 Op::Index { axis, kind: scope } => match scope {
-                    IdxKind::Group(len) => gws[axis as usize] = self.resolve_const(len).and_then(crate::dtype::Constant::as_dim).unwrap(),
+                    IdxKind::Group(len) => {
+                        gws[axis as usize] = self.resolve_const(len).and_then(crate::dtype::Constant::as_dim).unwrap()
+                    }
                     IdxKind::Local(len) => lws[axis as usize] = len,
                     IdxKind::Warp(_) => todo!(),
                 },

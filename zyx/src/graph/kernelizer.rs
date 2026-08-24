@@ -2,10 +2,10 @@ use std::collections::BTreeSet;
 
 use crate::{
     Map, Set,
+    graph::Constant,
     graph::{ClassId, Graph, JitKernelData, JitKernelId, Node},
     kernel::{DeviceId, IDX_T, Kernel, MemLayout, MoveOp, Op, OpId, ParamKind},
     shape::UAxis,
-    graph::Constant,
     slab::{Slab, SlabId},
 };
 
@@ -527,9 +527,12 @@ impl Graph {
                         let (mut skid, mut sop) = visited[&shape];
                         if cfg!(debug_assertions) {
                             let src_shape: Vec<u64> = self.jit_kernels[skid].kernel.shape(sop);
-                            let graph_shape: Vec<u64> = self.shape(shape).iter().map(|&d| self.resolve_const(d).and_then(Constant::as_dim).unwrap_or(0)).collect();
-                            if src_shape != graph_shape {
-                            }
+                            let graph_shape: Vec<u64> = self
+                                .shape(shape)
+                                .iter()
+                                .map(|&d| self.resolve_const(d).and_then(Constant::as_dim).unwrap_or(0))
+                                .collect();
+                            if src_shape != graph_shape {}
                         }
                         if skid != kid {
                             // A shape descriptor is pure metadata — never store it.
@@ -546,10 +549,13 @@ impl Graph {
                             .kernel
                             .push_back(Op::Move { x: op_id, mop: Box::new(MoveOp::Reshape { shape: sop }) });
                         if cfg!(debug_assertions) {
-                            let gs: Vec<u64> = self.shape(cid).iter().map(|&d| self.resolve_const(d).and_then(Constant::as_dim).unwrap_or(0)).collect();
+                            let gs: Vec<u64> = self
+                                .shape(cid)
+                                .iter()
+                                .map(|&d| self.resolve_const(d).and_then(Constant::as_dim).unwrap_or(0))
+                                .collect();
                             let ks: Vec<u64> = self.jit_kernels[kid].kernel.shape(result_op);
-                            if gs != ks {
-                            }
+                            if gs != ks {}
                         }
                         self.push_outputs(kid, cid, *rcs.get(&cid).unwrap());
                         visited.insert(cid, (kid, result_op));
@@ -1020,8 +1026,7 @@ impl Graph {
         if cfg!(debug_assertions) {
             let src_shape: Vec<u64> = self.jit_kernels[src].kernel.shape(root);
             let dst_shape: Vec<u64> = self.jit_kernels[dst].kernel.shape(new_root);
-            if src_shape != dst_shape {
-            }
+            if src_shape != dst_shape {}
         }
         visited.insert(shape, (dst, new_root));
         // The shape value is now recomputed inline in `dst`; it is no longer an

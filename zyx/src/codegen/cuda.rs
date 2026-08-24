@@ -225,7 +225,9 @@ impl Kernel {
                                     BOp::Mul => writeln!(source, "{indent}r{reg}.{c} = {x}.{c} * {y}.{c};"),
                                     BOp::Div => writeln!(source, "{indent}r{reg}.{c} = {x}.{c} / {y}.{c};"),
                                     BOp::Pow => writeln!(source, "{indent}r{reg}.{c} = pow((double){x}.{c}, (double){y}.{c});"),
-                                    BOp::Mod if dtype.0.is_float() => writeln!(source, "{indent}r{reg}.{c} = fmodf({x}.{c}, {y}.{c});"),
+                                    BOp::Mod if dtype.0.is_float() => {
+                                        writeln!(source, "{indent}r{reg}.{c} = fmodf({x}.{c}, {y}.{c});")
+                                    }
                                     BOp::Mod => writeln!(source, "{indent}r{reg}.{c} = {x}.{c} % {y}.{c};"),
                                     BOp::Cmplt => writeln!(source, "{indent}r{reg}.{c} = (unsigned int)({x}.{c} < {y}.{c});"),
                                     BOp::Cmpgt => writeln!(source, "{indent}r{reg}.{c} = (unsigned int)({x}.{c} > {y}.{c});"),
@@ -311,7 +313,9 @@ impl Kernel {
                 Op::Index { axis, kind: scope } => {
                     indices.insert(op_id, loop_id);
                     let max_idx = match scope {
-                        IdxKind::Group(len_id) => self.resolve_const(len_id).and_then(crate::dtype::Constant::as_dim).unwrap().saturating_sub(1),
+                        IdxKind::Group(len_id) => {
+                            self.resolve_const(len_id).and_then(crate::dtype::Constant::as_dim).unwrap().saturating_sub(1)
+                        }
                         IdxKind::Local(len) => u64::from(len).saturating_sub(1),
                         IdxKind::Warp(_) => todo!(),
                     };

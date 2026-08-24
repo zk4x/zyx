@@ -263,7 +263,9 @@ impl Kernel {
                 Op::Index { axis, kind } => {
                     dtypes.insert(op_id, IDX_T);
                     let ub = match kind {
-                        IdxKind::Group(len) => self.resolve_const(len).and_then(crate::dtype::Constant::as_dim).unwrap_or(u64::MAX).saturating_sub(1),
+                        IdxKind::Group(len) => {
+                            self.resolve_const(len).and_then(crate::dtype::Constant::as_dim).unwrap_or(u64::MAX).saturating_sub(1)
+                        }
                         IdxKind::Local(len) => len as u64 - 1,
                         IdxKind::Warp(len) => len as u64 - 1,
                     };

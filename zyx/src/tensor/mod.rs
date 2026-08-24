@@ -987,9 +987,9 @@ impl Tensor {
     /// ```rust
     /// use zyx::Tensor;
     ///
-    /// let predictions = Tensor::from([1.0, 2.0, 3.0]);
-    /// let targets = Tensor::from([1.5, 2.5, 2.8]);
-    /// let loss = predictions.huber_loss(&targets, 1.0);
+    /// let predictions = Tensor::from([1.0f32, 2.0, 3.0]);
+    /// let targets = Tensor::from([1.5f32, 2.5, 2.8]);
+    /// let loss = predictions.huber_loss(&targets, 1.0f32);
     /// // Huber loss will be quadratic for differences ≤ 1.0 and linear for differences > 1.0
     /// ```
     #[must_use]
@@ -1040,7 +1040,7 @@ impl Tensor {
     ///
     /// ```
     /// let t = zyx::Tensor::zeros([2, 3], zyx::DType::U8);
-    /// assert_eq!(t.expand((4, 2, 3))?.shape(), &[4, 2, 3]);
+    /// assert_eq!(t.expand([4, 2, 3])?.shape(), [4, 2, 3]);
     /// # Ok::<(), zyx::ZyxError>(())
     /// ```
     /// # Errors
@@ -1340,15 +1340,11 @@ impl Tensor {
         }
         // 0 is reserved as the internal inferred-dim marker; users infer with -1.
         if resolved.iter().any(|&d| d == Some(0)) {
-            return Err(ZyxError::shape_error(
-                "Reshape dimensions must be nonzero; use -1 to infer a dimension.".into(),
-            ));
+            return Err(ZyxError::shape_error("Reshape dimensions must be nonzero; use -1 to infer a dimension.".into()));
         }
         if infer_count == 1 {
             if resolved.iter().any(Option::is_none) {
-                return Err(ZyxError::shape_error(
-                    "Cannot infer dimension (-1): all other dimensions must be static.".into(),
-                ));
+                return Err(ZyxError::shape_error("Cannot infer dimension (-1): all other dimensions must be static.".into()));
             }
             let numel: Dim = self.shape().iter().product();
             let product: Dim = resolved.iter().filter_map(|&d| u64::try_from(d.unwrap()).ok()).product();
@@ -1358,7 +1354,10 @@ impl Tensor {
             let inferred_dim = numel / product;
             if inferred_dim.saturating_mul(product) != numel {
                 return Err(ZyxError::shape_error(
-                    format!("Cannot infer dimension: total elements {numel} not divisible by product of specified dims {product}").into(),
+                    format!(
+                        "Cannot infer dimension: total elements {numel} not divisible by product of specified dims {product}"
+                    )
+                    .into(),
                 ));
             }
             for (t, r) in tensors.iter_mut().zip(&resolved) {
@@ -2321,10 +2320,10 @@ impl Tensor {
     /// use zyx::Tensor;
     /// let a = Tensor::from([[1, 2], [3, 4]]);
     /// let b = Tensor::from([[5, 6], [7, 8]]);
-    /// assert_eq!(Tensor::stack([&a, &b], 0)?, [[[1, 2],
-    ///                                           [3, 4]],
-    ///                                          [[5, 6],
-    ///                                           [7, 8]]]);
+    /// assert_eq!(Tensor::stack_axis([&a, &b], 0)?, [[[1, 2],
+    ///                                               [3, 4]],
+    ///                                              [[5, 6],
+    ///                                               [7, 8]]]);
     /// # Ok::<(), zyx::ZyxError>(())
     /// ```
     ///

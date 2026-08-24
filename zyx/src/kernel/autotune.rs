@@ -108,6 +108,7 @@ pub(crate) enum Optimization {
         factors: Vec<(OpId, u64)>,
     },
     /// Pad indices to hardware-friendly sizes (e.g., 32 for CUDA warps).
+    #[allow(unused)]
     PadIndex {
         /// Pairs of (index_op_id, target_size) for each padding.
         factors: Vec<(OpId, Dim)>,

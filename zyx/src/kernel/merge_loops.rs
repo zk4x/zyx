@@ -88,7 +88,9 @@ impl Kernel {
         let mut total_len: u64 = 1;
         for &id in loop_ids {
             if let Op::Loop { len: len_id } = self.ops[id].op {
-                let Some(len) = self.resolve_const(len_id).and_then(crate::dtype::Constant::as_dim) else { return };
+                let Some(len) = self.resolve_const(len_id).and_then(crate::dtype::Constant::as_dim) else {
+                    return;
+                };
                 total_len *= len;
             }
         }
