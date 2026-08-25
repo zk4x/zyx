@@ -44,7 +44,7 @@ pub(super) fn initialize_pool(memory_pools: &mut Slab<PoolId, MemoryPool>, debug
         println!("[host] initialized");
     }
     let total_bytes = detect_host_memory_bytes();
-    let pool = MemoryPool::Host(HostMemoryPool { free_bytes: total_bytes, buffers: Slab::new() });
+    let pool = MemoryPool::Host(HostMemoryPool { free_bytes: total_bytes as i64, buffers: Slab::new() });
     if debug_dev {
         println!("[host] device total memory: {} MB", total_bytes / (1024 * 1024));
     }

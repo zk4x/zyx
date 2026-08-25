@@ -35,6 +35,7 @@ use crate::{
     graph::{ClassId, ExecPlan, Graph, GraphId, Node, plan::drain_events_for_buf},
     kernel::{BOp, DeviceId, Kernel, MemLayout, MoveOp, Op, OpId, ParamKind, UOp, autotune::OptSeq},
     rng::Rng,
+    scalar::{bf16, f16},
     shape::{Dim, UAxis},
     slab::{Slab, SlabId},
     tensor::TensorId,
@@ -110,6 +111,40 @@ impl SlabId for KernelId {
     }
 }
 
+/// A variable-backed scalar dimension, resolvable to a concrete value through
+/// the pool's variable slot of the tensor that owns it.
+#[derive(Clone, Copy)]
+pub(crate) enum VarDim {
+    Kernel(KernelId, OpId),
+    Graph(GraphId, ClassId),
+}
+
+/// PyTorch-style inference of the `-1` "auto" placeholder in a reshape target:
+/// at most one `-1` is allowed and resolves to `product(input) / product(other
+/// Read the raw target dims (with `-1` placeholders) of a shape descriptor op
+/// `shape_op` in kernel `kid`, mirroring `Kernel::shape_ids` but resolving each
+/// dim to a concrete `Dim`, treating a negative constant or unresolved variable
+/// as the `-1` placeholder.
+impl Runtime {
+    fn raw_shape_dims(&self, kid: KernelId, shape_op: OpId) -> Vec<Dim> {
+        let k = &self.kernels[kid].kernel;
+        let dim_ops: Vec<OpId> = match k.ops[shape_op].op {
+            Op::Stack { ref ops } => ops.to_vec(),
+            Op::Const(_) | Op::Param { shape: OpId::NULL, .. } => vec![shape_op],
+            ref op => todo!("raw_shape_dims: invalid shape descriptor {op:?}"),
+        };
+        dim_ops
+            .iter()
+            .map(|&d| match k.ops[d].op {
+                Op::Const(c) => c.as_dim().unwrap_or(-1),
+                Op::Load { src, .. } => self.resolve_variable(VarDim::Kernel(kid, src)).as_dim().unwrap_or(-1),
+                Op::Param { kind: ParamKind::Variable, .. } => self.resolve_variable(VarDim::Kernel(kid, d)).as_dim().unwrap_or(-1),
+                _ => k.resolve_const(d).and_then(Constant::as_dim).unwrap_or(-1),
+            })
+            .collect()
+    }
+}
+
 #[derive(Debug)]
 pub struct TensorData {
     pub kernel_id: KernelId,
@@ -133,9 +168,6 @@ pub(crate) struct KernelData {
 }
 
 pub struct Runtime {
-    /// Every tensor has an entry here. Each dim is the concrete value if that
-    /// dimension is static, or `0` if it is dynamic (symbolic).
-    pub shapes: Map<TensorId, Vec<Dim>>,
     pub graphs: Slab<GraphId, Graph>,
     pub tensors: Slab<TensorId, TensorData>,
     pub kernels: Slab<KernelId, KernelData>,
@@ -161,7 +193,6 @@ pub struct Runtime {
 impl Runtime {
     pub const fn new() -> Self {
         Runtime {
-            shapes: Map::with_hasher(BuildHasherDefault::new()),
             graphs: Slab::new(),
             tensors: Slab::new(),
             kernels: Slab::new(),
@@ -184,13 +215,6 @@ impl Runtime {
         }
     }
 
-    /// Returns the shape of tensor `x`. A dimension of `0` is dynamic (its
-    /// value is only known at launch), while any other value is a static
-    /// dimension.
-    pub fn shape(&self, x: TensorId) -> &[Dim] {
-        &self.shapes[&x]
-    }
-
     /// Read the scalar value of a constant tensor as a dimension.
     fn const_dim(&self, kernel_id: KernelId, op_id: OpId) -> Option<Dim> {
         let kernel = &self.kernels[kernel_id].kernel;
@@ -198,6 +222,244 @@ impl Runtime {
             return c.as_dim();
         }
         None
+    }
+
+    /// Resolve a variable dimension to its concrete value by scanning the
+    /// tensors for the one that owns the backing `Param { Variable }` (eager)
+    /// or class (graph), then reading its stored variable slot. An unboundable
+    /// variable is a bug and panics — never a fallback value.
+    pub(crate) fn resolve_variable(&self, src: VarDim) -> Constant {
+        let tid = match src {
+            VarDim::Kernel(kid, op_id) => self.tensors.iter().find(|(_, t)| t.kernel_id == kid && t.op_id == op_id).map(|(id, _)| id),
+            VarDim::Graph(gid, cid) => self.tensors.iter().find(|(_, t)| t.graph_id == gid && t.class_id == cid).map(|(id, _)| id),
+        }
+        .expect("resolve_variable: no tensor backs this variable dimension");
+        let buf = self.buffer_map.get(&tid).expect("resolve_variable: variable dimension tensor has no buffer");
+        let c = self.pools[buf.pool].get_variable(buf.buffer).expect("resolve_variable: variable slot is empty");
+        debug_assert_eq!(c.dtype(), crate::kernel::IDX_T, "resolve_variable: variable slot must hold IDX_T");
+        c
+    }
+
+    /// Concrete shape of tensor `x`, fully evaluated: every symbolic dimension
+    /// is resolved to a concrete `Dim` by folding const expressions and reading
+    /// variable slots. Panics if a dimension cannot be resolved (an unboundable
+    /// variable is a bug), never returns a sentinel.
+    pub(crate) fn shape(&self, x: TensorId) -> Vec<Dim> {
+        if self.is_graph(x) {
+            let (class_id, graph_id) = self.graph_ids(x);
+            let g = &self.graphs[graph_id];
+            g.shape(class_id)
+                .into_iter()
+                .map(|c| {
+                    if let Some(k) = g.resolve_const(c) {
+                        return k.as_dim().expect("resolved graph dim is not an integer constant");
+                    }
+                    self.resolve_variable(VarDim::Graph(graph_id, c)).as_dim().expect("dynamic graph dim is unboundable")
+                })
+                .collect()
+        } else {
+            let (kid, op_id) = self.eager_ids(x);
+            let tid = x;
+            let kernel = &self.kernels[kid].kernel;
+            // One dimension op resolved to a concrete `Dim`, folding const
+            // expressions and reading variable slots for `Load` / variable
+            // `Param` leaves. Duplicated from `Kernel::shape` on purpose so the
+            // resolver can reach the runtime's pools.
+            fn resolve_dim_op(rt: &Runtime, tid: TensorId, kid: KernelId, kernel: &Kernel, op: OpId) -> Option<Dim> {
+                match kernel.ops[op].op {
+                    Op::Const(c) => c.as_dim(),
+                    Op::Load { src, .. } => rt.resolve_variable(VarDim::Kernel(kid, src)).as_dim(),
+                    Op::Param { kind: ParamKind::Variable, .. } => rt.resolve_variable(VarDim::Kernel(kid, op)).as_dim(),
+                    Op::Unary { x, uop } => {
+                        resolve_dim_op(rt, tid, kid, kernel, x).map(|v| Constant::idx(v).unary(uop)).and_then(|c| c.as_dim())
+                    }
+                    Op::Binary { x, y, bop } => match (resolve_dim_op(rt, tid, kid, kernel, x), resolve_dim_op(rt, tid, kid, kernel, y)) {
+                        (Some(a), Some(b)) => Constant::binary(Constant::idx(a), Constant::idx(b), bop).as_dim(),
+                        _ => None,
+                    },
+                    _ => kernel.resolve_const(op).and_then(Constant::as_dim),
+                }
+            }
+            fn descriptor(k: &Kernel, id: OpId) -> Vec<OpId> {
+                if id.is_null() {
+                    return Vec::new();
+                }
+                match k.ops[id].op {
+                    Op::Stack { ref ops } => ops.to_vec(),
+                    Op::Const(_) | Op::Param { shape: OpId::NULL, .. } => vec![id],
+                    ref op => todo!("shape: invalid shape descriptor {op:?}"),
+                }
+            }
+            if op_id.is_null() {
+                return Vec::new();
+            }
+            let mut stack = vec![op_id];
+            let mut visited: Map<OpId, Vec<Dim>> = Map::default();
+            for _ in 0..10_000 {
+                let Some(id) = stack.pop() else {
+                    return visited[&op_id].clone();
+                };
+                if visited.contains_key(&id) {
+                    continue;
+                }
+                match kernel.ops[id].op {
+                    Op::Const(_) => {
+                        visited.insert(id, vec![]);
+                    }
+                    Op::Param { shape, .. } => {
+                        visited.insert(
+                            id,
+                            descriptor(kernel, shape)
+                                .iter()
+                                .map(|&d| resolve_dim_op(self, tid, kid, kernel, d).unwrap_or_else(|| panic!("dynamic eager dim unboundable for {x:?}: op={:?}", kernel.ops[d].op)))
+                                .collect(),
+                        );
+                    }
+                    Op::Stack { ref ops } => {
+                        if ops.is_empty() {
+                            visited.insert(id, vec![]);
+                        } else if let Some(mut dims) = visited.get(&ops[0]).cloned() {
+                            dims.insert(0, ops.len() as Dim);
+                            visited.insert(id, dims);
+                        } else {
+                            stack.push(id);
+                            stack.push(ops[0]);
+                        }
+                    }
+                    Op::Move { x, ref mop } => match mop.as_ref() {
+                        MoveOp::Reshape { shape, .. } | MoveOp::Expand { shape } => {
+                            visited.insert(
+                                id,
+                                descriptor(kernel, *shape)
+                                    .iter()
+                                    .map(|&d| resolve_dim_op(self, tid, kid, kernel, d).unwrap_or_else(|| panic!("dynamic eager dim unboundable for {x:?}: op={:?}", kernel.ops[d].op)))
+                                    .collect(),
+                            );
+                        }
+                        MoveOp::Permute { axes } => match visited.get(&x) {
+                            Some(dims) => {
+                                visited.insert(id, crate::shape::permute(dims, axes));
+                            }
+                            None => {
+                                stack.push(id);
+                                stack.push(x);
+                            }
+                        },
+                        MoveOp::Flip { .. } => match visited.get(&x) {
+                            Some(dims) => {
+                                visited.insert(id, dims.clone());
+                            }
+                            None => {
+                                stack.push(id);
+                                stack.push(x);
+                            }
+                        },
+                        &MoveOp::Narrow { axis, len, .. } | &MoveOp::Pad { axis, len, .. } => match visited.get(&x).cloned() {
+                            Some(mut dims) => {
+                                if dims.is_empty() {
+                                    dims = vec![resolve_dim_op(self, tid, kid, kernel, len).unwrap_or_else(|| panic!("dynamic eager dim unboundable op={:?}", kernel.ops[len].op))];
+                                } else {
+                                    dims[axis as usize] = resolve_dim_op(self, tid, kid, kernel, len).unwrap_or_else(|| panic!("dynamic eager dim unboundable op={:?}", kernel.ops[len].op));
+                                }
+                                visited.insert(id, dims);
+                            }
+                            None => {
+                                stack.push(id);
+                                stack.push(x);
+                            }
+                        },
+                    },
+                    Op::Binary { x, y, .. } => {
+                        let x_done = visited.contains_key(&x);
+                        if x_done && !visited[&x].is_empty() {
+                            visited.insert(id, visited[&x].clone());
+                        } else if visited.contains_key(&y) {
+                            visited.insert(id, visited[&y].clone());
+                        } else {
+                            stack.push(id);
+                            if !x_done {
+                                stack.push(x);
+                            }
+                            stack.push(y);
+                        }
+                    }
+                    Op::Reduce { x, .. } => match visited.get(&x).cloned() {
+                        Some(mut dims) => {
+                            dims.truncate(dims.len().saturating_sub(1));
+                            visited.insert(id, dims);
+                        }
+                        None => {
+                            stack.push(id);
+                            stack.push(x);
+                        }
+                    },
+                    Op::Load { src: x, .. }
+                    | Op::Store { src: x, .. }
+                    | Op::Cast { x, .. }
+                    | Op::Unary { x, .. }
+                    | Op::Mad { x, .. }
+                    | Op::MatmulTile { x, .. }
+                    | Op::ReduceTile { x, .. }
+                    | Op::Devectorize { vec: x, .. }
+                    | Op::TransposeTile { x } => match visited.get(&x) {
+                        Some(dims) => {
+                            visited.insert(id, dims.clone());
+                        }
+                        None => {
+                            stack.push(id);
+                            stack.push(x);
+                        }
+                    },
+                    Op::Asm { ref ops, .. } => match visited.get(&ops[0]) {
+                        Some(dims) => {
+                            visited.insert(id, dims.clone());
+                        }
+                        None => {
+                            stack.push(id);
+                            stack.push(ops[0]);
+                        }
+                    },
+                    Op::Index { .. } | Op::Loop { .. } => {
+                        visited.insert(id, vec![]);
+                    }
+                    Op::Storage { len, .. } if len == 1 => {
+                        visited.insert(id, vec![]);
+                    }
+                    ref op => todo!("shape of {op:?}"),
+                }
+            }
+            panic!("shape did not resolve in 10000 steps");
+        }
+    }
+
+    /// Symbolic shape of tensor `x` as dim tensors: one scalar IDX_T tensor
+    /// per dimension, each backed by the IR node computing that dim — a
+    /// `Const` for static dims, a loaded variable for dynamic ones. Works for
+    /// both eager (kernel ops) and graph (egraph classes) tensors.
+    pub fn dims(&mut self, x: TensorId) -> Vec<TensorId> {
+        let mut tids = Vec::new();
+        if self.is_graph(x) {
+            let (class_id, graph_id) = self.graph_ids(x);
+            for d in self.graphs[graph_id].shape(class_id) {
+                tids.push(self.new_graph_tensor(graph_id, d));
+            }
+        } else {
+            let kernel_id = self.tensors[x].kernel_id;
+            let op_id = self.tensors[x].op_id;
+            for dim_op in self.kernels[kernel_id].kernel.shape_ids(op_id) {
+                debug_assert!(!dim_op.is_null(), "dim has no backing op");
+                let tid = self.tensors.push(TensorData {
+                    kernel_id,
+                    op_id: dim_op,
+                    depends_on: KernelId::NULL,
+                    class_id: ClassId::NULL,
+                    graph_id: GraphId::NULL,
+                    rc: 1,
+                });
+                tids.push(tid);
+            }
+        }
+        tids
     }
 
     /// Resolve a shape tensor (a stack of scalar dims, or NULL for scalar) to
@@ -223,8 +485,8 @@ impl Runtime {
             }
         }
         match &kernel.ops[op_id].op {
-            Op::Stack { ops } => ops.iter().map(|&o| self.const_dim(kid, o).unwrap_or(0)).collect(),
-            Op::Const(_) => vec![self.const_dim(kid, op_id).unwrap_or(0)],
+            Op::Stack { ops } => ops.iter().map(|&o| self.const_dim(kid, o).unwrap_or(-1)).collect(),
+            Op::Const(_) => vec![self.const_dim(kid, op_id).unwrap_or(-1)],
             _ => vec![0],
         }
     }
@@ -237,20 +499,6 @@ impl Runtime {
             let (kid, op_id) = self.eager_ids(x);
             self.kernels[kid].kernel.dtype(op_id)
         }
-    }
-
-    /// Build a shape tensor (a stack of constant dims) from concrete dimensions.
-    /// An empty dims list produces a NULL (scalar) shape.
-    pub(crate) fn shape_tensor(&mut self, dims: &[Dim]) -> TensorId {
-        if dims.is_empty() {
-            return TensorId::NULL;
-        }
-        let ids: Vec<TensorId> = dims.iter().map(|&d| self.new_constant_tensor(Constant::idx(d))).collect();
-        let tid = self.stack(&ids).unwrap();
-        for id in &ids {
-            self.release(*id);
-        }
-        tid
     }
 
     pub fn is_realized(&self, x: TensorId) -> bool {
@@ -338,9 +586,8 @@ impl Runtime {
         let rc = self.tensors[x].rc - 1;
         #[cfg(feature = "debug_tensor_op")]
         println!(
-            "runtime::release(tid={x}) rc {} -> {rc} shape={:?} kernel={:?} op={:?}",
+            "runtime::release(tid={x}) rc {} -> {rc} kernel={:?} op={:?}",
             self.tensors[x].rc,
-            self.shapes.get(&x),
             self.tensors[x].kernel_id,
             self.tensors[x].op_id
         );
@@ -402,7 +649,7 @@ impl Runtime {
     /// the same buffer. Graph-affiliated tensors may be kept by their graph.
     fn on_rc_zero(&mut self, x: TensorId) {
         #[cfg(feature = "debug_tensor_op")]
-        println!("runtime::on_rc_zero(tid={x}) shape={:?}", self.shapes.get(&x));
+        println!("runtime::on_rc_zero(tid={x})");
         let (pending, class_id, graph_id) = (self.tensors[x].depends_on, self.tensors[x].class_id, self.tensors[x].graph_id);
 
         if !class_id.is_null() {
@@ -564,7 +811,6 @@ impl Runtime {
         });
         self.kernels[kernel_id].loads.push(tid);
         self.kernels[kernel_id].outputs.insert(tid);
-        self.shapes.insert(tid, resolved);
         tid
     }
 
@@ -581,7 +827,6 @@ impl Runtime {
             rc: 1,
         });
         self.kernels[kernel_id].outputs.insert(tid);
-        self.shapes.insert(tid, vec![]);
         tid
     }
 
@@ -590,7 +835,6 @@ impl Runtime {
         println!("runtime::new_full(shape={shape:?}, value={value:?})");
         let x = self.new_constant_tensor(value);
         if shape.is_null() {
-            self.shapes.insert(x, vec![]);
             return x;
         }
         let expanded = self.expand(x, shape).unwrap();
@@ -673,7 +917,7 @@ impl Runtime {
     ) -> Result<TensorId, ZyxError> {
         self.initialize_backends();
         let resolved = self.resolve_shape(shape);
-        let bytes: Dim = (resolved.iter().product::<Dim>() * dtype.bit_size() as Dim).div_ceil(8);
+        let bytes: Dim = ((resolved.iter().product::<Dim>() * dtype.bit_size() as Dim) + 7) / 8;
 
         let pool = self.pools[PoolId::DISK]
             .disk_pool()
@@ -704,7 +948,6 @@ impl Runtime {
             self.kernels[kernel_id].outputs.insert(tid);
             #[cfg(feature = "debug_tensor_op")]
             println!("  -> tid={tid}, kid={kernel_id:?}, op_id={op_id:?}");
-            self.shapes.insert(tid, self.shape(x).to_vec());
             tid
         } else {
             let graph_id = td.graph_id;
@@ -735,7 +978,6 @@ impl Runtime {
             self.kernels[kernel_id].outputs.insert(tid);
             #[cfg(feature = "debug_tensor_op")]
             println!("  -> tid={tid}, kid={kernel_id:?}, op_id={op_id:?}");
-            self.shapes.insert(tid, self.shape(x).to_vec());
             tid
         }
     }
@@ -765,7 +1007,6 @@ impl Runtime {
             self.kernels[kernel_id].outputs.insert(tid);
             #[cfg(feature = "debug_tensor_op")]
             println!("  -> tid={tid}, kid={kernel_id:?}, op_id={op_id:?}");
-            self.shapes.insert(tid, self.shape(x).to_vec());
             tid
         }
     }
@@ -857,7 +1098,6 @@ impl Runtime {
 
             #[cfg(feature = "debug_tensor_op")]
             println!("  -> tid={tid}, kid={kernel_id:?}, op_id={op_id:?}");
-            self.shapes.insert(tid, self.shape(x).to_vec());
             Ok(tid)
         }
     }
@@ -922,19 +1162,14 @@ impl Runtime {
         } else {
             // Reduce one axis at a time, permuting each to be last. Reduce the
             // highest axis first so lower indices stay valid as the rank shrinks.
-            // Track the running shape explicitly (intermediate reduce outputs
-            // don't get a `shapes` entry until the loop ends).
             let mut cur = x;
-            let mut cur_shape = shape;
-            let rank0 = cur_shape.len();
+            let rank0 = shape.len();
             let n_axes = axes.len();
             axes.sort_unstable_by(|a, b| b.cmp(a));
             for axis in axes {
-                let rank = cur_shape.len();
+                let rank = self.shape(cur).len();
                 let permute_axes: Vec<UAxis> = (0..rank as UAxis).filter(|&i| i != axis).chain([axis]).collect();
-                cur = self.permute(cur, permute_axes.clone());
-                let permuted_shape = crate::shape::permute(&cur_shape, &permute_axes);
-                let out_shape: Vec<Dim> = permuted_shape[..permuted_shape.len() - 1].to_vec();
+                cur = self.permute(cur, permute_axes);
 
                 let (kid, op_id) = self.duplicate_or_store(cur, false)?;
                 let dims = self.kernels[kid].kernel.shape_ids(op_id);
@@ -953,9 +1188,7 @@ impl Runtime {
 
                 debug_assert_eq!(self.kernels[kid].outputs.len(), 0, "input into reduce must have empty outputs");
                 self.kernels[kid].outputs.insert(tid);
-                self.shapes.insert(tid, out_shape.clone());
                 cur = tid;
-                cur_shape = out_shape;
             }
 
             if rank0 == n_axes {
@@ -963,12 +1196,10 @@ impl Runtime {
                 let one = self.kernels[kid].kernel.const_idx(1);
                 let op_id = self.kernels[kid].kernel.reshape(op_id, one);
                 self.tensors[cur].op_id = op_id;
-                cur_shape = vec![1];
             }
 
             #[cfg(feature = "debug_tensor_op")]
             println!("  -> tid={cur}, op_id={:?}", self.tensors[cur].op_id);
-            self.shapes.insert(cur, cur_shape);
             Ok(cur)
         }
     }
@@ -1021,8 +1252,7 @@ impl Runtime {
             let first_shape = self.shape(tensors[0]);
             let mut shape = Vec::with_capacity(first_shape.len() + 1);
             shape.push(tensors.len() as Dim);
-            shape.extend_from_slice(first_shape);
-            self.shapes.insert(tid, shape);
+            shape.extend_from_slice(&first_shape);
             Ok(tid)
         }
     }
@@ -1038,10 +1268,14 @@ impl Runtime {
         }
         if self.is_graph(id) {
             let (class_id, graph_id) = self.graph_ids(id);
-            self.graphs[graph_id].resolve_const(class_id)
+            let res = self.graphs[graph_id].resolve_const(class_id);
+            debug_assert_ne!(res, Some(Constant::idx(0)));
+            res
         } else {
             let (kernel_id, op_id) = self.eager_ids(id);
-            self.kernels[kernel_id].kernel.resolve_const(op_id)
+            let res = self.kernels[kernel_id].kernel.resolve_const(op_id);
+            debug_assert_ne!(res, Some(Constant::idx(0)));
+            res
         }
     }
 
@@ -1066,6 +1300,32 @@ impl Runtime {
             }
             let x_class = self.graph_ids(x).0;
             let shape = self.graph_ids(shape).0;
+            // Infer `-1` placeholders in the target shape to concrete sizes.
+            let g = &self.graphs[graph_id];
+            let input_dims: Vec<Dim> = g.shape(x_class).iter().map(|&c| g.resolve_const(c).and_then(|k| k.as_dim()).unwrap_or(-1)).collect();
+            let target_dims: Vec<Dim> = g.shape(shape).iter().map(|&c| g.resolve_const(c).and_then(|k| k.as_dim()).unwrap_or(-1)).collect();
+            let inferred = {
+                let n_infer = target_dims.iter().filter(|&&d| d < 0).count();
+                if n_infer == 0 {
+                    target_dims.clone()
+                } else {
+                    debug_assert!(n_infer <= 1, "reshape: at most one -1 allowed, got {n_infer}");
+                    let total: Dim = input_dims.iter().fold(1, |a, &b| a * b);
+                    let known: Dim = target_dims.iter().filter(|&&d| d >= 0).fold(1, |a, &d| a * d);
+                    let inferred = total / known;
+                    target_dims.iter().map(|&d| if d < 0 { inferred } else { d }).collect()
+                }
+            };
+            let shape = if inferred == target_dims {
+                shape
+            } else {
+                let dim_classes: Vec<ClassId> = inferred.iter().map(|&d| self.push_node(graph_id, Node::Const { cons_id: 0, value: Constant::idx(d) }).1).collect();
+                match dim_classes.len() {
+                    0 => ClassId::NULL,
+                    1 => dim_classes[0],
+                    _ => self.push_node(graph_id, Node::Stack { ops: dim_classes.into_boxed_slice() }).1,
+                }
+            };
             let (_, class_id) = self.push_node(graph_id, Node::Reshape { x: x_class, shape });
             Ok(self.new_graph_tensor(graph_id, class_id))
         } else {
@@ -1087,9 +1347,35 @@ impl Runtime {
                     shape_op = op_map[&shape_op];
                 }
             }
-            let out_dims = self.resolve_shape(shape);
 
-            let op_id = self.kernels[kernel_id].kernel.reshape(op_id, shape_op);
+            // Infer `-1` placeholders in the target shape to concrete sizes
+            // (PyTorch semantics) so no negative constant leaks into the IR.
+            let target = self.raw_shape_dims(kernel_id, shape_op);
+            let input = self.shape(x);
+            let inferred = {
+                let n_infer = target.iter().filter(|&&d| d < 0).count();
+                if n_infer == 0 {
+                    target.clone()
+                } else {
+                    debug_assert!(n_infer <= 1, "reshape: at most one -1 allowed, got {n_infer}");
+                    let total: Dim = input.iter().fold(1, |a, &b| a * b);
+                    let known: Dim = target.iter().filter(|&&d| d >= 0).fold(1, |a, &d| a * d);
+                    let inferred = total / known;
+                    target.iter().map(|&d| if d < 0 { inferred } else { d }).collect()
+                }
+            };
+            let new_shape_op = if inferred == target {
+                shape_op
+            } else {
+                let k = &mut self.kernels[kernel_id].kernel;
+                let dim_ops: Vec<OpId> = inferred.iter().map(|&d| k.const_idx(d)).collect();
+                match dim_ops.len() {
+                    0 => OpId::NULL,
+                    1 => dim_ops[0],
+                    _ => k.stack(&dim_ops),
+                }
+            };
+            let op_id = self.kernels[kernel_id].kernel.reshape(op_id, new_shape_op);
             let tid = self.tensors.push(TensorData {
                 kernel_id,
                 op_id,
@@ -1102,7 +1388,6 @@ impl Runtime {
             debug_assert_eq!(self.kernels[kernel_id].outputs.contains(&tid), false);
             self.kernels[kernel_id].outputs.insert(tid);
 
-            self.shapes.insert(tid, out_dims);
 
             #[cfg(feature = "debug_tensor_op")]
             println!("  -> tid={tid}, kid={kernel_id:?}, op_id={op_id:?}");
@@ -1154,7 +1439,6 @@ impl Runtime {
                     shape_op = op_map[&shape_op];
                 }
             }
-            let out_shape = self.resolve_shape(shape);
             let op_id = self.kernels[kernel_id].kernel.expand(op_id, shape_op);
             let tid = self.tensors.push(TensorData {
                 kernel_id,
@@ -1170,7 +1454,6 @@ impl Runtime {
 
             #[cfg(feature = "debug_tensor_op")]
             println!("  -> tid={tid}, kid={kernel_id:?}, op_id={op_id:?}");
-            self.shapes.insert(tid, out_shape);
             Ok(tid)
         }
     }
@@ -1200,7 +1483,6 @@ impl Runtime {
             self.new_graph_tensor(graph_id, class_id)
         } else {
             let (kernel_id, op_id) = self.duplicate_or_store(x, false).unwrap();
-            let permuted_shape = crate::shape::permute(&sh, &axes);
             let op_id = self.kernels[kernel_id]
                 .kernel
                 .push_back(Op::Move { x: op_id, mop: Box::new(MoveOp::Permute { axes: axes.into() }) });
@@ -1216,7 +1498,6 @@ impl Runtime {
             self.kernels[kernel_id].outputs.insert(tid);
             #[cfg(feature = "debug_tensor_op")]
             println!("  -> tid={tid}, kid={kernel_id:?}, op_id={op_id:?}");
-            self.shapes.insert(tid, permuted_shape);
             tid
         }
     }
@@ -1321,7 +1602,6 @@ impl Runtime {
             println!("  -> tid={tid}, kid={kernel_id:?}, op_id={op_id:?}");
             let mut padded = sh.to_vec();
             padded[axis as usize] = self.const_dim(kernel_id, len_op).unwrap();
-            self.shapes.insert(tid, padded);
             tid
         }
     }
@@ -1423,7 +1703,6 @@ impl Runtime {
             println!("  -> tid={tid}, kid={kernel_id:?}, op_id={op_id:?}");
             let mut narrowed = sh.to_vec();
             narrowed[axis as usize] = self.const_dim(kernel_id, len_op).unwrap();
-            self.shapes.insert(tid, narrowed);
             tid
         }
     }
@@ -1470,7 +1749,6 @@ impl Runtime {
             self.kernels[kernel_id].outputs.insert(tid);
             #[cfg(feature = "debug_tensor_op")]
             println!("  -> tid={tid}, kid={kernel_id:?}, op_id={op_id:?}");
-            self.shapes.insert(tid, sh.to_vec());
             Ok(tid)
         }
     }
@@ -1483,6 +1761,28 @@ impl Runtime {
         let dt = self.dtype(x);
         if dt != T::dtype() {
             return Err(ZyxError::DTypeError(format!("loading dtype {}, but the data has dtype {dt}", T::dtype()).into()));
+        }
+
+        // Host-resolved scalars: statically known values never reach a device.
+        if data.len() == 1 && self.shape(x).is_empty() {
+            if let Some(c) = self.resolve_const(x) {
+                data[0] = match c.cast(T::dtype()) {
+                    Constant::BF16(v) => T::from_bf16(bf16::from_le_bytes(v)),
+                    Constant::F16(v) => T::from_f16(f16::from_le_bytes(v)),
+                    Constant::F32(v) => T::from_f32(f32::from_le_bytes(v)),
+                    Constant::F64(v) => T::from_f64(f64::from_le_bytes(v)),
+                    Constant::U8(v) => T::from_u8(v),
+                    Constant::U16(v) => T::from_u16(v),
+                    Constant::U32(v) => T::from_u32(v),
+                    Constant::U64(v) => T::from_u64(u64::from_le_bytes(v)),
+                    Constant::I8(v) => T::from_i8(v),
+                    Constant::I16(v) => T::from_i16(v),
+                    Constant::I32(v) => T::from_i32(v),
+                    Constant::I64(v) => T::from_i64(i64::from_le_bytes(v)),
+                    Constant::Bool(v) => T::from_bool(v),
+                };
+                return Ok(());
+            }
         }
 
         let shape_numel: Dim = self.shape(x).iter().product();
@@ -1889,7 +2189,7 @@ impl Runtime {
 }
 
 #[allow(clippy::similar_names)]
-pub fn get_perf(flop: u64, bytes_read: u64, bytes_written: u64, nanos: u64) -> String {
+pub fn get_perf(flop: Dim, bytes_read: u64, bytes_written: u64, nanos: u64) -> String {
     const fn value_unit(x: u64) -> (u64, &'static str) {
         match x {
             0..1000 => (x * 100, ""),
@@ -1914,7 +2214,7 @@ pub fn get_perf(flop: u64, bytes_read: u64, bytes_written: u64, nanos: u64) -> S
         1_000_000_000_000.. => (nanos / 6_000_000_000, "min"),
     };
 
-    let (fs, f_us) = value_unit(flop * 1_000_000 / nanos * 1000);
+    let (fs, f_us) = value_unit(flop as u64 * 1_000_000 / nanos * 1000);
     let (brs, br_us) = value_unit(bytes_read * 1_000_000_000 / nanos);
     let (bws, bw_us) = value_unit(bytes_written * 1_000_000_000 / nanos);
 
@@ -2050,7 +2350,6 @@ impl Runtime {
         } else {
             pending
         };
-
         let outputs_empty = self.kernels[kid].outputs.is_empty();
 
         // Create load kernel so the tensor remains usable (visited must point to a live kernel)
@@ -2078,7 +2377,7 @@ impl Runtime {
         &mut self,
         mut kernel: Kernel,
         pool_id: PoolId,
-        flop: u64,
+        flop: Dim,
         read: u64,
         write: u64,
         buffers: &[PoolBufferId],

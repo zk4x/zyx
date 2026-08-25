@@ -102,6 +102,7 @@ impl Kernel {
             }
             if let Op::Loop { len: len_id, .. } = self.ops[op_id].op {
                 let Some(len) = self.resolve_const(len_id).and_then(crate::dtype::Constant::as_dim) else {
+                    op_id = prev;
                     continue;
                 };
                 let _ = endloop_ids.pop().unwrap();
@@ -286,11 +287,11 @@ impl Kernel {
         let Some(len) = self.resolve_const(len_id).and_then(crate::dtype::Constant::as_dim) else {
             return;
         };
-        if factor < 2 || !len.is_multiple_of(factor) {
+        if factor < 2 || len % factor as Dim != 0 {
             return;
         }
 
-        if self.ops.len().0 as u64 * factor > 5000 {
+        if self.ops.len().0  as i64 * factor > 5000 {
             return;
         }
 

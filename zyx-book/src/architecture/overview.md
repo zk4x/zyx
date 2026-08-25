@@ -121,6 +121,7 @@ The scheduler picks a device based on free memory and compute capacity. It handl
 ## Key Design Decisions
 
 - **One graph for everything** — autograd and computation share the same graph. No need to specify which tensors require gradients.
+- **Symbolic dims everywhere** — the eager path and the graph path BOTH work with symbolic dimensions, always. Every symbolic dim bottoms out in a `Param { Variable }` scalar (`IDX_T`) whose value lives in a backend pool's variable slot, so any dim expression can be fully evaluated to a concrete constant at any time: walk the tree, fold `Const` leaves via `Constant::unary` / `Constant::binary`, and read variable slots at `Param { Variable }` leaves. Consumers must evaluate dims this way instead of fabricating placeholder values (`0`, `-1`, ...) where evaluation can produce the real value.
 - **Inline ops** — all ops live in the arena as flat 32-byte entries. No `Box`, no vtables, no indirection. Passes allocate their own working data (hash maps, vecs) as needed.
 - **Linear IR** — linked list of fixed-size nodes. Optimizations traverse front-to-back or back-to-back.
 - **Backend codegen is trivial** — the hard work is in the IR-level optimization passes.

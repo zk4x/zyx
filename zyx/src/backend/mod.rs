@@ -613,7 +613,7 @@ impl MemoryPool {
 
     /// Returns the stored constant if `buffer_id` refers to a variable in this
     /// pool, `None` otherwise (regular buffer or unknown id).
-    pub fn get_variable(&mut self, buffer_id: PoolBufferId) -> Option<Constant> {
+    pub fn get_variable(&self, buffer_id: PoolBufferId) -> Option<Constant> {
         match self {
             MemoryPool::Dummy(_) => None,
             MemoryPool::Disk(_) => None,

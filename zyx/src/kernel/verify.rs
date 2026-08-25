@@ -474,8 +474,8 @@ impl Kernel {
                     let b = bounds_stack.last_mut().unwrap();
                     let len = match scope {
                         IdxKind::Group(len) => self.resolve_const(len).and_then(crate::dtype::Constant::as_dim),
-                        IdxKind::Local(len) => Some(u64::from(len)),
-                        IdxKind::Warp(len) => Some(u64::from(len)),
+                        IdxKind::Local(len) => Some(i64::from(len)),
+                        IdxKind::Warp(len) => Some(i64::from(len)),
                     };
                     // An unresolved (dynamic) group length is UNKNOWN: no
                     // bounds must be fabricated for it. A huge sentinel here
@@ -624,59 +624,59 @@ impl Kernel {
                         } else if min_x == 0 {
                             0
                         } else {
-                            min_x.saturating_pow(min_y.min(u32::MAX as u64) as u32)
+                            min_x.saturating_pow(min_y.min(u32::MAX  as i64) as u32)
                         };
                         let max_val = if max_y == 0 {
                             1
                         } else if max_x == 0 {
                             0
                         } else {
-                            max_x.saturating_pow(max_y.min(u32::MAX as u64) as u32)
+                            max_x.saturating_pow(max_y.min(u32::MAX  as i64) as u32)
                         };
                         (min_val, max_val)
                     }
                     BOp::Eq => {
                         let always = (min_x == max_x) && (min_y == max_y) && (min_x == min_y);
                         let maybe = !(max_x < min_y || max_y < min_x || always);
-                        let lower = u64::from(always);
-                        let upper = u64::from(always || maybe);
+                        let lower = Dim::from(always as u8);
+                        let upper = Dim::from((always || maybe) as u8);
                         (lower, upper)
                     }
                     BOp::NotEq => {
                         let always = max_x < min_y || max_y < min_x;
                         let maybe = !(always || min_x == max_x && min_y == max_y && min_x == min_y);
-                        let lower = u64::from(always);
-                        let upper = u64::from(always || maybe);
+                        let lower = Dim::from(always as u8);
+                        let upper = Dim::from((always || maybe) as u8);
                         (lower, upper)
                     }
                     BOp::Cmpgt => {
                         let always = min_x > max_y;
                         let never = max_x <= min_y;
                         let maybe = !always && !never;
-                        let lower = u64::from(always);
-                        let upper = u64::from(always || maybe);
+                        let lower = Dim::from(always as u8);
+                        let upper = Dim::from((always || maybe) as u8);
                         (lower, upper)
                     }
                     BOp::Cmpge => {
                         let always = min_x >= max_y;
                         let never = max_x < min_y;
                         let maybe = !always && !never;
-                        let lower = u64::from(always);
-                        let upper = u64::from(always || maybe);
+                        let lower = Dim::from(always as u8);
+                        let upper = Dim::from((always || maybe) as u8);
                         (lower, upper)
                     }
                     BOp::Cmplt => {
                         let always = max_x < min_y;
                         let never = max_y <= min_x;
                         let maybe = !always && !never;
-                        let lower = u64::from(always);
-                        let upper = u64::from(always || maybe);
+                        let lower = Dim::from(always as u8);
+                        let upper = Dim::from((always || maybe) as u8);
                         (lower, upper)
                     }
                     BOp::And => {
                         let always = (min_x == 1 && max_x == 1) && (min_y == 1 && max_y == 1);
                         let maybe = (max_x >= 1) && (max_y >= 1);
-                        (u64::from(always), u64::from(always || maybe))
+                        (Dim::from(always as u8), Dim::from((always || maybe) as u8))
                     }
                     BOp::Or => {
                         let always = (min_x == 1 && max_x == 1) || (min_y == 1 && max_y == 1);

@@ -1,6 +1,7 @@
 use std::collections::BTreeSet;
 
 use crate::{
+    shape::Dim,
     Map, Set,
     graph::Constant,
     graph::{ClassId, Graph, JitKernelData, JitKernelId, Node},
@@ -526,11 +527,11 @@ impl Graph {
                         (kid, op_id) = self.duplicate_or_store_class(x, kid, op_id, &mut visited, &mut rcs, force_store);
                         let (mut skid, mut sop) = visited[&shape];
                         if cfg!(debug_assertions) {
-                            let src_shape: Vec<u64> = self.jit_kernels[skid].kernel.shape(sop);
-                            let graph_shape: Vec<u64> = self
+                            let src_shape: Vec<i64> = self.jit_kernels[skid].kernel.shape(sop);
+                            let graph_shape: Vec<Dim> = self
                                 .shape(shape)
                                 .iter()
-                                .map(|&d| self.resolve_const(d).and_then(Constant::as_dim).unwrap_or(0))
+                                .map(|&d| self.resolve_const(d).and_then(Constant::as_dim).unwrap_or(-1))
                                 .collect();
                             if src_shape != graph_shape {}
                         }
@@ -549,12 +550,12 @@ impl Graph {
                             .kernel
                             .push_back(Op::Move { x: op_id, mop: Box::new(MoveOp::Reshape { shape: sop }) });
                         if cfg!(debug_assertions) {
-                            let gs: Vec<u64> = self
+                            let gs: Vec<Dim> = self
                                 .shape(cid)
                                 .iter()
-                                .map(|&d| self.resolve_const(d).and_then(Constant::as_dim).unwrap_or(0))
+                                .map(|&d| self.resolve_const(d).and_then(Constant::as_dim).unwrap_or(-1))
                                 .collect();
-                            let ks: Vec<u64> = self.jit_kernels[kid].kernel.shape(result_op);
+                            let ks: Vec<Dim> = self.jit_kernels[kid].kernel.shape(result_op);
                             if gs != ks {}
                         }
                         self.push_outputs(kid, cid, *rcs.get(&cid).unwrap());
@@ -1024,8 +1025,8 @@ impl Graph {
         self.jit_kernels[dst].loads.extend(src_loads);
         let new_root = *op_map.get(&root).expect("shape root must be in subkernel");
         if cfg!(debug_assertions) {
-            let src_shape: Vec<u64> = self.jit_kernels[src].kernel.shape(root);
-            let dst_shape: Vec<u64> = self.jit_kernels[dst].kernel.shape(new_root);
+            let src_shape: Vec<Dim> = self.jit_kernels[src].kernel.shape(root);
+            let dst_shape: Vec<Dim> = self.jit_kernels[dst].kernel.shape(new_root);
             if src_shape != dst_shape {}
         }
         visited.insert(shape, (dst, new_root));

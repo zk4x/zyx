@@ -396,7 +396,7 @@ pub(super) fn initialize_device(
         }
 
         let (tx, rx): (Sender<Command>, Receiver<Command>) = channel();
-        let free_bytes_atomic = Arc::new(AtomicU64::new(total_bytes));
+        let free_bytes_atomic = Arc::new(AtomicU64::new(total_bytes as u64));
 
         // Cast to usize for Send safety through the closure
         let worker_device_ids: Vec<usize> = device_ids.iter().map(|&d| d as usize).collect();
@@ -467,7 +467,7 @@ pub(super) fn initialize_device(
                             let _ = reply.send(variable);
                         }
                         Command::Allocate { bytes, reply } => {
-                            if bytes > free_bytes_atomic.load(Ordering::SeqCst) {
+                            if bytes > free_bytes_atomic.load(Ordering::SeqCst) as i64 {
                                 let _ = reply.send(Err(BackendError {
                                     status: ErrorStatus::MemoryAllocation,
                                     context: "Allocation failure".into(),
@@ -482,7 +482,7 @@ pub(super) fn initialize_device(
                                 let _ = reply.send(Err(e));
                                 continue 'work_thread_loop;
                             }
-                            free_bytes_atomic.fetch_sub(bytes, Ordering::SeqCst);
+                            free_bytes_atomic.fetch_sub(bytes as u64, Ordering::SeqCst);
                             let id = buffers.push(OpenCLBuffer::Buffer { ptr: buffer, bytes });
                             let _ = reply.send(Ok((id, OpenCLEvent { event: ptr::null_mut() })));
                         }
@@ -501,7 +501,7 @@ pub(super) fn initialize_device(
                                     OpenCLBuffer::Buffer { ptr, bytes } => {
                                         debug_assert!(!ptr.is_null(), "Deallocating null buffer is invalid");
                                         let _ = unsafe { clReleaseMemObject(ptr) }.check(ErrorStatus::Deinitialization);
-                                        free_bytes_atomic.fetch_add(bytes, Ordering::SeqCst);
+                                        free_bytes_atomic.fetch_add(bytes as u64, Ordering::SeqCst);
                                     }
                                 }
                                 buffers.remove(buffer_id);
@@ -772,7 +772,7 @@ impl OpenCLMemoryPool {
     pub fn deinitialize(&mut self) {}
 
     pub fn free_bytes(&self) -> Dim {
-        self.free_bytes.load(Ordering::SeqCst)
+        self.free_bytes.load(Ordering::SeqCst) as i64
     }
 
     pub fn store_variable(&mut self, variable: Constant) -> PoolBufferId {
@@ -783,7 +783,7 @@ impl OpenCLMemoryPool {
 
     /// Returns the stored constant if `buffer_id` is a variable, `None` otherwise.
     #[allow(unused)]
-    pub fn get_variable(&mut self, buffer_id: PoolBufferId) -> Option<Constant> {
+    pub fn get_variable(&self, buffer_id: PoolBufferId) -> Option<Constant> {
         let (reply, reply_rx) = channel();
         self.tx.send(Command::GetVariable { buffer_id, reply }).unwrap();
         reply_rx.recv().unwrap()
@@ -894,7 +894,7 @@ impl OpenCLDevice {
 
     pub fn compile(&mut self, kernel: &Kernel, debug_asm: bool) -> Result<DeviceProgramId, BackendError> {
         // --- Codegen ---
-        let mut lws = vec![1; 3];
+        let mut lws = vec![1i64; 3];
         let mut op_id = kernel.head;
         let mut steps_op_id = 0usize;
         while !op_id.is_null() {
@@ -905,14 +905,14 @@ impl OpenCLDevice {
             if let Op::Index { axis, kind: scope } = kernel.ops[op_id].op {
                 match scope {
                     IdxKind::Group(_) => {}
-                    IdxKind::Local(len) => lws[axis as usize] = u64::from(len),
+                    IdxKind::Local(len) => lws[axis as usize] = i64::from(len),
                     IdxKind::Warp(_) => todo!(),
                 }
             }
             op_id = kernel.next_op(op_id);
         }
 
-        if lws.iter().product::<u64>() > u64::from(self.dev_info.max_local_threads) {
+        if lws.iter().product::<i64>() > self.dev_info.max_local_threads as i64 {
             return Err(BackendError { status: ErrorStatus::KernelCompilation, context: "Invalid local work size.".into() });
         }
 

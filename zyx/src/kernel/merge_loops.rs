@@ -91,7 +91,7 @@ impl Kernel {
                 let Some(len) = self.resolve_const(len_id).and_then(crate::dtype::Constant::as_dim) else {
                     return;
                 };
-                total_len *= len;
+                total_len = total_len * len as u64;
             }
         }
 

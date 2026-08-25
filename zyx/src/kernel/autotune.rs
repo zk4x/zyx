@@ -57,14 +57,14 @@ use std::hash::{Hash, Hasher};
 type OptConfigFn = fn(&Kernel, &DeviceInfo) -> (Optimization, usize);
 
 const AVAILABLE_OPTIMIZATIONS: [OptConfigFn; 8] = [
-    Kernel::opt_split_global_to_local,
+    |k, d| Kernel::opt_split_global_to_local(k, d),
     |k, _| Kernel::opt_reassociate_commutative(k),
     |k, _| Kernel::opt_coarsen(k),
     |k, _| Kernel::opt_register_blocking(k),
-    Kernel::opt_local_reduce,
+    |k, d| Kernel::opt_local_reduce(k, d),
     |k, _| Kernel::opt_split_loop(k),
     //|k, _| Kernel::opt_pad_index(k),
-    Kernel::opt_vectorize,
+    |k, d| Kernel::opt_vectorize(k, d),
     |k, _| Kernel::opt_merge_nested_loops(k),
 ];
 
@@ -231,7 +231,7 @@ impl Optimization {
             Optimization::UnrollLoops { factors } => {
                 let factor = factors[config];
                 if (kernel.ops.len().0 as usize) < 5000 {
-                    kernel.unroll_loops(factor);
+                    kernel.unroll_loops(factor as Dim);
                 }
             }
             Optimization::SplitGlobalToLocal { factors } => {
@@ -243,7 +243,7 @@ impl Optimization {
                 };
                 // valid factors are checked by opt init
                 let len = kernel.resolve_const(len).and_then(crate::dtype::Constant::as_dim).unwrap();
-                let group_len = kernel.const_idx(len / factor as u64);
+                let group_len = kernel.const_idx(len / Dim::from(factor));
                 kernel.split_dim(
                     op_id,
                     vec![
@@ -277,7 +277,7 @@ impl Optimization {
                 let Some(len) = kernel.resolve_const(len_id).and_then(crate::dtype::Constant::as_dim) else {
                     return;
                 };
-                let len1 = kernel.const_idx(len / factor);
+                let len1 = kernel.const_idx(len / factor as Dim);
                 let len2 = kernel.const_idx(factor);
                 kernel.split_dim(op_id, vec![Op::Loop { len: len1 }, Op::Loop { len: len2 }]);
             }
@@ -291,7 +291,7 @@ impl Optimization {
                 };
                 let current_len = match kind {
                     IdxKind::Group(len) => kernel.resolve_const(len).and_then(crate::dtype::Constant::as_dim).unwrap(),
-                    IdxKind::Local(len) => len as u64,
+                    IdxKind::Local(len) => i64::from(len),
                     IdxKind::Warp(_) => todo!(),
                 };
                 let pad_len = (pad_to - current_len % pad_to) % pad_to;
@@ -384,7 +384,7 @@ impl Kernel {
                             DType::U8 | DType::I8 | DType::Bool => vec![1],
                             DType::U16 | DType::I16 => 1u16.to_le_bytes().to_vec(),
                             DType::U32 | DType::I32 => 1u32.to_le_bytes().to_vec(),
-                            DType::U64 | DType::I64 => 1u64.to_le_bytes().to_vec(),
+                            DType::U64 | DType::I64 => 1i64.to_le_bytes().to_vec(),
                         };
                         let scalar = Constant::from_le_bytes(&one, dtype);
                         let buf = memory_pool.store_variable(scalar);
@@ -392,13 +392,13 @@ impl Kernel {
                         new_bufs.push(buf);
                     } else {
                         // Buffer argument. This runs PRE-linearization, so the
-                        // param's shape stack is intact. Dynamic dims are `0`
+                        // param's shape stack is intact. Dynamic dims are `-1`
                         // (see the `Dim` docs); autotune substitutes 42. A
                         // null shape is a scalar buffer (e.g. a stored const).
                         let len: Dim = if shape.is_null() {
                             1
                         } else {
-                            self.shape(op_id).iter().map(|&d| if d == 0 { 42 } else { d }).product()
+                            self.shape(op_id).iter().map(|&d| if d < 0 { 42 } else { d }).product()
                         };
                         let bytes_alloc = (dtype.bit_size() as Dim * (len + 1)) / 8;
                         let (buf, ev) = memory_pool.allocate(bytes_alloc)?;
@@ -413,7 +413,7 @@ impl Kernel {
                                 DType::U8 | DType::I8 | DType::Bool => vec![1],
                                 DType::U16 | DType::I16 => 1u16.to_le_bytes().to_vec(),
                                 DType::U32 | DType::I32 => 1u32.to_le_bytes().to_vec(),
-                                DType::U64 | DType::I64 => 1u64.to_le_bytes().to_vec(),
+                                DType::U64 | DType::I64 => 1i64.to_le_bytes().to_vec(),
                             };
                             let fill = one.repeat(len as usize);
                             let ev = memory_pool.host_to_pool(&fill, buf, vec![ev])?;
@@ -452,7 +452,7 @@ impl Kernel {
         device: &mut Device,
         memory_pool: &mut MemoryPool,
         _config: &AutotuneConfig,
-        flop: u64,
+        flop: Dim,
         read_bytes: u64,
         write_bytes: u64,
         debug: DebugMask,
@@ -519,7 +519,7 @@ impl Kernel {
         device: &mut Device,
         memory_pool: &mut MemoryPool,
         config: &AutotuneConfig,
-        flop: u64,
+        flop: Dim,
         read_bytes: u64,
         write_bytes: u64,
         debug: DebugMask,
@@ -607,8 +607,7 @@ impl Kernel {
                     config_id += 1;
                     continue;
                 }
-                let cost = new_kernel.get_cost(device.info());
-                let new_seq = OptSeq { opts: vec![(opt_id, config_id)], cost };
+                let cost = new_kernel.get_cost(device.info());                let new_seq = OptSeq { opts: vec![(opt_id, config_id)], cost };
                 visited.insert(hash);
                 items.push(new_seq);
                 config_id += 1;
@@ -681,7 +680,7 @@ impl Kernel {
         let mut rng_launch = Rng::seed_from_u64(0xDEAD_BEEF);
         let mut sampled = Vec::with_capacity(n);
         while sampled.len() < n && !items.is_empty() {
-            let idx = rng_launch.range::<u64>(0..items.len() as u64) as usize;
+            let idx = rng_launch.range::<u64>(0..items.len()  as i64) as usize;
             sampled.push(items.swap_remove(idx));
         }
         items = sampled;*/
@@ -787,7 +786,7 @@ impl Kernel {
         device: &mut Device,
         memory_pool: &mut MemoryPool,
         debug: DebugMask,
-        flops: u64,
+        flops: Dim,
         bytes_read: u64,
         bytes_written: u64,
         _variant_hash: u64,

@@ -35,7 +35,9 @@ impl CausalSelfAttention {
     /// Forward pass of causal self attention
     pub fn forward(&self, x: impl Into<Tensor>) -> Result<Tensor, ZyxError> {
         let x: Tensor = x.into();
-        let [b, t, c] = x.dims::<3>()?;
+        let [b, t, c] = x.shape()[..3] else {
+            panic!("causal_self_attention: expected 3D input");
+        };
         let mut splits = self.c_attn.forward(x)?.split([c, c, c], 2)?;
         let mut v = splits.pop().unwrap();
         let mut k = splits.pop().unwrap();

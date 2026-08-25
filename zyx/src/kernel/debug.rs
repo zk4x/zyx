@@ -24,10 +24,10 @@
 /// ```
 use crate::kernel::{BOp, IDX_T, IdxKind, MoveOp, UOp};
 use crate::slab::SlabId;
-use crate::{BLUE, BOLD, CYAN, GREEN, GREY, MAGENTA, ORANGE, RED, RESET, YELLOW};
 use crate::{
-    DType, Map,
+    BLUE, BOLD, CYAN, DType, GREEN, GREY, MAGENTA, Map, ORANGE, RED, RESET, YELLOW,
     kernel::{Kernel, Op, OpId},
+    shape::Dim,
 };
 
 impl Kernel {
@@ -220,18 +220,8 @@ impl Kernel {
                         BOp::NotEq => ("", " != ", ""),
                         BOp::Eq => ("", " == ", ""),
                     };
-                    let x_r = id_map.get(&x).copied().unwrap_or(x);
-                    let y_r = id_map.get(&y).copied().unwrap_or(y);
-                    let x = if let Op::Const(c) = self.ops[x].op {
-                        format!("{c}")
-                    } else {
-                        format!("r{x_r}")
-                    };
-                    let y = if let Op::Const(c) = self.ops[y].op {
-                        format!("{c}")
-                    } else {
-                        format!("r{y_r}")
-                    };
+                    let x = id_map.get(&x).copied().unwrap_or(x);
+                    let y = id_map.get(&y).copied().unwrap_or(y);
                     if let Some((lb, ub)) = bounds.get(&op_id) {
                         println!("{indent}r{out_id}{grey}: {dtype}{reset} = {op1}{x}{op2}{y}{op3}    // {lb}..={ub}");
                     } else {
@@ -262,14 +252,19 @@ impl Kernel {
                 }
                 Op::Index { axis, kind } => {
                     dtypes.insert(op_id, IDX_T);
-                    let ub = match kind {
+                    match kind {
                         IdxKind::Group(len) => {
-                            self.resolve_const(len).and_then(crate::dtype::Constant::as_dim).unwrap_or(u64::MAX).saturating_sub(1)
+                            let ub = self.resolve_const(len).and_then(crate::dtype::Constant::as_dim).unwrap_or(Dim::MAX).saturating_sub(1);
+                            let len = id_map.get(&len).copied().unwrap_or(len);
+                            println!("{indent}r{out_id}{grey}: {IDX_T}{reset} = {blue}{kind}_index({axis}){reset} over {len}    // 0..={ub}");
                         }
-                        IdxKind::Local(len) => len as u64 - 1,
-                        IdxKind::Warp(len) => len as u64 - 1,
-                    };
-                    println!("{indent}r{out_id}{grey}: {IDX_T}{reset} = {blue}{kind}_index({axis}){reset}    // 0..={ub}");
+                        IdxKind::Local(len) => {
+                            println!("{indent}r{out_id}{grey}: {IDX_T}{reset} = {blue}{kind}_index({axis}){reset}    // 0..={}", len - 1);
+                        }
+                        IdxKind::Warp(len) => {
+                            println!("{indent}r{out_id}{grey}: {IDX_T}{reset} = {blue}local_index({axis}){reset}    // 0..={}", len - 1);
+                        }
+                    }
                 }
                 Op::Loop { len } => {
                     has_loops = true;

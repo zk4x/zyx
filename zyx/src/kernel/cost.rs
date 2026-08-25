@@ -17,6 +17,7 @@
 //! used to guide the autotuning search.
 
 use crate::{
+    shape::Dim,
     DType, Map, Set,
     backend::DeviceInfo,
     kernel::{IDX_T, IdxKind, Kernel, MemLayout, MemScope, Op, OpId, ParamKind},
@@ -189,28 +190,28 @@ impl Kernel {
         // Second pass: instruction counting + register allocation simulation
         let mut wi_compute_ops = 0;
         let mut wi_ops = 0;
-        let mut n_scoped_load_bits = [0u64; 3];
-        let mut n_scoped_store_bits = [0u64; 3];
-        let mut wi_barriers = 0u64;
-        let mut gws = [1u64; 3];
+        let mut n_scoped_load_bits = [0i64; 3];
+        let mut n_scoped_store_bits = [0i64; 3];
+        let mut wi_barriers = 0i64;
+        let mut gws = [1i64; 3];
         let mut lws = [1u32; 3];
-        let mut loop_mult = 1u64;
-        let mut latest_loop_lengths: Vec<u64> = Vec::new();
-        let mut max_loop_depth = 0u64;
+        let mut loop_mult = 1i64;
+        let mut latest_loop_lengths: Vec<Dim> = Vec::new();
+        let mut max_loop_depth = 0i64;
 
         let mut reg_slots: Vec<(u32, (DType, MemLayout))> = Vec::new(); // (rc, dtype)
         let mut reg_map: Map<OpId, usize> = Map::default();
         let mut indexing_ops: Set<OpId> = Set::default();
         let mut wi_peak_reg_bytes = 0u64;
-        let mut wi_branches = 0u64;
-        let mut glb_load_lidx_stride_weighted = 0u64;
-        let mut glb_load_lidx_stride_weight = 0u64;
-        let mut glb_store_lidx_stride_weighted = 0u64;
-        let mut glb_store_lidx_stride_weight = 0u64;
-        let mut loc_load_lidx_stride_weighted = 0u64;
-        let mut loc_load_lidx_stride_weight = 0u64;
-        let mut loc_store_lidx_stride_weighted = 0u64;
-        let mut loc_store_lidx_stride_weight = 0u64;
+        let mut wi_branches = 0i64;
+        let mut glb_load_lidx_stride_weighted = 0i64;
+        let mut glb_load_lidx_stride_weight = 0i64;
+        let mut glb_store_lidx_stride_weighted = 0i64;
+        let mut glb_store_lidx_stride_weight = 0i64;
+        let mut loc_load_lidx_stride_weighted = 0i64;
+        let mut loc_load_lidx_stride_weight = 0i64;
+        let mut loc_store_lidx_stride_weighted = 0i64;
+        let mut loc_store_lidx_stride_weight = 0i64;
 
         let mut op_id = self.head;
         while !op_id.is_null() {
@@ -307,7 +308,7 @@ impl Kernel {
                     let total_elements = loop_mult * layout.n_elements();
                     match scope {
                         MemScope::Global => {
-                            let n_bits = total_elements * dtypes[&op_id].0.bit_size() as u64;
+                            let n_bits = total_elements * dtypes[&op_id].0.bit_size()  as i64;
                             n_scoped_load_bits[0] += n_bits;
                             // Track stride: prefer lidx > gidx > loop
                             let strides = self.get_strides(index);
@@ -344,7 +345,7 @@ impl Kernel {
                             }
                         }
                         MemScope::Local | MemScope::Circular => {
-                            let n_bits = total_elements * dtypes[&op_id].0.bit_size() as u64;
+                            let n_bits = total_elements * dtypes[&op_id].0.bit_size()  as i64;
                             n_scoped_load_bits[1] += n_bits;
                             let strides = self.get_strides(index);
                             let stride = strides
@@ -380,7 +381,7 @@ impl Kernel {
                             }
                         }
                         MemScope::Register => {
-                            n_scoped_load_bits[2] += total_elements * dtypes[&op_id].0.bit_size() as u64;
+                            n_scoped_load_bits[2] += total_elements * dtypes[&op_id].0.bit_size()  as i64;
                         }
                     }
                 }
@@ -392,7 +393,7 @@ impl Kernel {
                     let scope = mem_scope(&self.ops[dst].op);
                     match scope {
                         MemScope::Global => {
-                            let n_bits = loop_mult * layout.n_elements() * dtypes[&op_id].0.bit_size() as u64;
+                            let n_bits = loop_mult * layout.n_elements() * dtypes[&op_id].0.bit_size()  as i64;
                             n_scoped_store_bits[0] += n_bits;
                             // Track stride: prefer lidx > gidx > loop
                             let strides = self.get_strides(index);
@@ -429,7 +430,7 @@ impl Kernel {
                             }
                         }
                         MemScope::Local | MemScope::Circular => {
-                            let n_bits = loop_mult * layout.n_elements() * dtypes[&op_id].0.bit_size() as u64;
+                            let n_bits = loop_mult * layout.n_elements() * dtypes[&op_id].0.bit_size()  as i64;
                             n_scoped_store_bits[1] += n_bits;
                             let strides = self.get_strides(index);
                             let stride = strides
@@ -465,13 +466,14 @@ impl Kernel {
                             }
                         }
                         MemScope::Register => {
-                            n_scoped_store_bits[2] += loop_mult * layout.n_elements() * dtypes[&op_id].0.bit_size() as u64
+                            n_scoped_store_bits[2] += loop_mult * layout.n_elements() * dtypes[&op_id].0.bit_size()  as i64
                         }
                     }
                 }
                 Op::Index { axis, kind: scope } => match scope {
                     IdxKind::Group(len) => {
-                        gws[axis as usize] = self.resolve_const(len).and_then(crate::dtype::Constant::as_dim).unwrap()
+                        // Dynamic dims are `-1`; autotune substitutes 42 (see `alloc_buffers`).
+                        gws[axis as usize] = self.resolve_const(len).and_then(crate::dtype::Constant::as_dim).unwrap_or(42)
                     }
                     IdxKind::Local(len) => lws[axis as usize] = len,
                     IdxKind::Warp(_) => todo!(),
@@ -485,7 +487,7 @@ impl Kernel {
                         loop_mult *= len;
                         latest_loop_lengths.push(len);
                     }
-                    let depth = latest_loop_lengths.len() as u64;
+                    let depth = latest_loop_lengths.len()  as i64;
                     if depth > max_loop_depth {
                         max_loop_depth = depth;
                     }
@@ -497,10 +499,10 @@ impl Kernel {
                     let (m, n, k) = dims.decompose_mnk();
                     let warp = u64::from(dev_info.warp_size);
                     let cost = (m * n * k) / warp;
-                    wi_ops += loop_mult * cost;
+                    wi_ops += loop_mult * cost as Dim;
                     if !indexing_ops.contains(&op_id) {
                         // TODO multiply by some constant
-                        wi_compute_ops += loop_mult * cost;
+                        wi_compute_ops += loop_mult * cost as Dim;
                     }
                 }
                 Op::Barrier => {
@@ -517,7 +519,7 @@ impl Kernel {
 
             // Track peak register bytes
             let bytes: u64 =
-                reg_slots.iter().filter(|(r, _)| *r > 0).map(|(_, dt)| u64::from(dt.0.bit_size() / 8) * dt.1.n_elements()).sum();
+                reg_slots.iter().filter(|(r, _)| *r > 0).map(|(_, dt)| u64::from(dt.0.bit_size() / 8) * dt.1.n_elements() as u64).sum();
             if bytes > wi_peak_reg_bytes {
                 wi_peak_reg_bytes = bytes;
             }
@@ -532,7 +534,7 @@ impl Kernel {
         let wi_local_store_bits = n_scoped_store_bits[1];
         let wi_register_store_bits = n_scoped_store_bits[2];
 
-        let num_groups: u64 = gws.iter().product();
+        let num_groups: Dim = gws.iter().product();
         let wi_per_group: u32 = lws.iter().product();
 
         let glb_load_lidx_stride = if glb_load_lidx_stride_weight > 0 {
@@ -589,8 +591,8 @@ impl Kernel {
             dev_info.preferred_vector_size as u32,
             dev_info.local_mem_size as u32,
         );
-        let cost = cost.max(1.0) as u64;
+        let cost = cost.max(1.0)  as i64;
 
-        Cost { cost }
+        Cost { cost: cost as u64 }
     }
 }

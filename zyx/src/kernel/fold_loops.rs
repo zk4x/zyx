@@ -27,6 +27,7 @@
 //! 3. If it's a simple pattern (like sum of 0+1+2+...), replace with arithmetic formula
 
 use crate::{
+    shape::Dim,
     Set,
     dtype::{Constant, DType},
     kernel::{BOp, IDX_T, IdxKind, Kernel, MemLayout, MemScope, Op, OpId},
@@ -386,7 +387,7 @@ impl Kernel {
         }
 
         let step = mul_const;
-        let offset = loop_len - c - 1;
+        let offset = loop_len - c as Dim - 1;
         let offset_id = self.insert_before(after_loop_load_id, Op::Const(Constant::idx(offset)));
         let sum_id = self.insert_before(after_loop_load_id, Op::Binary { x: gidx_id, y: offset_id, bop: BOp::Add });
         let step_id = self.insert_before(after_loop_load_id, Op::Const(Constant::idx(step)));
@@ -426,7 +427,7 @@ impl Kernel {
     ///
     /// For example, if accumulating `i` (the loop index directly):
     ///   a=1, b=1, c=n, `mul_const`=1, gidx is the loop index variable
-    fn trace_to_linear_comparison(&self, accumulated_value_id: OpId, loop_id: OpId) -> Option<(u64, u64, u64, u64, OpId)> {
+    fn trace_to_linear_comparison(&self, accumulated_value_id: OpId, loop_id: OpId) -> Option<(Dim, Dim, Dim, Dim, OpId)> {
         if let Op::Index { kind: IdxKind::Group(_), .. } = self.at(accumulated_value_id) {
             return None;
         }
@@ -477,7 +478,7 @@ impl Kernel {
     /// is the loop index plus/minus a constant, and the other is a constant threshold.
     ///
     /// Example: `gidx + 1 > n` returns (1, 1, n, `mul_const`, gidx)
-    fn trace_cmpgt(&self, op_id: OpId, mul_const: u64, loop_id: OpId) -> Option<(u64, u64, u64, u64, OpId)> {
+    fn trace_cmpgt(&self, op_id: OpId, mul_const: Dim, loop_id: OpId) -> Option<(Dim, Dim, Dim, Dim, OpId)> {
         if let Op::Binary { x, y, bop: BOp::Cmpgt } = self.at(op_id) {
             let c = if let Op::Const(threshold) = self.at(*y) {
                 threshold.as_dim().unwrap_or(0)
@@ -560,7 +561,7 @@ impl Kernel {
     /// is the coefficient of the loop variable, and `gidx` is the single
     /// non-constant, non-loop term. Returns `None` if the tree contains anything
     /// else (e.g. multiple outer variables or a loop-dependent gidx).
-    fn peel_mask_add(&self, id: OpId, loop_id: OpId, k: i64, coeff: u64, gidx: OpId) -> Option<(i64, u64, OpId)> {
+    fn peel_mask_add(&self, id: OpId, loop_id: OpId, k: i64, coeff: Dim, gidx: OpId) -> Option<(i64, Dim, OpId)> {
         if id == loop_id {
             return Some((k, coeff.saturating_add(1), gidx));
         }
@@ -593,7 +594,7 @@ impl Kernel {
             Op::Binary { x, y, bop: BOp::BitShiftLeft } if *x == loop_id => {
                 let Op::Const(v) = self.at(*y) else { return None };
                 let d = v.as_dim()?;
-                Some((k, coeff.saturating_add(1u64.checked_shl(u32::try_from(d).ok()?).unwrap_or(u64::MAX)), gidx))
+                Some((k, coeff.saturating_add(1i64.checked_shl(u32::try_from(d).ok()?).unwrap_or(i64::MAX)), gidx))
             }
             Op::Const(v) => {
                 let d = v.as_dim()?;
@@ -677,7 +678,7 @@ mod tests {
         let zf = k.const_val(0.0f32);
         k.store(acc, zf, zi, MemLayout::Scalar);
 
-        let lc = k.const_idx(loop_len as u64);
+        let lc = k.const_idx(loop_len  as i64);
         let loop_id = k.loop_(lc);
 
         // Some computation before load(acc) — e.g. loading source
@@ -711,7 +712,7 @@ mod tests {
         let zf = k.const_val(0.0f32);
         k.store(acc, zf, zi, MemLayout::Scalar);
 
-        let lc = k.const_idx(loop_len as u64);
+        let lc = k.const_idx(loop_len  as i64);
         let loop_id = k.loop_(lc);
 
         let index_val = k.const_idx(5u32);

@@ -465,7 +465,7 @@ pub(super) fn initialize_device(
         if debug_dev {
             println!("[cuda] {:?}, compute: {major}.{minor}", unsafe { std::ffi::CStr::from_ptr(device_name.as_ptr()) });
         }
-        let mut free_bytes = 0;
+        let mut free_bytes = 0usize;
         let Ok(()) = unsafe { cuDeviceTotalMem(&raw mut free_bytes, device) }.check(ErrorStatus::DeviceQuery) else {
             continue;
         };
@@ -549,8 +549,8 @@ pub(super) fn initialize_device(
                                 unsafe { (cuEventRecord)(event, stream) }.check(ErrorStatus::MemoryAllocation),
                                 reply
                             );
-                            debug_assert!(free_bytes_atomic.load(Ordering::SeqCst) > bytes);
-                            free_bytes_atomic.fetch_sub(bytes, Ordering::SeqCst);
+                            debug_assert!(free_bytes_atomic.load(Ordering::SeqCst) > bytes as u64);
+                            free_bytes_atomic.fetch_sub(bytes as u64, Ordering::SeqCst);
                             let buffer_id = buffers.push(CUDABuffer::Buffer { ptr, bytes });
                             let event = Event::CUDA(CUDAEvent { event });
                             let _ = reply.send(Ok((buffer_id, event)));
@@ -572,7 +572,7 @@ pub(super) fn initialize_device(
                                 CUDABuffer::Buffer { ptr, bytes } => {
                                     //_ = unsafe { (self.cuMemFreeAsync)(buffer.ptr, self.stream) }.check(ErrorStatus::MemoryDeallocation);
                                     _ = unsafe { (cuMemFree)(ptr) }.check(ErrorStatus::MemoryDeallocation);
-                                    free_bytes_atomic.fetch_add(bytes, Ordering::SeqCst);
+                                    free_bytes_atomic.fetch_add(bytes as u64, Ordering::SeqCst);
                                 }
                             }
                             buffers.remove(buffer_id);
@@ -861,7 +861,7 @@ pub(super) fn initialize_device(
                 dev.get(CUdevice_attribute::CU_DEVICE_ATTRIBUTE_MAX_SHARED_MEMORY_PER_BLOCK, cuDeviceGetAttribute)?,
             )
             .unwrap(),
-            max_register_bytes: (max_regs_per_block as u64 / max_threads_per_block as u64).min(256) * 4,
+            max_register_bytes: (max_regs_per_block  as i64 / max_threads_per_block  as i64).min(256) * 4,
             preferred_vector_size: 16,
             tensor_cores: major >= 7,
             warp_size: 32,
@@ -894,7 +894,7 @@ impl CUDAMemoryPool {
     }
 
     pub fn free_bytes(&self) -> Dim {
-        self.free_bytes.load(Ordering::SeqCst)
+        self.free_bytes.load(Ordering::SeqCst) as i64
     }
 
     pub fn store_variable(&mut self, variable: Constant) -> PoolBufferId {
@@ -905,7 +905,7 @@ impl CUDAMemoryPool {
 
     /// Returns the stored constant if `buffer_id` is a variable, `None` otherwise.
     #[allow(unused)]
-    pub fn get_variable(&mut self, buffer_id: PoolBufferId) -> Option<Constant> {
+    pub fn get_variable(&self, buffer_id: PoolBufferId) -> Option<Constant> {
         let (reply, reply_rx) = channel();
         self.tx.send(CUDACommand::GetVariable { buffer_id, reply }).unwrap();
         reply_rx.recv().unwrap()
@@ -913,7 +913,7 @@ impl CUDAMemoryPool {
 
     #[allow(clippy::needless_pass_by_ref_mut)]
     pub fn allocate(&mut self, bytes: Dim) -> Result<(PoolBufferId, Event), BackendError> {
-        if bytes > self.free_bytes.load(Ordering::SeqCst) {
+        if bytes > self.free_bytes.load(Ordering::SeqCst) as i64 {
             return Err(BackendError { status: ErrorStatus::MemoryAllocation, context: "Allocation failure.".into() });
         }
         let (reply, reply_rx) = channel();
@@ -930,7 +930,7 @@ impl CUDAMemoryPool {
     pub fn host_to_pool(&mut self, src: &[u8], dst: PoolBufferId, event_wait_list: Vec<Event>) -> Result<Event, BackendError> {
         let (reply, reply_rx) = channel();
         self.tx
-            .send(CUDACommand::HostToPool { src: src.as_ptr(), bytes: src.len() as u64, dst, event_wait_list, reply })
+            .send(CUDACommand::HostToPool { src: src.as_ptr(), bytes: src.len()  as i64, dst, event_wait_list, reply })
             .unwrap();
         reply_rx.recv().unwrap()
     }
@@ -939,7 +939,7 @@ impl CUDAMemoryPool {
     pub fn pool_to_host(&mut self, src: PoolBufferId, dst: &mut [u8], event_wait_list: Vec<Event>) -> Result<(), BackendError> {
         let (reply, reply_rx) = channel();
         self.tx
-            .send(CUDACommand::PoolToHost { src, dst: dst.as_mut_ptr(), bytes: dst.len() as u64, event_wait_list, reply })
+            .send(CUDACommand::PoolToHost { src, dst: dst.as_mut_ptr(), bytes: dst.len()  as i64, event_wait_list, reply })
             .unwrap();
         reply_rx.recv().unwrap()
     }
@@ -1850,14 +1850,14 @@ impl CUDADevice {
             if let Op::Index { axis, kind: scope } = kernel.ops[op_id].op {
                 match scope {
                     IdxKind::Group(_) => {}
-                    IdxKind::Local(len) => lws[axis as usize] = u64::from(len),
+                    IdxKind::Local(len) => lws[axis as usize] = i64::from(len),
                     IdxKind::Warp(_) => todo!(),
                 }
             }
             op_id = kernel.next_op(op_id);
         }
 
-        if lws.iter().product::<u64>() > u64::from(self.dev_info.max_local_threads) {
+        if lws.iter().product::<i64>() > self.dev_info.max_local_threads as i64 {
             return Err(BackendError { status: ErrorStatus::KernelCompilation, context: "Invalid local work size.".into() });
         }
 

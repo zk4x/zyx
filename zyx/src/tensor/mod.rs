@@ -193,10 +193,12 @@ where
 }
 
 impl Tensor {
-    /// Returns an owned vector containing the shape (dimensions) of the tensor.
+    /// Shape of the tensor as concrete dimensions.
     ///
-    /// This method retrieves the dimensions of the tensor as a vector. Each element
-    /// in the resulting vector corresponds to the size of one dimension of the tensor.
+    /// A pure host-side read: static dims come from the IR, dynamic (symbolic)
+    /// dims resolve through their variables' current values. Emits nothing and
+    /// never touches device execution. For per-dim symbolic tensors use
+    /// [`Tensor::dims`].
     ///
     /// # Examples
     ///
@@ -204,19 +206,11 @@ impl Tensor {
     /// use zyx::Tensor;
     ///
     /// let t = Tensor::from([[1.0, 2.0, 3.0, 4.0], [5.0, 6.0, 7.0, 8.0]]);
-    /// assert_eq!(t.shape(), vec![2, 4]);
+    /// assert_eq!(t.shape(), [2, 4]);
     /// ```
-    ///
-    /// # Returns
-    ///
-    /// A `Vec<usize>` containing the shape of the tensor.
-    ///
-    /// Dimensions that are symbolic (backed by a runtime variable, e.g. a
-    /// narrow with a [`Tensor::variable`] length) resolve to `0` here, since
-    /// no concrete value is known until realize.
     #[must_use]
     pub fn shape(&self) -> Vec<Dim> {
-        RT.lock().shape(self.id).to_vec()
+        RT.lock().shape(self.id)
     }
 
     /// Is realized
@@ -230,7 +224,14 @@ impl Tensor {
         RT.lock().supports_dtype(dtype)
     }
 
-    /// Returns a slice of the first N dimensions of this tensor.
+    /// Returns the first N dimensions of this tensor as dim tensors.
+    ///
+    /// Unlike [`Tensor::shape`] (which reports symbolic dims as `0`), each
+    /// returned entry is a scalar IDX_T tensor backed by the IR node computing
+    /// that dimension: a constant for static dims, a runtime variable for
+    /// dynamic ones. Use `.item()` on an entry when a concrete integer is
+    /// needed; use the tensor directly in `narrow`/`expand`/arithmetic to stay
+    /// symbolic.
     ///
     /// # Parameters
     ///
@@ -249,17 +250,18 @@ impl Tensor {
     /// # use zyx::Tensor;
     /// let t = Tensor::from([[2, 3, 2], [4, 5, 1]]);
     /// let [d1, d2] = t.dims().unwrap();
-    /// assert_eq!(d1, 2);
-    /// assert_eq!(d2, 3);
+    /// assert_eq!(d1.item::<i64>(), 2);
+    /// assert_eq!(d2.item::<i64>(), 3);
     /// ```
     #[allow(clippy::missing_panics_doc)]
-    pub fn dims<const N: usize>(&self) -> Result<[Dim; N], ZyxError> {
-        let rt = RT.lock();
-        let shape = rt.shape(self.id);
-        if N > shape.len() {
-            Err(ZyxError::shape_error(format!("Requested {N} dims, but tensor only has rank of {}", shape.len()).into()))
+    pub fn dims<const N: usize>(&self) -> Result<[Tensor; N], ZyxError> {
+        let mut rt = RT.lock();
+        let rank = rt.shape(self.id).len();
+        if N > rank {
+            Err(ZyxError::shape_error(format!("Requested {N} dims, but tensor only has rank of {}", rank).into()))
         } else {
-            Ok(shape[..N].try_into().unwrap())
+            let tids = rt.dims(self.id);
+            Ok(std::array::from_fn(|i| Tensor { id: tids[i] }))
         }
     }
 
@@ -285,8 +287,7 @@ impl Tensor {
     /// assert_eq!(d2, 3);
     /// ```
     pub fn rdims<const N: usize>(&self) -> Result<[Dim; N], ZyxError> {
-        let rt = RT.lock();
-        let shape = rt.shape(self.id);
+        let shape = self.shape();
 
         if N > shape.len() {
             return Err(ZyxError::shape_error(format!("Requested {N} dims, but tensor only has rank of {}", shape.len()).into()));
@@ -322,7 +323,7 @@ impl Tensor {
     /// over the shape of the tensor, calculating the product of all dimensions.
     #[must_use]
     pub fn numel(&self) -> Dim {
-        RT.lock().shape(self.id).iter().product()
+        self.shape().iter().product()
     }
 
     /// Returns the number of dimensions (rank) of the tensor.
@@ -342,7 +343,7 @@ impl Tensor {
     /// The rank of the tensor as a `Dim`.
     #[must_use]
     pub fn rank(&self) -> Dim {
-        RT.lock().shape(self.id).len() as u64
+        self.shape().len() as i64
     }
 
     /// Returns the data type of the tensor.
@@ -736,7 +737,7 @@ impl Tensor {
     #[must_use]
     pub fn zeros_like(input: impl Into<Tensor>) -> Tensor {
         let input = input.into();
-        Tensor::zeros(input.shape().iter().map(|d| Tensor::from(*d)), input.dtype())
+        Tensor::zeros(input.shape(), input.dtype())
     }
 
     /// Create tensor filled with ones.
@@ -760,7 +761,7 @@ impl Tensor {
     #[must_use]
     pub fn ones_like(input: impl Into<Tensor>) -> Tensor {
         let input = input.into();
-        Tensor::ones(input.shape().iter().map(|d| Tensor::from(*d)), input.dtype())
+        Tensor::ones(input.shape(), input.dtype())
     }
 
     /// Create tensor filled with value.
@@ -1105,7 +1106,7 @@ impl Tensor {
     pub fn permute(&self, axes: impl IntoIterator<Item = Axis>) -> Result<Tensor, ZyxError> {
         let rank = self.rank();
         let axes = into_axes(axes, rank as usize)?;
-        if rank != axes.len() as u64 {
+        if rank != axes.len() as i64 {
             return Err(ZyxError::shape_error(
                 format!("Axes has rank {}, but tensor has rank {}. It must be the same for permute.", axes.len(), rank).into(),
             ));
@@ -1351,7 +1352,7 @@ impl Tensor {
                 return Err(ZyxError::shape_error("Cannot infer dimension (-1): all other dimensions must be static.".into()));
             }
             let numel: Dim = self.shape().iter().product();
-            let product: Dim = resolved.iter().filter_map(|&d| u64::try_from(d.unwrap()).ok()).product();
+            let product: Dim = resolved.iter().filter_map(|&d| d).product();
             if product == 0 {
                 return Err(ZyxError::shape_error("Cannot infer dimension (-1): other dimensions include a zero.".into()));
             }
@@ -1516,16 +1517,16 @@ impl Tensor {
         if xshape[xrank - 1] != yshape[yrank - 1] {
             return Err(ZyxError::ShapeError(format!("Cannot dot tensors with shapes {xshape:?} and {org_y_shape:?}").into()));
         }
-        let x_shape = xshape[..xrank - 1].iter().copied().chain([1]).chain([xshape[xrank - 1]]).collect::<Vec<u64>>();
+        let x_shape = xshape[..xrank - 1].iter().copied().chain([1]).chain([xshape[xrank - 1]]).collect::<Vec<i64>>();
         let y_shape = yshape[0..yrank - 2]
             .iter()
             .copied()
             .chain([1])
             .chain(yshape[yrank - yrank.min(2)..yrank].iter().copied())
-            .collect::<Vec<u64>>();
+            .collect::<Vec<i64>>();
         (self.reshape(x_shape)? * y.reshape(y_shape)?)
             .sum([-1])?
-            .reshape(xshape[0..xshape.len() - 1].iter().copied().chain([yshape[yshape.len() - 2]]).collect::<Vec<u64>>())
+            .reshape(xshape[0..xshape.len() - 1].iter().copied().chain([yshape[yshape.len() - 2]]).collect::<Vec<i64>>())
     }
 
     /// Matmul
@@ -1544,16 +1545,16 @@ impl Tensor {
         if xshape[xrank - 1] != yshape[yrank - 1] {
             return Err(ZyxError::ShapeError(format!("Cannot dot tensors with shapes {xshape:?} and {org_y_shape:?}").into()));
         }
-        let x_shape = xshape[..xrank - 1].iter().copied().chain([1]).chain([xshape[xrank - 1]]).collect::<Vec<u64>>();
+        let x_shape = xshape[..xrank - 1].iter().copied().chain([1]).chain([xshape[xrank - 1]]).collect::<Vec<i64>>();
         let y_shape = yshape[0..yrank - 2]
             .iter()
             .copied()
             .chain([1])
             .chain(yshape[yrank - yrank.min(2)..yrank].iter().copied())
-            .collect::<Vec<u64>>();
+            .collect::<Vec<i64>>();
         (self.reshape(x_shape)?.cast(out_dtype) * y.reshape(y_shape)?.cast(out_dtype))
             .sum([-1])?
-            .reshape(xshape[0..xshape.len() - 1].iter().copied().chain([yshape[yshape.len() - 2]]).collect::<Vec<u64>>())
+            .reshape(xshape[0..xshape.len() - 1].iter().copied().chain([yshape[yshape.len() - 2]]).collect::<Vec<i64>>())
     }
 
     /// Matmul is just alias to dot
@@ -1772,10 +1773,10 @@ impl Tensor {
             ext_vals.push(t);
             ext_vals.push(blank as i32);
         }
-        let ext_labels = Tensor::from_vec(ext_vals, [n_ext as u64])?;
+        let ext_labels = Tensor::from_vec(ext_vals, [n_ext as i64])?;
 
         // Gather extended log-probs: [T, 2L+1]
-        let ext_labels_exp = ext_labels.expand([t_dim, n_ext as u64])?;
+        let ext_labels_exp = ext_labels.expand([t_dim, n_ext as i64])?;
         let lp = self.gather(1, ext_labels_exp)?;
 
         // log_add helper: max(a,b) + ln(1 + exp(min(a,b) - max(a,b)))
@@ -1785,7 +1786,7 @@ impl Tensor {
             max_val.clone() + ((min_val - &max_val).exp() + 1).ln()
         };
 
-        let neg_inf_tensor = Tensor::full([n_ext as u64], neg_inf).cast(dtype);
+        let neg_inf_tensor = Tensor::full([n_ext as i64], neg_inf).cast(dtype);
         let neg_inf_val = Tensor::from(neg_inf).cast(dtype);
 
         // Initialize alpha[0]: [-inf, ..., -inf] with first two set
@@ -1939,7 +1940,7 @@ impl Tensor {
     pub fn one_hot(&self, num_classes: Dim) -> Tensor {
         let mut num_classes = num_classes;
         if num_classes == 0 {
-            num_classes = (self.max_all() + 1).item::<i64>() as u64;
+            num_classes = (self.max_all() + 1).item::<i64>() as i64;
         }
 
         let dtype = self.dtype();
@@ -1967,7 +1968,7 @@ impl Tensor {
         let dim = if dim < 0 { rank as Axis + dim } else { dim };
         let offset = rank as Axis - dim - 1;
 
-        let dt = if num_classes > i32::MAX as u64 {
+        let dt = if num_classes > i32::MAX as i64 {
             DType::I64
         } else {
             DType::I32
@@ -2252,13 +2253,13 @@ impl Tensor {
             }
             let dim = usize::try_from(-dim).unwrap();
             let dim = rank - dim + 1;
-            self.reshape(shape[..dim].iter().copied().chain([1]).chain(shape[dim..].iter().copied()).collect::<Vec<u64>>())
+            self.reshape(shape[..dim].iter().copied().chain([1]).chain(shape[dim..].iter().copied()).collect::<Vec<i64>>())
         } else {
             let dim = usize::try_from(dim).unwrap();
             if dim > rank {
                 return Err(ZyxError::shape_error(format!("Unsqueeze dim {dim} is not possible on rank {rank} tensor.").into()));
             }
-            self.reshape(shape[..dim].iter().copied().chain([1]).chain(shape[dim..].iter().copied()).collect::<Vec<u64>>())
+            self.reshape(shape[..dim].iter().copied().chain([1]).chain(shape[dim..].iter().copied()).collect::<Vec<i64>>())
         }
     }
 
@@ -2504,11 +2505,11 @@ impl Tensor {
         };
         let i_ = &shape[rank - k_.len()..];
         let o_: Vec<Dim> =
-            (i_, d_.iter(), k_.iter(), s_.iter()).zip().map(|(i, d, k, s)| (*i - *d * (*k - 1)).div_ceil(*s)).collect();
+            (i_, d_.iter(), k_.iter(), s_.iter()).zip().map(|(i, d, k, s)| (*i - *d * (*k - 1) + *s - 1) / *s).collect();
         //println!("s_ {s_:?}, d_ {d_:?}, i_ {i_:?} o_ {o_:?}");
         let repeats: Vec<Dim> = repeat_n(1, rank - k_.len())
             .chain(
-                k_.iter().copied().zip(i_.iter().copied()).zip(d_.iter().copied()).map(|((k, i), d)| (k * (i + d)).div_ceil(i)),
+                k_.iter().copied().zip(i_.iter().copied()).zip(d_.iter().copied()).map(|((k, i), d)| (k * (i + d) + i - 1) / i),
             )
             .collect();
         //println!("repeats {repeats:?}");
@@ -2648,7 +2649,8 @@ impl Tensor {
         let [bs, cin_] = self.shape()[..2] else {
             return Err(ZyxError::shape_error(format!("conv requires self rank >= 2, but rank = {}", self.rank()).into()));
         };
-        let [cout, cin] = weight.shape()[..2] else {
+        let wsh = weight.shape();
+        let [cout, cin] = wsh[..2] else {
             return Err(ZyxError::shape_error(format!("conv requires weight rank >= 2, but rank = {}", weight.rank()).into()));
         };
         if let Some(bias) = bias
@@ -2659,7 +2661,7 @@ impl Tensor {
             ));
         }
 
-        let hw = &weight.shape()[2..];
+        let hw = &wsh[2..];
 
         let stride: Vec<Dim> = stride.into_shape().collect();
         let dilation: Vec<Dim> = dilation.into_shape().collect();
@@ -2669,12 +2671,12 @@ impl Tensor {
 
         let padding_: Vec<i64> = resolve_pool_pads(&padding.into_shape().collect::<Box<[Dim]>>(), hw.len());
 
-        if (groups as Dim * cin != cin_) || (self.shape().len() != weight.shape().len()) {
+        if (groups as Dim * cin != cin_) || (self.shape().len() != wsh.len()) {
             return Err(ZyxError::shape_error(
                 format!(
                     "Input Tensor shape {:?} does not match the shape of the weights {:?}. ({} vs. {cin_})",
                     self.shape(),
-                    weight.shape(),
+                    wsh,
                     groups as Dim * cin
                 )
                 .into(),
@@ -2683,7 +2685,8 @@ impl Tensor {
 
         let x = self.rpad_zeros(padding_.chunks(2).map(|x| (x[0], x[1]))).unwrap().pool(hw, stride, dilation).unwrap();
         let rcout = cout / groups as Dim;
-        let oyx = &x.shape()[2..x.shape().len() - hw.len()];
+        let xsh = x.shape();
+        let oyx = &xsh[2..xsh.len() - hw.len()];
 
         // for now without winograd
         let shape: Vec<Dim> = [bs, groups as Dim, cin, 1].iter().chain(oyx).chain(hw).copied().collect();
@@ -2810,7 +2813,7 @@ impl Tensor {
             return Err(ZyxError::shape_error("Repeats must be greater or equal to rank of the tensor.".into()));
         }
         let base_shape: Vec<Dim> = repeat_n(1, repeats.len() - rank).chain(shape.iter().copied()).collect();
-        let new_shape: Vec<Dim> = repeat_n(1, repeats.len() - rank).chain(shape).flat_map(|d| [1u64, d]).collect();
+        let new_shape: Vec<Dim> = repeat_n(1i64, repeats.len() - rank).chain(shape).flat_map(|d| [1i64, d]).collect();
         let expand_shape: Vec<Dim> =
             repeats.iter().copied().zip(base_shape.iter().copied()).flat_map(Into::<[Dim; 2]>::into).collect();
         let final_shape: Vec<Dim> = repeats.iter().copied().zip(base_shape.iter().copied()).map(|(r, d)| r * d).collect();
@@ -2915,8 +2918,8 @@ impl Tensor {
             ));
         }
 
-        let sin_freqs = sin_freqs.reshape([1u64, 1u64, seq_len, embed_dim / 2]).unwrap();
-        let cos_freqs = cos_freqs.reshape([1u64, 1u64, seq_len, embed_dim / 2]).unwrap();
+        let sin_freqs = sin_freqs.reshape([1i64, 1i64, seq_len, embed_dim / 2 as i64]).unwrap();
+        let cos_freqs = cos_freqs.reshape([1i64, 1i64, seq_len, embed_dim / 2 as i64]).unwrap();
 
         let half = (embed_dim / 2) as usize;
         let a = self.rslice(..half).unwrap();
@@ -3455,7 +3458,7 @@ fn tensor_to_string<T: core::fmt::Display>(data: &[T], shape: &[Dim], precision:
             let mut var: Dim = 1;
             let mut r = rank;
             while r > 0 {
-                if (i as Dim).is_multiple_of(n / var) {
+                if (i as Dim) % (n / var) == 0 {
                     res += &(" ".repeat(rank - r) + "[".repeat(r - 1).as_str());
                     break;
                 }
@@ -3464,14 +3467,14 @@ fn tensor_to_string<T: core::fmt::Display>(data: &[T], shape: &[Dim], precision:
             }
         }
         let _ = write!(res, "{x:>w$.precision$}");
-        if !(i as Dim + 1).is_multiple_of(d0) {
+        if !((i as Dim + 1) % d0 == 0) {
             res += "  ";
         }
         {
             let mut var: Dim = 1;
             let mut r = rank;
             while r > 0 {
-                if (i as Dim + 1).is_multiple_of(n / var) {
+                if (i as Dim + 1) % (n / var) == 0 {
                     res += &"]".repeat(r - 1);
                     break;
                 }
@@ -3479,7 +3482,7 @@ fn tensor_to_string<T: core::fmt::Display>(data: &[T], shape: &[Dim], precision:
                 r -= 1;
             }
         }
-        if (i as Dim + 1).is_multiple_of(d0) && i as Dim != n - 1 {
+        if ((i as Dim + 1) % d0 == 0) && i as Dim != n - 1 {
             res += "\n";
         }
     }

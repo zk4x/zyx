@@ -251,13 +251,13 @@ impl Kernel {
             if let Op::Index { axis, kind: scope } = self.ops[op_id].op {
                 match scope {
                     IdxKind::Group(_) => {}
-                    IdxKind::Local(len) => lws[axis as usize] = u64::from(len),
+                    IdxKind::Local(len) => lws[axis as usize] = Dim::from(len),
                     IdxKind::Warp(_) => todo!(),
                 }
             }
             op_id = self.next_op(op_id);
         }
-        if lws.iter().product::<Dim>() > u64::from(_dev_info.max_local_threads) {
+        if lws.iter().product::<Dim>() > _dev_info.max_local_threads as Dim {
             return Err(BackendError { status: ErrorStatus::KernelCompilation, context: "Invalid local work size.".into() });
         }
         let name = format!("k_{}", lws.iter().map(ToString::to_string).collect::<Vec<_>>().join("_"),).into_boxed_str();

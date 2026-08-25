@@ -46,6 +46,7 @@ use std::collections::BTreeSet;
 use crate::{
     DType, Map, RT, Set, Tensor, ZyxError,
     backend::BufferId,
+    dtype::Constant,
     graph::{ClassId, Graph, GraphId, plan::drain_events_for_buf},
     kernel::ParamKind,
     runtime::Runtime,
@@ -124,10 +125,20 @@ impl Tape {
                 let id = match grads.get(&x) {
                     Some(&id) => id,
                     None => {
-                        let x_shape: Vec<Dim> = rt.shape(x).to_vec();
-                        let shape = rt.shape_tensor(&x_shape);
+                        let shape = rt.shape(x);
                         let dtype = rt.dtype(x);
-                        rt.new_full(shape, dtype.zero_constant())
+                        let ids: Vec<TensorId> =
+                            shape.iter().map(|&d| rt.new_constant_tensor(Constant::idx(d))).collect();
+                        let stid = if ids.is_empty() {
+                            TensorId::NULL
+                        } else {
+                            let s = rt.stack(&ids).unwrap();
+                            for id in &ids {
+                                rt.release(*id);
+                            }
+                            s
+                        };
+                        rt.new_full(stid, dtype.zero_constant())
                     }
                 };
                 Tensor { id }
@@ -266,7 +277,7 @@ impl Tape {
                 if rt.tensors[t.id].class_id.is_null() {
                     panic!("non-graph tensor in realize")
                 } else {
-                    (rt.tensors[t.id].class_id, rt.shape(t.id).into(), rt.dtype(t.id))
+                    (rt.tensors[t.id].class_id, rt.shape(t.id), rt.dtype(t.id))
                 }
             })
             .collect();
@@ -308,8 +319,17 @@ impl FrozenTape {
 
         let mut outputs = Vec::new();
         for (cid, shape, dtype) in self.outputs.iter() {
-            let shape = rt.shape_tensor(shape);
-            let tid = rt.new_eager_tensor(shape, *dtype, ParamKind::Global);
+            let ids: Vec<TensorId> = shape.iter().map(|&d| rt.new_constant_tensor(Constant::idx(d))).collect();
+            let stid = if ids.is_empty() {
+                TensorId::NULL
+            } else {
+                let s = rt.stack(&ids).unwrap();
+                for id in &ids {
+                    rt.release(*id);
+                }
+                s
+            };
+            let tid = rt.new_eager_tensor(stid, *dtype, ParamKind::Global);
             rt.buffer_map.insert(tid, class_buf[cid]);
             outputs.push(Tensor::from_id(tid));
         }

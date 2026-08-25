@@ -245,7 +245,7 @@ pub(super) fn initialize_device(
             cuda: hip.clone(),
             context,
             device,
-            free_bytes: free_bytes as u64,
+            free_bytes: free_bytes  as i64,
             buffers: Slab::new(),
             stream,
             hipEventCreate,

@@ -147,7 +147,7 @@ impl Kernel {
                     match scope {
                         Scope::Global => index_combinations[axis as usize]
                             .iter()
-                            .map(|&i| Constant::idx(i as u64))
+                            .map(|&i| Constant::idx(i  as i64))
                             .collect(),
                         Scope::Local => todo!(),
                         Scope::Register => todo!(),

@@ -29,7 +29,7 @@ fn mnist() -> Result<(), ZyxError> {
     let train_y = train_dataset["train_y"].clone();
 
     let batch_size = 64;
-    let num_train = train_x.shape()[0];
+    let num_train = train_x.dims::<2>()?[0].item::<i64>();
 
     let net = MnistNet {
         l1_weight: Tensor::randn([128, 784], DType::F32)?,
@@ -42,8 +42,8 @@ fn mnist() -> Result<(), ZyxError> {
     #[allow(clippy::single_range_in_vec_init)] // slice() accepts array of ranges
     for _ in 0..5 {
         for i in (0..num_train).step_by(batch_size) {
-            let end = if i + batch_size as u64 <= num_train {
-                i + batch_size as u64
+            let end = if i + batch_size as i64 <= num_train {
+                i + batch_size as i64
             } else {
                 num_train
             };

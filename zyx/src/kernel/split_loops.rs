@@ -16,6 +16,7 @@
 
 use super::autotune::Optimization;
 use crate::{
+    shape::Dim,
     backend::DeviceInfo,
     dtype::Constant,
     kernel::{BOp, IdxKind, Kernel, Op, OpId},
@@ -60,9 +61,10 @@ impl Kernel {
                 if !local_axis_sizes.contains_key(&axis) {
                     let max_per_axis = dev_info.max_local_work_dims[axis as usize];
                     let Some(len) = self.resolve_const(len).and_then(crate::dtype::Constant::as_dim) else {
+                        op_id = self.next_op(op_id);
                         continue;
                     };
-                    l_factors.retain(|&f| len.is_multiple_of(f as u64) && f <= remaining_threads && f <= max_per_axis);
+                    l_factors.retain(|&f| len % f as Dim == 0 && f <= remaining_threads && f <= max_per_axis);
                     for &f in &l_factors {
                         factors.push((op_id, f));
                     }
@@ -89,12 +91,13 @@ impl Kernel {
         while !op_id.is_null() {
             if let Op::Loop { len: len_id } = self.ops[op_id].op {
                 let Some(len) = self.resolve_const(len_id).and_then(crate::dtype::Constant::as_dim) else {
+                    op_id = self.next_op(op_id);
                     continue;
                 };
                 if len >= 16 {
                     for &factor in &candidates {
-                        if len.is_multiple_of(factor as u64) {
-                            factors.push((op_id, factor as u64));
+                        if len % factor as Dim == 0 {
+                            factors.push((op_id, factor));
                         }
                     }
                 }
@@ -185,8 +188,8 @@ impl Kernel {
                 Op::Loop { len, .. } => st *= self.resolve_const(*len).and_then(crate::dtype::Constant::as_dim).unwrap(),
                 Op::Index { kind, .. } => match kind {
                     IdxKind::Group(len) => st *= self.resolve_const(*len).and_then(crate::dtype::Constant::as_dim).unwrap(),
-                    IdxKind::Local(len) => st *= u64::from(*len),
-                    IdxKind::Warp(len) => st *= u64::from(*len),
+                    IdxKind::Local(len) => st *= i64::from(*len),
+                    IdxKind::Warp(len) => st *= i64::from(*len),
                 },
                 _ => unreachable!("split can be only index or loop"),
             }

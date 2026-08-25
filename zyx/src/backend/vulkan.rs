@@ -448,7 +448,7 @@ impl std::fmt::Debug for VulkanMemoryPool {
 
 impl VulkanMemoryPool {
     pub(super) fn free_bytes(&self) -> Dim {
-        self.free_bytes.load(Ordering::SeqCst)
+        self.free_bytes.load(Ordering::SeqCst) as i64
     }
     pub(super) const fn deinitialize(&mut self) {}
     pub(super) fn allocate(&mut self, bytes: Dim) -> Result<(PoolBufferId, Event), BackendError> {
@@ -464,7 +464,7 @@ impl VulkanMemoryPool {
         self.tx.send(VulkanCommand::StoreVariable { variable, reply }).unwrap();
         rx.recv().unwrap().unwrap()
     }
-    pub(super) fn get_variable(&mut self, buffer_id: PoolBufferId) -> Option<Constant> {
+    pub(super) fn get_variable(&self, buffer_id: PoolBufferId) -> Option<Constant> {
         let (reply, rx) = channel();
         self.tx.send(VulkanCommand::GetVariable { buffer_id, reply }).unwrap();
         rx.recv().unwrap().ok()
@@ -1208,10 +1208,10 @@ pub(super) fn initialize_device(
                 while let Ok(cmd) = rx.recv() {
                     match cmd {
                         VulkanCommand::Allocate { bytes, reply } => {
-                            let size = bytes.next_multiple_of(4);
-                            let (buf, mem, ptr) = send_or_continue!(create_buffer(size), reply);
+                            let size = (bytes + 3) / 4;
+                            let (buf, mem, ptr) = send_or_continue!(create_buffer(size as u64), reply);
                             let id = buffers.push(VulkanBuffer::Buffer { buf, mem, ptr, bytes: bytes as usize });
-                            free_bytes_atomic.fetch_sub(size, Ordering::SeqCst);
+                            free_bytes_atomic.fetch_sub(size as u64, Ordering::SeqCst);
                             let _ = reply.send(Ok((
                                 id,
                                 Event::Vulkan(VulkanEvent {

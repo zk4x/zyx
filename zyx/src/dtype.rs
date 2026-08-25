@@ -180,7 +180,7 @@ impl DType {
             Self::I16 => Constant::I16(0),
             Self::I32 => Constant::I32(0),
             Self::I64 => Constant::I64(0i64.to_le_bytes()),
-            Self::U64 => Constant::U64(0u64.to_le_bytes()),
+            Self::U64 => Constant::U64(0i64.to_le_bytes()),
             Self::Bool => Constant::Bool(false),
         }
     }
@@ -199,7 +199,7 @@ impl DType {
             Self::I16 => Constant::I16(1),
             Self::I32 => Constant::I32(1),
             Self::I64 => Constant::I64(1i64.to_le_bytes()),
-            Self::U64 => Constant::U64(1u64.to_le_bytes()),
+            Self::U64 => Constant::U64(1i64.to_le_bytes()),
             Self::Bool => Constant::Bool(true),
         }
     }
@@ -307,7 +307,7 @@ impl Constant {
             Constant::U8(d) => Some(Dim::from(d)),
             Constant::U16(d) => Some(Dim::from(d)),
             Constant::U32(d) => Some(Dim::from(d)),
-            Constant::U64(d) => Some(u64::from_le_bytes(d)),
+            Constant::U64(d) => Some(i64::from_le_bytes(d)),
             Constant::I8(d) => {
                 if d >= 0 {
                     Some(d as Dim)

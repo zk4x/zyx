@@ -194,12 +194,12 @@ impl Runtime {
                     let x_shape = self.shape_class(graph_id, in_dims.clone());
                     let in_conc: Vec<Dim> = in_dims
                         .iter()
-                        .map(|&d| self.graphs[graph_id].resolve_const(d).and_then(Constant::as_dim).unwrap_or(0))
+                        .map(|&d| self.graphs[graph_id].resolve_const(d).and_then(Constant::as_dim).unwrap_or(-1))
                         .collect();
                     let xc_conc: Vec<Dim> = self.graphs[graph_id]
                         .shape(x_shape)
                         .iter()
-                        .map(|&d| self.graphs[graph_id].resolve_const(d).and_then(Constant::as_dim).unwrap_or(0))
+                        .map(|&d| self.graphs[graph_id].resolve_const(d).and_then(Constant::as_dim).unwrap_or(-1))
                         .collect();
                     if in_conc.iter().any(|&v| v != 0) && xc_conc.iter().any(|&v| v != 0) && in_conc != xc_conc {
                         eprintln!("RESGRAD in={:?} x_shape={:?}", in_conc, xc_conc);
@@ -210,15 +210,6 @@ impl Runtime {
                 Node::Expand { x, .. } => {
                     let out_dims = self.graphs[graph_id].shape(cid);
                     let in_dims = self.graphs[graph_id].shape(x);
-                    let out_shape: Vec<Dim> = out_dims
-                        .iter()
-                        .map(|&d| self.graph_const_dim(graph_id, d).expect("expand backward with symbolic dim"))
-                        .collect();
-                    let in_shape: Vec<Dim> = in_dims
-                        .iter()
-                        .map(|&d| self.graph_const_dim(graph_id, d).expect("expand backward with symbolic dim"))
-                        .collect();
-                    if in_shape.contains(&3) && in_shape.contains(&2) {}
                     // Right-align the input against the expanded output per broadcast
                     // semantics. The input is broadcast to the output by (a) leading
                     // `pad` dims that the input did not have at all (implicitly size 1)
@@ -226,16 +217,18 @@ impl Runtime {
                     // broadcast to a larger output extent. The gradient of a broadcast
                     // must be summed over *all* of these axes to drop back to the
                     // input shape.
-                    let pad = out_shape.len() - in_shape.len();
-                    let sum_axes: Vec<UAxis> = (0..pad)
-                        .chain(in_shape.iter().enumerate().filter_map(|(i, &xd)| {
-                            if xd == 1 && out_shape[pad + i] > 1 {
-                                Some((pad + i) as UAxis)
-                            } else {
-                                None
-                            }
-                        }))
-                        .collect();
+                    //
+                    // Symbolic broadcast decision (tinygrad `broadcast_axes`
+                    // semantics): an axis needs summing iff the input dim is
+                    // provably a singleton (1); unknown symbolic dims default
+                    // to NOT broadcast.
+                    let pad = out_dims.len() - in_dims.len();
+                    let mut sum_axes: Vec<UAxis> = (0..pad).map(|i| i as UAxis).collect();
+                    for (i, &xd) in in_dims.iter().enumerate() {
+                        if self.graph_const_dim(graph_id, xd) == Some(1) {
+                            sum_axes.push((pad + i) as UAxis);
+                        }
+                    }
                     if sum_axes.is_empty() {
                         accum_grad(self, graph_id, &mut grads, x, grad);
                     } else {
@@ -294,7 +287,7 @@ impl Runtime {
                             let x_dims = self.graphs[graph_id].shape(x);
                             // Shape dims are lengths: always integer-typed,
                             // never the tensor's data dtype.
-                            let one_dim = self.push_const(graph_id, Constant::new(1u64));
+                            let one_dim = self.push_const(graph_id, Constant::new(1i64));
                             let kept: Vec<ClassId> = x_dims
                                 .iter()
                                 .enumerate()
@@ -314,7 +307,7 @@ impl Runtime {
                             let one = self.push_const(graph_id, Constant::new(1u8).cast(dtype));
                             // Shape dims are lengths: always integer-typed,
                             // never the tensor's data dtype.
-                            let one_dim = self.push_const(graph_id, Constant::new(1u64));
+                            let one_dim = self.push_const(graph_id, Constant::new(1i64));
                             let kept: Vec<ClassId> = x_dims
                                 .iter()
                                 .enumerate()
@@ -359,7 +352,7 @@ impl Runtime {
             let grad_tid = match grads.get(&self.tensors[tid].class_id) {
                 Some(&gcid) => self.new_graph_tensor(graph_id, gcid),
                 None => {
-                    let shape: Vec<Dim> = self.shape(tid).into();
+                    let shape: Vec<Dim> = self.shape(tid);
                     let dtype = self.dtype(tid);
                     let zero_cid = self.push_const(graph_id, Constant::new(0u8).cast(dtype));
                     let ops: Box<[ClassId]> = shape.iter().map(|&d| self.push_const(graph_id, Constant::idx(d))).collect();
@@ -482,9 +475,6 @@ impl Runtime {
     /// Numeric value of a dim class, only if it is a constant. Symbolic dims
     /// return `None` — callers must not guess.
     fn graph_const_dim(&self, graph_id: GraphId, dim: ClassId) -> Option<Dim> {
-        match &self.graphs[graph_id].nodes[self.graphs[graph_id].classes[dim].nodes[0]].node {
-            Node::Const { value: c, .. } => c.as_dim(),
-            _ => None,
-        }
+        self.graphs[graph_id].resolve_const(dim).and_then(|c| c.as_dim())
     }
 }

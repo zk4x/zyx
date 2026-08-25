@@ -29,6 +29,10 @@ Don't write "clean code." Write debuggable code — understandable code.
 
 Always duplicate. Design the user API and write a list of requirements. Then write the simplest code that makes that API work. If you need similar code in different places, copy it. Once the program passes integration tests, remove the duplication by adding abstraction. The resulting abstraction will be much less likely to need a refactor.
 
+### Duplication is good — KISS is sh\*t
+
+Duplication is fine. Duplication is good. We like duplication. Do NOT invent an abstraction "for cleanliness" when two call sites happen to look alike — copy the code. The right abstraction emerges only after integration tests pass, and even then it is optional. "Keep it simple, stupid" leads to premature, wrong abstractions; explicit duplicated code is easier to read, debug, and change independently. Prefer a 200-line function over a clever 20-line helper that five places must agree on.
+
 ### Additive features (orthogonality)
 
 The goal of good abstractions is **orthogonality** — features compose without interfering. Complexity scales linearly while capabilities scale exponentially.

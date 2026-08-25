@@ -269,7 +269,7 @@ fn batched_matmul() -> Result<(), ZyxError> {
                         }
                     }
 
-                    let expected_shape = vec![b as u64, m as u64, n as u64];
+                    let expected_shape = vec![b as i64, m as i64, n as i64];
                     assert_eq!(z.shape(), expected_shape, "Shape mismatch: expected {:?}, got {:?}", expected_shape, z.shape());
 
                     // ---- Dtype check ----
@@ -982,11 +982,12 @@ fn mean1() -> Result<(), ZyxError> {
 fn var1() -> Result<(), ZyxError> {
     let x = Tensor::from([[1f32, 2., 3.], [4., 5., 6.]]);
     let [n] = x.dims()?;
+    let n = n.item::<i64>();
     let mean = x.mean_keepdim([0])?;
     let x = x - mean;
     let squared = &x * &x;
     let summed = squared.sum([0])?;
-    let y = summed / n as u32;
+    let y = summed / n;
     assert_eq!(y, [2.25f32, 2.25, 2.25]);
     Ok(())
 }
@@ -1008,7 +1009,7 @@ fn var2() -> Result<(), ZyxError> {
     let x = x - mean;
     let squared = &x * &x;
     let summed = squared.sum([1])?;
-    let y = summed / n as u32;
+    let y = summed / n;
     assert_eq!(y, [0.666666f32, 0.666666]);
     Ok(())
 }
@@ -1087,9 +1088,8 @@ fn causal_self_attention() -> Result<(), ZyxError> {
 
         let x = Tensor::from([[[1, 0, 4, 2], [2, 5, 0, 1], [0, 8, 1, 0], [5, 1, 0, 0]]]).cast(dtype);
 
-        let [b, t, c] = x.shape()[..] else {
-            return Err(ZyxError::ShapeError("x must have exactly 3 dims, b, t, c".into()));
-        };
+        let [b, t, c] = x.dims::<3>()?;
+        let (b, t, c) = (b.item::<i64>() as u64, t.item::<i64>() as u64, c.item::<i64>() as u64);
         let mut splits = x.dot(c_attn_weight.t())?.split([n_embd, n_embd, n_embd], 2)?;
         let mut v = splits.pop().unwrap();
         let mut k = splits.pop().unwrap();
@@ -1099,7 +1099,7 @@ fn causal_self_attention() -> Result<(), ZyxError> {
         q = q.reshape([b, t, n_head, c / n_head])?.transpose(1, 2)?;
         v = v.reshape([b, t, n_head, c / n_head])?.transpose(1, 2)?;
 
-        let mut att = q.dot(k.t())? * (1f32 / (*k.shape().last().unwrap() as f32).sqrt());
+        let mut att = q.dot(k.t())? * (1f32 / ((c / n_head) as f32).sqrt());
 
         /*assert_eq!(
             att,
@@ -1218,7 +1218,7 @@ fn test_padding_on_elementwise_kernel() {
     let t = Tensor::from([2, 3, 4]);
     let padded = t.pad([(1, 1)], 0).unwrap();
     let result = padded + 1;
-    assert_eq!(result.shape(), &[5]);
+    assert_eq!(result.shape(), [5]);
     assert_eq!(result.slice(1).unwrap(), 3);
 }
 
@@ -1230,7 +1230,7 @@ fn test_expand_on_elementwise_kernel() {
     let t = Tensor::from([2i32, 3, 4]);
     let expanded = t.expand([3, 3]).unwrap();
     let result = expanded + 1.0;
-    assert_eq!(result.shape(), &[3, 3]);
+    assert_eq!(result.shape(), [3, 3]);
     assert_eq!(result.slice((1, 1)).unwrap(), 4i32);
 }
 
@@ -1242,7 +1242,7 @@ fn test_reshape_on_elementwise_kernel() {
     let t = Tensor::from([2, 3, 4]);
     let reshaped = t.reshape([3, 1]).unwrap();
     let result = reshaped * 2.0;
-    assert_eq!(result.shape(), &[3, 1]);
+    assert_eq!(result.shape(), [3, 1]);
     assert_eq!(result.slice((2, 0)).unwrap(), 8i32);
 }
 
@@ -1251,7 +1251,7 @@ fn test_permute_on_elementwise_kernel() {
     let t = Tensor::from([[[1.0f32, 2.0], [3.0, 4.0]], [[5.0, 6.0], [7.0, 8.0]]]);
     let permuted = t.permute([2, 0, 1]).unwrap();
     let result = permuted + 1.0f32;
-    assert_eq!(result.shape(), &[2, 2, 2]);
+    assert_eq!(result.shape(), [2, 2, 2]);
     let value: f32 = result.slice((1, 0, 1)).unwrap().item();
     assert_eq!(value, 5.0f32);
 }
@@ -1261,7 +1261,7 @@ fn test_padding_on_reduce_kernel() {
     let t = Tensor::from([[1.0f32, 2.0], [3.0, 4.0]]);
     let padded = t.pad([(0, 0), (1, 1)], 0.0f32).unwrap();
     let reduced = padded.sum([0]).unwrap();
-    assert_eq!(reduced.shape(), &[4]);
+    assert_eq!(reduced.shape(), [4]);
     assert_eq!(reduced.slice(0).unwrap(), 0.0f32);
     assert_eq!(reduced.slice(1).unwrap(), 4.0f32);
     assert_eq!(reduced.slice(2).unwrap(), 6.0f32);
@@ -1273,7 +1273,7 @@ fn test_expand_on_reduce_kernel() {
     let t = Tensor::from([[1.0f32], [2.0], [3.0]]);
     let expanded = t.expand([3, 2]).unwrap();
     let reduced = expanded.mean([1]).unwrap();
-    assert_eq!(reduced.shape(), &[3]);
+    assert_eq!(reduced.shape(), [3]);
     assert_eq!(reduced.slice(1).unwrap(), 2.0f32);
 }
 
@@ -1282,7 +1282,7 @@ fn test_reshape_on_reduce_kernel() {
     let t = Tensor::from([[1.0f32, 2.0], [3.0, 4.0]]);
     let reshaped = t.reshape([4]).unwrap();
     let reduced = reshaped.sum([0]).unwrap();
-    assert_eq!(reduced.shape(), &[1]);
+    assert_eq!(reduced.shape(), [1]);
     assert_eq!(reduced.item::<f32>(), 10.0f32);
 }
 
@@ -1291,7 +1291,7 @@ fn test_permute_on_reduce_kernel() {
     let t = Tensor::from([[[1.0f32, 2.0], [3.0, 4.0]], [[5.0, 6.0], [7.0, 8.0]]]);
     let permuted = t.permute([1, 2, 0]).unwrap();
     let reduced = permuted.sum([2]).unwrap();
-    assert_eq!(reduced.shape(), &[2, 2]);
+    assert_eq!(reduced.shape(), [2, 2]);
     assert_eq!(reduced.slice((0, 0)).unwrap(), 6.0f32);
 }
 
@@ -1316,7 +1316,7 @@ fn rope_2() -> Result<(), ZyxError> {
         .reshape([1, 2, 4])?
         .cast(zyx::DType::F32);
     let base = 10000f32;
-
+    let [_batch_size, seq_len, embed_dim] = x.shape()[..3] else { panic!("expected 3D input"); };
     let [_batch_size, seq_len, embed_dim] = x.dims()?;
 
     assert_eq!(embed_dim % 2, 0, "Embedding dimension should be even for RoPE.");

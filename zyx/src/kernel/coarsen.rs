@@ -23,6 +23,7 @@ use std::collections::BTreeMap;
 
 use super::autotune::Optimization;
 use crate::{
+    shape::Dim,
     Map, Set,
     dtype::Constant,
     kernel::{BOp, IdxKind, Kernel, MemLayout, MemScope, Op, OpId},
@@ -77,11 +78,12 @@ impl Kernel {
             let next = self.next_op(op_id);
             if let Op::Index { kind: IdxKind::Group(len), .. } = self.ops[op_id].op {
                 let Some(len) = self.resolve_const(len).and_then(crate::dtype::Constant::as_dim) else {
+                    op_id = next;
                     continue;
                 };
                 for f in [16, 8, 4] {
                     //println!("len={len} f={f}");
-                    if len.is_multiple_of(f) {
+                    if len % f as Dim == 0 {
                         factors.push((op_id, f));
                     }
                 }
@@ -104,7 +106,7 @@ impl Kernel {
         let Some(len) = self.resolve_const(len).and_then(crate::dtype::Constant::as_dim) else {
             return;
         };
-        debug_assert!(len.is_multiple_of(factor));
+        debug_assert!(len % factor as Dim == 0);
 
         //println!("thread coarse gidx_id={gidx_id} by factor={factor}");
 
@@ -120,7 +122,7 @@ impl Kernel {
             return;
         }
 
-        if self.ops.len().0 as u64 * factor > 10000 {
+        if self.ops.len().0 as Dim * factor as Dim > 10000 {
             return;
         }
 
@@ -154,7 +156,7 @@ impl Kernel {
         let mut remaps: Map<OpId, Vec<OpId>> = Map::default();
 
         // Group index now split into multiple indices with constant offsets
-        let new_len = self.const_idx(len / factor);
+        let new_len = self.const_idx(len / factor as Dim);
         let x = self.insert_before(gidx_id, Op::Index { axis, kind: IdxKind::Group(new_len) });
         self.ops[gidx_id].op = Op::Binary { x, y: const_factor, bop: BOp::Mul };
         let mut ids = Vec::with_capacity((factor - 1) as usize);
@@ -171,7 +173,7 @@ impl Kernel {
             let next_op_id = self.next_op(op_id);
             match self.ops[op_id].op {
                 Op::Storage { scope: MemScope::Register, ref mut len, .. } => {
-                    *len *= factor;
+                    *len *= factor as Dim;
                     accumulator_storages.insert(op_id);
                 }
                 Op::Index { .. } | Op::Loop { .. } | Op::EndLoop | Op::If { .. } | Op::EndIf | Op::Barrier => {}
@@ -261,29 +263,31 @@ impl Kernel {
         let _timer = crate::Timer::new("opt_register_tiling");
         let candidates: Vec<u64> = vec![8, 16, 4, 2];
         let mut global_upcasts: BTreeMap<OpId, Vec<u64>> = BTreeMap::new();
-        let mut reduce_factors: BTreeMap<OpId, Vec<u64>> = BTreeMap::new();
+        let mut reduce_factor: BTreeMap<OpId, Vec<u64>> = BTreeMap::new();
 
         let mut op_id = self.head;
         while !op_id.is_null() {
             let next = self.next_op(op_id);
             if let Op::Loop { len: len_id } = self.ops[op_id].op {
                 let Some(len) = self.resolve_const(len_id).and_then(crate::dtype::Constant::as_dim) else {
+                    op_id = next;
                     continue;
                 };
                 if len >= 16 {
                     let applicable: Vec<u64> =
-                        candidates.iter().copied().filter(|&f| len.is_multiple_of(f) && len / f >= 4).collect();
+                        candidates.iter().copied().filter(|&f| len % f as Dim == 0 && len / f as Dim >= 4).collect();
                     if !applicable.is_empty() {
-                        reduce_factors.insert(op_id, applicable);
+                        reduce_factor.insert(op_id, applicable);
                     }
                 }
             }
             if let Op::Index { kind: IdxKind::Group(len), .. } = self.ops[op_id].op {
                 let Some(len) = self.resolve_const(len).and_then(crate::dtype::Constant::as_dim) else {
+                    op_id = next;
                     continue;
                 };
                 let applicable: Vec<u64> =
-                    candidates.iter().copied().filter(|&f| len.is_multiple_of(f) && len / f >= 4).collect();
+                    candidates.iter().copied().filter(|&f| len % f as Dim == 0 && len / f as Dim >= 4).collect();
                 if !applicable.is_empty() {
                     global_upcasts.insert(op_id, applicable);
                 }
@@ -291,15 +295,15 @@ impl Kernel {
             op_id = next;
         }
 
-        if global_upcasts.is_empty() || reduce_factors.is_empty() {
-            return (Optimization::RegisterBlocking { reduce_splits: reduce_factors, thread_coarses: global_upcasts }, 0);
+        if global_upcasts.is_empty() || reduce_factor.is_empty() {
+            return (Optimization::RegisterBlocking { reduce_splits: reduce_factor, thread_coarses: global_upcasts }, 0);
         }
 
         let n_global_options: usize = global_upcasts.values().map(|v| v.len() + 1).product();
-        let n_reduce_options: usize = reduce_factors.values().map(Vec::len).product();
+        let n_reduce_options: usize = reduce_factor.values().map(Vec::len).product();
 
         let n_configs = n_global_options * n_reduce_options;
-        (Optimization::RegisterBlocking { reduce_splits: reduce_factors, thread_coarses: global_upcasts }, n_configs)
+        (Optimization::RegisterBlocking { reduce_splits: reduce_factor, thread_coarses: global_upcasts }, n_configs)
     }
 
     pub(crate) fn apply_register_blocking(
@@ -339,7 +343,7 @@ impl Kernel {
         for (i, (&reduce_id, factors)) in reduce_splits.iter().enumerate() {
             let factor_idx = reduce_indices[i];
             let reduce_factor = factors[factor_idx];
-            self.unroll_tree_reduce(reduce_id, reduce_factor);
+            self.unroll_tree_reduce(reduce_id, reduce_factor as Dim);
         }
 
         // Then apply upcast

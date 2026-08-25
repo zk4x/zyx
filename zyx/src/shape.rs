@@ -7,16 +7,15 @@ use core::fmt::Debug;
 
 use crate::{error::ZyxError, tensor::Axis};
 
-/// Type alias for dimension values (u64)
+/// Type alias for dimension values (i64)
 ///
-/// # Convention: `0` means dynamic/symbolic
+/// # Convention: `-1` means dynamic/symbolic
 ///
-/// A `Dim` of `0` does NOT mean an empty dimension — it marks a **dynamic
+/// A `Dim` of `-1` does NOT mean an invalid dimension — it marks a **dynamic
 /// (symbolic) dimension** whose length is only known at kernel launch time
-/// (supplied as a `Param { kind: Variable }` scalar). Any nonzero value is a
-/// static, known length (emitted as a `Const`). Since `0` can never be a real
-/// axis length, it is unambiguous.
-pub type Dim = u64;
+/// (supplied as a `Param { kind: Variable }` scalar). Any nonnegative value
+/// is a static, known length (emitted as a `Const`).
+pub type Dim = i64;
 /// Type alias for axis indices (usize)
 pub type UAxis = usize;
 

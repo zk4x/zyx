@@ -81,7 +81,7 @@ impl Kernel {
                 && let Some(k) = shift.as_dim()
                 && k < 64
                 && let Some(&(_, xu)) = bounds.get(&x)
-                && xu < (1u64 << k)
+                && xu < (1i64 << k)
             {
                 let dtype = self.dtype(x);
                 self.ops[op_id].op = Op::Const(dtype.zero_constant());
@@ -99,9 +99,9 @@ impl Kernel {
         #[derive(Clone)]
         struct Slice {
             root: OpId,
-            lo: u64,
-            width: u64,
-            shift: u64,
+            lo: Dim,
+            width: Dim,
+            shift: Dim,
         }
 
         /// Returns (slices derived from a loop root, constant expression not derived from root).
@@ -153,12 +153,12 @@ impl Kernel {
                         Some(c) => c,
                         None => return (vec![], Some(op_id)),
                     };
-                    if !c.is_power_of_two() {
+                    if !(c > 0 && c & (c - 1) == 0) {
                         // Not a slice-changing multiply — keep the term as a
                         // non-derived constant so it survives the roundtrip.
                         return (vec![], Some(op_id));
                     }
-                    let kk = c.ilog2() as u64;
+                    let kk = c.ilog2()  as i64;
                     let (mut slices, constant) = collect_slices_inner(k, x);
                     for s in &mut slices {
                         s.shift += kk;
@@ -170,10 +170,10 @@ impl Kernel {
                         Some(c) => c,
                         None => return (vec![], Some(op_id)),
                     };
-                    if !c.is_power_of_two() {
+                    if !(c > 0 && c & (c - 1) == 0) {
                         return (vec![], Some(op_id));
                     }
-                    let kk = c.ilog2() as u64;
+                    let kk = c.ilog2()  as i64;
                     let (mut slices, constant) = collect_slices_inner(k, x);
                     for s in &mut slices {
                         s.lo += kk;
@@ -196,10 +196,10 @@ impl Kernel {
                         Some(c) => c,
                         None => return (vec![], Some(op_id)),
                     };
-                    if !c.is_power_of_two() {
+                    if !(c > 0 && c & (c - 1) == 0) {
                         return (vec![], Some(op_id));
                     }
-                    let width = c.ilog2() as u64;
+                    let width = c.ilog2()  as i64;
                     let (mut slices, constant) = collect_slices_inner(k, x);
                     for s in &mut slices {
                         s.width = s.width.min(width);
@@ -208,7 +208,7 @@ impl Kernel {
                 }
                 _ => {
                     if matches!(k.at(op_id), Op::Loop { .. }) {
-                        (vec![Slice { root: op_id, lo: 0, width: u64::MAX, shift: 0 }], None)
+                        (vec![Slice { root: op_id, lo: 0, width: Dim::MAX, shift: 0 }], None)
                     } else {
                         // Not a loop root — treat entire expression as constant
                         (vec![], Some(op_id))
@@ -217,7 +217,7 @@ impl Kernel {
             }
         }
 
-        fn const_u64(k: &Kernel, op_id: OpId) -> Option<u64> {
+        fn const_u64(k: &Kernel, op_id: OpId) -> Option<Dim> {
             match k.at(op_id) {
                 Op::Const(c) => c.as_dim(),
                 _ => None,
@@ -300,7 +300,7 @@ impl Kernel {
                 continue;
             }
 
-            let root_width = bounds.get(&root).map_or(64, |&(_, max)| if max == 0 { 1 } else { (max.ilog2() + 1) as u64 });
+            let root_width = bounds.get(&root).map_or(64, |&(_, max)| if max == 0 { 1 } else { (max.ilog2() + 1)  as i64 });
 
             // Filter zero-width slices (e.g. x%1 == 0) — they are constant 0, not a partition piece.
             slices.retain(|s| s.width != 0);
@@ -317,14 +317,14 @@ impl Kernel {
 
             // Sort by lo, fill in MAX widths from bounds, verify partition
             slices.sort_by_key(|s| s.lo);
-            let mut cursor = 0u64;
+            let mut cursor = 0i64;
             let mut ok = true;
             for s in &slices {
                 if s.lo != cursor {
                     ok = false;
                     break;
                 }
-                let w = if s.width == u64::MAX {
+                let w = if s.width == Dim::MAX {
                     root_width.saturating_sub(s.lo)
                 } else {
                     s.width
@@ -516,7 +516,7 @@ impl Kernel {
             // Need: min_b == 0 AND max(a*c) + max_b < divisor
             // When max(a*c + b) < divisor, (a*c + b) % divisor = a*c + b, so if max < divisor -> result = b
             if divisor > c
-                && divisor.is_multiple_of(c)
+                && c != 0 && divisor % c == 0
                 && let Some(&(_min_a, max_a)) = bounds.get(&a)
                 && let Some(&(min_b, max_b)) = bounds.get(&b)
             {
@@ -640,14 +640,14 @@ impl Kernel {
         if k != 1 || k >= 64 {
             return;
         }
-        let modulus = 1u64 << k;
+        let modulus = 1i64 << k;
         let Op::Const(residue) = self.ops[rem_y].op else { return };
         let Some(residue) = residue.as_dim() else { return };
         if residue != modulus - 1 && residue != modulus {
             return;
         }
         let Some(&(_, max_root)) = bounds.get(&shr_x) else { return };
-        if max_root.saturating_add(modulus - 1) > dtype_max(dtype) {
+        if max_root.saturating_add(modulus - 1) > dtype_max(dtype) as Dim {
             return;
         }
         let add_const = self.insert_before(op_id, Op::Const(Constant::from_le_bytes(&(modulus - 1).to_le_bytes(), dtype)));
@@ -683,7 +683,7 @@ impl Kernel {
             let (Some(&(_, max_a)), Some(&(_, max_b))) = (bounds.get(&a_side), bounds.get(&b)) else {
                 continue;
             };
-            if max_a.saturating_add(c.saturating_mul(max_b)) > dtype_max(self.dtype(a_side)) {
+            if max_a.saturating_add((c as Dim).saturating_mul(max_b)) > dtype_max(self.dtype(a_side)) as Dim {
                 continue;
             }
             self.ops[op_id].op = Op::Binary { x: a_side, y, bop: BOp::Mod };
@@ -702,7 +702,7 @@ impl Kernel {
         let Op::Const(amount) = self.ops[y].op else { return };
         let Some(amount) = amount.as_dim() else { return };
         let c = match bop {
-            BOp::BitShiftRight if amount < 64 => 1u64 << amount,
+            BOp::BitShiftRight if amount < 64 => 1i64 << amount,
             BOp::Div if amount > 0 => amount,
             _ => return,
         };
@@ -723,7 +723,7 @@ impl Kernel {
             let (Some(&(_, max_a)), Some(&(_, max_b))) = (bounds.get(&a_side), bounds.get(&b)) else {
                 continue;
             };
-            if max_a.saturating_add(c.saturating_mul(max_b)) > dtype_max(dtype) {
+            if max_a.saturating_add(c.saturating_mul(max_b)) > dtype_max(dtype) as Dim {
                 continue;
             }
             let amount_const = self.insert_before(op_id, Op::Const(Constant::from_le_bytes(&amount.to_le_bytes(), dtype)));
@@ -736,18 +736,18 @@ impl Kernel {
 
     /// Matches a term that is `c * b` for a compile-time constant `c`, from
     /// `b << k` (c = 2^k), `b * const` (c = const), or `b + b` (c = 2).
-    fn match_const_multiple(&self, op_id: OpId) -> Option<(OpId, u64)> {
+    fn match_const_multiple(&self, op_id: OpId) -> Option<(OpId, Dim)> {
         if let Op::Binary { x, y, bop: BOp::Add } = self.ops[op_id].op
             && x == y
         {
-            return Some((x, 2));
+            return Some((x, Dim::from(2)));
         }
         if let Op::Binary { x, y, bop: BOp::BitShiftLeft } = self.ops[op_id].op
             && let Op::Const(c) = self.ops[y].op
             && let Some(k) = c.as_dim()
             && k < 64
         {
-            return Some((x, 1u64 << k));
+            return Some((x, 1i64 << k));
         }
         if let Op::Binary { x, y, bop: BOp::Mul } = self.ops[op_id].op {
             for (a, b) in [(x, y), (y, x)] {
@@ -772,15 +772,15 @@ fn dtype_max(dtype: DType) -> u64 {
         DType::U16 => u64::from(u16::MAX),
         DType::U32 => u64::from(u32::MAX),
         DType::U64 => u64::MAX,
-        DType::I8 => i8::MAX as u64,
-        DType::I16 => i16::MAX as u64,
-        DType::I32 => i32::MAX as u64,
-        DType::I64 => i64::MAX as u64,
+        DType::I8 => i8::MAX  as u64,
+        DType::I16 => i16::MAX  as u64,
+        DType::I32 => i32::MAX  as u64,
+        DType::I64 => i64::MAX  as u64,
         _ => u64::MAX,
     }
 }
 
-fn mul_add(k: &Kernel, x: OpId) -> Option<(OpId, u64, OpId)> {
+fn mul_add(k: &Kernel, x: OpId) -> Option<(OpId, Dim, OpId)> {
     if let Some(x) = mad(k, x) {
         return Some(x);
     }
@@ -801,7 +801,7 @@ fn mul_add(k: &Kernel, x: OpId) -> Option<(OpId, u64, OpId)> {
     None
 }
 
-fn match_mul_or_shl(k: &Kernel, op: OpId) -> Option<(OpId, u64)> {
+fn match_mul_or_shl(k: &Kernel, op: OpId) -> Option<(OpId, Dim)> {
     if let Op::Binary { x: a, y: c, bop: BOp::Mul } = k.at(op)
         && let Op::Const(cst) = k.at(*c)
         && let Some(cval) = cst.as_dim()
@@ -813,12 +813,12 @@ fn match_mul_or_shl(k: &Kernel, op: OpId) -> Option<(OpId, u64)> {
         && let Some(cval) = cst.as_dim()
         && cval < 64
     {
-        return Some((*a, 1u64 << cval));
+        return Some((*a, 1i64 << cval));
     }
     None
 }
 
-fn mad(k: &Kernel, x: OpId) -> Option<(OpId, u64, OpId)> {
+fn mad(k: &Kernel, x: OpId) -> Option<(OpId, Dim, OpId)> {
     let Op::Mad { x: a, y: c, z: b } = k.at(x) else { return None };
     let Op::Const(cst) = k.at(*c) else { return None };
     let cval = cst.as_dim()?;
@@ -899,9 +899,9 @@ mod tests {
     fn eval_mask(k: &Kernel, mask: OpId) -> [[bool; 4]; 4] {
         use std::collections::HashMap;
         let mut table = [[false; 4]; 4];
-        for outer in 0..4u64 {
-            for inner in 0..4u64 {
-                let mut vals: HashMap<usize, u64> = HashMap::new();
+        for outer in 0i64..4i64 {
+            for inner in 0i64..4i64 {
+                let mut vals: HashMap<usize, Dim> = HashMap::new();
                 let mut op_id = k.head;
                 let mut loop_idx = 0usize;
                 while !op_id.is_null() {
@@ -916,7 +916,7 @@ mod tests {
                             if let Some(v) = c.as_dim() {
                                 vals.insert(id, v);
                             } else if let crate::dtype::Constant::Bool(v) = c {
-                                vals.insert(id, *v as u64);
+                                vals.insert(id, *v  as i64);
                             }
                         }
                         Op::Binary { x, y, bop } => {
@@ -927,12 +927,12 @@ mod tests {
                                     BOp::Mul => a.wrapping_mul(b),
                                     BOp::Div => a.wrapping_div(b),
                                     BOp::Mod => a.wrapping_rem(b),
-                                    BOp::Cmpgt => (a > b) as u64,
-                                    BOp::Cmplt => (a < b) as u64,
-                                    BOp::Eq => (a == b) as u64,
+                                    BOp::Cmpgt => (a > b)  as i64,
+                                    BOp::Cmplt => (a < b)  as i64,
+                                    BOp::Eq => (a == b)  as i64,
                                     BOp::BitShiftLeft => a << b,
                                     BOp::BitShiftRight => a >> b,
-                                    BOp::And => (a != 0 && b != 0) as u64,
+                                    BOp::And => (a != 0 && b != 0)  as i64,
                                     _ => continue,
                                 };
                                 vals.insert(id, v);

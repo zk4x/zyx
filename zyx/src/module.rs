@@ -55,7 +55,7 @@ pub trait Module {
         header.pop();
         write!(header, "}}").unwrap();
         let header_bytes = header.as_bytes();
-        f.write_all(&(header_bytes.len() as u64).to_le_bytes())?;
+        f.write_all(&(header_bytes.len()  as i64).to_le_bytes())?;
         f.write_all(header_bytes)?;
         for tensor in self.iter() {
             f.write_all(&tensor.to_le_bytes()?)?;
@@ -385,7 +385,7 @@ impl Tensor {
             let mut shape = vec![0u8; rank as usize * 8];
             f.read_exact(&mut shape)?;
             let shape: Vec<Dim> =
-                shape.chunks_exact(8).map(|x| u64::from_le_bytes([x[0], x[1], x[2], x[3], x[4], x[5], x[6], x[7]])).collect();
+                shape.chunks_exact(8).map(|x| i64::from_le_bytes([x[0], x[1], x[2], x[3], x[4], x[5], x[6], x[7]])).collect();
 
             // dtype
             let mut dtype = [0; 4];
@@ -449,7 +449,7 @@ impl Tensor {
         let mut i = 0;
         let mut tensors = HashMap::default();
         let mut dtype = DType::F32;
-        let mut shape = vec![1];
+        let mut shape = vec![1i64];
         let mut label = String::new();
         let mut metadata = true;
         let mut progress_bar = if RT.lock().debug.dev() {
@@ -462,7 +462,7 @@ impl Tensor {
         //let mmap = Arc::new(unsafe { memmap2::Mmap::map(&f)? });
         //let mut mptr = mmap.as_ptr();
         //mptr = mptr.wrapping_add(8 + header.len());
-        let mut offset = (8 + header.len()) as u64;
+        let mut offset = (8 + header.len())  as i64;
         for x in header.chars() {
             // We skip metadata for now
             if metadata && text.starts_with("__metadata__") {
@@ -487,7 +487,7 @@ impl Tensor {
                         shape = text
                             .split(',')
                             .map(|d| {
-                                d.parse::<u64>()
+                                d.parse::<Dim>()
                                     .map_err(|err| ZyxError::parse_error(format!("Cannot parse safetensors shape: {err}").into()))
                             })
                             .collect::<Result<_, ZyxError>>()?;
@@ -504,14 +504,14 @@ impl Tensor {
                             .collect::<Result<Vec<_>, ZyxError>>()?;
                         //println!("Offsets: {offsets:?}");
                         let bytes = shape.iter().product::<Dim>() * Dim::from(dtype.bit_size() / 8);
-                        if offsets[1] - offsets[0] != bytes {
+                        if offsets[1] - offsets[0] != bytes as u64 {
                             return Err(ZyxError::parse_error("Safetensors shapes and offsets are incorrect.".into()));
                         }
                         if let Some(bar) = &mut progress_bar {
                             bar.inc(1, &format!("{label}, {shape:?}, {dtype:?}"));
                         }
-                        let tensor = Tensor::from_path(shape.clone(), dtype, &path, offset)?;
-                        offset += bytes as u64;
+                        let tensor = Tensor::from_path(shape.clone(), dtype, &path, offset as u64)?;
+                        offset += bytes  as i64;
                         tensors.insert(label.clone(), tensor);
                     }
                     i += 1;

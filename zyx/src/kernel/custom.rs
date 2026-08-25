@@ -239,15 +239,15 @@ impl Kernel {
 
     /// Build a shape op from dimension values.
     ///
-    /// A dim of `0` marks a dynamic/symbolic dimension and becomes a scalar
-    /// `Param { kind: Variable }` of `IDX_T`; any other dim becomes a const
-    /// index. Returns `OpId::NULL` for rank-0, the single dim op for rank-1,
+    /// A negative dim (`-1`) marks a dynamic/symbolic dimension and becomes a
+    /// scalar `Param { kind: Variable }` of `IDX_T`; any nonnegative dim
+    /// becomes a const index. Returns `OpId::NULL` for rank-0, the single dim op for rank-1,
     /// or a `Stack` for higher ranks.
     pub fn add_shape(&mut self, shape: &[Dim]) -> OpId {
         let dim_ops: Vec<OpId> = shape
             .iter()
             .map(|&d| {
-                if d == 0 {
+                if d < 0 {
                     self.param(IDX_T, ParamKind::Variable, OpId::NULL)
                 } else {
                     self.const_idx(d)
@@ -589,7 +589,7 @@ impl CompiledKernel {
                     pool_events.push(rt.events.remove(&key).unwrap());
                 }
                 let dtype = rt.dtype(input.id);
-                let bytes = (rt.shape(input.id).iter().product::<Dim>() * dtype.bit_size() as Dim).div_ceil(8);
+                let bytes = ((rt.shape(input.id).iter().product::<Dim>() * dtype.bit_size() as Dim) + 7) / 8;
                 let alloc_bytes = bytes + dtype.bit_size() as Dim / 8;
                 let (dev_buf, alloc_ev) = rt.pools[pool_id].allocate(alloc_bytes)?;
                 pool_events.push(alloc_ev);
@@ -617,7 +617,7 @@ impl CompiledKernel {
         let mut output_bufs = Vec::new();
         for (i, shape) in shapes.iter().enumerate() {
             let dtype = self.outputs[i];
-            let bytes = (shape.iter().product::<Dim>() * dtype.bit_size() as Dim).div_ceil(8);
+            let bytes = ((shape.iter().product::<Dim>() * dtype.bit_size() as Dim) + 7) / 8;
             let (buf, ev) = rt.pools[pool_id].allocate(bytes)?;
             event_wait_list.push(ev);
             let buf_id = BufferId { pool: pool_id, buffer: buf };
@@ -657,7 +657,6 @@ impl CompiledKernel {
             rt.tensors[id].op_id = op_id;
             rt.retain(id);
             rt.buffer_map.insert(id, buf_id);
-            rt.shapes.insert(id, shape.clone());
             tensors.push(Tensor { id })
         }
 

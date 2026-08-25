@@ -118,7 +118,7 @@ pub(super) fn initialize_device(
     devices.push(Device::C(CDevice {
         device_info: DeviceInfo {
             compute: 10 * 1024 * 1024 * 1024 * 1024,
-            max_global_work_dims: vec![Dim::from(1_000_000_000u64); 3],
+            max_global_work_dims: vec![Dim::from(1_000_000_000); 3],
             max_local_threads: 1,
             max_local_work_dims: vec![1, 1, 1],
             preferred_vector_size: 8,
@@ -186,7 +186,7 @@ impl CDevice {
         }
 
         // --- Compute global work size ---
-        let mut gws0 = 1u64;
+        let mut gws0 = 1i64;
         let mut op_id = kernel.head;
         let mut steps_op_id = 0usize;
         while !op_id.is_null() {

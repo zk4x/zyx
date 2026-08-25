@@ -14,10 +14,10 @@
 //! - Skipping out-of-range stores with conditionals
 
 use crate::{
+    shape::Dim,
     Set,
     dtype::Constant,
     kernel::{BOp, IDX_T, IdxKind, Kernel, MemLayout, Op, OpId},
-    shape::Dim,
 };
 
 use super::autotune::Optimization;
@@ -195,7 +195,7 @@ impl Kernel {
                     IdxKind::Warp(len) => Dim::from(len),
                 };
                 for pad_to in [8, 16, 32] {
-                    if !len.is_multiple_of(pad_to) {
+                    if len % pad_to as Dim != 0 {
                         factors.push((op_id, pad_to));
                     }
                 }

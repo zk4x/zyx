@@ -15,11 +15,11 @@
 
 use super::autotune::Optimization;
 use crate::{
+    shape::Dim,
     Map,
     backend::DeviceInfo,
     dtype::Constant,
     kernel::{BOp, IdxKind, Kernel, MemLayout, MemScope, Op, OpId},
-    shape::Dim,
 };
 
 impl Kernel {
@@ -62,11 +62,12 @@ impl Kernel {
             let next = self.next_op(op_id);
             if let Op::Loop { len: len_id } = self.ops[op_id].op {
                 let Some(len) = self.resolve_const(len_id).and_then(crate::dtype::Constant::as_dim) else {
+                    op_id = next;
                     continue;
                 };
                 if len >= 16 {
                     for &factor in &candidates {
-                        if len.is_multiple_of(factor) && len / factor >= 4 && remaining_threads as u64 >= factor {
+                        if len % factor as Dim == 0 && len / factor as Dim >= 4 && remaining_threads  as Dim >= factor as Dim {
                             for &tree_branch in &tree_branch_candidates {
                                 factors.push((op_id, factor, tree_branch));
                             }

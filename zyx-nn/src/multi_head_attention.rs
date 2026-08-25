@@ -150,8 +150,8 @@ impl MultiheadAttention {
             v = v.transpose(0, 1)?;
         }
 
-        let [b, t_q, _] = q.dims::<3>()?;
-        let [_, t_kv, _] = k.dims::<3>()?;
+        let [b, t_q, _] = q.shape()[..3] else { panic!("multi_head_attention: expected 3D q"); };
+        let [_, t_kv, _] = k.shape()[..3] else { panic!("multi_head_attention: expected 3D k"); };
         let h = self.num_heads;
         let d = self.head_dim;
 

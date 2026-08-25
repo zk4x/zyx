@@ -761,11 +761,11 @@ impl Kernel {
     /// Compute flop and memory statistics for the kernel.
     ///
     /// Returns estimated flops, memory reads, and memory writes.
-    pub(crate) fn flop_mem_rw(&self) -> (u64, u64, u64) {
+    pub(crate) fn flop_mem_rw(&self) -> (Dim, u64, u64) {
         #[derive(Clone)]
         struct Info {
             shape: Vec<Dim>,
-            flops: u64,
+            flops: Dim,
             mem_read: u64,
             mem_write: u64,
         }
@@ -852,7 +852,7 @@ impl Kernel {
             panic!("flop_mem_rw did not finish in 10000 steps");
         }
 
-        stack.into_values().fold((0, 0, 0), |acc, info| (acc.0 + info.flops, acc.1 + info.mem_read, acc.2 + info.mem_write))
+        stack.into_values().fold((0 as Dim, 0, 0), |acc, info| (acc.0 + info.flops, acc.1 + info.mem_read, acc.2 + info.mem_write))
     }
 
     /// Check if the kernel contains any store operations.
@@ -1053,7 +1053,7 @@ impl Kernel {
     }
 
     /// Numeric tensor shape of the value produced by `op_id`: each dim
-    /// resolved to its const value, `0` where resolution fails (symbolic).
+    /// resolved to its const value, `-1` where resolution fails (symbolic).
     /// Immutable — unlike [`Self::shape_ids`] this never emits ops; a
     /// directly accessed `Stack` contributes its element count as a plain
     /// number instead of a const dim op.
@@ -1069,12 +1069,6 @@ impl Kernel {
                 ref op => todo!("shape: invalid shape descriptor {op:?}"),
             }
         }
-        let resolve = |id: OpId| -> Dim {
-            match self.ops[id].op {
-                Op::Const(c) => c.as_dim().unwrap_or(0),
-                _ => 0,
-            }
-        };
         if op_id.is_null() {
             return Vec::new();
         }
@@ -1092,7 +1086,7 @@ impl Kernel {
                     visited.insert(id, vec![]);
                 }
                 Op::Param { shape, .. } => {
-                    visited.insert(id, descriptor(self, shape).iter().map(|&d| resolve(d)).collect());
+                    visited.insert(id, descriptor(self, shape).iter().map(|&d| self.resolve_const(d).and_then(crate::dtype::Constant::as_dim).unwrap_or(-1)).collect());
                 }
                 // Direct access of a stack op: `[len] + first_element_shape`.
                 Op::Stack { ref ops } => {
@@ -1109,7 +1103,7 @@ impl Kernel {
                 }
                 Op::Move { x, ref mop } => match mop.as_ref() {
                     MoveOp::Reshape { shape, .. } | MoveOp::Expand { shape } => {
-                        visited.insert(id, descriptor(self, *shape).iter().map(|&d| resolve(d)).collect());
+                        visited.insert(id, descriptor(self, *shape).iter().map(|&d| self.resolve_const(d).and_then(crate::dtype::Constant::as_dim).unwrap_or(-1)).collect());
                     }
                     MoveOp::Permute { axes } => match visited.get(&x) {
                         Some(dims) => {
@@ -1132,9 +1126,9 @@ impl Kernel {
                     &MoveOp::Narrow { axis, len, .. } | &MoveOp::Pad { axis, len, .. } => match visited.get(&x).cloned() {
                         Some(mut dims) => {
                             if dims.is_empty() {
-                                dims = vec![resolve(len)];
+                                dims = vec![self.resolve_const(len).and_then(crate::dtype::Constant::as_dim).unwrap_or(-1)];
                             } else {
-                                dims[axis as usize] = resolve(len);
+                                dims[axis as usize] = self.resolve_const(len).and_then(crate::dtype::Constant::as_dim).unwrap_or(-1);
                             }
                             visited.insert(id, dims);
                         }
@@ -1230,15 +1224,16 @@ impl Kernel {
         let index_len_of = |op: &Op| -> Dim {
             match op {
                 Op::Index { kind, .. } => match kind {
-                    IdxKind::Group(len) => self.resolve_const(*len).and_then(crate::dtype::Constant::as_dim).unwrap(),
-                    IdxKind::Local(len) => u64::from(*len),
-                    IdxKind::Warp(len) => u64::from(*len),
+                    // Dynamic dims are `-1`; autotune substitutes 42 (see `alloc_buffers`).
+                    IdxKind::Group(len) => self.resolve_const(*len).and_then(crate::dtype::Constant::as_dim).unwrap_or(42),
+                    IdxKind::Local(len) => i64::from(*len),
+                    IdxKind::Warp(len) => i64::from(*len),
                 },
                 _ => unreachable!(),
             }
         };
 
-        let mut params = vec![(index, 1u64)];
+        let mut params = vec![(index, 1i64)];
         let mut indices = Map::default();
 
         for _ in 0..10_000 {
@@ -1299,28 +1294,28 @@ impl Kernel {
                                     x,
                                     (
                                         self.resolve_const(*len).and_then(crate::dtype::Constant::as_dim).unwrap(),
-                                        (1u64 << c.as_dim().unwrap()) * scale,
+                                        (1i64 << c.as_dim().unwrap()) * scale,
                                     ),
                                 );
                             }
                             (Op::Index { .. }, Op::Const(c)) => {
-                                indices.insert(x, (index_len_of(&self.ops[x].op), (1u64 << c.as_dim().unwrap()) * scale));
+                                indices.insert(x, (index_len_of(&self.ops[x].op), (1i64 << c.as_dim().unwrap()) * scale));
                             }
                             (Op::Const(c), Op::Index { .. }) => {
-                                indices.insert(y, (index_len_of(&self.ops[y].op), (1u64 << c.as_dim().unwrap()) * scale));
+                                indices.insert(y, (index_len_of(&self.ops[y].op), (1i64 << c.as_dim().unwrap()) * scale));
                             }
                             (Op::Const(c), Op::Loop { len, .. }) => {
                                 indices.insert(
                                     y,
                                     (
                                         self.resolve_const(*len).and_then(crate::dtype::Constant::as_dim).unwrap(),
-                                        (1u64 << c.as_dim().unwrap()) * scale,
+                                        (1i64 << c.as_dim().unwrap()) * scale,
                                     ),
                                 );
                             }
                             _ => {
                                 if let Op::Const(c) = self.ops[y].op {
-                                    params.push((x, scale * (1u64 << c.as_dim().unwrap())));
+                                    params.push((x, scale * (1i64 << c.as_dim().unwrap())));
                                 }
                             }
                         }
@@ -1441,8 +1436,8 @@ impl Kernel {
                 Op::Loop { len } => values.get(len).copied().flatten(),
                 &Op::Index { kind, .. } => match kind {
                     IdxKind::Group(len) => values.get(&len).copied().flatten(),
-                    IdxKind::Local(len) => Some(Constant::U32(len)),
-                    IdxKind::Warp(len) => Some(Constant::U32(len as u32)),
+                    IdxKind::Local(len) => Some(Constant::idx(len)),
+                    IdxKind::Warp(len) => Some(Constant::idx(len)),
                 },
                 // Param is dynamic
                 Op::Param { .. } => None,

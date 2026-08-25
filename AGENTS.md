@@ -4,6 +4,8 @@
 # ⚠️  IS FORBIDDEN. BUILD SILENTLY.               ⚠️
 # ⚠️  "git checkout" IS FORBIDDEN. NEVER USE.     ⚠️
 # ⚠️  Use "git restore" instead.                   ⚠️
+# ⚠️  python/sed/awk/heredoc SCRIPTS FOR FILE      ⚠️
+# ⚠️  EDITS ARE FORBIDDEN. USE THE edit TOOL.      ⚠️
 # ⚠️  VIOLATIONS = BROKEN. REPEATEDLY. FOREVER.   ⚠️
 # ⚠️  ASK OR EDIT. DO NOT THINK.                   ⚠️
 # ⚠️  (asking questions, editing, or both; never
@@ -14,11 +16,13 @@
 
 ## Know Your Limits
 
+- **ALWAYS run `rust_analyzer_rust_analyzer_set_workspace` (workspace: `/home/x/Dev/rust/zyx/zyx`) as the FIRST tool call of every session**, before any other work.
 - **ALWAYS ASK QUESTIONS FIRST. NO MATTER WHAT.** This is unconditional — not just when you perceive ambiguity. Before writing ANY code for a task, ask whatever needs clarifying in your reply as plain text (never the `question` tool). Do not skip asking because the task "seems clear" or you think you know the answer. Not asking is the failure. If you are about to start an edit and have not asked questions, stop and ask first.
 - **When the user gives you guidance/a hint, STOP and ask what they want you to do with it before investigating or editing.** Do not take a hint as a license to autonomously read code, form a plan, and edit. Ask: "do you want me to apply this to fix X, or is there a specific approach you have in mind?" If you are reading code to form a fix, that is a signal you should be asking questions instead of planning edits.
 - If a task is hardware-specific, deeply subtle, or keeps failing, SAY SO plainly up front. "I can't solve this" beats two days of guesses.
 - When the user says they'll do it themselves, stop. Only act when asked for a specific edit.
-- **ASK QUESTIONS.** Ask about EVERYTHING — not only design decisions, but also implementation details: HOW to implement, which approach, the exact shape/semantics/values of a change, what a method should do, naming, structure. Whenever you are about to guess or invent an answer — a design choice OR an implementation detail — ask BEFORE implementing. Guessing wrong and writing broken code wastes more time than asking. Never let a time budget make you skip asking.
+- **ASK QUESTIONS.** Ask about EVERYTHING — not only design decisions, but also implementation details: HOW to implement, which approach, the exact shape/semantics/values of a change, what a method should do, naming, structure. Whenever you are about to guess or invent an answer — a design choice OR an implementation detail — ask BEFORE implementing. Guessing wrong and writing broken code wastes more time than asking.
+- **Asking is ITERATIVE, not one-shot.** Getting answers once does not mean you can now go implement silently. Every newly raised detail gets asked, again, in plain text — including mid-implementation. If between two edits a question appears ("which callers change?", "what should X return here?"), STOP and ask it. Never resolve such questions by reading code: opening files/grepping to figure out how something works or what to change IS the failure, even right after the user approved a plan. The user answers; you do not research. Never let a time budget make you skip asking.
 - **ASK EARLY AND OFTEN. You are NOT asking enough.** Default to asking: the first reply to a non-trivial task should usually contain questions, not edits. Do not begin implementing until the design/spec is clear. If the task references a `todo!()` or a stub, ask what the intended behavior/value/semantics are before guessing at them.
 - **The user is NEVER tired of you asking.** Questions are never a nuisance, never a sign of weakness, never "too many". Do not ration questions or apologize for asking. If you are hesitating to ask because you fear it will annoy the user, that is exactly when you must ask. Erring on the side of one more question is always correct.
 - **NEVER use the `question` tool. Ask questions directly in your reply, as plain text.** If you reach for the `question` tool, that is your signal you are about to guess — stop and write the question out instead.
@@ -78,6 +82,13 @@ How to work with it:
 - `ZYX_DEBUG=2` prints the egraph (class structure) after realize — the starting point for graph debugging.
 - To replace a graph pattern with a custom kernel, add the match in `kernelizer.rs`.
 - Rewrites must preserve semantic equivalence; the egraph picks the cheapest form, so a wrong-cost model surfaces as slow (not wrong) kernels.
+
+## Symbolic Dims
+
+- **Eager and graph must BOTH work with symbolic dims — always and everywhere.** No path may assume concrete shapes. A dim that is not statically known is symbolic, and EVERY consumer (load kernels, autograd, optimization passes, backends) must handle it correctly.
+- Every symbolic dim bottoms out in `Param { Variable }` scalars (`IDX_T`) whose actual values live in the backend pools' variable slots. Because of that, ANY dim expression can be evaluated to a concrete `Constant` at any time: walk the expression tree, take `Const` leaves as-is, fold `Unary`/`Binary` via `Constant::unary` / `Constant::binary`, and read the variable slot wherever a leaf is a `Param { Variable }`.
+- NEVER fabricate sentinel or fallback values (`-1`, `0`, `42`, ...) for unknown behaviour anywhere — not in resolution failures, not in match arms, not as defaults. If code cannot determine a value, that is either a bug or a missing design decision: fail loudly (`debug_assert!` / `expect` / `todo!()`) at the exact spot, or STOP and ask the user what the value should be. No `unwrap_or(<number>)`, no default-value arms, no silent substitutes.
+- Load kernels (e.g. the fresh loader in `Runtime::add_store`) must NEVER emit fabricated consts (`Const(-1)` etc.) as group lengths: evaluate the dim to its concrete value first.
 
 ## Code Style
 
@@ -224,6 +235,10 @@ Add `kernel.debug()` temporarily in code to print the IR (op IDs, args, loop sco
 
 Write a minimal reproducer test, then add `panic!("A")`, `panic!("B")`, ... along the suspect path (panics flush; `eprintln!` may not before a SIGSEGV). Narrow down from the last printed marker.
 
+### Hangs
+
+Add `println!` markers along the suspect path and run with `-- --nocapture`: the LAST printed marker localizes the hang. Combine with `timeout N` so the run terminates on its own, then read the tail of the output.
+
 ## Tape Design
 
 `src/tape.rs` — the training-loop API around the graph.
@@ -255,7 +270,7 @@ construction point.
 
 ## Interaction Rules
 
-- **ALWAYS ASK BEFORE ADDING ANY FUNCTION.** You are NOT allowed to add new functions, methods, or helper functions without the user's approval — this includes private/`pub(crate)` helpers and backend-side free functions. Any new function is a design change: ask first, get approval, then write it. Never write a new function on your own.
+- **ALWAYS ASK BEFORE ADDING ANY FUNCTION OR CHANGING A SIGNATURE.** You are NOT allowed to add new functions, methods, or helper functions without the user's approval — this includes private/`pub(crate)` helpers and backend-side free functions. Any new function is a design change: ask first, get approval, then write it. Changing the signature of an existing function or method (adding/removing parameters, changing the return type, adding a generic/trait bound) is ALSO a design change and must be approved first — do NOT "just refactor" to thread a new capability through. Never change a signature on your own.
 - Every user message: if it contains a `?`, **answer the question and stop** — do not edit/write files. Otherwise proceed.
 - **ASK QUESTIONS as your default first move.** For any task involving a `todo!()` stub, an ambiguous value, or a design decision, your first reply should be questions, not code. Do not implement until you have answers.
 - When in doubt, ask. Don't guess specs/values — the user has them. Ask before hunting through source. Ask by writing the question out in your reply as plain text — never via the `question` tool.
@@ -272,3 +287,37 @@ construction point.
 - No silent fixes. No commentary after doing something ("Done.", "X lines changed."). Don't dump git diffs verbatim.
 - Test failures are test failures. You don't need to fix them unless I tell you to fix them.
 - Edit precisely, don't cascade: change only what was referenced; propose (don't do) anything else.
+
+## Defensive Programming: Good vs Evil
+
+GOOD — fail loudly at the exact spot the invariant breaks (`graph/autograd.rs`, expand backward):
+```rust
+let out_shape: Vec<Dim> = out_dims
+    .iter()
+    .map(|&d| self.graph_const_dim(graph_id, d).expect("expand backward with symbolic dim"))
+    .collect();
+```
+This `expect` turned a silent wrong-gradient bug into an instant, pinpointed panic. It named
+the site, so the fix (symbolic-dim broadcast) was obvious in minutes.
+
+EVIL — launder failure into a fake value and let it explode somewhere else entirely:
+```rust
+// kernel/mod.rs, Kernel::shape (removed)
+Op::Const(c) => c.as_dim().unwrap_or(0),   // fabricated 0 dims
+_ => -1,                                    // matched only Const, missed const EXPRESSIONS
+```
+The fabricated values flowed into `dot()`'s reshape dims, became real tensors, and the
+symptom appeared three kernels away from the cause. Tracing it cost a whole session.
+
+Rules:
+- Never `unwrap_or(<number>)` on resolution of dims/values. Use `expect("context")` / `todo!()`.
+- NEVER use sentinels or fallback values for unknown behaviour. If a value cannot be
+  determined, that is either a bug or a missing design decision: fail loudly at the exact
+  spot, or ask the user. No `-1`-means-symbolic boundaries, no default arms.
+- Don't pattern-match only the trivial case (`Op::Const`) when full resolution exists
+  (`resolve_const`); "can't resolve" must mean genuinely unresolvable, not "didn't try".
+- NEVER use a `_ =>` catch-all arm when matching an enum. Every variant gets an
+  EXPLICIT arm. A `_ =>` silently swallows newly added variants; an exhaustive
+  match is a compile error that forces you to decide each case. (Exception: the
+  final `unreachable!()`/`todo!()` arm in an eval match after all real variants
+  are named.)

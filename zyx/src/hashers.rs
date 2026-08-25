@@ -60,7 +60,7 @@ impl Hasher for AHasher {
             k = k.wrapping_mul(0x9e3779b97f4a7c15);
             k ^= k >> 33;
 
-            h ^= k;
+            h ^= k as u64;
             h = h.wrapping_mul(0xc2b2ae3d27d4eb4f);
             h ^= h >> 29;
 
@@ -69,10 +69,10 @@ impl Hasher for AHasher {
 
         // tail
         while i < bytes.len() {
-            let mut k = bytes[i] as u64;
-            k = k.wrapping_mul(0x9e3779b97f4a7c15);
+            let mut k = bytes[i]  as i64;
+            k = k.wrapping_mul(0x9e3779b97f4a7c15u64 as i64);
 
-            h ^= k;
+            h ^= k as u64;
             h = h.wrapping_mul(0xc2b2ae3d27d4eb4f);
 
             i += 1;

@@ -253,7 +253,7 @@ impl WGPUMemoryPool {
             // Write the remaining bytes padded with zeros
             if remaining > 0 {
                 padded[..remaining].copy_from_slice(&src[full_chunks * ALIGN..]);
-                self.queue.write_buffer(dst, (full_chunks * ALIGN) as u64, &padded);
+                self.queue.write_buffer(dst, (full_chunks * ALIGN)  as i64, &padded);
             }
         } else {
             // Already aligned
@@ -298,7 +298,7 @@ impl WGPUMemoryPool {
         // Create a temporary download buffer to receive data from the GPU
         let download_buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("DownloadBuffer"), // You can try removing or adjusting the label if needed
-            size: dst.len() as u64,
+            size: dst.len()  as i64,
             usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST, // Ensure proper usage flags
             mapped_at_creation: false,
         });
@@ -313,7 +313,7 @@ impl WGPUMemoryPool {
             0, // Start at the beginning of the source buffer
             &download_buffer,
             0,                // Start at the beginning of the destination buffer
-            dst.len() as u64, // The number of bytes to copy
+            dst.len()  as i64, // The number of bytes to copy
         );
 
         // Submit the command to the GPU
@@ -397,7 +397,7 @@ impl WGPUDevice {
     }
 
     pub fn compile(&mut self, kernel: &Kernel, debug_asm: bool) -> Result<DeviceProgramId, BackendError> {
-        let mut lws = [Dim::from(1u64); 3];
+        let mut lws = [Dim::from(1i64); 3];
         let mut op_id = kernel.head;
         let mut steps_op_id = 0usize;
         while !op_id.is_null() {

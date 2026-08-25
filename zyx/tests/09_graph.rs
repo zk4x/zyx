@@ -76,9 +76,8 @@ fn self_attention() -> Result<(), ZyxError> {
 
     let x = Tensor::from([[[1, 0, 4, 2], [2, 5, 0, 1], [0, 8, 1, 0], [5, 1, 0, 0]]]).cast(dtype);
 
-    let [b, t, c] = x.shape()[..] else {
-        return Err(ZyxError::ShapeError("x must have exactly 3 dims, b, t, c".into()));
-    };
+    let [b, t, c] = x.dims::<3>()?;
+    let (b, t, c) = (b.item::<i64>() as u64, t.item::<i64>() as u64, c.item::<i64>() as u64);
 
     let tape = Tape::new([&x, &c_attn_weight])?;
     let mut splits = x.dot(c_attn_weight.t())?.split([n_embd, n_embd, n_embd], 2)?;
@@ -90,7 +89,7 @@ fn self_attention() -> Result<(), ZyxError> {
     q = q.reshape([b, t, n_head, c / n_head])?.transpose(1, 2)?;
     v = v.reshape([b, t, n_head, c / n_head])?.transpose(1, 2)?;
 
-    let mut att = q.dot(k.t())? * (1f32 / (*k.shape().last().unwrap() as f32).sqrt());
+    let mut att = q.dot(k.t())? * (1f32 / ((c / n_head) as f32).sqrt());
     att = att.softmax([-1])?;
     let mut y = att.dot(v)?;
     y = y.transpose(1, 2)?.reshape([b, t, c])?;

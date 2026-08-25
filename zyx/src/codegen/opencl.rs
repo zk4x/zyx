@@ -330,7 +330,7 @@ impl Kernel {
                         IdxKind::Group(len_id) => {
                             self.resolve_const(len_id).and_then(crate::dtype::Constant::as_dim).unwrap().saturating_sub(1)
                         }
-                        IdxKind::Local(len) => u64::from(len).saturating_sub(1),
+                        IdxKind::Local(len) => i64::from(len).saturating_sub(1),
                         IdxKind::Warp(_) => todo!(),
                     };
                     _ = writeln!(

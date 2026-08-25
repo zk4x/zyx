@@ -71,7 +71,6 @@ impl Kernel {
     // TODO Currently it only works if each param has a single move op chain.
     // Make it also work with move op chains when each param is accessed by multiple move ops.
     pub fn linearize(&mut self) {
-        eprintln!("LIN-START {:?} nops={}", std::ptr::from_ref(self), self.ops.values().count());
         if !self.ops.values().any(|n| matches!(n.op, Op::Store { index: OpId::NULL, .. })) {
             return;
         }
@@ -242,7 +241,6 @@ impl Kernel {
         self.common_subexpression_elimination();
         self.dead_code_elimination();
 
-        eprintln!("LIN-END OK {:?} ", std::ptr::from_ref(self));
         // The shape_ids cache is only valid pre-linearization; drop it so
         // autotuned kernels stay free of cached shape scaffolding.
         self.shape_cache = Map::default();
@@ -856,7 +854,7 @@ impl Kernel {
             }
 
             // Loop trip lengths, for sibling ordering (bigger loops first).
-            let loop_size = |axis: OpId| -> u64 {
+            let loop_size = |axis: OpId| -> Dim {
                 let Op::Loop { len } = self.ops[axis].op else {
                     unreachable!("reduce_axis must point at a Loop")
                 };
@@ -893,7 +891,7 @@ impl Kernel {
                 if in_degree.get(&id).copied().unwrap_or(0) == 0 {
                     let is_loop = matches!(self.ops[id].op, Op::Loop { .. });
                     let size = if is_loop { loop_size(id) } else { 0 };
-                    heap.push(std::cmp::Reverse((u8::from(is_loop), u64::MAX - size, id)));
+                    heap.push(std::cmp::Reverse((u8::from(is_loop), u64::MAX - size as u64, id)));
                 }
             }
             let mut order = Vec::with_capacity(reachable.len());
@@ -909,7 +907,7 @@ impl Kernel {
                         if *d == 0 {
                             let is_loop = matches!(self.ops[c].op, Op::Loop { .. });
                             let size = if is_loop { loop_size(c) } else { 0 };
-                            heap.push(std::cmp::Reverse((u8::from(is_loop), u64::MAX - size, c)));
+                            heap.push(std::cmp::Reverse((u8::from(is_loop), u64::MAX - size as u64, c)));
                         }
                     }
                 }

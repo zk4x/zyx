@@ -1332,10 +1332,9 @@ impl Graph {
     /// is not a `Const`.
     pub(crate) fn resolve_const(&self, class: ClassId) -> Option<Constant> {
         // Preorder of the const-expression subgraph reachable through
-        // `Cast`, `Unary` and `Binary`; non-const leaves abort. Expression
-        // entries carry a dummy seed replaced during evaluation.
+        // `Cast`, `Unary` and `Binary`; non-const leaves abort.
         let mut visited: Set<NodeId> = Set::default();
-        let mut order: Vec<(NodeId, Constant)> = Vec::new();
+        let mut order: Vec<NodeId> = Vec::new();
         let mut stack = vec![class];
         for _ in 0..10_000 {
             let Some(id) = stack.pop() else { break };
@@ -1344,22 +1343,31 @@ impl Graph {
                 continue;
             }
             match &self.nodes[node_id].node {
-                Node::Cast { x, dtype } => {
-                    stack.push(*x);
-                    order.push((node_id, Constant::Bool(false).cast(*dtype)));
-                }
-                Node::Unary { x, .. } => {
-                    stack.push(*x);
-                    order.push((node_id, Constant::U8(0)));
-                }
+                Node::Cast { x, .. } => stack.push(*x),
+                Node::Unary { x, .. } => stack.push(*x),
                 Node::Binary { x, y, .. } => {
                     stack.push(*y);
                     stack.push(*x);
-                    order.push((node_id, Constant::U8(0)));
                 }
-                Node::Const { value, .. } => order.push((node_id, *value)),
-                _ => return None,
+                Node::Const { .. } => {}
+                // Every other variant is a non-scalar / dynamic leaf: not
+                // resolvable to a constant.
+                Node::Leaf { .. }
+                | Node::Expand { .. }
+                | Node::Permute { .. }
+                | Node::Reshape { .. }
+                | Node::Pad { .. }
+                | Node::Flip { .. }
+                | Node::Narrow { .. }
+                | Node::Stack { .. }
+                | Node::Reduce { .. }
+                | Node::Assign { .. }
+                | Node::After { .. }
+                | Node::ToDevice { .. }
+                | Node::Contiguous { .. }
+                | Node::Kernel { .. } => return None,
             }
+            order.push(node_id);
         }
         if !stack.is_empty() {
             panic!("resolve_const did not finish in 10000 steps");
@@ -1368,9 +1376,9 @@ impl Graph {
         // operands), so reversing it evaluates every operand before its
         // consumer.
         let mut values: Map<NodeId, Constant> = Map::default();
-        for &(node_id, leaf_or_seed) in order.iter().rev() {
+        for &node_id in order.iter().rev() {
             let value = match &self.nodes[node_id].node {
-                Node::Const { .. } => leaf_or_seed,
+                Node::Const { value, .. } => *value,
                 Node::Cast { x, dtype } => values[&self.classes[*x].nodes[0]].cast(*dtype),
                 Node::Unary { x, uop } => values[&self.classes[*x].nodes[0]].unary(*uop),
                 Node::Binary { x, y, bop } => {
@@ -1674,8 +1682,8 @@ impl Runtime {
 
         let jit_kernels: *const Slab<JitKernelId, JitKernelData> = &self.graphs[graph_id].jit_kernels;
         let jit_kernels: &Slab<JitKernelId, JitKernelData> = unsafe { &*jit_kernels };
-        let total = jit_kernels.len().0 as u64 * device_ids.len() as u64;
-        let mut bar = crate::prog_bar::ProgressBar::new(total);
+        let total = jit_kernels.len().0  as i64 * device_ids.len()  as i64;
+        let mut bar = crate::prog_bar::ProgressBar::new(total as u64);
         for ek in jit_kernels.values() {
             let (flop, read, write) = ek.kernel.flop_mem_rw();
             let class_of = ek.stores.first().copied().unwrap();
@@ -1937,21 +1945,8 @@ impl Runtime {
     }
 
     /// Numeric shape of a class for the runtime's `shapes` cache: static dim
-    /// classes resolve to their const value, symbolic dims to `0`.
-    fn resolved_shape(&self, graph_id: GraphId, class: ClassId) -> Vec<Dim> {
-        self.graphs[graph_id]
-            .shape(class)
-            .into_iter()
-            .map(|dim| match &self.graphs[graph_id].nodes[self.graphs[graph_id].classes[dim].nodes[0]].node {
-                Node::Const { value: c, .. } => c.as_dim().unwrap_or(0),
-                _ => 0,
-            })
-            .collect()
-    }
-
     pub fn new_graph_tensor(&mut self, graph_id: GraphId, class_id: ClassId) -> TensorId {
         self.graphs[graph_id].ref_count += 1;
-        let shape = self.resolved_shape(graph_id, class_id);
         let tid = self.tensors.push(TensorData {
             kernel_id: KernelId::NULL,
             op_id: OpId::NULL,
@@ -1960,7 +1955,6 @@ impl Runtime {
             graph_id,
             rc: 1,
         });
-        self.shapes.insert(tid, shape);
         tid
     }
 
@@ -2047,11 +2041,11 @@ impl Runtime {
         // `Tensor::broadcast` (and the eager binary path must call it before
         // reaching here). `Node::Binary` in the kernelizer does NOT broadcast.
         // Shapes are symbolic `Vec<ClassId>`; compare their *concrete* dims
-        // (unresolved/dynamic dims are `0` and skipped) so that two operands
+        // (unresolved/dynamic dims are `-1` and skipped) so that two operands
         // with the same concrete shape but distinct dim classes still compare
         // equal.
         let concrete = |s: &[ClassId]| -> Vec<Dim> {
-            s.iter().map(|&d| self.graphs[graph_id].resolve_const(d).and_then(Constant::as_dim).unwrap_or(0)).collect()
+            s.iter().map(|&d| self.graphs[graph_id].resolve_const(d).and_then(Constant::as_dim).unwrap_or(-1)).collect()
         };
         let sx = self.graphs[graph_id].shape(x);
         let sy = self.graphs[graph_id].shape(y);

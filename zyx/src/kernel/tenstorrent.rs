@@ -147,7 +147,7 @@ impl Kernel {
         while !op_id.is_null() {
             if let Op::Index { axis, kind: IdxKind::Group(len) } = self.ops[op_id].op {
                 let len = self.resolve_const(len).and_then(crate::dtype::Constant::as_dim).unwrap();
-                if len.is_multiple_of(32) && len >= 32 {
+                if len % 32 == 0 && len >= 32 {
                     let f1 = len / 32;
                     let f1_id = self.const_idx(f1);
                     self.split_dim(

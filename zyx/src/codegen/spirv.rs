@@ -5,6 +5,7 @@
 //! Translates kernel IR ops to SPIR-V machine code (`Vec<u32>`).
 
 use crate::{
+    shape::Dim,
     DType, Map,
     dtype::Constant,
     error::{BackendError, ErrorStatus},
@@ -839,7 +840,7 @@ impl Kernel {
                             let key = match IDX_T {
                                 DType::U32 => Constant::U32(val),
                                 DType::I32 => Constant::I32(val as i32),
-                                DType::U64 => Constant::U64((val as u64).to_le_bytes()),
+                                DType::U64 => Constant::U64((val  as i64).to_le_bytes()),
                                 dt => {
                                     return Err(BackendError {
                                         status: ErrorStatus::KernelCompilation,
@@ -1080,7 +1081,7 @@ impl Kernel {
         // === Function body: walk kernel ops ===
 
         // Loop stack: (header_label, merge_label, continue_label, counter_var, len)
-        let mut loop_stack: Vec<(u32, u32, u32, u32, u64)> = Vec::new();
+        let mut loop_stack: Vec<(u32, u32, u32, u32, Dim)> = Vec::new();
         let mut if_stack: Vec<u32> = Vec::new(); // merge_label
 
         {

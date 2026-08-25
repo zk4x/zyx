@@ -153,7 +153,7 @@ pub(super) fn initialize_device(
         // for generic (eager) kernels, it only runs matched AOT matmuls.
         device_info: DeviceInfo {
             compute: 1,
-            max_global_work_dims: vec![Dim::from(0u64); 3],
+            max_global_work_dims: vec![Dim::from(0i64); 3],
             max_local_threads: 1,
             max_local_work_dims: vec![1, 1, 1],
             preferred_vector_size: 8,

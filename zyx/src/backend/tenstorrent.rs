@@ -267,10 +267,10 @@ impl TTMemoryPool {
             .get_mut(dst)
             .ok_or_else(|| BackendError { status: ErrorStatus::MemoryCopyH2P, context: "invalid buffer id".into() })?;
         let len = src.len().min(buf.size as usize);
-        let (cname, shm_ptr, _) = create_temp_shm(len as u64)?;
+        let (cname, shm_ptr, _) = create_temp_shm(len  as i64)?;
         let shm_path = cname.to_str().unwrap_or("/none");
         unsafe { std::ptr::copy_nonoverlapping(src.as_ptr(), shm_ptr, len) };
-        rt.lock().unwrap().write_buf(buf.dev_index, shm_path, len as u64)?;
+        rt.lock().unwrap().write_buf(buf.dev_index, shm_path, len  as i64)?;
         unsafe {
             libc::munmap(shm_ptr as *mut libc::c_void, len as usize);
             libc::shm_unlink(cname.as_ptr());
@@ -286,9 +286,9 @@ impl TTMemoryPool {
             .get_mut(src)
             .ok_or_else(|| BackendError { status: ErrorStatus::MemoryCopyP2H, context: "invalid buffer id".into() })?;
         let len = dst.len().min(buf.size as usize);
-        let (cname, shm_ptr, _) = create_temp_shm(len as u64)?;
+        let (cname, shm_ptr, _) = create_temp_shm(len  as i64)?;
         let shm_path = cname.to_str().unwrap_or("/none");
-        rt.lock().unwrap().read_buf(buf.dev_index, shm_path, len as u64)?;
+        rt.lock().unwrap().read_buf(buf.dev_index, shm_path, len  as i64)?;
         unsafe {
             std::ptr::copy_nonoverlapping(shm_ptr, dst.as_mut_ptr(), len);
             libc::munmap(shm_ptr as *mut libc::c_void, len as usize);
