@@ -82,16 +82,7 @@ impl<T> Mutex<T> {
                 //core::sync::atomic::spin_loop_hint();
                 //std::thread::sleep(std::time::Duration::from_secs(1));
                 core::hint::spin_loop();
-                /*i += 1;
-                debug_assert!(
-                    i > N,
-                    "Failed to unlock mutex after {N} tries. Panicking in order to avoid deadlock."
-                );*/
             }
-            /*debug_assert!(
-                i > N,
-                "Failed to unlock mutex after million tries. Panicking in order to avoid deadlock."
-            );*/
         }
     }
 

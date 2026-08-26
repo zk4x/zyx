@@ -255,12 +255,18 @@ impl Tensor {
     /// ```
     #[allow(clippy::missing_panics_doc)]
     pub fn dims<const N: usize>(&self) -> Result<[Tensor; N], ZyxError> {
-        let rt = RT.lock();
+        let mut rt = RT.lock();
         let rank = rt.resolve_shape(self.id).len();
         if N > rank {
             Err(ZyxError::shape_error(format!("Requested {N} dims, but tensor only has rank of {}", rank).into()))
         } else {
             let tids = rt.shape(self.id);
+            // Each returned `Tensor` takes ownership of a reference to the
+            // slab dim node; retain so dropping the handle does not free a
+            // node the source tensor's `shape_id` still references.
+            for &tid in &tids {
+                rt.retain(tid);
+            }
             Ok(std::array::from_fn(|i| Tensor { id: tids[i] }))
         }
     }
@@ -533,7 +539,13 @@ impl Tensor {
     /// Returns device error if the device fails to allocate memory for tensor.
     #[allow(clippy::missing_panics_doc, reason = "all panics are checked ahead")]
     pub fn rand(shape: impl IntoIterator<Item = impl Into<Tensor>>, dtype: DType) -> Result<Tensor, ZyxError> {
-        let tensors: Vec<Tensor> = shape.into_iter().map(|x| x.into()).collect();
+        let tensors = Self::cast_to_shape(shape);
+        {
+            let rt = RT.lock();
+            for t in &tensors {
+                debug_assert_eq!(rt.dtype(t.id), DType::I64, "rand shape dim must have dtype IDX_T (i64)");
+            }
+        }
         let shape = if tensors.is_empty() {
             None
         } else {
@@ -625,7 +637,13 @@ impl Tensor {
     /// Retuns device error if device fails to allocate memory for given tensor.
     pub fn randn(shape: impl IntoIterator<Item = impl Into<Tensor>>, dtype: DType) -> Result<Tensor, ZyxError> {
         // https://en.wikipedia.org/wiki/Box%E2%80%93Muller_transform
-        let dims: Vec<Tensor> = shape.into_iter().map(Into::into).collect();
+        let dims = Self::cast_to_shape(shape);
+        {
+            let rt = RT.lock();
+            for t in &dims {
+                debug_assert_eq!(rt.dtype(t.id), DType::I64, "randn shape dim must have dtype IDX_T (i64)");
+            }
+        }
         let mut nshape = Vec::with_capacity(dims.len() + 1);
         nshape.push(Tensor::from(2));
         nshape.extend(dims);
@@ -680,7 +698,13 @@ impl Tensor {
         shape: impl IntoIterator<Item = impl Into<Tensor>>,
         range: impl core::ops::RangeBounds<T> + Clone,
     ) -> Result<Tensor, ZyxError> {
-        let dims: Vec<Tensor> = shape.into_iter().map(Into::into).collect();
+        let dims = Self::cast_to_shape(shape);
+        {
+            let rt = RT.lock();
+            for t in &dims {
+                debug_assert_eq!(rt.dtype(t.id), DType::I64, "randint shape dim must have dtype IDX_T (i64)");
+            }
+        }
         let shape = Tensor::stack(&dims)?;
         let mut rt = RT.lock();
         let n: Dim = rt.resolve_shape(shape.id).into_iter().product();
@@ -730,7 +754,13 @@ impl Tensor {
     /// Create tensor filled with zeros.
     #[must_use]
     pub fn zeros(shape: impl IntoIterator<Item = impl Into<Tensor>>, dtype: DType) -> Tensor {
-        let dims: Vec<Tensor> = shape.into_iter().map(Into::into).collect();
+        let dims = Self::cast_to_shape(shape);
+        {
+            let rt = RT.lock();
+            for t in &dims {
+                debug_assert_eq!(rt.dtype(t.id), DType::I64, "zeros shape dim must have dtype IDX_T (i64)");
+            }
+        }
         let shape = if dims.is_empty() {
             None
         } else {
@@ -754,7 +784,13 @@ impl Tensor {
     /// Create tensor filled with ones.
     #[must_use]
     pub fn ones(shape: impl IntoIterator<Item = impl Into<Tensor>>, dtype: DType) -> Tensor {
-        let dims: Vec<Tensor> = shape.into_iter().map(Into::into).collect();
+        let dims = Self::cast_to_shape(shape);
+        {
+            let rt = RT.lock();
+            for t in &dims {
+                debug_assert_eq!(rt.dtype(t.id), DType::I64, "ones shape dim must have dtype IDX_T (i64)");
+            }
+        }
         let shape = if dims.is_empty() {
             None
         } else {
@@ -780,7 +816,13 @@ impl Tensor {
     /// Returns device error if the device failed to allocate memory for tensor.
     #[allow(clippy::missing_panics_doc)]
     pub fn full(shape: impl IntoIterator<Item = impl Into<Tensor>>, value: impl Scalar) -> Tensor {
-        let dims: Vec<Tensor> = shape.into_iter().map(Into::into).collect();
+        let dims = Self::cast_to_shape(shape);
+        {
+            let rt = RT.lock();
+            for t in &dims {
+                debug_assert_eq!(rt.dtype(t.id), DType::I64, "full shape dim must have dtype IDX_T (i64)");
+            }
+        }
         let shape = if dims.is_empty() {
             None
         } else {
@@ -1062,19 +1104,30 @@ impl Tensor {
     /// # Errors
     /// Returns error if self cannot be expanded into shape.
     pub fn expand<D: Into<Tensor>>(&self, shape: impl IntoIterator<Item = D>) -> Result<Tensor, ZyxError> {
-        let mut tensors: Vec<Tensor> = shape.into_iter().map(|x| x.into()).collect();
-        // Resolve -1 (keep dim) user-side: runtime knows nothing of sentinels.
-        // Torch semantics: -1 leaves the aligned dimension unchanged; the
-        // target shape may add leading dimensions (target rank >= input rank).
-        let resolved: Vec<Option<i64>> = tensors
-            .iter()
-            .map(|t| {
-                RT.lock().resolve_symbolic(t.id).and_then(|c| match c.cast(DType::I64) {
-                    crate::dtype::Constant::I64(b) => Some(i64::from_le_bytes(b)),
-                    _ => None,
+        let mut tensors = Self::cast_to_shape(shape);
+        // Shape/dim tensors must be IDX_T (i64) after normalization.
+        let resolved: Vec<Option<i64>> = {
+            let rt = RT.lock();
+            for t in &tensors {
+                debug_assert_eq!(
+                    rt.dtype(t.id),
+                    DType::I64,
+                    "expand dim tensor must have dtype IDX_T (i64)"
+                );
+            }
+            // Resolve -1 (keep dim) user-side: runtime knows nothing of sentinels.
+            // Torch semantics: -1 leaves the aligned dimension unchanged; the
+            // target shape may add leading dimensions (target rank >= input rank).
+            tensors
+                .iter()
+                .map(|t| {
+                    rt.resolve_symbolic(t.id).and_then(|c| match c.cast(DType::I64) {
+                        crate::dtype::Constant::I64(b) => Some(i64::from_le_bytes(b)),
+                        _ => None,
+                    })
                 })
-            })
-            .collect();
+                .collect()
+        };
         if resolved.iter().any(|&d| d.is_some_and(|v| v < -1)) {
             return Err(ZyxError::shape_error("Expanded dimensions must be >= -1.".into()));
         }
@@ -1199,6 +1252,12 @@ impl Tensor {
     /// Returns error if the axis is out of range or the padding is invalid.
     #[track_caller]
     pub fn pad_zeros_axis(&self, axis: UAxis, lp: Tensor, len: Tensor) -> Result<Tensor, ZyxError> {
+        let lp = lp.cast_to_dim();
+        let len = len.cast_to_dim();
+        let rt = RT.lock();
+        debug_assert_eq!(rt.dtype(lp.id), DType::I64, "pad_zeros_axis lp must have dtype IDX_T (i64)");
+        debug_assert_eq!(rt.dtype(len.id), DType::I64, "pad_zeros_axis len must have dtype IDX_T (i64)");
+        drop(rt);
         Ok(Tensor { id: RT.lock().pad_zeros(self.id, axis, lp.id, len.id) })
     }
 
@@ -1353,6 +1412,23 @@ impl Tensor {
         Ok(t0 + ones.pad_zeros(padding)?.where_(zeros, value)?)
     }
 
+    /// Casts a single shape/dim/padding tensor to `IDX_T` (`i64`).
+    ///
+    /// Shape and padding tensors must be `IDX_T`; user-supplied integer literals
+    /// infer as `i32`, so this normalizes them before they enter the runtime.
+    fn cast_to_dim(&self) -> Tensor {
+        if RT.lock().dtype(self.id) == DType::I64 {
+            self.clone()
+        } else {
+            self.cast(DType::I64)
+        }
+    }
+
+    /// Collects a shape iterator into `Tensor`s, casting each to `IDX_T`.
+    fn cast_to_shape(shape: impl IntoIterator<Item = impl Into<Tensor>>) -> Vec<Tensor> {
+        shape.into_iter().map(|x| x.into().cast_to_dim()).collect()
+    }
+
     /// Applies a new shape to this tensor while preserving its total number of elements.
     ///
     /// A single `-1` in the shape will be inferred automatically, like in
@@ -1376,17 +1452,28 @@ impl Tensor {
     /// # Errors
     /// Returns error if self cannot be reshaped to shape.
     pub fn reshape<D: Into<Tensor>>(&self, shape: impl IntoIterator<Item = D>) -> Result<Tensor, ZyxError> {
-        let mut tensors: Vec<Tensor> = shape.into_iter().map(|x| x.into()).collect();
-        // Resolve -1 (infer) user-side: runtime knows nothing of sentinels.
-        let resolved: Vec<Option<i64>> = tensors
-            .iter()
-            .map(|t| {
-                RT.lock().resolve_symbolic(t.id).and_then(|c| match c.cast(DType::I64) {
-                    crate::dtype::Constant::I64(b) => Some(i64::from_le_bytes(b)),
-                    _ => None,
+        let mut tensors = Self::cast_to_shape(shape);
+        // Shape/dim tensors must be IDX_T (i64) after normalization.
+        let resolved: Vec<Option<i64>> = {
+            let rt = RT.lock();
+            for t in &tensors {
+                debug_assert_eq!(
+                    rt.dtype(t.id),
+                    DType::I64,
+                    "reshape dim tensor must have dtype IDX_T (i64)"
+                );
+            }
+            // Resolve -1 (infer) user-side: runtime knows nothing of sentinels.
+            tensors
+                .iter()
+                .map(|t| {
+                    rt.resolve_symbolic(t.id).and_then(|c| match c.cast(DType::I64) {
+                        crate::dtype::Constant::I64(b) => Some(i64::from_le_bytes(b)),
+                        _ => None,
+                    })
                 })
-            })
-            .collect();
+                .collect()
+        };
         let infer_count = resolved.iter().filter(|&&d| d == Some(-1)).count();
         if infer_count > 1 {
             return Err(ZyxError::shape_error("Can only infer one dimension (-1).".into()));

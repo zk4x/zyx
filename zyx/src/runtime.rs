@@ -357,10 +357,16 @@ impl Runtime {
             TensorData::Graph { class_id, graph_id, .. } => self.graphs[graph_id].dtype(class_id),
             TensorData::Promoted { class_id, graph_id, .. } => self.graphs[graph_id].dtype(class_id),
             TensorData::Constant { value, .. } | TensorData::Variable { value, .. } => value.dtype(),
-            TensorData::Cast { .. } => todo!(),
-            TensorData::Unary { .. } => todo!(),
-            TensorData::Binary { .. } => todo!(),
-            TensorData::Stack { .. } => todo!(),
+            TensorData::Cast { dtype, .. } => dtype,
+            TensorData::Unary { x, .. } => self.dtype(x),
+            TensorData::Binary { x, bop, .. } => {
+                if bop.returns_bool() {
+                    DType::Bool
+                } else {
+                    self.dtype(x)
+                }
+            }
+            TensorData::Stack { .. } => IDX_T,
             TensorData::DeadGraph { .. } => panic!("dtype of a dead graph tensor {x}"),
         }
     }
@@ -1378,8 +1384,6 @@ impl Runtime {
     }
 
     pub fn reduce(&mut self, x: TensorId, mut axes: Vec<UAxis>, rop: BOp) -> Result<TensorId, ZyxError> {
-        #[cfg(feature = "debug_tensor_op")]
-        println!("runtime::reduce(x={x}, axes={axes:?}, rop={rop:?})");
         let shape = self.resolve_shape(x).to_vec();
         let rank = shape.len();
         debug_assert!(!axes.is_empty(), "reduce must specify at least one axis");
@@ -2113,15 +2117,13 @@ impl Runtime {
     pub fn load<T: Scalar>(&mut self, x: TensorId, data: &mut [T]) -> Result<(), ZyxError> {
         #[cfg(feature = "debug_tensor_op")]
         println!("runtime::load(x={x})");
-        let dt = self.dtype(x);
-        if dt != T::dtype() {
-            return Err(ZyxError::DTypeError(format!("loading dtype {}, but the data has dtype {dt}", T::dtype()).into()));
-        }
 
-        // Host-resolved scalars: statically known values never reach a device.
-        if data.len() == 1 && self.resolve_shape(x).is_empty() {
+        // Symbolic (slab) tensors carry no buffer; resolve their value directly,
+        // no kernel launch needed. They are constants/broadcast scalars, so the
+        // single resolved value is written to every element of `data`.
+        if !self.buffer_map.contains_key(&x) {
             if let Some(c) = self.resolve_symbolic(x) {
-                data[0] = match c.cast(T::dtype()) {
+                let v = match c.cast(T::dtype()) {
                     Constant::BF16(v) => T::from_bf16(bf16::from_le_bytes(v)),
                     Constant::F16(v) => T::from_f16(f16::from_le_bytes(v)),
                     Constant::F32(v) => T::from_f32(f32::from_le_bytes(v)),
@@ -2136,8 +2138,16 @@ impl Runtime {
                     Constant::I64(v) => T::from_i64(i64::from_le_bytes(v)),
                     Constant::Bool(v) => T::from_bool(v),
                 };
+                for d in data.iter_mut() {
+                    *d = v;
+                }
                 return Ok(());
             }
+        }
+
+        let dt = self.dtype(x);
+        if dt != T::dtype() {
+            return Err(ZyxError::DTypeError(format!("loading dtype {}, but the data has dtype {dt}", T::dtype()).into()));
         }
 
         let shape_numel: Dim = self.resolve_shape(x).iter().product();
@@ -2919,7 +2929,8 @@ impl Runtime {
             assert!(
                 self.buffer_map.contains_key(&tid)
                     || outputs.contains(&tid)
-                    || self.kernels.values().any(|kd| kd.outputs.contains(&tid) || kd.stores.contains(&tid)),
+                    || self.kernels.values().any(|kd| kd.outputs.contains(&tid) || kd.stores.contains(&tid))
+                    || self.resolve_symbolic(tid).is_some(),
                 "load tid {tid} not realized, not in outputs, not in any kernel; kernels loading it: {:?}",
                 self.kernels.iter().filter(|(_, kd)| kd.loads.contains(&tid)).map(|(k, _)| k).collect::<Vec<_>>(),
             );
@@ -2938,10 +2949,16 @@ impl Runtime {
         // Recursive materialization: find producer kernels (those that have stores for our loads)
         // and materialize them so our loads become available.
         for &load in &loads {
-            // An `Eager` tensor never carries a graph class, so its
-            // depends_on is the pending producer.
+            // A load's PRODUCER is `kernel_id`; its PREDECESSOR is `depends_on`
+            // (the kernel whose output `kernel_id` consumes, or — for an
+            // assign target / deferred store — the kernel that actually
+            // *writes* this load's buffer via a StoreView). zyx2 materializes
+            // `depends_on`; for a plain eager tensor `depends_on` is NULL and we
+            // fall back to the producer `kernel_id`.
             let pending = match self.tensors[load] {
-                TensorData::Eager { depends_on, .. } => depends_on,
+                TensorData::Eager { kernel_id, depends_on, .. } => {
+                    if depends_on.is_null() { kernel_id } else { depends_on }
+                }
                 TensorData::Graph { .. } | TensorData::Promoted { .. } => KernelId::NULL,
                 _ => KernelId::NULL,
             };
@@ -2955,8 +2972,20 @@ impl Runtime {
         }
 
         debug_assert!(
-            loads.iter().all(|&tid| self.buffer_map.contains_key(&tid)),
-            "all loads must be realized after recursive materialization"
+            loads.iter().all(|&tid| {
+                self.buffer_map.contains_key(&tid) || self.resolve_symbolic(tid).is_some()
+            }),
+            "unmet loads: {:?}",
+            loads.iter()
+                .filter(|&&tid| !self.buffer_map.contains_key(&tid) && self.resolve_symbolic(tid).is_none())
+                .map(|&tid| {
+                    let (kid, dep) = match self.tensors[tid] {
+                        TensorData::Eager { kernel_id, depends_on, .. } => (kernel_id, depends_on),
+                        _ => (KernelId::NULL, KernelId::NULL),
+                    };
+                    (tid, kid, dep)
+                })
+                .collect::<Vec<_>>()
         );
 
         // Pick device and pool
