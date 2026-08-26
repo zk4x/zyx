@@ -545,7 +545,12 @@ impl Runtime {
                 *rc
             }
         };
-        if rc != 0 {
+        // Eager tensors are handled below: their death is driven by the
+        // producer kernel's outputs set (a member while any reference lives),
+        // so the pruning self-load edge can drive rc to zero on the last
+        // reference. Every other tensor kind dies purely on its refcount.
+        let is_eager = matches!(self.tensors[x], TensorData::Eager { .. });
+        if rc != 0 && !is_eager {
             return;
         }
 
@@ -644,10 +649,18 @@ impl Runtime {
                 }
             }
             TensorData::Eager { kernel_id, op_id, depends_on, shape_id, .. } => {
-                // Prune ops no longer needed by the surviving outputs. x stays
-                // in its producing kernel's outputs while rc > 0; the kernel's
-                // lifetime is tied to its outputs' refcounts.
-                let pruned = if !op_id.is_null() && !self.kernels[kernel_id].outputs.contains(&x) {
+                // Sync the producer kernel's outputs with this reference going
+                // away. While x is still a member, the kernel keeps it alive.
+                self.kernels[kernel_id].outputs.remove(&x);
+                if rc != 0 && self.kernels[kernel_id].outputs.contains(&x) {
+                    // Another live output of the same kernel references x;
+                    // keep the (now possibly dead) kernel as-is.
+                    return;
+                }
+                // No live output of this kernel keeps x's op chain: prune it.
+                // The dropped loads may include x's own self-load edge, whose
+                // release drives rc to zero and frees the entry.
+                let pruned = if !op_id.is_null() {
                     let out_ops: Vec<OpId> = self.kernels[kernel_id]
                         .outputs
                         .iter()
@@ -666,18 +679,21 @@ impl Runtime {
                 for tid in pruned {
                     self.release(tid);
                 }
-
-                // If a pending kernel still produces x, keep everything until
-                // that kernel materializes.
-                if depends_on.is_null() {
+                // x may already have been freed by a recursive release above
+                // (its self-load edge). Only finalize if it is still present.
+                if self.tensors.contains_id(x) && depends_on.is_null() {
                     free_buffer(self, x);
                     self.tensors.remove(x);
                     // Drop the edge to the shape expression.
                     if !shape_id.is_null() {
                         self.release(shape_id);
                     }
-                    if !kernel_id.is_null() {
-                        self.detach_producer(x, kernel_id, op_id);
+                }
+                if !kernel_id.is_null() && self.kernels.contains_id(kernel_id) {
+                    let kd = &self.kernels[kernel_id];
+                    let dead = kd.outputs.is_empty() && !kd.kernel.contains_stores();
+                    if dead {
+                        self.remove_dead_eager_kernel(kernel_id);
                     }
                 }
             }
@@ -880,7 +896,10 @@ impl Runtime {
         });
         let shape_op = self.replay_symbolic_into_kernel(kernel_id, shape_id);
         let op_id = self.kernels[kernel_id].kernel.push_back(Op::Param { dtype, kind, shape: shape_op });
-        let tid = self.tensors.push(TensorData::Eager { kernel_id, op_id, depends_on: KernelId::NULL, shape_id, rc: 1 });
+        // rc: 2 — one reference for the caller's handle, one for the kernel's
+        // own self-load edge (see `release`'s eager arm, which releases that
+        // edge through the op-chain prune).
+        let tid = self.tensors.push(TensorData::Eager { kernel_id, op_id, depends_on: KernelId::NULL, shape_id, rc: 2 });
         self.kernels[kernel_id].loads.push(tid);
         self.kernels[kernel_id].outputs.insert(tid);
         tid
@@ -958,7 +977,6 @@ impl Runtime {
         // consumes one reference.
         self.retain(shape);
         let tid = self.new_eager_tensor(shape, dtype, ParamKind::Global);
-        self.retain(tid);
 
         self.buffer_map.insert(tid, buffer_id);
 
@@ -988,7 +1006,6 @@ impl Runtime {
         // consumes one reference.
         self.retain(shape);
         let tid = self.new_eager_tensor(shape, dtype, ParamKind::Global);
-        self.retain(tid);
         self.buffer_map.insert(tid, buffer_id);
         Ok(tid)
     }
@@ -1642,7 +1659,7 @@ impl Runtime {
                     op_id,
                     depends_on: KernelId::NULL,
                     shape_id,
-                    rc: 1,
+                    rc: 2,
                 });
                 self.kernels[kernel_id].loads.push(tid);
                 self.kernels[kernel_id].outputs.insert(tid);
