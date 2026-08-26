@@ -326,6 +326,11 @@ impl Tensor {
             return Tensor { id: rt.new_constant_tensor(Constant::new(1u8)) };
         }
         let mut n = dims[0];
+        if dims.len() == 1 {
+            // Rank-1 shortcut: n is a borrowed reference into the source's
+            // shape expression, not a fresh node — take our own reference.
+            rt.retain(n);
+        }
         for &d in &dims[1..] {
             n = rt.binary(n, d, BOp::Mul).expect("numel: failed to build symbolic mul chain");
         }

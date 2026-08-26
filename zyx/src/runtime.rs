@@ -339,7 +339,7 @@ impl Runtime {
             | TensorData::Binary { .. } => {
                 return Vec::new();
             }
-            TensorData::Stack { .. } => panic!("cannot query the shape of a bare stack"),
+            TensorData::Stack { ref tensors, .. } => return tensors.to_vec(),
             TensorData::DeadGraph { .. } => panic!("shape of a dead graph tensor {x}"),
         };
         if shape_id.is_null() {
@@ -494,9 +494,22 @@ impl Runtime {
     /// last live output. Graph tensors are kept by their graph instead; its
     /// `ref_count` tears it down when it hits zero.
     pub fn release(&mut self, x: TensorId) {
-        eprintln!("DBG release(tid={x}) data={:?}", self.tensors.get(x));
-        if matches!(self.tensors.get(x), Some(TensorData::Stack { .. })) {
-            eprintln!("DBG stack release backtrace:\n{}", std::backtrace::Backtrace::force_capture());
+        let rc_now = self.tensors.get(x).map(|d| match d {
+            TensorData::Eager { rc, .. }
+            | TensorData::Graph { rc, .. }
+            | TensorData::Promoted { rc, .. }
+            | TensorData::Constant { rc, .. }
+            | TensorData::Variable { rc, .. }
+            | TensorData::Cast { rc, .. }
+            | TensorData::Unary { rc, .. }
+            | TensorData::Binary { rc, .. }
+            | TensorData::Stack { rc, .. }
+            | TensorData::DeadGraph { rc, .. } => *rc,
+        });
+        if rc_now == Some(1) {
+            eprintln!("DBG release(tid={x}) DYING data={:?}\n{}", self.tensors.get(x), std::backtrace::Backtrace::force_capture());
+        } else if cfg!(feature = "debug_tensor_op") {
+            eprintln!("DBG release(tid={x}) data={:?}", self.tensors.get(x));
         }
         #[cfg(feature = "debug_tensor_op")]
         {
@@ -1229,6 +1242,9 @@ impl Runtime {
             let sym = if x_sym { x } else { y };
             let data = if x_sym { y } else { x };
             let shape_id = result_shape(self, x, y);
+            // The result shares the operand's shape expression; take our own
+            // reference instead of stealing the operand's.
+            self.retain(shape_id);
             let (kid, data_op) = match self.tensors[data] {
                 TensorData::Eager { kernel_id, op_id, .. } => (kernel_id, op_id),
                 ref t => panic!("binary: non-slab operand tid {data} is not an eager tensor: {t:?}"),
@@ -1246,6 +1262,9 @@ impl Runtime {
             Ok(tid)
         } else {
             let shape_id = result_shape(self, x, y);
+            // The result shares the operand's shape expression; take our own
+            // reference instead of stealing the operand's.
+            self.retain(shape_id);
             let (mut kid_x, mut op_id_x) = match self.tensors[x] {
                 TensorData::Eager { kernel_id, op_id, .. } => (kernel_id, op_id),
                 ref t => panic!("binary: operand tid {x} is not an eager tensor: {t:?}"),
@@ -1708,6 +1727,42 @@ impl Runtime {
                 let tid = self.tensors.push(TensorData::Graph { class_id, graph_id, shape_id, rc: 1 });
                 Ok(tid)
             }
+        } else if matches!(
+            self.tensors[x],
+            TensorData::Constant { .. }
+                | TensorData::Variable { .. }
+                | TensorData::Cast { .. }
+                | TensorData::Unary { .. }
+                | TensorData::Binary { .. }
+                | TensorData::Stack { .. }
+        ) {
+            // Pure-slab operand (e.g. a broadcast scalar): materialize it into
+            // a fresh eager kernel that replays the slab expression and
+            // expands it to the target shape.
+            let dtype = self.dtype(x);
+            let kid = self.kernels.push(KernelData {
+                outputs: Set::default(),
+                loads: Vec::new(),
+                stores: Vec::new(),
+                kernel: Kernel::new(DeviceId::AUTO),
+            });
+            let val_op = self.replay_symbolic_into_kernel(kid, x);
+            let shape_op = self.replay_symbolic_into_kernel(kid, shape_id);
+            let op_id = self.kernels[kid].kernel.expand(val_op, shape_op);
+            if !shape_id.is_null() {
+                self.retain(shape_id);
+            }
+            let tid = self.tensors.push(TensorData::Eager {
+                kernel_id: kid,
+                op_id,
+                depends_on: KernelId::NULL,
+                shape_id,
+                rc: 1,
+            });
+            self.kernels[kid].outputs.insert(tid);
+            #[cfg(feature = "debug_tensor_op")]
+            println!("runtime::expand(x={x}) -> eager from slab: tid={tid}, kid={kid:?}, op_id={op_id:?}");
+            Ok(tid)
         } else {
             let force_store = match self.tensors[x] {
                 TensorData::Eager { kernel_id, op_id, .. } => self.kernels[kernel_id].kernel.is_preceded_by_compute(op_id),
@@ -1866,7 +1921,12 @@ impl Runtime {
             TensorData::Eager { kernel_id: xkid, op_id: xop, .. } => {
                 // Duplicate only when the pad actually grows the tensor AND
                 // compute precedes it in the kernel (conv layers need this).
-                let grows = self.resolve_shape(len)[0] > self.resolve_shape(x)[axis as usize];
+                let len_const = self
+                    .resolve_symbolic(len)
+                    .expect("pad_zeros: eager-arm len bound must be a resolvable scalar")
+                    .as_dim()
+                    .expect("pad_zeros: len bound does not evaluate to an integer");
+                let grows = len_const > self.resolve_shape(x)[axis as usize];
                 let force_store = grows && self.kernels[xkid].kernel.is_preceded_by_compute(xop);
                 let (kernel_id, op_id) = self.duplicate_or_store(x, force_store).unwrap();
 
