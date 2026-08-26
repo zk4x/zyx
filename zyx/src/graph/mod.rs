@@ -1954,7 +1954,7 @@ impl Runtime {
             // no data moves. The slab-side `shape_id` is replayed into the
             // new kernel.
             if !old_kernel_id.is_null() {
-                self.detach_producer(tid, old_kernel_id, old_op_id);
+                self.on_rc_zero(tid, old_kernel_id, old_op_id);
             }
             let dtype = self.dtype(tid);
             let kernel_id = self.kernels.push(KernelData {
