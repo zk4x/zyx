@@ -494,23 +494,6 @@ impl Runtime {
     /// last live output. Graph tensors are kept by their graph instead; its
     /// `ref_count` tears it down when it hits zero.
     pub fn release(&mut self, x: TensorId) {
-        let rc_now = self.tensors.get(x).map(|d| match d {
-            TensorData::Eager { rc, .. }
-            | TensorData::Graph { rc, .. }
-            | TensorData::Promoted { rc, .. }
-            | TensorData::Constant { rc, .. }
-            | TensorData::Variable { rc, .. }
-            | TensorData::Cast { rc, .. }
-            | TensorData::Unary { rc, .. }
-            | TensorData::Binary { rc, .. }
-            | TensorData::Stack { rc, .. }
-            | TensorData::DeadGraph { rc, .. } => *rc,
-        });
-        if rc_now == Some(1) {
-            eprintln!("DBG release(tid={x}) DYING data={:?}\n{}", self.tensors.get(x), std::backtrace::Backtrace::force_capture());
-        } else if cfg!(feature = "debug_tensor_op") {
-            eprintln!("DBG release(tid={x}) data={:?}", self.tensors.get(x));
-        }
         #[cfg(feature = "debug_tensor_op")]
         {
             let desc: String = match &self.tensors[x] {
@@ -545,12 +528,10 @@ impl Runtime {
                 *rc
             }
         };
-        // Eager tensors are handled below: their death is driven by the
-        // producer kernel's outputs set (a member while any reference lives),
-        // so the pruning self-load edge can drive rc to zero on the last
-        // reference. Every other tensor kind dies purely on its refcount.
-        let is_eager = matches!(self.tensors[x], TensorData::Eager { .. });
-        if rc != 0 && !is_eager {
+        // Every variant dies purely on its refcount. `rc` is decremented above;
+        // a still-positive count means another live reference (handle, kernel
+        // self-load edge, or symbolic-node child) keeps the entry alive.
+        if rc != 0 {
             return;
         }
 
@@ -649,18 +630,17 @@ impl Runtime {
                 }
             }
             TensorData::Eager { kernel_id, op_id, depends_on, shape_id, .. } => {
-                // Sync the producer kernel's outputs with this reference going
-                // away. While x is still a member, the kernel keeps it alive.
-                self.kernels[kernel_id].outputs.remove(&x);
-                if rc != 0 && self.kernels[kernel_id].outputs.contains(&x) {
-                    // Another live output of the same kernel references x;
-                    // keep the (now possibly dead) kernel as-is.
-                    return;
+                // The kernel may already be gone when this is the self-load
+                // release (it runs after `remove_dead_eager_kernel` removed
+                // the kernel). Guard every kernel access on liveness.
+                let kernel_present = !kernel_id.is_null() && self.kernels.contains_id(kernel_id);
+                if kernel_present {
+                    self.kernels[kernel_id].outputs.remove(&x);
                 }
-                // No live output of this kernel keeps x's op chain: prune it.
-                // The dropped loads may include x's own self-load edge, whose
-                // release drives rc to zero and frees the entry.
-                let pruned = if !op_id.is_null() {
+                // rc is 0 here (the caller's reference was already dropped, and
+                // the kernel self-load edge is the last one). Prune the op
+                // chain this tensor needed; dropped operand loads are released.
+                let pruned = if kernel_present && !op_id.is_null() {
                     let out_ops: Vec<OpId> = self.kernels[kernel_id]
                         .outputs
                         .iter()
@@ -677,10 +657,16 @@ impl Runtime {
                     Vec::new()
                 };
                 for tid in pruned {
+                    // The kernel's self-load entry is `x` itself; it is freed
+                    // below (and by `remove_dead_eager_kernel`), not by a
+                    // recursive `release` that would underflow `rc`.
+                    if tid == x {
+                        continue;
+                    }
                     self.release(tid);
                 }
-                // x may already have been freed by a recursive release above
-                // (its self-load edge). Only finalize if it is still present.
+                // Finalize x if it survived the prune (it is freed here on the
+                // last handle, or by `remove_dead_eager_kernel` on the self-load).
                 if self.tensors.contains_id(x) && depends_on.is_null() {
                     free_buffer(self, x);
                     self.tensors.remove(x);
@@ -689,9 +675,11 @@ impl Runtime {
                         self.release(shape_id);
                     }
                 }
-                if !kernel_id.is_null() && self.kernels.contains_id(kernel_id) {
-                    let kd = &self.kernels[kernel_id];
-                    let dead = kd.outputs.is_empty() && !kd.kernel.contains_stores();
+                // Kernel death is owned by `remove_dead_eager_kernel`. On the
+                // self-load release path the kernel is already removed, so only
+                // tear it down when we still own a live kernel.
+                if kernel_present && self.kernels.contains_id(kernel_id) {
+                    let dead = self.kernels[kernel_id].outputs.is_empty() && !self.kernels[kernel_id].kernel.contains_stores();
                     if dead {
                         self.remove_dead_eager_kernel(kernel_id);
                     }
