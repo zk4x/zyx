@@ -1672,6 +1672,7 @@ impl Tensor {
     /// Returns error if the tensors have non broadcasteable shapes.
     pub fn dot(&self, rhs: impl Into<Tensor>) -> Result<Tensor, ZyxError> {
         let rhs = rhs.into();
+        eprintln!("DBG dot self.id={} shape={:?} rhs.id={} shape={:?}", self.id, self.shape(), rhs.id, rhs.shape());
         let org_y_shape = rhs.shape();
         let y = rhs.t();
         let xshape = self.shape();

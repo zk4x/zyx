@@ -190,10 +190,11 @@ The user knows the answer to your design questions. Over-investigation is a hard
 4. Iterate: the user answers / pastes debug output; you reason over what they gave you and ask the next question. Do not switch to reading source to "check" — stay in the ask-answer loop.
 
 Automatic "STOP and ask" triggers (each one alone means you must ask, not investigate):
-- You want to add instrumentation (`eprintln`/`println`) to diagnose → ask.
 - You want to read a second file to resolve a question → ask.
 - You've used more than ~2 investigative tool calls after the backtrace → ask.
 - You find yourself forming a question, then going to read code to answer it → that question is for the user; ask them.
+
+EXCEPTION — debug prints: adding temporary `eprintln!`/`println!` debug instrumentation does NOT require asking. Just add it, run, and bring the output. Remember to remove temporary prints before finishing (never leave debug code behind).
 
 **Never run a Read/Grep/Bash tool to investigate a bug until you have asked the user the question you are trying to answer.** Reading code to answer your own question IS the failure.
 
@@ -201,7 +202,7 @@ Automatic "STOP and ask" triggers (each one alone means you must ask, not invest
 - Every time the test fails after you made a change, that failure is a **NEW task**. Stop. Report exactly what panicked and where. Ask the user how to proceed before touching any file again.
 - One fix per question. You may NOT run the test again and patch whatever breaks next without a question in between.
 - If you are about to run the test a second time in a row to see "what happens next", you are chaining fixes — stop and ask.
-- Adding any `eprintln`/`println` debug instrumentation during this loop requires asking first (per the trigger above); if you added some without asking, remove it and ask.
+- Adding any `eprintln`/`println` debug instrumentation during this loop is allowed WITHOUT asking (see exception above); just remember to remove it before finishing.
 
 ### ZYX_DEBUG (bitmask, `ENV_VARS.md`)
 

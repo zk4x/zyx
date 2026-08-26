@@ -33,6 +33,8 @@ Always duplicate. Design the user API and write a list of requirements. Then wri
 
 Duplication is fine. Duplication is good. We like duplication. Do NOT invent an abstraction "for cleanliness" when two call sites happen to look alike — copy the code. The right abstraction emerges only after integration tests pass, and even then it is optional. "Keep it simple, stupid" leads to premature, wrong abstractions; explicit duplicated code is easier to read, debug, and change independently. Prefer a 200-line function over a clever 20-line helper that five places must agree on.
 
+If something doesn't NATURALLY serve dual purpose, NEVER force it — always duplicate by default, and deduplicate only when the fit for both call sites is obvious and natural. A "shared" function contorted with flags/modes to serve two callers is worse than two honest copies.
+
 ### Additive features (orthogonality)
 
 The goal of good abstractions is **orthogonality** — features compose without interfering. Complexity scales linearly while capabilities scale exponentially.

@@ -1925,6 +1925,7 @@ impl Runtime {
 
     pub fn eagerify(&mut self, tid: TensorId) {
         let realized = self.buffer_map.contains_key(&tid);
+        eprintln!("DBG eagerify tid={tid} realized={realized} variant={:?}", self.tensors[tid]);
         let (old_kernel_id, old_op_id, graph_id, shape_id) = match self.tensors[tid] {
             TensorData::Graph { graph_id, shape_id, .. } => (KernelId::NULL, OpId::NULL, graph_id, shape_id),
             TensorData::Promoted { kernel_id, op_id, graph_id, shape_id, .. } => (kernel_id, op_id, graph_id, shape_id),
@@ -1954,7 +1955,14 @@ impl Runtime {
             // no data moves. The slab-side `shape_id` is replayed into the
             // new kernel.
             if !old_kernel_id.is_null() {
-                self.on_rc_zero(tid, old_kernel_id, old_op_id);
+                // Live detach: this tensor is still alive (rc > 0), only its
+                // affiliation moves to a fresh load kernel below. A kernel can
+                // be used by MULTIPLE tensors, so the old producer survives
+                // intact — just remove this tensor from its outputs. Its fate
+                // is settled later by whoever truly kills it (`release` →
+                // `on_rc_zero`); no death bookkeeping here.
+                let removed = self.kernels[old_kernel_id].outputs.remove(&tid);
+                debug_assert!(removed, "eagerify: tid {tid} not listed in outputs of producer {old_kernel_id:?}");
             }
             let dtype = self.dtype(tid);
             let kernel_id = self.kernels.push(KernelData {
