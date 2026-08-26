@@ -29,21 +29,13 @@ use crate::{
     kernel::{Kernel, Op, OpId},
     shape::Dim,
 };
+use std::fmt::{Display, Formatter};
 
 impl Kernel {
     /// Print debug information for the kernel.
     ///
-    /// This method prints detailed information about the kernel IR,
-    /// including:
-    ///
-    /// - Loaded and stored tensor IDs
-    /// - Output tensor IDs
-    /// - Operation bounds (value ranges)
-    /// - Operation dtypes
-    /// - Loop information
-    ///
     /// Output is color-coded for readability, but color is disabled
-    /// when running with AGENT=1 (for cleaner log output).
+    /// when running with `AGENT=1` (for cleaner log output).
     ///
     /// # Example
     ///
@@ -52,10 +44,20 @@ impl Kernel {
     /// ZYX_DEBUG=16 cargo run # Print generated assembly
     /// ```
     pub fn debug(&self) {
+        println!("{self}")
+    }
+
+    /// Render the kernel as a string.
+    ///
+    /// The `remap_ids` parameter is ignored in this implementation.
+    pub fn render(&self, _remap_ids: bool) -> String {
+        format!("{self}")
+    }
+}
+
+impl Display for Kernel {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         let remap_ids = false;
-        //println!("\nloads={:?}", self.loads);
-        //println!("stores={:?}", self.stores);
-        //println!("outputs={:?}", self.outputs);
         let mut indent = String::from(" ");
         let bounds = self.compute_bounds();
         let mut dtypes: Map<OpId, DType> = Map::default();
@@ -88,7 +90,8 @@ impl Kernel {
                         indent.pop();
                         indent.pop();
                     }
-                    println!(
+                    writeln!(
+                        f,
                         "{indent}r{out_id}{grey}: {dtype}{reset} = {red}reduce {}{reset} r{x} over r{reduce_axis}",
                         match rop {
                             BOp::Add => "sum",
@@ -97,13 +100,15 @@ impl Kernel {
                             _ => unreachable!(),
                         },
                         reduce_axis = id_map[&reduce_axis]
-                    );
+                    )
+                    .unwrap();
                 }
                 Op::ReduceTile { x, rop, .. } => {
                     let dtype = dtypes.get(&x).copied().unwrap_or(DType::U8);
                     dtypes.insert(op_id, dtype);
                     let x = id_map[&x];
-                    println!(
+                    writeln!(
+                        f,
                         "{indent}r{out_id}: {dtype}{grey}: {dtype}{reset} = {red}reduce_tile_{}{reset} r{x}",
                         match rop {
                             BOp::Add => "sum",
@@ -111,33 +116,34 @@ impl Kernel {
                             BOp::Mul => "prod",
                             _ => unreachable!(),
                         },
-                    );
+                    )
+                    .unwrap();
                 }
                 Op::MatmulTile { x, y } => {
                     let dtype = dtypes.get(&x).copied().unwrap_or(DType::U8);
                     dtypes.insert(op_id, dtype);
                     let x = id_map[&x];
                     let y = id_map[&y];
-                    println!("{indent}r{out_id}{grey}: {dtype}{reset} = {red}matmul_tile{reset} r{x}, r{y}");
+                    writeln!(f, "{indent}r{out_id}{grey}: {dtype}{reset} = {red}matmul_tile{reset} r{x}, r{y}").unwrap();
                 }
                 Op::TransposeTile { x } => {
                     let dtype = dtypes.get(&x).copied().unwrap_or(DType::U8);
                     dtypes.insert(op_id, dtype);
                     let x = id_map[&x];
-                    println!("{indent}r{out_id}{grey}: {dtype}{reset} = {red}transpose_tile{reset} r{x}");
+                    writeln!(f, "{indent}r{out_id}{grey}: {dtype}{reset} = {red}transpose_tile{reset} r{x}").unwrap();
                 }
                 Op::Param { dtype, kind, shape } => {
                     dtypes.insert(op_id, dtype);
-                    println!("{indent}{red}r{out_id}{reset}{grey}: {dtype}{reset} = {yellow}param{reset} {kind} shape=r{shape}");
+                    writeln!(f, "{indent}{red}r{out_id}{reset}{grey}: {dtype}{reset} = {yellow}param{reset} {kind} shape=r{shape}").unwrap();
                 }
                 Op::Storage { dtype, scope, len } => {
                     dtypes.insert(op_id, dtype);
-                    println!("{indent}{red}r{out_id}{reset}{grey}: {dtype}{reset} = {yellow}storage{reset} {scope}, len={len:?}");
+                    writeln!(f, "{indent}{red}r{out_id}{reset}{grey}: {dtype}{reset} = {yellow}storage{reset} {scope}, len={len:?}").unwrap();
                 }
                 Op::Const(value) => {
                     let dtype = value.dtype();
                     dtypes.insert(op_id, dtype);
-                    println!("{indent}r{out_id}{grey}: {dtype}{reset} = {magenta}{value}{reset}");
+                    writeln!(f, "{indent}r{out_id}{grey}: {dtype}{reset} = {magenta}{value}{reset}").unwrap();
                 }
                 Op::Load { src, index, layout } => {
                     let dtype = dtypes.get(&src).copied().unwrap_or(DType::U8);
@@ -145,9 +151,11 @@ impl Kernel {
                     let (lb, ub) = bounds.get(&index).copied().unwrap_or((0, 0));
                     let src = id_map.get(&src).copied().unwrap_or(src);
                     let index = id_map.get(&index).copied().unwrap_or(index);
-                    println!(
+                    writeln!(
+                        f,
                         "{indent}r{out_id}{grey}: {dtype}{reset} = {red}r{src}{reset}[r{index} @ {layout}]    // {lb}..={ub} {green}load{reset}"
-                    );
+                    )
+                    .unwrap();
                 }
                 Op::Store { dst, src: x, index, layout } => {
                     let dtype = dtypes.get(&x).copied().unwrap_or(DType::U8);
@@ -156,15 +164,15 @@ impl Kernel {
                     let dst = id_map.get(&dst).copied().unwrap_or(dst);
                     let index = id_map.get(&index).copied().unwrap_or(index);
                     let x = id_map.get(&x).copied().unwrap_or(x);
-                    println!("{indent}{red}r{dst}{reset}[r{index} @ {layout}] = r{x}    // {lb}..={ub} {red}store{reset}");
+                    writeln!(f, "{indent}{red}r{dst}{reset}[r{index} @ {layout}] = r{x}    // {lb}..={ub} {red}store{reset}").unwrap();
                 }
                 Op::Cast { x, dtype } => {
                     dtypes.insert(op_id, dtype);
                     let x = id_map.get(&x).copied().unwrap_or(x);
                     if let Some((lb, ub)) = bounds.get(&op_id) {
-                        println!("{indent}r{out_id}{grey}: {dtype}{reset} = {dtype}(r{x})    // {lb}..={ub}");
+                        writeln!(f, "{indent}r{out_id}{grey}: {dtype}{reset} = {dtype}(r{x})    // {lb}..={ub}").unwrap();
                     } else {
-                        println!("{indent}r{out_id}{grey}: {dtype}{reset} = {dtype}(r{x})");
+                        writeln!(f, "{indent}r{out_id}{grey}: {dtype}{reset} = {dtype}(r{x})").unwrap();
                     }
                 }
                 Op::Unary { x, uop, .. } => {
@@ -187,9 +195,9 @@ impl Kernel {
                     };
                     let x = id_map.get(&x).copied().unwrap_or(x);
                     if let Some((lb, ub)) = bounds.get(&op_id) {
-                        println!("{indent}r{out_id}{grey}: {dtype}{reset} = {op1}r{x}{op2}    // {lb}..={ub}");
+                        writeln!(f, "{indent}r{out_id}{grey}: {dtype}{reset} = {op1}r{x}{op2}    // {lb}..={ub}").unwrap();
                     } else {
-                        println!("{indent}r{out_id}{grey}: {dtype}{reset} = {op1}r{x}{op2}");
+                        writeln!(f, "{indent}r{out_id}{grey}: {dtype}{reset} = {op1}r{x}{op2}").unwrap();
                     }
                 }
                 Op::Binary { x, y, bop, .. } => {
@@ -223,9 +231,9 @@ impl Kernel {
                     let x = id_map.get(&x).copied().unwrap_or(x);
                     let y = id_map.get(&y).copied().unwrap_or(y);
                     if let Some((lb, ub)) = bounds.get(&op_id) {
-                        println!("{indent}r{out_id}{grey}: {dtype}{reset} = {op1}{x}{op2}{y}{op3}    // {lb}..={ub}");
+                        writeln!(f, "{indent}r{out_id}{grey}: {dtype}{reset} = {op1}{x}{op2}{y}{op3}    // {lb}..={ub}").unwrap();
                     } else {
-                        println!("{indent}r{out_id}{grey}: {dtype}{reset} = {op1}{x}{op2}{y}{op3}");
+                        writeln!(f, "{indent}r{out_id}{grey}: {dtype}{reset} = {op1}{x}{op2}{y}{op3}").unwrap();
                     }
                 }
                 Op::Mad { x, y, z } => {
@@ -235,9 +243,9 @@ impl Kernel {
                     let y = id_map.get(&y).copied().unwrap_or(y);
                     let z = id_map.get(&z).copied().unwrap_or(z);
                     if let Some((l, u)) = bounds.get(&op_id) {
-                        println!("{indent}r{out_id}{grey}: {dtype}{reset} = r{x} * r{y} + r{z}    // {l}..={u}");
+                        writeln!(f, "{indent}r{out_id}{grey}: {dtype}{reset} = r{x} * r{y} + r{z}    // {l}..={u}").unwrap();
                     } else {
-                        println!("{indent}r{out_id}{grey}: {dtype}{reset} = r{x} * r{y} + r{z}");
+                        writeln!(f, "{indent}r{out_id}{grey}: {dtype}{reset} = r{x} * r{y} + r{z}").unwrap();
                     }
                 }
                 Op::Wmma { dims, layout, dtype, c, a, b } => {
@@ -246,9 +254,7 @@ impl Kernel {
                     let a = id_map.get(&a).copied().unwrap_or(a);
                     let b = id_map.get(&b).copied().unwrap_or(b);
                     let c = id_map.get(&c).copied().unwrap_or(c);
-                    println!(
-                        "{indent}r{out_id}{grey}: {cdtype}{reset} = {orange}wmma{reset}.{dims:?}.{layout:?}.{dtype:?}(c={c}, a={a}, b={b})",
-                    );
+                    writeln!(f, "{indent}r{out_id}{grey}: {cdtype}{reset} = {orange}wmma{reset}.{dims:?}.{layout:?}.{dtype:?}(c={c}, a={a}, b={b})").unwrap();
                 }
                 Op::Index { axis, kind } => {
                     dtypes.insert(op_id, IDX_T);
@@ -256,13 +262,13 @@ impl Kernel {
                         IdxKind::Group(len) => {
                             let ub = self.resolve_const(len).and_then(crate::dtype::Constant::as_dim).unwrap_or(Dim::MAX).saturating_sub(1);
                             let len = id_map.get(&len).copied().unwrap_or(len);
-                            println!("{indent}r{out_id}{grey}: {IDX_T}{reset} = {blue}{kind}_index({axis}){reset} over {len}    // 0..={ub}");
+                            writeln!(f, "{indent}r{out_id}{grey}: {IDX_T}{reset} = {blue}{kind}_index({axis}){reset} over {len}    // 0..={ub}").unwrap();
                         }
                         IdxKind::Local(len) => {
-                            println!("{indent}r{out_id}{grey}: {IDX_T}{reset} = {blue}{kind}_index({axis}){reset}    // 0..={}", len - 1);
+                            writeln!(f, "{indent}r{out_id}{grey}: {IDX_T}{reset} = {blue}{kind}_index({axis}){reset}    // 0..={}", len - 1).unwrap();
                         }
                         IdxKind::Warp(len) => {
-                            println!("{indent}r{out_id}{grey}: {IDX_T}{reset} = {blue}local_index({axis}){reset}    // 0..={}", len - 1);
+                            writeln!(f, "{indent}r{out_id}{grey}: {IDX_T}{reset} = {blue}local_index({axis}){reset}    // 0..={}", len - 1).unwrap();
                         }
                     }
                 }
@@ -272,15 +278,15 @@ impl Kernel {
                     dtypes.insert(op_id, dtype);
                     let len = id_map.get(&len).copied().unwrap_or(OpId::NULL);
                     if let Some((l, u)) = bounds.get(&op_id) {
-                        println!("{indent}{bold}for{reset} r{out_id} in 0..r{len} {{    // {l}..={}", u);
+                        writeln!(f, "{indent}{bold}for{reset} r{out_id} in 0..r{len} {{    // {l}..={}", u).unwrap();
                     } else {
-                        println!("{indent}{bold}for{reset} r{out_id} in 0..r{len} {{");
+                        writeln!(f, "{indent}{bold}for{reset} r{out_id} in 0..r{len} {{").unwrap();
                     }
                     indent += "  ";
                 }
                 Op::If { condition } => {
                     let condition = id_map.get(&condition).copied().unwrap_or(OpId::NULL);
-                    println!("{indent}{bold}if{reset} r{condition} {{");
+                    writeln!(f, "{indent}{bold}if{reset} r{condition} {{").unwrap();
                     indent += "  ";
                 }
                 Op::EndIf | Op::EndLoop => {
@@ -288,22 +294,22 @@ impl Kernel {
                         indent.pop();
                         indent.pop();
                     }
-                    println!("{indent}}}");
+                    writeln!(f, "{indent}}}").unwrap();
                 }
                 Op::Asm { ref asm, ref ops } => {
                     let dtype = dtypes.get(&ops[0]).copied().unwrap_or(DType::U8);
                     dtypes.insert(op_id, dtype);
                     let ops: Vec<OpId> = ops.iter().map(|x| id_map.get(x).copied().unwrap_or(OpId::NULL)).collect();
-                    println!("{indent}r{out_id}{grey}: {dtype}{reset} = {orange}asm{reset} {asm:?} {ops:?}");
+                    writeln!(f, "{indent}r{out_id}{grey}: {dtype}{reset} = {orange}asm{reset} {asm:?} {ops:?}").unwrap();
                 }
                 Op::Stack { ref ops } => {
                     let dtype = dtypes.get(&ops[0]).copied().unwrap_or(DType::U8);
                     dtypes.insert(op_id, dtype);
                     let ops: Vec<OpId> = ops.iter().map(|x| id_map.get(x).copied().unwrap_or(OpId::NULL)).collect();
                     if let Some((lb, ub)) = bounds.get(&op_id) {
-                        println!("{indent}r{out_id}{grey}: {dtype}{reset} = {orange}stack{reset}{ops:?}    // {lb}..={ub}");
+                        writeln!(f, "{indent}r{out_id}{grey}: {dtype}{reset} = {orange}stack{reset}{ops:?}    // {lb}..={ub}").unwrap();
                     } else {
-                        println!("{indent}r{out_id}{grey}: {dtype}{reset} = {orange}stack{reset}{ops:?}");
+                        writeln!(f, "{indent}r{out_id}{grey}: {dtype}{reset} = {orange}stack{reset}{ops:?}").unwrap();
                     }
                 }
                 Op::Devectorize { vec, idx } => {
@@ -311,9 +317,9 @@ impl Kernel {
                     dtypes.insert(op_id, dtype);
                     let vec = id_map.get(&vec).copied().unwrap_or(OpId::NULL);
                     if let Some((l, u)) = bounds.get(&op_id) {
-                        println!("{indent}r{out_id}{grey}: {dtype}{reset} = r{vec}{orange}.s{idx}{reset}    // {l}..={u}",);
+                        writeln!(f, "{indent}r{out_id}{grey}: {dtype}{reset} = r{vec}{orange}.s{idx}{reset}    // {l}..={u}",).unwrap();
                     } else {
-                        println!("{indent}r{out_id}{grey}: {dtype}{reset} = r{vec}{orange}.s{idx}{reset}");
+                        writeln!(f, "{indent}r{out_id}{grey}: {dtype}{reset} = r{vec}{orange}.s{idx}{reset}").unwrap();
                     }
                 }
                 Op::Move { x, ref mop } => {
@@ -323,40 +329,36 @@ impl Kernel {
                     match mop.as_ref() {
                         &MoveOp::Reshape { shape, .. } => {
                             let shape = id_map.get(&shape).copied().unwrap_or(shape);
-                            println!("{indent}r{out_id}{grey}: {dtype}{reset} = {cyan}reshape{reset} r{x} -> {shape:?}");
+                            writeln!(f, "{indent}r{out_id}{grey}: {dtype}{reset} = {cyan}reshape{reset} r{x} -> {shape:?}").unwrap();
                         }
                         &MoveOp::Expand { shape } => {
                             let shape = id_map.get(&shape).copied().unwrap_or(shape);
-                            println!("{indent}r{out_id}{grey}: {dtype}{reset} = {cyan}expand{reset} r{x} -> {shape:?}");
+                            writeln!(f, "{indent}r{out_id}{grey}: {dtype}{reset} = {cyan}expand{reset} r{x} -> {shape:?}").unwrap();
                         }
                         MoveOp::Permute { axes } => {
-                            println!("{indent}r{out_id}{grey}: {dtype}{reset} = {cyan}permute{reset} r{x} axes={axes:?}");
+                            writeln!(f, "{indent}r{out_id}{grey}: {dtype}{reset} = {cyan}permute{reset} r{x} axes={axes:?}").unwrap();
                         }
                         &MoveOp::Pad { ref axis, lp, len } => {
                             let lp = id_map.get(&lp).copied().unwrap_or(lp);
                             let len = id_map.get(&len).copied().unwrap_or(len);
-                            println!(
-                                "{indent}r{out_id}{grey}: {dtype}{reset} = {cyan}pad{reset} r{x} axis={axis} lp=r{lp} len=r{len}",
-                            );
+                            writeln!(f, "{indent}r{out_id}{grey}: {dtype}{reset} = {cyan}pad{reset} r{x} axis={axis} lp=r{lp} len=r{len}").unwrap();
                         }
                         &MoveOp::Narrow { ref axis, start, len } => {
                             let start = id_map.get(&start).copied().unwrap_or(start);
                             let len = id_map.get(&len).copied().unwrap_or(len);
-                            println!(
-                                "{indent}r{out_id}{grey}: {dtype}{reset} = {cyan}narrow{reset} r{x} axis={axis} start=r{start} len=r{len}",
-                            );
+                            writeln!(f, "{indent}r{out_id}{grey}: {dtype}{reset} = {cyan}narrow{reset} r{x} axis={axis} start=r{start} len=r{len}").unwrap();
                         }
                         MoveOp::Flip { axes } => {
-                            println!("{indent}r{out_id}{grey}: {dtype}{reset} = {cyan}flip{reset} r{x} axes={axes:?}");
+                            writeln!(f, "{indent}r{out_id}{grey}: {dtype}{reset} = {cyan}flip{reset} r{x} axes={axes:?}").unwrap();
                         }
                     }
                 }
                 Op::Barrier => {
-                    println!("{indent}barrier");
+                    writeln!(f, "{indent}barrier").unwrap();
                 }
             }
             op_id = self.ops[op_id].next;
         }
-        println!()
+        writeln!(f)
     }
 }

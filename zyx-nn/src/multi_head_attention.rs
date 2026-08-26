@@ -15,15 +15,15 @@ use crate::Linear;
 #[cfg_attr(feature = "py", pyo3::pyclass)]
 pub struct MultiheadAttention {
     /// - `embed_dim`: Total dimension of the model (i.e. output embedding size).
-    pub embed_dim: u64,
+    pub embed_dim: i64,
     /// - `kdim`: Dimension of the key input. If `None`, defaults to `embed_dim`.
-    pub kdim: u64,
+    pub kdim: i64,
     /// - `vdim`: Dimension of the value input. If `None`, defaults to `embed_dim`.
-    pub vdim: u64,
+    pub vdim: i64,
     /// - `num_heads`: Number of parallel attention heads.
-    pub num_heads: u64,
+    pub num_heads: i64,
     /// - `head_dim`: Dimension per attention head (i.e. `embed_dim / num_heads`).
-    pub head_dim: u64,
+    pub head_dim: i64,
 
     /// - `q_proj`: Linear projection layer for the query.
     pub q_proj: Linear,
@@ -68,18 +68,18 @@ impl MultiheadAttention {
     /// A configured `MultiheadAttention` module, or error on shape issues.
     #[allow(clippy::too_many_arguments)] // mirrors PyTorch API with multiple config parameters
     pub fn new(
-        embed_dim: u64,
-        num_heads: u64,
+        embed_dim: i64,
+        num_heads: i64,
         dropout: f32,
         bias: bool,
         add_bias_kv: bool,
         add_zero_attn: bool,
-        kdim: Option<u64>,
-        vdim: Option<u64>,
+        kdim: Option<i64>,
+        vdim: Option<i64>,
         batch_first: bool,
         dtype: DType,
     ) -> Result<Self, ZyxError> {
-        if !embed_dim.is_multiple_of(num_heads) {
+        if embed_dim % num_heads != 0 {
             return Err(ZyxError::shape_error(
                 format!(
                     "embed_dim ({}) must be divisible by num_heads ({})",

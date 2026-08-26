@@ -220,8 +220,10 @@ pub enum MemScope {
     Local,
     /// Register scope (registers).
     Register,
-    /// Circular buffer, SRAM (tenstorrent)
-    Circular,
+    /// Circular buffer for reading, SRAM (tenstorrent)
+    CircularReader,
+    /// Circular buffer for writing, SRAM (tenstorrent)
+    CircularWriter,
 }
 
 /// Memory layout for kernel operations.
@@ -904,6 +906,9 @@ impl Kernel {
                 Op::Stack { ref ops } => return ops.to_vec(),
                 // A bare Const is a single concrete dim length.
                 Op::Const(_) => return vec![id],
+                // A scalar dim *expression* (over consts, params or loads)
+                // computes its own single dim length.
+                Op::Unary { .. } | Op::Binary { .. } | Op::Load { .. } => return vec![id],
                 Op::Param { shape, dtype, .. } => (shape, dtype),
                 ref op => todo!("shape_ids: invalid shape descriptor {op:?}"),
             };

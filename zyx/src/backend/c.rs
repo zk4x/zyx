@@ -45,7 +45,7 @@ pub struct CDevice {
     device_info: DeviceInfo,
     memory_pool_id: PoolId,
     programs: Slab<DeviceProgramId, CProgram>,
-    has_openmp: bool,
+    pub has_openmp: bool,
 }
 
 pub(super) fn initialize_device(

@@ -1,0 +1,10 @@
+[package]
+name = "nanogpt"
+version = "0.1.0"
+edition = "2021"
+license = "LGPL-3.0-only"
+
+[dependencies]
+zyx = { path = "../../zyx" }
+zyx-nn = { path = "../../zyx-nn" }
+zyx-optim = { path = "../../zyx-optim" }

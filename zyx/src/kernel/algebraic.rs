@@ -38,45 +38,57 @@ impl Kernel {
         let _timer = crate::Timer::new("algebraic_simplification");
 
         self.unfuse_mad();
-        self.simplify_shl_shr_roundtrips();
-        self.simplify_bitwise_identities();
 
+        // Single fused walk applying all per-op simplifications (shl_shr
+        // roundtrip, bitwise identities, div/mod, zero shifts, constant
+        // comparisons) at once instead of one full-IR walk per check. Bounds are
+        // computed once and are conservative (see `compute_bounds`), so reusing
+        // them across these value-preserving checks is sound.
         let bounds = self.compute_bounds();
+        self.simplify_fused(&bounds);
 
+        // Structural passes that match across multiple ops and may insert new
+        // ops; kept separate because they cannot be merged into the per-op walk.
+        self.simplify_mod_shift_sequences(&bounds);
+        self.simplify_demux_roundtrip(&bounds);
+        let bounds = self.compute_bounds();
+        self.simplify_mod_div_identity(&bounds);
+
+        self.dead_code_elimination();
+        self.verify();
+    }
+
+    /// Single linear walk applying every per-op simplification check. This fuses
+    /// what used to be several separate full-IR walks (`simplify_shl_shr_roundtrips`,
+    /// `simplify_bitwise_identities`, the div/mod simplification,
+    /// `simplify_zero_shifts`, `simplify_constant_comparisons`) into one O(N)
+    /// pass. `unfuse_mad`, `dead_code_elimination`, `verify`, and the structural
+    /// passes `simplify_mod_shift_sequences` / `simplify_demux_roundtrip` remain
+    /// separate.
+    fn simplify_fused(&mut self, bounds: &Map<OpId, (Dim, Dim)>) {
+        #[cfg(feature = "time")]
+        let _timer = crate::Timer::new("simplify_fused");
         let mut op_id = self.head;
         while !op_id.is_null() {
             let next = self.next_op(op_id);
-
-            if let &Op::Binary { x, y, bop } = self.at(op_id)
+            // shl_shr roundtrip: (x << n) >> n -> x (and the shr-of-add form).
+            if let Some(y) = self.match_shl_shr_roundtrip(op_id) {
+                self.remap(op_id, y);
+            } else if let Some(replacement) = self.match_bitwise_identity(op_id) {
+                self.remap(op_id, replacement);
+            } else if let &Op::Binary { x, y, bop } = self.at(op_id)
                 && matches!(bop, BOp::Div | BOp::Mod)
                 && let Op::Const(divisor) = self.at(y)
             {
                 let dtype = divisor.dtype();
                 if let Some(divisor) = divisor.as_dim() {
                     match bop {
-                        BOp::Mod => self.simplify_mod(op_id, x, y, dtype, &bounds),
-                        BOp::Div => self.simplify_div(op_id, x, divisor, dtype, &bounds),
+                        BOp::Mod => self.simplify_mod(op_id, x, y, dtype, bounds),
+                        BOp::Div => self.simplify_div(op_id, x, divisor, dtype, bounds),
                         _ => {}
                     }
                 }
-            }
-
-            op_id = next;
-        }
-
-        self.simplify_mod_shift_sequences(&bounds);
-        self.simplify_zero_shifts(&bounds);
-        self.simplify_demux_roundtrip(&bounds);
-        self.dead_code_elimination();
-        self.verify();
-    }
-
-    /// Fold `x >> k` to constant zero when the upper bound of `x` is below `2^k`.
-    fn simplify_zero_shifts(&mut self, bounds: &Map<OpId, (Dim, Dim)>) {
-        let mut op_id = self.head;
-        while !op_id.is_null() {
-            let next = self.next_op(op_id);
-            if let &Op::Binary { x, y, bop: BOp::BitShiftRight } = self.at(op_id)
+            } else if let &Op::Binary { x, y, bop: BOp::BitShiftRight } = self.at(op_id)
                 && let Op::Const(shift) = self.at(y)
                 && let Some(k) = shift.as_dim()
                 && k < 64
@@ -85,8 +97,112 @@ impl Kernel {
             {
                 let dtype = self.dtype(x);
                 self.ops[op_id].op = Op::Const(dtype.zero_constant());
+            } else if let &Op::Binary { x: cmp_x, y: cmp_y, bop } = self.at(op_id)
+                && matches!(bop, BOp::Eq | BOp::NotEq | BOp::Cmpge | BOp::Cmpgt | BOp::Cmplt)
+                && let Op::Const(cy) = self.at(cmp_y)
+                && cy.as_dim() == Some(0)
+                && let Op::Binary { x: sub_x, y: sub_y, bop: BOp::Sub } = self.at(cmp_x)
+            {
+                // `(a - b) OP 0` equals `a OP b` for integer comparisons, but only
+                // if `a - b` cannot overflow (otherwise wrapping breaks the
+                // equivalence). Guard with the conservative bounds.
+                let no_overflow = bounds
+                    .get(sub_x)
+                    .zip(bounds.get(sub_y))
+                    .map(|(&(a_lb, a_ub), &(b_lb, b_ub))| {
+                        a_ub.saturating_sub(b_lb) != i64::MAX && a_lb.saturating_sub(b_ub) != i64::MIN
+                    })
+                    .unwrap_or(false);
+                if no_overflow {
+                    self.ops[op_id].op = Op::Binary { x: *sub_x, y: *sub_y, bop };
+                }
+            } else if let &Op::Binary { x, y, bop } = self.at(op_id)
+                && !self.dtype(x).is_float()
+            {
+                let folded: Option<Constant> = match (self.at(x).clone(), self.at(y).clone()) {
+                    (Op::Const(cx), Op::Const(cy)) => Some(Constant::binary(cx, cy, bop)),
+                    (Op::Const(cx), _) => bounds
+                        .get(&y)
+                        .and_then(|&(lb, ub)| cx.as_dim().and_then(|cv| fold_cmp(bop, lb, ub, cv, true).map(Constant::Bool))),
+                    (_, Op::Const(cy)) => bounds
+                        .get(&x)
+                        .and_then(|&(lb, ub)| cy.as_dim().and_then(|cv| fold_cmp(bop, lb, ub, cv, false).map(Constant::Bool))),
+                    _ => None,
+                };
+                if let Some(c) = folded {
+                    self.ops[op_id].op = Op::Const(c);
+                }
             }
             op_id = next;
+        }
+    }
+
+    /// Collapse `(a % n) + n * (a / n)` (and its commutation) back to `a`, the
+    /// general integer round-trip identity `a = n * (a / n) + (a % n)`. This
+    /// fires for non-power-of-two strides where `simplify_demux_roundtrip`
+    /// (which requires power-of-two strides) cannot simplify the chain. Guarded
+    /// to non-negative `a` and positive `n` (truncated div/mod), using the
+    /// conservative bounds.
+    fn simplify_mod_div_identity(&mut self, bounds: &Map<OpId, (Dim, Dim)>) {
+        #[cfg(feature = "time")]
+        let _timer = crate::Timer::new("simplify_mod_div_identity");
+        let mut op_id = self.head;
+        while !op_id.is_null() {
+            let next = self.next_op(op_id);
+            if let &Op::Binary { x, y, bop: BOp::Add } = self.at(op_id) {
+                if let Some(a) = self
+                    .match_mod_div_identity(x, y, bounds)
+                    .or_else(|| self.match_mod_div_identity(y, x, bounds))
+                {
+                    self.remap(op_id, a);
+                }
+            }
+            op_id = next;
+        }
+    }
+
+    /// If `mod_op` is `a % n` and `mul_op` is `n * (a / n)` (in either mul order)
+    /// with the same `a`/`n`, return `a`. `a` must be non-negative and `n`
+    /// strictly positive (per `bounds`) for the truncated-division identity to hold.
+    fn match_mod_div_identity(&self, mod_op: OpId, mul_op: OpId, bounds: &Map<OpId, (Dim, Dim)>) -> Option<OpId> {
+        let (a, n) = match self.at(mod_op) {
+            Op::Binary { x, y, bop: BOp::Mod } => (*x, *y),
+            _ => return None,
+        };
+        if self.dtype(a).is_float() || self.dtype(n).is_float() {
+            return None;
+        }
+        // Default to the widest possible (negative) bound so a missing entry in
+        // the conservative bounds map does NOT silently satisfy `a >= 0`. `n`
+        // defaults to 0, which fails the `n > 0` check, so an unbounded `n` is
+        // also refused.
+        let a_lb = bounds.get(&a).map_or(Dim::MIN, |&(lb, _)| lb);
+        let n_lb = bounds.get(&n).map_or(0, |&(lb, _)| lb);
+        if a_lb < 0 || n_lb <= 0 {
+            return None;
+        }
+        match self.at(mul_op) {
+            Op::Binary { x, y, bop: BOp::Mul } => {
+                if self.match_div_a_n(*x, *y, a, n).is_some() {
+                    return Some(a);
+                }
+                if self.match_div_a_n(*y, *x, a, n).is_some() {
+                    return Some(a);
+                }
+                None
+            }
+            _ => None,
+        }
+    }
+
+    /// Returns `Some(())` when `mul_side == n` and `div_side == Div(a, n)`.
+    fn match_div_a_n(&self, mul_side: OpId, div_side: OpId, a: OpId, n: OpId) -> Option<()> {
+        if mul_side != n {
+            return None;
+        }
+        match self.at(div_side) {
+            Op::Binary { x, y, bop: BOp::Div } if *x == a && *y == n => Some(()),
+            _ => None,
         }
     }
 
@@ -95,6 +211,8 @@ impl Kernel {
     /// shifts each to a new position via mul/shl, and sums them (a round-trip
     /// after merge_nested_loops + constant folding).
     fn simplify_demux_roundtrip(&mut self, bounds: &Map<OpId, (Dim, Dim)>) {
+        #[cfg(feature = "time")]
+        let _timer = crate::Timer::new("simplify_demux_roundtrip");
         /// A slice of a variable extracted via div/mod/shr then shifted back.
         #[derive(Clone)]
         struct Slice {
@@ -356,17 +474,7 @@ impl Kernel {
         }
     }
 
-    fn simplify_shl_shr_roundtrips(&mut self) {
-        let mut op_id = self.head;
-        while !op_id.is_null() {
-            let next = self.next_op(op_id);
-            if let Some(y) = self.match_shl_shr_roundtrip(op_id) {
-                self.remap(op_id, y);
-            }
-            op_id = next;
-        }
-        self.dead_code_elimination();
-    }
+
 
     fn match_shl_shr_roundtrip(&self, op_id: OpId) -> Option<OpId> {
         let Op::Binary { x: add_op, y: shift_amount, bop: BOp::BitShiftRight } = self.at(op_id) else {
@@ -391,17 +499,7 @@ impl Kernel {
         None
     }
 
-    fn simplify_bitwise_identities(&mut self) {
-        let mut op_id = self.head;
-        while !op_id.is_null() {
-            let next = self.next_op(op_id);
-            if let Some(replacement) = self.match_bitwise_identity(op_id) {
-                self.remap(op_id, replacement);
-            }
-            op_id = next;
-        }
-        self.dead_code_elimination();
-    }
+
 
     fn match_bitwise_identity(&self, op_id: OpId) -> Option<OpId> {
         if let Op::Binary { x, y, bop: BOp::BitAnd } = self.at(op_id) {
@@ -802,13 +900,28 @@ fn mul_add(k: &Kernel, x: OpId) -> Option<(OpId, Dim, OpId)> {
 }
 
 fn match_mul_or_shl(k: &Kernel, op: OpId) -> Option<(OpId, Dim)> {
+    // Multiplication is commutative, so recognize the constant factor on either
+    // side: `a * c` and `c * a` both bind `a` to the non-constant operand.
     if let Op::Binary { x: a, y: c, bop: BOp::Mul } = k.at(op)
         && let Op::Const(cst) = k.at(*c)
         && let Some(cval) = cst.as_dim()
     {
         return Some((*a, cval));
     }
+    if let Op::Binary { x: c, y: a, bop: BOp::Mul } = k.at(op)
+        && let Op::Const(cst) = k.at(*c)
+        && let Some(cval) = cst.as_dim()
+    {
+        return Some((*a, cval));
+    }
     if let Op::Binary { x: a, y: c, bop: BOp::BitShiftLeft } = k.at(op)
+        && let Op::Const(cst) = k.at(*c)
+        && let Some(cval) = cst.as_dim()
+        && cval < 64
+    {
+        return Some((*a, 1i64 << cval));
+    }
+    if let Op::Binary { x: c, y: a, bop: BOp::BitShiftLeft } = k.at(op)
         && let Op::Const(cst) = k.at(*c)
         && let Some(cval) = cst.as_dim()
         && cval < 64
@@ -823,6 +936,69 @@ fn mad(k: &Kernel, x: OpId) -> Option<(OpId, Dim, OpId)> {
     let Op::Const(cst) = k.at(*c) else { return None };
     let cval = cst.as_dim()?;
     Some((*a, cval, *b))
+}
+
+/// Statically evaluate a comparison / equality op `x <op> c` (or `c <op> x`)
+/// when `x` has a conservative integer bound `(lb, ub)` and `c` is a
+/// compile-time constant. Returns `Some(true)` / `Some(false)` when the bound
+/// forces a single outcome, `None` when it cannot be decided from the bound
+/// alone. `const_is_left` distinguishes `c <op> x` (`true`) from `x <op> c`
+/// (`false`). See `compute_bounds` for the meaning of "conservative".
+fn fold_cmp(bop: BOp, lb: Dim, ub: Dim, c: Dim, const_is_left: bool) -> Option<bool> {
+    match bop {
+        BOp::Cmpge => {
+            if const_is_left {
+                if c >= ub { Some(true) } else if c < lb { Some(false) } else { None }
+            } else if lb >= c {
+                Some(true)
+            } else if ub < c {
+                Some(false)
+            } else {
+                None
+            }
+        }
+        BOp::Cmpgt => {
+            if const_is_left {
+                if c > ub { Some(true) } else if c <= lb { Some(false) } else { None }
+            } else if lb > c {
+                Some(true)
+            } else if ub <= c {
+                Some(false)
+            } else {
+                None
+            }
+        }
+        BOp::Cmplt => {
+            if const_is_left {
+                if c < lb { Some(true) } else if c >= ub { Some(false) } else { None }
+            } else if ub < c {
+                Some(true)
+            } else if lb >= c {
+                Some(false)
+            } else {
+                None
+            }
+        }
+        BOp::Eq => {
+            if lb == ub {
+                Some(lb == c)
+            } else if c < lb || c > ub {
+                Some(false)
+            } else {
+                None
+            }
+        }
+        BOp::NotEq => {
+            if lb == ub {
+                Some(lb != c)
+            } else if c < lb || c > ub {
+                Some(true)
+            } else {
+                None
+            }
+        }
+        _ => None,
+    }
 }
 
 #[cfg(test)]

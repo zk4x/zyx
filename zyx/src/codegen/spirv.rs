@@ -721,7 +721,7 @@ impl Kernel {
                     }
                     &Op::Storage { dtype, scope, len } => {
                         match scope {
-                            MemScope::Circular => unreachable!(),
+                            MemScope::CircularReader | MemScope::CircularWriter => unreachable!(),
                             MemScope::Global => {
                                 unreachable!()
                             }
@@ -1128,7 +1128,7 @@ impl Kernel {
                     }
                     Op::Storage { scope, .. } => {
                         match scope {
-                            MemScope::Circular => unreachable!(),
+                            MemScope::CircularReader | MemScope::CircularWriter => unreachable!(),
                             MemScope::Global | MemScope::Local => {
                                 // Already declared as module-level variable
                             }
@@ -1830,15 +1830,17 @@ fn capability_name(c: u32) -> &'static str {
     }
 }
 
-pub fn debug_print(spv: &[u32]) {
+pub fn debug_string(spv: &[u32]) -> String {
+    use std::fmt::Write;
+    let mut out = String::new();
     if spv.len() < 5 {
-        return;
+        return out;
     }
     let bound = spv[3];
-    println!("; SPIR-V disassembly (bound={bound})");
-    println!("; {} words", spv.len());
+    writeln!(out, "; SPIR-V disassembly (bound={bound})").unwrap();
+    writeln!(out, "; {} words", spv.len()).unwrap();
 
-    let mut i = 5; // skip header
+    let mut i = 5;
     while i < spv.len() {
         let w = spv[i];
         let word_count = (w >> 16) as u16;
@@ -1848,64 +1850,57 @@ pub fn debug_print(spv: &[u32]) {
         }
 
         if let Ok(op) = OpCode::try_from(op) {
-            print!("  {op:?}");
+            write!(out, "  {op:?}").unwrap();
         } else {
-            print!("  ??");
+            write!(out, "  ??").unwrap();
         }
 
         let operands = if i + word_count as usize <= spv.len() {
             &spv[i + 1..i + word_count as usize]
         } else {
-            // Malformed SPIR-V, slice to end
             &spv[i + 1..]
         };
 
-        // Format known instructions
         match op {
             17 => {
-                // Capability
                 if !operands.is_empty() {
-                    print!(" {}", capability_name(operands[0]));
+                    write!(out, " {}", capability_name(operands[0])).unwrap();
                 }
             }
             11 => {
-                // ExtInstImport
                 if operands.len() >= 2 {
-                    print!(" %{}", operands[0]);
+                    write!(out, " %{}", operands[0]).unwrap();
                     let name_bytes: Vec<u8> = operands[1..].iter().flat_map(|w| w.to_le_bytes()).collect();
                     let name_str = String::from_utf8_lossy(&name_bytes).trim_end_matches('\0').to_string();
-                    print!(" \"{name_str}\"");
+                    write!(out, " \"{name_str}\"").unwrap();
                 }
             }
             14 => {
-                // MemoryModel
                 if operands.len() >= 2 {
-                    print!(" {}", if operands[0] == 0 { "Logical" } else { "??" });
-                    print!(" {}", if operands[1] == 1 { "GLSL450" } else { "??" });
+                    write!(out, " {}", if operands[0] == 0 { "Logical" } else { "??" }).unwrap();
+                    write!(out, " {}", if operands[1] == 1 { "GLSL450" } else { "??" }).unwrap();
                 }
             }
             15 => {
-                // EntryPoint
                 if operands.len() >= 3 {
                     let model = match operands[0] {
                         5 => "GLCompute",
                         _ => "??",
                     };
-                    print!(" {} %{}", model, operands[1]);
+                    write!(out, " {} %{}", model, operands[1]).unwrap();
                     let name_bytes: Vec<u8> = operands[2..].iter().flat_map(|w| w.to_le_bytes()).collect();
                     let name_end = name_bytes.iter().position(|&b| b == 0).unwrap_or(name_bytes.len());
                     let name_str = String::from_utf8_lossy(&name_bytes[..name_end]);
-                    print!(" \"{name_str}\"");
+                    write!(out, " \"{name_str}\"").unwrap();
                     let name_word_len = (name_end + 4) / 4;
                     for &id in &operands[2 + name_word_len..] {
-                        print!(" %{id}");
+                        write!(out, " %{id}").unwrap();
                     }
                 }
             }
             16 => {
-                // ExecutionMode
                 if operands.len() >= 2 {
-                    print!(" %{}", operands[0]);
+                    write!(out, " %{}", operands[0]).unwrap();
                     let mode = match operands[1] {
                         17 => format!(
                             "LocalSize {} {} {}",
@@ -1915,138 +1910,126 @@ pub fn debug_print(spv: &[u32]) {
                         ),
                         _ => format!("??({})", operands[1]),
                     };
-                    print!(" {mode}");
+                    write!(out, " {mode}").unwrap();
                 }
             }
             71 => {
-                // Decorate
                 if operands.len() >= 2 {
-                    print!(" %{} {:?}", operands[0], Decoration::try_from(operands[1]).unwrap());
+                    write!(out, " %{} {:?}", operands[0], Decoration::try_from(operands[1]).unwrap()).unwrap();
                     if operands.len() > 2 {
                         if operands[1] == 11 {
-                            // BuiltIn
-                            print!(" {}", builtin_name(operands[2]));
+                            write!(out, " {}", builtin_name(operands[2])).unwrap();
                         } else {
                             for &v in &operands[2..] {
-                                print!(" {v}");
+                                write!(out, " {v}").unwrap();
                             }
                         }
                     }
                 }
             }
             21 => {
-                // TypeInt
                 if operands.len() >= 2 {
-                    print!(" %{} {} {}", operands[0], operands[1], if operands[2] == 0 { "u" } else { "i" });
+                    write!(out, " %{} {} {}", operands[0], operands[1], if operands[2] == 0 { "u" } else { "i" }).unwrap();
                 }
             }
             22 => {
-                // TypeFloat
                 if !operands.is_empty() {
-                    print!(" %{} {}", operands[0], operands[1]);
+                    write!(out, " %{} {}", operands[0], operands[1]).unwrap();
                 }
             }
             19 | 20 => {
-                // TypeVoid, TypeBool
                 if !operands.is_empty() {
-                    print!(" %{}", operands[0]);
+                    write!(out, " %{}", operands[0]).unwrap();
                 }
             }
             23 | 28 | 29 | 33 => {
-                // TypeVector, TypeArray, TypeRuntimeArray, TypeFunction
                 if !operands.is_empty() {
-                    print!(" %{}", operands[0]);
+                    write!(out, " %{}", operands[0]).unwrap();
                     for &v in &operands[1..] {
-                        print!(" %{v}");
+                        write!(out, " %{v}").unwrap();
                     }
                 }
             }
             32 => {
-                // TypePointer
                 if operands.len() >= 2 {
-                    print!(" %{} {} %{}", operands[0], storage_class_name(operands[1]), operands[2]);
+                    write!(out, " %{} {} %{}", operands[0], storage_class_name(operands[1]), operands[2]).unwrap();
                 }
             }
             43 | 61 | 65 | 81 | 87 | 12 => {
-                // Constant, Load, AccessChain, CompositeExtract, Select, ExtInst
                 if operands.len() >= 2 {
-                    print!(" %{} %{}", operands[0], operands[1]);
+                    write!(out, " %{} %{}", operands[0], operands[1]).unwrap();
                     for &v in &operands[2..] {
-                        print!(" %{v}");
+                        write!(out, " %{v}").unwrap();
                     }
                 }
             }
             59 => {
-                // Variable
                 if operands.len() >= 2 {
-                    print!(" %{} %{} {}", operands[0], operands[1], storage_class_name(operands[2]));
+                    write!(out, " %{} %{} {}", operands[0], operands[1], storage_class_name(operands[2])).unwrap();
                 }
             }
             54 => {
-                // Function
                 if operands.len() >= 3 {
-                    print!(" %{} %{}", operands[0], operands[1]);
+                    write!(out, " %{} %{}", operands[0], operands[1]).unwrap();
                     let ctrl = match operands[2] {
                         0 => "None".into(),
                         x => format!("?[{x}]?"),
                     };
-                    print!(" {ctrl}");
+                    write!(out, " {ctrl}").unwrap();
                     for &v in &operands[3..] {
-                        print!(" %{v}");
+                        write!(out, " %{v}").unwrap();
                     }
                 }
             }
             248 => {
-                // Label
                 if !operands.is_empty() {
-                    print!(" %{}", operands[0]);
+                    write!(out, " %{}", operands[0]).unwrap();
                 }
             }
             49 => {
-                // Branch
                 if !operands.is_empty() {
-                    print!(" %{}", operands[0]);
+                    write!(out, " %{}", operands[0]).unwrap();
                 }
             }
             50 => {
-                // BranchConditional
                 if operands.len() >= 3 {
-                    print!(" %{} %{} %{}", operands[0], operands[1], operands[2]);
+                    write!(out, " %{} %{} %{}", operands[0], operands[1], operands[2]).unwrap();
                 }
             }
             246 | 247 => {
-                // LoopMerge, SelectionMerge
                 if !operands.is_empty() {
-                    print!(" %{}", operands[0]);
+                    write!(out, " %{}", operands[0]).unwrap();
                     if operands.len() > 1 {
-                        print!(" %{}", operands[1]);
+                        write!(out, " %{}", operands[1]).unwrap();
                     }
                 }
             }
             62 => {
-                // Store
                 if operands.len() >= 2 {
-                    print!(" %{} %{}", operands[0], operands[1]);
+                    write!(out, " %{} %{}", operands[0], operands[1]).unwrap();
                 }
             }
             224 => {
-                // ControlBarrier
                 if operands.len() >= 3 {
-                    print!(" {} {} {}", operands[0], operands[1], operands[2]);
+                    write!(out, " {} {} {}", operands[0], operands[1], operands[2]).unwrap();
                 }
             }
             _ => {
-                // Generic: print all operands as numbers/IDs
                 for (j, &v) in operands.iter().enumerate() {
                     if j == 0 && !matches!(op, 56 | 63) {
-                        print!(" %{v}");
+                        write!(out, " %{v}").unwrap();
                     } else {
-                        print!(" {v}");
+                        write!(out, " {v}").unwrap();
                     }
                 }
             }
         }
-        println!();
+        writeln!(out).unwrap();
         i += word_count as usize;
     }
+    out
+}
+
+pub fn debug_print(spv: &[u32]) {
+    println!("{}", debug_string(spv));
 }

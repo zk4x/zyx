@@ -17,6 +17,8 @@ impl Kernel {
     /// (no uses before declarations) and proper data type propagation.
     /// This is an internal method used during kernel compilation.
     pub fn verify(&self) {
+        #[cfg(feature = "time")]
+        let _timer = crate::Timer::new("verify");
         if !cfg!(debug_assertions) {
             return;
         }
@@ -122,7 +124,7 @@ impl Kernel {
                             }
                         }
                     },
-                    Op::Storage { scope: MemScope::Local, .. } | Op::Storage { scope: MemScope::Circular, .. } => {
+                    Op::Storage { scope: MemScope::Local, .. } | Op::Storage { scope: MemScope::CircularReader, .. } | Op::Storage { scope: MemScope::CircularWriter, .. } => {
                         if phase == Phase::GlobalRo || phase == Phase::GlobalRw || phase == Phase::LocalRo {
                             phase = Phase::LocalRw;
                         }
@@ -301,9 +303,16 @@ impl Kernel {
                 }
                 Op::Index { axis, kind: scope, .. } => {
                     match scope {
-                        IdxKind::Group(_) => {
+                        IdxKind::Group(len) => {
                             if !gids.insert(axis) {
                                 println!("index={op_id} is using {scope} axis={axis} for the second time");
+                                self.debug();
+                                panic!();
+                            }
+                            if let Some(d) = self.resolve_const(len).and_then(Constant::as_dim)
+                                && d < 0
+                            {
+                                println!("Group index length resolves to negative constant {d} at op {op_id:?}");
                                 self.debug();
                                 panic!();
                             }
@@ -319,7 +328,14 @@ impl Kernel {
                     }
                     dtypes.insert(op_id, IDX_T);
                 }
-                Op::Loop { .. } => {
+                Op::Loop { len } => {
+                    if let Some(d) = self.resolve_const(len).and_then(Constant::as_dim)
+                        && d < 0
+                    {
+                        println!("Loop length resolves to negative constant {d} at op {op_id:?}");
+                        self.debug();
+                        panic!();
+                    }
                     stack.push(Set::default());
                     dtypes.insert(op_id, IDX_T);
                 }
@@ -395,206 +411,106 @@ impl Kernel {
 }
 
 impl Kernel {
+    /// Compute value-range bounds for every operation in the kernel.
+    ///
+    /// # Invariant
+    ///
+    /// `compute_bounds` can **never be precise**. It always returns
+    /// **conservative (over-approximating)** bounds: for every op, its true
+    /// runtime value is contained in `[lb, ub]`. The single guarantee we MUST
+    /// uphold is that bounds are **never too tight** — they must never
+    /// *under*-approximate the true range. Being wider than reality is always
+    /// safe; being tighter than reality is the only forbidden failure mode,
+    /// because it would let a constant fold assume a value the op can never take.
+    ///
+    /// # Why it is always imprecise
+    ///
+    /// The imprecision is fundamental and expected, not a bug: variables are
+    /// bounded **independently**, which ignores *correlations* between them. For
+    /// example, `x` and `y` may always satisfy `x <= y` at runtime, but their
+    /// independent ranges are derived separately and will overlap / be wider
+    /// than the true joint set of reachable values. The resulting range is
+    /// therefore wider than reality — that is correct and intended. Precision
+    /// can never be recovered without tracking joint constraints, which this
+    /// pass deliberately does not do.
+    ///
+    /// Because the bounds never under-approximate, they are safe to use for
+    /// proving a comparison or boolean op is statically constant (if the
+    /// conservative range already forces the comparison to one result, that
+    /// result holds for every concrete value). They are **NOT** safe for
+    /// replacing an op with a specific non-constant value, only for deciding
+    /// constant outcomes.
     #[allow(clippy::match_same_arms)]
     pub(crate) fn compute_bounds(&self) -> Map<OpId, (Dim, Dim)> {
+        // Single linear walk, O(number of ops). Bounds are ALWAYS conservative
+        // (wide): we never narrow from guard conditions and never narrow across
+        // scopes, so a single global map suffices — no scope stack, no cloning,
+        // no per-op merge. Each op's bound is derived once from its
+        // (already-processed) operands. This is intentionally not precise (see
+        // the doc comment above): variables are bounded independently and
+        // correlations are ignored, so ranges are wider than reality, which is
+        // correct and required.
         let mut bounds: Map<OpId, (Dim, Dim)> = Map::default();
-        let mut bounds_stack: Vec<Map<OpId, (Dim, Dim)>> = vec![Map::default()];
         let mut op_id = self.head;
         while !op_id.is_null() {
             match *self.at(op_id) {
                 Op::Const(x) => {
-                    let b = bounds_stack.last_mut().unwrap();
                     if let Some(v) = x.as_dim() {
-                        b.insert(op_id, (v, v));
+                        bounds.insert(op_id, (v, v));
                     }
                 }
                 Op::Storage { .. } => {}
                 Op::Loop { .. } | Op::Unary { .. } | Op::Cast { .. } | Op::Binary { .. } | Op::Mad { .. } => {
-                    let b = bounds_stack.last_mut().unwrap();
-                    self.rederive_bounds(b, op_id);
+                    self.rederive_bounds(&mut bounds, op_id);
                 }
-                Op::If { condition } => {
-                    let mut prev = bounds_stack.last().unwrap().clone();
-                    let mut skip_rederive = Set::default();
-                    let mut params = Vec::new();
-                    params.push(condition);
-                    while let Some(param) = params.pop() {
-                        if let Op::Binary { x, y, bop } = self.at(param) {
-                            match bop {
-                                BOp::Eq => {
-                                    if let Some((yl, yu)) = prev.get(y)
-                                        && yl == yu
-                                        && let Some((_xl, _xu)) = prev.get(x)
-                                    {
-                                        let x_id = *x;
-                                        let yl = *yl;
-                                        let yu = *yu;
-                                        prev.insert(x_id, (yl, yu));
-                                        self.backward_constrain(x_id, yl, yu, &mut prev, &mut skip_rederive);
-                                    }
-                                }
-                                BOp::Cmplt => {
-                                    if let Some((yl, yu)) = prev.get(y)
-                                        && yl == yu
-                                        && let Some((xl, _xu)) = prev.get(x)
-                                    {
-                                        let x_id = *x;
-                                        let xl = *xl;
-                                        let new_upper = yl.saturating_sub(1);
-                                        prev.insert(x_id, (xl, new_upper));
-                                        // Don't add x_id to skip_rederive — the re-derive will
-                                        // recompute it from the backward-constrained operands
-                                        // correctly (and possibly tighter).
-                                        self.backward_constrain(x_id, xl, new_upper, &mut prev, &mut skip_rederive);
-                                    }
-                                }
-                                _ => {}
-                            }
-                        }
-                        params.extend(self.ops[param].op.parameters());
-                    }
-                    // Re-derive bounds for all ops up to this point in case any depend
-                    // on the newly constrained variables (e.g. pad_index wraps a store in
-                    // Op::If but the store index was computed before the If and used the
-                    // unconstrained range).  Skip variables that were just hand-constrained
-                    // — re-derive would overwrite them using stale operand bounds.
-                    let mut scan = self.head;
-                    while scan != op_id {
-                        if !skip_rederive.contains(&scan) {
-                            self.rederive_bounds(&mut prev, scan);
-                        }
-                        scan = self.ops[scan].next;
-                    }
-                    bounds_stack.push(prev);
-                }
-                Op::EndIf => {
-                    bounds_stack.pop();
-                }
+                Op::If { .. } | Op::EndIf => {}
                 Op::Index { kind: scope, .. } => {
-                    let b = bounds_stack.last_mut().unwrap();
                     let len = match scope {
                         IdxKind::Group(len) => self.resolve_const(len).and_then(crate::dtype::Constant::as_dim),
                         IdxKind::Local(len) => Some(i64::from(len)),
                         IdxKind::Warp(len) => Some(i64::from(len)),
                     };
-                    // An unresolved (dynamic) group length is UNKNOWN: no
-                    // bounds must be fabricated for it. A huge sentinel here
-                    // would wrap around in downstream arithmetic and produce
-                    // false tight ranges (-> provably-false guards -> wrong
-                    // constant folding).
+                    // An unresolved (dynamic) group length is UNKNOWN: no bounds
+                    // must be fabricated for it. A huge sentinel here would wrap
+                    // around in downstream arithmetic and produce false tight
+                    // ranges (-> provably-false guards -> wrong constant folding).
                     if let Some(len) = len {
-                        b.insert(op_id, (0, len.saturating_sub(1)));
+                        bounds.insert(op_id, (0, len.saturating_sub(1)));
                     }
                 }
                 Op::Asm { ref ops, .. } => {
-                    let b = bounds_stack.last_mut().unwrap();
                     let mut r = None;
                     for x in ops.iter() {
-                        if let Some(&(xl, xu)) = b.get(x) {
-                            if let Some((l, u)) = r {
-                                r = Some((xl.min(l), xu.max(u)));
-                            } else {
-                                r = Some((xl, xu));
-                            }
+                        if let Some(&(xl, xu)) = bounds.get(x) {
+                            r = Some(match r {
+                                Some((l, u)) => (xl.min(l), xu.max(u)),
+                                None => (xl, xu),
+                            });
                         }
                     }
                     if let Some((xl, xu)) = r {
-                        b.insert(op_id, (xl, xu));
+                        bounds.insert(op_id, (xl, xu));
                     }
                 }
                 Op::Stack { ref ops } => {
-                    let b = bounds_stack.last_mut().unwrap();
                     let mut r = None;
                     for x in ops.iter() {
-                        if let Some(&(xl, xu)) = b.get(x) {
-                            if let Some((l, u)) = r {
-                                r = Some((xl.min(l), xu.max(u)));
-                            } else {
-                                r = Some((xl, xu));
-                            }
+                        if let Some(&(xl, xu)) = bounds.get(x) {
+                            r = Some(match r {
+                                Some((l, u)) => (xl.min(l), xu.max(u)),
+                                None => (xl, xu),
+                            });
                         }
                     }
                     if let Some((xl, xu)) = r {
-                        b.insert(op_id, (xl, xu));
+                        bounds.insert(op_id, (xl, xu));
                     }
                 }
                 _ => {}
             }
-            // Merge current scope bounds into the global bounds map.
-            // Skip at EndIf — parent scope entries are stale inside the If body
-            // and would overwrite the refined bounds that were already merged
-            // from the If scope during body processing.
-            if !matches!(*self.at(op_id), Op::EndIf)
-                && let Some(scope_bounds) = bounds_stack.last()
-            {
-                for (&k, &v) in scope_bounds {
-                    bounds.insert(k, v);
-                }
-            }
             op_id = self.ops[op_id].next;
         }
         bounds
-    }
-
-    /// Propagate constraint backward from v to its operands (one level, no recursion).
-    /// When v is constrained to (`new_lower`, `new_upper`) and v = f(operand, constant),
-    /// the operand's upper bound can be narrowed accordingly.
-    fn backward_constrain(
-        &self,
-        v: OpId,
-        _new_lower: Dim,
-        new_upper: Dim,
-        prev: &mut Map<OpId, (Dim, Dim)>,
-        skip_rederive: &mut Set<OpId>,
-    ) {
-        match &self.ops[v].op {
-            Op::Binary { x, y, bop: BOp::Mul } => {
-                let xc = prev.get(x).filter(|(l, u)| l == u).copied();
-                let yc = prev.get(y).filter(|(l, u)| l == u).copied();
-                let operand_k = match (xc, yc) {
-                    (None, Some((k, _))) => Some((*x, k)),
-                    (Some((k, _)), None) => Some((*y, k)),
-                    _ => None,
-                };
-                if let Some((operand, k)) = operand_k
-                    && let Some(upper) = new_upper.checked_div(k)
-                    && let Some(&(ol, ou)) = prev.get(&operand)
-                    && upper < ou
-                {
-                    prev.insert(operand, (ol, upper));
-                    skip_rederive.insert(operand);
-                }
-            }
-            Op::Binary { x, y, bop: BOp::Add } => {
-                let xc = prev.get(x).filter(|(l, u)| l == u).copied();
-                let yc = prev.get(y).filter(|(l, u)| l == u).copied();
-                let operand_k = match (xc, yc) {
-                    (None, Some((k, _))) => Some((*x, k)),
-                    (Some((k, _)), None) => Some((*y, k)),
-                    _ => None,
-                };
-                if let Some((operand, k)) = operand_k
-                    && new_upper >= k
-                {
-                    let upper = new_upper - k;
-                    if let Some(&(ol, ou)) = prev.get(&operand)
-                        && upper < ou
-                    {
-                        prev.insert(operand, (ol, upper));
-                        skip_rederive.insert(operand);
-                    }
-                }
-            }
-            Op::Cast { x, .. } => {
-                if let Some(&(cl, cu)) = prev.get(x)
-                    && new_upper < cu
-                {
-                    prev.insert(*x, (cl, new_upper));
-                    skip_rederive.insert(*x);
-                }
-            }
-            _ => {}
-        }
     }
 
     fn rederive_bounds(&self, prev: &mut Map<OpId, (Dim, Dim)>, op_id: OpId) {
@@ -612,10 +528,50 @@ impl Kernel {
                     // fabricate a small upper bound out of huge ones.
                     BOp::Add => (min_x.saturating_add(min_y), max_x.saturating_add(max_y)),
                     BOp::Sub => (min_x.saturating_sub(max_y), max_x.saturating_sub(min_y)),
-                    BOp::Mul => (min_x.saturating_mul(min_y), max_x.saturating_mul(max_y)),
-                    BOp::Div | BOp::Mod if min_y == 0 || max_y == 0 => (0, Dim::MAX),
-                    BOp::Div => (min_x / min_y, max_x / max_y),
-                    BOp::Mod => (0, max_y - 1),
+                    BOp::Mul => {
+                        // The true range is the min/max over the four corner
+                        // products; the naive (min_x*min_y, max_x*max_y) is only
+                        // valid for non-negative operands and under-approximates
+                        // (non-conservative) when signs mix.
+                        let p1 = min_x.saturating_mul(min_y);
+                        let p2 = min_x.saturating_mul(max_y);
+                        let p3 = max_x.saturating_mul(min_y);
+                        let p4 = max_x.saturating_mul(max_y);
+                        (p1.min(p2).min(p3).min(p4), p1.max(p2).max(p3).max(p4))
+                    }
+                    BOp::Div | BOp::Mod if min_y == 0 || max_y == 0 => (Dim::MIN, Dim::MAX),
+                    BOp::Div => {
+                        // x / y over the rectangle: min/max of the four corner
+                        // quotients (saturating — a divisor near zero would
+                        // otherwise fabricate a tiny bound).
+                        let q1 = min_x.saturating_div(min_y);
+                        let q2 = min_x.saturating_div(max_y);
+                        let q3 = max_x.saturating_div(min_y);
+                        let q4 = max_x.saturating_div(max_y);
+                        (q1.min(q2).min(q3).min(q4), q1.max(q2).max(q3).max(q4))
+                    }
+                    BOp::Mod => {
+                        // zyx integer remainder has the same sign as the
+                        // dividend (truncated division), so `|x % y| < |y|` and
+                        // the sign follows `x`. When the dividend is known
+                        // non-negative the remainder lies in `[0, |y|-1]`, and
+                        // when it is known non-positive in `[-(|y|-1), 0]`.
+                        // These are sound (conservative) tightenings of the
+                        // sign-agnostic `[-(|y|-1), |y|-1]`.
+                        let mag = max_y.unsigned_abs().max(min_y.unsigned_abs());
+                        if mag == 0 {
+                            (Dim::MIN, Dim::MAX)
+                        } else {
+                            let m = mag as i64 - 1;
+                            if min_x >= 0 {
+                                (0, m)
+                            } else if max_x <= 0 {
+                                (-m, 0)
+                            } else {
+                                (-m, m)
+                            }
+                        }
+                    }
                     BOp::BitShiftLeft => (min_x << min_y.min(63), max_x << max_y.min(63)),
                     BOp::BitShiftRight => (min_x >> min_y.min(63), max_x >> max_y.min(63)),
                     BOp::Pow => {

@@ -20,7 +20,7 @@ use crate::{
     DType, Map,
     backend::DTypeCapability,
     error::{BackendError, ErrorStatus},
-    kernel::{IdxScope, MemScope, Op, OpId},
+    kernel::{MemScope, Op, OpId, ParamKind},
     shape::Dim,
     slab::Slab,
 };
@@ -167,7 +167,7 @@ pub(super) fn initialize_device(
     let runtime = Arc::new(Mutex::new(RuntimeProcess::new(&runtime_path.to_string_lossy(), &cache_dir.to_string_lossy())?));
 
     let pool_id = memory_pools.len();
-    let pool = MemoryPool::TT(TTMemoryPool { buffers: Slab::new(), runtime: runtime.clone(), free_bytes: Dim::from(dram_bytes) });
+    let pool = MemoryPool::TT(TTMemoryPool { buffers: Slab::new(), runtime: runtime.clone(), free_bytes: Dim::from(dram_bytes as i64) });
     memory_pools.push(pool);
 
     let _device_id = devices.len();
@@ -253,7 +253,7 @@ impl TTMemoryPool {
 
     pub fn deallocate(&mut self, buffer_id: PoolBufferId, event_wait_list: Vec<Event>) {
         let _ = event_wait_list;
-        if self.buffers.contains_key(buffer_id) {
+        if self.buffers.contains_id(buffer_id) {
             let buf = unsafe { self.buffers.remove_and_return(buffer_id) };
             let _ = self.runtime.lock().unwrap().free_buf(buf.dev_index);
         }
@@ -267,10 +267,10 @@ impl TTMemoryPool {
             .get_mut(dst)
             .ok_or_else(|| BackendError { status: ErrorStatus::MemoryCopyH2P, context: "invalid buffer id".into() })?;
         let len = src.len().min(buf.size as usize);
-        let (cname, shm_ptr, _) = create_temp_shm(len  as i64)?;
+        let (cname, shm_ptr, _) = create_temp_shm(len as u64)?;
         let shm_path = cname.to_str().unwrap_or("/none");
         unsafe { std::ptr::copy_nonoverlapping(src.as_ptr(), shm_ptr, len) };
-        rt.lock().unwrap().write_buf(buf.dev_index, shm_path, len  as i64)?;
+        rt.lock().unwrap().write_buf(buf.dev_index, shm_path, len as u64)?;
         unsafe {
             libc::munmap(shm_ptr as *mut libc::c_void, len as usize);
             libc::shm_unlink(cname.as_ptr());
@@ -286,9 +286,9 @@ impl TTMemoryPool {
             .get_mut(src)
             .ok_or_else(|| BackendError { status: ErrorStatus::MemoryCopyP2H, context: "invalid buffer id".into() })?;
         let len = dst.len().min(buf.size as usize);
-        let (cname, shm_ptr, _) = create_temp_shm(len  as i64)?;
+        let (cname, shm_ptr, _) = create_temp_shm(len as u64)?;
         let shm_path = cname.to_str().unwrap_or("/none");
-        rt.lock().unwrap().read_buf(buf.dev_index, shm_path, len  as i64)?;
+        rt.lock().unwrap().read_buf(buf.dev_index, shm_path, len as u64)?;
         unsafe {
             std::ptr::copy_nonoverlapping(shm_ptr, dst.as_mut_ptr(), len);
             libc::munmap(shm_ptr as *mut libc::c_void, len as usize);
@@ -325,7 +325,7 @@ impl TTMemoryPool {
     }
 
     pub fn dev_index(&self, buffer_id: PoolBufferId) -> Result<u32, BackendError> {
-        if self.buffers.contains_key(buffer_id) {
+        if self.buffers.contains_id(buffer_id) {
             Ok(self.buffers[buffer_id].dev_index)
         } else {
             Err(BackendError { status: ErrorStatus::MemoryAllocation, context: "invalid buffer id".into() })
@@ -693,13 +693,13 @@ impl TTDevice {
                     panic!("compile did not finish in 10000 steps");
                 }
                 match &kernel.ops[scan].op {
-                    Op::Define { dtype, scope: MemScope::Global, ro: true, .. } => input_dtypes.push(*dtype),
-                    Op::Define { dtype, scope: MemScope::Global, ro: false, .. } => output_dtypes.push(*dtype),
-                    Op::Store { dst, x, .. } => {
-                        if let Op::Define { scope: MemScope::Circular, .. } = kernel.ops[*dst].op {
-                            if let Op::Load { src, .. } = kernel.ops[*x].op {
-                                if let Op::Define { ro: true, .. } = kernel.ops[src].op {
-                                    input_cb_map.insert(*dst, max_cb);
+                    Op::Param { dtype, kind: ParamKind::Global, .. } => input_dtypes.push(*dtype),
+                    Op::Param { dtype, kind: ParamKind::GlobalMut, .. } => output_dtypes.push(*dtype),
+                    Op::Store { dst, src, .. } => {
+                        if let Op::Storage { scope: MemScope::CircularReader, .. } = kernel.ops[*dst].op {
+                            if let Op::Load { src: cb_src, .. } = kernel.ops[*src].op {
+                                if let Op::Storage { scope: MemScope::CircularReader, .. } = kernel.ops[cb_src].op {
+                                    input_cb_map.insert(cb_src, max_cb);
                                     max_cb += 1;
                                 } else {
                                     unreachable!()
@@ -756,7 +756,7 @@ impl TTDevice {
                     .map(|(op, _)| *op);
                 let dt = local_op
                     .and_then(|op| {
-                        if let Op::Define { dtype, .. } = &kernel.ops[op].op {
+                        if let Op::Storage { dtype, .. } = &kernel.ops[op].op {
                             Some(*dtype)
                         } else {
                             None
@@ -776,7 +776,7 @@ impl TTDevice {
     }
 
     pub fn release(&mut self, program_id: DeviceProgramId) {
-        if self.programs.contains_key(program_id) {
+        if self.programs.contains_id(program_id) {
             unsafe { self.programs.remove_and_return(program_id) };
         }
     }
@@ -785,12 +785,11 @@ impl TTDevice {
         &mut self,
         program_id: DeviceProgramId,
         memory_pool: &mut TTMemoryPool,
-        gws: &[Dim],
         args: &[PoolBufferId],
         event_wait_list: Vec<Event>,
     ) -> Result<Event, BackendError> {
         let _ = event_wait_list;
-        let prog = if self.programs.contains_key(program_id) {
+        let prog = if self.programs.contains_id(program_id) {
             &self.programs[program_id]
         } else {
             return Err(BackendError { status: ErrorStatus::KernelLaunch, context: "invalid program id".into() });
@@ -826,10 +825,7 @@ impl TTDevice {
         }
 
         let mut rt_guard = rt.lock().unwrap();
-        let grid_dims = [
-            u32::try_from(gws.first().copied().unwrap_or(1)).unwrap_or(1),
-            u32::try_from(gws.get(1).copied().unwrap_or(1)).unwrap_or(1),
-        ];
+        let grid_dims: [u32; 2] = [1, 1];
         rt_guard.run(program_id.0, &src_indices, &dst_indices, grid_dims)?;
 
         Ok(Event::TT(TTEvent))

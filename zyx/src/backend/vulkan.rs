@@ -1631,18 +1631,18 @@ pub(super) fn initialize_device(
                                 continue;
                             }
 
-                            let grid = |gdim: GwsDim| -> u32 {
-                                match gdim {
-                                    GwsDim::Const(d) => u32::try_from(d).unwrap_or(1),
-                                    GwsDim::Param(ordinal) => match &buffers[args[ordinal]] {
-                                        VulkanBuffer::Variable(c) => u32::try_from(c.as_dim().unwrap()).unwrap_or(1),
-                                        _ => unreachable!("gws param must be a Variable buffer"),
-                                    },
-                                }
+                            let default_gws = GwsDim::Const(1);
+                            let grid = |gdim: &GwsDim| -> u32 {
+                                gdim.eval(&mut |ordinal| match &buffers[args[ordinal]] {
+                                    VulkanBuffer::Variable(c) => c.as_dim().unwrap(),
+                                    _ => unreachable!("gws param must be a Variable buffer"),
+                                })
+                                .try_into()
+                                .unwrap_or(1)
                             };
-                            let gx = grid(prog.gws.first().copied().unwrap_or(GwsDim::Const(1)));
-                            let gy = grid(prog.gws.get(1).copied().unwrap_or(GwsDim::Const(1)));
-                            let gz = grid(prog.gws.get(2).copied().unwrap_or(GwsDim::Const(1)));
+                            let gx = grid(prog.gws.first().unwrap_or(&default_gws));
+                            let gy = grid(prog.gws.get(1).unwrap_or(&default_gws));
+                            let gz = grid(prog.gws.get(2).unwrap_or(&default_gws));
 
                             if gx == 0 || gy == 0 || gz == 0 {
                                 let _ = reply.send(Err(BackendError {

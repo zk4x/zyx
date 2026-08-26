@@ -10,10 +10,10 @@ use zyx_derive::Module;
 #[derive(Debug, Module)]
 #[cfg_attr(feature = "py", pyo3::pyclass)]
 pub struct Conv2d {
-    stride: Vec<u64>,
-    dilation: Vec<u64>,
-    groups: u64,
-    padding: Vec<u64>,
+    stride: Vec<i64>,
+    dilation: Vec<i64>,
+        groups: u64,
+    padding: Vec<i64>,
     /// weight
     pub weight: Tensor,
     /// bias
@@ -24,22 +24,22 @@ impl Conv2d {
     /// Initialize Conv2d
     #[allow(clippy::too_many_arguments)] // mirrors PyTorch API with multiple config parameters
     pub fn new(
-        in_channels: u64,
-        out_channels: u64,
+        in_channels: i64,
+        out_channels: i64,
         kernel_size: impl IntoShape,
         stride: impl IntoShape,
         padding: impl IntoShape,
         dilation: impl IntoShape,
-        groups: u64,
+    groups: u64,
         bias: bool,
         dtype: DType,
     ) -> Result<Self, ZyxError> {
-        let mut kernel_size: Vec<u64> = kernel_size.into_shape().collect();
+        let mut kernel_size: Vec<i64> = kernel_size.into_shape().collect();
         if kernel_size.len() == 1 {
             kernel_size.push(kernel_size[0]);
         }
-        let scale = 1f32 / ((in_channels * kernel_size.iter().product::<u64>()) as f32).sqrt();
-        let mut weight_shape = vec![out_channels, in_channels / groups];
+        let scale = 1f32 / ((in_channels * kernel_size.iter().product::<i64>()) as f32).sqrt();
+        let mut weight_shape = vec![out_channels, in_channels / groups as i64];
         weight_shape.extend(kernel_size);
         Ok(Conv2d {
             stride: stride.into_shape().collect(),

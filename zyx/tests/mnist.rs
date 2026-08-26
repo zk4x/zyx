@@ -24,7 +24,7 @@ fn mnist() -> Result<(), ZyxError> {
         }
     }
 
-    let train_dataset: HashMap<String, Tensor> = Tensor::load("../zyx-examples/data/mnist_dataset.safetensors")?;
+    let train_dataset: HashMap<String, Tensor> = Tensor::load("../examples/data/mnist_dataset.safetensors")?;
     let train_x = train_dataset["train_x"].cast(DType::F32) / 255;
     let train_y = train_dataset["train_y"].clone();
 

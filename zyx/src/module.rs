@@ -47,7 +47,7 @@ pub trait Module {
             let mut st_shape = format!("{:?}", tensor.shape());
             st_shape.retain(|c| !c.is_whitespace());
             write!(header, "\"shape\":{st_shape},").unwrap();
-            let size = tensor.numel() * Dim::from(dtype.bit_size() / 8);
+            let size = tensor.numel().item::<Dim>() * Dim::from(dtype.bit_size() / 8);
             write!(header, "\"data_offsets\":[{},{}]", begin, begin + size).unwrap();
             begin += size;
             write!(header, "}},").unwrap();
@@ -412,7 +412,7 @@ impl Tensor {
 
         let mut progress_bar = if RT.lock().debug.dev() {
             println!("Loading tensors from safetensors file");
-            let bar = crate::prog_bar::ProgressBar::new(tensor_count);
+            let bar = crate::progress::ProgressBar::new(tensor_count);
             Some(bar)
         } else {
             None
@@ -454,7 +454,7 @@ impl Tensor {
         let mut metadata = true;
         let mut progress_bar = if RT.lock().debug.dev() {
             println!("Loading tensors from safetensors file");
-            let bar = crate::prog_bar::ProgressBar::new(u64::try_from(header.chars().filter(|&c| c == '[').count()).unwrap() / 2);
+            let bar = crate::progress::ProgressBar::new(u64::try_from(header.chars().filter(|&c| c == '[').count()).unwrap() / 2);
             Some(bar)
         } else {
             None

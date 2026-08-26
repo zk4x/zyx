@@ -9,9 +9,9 @@ use zyx_derive::Module;
 #[cfg_attr(feature = "py", pyo3::pyclass)]
 pub struct Embedding {
     /// Vocabulary size
-    pub vocab_size: u64,
+    pub vocab_size: i64,
     /// Embedding size
-    pub embed_size: u64,
+    pub embed_size: i64,
     /// Weight
     pub weight: Tensor,
     /// Arange
@@ -20,7 +20,7 @@ pub struct Embedding {
 
 impl Embedding {
     /// new embedding layer
-    pub fn new(vocab_size: u64, embed_size: u64, dtype: DType) -> Result<Embedding, ZyxError> {
+    pub fn new(vocab_size: i64, embed_size: i64, dtype: DType) -> Result<Embedding, ZyxError> {
         Ok(Embedding {
             vocab_size,
             embed_size,
@@ -55,7 +55,7 @@ impl Embedding {
                 x_sh.iter()
                     .copied()
                     .chain([self.embed_size])
-                    .collect::<Vec<u64>>(),
+                    .collect::<Vec<i64>>(),
                 x.dtype(),
             ));
         }
@@ -67,14 +67,14 @@ impl Embedding {
                     .into(),
             ));
         }
-        let big_shp: Vec<u64> = x_sh
+        let big_shp: Vec<i64> = x_sh
             .iter()
             .copied()
             .chain([self.vocab_size, self.embed_size])
             .collect();
         let arange = self.arange.expand(big_shp.clone())?;
         let idx = x
-            .reshape(x_sh.into_iter().chain([1, 1]).collect::<Vec<u64>>())?
+            .reshape(x_sh.into_iter().chain([1, 1]).collect::<Vec<i64>>())?
             .expand(big_shp.clone())?;
         let vals = self.weight.expand(big_shp)?;
         (arange.equal(idx)?.cast(xdt) * vals).sum([2])

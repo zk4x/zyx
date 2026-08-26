@@ -178,7 +178,7 @@ impl Tensor {
     #[must_use]
     #[pyo3(name = "numel")]
     pub fn numel_py(&self) -> Dim {
-        self.numel()
+        self.numel().item::<Dim>()
     }
 
     /// Returns the rank (number of dimensions) of the tensor.

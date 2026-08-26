@@ -17,8 +17,8 @@ pub struct Linear {
 impl Linear {
     /// Initilize linear layer in device self
     pub fn new(
-        in_features: u64,
-        out_features: u64,
+        in_features: i64,
+        out_features: i64,
         bias: bool,
         dtype: DType,
     ) -> Result<Linear, ZyxError> {

@@ -344,7 +344,7 @@ impl Kernel {
                                 glb_load_lidx_stride_weight += n_bits;
                             }
                         }
-                        MemScope::Local | MemScope::Circular => {
+                        MemScope::Local | MemScope::CircularReader | MemScope::CircularWriter => {
                             let n_bits = total_elements * dtypes[&op_id].0.bit_size()  as i64;
                             n_scoped_load_bits[1] += n_bits;
                             let strides = self.get_strides(index);
@@ -429,7 +429,7 @@ impl Kernel {
                                 glb_store_lidx_stride_weight += n_bits;
                             }
                         }
-                        MemScope::Local | MemScope::Circular => {
+                        MemScope::Local | MemScope::CircularReader | MemScope::CircularWriter => {
                             let n_bits = loop_mult * layout.n_elements() * dtypes[&op_id].0.bit_size()  as i64;
                             n_scoped_store_bits[1] += n_bits;
                             let strides = self.get_strides(index);

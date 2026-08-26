@@ -46,7 +46,7 @@ pub struct RNNCell {
     /// the learnable hidden-hidden bias, of shape (hidden_size)
     pub bias_hh: Option<Tensor>,
     /// the hidden size
-    pub hidden_size: u64,
+    pub hidden_size: i64,
     /// the nonlinearity to use ("tanh" or "relu")
     nonlinearity: &'static str,
 }
@@ -64,8 +64,8 @@ impl RNNCell {
     /// # Returns
     /// A `Result` wrapping the created `RNNCell` or a `ZyxError` if initialization fails.
     pub fn new(
-        input_size: u64,
-        hidden_size: u64,
+        input_size: i64,
+        hidden_size: i64,
         bias: bool,
         nonlinearity: &'static str,
         dtype: Option<DType>,

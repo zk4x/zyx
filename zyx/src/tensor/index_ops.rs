@@ -320,6 +320,7 @@ impl Tensor {
     /// Returns error if the shapes are incompatible.
     pub fn gather(&self, axis: Axis, indices: impl Into<Tensor>) -> Result<Tensor, ZyxError> {
         let indices = indices.into();
+
         let shape = self.shape();
         let index_shape = indices.shape();
         let dim = into_axis(axis, shape.len())?;
@@ -339,11 +340,14 @@ impl Tensor {
         }
 
         let dim_size = shape[dim];
+
         let is_negative = indices.cmplt(0)?.cast(indices.dtype());
         let indices = indices + is_negative * dim_size;
 
+
         // Prepare one-hot along dim
         let one_hot = indices.unsqueeze(-1)?.one_hot_along_dim(dim_size, -1)?;
+
 
         // Prepare negative padding for shrink
         let mut padding = Vec::new();
@@ -355,8 +359,11 @@ impl Tensor {
             }
         }
 
+
         let x = self.rpad_zeros(padding)?.unsqueeze(-1)?.transpose(-1, dim as i32)?;
+
         let result = one_hot.mul(&x).sum_dtype([-1], self.dtype())?;
+
 
         Ok(result)
     }
@@ -431,6 +438,7 @@ impl Tensor {
     ///
     /// Returns error if the dimension is out of bounds.
     pub fn index_select(&self, dim: Axis, index: impl Into<Tensor>) -> Result<Tensor, ZyxError> {
+
         let index = index.into();
         let mut shape = self.shape();
         let rank = shape.len();
@@ -440,6 +448,7 @@ impl Tensor {
         let mut view_shape: Vec<Dim> = vec![1; rank];
         view_shape[dim] = index.shape()[0];
         let index_expanded = index.reshape(view_shape)?.expand(shape)?;
+
 
         self.gather(dim as Axis, index_expanded)
     }

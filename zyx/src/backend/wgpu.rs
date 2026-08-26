@@ -518,16 +518,16 @@ impl WGPUDevice {
             cpass.set_pipeline(&program.pipeline);
             cpass.set_bind_group(0, &set, &[]);
             cpass.insert_debug_marker(&program.name);
-            let grid = |gdim: GwsDim| -> u32 {
-                match gdim {
-                    GwsDim::Const(d) => u32::try_from(d).unwrap(),
-                    GwsDim::Param(_) => todo!("wgpu: gws from scalar variable param"),
-                }
+            let default_gws = GwsDim::Const(1);
+            let grid = |gdim: &GwsDim| -> u32 {
+                gdim.eval(&mut |_| todo!("wgpu: gws from scalar variable param"))
+                    .try_into()
+                    .unwrap()
             };
             cpass.dispatch_workgroups(
-                grid(program.gws.first().copied().unwrap_or(GwsDim::Const(1))),
-                grid(program.gws.get(1).copied().unwrap_or(GwsDim::Const(1))),
-                grid(program.gws.get(2).copied().unwrap_or(GwsDim::Const(1))),
+                grid(program.gws.first().unwrap_or(&default_gws)),
+                grid(program.gws.get(1).unwrap_or(&default_gws)),
+                grid(program.gws.get(2).unwrap_or(&default_gws)),
             );
         }
         let submission_index = Some(self.queue.submit(Some(encoder.finish())));

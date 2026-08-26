@@ -93,6 +93,7 @@ impl Kernel {
     /// * `factor` - The factor for splitting the loop
     /// * `tree_branch` - The tree reduction branching factor
     pub(crate) fn local_reduce(&mut self, loop_start: OpId, factor: u32, tree_branch: u32) {
+        return;
         #[cfg(feature = "time")]
         let _timer = crate::Timer::new("tiled_reduce");
         let loop_len_id = if let Op::Loop { len } = self.at(loop_start) {

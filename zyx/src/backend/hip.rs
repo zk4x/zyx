@@ -64,7 +64,7 @@ pub struct HIPDevice {
     device: HIPdevice,
     memory_pool_id: PoolId,
     dev_info: DeviceInfo,
-    compute_capability: [c_int; 2],
+    pub compute_capability: [c_int; 2],
     streams: Vec<HIPStream>,
     programs: Slab<DeviceProgramId, HIPProgram>,
     hipModuleLoadData: unsafe extern "C" fn(*mut HIPmodule, *const u8) -> HIPStatus,
@@ -683,16 +683,16 @@ impl HIPDevice {
 
         let mut event = ptr::null_mut();
         unsafe { (self.hipEventCreate)(&raw mut event, 0) }.check(ErrorStatus::KernelLaunch)?;
-        let grid = |gdim: GwsDim| -> u32 {
-            match gdim {
-                GwsDim::Const(d) => u32::try_from(d).unwrap(),
-                GwsDim::Param(_) => todo!("HIP: gws from scalar variable param"),
-            }
+        let default_gws = GwsDim::Const(1);
+        let grid = |gdim: &GwsDim| -> u32 {
+            gdim.eval(&mut |_| todo!("HIP: gws from scalar variable param"))
+                .try_into()
+                .unwrap()
         };
         let (gx, gy, gz) = (
-            grid(program.gws.first().copied().unwrap_or(GwsDim::Const(1))),
-            grid(program.gws.get(1).copied().unwrap_or(GwsDim::Const(1))),
-            grid(program.gws.get(2).copied().unwrap_or(GwsDim::Const(1))),
+            grid(program.gws.first().unwrap_or(&default_gws)),
+            grid(program.gws.get(1).unwrap_or(&default_gws)),
+            grid(program.gws.get(2).unwrap_or(&default_gws)),
         );
         unsafe {
             (self.hipLaunchKernel)(

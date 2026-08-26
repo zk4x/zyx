@@ -49,7 +49,7 @@ use crate::{
     dtype::Constant,
     graph::{ClassId, Graph, GraphId, plan::drain_events_for_buf},
     kernel::ParamKind,
-    runtime::Runtime,
+    runtime::{Runtime, TensorData},
     shape::Dim,
     slab::SlabId,
     tensor::TensorId,
@@ -125,7 +125,7 @@ impl Tape {
                 let id = match grads.get(&x) {
                     Some(&id) => id,
                     None => {
-                        let shape = rt.shape(x);
+                        let shape = rt.resolve_shape(x);
                         let dtype = rt.dtype(x);
                         let ids: Vec<TensorId> =
                             shape.iter().map(|&d| rt.new_constant_tensor(Constant::idx(d))).collect();
@@ -156,11 +156,11 @@ impl Tape {
         let output_pairs: Vec<(TensorId, ClassId)> = tensors
             .into_iter()
             .map(|t| {
-                if rt.tensors[t.id].class_id.is_null() {
-                    panic!("non-graph tensor in realize")
-                } else {
-                    (t.id, rt.tensors[t.id].class_id)
-                }
+                let class_id = match rt.tensors[t.id] {
+                    TensorData::Graph { class_id, .. } | TensorData::Promoted { class_id, .. } => class_id,
+                    ref td => panic!("non-graph tensor in realize: tid {t} data {td:?}"),
+                };
+                (t.id, class_id)
             })
             .collect();
 
@@ -234,10 +234,14 @@ impl Drop for Tape {
 
         let leaves: Vec<TensorId> = rt.graphs[graph_id].leaf_map.values().copied().collect();
         for tid in leaves {
-            if rt.tensors[tid].graph_id != graph_id {
+            let (affiliated, rc) = match rt.tensors[tid] {
+                TensorData::Graph { graph_id: g, rc, .. } | TensorData::Promoted { graph_id: g, rc, .. } => (g == graph_id, rc),
+                _ => continue,
+            };
+            if !affiliated {
                 continue;
             }
-            if rt.tensors[tid].rc == 0 {
+            if rc == 0 {
                 // Dead leaf: rc counts both handles and kernel loads, so rc == 0
                 // means nothing references it anymore. Remove it, freeing its
                 // buffer if no other tensor maps to the same buffer.
@@ -250,12 +254,10 @@ impl Drop for Tape {
                 }
                 rt.tensors.remove(tid);
             } else {
-                // Alive leaf: back to eager. Keep its kernel_id/op_id so its
-                // value can still be computed; the graph affiliation is what
-                // made it a graph tensor, so clearing it reverts the tensor.
-                rt.tensors[tid].class_id = ClassId::NULL;
-                rt.tensors[tid].graph_id = GraphId::NULL;
-                rt.graphs[graph_id].ref_count -= 1;
+                // Alive leaf: back to eager (fresh load kernel over its
+                // realized buffer, or in-place demotion for unrealized
+                // promoted tensors). eagerify also drops the graph's rc.
+                rt.eagerify(tid);
             }
         }
 
@@ -274,11 +276,11 @@ impl Tape {
         let outputs: Vec<(ClassId, Vec<Dim>, DType)> = outputs
             .into_iter()
             .map(|t| {
-                if rt.tensors[t.id].class_id.is_null() {
-                    panic!("non-graph tensor in realize")
-                } else {
-                    (rt.tensors[t.id].class_id, rt.shape(t.id), rt.dtype(t.id))
-                }
+                let class_id = match rt.tensors[t.id] {
+                    TensorData::Graph { class_id, .. } | TensorData::Promoted { class_id, .. } => class_id,
+                    ref td => panic!("non-graph tensor in freeze: tid {t} data {td:?}"),
+                };
+                (class_id, rt.resolve_shape(t.id), rt.dtype(t.id))
             })
             .collect();
 
@@ -343,10 +345,16 @@ impl Runtime {
         if cfg!(debug_assertions) {
             let output_set: Set<TensorId> = outputs.iter().copied().collect();
             for (tid, td) in self.tensors.iter() {
-                if td.graph_id == graph_id
+                let (affiliated, class_id) = match td {
+                    TensorData::Graph { class_id: c, graph_id: g, .. } | TensorData::Promoted { class_id: c, graph_id: g, .. } => {
+                        (*g == graph_id, *c)
+                    }
+                    _ => continue,
+                };
+                if affiliated
                     && !output_set.contains(&tid)
-                    && !self.graphs[graph_id].is_leaf(td.class_id)
-                    && !self.graphs[graph_id].is_after(td.class_id)
+                    && !self.graphs[graph_id].is_leaf(class_id)
+                    && !self.graphs[graph_id].is_after(class_id)
                 {
                     debug_assert!(
                         !self.buffer_map.contains_key(&tid),

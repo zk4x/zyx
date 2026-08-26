@@ -41,7 +41,7 @@ impl PositionalEncoding {
     /// let pe = PositionalEncoding::new(512, 1024, 0.1, DType::F32)?;
     /// ```
     pub fn new(
-        d_model: u64,
+        d_model: i64,
         max_len: usize,
         dropout_prob: f32,
         dtype: DType,
@@ -79,7 +79,7 @@ impl PositionalEncoding {
         }
 
         // Pad if d_model is odd
-        if !d_model.is_multiple_of(2) {
+        if d_model % 2 != 0 {
             let pad = sin_part
                 .slice((0..max_len, d_model / 2 - 1))?
                 .unsqueeze(1)?;

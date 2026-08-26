@@ -67,7 +67,7 @@ mod hashers;
 pub mod kernel;
 mod module;
 mod mutex;
-mod prog_bar;
+mod progress;
 #[cfg(feature = "py")]
 pub mod py_bindings;
 mod rng;
@@ -76,6 +76,8 @@ mod scalar;
 mod shape;
 mod slab;
 mod tape;
+#[cfg(feature = "viz")]
+mod viz;
 mod tensor;
 mod types;
 mod vendor;

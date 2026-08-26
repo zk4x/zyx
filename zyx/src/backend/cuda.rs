@@ -166,7 +166,7 @@ pub struct CUDADevice {
     device_id: DeviceId,
     memory_pool_id: PoolId,
     dev_info: DeviceInfo,
-    compute_capability: [c_int; 2],
+    pub compute_capability: [c_int; 2],
     cudnn_available: bool,
 }
 
@@ -722,19 +722,19 @@ pub(super) fn initialize_device(
                                             }
                                         }
                                     }
-                                    let grid = |gdim: GwsDim| -> u32 {
-                                        match gdim {
-                                            GwsDim::Const(d) => u32::try_from(d).unwrap(),
-                                            GwsDim::Param(ordinal) => match &buffers[args[ordinal]] {
-                                                CUDABuffer::Variable(c) => u32::try_from(c.as_dim().unwrap()).unwrap(),
-                                                _ => unreachable!("gws param must be a Variable buffer"),
-                                            },
-                                        }
+                                    let grid = |gdim: &GwsDim| -> u32 {
+                                        gdim.eval(&mut |ordinal| match &buffers[args[ordinal]] {
+                                            CUDABuffer::Variable(c) => c.as_dim().unwrap(),
+                                            _ => unreachable!("gws param must be a Variable buffer"),
+                                        })
+                                        .try_into()
+                                        .unwrap()
                                     };
+                                    let default_gws = GwsDim::Const(1);
                                     let (gx, gy, gz) = (
-                                        grid(gws.first().copied().unwrap_or(GwsDim::Const(1))),
-                                        grid(gws.get(1).copied().unwrap_or(GwsDim::Const(1))),
-                                        grid(gws.get(2).copied().unwrap_or(GwsDim::Const(1))),
+                                        grid(gws.first().unwrap_or(&default_gws)),
+                                        grid(gws.get(1).unwrap_or(&default_gws)),
+                                        grid(gws.get(2).unwrap_or(&default_gws)),
                                     );
                                     unsafe {
                                         (cuLaunchKernel)(

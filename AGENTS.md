@@ -32,6 +32,17 @@
 - **Confirm whether values are symbolic or numeric before touching them.** Dims, shapes, lengths, and strides are usually `OpId`s (symbolic IR nodes), not `Dim`s you can multiply directly. If a computation would need numeric values (e.g. `index_len`/`as_dim` to multiply), that is a sign the design may intend symbolic ops instead — ASK which is intended, and how strides/shapes are meant to be expressed, before writing code.
 - **FORBIDDEN WORDS** — never say these (in responses AND in your reasoning AND in your inner monologue): "Actually", "wait", "key insight", "let me", "Hmm", "But wait". The rule is absolute, applies to every token you emit (including tool call parameters, file contents, and planning), and violations are never excused by "it was in reasoning" or "I was thinking out loud".
 
+## No Workarounds
+
+- **NO WORKAROUNDS.** Never paper over a real bug by rerouting the caller away from the buggy code path (e.g. swapping `index_select` for `slice`, or dropping an API the user asked for) instead of reproducing and fixing the bug. A workaround hides the bug and shifts the symptom somewhere else, making it far harder to find later. When you find a bug, **reproduce it in a test** (e.g. in `zyx/tests/`) and report it — do not route around it. If avoiding the path seems necessary, STOP and ask the user first.
+
+## Optimization Pass Performance Budget
+
+- **NO optimization pass may take longer than 30 microseconds (µs) on a single invocation.** Most passes run well under that (single-digit µs); 30µs is a generous ceiling, not a target. This applies to every pass in `zyx/src/kernel/` (algebraic, verify/compute_bounds, fold_*, autotune drivers, etc.) and to `run_always_on_optimizations` / `AVAILABLE_OPTIMIZATIONS` as a whole.
+- A pass that blows this budget is a **performance bug**, not an acceptable cost: it runs once per autotune variant and once per compiled kernel, so even a few hundred µs compounds into seconds across a run. Such a pass is almost always doing redundant or quadratic work (e.g. re-walking the whole IR per `If`, recomputing bounds many times). Fix the algorithmic cost — do NOT paper over it.
+- **Add timings to measure.** Wrap each pass in a `time_pass!`/`Instant` measurement (printing to stderr) so per-pass cost is observable, then keep it under 30µs. Verify with a targeted test, not the full suite, when measuring.
+- `compute_bounds` (verify.rs) is the usual suspect: it walks the whole IR and is called repeatedly. It must stay linear in the number of ops; never re-derive or re-scan the IR per-`If` (that is O(K·N)). Remember `compute_bounds` only guarantees **conservative (never too tight)** bounds — see its docs.
+
 ## Key Commands
 
 The repo root has **no `Cargo.toml`** — crates (`zyx`, `zyx-nn`, ...) are independent packages. **Always run cargo from the `zyx/` subdirectory.**
@@ -46,7 +57,7 @@ cd zyx && AGENT=1 cargo test --doc         # doc tests
 cd zyx && cargo fmt                        # format
 ```
 
-- Tenstorrent: `TT_METAL_ROOT=~/Dev/cpp/tt-metal cargo build --features tenstorrent`
+- Tenstorrent: `TT_METAL_ROOT=/home/x/Dev/cpp/tt-metal cargo build --features tenstorrent`
 - Clippy is NOT a gate (lint `#![deny(...)]` block in `src/lib.rs` is commented out). Don't run it.
 - Tests live in `zyx/tests/`, named `{number}_{category}.rs` (e.g. `1_unary.rs`) plus `mnist.rs` (`mnist.py` + `.safetensors` are fixtures). Tests return `Result<(), ZyxError>` and use `assert!` / `is_equal()` for floats.
 - Python: use `python3.12` for everything.
@@ -59,7 +70,9 @@ zyx/           core tensor library (all the real work)
   src/graph/     the egraph + autograd + kernelizer + plan
   src/kernel/    kernel IR, codegen, and ALL optimization passes
   tests/         integration tests
-zyx-nn, zyx-optim, zyx-onnx, zyx-fuzzy, zyx-py, zyx-bench, zyx-examples, zyx-book
+zyx-nn, zyx-optim, zyx-onnx, zyx-fuzzy, zyx-py, zyx-bench, zyx-book
+examples/      virtual workspace; each model is its own crate (mnist, rnn, phi, llama, ...)
+                examples/data/ holds datasets, examples/models/ holds weights/gguf/configs
 ```
 
 Root docs worth reading: `ENV_VARS.md` (ZYX_DEBUG), `CONFIG.md` (backend config), `STYLE.md`, `ADDING_BACKENDS.md`.
@@ -86,7 +99,7 @@ How to work with it:
 ## Symbolic Dims
 
 - **Eager and graph must BOTH work with symbolic dims — always and everywhere.** No path may assume concrete shapes. A dim that is not statically known is symbolic, and EVERY consumer (load kernels, autograd, optimization passes, backends) must handle it correctly.
-- Every symbolic dim bottoms out in `Param { Variable }` scalars (`IDX_T`) whose actual values live in the backend pools' variable slots. Because of that, ANY dim expression can be evaluated to a concrete `Constant` at any time: walk the expression tree, take `Const` leaves as-is, fold `Unary`/`Binary` via `Constant::unary` / `Constant::binary`, and read the variable slot wherever a leaf is a `Param { Variable }`.
+- Every symbolic dim bottoms out in `Param { Variable }` scalars (`IDX_T`) whose actual values live in the backend pools' variable slots. `IDX_T` is `DType::I64` (i64) — **never `u32`**. Dimension/index values must NEVER be cast to `u32`: they overflow above 4.29×10⁹ (e.g. `60000·120000` wraps to `2905032704`), which silently corrupts downstream codegen. `TensorId`/`OpId`/`ClassId` are `u32` only as compact identifiers, never as dimension values. Because of that, ANY dim expression can be evaluated to a concrete `Constant` at any time: walk the expression tree, take `Const` leaves as-is, fold `Unary`/`Binary` via `Constant::unary` / `Constant::binary`, and read the variable slot wherever a leaf is a `Param { Variable }`.
 - NEVER fabricate sentinel or fallback values (`-1`, `0`, `42`, ...) for unknown behaviour anywhere — not in resolution failures, not in match arms, not as defaults. If code cannot determine a value, that is either a bug or a missing design decision: fail loudly (`debug_assert!` / `expect` / `todo!()`) at the exact spot, or STOP and ask the user what the value should be. No `unwrap_or(<number>)`, no default-value arms, no silent substitutes.
 - Load kernels (e.g. the fresh loader in `Runtime::add_store`) must NEVER emit fabricated consts (`Const(-1)` etc.) as group lengths: evaluate the dim to its concrete value first.
 
@@ -267,6 +280,31 @@ tape scope. When reasoning about kernel identity / recompilation (e.g. the kv-ca
 `narrow(0, start, len)` case), consider which path the consumer actually runs, and
 note that changing an `Op` means changing it in **both** places unless the two share a
 construction point.
+
+**When execution actually happens on each path:**
+
+- **No tape (eager):** ops are recorded directly into a kernel. The kernel is **launched (executed)** automatically once no further fusion is possible (or for any other reason the runtime flushes it). There is no separate "realize" step — the launch *is* the realization. A bare `Tensor` op outside a tape computes as soon as its kernel is flushed.
+- **Inside a `Tape`:** there is **no launch at all** — everything stays lazy in the egraph. The ONLY way to execute is `Tape::realize(states)`, and calling it **consumes the tape**. There is therefore **no partial realization**: you cannot realize some tensors while keeping the tape alive; `realize` runs the whole tape graph and then the tape is gone. (`loss.item::<f32>()` only works *after* `realize` because `realize` already executed the graph.)
+
+### Forcing execution of a lazy `Tensor`
+
+Tensors are lazy: an op builds a graph/eager kernel but does **not** compute until forced. To actually run a value (e.g. in a reproducer test), use:
+
+- `tensor.item::<T>()` — returns `T` **directly** (NOT `Result`, NOT `Option`); valid only on a **scalar** (1-element) tensor.
+- `tensor.sum([axes]).item::<T>()` — reduce to a scalar, then `item`.
+- Inside a `Tape`: `Tape::realize(states)` realizes the whole graph; `loss.item::<f32>()` after `realize` also triggers it.
+- **There is NO `Tensor::realize()` method** — `realize` exists only on `Tape`. Do not call it on a `Tensor`.
+- `Tensor::shape()` is lazy (returns the symbolic/output shape WITHOUT computing) — it will NOT reveal a `-1` dimension that only appears INSIDE a kernel at execution time. A bug whose only symptom is an internal `-1` dimension (→ a ~4.29×10⁹-element kernel loop / hang) is invisible to `shape()`; it only shows up under `ZYX_DEBUG=8` (kernel IR) or when the kernel actually executes.
+- **Do NOT treat "shape() doesn't show the bug" as a blocker.** If a bug only manifests at execution (e.g. an internal `-1` dimension, a hang, a wrong value), write the reproducer test to **force execution** (`item`/`sum`/`to_vec`) and let it reproduce the hang/failure. A test that currently hangs or fails *because it documents a bug* is a valid outcome (see Interaction Rules). Stop raising "but shape() looks fine" — it's expected and irrelevant.
+
+### Kernel IR `shape` conventions (what `NULL` / `-1` mean — common misconceptions)
+
+- **`NULL` `shape` in the IR means SCALAR (rank 0).** It is a display convention, not "missing shape" and not a bug. Do not read a NULL shape as an error.
+- **`ZYX_DEBUG=4` (pre-linearize / scheduler output):** every *non-scalar* tensor's `shape` is a real, non-NULL shape. Only scalars have a NULL shape (even here).
+- **`ZYX_DEBUG=8` (post-linearize):** the `shape` field on ops is NULL for **everything** — shapes have been lowered into loop bounds and index arithmetic, so a NULL `shape` here is expected and does NOT mean scalar.
+- **Buffer dimensions are NOT stored in the post-linearize `shape` field.** Pre-linearize they live in the `shape` field on the `Param` (input) op. After linearization that dimension becomes a loop bound / group-index length.
+- **A negative dimension (`-1`, printed as `r4294967295` / ~4.29×10⁹) on a `Param` shape (pre-linearize) or as a loop bound / group-index length (post-linearize) is a BUG.** It is NOT "scalar" and NOT "infer a dimension" — it produces a ~4.29×10⁹-element loop and hangs. `kernel::verify` must catch it loudly (panic on a resolvable negative loop/group length), not let it hang.
+- **To resolve an `OpId` to a concrete `Dim` constant in kernel code, use `self.resolve_const(op).and_then(Constant::as_dim)`.** There is NO `Kernel::resolve_dim` method (the name `resolve_dim` refers to the private `resolve_dim_op` in `runtime.rs`). A `Loop`'s `len` and an `IdxKind::Group(len)`'s `len` are `OpId`s; resolve them this way and, if the result is a constant, assert it is `>= 0`.
 
 ## Interaction Rules
 

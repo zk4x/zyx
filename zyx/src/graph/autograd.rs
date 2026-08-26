@@ -3,7 +3,7 @@ use crate::{
     dtype::Constant,
     graph::{ClassId, Graph, GraphId, Node},
     kernel::{BOp, UOp},
-    runtime::Runtime,
+    runtime::{Runtime, TensorData},
     shape::{Dim, UAxis},
     slab::SlabId,
     tensor::TensorId,
@@ -12,11 +12,20 @@ use std::collections::BTreeSet;
 
 impl Runtime {
     pub(crate) fn gradient(&mut self, target: TensorId, sources: Set<TensorId>, graph_id: GraphId) -> Map<TensorId, TensorId> {
-        let target_class = self.tensors[target].class_id;
+        let target_class = match self.tensors[target] {
+            TensorData::Graph { class_id, .. } | TensorData::Promoted { class_id, .. } => class_id,
+            _ => ClassId::NULL,
+        };
         if target_class.is_null() {
             panic!("gradient on non-graph tensor");
         }
-        let source_classes: Set<ClassId> = sources.iter().map(|tid| self.tensors[*tid].class_id).collect();
+        let source_classes: Set<ClassId> = sources
+            .iter()
+            .map(|tid| match self.tensors[*tid] {
+                TensorData::Graph { class_id, .. } | TensorData::Promoted { class_id, .. } => class_id,
+                _ => ClassId::NULL,
+            })
+            .collect();
         for class_id in &source_classes {
             if class_id.is_null() {
                 panic!("one of the sources is non-graph tensor");
@@ -349,10 +358,21 @@ impl Runtime {
 
         let mut res = Map::default();
         for tid in sources {
-            let grad_tid = match grads.get(&self.tensors[tid].class_id) {
-                Some(&gcid) => self.new_graph_tensor(graph_id, gcid),
+            // The gradient result shares the source's shape expression.
+            let shape_id = match self.tensors[tid] {
+                TensorData::Graph { shape_id, .. } | TensorData::Promoted { shape_id, .. } => shape_id,
+                ref t => panic!("gradient source {tid} is not a graph tensor: {t:?}"),
+            };
+            if !shape_id.is_null() {
+                self.retain(shape_id);
+            }
+            let grad_tid = match grads.get(&match self.tensors[tid] {
+                TensorData::Graph { class_id, .. } | TensorData::Promoted { class_id, .. } => class_id,
+                ref t => unreachable!("{t:?}"),
+            }) {
+                Some(&gcid) => gcid,
                 None => {
-                    let shape: Vec<Dim> = self.shape(tid);
+                    let shape: Vec<Dim> = self.resolve_shape(tid);
                     let dtype = self.dtype(tid);
                     let zero_cid = self.push_const(graph_id, Constant::new(0u8).cast(dtype));
                     let ops: Box<[ClassId]> = shape.iter().map(|&d| self.push_const(graph_id, Constant::idx(d))).collect();
@@ -361,10 +381,11 @@ impl Runtime {
                     } else {
                         self.push_node(graph_id, Node::Stack { ops }).1
                     };
-                    let (_, cid) = self.push_node(graph_id, Node::Expand { x: zero_cid, shape: shape_cid });
-                    self.new_graph_tensor(graph_id, cid)
+                    self.push_node(graph_id, Node::Expand { x: zero_cid, shape: shape_cid }).1
                 }
             };
+            self.graphs[graph_id].ref_count += 1;
+            let grad_tid = self.tensors.push(TensorData::Graph { class_id: grad_tid, graph_id, shape_id, rc: 1 });
             res.insert(tid, grad_tid);
         }
         res

@@ -814,6 +814,12 @@ pub(crate) struct OptSeq {
     cost: Cost,
 }
 
+impl Default for OptSeq {
+    fn default() -> Self {
+        Self { opts: Vec::new(), cost: Cost { cost: u64::MAX } }
+    }
+}
+
 impl SerBin for OptSeq {
     fn ser_bin(&self, output: &mut Vec<u8>) {
         self.opts.ser_bin(output);

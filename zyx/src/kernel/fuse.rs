@@ -53,6 +53,8 @@ impl Kernel {
 
     /// Find all multiply add operations and unfuse them
     pub fn unfuse_mad(&mut self) {
+        #[cfg(feature = "time")]
+        let _timer = crate::Timer::new("unfuse_mad");
         let mut op_id = self.head;
         while !op_id.is_null() {
             if let Op::Mad { x, y, z } = self.ops[op_id].op {

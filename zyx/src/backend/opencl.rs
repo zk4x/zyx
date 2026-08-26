@@ -701,13 +701,10 @@ pub(super) fn initialize_device(
                                 .iter()
                                 .zip(program.lws.iter())
                                 .map(|(gdim, l)| {
-                                    let g = match gdim {
-                                        GwsDim::Const(d) => *d,
-                                        GwsDim::Param(ordinal) => match &buffers[args[*ordinal]] {
-                                            OpenCLBuffer::Variable(c) => c.as_dim().unwrap(),
-                                            _ => unreachable!("gws param must be a Variable buffer"),
-                                        },
-                                    };
+                                    let g = gdim.eval(&mut |ordinal| match &buffers[args[ordinal]] {
+                                        OpenCLBuffer::Variable(c) => c.as_dim().unwrap(),
+                                        _ => unreachable!("gws param must be a Variable buffer"),
+                                    });
                                     g * *l
                                 })
                                 .collect();

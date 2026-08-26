@@ -9,7 +9,7 @@ use zyx_derive::Module;
 #[cfg_attr(feature = "py", pyo3::pyclass)]
 pub struct GroupNorm {
     /// number of groups
-    pub num_groups: u64,
+    pub num_groups: i64,
     /// epsilon
     pub eps: f32,
     /// shape: [C]
@@ -38,12 +38,12 @@ impl GroupNorm {
     /// let out = gn.forward(x)?;
     /// ```
     pub fn new(
-        num_groups: u64,
-        num_channels: u64,
+        num_groups: i64,
+        num_channels: i64,
         affine: bool,
         dtype: DType,
     ) -> Result<Self, ZyxError> {
-        if !num_channels.is_multiple_of(num_groups) {
+        if num_channels % num_groups != 0 {
             return Err(ZyxError::ShapeError(
                 format!(
                     "num_channels ({}) must be divisible by num_groups ({})",

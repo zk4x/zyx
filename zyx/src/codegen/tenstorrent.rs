@@ -5,7 +5,7 @@ use crate::{
     DType, Map, Set,
     dtype::Constant,
     error::{BackendError, ErrorStatus},
-    kernel::{BOp, IdxScope, Kernel, MemLayout, MemScope, Op, OpId, UOp},
+    kernel::{BOp, IdxKind, Kernel, MemLayout, MemScope, Op, OpId, ParamKind, UOp},
 };
 use std::fmt::Write;
 
@@ -136,36 +136,47 @@ impl Kernel {
                     panic!("tt_binary_init did not finish in 10000 steps");
                 }
                 match self.ops[op_id].op {
-                    Op::Define { dtype: _, scope, ro, .. } => match scope {
-                        MemScope::Global => {
-                            if ro {
-                                writeln!(reader, "{indent}uint32_t src{op_id} = get_arg_val<uint32_t>({input_arg_idx});");
-                                writeln!(
-                                    reader,
-                                    "{indent}auto args{op_id} = TensorAccessorArgs<{}>({input_arg_idx});",
-                                    input_arg_idx * 2
-                                );
-                                writeln!(reader, "{indent}auto p{op_id} = TensorAccessor(args{op_id}, src{op_id}, {PAGE_SIZE});");
-                                input_arg_idx += 1;
-                            }
+                    Op::Param { dtype: _, kind: ParamKind::Global, .. } => {
+                        writeln!(reader, "{indent}uint32_t src{op_id} = get_arg_val<uint32_t>({input_arg_idx});");
+                        writeln!(
+                            reader,
+                            "{indent}auto args{op_id} = TensorAccessorArgs<{}>({input_arg_idx});",
+                            input_arg_idx * 2
+                        );
+                        writeln!(reader, "{indent}auto p{op_id} = TensorAccessor(args{op_id}, src{op_id}, {PAGE_SIZE});");
+                        input_arg_idx += 1;
+                    }
+                    Op::Param { kind: ParamKind::GlobalMut, .. } => {
+                        writeln!(reader, "{indent}uint32_t dst{op_id} = get_arg_val<uint32_t>({input_arg_idx});");
+                        writeln!(
+                            reader,
+                            "{indent}auto args{op_id} = TensorAccessorArgs<{}>({input_arg_idx});",
+                            input_arg_idx * 2
+                        );
+                        writeln!(reader, "{indent}auto p{op_id} = TensorAccessor(args{op_id}, dst{op_id}, {PAGE_SIZE});");
+                        input_arg_idx += 1;
+                    }
+                    Op::Storage { dtype: _, scope: MemScope::CircularReader, .. } => {
+                        if let Some(cb_id) = input_cb_map.get(&op_id) {
+                            writeln!(reader, "{indent}CircularBuffer cb{cb_id}(tt::CBIndex::c_{cb_id});");
                         }
-                        MemScope::Local => unreachable!(),
-                        MemScope::Circular => {
-                            if let Some(cb_id) = input_cb_map.get(&op_id) {
-                                writeln!(reader, "{indent}CircularBuffer cb{cb_id}(tt::CBIndex::c_{cb_id});");
-                            }
+                    }
+                    Op::Storage { scope: MemScope::CircularWriter, .. } => {
+                        if let Some(cb_id) = output_cb_map.get(&op_id) {
+                            writeln!(reader, "{indent}CircularBuffer cb{cb_id}(tt::CBIndex::c_{cb_id});");
                         }
-                        MemScope::Register => todo!(),
-                    },
+                    }
+                    Op::Storage { scope: MemScope::Local, .. } => unreachable!(),
+                    Op::Storage { scope: MemScope::Register, .. } => todo!(),
                     Op::Load { .. } => {}
-                    Op::Store { dst, x, index: st_idx, layout: st_layout } => {
-                        let Op::Load { src, index: ld_idx, layout: ld_layout } = self.ops[x].op else {
+                    Op::Store { dst, src, index: st_idx, layout: st_layout } => {
+                        let Op::Load { src: ld_src, index: ld_idx, layout: ld_layout } = self.ops[src].op else {
                             panic!("tenstorrent supports only global to local loads in reader kernels with no ops inbetween")
                         };
-                        let Op::Define { scope: MemScope::Global, .. } = self.ops[src].op else {
+                        let Op::Param { kind: ParamKind::Global, .. } = self.ops[ld_src].op else {
                             unreachable!()
                         };
-                        let Op::Define { dtype, scope: MemScope::Circular, .. } = self.ops[dst].op else {
+                        let Op::Storage { dtype, scope: MemScope::CircularReader, .. } = self.ops[dst].op else {
                             unreachable!()
                         };
 
@@ -178,7 +189,7 @@ impl Kernel {
                                     }
                                     writeln!(
                                         reader,
-                                        "{indent}noc.async_read(p{src}, cb{cb_id}, {elem_size},\n{indent}  {{ .page_id = (r{ld_idx}*{elem_size})/{PAGE_SIZE}, .offset_bytes = (r{ld_idx}*{elem_size})%{PAGE_SIZE} }},\n{indent}  {{ .offset_bytes = r{st_idx}*{elem_size} }});"
+                                        "{indent}noc.async_read(p{ld_src}, cb{cb_id}, {elem_size},\n{indent}  {{ .page_id = (r{ld_idx}*{elem_size})/{PAGE_SIZE}, .offset_bytes = (r{ld_idx}*{elem_size})%{PAGE_SIZE} }},\n{indent}  {{ .offset_bytes = r{st_idx}*{elem_size} }});"
                                     );
                                 }
                                 _ => todo!(),
@@ -216,7 +227,7 @@ impl Kernel {
                     Op::Const(val) => {
                         writeln!(reader, "{indent}{} r{op_id} = {};", val.dtype().c_type(), val.c_code());
                     }
-                    Op::Index { axis, scope: IdxScope::Group, .. } => {
+                    Op::Index { axis, kind: IdxKind::Group(_), .. } => {
                         writeln!(reader, "{indent}uint32_t r{op_id} = get_arg_val<uint32_t>({});", n_inputs + axis as usize);
                         writeln!(reader, "{indent}DEVICE_PRINT(\"r{op_id}=gidx{axis}={{}}\\n\", r{op_id});");
                     }
@@ -226,7 +237,7 @@ impl Kernel {
                     Op::Cast { x, dtype } => {
                         writeln!(reader, "{indent}{} r{op_id} = ({})r{x};", dtype.c_type(), dtype.c_type());
                     }
-                    Op::Index { scope: IdxScope::Local, .. } => {
+                    Op::Index { kind: IdxKind::Local(_), .. } => {
                         unreachable!(
                             "tenstorrent does not have local threads; local indices should have been converted to loops by the opt_tenstorrent_tile optimization pass"
                         )
@@ -340,7 +351,7 @@ impl Kernel {
                     }
                     if compute_deps.contains(&scan) {
                         match &self.ops[scan].op {
-                            Op::Index { axis, scope: IdxScope::Local, .. } => {
+                            Op::Index { axis, kind: IdxKind::Local(_), .. } => {
                                 writeln!(
                                     compute,
                                     "{indent}uint32_t r{scan} = get_arg_val<uint32_t>({});",
@@ -408,8 +419,8 @@ impl Kernel {
                             binary_inits.insert(init);
                         }
                     }
-                    Op::Store { x, .. } => {
-                        if matches!(self.ops[x].op, Op::Const(_)) {
+                    Op::Store { src, .. } => {
+                        if matches!(self.ops[src].op, Op::Const(_)) {
                             has_fill = true;
                         }
                     }
@@ -487,7 +498,7 @@ impl Kernel {
                         panic!("tt_binary_init did not finish in 10000 steps");
                     }
                     match self.ops[scan].op {
-                        Op::Cast { x, .. } | Op::Unary { x, .. } | Op::Store { x, .. } => materialize_const(x),
+                        Op::Cast { x, .. } | Op::Unary { x, .. } | Op::Store { src: x, .. } => materialize_const(x),
                         Op::Binary { x, y, .. } => {
                             materialize_const(x);
                             materialize_const(y);
@@ -598,12 +609,13 @@ impl Kernel {
                             BOp::BitShiftRight => todo!(),
                             BOp::NotEq => todo!(),
                             BOp::Eq => todo!(),
+                            BOp::Cmpge => todo!(),
                         };
                     }
-                    Op::Store { dst, x, index: _, layout: MemLayout::Tile { .. } } => {
+                    Op::Store { dst, src, index: _, layout: MemLayout::Tile { .. } } => {
                         if let Some(&cb_id) = output_cb_map.get(&dst) {
-                            let idx = consumer_count.entry(x).or_insert(0);
-                            let slot = dst_slots[&x][*idx as usize];
+                            let idx = consumer_count.entry(src).or_insert(0);
+                            let slot = dst_slots.get(&src).expect("dst slot must exist")[*idx as usize];
                             *idx += 1;
                             output_stores.push((slot, cb_id));
                         }
@@ -660,7 +672,7 @@ impl Kernel {
                 if steps_scan > 10_000 {
                     panic!("tt_binary_init did not finish in 10000 steps");
                 }
-                if let Op::Define { scope: MemScope::Global, ro: false, .. } = self.ops[scan].op {
+                if let Op::Param { kind: ParamKind::GlobalMut, .. } = self.ops[scan].op {
                     writeln!(writer, "{indent}uint32_t out{scan} = get_arg_val<uint32_t>({out_global_count});");
                     writeln!(
                         writer,
@@ -689,9 +701,9 @@ impl Kernel {
                 match self.ops[scan].op {
                     Op::Loop { .. } => depth += 1,
                     Op::EndLoop => depth -= 1,
-                    Op::Store { x, .. } if depth > 0 => {
-                        if let Op::Load { src, .. } = self.ops[x].op {
-                            if let Some(&cb_id) = output_cb_map.get(&src) {
+                    Op::Store { src, .. } if depth > 0 => {
+                        if let Op::Load { src: cb_src, .. } = self.ops[src].op {
+                            if let Some(&cb_id) = output_cb_map.get(&cb_src) {
                                 if !in_loop_cbs.contains(&cb_id) {
                                     in_loop_cbs.push(cb_id);
                                 }
@@ -751,7 +763,7 @@ impl Kernel {
                 }
                 if writer_deps.contains(&scan) {
                     match &self.ops[scan].op {
-                        Op::Index { axis, scope: IdxScope::Group, .. } => {
+                        Op::Index { axis, kind: IdxKind::Group(_), .. } => {
                             writeln!(writer, "{indent}uint32_t r{scan} = get_arg_val<uint32_t>({});", n_outputs + *axis as usize);
                             writeln!(writer, "{indent}DPRINT << \"writer r{scan}=gidx{axis}=\" << r{scan} << ENDL();");
                         }
@@ -788,13 +800,13 @@ impl Kernel {
                 panic!("tt_binary_init did not finish in 10000 steps");
             }
             match self.ops[op_id].op {
-                Op::Store { dst, x, index: st_idx, layout } => {
+                Op::Store { dst, src, index: st_idx, layout } => {
                     if layout != MemLayout::Scalar {
                         todo!("add support for non-scalar stores back to DRAM")
                     }
-                    if let Op::Load { src, index: ld_idx, .. } = self.ops[x].op {
-                        if let Some(&cb_id) = output_cb_map.get(&src) {
-                            let Op::Define { dtype, .. } = self.ops[dst].op else {
+                    if let Op::Load { src: cb_src, index: ld_idx, .. } = self.ops[src].op {
+                        if let Some(&cb_id) = output_cb_map.get(&cb_src) {
+                            let Op::Storage { dtype, .. } = self.ops[dst].op else {
                                 unreachable!()
                             };
                             let elem_size = dtype.bit_size() as u32 / 8;
@@ -815,7 +827,7 @@ impl Kernel {
                 Op::Const(val) => {
                     writeln!(writer, "{indent}{} r{op_id} = {};", val.dtype().c_type(), val.c_code());
                 }
-                Op::Index { axis, scope: IdxScope::Group, .. } => {
+                Op::Index { axis, kind: IdxKind::Group(_), .. } => {
                     writeln!(writer, "{indent}uint32_t r{op_id} = get_arg_val<uint32_t>({});", n_outputs + axis as usize);
                 }
                 Op::Cast { x, dtype } => {

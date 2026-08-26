@@ -1,0 +1,16 @@
+[package]
+name = "phi"
+version = "0.1.0"
+edition = "2021"
+license = "LGPL-3.0-only"
+
+[dependencies]
+zyx = { path = "../../zyx" }
+zyx-nn = { path = "../../zyx-nn" }
+tokenizers = "*"
+serde = { version = "*", features = ["derive"] }
+half = "*"
+clap = { version = "*", features = ["derive"] }
+rand = "*"
+csv = "*"
+serde_json = "*"

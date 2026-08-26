@@ -42,7 +42,7 @@ pub struct LSTMCell {
     w_hh: Tensor,         // (4 * hidden_size, hidden_size)
     b_ih: Option<Tensor>, // (4 * hidden_size)
     b_hh: Option<Tensor>, // (4 * hidden_size)
-    hidden_size: u64,
+    hidden_size: i64,
 }
 
 impl LSTMCell {
@@ -57,8 +57,8 @@ impl LSTMCell {
     /// # Returns
     /// A `Result` wrapping the created `LSTMCell` or a `ZyxError` if initialization fails.
     pub fn new(
-        input_size: u64,
-        hidden_size: u64,
+        input_size: i64,
+    hidden_size: i64,
         bias: bool,
         dtype: Option<DType>,
     ) -> Result<Self, ZyxError> {

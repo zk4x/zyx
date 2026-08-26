@@ -374,7 +374,7 @@ impl Kernel {
             return false;
         }
 
-        let Some((a, b, c, mul_const, gidx_id)) = self.trace_to_linear_comparison(accumulated_value_id, loop_id) else {
+        let Some((a, b, c, mul_const, gidx_id, inclusive)) = self.trace_to_linear_comparison(accumulated_value_id, loop_id) else {
             return false;
         };
 
@@ -387,7 +387,8 @@ impl Kernel {
         }
 
         let step = mul_const;
-        let offset = loop_len - c as Dim - 1;
+        // `a OP b > c` counts `loop_len - c - 1` iterations; `>= c` counts one more.
+        let offset = if inclusive { loop_len - c as Dim } else { loop_len - c as Dim - 1 };
         let offset_id = self.insert_before(after_loop_load_id, Op::Const(Constant::idx(offset)));
         let sum_id = self.insert_before(after_loop_load_id, Op::Binary { x: gidx_id, y: offset_id, bop: BOp::Add });
         let step_id = self.insert_before(after_loop_load_id, Op::Const(Constant::idx(step)));
@@ -427,7 +428,7 @@ impl Kernel {
     ///
     /// For example, if accumulating `i` (the loop index directly):
     ///   a=1, b=1, c=n, `mul_const`=1, gidx is the loop index variable
-    fn trace_to_linear_comparison(&self, accumulated_value_id: OpId, loop_id: OpId) -> Option<(Dim, Dim, Dim, Dim, OpId)> {
+    fn trace_to_linear_comparison(&self, accumulated_value_id: OpId, loop_id: OpId) -> Option<(Dim, Dim, Dim, Dim, OpId, bool)> {
         if let Op::Index { kind: IdxKind::Group(_), .. } = self.at(accumulated_value_id) {
             return None;
         }
@@ -472,19 +473,23 @@ impl Kernel {
         None
     }
 
-    /// Looks for a comparison pattern: `loop_idx + offset > threshold`
+    /// Looks for a comparison pattern: `loop_idx + offset > threshold` (or `>=`).
     ///
-    /// This is the innermost pattern we expect: a Binary with Cmpgt where one operand
+    /// This is the innermost pattern we expect: a Binary with Cmpgt/Cmpge where one operand
     /// is the loop index plus/minus a constant, and the other is a constant threshold.
+    /// `>=` (inclusive) sets the returned `bool` so the caller counts one extra iteration.
     ///
-    /// Example: `gidx + 1 > n` returns (1, 1, n, `mul_const`, gidx)
-    fn trace_cmpgt(&self, op_id: OpId, mul_const: Dim, loop_id: OpId) -> Option<(Dim, Dim, Dim, Dim, OpId)> {
-        if let Op::Binary { x, y, bop: BOp::Cmpgt } = self.at(op_id) {
+    /// Example: `gidx + 1 > n` returns (1, 1, n, `mul_const`, gidx, false)
+    fn trace_cmpgt(&self, op_id: OpId, mul_const: Dim, loop_id: OpId) -> Option<(Dim, Dim, Dim, Dim, OpId, bool)> {
+        if let Op::Binary { x, y, bop: bop @ (BOp::Cmpgt | BOp::Cmpge) } = self.at(op_id) {
             let c = if let Op::Const(threshold) = self.at(*y) {
                 threshold.as_dim().unwrap_or(0)
             } else {
                 return None;
             };
+
+            // `>=` (inclusive) counts one more iteration than `>` (strict).
+            let inclusive = matches!(bop, BOp::Cmpge);
 
             if let Op::Binary { x: add_x, y: add_y, bop: BOp::Add } = self.at(*x) {
                 let gidx = if *add_x == loop_id {
@@ -498,7 +503,7 @@ impl Kernel {
                 let mut x = gidx;
                 while x != op_id {
                     if x == loop_id {
-                        return Some((1, 1, c, mul_const, gidx));
+                        return Some((1, 1, c, mul_const, gidx, inclusive));
                     }
                     x = self.next_op(x);
                 }
@@ -507,7 +512,7 @@ impl Kernel {
             // `((k + gidx + coeff*loop) >> 1) > 0` that folds to `gidx > 0` at
             // `loop == 0` and is always true for `loop >= 1`. See trace_masked_ceil.
             if let Some(gidx) = self.trace_masked_ceil(op_id, loop_id) {
-                return Some((1, 1, c, mul_const, gidx));
+                return Some((1, 1, c, mul_const, gidx, false));
             }
         }
         None
@@ -635,12 +640,12 @@ impl Kernel {
                                 return false;
                             }
                         }
-                        Op::Binary { bop: BOp::Cmpgt, .. } => return true,
+                        Op::Binary { bop: BOp::Cmpgt | BOp::Cmpge, .. } => return true,
                         _ => return false,
                     }
                 }
             }
-            Op::Binary { bop: BOp::Cmpgt, .. } => true,
+            Op::Binary { bop: BOp::Cmpgt | BOp::Cmpge, .. } => true,
             _ => false,
         }
     }
@@ -1128,5 +1133,49 @@ mod tests {
             expected[p * 8 + tokens_host[p] as usize] = 1.0;
         }
         assert_eq!(got, expected);
+    }
+
+    /// Regression: a gather/one-hot mask written as `>=` (Cmpge) must fold, not
+    /// just `>` (Cmpgt). The inner loop of index_select/embedding counts
+    /// `i64((g + loop) >= threshold)`; with loop_len=60 and threshold=59 the
+    /// closed form is `g + 1`. The off-by-one between `>` (`loop_len - c - 1`)
+    /// and `>=` (`loop_len - c`) must be honored.
+    #[test]
+    fn test_cmpge_arange_loop_folds() {
+        let mut k = Kernel::new(DeviceId::AUTO);
+        let out = k.param(DType::I64, ParamKind::GlobalMut, OpId::NULL);
+        let out_shape = k.const_idx(2u32);
+        let g = k.group_index(0, out_shape);
+        let acc = k.storage(DType::I64, MemScope::Register, 1);
+        let zi = k.const_idx(0u32);
+        let ziv = k.const_val(0i64);
+        k.store(acc, ziv, zi, MemLayout::Scalar);
+
+        let ilen = k.const_idx(60u32);
+        let loop_id = k.loop_(ilen);
+
+        // r350 = g + loop
+        let r350 = k.binary(g, loop_id, BOp::Add);
+        let c59 = k.const_idx(59u32);
+        let cmp = k.binary(r350, c59, BOp::Cmpge);
+        let mask = k.cast(cmp, DType::I64);
+        let l = k.load(acc, zi, MemLayout::Scalar);
+        let sum = k.binary(mask, l, BOp::Add);
+        k.store(acc, sum, zi, MemLayout::Scalar);
+
+        k.end_loop();
+
+        let res = k.load(acc, zi, MemLayout::Scalar);
+        k.store(out, res, g, MemLayout::Scalar);
+
+        k.simplify_accumulating_loop();
+
+        // The after-loop load must be rewritten to the closed form (not a Load).
+        assert!(matches!(k.at(res), Op::Cast { .. }), "cmpge loop should fold");
+
+        let compiled = k.compile().unwrap();
+        let result = compiled.forward(&[], vec![[2]]).unwrap().pop().unwrap();
+        // out[g] = g + 1 for g in 0..2
+        assert_eq!(result, [1i64, 2]);
     }
 }

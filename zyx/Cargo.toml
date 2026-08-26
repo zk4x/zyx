@@ -50,6 +50,9 @@ pollster = { version = "0.4.0", default-features = false, optional = true } # MI
 # Pyo3 is used only for python bindings
 pyo3 = { version = "0.29.0", optional = true, features = ["extension-module", "generate-import-lib"] } # MIT or Apache 2.0
 
+# tiny_http is used by the viz feature for the web server
+tiny_http = { version = "0.12.0", optional = true } # MIT
+
 [dev-dependencies]
 matrixmultiply = "0.3"
 
@@ -80,6 +83,9 @@ time = []
 
 # Enables debug println! at the start of every tensor op
 debug_tensor_op = []
+
+# Enables web-based kernel visualization server on port 4242
+viz = ["dep:tiny_http"]
 
 # Optimize for linking time, 'cause linker is so slow...
 [profile.dev] # Modify profile settings via config.

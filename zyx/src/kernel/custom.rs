@@ -23,7 +23,7 @@ use crate::Set;
 use crate::backend::{BufferId, DeviceInfo, MemoryPool, ProgramId};
 use crate::dtype::Constant;
 use crate::error::BackendError;
-use crate::graph::{ClassId, GraphId};
+use crate::tensor::TensorId;
 use crate::kernel::{
     BOp, DeviceId, IDX_T, IdxKind, Kernel, MMADType, MMADims, MMALayout, MemLayout, MemScope, MoveOp, Op, OpId, ParamKind, UOp,
 };
@@ -589,7 +589,7 @@ impl CompiledKernel {
                     pool_events.push(rt.events.remove(&key).unwrap());
                 }
                 let dtype = rt.dtype(input.id);
-                let bytes = ((rt.shape(input.id).iter().product::<Dim>() * dtype.bit_size() as Dim) + 7) / 8;
+                let bytes = ((rt.resolve_shape(input.id).iter().product::<Dim>() * dtype.bit_size() as Dim) + 7) / 8;
                 let alloc_bytes = bytes + dtype.bit_size() as Dim / 8;
                 let (dev_buf, alloc_ev) = rt.pools[pool_id].allocate(alloc_bytes)?;
                 pool_events.push(alloc_ev);
@@ -640,21 +640,30 @@ impl CompiledKernel {
         // break any eager op built on the forward result (e.g. a .cast()).
         let mut tensors = Vec::new();
         for ((dtype, buf_id), shape) in self.outputs.iter().copied().zip(output_bufs).zip(shapes) {
-            let id = rt.tensors.push(TensorData {
-                kernel_id: KernelId::NULL,
-                op_id: OpId::NULL,
-                depends_on: KernelId::NULL,
-                class_id: ClassId::NULL,
-                graph_id: GraphId::NULL,
-                rc: 1,
-            });
+            // Build the slab-side shape expression (constant dims) for the
+            // new tensor before pushing it.
+            let dim_tids: Vec<TensorId> = shape
+                .iter()
+                .map(|&d| rt.new_constant_tensor(crate::dtype::Constant::idx(d)))
+                .collect();
+            let shape_id = if dim_tids.is_empty() {
+                TensorId::NULL
+            } else {
+                rt.stack(&dim_tids).expect("custom kernel output: failed to build shape stack")
+            };
             let mut kernel = Kernel::new(DeviceId::AUTO);
             let shape_op = kernel.add_shape(&shape);
             let op_id = kernel.push_back(Op::Param { dtype, kind: ParamKind::Global, shape: shape_op });
+            let id = rt.tensors.push(TensorData::Eager {
+                kernel_id: KernelId::NULL,
+                op_id: OpId::NULL,
+                depends_on: KernelId::NULL,
+                shape_id,
+                rc: 1,
+            });
             let load_kid =
                 rt.kernels.push(KernelData { outputs: Set::from_iter([id]), loads: vec![id], stores: Vec::new(), kernel });
-            rt.tensors[id].kernel_id = load_kid;
-            rt.tensors[id].op_id = op_id;
+            rt.tensors[id] = TensorData::Eager { kernel_id: load_kid, op_id, depends_on: KernelId::NULL, shape_id, rc: 1 };
             rt.retain(id);
             rt.buffer_map.insert(id, buf_id);
             tensors.push(Tensor { id })

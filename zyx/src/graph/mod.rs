@@ -19,7 +19,7 @@ use crate::{
     backend::{BufferId, Device, PoolId, ProgramId},
     dtype::Constant,
     kernel::{BOp, DeviceId, IDX_T, Kernel, MoveOp, Op, OpId, ParamKind, UOp},
-    runtime::{KernelData, KernelId, Runtime, TensorData, loads_dropped_by_prune},
+    runtime::{KernelData, KernelId, Runtime, TensorData},
     shape::{Dim, UAxis},
     slab::{Slab, SlabId},
     tensor::TensorId,
@@ -1394,7 +1394,10 @@ impl Graph {
 
 impl Runtime {
     pub fn promote_to_graph(&mut self, tid: TensorId, graph_id: GraphId) -> Result<ClassId, ZyxError> {
-        let (class_id, gid) = (self.tensors[tid].class_id, self.tensors[tid].graph_id);
+        let (class_id, gid) = match self.tensors[tid] {
+            TensorData::Graph { class_id, graph_id, .. } | TensorData::Promoted { class_id, graph_id, .. } => (class_id, graph_id),
+            _ => (ClassId::NULL, GraphId::NULL),
+        };
         if !class_id.is_null() {
             if !self.graphs[gid].dead {
                 if graph_id == gid {
@@ -1405,16 +1408,25 @@ impl Runtime {
             }
             // Graph is dead: the tensor reverts to eager (its kernel_id is still
             // valid since we never mutated the eager kernel). Clear the graph
-            // affiliation before promoting it into a new scope.
-            self.tensors[tid].class_id = ClassId::NULL;
-            self.tensors[tid].graph_id = GraphId::NULL;
+            // affiliation before promoting it into a new scope. Its pending
+            // store is gone because promotion materializes pending stores.
+            match &mut self.tensors[tid] {
+                TensorData::Promoted { kernel_id, op_id, shape_id, rc, .. } => {
+                    let (kernel_id, op_id, shape_id, rc) = (*kernel_id, *op_id, *shape_id, *rc);
+                    self.tensors[tid] = TensorData::Eager { kernel_id, op_id, depends_on: KernelId::NULL, shape_id, rc };
+                }
+                ref t => panic!("promote_to_graph: dead-graph tensor {tid} has no eager side to revert to: {t:?}"),
+            }
             self.graphs[gid].ref_count -= 1;
             if self.graphs[gid].dead && self.graphs[gid].ref_count == 0 {
                 self.remove_dead_graph(gid);
             }
         }
 
-        let (kernel_id, my_op_id) = self.eager_ids(tid);
+        let (kernel_id, my_op_id) = match self.tensors[tid] {
+            TensorData::Eager { kernel_id, op_id, .. } | TensorData::Promoted { kernel_id, op_id, .. } => (kernel_id, op_id),
+            ref t => panic!("promote_to_graph: tensor {tid} has no eager kernel: {t:?}"),
+        };
 
         // Already realized eager tensors promote to the graph as leaves directly.
         // Their buffer is read by the plan as an input; the value is preserved and
@@ -1454,8 +1466,20 @@ impl Runtime {
             self.graphs[graph_id].leaf_map.insert(class_id, tid);
             self.graphs[graph_id].leaf_classes.push(class_id);
             self.graphs[graph_id].ref_count += 1;
-            self.tensors[tid].class_id = class_id;
-            self.tensors[tid].graph_id = graph_id;
+            match &mut self.tensors[tid] {
+                TensorData::Graph { class_id: c, .. } | TensorData::Promoted { class_id: c, .. } => *c = class_id,
+                TensorData::Eager { .. } => {
+                    let (kernel_id, op_id, shape_id, rc) = match self.tensors[tid] {
+                        TensorData::Eager { kernel_id, op_id, depends_on, shape_id, rc } => {
+                            debug_assert!(depends_on.is_null(), "promoting unrealized tensor {tid} with pending store");
+                            (kernel_id, op_id, shape_id, rc)
+                        }
+                        ref t => unreachable!("{t:?}"),
+                    };
+                    self.tensors[tid] = TensorData::Promoted { kernel_id, op_id, class_id, graph_id, shape_id, rc };
+                }
+                ref t => panic!("promote_to_graph: cannot attach tensor {tid} to the graph: {t:?}"),
+            }
             return Ok(class_id);
         }
 
@@ -1510,10 +1534,12 @@ impl Runtime {
                     Op::Param { shape, dtype, .. } => {
                         let load_tid = loads[storage_idx];
                         if !self.buffer_map.contains_key(&load_tid) {
-                            let pending = if self.tensors[load_tid].class_id.is_null() {
-                                self.tensors[load_tid].depends_on
-                            } else {
-                                KernelId::NULL
+                            // An `Eager` tensor never carries a graph class,
+                            // so its depends_on is the pending producer.
+                            let pending = match &self.tensors[load_tid] {
+                                TensorData::Eager { depends_on, .. } => *depends_on,
+                                TensorData::Graph { .. } | TensorData::Promoted { .. } => KernelId::NULL,
+                                ref t => panic!("promote_to_graph: load tid {load_tid} is not a kernel tensor: {t:?}"),
                             };
                             debug_assert!(!pending.is_null());
                             let outputs: Vec<TensorId> = self.kernels[pending].outputs.iter().copied().collect();
@@ -1522,12 +1548,18 @@ impl Runtime {
                             }
                         }
 
-                        if !self.tensors[load_tid].class_id.is_null()
-                            && self.tensors[load_tid].graph_id == graph_id
-                            && !self.graphs[graph_id].dead
-                        {
+                        let load_is_leaf = match &self.tensors[load_tid] {
+                            TensorData::Graph { class_id: c, graph_id: g, .. } | TensorData::Promoted { class_id: c, graph_id: g, .. } => {
+                                !c.is_null() && *g == graph_id && !self.graphs[graph_id].dead
+                            }
+                            _ => false,
+                        };
+                        if load_is_leaf {
                             // load_tid is already a leaf of this graph: reuse its class.
-                            self.tensors[load_tid].class_id
+                            match &self.tensors[load_tid] {
+                                TensorData::Graph { class_id: c, .. } | TensorData::Promoted { class_id: c, .. } => *c,
+                                ref t => unreachable!("{t:?}"),
+                            }
                         } else {
                             // Create load_tid's leaf, with the symbolic shape
                             // class built from this Param's own shape stack
@@ -1560,8 +1592,24 @@ impl Runtime {
                             self.graphs[graph_id].leaf_map.insert(class_id, load_tid);
                             self.graphs[graph_id].leaf_classes.push(class_id);
                             self.graphs[graph_id].ref_count += 1;
-                            self.tensors[load_tid].class_id = class_id;
-                            self.tensors[load_tid].graph_id = graph_id;
+                            match &mut self.tensors[load_tid] {
+                                TensorData::Graph { class_id: c, .. } | TensorData::Promoted { class_id: c, .. } => *c = class_id,
+                                TensorData::Eager { .. } => {
+                                    let (kernel_id, op_id, shape_id, rc) = match self.tensors[load_tid] {
+                                        TensorData::Eager { kernel_id, op_id, depends_on, shape_id, rc } => {
+                                            debug_assert!(
+                                                depends_on.is_null(),
+                                                "promoting unrealized tensor {load_tid} with pending store"
+                                            );
+                                            (kernel_id, op_id, shape_id, rc)
+                                        }
+                                        ref t => unreachable!("{t:?}"),
+                                    };
+                                    self.tensors[load_tid] =
+                                        TensorData::Promoted { kernel_id, op_id, class_id, graph_id, shape_id, rc };
+                                }
+                                ref t => panic!("promote_to_graph: cannot attach load tensor {load_tid} to the graph: {t:?}"),
+                            }
                             class_id
                         }
                     }
@@ -1671,8 +1719,20 @@ impl Runtime {
 
         let class_id = op_to_class[&my_op_id];
         self.graphs[graph_id].ref_count += 1;
-        self.tensors[tid].class_id = class_id;
-        self.tensors[tid].graph_id = graph_id;
+        match &mut self.tensors[tid] {
+            TensorData::Graph { class_id: c, .. } | TensorData::Promoted { class_id: c, .. } => *c = class_id,
+            TensorData::Eager { .. } => {
+                let (kernel_id, op_id, shape_id, rc) = match self.tensors[tid] {
+                    TensorData::Eager { kernel_id, op_id, depends_on, shape_id, rc } => {
+                        debug_assert!(depends_on.is_null(), "promoting unrealized tensor {tid} with pending store");
+                        (kernel_id, op_id, shape_id, rc)
+                    }
+                    ref t => unreachable!("{t:?}"),
+                };
+                self.tensors[tid] = TensorData::Promoted { kernel_id, op_id, class_id, graph_id, shape_id, rc };
+            }
+            ref t => panic!("promote_to_graph: cannot attach tensor {tid} to the graph: {t:?}"),
+        }
         Ok(class_id)
     }
 
@@ -1683,7 +1743,7 @@ impl Runtime {
         let jit_kernels: *const Slab<JitKernelId, JitKernelData> = &self.graphs[graph_id].jit_kernels;
         let jit_kernels: &Slab<JitKernelId, JitKernelData> = unsafe { &*jit_kernels };
         let total = jit_kernels.len().0  as i64 * device_ids.len()  as i64;
-        let mut bar = crate::prog_bar::ProgressBar::new(total as u64);
+        let mut bar = crate::progress::ProgressBar::new(total as u64);
         for ek in jit_kernels.values() {
             let (flop, read, write) = ek.kernel.flop_mem_rw();
             let class_of = ek.stores.first().copied().unwrap();
@@ -1697,8 +1757,22 @@ impl Runtime {
                 let mut kernel = ek.kernel.clone();
                 kernel.device_id = dev_id;
                 bar.inc(1, &format!("autotune {} on dev={}", kernel.name(), dev_id.0));
-                let (dev_prog, timing) = self.get_or_autotune(kernel, pool_id, flop, read, write, &[])?;
+                let (dev_prog, _opts, timing) = self.get_or_autotune(kernel, pool_id, flop, read, write, &[])?;
                 let prog = ProgramId { device: dev_id, program: dev_prog };
+                #[cfg(feature = "viz")]
+                {
+                    let sched_kernel = ek.kernel.clone();
+                    let dev = &self.devices[dev_id];
+                    let kc = crate::viz::KernelCapture {
+                        sched_kernel,
+                        opt_seq: _opts,
+                        dev_info: dev.info().clone(),
+                        device_label: dev.name(),
+                        cc: dev.compute_capability(),
+                        has_openmp: dev.has_openmp(),
+                    };
+                    self.viz.record(prog, kc);
+                }
 
                 let knid = self.graphs[graph_id].nodes.push(NodeData {
                     node: Node::Kernel {
@@ -1743,14 +1817,24 @@ impl Runtime {
             // kernel (Eager state) — both carry a buffer.
             for &tid in self.graphs[graph_id].leaf_map.values() {
                 debug_assert!(self.buffer_map.contains_key(&tid), "leaf {tid} not realized");
-                debug_assert!(self.tensors[tid].graph_id == graph_id, "leaf {tid} belongs to another graph");
+                let affiliated = match self.tensors[tid] {
+                    TensorData::Graph { graph_id: g, .. } | TensorData::Promoted { graph_id: g, .. } => g == graph_id,
+                    ref t => panic!("leaf {tid} is not a graph tensor: {t:?}"),
+                };
+                debug_assert!(affiliated, "leaf {tid} belongs to another graph");
             }
             // I2: no non-leaf graph tensor is realized — except in-place assign
             // targets, whose value lives in the (realized) leaf buffer they alias.
             for (tid, td) in self.tensors.iter() {
-                if td.graph_id == graph_id
-                    && !self.graphs[graph_id].is_leaf(td.class_id)
-                    && !self.graphs[graph_id].is_after(td.class_id)
+                let (affiliated, class_id) = match td {
+                    TensorData::Graph { class_id: c, graph_id: g, .. } | TensorData::Promoted { class_id: c, graph_id: g, .. } => {
+                        (*g == graph_id, *c)
+                    }
+                    _ => continue,
+                };
+                if affiliated
+                    && !self.graphs[graph_id].is_leaf(class_id)
+                    && !self.graphs[graph_id].is_after(class_id)
                 {
                     debug_assert!(!self.buffer_map.contains_key(&tid), "non-leaf graph tensor {tid} realized before realize");
                 }
@@ -1833,92 +1917,69 @@ impl Runtime {
         if self.debug.egraph() {
             plan.debug();
         }
+        #[cfg(feature = "viz")]
+        self.viz.snapshot(&self.graphs[graph_id], &plan);
 
         Ok(plan)
     }
 
     pub fn eagerify(&mut self, tid: TensorId) {
-        if self.tensors[tid].class_id.is_null() {
-            return;
-        }
-        let graph_id = self.tensors[tid].graph_id;
-        let old_kernel_id = self.tensors[tid].kernel_id;
-
-        // Release tid from its old eager kernel (if any): remove it from outputs,
-        // prune the unused chain (releasing pruned loads), and drop the kernel if
-        // nothing else uses it (releasing its remaining loads).
-        let mut pruned: Vec<TensorId> = Vec::new();
-        if !old_kernel_id.is_null() {
-            let old_op_id = self.tensors[tid].op_id;
-            let kernel_died = {
-                let kd = &mut self.kernels[old_kernel_id];
-                kd.outputs.remove(&tid);
-                if !old_op_id.is_null() {
-                    let out_ops: Vec<OpId> = kd.outputs.iter().map(|&t| self.tensors[t].op_id).collect();
-                    let old_loads = std::mem::take(&mut kd.loads);
-                    let new_loads = kd.kernel.remove_unused_chain(old_op_id, &out_ops, &old_loads);
-                    kd.loads = new_loads.clone();
-                    pruned = loads_dropped_by_prune(&old_loads, &new_loads);
-                }
-                kd.outputs.is_empty()
-            };
-            for t in pruned {
-                self.release_load(t);
-            }
-            if kernel_died {
-                if !self.kernels[old_kernel_id].kernel.contains_stores() {
-                    self.remove_dead_eager_kernel(old_kernel_id);
-                } else {
-                    self.materialize_kernel(old_kernel_id).unwrap();
-                }
-            }
-        }
-
-        // Capture dtype and symbolic shape while tid is still graph-affiliated.
-        let dtype = self.dtype(tid);
-        let dim_consts: Vec<Option<Constant>> = self.graphs[graph_id]
-            .shape(self.tensors[tid].class_id)
-            .into_iter()
-            .map(|dim| match &self.graphs[graph_id].nodes[self.graphs[graph_id].classes[dim].nodes[0]].node {
-                Node::Const { value: c, .. } => Some(*c),
-                _ => None,
-            })
-            .collect();
-
-        self.tensors[tid].class_id = ClassId::NULL;
-        self.tensors[tid].graph_id = GraphId::NULL;
-        let kernel_id = self.kernels.push(KernelData {
-            outputs: Set::from_iter([tid]),
-            loads: Vec::new(),
-            stores: Vec::new(),
-            kernel: Kernel::new(DeviceId::AUTO),
-        });
-        let dim_ops: Vec<OpId> = dim_consts
-            .into_iter()
-            .map(|c| match c {
-                Some(c) => self.kernels[kernel_id].kernel.push_back(Op::Const(c)),
-                None => self.kernels[kernel_id].kernel.param(crate::kernel::IDX_T, ParamKind::Variable, OpId::NULL),
-            })
-            .collect();
-        let shape = match dim_ops.len() {
-            0 => OpId::NULL,
-            1 => dim_ops[0],
-            _ => self.kernels[kernel_id].kernel.stack(&dim_ops),
+        let realized = self.buffer_map.contains_key(&tid);
+        let (old_kernel_id, old_op_id, graph_id, shape_id) = match self.tensors[tid] {
+            TensorData::Graph { graph_id, shape_id, .. } => (KernelId::NULL, OpId::NULL, graph_id, shape_id),
+            TensorData::Promoted { kernel_id, op_id, graph_id, shape_id, .. } => (kernel_id, op_id, graph_id, shape_id),
+            // Already eager or a pure-slab value: nothing to do.
+            _ => return,
         };
-        let op_id = self.kernels[kernel_id].kernel.push_back(Op::Param { dtype, kind: ParamKind::Global, shape });
-        self.kernels[kernel_id].loads.push(tid);
-        self.tensors[tid].kernel_id = kernel_id;
-        self.tensors[tid].op_id = op_id;
-        self.tensors[tid].depends_on = KernelId::NULL;
-        self.retain(tid);
+
+        if !realized {
+            match self.tensors[tid] {
+                TensorData::Promoted { kernel_id, op_id, shape_id, rc, .. } => {
+                    // Unrealized promoted tensor: the eager producer kernel was
+                    // never mutated, so just demote in place.
+                    self.tensors[tid] = TensorData::Eager { kernel_id, op_id, depends_on: KernelId::NULL, shape_id, rc };
+                }
+                TensorData::Graph { rc, .. } => {
+                    // Unrealized graph-only tensor: its value can only be
+                    // recomputed by the (dropping) graph; keep it as a dead
+                    // handle that panics on use.
+                    self.tensors[tid] = TensorData::DeadGraph { graph_id, rc };
+                    return;
+                }
+                ref t => unreachable!("eagerify: unexpected variant after affiliation match: {t:?}"),
+            }
+        } else {
+            // Realized: detach from any old eager producer (promoted only),
+            // then build a fresh load kernel sharing the existing buffer —
+            // no data moves. The slab-side `shape_id` is replayed into the
+            // new kernel.
+            if !old_kernel_id.is_null() {
+                self.detach_producer(tid, old_kernel_id, old_op_id);
+            }
+            let dtype = self.dtype(tid);
+            let kernel_id = self.kernels.push(KernelData {
+                outputs: Set::from_iter([tid]),
+                loads: Vec::new(),
+                stores: Vec::new(),
+                kernel: Kernel::new(DeviceId::AUTO),
+            });
+            let shape_op = self.replay_symbolic_into_kernel(kernel_id, shape_id);
+            let op_id = self.kernels[kernel_id].kernel.push_back(Op::Param { dtype, kind: ParamKind::Global, shape: shape_op });
+            self.kernels[kernel_id].loads.push(tid);
+            let rc = match self.tensors[tid] {
+                TensorData::Graph { rc, .. } | TensorData::Promoted { rc, .. } => rc,
+                ref t => unreachable!("eagerify: {t:?}"),
+            };
+            self.tensors[tid] = TensorData::Eager { kernel_id, op_id, depends_on: KernelId::NULL, shape_id, rc };
+            // The new kernel-load occurrence carries its own rc reference.
+            self.retain(tid);
+        }
+
         self.graphs[graph_id].ref_count -= 1;
     }
 
     pub fn assert_graph_alive(&self, graph_id: GraphId) {
-        assert!(
-            !self.graphs[graph_id].dead,
-            "tape scope has ended (tensor belongs to a dead tape scope; Tape dropped or realized without this tensor being an output)"
-        );
+        assert!(!self.graphs[graph_id].dead, "tape scope has ended (tensor belongs to a dead tape scope");
     }
 
     /// Pushes a constant node into the graph and returns its class.
@@ -1945,19 +2006,6 @@ impl Runtime {
     }
 
     /// Numeric shape of a class for the runtime's `shapes` cache: static dim
-    pub fn new_graph_tensor(&mut self, graph_id: GraphId, class_id: ClassId) -> TensorId {
-        self.graphs[graph_id].ref_count += 1;
-        let tid = self.tensors.push(TensorData {
-            kernel_id: KernelId::NULL,
-            op_id: OpId::NULL,
-            depends_on: KernelId::NULL,
-            class_id,
-            graph_id,
-            rc: 1,
-        });
-        tid
-    }
-
     pub fn push_node(&mut self, graph_id: GraphId, node: Node) -> (NodeId, ClassId) {
         match node {
             Node::Permute { .. } => {

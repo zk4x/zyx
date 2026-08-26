@@ -49,9 +49,9 @@ impl TransformerDecoderLayer {
     /// Returns a `Result` containing the new `TransformerDecoderLayer` or a `ZyxError` if initialization fails.
     #[allow(clippy::too_many_arguments)] // mirrors PyTorch API with multiple config parameters
     pub fn new(
-        d_model: u64,                     // embed_dim
-        nhead: u64,                       // num_heads
-        dim_feedforward: u64,             // dim_feedforward
+        d_model: i64,                     // embed_dim
+        nhead: i64,                       // num_heads
+        dim_feedforward: i64,             // dim_feedforward
         dropout: f32,                     // dropout rate
         activation: fn(Tensor) -> Tensor, // activation function
         layer_norm_eps: f64,              // layer_norm_eps

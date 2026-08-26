@@ -18,10 +18,11 @@ use crate::{
     dtype::{Constant, DType},
     error::{BackendError, ErrorStatus},
     graph::{ClassId, Graph},
-    kernel::{IdxKind, Kernel, Op, ParamKind},
+    kernel::{BOp, IdxKind, Kernel, Op, OpId, ParamKind},
     shape::Dim,
     slab::{Slab, SlabId},
 };
+use crate::{Map, hashers::FHasher};
 use c::CDevice;
 use cblas::CblasDevice;
 use cuda::{CUDADevice, CUDAMemoryPool};
@@ -30,7 +31,7 @@ use dummy::{DummyDevice, DummyMemoryPool};
 use host::HostMemoryPool;
 use nanoserde::{DeBin, DeJson, SerBin};
 use opencl::{OpenCLDevice, OpenCLMemoryPool};
-use std::collections::BTreeSet;
+use std::{collections::BTreeSet, hash::BuildHasherDefault};
 #[cfg(feature = "tenstorrent")]
 use tenstorrent::{TTDevice, TTMemoryPool};
 use vulkan::{VulkanDevice, VulkanMemoryPool};
@@ -57,23 +58,68 @@ pub struct PoolBufferId(u32);
 /// Per-gws-axis launch size for a compiled kernel. Backends store one of these
 /// per gws axis at compile time and derive the actual grid at launch from it +
 /// the bound `args`. See AGENTS.md "gws (Global Work Size)".
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum GwsDim {
     /// The group length is an `Op::Const`; use this size directly.
     Const(Dim),
     /// The group length is an `Op::Param { kind: Variable }`; read
     /// `args[ordinal]` from the pool (`get_variable` → `Constant::as_dim()`).
     Param(usize),
+    /// The group length is a dim *expression* (e.g. an inferred reshape dim):
+    /// a binary op over two recursively-evaluable group dims.
+    Binary { x: Box<GwsDim>, y: Box<GwsDim>, bop: BOp },
+}
+
+impl GwsDim {
+    /// Evaluate to the concrete grid extent. `param` resolves a variable
+    /// ordinal (same mapping as compile-time `Param` ordinals) to its value.
+    #[must_use]
+    pub fn eval(&self, param: &mut dyn FnMut(usize) -> Dim) -> Dim {
+        match self {
+            GwsDim::Const(d) => *d,
+            GwsDim::Param(ordinal) => param(*ordinal),
+            GwsDim::Binary { x, y, bop } => {
+                let xv = Constant::idx(x.eval(param));
+                let yv = Constant::idx(y.eval(param));
+                Constant::binary(xv, yv, *bop).as_dim().expect("gws expression evaluated to a non-integer dim")
+            }
+        }
+    }
 }
 
 /// Walk the kernel's `Op::Index` ops and return one `GwsDim` per gws axis.
 ///
-/// Each group length `op_id` is either an `Op::Const` (→ `Const`) or an
-/// `Op::Param { kind: Variable }` (→ `Param`, ordinal = its head-order position
-/// counting every `Op::Param`); anything else is unreachable.
+/// Each group length `op_id` is a dim over `Op::Const` leaves and
+/// `Op::Param { kind: Variable }` leaves (`Const` → `Const`,
+/// `Param { Variable }` → `Param`, binary chains → `Binary`); anything else is
+/// unreachable.
 fn gws_from_kernel(kernel: &Kernel) -> Vec<GwsDim> {
-    let mut gws = Vec::new();
+    // Head-order position of every `Op::Param`, matching the arg ordering.
+    let mut param_ordinal: Map<OpId, usize> = Map::with_hasher(BuildHasherDefault::<FHasher>::new());
     let mut param_idx = 0usize;
+    let mut op_id = kernel.head;
+    while !op_id.is_null() {
+        if matches!(kernel.ops[op_id].op, Op::Param { .. }) {
+            param_ordinal.insert(op_id, param_idx);
+            param_idx += 1;
+        }
+        op_id = kernel.next_op(op_id);
+    }
+
+    fn conv(kernel: &Kernel, len: OpId, ordinals: &Map<OpId, usize>) -> GwsDim {
+        match &kernel.ops[len].op {
+            Op::Const(c) => GwsDim::Const(c.as_dim().unwrap()),
+            Op::Param { kind: ParamKind::Variable, .. } => GwsDim::Param(ordinals[&len]),
+            Op::Binary { x, y, bop } => GwsDim::Binary {
+                x: Box::new(conv(kernel, *x, ordinals)),
+                y: Box::new(conv(kernel, *y, ordinals)),
+                bop: *bop,
+            },
+            ref op => unreachable!("group length must be a dim over Const/Param Variable, got {op:?}"),
+        }
+    }
+
+    let mut gws = Vec::new();
     let mut op_id = kernel.head;
     let mut steps_op_id = 0usize;
     while !op_id.is_null() {
@@ -81,21 +127,13 @@ fn gws_from_kernel(kernel: &Kernel) -> Vec<GwsDim> {
         if steps_op_id > 10_000 {
             panic!("gws_from_kernel did not finish in 10000 steps");
         }
-        match &kernel.ops[op_id].op {
-            Op::Param { .. } => param_idx += 1,
-            Op::Index { axis, kind: IdxKind::Group(len) } => {
-                let gdim = match &kernel.ops[*len].op {
-                    Op::Const(c) => GwsDim::Const(c.as_dim().unwrap()),
-                    Op::Param { kind: ParamKind::Variable, .. } => GwsDim::Param(param_idx - 1),
-                    _ => unreachable!("group length must be Const or Param Variable"),
-                };
-                let axis = *axis as usize;
-                if gws.len() <= axis {
-                    gws.resize(axis + 1, GwsDim::Const(1));
-                }
-                gws[axis] = gdim;
+        if let Op::Index { axis, kind: IdxKind::Group(len) } = kernel.ops[op_id].op {
+            let gdim = conv(kernel, len, &param_ordinal);
+            let axis = axis as usize;
+            if gws.len() <= axis {
+                gws.resize(axis + 1, GwsDim::Const(1));
             }
-            _ => {}
+            gws[axis] = gdim;
         }
         op_id = kernel.next_op(op_id);
     }
@@ -608,6 +646,8 @@ impl MemoryPool {
             MemoryPool::OpenCL(pool) => pool.store_variable(scalar),
             MemoryPool::HIP(_) => todo!(),
             MemoryPool::Vulkan(pool) => pool.store_variable(scalar),
+            #[cfg(feature = "tenstorrent")]
+            MemoryPool::TT(_) => todo!(),
         }
     }
 
@@ -622,6 +662,8 @@ impl MemoryPool {
             MemoryPool::OpenCL(pool) => pool.get_variable(buffer_id),
             MemoryPool::HIP(_) => None,
             MemoryPool::Vulkan(pool) => pool.get_variable(buffer_id),
+            #[cfg(feature = "tenstorrent")]
+            MemoryPool::TT(_) => None,
         }
     }
 
@@ -896,6 +938,43 @@ impl Device {
     /// must be skipped by generic kernel autotuning.
     pub const fn aot_only(&self) -> bool {
         matches!(self, Self::Cblas(_))
+    }
+
+    /// Human-readable device name (e.g. "CUDA", "OpenCL", "C").
+    #[cfg(feature="viz")]
+    pub const fn name(&self) -> &'static str {
+        match self {
+            Device::C(_) => "C",
+            Device::Cblas(_) => "CBLAS",
+            Device::Dummy(_) => "Dummy",
+            Device::CUDA(_) => "CUDA",
+            Device::OpenCL(_) => "OpenCL",
+            Device::HIP(_) => "HIP",
+            #[cfg(feature = "tenstorrent")]
+            Device::TT(_) => "Tenstorrent",
+            Device::Vulkan(_) => "Vulkan",
+            #[cfg(feature = "wgpu")]
+            Device::WGPU(_) => "WGPU",
+        }
+    }
+
+    /// CUDA/HIP compute capability, if available.
+    #[cfg(feature="viz")]
+    pub fn compute_capability(&self) -> Option<[i32; 2]> {
+        match self {
+            Device::CUDA(dev) => Some(dev.compute_capability),
+            Device::HIP(dev) => Some(dev.compute_capability),
+            _ => None,
+        }
+    }
+
+    /// Whether the C backend was compiled with OpenMP support.
+    #[cfg(feature="viz")]
+    pub fn has_openmp(&self) -> bool {
+        match self {
+            Device::C(dev) => dev.has_openmp,
+            _ => false,
+        }
     }
 
     /// Compile a kernel into a device program. Returns a program ID usable with

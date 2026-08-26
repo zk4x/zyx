@@ -1,0 +1,14 @@
+[workspace]
+resolver = "2"
+members = [
+    "mnist",
+    "mnist-snn",
+    "nanogpt",
+    "phi",
+    "readme-test",
+    "rnn",
+    "tiny-net",
+    "tiny-net2",
+    "llama",
+    "probe",
+]

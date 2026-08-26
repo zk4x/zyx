@@ -210,7 +210,7 @@ impl Tensor {
     /// ```
     #[must_use]
     pub fn shape(&self) -> Vec<Dim> {
-        RT.lock().shape(self.id)
+        RT.lock().resolve_shape(self.id)
     }
 
     /// Is realized
@@ -255,12 +255,12 @@ impl Tensor {
     /// ```
     #[allow(clippy::missing_panics_doc)]
     pub fn dims<const N: usize>(&self) -> Result<[Tensor; N], ZyxError> {
-        let mut rt = RT.lock();
-        let rank = rt.shape(self.id).len();
+        let rt = RT.lock();
+        let rank = rt.resolve_shape(self.id).len();
         if N > rank {
             Err(ZyxError::shape_error(format!("Requested {N} dims, but tensor only has rank of {}", rank).into()))
         } else {
-            let tids = rt.dims(self.id);
+            let tids = rt.shape(self.id);
             Ok(std::array::from_fn(|i| Tensor { id: tids[i] }))
         }
     }
@@ -302,28 +302,34 @@ impl Tensor {
     /// Returns the total number of elements in the tensor.
     ///
     /// This method calculates the product of all dimensions of the tensor, effectively
-    /// giving you the total number of elements it contains. This can be useful for
-    /// various operations where the total size of a tensor is needed.
+    /// giving you the total number of elements it contains. Fully symbolic:
+    /// built from this tensor's dim tensors via binary multiplication, so a
+    /// dynamic shape yields an expression, not a concrete number. Use
+    /// [`Tensor::item`] when a concrete integer is needed.
     ///
     /// # Examples
     ///
     /// ```rust
     /// use zyx::Tensor;
     /// let t = Tensor::from([[2, 3, 2], [4, 5, 1]]);
-    /// assert_eq!(t.numel(), 6);
+    /// assert_eq!(t.numel().item::<i32>(), 6);
     /// ```
     ///
     /// # Returns
     ///
-    /// A `Dim` representing the total number of elements in the tensor.
-    ///
-    /// # Notes
-    ///
-    /// The method uses a read lock on the runtime (`RT.lock()`) to access and iterate
-    /// over the shape of the tensor, calculating the product of all dimensions.
+    /// A scalar tensor representing the total number of elements in the tensor.
     #[must_use]
-    pub fn numel(&self) -> Dim {
-        self.shape().iter().product()
+    pub fn numel(&self) -> Tensor {
+        let mut rt = RT.lock();
+        let dims = rt.shape(self.id);
+        if dims.is_empty() {
+            return Tensor { id: rt.new_constant_tensor(Constant::new(1u8)) };
+        }
+        let mut n = dims[0];
+        for &d in &dims[1..] {
+            n = rt.binary(n, d, BOp::Mul).expect("numel: failed to build symbolic mul chain");
+        }
+        Tensor { id: n }
     }
 
     /// Returns the number of dimensions (rank) of the tensor.
@@ -1051,7 +1057,47 @@ impl Tensor {
     /// # Errors
     /// Returns error if self cannot be expanded into shape.
     pub fn expand<D: Into<Tensor>>(&self, shape: impl IntoIterator<Item = D>) -> Result<Tensor, ZyxError> {
-        let tensors: Vec<Tensor> = shape.into_iter().map(|x| x.into()).collect();
+        let mut tensors: Vec<Tensor> = shape.into_iter().map(|x| x.into()).collect();
+        // Resolve -1 (keep dim) user-side: runtime knows nothing of sentinels.
+        // Torch semantics: -1 leaves the aligned dimension unchanged; the
+        // target shape may add leading dimensions (target rank >= input rank).
+        let resolved: Vec<Option<i64>> = tensors
+            .iter()
+            .map(|t| {
+                RT.lock().resolve_symbolic(t.id).and_then(|c| match c.cast(DType::I64) {
+                    crate::dtype::Constant::I64(b) => Some(i64::from_le_bytes(b)),
+                    _ => None,
+                })
+            })
+            .collect();
+        if resolved.iter().any(|&d| d.is_some_and(|v| v < -1)) {
+            return Err(ZyxError::shape_error("Expanded dimensions must be >= -1.".into()));
+        }
+        if resolved.iter().any(|&d| d == Some(-1)) {
+            let own_dims: Vec<Tensor> = {
+                let rt = RT.lock();
+                rt.shape(self.id).into_iter().map(|id| Tensor { id }).collect()
+            };
+            let prepend = tensors.len() as i64 - own_dims.len() as i64;
+            if prepend < 0 {
+                return Err(ZyxError::shape_error(format!(
+                    "Can't expand a tensor of rank {} into a tensor of rank {}",
+                    own_dims.len(),
+                    tensors.len()
+                ).into()));
+            }
+            for (i, &r) in resolved.iter().enumerate() {
+                if r == Some(-1) {
+                    let axis = i as i64 - prepend;
+                    if axis < 0 {
+                        return Err(ZyxError::shape_error(
+                            "The size -1 is invalid for an added dimension in expand.".into(),
+                        ));
+                    }
+                    tensors[i] = own_dims[axis as usize].clone();
+                }
+            }
+        }
         let shape = Tensor::stack(&tensors)?;
         let id = RT.lock().expand(self.id, shape.id)?;
         Ok(Tensor { id })
@@ -1141,7 +1187,7 @@ impl Tensor {
     }
 
     /// Pads a single axis with zeros: `lp` zeros on the left, up to total
-    /// length `len` (tinygrad convention; right padding is
+    /// length `len`; right padding is
     /// `len - lp - orig_len`). `lp` and `len` are scalar tensors.
     ///
     /// # Errors
@@ -1161,7 +1207,7 @@ impl Tensor {
             return Err(ZyxError::shape_error(format!("Invalid padding left={l}, right={r} on dimension size {orig}").into()));
         }
         let lp = Tensor::from(l);
-        let len = Tensor::from((orig + l + r) as u32);
+        let len = Tensor::from((orig + l + r) as i64);
         self.pad_zeros_axis(axis, lp, len)
     }
 
@@ -1330,7 +1376,7 @@ impl Tensor {
         let resolved: Vec<Option<i64>> = tensors
             .iter()
             .map(|t| {
-                RT.lock().resolve_const(t.id).and_then(|c| match c.cast(DType::I64) {
+                RT.lock().resolve_symbolic(t.id).and_then(|c| match c.cast(DType::I64) {
                     crate::dtype::Constant::I64(b) => Some(i64::from_le_bytes(b)),
                     _ => None,
                 })
@@ -1348,26 +1394,52 @@ impl Tensor {
             return Err(ZyxError::shape_error("Reshape dimensions must be nonzero; use -1 to infer a dimension.".into()));
         }
         if infer_count == 1 {
-            if resolved.iter().any(Option::is_none) {
-                return Err(ZyxError::shape_error("Cannot infer dimension (-1): all other dimensions must be static.".into()));
+            // Symbolic inference: build `numel / product(others)` as a dim-op
+            // expression over the input's dim tensors, so no concrete value is
+            // ever needed at construction time (a symbolic seq dim stays
+            // symbolic). Const inputs still fold later during resolution.
+            let own_dims: Vec<Tensor> = {
+                RT.lock().shape(self.id).into_iter().map(|id| Tensor { id }).collect()
+            };
+            if own_dims.is_empty() {
+                return Err(ZyxError::shape_error("Cannot infer dimension (-1): tensor has rank zero.".into()));
             }
-            let numel: Dim = self.shape().iter().product();
-            let product: Dim = resolved.iter().filter_map(|&d| d).product();
-            if product == 0 {
-                return Err(ZyxError::shape_error("Cannot infer dimension (-1): other dimensions include a zero.".into()));
+            let mut numel: Option<Tensor> = None;
+            for d in &own_dims {
+                numel = Some(match numel {
+                    None => d.clone(),
+                    Some(acc) => &acc * d,
+                });
             }
-            let inferred_dim = numel / product;
-            if inferred_dim.saturating_mul(product) != numel {
-                return Err(ZyxError::shape_error(
-                    format!(
-                        "Cannot infer dimension: total elements {numel} not divisible by product of specified dims {product}"
-                    )
-                    .into(),
-                ));
+            let numel = numel.expect("reshape: own_dims is non-empty");
+            let mut divisor: Option<Tensor> = None;
+            for (t, r) in tensors.iter().zip(&resolved) {
+                if *r != Some(-1) {
+                    divisor = Some(match divisor {
+                        None => t.clone(),
+                        Some(acc) => &acc * t,
+                    });
+                }
             }
+            // `reshape([-1])` has no other dims: inferred is just numel.
+            let mut divisor_opt: Option<Tensor> = None;
+            for (t, r) in tensors.iter().zip(&resolved) {
+                if *r != Some(-1) {
+                    // Dim arithmetic is IDX_T; normalize user-provided int widths.
+                    let term = t.clone().cast(DType::I64);
+                    divisor_opt = Some(match divisor_opt {
+                        None => term,
+                        Some(acc) => &acc * &term,
+                    });
+                }
+            }
+            let inferred = match divisor_opt {
+                Some(divisor) => &numel / &divisor,
+                None => numel.clone(),
+            };
             for (t, r) in tensors.iter_mut().zip(&resolved) {
                 if *r == Some(-1) {
-                    *t = Tensor::from(inferred_dim);
+                    *t = inferred.clone();
                 }
             }
         }
@@ -1401,7 +1473,7 @@ impl Tensor {
         let rank = self.rank();
         if rank == 1 {
             let n = self.numel();
-            return self.reshape([n, 1]).unwrap();
+            return self.reshape([n, Tensor::from(1)]).unwrap();
         }
         let mut axes: Vec<Axis> = (0..Axis::try_from(rank).unwrap()).collect();
         axes.swap((rank - 1) as usize, (rank - 2) as usize);
@@ -3263,8 +3335,8 @@ impl TryFrom<Tensor> for bool {
 impl<T: Scalar> TryFrom<Tensor> for Vec<T> {
     type Error = ZyxError;
     fn try_from(value: Tensor) -> Result<Self, Self::Error> {
-        let numel = value.numel();
-        let bytes = (numel as usize)
+        let numel = value.numel().item::<Dim>() as usize;
+        let bytes = numel
             .checked_mul(std::mem::size_of::<T>())
             .ok_or_else(|| ZyxError::AllocationError("allocation size overflow".into()))?;
         let max_free = RT.lock().free_memory();
