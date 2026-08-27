@@ -115,7 +115,7 @@ impl SlabId for KernelId {
 
 /// A dimension resolved for merge-compatibility checking (see
 /// [`Runtime::resolve_shape_without_variables`]).
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ResolvedDim {
     /// Concrete dimension: the expression contains no variables, so its
     /// value is a compile-time constant.

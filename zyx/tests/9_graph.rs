@@ -46,7 +46,6 @@ fn kv_cache_narrow_assign_symbolic() -> Result<(), ZyxError> {
     let cache = Tensor::zeros([1024, 8, 128], DType::F32);
     let start = Tensor::variable(0i64);
     let len = Tensor::variable(2i64);
-    println!("len={}", len.id());
     // len is the shared dynamic dim: k's shape AND the narrow use the same
     // dim tensor, so the assign's provability check passes.
     let k = Tensor::randn([Tensor::from(1), Tensor::from(8), len.clone(), Tensor::from(128)], DType::F32)?;

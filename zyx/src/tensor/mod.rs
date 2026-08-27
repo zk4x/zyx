@@ -11,12 +11,12 @@ use crate::backend::DTypeCapability;
 use crate::dtype::{Constant, DType};
 use crate::error::ZyxError;
 use crate::kernel::{BOp, UOp};
+use crate::runtime::ResolvedDim;
 use crate::scalar::{Float, Scalar};
 use crate::scalar::{bf16, f16};
 use crate::shape::{Dim, IntoShape, UAxis, into_axes, into_axis};
 use crate::slab::SlabId;
 use crate::{DebugMask, RT};
-use core::cmp::Ordering;
 use std::fmt::{Debug, Display};
 use std::iter::{once, repeat_n};
 use std::ops::{Bound, Mul, Neg, Not, Range, RangeBounds};
@@ -291,19 +291,12 @@ impl Tensor {
     /// ```
     #[allow(clippy::missing_panics_doc)]
     pub fn dims<const N: usize>(&self) -> Result<[Tensor; N], ZyxError> {
-        let mut rt = RT.lock();
-        let tids = rt.shape(self.id);
-        let rank = tids.len();
+        let symbolic = self.symbolic_shape();
+        let rank = symbolic.len();
         if N > rank {
             Err(ZyxError::shape_error(format!("Requested {N} dims, but tensor only has rank of {}", rank).into()))
         } else {
-            // Each returned `Tensor` takes ownership of a reference to the
-            // slab dim node; retain so dropping the handle does not free a
-            // node the source tensor's `shape_id` still references.
-            for &tid in &tids {
-                rt.retain(tid);
-            }
-            Ok(std::array::from_fn(|i| Tensor { id: tids[i] }))
+            Ok(std::array::from_fn(|i| symbolic[i].clone()))
         }
     }
 
@@ -362,21 +355,16 @@ impl Tensor {
     /// A scalar tensor representing the total number of elements in the tensor.
     #[must_use]
     pub fn numel(&self) -> Tensor {
-        let mut rt = RT.lock();
-        let dims = rt.shape(self.id);
+        let dims = self.symbolic_shape();
         if dims.is_empty() {
-            return Tensor { id: rt.new_constant_tensor(Constant::new(1u8)) };
+            return Tensor { id: RT.lock().new_constant_tensor(Constant::new(1u8)) };
         }
-        let mut n = dims[0];
-        if dims.len() == 1 {
-            // Rank-1 shortcut: n is a borrowed reference into the source's
-            // shape expression, not a fresh node — take our own reference.
-            rt.retain(n);
+        let mut iter = dims.into_iter();
+        let mut n = iter.next().expect("dims is non-empty");
+        for d in iter {
+            n = Tensor { id: RT.lock().binary(n.id, d.id, BOp::Mul).expect("numel: failed to build symbolic mul chain") };
         }
-        for &d in &dims[1..] {
-            n = rt.binary(n, d, BOp::Mul).expect("numel: failed to build symbolic mul chain");
-        }
-        Tensor { id: n }
+        n
     }
 
     /// Returns the number of dimensions (rank) of the tensor.
@@ -1164,10 +1152,7 @@ impl Tensor {
             return Err(ZyxError::shape_error("Expanded dimensions must be >= -1.".into()));
         }
         if resolved.iter().any(|&d| d == Some(-1)) {
-            let own_dims: Vec<Tensor> = {
-                let rt = RT.lock();
-                rt.shape(self.id).into_iter().map(|id| Tensor { id }).collect()
-            };
+            let own_dims = self.symbolic_shape();
             let prepend = tensors.len() as i64 - own_dims.len() as i64;
             if prepend < 0 {
                 return Err(ZyxError::shape_error(
@@ -1211,11 +1196,13 @@ impl Tensor {
     /// # Ok::<(), zyx::ZyxError>(())
     /// ```
     pub fn expand_axis(&self, axis: Axis, dim: Dim) -> Result<Tensor, ZyxError> {
-        let mut shape = self.shape();
-        let axis = into_axis(axis, shape.len())?;
-        shape[axis] = dim;
-        let tensors: Vec<Tensor> = shape.iter().map(|&d| Tensor::from(d)).collect();
-        let shape = Tensor::stack(&tensors)?;
+        let rank = self.shape().len();
+        let axis = into_axis(axis, rank)?;
+        let mut dims = self.symbolic_shape();
+        // Only the NEW dim is a fresh constant — the user passed it concretely.
+        // All other dims stay symbolic so variable-backed dims survive.
+        dims[axis] = Tensor::from(dim);
+        let shape = Tensor::stack(&dims)?;
         let id = RT.lock().expand(self.id, shape.id)?;
         Ok(Tensor { id })
     }
@@ -1514,7 +1501,7 @@ impl Tensor {
             // expression over the input's dim tensors, so no concrete value is
             // ever needed at construction time (a symbolic seq dim stays
             // symbolic). Const inputs still fold later during resolution.
-            let own_dims: Vec<Tensor> = { RT.lock().shape(self.id).into_iter().map(|id| Tensor { id }).collect() };
+            let own_dims = self.symbolic_shape();
             if own_dims.is_empty() {
                 return Err(ZyxError::shape_error("Cannot infer dimension (-1): tensor has rank zero.".into()));
             }
@@ -2282,8 +2269,7 @@ impl Tensor {
     ///
     /// Returns error if self cannot be flattened by axes.
     pub fn flatten(&self, axes: impl RangeBounds<Axis>) -> Result<Tensor, ZyxError> {
-        let shape = self.shape();
-        let rank = shape.len();
+        let rank = self.rank() as usize;
         let start_dim = into_axis(
             match axes.start_bound() {
                 Bound::Included(dim) => *dim,
@@ -2300,9 +2286,19 @@ impl Tensor {
             },
             rank,
         )? + 1;
-        let dim = shape[start_dim..end_dim].iter().product();
-        let new_shape: Vec<Dim> =
-            shape[..start_dim].iter().copied().chain([dim]).chain(shape[end_dim..].iter().copied()).collect();
+        // The joined dim is a SYMBOLIC product (mul chain over the dim
+        // expression tensors) so a variable-backed seq dim stays symbolic.
+        let symbolic = self.symbolic_shape();
+        let mut dim_iter = symbolic[start_dim..end_dim].iter();
+        let mut dim = match dim_iter.next() {
+            Some(d) => d.clone(),
+            None => Tensor::from(1),
+        };
+        for d in dim_iter {
+            dim = Tensor { id: RT.lock().binary(dim.id, d.id, BOp::Mul).expect("flatten: failed to build symbolic mul chain") };
+        }
+        let new_shape: Vec<Tensor> =
+            symbolic[..start_dim].to_vec().into_iter().chain(std::iter::once(dim)).chain(symbolic[end_dim..].to_vec()).collect();
         self.reshape(new_shape)
     }
 
@@ -2438,21 +2434,34 @@ impl Tensor {
     /// Returns error if self cannot be unsqueezed along axis.
     #[allow(clippy::missing_panics_doc)]
     pub fn unsqueeze(&self, dim: Axis) -> Result<Tensor, ZyxError> {
-        let shape = self.shape();
-        let rank = shape.len();
+        let rank = self.rank() as usize;
+        // Dims stay SYMBOLIC — only fresh 1 constants are inserted.
+        let symbolic = self.symbolic_shape();
         if dim < 0 {
             if -dim > (rank + 1) as Axis {
                 return Err(ZyxError::shape_error(format!("Unsqueeze dim {dim} is not possible on rank {rank} tensor.").into()));
             }
-            let dim = usize::try_from(-dim).unwrap();
-            let dim = rank - dim + 1;
-            self.reshape(shape[..dim].iter().copied().chain([1]).chain(shape[dim..].iter().copied()).collect::<Vec<i64>>())
+            let pos = usize::try_from(-dim).unwrap();
+            let pos = rank - pos + 1;
+            let new_shape: Vec<Tensor> = symbolic[..pos]
+                .to_vec()
+                .into_iter()
+                .chain(std::iter::once(Tensor::from(1)))
+                .chain(symbolic[pos..].to_vec())
+                .collect();
+            self.reshape(new_shape)
         } else {
-            let dim = usize::try_from(dim).unwrap();
-            if dim > rank {
+            let pos = usize::try_from(dim).unwrap();
+            if pos > rank {
                 return Err(ZyxError::shape_error(format!("Unsqueeze dim {dim} is not possible on rank {rank} tensor.").into()));
             }
-            self.reshape(shape[..dim].iter().copied().chain([1]).chain(shape[dim..].iter().copied()).collect::<Vec<i64>>())
+            let new_shape: Vec<Tensor> = symbolic[..pos]
+                .to_vec()
+                .into_iter()
+                .chain(std::iter::once(Tensor::from(1)))
+                .chain(symbolic[pos..].to_vec())
+                .collect();
+            self.reshape(new_shape)
         }
     }
 
@@ -3314,73 +3323,53 @@ impl Tensor {
             }
         }
 
-        let rx = x_shape.rank();
-        let ry = y_shape.rank();
-        let mut nx_shape = x_shape.clone();
-        let mut ny_shape = y_shape.clone();
-        match rx.cmp(&ry) {
-            Ordering::Less => {
-                nx_shape = repeat_n(1, ry - rx).chain(nx_shape).collect();
-            }
-            Ordering::Greater => {
-                ny_shape = repeat_n(1, rx - ry).chain(ny_shape).collect();
-            }
-            Ordering::Equal => {}
-        }
-        // The target shape is built from the operands' SYMBOLIC dim tensors —
-        // a variable-backed dim must survive into the result, since the
-        // merge-time provability checks in `runtime::binary`/`assign` require
-        // the same dim tensor in both operands. The resolved shapes above are
-        // only used to DECIDE: broadcastability and which side is the 1.
-        // Per-dim rule:
+        // The target shape is built from the operands' dim resolution —
+        // `resolve_shape_without_variables` classifies every axis as
         // - Static(1) vs anything -> the other side's dim tensor
         // - Static vs Static -> max (equality checked above)
         // - Symbolic(t) vs Symbolic(t) -> t
         // - Symbolic vs Static(n != 1) -> unprovable -> error
-        let symbolics: Vec<Vec<Tensor>> = [x.id, y.id].map(|tid| Tensor { id: tid }.symbolic_shape()).to_vec();
-        // Right-aligned view: rank was padded with 1s above, but the symbolic
-        // dim lists are unpadded — axes before the shorter side's rank have no
-        // dim tensor (they are broadcast padding) and are never chosen as the
-        // target while the other side is 1 there... they can only be reached
-        // when the OTHER side is also 1 (both 1), in which case a const 1 is
-        // the target. Returns None for such padding axes.
-        let sym = |side: usize, i: usize| -> Option<&Tensor> {
-            let len = symbolics[side].len();
-            let padded_len = nx_shape.len();
-            if i < padded_len - len {
-                None
-            } else {
-                Some(&symbolics[side][i - (padded_len - len)])
-            }
+        let (rdx, rdy) = {
+            let rt = RT.lock();
+            (rt.resolve_shape_without_variables(x.id), rt.resolve_shape_without_variables(y.id))
         };
-        let mut eshape = Vec::new();
+        let sdx = x.symbolic_shape();
+        let sdy = y.symbolic_shape();
+        // Right-align the shorter rank with Static(1).
+        let rank = rdx.len().max(rdy.len());
+        let rdim = |side: &[ResolvedDim], i: usize| {
+            side.get(side.len().wrapping_sub(rank).wrapping_add(i)).copied().unwrap_or(ResolvedDim::Static(1))
+        };
+        fn dtensor(side: &[Tensor], i: usize, rank: usize) -> Option<&Tensor> {
+            let offset = rank - side.len();
+            if i < offset { None } else { Some(&side[i - offset]) }
+        }
+        let mut eshape_rdim: Vec<ResolvedDim> = Vec::new();
         let mut eshape_sym: Vec<Tensor> = Vec::new();
-        for (i, (rx, ry)) in nx_shape.iter().zip(ny_shape.iter()).enumerate() {
-            let sx = sym(0, i);
-            let sy = sym(1, i);
-            let target = if *rx == 1 {
-                match sy {
+        for i in 0..rank {
+            let (a, b) = (rdim(&rdx, i), rdim(&rdy, i));
+            let target = match (a, b) {
+                (ResolvedDim::Static(1), _) => match dtensor(&sdy, i, rank) {
                     Some(t) => t.clone(),
                     // Both sides are broadcast padding (both resolved 1).
                     None => Tensor::from(1),
-                }
-            } else if *ry == 1 {
-                match sx {
+                },
+                (_, ResolvedDim::Static(1)) => match dtensor(&sdx, i, rank) {
                     Some(t) => t.clone(),
                     None => Tensor::from(1),
+                },
+                (ResolvedDim::Static(av), ResolvedDim::Static(bv)) => {
+                    // Both static and non-1: equal (checked above); take the
+                    // larger one's dim tensor (same const either way).
+                    if av >= bv {
+                        dtensor(&sdx, i, rank).expect("static dim has a dim tensor").clone()
+                    } else {
+                        dtensor(&sdy, i, rank).expect("static dim has a dim tensor").clone()
+                    }
                 }
-            } else {
-                let (sx, sy) = (
-                    sx.expect("both dims non-1: neither side is padding"),
-                    sy.expect("both dims non-1: neither side is padding"),
-                );
-                let sym_x =
-                    matches!(RT.lock().resolve_shape_without_variables(sx.id)[0], crate::runtime::ResolvedDim::Symbolic(_));
-                let sym_y =
-                    matches!(RT.lock().resolve_shape_without_variables(sy.id)[0], crate::runtime::ResolvedDim::Symbolic(_));
-                if sym_x && sym_y {
-                    if sx.id == sy.id {
-                        sx.clone()
+                (ResolvedDim::Symbolic(ta), ResolvedDim::Symbolic(tb)) => {
+                    if ta == tb {
+                        dtensor(&sdx, i, rank).expect("symbolic dim has a dim tensor").clone()
                     } else {
                         return Err(ZyxError::shape_error(
                             format!(
@@ -3389,30 +3378,38 @@ impl Tensor {
                             .into(),
                         ));
                     }
-                } else if sym_x || sym_y {
+                }
+                (ResolvedDim::Symbolic(_), ResolvedDim::Static(_)) | (ResolvedDim::Static(_), ResolvedDim::Symbolic(_)) => {
                     return Err(ZyxError::shape_error(
                         format!("cannot broadcast a symbolic dim against a static dim (n != 1): {x_shape:?} vs {y_shape:?}")
                             .into(),
                     ));
-                } else {
-                    sx.clone()
                 }
             };
             eshape_sym.push(target);
-            eshape.push(*rx.max(ry));
-        }
-        if x_shape != eshape {
-            x = x.expand(eshape_sym.iter())?;
+            eshape_rdim.push(match (a, b) {
+                (ResolvedDim::Static(av), ResolvedDim::Static(bv)) => ResolvedDim::Static(std::cmp::max(av, bv)),
+                (ResolvedDim::Symbolic(t), _) | (_, ResolvedDim::Symbolic(t)) => ResolvedDim::Symbolic(t),
+            });
         }
         //println!("Second broadcast operand {y}");
         //println!("{x_shape:?}, {eshape:?}");
         //println!("After reshape second broadcast operand {y}");
-        if y_shape != eshape {
+        // Expand only axes that actually differ from the operand's own dims.
+        let needs_expand = |op: &[ResolvedDim]| -> bool {
+            op.len() != rank
+                || op.iter().enumerate().any(|(i, d)| {
+                    let e = eshape_rdim[rank - op.len() + i];
+                    !matches!((d, &e), (ResolvedDim::Static(a), ResolvedDim::Static(b)) if a == b)
+                        && !matches!((d, &e), (ResolvedDim::Symbolic(a), ResolvedDim::Symbolic(b)) if a == b)
+                })
+        };
+        if needs_expand(&rdx) {
+            x = x.expand(eshape_sym.iter())?;
+        }
+        if needs_expand(&rdy) {
             y = y.expand(eshape_sym.iter())?;
         }
-        //println!("Second broadcast operand {y}");
-        //println!("Broadcasted to {eshape:?}");
-        //println!("y shape {:?}", y.shape());
         Ok((x, y))
     }
 
