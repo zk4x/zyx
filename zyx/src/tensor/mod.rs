@@ -357,12 +357,14 @@ impl Tensor {
     pub fn numel(&self) -> Tensor {
         let dims = self.symbolic_shape();
         if dims.is_empty() {
-            return Tensor { id: RT.lock().new_constant_tensor(Constant::new(1u8)) };
+            let id = RT.lock().new_constant_tensor(Constant::new(1u8));
+            return Tensor { id };
         }
         let mut iter = dims.into_iter();
         let mut n = iter.next().expect("dims is non-empty");
         for d in iter {
-            n = Tensor { id: RT.lock().binary(n.id, d.id, BOp::Mul).expect("numel: failed to build symbolic mul chain") };
+            let id = RT.lock().binary(n.id, d.id, BOp::Mul).expect("numel: failed to build symbolic mul chain");
+            n = Tensor { id };
         }
         n
     }
@@ -1230,7 +1232,8 @@ impl Tensor {
                 format!("Axes has rank {}, but tensor has rank {}. It must be the same for permute.", axes.len(), rank).into(),
             ));
         }
-        Ok(Tensor { id: RT.lock().permute(self.id, axes) })
+        let id = RT.lock().permute(self.id, axes);
+        Ok(Tensor { id })
     }
 
     /// Flips tensor along the given axes, reversing the order of elements.
@@ -1256,7 +1259,8 @@ impl Tensor {
         }
         axes.sort_unstable();
         axes.dedup();
-        Ok(Tensor { id: RT.lock().flip(self.id, axes)? })
+        let id = RT.lock().flip(self.id, axes)?;
+        Ok(Tensor { id })
     }
 
     /// Pads a single axis with zeros: `lp` zeros on the left, up to total
@@ -1269,11 +1273,11 @@ impl Tensor {
     pub fn pad_zeros_axis(&self, axis: UAxis, lp: Tensor, len: Tensor) -> Result<Tensor, ZyxError> {
         let lp = lp.cast_to_dim();
         let len = len.cast_to_dim();
-        let rt = RT.lock();
+        let mut rt = RT.lock();
         debug_assert_eq!(rt.dtype(lp.id), DType::I64, "pad_zeros_axis lp must have dtype IDX_T (i64)");
         debug_assert_eq!(rt.dtype(len.id), DType::I64, "pad_zeros_axis len must have dtype IDX_T (i64)");
-        drop(rt);
-        Ok(Tensor { id: RT.lock().pad_zeros(self.id, axis, lp.id, len.id) })
+        let id = rt.pad_zeros(self.id, axis, lp.id, len.id);
+        Ok(Tensor { id })
     }
 
     /// Applies `(lp, len)` zero padding to a single axis, validating against
@@ -2211,7 +2215,8 @@ impl Tensor {
     #[track_caller]
     pub fn mse_loss(&self, target: impl Into<Tensor>) -> Result<Tensor, ZyxError> {
         let (x, y) = Tensor::broadcast(self, target)?;
-        let x = Tensor { id: RT.lock().binary(x.id, y.id, BOp::Sub)? };
+        let id = RT.lock().binary(x.id, y.id, BOp::Sub)?;
+        let x = Tensor { id };
         Ok((x.clone() * x).mean_all())
     }
 
