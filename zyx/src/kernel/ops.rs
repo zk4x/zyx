@@ -313,20 +313,24 @@ impl MoveOp {
     /// Returns a copy with all `OpId` references remapped through `op_map`.
     /// `fallback` is used for op ids not present in `op_map` (mirroring the
     /// assign replay's handling of the movement-chain head).
-    pub(crate) fn remap(&self, op_map: &Map<OpId, OpId>, fallback: OpId) -> Box<Self> {
+    pub(crate) fn remap(&self, op_map: &Map<OpId, OpId>) -> Box<Self> {
         match self {
-            MoveOp::Reshape { shape } => Box::new(MoveOp::Reshape { shape: op_map.get(shape).copied().unwrap_or(fallback) }),
-            MoveOp::Expand { shape } => Box::new(MoveOp::Expand { shape: op_map.get(shape).copied().unwrap_or(fallback) }),
+            MoveOp::Reshape { shape } => Box::new(MoveOp::Reshape {
+                shape: op_map.get(shape).copied().expect("MoveOp::remap: referenced op not in mapping"),
+            }),
+            MoveOp::Expand { shape } => Box::new(MoveOp::Expand {
+                shape: op_map.get(shape).copied().expect("MoveOp::remap: referenced op not in mapping"),
+            }),
             MoveOp::Permute { axes } => Box::new(MoveOp::Permute { axes: axes.clone() }),
             MoveOp::Pad { axis, lp, len } => Box::new(MoveOp::Pad {
                 axis: *axis,
-                lp: op_map.get(lp).copied().unwrap_or(fallback),
-                len: op_map.get(len).copied().unwrap_or(fallback),
+                lp: op_map.get(lp).copied().expect("MoveOp::remap: referenced op not in mapping"),
+                len: op_map.get(len).copied().expect("MoveOp::remap: referenced op not in mapping"),
             }),
             MoveOp::Flip { axes } => Box::new(MoveOp::Flip { axes: axes.clone() }),
             MoveOp::Narrow { axis, start, len } => {
-                let start = op_map.get(start).copied().unwrap_or(fallback);
-                let len = op_map.get(len).copied().unwrap_or(fallback);
+                let start = op_map.get(start).copied().expect("MoveOp::remap: referenced op not in mapping");
+                let len = op_map.get(len).copied().expect("MoveOp::remap: referenced op not in mapping");
                 Box::new(MoveOp::Narrow { axis: *axis, start, len })
             }
         }

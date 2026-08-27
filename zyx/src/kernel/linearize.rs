@@ -458,10 +458,15 @@ impl Kernel {
                 Op::Store { dst, src, index, layout } => {
                     debug_assert_eq!(index, OpId::NULL);
                     debug_assert_eq!(layout, MemLayout::Scalar);
-                    // The store writes the kernel's single contiguous output, so its
-                    // view is built from the writable global's shape (the dims live in
-                    // the dst Param's `shape`), with the group-index/stride scaffolding
-                    // inserted before `start`.
+                    // The store writes its dst op's whole view. Loop lengths come
+                    // from the dst op's own shape — NOT the terminal Param's shape:
+                    // a crop (`pad lp<0`) or narrow between the Param and the store
+                    // makes the view smaller than the backing buffer, and looping
+                    // over the Param shape would run past the view (reading OOB and
+                    // clobbering elements adjacent to the view). The move handlers
+                    // below (pad/narrow/...) then shift the index into the base
+                    // domain; the Param handler computes the flat write index from
+                    // that shifted view.
                     let mut dst_param = dst;
                     for _ in 0..10_000 {
                         let Op::Move { x, .. } = self.ops[dst_param].op else { break };
@@ -481,7 +486,7 @@ impl Kernel {
                         "store dst chain terminates at Param {dst_param:?}, which is already a store destination"
                     );
                     self.ops[op_id].op = Op::Store { dst, src, index: OpId::NULL, layout: MemLayout::Scalar };
-                    let dims = self.shape_ids(dst_param);
+                    let dims = self.shape_ids(dst);
                     let mut view = Vec::new();
                     for (axis, &len) in dims.iter().enumerate().rev() {
                         let idx = self.group_index(axis as u32, len);

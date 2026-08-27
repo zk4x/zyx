@@ -442,7 +442,7 @@ impl Graph {
                                 }
                                 Op::Move { x, ref mop } => {
                                     let x = op_map.get(&x).copied().unwrap_or(op_map[&dst_param]);
-                                    let mop = mop.remap(&op_map, dst_param);
+                                    let mop = mop.remap(&op_map);
                                     let id = self.jit_kernels[kid].kernel.push_back(Op::Move { x, mop });
                                     op_map.insert(op_id, id);
                                 }
@@ -650,7 +650,15 @@ impl Graph {
                     Node::Contiguous { x } => {
                         let (kid, op_id) = visited[&x];
                         self.consume(x, kid, &mut visited, &mut rcs);
-                        let (kid, op_id) = self.add_store(x, kid, op_id, &mut visited, &rcs);
+                        // Cast-shim semantics (mirrors eager runtime::contiguous):
+                        // a same-dtype Cast (value identity) becomes the stored
+                        // class's own op, so `cid` gets a distinct op and its own
+                        // backing buffer instead of aliasing x's load op.
+                        let dtype = self.dtype(cid);
+                        let cast_op = self.jit_kernels[kid].kernel.cast(op_id, dtype);
+                        let rc = rcs.get(&cid).copied().unwrap_or_else(|| panic!("contiguous: class {cid:?} has no rc entry"));
+                        self.jit_kernels[kid].outputs.extend(std::iter::repeat_n(cid, rc as usize));
+                        let (kid, op_id) = self.add_store(cid, kid, cast_op, &mut visited, &mut rcs);
                         visited.insert(cid, (kid, op_id));
                     }
                     Node::Kernel { .. } => {}

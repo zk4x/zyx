@@ -213,6 +213,42 @@ impl Tensor {
         RT.lock().resolve_shape(self.id)
     }
 
+    /// Symbolic shape of this tensor: one scalar IDX_T [`Tensor`] per
+    /// dimension — a constant tensor for static dims, a variable-backed
+    /// expression for dynamic ones.
+    ///
+    /// Unlike [`Tensor::shape`] (which resolves variable slots into concrete
+    /// `Dim`s), this keeps dynamic dims symbolic. Use it EVERYWHERE a shape is
+    /// used to CONSTRUCT another tensor (reshape/expand/broadcast/narrow
+    /// targets) — rebuilding shapes from resolved `Dim`s bakes variables into
+    /// fresh constants and breaks the merge-time provability checks in
+    /// `runtime::binary`/`assign`, which require the same dim tensor in both
+    /// operands. Use [`Tensor::shape`] only to DECIDE (checks, drop
+    /// decisions, display).
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use zyx::Tensor;
+    ///
+    /// let t = Tensor::from([[1.0, 2.0], [3.0, 4.0]]);
+    /// let dims = t.symbolic_shape();
+    /// assert_eq!(dims.len(), 2);
+    /// assert_eq!(dims[0].item::<i64>(), 2);
+    /// ```
+    #[must_use]
+    pub fn symbolic_shape(&self) -> Vec<Tensor> {
+        let mut rt = RT.lock();
+        let tids = rt.shape(self.id);
+        // Each returned Tensor takes ownership of a reference to the slab dim
+        // node; retain so dropping the handle does not free a node the source
+        // tensor's `shape_id` still references.
+        for &tid in &tids {
+            rt.retain(tid);
+        }
+        tids.into_iter().map(|tid| Tensor { id: tid }).collect()
+    }
+
     /// Is realized
     pub fn is_realized(&self) -> bool {
         RT.lock().is_realized(self.id)
@@ -256,11 +292,11 @@ impl Tensor {
     #[allow(clippy::missing_panics_doc)]
     pub fn dims<const N: usize>(&self) -> Result<[Tensor; N], ZyxError> {
         let mut rt = RT.lock();
-        let rank = rt.resolve_shape(self.id).len();
+        let tids = rt.shape(self.id);
+        let rank = tids.len();
         if N > rank {
             Err(ZyxError::shape_error(format!("Requested {N} dims, but tensor only has rank of {}", rank).into()))
         } else {
-            let tids = rt.shape(self.id);
             // Each returned `Tensor` takes ownership of a reference to the
             // slab dim node; retain so dropping the handle does not free a
             // node the source tensor's `shape_id` still references.
@@ -1109,11 +1145,7 @@ impl Tensor {
         let resolved: Vec<Option<i64>> = {
             let rt = RT.lock();
             for t in &tensors {
-                debug_assert_eq!(
-                    rt.dtype(t.id),
-                    DType::I64,
-                    "expand dim tensor must have dtype IDX_T (i64)"
-                );
+                debug_assert_eq!(rt.dtype(t.id), DType::I64, "expand dim tensor must have dtype IDX_T (i64)");
             }
             // Resolve -1 (keep dim) user-side: runtime knows nothing of sentinels.
             // Torch semantics: -1 leaves the aligned dimension unchanged; the
@@ -1138,19 +1170,15 @@ impl Tensor {
             };
             let prepend = tensors.len() as i64 - own_dims.len() as i64;
             if prepend < 0 {
-                return Err(ZyxError::shape_error(format!(
-                    "Can't expand a tensor of rank {} into a tensor of rank {}",
-                    own_dims.len(),
-                    tensors.len()
-                ).into()));
+                return Err(ZyxError::shape_error(
+                    format!("Can't expand a tensor of rank {} into a tensor of rank {}", own_dims.len(), tensors.len()).into(),
+                ));
             }
             for (i, &r) in resolved.iter().enumerate() {
                 if r == Some(-1) {
                     let axis = i as i64 - prepend;
                     if axis < 0 {
-                        return Err(ZyxError::shape_error(
-                            "The size -1 is invalid for an added dimension in expand.".into(),
-                        ));
+                        return Err(ZyxError::shape_error("The size -1 is invalid for an added dimension in expand.".into()));
                     }
                     tensors[i] = own_dims[axis as usize].clone();
                 }
@@ -1457,11 +1485,7 @@ impl Tensor {
         let resolved: Vec<Option<i64>> = {
             let rt = RT.lock();
             for t in &tensors {
-                debug_assert_eq!(
-                    rt.dtype(t.id),
-                    DType::I64,
-                    "reshape dim tensor must have dtype IDX_T (i64)"
-                );
+                debug_assert_eq!(rt.dtype(t.id), DType::I64, "reshape dim tensor must have dtype IDX_T (i64)");
             }
             // Resolve -1 (infer) user-side: runtime knows nothing of sentinels.
             tensors
@@ -1490,9 +1514,7 @@ impl Tensor {
             // expression over the input's dim tensors, so no concrete value is
             // ever needed at construction time (a symbolic seq dim stays
             // symbolic). Const inputs still fold later during resolution.
-            let own_dims: Vec<Tensor> = {
-                RT.lock().shape(self.id).into_iter().map(|id| Tensor { id }).collect()
-            };
+            let own_dims: Vec<Tensor> = { RT.lock().shape(self.id).into_iter().map(|id| Tensor { id }).collect() };
             if own_dims.is_empty() {
                 return Err(ZyxError::shape_error("Cannot infer dimension (-1): tensor has rank zero.".into()));
             }
@@ -2364,21 +2386,28 @@ impl Tensor {
     #[allow(clippy::missing_panics_doc)]
     #[must_use]
     pub fn squeeze(&self, axes: impl IntoIterator<Item = Axis>) -> Tensor {
-        let shape = self.shape();
+        // The drop decision needs concrete values (`d != 1` must hold to
+        // remove an axis), but the KEPT dims must be propagated SYMBOLICALLY
+        // from the dim-expression tensors — rebuilding them from resolved
+        // `Dim`s would bake variable-backed dims into fresh constants and
+        // break symbolic-dim consumers downstream (e.g. assign's provability
+        // check, which requires the same dim tensor in both operands).
+        let resolved = self.shape();
+        let symbolic = self.symbolic_shape();
         let mut naxes = Vec::new();
-        for axis in axes.into_iter().take(shape.len()) {
-            if let Ok(axis) = into_axis(axis, shape.len()) {
+        for axis in axes.into_iter().take(resolved.len()) {
+            if let Ok(axis) = into_axis(axis, resolved.len()) {
                 naxes.push(axis);
             }
         }
         let mut new_shape = Vec::new();
-        for (a, d) in shape.into_iter().enumerate() {
+        for (a, &d) in resolved.iter().enumerate() {
             if d != 1 || !naxes.contains(&a) {
-                new_shape.push(d);
+                new_shape.push(symbolic[a].clone());
             }
         }
         if new_shape.is_empty() {
-            new_shape = vec![1];
+            new_shape = vec![Tensor::from(1)];
         }
         self.reshape(new_shape).unwrap()
     }
@@ -3298,19 +3327,88 @@ impl Tensor {
             }
             Ordering::Equal => {}
         }
+        // The target shape is built from the operands' SYMBOLIC dim tensors —
+        // a variable-backed dim must survive into the result, since the
+        // merge-time provability checks in `runtime::binary`/`assign` require
+        // the same dim tensor in both operands. The resolved shapes above are
+        // only used to DECIDE: broadcastability and which side is the 1.
+        // Per-dim rule:
+        // - Static(1) vs anything -> the other side's dim tensor
+        // - Static vs Static -> max (equality checked above)
+        // - Symbolic(t) vs Symbolic(t) -> t
+        // - Symbolic vs Static(n != 1) -> unprovable -> error
+        let symbolics: Vec<Vec<Tensor>> = [x.id, y.id].map(|tid| Tensor { id: tid }.symbolic_shape()).to_vec();
+        // Right-aligned view: rank was padded with 1s above, but the symbolic
+        // dim lists are unpadded — axes before the shorter side's rank have no
+        // dim tensor (they are broadcast padding) and are never chosen as the
+        // target while the other side is 1 there... they can only be reached
+        // when the OTHER side is also 1 (both 1), in which case a const 1 is
+        // the target. Returns None for such padding axes.
+        let sym = |side: usize, i: usize| -> Option<&Tensor> {
+            let len = symbolics[side].len();
+            let padded_len = nx_shape.len();
+            if i < padded_len - len {
+                None
+            } else {
+                Some(&symbolics[side][i - (padded_len - len)])
+            }
+        };
         let mut eshape = Vec::new();
-        for (x, y) in nx_shape.iter().zip(ny_shape.iter()) {
-            eshape.push(*x.max(y));
+        let mut eshape_sym: Vec<Tensor> = Vec::new();
+        for (i, (rx, ry)) in nx_shape.iter().zip(ny_shape.iter()).enumerate() {
+            let sx = sym(0, i);
+            let sy = sym(1, i);
+            let target = if *rx == 1 {
+                match sy {
+                    Some(t) => t.clone(),
+                    // Both sides are broadcast padding (both resolved 1).
+                    None => Tensor::from(1),
+                }
+            } else if *ry == 1 {
+                match sx {
+                    Some(t) => t.clone(),
+                    None => Tensor::from(1),
+                }
+            } else {
+                let (sx, sy) = (
+                    sx.expect("both dims non-1: neither side is padding"),
+                    sy.expect("both dims non-1: neither side is padding"),
+                );
+                let sym_x =
+                    matches!(RT.lock().resolve_shape_without_variables(sx.id)[0], crate::runtime::ResolvedDim::Symbolic(_));
+                let sym_y =
+                    matches!(RT.lock().resolve_shape_without_variables(sy.id)[0], crate::runtime::ResolvedDim::Symbolic(_));
+                if sym_x && sym_y {
+                    if sx.id == sy.id {
+                        sx.clone()
+                    } else {
+                        return Err(ZyxError::shape_error(
+                            format!(
+                                "cannot broadcast two different symbolic dims against each other: {x_shape:?} vs {y_shape:?}"
+                            )
+                            .into(),
+                        ));
+                    }
+                } else if sym_x || sym_y {
+                    return Err(ZyxError::shape_error(
+                        format!("cannot broadcast a symbolic dim against a static dim (n != 1): {x_shape:?} vs {y_shape:?}")
+                            .into(),
+                    ));
+                } else {
+                    sx.clone()
+                }
+            };
+            eshape_sym.push(target);
+            eshape.push(*rx.max(ry));
         }
         if x_shape != eshape {
-            x = x.expand(eshape.iter().copied())?;
+            x = x.expand(eshape_sym.iter())?;
         }
         //println!("Second broadcast operand {y}");
-        //println!("{x_shape:?}, {y_shape:?}, {eshape:?}");
+        //println!("{x_shape:?}, {eshape:?}");
         //println!("After reshape second broadcast operand {y}");
-        //Tensor::plot_graph([], "graph");
         if y_shape != eshape {
-            y = y.expand(eshape.iter().copied())?;
+            y = y.expand(eshape_sym.iter())?;
         }
         //println!("Second broadcast operand {y}");
         //println!("Broadcasted to {eshape:?}");

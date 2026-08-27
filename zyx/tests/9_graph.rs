@@ -1,7 +1,7 @@
 // Copyright (C) 2025 zk4x
 // SPDX-License-Identifier: LGPL-3.0-only
 
-use zyx::{DType, Tensor, ZyxError};
+use zyx::{DType, Scalar, Tensor, ZyxError};
 
 // Reproduces: `index_select` (via `randint` indices) produces a `-1` dimension
 // (printed as `r4294967295` / ~4.29×10⁹) on a `Param` shape pre-linearize. After
@@ -44,11 +44,29 @@ fn reshape_infer_symbolic_dim() -> Result<(), ZyxError> {
 #[test]
 fn kv_cache_narrow_assign_symbolic() -> Result<(), ZyxError> {
     let cache = Tensor::zeros([1024, 8, 128], DType::F32);
-    let k = Tensor::randn([1, 8, 2, 128], DType::F32)?;
-    let k_assign = k.squeeze([0]).transpose(0, 1).unwrap();
     let start = Tensor::variable(0i64);
     let len = Tensor::variable(2i64);
-    cache.narrow(0, start, len)?.assign(&k_assign).unwrap();
-    let _ = cache.sum_all().item::<f32>();
+    println!("len={}", len.id());
+    // len is the shared dynamic dim: k's shape AND the narrow use the same
+    // dim tensor, so the assign's provability check passes.
+    let k = Tensor::randn([Tensor::from(1), Tensor::from(8), len.clone(), Tensor::from(128)], DType::F32)?;
+    let k_assign = k.squeeze([0]).transpose(0, 1).unwrap();
+    // Invalid: the cache's zeros kernel is a pure const fill with no backing
+    // buffer — assign through a view of it would write into an orphaned copy.
+    // The error tells the user to materialize with `.contiguous()` first.
+    assert!(
+        matches!(cache.narrow(0, start.clone(), len.clone())?.assign(&k_assign), Err(ZyxError::ShapeError(_))),
+        "assign through a view of an unmaterialized base must be rejected"
+    );
+    // Happy path: materialize the base, then assign writes through the view
+    // into the cache itself. The len variable is the SHARED dim tensor of
+    // both k's shape and the narrow — assign requires provably equal shapes
+    // (same dim tensor in both operands, or concrete in both).
+    let cache = cache.contiguous()?;
+    cache.narrow(0, start.clone(), len.clone())?.assign(&k_assign).unwrap();
+    // The assigned slice must land inside the cache: sum differs from zero and
+    // equals the source region's sum (mod layout changes from the transpose).
+    assert_ne!(cache.sum_all().item::<f32>(), 0.0);
+    assert!(cache.narrow(0, start.clone(), len.clone())?.sum_all().item::<f32>().is_equal(k_assign.sum_all().item::<f32>()));
     Ok(())
 }

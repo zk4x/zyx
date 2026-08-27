@@ -113,6 +113,21 @@ impl SlabId for KernelId {
     }
 }
 
+/// A dimension resolved for merge-compatibility checking (see
+/// [`Runtime::resolve_shape_without_variables`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum ResolvedDim {
+    /// Concrete dimension: the expression contains no variables, so its
+    /// value is a compile-time constant.
+    Static(Dim),
+    /// Symbolic dimension: identified by the ROOT dim-expression tensor.
+    /// Two dims are provably equal ONLY if they are the same tensor —
+    /// different expressions over the same variable, or a variable whose
+    /// slot happens to hold the same value as a constant, are NOT proof
+    /// (the slot can change before launch).
+    Symbolic(TensorId),
+}
+
 #[derive(Debug)]
 pub enum TensorData {
     // Eager only
@@ -332,6 +347,18 @@ impl Runtime {
         }
     }
 
+    /// Concrete (resolved) shape of tensor `x`: evaluates every dim expression
+    /// to a `Dim`, reading variable slots from `variable_map`.
+    ///
+    /// # Convention
+    /// `shape` (the symbolic variant) should be used EVERYWHERE in kernel
+    /// construction — shapes must stay symbolic (variable-backed) so that
+    /// consumers sharing a dim reference the same op and symbolic dims survive
+    /// to launch time. `resolve_shape` is mostly for debug checks, assertions
+    /// and user-facing messages where a concrete value is genuinely needed;
+    /// resolving a variable into a const shape in kernel IR silently breaks
+    /// symbolic-dim consumers (they end up with a different op than the rest
+    /// of the graph for the same dim).
     pub(crate) fn resolve_shape(&self, x: TensorId) -> Vec<Dim> {
         // DFS post-order flatten (same traversal as replay_shape_into_kernel):
         // every node lands after its operands, so one flat pass evaluates.
@@ -378,10 +405,94 @@ impl Runtime {
         dims
     }
 
+    /// A dimension resolved for merge-compatibility checking (see
+    /// [`Runtime::resolve_shape_without_variables`]).
+    /// Shape of tensor `x` with variable-backed dims left symbolic: a dim
+    /// whose expression tree contains any [`TensorData::Variable`] resolves
+    /// to [`ResolvedDim::Symbolic`] (its root dim tensor), everything else
+    /// evaluates to [`ResolvedDim::Static`]. Unlike `resolve_shape`, variable
+    /// slots are never read — this is the PROVABILITY view of a shape: what
+    /// can be checked for equality without depending on the variable's
+    /// current bound value.
+    ///
+    /// Used by the merge-time compatibility checks in `binary` and `assign`:
+    /// two shapes may only merge if every dim is provably equal — same
+    /// constant, or the SAME symbolic dim tensor in both operands. If only
+    /// the bound values agree, the merge is rejected with an error instead.
+    pub(crate) fn resolve_shape_without_variables(&self, x: TensorId) -> Vec<ResolvedDim> {
+        // Post-order check: does this dim expression contain a Variable anywhere?
+        fn contains_variable(rt: &Runtime, x: TensorId) -> bool {
+            match &rt.tensors[x] {
+                TensorData::Variable { .. } => true,
+                TensorData::Cast { x: a, .. } | TensorData::Unary { x: a, .. } => contains_variable(rt, *a),
+                TensorData::Binary { x: a, y: b, .. } => contains_variable(rt, *a) || contains_variable(rt, *b),
+                TensorData::Stack { tensors, .. } => tensors.iter().any(|&t| contains_variable(rt, t)),
+                TensorData::Constant { .. } => false,
+                t => panic!(
+                    "dim expression tid {x} contains non-symbolic tensor data {t:?}; shapes must be built from Dim constants, variables and dim ops"
+                ),
+            }
+        }
+
+        // Same DFS post-order flatten + evaluation as `resolve_shape`, but a
+        // variable-tainted root short-circuits to Symbolic (no slot reads).
+        fn flatten(rt: &Runtime, x: TensorId, order: &mut Vec<TensorId>) {
+            match &rt.tensors[x] {
+                TensorData::Constant { .. } | TensorData::Variable { .. } => (),
+                TensorData::Cast { x: a, .. } => flatten(rt, *a, order),
+                TensorData::Unary { x: a, .. } => flatten(rt, *a, order),
+                TensorData::Binary { x: a, y: b, .. } => {
+                    flatten(rt, *a, order);
+                    flatten(rt, *b, order);
+                }
+                TensorData::Stack { tensors, .. } => {
+                    for &t in tensors.iter() {
+                        flatten(rt, t, order);
+                    }
+                }
+                t => panic!(
+                    "shape expression tid {x} contains non-symbolic tensor data {t:?}; shapes must be built from Dim constants, variables and dim ops"
+                ),
+            }
+            order.push(x);
+        }
+
+        let mut dims = Vec::new();
+        for root in self.shape(x) {
+            if contains_variable(self, root) {
+                dims.push(ResolvedDim::Symbolic(root));
+                continue;
+            }
+            let mut order = Vec::new();
+            flatten(self, root, &mut order);
+            let mut vals: Map<TensorId, Constant> = Map::with_hasher(BuildHasherDefault::new());
+            let mut value = Constant::I64(0i64.to_le_bytes());
+            for tid in order {
+                value = match self.tensors[tid] {
+                    TensorData::Constant { value, .. } => value,
+                    TensorData::Variable { .. } => unreachable!("variable inside a dim checked as variable-free"),
+                    TensorData::Cast { x: a, dtype, .. } => vals[&a].cast(dtype),
+                    TensorData::Unary { x: a, uop, .. } => vals[&a].unary(uop),
+                    TensorData::Binary { x: a, y: b, bop, .. } => Constant::binary(vals[&a], vals[&b], bop),
+                    ref t => panic!("dimension tid {tid} is not a dim expression: {t:?}"),
+                };
+                vals.insert(tid, value);
+            }
+            dims.push(ResolvedDim::Static(value.as_dim().expect("dim expression does not evaluate to an integer")));
+        }
+        dims
+    }
+
     /// Symbolic shape of tensor `x` as dim tensors: one scalar IDX_T tensor
     /// per dimension — a `Constant` for static dims, a variable-backed
     /// expression for dynamic ones. Dim-expression tensors themselves are
     /// scalars: their shape is empty.
+    ///
+    /// # Convention
+    /// This is the DEFAULT way to read a shape when building kernels — use it
+    /// everywhere. `resolve_shape` (concrete evaluation) is mostly for debug
+    /// checks and messages; resolving dims to consts in kernel IR breaks
+    /// symbolic-dim consumers.
     pub fn shape(&self, x: TensorId) -> Vec<TensorId> {
         let shape_id = match self.tensors[x] {
             TensorData::Eager { shape_id, .. } | TensorData::Graph { shape_id, .. } | TensorData::Promoted { shape_id, .. } => {
@@ -500,18 +611,20 @@ impl Runtime {
     ///   which must therefore also restore eager consistency for any surviving
     ///   siblings of its producer kernel.
     pub fn retain(&mut self, x: TensorId) {
-        match &mut self.tensors[x] {
-            TensorData::Eager { rc, .. }
-            | TensorData::Graph { rc, .. }
-            | TensorData::Promoted { rc, .. }
-            | TensorData::DeadGraph { rc, .. }
-            | TensorData::Constant { rc, .. }
-            | TensorData::Variable { rc, .. }
-            | TensorData::Cast { rc, .. }
-            | TensorData::Unary { rc, .. }
-            | TensorData::Binary { rc, .. }
-            | TensorData::Stack { rc, .. } => *rc += 1,
-        };
+        if !x.is_null() {
+            match &mut self.tensors[x] {
+                TensorData::Eager { rc, .. }
+                | TensorData::Graph { rc, .. }
+                | TensorData::Promoted { rc, .. }
+                | TensorData::DeadGraph { rc, .. }
+                | TensorData::Constant { rc, .. }
+                | TensorData::Variable { rc, .. }
+                | TensorData::Cast { rc, .. }
+                | TensorData::Unary { rc, .. }
+                | TensorData::Binary { rc, .. }
+                | TensorData::Stack { rc, .. } => *rc += 1,
+            };
+        }
     }
 
     /// Detach `x` from its producer kernel's outputs, pruning the op chain
@@ -552,13 +665,6 @@ impl Runtime {
                 pruned = loads_dropped_by_prune(&old_loads, &new_loads);
             }
             (kd.outputs.is_empty() && !kd.kernel.contains_stores(), kd.outputs.is_empty() && kd.kernel.contains_stores(), pruned)
-        };
-        let fate = if remove_kernel {
-            "remove kernel"
-        } else if materialize {
-            "materialize"
-        } else {
-            "kernel survives"
         };
         for tid in pruned {
             self.release(tid);
@@ -622,6 +728,8 @@ impl Runtime {
                 TensorData::Unary { x: a, uop, .. } => format!("unary {uop:?}({a})"),
                 TensorData::Binary { x: a, y: b, bop, .. } => format!("binary {bop:?}({a},{b})"),
                 TensorData::Stack { tensors, .. } => format!("stack len={}", tensors.len()),
+                TensorData::DeadGraph { graph_id, .. } => format!("dead graph={graph_id:?}"),
+                TensorData::Cast { x: a, dtype, .. } => format!("cast {a} -> {dtype:?}"),
             };
             println!("runtime::release(tid={x}) kind={desc}");
         }
@@ -629,18 +737,6 @@ impl Runtime {
         // Drop one reference. Handles and edges (kernel loads, symbolic-node
         // children) all count through here.
         let rc = {
-            let kind = match self.tensors[x] {
-                TensorData::Eager { kernel_id, .. } => format!("Eager kid={kernel_id:?}"),
-                TensorData::Graph { graph_id, .. } => format!("Graph g={graph_id:?}"),
-                TensorData::Promoted { kernel_id, graph_id, .. } => format!("Promoted kid={kernel_id:?} g={graph_id:?}"),
-                TensorData::Constant { .. } => "Const".into(),
-                TensorData::Variable { .. } => "Var".into(),
-                TensorData::Cast { .. } => "Cast".into(),
-                TensorData::Unary { .. } => "Unary".into(),
-                TensorData::Binary { .. } => "Binary".into(),
-                TensorData::Stack { .. } => "Stack".into(),
-                TensorData::DeadGraph { graph_id, .. } => format!("DeadGraph g={graph_id:?}"),
-            };
             let r = match &mut self.tensors[x] {
                 TensorData::Eager { rc, .. }
                 | TensorData::Graph { rc, .. }
@@ -1176,13 +1272,14 @@ impl Runtime {
             | TensorData::Promoted { class_id, graph_id, shape_id, .. } => {
                 self.assert_graph_alive(graph_id);
                 let (_, class_id) = self.push_node(graph_id, Node::Cast { x: class_id, dtype });
-                #[cfg(feature = "debug_tensor_op")]
-                println!("  -> graph: tid={tid}, graph_id={graph_id:?}, class_id={class_id:?}");
                 self.graphs[graph_id].ref_count += 1;
                 // Shape-preserving op: share the input's shape expression, like eager.
                 debug_assert!(!shape_id.is_null(), "cast: input graph tensor {x} has no shape expression");
                 self.retain(shape_id);
-                self.tensors.push(TensorData::Graph { class_id, graph_id, shape_id, rc: 1 })
+                let tid = self.tensors.push(TensorData::Graph { class_id, graph_id, shape_id, rc: 1 });
+                #[cfg(feature = "debug_tensor_op")]
+                println!("  -> graph: tid={tid}, graph_id={graph_id:?}, class_id={class_id:?}");
+                tid
             }
         }
     }
@@ -1203,10 +1300,10 @@ impl Runtime {
             TensorData::DeadGraph { .. } => panic!("bitcast of a dead graph tensor {x}"),
             TensorData::Eager { kernel_id, op_id, shape_id, .. } => {
                 let op_id = self.kernels[kernel_id].kernel.bitcast(op_id, dtype);
-                let tid = self.tensors.push(TensorData::Eager { kernel_id, op_id, depends_on: KernelId::NULL, shape_id, rc: 1 });
-                self.kernels[kernel_id].outputs.insert(tid);
                 // The bitcast shares the input's shape expression.
                 self.retain(shape_id);
+                let tid = self.tensors.push(TensorData::Eager { kernel_id, op_id, depends_on: KernelId::NULL, shape_id, rc: 1 });
+                self.kernels[kernel_id].outputs.insert(tid);
                 #[cfg(feature = "debug_tensor_op")]
                 println!("  -> eager: tid={tid}, kid={kernel_id:?}, op_id={op_id:?}");
                 tid
@@ -1428,6 +1525,23 @@ impl Runtime {
             println!("  -> eager: tid={tid}, kid={kid:?}, op_id={op_id:?}");
             Ok(tid)
         } else {
+            // Merge-time shape-compatibility rule: non-scalar operands must be
+            // PROVABLY equal — per dim, the same constant or the SAME symbolic
+            // dim tensor. A variable dim that only agrees with the other side
+            // by its currently bound value is not proof (the slot may change
+            // before launch), so the merge is rejected with an error. Code
+            // with dynamic shapes must propagate the same dim tensor into
+            // both operands' shapes (e.g. llama propagating the kv-cache len).
+            let sx = self.resolve_shape_without_variables(x);
+            let sy = self.resolve_shape_without_variables(y);
+            if !sx.is_empty() && !sy.is_empty() && sx != sy {
+                return Err(ZyxError::shape_error(
+                    format!(
+                        "binary: cannot prove operand shapes are equal: {sx:?} vs {sy:?} — a symbolic dim must be the same dim tensor in both operands, or concrete in both"
+                    )
+                    .into(),
+                ));
+            }
             let shape_id = result_shape(self, x, y);
             // The result shares the operand's shape expression; take our own
             // reference instead of stealing the operand's.
@@ -1539,15 +1653,22 @@ impl Runtime {
             self.retain(x);
             Ok(x)
         } else {
-            self.add_store(x)?;
-            self.retain(x);
-            Ok(x)
+            // Cast-shim semantics: contiguous adds a same-dtype Cast (a value
+            // identity) to x's kernel and stores THAT as a new tensor. The
+            // cast tid is the returned handle — it gets its own buffer_map
+            // entry whenever the store materializes (immediately, or lazily
+            // via `depends_on` when the producer kernel still has other
+            // outputs), while x itself stays unfused in its producer.
+            let cast_tid = self.cast(x, self.dtype(x));
+            self.add_store(cast_tid)?;
+            #[cfg(feature = "debug_tensor_op")]
+            println!("  -> tid={cast_tid} (cast shim stored)");
+            Ok(cast_tid)
         }
     }
 
     pub fn reduce(&mut self, x: TensorId, mut axes: Vec<UAxis>, rop: BOp) -> Result<TensorId, ZyxError> {
-        let shape = self.resolve_shape(x).to_vec();
-        let rank = shape.len();
+        let rank = self.shape(x).len();
         debug_assert!(!axes.is_empty(), "reduce must specify at least one axis");
         debug_assert!(axes.iter().all(|&a| (a as usize) < rank), "reduce axis {axes:?} out of bounds for rank {rank}");
         debug_assert!(
@@ -1587,7 +1708,6 @@ impl Runtime {
                 // Reduce one axis at a time, permuting each to be last. Reduce the
                 // highest axis first so lower indices stay valid as the rank shrinks.
                 let mut cur = x;
-                let rank0 = shape.len();
                 let n_axes = axes.len();
                 axes.sort_unstable_by(|a, b| b.cmp(a));
                 let mut dims = self.shape(x);
@@ -1625,7 +1745,7 @@ impl Runtime {
                     cur = tid;
                 }
 
-                if rank0 == n_axes {
+                if rank == n_axes {
                     let (kid, op_id) = match self.tensors[cur] {
                         TensorData::Eager { kernel_id, op_id, .. } => (kernel_id, op_id),
                         ref t => unreachable!("{t:?}"),
@@ -1772,7 +1892,7 @@ impl Runtime {
 
     pub(super) fn reshape(&mut self, x: TensorId, shape_id: TensorId) -> Result<TensorId, ZyxError> {
         #[cfg(feature = "debug_tensor_op")]
-        println!("runtime::reshape(x={x}, shape={shape:?})");
+        println!("runtime::reshape(x={x}, shape={shape_id:?})");
         // Shapes are always resolvable on the tensor side (closed expressions
         // over variable_map), so this is a total check.
         debug_assert_eq!(
@@ -1814,9 +1934,7 @@ impl Runtime {
             let (_, class_id) = self.push_node(graph_id, Node::Reshape { x: x_class, shape: shape_class });
             {
                 self.graphs[graph_id].ref_count += 1;
-                if !shape_id.is_null() {
-                    self.retain(shape_id);
-                }
+                self.retain(shape_id);
                 let tid = self.tensors.push(TensorData::Graph { class_id, graph_id, shape_id, rc: 1 });
                 Ok(tid)
             }
@@ -1872,7 +1990,7 @@ impl Runtime {
 
     pub fn expand(&mut self, x: TensorId, shape_id: TensorId) -> Result<TensorId, ZyxError> {
         #[cfg(feature = "debug_tensor_op")]
-        println!("runtime::expand(x={x}, shape={shape:?})");
+        println!("runtime::expand(x={x}, shape={shape_id:?})");
         let sh = self.resolve_shape(x);
         let target = self.resolve_shape(shape_id);
         debug_assert!(
@@ -1910,9 +2028,7 @@ impl Runtime {
             let (_, class_id) = self.push_node(graph_id, Node::Expand { x: x_class, shape: shape_class });
             {
                 self.graphs[graph_id].ref_count += 1;
-                if !shape_id.is_null() {
-                    self.retain(shape_id);
-                }
+                self.retain(shape_id);
                 let tid = self.tensors.push(TensorData::Graph { class_id, graph_id, shape_id, rc: 1 });
                 Ok(tid)
             }
@@ -1959,9 +2075,7 @@ impl Runtime {
             );
             let shape_op = self.replay_symbolic_into_kernel(kernel_id, shape_id);
             let op_id = self.kernels[kernel_id].kernel.expand(op_id, shape_op);
-            if !shape_id.is_null() {
-                self.retain(shape_id);
-            }
+            self.retain(shape_id);
             let tid = self.tensors.push(TensorData::Eager { kernel_id, op_id, depends_on: KernelId::NULL, shape_id, rc: 1 });
 
             debug_assert_eq!(self.kernels[kernel_id].outputs.contains(&tid), false);
@@ -2061,6 +2175,7 @@ impl Runtime {
         let shape_id = {
             let mut dims = self.shape(x);
             dims[axis as usize] = len;
+            self.retain(len);
             self.stack(&dims).expect("pad_zeros: failed to build shape stack")
         };
 
@@ -2150,6 +2265,7 @@ impl Runtime {
         let shape_id = {
             let mut dims = self.shape(x);
             dims[axis as usize] = len;
+            self.retain(len);
             self.stack(&dims).expect("narrow: failed to build shape stack")
         };
 
@@ -2417,6 +2533,23 @@ impl Runtime {
         if dst_shape != src_shape {
             return Err(ZyxError::shape_error(format!("assign shape mismatch: dst={dst_shape:?}, src={src_shape:?}").into()));
         }
+        // Merge-time shape-compatibility rule (same as `binary`): dst and src
+        // must be PROVABLY equal shapes — per dim, the same constant or the
+        // SAME symbolic dim tensor. A variable dim that only agrees with the
+        // other side by its currently bound value is not proof (the slot may
+        // change before launch), so the assign is rejected with an error.
+        // Dynamic-shape code must propagate the same dim tensor into both
+        // operands' shapes (e.g. llama propagating the kv-cache len).
+        let dst_syms = self.resolve_shape_without_variables(dst);
+        let src_syms = self.resolve_shape_without_variables(src);
+        if !dst_syms.is_empty() && !src_syms.is_empty() && dst_syms != src_syms {
+            return Err(ZyxError::shape_error(
+                format!(
+                    "assign: cannot prove dst and src shapes are equal: {dst_syms:?} vs {src_syms:?} — a symbolic dim must be the same dim tensor in both operands, or concrete in both"
+                )
+                .into(),
+            ));
+        }
         if self.is_graph(dst) {
             // Graph-mode in-place assign: record a Node::Assign inside the tape
             // graph. The plan writes src's value into dst's buffer in-place; dst
@@ -2520,6 +2653,16 @@ impl Runtime {
             ));
         }
         if !self.kernels[dst_kid].stores.is_empty() {
+            eprintln!("DBG assign: dst_kid={dst_kid:?} stores={:?}", self.kernels[dst_kid].stores);
+        }
+        eprintln!(
+            "DBG assign: src_kid={src_kid:?} contains_stores={} src_stores={:?} src_loads={:?} dst_stores={:?}",
+            self.kernels[src_kid].kernel.contains_stores(),
+            self.kernels[src_kid].stores,
+            self.kernels[src_kid].loads,
+            self.kernels[dst_kid].stores
+        );
+        if !self.kernels[dst_kid].stores.is_empty() {
             return Err(ZyxError::ShapeError(
                 format!("assign: dst kernel {dst_kid:?} has stores {}; expected none", self.kernels[dst_kid].stores.len()).into(),
             ));
@@ -2535,22 +2678,50 @@ impl Runtime {
         let KernelData { kernel, loads, .. } = unsafe { self.kernels.remove_and_return(dst_kid) };
         // The dst kernel's `loads` mixes the owning buffer with dim-variable
         // defines (scalar shape expressions). Exactly ONE entry may be a
-        // buffer; everything else must be a known variable. Fail loud — no
-        // positional assumptions.
+        // buffer; everything else must be a known variable. Zero buffers means
+        // the dst base has no backing pool storage (e.g. an assign through a
+        // view of an unmaterialized const-fill tensor): the write would land
+        // in an orphaned copy, so it is rejected — the user must materialize
+        // the base with `.contiguous()` first. More than one buffer means the
+        // dst-kernel contract is violated outright. Both are errors, not panics.
         let mut buffer_loads = loads.iter().copied().filter(|&t| !self.variable_map.contains_key(&t));
-        let dst_org = match (buffer_loads.next(), buffer_loads.next()) {
-            (Some(t), None) => t,
-            found => {
-                let is_var: Vec<bool> = loads.iter().map(|t| self.variable_map.contains_key(t)).collect();
-                eprintln!("DBG assign: dst_kid={dst_kid:?} loads={loads:?} is_var={is_var:?}");
-                panic!("assign: dst kernel must contain exactly one buffer load, got {:?}", found.0)
-            }
-        };
+        let dst_org =
+            match (buffer_loads.next(), buffer_loads.next()) {
+                (Some(t), None) => t,
+                (None, _) => {
+                    return Err(ZyxError::ShapeError(
+                        "assign: dst kernel has no backing buffer; its base was never materialized \
+                     into pool storage — call `.contiguous()` on it before assign"
+                            .into(),
+                    ));
+                }
+                _ => return Err(ZyxError::ShapeError(
+                    "assign: dst kernel contains more than one buffer load; dst must be a movement-only view of exactly one base"
+                        .into(),
+                )),
+            };
         for t in &loads {
             assert!(
                 *t == dst_org || self.variable_map.contains_key(t),
                 "assign: dst kernel load {t} is neither the buffer nor a known variable"
             );
+        }
+        // The base's backing store may still be deferred (e.g. `contiguous`
+        // marks the store but leaves it unmaterialized for fusion). Assign
+        // writes in-place, so the storage must exist NOW: force-materialize
+        // the producer kernel that holds the pending store.
+        let pending_kid = match self.tensors[dst_org] {
+            TensorData::Eager { depends_on, .. } if !depends_on.is_null() => Some(depends_on),
+            _ => None,
+        };
+        if let Some(kid) = pending_kid {
+            // Convention (see `materialize_kernel`): a kernel is materialized by
+            // `add_store`-ing all of its outputs — the last call materializes it
+            // automatically. `materialize_kernel` must not be called directly on
+            // a kernel with unstored outputs.
+            for out in self.kernels[kid].outputs.clone() {
+                self.add_store(out)?;
+            }
         }
         // Drop the kernel-load edge the removed kernel held on dst_org; the
         // user's handle keeps it alive.
@@ -2589,49 +2760,76 @@ impl Runtime {
         // below, in define order. Variable defines keep their variable tid;
         // the base buffer param gets dst_org.
         let mut new_def_loads: Vec<TensorId> = Vec::new();
+        // Pass A: transitive dependency closure over the removed kernel's ops
+        // via `parameters()` — this pulls in every referenced id, including
+        // `Param { shape }` descriptors and `MoveOp` internals (narrow
+        // start/len, pad lp/len, reshape/expand shapes). Nothing may be left
+        // dangling: ids from the removed kernel would silently collide with
+        // unrelated ops in src's kernel.
+        let mut required: Set<OpId> = Set::default();
+        {
+            let mut stack: Vec<OpId> = Vec::new();
+            let mut oid = kernel.head;
+            while !oid.is_null() {
+                stack.push(oid);
+                oid = kernel.next_op(oid);
+            }
+            while let Some(id) = stack.pop() {
+                if !required.insert(id) {
+                    continue;
+                }
+                stack.extend(kernel.ops[id].op.parameters());
+            }
+            debug_assert!(stack.is_empty(), "assign replay: dependency walk did not finish");
+        }
+        // Pass B: copy in ORIGINAL head order. This preserves the head-order
+        // relation between defines and `loads` (params appended in the same
+        // order they appear in `loads`) and guarantees every dependency is
+        // copied before its user.
         let mut def_i = 0usize;
         let mut op_id = kernel.head;
         while !op_id.is_null() {
-            match kernel.ops[op_id].op {
-                Op::Const(value) => {
-                    let id = self.kernels[src_kid].kernel.push_back(Op::Const(value));
-                    op_map.insert(op_id, id);
-                }
-                Op::Param { dtype, mut kind, shape } => {
-                    if op_id == dst_param {
-                        kind = ParamKind::GlobalMut;
-                    }
-                    assert!(
-                        matches!(kind, ParamKind::GlobalMut | ParamKind::Variable),
-                        "assign: unexpected param kind {kind:?} in dst movement kernel"
-                    );
-                    let id = self.kernels[src_kid].kernel.push_back(Op::Param { dtype, kind, shape });
-                    // Assign turns dst's base from a load into a PURE STORE:
-                    // it must NOT register in loads — its buffer slot comes
-                    // via `stores` instead (see KernelData docs).
-                    if kind == ParamKind::Variable {
-                        new_def_loads.push(loads[def_i]);
-                    }
-                    def_i += 1;
-                    op_map.insert(op_id, id);
-                }
-                Op::Move { x, ref mop } => {
-                    let x = if let Some(x) = op_map.get(&x) {
-                        *x
-                    } else {
+            if required.contains(&op_id) {
+                let mut op = kernel.ops[op_id].op.clone();
+                if let Op::Move { x, .. } = &mut op {
+                    if op_map.get(x).is_none() {
                         // this is the move on the load
-                        op_map[&dst_param]
-                    };
-                    let mop = mop.remap(&op_map, op_map[&dst_param]);
-                    let id = self.kernels[src_kid].kernel.push_back(Op::Move { x, mop });
-                    op_map.insert(op_id, id);
+                        *x = op_map[&dst_param];
+                    }
                 }
-                Op::Stack { ref ops } => {
-                    let mapped: Box<[OpId]> = ops.iter().map(|&o| op_map[&o]).collect();
-                    let id = self.kernels[src_kid].kernel.push_back(Op::Stack { ops: mapped });
-                    op_map.insert(op_id, id);
+                // Single remap pass: `parameters_mut` covers the Move's `x`
+                // AND its `MoveOp` internals (reshape/expand shapes, pad
+                // lp/len, narrow start/len) — no second mop.remap, that would
+                // look up already-remapped ids.
+                for p in op.parameters_mut() {
+                    *p =
+                        op_map.get(p).copied().expect("assign replay: dependency was not copied before its user despite closure");
                 }
-                _ => unreachable!("should've already returned error"),
+                let mut new_def_load: Option<TensorId> = None;
+                match &mut op {
+                    Op::Param { kind, .. } => {
+                        // Assign turns dst's base from a load into a PURE
+                        // STORE: it must NOT register in loads — its buffer
+                        // slot comes via `stores` instead (see KernelData docs).
+                        if op_id == dst_param {
+                            *kind = ParamKind::GlobalMut;
+                        }
+                        assert!(
+                            matches!(kind, ParamKind::GlobalMut | ParamKind::Variable),
+                            "assign: unexpected param kind {kind:?} in dst movement kernel"
+                        );
+                        if *kind != ParamKind::GlobalMut {
+                            new_def_load = Some(loads[def_i]);
+                        }
+                        def_i += 1;
+                    }
+                    _ => {}
+                }
+                let new_id = self.kernels[src_kid].kernel.push_back(op);
+                if let Some(load) = new_def_load {
+                    new_def_loads.push(load);
+                }
+                op_map.insert(op_id, new_id);
             }
             op_id = kernel.next_op(op_id);
         }
@@ -3156,10 +3354,18 @@ impl Runtime {
         Ok((program_id, opts, timing))
     }
 
-    /// Materializes a kernel by adding store ops for all its outputs, compiling,
-    /// launching, then creating load kernels for each output so the tensors remain
-    /// usable in further graph construction. The kernel is consumed (removed from
-    /// the slab) and cached in `kernel_map`/`programs` for reuse.
+    /// Materializes a kernel by compiling, launching, then creating load kernels
+    /// for each output so the tensors remain usable in further graph construction.
+    /// The kernel is consumed (removed from the slab) and cached in
+    /// `kernel_map`/`programs` for reuse.
+    ///
+    /// # Convention
+    /// The way to materialize a kernel is NOT to call this method directly, but
+    /// to `add_store` all of the kernel's outputs: `add_store` moves each tid
+    /// out of `outputs` and, once the last one is stored (`outputs` empty),
+    /// materializes the kernel automatically. Calling `materialize_kernel`
+    /// directly on a kernel that still has unstored outputs trips the
+    /// `all outputs must be stored` debug_assert below.
     ///
     /// # Invariant
     /// A kernel must never both load and store the same tensor (prevents aliasing).
