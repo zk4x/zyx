@@ -863,6 +863,48 @@ impl Kernel {
             }
         };
 
+        // Region isolation: an independent reduce region (one whose input does
+        // not feed another reduce and vice versa) must be FULLY SCHEDULED
+        // before the next independent region's `Loop` header. Scope is assigned
+        // positionally in `add_control_flow` — each `EndLoop` lands immediately
+        // before its reduce op — so any unrelated op emitted between a region's
+        // header and its reduce op would be silently captured into that region
+        // and rejected by `kernel::verify` ("uses ... before declaration").
+        // Ordering one region's RESULT before the other's HEADER suffices to
+        // close this gap; the producer wins by bigger resolved trip length,
+        // falling back to lower reduce op id for determinism.
+        let mut siblings: Vec<(Dim, OpId, OpId)> = Vec::with_capacity(reduce_ids.len()); // (size, reduce_op, loop_op)
+        for &r in &reduce_ids {
+            let Op::Reduce { reduce_axis, .. } = self.ops[r].op else {
+                unreachable!()
+            };
+            siblings.push((loop_size(reduce_axis), r, reduce_axis));
+        }
+        siblings.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
+        let mut closures: Map<OpId, Set<OpId>> = Map::default();
+        for &r in &reduce_ids {
+            let Op::Reduce { x, .. } = self.ops[r].op else { unreachable!() };
+            let mut stack: Vec<OpId> = vec![x];
+            let mut seen = Set::default();
+            for _ in 0..10_000 {
+                let Some(p) = stack.pop() else { break };
+                if p.is_null() || !seen.insert(p) {
+                    continue;
+                }
+                stack.extend(self.ops[p].op.parameters());
+            }
+            debug_assert!(stack.is_empty(), "dependency walk did not finish");
+            closures.insert(r, seen);
+        }
+        for w in siblings.windows(2) {
+            let (_, a_red, _) = w[0];
+            let (_, b_red, b_loop) = w[1];
+            if !closures[&a_red].contains(&b_red) && !closures[&b_red].contains(&a_red) {
+                extra_deps.push((a_red, b_loop));
+                break;
+            }
+        }
+
         // ASAP Kahn: emit an op as soon as all its producers are placed,
         // preferring non-loops over loops (loops go last among ready ops,
         // so loop-invariant computation hoists above the loop headers)
@@ -936,7 +978,6 @@ impl Kernel {
         }
         self.head = final_order.first().copied().unwrap_or(OpId::NULL);
         self.tail = final_order.last().copied().unwrap_or(OpId::NULL);
-        self.debug();
     }
 
     // Auto-cast scalar operands in arithmetic so mixed-dtype binaries are
