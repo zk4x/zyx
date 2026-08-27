@@ -2,7 +2,8 @@
 // SPDX-License-Identifier: LGPL-3.0-only
 
 use super::{
-    DTypeCapability, Device, DeviceId, DeviceInfo, DeviceProgramId, Event, MemoryPool, PoolBufferId, PoolId, opencl::OpenCLEvent,
+    DTypeCapability, Device, DeviceId, DeviceInfo, DeviceProgramId, Event, LaunchArg, MemoryPool, PoolBufferId, PoolId,
+    opencl::OpenCLEvent,
 };
 use crate::{
     DType,
@@ -187,14 +188,19 @@ impl DummyDevice {
         &mut self,
         program_id: DeviceProgramId,
         memory_pool: &mut DummyMemoryPool,
-        args: &[PoolBufferId],
+        args: &[LaunchArg],
         event_wait_list: Vec<Event>,
     ) -> Result<Event, BackendError> {
         let _ = self;
         let _ = program_id;
         let _ = event_wait_list;
-        for &arg in args {
-            let _ = memory_pool.buffers[arg];
+        for arg in args {
+            match arg {
+                LaunchArg::Buffer(buffer_id) => {
+                    let _ = memory_pool.buffers[*buffer_id];
+                }
+                LaunchArg::Variable(_) => {}
+            }
         }
         Ok(Event::OpenCL(OpenCLEvent { event: ptr::null_mut() }))
     }

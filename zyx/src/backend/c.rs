@@ -10,7 +10,7 @@
 #![allow(clippy::unused_self)]
 
 use super::{
-    DTypeCapability, Device, DeviceId, DeviceInfo, DeviceProgramId, Event, MemoryPool, PoolBufferId, PoolId, host::HostMemoryPool,
+    DTypeCapability, Device, DeviceId, DeviceInfo, DeviceProgramId, Event, LaunchArg, MemoryPool, PoolId, host::HostMemoryPool,
 };
 use crate::DType;
 use crate::error::{BackendError, ErrorStatus};
@@ -272,18 +272,29 @@ impl CDevice {
         &mut self,
         program_id: DeviceProgramId,
         memory_pool: &mut HostMemoryPool,
-        args: &[PoolBufferId],
+        args: &[LaunchArg],
         event_wait_list: Vec<Event>,
     ) -> Result<Event, BackendError> {
         let _ = event_wait_list; // sync not needed for sequential CPU
 
         let program = &self.programs[program_id];
 
-        // Get buffer pointers
+        // Get buffer pointers. Variables are not stored anywhere — the value is
+        // copied into a local byte box here, so the kernel reads it by pointer.
+        let mut vars: Vec<Box<[u8]>> = Vec::new();
         let mut ptrs: Vec<*mut u8> = Vec::with_capacity(args.len());
-        for &arg in args {
-            let ptr = memory_pool.buffer_ptr_mut(arg);
-            ptrs.push(ptr);
+        for arg in args {
+            match *arg {
+                LaunchArg::Buffer(buffer_id) => {
+                    let ptr = memory_pool.buffer_ptr_mut(buffer_id);
+                    ptrs.push(ptr);
+                }
+                LaunchArg::Variable(constant) => {
+                    vars.push(constant.to_le_bytes().into_boxed_slice());
+                    let var = vars.last_mut().unwrap();
+                    ptrs.push(var.as_mut_ptr());
+                }
+            }
         }
 
         let func_name = CString::new(program.name.as_str()).unwrap();

@@ -15,7 +15,7 @@
 // giving 120 cores total. A single-core launch uses `gidx0 = 0,
 // gidx1 = 0` (also written `{0, 0}` in CoreCoord notation).
 
-use super::{Device, DeviceId, DeviceInfo, DeviceProgramId, Event, Kernel, MemoryPool, PoolBufferId, PoolId};
+use super::{Device, DeviceId, DeviceInfo, DeviceProgramId, Event, Kernel, LaunchArg, MemoryPool, PoolBufferId, PoolId};
 use crate::{
     DType, Map,
     backend::DTypeCapability,
@@ -785,7 +785,7 @@ impl TTDevice {
         &mut self,
         program_id: DeviceProgramId,
         memory_pool: &mut TTMemoryPool,
-        args: &[PoolBufferId],
+        args: &[LaunchArg],
         event_wait_list: Vec<Event>,
     ) -> Result<Event, BackendError> {
         let _ = event_wait_list;
@@ -809,7 +809,10 @@ impl TTDevice {
 
         let mut src_indices: Vec<u32> = Vec::with_capacity(n_inputs);
         for i in 0..n_inputs {
-            let idx = memory_pool.dev_index(args[i]).map_err(|e| BackendError {
+            let LaunchArg::Buffer(buffer_id) = args[i] else {
+                unreachable!("tt kernel inputs are plain buffers");
+            };
+            let idx = memory_pool.dev_index(buffer_id).map_err(|e| BackendError {
                 status: ErrorStatus::KernelLaunch,
                 context: format!("src{i} dev_index: {e}").into(),
             })?;
@@ -817,7 +820,10 @@ impl TTDevice {
         }
         let mut dst_indices: Vec<u32> = Vec::with_capacity(n_outputs);
         for i in 0..n_outputs {
-            let idx = memory_pool.dev_index(args[n_inputs + i]).map_err(|e| BackendError {
+            let LaunchArg::Buffer(buffer_id) = args[n_inputs + i] else {
+                unreachable!("tt kernel outputs are plain buffers");
+            };
+            let idx = memory_pool.dev_index(buffer_id).map_err(|e| BackendError {
                 status: ErrorStatus::KernelLaunch,
                 context: format!("dst{i} dev_index: {e}").into(),
             })?;

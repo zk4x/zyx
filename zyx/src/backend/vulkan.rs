@@ -19,14 +19,13 @@ use nanoserde::DeJson;
 use crate::kernel::{IdxKind, Op};
 use crate::{
     DType,
-    dtype::Constant,
     error::{BackendError, ErrorStatus},
     kernel::Kernel,
     shape::Dim,
     slab::Slab,
 };
 
-use super::{DTypeCapability, DeviceInfo, DeviceProgramId, Event, GwsDim, MemoryPool, PoolBufferId, PoolId, gws_from_kernel};
+use super::{DTypeCapability, DeviceInfo, DeviceProgramId, Event, GwsDim, LaunchArg, MemoryPool, PoolBufferId, PoolId, gws_from_kernel};
 
 // ── Vulkan FFI types ─────────────────────────────────────────────────────────
 
@@ -404,14 +403,6 @@ enum VulkanCommand {
         event_wait_list: Vec<Event>,
         reply: Sender<Result<(), BackendError>>,
     },
-    StoreVariable {
-        variable: Constant,
-        reply: Sender<Result<PoolBufferId, BackendError>>,
-    },
-    GetVariable {
-        buffer_id: PoolBufferId,
-        reply: Sender<Result<Constant, BackendError>>,
-    },
     Compile {
         kernel: Box<Kernel>,
         debug_asm: bool,
@@ -419,7 +410,7 @@ enum VulkanCommand {
     },
     Launch {
         program_id: DeviceProgramId,
-        args: Vec<PoolBufferId>,
+        args: Vec<LaunchArg>,
         event_wait_list: Vec<Event>,
         reply: Sender<Result<Event, BackendError>>,
     },
@@ -458,16 +449,6 @@ impl VulkanMemoryPool {
     }
     pub(super) fn deallocate(&mut self, buffer_id: PoolBufferId, event_wait_list: Vec<Event>) {
         self.tx.send(VulkanCommand::Deallocate { buffer_id, event_wait_list }).unwrap();
-    }
-    pub(super) fn store_variable(&mut self, variable: Constant) -> PoolBufferId {
-        let (reply, rx) = channel();
-        self.tx.send(VulkanCommand::StoreVariable { variable, reply }).unwrap();
-        rx.recv().unwrap().unwrap()
-    }
-    pub(super) fn get_variable(&self, buffer_id: PoolBufferId) -> Option<Constant> {
-        let (reply, rx) = channel();
-        self.tx.send(VulkanCommand::GetVariable { buffer_id, reply }).unwrap();
-        rx.recv().unwrap().ok()
     }
     pub(super) fn host_to_pool(
         &mut self,
@@ -546,17 +527,13 @@ struct VulkanProgram {
 
 // ── Buffer ───────────────────────────────────────────────────────────────────
 
-/// A buffer in the Vulkan memory pool. Either a real device buffer or a scalar
-/// variable (a `Constant` stored by value, no device allocation).
+/// A buffer in the Vulkan memory pool: a device buffer with mapped host pointer.
 #[derive(Debug)]
-pub(super) enum VulkanBuffer {
-    Variable(Constant),
-    Buffer {
-        buf: VkBuffer,
-        mem: VkDeviceMemory,
-        ptr: *mut u8,
-        bytes: usize,
-    },
+pub(super) struct VulkanBuffer {
+    buf: VkBuffer,
+    mem: VkDeviceMemory,
+    ptr: *mut u8,
+    bytes: usize,
 }
 
 // ── Device ───────────────────────────────────────────────────────────────────
@@ -596,7 +573,7 @@ impl VulkanDevice {
         &mut self,
         program_id: DeviceProgramId,
         _memory_pool: &mut VulkanMemoryPool,
-        args: &[PoolBufferId],
+        args: &[LaunchArg],
         event_wait_list: Vec<Event>,
     ) -> Result<Event, BackendError> {
         let (reply, rx) = channel();
@@ -1210,7 +1187,7 @@ pub(super) fn initialize_device(
                         VulkanCommand::Allocate { bytes, reply } => {
                             let size = (bytes + 3) / 4;
                             let (buf, mem, ptr) = send_or_continue!(create_buffer(size as u64), reply);
-                            let id = buffers.push(VulkanBuffer::Buffer { buf, mem, ptr, bytes: bytes as usize });
+                            let id = buffers.push(VulkanBuffer { buf, mem, ptr, bytes: bytes as usize });
                             free_bytes_atomic.fetch_sub(size as u64, Ordering::SeqCst);
                             let _ = reply.send(Ok((
                                 id,
@@ -1241,9 +1218,7 @@ pub(super) fn initialize_device(
                                 }
                             }
                             let res = unsafe { buffers.remove_and_return(buffer_id) };
-                            let VulkanBuffer::Buffer { buf, mem, ptr, bytes: size } = res else {
-                                continue;
-                            };
+                            let VulkanBuffer { buf, mem, ptr, bytes: size } = res;
                             if !ptr.is_null() {
                                 unsafe { vkUnmapMemory(device, mem) };
                             }
@@ -1268,13 +1243,7 @@ pub(super) fn initialize_device(
                                     unsafe { vkFreeDescriptorSets(device, desc_pool, 1, &ev.desc_set) };
                                 }
                             }
-                            let &VulkanBuffer::Buffer { ptr, .. } = &buffers[dst] else {
-                                let _ = reply.send(Err(BackendError {
-                                    status: ErrorStatus::MemoryCopyP2H,
-                                    context: "HostToPool: dst is a variable, not a buffer".into(),
-                                }));
-                                continue;
-                            };
+                            let VulkanBuffer { ptr, .. } = buffers[dst];
                             unsafe { std::ptr::copy_nonoverlapping(src, ptr, bytes) };
                             let _ = reply.send(Ok(Event::Vulkan(VulkanEvent {
                                 fence: std::ptr::null_mut(),
@@ -1297,29 +1266,9 @@ pub(super) fn initialize_device(
                                     unsafe { vkFreeDescriptorSets(device, desc_pool, 1, &ev.desc_set) };
                                 }
                             }
-                            let &VulkanBuffer::Buffer { ptr, .. } = &buffers[src] else {
-                                let _ = reply.send(Err(BackendError {
-                                    status: ErrorStatus::MemoryCopyP2H,
-                                    context: "PoolToHost: src is a variable, not a buffer".into(),
-                                }));
-                                continue;
-                            };
+                            let VulkanBuffer { ptr, .. } = buffers[src];
                             unsafe { std::ptr::copy_nonoverlapping(ptr, dst, bytes) };
                             let _ = reply.send(Ok(()));
-                        }
-                        VulkanCommand::StoreVariable { variable, reply } => {
-                            let id = buffers.push(VulkanBuffer::Variable(variable));
-                            let _ = reply.send(Ok(id));
-                        }
-                        VulkanCommand::GetVariable { buffer_id, reply } => {
-                            if let VulkanBuffer::Variable(c) = buffers[buffer_id] {
-                                let _ = reply.send(Ok(c));
-                            } else {
-                                let _ = reply.send(Err(BackendError {
-                                    status: ErrorStatus::MemoryCopyP2H,
-                                    context: "GetVariable: buffer is not a variable".into(),
-                                }));
-                            }
                         }
                         VulkanCommand::Compile { kernel, debug_asm, reply } => {
                             let mut lws: [u32; 3] = [1; 3];
@@ -1560,9 +1509,9 @@ pub(super) fn initialize_device(
                             let mut buf_infos: Vec<VkDescriptorBufferInfo> = Vec::with_capacity(n);
                             let mut push_constants: Vec<u8> = vec![0u8; prog.push_constants_size as usize];
                             let mut push_off: u32 = 0;
-                            for &arg_id in &args {
-                                match &buffers[arg_id] {
-                                    VulkanBuffer::Variable(constant) => {
+                            for arg_id in &args {
+                                match arg_id {
+                                    LaunchArg::Variable(constant) => {
                                         let storage_bits = if constant.dtype() == crate::DType::Bool {
                                             32
                                         } else {
@@ -1576,8 +1525,12 @@ pub(super) fn initialize_device(
                                             .copy_from_slice(&bytes);
                                         push_off += size;
                                     }
-                                    VulkanBuffer::Buffer { buf, .. } => {
-                                        buf_infos.push(VkDescriptorBufferInfo { buffer: *buf, offset: 0, range: VK_WHOLE_SIZE });
+                                    LaunchArg::Buffer(buffer_id) => {
+                                        buf_infos.push(VkDescriptorBufferInfo {
+                                            buffer: buffers[*buffer_id].buf,
+                                            offset: 0,
+                                            range: VK_WHOLE_SIZE,
+                                        });
                                     }
                                 }
                             }
@@ -1633,9 +1586,9 @@ pub(super) fn initialize_device(
 
                             let default_gws = GwsDim::Const(1);
                             let grid = |gdim: &GwsDim| -> u32 {
-                                gdim.eval(&mut |ordinal| match &buffers[args[ordinal]] {
-                                    VulkanBuffer::Variable(c) => c.as_dim().unwrap(),
-                                    _ => unreachable!("gws param must be a Variable buffer"),
+                                gdim.eval(&mut |ordinal| match &args[ordinal] {
+                                    LaunchArg::Variable(c) => c.as_dim().unwrap(),
+                                    LaunchArg::Buffer(_) => unreachable!("gws param must be a Variable launch arg"),
                                 })
                                 .try_into()
                                 .unwrap_or(1)
@@ -1780,10 +1733,7 @@ pub(super) fn initialize_device(
 
                 // Cleanup all resources
                 for id in buffers.ids().collect::<Vec<_>>() {
-                    let res = unsafe { buffers.remove_and_return(id) };
-                    let VulkanBuffer::Buffer { buf, mem, ptr, .. } = res else {
-                        continue;
-                    };
+                    let VulkanBuffer { buf, mem, ptr, bytes: _ } = unsafe { buffers.remove_and_return(id) };
                     if !ptr.is_null() {
                         unsafe { vkUnmapMemory(device, mem) };
                     }

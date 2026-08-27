@@ -131,7 +131,8 @@ macro_rules! send_or_continue {
 }
 
 use super::{
-    DTypeCapability, Device, DeviceId, DeviceInfo, DeviceProgramId, Event, GwsDim, MemoryPool, PoolBufferId, PoolId, ProgramId,
+    DTypeCapability, Device, DeviceId, DeviceInfo, DeviceProgramId, Event, GwsDim, LaunchArg, MemoryPool, PoolBufferId, PoolId,
+    ProgramId,
     gws_from_kernel,
 };
 
@@ -154,9 +155,9 @@ pub struct CUDAMemoryPool {
 }
 
 #[derive(Debug)]
-pub(super) enum CUDABuffer {
-    Variable(Constant),
-    Buffer { ptr: u64, bytes: Dim },
+pub(super) struct CUDABuffer {
+    pub ptr: u64,
+    pub bytes: Dim,
 }
 
 #[derive(Debug)]
@@ -253,14 +254,6 @@ pub struct CUDAEvent {
 unsafe impl Send for CUDAEvent {}
 
 enum CUDACommand {
-    StoreVariable {
-        variable: Constant,
-        reply: Sender<PoolBufferId>,
-    },
-    GetVariable {
-        buffer_id: PoolBufferId,
-        reply: Sender<Option<Constant>>,
-    },
     Allocate {
         bytes: Dim,
         reply: Sender<Result<(PoolBufferId, Event), BackendError>>,
@@ -300,7 +293,7 @@ enum CUDACommand {
     },
     Launch {
         program_id: DeviceProgramId,
-        args: Vec<PoolBufferId>,
+        args: Vec<LaunchArg>,
         event_wait_list: Vec<Event>,
         reply: Sender<Result<Event, BackendError>>,
     },
@@ -517,17 +510,6 @@ pub(super) fn initialize_device(
                 // Worker loop
                 'work_thread_loop: while let Ok(cmd) = rx.recv() {
                     match cmd {
-                        CUDACommand::StoreVariable { variable: scalar, reply } => {
-                            let buffer_id = buffers.push(CUDABuffer::Variable(scalar));
-                            let _ = reply.send(buffer_id);
-                        }
-                        CUDACommand::GetVariable { buffer_id, reply } => {
-                            let variable = buffers.get(buffer_id).and_then(|buffer| match buffer {
-                                CUDABuffer::Variable(constant) => Some(constant.clone()),
-                                CUDABuffer::Buffer { .. } => None,
-                            });
-                            let _ = reply.send(variable);
-                        }
                         CUDACommand::Allocate { bytes, reply } => {
                             //println!("Allocating to context {:?}, device {:?}", self.context, self.device);
 
@@ -551,7 +533,7 @@ pub(super) fn initialize_device(
                             );
                             debug_assert!(free_bytes_atomic.load(Ordering::SeqCst) > bytes as u64);
                             free_bytes_atomic.fetch_sub(bytes as u64, Ordering::SeqCst);
-                            let buffer_id = buffers.push(CUDABuffer::Buffer { ptr, bytes });
+                            let buffer_id = buffers.push(CUDABuffer { ptr, bytes });
                             let event = Event::CUDA(CUDAEvent { event });
                             let _ = reply.send(Ok((buffer_id, event)));
                         }
@@ -567,19 +549,16 @@ pub(super) fn initialize_device(
                             if !buffers.contains_id(buffer_id) {
                                 continue;
                             }
-                            match buffers[buffer_id] {
-                                CUDABuffer::Variable(_) => {}
-                                CUDABuffer::Buffer { ptr, bytes } => {
-                                    //_ = unsafe { (self.cuMemFreeAsync)(buffer.ptr, self.stream) }.check(ErrorStatus::MemoryDeallocation);
-                                    _ = unsafe { (cuMemFree)(ptr) }.check(ErrorStatus::MemoryDeallocation);
-                                    free_bytes_atomic.fetch_add(bytes as u64, Ordering::SeqCst);
-                                }
+                            let CUDABuffer { ptr, bytes } = buffers[buffer_id];
+                            {
+                                //_ = unsafe { (self.cuMemFreeAsync)(buffer.ptr, self.stream) }.check(ErrorStatus::MemoryDeallocation);
+                                _ = unsafe { (cuMemFree)(ptr) }.check(ErrorStatus::MemoryDeallocation);
+                                free_bytes_atomic.fetch_add(bytes as u64, Ordering::SeqCst);
                             }
                             buffers.remove(buffer_id);
                         }
                         CUDACommand::HostToPool { src, bytes, dst, mut event_wait_list, reply } => {
                             let stream = next_stream(&mut streams, cuStreamSynchronize);
-                            let dst = &buffers[dst];
                             while let Some(Event::CUDA(CUDAEvent { event })) = event_wait_list.pop() {
                                 if !event.is_null() {
                                     send_or_continue!(
@@ -595,10 +574,7 @@ pub(super) fn initialize_device(
                             );
                             debug_assert!(!stream.is_null());
                             //unsafe { (self.cuStreamSynchronize)(self.stream) }.check(ErrorStatus::MemoryCopyH2P)?;
-                            let &CUDABuffer::Buffer { ptr, .. } = dst else {
-                                unreachable!()
-                            };
-                            let status = unsafe { (cuMemcpyHtoDAsync)(ptr, src.cast(), bytes as usize, stream) };
+                            let status = unsafe { (cuMemcpyHtoDAsync)(buffers[dst].ptr, src.cast(), bytes as usize, stream) };
                             send_or_continue!(status.check(ErrorStatus::MemoryCopyH2P), reply);
                             send_or_continue!(unsafe { (cuEventRecord)(event, stream) }.check(ErrorStatus::MemoryCopyH2P), reply);
                             //unsafe { (cuStreamSynchronize)(stream) }.check(ErrorStatus::MemoryCopyH2P).unwrap();
@@ -621,11 +597,8 @@ pub(super) fn initialize_device(
                                 unsafe { (cuEventCreate)(&raw mut event, 0x2) }.check(ErrorStatus::MemoryCopyP2H),
                                 reply
                             );
-                            let &CUDABuffer::Buffer { ptr, .. } = src else {
-                                unreachable!()
-                            };
                             send_or_continue!(
-                                unsafe { (cuMemcpyDtoHAsync)(dst.cast(), ptr, bytes as usize, stream) }
+                                unsafe { (cuMemcpyDtoHAsync)(dst.cast(), src.ptr, bytes as usize, stream) }
                                     .check(ErrorStatus::MemoryCopyP2H),
                                 reply
                             );
@@ -709,13 +682,22 @@ pub(super) fn initialize_device(
                                     // Boxed so reallocs of this vec can never dangle the
                                     // pointers handed to cuLaunchKernel.
                                     let mut scalar_values: Vec<Box<[u8]>> = Vec::new();
+                                    // Stable storage for the device pointers of buffer args —
+                                    // cuLaunchKernel receives their addresses by reference.
+                                    let mut buffer_ptrs: Vec<u64> = args.iter().filter_map(|arg| match arg {
+                                        LaunchArg::Buffer(buffer_id) => Some(buffers[*buffer_id].ptr),
+                                        LaunchArg::Variable(_) => None,
+                                    }).collect();
+                                    let mut buf_ptr_idx = 0usize;
                                     for arg in args.iter() {
-                                        match &buffers[*arg] {
-                                            CUDABuffer::Buffer { ptr, .. } => {
-                                                let slot: *const u64 = &raw const *ptr;
+                                        match arg {
+                                            LaunchArg::Buffer(_) => {
+                                                let ptr = &buffer_ptrs[buf_ptr_idx];
+                                                buf_ptr_idx += 1;
+                                                let slot: *const u64 = core::ptr::from_ref(ptr);
                                                 kernel_params.push(slot.cast_mut().cast());
                                             }
-                                            CUDABuffer::Variable(constant) => {
+                                            LaunchArg::Variable(constant) => {
                                                 scalar_values.push(constant.to_le_bytes().into());
                                                 let value = scalar_values.last().unwrap();
                                                 kernel_params.push(value.as_ptr().cast_mut().cast());
@@ -723,9 +705,9 @@ pub(super) fn initialize_device(
                                         }
                                     }
                                     let grid = |gdim: &GwsDim| -> u32 {
-                                        gdim.eval(&mut |ordinal| match &buffers[args[ordinal]] {
-                                            CUDABuffer::Variable(c) => c.as_dim().unwrap(),
-                                            _ => unreachable!("gws param must be a Variable buffer"),
+                                        gdim.eval(&mut |ordinal| match &args[ordinal] {
+                                            LaunchArg::Variable(c) => c.as_dim().unwrap(),
+                                            LaunchArg::Buffer(_) => unreachable!("gws param must be a Variable launch arg"),
                                         })
                                         .try_into()
                                         .unwrap()
@@ -897,20 +879,6 @@ impl CUDAMemoryPool {
         self.free_bytes.load(Ordering::SeqCst) as i64
     }
 
-    pub fn store_variable(&mut self, variable: Constant) -> PoolBufferId {
-        let (reply, reply_rx) = channel();
-        self.tx.send(CUDACommand::StoreVariable { variable, reply }).unwrap();
-        reply_rx.recv().unwrap()
-    }
-
-    /// Returns the stored constant if `buffer_id` is a variable, `None` otherwise.
-    #[allow(unused)]
-    pub fn get_variable(&self, buffer_id: PoolBufferId) -> Option<Constant> {
-        let (reply, reply_rx) = channel();
-        self.tx.send(CUDACommand::GetVariable { buffer_id, reply }).unwrap();
-        reply_rx.recv().unwrap()
-    }
-
     #[allow(clippy::needless_pass_by_ref_mut)]
     pub fn allocate(&mut self, bytes: Dim) -> Result<(PoolBufferId, Event), BackendError> {
         if bytes > self.free_bytes.load(Ordering::SeqCst) as i64 {
@@ -1009,7 +977,7 @@ impl CUDADevice {
         &mut self,
         program_id: DeviceProgramId,
         _memory_pool: &mut CUDAMemoryPool,
-        args: &[PoolBufferId],
+        args: &[LaunchArg],
         // If sync is empty, kernel will be immediatelly synchronized
         event_wait_list: Vec<Event>,
     ) -> Result<Event, BackendError> {
@@ -1457,7 +1425,7 @@ unsafe fn launch_cudnn_plan(
     handle: Option<cudnnHandle_t>,
     plan: &CudnnPlan,
     buffers: &Slab<PoolBufferId, CUDABuffer>,
-    args: &[PoolBufferId],
+    args: &[LaunchArg],
     stream: CUstream,
 ) -> Result<(), BackendError> {
     unsafe {
@@ -1477,9 +1445,9 @@ unsafe fn launch_cudnn_plan(
 
         let data_ptrs: Vec<*mut c_void> = args
             .iter()
-            .map(|arg| match buffers[*arg] {
-                CUDABuffer::Variable(constant) => todo!(),
-                CUDABuffer::Buffer { ptr, .. } => ptr as *mut c_void,
+            .map(|arg| match arg {
+                LaunchArg::Variable(_) => todo!(),
+                LaunchArg::Buffer(buffer_id) => buffers[*buffer_id].ptr as *mut c_void,
             })
             .collect();
         let unique_ids: Vec<i64> = plan.arg_uids.clone();

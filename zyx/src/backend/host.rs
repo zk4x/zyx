@@ -3,8 +3,6 @@
 
 use super::{Event, MemoryPool, PoolBufferId, PoolId};
 use crate::{
-    DType,
-    dtype::Constant,
     error::{BackendError, ErrorStatus},
     shape::Dim,
     slab::Slab,
@@ -13,13 +11,7 @@ use crate::{
 #[derive(Debug)]
 pub struct HostMemoryPool {
     free_bytes: Dim,
-    buffers: Slab<PoolBufferId, HostBuffer>,
-}
-
-#[derive(Debug)]
-enum HostBuffer {
-    Variable { value: Box<[u8]>, dtype: DType },
-    Buffer(Box<[u8]>),
+    buffers: Slab<PoolBufferId, Box<[u8]>>,
 }
 
 #[derive(Debug, Clone)]
@@ -62,21 +54,6 @@ impl HostMemoryPool {
         self.free_bytes
     }
 
-    pub fn store_variable(&mut self, variable: Constant) -> PoolBufferId {
-        let dtype = variable.dtype();
-        let buffer = HostBuffer::Variable { value: variable.to_le_bytes().into_boxed_slice(), dtype };
-        self.buffers.push(buffer)
-    }
-
-    /// Returns the stored constant if `buffer_id` is a variable, `None` otherwise.
-    #[allow(unused)]
-    pub fn get_variable(&self, buffer_id: PoolBufferId) -> Option<Constant> {
-        match &self.buffers[buffer_id] {
-            HostBuffer::Variable { value, dtype } => Some(Constant::from_le_bytes(value, *dtype)),
-            HostBuffer::Buffer(..) => None,
-        }
-    }
-
     pub fn allocate(&mut self, bytes: Dim) -> Result<(PoolBufferId, Event), BackendError> {
         let bytes: usize = bytes
             .try_into()
@@ -85,24 +62,22 @@ impl HostMemoryPool {
             return Err(BackendError { status: ErrorStatus::MemoryAllocation, context: "OOM".into() });
         }
         self.free_bytes -= bytes as Dim;
-        let buffer = HostBuffer::Buffer(vec![0u8; bytes].into_boxed_slice());
+        let buffer = vec![0u8; bytes].into_boxed_slice();
         let id = self.buffers.push(buffer);
         Ok((id, Event::Host(HostEvent)))
     }
 
     pub fn insert(&mut self, buf: Box<[u8]>) -> PoolBufferId {
         self.free_bytes -= buf.len() as Dim;
-        self.buffers.push(HostBuffer::Buffer(buf))
+        self.buffers.push(buf)
     }
 
     #[allow(clippy::needless_pass_by_value)]
     pub fn deallocate(&mut self, buffer_id: PoolBufferId, event_wait_list: Vec<Event>) {
         let _ = event_wait_list;
         if self.buffers.contains_id(buffer_id) {
-            match unsafe { self.buffers.remove_and_return(buffer_id) } {
-                HostBuffer::Variable { .. } => {}
-                HostBuffer::Buffer(buffer) => self.free_bytes += buffer.len() as Dim,
-            }
+            let buffer = unsafe { self.buffers.remove_and_return(buffer_id) };
+            self.free_bytes += buffer.len() as Dim;
         }
     }
 
@@ -114,7 +89,6 @@ impl HostMemoryPool {
             .buffers
             .get_mut(dst)
             .ok_or_else(|| BackendError { status: ErrorStatus::MemoryCopyH2P, context: "invalid buffer id".into() })?;
-        let HostBuffer::Buffer(buffer) = buffer else { unreachable!() };
         let len = src.len().min(buffer.len());
         buffer[..len].copy_from_slice(&src[..len]);
         Ok(Event::Host(HostEvent))
@@ -125,16 +99,9 @@ impl HostMemoryPool {
     #[allow(clippy::unnecessary_wraps)]
     pub fn pool_to_host(&mut self, src: PoolBufferId, dst: &mut [u8], event_wait_list: Vec<Event>) -> Result<(), BackendError> {
         let _ = event_wait_list;
-        match &self.buffers[src] {
-            HostBuffer::Buffer(buffer) => {
-                let len = dst.len().min(buffer.len());
-                dst[..len].copy_from_slice(&buffer[..len]);
-            }
-            HostBuffer::Variable { value, .. } => {
-                let len = dst.len().min(value.len());
-                dst[..len].copy_from_slice(&value[..len]);
-            }
-        }
+        let buffer = &self.buffers[src];
+        let len = dst.len().min(buffer.len());
+        dst[..len].copy_from_slice(&buffer[..len]);
         Ok(())
     }
 
@@ -173,15 +140,11 @@ impl HostMemoryPool {
     }
 
     pub fn get_buffer(&self, id: PoolBufferId) -> &[u8] {
-        match &self.buffers[id] {
-            HostBuffer::Variable { value, .. } | HostBuffer::Buffer(value) => value,
-        }
+        &self.buffers[id]
     }
 
     /// Get a mutable raw pointer to the buffer's data
     pub fn buffer_ptr_mut(&mut self, id: PoolBufferId) -> *mut u8 {
-        match &mut self.buffers[id] {
-            HostBuffer::Variable { value, .. } | HostBuffer::Buffer(value) => value.as_mut_ptr(),
-        }
+        self.buffers[id].as_mut_ptr()
     }
 }

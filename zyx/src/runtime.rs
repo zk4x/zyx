@@ -29,7 +29,7 @@ use crate::viz::Viz;
 use crate::{
     DType, DebugMask, Map, Scalar, Set, ZyxError,
     backend::{
-        AutotuneConfig, BufferId, Config, DTypeCapability, Device, DeviceInfo, DeviceProgramId, Event, MemoryPool, PoolBufferId,
+        AutotuneConfig, BufferId, Config, DTypeCapability, Device, DeviceInfo, DeviceProgramId, Event, LaunchArg, MemoryPool,
         PoolId, ProgramId,
     },
     dtype::Constant,
@@ -2301,6 +2301,16 @@ impl Runtime {
             ));
         }
 
+        // Fast path: variables (and fully-symbolic expressions over them)
+        // live only in `variable_map` — no buffer, no pool storage.
+        if let Some(value) = self.variable_map.get(&x).copied().or_else(|| self.resolve_symbolic(x)) {
+            let bytes = (data.len() * T::bit_size() as usize).div_ceil(8);
+            let byte_slice = unsafe { std::slice::from_raw_parts_mut(data.as_mut_ptr().cast(), bytes) };
+            let value_bytes = value.to_le_bytes();
+            byte_slice[..value_bytes.len()].copy_from_slice(&value_bytes);
+            return Ok(());
+        }
+
         // Fast path: already realized
         let Some(mut buffer_id) = self.buffer_map.get(&x).copied() else {
             let this = &mut *self;
@@ -3063,7 +3073,7 @@ impl Runtime {
         flop: Dim,
         read: u64,
         write: u64,
-        buffers: &[PoolBufferId],
+        buffers: &[LaunchArg],
     ) -> Result<(DeviceProgramId, OptSeq, u64), ZyxError> {
         let kernel_id = if let Some(&cached_kid) = self.kernel_map.get(&kernel) {
             if let Some(&program_id) = self.programs.get(&cached_kid) {
@@ -3272,18 +3282,13 @@ impl Runtime {
         };
         kernel.device_id = dev_id;
 
-        // Ensure loads are in target pool
+        // Ensure loads are in target pool. Variables and symbolic leaves are
+        // not backed by any buffer — they bind at launch from `variable_map`.
         let mut event_wait_list = Vec::new();
         for &tid in &loads {
-            let buf_id = self.buffer_map[&tid];
+            let Some(&buf_id) = self.buffer_map.get(&tid) else { continue };
             if buf_id.pool != pool_id {
                 let src = buf_id.buffer;
-                if let Some(constant) = self.pools[buf_id.pool].get_variable(src) {
-                    let dst = self.pools[pool_id].store_variable(constant);
-                    self.buffer_map.remove(&tid);
-                    self.buffer_map.insert(tid, BufferId { pool: pool_id, buffer: dst });
-                    continue;
-                }
                 let bytes =
                     (self.resolve_shape(tid).iter().product::<Dim>() as usize * dtypes[&tid].bit_size() as usize).div_ceil(8);
                 let alloc_bytes = bytes + dtypes[&tid].bit_size() as usize / 8;
@@ -3397,7 +3402,7 @@ impl Runtime {
             debug_assert!(self.buffer_map.contains_key(&tid), "materialize: store tid {tid} has no buffer after realization");
         }
 
-        // Build buffers: load buffers first, then store buffers.
+        // Build args: load buffers/variables first, then store buffers.
         // Law: `loads` ↔ Global+Variable defines, `stores` carries the
         // GlobalMut store targets — args bind positionally over exactly this
         // concatenation, so both sides must stay aligned and unshuffled.
@@ -3418,12 +3423,18 @@ impl Runtime {
             assert_eq!(n_non_mut, loads.len(), "materialize: {} non-store defines but {} load entries", n_non_mut, loads.len());
             assert!(n_mut <= stores.len(), "materialize: {} GlobalMut defines but only {} stores", n_mut, stores.len());
         }
-        let mut buffers: Vec<PoolBufferId> = Vec::new();
+        let mut buffers: Vec<LaunchArg> = Vec::new();
         for &tid in &loads {
-            buffers.push(self.buffer_map[&tid].buffer);
+            if let Some(&value) = self.variable_map.get(&tid) {
+                // Variables live only in variable_map — they never have a
+                // buffer or pool storage; the value is bound at launch.
+                buffers.push(LaunchArg::Variable(value));
+            } else {
+                buffers.push(LaunchArg::Buffer(self.buffer_map[&tid].buffer));
+            }
         }
         for &tid in &stores {
-            buffers.push(self.buffer_map[&tid].buffer);
+            buffers.push(LaunchArg::Buffer(self.buffer_map[&tid].buffer));
         }
 
         // Compile and launch (caches in kernel_map / programs)

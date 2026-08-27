@@ -2,7 +2,8 @@ use std::collections::BTreeSet;
 
 use crate::{
     Map, Set, ZyxError,
-    backend::{BufferId, Device, DeviceId, Event, MemoryPool, PoolId, ProgramId},
+    backend::{BufferId, Device, DeviceId, Event, LaunchArg, MemoryPool, PoolId, ProgramId},
+    dtype::Constant,
     graph::{ClassId, Graph, Node, NodeId},
     kernel::BOp,
     runtime::Runtime,
@@ -272,7 +273,12 @@ impl ExecPlan {
 }
 
 impl Runtime {
-    pub fn execute_plan(&mut self, cache_key: u64, class_buf: &mut Map<ClassId, BufferId>) -> Result<(), ZyxError> {
+    pub fn execute_plan(
+        &mut self,
+        cache_key: u64,
+        class_buf: &mut Map<ClassId, BufferId>,
+        class_vars: &Map<ClassId, Constant>,
+    ) -> Result<(), ZyxError> {
         let plan = self.plan_cache.get(&cache_key).unwrap();
 
         #[cfg(debug_assertions)]
@@ -290,16 +296,15 @@ impl Runtime {
             match node {
                 ExecNode::Allocate { class, pool, static_size, dtype_size, dynamic_dims } => {
                     // Resolve dynamic dims from their leaf classes' scalar
-                    // values (set between plan runs), then size the buffer:
-                    // one element per static*dynamic element, plus one extra
-                    // trash element.
+                    // values (variables bound between plan runs), then size
+                    // the buffer: one element per static*dynamic element,
+                    // plus one extra trash element.
                     let mut elements = *static_size;
                     for dim in dynamic_dims {
-                        let buf = class_buf.get(dim).copied();
-                        let value = buf.and_then(|b| self.pools[b.pool].get_variable(b.buffer)).and_then(|c| c.as_dim());
+                        let value = class_vars.get(dim).and_then(|c| c.as_dim());
                         debug_assert!(
                             value.is_some(),
-                            "dynamic dim class {dim:?} must resolve to a stored variable at execution time"
+                            "dynamic dim class {dim:?} must resolve to a variable at execution time"
                         );
                         let v = value.unwrap_or(0);
                         debug_assert!(v > 0, "dynamic dim class {dim:?} resolved to non-positive value {v}");
@@ -317,12 +322,17 @@ impl Runtime {
                     let mut args = Vec::new();
                     let mut kernel_bufs = BTreeSet::new();
                     for c in load_classes.iter().chain(store_classes.iter()) {
+                        if let Some(&value) = class_vars.get(c) {
+                            // Variable leaf: bound from variable_map, no buffer.
+                            args.push(LaunchArg::Variable(value));
+                            continue;
+                        }
                         let Some(buf) = class_buf.get(c) else {
                             panic!(
                                 "DEBUG launch: class {c:?} (program {program_id:?}) has no allocated buffer; load_classes={load_classes:?}, store_classes={store_classes:?}"
                             );
                         };
-                        args.push(buf.buffer);
+                        args.push(LaunchArg::Buffer(buf.buffer));
                         kernel_bufs.insert(*buf);
                     }
                     let wait_list = drain_events_for_bufs(&mut self.events, &kernel_bufs);
@@ -337,13 +347,6 @@ impl Runtime {
                     let src = class_buf[src_class];
                     let dst = class_buf[dst_class];
                     let wait_list = drain_events_for_buf(&mut self.events, src);
-                    // Variable buffers hold a single scalar value, not pool memory:
-                    // copy them value-by-value, never via pool_to_pool.
-                    if let Some(constant) = self.pools[src.pool].get_variable(src.buffer) {
-                        let dst_buf = self.pools[dst.pool].store_variable(constant);
-                        class_buf.insert(*dst_class, BufferId { pool: dst.pool, buffer: dst_buf });
-                        continue;
-                    }
                     // SAFETY: src_pool and dst_pool are different PoolIds (checked
                     // below); rust cannot split the Slab borrow across the two
                     // indices.

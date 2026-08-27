@@ -20,7 +20,7 @@ use std::collections::BTreeSet;
 
 use crate::Map;
 use crate::Set;
-use crate::backend::{BufferId, DeviceInfo, MemoryPool, ProgramId};
+use crate::backend::{BufferId, DeviceInfo, LaunchArg, MemoryPool, ProgramId};
 use crate::dtype::Constant;
 use crate::error::BackendError;
 use crate::tensor::TensorId;
@@ -629,6 +629,7 @@ impl CompiledKernel {
         for buf in &output_bufs {
             args.push(buf.buffer);
         }
+        let args: Vec<LaunchArg> = args.into_iter().map(LaunchArg::Buffer).collect();
         let pool_ptr = &mut rt.pools[pool_id] as *mut MemoryPool;
         let device = &mut rt.devices[device_id];
         let event = unsafe { device.launch(self.program.program, &mut *pool_ptr, &args, event_wait_list)? };

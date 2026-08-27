@@ -175,13 +175,20 @@ impl Tape {
 
         if let Some(plan) = rt.plan_cache.get(&cache_key) {
             let mut class_buf: Map<ClassId, BufferId> = Map::default();
+            let mut class_vars: Map<ClassId, Constant> = Map::default();
             for &cid in &plan.leaf_classes {
                 let &tid = rt.graphs[graph_id].leaf_map.get(&cid).unwrap();
-                debug_assert!(rt.buffer_map.contains_key(&tid), "leaf class {cid:?} tid {tid:?} not in buffer_map");
-                class_buf.insert(cid, rt.buffer_map[&tid]);
+                if let Some(&buf_id) = rt.buffer_map.get(&tid) {
+                    class_buf.insert(cid, buf_id);
+                } else {
+                    // Variable leaf: no buffer anywhere; its scalar value
+                    // resolves from variable_map (directly or symbolically).
+                    let value = rt.resolve_symbolic(tid).expect("leaf class tid resolves neither to a buffer nor a variable");
+                    class_vars.insert(cid, value);
+                }
             }
 
-            rt.execute_plan(cache_key, &mut class_buf)?;
+            rt.execute_plan(cache_key, &mut class_buf, &class_vars)?;
             for (&tid, &cid) in output_tids.iter().zip(output_classes.iter()) {
                 rt.buffer_map.insert(tid, class_buf[&cid]);
                 rt.eagerify(tid);
@@ -194,15 +201,22 @@ impl Tape {
         let plan = rt.compile_graph(graph_id, &output_set)?;
 
         let mut class_buf: Map<ClassId, BufferId> = Map::default();
+        let mut class_vars: Map<ClassId, Constant> = Map::default();
         for &cid in &plan.leaf_classes {
             let &tid = rt.graphs[graph_id].leaf_map.get(&cid).unwrap();
-            debug_assert!(rt.buffer_map.contains_key(&tid), "leaf class {cid:?} tid {tid:?} not in buffer_map");
-            class_buf.insert(cid, rt.buffer_map[&tid]);
+            if let Some(&buf_id) = rt.buffer_map.get(&tid) {
+                class_buf.insert(cid, buf_id);
+            } else {
+                // Variable leaf: no buffer anywhere; its scalar value
+                // resolves from variable_map (directly or symbolically).
+                let value = rt.resolve_symbolic(tid).expect("leaf class tid resolves neither to a buffer nor a variable");
+                class_vars.insert(cid, value);
+            }
         }
 
         rt.plan_cache.insert(cache_key, plan);
 
-        rt.execute_plan(cache_key, &mut class_buf)?;
+        rt.execute_plan(cache_key, &mut class_buf, &class_vars)?;
         for (&tid, &cid) in output_tids.iter().zip(output_classes.iter()) {
             rt.buffer_map.insert(tid, class_buf[&cid]);
             rt.eagerify(tid);
@@ -313,11 +327,19 @@ impl FrozenTape {
         let mut rt = RT.lock();
 
         let mut class_buf: Map<ClassId, BufferId> = Map::default();
+        let mut class_vars: Map<ClassId, Constant> = Map::default();
         for (tid, &cid) in inputs.into_iter().zip(rt.plan_cache[&self.cache_key].leaf_classes.iter()) {
-            class_buf.insert(cid, rt.buffer_map[&tid.id]);
+            if let Some(&buf_id) = rt.buffer_map.get(&tid.id) {
+                class_buf.insert(cid, buf_id);
+            } else {
+                // Variable leaf: no buffer anywhere; its scalar value
+                // resolves from variable_map (directly or symbolically).
+                let value = rt.resolve_symbolic(tid.id).expect("replay input resolves neither to a buffer nor a variable");
+                class_vars.insert(cid, value);
+            }
         }
 
-        rt.execute_plan(self.cache_key, &mut class_buf)?;
+        rt.execute_plan(self.cache_key, &mut class_buf, &class_vars)?;
 
         let mut outputs = Vec::new();
         for (cid, shape, dtype) in self.outputs.iter() {

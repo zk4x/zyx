@@ -10,17 +10,10 @@
 #![allow(clippy::unused_self)]
 
 use super::{
-    DTypeCapability, Device, DeviceId, DeviceInfo, DeviceProgramId, Event, GwsDim, MemoryPool, PoolBufferId, PoolId,
-    gws_from_kernel,
+    DTypeCapability, Device, DeviceId, DeviceInfo, DeviceProgramId, Event, GwsDim, LaunchArg, MemoryPool, PoolBufferId,
+    PoolId, gws_from_kernel,
 };
-use crate::{
-    DType,
-    dtype::Constant,
-    error::{BackendError, ErrorStatus},
-    kernel::{IdxKind, Kernel, Op},
-    shape::Dim,
-    slab::Slab,
-};
+use crate::{DType, error::{BackendError, ErrorStatus}, kernel::{IdxKind, Kernel, Op}, shape::Dim, slab::Slab};
 use libloading::Library;
 use nanoserde::DeJson;
 use std::{
@@ -52,9 +45,9 @@ pub struct OpenCLMemoryPool {
 }
 
 #[derive(Debug)]
-pub enum OpenCLBuffer {
-    Variable(Constant),
-    Buffer { ptr: *mut c_void, bytes: Dim },
+pub struct OpenCLBuffer {
+    pub ptr: *mut c_void,
+    pub bytes: Dim,
 }
 
 #[derive(Debug)]
@@ -85,14 +78,6 @@ pub struct OpenCLEvent {
 }
 
 enum Command {
-    StoreVariable {
-        variable: Constant,
-        reply: Sender<PoolBufferId>,
-    },
-    GetVariable {
-        buffer_id: PoolBufferId,
-        reply: Sender<Option<Constant>>,
-    },
     Allocate {
         bytes: Dim,
         reply: Sender<Result<(PoolBufferId, OpenCLEvent), BackendError>>,
@@ -125,7 +110,7 @@ enum Command {
     Launch {
         device_id: usize,
         program_id: DeviceProgramId,
-        args: Vec<PoolBufferId>,
+        args: Vec<LaunchArg>,
         event_wait_list: Vec<OpenCLEvent>,
         reply: Sender<Result<OpenCLEvent, BackendError>>,
     },
@@ -451,21 +436,6 @@ pub(super) fn initialize_device(
 
                 'work_thread_loop: while let Ok(cmd) = rx.recv() {
                     match cmd {
-                        Command::StoreVariable { variable: scalar, reply } => {
-                            let buffer_id = buffers.push(OpenCLBuffer::Variable(scalar));
-                            let _ = reply.send(buffer_id);
-                        }
-                        Command::GetVariable { buffer_id, reply } => {
-                            let variable = if !buffers.contains_id(buffer_id) {
-                                None
-                            } else {
-                                match &buffers[buffer_id] {
-                                    OpenCLBuffer::Variable(constant) => Some(constant.clone()),
-                                    OpenCLBuffer::Buffer { .. } => None,
-                                }
-                            };
-                            let _ = reply.send(variable);
-                        }
                         Command::Allocate { bytes, reply } => {
                             if bytes > free_bytes_atomic.load(Ordering::SeqCst) as i64 {
                                 let _ = reply.send(Err(BackendError {
@@ -483,7 +453,7 @@ pub(super) fn initialize_device(
                                 continue 'work_thread_loop;
                             }
                             free_bytes_atomic.fetch_sub(bytes as u64, Ordering::SeqCst);
-                            let id = buffers.push(OpenCLBuffer::Buffer { ptr: buffer, bytes });
+                            let id = buffers.push(OpenCLBuffer { ptr: buffer, bytes });
                             let _ = reply.send(Ok((id, OpenCLEvent { event: ptr::null_mut() })));
                         }
                         Command::Deallocate { buffer_id, event_wait_list } => {
@@ -496,21 +466,17 @@ pub(super) fn initialize_device(
                                 .check(ErrorStatus::Deinitialization);
                             }
                             if buffers.contains_id(buffer_id) {
-                                match buffers[buffer_id] {
-                                    OpenCLBuffer::Variable(_) => {}
-                                    OpenCLBuffer::Buffer { ptr, bytes } => {
-                                        debug_assert!(!ptr.is_null(), "Deallocating null buffer is invalid");
-                                        let _ = unsafe { clReleaseMemObject(ptr) }.check(ErrorStatus::Deinitialization);
-                                        free_bytes_atomic.fetch_add(bytes as u64, Ordering::SeqCst);
-                                    }
+                                let OpenCLBuffer { ptr, bytes } = buffers[buffer_id];
+                                {
+                                    debug_assert!(!ptr.is_null(), "Deallocating null buffer is invalid");
+                                    let _ = unsafe { clReleaseMemObject(ptr) }.check(ErrorStatus::Deinitialization);
+                                    free_bytes_atomic.fetch_add(bytes as u64, Ordering::SeqCst);
                                 }
                                 buffers.remove(buffer_id);
                             }
                         }
                         Command::HostToPool { src, bytes, dst, event_wait_list, reply } => {
-                            let OpenCLBuffer::Buffer { ptr, .. } = buffers[dst] else {
-                                unreachable!()
-                            };
+                            let ptr = buffers[dst].ptr;
                             debug_assert!(bytes <= bytes);
                             let event_wait_list: Vec<*mut c_void> =
                                 event_wait_list.into_iter().map(|e| e.event).filter(|event| !event.is_null()).collect();
@@ -539,14 +505,9 @@ pub(super) fn initialize_device(
                             }
                             let _ = reply.send(Ok(OpenCLEvent { event }));
                         }
-                        Command::PoolToHost { src, dst, bytes, event_wait_list, reply } => match &buffers[src] {
-                            OpenCLBuffer::Variable(constant) => {
-                                let value = constant.to_le_bytes();
-                                let len = (bytes as usize).min(value.len());
-                                unsafe { core::ptr::copy_nonoverlapping(value.as_ptr(), dst.cast(), len) };
-                                let _ = reply.send(Ok(()));
-                            }
-                            OpenCLBuffer::Buffer { ptr, .. } => {
+                        Command::PoolToHost { src, dst, bytes, event_wait_list, reply } => {
+                            let OpenCLBuffer { ptr, .. } = buffers[src];
+                            {
                                 debug_assert!(!ptr.is_null(), "Trying to read null memory. Internal bug.");
                                 let mut event_wait_list: Vec<*mut c_void> =
                                     event_wait_list.into_iter().map(|e| e.event).filter(|event| !event.is_null()).collect();
@@ -563,7 +524,7 @@ pub(super) fn initialize_device(
                                 let status = unsafe {
                                     clEnqueueReadBuffer(
                                         data_queue,
-                                        *ptr,
+                                        ptr,
                                         CL_NON_BLOCKING,
                                         0,
                                         bytes as usize,
@@ -582,7 +543,7 @@ pub(super) fn initialize_device(
                                 event_wait_list.push(event);
                                 _ = reply.send(Ok(()));
                             }
-                        },
+                        }
                         Command::SyncEvents { events, reply } => {
                             let events: Vec<*mut c_void> =
                                 events.into_iter().map(|e| e.event).filter(|event| !event.is_null()).collect();
@@ -669,14 +630,15 @@ pub(super) fn initialize_device(
                             //println!("Launching program_id={program_id:?}");
                             let program = &programs[program_id];
                             let mut i = 0;
-                            for &arg in &args {
+                            for arg in &args {
                                 let mut scalar_values: Vec<Vec<u8>> = Vec::new();
-                                let (arg_ptr, arg_size) = match &buffers[arg] {
-                                    OpenCLBuffer::Buffer { ptr, .. } => {
-                                        let value_ptr: *const _ = &raw const *ptr;
+                                let (arg_ptr, arg_size) = match arg {
+                                    LaunchArg::Buffer(buffer_id) => {
+                                        let ptr = buffers[*buffer_id].ptr;
+                                        let value_ptr: *const _ = &raw const ptr;
                                         (value_ptr.cast(), core::mem::size_of::<*mut c_void>())
                                     }
-                                    OpenCLBuffer::Variable(constant) => {
+                                    LaunchArg::Variable(constant) => {
                                         let bytes = constant.to_le_bytes();
                                         let value_ptr = bytes.as_ptr();
                                         scalar_values.push(bytes);
@@ -701,9 +663,9 @@ pub(super) fn initialize_device(
                                 .iter()
                                 .zip(program.lws.iter())
                                 .map(|(gdim, l)| {
-                                    let g = gdim.eval(&mut |ordinal| match &buffers[args[ordinal]] {
-                                        OpenCLBuffer::Variable(c) => c.as_dim().unwrap(),
-                                        _ => unreachable!("gws param must be a Variable buffer"),
+                                    let g = gdim.eval(&mut |ordinal| match &args[ordinal] {
+                                        LaunchArg::Variable(c) => c.as_dim().unwrap(),
+                                        LaunchArg::Buffer(_) => unreachable!("gws param must be a Variable launch arg"),
                                     });
                                     g * *l
                                 })
@@ -770,20 +732,6 @@ impl OpenCLMemoryPool {
 
     pub fn free_bytes(&self) -> Dim {
         self.free_bytes.load(Ordering::SeqCst) as i64
-    }
-
-    pub fn store_variable(&mut self, variable: Constant) -> PoolBufferId {
-        let (reply, reply_rx) = channel();
-        self.tx.send(Command::StoreVariable { variable, reply }).unwrap();
-        reply_rx.recv().unwrap()
-    }
-
-    /// Returns the stored constant if `buffer_id` is a variable, `None` otherwise.
-    #[allow(unused)]
-    pub fn get_variable(&self, buffer_id: PoolBufferId) -> Option<Constant> {
-        let (reply, reply_rx) = channel();
-        self.tx.send(Command::GetVariable { buffer_id, reply }).unwrap();
-        reply_rx.recv().unwrap()
     }
 
     pub fn allocate(&mut self, bytes: Dim) -> Result<(PoolBufferId, Event), BackendError> {
@@ -931,7 +879,7 @@ impl OpenCLDevice {
         &mut self,
         program_id: DeviceProgramId,
         _memory_pool: &mut OpenCLMemoryPool,
-        args: &[PoolBufferId],
+        args: &[LaunchArg],
         event_wait_list: Vec<Event>,
     ) -> Result<Event, BackendError> {
         let events = event_wait_list

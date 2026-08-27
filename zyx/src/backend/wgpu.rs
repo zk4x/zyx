@@ -1,14 +1,11 @@
 // Copyright (C) 2025 zk4x
 // SPDX-License-Identifier: LGPL-3.0-only
 
-use super::{BackendError, Device, DeviceId, DeviceInfo, ErrorStatus, Event, GwsDim, MemoryPool, PoolId, gws_from_kernel};
-use crate::{
-    DType,
-    backend::{DTypeCapability, DeviceProgramId, PoolBufferId},
-    kernel::{IdxKind, Kernel, MemScope, Op},
-    shape::Dim,
-    slab::Slab,
+use super::{
+    BackendError, Device, DeviceId, DeviceInfo, ErrorStatus, Event, GwsDim, LaunchArg, MemoryPool, PoolId,
+    gws_from_kernel,
 };
+use crate::{DType, backend::{DTypeCapability, DeviceProgramId, PoolBufferId}, kernel::{IdxKind, Kernel, MemScope, Op}, shape::Dim, slab::Slab};
 use nanoserde::DeJson;
 use pollster::FutureExt;
 use std::{sync::Arc, time::Duration};
@@ -492,7 +489,7 @@ impl WGPUDevice {
         &mut self,
         program_id: DeviceProgramId,
         memory_pool: &mut WGPUMemoryPool,
-        args: &[PoolBufferId],
+        args: &[LaunchArg],
         event_wait_list: Vec<Event>,
     ) -> Result<Event, BackendError> {
         drop(event_wait_list);
@@ -500,9 +497,10 @@ impl WGPUDevice {
         let binds: Vec<wgpu::BindGroupEntry> = args
             .iter()
             .enumerate()
-            .map(|(bind_id, &arg)| {
-                let buffer = &memory_pool.buffers[arg];
-                wgpu::BindGroupEntry { binding: u32::try_from(bind_id).unwrap(), resource: buffer.as_entire_binding() }
+            .filter_map(|(bind_id, arg)| {
+                let LaunchArg::Buffer(buffer_id) = arg else { return None };
+                let buffer = &memory_pool.buffers[*buffer_id];
+                Some(wgpu::BindGroupEntry { binding: u32::try_from(bind_id).unwrap(), resource: buffer.as_entire_binding() })
             })
             .collect();
 
@@ -520,9 +518,12 @@ impl WGPUDevice {
             cpass.insert_debug_marker(&program.name);
             let default_gws = GwsDim::Const(1);
             let grid = |gdim: &GwsDim| -> u32 {
-                gdim.eval(&mut |_| todo!("wgpu: gws from scalar variable param"))
-                    .try_into()
-                    .unwrap()
+                gdim.eval(&mut |ordinal| match &args[ordinal] {
+                    LaunchArg::Variable(c) => c.as_dim().unwrap(),
+                    LaunchArg::Buffer(_) => unreachable!("gws param must be a Variable launch arg"),
+                })
+                .try_into()
+                .unwrap()
             };
             cpass.dispatch_workgroups(
                 grid(program.gws.first().unwrap_or(&default_gws)),

@@ -36,7 +36,7 @@
 #![allow(clippy::cast_precision_loss)]
 #![allow(clippy::derived_hash_with_manual_eq)]
 
-use crate::backend::{AutotuneConfig, Device, DeviceInfo, DeviceProgramId, MemoryPool, PoolBufferId};
+use crate::backend::{AutotuneConfig, Device, DeviceInfo, DeviceProgramId, LaunchArg, MemoryPool, PoolBufferId};
 use crate::dtype::{Constant, DType};
 use crate::error::{BackendError, ErrorStatus};
 use crate::hashers::AHasher;
@@ -361,8 +361,8 @@ impl Kernel {
     fn alloc_buffers(
         &self,
         memory_pool: &mut MemoryPool,
-        buffers: &[PoolBufferId],
-    ) -> Result<(Vec<PoolBufferId>, Vec<PoolBufferId>), BackendError> {
+        buffers: &[LaunchArg],
+    ) -> Result<(Vec<LaunchArg>, Vec<PoolBufferId>), BackendError> {
         let mut buf_idx = 0usize;
         let mut used_bufs = Vec::new();
         let mut new_bufs = Vec::new();
@@ -371,25 +371,14 @@ impl Kernel {
         while !op_id.is_null() {
             match self.ops[op_id].op {
                 Op::Param { kind, dtype, shape } => {
-                    if buf_idx < buffers.len() && buffers[buf_idx] != PoolBufferId::NULL {
-                        used_bufs.push(buffers[buf_idx]);
+                    if buf_idx < buffers.len() {
+                        // Caller-provided argument (a bound buffer or a
+                        // variable value) — pass through unchanged.
+                        used_bufs.push(buffers[buf_idx].clone());
                     } else if kind == ParamKind::Variable {
-                        // Scalar argument: not a buffer, stored in the pool's
-                        // variable slot (backends pass it by value at launch).
-                        let one: Vec<u8> = match dtype {
-                            DType::BF16 => bf16::ONE.to_le_bytes().to_vec(),
-                            DType::F16 => f16::ONE.to_le_bytes().to_vec(),
-                            DType::F32 => 1f32.to_le_bytes().to_vec(),
-                            DType::F64 => 1f64.to_le_bytes().to_vec(),
-                            DType::U8 | DType::I8 | DType::Bool => vec![1],
-                            DType::U16 | DType::I16 => 1u16.to_le_bytes().to_vec(),
-                            DType::U32 | DType::I32 => 1u32.to_le_bytes().to_vec(),
-                            DType::U64 | DType::I64 => 1i64.to_le_bytes().to_vec(),
-                        };
-                        let scalar = Constant::from_le_bytes(&one, dtype);
-                        let buf = memory_pool.store_variable(scalar);
-                        used_bufs.push(buf);
-                        new_bufs.push(buf);
+                        // Scalar argument: not a buffer anywhere — pass some
+                        // arbitrary value at launch (timing-only).
+                        used_bufs.push(LaunchArg::Variable(Constant::idx(42).cast(dtype)));
                     } else {
                         // Buffer argument. This runs PRE-linearization, so the
                         // param's shape stack is intact. Dynamic dims are `-1`
@@ -402,7 +391,7 @@ impl Kernel {
                         };
                         let bytes_alloc = (dtype.bit_size() as Dim * (len + 1)) / 8;
                         let (buf, ev) = memory_pool.allocate(bytes_alloc)?;
-                        used_bufs.push(buf);
+                        used_bufs.push(LaunchArg::Buffer(buf));
                         new_bufs.push(buf);
                         if matches!(kind, ParamKind::Global) {
                             let one: Vec<u8> = match dtype {
@@ -523,7 +512,7 @@ impl Kernel {
         read_bytes: u64,
         write_bytes: u64,
         debug: DebugMask,
-        buffers: &[PoolBufferId],
+        buffers: &[LaunchArg],
     ) -> Result<(DeviceProgramId, OptSeq, u64), BackendError> {
         if false {
             return self.apply_selected_optimizations(device, memory_pool, config, flop, read_bytes, write_bytes, debug);
@@ -565,7 +554,7 @@ impl Kernel {
                     matches!(op.op, Op::Param { kind: ParamKind::Global | ParamKind::GlobalMut | ParamKind::Variable, .. })
                 })
                 .count();
-            let n_buffers = buffers.iter().filter(|&&b| b != PoolBufferId::NULL).count();
+            let n_buffers = buffers.len();
             assert!(
                 n_buffers <= n_params,
                 "buffers len ({}) must not exceed number of params ({}) in kernel",
@@ -782,7 +771,7 @@ impl Kernel {
     #[allow(clippy::too_many_arguments)] // autotune internal API, arguments are kernel parameters
     pub(crate) fn launch_with_timings(
         &self,
-        buffers: &[PoolBufferId],
+        buffers: &[LaunchArg],
         device: &mut Device,
         memory_pool: &mut MemoryPool,
         debug: DebugMask,

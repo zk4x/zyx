@@ -55,15 +55,11 @@ mod wgpu;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct PoolBufferId(u32);
 
-/// A single kernel-launch argument, bound in head order of the kernel's `Param`
-/// ops. Buffers are resolved through the runtime's `buffer_map`; variables come
-/// straight from `variable_map` — backends never store variables themselves,
-/// they only receive variable *values* at launch time.
 #[derive(Debug, Clone)]
 pub enum LaunchArg {
-    /// A plain data buffer (`BufferId` points into a `MemoryPool`; backends
-    /// bind its storage as the kernel param).
-    Buffer(BufferId),
+    /// A plain data buffer (`PoolBufferId` indexes the launched `MemoryPool`).
+    /// The caller guarantees every `Buffer` arg belongs to that pool.
+    Buffer(PoolBufferId),
     /// A scalar value for a `Param { kind: Variable }`. Used both as a kernel
     /// param and (via group-index lengths) to derive the grid size host-side.
     Variable(Constant),
@@ -656,36 +652,6 @@ impl MemoryPool {
             MemoryPool::Vulkan(pool) => pool.free_bytes(),
             #[cfg(feature = "wgpu")]
             MemoryPool::WGPU(pool) => pool.free_bytes(),
-        }
-    }
-
-    pub fn store_variable(&mut self, scalar: Constant) -> PoolBufferId {
-        match self {
-            MemoryPool::Dummy(_) => todo!(),
-            MemoryPool::Disk(_) => unreachable!(),
-            MemoryPool::Host(pool) => pool.store_variable(scalar),
-            MemoryPool::CUDA(pool) => pool.store_variable(scalar),
-            MemoryPool::OpenCL(pool) => pool.store_variable(scalar),
-            MemoryPool::HIP(_) => todo!(),
-            MemoryPool::Vulkan(pool) => pool.store_variable(scalar),
-            #[cfg(feature = "tenstorrent")]
-            MemoryPool::TT(_) => todo!(),
-        }
-    }
-
-    /// Returns the stored constant if `buffer_id` refers to a variable in this
-    /// pool, `None` otherwise (regular buffer or unknown id).
-    pub fn get_variable(&self, buffer_id: PoolBufferId) -> Option<Constant> {
-        match self {
-            MemoryPool::Dummy(_) => None,
-            MemoryPool::Disk(_) => None,
-            MemoryPool::Host(pool) => pool.get_variable(buffer_id),
-            MemoryPool::CUDA(pool) => pool.get_variable(buffer_id),
-            MemoryPool::OpenCL(pool) => pool.get_variable(buffer_id),
-            MemoryPool::HIP(_) => None,
-            MemoryPool::Vulkan(pool) => pool.get_variable(buffer_id),
-            #[cfg(feature = "tenstorrent")]
-            MemoryPool::TT(_) => None,
         }
     }
 

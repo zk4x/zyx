@@ -17,7 +17,7 @@
 #![allow(clippy::needless_pass_by_ref_mut)]
 
 use super::{
-    DTypeCapability, Device, DeviceId, DeviceInfo, DeviceProgramId, Event, MemoryPool, PoolBufferId, PoolId, ProgramId,
+    DTypeCapability, Device, DeviceId, DeviceInfo, DeviceProgramId, Event, LaunchArg, MemoryPool, PoolId, ProgramId,
     host::HostEvent,
 };
 use crate::{
@@ -242,7 +242,7 @@ impl CblasDevice {
         &mut self,
         program_id: DeviceProgramId,
         memory_pool: &mut super::host::HostMemoryPool,
-        args: &[PoolBufferId],
+        args: &[LaunchArg],
         event_wait_list: Vec<Event>,
     ) -> Result<Event, BackendError> {
         let _ = event_wait_list; // sync not needed for sequential CPU
@@ -258,9 +258,12 @@ impl CblasDevice {
             .map_err(|_| BackendError { status: ErrorStatus::IncorrectKernelArg, context: "k exceeds i32 range".into() })?;
 
         // args are [a, b, out] — loads first, then stores
-        let a = memory_pool.buffer_ptr_mut(args[0]) as *mut f32;
-        let b = memory_pool.buffer_ptr_mut(args[1]) as *mut f32;
-        let c = memory_pool.buffer_ptr_mut(args[2]) as *mut f32;
+        let LaunchArg::Buffer(b0) = args[0] else { unreachable!("cblas sgemm args are plain buffers") };
+        let LaunchArg::Buffer(b1) = args[1] else { unreachable!("cblas sgemm args are plain buffers") };
+        let LaunchArg::Buffer(b2) = args[2] else { unreachable!("cblas sgemm args are plain buffers") };
+        let a = memory_pool.buffer_ptr_mut(b0) as *mut f32;
+        let b = memory_pool.buffer_ptr_mut(b1) as *mut f32;
+        let c = memory_pool.buffer_ptr_mut(b2) as *mut f32;
 
         unsafe {
             // Row-major, NoTrans x NoTrans: C(m, n) = A(m, k) @ B(k, n)

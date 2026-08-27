@@ -11,7 +11,7 @@
 
 use super::{DTypeCapability, Device, DeviceInfo, GwsDim, MemoryPool, gws_from_kernel};
 use crate::DType;
-use crate::backend::{DeviceId, DeviceProgramId, Event, PoolBufferId, PoolId};
+use crate::backend::{DeviceId, DeviceProgramId, Event, LaunchArg, PoolBufferId, PoolId};
 use crate::dtype::Constant;
 use crate::error::{BackendError, ErrorStatus};
 use crate::kernel::Kernel;
@@ -655,7 +655,7 @@ impl HIPDevice {
         &mut self,
         program_id: DeviceProgramId,
         memory_pool: &mut HIPMemoryPool,
-        args: &[PoolBufferId],
+        args: &[LaunchArg],
         mut event_wait_list: Vec<Event>,
     ) -> Result<Event, BackendError> {
         let stream_id = self.next_stream();
@@ -664,12 +664,19 @@ impl HIPDevice {
         //println!("CUDA launch program id: {program_id}, gws: {:?}, lws: {:?}", program.global_work_size, program.local_work_size);
 
         let mut kernel_params: Vec<*mut core::ffi::c_void> = Vec::new();
-        for &arg in args {
-            let arg = &memory_pool.buffers[arg];
-            //let ptr = &mut arg.mem;
-            let ptr: *const u64 = &raw const arg.ptr;
-            let ptr: *mut u64 = ptr.cast_mut();
-            kernel_params.push(ptr.cast());
+        let mut scalar_values: Vec<Box<[u8]>> = Vec::new();
+        for arg in args {
+            match arg {
+                LaunchArg::Buffer(buffer_id) => {
+                    let ptr: *const u64 = core::ptr::addr_of!(memory_pool.buffers[*buffer_id].ptr);
+                    kernel_params.push(ptr.cast_mut().cast());
+                }
+                LaunchArg::Variable(constant) => {
+                    scalar_values.push(constant.to_le_bytes().into_boxed_slice());
+                    let value = scalar_values.last().unwrap();
+                    kernel_params.push(value.as_ptr().cast_mut().cast());
+                }
+            }
         }
 
         while let Some(Event::HIP(HIPEvent { event })) = event_wait_list.pop() {
@@ -685,9 +692,12 @@ impl HIPDevice {
         unsafe { (self.hipEventCreate)(&raw mut event, 0) }.check(ErrorStatus::KernelLaunch)?;
         let default_gws = GwsDim::Const(1);
         let grid = |gdim: &GwsDim| -> u32 {
-            gdim.eval(&mut |_| todo!("HIP: gws from scalar variable param"))
-                .try_into()
-                .unwrap()
+            gdim.eval(&mut |ordinal| match &args[ordinal] {
+                LaunchArg::Variable(c) => c.as_dim().unwrap(),
+                LaunchArg::Buffer(_) => unreachable!("gws param must be a Variable launch arg"),
+            })
+            .try_into()
+            .unwrap()
         };
         let (gx, gy, gz) = (
             grid(program.gws.first().unwrap_or(&default_gws)),
