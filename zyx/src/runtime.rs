@@ -714,14 +714,18 @@ impl Runtime {
                         // A promoted tensor still counts as an output of its
                         // producer kernel. Detach exactly like the eager arm so
                         // surviving siblings keep a consistent kernel for their
-                        // revert-to-eager once the graph dies.
+                        // revert-to-eager once the graph dies. `on_rc_zero`
+                        // already frees the buffer, removes the slab entry and
+                        // releases the shape edge, so only the graph refcount
+                        // remains to be dropped below.
                         if !producer.is_null() {
                             self.on_rc_zero(x, producer, op_id);
-                        }
-                        self.tensors.remove(x);
-                        // Drop the edge to the shape expression.
-                        if !shape_id.is_null() {
-                            self.release(shape_id);
+                        } else if self.tensors.contains_id(x) {
+                            self.tensors.remove(x);
+                            // Drop the edge to the shape expression.
+                            if !shape_id.is_null() {
+                                self.release(shape_id);
+                            }
                         }
                     }
                     self.graphs[graph_id].ref_count -= 1;
