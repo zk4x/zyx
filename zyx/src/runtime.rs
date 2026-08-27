@@ -2540,7 +2540,11 @@ impl Runtime {
         let mut buffer_loads = loads.iter().copied().filter(|&t| !self.variable_map.contains_key(&t));
         let dst_org = match (buffer_loads.next(), buffer_loads.next()) {
             (Some(t), None) => t,
-            found => panic!("assign: dst kernel must contain exactly one buffer load, got {:?}", found.0),
+            found => {
+                let is_var: Vec<bool> = loads.iter().map(|t| self.variable_map.contains_key(t)).collect();
+                eprintln!("DBG assign: dst_kid={dst_kid:?} loads={loads:?} is_var={is_var:?}");
+                panic!("assign: dst kernel must contain exactly one buffer load, got {:?}", found.0)
+            }
         };
         for t in &loads {
             assert!(
@@ -3374,6 +3378,11 @@ impl Runtime {
         // allocate new buffers for the rest.
         let mut kernel_buffers = BTreeSet::new();
         for &tid in &loads {
+            // Scalars bound via `variable_map` are launch-time values, not
+            // pool storage — they have no buffer and no event dependency.
+            if self.variable_map.contains_key(&tid) {
+                continue;
+            }
             kernel_buffers.insert(self.buffer_map[&tid]);
         }
         for &tid in &stores {
