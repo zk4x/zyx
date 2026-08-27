@@ -554,7 +554,6 @@ impl Runtime {
         } else {
             "kernel survives"
         };
-        eprintln!("DBG detach_from_producer tid={x} producer={producer:?} -> {fate}, pruned={pruned:?}");
         for tid in pruned {
             self.release(tid);
         }
@@ -651,7 +650,6 @@ impl Runtime {
                     *rc
                 }
             };
-            eprintln!("DBG release tid={x} {kind} rc->{r}");
             r
         };
         // Every variant dies purely on its refcount. `rc` is decremented above;
@@ -781,7 +779,6 @@ impl Runtime {
     /// references.
     pub fn remove_dead_eager_kernel(&mut self, kid: KernelId) {
         let loads = std::mem::take(&mut self.kernels[kid].loads);
-        eprintln!("DBG remove_dead_eager_kernel kid={kid:?} loads={loads:?}");
         self.kernels.remove(kid);
         for tid in loads {
             self.release(tid);
@@ -805,7 +802,6 @@ impl Runtime {
                 self.pools[buf_id.pool].deallocate(buf_id.buffer, wait_list);
             }
             self.tensors.remove(tid);
-            eprintln!("DBG remove_dead_graph g={graph_id:?} removed leaf tid={tid}");
             // Drop the edge to the shape expression.
             if !shape_id.is_null() {
                 self.release(shape_id);

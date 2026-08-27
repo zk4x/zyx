@@ -148,11 +148,6 @@ impl IntoShape for Box<[Dim]> {
 }
 
 pub fn into_axis(axis: Axis, rank: UAxis) -> Result<UAxis, ZyxError> {
-    if axis < 0 && rank == 0 {
-        eprintln!("DBG into_axis FAIL axis={axis} rank={rank}");
-        let bt = std::backtrace::Backtrace::force_capture();
-        eprintln!("DBG backtrace:\n{bt}");
-    }
     TryInto::<Axis>::try_into(rank).map_or_else(
         |_| Err(ZyxError::ShapeError(format!("Axis {axis} is out of range of rank {rank}").into())),
         |rank2| {

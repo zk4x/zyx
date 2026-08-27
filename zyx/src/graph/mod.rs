@@ -1925,7 +1925,6 @@ impl Runtime {
 
     pub fn eagerify(&mut self, tid: TensorId) {
         let realized = self.buffer_map.contains_key(&tid);
-        eprintln!("DBG eagerify tid={tid} realized={realized} variant={:?}", self.tensors[tid]);
         let (old_kernel_id, old_op_id, graph_id, shape_id) = match self.tensors[tid] {
             TensorData::Graph { graph_id, shape_id, .. } => (KernelId::NULL, OpId::NULL, graph_id, shape_id),
             TensorData::Promoted { kernel_id, op_id, graph_id, shape_id, .. } => (kernel_id, op_id, graph_id, shape_id),
