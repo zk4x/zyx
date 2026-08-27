@@ -18,7 +18,7 @@ use crate::{
     dtype::{Constant, DType},
     error::{BackendError, ErrorStatus},
     graph::{ClassId, Graph},
-    kernel::{BOp, IdxKind, Kernel, Op, OpId, ParamKind},
+    kernel::{BOp, IdxKind, Kernel, Op, OpId, ParamKind, UOp},
     shape::Dim,
     slab::{Slab, SlabId},
 };
@@ -55,6 +55,20 @@ mod wgpu;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct PoolBufferId(u32);
 
+/// A single kernel-launch argument, bound in head order of the kernel's `Param`
+/// ops. Buffers are resolved through the runtime's `buffer_map`; variables come
+/// straight from `variable_map` — backends never store variables themselves,
+/// they only receive variable *values* at launch time.
+#[derive(Debug, Clone)]
+pub enum LaunchArg {
+    /// A plain data buffer (`BufferId` points into a `MemoryPool`; backends
+    /// bind its storage as the kernel param).
+    Buffer(BufferId),
+    /// A scalar value for a `Param { kind: Variable }`. Used both as a kernel
+    /// param and (via group-index lengths) to derive the grid size host-side.
+    Variable(Constant),
+}
+
 /// Per-gws-axis launch size for a compiled kernel. Backends store one of these
 /// per gws axis at compile time and derive the actual grid at launch from it +
 /// the bound `args`. See AGENTS.md "gws (Global Work Size)".
@@ -63,8 +77,12 @@ pub enum GwsDim {
     /// The group length is an `Op::Const`; use this size directly.
     Const(Dim),
     /// The group length is an `Op::Param { kind: Variable }`; read
-    /// `args[ordinal]` from the pool (`get_variable` → `Constant::as_dim()`).
+    /// `args[ordinal]`, which must be a `LaunchArg::Variable`, and take its
+    /// value (`Constant::as_dim()`).
     Param(usize),
+    /// The group length is a dim *expression* (e.g. an inferred reshape dim):
+    /// a unary op over a recursively-evaluable group dim.
+    Unary { x: Box<GwsDim>, uop: UOp },
     /// The group length is a dim *expression* (e.g. an inferred reshape dim):
     /// a binary op over two recursively-evaluable group dims.
     Binary { x: Box<GwsDim>, y: Box<GwsDim>, bop: BOp },
@@ -78,6 +96,9 @@ impl GwsDim {
         match self {
             GwsDim::Const(d) => *d,
             GwsDim::Param(ordinal) => param(*ordinal),
+            GwsDim::Unary { x, uop } => Constant::unary(Constant::idx(x.eval(param)), *uop)
+                .as_dim()
+                .expect("gws expression evaluated to a non-integer dim"),
             GwsDim::Binary { x, y, bop } => {
                 let xv = Constant::idx(x.eval(param));
                 let yv = Constant::idx(y.eval(param));
@@ -91,8 +112,8 @@ impl GwsDim {
 ///
 /// Each group length `op_id` is a dim over `Op::Const` leaves and
 /// `Op::Param { kind: Variable }` leaves (`Const` → `Const`,
-/// `Param { Variable }` → `Param`, binary chains → `Binary`); anything else is
-/// unreachable.
+/// `Param { Variable }` → `Param`, unary/binary chains → `Unary`/`Binary`);
+/// anything else is unreachable.
 fn gws_from_kernel(kernel: &Kernel) -> Vec<GwsDim> {
     // Head-order position of every `Op::Param`, matching the arg ordering.
     let mut param_ordinal: Map<OpId, usize> = Map::with_hasher(BuildHasherDefault::<FHasher>::new());
@@ -110,6 +131,7 @@ fn gws_from_kernel(kernel: &Kernel) -> Vec<GwsDim> {
         match &kernel.ops[len].op {
             Op::Const(c) => GwsDim::Const(c.as_dim().unwrap()),
             Op::Param { kind: ParamKind::Variable, .. } => GwsDim::Param(ordinals[&len]),
+            Op::Unary { x, uop } => GwsDim::Unary { x: Box::new(conv(kernel, *x, ordinals)), uop: *uop },
             Op::Binary { x, y, bop } => GwsDim::Binary {
                 x: Box::new(conv(kernel, *x, ordinals)),
                 y: Box::new(conv(kernel, *y, ordinals)),
@@ -1051,18 +1073,20 @@ impl Device {
     /// before submitting to the GPU queue (ensures input buffers are ready).
     /// Returns an event that signals when the kernel completes.
     ///
-    /// The `args` are the PoolBufferIds for the kernel's buffers in the order the
+    /// The `args` are the `LaunchArg`s for the kernel in the order the
     /// `Param` ops appear in the kernel IR given to compile (flat, head order, all
     /// kinds: `Variable`/`Global`/`GlobalMut`). `Op::Storage` is NOT a kernel
-    /// parameter. The grid (gws) is NOT passed here — each backend derives it at
-    /// launch from the per-axis `GwsDim` it stored at compile: `Const(size)` uses
-    /// the size; `Param(ordinal)` reads `args[ordinal]` from the pool via
-    /// `get_variable` → `Constant::as_dim()`.
+    /// parameter. `LaunchArg::Buffer` ids point into `memory_pool`;
+    /// `LaunchArg::Variable` carries the scalar value directly — backends never
+    /// store variables. The grid (gws) is NOT passed here — each backend derives
+    /// it at launch from the per-axis `GwsDim` it stored at compile, evaluating
+    /// `Param(ordinal)` leaves against `args[ordinal]` (`LaunchArg::Variable`
+    /// → `Constant::as_dim()`).
     pub fn launch(
         &mut self,
         program_id: DeviceProgramId,
         memory_pool: &mut MemoryPool,
-        args: &[PoolBufferId],
+        args: &[LaunchArg],
         event_wait_list: Vec<Event>,
     ) -> Result<Event, BackendError> {
         // A kernel always has at least one Param (its output); launching with

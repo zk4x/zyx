@@ -109,8 +109,6 @@ impl Graph {
 
         let mut visited: Map<ClassId, (JitKernelId, OpId)> = Map::default();
 
-        //println!("order={:?}", order);
-
         for (i, &cid) in order.iter().enumerate() {
             debug_assert!(!visited.contains_key(&cid), "class {cid:?} already visited");
 
@@ -349,7 +347,24 @@ impl Graph {
                         let (dst_kid, dst_op) = visited[&dst];
 
                         assert_ne!(kid, dst_kid, "assign: src and dst must not share kernel {kid:?}");
-                        let dst_leaf = self.jit_kernels[dst_kid].loads[0];
+                        // The dst kernel's loads mix the owning buffer with
+                        // dim-variable classes. Exactly ONE buffer entry may
+                        // exist — trace it instead of assuming a position,
+                        // fail loud otherwise.
+                        let dst_loads = self.jit_kernels[dst_kid].loads.clone();
+                        let is_var_class =
+                            |g: &Self, c: ClassId| matches!(&g.nodes[g.classes[c].nodes[0]].node, Node::Leaf { dtype, shape, .. } if *dtype == IDX_T && shape.is_null());
+                        let mut buffer_classes = dst_loads.iter().copied().filter(|&c| !is_var_class(self, c));
+                        let dst_leaf = match (buffer_classes.next(), buffer_classes.next()) {
+                            (Some(c), None) => c,
+                            found => panic!("assign: dst kernel must contain exactly one buffer load, got {:?}", found.0),
+                        };
+                        for &c in &dst_loads {
+                            assert!(
+                                c == dst_leaf || is_var_class(self, c),
+                                "assign: dst kernel load class {c:?} is neither the buffer nor a dim variable"
+                            );
+                        }
                         assert!(
                             !self.jit_kernels[kid].loads.contains(&dst_leaf),
                             "assign: src kernel loads dst tensor, not allowed to avoid data races"
@@ -378,7 +393,7 @@ impl Graph {
 
                         // Remove dst's movement-only kernel; its base buffer is
                         // dst_leaf's. The assign store reuses that buffer in-place.
-                        let JitKernelData { kernel: dst_kernel, loads, stores, outputs } =
+                        let JitKernelData { kernel: dst_kernel, stores, outputs, .. } =
                             unsafe { self.jit_kernels.remove_and_return(dst_kid) };
                         debug_assert!(stores.is_empty());
 
@@ -395,8 +410,11 @@ impl Graph {
                         // Replay dst's movement chain into src's kernel. The
                         // replayed base param becomes the mutable (GlobalMut)
                         // store target; the last replayed move yields dst's final
-                        // position.
+                        // position. Every replayed define keeps its load class,
+                        // aligned in define order (positional args law).
                         let mut op_map: Map<OpId, OpId> = Map::default();
+                        let mut new_def_loads: Vec<ClassId> = Vec::new();
+                        let mut def_i = 0usize;
                         let mut op_id = dst_kernel.head;
                         while !op_id.is_null() {
                             match dst_kernel.ops[op_id].op {
@@ -408,7 +426,18 @@ impl Graph {
                                     if op_id == dst_param {
                                         kind = ParamKind::GlobalMut;
                                     }
+                                    assert!(
+                                        matches!(kind, ParamKind::GlobalMut | ParamKind::Variable),
+                                        "assign: unexpected param kind {kind:?} in dst movement kernel"
+                                    );
                                     let id = self.jit_kernels[kid].kernel.push_back(Op::Param { dtype, kind, shape });
+                                    // Assign turns dst's base from a load into a
+                                    // PURE STORE: it must NOT register in loads —
+                                    // its buffer slot comes via `stores` instead.
+                                    if kind == ParamKind::Variable {
+                                        new_def_loads.push(dst_loads[def_i]);
+                                    }
+                                    def_i += 1;
                                     op_map.insert(op_id, id);
                                 }
                                 Op::Move { x, ref mop } => {
@@ -445,10 +474,10 @@ impl Graph {
                         let dst_op = op_map.get(&dst_op).copied().unwrap_or(op_map[&dst_param]);
                         self.jit_kernels[kid].kernel.store(dst_op, src_op, OpId::NULL, MemLayout::Scalar);
                         self.jit_kernels[kid].stores.push(dst_leaf);
-                        // Extra loads (Variable params like a narrow start, all
-                        // but the base param) are replayed as new params in
-                        // src's kernel and must be passed at launch too.
-                        self.jit_kernels[kid].loads.extend(loads.iter().skip(1).copied());
+                        // Register every replayed define's load class in define
+                        // order (variables and the GlobalMut base buffer alike)
+                        // — positional args law.
+                        self.jit_kernels[kid].loads.extend(new_def_loads);
 
                         self.consume(src, kid, &mut visited, &mut rcs);
                         *rcs.get_mut(&dst).unwrap() -= 1;
@@ -797,48 +826,26 @@ impl Graph {
     }
 
     fn new_load_kernel(&mut self, cid: ClassId, rc: u32) -> (JitKernelId, OpId) {
-        let mut kernel = Kernel::new(DeviceId::NULL);
-        // TODO: class dims are re-emitted here as const indices / scalar
-        // `Param { Variable }` of IDX_T. This is the unresolved part of the
-        // kernelizer shape story — the eager path takes shapes from the
-        // runtime cache instead. Revisit once the graph-side design settles.
-        let shape = {
-            let dims: Vec<ClassId> = self.shape(cid);
-            // Fold dim expressions (e.g. pad/slice arithmetic over consts):
-            // a dim that resolves to a constant becomes a Const op; only
-            // genuinely dynamic dims become Variable params.
-            let dim_consts: Vec<Option<crate::dtype::Constant>> = dims
-                .iter()
-                .map(|dim| {
-                    // Dtypes are fully static: shape dims must be integer-typed.
-                    if cfg!(debug_assertions) {
-                        let dt = self.dtype(*dim);
-                        debug_assert!(dt.is_int(), "param dim must be integer-typed, got {dt:?}");
-                    }
-                    self.resolve_const(*dim)
-                })
-                .collect();
-            let dim_ops: Vec<OpId> = dims
-                .iter()
-                .zip(dim_consts)
-                .map(|(_, c)| match c {
-                    Some(c) => kernel.push_back(Op::Const(c)),
-                    None => kernel.param(IDX_T, ParamKind::Variable, OpId::NULL),
-                })
-                .collect();
-            match dim_ops.len() {
-                0 => OpId::NULL,
-                1 => dim_ops[0],
-                _ => kernel.stack(&dim_ops),
-            }
-        };
-        let op_id = kernel.param(self.dtype(cid), ParamKind::Global, shape);
         let kid = self.jit_kernels.push(JitKernelData {
-            kernel,
-            outputs: vec![cid; rc as usize],
-            loads: vec![cid],
+            kernel: Kernel::new(DeviceId::NULL),
+            outputs: Vec::new(),
+            loads: Vec::new(),
             stores: Vec::new(),
         });
+        // Shapes are purely symbolic metadata: they are replayed directly from
+        // the egraph into this kernel via `replay_symbolic_into_kernel` — the
+        // graph-side mirror of eager's `Runtime::replay_symbolic_into_kernel`.
+        // Variables register in `loads` at mint time inside the replay, before
+        // the buffer param below, so define order == loads order and the
+        // positional args law holds. No constant folding, no anonymous
+        // variables, no fallbacks.
+        let dims = self.shape(cid);
+        let shape = self.replay_symbolic_into_kernel(kid, &dims);
+        let dtype = self.dtype(cid);
+        let op_id = self.jit_kernels[kid].kernel.param(dtype, ParamKind::Global, shape);
+        let data = &mut self.jit_kernels[kid];
+        data.outputs = vec![cid; rc as usize];
+        data.loads.push(cid);
         (kid, op_id)
     }
 

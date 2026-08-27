@@ -212,7 +212,13 @@ pub(crate) struct KernelData {
     /// - `stores`: tensors whose StoreView the kernel holds. They are
     ///   **finished**: materializing the kernel must realize every one of
     ///   them (allocate their buffers), because other kernels already use
-    ///   them as loads.
+    ///   them as loads. A `GlobalMut` define's buffer slot is carried here,
+    ///   NOT in `loads`: an in-place assign turns dst from a load into a pure
+    ///   store, so the target must not appear in `loads`.
+    /// - `loads`: tensors this kernel reads, aligned to its non-store
+    ///   `Param` defines (`Global` buffers and scalar `Variable` dim params)
+    ///   in head order. Launch args bind positionally: load slots first
+    ///   (`loads`), then store slots (`stores`) — never shuffled.
     ///
     /// # Fusion break (`add_store`)
     ///
@@ -818,6 +824,53 @@ impl Runtime {
     /// handles mixing with the surrounding expression. Appends the expression's
     /// variable loads to the kernel and retains each (the kernel holds an edge
     /// to them). A null `shape` is a scalar: returns `OpId::NULL`.
+    /// Replay a symbolic scalar/shape expression (a tensors-slab tree) into
+    /// kernel IR, returning the root `OpId`.
+    ///
+    /// This is one third of the symbolic-shapes story; the other two live in
+    /// [`Runtime::replay_symbolic_into_graph`] (slab → egraph) and the
+    /// kernelizer's graph-side replay (egraph → kernel IR, see
+    /// `Graph::replay_symbolic_into_kernel`). All three follow the same laws,
+    /// which is what makes them interchangeable representations of the same
+    /// expression tree.
+    ///
+    /// # The symbolic closed set
+    ///
+    /// Every shape and every dimension everywhere in zyx is a value built
+    /// from exactly these six slab variants — nothing else participates in a
+    /// shape expression, ever:
+    ///
+    /// - `Constant` — baked at construction; carries its own dtype and is
+    ///   emitted verbatim as `Op::Const` (linearize's autocast reconciles
+    ///   dtype mixing with surrounding expression ops).
+    /// - `Variable` — resolved at execution time from `variable_map`; each
+    ///   occurrence becomes a `Param { kind: Variable }` define registered in
+    ///   the owning kernel's `loads` under its originating `TensorId`.
+    /// - `Cast`, `Unary`, `Binary` over already-mapped operands — replayed as
+    ///   real kernel ops.
+    /// - `Stack` — grouped into a single `Op::Stack`.
+    ///
+    /// Anything else reaching this walk is a bug and panics loudly here. No
+    /// fallback, no fabricated dims, no folding: constants are NOT folded
+    /// into precomputed values because linearize and verify reason about the
+    /// symbolic structure itself.
+    ///
+    /// # Positional binding (the args law)
+    ///
+    /// All `Param` defines of a kernel — global buffers and scalar variables
+    /// alike — appear in flat head order in the kernel IR, and the launch-time
+    /// args slice binds positionally over exactly that sequence. Deduplicating
+    /// repeated variable tids via `op_map` therefore preserves correctness:
+    /// fewer defines, and each surviving define still maps to the same slot in
+    /// whatever positional binding the caller passes. See also
+    /// `kernel::verify`'s checks and the gws section of AGENTS.md.
+    ///
+    /// # Why registration rides on `loads`
+    ///
+    /// Each `Variable` leaf adds `tid` to `KernelData::loads` and takes an rc.
+    /// This is what ties an abstract define back to the pooled value at
+    /// launch time without any parallel bookkeeping structure: `n_params ==
+    /// loads.len()` remains an enforced invariant.
     pub fn replay_symbolic_into_kernel(&mut self, kid: KernelId, shape: TensorId) -> OpId {
         if shape.is_null() {
             return OpId::NULL;
@@ -892,6 +945,25 @@ impl Runtime {
     /// root class. Constants become `Const` classes, variables become
     /// `IDX_T` leaves — the same lowering `promote_to_graph` uses for dim
     /// expressions.
+    /// Replay a symbolic scalar/shape expression from the tensors slab into
+    /// egraph classes, returning its root class.
+    ///
+    /// Middle stage of the symbolic-shapes pipeline (see
+    /// [`Runtime::replay_symbolic_into_kernel`] for the full contract):
+    /// - `Constant` → `Const` class (never merged — see [`Node::Const`]).
+    /// - `Variable` → a fresh `IDX_T` **dim-variable leaf**: a `Node::Leaf`
+    ///   with `shape == NULL`. Leaves hashcons but never merge (fresh
+    ///   `cons_id` every time), so the same logical variable appearing under
+    ///   two tensors' shapes yields two distinct classes. This duplication is
+    ///   deliberate for now: classes carry identity, not value identity, and
+    ///   execution-time binding resolves through `variable_map` outside the
+    ///   egraph entirely. TensorIds must NOT enter the egraph — that would
+    ///   poison graph hashing and cross-replay plan caching.
+    /// - `Cast` / `Unary` / `Binary` → corresponding nodes over operand
+    ///   classes (hashconsed normally).
+    /// - `Stack` → a `Stack` node (or folded away for len < 2).
+    ///
+    /// The same closed-set rule applies: anything else panics here.
     fn replay_symbolic_into_graph(&mut self, graph_id: GraphId, shape: TensorId) -> ClassId {
         // DFS post-order flatten: every node lands after its operands.
         fn flatten(rt: &Runtime, x: TensorId, order: &mut Vec<TensorId>) {
@@ -2451,11 +2523,37 @@ impl Runtime {
         // Remove the dst (movement-only) kernel; its base buffer is dst_org.
         // The removed kernel held a kernel-load reference on dst_org.
         let KernelData { kernel, loads, .. } = unsafe { self.kernels.remove_and_return(dst_kid) };
-        let dst_org = loads[0];
+        // The dst kernel's `loads` mixes the owning buffer with dim-variable
+        // defines (scalar shape expressions). Exactly ONE entry may be a
+        // buffer; everything else must be a known variable. Fail loud — no
+        // positional assumptions.
+        let mut buffer_loads = loads.iter().copied().filter(|&t| !self.variable_map.contains_key(&t));
+        let dst_org = match (buffer_loads.next(), buffer_loads.next()) {
+            (Some(t), None) => t,
+            found => panic!("assign: dst kernel must contain exactly one buffer load, got {:?}", found.0),
+        };
+        for t in &loads {
+            assert!(
+                *t == dst_org || self.variable_map.contains_key(t),
+                "assign: dst kernel load {t} is neither the buffer nor a known variable"
+            );
+        }
         // Drop the kernel-load edge the removed kernel held on dst_org; the
         // user's handle keeps it alive.
         self.release(dst_org);
-
+        // `loads` is positionally aligned with the kernel's Param defines
+        // (invariant: len == number of defines); verify before replaying.
+        {
+            let mut n_params = 0usize;
+            let mut p = kernel.head;
+            while !p.is_null() {
+                if matches!(&kernel.ops[p].op, Op::Param { .. }) {
+                    n_params += 1;
+                }
+                p = kernel.next_op(p);
+            }
+            assert_eq!(n_params, loads.len(), "assign: dst kernel param/loads count mismatch");
+        }
         let mut dst_param = dst_op;
         for _ in 0..100 {
             match kernel.ops[dst_param].op {
@@ -2473,6 +2571,11 @@ impl Runtime {
         // param becomes the (mutable) store target; the last replayed
         // movement op yields dst's final value within src's kernel.
         let mut op_map = Map::default();
+        // Load classes for src's kernel, aligned to every define replayed
+        // below, in define order. Variable defines keep their variable tid;
+        // the base buffer param gets dst_org.
+        let mut new_def_loads: Vec<TensorId> = Vec::new();
+        let mut def_i = 0usize;
         let mut op_id = kernel.head;
         while !op_id.is_null() {
             match kernel.ops[op_id].op {
@@ -2484,7 +2587,18 @@ impl Runtime {
                     if op_id == dst_param {
                         kind = ParamKind::GlobalMut;
                     }
+                    assert!(
+                        matches!(kind, ParamKind::GlobalMut | ParamKind::Variable),
+                        "assign: unexpected param kind {kind:?} in dst movement kernel"
+                    );
                     let id = self.kernels[src_kid].kernel.push_back(Op::Param { dtype, kind, shape });
+                    // Assign turns dst's base from a load into a PURE STORE:
+                    // it must NOT register in loads — its buffer slot comes
+                    // via `stores` instead (see KernelData docs).
+                    if kind == ParamKind::Variable {
+                        new_def_loads.push(loads[def_i]);
+                    }
+                    def_i += 1;
                     op_map.insert(op_id, id);
                 }
                 Op::Move { x, ref mop } => {
@@ -2512,10 +2626,27 @@ impl Runtime {
         // Store src's value into dst's base buffer through the replayed chain.
         self.kernels[src_kid].kernel.store(dst_op, src_op, OpId::NULL, MemLayout::Scalar);
         self.kernels[src_kid].stores.push(dst_org);
-        // Extra loads (variable defines like a narrow start, all but the base
-        // define) are replayed as new defines in src's kernel and must be
-        // passed at launch too.
-        self.kernels[src_kid].loads.extend(loads.iter().skip(1).copied());
+        // Register every replayed define's load in define order. Variables
+        // only — the GlobalMut base is a PURE STORE now and must not appear
+        // in loads (its buffer slot comes via `stores`).
+        self.kernels[src_kid].loads.extend(new_def_loads);
+        #[cfg(debug_assertions)]
+        {
+            let kd = &self.kernels[src_kid];
+            assert!(!kd.loads.contains(&dst_org), "assign: GlobalMut store target {dst_org} leaked into loads");
+            // loads ↔ non-mut defines, aligned in head order.
+            let mut n_non_mut = 0usize;
+            let mut p = kd.kernel.head;
+            while !p.is_null() {
+                if let Op::Param { kind, .. } = &kd.kernel.ops[p].op {
+                    if *kind != ParamKind::GlobalMut {
+                        n_non_mut += 1;
+                    }
+                }
+                p = kd.kernel.next_op(p);
+            }
+            assert_eq!(n_non_mut, kd.loads.len(), "assign: loads/defines alignment broken for kernel {:?}", src_kid);
+        }
 
         // The store writes IN PLACE into dst_org's existing buffer, which
         // stays resident in buffer_map — no new buffer is allocated for the
@@ -3266,7 +3397,27 @@ impl Runtime {
             debug_assert!(self.buffer_map.contains_key(&tid), "materialize: store tid {tid} has no buffer after realization");
         }
 
-        // Build buffers: load buffers first, then store buffers
+        // Build buffers: load buffers first, then store buffers.
+        // Law: `loads` ↔ Global+Variable defines, `stores` carries the
+        // GlobalMut store targets — args bind positionally over exactly this
+        // concatenation, so both sides must stay aligned and unshuffled.
+        #[cfg(debug_assertions)]
+        {
+            let (mut n_non_mut, mut n_mut) = (0usize, 0usize);
+            let mut p = kernel.head;
+            while !p.is_null() {
+                if let Op::Param { kind, .. } = &kernel.ops[p].op {
+                    match kind {
+                        ParamKind::GlobalMut => n_mut += 1,
+                        ParamKind::Global | ParamKind::Variable => n_non_mut += 1,
+                        _ => {}
+                    }
+                }
+                p = kernel.next_op(p);
+            }
+            assert_eq!(n_non_mut, loads.len(), "materialize: {} non-store defines but {} load entries", n_non_mut, loads.len());
+            assert!(n_mut <= stores.len(), "materialize: {} GlobalMut defines but only {} stores", n_mut, stores.len());
+        }
         let mut buffers: Vec<PoolBufferId> = Vec::new();
         for &tid in &loads {
             buffers.push(self.buffer_map[&tid].buffer);

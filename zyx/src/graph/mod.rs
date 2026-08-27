@@ -139,6 +139,13 @@ pub(crate) enum Node {
         dtype: DType,
         /// Shape of the leaf as a class: a Stack of dim classes (Const dims or
         /// symbolic dim leaves). `ClassId::NULL` for scalars (`[]` shape).
+        ///
+        /// Two leaf kinds are distinguished purely by `(dtype, shape)`:
+        /// buffer leaves carry a data dtype and a (possibly NULL for scalars)
+        /// shape stack; **dim-variable leaves** are `dtype == IDX_T` with
+        /// `shape == ClassId::NULL` — they represent a dynamic dimension
+        /// value, created by `replay_symbolic_into_graph`, never merged with
+        /// any other class, and bound at execution time via `variable_map`.
         shape: ClassId,
     },
     Expand {
@@ -385,6 +392,36 @@ impl SlabId for JitKernelId {
 }
 
 #[derive(Debug, Clone)]
+/// A jit kernel under construction by the kernelizer.
+///
+/// # Field contracts
+///
+/// - `kernel`: the kernel IR. All `Param` defines — global buffer params and
+///   scalar `Param { kind: Variable }` dim params alike — sit in flat head
+///   order, and launch-time args bind **positionally** over exactly that
+///   sequence (see the gws section of AGENTS.md). No define may be inserted,
+///   removed, or reordered after ops referencing it exist: that would silently
+///   re-bind every arg.
+/// - `loads`: every class this kernel reads, aligned to the kernel's
+///   **non-store** `Param` defines (`Global` buffers and scalar
+///   `Param { kind: Variable }` dim params) in head order — each entry
+///   corresponds to exactly one such define: a global buffer class
+///   (`Node::Leaf` with data dtype) for a `Global` param, or a dim-variable
+///   class (`Node::Leaf { dtype: IDX_T, shape: NULL }`) for a `Variable`
+///   param. **A `GlobalMut` store target must NOT appear here**: an in-place
+///   assign turns dst from a load into a pure store; its buffer slot is
+///   carried by `stores` instead. Invariant
+///   `loads.len() == number of Global+Variable defines` is asserted at
+///   extraction. Never shuffle; consumers (exec plan, tape) map entries to
+///   pooled values via `buffer_map` / `variable_map` keyed by the originating
+///   tensor id resolved through `leaf_map`.
+/// - `outputs`: classes whose value this kernel produces; one slot per rc so
+///   multi-consumer reloads work.
+/// - `stores`: classes written to storage.
+///
+/// Known pending fix: `assign` handling assumed `loads[0]` was the destination
+/// buffer — with variables now also present in `loads`, it must trace the
+/// actual buffer class instead of assuming position 0.
 pub struct JitKernelData {
     pub(crate) kernel: Kernel,
     pub(crate) outputs: Vec<ClassId>,
@@ -514,6 +551,20 @@ impl Graph {
     /// dependencies between classes and boundary classes must not be walked
     /// through into other regions. When `allowed` is `Some`, the walk never
     /// leaves that set.
+    ///
+    /// # Why boundary shape classes are absent from the order
+    ///
+    /// Because `deps` prunes a boundary class's `class_params`, a boundary
+    /// leaf's shape stack never enters the returned order — by design, not by
+    /// accident: shapes are purely symbolic metadata, never values flowing
+    /// between kernels ("a shape dimension is a result of a kernel" was
+    /// abandoned). Load kernels re-materialize their shapes themselves via
+    /// `replay_symbolic_into_kernel`, exactly as the eager path does with
+    /// `Runtime::replay_symbolic_into_kernel`. Consequently a missing shape
+    /// class here must NOT be treated as a lost dependency; conversely, if a
+    /// load kernel ever needs to consume a *computed* dim class, that is an
+    /// invariant violation and panics inside replay rather than being fed
+    /// through this sort.
     pub fn topo_sort_classes<const WITHOUT_KERNELS: bool>(
         &self,
         inputs: &Set<ClassId>,
@@ -1302,6 +1353,110 @@ impl Graph {
         }
     }
 
+    /// Replay a symbolic shape expression (egraph classes) into kernel IR.
+    ///
+    /// Graph-side counterpart of [`Runtime::replay_symbolic_into_kernel`]
+    /// (slab → kernel) — see its doc for the shared contract. Differences
+    /// forced by living on the egraph:
+    ///
+    /// - Operands are `ClassId`s, never TensorIds. TensorIds must not appear
+    ///   inside the egraph or anything derived from it (graph hashing, replay,
+    ///   plan caching all depend on this).
+    /// - Dim variables are `Node::Leaf { dtype: IDX_T, shape: NULL }` classes;
+    ///   each distinct class becomes exactly one `Param { kind: Variable }`
+    ///   define plus one entry in `jit_kernels[kid].loads` (registered at mint
+    ///   time so define order == load order and positional binding holds).
+    /// - `dims` is the already-decomposed list of top-level dim classes (the
+    ///   result of [`Graph::dims`]). Each is replayed as a full expression;
+    ///   dedupe of shared subexpressions happens within this call via the
+    ///   class map. Note this decomposition loses no structure: a dim
+    ///   expression is always a scalar tree, only the outermost Stack layer is
+    ///   flattened here, which re-emerges as a single `Op::Stack`.
+    ///
+    /// Panics loudly on any node outside the symbolic closed set — in
+    /// particular on computed dims (`Reduce` results feeding shapes). Shapes
+    /// are purely symbolic; a shape dimension may never be produced by a
+    /// kernel (jax/inductor/tinygrad convention adopted repo-wide).
+    pub(crate) fn replay_symbolic_into_kernel(&mut self, kid: JitKernelId, dims: &[ClassId]) -> OpId {
+        // Post-order flatten: every class lands after its operands, so one
+        // flat pass emits with operands already mapped.
+        fn flatten(graph: &Graph, cid: ClassId, order: &mut Vec<ClassId>) {
+            let nodes = &graph.classes[cid].nodes;
+            debug_assert!(nodes.len() == 1, "symbolic dim class must have exactly one node, got {}", nodes.len());
+            let node = &graph.nodes[nodes[0]].node;
+            match node {
+                Node::Const { .. } | Node::Leaf { .. } => (),
+                Node::Cast { x, .. } | Node::Unary { x, .. } => flatten(graph, *x, order),
+                Node::Binary { x, y, .. } => {
+                    flatten(graph, *x, order);
+                    flatten(graph, *y, order);
+                }
+                Node::Stack { ops } => {
+                    for op in ops.iter() {
+                        flatten(graph, *op, order);
+                    }
+                }
+                n => panic!(
+                    "shape expression contains non-symbolic node {:?}; shapes are purely symbolic and must never be computed by kernels",
+                    n
+                ),
+            }
+            order.push(cid);
+        }
+
+        let mut class_map: Map<ClassId, OpId> = Map::default();
+        let mut dim_ops: Vec<OpId> = Vec::with_capacity(dims.len());
+        for &cid in dims {
+            if cid.is_null() {
+                continue;
+            }
+            let mut order = Vec::new();
+            flatten(self, cid, &mut order);
+            let mut root = OpId::NULL;
+            for c in order {
+                if let Some(&mapped) = class_map.get(&c) {
+                    root = mapped;
+                    continue;
+                }
+                let nodes = self.classes[c].nodes.clone();
+                debug_assert!(nodes.len() == 1, "symbolic dim class must have exactly one node");
+                let node = self.nodes[nodes[0]].node.clone();
+                let op_id = match node {
+                    Node::Const { value, .. } => self.jit_kernels[kid].kernel.push_back(Op::Const(value)),
+                    Node::Leaf { dtype, shape, .. } => {
+                        debug_assert!(shape.is_null(), "dim-variable leaf must be scalar, got shape {:?}", shape);
+                        debug_assert!(dtype == IDX_T, "dim-variable leaf must be {:?}-typed, got {:?}", IDX_T, dtype);
+                        let op_id = self.jit_kernels[kid].kernel.param(IDX_T, ParamKind::Variable, OpId::NULL);
+                        self.jit_kernels[kid].loads.push(c);
+                        op_id
+                    }
+                    Node::Cast { x, dtype } => {
+                        let a = class_map[&x];
+                        self.jit_kernels[kid].kernel.cast(a, dtype)
+                    }
+                    Node::Unary { x, uop } => {
+                        let a = class_map[&x];
+                        self.jit_kernels[kid].kernel.unary(a, uop)
+                    }
+                    Node::Binary { x, y, bop } => {
+                        let (a, b) = (class_map[&x], class_map[&y]);
+                        self.jit_kernels[kid].kernel.binary(a, b, bop)
+                    }
+                    n => unreachable!("flatten rejected non-symbolic data {n:?}"),
+                };
+                class_map.insert(c, op_id);
+                root = op_id;
+            }
+            dim_ops.push(root);
+        }
+
+        match dim_ops.len() {
+            0 => OpId::NULL,
+            1 => *dim_ops.last().unwrap(),
+            _ => self.jit_kernels[kid].kernel.stack(&dim_ops),
+        }
+    }
+
     pub fn dtype(&self, class: ClassId) -> DType {
         match &self.nodes[self.classes[class].nodes[0]].node {
             Node::Const { value: c, .. } => c.dtype(),
@@ -1849,6 +2004,10 @@ impl Runtime {
         debug_assert!(self.graphs.contains_id(graph_id));
         self.debug_assert_pre_realize(graph_id);
 
+        if self.debug.egraph() {
+            self.graphs[graph_id].debug();
+        }
+
         for cid in self.graphs[graph_id].classes.ids() {
             let has_leaf = self.graphs[graph_id].classes[cid]
                 .nodes
@@ -1900,10 +2059,6 @@ impl Runtime {
         let devices_ptr: *const Slab<DeviceId, Device> = &self.devices;
         let buffer_map_ptr: *const Map<TensorId, BufferId> = &self.buffer_map;
         self.graphs[graph_id].add_memory_ops(unsafe { &*devices_ptr }, unsafe { &*buffer_map_ptr });
-
-        if self.debug.egraph() {
-            self.graphs[graph_id].debug();
-        }
 
         let nodes = self.graphs[graph_id].extract(output_set);
 

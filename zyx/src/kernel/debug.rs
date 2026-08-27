@@ -134,7 +134,11 @@ impl Display for Kernel {
                 }
                 Op::Param { dtype, kind, shape } => {
                     dtypes.insert(op_id, dtype);
-                    writeln!(f, "{indent}{red}r{out_id}{reset}{grey}: {dtype}{reset} = {yellow}param{reset} {kind} shape=r{shape}").unwrap();
+                    if shape.is_null() {
+                        writeln!(f, "{indent}{red}r{out_id}{reset}{grey}: {dtype}{reset} = {yellow}param{reset} {kind} shape=NULL").unwrap();
+                    } else {
+                        writeln!(f, "{indent}{red}r{out_id}{reset}{grey}: {dtype}{reset} = {yellow}param{reset} {kind} shape=r{shape}").unwrap();
+                    }
                 }
                 Op::Storage { dtype, scope, len } => {
                     dtypes.insert(op_id, dtype);
