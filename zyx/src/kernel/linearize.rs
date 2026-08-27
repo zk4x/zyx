@@ -767,177 +767,176 @@ impl Kernel {
         // order their dependencies. Phase 1 may leave the linked list temporarily
         // invalid while inserting and replacing ops, so the slab is the source of
         // truth until this phase rebuilds the list.
-        {
-            let mut roots = Vec::new();
-            for (op_id, op) in self.iter_unordered() {
-                match op {
-                    Op::Store { .. } => roots.push(op_id),
-                    Op::Param { .. }
-                    | Op::Const(_)
-                    | Op::Binary { .. }
-                    | Op::Unary { .. }
-                    | Op::Cast { .. }
-                    | Op::Mad { .. }
-                    | Op::Load { .. }
-                    | Op::Index { .. }
-                    | Op::Reduce { .. }
-                    | Op::Loop { .. } => {}
-                    Op::Storage { .. } | Op::Wmma { .. } | Op::Barrier | Op::If { .. } | Op::EndIf | Op::EndLoop => {
-                        debug_assert!(false, "unexpected root operation after Phase 1: {op:?}");
-                    }
-                    _ => {}
+        let mut roots = Vec::new();
+        for (op_id, op) in self.iter_unordered() {
+            match op {
+                Op::Store { .. } => roots.push(op_id),
+                Op::Param { .. }
+                | Op::Const(_)
+                | Op::Binary { .. }
+                | Op::Unary { .. }
+                | Op::Cast { .. }
+                | Op::Mad { .. }
+                | Op::Load { .. }
+                | Op::Index { .. }
+                | Op::Reduce { .. }
+                | Op::Loop { .. } => {}
+                Op::Storage { .. } | Op::Wmma { .. } | Op::Barrier | Op::If { .. } | Op::EndIf | Op::EndLoop => {
+                    debug_assert!(false, "unexpected root operation after Phase 1: {op:?}");
                 }
+                _ => {}
             }
+        }
 
-            // Reachability from the store roots. Any op not on a store's dependency
-            // chain is dead and removed.
-            let mut reachable = Set::default();
-            let mut pending = roots;
-            for _ in 0..10_000 {
-                let Some(op_id) = pending.pop() else { break };
-                if self.ops.contains_id(op_id) {
-                    if reachable.insert(op_id) {
-                        pending.extend(self.at(op_id).parameters());
-                    }
+        // Reachability from the store roots. Any op not on a store's dependency
+        // chain is dead and removed.
+        let mut reachable = Set::default();
+        let mut pending = roots;
+        for _ in 0..10_000 {
+            let Some(op_id) = pending.pop() else { break };
+            if self.ops.contains_id(op_id) {
+                if reachable.insert(op_id) {
+                    pending.extend(self.at(op_id).parameters());
                 }
             }
-            if !pending.is_empty() {
-                panic!("toposort did not finish in 10000 steps");
-            }
+        }
+        if !pending.is_empty() {
+            panic!("toposort did not finish in 10000 steps");
+        }
 
-            for op_id in self.ops.ids().collect::<Vec<_>>() {
-                if !reachable.contains(&op_id) && !matches!(self.ops[op_id].op, Op::Param { .. }) {
-                    self.remove_op(op_id);
-                }
+        for op_id in self.ops.ids().collect::<Vec<_>>() {
+            if !reachable.contains(&op_id) && !matches!(self.ops[op_id].op, Op::Param { .. }) {
+                self.remove_op(op_id);
             }
+        }
 
-            // Get reduce ids in sorted order, from innermost to outermost
-            let mut reduce_ids: Vec<OpId> = Vec::new();
-            let mut op_id = self.head;
-            for _ in 0..10_000 {
-                if op_id.is_null() {
-                    break;
-                }
-                if matches!(self.ops[op_id].op, Op::Reduce { .. }) {
-                    reduce_ids.push(op_id);
-                }
-                op_id = self.next_op(op_id);
+        // Get reduce ids in sorted order, from innermost to outermost
+        let mut reduce_ids: Vec<OpId> = Vec::new();
+        let mut op_id = self.head;
+        for _ in 0..10_000 {
+            if op_id.is_null() {
+                break;
             }
-            if !op_id.is_null() {
-                panic!("toposort did not finish in 10000 steps");
+            if matches!(self.ops[op_id].op, Op::Reduce { .. }) {
+                reduce_ids.push(op_id);
             }
+            op_id = self.next_op(op_id);
+        }
+        if !op_id.is_null() {
+            panic!("toposort did not finish in 10000 steps");
+        }
 
-            // Structural edges between loops, derived purely from reduce
-            // dependencies. If reduce `d` is a transitive dependency of reduce
-            // `r` (d feeds r directly or indirectly), then `r` is the outer
-            // region: its loop must open before `d`'s loop. Together with the
-            // natural data dependency R_d -> ... -> R_r this makes partially
-            // overlapping regions impossible.
-            let mut extra_deps: Vec<(OpId, OpId)> = Vec::new(); // (producer, consumer)
-            for &r in &reduce_ids {
-                let Op::Reduce { x, reduce_axis: r_axis, .. } = self.ops[r].op else {
-                    unreachable!()
-                };
-                let mut stack: Vec<OpId> = vec![x];
-                let mut seen: Set<OpId> = Set::default();
-                for _ in 0..10_000 {
-                    let Some(p) = stack.pop() else { break };
-                    if p.is_null() || !seen.insert(p) {
-                        continue;
-                    }
-                    if let Op::Reduce { reduce_axis: d_axis, .. } = self.ops[p].op {
-                        extra_deps.push((r_axis, d_axis));
-                    }
-                    stack.extend(self.ops[p].op.parameters());
-                }
-                debug_assert!(stack.is_empty(), "dependency walk did not finish");
-            }
-
-            // Loop trip lengths, for sibling ordering (bigger loops first).
-            let loop_size = |axis: OpId| -> Dim {
-                let Op::Loop { len } = self.ops[axis].op else {
-                    unreachable!("reduce_axis must point at a Loop")
-                };
-                match self.ops[len].op {
-                    Op::Const(c) => c.as_dim().unwrap_or(0),
-                    _ => 0,
-                }
+        // Structural edges between loops, derived purely from reduce
+        // dependencies. If reduce `d` is a transitive dependency of reduce
+        // `r` (d feeds r directly or indirectly), then `r` is the outer
+        // region: its loop must open before `d`'s loop. Together with the
+        // natural data dependency R_d -> ... -> R_r this makes partially
+        // overlapping regions impossible.
+        let mut extra_deps: Vec<(OpId, OpId)> = Vec::new(); // (producer, consumer)
+        for &r in &reduce_ids {
+            let Op::Reduce { x, reduce_axis: r_axis, .. } = self.ops[r].op else {
+                unreachable!()
             };
-
-            // ASAP Kahn: emit an op as soon as all its producers are placed,
-            // preferring non-loops over loops (loops go last among ready ops,
-            // so loop-invariant computation hoists above the loop headers)
-            // and bigger loops before smaller ones among ready siblings.
-            let mut in_degree: Map<OpId, u32> = Map::default();
-            let mut consumers: Map<OpId, Vec<OpId>> = Map::default();
-            for (op_id, op) in self.iter_unordered() {
-                if !reachable.contains(&op_id) {
+            let mut stack: Vec<OpId> = vec![x];
+            let mut seen: Set<OpId> = Set::default();
+            for _ in 0..10_000 {
+                let Some(p) = stack.pop() else { break };
+                if p.is_null() || !seen.insert(p) {
                     continue;
                 }
-                for p in op.parameters() {
-                    if !p.is_null() {
-                        *in_degree.entry(op_id).or_default() += 1;
-                        consumers.entry(p).or_default().push(op_id);
-                    }
+                if let Op::Reduce { reduce_axis: d_axis, .. } = self.ops[p].op {
+                    extra_deps.push((r_axis, d_axis));
                 }
+                stack.extend(self.ops[p].op.parameters());
             }
-            for &(prod, cons) in &extra_deps {
-                *in_degree.entry(cons).or_default() += 1;
-                consumers.entry(prod).or_default().push(cons);
-            }
-
-            let mut heap: BinaryHeap<std::cmp::Reverse<(u8, u64, OpId)>> = BinaryHeap::new();
-            for &id in &reachable {
-                if in_degree.get(&id).copied().unwrap_or(0) == 0 {
-                    let is_loop = matches!(self.ops[id].op, Op::Loop { .. });
-                    let size = if is_loop { loop_size(id) } else { 0 };
-                    heap.push(std::cmp::Reverse((u8::from(is_loop), u64::MAX - size as u64, id)));
-                }
-            }
-            let mut order = Vec::with_capacity(reachable.len());
-            for _ in 0..10_000 {
-                let Some(std::cmp::Reverse((_, _, op_id))) = heap.pop() else {
-                    break;
-                };
-                order.push(op_id);
-                if let Some(cs) = consumers.get(&op_id) {
-                    for &c in cs {
-                        let d = in_degree.get_mut(&c).expect("consumer must have an in_degree entry");
-                        *d -= 1;
-                        if *d == 0 {
-                            let is_loop = matches!(self.ops[c].op, Op::Loop { .. });
-                            let size = if is_loop { loop_size(c) } else { 0 };
-                            heap.push(std::cmp::Reverse((u8::from(is_loop), u64::MAX - size as u64, c)));
-                        }
-                    }
-                }
-            }
-            if order.len() != reachable.len() {
-                panic!("linearize dependency ordering contains a cycle or missing operation");
-            }
-            order.retain(|op| !matches!(self.ops[*op].op, Op::Param { .. }));
-
-            // Move the params to the front: read-only (Variable + Global) first,
-            // then writable (GlobalMut), each in linked-list order. Unused
-            // params never enter the Kahn order at all; used ones are dropped
-            // here and reinserted.
-            let mut final_order = Vec::with_capacity(order.len() + ro_params.len() + rw_params.len());
-            final_order.extend(ro_params.iter().copied());
-            final_order.extend(rw_params.iter().copied());
-            final_order.extend(order);
-
-            // Rebuild the kernel's linked list in `final_order`.
-            for (i, &op) in final_order.iter().enumerate() {
-                self.ops[op].prev = if i == 0 { OpId::NULL } else { final_order[i - 1] };
-                self.ops[op].next = if i + 1 == final_order.len() {
-                    OpId::NULL
-                } else {
-                    final_order[i + 1]
-                };
-            }
-            self.head = final_order.first().copied().unwrap_or(OpId::NULL);
-            self.tail = final_order.last().copied().unwrap_or(OpId::NULL);
+            debug_assert!(stack.is_empty(), "dependency walk did not finish");
         }
+
+        // Loop trip lengths, for sibling ordering (bigger loops first).
+        let loop_size = |axis: OpId| -> Dim {
+            let Op::Loop { len } = self.ops[axis].op else {
+                unreachable!("reduce_axis must point at a Loop")
+            };
+            match self.ops[len].op {
+                Op::Const(c) => c.as_dim().unwrap_or(0),
+                _ => 0,
+            }
+        };
+
+        // ASAP Kahn: emit an op as soon as all its producers are placed,
+        // preferring non-loops over loops (loops go last among ready ops,
+        // so loop-invariant computation hoists above the loop headers)
+        // and bigger loops before smaller ones among ready siblings.
+        let mut in_degree: Map<OpId, u32> = Map::default();
+        let mut consumers: Map<OpId, Vec<OpId>> = Map::default();
+        for (op_id, op) in self.iter_unordered() {
+            if !reachable.contains(&op_id) {
+                continue;
+            }
+            for p in op.parameters() {
+                if !p.is_null() {
+                    *in_degree.entry(op_id).or_default() += 1;
+                    consumers.entry(p).or_default().push(op_id);
+                }
+            }
+        }
+        for &(prod, cons) in &extra_deps {
+            *in_degree.entry(cons).or_default() += 1;
+            consumers.entry(prod).or_default().push(cons);
+        }
+
+        let mut heap: BinaryHeap<std::cmp::Reverse<(u8, u64, OpId)>> = BinaryHeap::new();
+        for &id in &reachable {
+            if in_degree.get(&id).copied().unwrap_or(0) == 0 {
+                let is_loop = matches!(self.ops[id].op, Op::Loop { .. });
+                let size = if is_loop { loop_size(id) } else { 0 };
+                heap.push(std::cmp::Reverse((u8::from(is_loop), u64::MAX - size as u64, id)));
+            }
+        }
+        let mut order = Vec::with_capacity(reachable.len());
+        for _ in 0..10_000 {
+            let Some(std::cmp::Reverse((_, _, op_id))) = heap.pop() else {
+                break;
+            };
+            order.push(op_id);
+            if let Some(cs) = consumers.get(&op_id) {
+                for &c in cs {
+                    let d = in_degree.get_mut(&c).expect("consumer must have an in_degree entry");
+                    *d -= 1;
+                    if *d == 0 {
+                        let is_loop = matches!(self.ops[c].op, Op::Loop { .. });
+                        let size = if is_loop { loop_size(c) } else { 0 };
+                        heap.push(std::cmp::Reverse((u8::from(is_loop), u64::MAX - size as u64, c)));
+                    }
+                }
+            }
+        }
+        if order.len() != reachable.len() {
+            panic!("linearize dependency ordering contains a cycle or missing operation");
+        }
+        order.retain(|op| !matches!(self.ops[*op].op, Op::Param { .. }));
+
+        // Move the params to the front: read-only (Variable + Global) first,
+        // then writable (GlobalMut), each in linked-list order. Unused
+        // params never enter the Kahn order at all; used ones are dropped
+        // here and reinserted.
+        let mut final_order = Vec::with_capacity(order.len() + ro_params.len() + rw_params.len());
+        final_order.extend(ro_params.iter().copied());
+        final_order.extend(rw_params.iter().copied());
+        final_order.extend(order);
+
+        // Rebuild the kernel's linked list in `final_order`.
+        for (i, &op) in final_order.iter().enumerate() {
+            self.ops[op].prev = if i == 0 { OpId::NULL } else { final_order[i - 1] };
+            self.ops[op].next = if i + 1 == final_order.len() {
+                OpId::NULL
+            } else {
+                final_order[i + 1]
+            };
+        }
+        self.head = final_order.first().copied().unwrap_or(OpId::NULL);
+        self.tail = final_order.last().copied().unwrap_or(OpId::NULL);
+        self.debug();
     }
 
     // Auto-cast scalar operands in arithmetic so mixed-dtype binaries are

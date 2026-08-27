@@ -85,7 +85,7 @@ impl Display for Kernel {
                     let dtype = dtypes.get(&x).copied().unwrap_or(DType::U8);
                     dtypes.insert(op_id, dtype);
                     let x = id_map[&x];
-                    let reduce_axis = id_map[&reduce_axis];
+                    let reduce_axis = id_map.get(&reduce_axis).unwrap_or(&reduce_axis);
                     if has_loops {
                         indent.pop();
                         indent.pop();
@@ -99,7 +99,6 @@ impl Display for Kernel {
                             BOp::Mul => "prod",
                             _ => unreachable!(),
                         },
-                        reduce_axis = id_map[&reduce_axis]
                     )
                     .unwrap();
                 }
@@ -235,9 +234,9 @@ impl Display for Kernel {
                     let x = id_map.get(&x).copied().unwrap_or(x);
                     let y = id_map.get(&y).copied().unwrap_or(y);
                     if let Some((lb, ub)) = bounds.get(&op_id) {
-                        writeln!(f, "{indent}r{out_id}{grey}: {dtype}{reset} = {op1}{x}{op2}{y}{op3}    // {lb}..={ub}").unwrap();
+                        writeln!(f, "{indent}r{out_id}{grey}: {dtype}{reset} = {op1}r{x}{op2}r{y}{op3}    // {lb}..={ub}").unwrap();
                     } else {
-                        writeln!(f, "{indent}r{out_id}{grey}: {dtype}{reset} = {op1}{x}{op2}{y}{op3}").unwrap();
+                        writeln!(f, "{indent}r{out_id}{grey}: {dtype}{reset} = {op1}r{x}{op2}r{y}{op3}").unwrap();
                     }
                 }
                 Op::Mad { x, y, z } => {
