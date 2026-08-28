@@ -573,9 +573,16 @@ impl Runtime {
     pub fn dtype(&self, x: TensorId) -> DType {
         match self.tensors[x] {
             TensorData::Eager { kernel_id, op_id, .. } => self.kernels[kernel_id].kernel.dtype(op_id),
-            TensorData::Graph { class_id, graph_id, .. } | TensorData::Promoted { class_id, graph_id, .. } => {
+            TensorData::Graph { class_id, graph_id, .. } => {
                 self.assert_graph_alive(graph_id);
                 self.graphs[graph_id].dtype(class_id)
+            }
+            TensorData::Promoted { class_id, graph_id, kernel_id, op_id, .. } => {
+                if self.graphs[graph_id].dead {
+                    self.kernels[kernel_id].kernel.dtype(op_id)
+                } else {
+                    self.graphs[graph_id].dtype(class_id)
+                }
             }
             TensorData::Constant { value, .. } | TensorData::Variable { value, .. } => value.dtype(),
             TensorData::Cast { dtype, .. } => dtype,
