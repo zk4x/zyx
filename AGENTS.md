@@ -178,6 +178,12 @@ All kernel optimizations live in `zyx/src/kernel/` (`autotune.rs` driver + one f
    `cd zyx && AGENT=1 cargo test --test <file> <name>`
 2. Use `ZYX_DEBUG` (below) to see the graph, kernel IR, and generated code instead of guessing.
 
+### Architecture-first debugging
+
+For non-trivial bugs (lifecycle, ref-counting, ownership across tape/eager boundary, graph state), the user provides the architecture and invariants up front. The agent writes them into the conversation as a short summary (a doc-like block), and that crystallizes the issue — invariants the code violates, transitions that aren't handled, states the code doesn't model. The agent does not grep to discover them; the user knows.
+
+When the user says "the architecture is X, the invariant is Y, and it breaks because Z", treat that as ground truth. Reproduce, then ask the next question. The summary block is also a candidate for permanent placement in AGENTS.md under the relevant topic (Tape Design, Backends, ...).
+
 ### Investigate the MINIMUM, then ASK — debug TOGETHER
 
 We debug **together**. You do NOT read code to find bugs; you ask the user and they answer. The fastest path to a fix is the user pasting the IR/debug output and walking through it with you — not you grepping files. Debugging this way finds and fixes a bug in minutes, not the hour you spent reading/instrumenting on your own.

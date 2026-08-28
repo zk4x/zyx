@@ -127,8 +127,7 @@ impl Tape {
                     None => {
                         let shape = rt.resolve_shape(x);
                         let dtype = rt.dtype(x);
-                        let ids: Vec<TensorId> =
-                            shape.iter().map(|&d| rt.new_constant_tensor(Constant::idx(d))).collect();
+                        let ids: Vec<TensorId> = shape.iter().map(|&d| rt.new_constant_tensor(Constant::idx(d))).collect();
                         let stid = if ids.is_empty() {
                             TensorId::NULL
                         } else {
@@ -239,7 +238,6 @@ impl Drop for Tape {
     fn drop(&mut self) {
         let mut rt = RT.lock();
         let graph_id = self.graph_id;
-        rt.graphs[graph_id].dead = true;
         /*eprintln!(
             ">>> Tape::drop graph={graph_id:?} ref_count={} leaf_map_len={}",
             rt.graphs[graph_id].ref_count,
@@ -274,6 +272,7 @@ impl Drop for Tape {
                 rt.eagerify(tid);
             }
         }
+        rt.graphs[graph_id].mark_dead();
 
         if rt.graphs[graph_id].ref_count == 0 {
             rt.remove_dead_graph(graph_id);
@@ -368,9 +367,8 @@ impl Runtime {
             let output_set: Set<TensorId> = outputs.iter().copied().collect();
             for (tid, td) in self.tensors.iter() {
                 let (affiliated, class_id) = match td {
-                    TensorData::Graph { class_id: c, graph_id: g, .. } | TensorData::Promoted { class_id: c, graph_id: g, .. } => {
-                        (*g == graph_id, *c)
-                    }
+                    TensorData::Graph { class_id: c, graph_id: g, .. }
+                    | TensorData::Promoted { class_id: c, graph_id: g, .. } => (*g == graph_id, *c),
                     _ => continue,
                 };
                 if affiliated

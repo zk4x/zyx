@@ -473,3 +473,23 @@ fn ce_two_layer() -> Result<(), ZyxError> {
     }
     Ok(())
 }
+
+#[test]
+#[should_panic]
+fn promote_dead_graph() {
+    let w = Tensor::randn([2, 3], DType::F32).unwrap();
+    let derived = {
+        let tape = Tape::new([&w]).unwrap();
+        let x = Tensor::randn([2, 3], DType::F32).unwrap();
+        let out = x.dot(w.t()).unwrap(); // `out` is born in `Graph` state on tape's graph.
+        // Drop tape without realizing → tape's graph goes dead; `out` is now
+        // a `Graph { .. }` tensor whose graph is dead.
+        drop(tape);
+        out
+    };
+    // Use the dead-graph `derived` in a new tape. The implicit promote of
+    // `derived` into the new tape is the call expected to hit line 1599.
+    let tape2 = Tape::new([&w]).unwrap();
+    let _ = &derived + 1.0f32; // triggers promote_to_graph on `derived`.
+    tape2.realize([]).unwrap();
+}

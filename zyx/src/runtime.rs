@@ -234,15 +234,6 @@ pub enum TensorData {
         shape_id: TensorId,
         rc: u16,
     },
-    /// Marker left behind when a tape scope drops an unrealized graph-only
-    /// tensor: a note to the user that they forgot to realize something.
-    /// Releasing it is fine (it tears down its dead graph edge); using it in
-    /// any operation panics — the value is gone unless realized explicitly
-    /// before the scope ended. It only exists so `release` can clean it up.
-    DeadGraph {
-        graph_id: GraphId,
-        rc: u16,
-    },
     // Baked into kernel
     Constant {
         value: Constant,
@@ -569,7 +560,6 @@ impl Runtime {
                 return Vec::new();
             }
             TensorData::Stack { ref tensors, .. } => return tensors.to_vec(),
-            TensorData::DeadGraph { .. } => panic!("shape of a dead graph tensor {x}"),
         };
         if shape_id.is_null() {
             return Vec::new();
@@ -583,8 +573,10 @@ impl Runtime {
     pub fn dtype(&self, x: TensorId) -> DType {
         match self.tensors[x] {
             TensorData::Eager { kernel_id, op_id, .. } => self.kernels[kernel_id].kernel.dtype(op_id),
-            TensorData::Graph { class_id, graph_id, .. } => self.graphs[graph_id].dtype(class_id),
-            TensorData::Promoted { class_id, graph_id, .. } => self.graphs[graph_id].dtype(class_id),
+            TensorData::Graph { class_id, graph_id, .. } | TensorData::Promoted { class_id, graph_id, .. } => {
+                self.assert_graph_alive(graph_id);
+                self.graphs[graph_id].dtype(class_id)
+            }
             TensorData::Constant { value, .. } | TensorData::Variable { value, .. } => value.dtype(),
             TensorData::Cast { dtype, .. } => dtype,
             TensorData::Unary { x, .. } => self.dtype(x),
@@ -596,7 +588,6 @@ impl Runtime {
                 }
             }
             TensorData::Stack { .. } => IDX_T,
-            TensorData::DeadGraph { .. } => panic!("dtype of a dead graph tensor {x}"),
         }
     }
 
@@ -617,9 +608,6 @@ impl Runtime {
             | TensorData::Unary { .. }
             | TensorData::Binary { .. }
             | TensorData::Stack { .. } => false,
-            TensorData::DeadGraph { .. } => {
-                panic!("use of a dead graph tensor {x}: it was never realized before its tape scope ended")
-            }
         }
     }
 
@@ -679,7 +667,6 @@ impl Runtime {
                 TensorData::Eager { rc, .. }
                 | TensorData::Graph { rc, .. }
                 | TensorData::Promoted { rc, .. }
-                | TensorData::DeadGraph { rc, .. }
                 | TensorData::Constant { rc, .. }
                 | TensorData::Variable { rc, .. }
                 | TensorData::Cast { rc, .. }
@@ -809,8 +796,7 @@ impl Runtime {
                 | TensorData::Cast { rc, .. }
                 | TensorData::Unary { rc, .. }
                 | TensorData::Binary { rc, .. }
-                | TensorData::Stack { rc, .. }
-                | TensorData::DeadGraph { rc, .. } => {
+                | TensorData::Stack { rc, .. } => {
                     *rc -= 1;
                     *rc
                 }
@@ -922,18 +908,6 @@ impl Runtime {
                     // Drop the edge to the shape expression.
                     if !shape_id.is_null() {
                         self.release(shape_id);
-                    }
-                }
-            }
-            TensorData::DeadGraph { graph_id, .. } => {
-                // Marker death path: drop the entry and release its edge on
-                // the dead graph so the graph can be torn down once its last
-                // marker is gone.
-                self.tensors.remove(x);
-                if self.graphs.contains_id(graph_id) && self.graphs[graph_id].ref_count > 0 {
-                    self.graphs[graph_id].ref_count -= 1;
-                    if self.graphs[graph_id].dead && self.graphs[graph_id].ref_count == 0 {
-                        self.remove_dead_graph(graph_id);
                     }
                 }
             }
@@ -1310,7 +1284,6 @@ impl Runtime {
 
         match self.tensors[x] {
             TensorData::Constant { value, .. } => self.new_constant_tensor(value.cast(dtype)),
-            TensorData::DeadGraph { .. } => panic!("cast of a dead graph tensor {x}"),
             TensorData::Variable { .. }
             | TensorData::Cast { .. }
             | TensorData::Unary { .. }
@@ -1360,7 +1333,6 @@ impl Runtime {
             | TensorData::Stack { .. } => {
                 todo!("bitcast of pure-symbolic tensors")
             }
-            TensorData::DeadGraph { .. } => panic!("bitcast of a dead graph tensor {x}"),
             TensorData::Eager { kernel_id, op_id, shape_id, .. } => {
                 let op_id = self.kernels[kernel_id].kernel.bitcast(op_id, dtype);
                 // The bitcast shares the input's shape expression.
@@ -1394,7 +1366,6 @@ impl Runtime {
 
         match self.tensors[x] {
             TensorData::Constant { value, .. } => self.new_constant_tensor(value.unary(uop)),
-            TensorData::DeadGraph { .. } => panic!("unary of a dead graph tensor {x}"),
             TensorData::Variable { .. }
             | TensorData::Cast { .. }
             | TensorData::Unary { .. }

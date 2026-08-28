@@ -436,6 +436,7 @@ pub struct Graph {
     pub(crate) classes: Slab<ClassId, EClass>,
     pub(crate) jit_kernels: Slab<JitKernelId, JitKernelData>,
     pub(crate) leaf_classes: Vec<ClassId>,
+    pub(crate) leaf_map: Map<ClassId, TensorId>,
     // Number of alive graph tensors (TensorState::Graph) referencing this graph.
     // Incremented at every graph-tensor birth, decremented when a tensor dies
     // (release), is eagerified, or is dropped.
@@ -444,7 +445,6 @@ pub struct Graph {
     // The graph is removed from the slab only when dead && ref_count == 0, which
     // guarantees no stale tensor ever observes a reused GraphId.
     pub(crate) dead: bool,
-    pub(crate) leaf_map: Map<ClassId, TensorId>,
     /// Allocator for [`Node::Const`]/[`Node::Leaf`] `cons_id`s.
     pub(crate) max_cons_id: u32,
 }
@@ -478,6 +478,16 @@ impl Node {
 }
 
 impl Graph {
+    /// Cleanup - when graph is no longer needed, but cannot be dropped yet, so it's marked dead
+    pub fn mark_dead(&mut self) {
+        self.dead = true;
+        self.hashcons = Map::default();
+        self.nodes = Slab::new();
+        self.classes = Slab::new();
+        self.jit_kernels = Slab::new();
+        self.leaf_map = Map::default();
+    }
+
     pub fn new() -> Self {
         Self {
             hashcons: Map::default(),
@@ -2117,11 +2127,10 @@ impl Runtime {
                     // never mutated, so just demote in place.
                     self.tensors[tid] = TensorData::Eager { kernel_id, op_id, depends_on: KernelId::NULL, shape_id, rc };
                 }
-                TensorData::Graph { rc, .. } => {
+                TensorData::Graph { .. } => {
                     // Unrealized graph-only tensor: its value can only be
                     // recomputed by the (dropping) graph; keep it as a dead
                     // handle that panics on use.
-                    self.tensors[tid] = TensorData::DeadGraph { graph_id, rc };
                     return;
                 }
                 ref t => unreachable!("eagerify: unexpected variant after affiliation match: {t:?}"),
