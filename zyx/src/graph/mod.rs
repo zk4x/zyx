@@ -1457,6 +1457,30 @@ impl Graph {
         }
     }
 
+    /// Replays a shape-descriptor class (a `Reshape`/`Expand` shape, a `Pad`
+    /// `lp`/`len` bound, a `Narrow` `start`/`len` bound) directly into kernel
+    /// `kid` and returns the root op of the replayed expression.
+    ///
+    /// Shape descriptors are pure symbolic metadata: the kernelizer never
+    /// materializes kernels for them — each consumer replays the expression
+    /// on demand (the graph-side mirror of eager's
+    /// `Runtime::replay_symbolic_into_kernel`). A `Stack` class replays as a
+    /// stack of its dim elements; any other class replays as a single dim
+    /// expression. Read-only over the egraph: no graph or kernel mutation
+    /// beyond emitting the expression's ops into `kid`.
+    pub(crate) fn replay_shape_into_kernel(&mut self, kid: JitKernelId, shape: ClassId) -> OpId {
+        if shape.is_null() {
+            return OpId::NULL;
+        }
+        match &self.nodes[self.classes[shape].nodes[0]].node {
+            Node::Stack { ops } => {
+                let ops: Vec<ClassId> = ops.iter().copied().collect();
+                self.replay_symbolic_into_kernel(kid, &ops)
+            }
+            _ => self.replay_symbolic_into_kernel(kid, &[shape]),
+        }
+    }
+
     pub fn dtype(&self, class: ClassId) -> DType {
         match &self.nodes[self.classes[class].nodes[0]].node {
             Node::Const { value: c, .. } => c.dtype(),
