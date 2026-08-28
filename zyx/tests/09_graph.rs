@@ -243,7 +243,7 @@ fn big_matmul() -> Result<(), ZyxError> {
     let tape = Tape::new([&x, &w])?;
     let z = x.dot(&w)?.relu();
     tape.realize([&z])?;
-    let shape = z.shape();
+    let shape = z.resolve_shape();
     assert_eq!(shape, [256, 296]);
     Ok(())
 }

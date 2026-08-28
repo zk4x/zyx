@@ -94,7 +94,7 @@ impl LayerNorm {
     /// ```
     pub fn forward(&self, input: impl Into<Tensor>) -> Result<Tensor, ZyxError> {
         let input = input.into();
-        let input_shape = input.shape();
+        let input_shape = input.symbolic_shape();
         let input_rank = input_shape.len();
         let norm_rank = self.normalized_shape.len();
 

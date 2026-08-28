@@ -256,7 +256,7 @@ fn gather_axis_minus2() -> Result<(), ZyxError> {
     let x = Tensor::from([[1, 2], [3, 4], [5, 6]]);
     let indices = Tensor::from([[0], [0], [2]]);
     let gathered = x.gather(-2, &indices)?;
-    assert_eq!(gathered.shape(), [3, 1]);
+    assert_eq!(gathered.resolve_shape(), [3, 1]);
     let result: Vec<i32> = gathered.flatten(..)?.try_into()?;
     assert_eq!(result, [1, 1, 5]);
     Ok(())
@@ -562,7 +562,7 @@ fn arange_large_range() -> Result<(), ZyxError> {
         return Ok(());
     }
     let x = Tensor::arange(0i64, 1000, 1i64)?;
-    assert_eq!(x.shape(), [1000]);
+    assert_eq!(x.resolve_shape(), [1000]);
     let result: Vec<i64> = x.try_into()?;
     for (i, &val) in result.iter().enumerate() {
         assert_eq!(val, i as i64, "Mismatch at index {i}");
@@ -574,7 +574,7 @@ fn arange_large_range() -> Result<(), ZyxError> {
 fn one_hot_large_num_classes() -> Result<(), ZyxError> {
     let indices = Tensor::from([0u16, 1, 2]);
     let one_hot = indices.one_hot(100);
-    assert_eq!(one_hot.shape(), [3, 100]);
+    assert_eq!(one_hot.resolve_shape(), [3, 100]);
     Ok(())
 }
 

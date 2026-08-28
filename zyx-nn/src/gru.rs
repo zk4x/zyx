@@ -17,7 +17,7 @@ pub struct GRUCell {
     /// bias hh
     pub bias_hh: Option<Tensor>, // (3*hidden_size)
     /// hidden
-    pub hidden_size: i64,
+    pub hidden_size: Tensor,
 }
 
 impl GRUCell {
@@ -43,13 +43,13 @@ impl GRUCell {
             } else {
                 None
             },
-            hidden_size,
+            hidden_size: hidden_size.into(),
         })
     }
 
     /// Forward pass: x (batch, input_size), h (batch, hidden_size)
     pub fn forward(&self, input: Tensor, hx: Tensor) -> Result<Tensor, ZyxError> {
-        let hs = self.hidden_size;
+        let hs = self.hidden_size.item::<i64>();
 
         // 🔹 Linear for input-to-hidden: x @ W_ih^T + b_ih
         let mut gates = input.matmul(self.weight_ih.t())?;

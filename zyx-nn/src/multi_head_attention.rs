@@ -15,15 +15,15 @@ use crate::Linear;
 #[cfg_attr(feature = "py", pyo3::pyclass)]
 pub struct MultiheadAttention {
     /// - `embed_dim`: Total dimension of the model (i.e. output embedding size).
-    pub embed_dim: i64,
+    pub embed_dim: Tensor,
     /// - `kdim`: Dimension of the key input. If `None`, defaults to `embed_dim`.
-    pub kdim: i64,
+    pub kdim: Tensor,
     /// - `vdim`: Dimension of the value input. If `None`, defaults to `embed_dim`.
-    pub vdim: i64,
+    pub vdim: Tensor,
     /// - `num_heads`: Number of parallel attention heads.
-    pub num_heads: i64,
+    pub num_heads: Tensor,
     /// - `head_dim`: Dimension per attention head (i.e. `embed_dim / num_heads`).
-    pub head_dim: i64,
+    pub head_dim: Tensor,
 
     /// - `q_proj`: Linear projection layer for the query.
     pub q_proj: Linear,
@@ -111,11 +111,11 @@ impl MultiheadAttention {
         };
 
         Ok(Self {
-            embed_dim,
-            kdim,
-            vdim,
-            num_heads,
-            head_dim,
+            embed_dim: embed_dim.into(),
+            kdim: kdim.into(),
+            vdim: vdim.into(),
+            num_heads: num_heads.into(),
+            head_dim: head_dim.into(),
             q_proj,
             k_proj,
             v_proj,
@@ -150,38 +150,39 @@ impl MultiheadAttention {
             v = v.transpose(0, 1)?;
         }
 
-        let [b, t_q, _] = q.shape()[..3] else { panic!("multi_head_attention: expected 3D q"); };
-        let [_, t_kv, _] = k.shape()[..3] else { panic!("multi_head_attention: expected 3D k"); };
-        let h = self.num_heads;
-        let d = self.head_dim;
+        let [b, t_q, _] = q.dims::<3>()?;
+        let [_, t_kv, _] = k.dims::<3>()?;
+        let h = &self.num_heads;
+        let d = &self.head_dim;
 
         // Project and reshape
         let q = self
             .q_proj
             .forward(q)?
-            .reshape([b, t_q, h, d])?
+            .reshape([&b, &t_q, h, d])?
             .transpose(1, 2)?;
         let mut k = self
             .k_proj
             .forward(k)?
-            .reshape([b, t_kv, h, d])?
+            .reshape([&b, &t_kv, h, d])?
             .transpose(1, 2)?;
         let mut v = self
             .v_proj
             .forward(v)?
-            .reshape([b, t_kv, h, d])?
+            .reshape([&b, &t_kv, h, d])?
             .transpose(1, 2)?;
 
         // Add bias_k / bias_v
         if self.add_bias_kv {
             if let (Some(bk), Some(bv)) = (&self.bias_k, &self.bias_v) {
+                let one: Tensor = 1i64.into();
                 let bk = bk
-                    .expand([b, 1, self.embed_dim])?
-                    .reshape([b, 1, h, d])?
+                    .expand([&b, &one, &self.embed_dim])?
+                    .reshape([&b, &one, h, d])?
                     .transpose(1, 2)?;
                 let bv = bv
-                    .expand([b, 1, self.embed_dim])?
-                    .reshape([b, 1, h, d])?
+                    .expand([&b, &one, &self.embed_dim])?
+                    .reshape([&b, &one, h, d])?
                     .transpose(1, 2)?;
                 k = Tensor::cat([&k, &bk], 2)?;
                 v = Tensor::cat([&v, &bv], 2)?;
@@ -189,13 +190,16 @@ impl MultiheadAttention {
         }
 
         if self.add_zero_attn {
-            let zero = Tensor::zeros([b, h, 1, d], k.dtype());
+            let b_dim = b.item::<i64>();
+            let h_dim = h.item::<i64>();
+            let d_dim = d.item::<i64>();
+            let zero = Tensor::zeros([b_dim, h_dim, 1, d_dim], k.dtype());
             k = Tensor::cat([&k, &zero], 2)?;
             v = Tensor::cat([&v, &zero], 2)?;
         }
 
         // Attention scores
-        let scale = 1f32 / (d as f32).sqrt();
+        let scale = 1f32 / d.item::<f32>().sqrt();
         let mut attn_scores = q.matmul(k.transpose(-2, -1)?)? * scale; // [B, H, T_q, T_kv]
 
         // Key padding mask
@@ -206,7 +210,9 @@ impl MultiheadAttention {
 
         // Causal mask
         if is_causal {
-            let causal_mask = Tensor::ones([t_q, t_kv], attn_scores.dtype()).tril(0)?;
+            let t_q_dim = t_q.item::<i64>();
+            let t_kv_dim = t_kv.item::<i64>();
+            let causal_mask = Tensor::ones([t_q_dim, t_kv_dim], attn_scores.dtype()).tril(0)?;
             attn_scores = attn_scores.masked_fill(causal_mask.equal(0)?, f32::NEG_INFINITY)?;
         }
 
@@ -223,7 +229,8 @@ impl MultiheadAttention {
 
         // Attention output
         let attn_output = attn_weights.matmul(v)?; // [B, H, T_q, D]
-        let attn_output = attn_output.transpose(1, 2)?.reshape([b, t_q, h * d])?;
+        let hd = h * d;
+        let attn_output = attn_output.transpose(1, 2)?.reshape([&b, &t_q, &hd])?;
         let mut output = self.out_proj.forward(attn_output)?;
 
         if !self.batch_first {

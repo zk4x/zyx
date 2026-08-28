@@ -36,10 +36,10 @@ fn reshape_infer_symbolic_dim() -> Result<(), ZyxError> {
     let start = Tensor::variable(0i64);
     let len = Tensor::variable(2i64);
     let y = x.narrow(0, start, len)?;
-    assert_eq!(y.shape(), [2, 64]);
+    assert_eq!(y.resolve_shape(), [2, 64]);
     // -1 inference over a symbolic dim: inferred = (2*64)/64 = 2.
     let z = y.reshape([-1])?;
-    assert_eq!(z.shape(), [128]);
+    assert_eq!(z.resolve_shape(), [128]);
     let _ = z.item::<f32>();
     Ok(())
 }

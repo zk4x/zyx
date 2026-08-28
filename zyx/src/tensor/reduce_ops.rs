@@ -60,7 +60,7 @@ impl Tensor {
         }
 
         // Determine axes
-        let mut shape = self.shape();
+        let mut shape = self.resolve_shape();
         let rank = shape.len();
         let x_dtype = self.dtype();
         let axes: Vec<_> = axes.into_iter().collect();
@@ -112,12 +112,14 @@ impl Tensor {
                 if let Some(dtype) = dtype {
                     let x = self - self.mean_keepdim_dtype(axes.clone(), dtype)?;
                     let shape_dims: Vec<Dim> = axes_vec.iter().map(|&a| shape[a]).collect();
-                    let d = Axis::try_from(shape_dims.iter().product::<Dim>() as u64).unwrap() - Axis::try_from(correction).unwrap();
+                    let d =
+                        Axis::try_from(shape_dims.iter().product::<Dim>() as u64).unwrap() - Axis::try_from(correction).unwrap();
                     (x.clone() * x).sum_dtype(axes, dtype)? / Tensor::from(d).cast(x_dtype)
                 } else {
                     let x = self - self.mean_keepdim(axes.clone())?;
                     let shape_dims: Vec<Dim> = axes_vec.iter().map(|&a| shape[a]).collect();
-                    let d = Axis::try_from(shape_dims.iter().product::<Dim>() as u64).unwrap() - Axis::try_from(correction).unwrap();
+                    let d =
+                        Axis::try_from(shape_dims.iter().product::<Dim>() as u64).unwrap() - Axis::try_from(correction).unwrap();
                     (x.clone() * x).sum(axes)? / Tensor::from(d).cast(x_dtype)
                 }
             }
@@ -1074,7 +1076,7 @@ impl Tensor {
 
     /// Cumulative reduce along axis
     fn cum_reduce(&self, axis: Axis, rop: BOp) -> Result<Tensor, ZyxError> {
-        let shape = self.shape();
+        let shape = self.resolve_shape();
         let uaxis = into_axis(axis, shape.len())?;
         let pl_sz = i64::try_from(shape[uaxis] - 1).unwrap();
         let mut x = self.transpose(axis, -1)?;

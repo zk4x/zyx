@@ -76,11 +76,11 @@ mod scalar;
 mod shape;
 mod slab;
 mod tape;
-#[cfg(feature = "viz")]
-mod viz;
 mod tensor;
 mod types;
 mod vendor;
+#[cfg(feature = "viz")]
+mod viz;
 
 type Set<T> = std::collections::HashSet<T, std::hash::BuildHasherDefault<crate::hashers::FHasher>>;
 type Map<K, V> = std::collections::HashMap<K, V, std::hash::BuildHasherDefault<crate::hashers::FHasher>>;
@@ -89,7 +89,6 @@ pub use dtype::DType;
 pub use error::ZyxError;
 pub use module::Module;
 pub use scalar::{Float, Scalar, bf16, f16};
-pub use shape::IntoShape;
 pub use tape::Tape;
 pub use tensor::ReduceOp;
 pub use tensor::Tensor;

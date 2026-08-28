@@ -82,7 +82,7 @@ impl Tensor {
     /// Returns a [`ZyxError::ShapeError`] if the indices are invalid, out of bounds,
     /// or don't match the tensor's dimensionality.
     pub fn slice(&self, index: impl IntoIndex) -> Result<Tensor, ZyxError> {
-        let shape = self.shape();
+        let shape = self.resolve_shape();
         let rank = shape.len();
 
         let mut squeeze_axes: Vec<Axis> = Vec::new();
@@ -167,7 +167,7 @@ impl Tensor {
     /// Returns error if the index is invalid for the tensor shape.
     #[allow(clippy::missing_panics_doc)]
     pub fn rslice(&self, index: impl IntoIndex) -> Result<Tensor, ZyxError> {
-        let shape = self.shape();
+        let shape = self.resolve_shape();
         let rank = shape.len();
         //print!("shape={shape:?}");
 
@@ -267,7 +267,7 @@ impl Tensor {
     #[allow(clippy::missing_panics_doc)]
     #[must_use]
     pub fn diagonal(&self) -> Tensor {
-        let n = *self.shape().last().expect("Shape in invalid state. Internal bug.");
+        let n = *self.resolve_shape().last().expect("Shape in invalid state. Internal bug.");
         self.flatten(..)
             .unwrap()
             .rpad_zeros([(0i64, i64::try_from(n).unwrap())])
@@ -322,8 +322,8 @@ impl Tensor {
     pub fn gather(&self, axis: Axis, indices: impl Into<Tensor>) -> Result<Tensor, ZyxError> {
         let indices = indices.into();
 
-        let shape = self.shape();
-        let index_shape = indices.shape();
+        let shape = self.resolve_shape();
+        let index_shape = indices.resolve_shape();
         let dim = into_axis(axis, shape.len())?;
 
         if shape.len() != index_shape.len() {
@@ -380,8 +380,8 @@ impl Tensor {
     pub fn scatter(&self, axis: Axis, indices: impl Into<Tensor>, src: impl Into<Tensor>) -> Result<Tensor, ZyxError> {
         let indices = indices.into();
         let src = src.into();
-        let shape = self.shape();
-        let index_shape = indices.shape();
+        let shape = self.resolve_shape();
+        let index_shape = indices.resolve_shape();
         let dim = into_axis(axis, shape.len())?;
         let dim_size = shape[dim];
 
@@ -391,8 +391,10 @@ impl Tensor {
             ));
         }
 
-        if index_shape != src.shape() {
-            return Err(ZyxError::shape_error(format!("indices shape {:?} != src shape {:?}", index_shape, src.shape()).into()));
+        if index_shape != src.resolve_shape() {
+            return Err(ZyxError::shape_error(
+                format!("indices shape {:?} != src shape {:?}", index_shape, src.resolve_shape()).into(),
+            ));
         }
 
         for (d, (&s, &i)) in shape.iter().zip(index_shape.iter()).enumerate() {
@@ -434,17 +436,15 @@ impl Tensor {
     ///
     /// Returns error if the dimension is out of bounds.
     pub fn index_select(&self, dim: Axis, index: impl Into<Tensor>) -> Result<Tensor, ZyxError> {
-
         let index = index.into();
-        let mut shape = self.shape();
+        let mut shape = self.resolve_shape();
         let rank = shape.len();
         let dim = into_axis(dim, rank)?;
 
-        shape[dim] = index.shape()[0];
+        shape[dim] = index.resolve_shape()[0];
         let mut view_shape: Vec<Dim> = vec![1; rank];
-        view_shape[dim] = index.shape()[0];
+        view_shape[dim] = index.resolve_shape()[0];
         let index_expanded = index.reshape(view_shape)?.expand(shape)?;
-
 
         self.gather(dim as Axis, index_expanded)
     }

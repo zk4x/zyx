@@ -44,7 +44,7 @@ pub trait Module {
             let dtype = tensor.dtype();
             write!(header, "\"{label}\":{{").unwrap();
             write!(header, "\"dtype\":\"{}\",", dtype.safetensors()).unwrap();
-            let mut st_shape = format!("{:?}", tensor.shape());
+            let mut st_shape = format!("{:?}", tensor.resolve_shape());
             st_shape.retain(|c| !c.is_whitespace());
             write!(header, "\"shape\":{st_shape},").unwrap();
             let size = tensor.numel().item::<Dim>() * Dim::from(dtype.bit_size() / 8);
@@ -55,7 +55,7 @@ pub trait Module {
         header.pop();
         write!(header, "}}").unwrap();
         let header_bytes = header.as_bytes();
-        f.write_all(&(header_bytes.len()  as i64).to_le_bytes())?;
+        f.write_all(&(header_bytes.len() as i64).to_le_bytes())?;
         f.write_all(header_bytes)?;
         for tensor in self.iter() {
             f.write_all(&tensor.to_le_bytes()?)?;
@@ -462,7 +462,7 @@ impl Tensor {
         //let mmap = Arc::new(unsafe { memmap2::Mmap::map(&f)? });
         //let mut mptr = mmap.as_ptr();
         //mptr = mptr.wrapping_add(8 + header.len());
-        let mut offset = (8 + header.len())  as i64;
+        let mut offset = (8 + header.len()) as i64;
         for x in header.chars() {
             // We skip metadata for now
             if metadata && text.starts_with("__metadata__") {
@@ -511,7 +511,7 @@ impl Tensor {
                             bar.inc(1, &format!("{label}, {shape:?}, {dtype:?}"));
                         }
                         let tensor = Tensor::from_path(shape.clone(), dtype, &path, offset as u64)?;
-                        offset += bytes  as i64;
+                        offset += bytes as i64;
                         tensors.insert(label.clone(), tensor);
                     }
                     i += 1;

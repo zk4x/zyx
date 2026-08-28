@@ -11,7 +11,7 @@ use zyx_derive::Module;
 pub struct CausalSelfAttention {
     c_attn: Linear,
     c_proj: Linear,
-    n_head: i64,
+    n_head: Tensor,
     dropout_p: f32,
 }
 
@@ -27,7 +27,7 @@ impl CausalSelfAttention {
         Ok(CausalSelfAttention {
             c_attn: Linear::new(n_embd, 3 * n_embd, bias, dtype)?,
             c_proj: Linear::new(n_embd, n_embd, bias, dtype)?,
-            n_head,
+            n_head: n_head.into(),
             dropout_p,
         })
     }
@@ -35,22 +35,22 @@ impl CausalSelfAttention {
     /// Forward pass of causal self attention
     pub fn forward(&self, x: impl Into<Tensor>) -> Result<Tensor, ZyxError> {
         let x: Tensor = x.into();
-        let [b, t, c] = x.shape()[..3] else {
-            panic!("causal_self_attention: expected 3D input");
-        };
-        let mut splits = self.c_attn.forward(x)?.split([c, c, c], 2)?;
+        let [b, t, c] = x.dims::<3>()?;
+        let c_dim = c.item::<i64>();
+        let mut splits = self.c_attn.forward(x)?.split([c_dim, c_dim, c_dim], 2)?;
         let mut v = splits.pop().unwrap();
         let mut k = splits.pop().unwrap();
         let mut q = splits.pop().unwrap();
 
+        let head_dim = &c / &self.n_head;
         k = k
-            .reshape([b, t, self.n_head, c / self.n_head])?
+            .reshape([&b, &t, &self.n_head, &head_dim])?
             .transpose(1, 2)?;
         q = q
-            .reshape([b, t, self.n_head, c / self.n_head])?
+            .reshape([&b, &t, &self.n_head, &head_dim])?
             .transpose(1, 2)?;
         v = v
-            .reshape([b, t, self.n_head, c / self.n_head])?
+            .reshape([&b, &t, &self.n_head, &head_dim])?
             .transpose(1, 2)?;
 
         let scale = (1.0 / (*k.shape().last().unwrap() as f64).sqrt()) as f32;
@@ -66,7 +66,7 @@ impl CausalSelfAttention {
         // TODO enable dropout
         att = att.dropout(self.dropout_p);
         let mut y = att.dot(v)?;
-        y = y.transpose(1, 2)?.reshape([b, t, c])?;
+        y = y.transpose(1, 2)?.reshape([&b, &t, &c])?;
         y = self.c_proj.forward(y)?;
         //y = y.dropout(self.dropout_p)?;
         Ok(y)
@@ -76,7 +76,7 @@ impl CausalSelfAttention {
 #[test]
 fn attention1() -> Result<(), ZyxError> {
     Tensor::manual_seed(49340293);
-    let n_head = 2;
+    let n_head: i64 = 2;
     let dropout_p = 0.0;
 
     let attn = CausalSelfAttention {
@@ -108,7 +108,7 @@ fn attention1() -> Result<(), ZyxError> {
             .into(),
             bias: None,
         },
-        n_head,
+        n_head: n_head.into(),
         dropout_p,
     };
 

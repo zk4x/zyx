@@ -102,7 +102,7 @@ fn test_max_pool() -> Result<(), ZyxError> {
     )?;
 
     // Verify the output shape and values
-    assert_eq!(output.shape(), [2, 2]);
+    assert_eq!(output.resolve_shape(), [2, 2]);
     assert_eq!(output, [[6.0f32, 8.0], [14.0, 16.0]]);
 
     Ok(())
@@ -270,7 +270,7 @@ fn batched_matmul() -> Result<(), ZyxError> {
                     }
 
                     let expected_shape = vec![b as i64, m as i64, n as i64];
-                    assert_eq!(z.shape(), expected_shape, "Shape mismatch: expected {:?}, got {:?}", expected_shape, z.shape());
+                    assert_eq!(z.resolve_shape(), expected_shape, "Shape mismatch: expected {:?}, got {:?}", expected_shape, z.resolve_shape());
 
                     // ---- Dtype check ----
                     assert_eq!(z.dtype(), DType::I32, "Dtype mismatch: expected I32, got {:?}", z.dtype());
@@ -360,9 +360,9 @@ fn mix_reshape1() -> Result<(), ZyxError> {
     let mut x = Tensor::from([[[[2i32], [4]], [[3], [1]], [[5], [1]]]]);
     //println!("x shape {:?}", x.shape());
     x = x.permute([0, 2, 1, 3])?;
-    assert_eq!(x.shape(), [1, 2, 3, 1]);
+    assert_eq!(x.resolve_shape(), [1, 2, 3, 1]);
     x = x.reshape([1, 2, 1, 3, 1]).unwrap();
-    assert_eq!(x.shape(), [1, 2, 1, 3, 1]);
+    assert_eq!(x.resolve_shape(), [1, 2, 1, 3, 1]);
     assert_eq!(x, [[[[[2i32], [3], [5]]], [[[4], [1], [1]]]]]);
     Ok(())
 }
@@ -592,7 +592,7 @@ fn partial_padding() -> Result<(), ZyxError> {
     ]);
     // ---- pad_zeros: pad only first 2 dimensions ----
     let padded = t4.pad_zeros([(1, 1), (1, 0)])?;
-    assert_eq!(padded.shape(), vec![4, 3, 2, 2]);
+    assert_eq!(padded.resolve_shape(), vec![4, 3, 2, 2]);
     assert_eq!(
         padded,
         [
@@ -605,7 +605,7 @@ fn partial_padding() -> Result<(), ZyxError> {
 
     // ---- rpad_zeros: reverse order, pad same logical dims ----
     let rpadded = t4.rpad_zeros([(1, 0), (1, 1)])?;
-    assert_eq!(rpadded.shape(), vec![2, 2, 4, 3]);
+    assert_eq!(rpadded.resolve_shape(), vec![2, 2, 4, 3]);
     assert_eq!(
         rpadded,
         [
@@ -844,7 +844,7 @@ fn bench_mm1() -> Result<(), ZyxError> {
 #[test]
 fn double_vec() -> Result<(), ZyxError> {
     let x = Tensor::from(vec![vec![4, 1, 2], vec![4, 6, 2]]);
-    assert_eq!(x.shape(), [2, 3]);
+    assert_eq!(x.resolve_shape(), [2, 3]);
     Ok(())
 }
 
@@ -1218,7 +1218,7 @@ fn test_padding_on_elementwise_kernel() {
     let t = Tensor::from([2, 3, 4]);
     let padded = t.pad([(1, 1)], 0).unwrap();
     let result = padded + 1;
-    assert_eq!(result.shape(), [5]);
+    assert_eq!(result.resolve_shape(), [5]);
     assert_eq!(result.slice(1).unwrap(), 3);
 }
 
@@ -1230,7 +1230,7 @@ fn test_expand_on_elementwise_kernel() {
     let t = Tensor::from([2i32, 3, 4]);
     let expanded = t.expand([3, 3]).unwrap();
     let result = expanded + 1.0;
-    assert_eq!(result.shape(), [3, 3]);
+    assert_eq!(result.resolve_shape(), [3, 3]);
     assert_eq!(result.slice((1, 1)).unwrap(), 4i32);
 }
 
@@ -1242,7 +1242,7 @@ fn test_reshape_on_elementwise_kernel() {
     let t = Tensor::from([2, 3, 4]);
     let reshaped = t.reshape([3, 1]).unwrap();
     let result = reshaped * 2.0;
-    assert_eq!(result.shape(), [3, 1]);
+    assert_eq!(result.resolve_shape(), [3, 1]);
     assert_eq!(result.slice((2, 0)).unwrap(), 8i32);
 }
 
@@ -1251,7 +1251,7 @@ fn test_permute_on_elementwise_kernel() {
     let t = Tensor::from([[[1.0f32, 2.0], [3.0, 4.0]], [[5.0, 6.0], [7.0, 8.0]]]);
     let permuted = t.permute([2, 0, 1]).unwrap();
     let result = permuted + 1.0f32;
-    assert_eq!(result.shape(), [2, 2, 2]);
+    assert_eq!(result.resolve_shape(), [2, 2, 2]);
     let value: f32 = result.slice((1, 0, 1)).unwrap().item();
     assert_eq!(value, 5.0f32);
 }
@@ -1261,7 +1261,7 @@ fn test_padding_on_reduce_kernel() {
     let t = Tensor::from([[1.0f32, 2.0], [3.0, 4.0]]);
     let padded = t.pad([(0, 0), (1, 1)], 0.0f32).unwrap();
     let reduced = padded.sum([0]).unwrap();
-    assert_eq!(reduced.shape(), [4]);
+    assert_eq!(reduced.resolve_shape(), [4]);
     assert_eq!(reduced.slice(0).unwrap(), 0.0f32);
     assert_eq!(reduced.slice(1).unwrap(), 4.0f32);
     assert_eq!(reduced.slice(2).unwrap(), 6.0f32);
@@ -1273,7 +1273,7 @@ fn test_expand_on_reduce_kernel() {
     let t = Tensor::from([[1.0f32], [2.0], [3.0]]);
     let expanded = t.expand([3, 2]).unwrap();
     let reduced = expanded.mean([1]).unwrap();
-    assert_eq!(reduced.shape(), [3]);
+    assert_eq!(reduced.resolve_shape(), [3]);
     assert_eq!(reduced.slice(1).unwrap(), 2.0f32);
 }
 
@@ -1282,7 +1282,7 @@ fn test_reshape_on_reduce_kernel() {
     let t = Tensor::from([[1.0f32, 2.0], [3.0, 4.0]]);
     let reshaped = t.reshape([4]).unwrap();
     let reduced = reshaped.sum([0]).unwrap();
-    assert_eq!(reduced.shape(), [1]);
+    assert_eq!(reduced.resolve_shape(), [1]);
     assert_eq!(reduced.item::<f32>(), 10.0f32);
 }
 
@@ -1291,7 +1291,7 @@ fn test_permute_on_reduce_kernel() {
     let t = Tensor::from([[[1.0f32, 2.0], [3.0, 4.0]], [[5.0, 6.0], [7.0, 8.0]]]);
     let permuted = t.permute([1, 2, 0]).unwrap();
     let reduced = permuted.sum([2]).unwrap();
-    assert_eq!(reduced.shape(), [2, 2]);
+    assert_eq!(reduced.resolve_shape(), [2, 2]);
     assert_eq!(reduced.slice((0, 0)).unwrap(), 6.0f32);
 }
 

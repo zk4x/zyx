@@ -9,9 +9,9 @@ use zyx_derive::Module;
 #[cfg_attr(feature = "py", pyo3::pyclass)]
 pub struct Embedding {
     /// Vocabulary size
-    pub vocab_size: i64,
+    pub vocab_size: Tensor,
     /// Embedding size
-    pub embed_size: i64,
+    pub embed_size: Tensor,
     /// Weight
     pub weight: Tensor,
     /// Arange
@@ -21,26 +21,33 @@ pub struct Embedding {
 impl Embedding {
     /// new embedding layer
     pub fn new(vocab_size: i64, embed_size: i64, dtype: DType) -> Result<Embedding, ZyxError> {
+        let vocab_size_t: Tensor = vocab_size.into();
+        let embed_size_t: Tensor = embed_size.into();
+        let one: Tensor = 1i64.into();
+        let weight = Tensor::glorot_uniform([vocab_size, embed_size], dtype)?
+            .reshape([one.clone(), one.clone(), vocab_size_t.clone(), embed_size_t.clone()])?;
+        let arange = Tensor::arange(0, vocab_size, 1)?
+            .reshape([one.clone(), one, vocab_size_t.clone(), 1i64.into()])?
+            .cast(dtype);
         Ok(Embedding {
-            vocab_size,
-            embed_size,
-            weight: Tensor::glorot_uniform([vocab_size, embed_size], dtype)?
-                .reshape([1, 1, vocab_size, embed_size])?,
-            arange: Tensor::arange(0, vocab_size as i64, 1)?
-                .reshape([1, 1, vocab_size, 1])?
-                .cast(dtype),
+            vocab_size: vocab_size_t,
+            embed_size: embed_size_t,
+            weight,
+            arange,
         })
     }
 
     /// Initialize embedding using only weight
     pub fn from_params(weight: Tensor) -> Result<Embedding, ZyxError> {
-        let sh = weight.shape();
+        let sh = weight.symbolic_shape();
         assert_eq!(sh.len(), 2);
+        let vocab_size = sh[0].clone();
+        let embed_size = sh[1].clone();
         Ok(Embedding {
-            vocab_size: sh[0],
-            embed_size: sh[1],
-            arange: Tensor::arange(0, sh[0] as i64, 1)?
-                .reshape([1, 1, sh[0], 1])?
+            vocab_size: vocab_size.clone(),
+            embed_size: embed_size.clone(),
+            arange: Tensor::arange(0, vocab_size.item::<i64>(), 1)?
+                .reshape([1i64.into(), 1i64.into(), vocab_size, 1i64.into()])?
                 .cast(weight.dtype()),
             weight,
         })
@@ -49,15 +56,14 @@ impl Embedding {
     /// Forward embedding layer
     pub fn forward(&self, x: impl Into<Tensor>) -> Result<Tensor, ZyxError> {
         let x: Tensor = x.into();
-        let x_sh = x.shape();
-        if x.numel() == 0 {
-            return Ok(Tensor::zeros(
-                x_sh.iter()
-                    .copied()
-                    .chain([self.embed_size])
-                    .collect::<Vec<i64>>(),
-                x.dtype(),
-            ));
+        let x_sh = x.symbolic_shape();
+        if x.numel().item::<i64>() == 0 {
+            let shape: Vec<Tensor> = x_sh
+                .iter()
+                .cloned()
+                .chain(std::iter::once(self.embed_size.clone()))
+                .collect();
+            return Ok(Tensor::zeros(shape, x.dtype()));
         }
         let xdt = x.dtype();
         let wdt = self.weight.dtype();
@@ -67,15 +73,19 @@ impl Embedding {
                     .into(),
             ));
         }
-        let big_shp: Vec<i64> = x_sh
+        let one: Tensor = 1i64.into();
+        let big_shp: Vec<Tensor> = x_sh
             .iter()
-            .copied()
-            .chain([self.vocab_size, self.embed_size])
+            .cloned()
+            .chain([self.vocab_size.clone(), self.embed_size.clone()])
             .collect();
         let arange = self.arange.expand(big_shp.clone())?;
-        let idx = x
-            .reshape(x_sh.into_iter().chain([1, 1]).collect::<Vec<i64>>())?
-            .expand(big_shp.clone())?;
+        let reshape_shape: Vec<Tensor> = x_sh
+            .into_iter()
+            .chain(std::iter::once(one.clone()))
+            .chain(std::iter::once(one))
+            .collect();
+        let idx = x.reshape(reshape_shape)?.expand(big_shp.clone())?;
         let vals = self.weight.expand(big_shp)?;
         (arange.equal(idx)?.cast(xdt) * vals).sum([2])
     }

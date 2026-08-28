@@ -9,7 +9,7 @@ use zyx_derive::Module;
 #[cfg_attr(feature = "py", pyo3::pyclass)]
 pub struct GroupNorm {
     /// number of groups
-    pub num_groups: i64,
+    pub num_groups: Tensor,
     /// epsilon
     pub eps: f32,
     /// shape: [C]
@@ -27,7 +27,7 @@ impl GroupNorm {
     /// # Arguments
     /// - `num_groups`: Number of groups to divide channels into.
     /// - `num_channels`: Total number of input channels (must be divisible by `num_groups`).
-    /// - `affine`: If `true`, includes learnable scale (`weight`) and bias (`bias`) parameters.
+    /// - `affine`: If `true`, includes learnable scale (`weight`) and `bias` parameters.
     ///
     /// # Returns
     /// A `GroupNorm` module with optional learnable parameters.
@@ -63,7 +63,7 @@ impl GroupNorm {
         };
 
         Ok(Self {
-            num_groups,
+            num_groups: num_groups.into(),
             eps: 1e-5,
             weight,
             bias,
@@ -98,34 +98,37 @@ impl GroupNorm {
     /// ```
     pub fn forward(&self, x: impl Into<Tensor>) -> Result<Tensor, ZyxError> {
         let x = x.into();
-        let shape = x.shape();
+        let shape = x.symbolic_shape();
 
         if shape.len() < 2 {
             return Err(ZyxError::ShapeError(
-                format!("GroupNorm requires at least 2D input, got {:?}", shape).into(),
+                format!("GroupNorm requires at least 2D input, got rank {}", shape.len()).into(),
             ));
         }
 
-        let n = shape[0];
-        let c = shape[1];
+        let n = &shape[0];
+        let c = &shape[1];
         let rest = &shape[2..];
 
-        if c % self.num_groups != 0 {
+        let c_dim = c.item::<i64>();
+        let ng_dim = self.num_groups.item::<i64>();
+        if c_dim % ng_dim != 0 {
             return Err(ZyxError::ShapeError(
                 format!(
                     "num_channels ({}) must be divisible by num_groups ({})",
-                    c, self.num_groups
+                    c_dim, ng_dim
                 )
                 .into(),
             ));
         }
 
-        let group_size = c / self.num_groups;
+        let group_size: Tensor = (c_dim / ng_dim).into();
 
-        // Reshape: [N, C, ...] → [N, G, C//G, ...]
-        let mut new_shape = vec![n, self.num_groups, group_size];
-        new_shape.extend_from_slice(rest);
-        let x = x.reshape(new_shape.clone())?;
+        // Reshape: [N, C, ...] -> [N, G, C//G, ...]
+        let mut new_shape: Vec<Tensor> = vec![n.clone(), self.num_groups.clone(), group_size];
+        new_shape.extend(rest.iter().cloned());
+        let shape_refs: Vec<&Tensor> = new_shape.iter().collect();
+        let x = x.reshape(shape_refs)?;
 
         // Axes to normalize over: [2, 3, 4, ...]
         let axes = 2..(new_shape.len() as i32);
@@ -137,7 +140,8 @@ impl GroupNorm {
         let x = (x - mean) / (var + eps).sqrt();
 
         // Reshape back to original shape
-        let mut x = x.reshape(shape)?;
+        let shape_refs: Vec<&Tensor> = shape.iter().collect();
+        let mut x = x.reshape(shape_refs)?;
 
         if let Some(weight) = &self.weight {
             x = x * weight;

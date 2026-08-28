@@ -53,40 +53,42 @@ impl BatchNorm {
 
         if Tensor::training() {
             batch_mean = x.mean([0, 2, 3])?;
-            let y = &x - batch_mean.reshape([1, batch_mean.numel(), 1, 1])?;
+            let shape4d = vec![1i64.into(), batch_mean.numel(), 1i64.into(), 1i64.into()];
+            let y = &x - batch_mean.reshape(shape4d.clone())?;
             let batch_var = (&y * &y).mean([0, 2, 3])?;
             batch_invstd = (self
                 .running_var
-                .reshape([1, self.running_var.numel(), 1, 1])?
-                .expand(x.shape())?
+                .reshape(shape4d.clone())?
+                .expand(x.symbolic_shape())?
                 + self.eps)
                 .rsqrt();
 
             if self.track_running_stats {
                 self.running_mean =
                     &self.running_mean * (1.0 - self.momentum) + &batch_mean * self.momentum;
+                let n = y.numel();
+                let bessel = &n / (&n - y.shape()[1]);
                 self.running_var = &self.running_var * (1.0 - self.momentum)
-                    + batch_var * self.momentum * y.numel() as f32
-                        / (y.numel() - y.shape()[1]) as f32;
+                    + batch_var * self.momentum * bessel;
                 self.num_batches_tracked = &self.num_batches_tracked + 1;
             }
         } else {
             batch_mean = self.running_mean.clone();
             batch_invstd = (self
                 .running_var
-                .reshape([1, self.running_var.numel(), 1, 1])?
-                .expand(x.shape())?
+                .reshape(vec![1i64.into(), self.running_var.numel(), 1i64.into(), 1i64.into()])?
+                .expand(x.symbolic_shape())?
                 + self.eps)
                 .rsqrt()
         }
 
-        let shape = [1, batch_mean.numel(), 1, 1];
-        let mut x = x - batch_mean.reshape(shape)?;
+        let shape = vec![1i64.into(), batch_mean.numel(), 1i64.into(), 1i64.into()];
+        let mut x = x - batch_mean.reshape(shape.clone())?;
         if let Some(weight) = &self.weight {
-            x = weight.reshape(shape)? * x;
+            x = weight.reshape(shape.clone())? * x;
         }
         x = x * if batch_invstd.rank() == 1 {
-            batch_invstd.reshape(shape)?
+            batch_invstd.reshape(shape.clone())?
         } else {
             batch_invstd
         };
