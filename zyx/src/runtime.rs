@@ -695,58 +695,48 @@ impl Runtime {
     /// producer is intentionally unconditional here too (defensive): an old
     /// producer should be store-free in this path, but launching it anyway is
     /// always correct.
-    pub fn detach_from_producer(&mut self, x: TensorId, producer: KernelId, op_id: OpId) {
-        let (remove_kernel, materialize, pruned) = {
-            let kd = &mut self.kernels[producer];
-            kd.outputs.remove(&x);
-            let mut pruned = Vec::new();
-            if !kd.outputs.is_empty() && !op_id.is_null() {
-                let out_ops: Vec<OpId> = kd
-                    .outputs
-                    .iter()
-                    .map(|&tid| match &self.tensors[tid] {
-                        TensorData::Eager { op_id, .. } | TensorData::Promoted { op_id, .. } => *op_id,
-                        t => panic!("kernel output tid {tid} has unexpected tensor data {t:?}"),
-                    })
-                    .collect();
-                let old_loads = std::mem::take(&mut kd.loads);
-                let new_loads = kd.kernel.remove_unused_chain(op_id, &out_ops, &old_loads);
-                kd.loads = new_loads.clone();
-                pruned = loads_dropped_by_prune(&old_loads, &new_loads);
-            }
-            (kd.outputs.is_empty() && !kd.kernel.contains_stores(), kd.outputs.is_empty() && kd.kernel.contains_stores(), pruned)
-        };
-        for tid in pruned {
-            self.release(tid);
-        }
-        if remove_kernel {
-            self.remove_dead_eager_kernel(producer);
-        } else if materialize {
-            self.materialize_kernel(producer).unwrap();
-        }
-    }
+    pub fn detach_from_kernel(&mut self, x: TensorId, kernel_id: KernelId, op_id: OpId) {
+        debug_assert!(!x.is_null());
 
-    /// True death path for a kernel-backed tensor (`rc` just hit zero): detach
-    /// it from its producer like [`Self::detach_from_producer`], THEN run the
-    /// death bookkeeping the live detach must not do — free `x`'s buffer,
-    /// remove the slab entry, release the edge to its shape expression.
-    ///
-    /// Must only be called from `release`'s eager/promoted arms after the final
-    /// rc decrement; a live tensor here would get torn down while still
-    /// referenced.
-    pub fn on_rc_zero(&mut self, x: TensorId, producer: KernelId, op_id: OpId) {
-        self.detach_from_producer(x, producer, op_id);
-        // Finalize x if it survived the teardown (it is freed here on the last
-        // handle, or by `remove_dead_eager_kernel` on the self-load path).
-        let shape_id = match &self.tensors[x] {
-            TensorData::Eager { shape_id, .. } | TensorData::Promoted { shape_id, .. } => *shape_id,
-            _ => return,
-        };
-        self.free_buffer(x);
-        self.tensors.remove(x);
-        // Drop the edge to the shape expression.
-        if !shape_id.is_null() {
-            self.release(shape_id);
+        if kernel_id.is_null() && op_id.is_null() {
+            return;
+        }
+
+        debug_assert!(!op_id.is_null());
+        debug_assert!(!kernel_id.is_null());
+        debug_assert!(!self.kernels[kernel_id].loads.contains(&x));
+        debug_assert!(!self.kernels[kernel_id].stores.contains(&x));
+
+        self.kernels[kernel_id].outputs.remove(&x);
+
+        if self.kernels[kernel_id].outputs.is_empty() && self.kernels[kernel_id].stores.is_empty() {
+            let loads = std::mem::take(&mut self.kernels[kernel_id].loads);
+            self.kernels.remove(kernel_id);
+            for tid in loads {
+                self.release(tid);
+            }
+            return;
+        }
+
+        let out_ops: Vec<OpId> = self.kernels[kernel_id]
+            .outputs
+            .iter()
+            .map(|&tid| match self.tensors[tid] {
+                TensorData::Eager { op_id, .. } | TensorData::Promoted { op_id, .. } => op_id,
+                ref t => panic!("kernel output tid {tid} has unexpected tensor data {t:?}"),
+            })
+            .collect();
+        let loads = self.kernels[kernel_id].loads.clone();
+        let new_loads = self.kernels[kernel_id].kernel.remove_unused_chain(op_id, &out_ops, &loads);
+        let pruned = loads_dropped_by_prune(&loads, &new_loads);
+        for load in pruned {
+            self.release(load);
+        }
+        self.kernels[kernel_id].loads = new_loads;
+
+        if self.kernels[kernel_id].outputs.is_empty() {
+            // Materialize, which removes the kernel
+            self.materialize_kernel(kernel_id).expect("materialization in tensor detach from kernel failed");
         }
     }
 
@@ -838,114 +828,42 @@ impl Runtime {
                     self.release(t);
                 }
             }
-            TensorData::Graph { class_id, graph_id, shape_id, .. } => {
-                if self.graphs.contains_id(graph_id) {
-                    if !self.graphs[graph_id].is_leaf(class_id) {
-                        debug_assert!(!self.buffer_map.contains_key(&x), "dead non-leaf graph tensor holds a buffer");
-                        self.tensors.remove(x);
-                        // Drop the edge to the shape expression.
-                        if !shape_id.is_null() {
-                            self.release(shape_id);
-                        }
-                    }
-                    self.graphs[graph_id].ref_count -= 1;
-                    if self.graphs[graph_id].dead && self.graphs[graph_id].ref_count == 0 {
-                        self.remove_dead_graph(graph_id);
-                    }
-                } else if !self.buffer_map.contains_key(&x) {
-                    self.tensors.remove(x);
+            TensorData::Graph { graph_id, shape_id, .. } => {
+                debug_assert!(!self.buffer_map.contains_key(&x), "dead non-leaf graph tensor holds a buffer");
+                self.tensors.remove(x);
+                if !shape_id.is_null() {
+                    self.release(shape_id);
+                }
+                self.graphs[graph_id].ref_count -= 1;
+                if self.graphs[graph_id].ref_count == 0 {
+                    self.remove_dead_graph(graph_id);
                 }
             }
-            TensorData::Promoted { kernel_id: producer, op_id, class_id, graph_id, shape_id, .. } => {
-                if self.graphs.contains_id(graph_id) {
-                    if !self.graphs[graph_id].is_leaf(class_id) {
-                        debug_assert!(!self.buffer_map.contains_key(&x), "dead non-leaf graph tensor holds a buffer");
-                        // A promoted tensor still counts as an output of its
-                        // producer kernel. Detach exactly like the eager arm so
-                        // surviving siblings keep a consistent kernel for their
-                        // revert-to-eager once the graph dies. `on_rc_zero`
-                        // already frees the buffer, removes the slab entry and
-                        // releases the shape edge, so only the graph refcount
-                        // remains to be dropped below.
-                        if !producer.is_null() {
-                            self.on_rc_zero(x, producer, op_id);
-                        } else if self.tensors.contains_id(x) {
-                            self.tensors.remove(x);
-                            // Drop the edge to the shape expression.
-                            if !shape_id.is_null() {
-                                self.release(shape_id);
-                            }
-                        }
-                    }
-                    self.graphs[graph_id].ref_count -= 1;
-                    if self.graphs[graph_id].dead && self.graphs[graph_id].ref_count == 0 {
-                        self.remove_dead_graph(graph_id);
-                    }
-                } else if !self.buffer_map.contains_key(&x) {
-                    self.tensors.remove(x);
+            TensorData::Eager { kernel_id, op_id, shape_id, .. } => {
+                self.detach_from_kernel(x, kernel_id, op_id);
+                self.free_buffer(x);
+                self.tensors.remove(x);
+                if !shape_id.is_null() {
+                    self.release(shape_id);
                 }
             }
-            TensorData::Eager { kernel_id, op_id, depends_on, shape_id, .. } => {
-                // A pending kernel (depends_on) still produces x: keep x in its
-                // producer's outputs and keep its buffer until that kernel
-                // materializes. This matches the working version's
-                // `if rc == 0 && pending.is_null() { on_rc_zero }` — when
-                // depends_on is non-null we return early and leave x intact.
-                if !depends_on.is_null() {
-                    return;
+            TensorData::Promoted { kernel_id, op_id, graph_id, shape_id, .. } => {
+                self.detach_from_kernel(x, kernel_id, op_id);
+                self.free_buffer(x);
+                self.tensors.remove(x);
+                if !shape_id.is_null() {
+                    self.release(shape_id);
                 }
-                // The kernel may already be gone when this is the self-load
-                // release (it runs after `remove_dead_eager_kernel` removed
-                // the kernel). Guard every kernel access on liveness.
-                if !kernel_id.is_null() && self.kernels.contains_id(kernel_id) {
-                    self.on_rc_zero(x, kernel_id, op_id);
-                }
-                // Finalize x if it survived the teardown (it is freed here on the
-                // last handle, or by `remove_dead_eager_kernel` on the self-load).
-                if self.tensors.contains_id(x) {
-                    self.free_buffer(x);
-                    self.tensors.remove(x);
-                    // Drop the edge to the shape expression.
-                    if !shape_id.is_null() {
-                        self.release(shape_id);
-                    }
+                self.graphs[graph_id].ref_count -= 1;
+                if self.graphs[graph_id].ref_count == 0 {
+                    self.remove_dead_graph(graph_id);
                 }
             }
-        }
-    }
-
-    /// Remove a kernel that has no outputs and no stores, releasing its load
-    /// references.
-    pub fn remove_dead_eager_kernel(&mut self, kid: KernelId) {
-        let loads = std::mem::take(&mut self.kernels[kid].loads);
-        self.kernels.remove(kid);
-        for tid in loads {
-            self.release(tid);
         }
     }
 
     pub(crate) fn remove_dead_graph(&mut self, graph_id: GraphId) {
-        let leaf_tids: Vec<TensorId> = self.graphs[graph_id].leaf_map.values().copied().collect();
-        for tid in leaf_tids {
-            // Dead leaves may already have been removed by Tape::drop.
-            if !self.tensors.contains_id(tid) {
-                continue;
-            }
-            let shape_id = match self.tensors[tid] {
-                TensorData::Graph { graph_id: g, shape_id, .. } if g == graph_id => shape_id,
-                TensorData::Promoted { graph_id: g, shape_id, .. } if g == graph_id => shape_id,
-                _ => continue,
-            };
-            if let Some(buf_id) = self.buffer_map.remove(&tid) {
-                let wait_list = drain_events_for_buf(&mut self.events, buf_id);
-                self.pools[buf_id.pool].deallocate(buf_id.buffer, wait_list);
-            }
-            self.tensors.remove(tid);
-            // Drop the edge to the shape expression.
-            if !shape_id.is_null() {
-                self.release(shape_id);
-            }
-        }
+        debug_assert!(self.graphs[graph_id].leaf_map.values().copied().all(|id| !self.tensors.contains_id(id)));
         self.graphs.remove(graph_id);
     }
 
@@ -2737,19 +2655,13 @@ impl Runtime {
             ));
         }
 
-        // Remove the dst (movement-only) kernel; its base buffer is dst_org.
-        // The removed kernel held a kernel-load reference on dst_org.
-        let KernelData { kernel, loads, .. } = unsafe { self.kernels.remove_and_return(dst_kid) };
-        // The dst kernel's `loads` mixes the owning buffer with dim-variable
-        // defines (scalar shape expressions). Exactly ONE entry may be a
-        // buffer; everything else must be a known variable. Zero buffers means
-        // the dst base has no backing pool storage (e.g. an assign through a
-        // view of an unmaterialized const-fill tensor): the write would land
-        // in an orphaned copy, so it is rejected — the user must materialize
-        // the base with `.contiguous()` first. More than one buffer means the
-        // dst-kernel contract is violated outright. Both are errors, not panics.
-        let mut buffer_loads = loads.iter().copied().filter(|&t| !self.variable_map.contains_key(&t));
-        let dst_org =
+        // Validate the dst kernel's loads BEFORE removing it: a failed
+        // validation must leave the kernel intact so the dst view tensor (still
+        // pointing at dst_kid) stays valid and its later drop does not index a
+        // deleted kernel.
+        let dst_kernel_loads = self.kernels[dst_kid].loads.clone();
+        let dst_org = {
+            let mut buffer_loads = dst_kernel_loads.iter().copied().filter(|&t| !self.variable_map.contains_key(&t));
             match (buffer_loads.next(), buffer_loads.next()) {
                 (Some(t), None) => t,
                 (None, _) => {
@@ -2763,7 +2675,12 @@ impl Runtime {
                     "assign: dst kernel contains more than one buffer load; dst must be a movement-only view of exactly one base"
                         .into(),
                 )),
-            };
+            }
+        };
+
+        // Remove the dst (movement-only) kernel; its base buffer is dst_org.
+        // The removed kernel held a kernel-load reference on dst_org.
+        let KernelData { kernel, loads, .. } = unsafe { self.kernels.remove_and_return(dst_kid) };
         for t in &loads {
             assert!(
                 *t == dst_org || self.variable_map.contains_key(t),

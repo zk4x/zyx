@@ -96,6 +96,7 @@
 
 pub use crate::backend::DeviceId;
 
+use crate::tensor::TensorId;
 use crate::{DType, Map, Set, dtype::Constant, shape::Dim, slab::Slab};
 use nanoserde::{DeBin, SerBin};
 use std::collections::BTreeMap;
@@ -593,12 +594,7 @@ impl Kernel {
     /// Removes ops from `x` backwards that are no longer needed.
     /// Returns a filtered version of `loads` with entries for removed LoadViews removed.
     /// The i-th entry in `loads` corresponds to the i-th LoadView in op order.
-    pub(crate) fn remove_unused_chain(
-        &mut self,
-        x: OpId,
-        keep_alive: &[OpId],
-        loads: &[crate::tensor::TensorId],
-    ) -> Vec<crate::tensor::TensorId> {
+    pub(crate) fn remove_unused_chain(&mut self, x: OpId, keep_alive: &[OpId], loads: &[TensorId]) -> Vec<TensorId> {
         let mut chain: Set<OpId> = Set::default();
         let mut stack = vec![x];
         for _ in 0..10_000 {
@@ -854,7 +850,9 @@ impl Kernel {
             panic!("flop_mem_rw did not finish in 10000 steps");
         }
 
-        stack.into_values().fold((0 as Dim, 0, 0), |acc, info| (acc.0 + info.flops, acc.1 + info.mem_read, acc.2 + info.mem_write))
+        stack
+            .into_values()
+            .fold((0 as Dim, 0, 0), |acc, info| (acc.0 + info.flops, acc.1 + info.mem_read, acc.2 + info.mem_write))
     }
 
     /// Check if the kernel contains any store operations.
@@ -1091,7 +1089,13 @@ impl Kernel {
                     visited.insert(id, vec![]);
                 }
                 Op::Param { shape, .. } => {
-                    visited.insert(id, descriptor(self, shape).iter().map(|&d| self.resolve_const(d).and_then(crate::dtype::Constant::as_dim).unwrap_or(-1)).collect());
+                    visited.insert(
+                        id,
+                        descriptor(self, shape)
+                            .iter()
+                            .map(|&d| self.resolve_const(d).and_then(crate::dtype::Constant::as_dim).unwrap_or(-1))
+                            .collect(),
+                    );
                 }
                 // Direct access of a stack op: `[len] + first_element_shape`.
                 Op::Stack { ref ops } => {
@@ -1108,7 +1112,13 @@ impl Kernel {
                 }
                 Op::Move { x, ref mop } => match mop.as_ref() {
                     MoveOp::Reshape { shape, .. } | MoveOp::Expand { shape } => {
-                        visited.insert(id, descriptor(self, *shape).iter().map(|&d| self.resolve_const(d).and_then(crate::dtype::Constant::as_dim).unwrap_or(-1)).collect());
+                        visited.insert(
+                            id,
+                            descriptor(self, *shape)
+                                .iter()
+                                .map(|&d| self.resolve_const(d).and_then(crate::dtype::Constant::as_dim).unwrap_or(-1))
+                                .collect(),
+                        );
                     }
                     MoveOp::Permute { axes } => match visited.get(&x) {
                         Some(dims) => {
@@ -1133,7 +1143,8 @@ impl Kernel {
                             if dims.is_empty() {
                                 dims = vec![self.resolve_const(len).and_then(crate::dtype::Constant::as_dim).unwrap_or(-1)];
                             } else {
-                                dims[axis as usize] = self.resolve_const(len).and_then(crate::dtype::Constant::as_dim).unwrap_or(-1);
+                                dims[axis as usize] =
+                                    self.resolve_const(len).and_then(crate::dtype::Constant::as_dim).unwrap_or(-1);
                             }
                             visited.insert(id, dims);
                         }

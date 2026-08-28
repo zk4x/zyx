@@ -287,8 +287,6 @@ impl Tensor {
     #[track_caller]
     #[allow(clippy::missing_panics_doc)]
     pub fn relu(&self) -> Tensor {
-        //return Tensor { id: RT.lock().unary(self.id, UOp::ReLU) };
-        //self.cmpgt(0).unwrap().where_(self, 0).unwrap() // for whatever reason this is the fastest
         self.cmpgt(0f32).unwrap() * self
     }
 
