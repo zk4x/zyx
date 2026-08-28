@@ -2173,6 +2173,7 @@ impl Runtime {
     }
 
     pub fn assert_graph_alive(&self, graph_id: GraphId) {
+        assert!(!graph_id.is_null(), "tape scope has ended (tensor belongs to a dead tape scope)");
         assert!(!self.graphs[graph_id].dead, "tape scope has ended (tensor belongs to a dead tape scope");
     }
 

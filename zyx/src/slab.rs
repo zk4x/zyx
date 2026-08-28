@@ -90,7 +90,7 @@ impl<Id: SlabId, T> Slab<Id, T> {
     }*/
 
     pub(crate) fn push(&mut self, value: T) -> Id {
-        if let Some(id) = self.empty.iter().copied().next() {
+        if let Some(id) = self.empty.iter().next().copied() {
             self.empty.remove(&id);
             self.values[id.into()] = MaybeUninit::new(value);
             id

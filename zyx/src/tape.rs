@@ -244,32 +244,74 @@ impl Drop for Tape {
             rt.graphs[graph_id].leaf_map.len()
         );*/
 
-        let leaves: Vec<TensorId> = rt.graphs[graph_id].leaf_map.values().copied().collect();
-        for tid in leaves {
-            let (affiliated, rc) = match rt.tensors[tid] {
-                TensorData::Graph { graph_id: g, rc, .. } | TensorData::Promoted { graph_id: g, rc, .. } => (g == graph_id, rc),
-                _ => continue,
+        // Revert every tensor still affiliated with this graph back to a state
+        // that does not reference the (about-to-die) graph:
+        //   - `Promoted` keeps its eager side, so it reverts to `Eager`.
+        //   - pure `Graph` has no eager side; it can't be realized, so we just
+        //     clear its `graph_id`/`class_id`, orphaning it as a dead handle
+        //     that panics on use (and is freed by `release` when its handle drops).
+        // We scan the whole tensor slab (a drop is rare next to kernel launches,
+        // and the slab is bounded by the allocation high-water mark) rather than
+        // tracking affiliations in a per-graph set.
+        // TODO: if this full scan ever shows up as a perf bottleneck, replace it
+        // with a `Vec<TensorId>` of affiliated tensors kept on `Graph` and pushed
+        // in every `promote_to_graph` path (leaf + non-buffer), iterating that
+        // instead. A debug-only full scan can stay to assert the set is complete.
+        let affiliated: Vec<TensorId> = rt
+            .tensors
+            .iter()
+            .filter_map(|(tid, td)| match td {
+                TensorData::Graph { graph_id: g, .. } | TensorData::Promoted { graph_id: g, .. } if *g == graph_id => {
+                    Some(tid)
+                }
+                _ => None,
+            })
+            .collect();
+        for tid in affiliated {
+            let (kind, rc, gid) = match rt.tensors[tid] {
+                TensorData::Promoted { rc, .. } => (0u8, rc, GraphId::NULL),
+                TensorData::Graph { graph_id: g, rc, .. } => (1u8, rc, g),
+                ref t => unreachable!("affiliated tensor changed variant: {t:?}"),
             };
-            if !affiliated {
-                continue;
-            }
-            if rc == 0 {
-                // Dead leaf: rc counts both handles and kernel loads, so rc == 0
-                // means nothing references it anymore. Remove it, freeing its
-                // buffer if no other tensor maps to the same buffer.
-                if let Some(buf_id) = rt.buffer_map.remove(&tid) {
-                    let still_used = rt.buffer_map.values().any(|b| b.pool == buf_id.pool && b.buffer == buf_id.buffer);
-                    if !still_used {
-                        let wait_list = drain_events_for_buf(&mut rt.events, buf_id);
-                        rt.pools[buf_id.pool].deallocate(buf_id.buffer, wait_list);
+            if kind == 0 {
+                // `Promoted` => revert to `Eager` (keeps the eager kernel).
+                if rc == 0 {
+                    // Nothing references it: free its buffer and drop it.
+                    if let Some(buf_id) = rt.buffer_map.remove(&tid) {
+                        let still_used =
+                            rt.buffer_map.values().any(|b| b.pool == buf_id.pool && b.buffer == buf_id.buffer);
+                        if !still_used {
+                            let wait_list = drain_events_for_buf(&mut rt.events, buf_id);
+                            rt.pools[buf_id.pool].deallocate(buf_id.buffer, wait_list);
+                        }
+                    }
+                    rt.tensors.remove(tid);
+                } else {
+                    rt.eagerify(tid);
+                }
+            } else {
+                // pure `Graph` => orphan it (its ref_count contribution is
+                // dropped here; `release` will skip the graph on later handle drop).
+                if rc == 0 {
+                    if let Some(buf_id) = rt.buffer_map.remove(&tid) {
+                        let still_used =
+                            rt.buffer_map.values().any(|b| b.pool == buf_id.pool && b.buffer == buf_id.buffer);
+                        if !still_used {
+                            let wait_list = drain_events_for_buf(&mut rt.events, buf_id);
+                            rt.pools[buf_id.pool].deallocate(buf_id.buffer, wait_list);
+                        }
+                    }
+                    rt.tensors.remove(tid);
+                } else {
+                    rt.graphs[gid].ref_count -= 1;
+                    match &mut rt.tensors[tid] {
+                        TensorData::Graph { graph_id, class_id, .. } => {
+                            *graph_id = GraphId::NULL;
+                            *class_id = ClassId::NULL;
+                        }
+                        _ => unreachable!(),
                     }
                 }
-                rt.tensors.remove(tid);
-            } else {
-                // Alive leaf: back to eager (fresh load kernel over its
-                // realized buffer, or in-place demotion for unrealized
-                // promoted tensors). eagerify also drops the graph's rc.
-                rt.eagerify(tid);
             }
         }
         rt.graphs[graph_id].mark_dead();

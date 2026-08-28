@@ -841,9 +841,11 @@ impl Runtime {
                 if !shape_id.is_null() {
                     self.release(shape_id);
                 }
-                self.graphs[graph_id].ref_count -= 1;
-                if self.graphs[graph_id].ref_count == 0 {
-                    self.remove_dead_graph(graph_id);
+                if !graph_id.is_null() {
+                    self.graphs[graph_id].ref_count -= 1;
+                    if self.graphs[graph_id].ref_count == 0 {
+                        self.remove_dead_graph(graph_id);
+                    }
                 }
             }
             TensorData::Eager { kernel_id, op_id, shape_id, .. } => {
@@ -861,9 +863,11 @@ impl Runtime {
                 if !shape_id.is_null() {
                     self.release(shape_id);
                 }
-                self.graphs[graph_id].ref_count -= 1;
-                if self.graphs[graph_id].ref_count == 0 {
-                    self.remove_dead_graph(graph_id);
+                if !graph_id.is_null() {
+                    self.graphs[graph_id].ref_count -= 1;
+                    if self.graphs[graph_id].ref_count == 0 {
+                        self.remove_dead_graph(graph_id);
+                    }
                 }
             }
         }
