@@ -2653,16 +2653,6 @@ impl Runtime {
             ));
         }
         if !self.kernels[dst_kid].stores.is_empty() {
-            eprintln!("DBG assign: dst_kid={dst_kid:?} stores={:?}", self.kernels[dst_kid].stores);
-        }
-        eprintln!(
-            "DBG assign: src_kid={src_kid:?} contains_stores={} src_stores={:?} src_loads={:?} dst_stores={:?}",
-            self.kernels[src_kid].kernel.contains_stores(),
-            self.kernels[src_kid].stores,
-            self.kernels[src_kid].loads,
-            self.kernels[dst_kid].stores
-        );
-        if !self.kernels[dst_kid].stores.is_empty() {
             return Err(ZyxError::ShapeError(
                 format!("assign: dst kernel {dst_kid:?} has stores {}; expected none", self.kernels[dst_kid].stores.len()).into(),
             ));
