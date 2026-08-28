@@ -10,17 +10,18 @@ import torchvision.transforms as transforms
 from safetensors.numpy import save_file
 
 # Create data directory
-os.makedirs("data", exist_ok=True)
+DATA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "data")
+os.makedirs(DATA_DIR, exist_ok=True)
 
 print("Downloading MNIST dataset...")
 
 # Download MNIST
 train_dataset = torchvision.datasets.MNIST(
-    root="./data", train=True, download=True, transform=transforms.ToTensor()
+    root=DATA_DIR, train=True, download=True, transform=transforms.ToTensor()
 )
 
 test_dataset = torchvision.datasets.MNIST(
-    root="./data", train=False, download=True, transform=transforms.ToTensor()
+    root=DATA_DIR, train=False, download=True, transform=transforms.ToTensor()
 )
 
 # Convert to numpy arrays
@@ -42,7 +43,7 @@ save_file(
         "test_x": test_x,
         "test_y": test_y,
     },
-    "data/mnist_dataset.safetensors",
+    os.path.join(DATA_DIR, "mnist_dataset.safetensors"),
 )
 
 print("Saved to data/mnist_dataset.safetensors")
