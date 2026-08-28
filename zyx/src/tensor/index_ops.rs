@@ -305,7 +305,8 @@ impl Tensor {
                 format!("narrow: start {start} + length {length} > dim {dim} on axis {axis}").into(),
             ));
         }*/
-        Ok(Tensor { id: RT.lock().narrow(self.id, axis, start.id, length.id) })
+        let id = RT.lock().narrow(self.id, axis, start.id, length.id);
+        Ok(Tensor { id })
     }
 
     /// Gather
@@ -344,10 +345,8 @@ impl Tensor {
         let is_negative = indices.cmplt(0)?.cast(indices.dtype());
         let indices = indices + is_negative * dim_size;
 
-
         // Prepare one-hot along dim
         let one_hot = indices.unsqueeze(-1)?.one_hot_along_dim(dim_size, -1)?;
-
 
         // Prepare negative padding for shrink
         let mut padding = Vec::new();
@@ -359,11 +358,8 @@ impl Tensor {
             }
         }
 
-
         let x = self.rpad_zeros(padding)?.unsqueeze(-1)?.transpose(-1, dim as i32)?;
-
         let result = one_hot.mul(&x).sum_dtype([-1], self.dtype())?;
-
 
         Ok(result)
     }

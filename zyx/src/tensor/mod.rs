@@ -903,7 +903,8 @@ impl Tensor {
     /// Casts self to [dtype](crate::DType).
     #[must_use]
     pub fn cast(&self, dtype: DType) -> Tensor {
-        return Tensor { id: RT.lock().cast(self.id, dtype) };
+        let id = RT.lock().cast(self.id, dtype);
+        return Tensor { id };
     }
 
     /// Changes dtype of the tensor without mutating it.
@@ -2300,7 +2301,8 @@ impl Tensor {
             None => Tensor::from(1),
         };
         for d in dim_iter {
-            dim = Tensor { id: RT.lock().binary(dim.id, d.id, BOp::Mul).expect("flatten: failed to build symbolic mul chain") };
+            let id = RT.lock().binary(dim.id, d.id, BOp::Mul).expect("flatten: failed to build symbolic mul chain");
+            dim = Tensor { id };
         }
         let new_shape: Vec<Tensor> =
             symbolic[..start_dim].to_vec().into_iter().chain(std::iter::once(dim)).chain(symbolic[end_dim..].to_vec()).collect();
