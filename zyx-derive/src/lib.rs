@@ -95,12 +95,14 @@ fn derive_module(input: &DeriveInput) -> TokenStream {
             let no_param = has_no_param_attr(&field.attrs);
 
             use std::string::ToString;
-            if !no_param && quote! { #field_ty }.to_string() == "Tensor" {
+            if no_param {
+                // Skip non-trainable hyperparameter entirely.
+            } else if quote! { #field_ty }.to_string() == "Tensor" {
                 field_iterators = quote! {
                     #field_iterators
                     res.push((#field_name_str.to_string(), &self.#field_name));
                 }
-            } else if !no_param && quote! { #field_ty }.to_string() == "Option < Tensor >" {
+            } else if quote! { #field_ty }.to_string() == "Option < Tensor >" {
                 field_iterators = quote! {
                     #field_iterators
                     if let Some(tensor) = &self.#field_name {
@@ -147,12 +149,14 @@ fn derive_module(input: &DeriveInput) -> TokenStream {
             let no_param = has_no_param_attr(&field.attrs);
 
             use std::string::ToString;
-            if !no_param && quote! { #field_ty }.to_string() == "Tensor" {
+            if no_param {
+                // Skip non-trainable hyperparameter entirely.
+            } else if quote! { #field_ty }.to_string() == "Tensor" {
                 mut_field_iterators = quote! {
                     #mut_field_iterators
                     res.push((#field_name_str.to_string(), &mut self.#field_name));
                 }
-            } else if !no_param && quote! { #field_ty }.to_string() == "Option < Tensor >" {
+            } else if quote! { #field_ty }.to_string() == "Option < Tensor >" {
                 mut_field_iterators = quote! {
                     #mut_field_iterators
                     if let Some(tensor) = &mut self.#field_name {
@@ -218,7 +222,9 @@ fn derive_module(input: &DeriveInput) -> TokenStream {
             let field_ty: &syn::Type = &field.ty;
             let no_param = has_no_param_attr(&field.attrs);
             use std::string::ToString;
-            if !no_param && quote! { #field_ty }.to_string() == "Tensor" {
+            if no_param {
+                // Skip non-trainable hyperparameter entirely.
+            } else if quote! { #field_ty }.to_string() == "Tensor" {
                 field_iterators = quote! {
                     #field_iterators
                     res.push(&self.#field_name);
@@ -274,7 +280,9 @@ fn derive_module(input: &DeriveInput) -> TokenStream {
             let field_ty: &syn::Type = &field.ty;
             let no_param = has_no_param_attr(&field.attrs);
             use std::string::ToString;
-            if !no_param && quote! { #field_ty }.to_string() == "Tensor" {
+            if no_param {
+                // Skip non-trainable hyperparameter entirely.
+            } else if quote! { #field_ty }.to_string() == "Tensor" {
                 field_iterators = quote! {
                     #field_iterators
                     res.push(&mut self.#field_name);
