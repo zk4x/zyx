@@ -1574,7 +1574,9 @@ impl Graph {
 impl Runtime {
     pub fn promote_to_graph(&mut self, tid: TensorId, graph_id: GraphId) -> Result<ClassId, ZyxError> {
         let (class_id, gid) = match self.tensors[tid] {
-            TensorData::Graph { class_id, graph_id, .. } | TensorData::Promoted { class_id, graph_id, .. } => (class_id, graph_id),
+            TensorData::Graph { class_id, graph_id, .. } | TensorData::Promoted { class_id, graph_id, .. } => {
+                (class_id, graph_id)
+            }
             _ => (ClassId::NULL, GraphId::NULL),
         };
         if !class_id.is_null() {
@@ -1728,7 +1730,8 @@ impl Runtime {
                         }
 
                         let load_is_leaf = match &self.tensors[load_tid] {
-                            TensorData::Graph { class_id: c, graph_id: g, .. } | TensorData::Promoted { class_id: c, graph_id: g, .. } => {
+                            TensorData::Graph { class_id: c, graph_id: g, .. }
+                            | TensorData::Promoted { class_id: c, graph_id: g, .. } => {
                                 !c.is_null() && *g == graph_id && !self.graphs[graph_id].dead
                             }
                             _ => false,
@@ -1921,7 +1924,7 @@ impl Runtime {
 
         let jit_kernels: *const Slab<JitKernelId, JitKernelData> = &self.graphs[graph_id].jit_kernels;
         let jit_kernels: &Slab<JitKernelId, JitKernelData> = unsafe { &*jit_kernels };
-        let total = jit_kernels.len().0  as i64 * device_ids.len()  as i64;
+        let total = jit_kernels.len().0 as i64 * device_ids.len() as i64;
         let mut bar = crate::progress::ProgressBar::new(total as u64);
         for ek in jit_kernels.values() {
             let (flop, read, write) = ek.kernel.flop_mem_rw();
@@ -2006,15 +2009,11 @@ impl Runtime {
             // targets, whose value lives in the (realized) leaf buffer they alias.
             for (tid, td) in self.tensors.iter() {
                 let (affiliated, class_id) = match td {
-                    TensorData::Graph { class_id: c, graph_id: g, .. } | TensorData::Promoted { class_id: c, graph_id: g, .. } => {
-                        (*g == graph_id, *c)
-                    }
+                    TensorData::Graph { class_id: c, graph_id: g, .. }
+                    | TensorData::Promoted { class_id: c, graph_id: g, .. } => (*g == graph_id, *c),
                     _ => continue,
                 };
-                if affiliated
-                    && !self.graphs[graph_id].is_leaf(class_id)
-                    && !self.graphs[graph_id].is_after(class_id)
-                {
+                if affiliated && !self.graphs[graph_id].is_leaf(class_id) && !self.graphs[graph_id].is_after(class_id) {
                     debug_assert!(!self.buffer_map.contains_key(&tid), "non-leaf graph tensor {tid} realized before realize");
                 }
             }
@@ -2104,7 +2103,7 @@ impl Runtime {
 
     pub fn eagerify(&mut self, tid: TensorId) {
         let realized = self.buffer_map.contains_key(&tid);
-        let (old_kernel_id, old_op_id, graph_id, shape_id) = match self.tensors[tid] {
+        let (old_kernel_id, _, graph_id, shape_id) = match self.tensors[tid] {
             TensorData::Graph { graph_id, shape_id, .. } => (KernelId::NULL, OpId::NULL, graph_id, shape_id),
             TensorData::Promoted { kernel_id, op_id, graph_id, shape_id, .. } => (kernel_id, op_id, graph_id, shape_id),
             // Already eager or a pure-slab value: nothing to do.

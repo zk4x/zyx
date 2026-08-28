@@ -1,9 +1,7 @@
 use std::collections::BTreeSet;
 
 use crate::{
-    shape::Dim,
     Map, Set,
-    graph::Constant,
     graph::{ClassId, Graph, JitKernelData, JitKernelId, Node},
     kernel::{DeviceId, IDX_T, Kernel, MemLayout, MoveOp, Op, OpId, ParamKind},
     shape::UAxis,
@@ -229,9 +227,9 @@ impl Graph {
                             }
                         }
                         let mut op_ids: Vec<OpId> = Vec::with_capacity(ops.len());
-        for &elem in ops.iter() {
-            let (mut ekid, mut eop) = visited[&elem];
-            if ekid != kid {
+                        for &elem in ops.iter() {
+                            let (mut ekid, mut eop) = visited[&elem];
+                            if ekid != kid {
                                 if self.jit_kernels[ekid].kernel.contains_stores() {
                                     (ekid, eop) = self.add_store(elem, ekid, eop, &mut visited, &rcs);
                                 }
@@ -421,8 +419,7 @@ impl Graph {
                         // exist — trace it instead of assuming a position,
                         // fail loud otherwise.
                         let dst_loads = self.jit_kernels[dst_kid].loads.clone();
-                        let is_var_class =
-                            |g: &Self, c: ClassId| matches!(&g.nodes[g.classes[c].nodes[0]].node, Node::Leaf { dtype, shape, .. } if *dtype == IDX_T && shape.is_null());
+                        let is_var_class = |g: &Self, c: ClassId| matches!(&g.nodes[g.classes[c].nodes[0]].node, Node::Leaf { dtype, shape, .. } if *dtype == IDX_T && shape.is_null());
                         let mut buffer_classes = dst_loads.iter().copied().filter(|&c| !is_var_class(self, c));
                         let dst_leaf = match (buffer_classes.next(), buffer_classes.next()) {
                             (Some(c), None) => c,
@@ -636,10 +633,9 @@ impl Graph {
                         let lp_op = self.replay_shape_into_kernel(kid, lp);
                         let len_op = self.replay_shape_into_kernel(kid, len);
                         self.consume(x, kid, &mut visited, &mut rcs);
-                        let result_op = self.jit_kernels[kid].kernel.push_back(Op::Move {
-                            x: op_id,
-                            mop: Box::new(MoveOp::Pad { axis, lp: lp_op, len: len_op }),
-                        });
+                        let result_op = self.jit_kernels[kid]
+                            .kernel
+                            .push_back(Op::Move { x: op_id, mop: Box::new(MoveOp::Pad { axis, lp: lp_op, len: len_op }) });
                         self.push_outputs(kid, cid, *rcs.get(&cid).unwrap());
                         visited.insert(cid, (kid, result_op));
                     }
@@ -955,8 +951,8 @@ impl Graph {
             (new_kid, new_op)
         } else {
             (kid, op_id)
-         }
-     }
+        }
+    }
 
     fn merge_kernels(&mut self, src: JitKernelId, dst: JitKernelId, visited: &mut Map<ClassId, (JitKernelId, OpId)>) {
         let JitKernelData { kernel: src_kernel, outputs, loads, stores } = unsafe { self.jit_kernels.remove_and_return(src) };
