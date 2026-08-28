@@ -69,6 +69,21 @@ impl Graph {
     /// 2. **Visited residency**: Every class with `rcs[cid] > 0` that has been produced must have
     ///    exactly one entry in `visited` mapping it to the kernel where its computation lives.
     ///    [`add_store`] removes the entry and restores it via a load kernel if consumers remain.
+    /// 3. **Shape replay**: Shape-descriptor classes — the `shape` of `Reshape`/`Expand`, the
+    ///    `lp`/`len` of `Pad`, the `start`/`len` of `Narrow` — are pure symbolic metadata and
+    ///    are **never** kernelized. Their transitive subgraph (`Stack` elements, `Binary`/`Unary`/
+    ///    `Cast` operands, `Const` leaves, IDX_T scalar `Leaf` dim-variables) is collected
+    ///    before the refcount walk; those classes are excluded from `rcs`, skipped by the
+    ///    kernelize loop, and replayed into each consumer on demand via
+    ///    [`Graph::replay_shape_into_kernel`]. Replay panics on a non-symbolic node — shapes
+    ///    are pure metadata and must never be computed by a kernel.
+    /// 4. **Eager parity**: The narrow/assign/contiguous arms in this kernelizer mirror
+    ///    `Runtime::narrow`/`assign`/`contiguous` exactly. The narrow arm requires the input
+    ///    kernel to have empty `outputs` after the input is consumed (mirroring `Runtime::narrow`'s
+    ///    "input into narrow must have empty outputs" check); the assign arm replays dst's
+    ///    movement chain into src's kernel and uses an in-place store, then re-points dst's
+    ///    remaining consumers at a fresh load kernel (the same contract `add_store` uses for
+    ///    every other stored class).
     pub fn kernelize(&mut self, inputs: &Set<ClassId>, outputs: &BTreeSet<ClassId>, allowed: Option<&Set<ClassId>>) {
         // A class can't be both a boundary input and a region output — that
         // would make a fused kernel load and store the same class.
@@ -848,6 +863,16 @@ impl Graph {
         self.verify();
     }
 
+    /// Creates a fresh **load kernel** for class `cid` that re-exposes its stored value to
+    /// `rc` remaining consumers.
+    ///
+    /// The load kernel holds a single `Param(Global)` (its only load) whose shape is replayed
+    /// symbolically from the egraph (see [`Graph::replay_symbolic_into_kernel`]). Its `outputs`
+    /// list contains exactly `rc` copies of `cid` — one per remaining consumer; each
+    /// `consume(cid, kid, ...)` will pop one. This is the canonical "class was stored, point
+    /// remaining consumers at a fresh loader" contract used by [`add_store`] and the assign
+    /// arm's post-in-place-store handling — the inverse of placement, so consumers never
+    /// re-enter a kernel whose `outputs` no longer contains the class.
     fn new_load_kernel(&mut self, cid: ClassId, rc: u32) -> (JitKernelId, OpId) {
         let kid = self.jit_kernels.push(JitKernelData {
             kernel: Kernel::new(DeviceId::NULL),

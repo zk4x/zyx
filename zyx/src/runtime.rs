@@ -1,3 +1,66 @@
+// Copyright (C) 2025 zk4x
+// SPDX-License-Identifier: LGPL-3.0-only
+
+//! Runtime: the eager tensor executor.
+//!
+//! The `Runtime` holds the per-process tensor slab, kernel pool, variable slots, and the
+//! graph state for the active tape. Most callers go through [`Tensor`], which acquires the
+//! process-wide runtime via a `Mutex` (`RT.lock()`).
+//!
+//! # Concurrency and the runtime lock
+//!
+//! The runtime mutex (`src/mutex.rs`) is a hand-rolled spinlock that is **not reentrant**.
+//! Deadlock prevention lives in the lock itself (a bounded spin with a `debug_assert!` that
+//! fires when the spin count exceeds the configured limit instead of hanging forever).
+//!
+//! Two lock-related footguns recur; both are avoidable by construction:
+//!
+//! 1. **Drop-order trap.** An assignment like
+//!    `n = Tensor { id: RT.lock().binary(n.id, ...) };`
+//!    evaluates the RHS first — the `MutexGuard` temporary is still alive when the
+//!    assignment then drops the **old** `n`. `Tensor::drop` calls `RT.lock().release`, and
+//!    the still-held guard deadlocks on its own lock. Always bind the result of
+//!    `RT.lock()` to a `let` first, so the guard drops at the end of that statement
+//!    before the assignment drops the old handle:
+//!    `let id = RT.lock().binary(...); n = Tensor { id };`.
+//!
+//! 2. **Held-guard / nested-call trap.** Never call a method that takes `RT.lock()`
+//!    (e.g. `Tensor::symbolic_shape`, `Tensor::shape`, `Tensor::stack`, `Tensor::expand`,
+//!    `Tensor::reshape`) while already holding the guard. Scope every `let rt = RT.lock()`
+//!    tightly so the guard is released before the next call.
+//!
+//! # Refcount rules (the only places the runtime mutates refcounts)
+//!
+//! Refcounting is done **purely inside the runtime** — `Tensor` is a thin handle. The
+//! rules:
+//!
+//! - **Fresh stacks own their result.** `self.stack(&dims)` returns a new `shape_id` with
+//!   `rc = 1` which is the result's ownership. Callers must **not** `retain` a freshly built
+//!   stack — that double-counts and leaks. Retain only when *sharing* an existing shape_id
+//!   (e.g. `flip`, `bitcast`, eager `cast`, eager `binary`).
+//! - **Symbolic nodes retain.** Every runtime function that takes a `TensorId` and stores
+//!   it somewhere must `retain` it if the stored id is symbolic (the structural nodes:
+//!   `Constant`, `Variable`, `Stack`, `Cast`, `Unary`, `Binary`). Eager / Graph / Promoted
+//!   nodes are not retain-counted by consumers — shared kernels/graphs carry their own
+//!   reference counts and the tensor `Clone` / `Drop` handles handle accounting.
+//! - **Eager / Graph / Promoted share kernels/graphs.** A tensor in one of those states
+//!   shares ownership with the kernel or graph it lives in; do not `retain` it from a
+//!   consumer — the kernelizer and the kernel's `loads`/`stores` are the source of truth.
+//!
+//! # Invariants carried into the kernelizer
+//!
+//! The graph-side kernelizer mirrors these eager contracts (see
+//! `graph::kernelize` for the full list and the shape-replay rule):
+//!
+//! - `duplicate_or_store` always returns a **store-free, outputs-empty** kernel — this is
+//!   why `narrow`'s "input must have empty outputs" assertion holds unconditionally.
+//! - `narrow` requires its input kernel's `outputs` to be empty (no other pending outputs).
+//! - `assign` requires its `dst` kernel to be movement-only with no other outputs and no
+//!   stores, and removes the kernel after the in-place store. Shape equality is proved
+//!   per dim (same const, or the same symbolic dim tensor).
+//! - `merge_kernel` requires the merge kernel to be store-free (callers must `add_store`
+//!   first if it isn't).
+
 // ----- ASYNC EVENT RULES -----
 //
 // host_to_pool is async: the host-side source buffer must stay valid
@@ -1628,6 +1691,17 @@ impl Runtime {
         Ok(tid)
     }
 
+    /// Forces a contiguous, materialized view of `x` (breaks aliasing / forces a fresh buffer).
+    ///
+    /// Three branches, matching the tensor's storage kind:
+    /// - **Graph** (`is_graph(x)`): pushes a `Node::Contiguous` and shares `x`'s shape
+    ///   expression. The kernelizer's `Node::Contiguous` arm applies a same-dtype `Cast`
+    ///   (value identity) and stores the new class — giving it a distinct op and its own
+    ///   backing buffer instead of aliasing `x`'s load op.
+    /// - **Already realized** (in `buffer_map`): a no-op — the tensor is a load from its own
+    ///   contiguous buffer, so the returned handle is `x` (retained).
+    /// - **Eager (unrealized)**: a cast-shim — emit a same-dtype `Cast` op in `x`'s kernel
+    ///   and store the cast tensor as a new handle, leaving `x` itself unfused in its producer.
     pub fn contiguous(&mut self, x: TensorId) -> Result<TensorId, ZyxError> {
         #[cfg(feature = "debug_tensor_op")]
         println!("runtime::contiguous(x={x})");
@@ -2236,7 +2310,16 @@ impl Runtime {
         }
     }
 
-    /// Narrow
+    /// Narrow `x` along `axis` to `[start, start + len)`.
+    ///
+    /// # Contract
+    ///
+    /// On the eager path, `x` is consumed from a kernel whose `outputs` list is **empty** at
+    /// the moment of the narrow — `x` is alone in its kernel with no pending stores. This is
+    /// why the kernelizer's `Node::Narrow` arm asserts the same condition on the graph side
+    /// (after `consume(x)` the kernel's `outputs` must be empty). `start` and `len` are
+    /// scalar integer dim-expressions; their values may be symbolic (variable-backed).
+    /// Bounds are replayed symbolically into the producing kernel.
     pub fn narrow(&mut self, x: TensorId, axis: UAxis, start: TensorId, len: TensorId) -> TensorId {
         #[cfg(feature = "debug_tensor_op")]
         println!("runtime::narrow(x={x}, axis={axis}, start={start}, len={len})");
@@ -2505,11 +2588,31 @@ impl Runtime {
         Ok(())
     }
 
-    /// Assigns the value of `src` to `dst` in-place using StoreView in the kernel IR.
+    /// In-place assignment of `src` into `dst`.
     ///
-    /// A StoreView is added to `src`'s kernel that writes into `dst`'s
-    /// existing buffer. Materialization happens naturally when `src`'s
-    /// kernel is released.
+    /// # Eager contract
+    ///
+    /// - `dst` must be a movement-only kernel with no other pending outputs and no stores;
+    ///   its single output is `dst` itself. The kernel is **removed** and its base buffer is
+    ///   re-pointed through the in-place store.
+    /// - `dst`'s kernel's `loads` mixes the owning buffer with IDX_T scalar dim-variables.
+    ///   Exactly one entry may be a buffer; anything else must be a dim-variable.
+    ///   Zero buffers means the base was never materialized into pool storage (e.g. a
+    ///   const-fill) — the assign is rejected with a `ShapeError` asking the user to
+    ///   `.contiguous()` the base first.
+    /// - `src` and `dst` may not share a kernel; `src` may not load `dst`'s buffer (data race).
+    /// - Shape compatibility is **proved** per dim: the same constant, or the **same**
+    ///   symbolic dim tensor in both operands. A variable that only agrees with the other
+    ///   side by its currently bound value is not proof and is rejected.
+    ///
+    /// # Graph mirror
+    ///
+    /// `Node::Assign` in the kernelizer replays `dst`'s movement chain into `src`'s kernel
+    /// and emits an in-place store of `src`'s value into `dst`'s base buffer. `dst`'s
+    /// remaining consumers are re-pointed at a **fresh load kernel** for `dst` (the same
+    /// contract `add_store` uses for every stored class) so that any later consumer whose
+    /// `force_store` would otherwise trigger a second in-place store still finds `dst`
+    /// waiting on a load, not buried inside the storing kernel.
     ///
     /// # Errors
     ///
@@ -3052,6 +3155,20 @@ pub fn get_perf(flop: Dim, bytes_read: u64, bytes_written: u64, nanos: u64) -> S
 }
 
 impl Runtime {
+    /// Ensures `x` lives alone in a **store-free** kernel and returns its `(kid, op_id)` in
+    /// that kernel — the canonical "clean" placement for a tensor that another op (e.g.
+    /// `narrow`, `permute`, `transpose`) is about to merge into.
+    ///
+    /// Steps:
+    /// 1. If the producer kernel already has stores, or `x`'s op is preceded by a reduce,
+    ///    or `force_store` was set: call [`add_store`] so `x` lands in a fresh load kernel.
+    /// 2. Extract `x`'s op (and any other outputs) into a **brand-new** kernel with empty
+    ///    `outputs` and no stores, retargeting the variables/loads correctly.
+    ///
+    /// The returned kernel is therefore a **fresh, store-free, outputs-empty** kernel that
+    /// contains `x` and nothing else pending — this is the contract that makes
+    /// `Runtime::narrow`'s "input into narrow must have empty outputs" assertion hold
+    /// unconditionally, and that the kernelizer's `Node::Narrow` arm mirrors.
     fn duplicate_or_store(&mut self, x: TensorId, force_store: bool) -> Result<(KernelId, OpId), ZyxError> {
         fn eager_ids(rt: &Runtime, x: TensorId) -> (KernelId, OpId) {
             match rt.tensors[x] {
@@ -3200,6 +3317,17 @@ impl Runtime {
         Ok(op_map)
     }
 
+    /// Materializes `x`'s value into its kernel's storage and re-exposes it via a fresh load
+    /// kernel for any remaining consumers (mirrors the kernelizer's `add_store` contract).
+    ///
+    /// After this call, `x`'s kernel has the new entry in `stores`, and `x`'s value is
+    /// available to any later consumer through a reload (the freshly pushed load kernel
+    /// holds `x`'s op as its only load). This is the canonical split point: a class that has
+    /// been stored is no longer fused into a producer kernel — any subsequent consumer that
+    /// would otherwise have to materialize again gets a clean reload.
+    ///
+    /// Called by `duplicate_or_store` (when the producer kernel already stores or its op is
+    /// preceded by a reduce) and by `contiguous`'s cast-shim.
     pub fn add_store(&mut self, x: TensorId) -> Result<(), ZyxError> {
         let (kid, op_id, pending) = match self.tensors[x] {
             TensorData::Eager { kernel_id, op_id, depends_on, .. } => (kernel_id, op_id, depends_on),
@@ -3620,7 +3748,6 @@ impl Runtime {
                     match kind {
                         ParamKind::GlobalMut => n_mut += 1,
                         ParamKind::Global | ParamKind::Variable => n_non_mut += 1,
-                        _ => {}
                     }
                 }
                 p = kernel.next_op(p);
