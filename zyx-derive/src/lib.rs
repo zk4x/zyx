@@ -28,6 +28,7 @@
 //!
 //! For more details, there is a [book](https://www.github.com/zk4x/zyx/tree/main/zyx-book).
 #![forbid(unsafe_code)]
+#![doc = include_str!("../README.md")]
 #![forbid(rustdoc::broken_intra_doc_links)]
 #![forbid(rustdoc::private_intra_doc_links)]
 #![forbid(missing_docs)]
@@ -45,16 +46,25 @@ use proc_macro::TokenStream;
 use quote::quote;
 use syn::{parse_macro_input, Data, DataStruct, DeriveInput};
 
-/// # Procedural macro Module
-///
 /// Implements FromIterator<Item = (String, Tensor)> and Module for your struct.
 ///
 /// This allows saving, loading, backpropagation and updating your modules.
-#[proc_macro_derive(Module)]
-pub fn derive_module(input: TokenStream) -> TokenStream {
+///
+/// Recognised field attributes:
+/// - `#[no_param]` — marks a `Tensor` / `Option<Tensor>` field as a
+///   non-trainable hyperparameter (or state buffer). The parameter iteration
+///   skips it.
+#[proc_macro_derive(Module, attributes(no_param))]
+pub fn module_derive(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
-    let struct_name = &input.ident;
+    derive_module(&input)
+}
 
+fn derive_module(input: &DeriveInput) -> TokenStream {
+    let struct_name = &input.ident;
+    let (impl_generics, ty_generics, where_clause) = input.generics.split_for_impl();
+
+    // iter_tensors (immutable)
     let mut field_iterators = quote! {
         trait __MarkerTraitRef: Sized {
             fn __iterate_by_ref(self, res: &mut Vec<(String, &zyx::Tensor)>, label: &str) {}
@@ -82,14 +92,15 @@ pub fn derive_module(input: TokenStream) -> TokenStream {
             let field_name_str = field_name.to_string();
 
             let field_ty: &syn::Type = &field.ty;
+            let no_param = has_no_param_attr(&field.attrs);
 
             use std::string::ToString;
-            if quote! { #field_ty }.to_string() == "Tensor" {
+            if !no_param && quote! { #field_ty }.to_string() == "Tensor" {
                 field_iterators = quote! {
                     #field_iterators
                     res.push((#field_name_str.to_string(), &self.#field_name));
                 }
-            } else if quote! { #field_ty }.to_string() == "Option < Tensor >" {
+            } else if !no_param && quote! { #field_ty }.to_string() == "Option < Tensor >" {
                 field_iterators = quote! {
                     #field_iterators
                     if let Some(tensor) = &self.#field_name {
@@ -105,6 +116,7 @@ pub fn derive_module(input: TokenStream) -> TokenStream {
         }
     }
 
+    // iter_tensors_mut
     let mut mut_field_iterators = quote! {
         trait __MarkerTraitRef: Sized {
             fn __iterate_by_ref(mut self, res: &mut Vec<(String, &mut zyx::Tensor)>, label: &str) {}
@@ -132,14 +144,15 @@ pub fn derive_module(input: TokenStream) -> TokenStream {
             let field_name_str = field_name.to_string();
 
             let field_ty: &syn::Type = &field.ty;
+            let no_param = has_no_param_attr(&field.attrs);
 
             use std::string::ToString;
-            if quote! { #field_ty }.to_string() == "Tensor" {
+            if !no_param && quote! { #field_ty }.to_string() == "Tensor" {
                 mut_field_iterators = quote! {
                     #mut_field_iterators
                     res.push((#field_name_str.to_string(), &mut self.#field_name));
                 }
-            } else if quote! { #field_ty }.to_string() == "Option < Tensor >" {
+            } else if !no_param && quote! { #field_ty }.to_string() == "Option < Tensor >" {
                 mut_field_iterators = quote! {
                     #mut_field_iterators
                     if let Some(tensor) = &mut self.#field_name {
@@ -156,7 +169,7 @@ pub fn derive_module(input: TokenStream) -> TokenStream {
     }
 
     let expanded = quote! {
-        impl zyx::Module for #struct_name {
+        impl #impl_generics zyx::Module for #struct_name #ty_generics #where_clause {
             fn iter<'a>(&'a self) -> impl Iterator<Item = &'a zyx::Tensor> {
                 self.into_iter()
             }
@@ -203,8 +216,9 @@ pub fn derive_module(input: TokenStream) -> TokenStream {
                 None => panic!("Unnamed fields are not supported"),
             };
             let field_ty: &syn::Type = &field.ty;
+            let no_param = has_no_param_attr(&field.attrs);
             use std::string::ToString;
-            if quote! { #field_ty }.to_string() == "Tensor" {
+            if !no_param && quote! { #field_ty }.to_string() == "Tensor" {
                 field_iterators = quote! {
                     #field_iterators
                     res.push(&self.#field_name);
@@ -221,7 +235,7 @@ pub fn derive_module(input: TokenStream) -> TokenStream {
     let expanded = quote! {
         #expanded
 
-        impl<'a> IntoIterator for &'a #struct_name {
+        impl<'a> IntoIterator for &'a #struct_name #ty_generics {
             type Item = &'a zyx::Tensor;
             type IntoIter = std::vec::IntoIter<&'a zyx::Tensor>;
 
@@ -258,8 +272,9 @@ pub fn derive_module(input: TokenStream) -> TokenStream {
                 None => panic!("Unnamed fields are not supported"),
             };
             let field_ty: &syn::Type = &field.ty;
+            let no_param = has_no_param_attr(&field.attrs);
             use std::string::ToString;
-            if quote! { #field_ty }.to_string() == "Tensor" {
+            if !no_param && quote! { #field_ty }.to_string() == "Tensor" {
                 field_iterators = quote! {
                     #field_iterators
                     res.push(&mut self.#field_name);
@@ -276,7 +291,7 @@ pub fn derive_module(input: TokenStream) -> TokenStream {
     let expanded = quote! {
         #expanded
 
-        impl<'a> IntoIterator for &'a mut #struct_name {
+        impl<'a> IntoIterator for &'a mut #struct_name #ty_generics {
             type Item = &'a mut zyx::Tensor;
             type IntoIter = std::vec::IntoIter<&'a mut zyx::Tensor>;
 
@@ -288,4 +303,11 @@ pub fn derive_module(input: TokenStream) -> TokenStream {
     };
 
     TokenStream::from(expanded)
+}
+
+/// Returns true if any of the field's attributes is `#[no_param]`, which marks a
+/// `Tensor` / `Option<Tensor>` field as a non-trainable hyperparameter (or
+/// state buffer) that the `Module` derive's parameter iteration should skip.
+fn has_no_param_attr(attrs: &[syn::Attribute]) -> bool {
+    attrs.iter().any(|a| a.path().is_ident("no_param"))
 }

@@ -17,6 +17,7 @@ pub struct GRUCell {
     /// bias hh
     pub bias_hh: Option<Tensor>, // (3*hidden_size)
     /// hidden
+    #[no_param]
     pub hidden_size: Tensor,
 }
 

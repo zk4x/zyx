@@ -15,14 +15,19 @@ use crate::Linear;
 #[cfg_attr(feature = "py", pyo3::pyclass)]
 pub struct MultiheadAttention {
     /// - `embed_dim`: Total dimension of the model (i.e. output embedding size).
+    #[no_param]
     pub embed_dim: Tensor,
     /// - `kdim`: Dimension of the key input. If `None`, defaults to `embed_dim`.
+    #[no_param]
     pub kdim: Tensor,
     /// - `vdim`: Dimension of the value input. If `None`, defaults to `embed_dim`.
+    #[no_param]
     pub vdim: Tensor,
     /// - `num_heads`: Number of parallel attention heads.
+    #[no_param]
     pub num_heads: Tensor,
     /// - `head_dim`: Dimension per attention head (i.e. `embed_dim / num_heads`).
+    #[no_param]
     pub head_dim: Tensor,
 
     /// - `q_proj`: Linear projection layer for the query.

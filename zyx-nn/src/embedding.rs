@@ -9,8 +9,10 @@ use zyx_derive::Module;
 #[cfg_attr(feature = "py", pyo3::pyclass)]
 pub struct Embedding {
     /// Vocabulary size
+    #[no_param]
     pub vocab_size: Tensor,
     /// Embedding size
+    #[no_param]
     pub embed_size: Tensor,
     /// Weight
     pub weight: Tensor,

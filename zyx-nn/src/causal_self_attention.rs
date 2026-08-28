@@ -11,6 +11,7 @@ use zyx_derive::Module;
 pub struct CausalSelfAttention {
     c_attn: Linear,
     c_proj: Linear,
+    #[no_param]
     n_head: Tensor,
     dropout_p: f32,
 }

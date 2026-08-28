@@ -25,3 +25,6 @@ optional = true
 
 [features]
 py = ["dep:pyo3", "zyx/py"]
+
+[dev-dependencies]
+zyx-optim = { path = "../zyx-optim" }

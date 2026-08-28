@@ -270,7 +270,13 @@ fn batched_matmul() -> Result<(), ZyxError> {
                     }
 
                     let expected_shape = vec![b as i64, m as i64, n as i64];
-                    assert_eq!(z.resolve_shape(), expected_shape, "Shape mismatch: expected {:?}, got {:?}", expected_shape, z.resolve_shape());
+                    assert_eq!(
+                        z.resolve_shape(),
+                        expected_shape,
+                        "Shape mismatch: expected {:?}, got {:?}",
+                        expected_shape,
+                        z.resolve_shape()
+                    );
 
                     // ---- Dtype check ----
                     assert_eq!(z.dtype(), DType::I32, "Dtype mismatch: expected I32, got {:?}", z.dtype());
@@ -903,7 +909,7 @@ fn conv2() -> Result<(), ZyxError> {
     // out = floor((5 + 2*1 - 3)/2) + 1 = 3
     assert_eq!(x.shape(), [1, 1, 3, 3]);
 
-    assert_eq!(x, [[[[0., 4., 4.], [20., 48., 28.], [20., 44., 24.]]]]);
+    assert_eq!(x, [[[[0f32, 4., 4.], [20., 48., 28.], [20., 44., 24.]]]]);
 
     Ok(())
 }*/

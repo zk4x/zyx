@@ -9,6 +9,7 @@ use zyx_derive::Module;
 #[cfg_attr(feature = "py", pyo3::pyclass)]
 pub struct GroupNorm {
     /// number of groups
+    #[no_param]
     pub num_groups: Tensor,
     /// epsilon
     pub eps: f32,
