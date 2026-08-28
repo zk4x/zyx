@@ -1,7 +1,7 @@
 // Copyright (C) 2025 zk4x
 // SPDX-License-Identifier: LGPL-3.0-only
 
-use zyx::{DType, IntoShape, Tensor, ZyxError};
+use zyx::{DType, Tensor, ZyxError};
 use zyx_derive::Module;
 
 /// Applies a 2D convolution over an input signal composed of several input planes.
@@ -26,15 +26,18 @@ impl Conv2d {
     pub fn new(
         in_channels: i64,
         out_channels: i64,
-        kernel_size: impl IntoShape,
-        stride: impl IntoShape,
-        padding: impl IntoShape,
-        dilation: impl IntoShape,
+        kernel_size: impl IntoIterator<Item = impl Into<Tensor>>,
+        stride: impl IntoIterator<Item = impl Into<Tensor>>,
+        padding: impl IntoIterator<Item = impl Into<Tensor>>,
+        dilation: impl IntoIterator<Item = impl Into<Tensor>>,
     groups: u64,
         bias: bool,
         dtype: DType,
     ) -> Result<Self, ZyxError> {
-        let mut kernel_size: Vec<i64> = kernel_size.into_shape().collect();
+        let mut kernel_size: Vec<i64> = kernel_size
+            .into_iter()
+            .map(|s| s.into().item::<i64>())
+            .collect();
         if kernel_size.len() == 1 {
             kernel_size.push(kernel_size[0]);
         }
@@ -42,10 +45,19 @@ impl Conv2d {
         let mut weight_shape = vec![out_channels, in_channels / groups as i64];
         weight_shape.extend(kernel_size);
         Ok(Conv2d {
-            stride: stride.into_shape().collect(),
-            dilation: dilation.into_shape().collect(),
+            stride: stride
+                .into_iter()
+                .map(|s| s.into().item::<i64>())
+                .collect(),
+            dilation: dilation
+                .into_iter()
+                .map(|s| s.into().item::<i64>())
+                .collect(),
             groups,
-            padding: padding.into_shape().collect(),
+            padding: padding
+                .into_iter()
+                .map(|s| s.into().item::<i64>())
+                .collect(),
             weight: Tensor::uniform(weight_shape.iter().copied(), -scale..scale)?.cast(dtype),
             bias: if bias {
                 Some(Tensor::uniform([out_channels], -scale..scale)?.cast(dtype))
@@ -61,9 +73,9 @@ impl Conv2d {
             &self.weight,
             self.bias.as_ref(),
             self.groups,
-            &self.stride,
-            &self.dilation,
-            &self.padding,
+            self.stride.clone(),
+            self.dilation.clone(),
+            self.padding.clone(),
         )
     }
 }

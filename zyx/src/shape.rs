@@ -3,8 +3,6 @@
 
 //! Few traits that describe shapes, axes, padding, etc.
 
-use core::fmt::Debug;
-
 use crate::{error::ZyxError, tensor::Axis};
 
 /// Type alias for dimension values (i64)

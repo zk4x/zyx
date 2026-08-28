@@ -84,8 +84,8 @@ impl TransformerEncoderLayer {
         let linear2 = Linear::new(dim_feedforward, d_model, bias, dtype)?;
 
         // --- LayerNorms ---
-        let norm1 = LayerNorm::new(d_model, layer_norm_eps, true, bias, dtype)?;
-        let norm2 = LayerNorm::new(d_model, layer_norm_eps, true, bias, dtype)?;
+        let norm1 = LayerNorm::new([d_model], layer_norm_eps, true, bias, dtype)?;
+        let norm2 = LayerNorm::new([d_model], layer_norm_eps, true, bias, dtype)?;
 
         Ok(Self {
             self_attn,

@@ -20,7 +20,7 @@ fn make_bn(num_features: i64) -> BatchNorm {
 #[test]
 fn conv_bn_backward_1() -> Result<(), ZyxError> {
     // Reproduce slow backward kernel: conv(3->16) + BN + pool + linear + loss + backward
-    let conv = Conv2d::new(3, 16, 3, 1, 1, 1, 1, false, DType::F32)?;
+    let conv = Conv2d::new(3, 16, [3], [1], [1], [1], 1, false, DType::F32)?;
     let mut bn = make_bn(16);
     let linear = Linear::new(16, 10, true, DType::F32)?;
 
@@ -47,7 +47,7 @@ fn conv_bn_backward_1() -> Result<(), ZyxError> {
 fn conv_weight_backward() -> Result<(), ZyxError> {
     // Conv weight backward kernel only: no BN, no pool, no linear.
     // This isolates the im2col + expand + mul + reduce pattern.
-    let conv = Conv2d::new(3, 16, 3, 1, 1, 1, 1, false, DType::F32)?;
+    let conv = Conv2d::new(3, 16, [3], [1], [1], [1], 1, false, DType::F32)?;
     let x = Tensor::rand([128, 3, 32, 32], DType::F32)?;
 
     let tape = Tape::new([&conv.weight])?;

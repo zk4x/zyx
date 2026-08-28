@@ -59,7 +59,7 @@ impl BatchNorm {
             batch_invstd = (self
                 .running_var
                 .reshape(shape4d.clone())?
-                .expand(x.symbolic_shape())?
+                .expand(x.shape())?
                 + self.eps)
                 .rsqrt();
 
@@ -67,7 +67,7 @@ impl BatchNorm {
                 self.running_mean =
                     &self.running_mean * (1.0 - self.momentum) + &batch_mean * self.momentum;
                 let n = y.numel();
-                let bessel = &n / (&n - y.shape()[1]);
+                let bessel = &n / (&n - &y.shape()[1]);
                 self.running_var = &self.running_var * (1.0 - self.momentum)
                     + batch_var * self.momentum * bessel;
                 self.num_batches_tracked = &self.num_batches_tracked + 1;
@@ -77,7 +77,7 @@ impl BatchNorm {
             batch_invstd = (self
                 .running_var
                 .reshape(vec![1i64.into(), self.running_var.numel(), 1i64.into(), 1i64.into()])?
-                .expand(x.symbolic_shape())?
+                .expand(x.shape())?
                 + self.eps)
                 .rsqrt()
         }

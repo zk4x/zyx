@@ -374,7 +374,7 @@ fn pool() -> Result<(), ZyxError> {
     //println!("{x}");
     //x = x.reshape([12, 3]);
     //println!("{x}");
-    x = x.pool([2, 2], 1, 1)?;
+    x = x.pool([2, 2], [1], [1])?;
     assert_eq!(x, [[[[0i32, 1], [3, 4]], [[1, 2], [4, 5]]], [[[3, 4], [6, 7]], [[4, 5], [7, 8]]]]);
     //println!("{x}");
     Ok(())
@@ -880,7 +880,7 @@ fn dot5() {
 fn conv1() -> Result<(), ZyxError> {
     let t = Tensor::arange(0f32, 9., 1.)?.reshape([1, 1, 3, 3])?;
     let w = Tensor::ones([1, 1, 2, 2], DType::F32);
-    let x = t.conv(&w, None, 1, 1, 1, 0)?;
+    let x = t.conv(&w, None, 1, [1], [1], [0])?;
 
     assert_eq!(x, [[[[8f32, 12.,], [20., 24.]]]]);
 
@@ -896,7 +896,7 @@ fn conv2() -> Result<(), ZyxError> {
     let w = Tensor::ones([1, 1, 2, 2], DType::F32);
 
     // groups=1, stride=2, dilation=2, padding=1
-    let x = t.conv(&w, None, 1, 2, 2, 1)?;
+    let x = t.conv(&w, None, 1, [2], [2], [1])?;
 
     // Expected output shape calculation:
     // effective_kernel = dilation*(k-1)+1 = 2*(2-1)+1 = 3

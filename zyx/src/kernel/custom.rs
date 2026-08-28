@@ -31,7 +31,7 @@ use crate::runtime::{KernelData, KernelId, TensorData};
 use crate::shape::UAxis;
 use crate::slab::{Slab, SlabId};
 use crate::types::{TinyString, TinyVec};
-use crate::{DType, IntoShape, Tensor, ZyxError, shape::Dim};
+use crate::{DType, Tensor, ZyxError, shape::Dim};
 
 /// A compiled kernel ready for repeated execution.
 #[derive(Debug)]
@@ -103,7 +103,7 @@ impl Kernel {
     ///
     /// let compiled = kernel.compile()?;
     /// let x = Tensor::from([1.0f32, 2.0, 3.0, 4.0]);
-    /// let result = compiled.forward(&[&x], vec![n])?;
+    /// let result = compiled.forward(&[&x], vec![[n]])?;
     /// let data: Vec<f32> = result.into_iter().next().unwrap().try_into()?;
     /// assert_eq!(data, vec![2.0, 4.0, 6.0, 8.0]);
     /// # Ok::<_, ZyxError>(())
@@ -560,9 +560,16 @@ impl CompiledKernel {
     }
 
     /// Execute the compiled kernel with new input tensors.
-    pub fn forward(&self, inputs: &[&Tensor], shapes: Vec<impl IntoShape>) -> Result<Vec<Tensor>, ZyxError> {
+    pub fn forward(
+        &self,
+        inputs: &[&Tensor],
+        shapes: Vec<impl IntoIterator<Item = impl Into<Tensor>>>,
+    ) -> Result<Vec<Tensor>, ZyxError> {
         debug_assert_eq!(inputs.len(), self.inputs.len());
-        let shapes: Vec<Vec<Dim>> = shapes.into_iter().map(|s| s.into_shape().collect()).collect();
+        let shapes: Vec<Vec<Dim>> = shapes
+            .into_iter()
+            .map(|s| s.into_iter().map(|t| t.into().item::<i64>()).collect())
+            .collect();
         debug_assert_eq!(shapes.len(), self.outputs.len());
 
         let mut rt = crate::RT.lock();

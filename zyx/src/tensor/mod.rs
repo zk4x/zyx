@@ -217,13 +217,13 @@ impl Tensor {
     /// dimension — a constant tensor for static dims, a variable-backed
     /// expression for dynamic ones.
     ///
-    /// Unlike [`Tensor::shape`] (which resolves variable slots into concrete
-    /// `Dim`s), this keeps dynamic dims symbolic. Use it EVERYWHERE a shape is
-    /// used to CONSTRUCT another tensor (reshape/expand/broadcast/narrow
-    /// targets) — rebuilding shapes from resolved `Dim`s bakes variables into
-    /// fresh constants and breaks the merge-time provability checks in
+    /// Unlike [`Tensor::resolve_shape`] (which resolves variable slots into
+    /// concrete `Dim`s), this keeps dynamic dims symbolic. Use it EVERYWHERE a
+    /// shape is used to CONSTRUCT another tensor (reshape/expand/broadcast/
+    /// narrow targets) — rebuilding shapes from resolved `Dim`s bakes variables
+    /// into fresh constants and breaks the merge-time provability checks in
     /// `runtime::binary`/`assign`, which require the same dim tensor in both
-    /// operands. Use [`Tensor::shape`] only to DECIDE (checks, drop
+    /// operands. Use [`Tensor::resolve_shape`] only to DECIDE (checks, drop
     /// decisions, display).
     ///
     /// # Examples
@@ -232,7 +232,7 @@ impl Tensor {
     /// use zyx::Tensor;
     ///
     /// let t = Tensor::from([[1.0, 2.0], [3.0, 4.0]]);
-    /// let dims = t.symbolic_shape();
+    /// let dims = t.shape();
     /// assert_eq!(dims.len(), 2);
     /// assert_eq!(dims[0].item::<i64>(), 2);
     /// ```
@@ -1422,7 +1422,7 @@ impl Tensor {
                 format!("Cannot pad tensor with dtype {} with value of dtype {}", dtype, value.dtype()).into(),
             ));
         }
-        if !padding.len() as UAxis <= sh.rank() && padding.iter().zip(sh.iter().rev()).all(|(&(lp, rp), &d)| if lp < 0 { Dim::try_from(-lp).unwrap() <= d } else { true } && if rp < 0 { Dim::try_from(-rp).unwrap() <= d } else { true }) {
+        if !padding.len() as UAxis <= sh.len() && padding.iter().zip(sh.iter().rev()).all(|(&(lp, rp), &d)| if lp < 0 { Dim::try_from(-lp).unwrap() <= d } else { true } && if rp < 0 { Dim::try_from(-rp).unwrap() <= d } else { true }) {
             return Err(ZyxError::shape_error(format!("Cannot pad tensor with shape {sh:?} with padding {padding:?}").into()));
         }
         let t0 = self.pad_zeros(padding.clone())?;
@@ -2349,7 +2349,7 @@ impl Tensor {
             return Err(ZyxError::shape_error("Cat requires two or more tensors.".into()));
         }
         let shape = tensors[0].resolve_shape();
-        let rank = shape.rank();
+        let rank = shape.len();
         let dim: usize = (if axis < 0 {
             axis + Axis::try_from(rank).unwrap()
         } else {
@@ -2590,15 +2590,22 @@ impl Tensor {
     ///
     /// Returns error if self cannot be split along axis.
     #[allow(clippy::missing_panics_doc)]
-    pub fn split(&self, sizes: impl IntoShape, axis: isize) -> Result<Vec<Tensor>, ZyxError> {
+    pub fn split(
+        &self,
+        sizes: impl IntoIterator<Item = impl Into<Tensor>>,
+        axis: isize,
+    ) -> Result<Vec<Tensor>, ZyxError> {
         // assert all_int(self.shape), f"does not support symbolic shape {self.shape}"
         // dim = self._resolve_dim(dim)
         // if isinstance(sizes, int): sizes = [min(sizes, self.shape[dim]-i) for i in range(0, max(1, self.shape[dim]), max(1, sizes))]
         // assert sum(sizes) == self.shape[dim], f"expect sizes to sum exactly to {self.shape[dim]}, but got {sum(sizes)}"
         // return tuple(self[sl] for sl in [tuple([slice(None)]*dim + [slice(sum(sizes[:i]), sum(sizes[:i + 1]))]) for i in range(len(sizes))])
-        let sizes: Vec<Dim> = sizes.into_shape().collect();
+        let sizes: Vec<Dim> = sizes
+            .into_iter()
+            .map(|s| s.into().item::<i64>())
+            .collect();
         let shape = self.resolve_shape();
-        let rank = shape.rank();
+        let rank = shape.len();
         let dim: usize = usize::try_from(if axis < 0 {
             axis + isize::try_from(rank).unwrap()
         } else {
@@ -2694,14 +2701,23 @@ impl Tensor {
     #[allow(clippy::missing_panics_doc)]
     pub fn pool(
         &self,
-        kernel_size: impl IntoShape,
-        stride: impl IntoShape,
-        dilation: impl IntoShape,
+        kernel_size: impl IntoIterator<Item = impl Into<Tensor>>,
+        stride: impl IntoIterator<Item = impl Into<Tensor>>,
+        dilation: impl IntoIterator<Item = impl Into<Tensor>>,
     ) -> Result<Tensor, ZyxError> {
         // What a complex function ...
-        let k_: Vec<Dim> = kernel_size.into_shape().collect();
-        let stride: Vec<Dim> = stride.into_shape().collect();
-        let dilation: Vec<Dim> = dilation.into_shape().collect();
+        let k_: Vec<Dim> = kernel_size
+            .into_iter()
+            .map(|s| s.into().item::<i64>())
+            .collect();
+        let stride: Vec<Dim> = stride
+            .into_iter()
+            .map(|s| s.into().item::<i64>())
+            .collect();
+        let dilation: Vec<Dim> = dilation
+            .into_iter()
+            .map(|s| s.into().item::<i64>())
+            .collect();
 
         let shape = self.resolve_shape();
         let rank = shape.len();
@@ -2838,9 +2854,9 @@ impl Tensor {
         weight: &Tensor,
         bias: Option<&Tensor>,
         groups: u64,
-        stride: impl IntoShape,
-        dilation: impl IntoShape,
-        padding: impl IntoShape,
+        stride: impl IntoIterator<Item = impl Into<Tensor>>,
+        dilation: impl IntoIterator<Item = impl Into<Tensor>>,
+        padding: impl IntoIterator<Item = impl Into<Tensor>>,
     ) -> Result<Tensor, ZyxError> {
         fn resolve_pool_pads(padding: &[Dim], dims: usize) -> Vec<i64> {
             if padding.len() == 1 {
@@ -2875,15 +2891,25 @@ impl Tensor {
             ));
         }
 
-        let hw = &wsh[2..];
+        let hw = wsh[2..].to_vec();
 
-        let stride: Vec<Dim> = stride.into_shape().collect();
-        let dilation: Vec<Dim> = dilation.into_shape().collect();
+        let stride: Vec<Dim> = stride
+            .into_iter()
+            .map(|s| s.into().item::<i64>())
+            .collect();
+        let dilation: Vec<Dim> = dilation
+            .into_iter()
+            .map(|s| s.into().item::<i64>())
+            .collect();
         /*if stride.len() != hw.len() || dilation.len() != hw.len() {
             return Err(ZyxError::shape_error("Stride/dilation length must match kernel spatial dimensions".into()));
         }*/
 
-        let padding_: Vec<i64> = resolve_pool_pads(&padding.into_shape().collect::<Box<[Dim]>>(), hw.len());
+        let padding_dim: Vec<Dim> = padding
+            .into_iter()
+            .map(|s| s.into().item::<i64>())
+            .collect();
+        let padding_: Vec<i64> = resolve_pool_pads(&padding_dim, hw.len());
 
         if (groups as Dim * cin != cin_) || (self.resolve_shape().len() != wsh.len()) {
             return Err(ZyxError::shape_error(
@@ -2897,15 +2923,15 @@ impl Tensor {
             ));
         }
 
-        let x = self.rpad_zeros(padding_.chunks(2).map(|x| (x[0], x[1]))).unwrap().pool(hw, stride, dilation).unwrap();
+        let x = self.rpad_zeros(padding_.chunks(2).map(|x| (x[0], x[1]))).unwrap().pool(hw.clone(), stride, dilation).unwrap();
         let rcout = cout / groups as Dim;
         let xsh = x.resolve_shape();
         let oyx = &xsh[2..xsh.len() - hw.len()];
 
         // for now without winograd
-        let shape: Vec<Dim> = [bs, groups as Dim, cin, 1].iter().chain(oyx).chain(hw).copied().collect();
+        let shape: Vec<Dim> = [bs, groups as Dim, cin, 1].iter().chain(oyx).chain(&hw).copied().collect();
         let x = x.reshape(shape).unwrap();
-        let shape: Vec<Dim> = [bs, groups as Dim, cin, rcout].iter().chain(oyx).chain(hw).copied().collect();
+        let shape: Vec<Dim> = [bs, groups as Dim, cin, rcout].iter().chain(oyx).chain(&hw).copied().collect();
         let x = x.expand(shape).unwrap();
         let mut axes = vec![0, 1, 3];
         for i in 0..oyx.len() {
@@ -2918,7 +2944,7 @@ impl Tensor {
         let x = x.permute(axes.iter().map(|&a| Axis::try_from(a).unwrap())).unwrap();
 
         let shape: Vec<Dim> =
-            [1, groups as Dim, rcout].iter().chain(&vec![1; oyx.len()]).chain(&[cin]).chain(hw).copied().collect();
+            [1, groups as Dim, rcout].iter().chain(&vec![1; oyx.len()]).chain(&[cin]).chain(&hw).copied().collect();
         let weight = weight.reshape(shape).unwrap();
         let mut axes: Vec<Axis> = Vec::new();
         for i in 0..=oyx.len() {
@@ -2962,14 +2988,17 @@ impl Tensor {
     /// Returns error if the kernel size, stride, or padding is invalid.
     pub fn max_pool(
         &self,
-        kernel_size: impl IntoShape,
-        stride: impl IntoShape,
-        dilation: impl IntoShape,
+        kernel_size: impl IntoIterator<Item = impl Into<Tensor>>,
+        stride: impl IntoIterator<Item = impl Into<Tensor>>,
+        dilation: impl IntoIterator<Item = impl Into<Tensor>>,
         padding: impl IntoIterator<Item = (i64, i64)>,
         ceil_mode: bool,
         return_indices: bool,
     ) -> Result<Tensor, ZyxError> {
-        let kernel_size: Vec<Dim> = kernel_size.into_shape().collect();
+        let kernel_size: Vec<Dim> = kernel_size
+            .into_iter()
+            .map(|s| s.into().item::<i64>())
+            .collect();
         let axis: Vec<Axis> = (-(kernel_size.len() as Axis)..0).collect();
 
         let padding: Vec<(i64, i64)> = padding.into_iter().collect();
@@ -3020,8 +3049,14 @@ impl Tensor {
     ///
     /// Returns error if the input tensor has zero dimensions.
     #[allow(clippy::missing_panics_doc)]
-    pub fn repeat(&self, repeats: impl IntoShape) -> Result<Tensor, ZyxError> {
-        let repeats: Vec<Dim> = repeats.into_shape().collect();
+    pub fn repeat(
+        &self,
+        repeats: impl IntoIterator<Item = impl Into<Tensor>>,
+    ) -> Result<Tensor, ZyxError> {
+        let repeats: Vec<Dim> = repeats
+            .into_iter()
+            .map(|s| s.into().item::<i64>())
+            .collect();
         let shape = self.resolve_shape();
         let rank = shape.len();
         if repeats.len() < rank {

@@ -1081,7 +1081,7 @@ impl Tensor {
         let pl_sz = i64::try_from(shape[uaxis] - 1).unwrap();
         let mut x = self.transpose(axis, -1)?;
         x = x.rpad_zeros([(pl_sz, 0i64)])?;
-        x = x.pool(shape[uaxis], 1, 1)?;
+        x = x.pool([shape[uaxis]], [1i64], [1i64])?;
         x = match rop {
             BOp::Add => x.sum([-1])?,
             BOp::Max => x.max([-1])?,

@@ -98,7 +98,7 @@ impl GroupNorm {
     /// ```
     pub fn forward(&self, x: impl Into<Tensor>) -> Result<Tensor, ZyxError> {
         let x = x.into();
-        let shape = x.symbolic_shape();
+        let shape = x.shape();
 
         if shape.len() < 2 {
             return Err(ZyxError::ShapeError(

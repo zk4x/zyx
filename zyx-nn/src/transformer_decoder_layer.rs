@@ -91,8 +91,8 @@ impl TransformerDecoderLayer {
         let feedforward = Linear::new(d_model, dim_feedforward, bias, dtype)?;
 
         // LayerNorms (First for attention, second for feedforward)
-        let layer_norm_1 = LayerNorm::new(d_model, layer_norm_eps, true, bias, dtype)?;
-        let layer_norm_2 = LayerNorm::new(d_model, layer_norm_eps, true, bias, dtype)?;
+        let layer_norm_1 = LayerNorm::new([d_model], layer_norm_eps, true, bias, dtype)?;
+        let layer_norm_2 = LayerNorm::new([d_model], layer_norm_eps, true, bias, dtype)?;
 
         // Return the complete TransformerDecoderLayer
         Ok(TransformerDecoderLayer {

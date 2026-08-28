@@ -39,7 +39,7 @@ impl Embedding {
 
     /// Initialize embedding using only weight
     pub fn from_params(weight: Tensor) -> Result<Embedding, ZyxError> {
-        let sh = weight.symbolic_shape();
+        let sh = weight.shape();
         assert_eq!(sh.len(), 2);
         let vocab_size = sh[0].clone();
         let embed_size = sh[1].clone();
@@ -56,7 +56,7 @@ impl Embedding {
     /// Forward embedding layer
     pub fn forward(&self, x: impl Into<Tensor>) -> Result<Tensor, ZyxError> {
         let x: Tensor = x.into();
-        let x_sh = x.symbolic_shape();
+        let x_sh = x.shape();
         if x.numel().item::<i64>() == 0 {
             let shape: Vec<Tensor> = x_sh
                 .iter()

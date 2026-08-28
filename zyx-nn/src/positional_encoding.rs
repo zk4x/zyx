@@ -110,7 +110,7 @@ impl PositionalEncoding {
     /// - The sequence length exceeds the configured `max_len`.
     pub fn forward(&self, x: impl Into<Tensor>) -> Result<Tensor, ZyxError> {
         let x = x.into();
-        let shape = x.symbolic_shape();
+        let shape = x.shape();
 
         if shape.len() != 3 {
             return Err(ZyxError::ShapeError(
@@ -120,8 +120,8 @@ impl PositionalEncoding {
 
         let seq_len = shape[1].item::<i64>();
         let dim = shape[2].item::<i64>();
-        let pe_dim = self.pe.symbolic_shape()[1].item::<i64>();
-        let pe_max = self.pe.symbolic_shape()[0].item::<i64>();
+        let pe_dim = self.pe.shape()[1].item::<i64>();
+        let pe_max = self.pe.shape()[0].item::<i64>();
 
         if dim != pe_dim {
             return Err(ZyxError::ShapeError(

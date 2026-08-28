@@ -1,7 +1,7 @@
 // Copyright (C) 2025 zk4x
 // SPDX-License-Identifier: LGPL-3.0-only
 
-use zyx::{DType, IntoShape, Tensor, ZyxError};
+use zyx::{DType, Tensor, ZyxError};
 use zyx_derive::Module;
 
 /// A Layer Normalization layer.
@@ -40,13 +40,16 @@ impl LayerNorm {
     /// let layer_norm = LayerNorm::new([10, 20], 1e-5, true, true, DType::F32).unwrap();
     /// ```
     pub fn new(
-        normalized_shape: impl IntoShape,
+        normalized_shape: impl IntoIterator<Item = impl Into<Tensor>>,
         eps: f64,
         elementwise_affine: bool,
         bias: bool,
         dtype: DType,
     ) -> Result<Self, ZyxError> {
-        let normalized_shape: Vec<i64> = normalized_shape.into_shape().collect();
+        let normalized_shape: Vec<i64> = normalized_shape
+            .into_iter()
+            .map(|s| s.into().item::<i64>())
+            .collect();
 
         // Optional learnable parameters
         let weight = if elementwise_affine {
@@ -94,7 +97,7 @@ impl LayerNorm {
     /// ```
     pub fn forward(&self, input: impl Into<Tensor>) -> Result<Tensor, ZyxError> {
         let input = input.into();
-        let input_shape = input.symbolic_shape();
+        let input_shape = input.shape();
         let input_rank = input_shape.len();
         let norm_rank = self.normalized_shape.len();
 

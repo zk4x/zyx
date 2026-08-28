@@ -53,7 +53,7 @@ impl CausalSelfAttention {
             .reshape([&b, &t, &self.n_head, &head_dim])?
             .transpose(1, 2)?;
 
-        let scale = (1.0 / (*k.shape().last().unwrap() as f64).sqrt()) as f32;
+        let scale = (1.0 / (*k.resolve_shape().last().unwrap() as f64).sqrt()) as f32;
         //println!("scale = {scale}");
         let mut att = q.dot(k.t())? * scale;
         //println!("{att}");
