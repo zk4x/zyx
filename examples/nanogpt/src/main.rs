@@ -76,7 +76,7 @@ struct Block {
 impl Block {
     fn init(config: &GPTConfig) -> Result<Block, ZyxError> {
         Ok(Block {
-            ln_1: LayerNorm::new(config.n_embd, config.eps, true, config.bias, config.dtype)?,
+            ln_1: LayerNorm::new([config.n_embd], config.eps, true, config.bias, config.dtype)?,
             attn: CausalSelfAttention::new(
                 config.n_embd,
                 config.n_head,
@@ -84,7 +84,7 @@ impl Block {
                 config.dropout,
                 config.dtype,
             )?,
-            ln_2: LayerNorm::new(config.n_embd, config.eps, true, config.bias, config.dtype)?,
+            ln_2: LayerNorm::new([config.n_embd], config.eps, true, config.bias, config.dtype)?,
             mlp: MLP::init(config)?,
         })
     }
@@ -118,7 +118,7 @@ impl GPT {
                 .collect(),
             wte: Embedding::new(config.vocab_size, config.n_embd, config.dtype)?,
             wpe: Embedding::new(config.block_size, config.n_embd, config.dtype)?,
-            ln_f: LayerNorm::new(config.n_embd, config.eps, true, config.bias, config.dtype)?,
+            ln_f: LayerNorm::new([config.n_embd], config.eps, true, config.bias, config.dtype)?,
             lm_head: Linear::new(config.n_embd, config.vocab_size, config.bias, config.dtype)?,
             config,
         };
@@ -142,24 +142,26 @@ impl GPT {
     fn get_num_params(&self, non_embedding: bool) -> i64 {
         let mut n_params = 0;
         for p in self.into_iter() {
-            n_params += p.numel();
+            n_params += p.numel().item::<i64>();
         }
         if non_embedding {
-            n_params -= self.wpe.weight.numel();
+            n_params -= self.wpe.weight.numel().item::<i64>();
         }
         return n_params;
     }
 
     fn forward(&self, idx: impl Into<Tensor>) -> Result<Tensor, ZyxError> {
         let idx = idx.into();
-        let [_, t] = idx.shape()[..] else {
-            panic!("Input must have 2d shape batch x time")
+        let shape = idx.shape();
+        let t = match shape.as_slice() {
+            [_, t] => t.clone(),
+            _ => panic!("Input must have 2d shape batch x time"),
         };
         assert!(
-            t <= self.config.block_size,
+            t.item::<i64>() <= self.config.block_size,
             "Time dimensions must be <= block size"
         );
-        let pos = Tensor::arange(0, t as i64, 1)?.cast(self.config.dtype);
+        let pos = Tensor::arange(0, t.item::<i64>(), 1)?.cast(self.config.dtype);
 
         let tok_emb = self.wte.forward(idx)?; // [b, t, n_embd]
         let pos_emb = self.wpe.forward(pos)?; // [t, n_embd]
@@ -183,7 +185,7 @@ impl GPT {
     ) -> Result<Tensor, ZyxError> {
         let mut idx = idx.into();
         for _ in 0..max_new_tokens {
-            let idx_cond = if idx.shape()[1] <= self.config.block_size {
+            let idx_cond = if idx.shape()[1].item::<i64>() <= self.config.block_size {
                 idx.clone()
             } else {
                 idx.rslice(-(self.config.block_size as i32)..)?
@@ -234,7 +236,7 @@ fn main() -> Result<(), ZyxError> {
 
     let encoded: Vec<i64> = data.chars().map(|c| stoi[&c]).collect();
     let encoded = Tensor::from(encoded);
-    let n = encoded.numel();
+    let n = encoded.numel().item::<i64>();
     let train_data = encoded.rslice(..(9 * n / 10))?;
     let val_data = encoded.rslice((9 * n / 10)..)?;
 
@@ -247,7 +249,7 @@ fn main() -> Result<(), ZyxError> {
 
     // estimate loss
     for (name, split_data) in [("train", &train_data), ("val", &val_data)] {
-        let samples = Tensor::randint([batch_size], 0..(split_data.numel() - block_size - 1))?;
+        let samples = Tensor::randint([batch_size], 0..(split_data.numel().item::<i64>() - block_size - 1))?;
         let ix: Vec<i64> = Vec::try_from(samples.clone())?;
         let mut x_batch = Vec::new();
         let mut y_batch = Vec::new();
@@ -268,7 +270,7 @@ fn main() -> Result<(), ZyxError> {
     for step in 0..5 {
         let tape = Tape::new(&model)?;
         let samples =
-            Tensor::randint([batch_size], 0..(train_data.numel() - block_size - 1))?;
+            Tensor::randint([batch_size], 0..(train_data.numel().item::<i64>() - block_size - 1))?;
         let ix: Vec<i64> = Vec::try_from(samples)?;
         let mut x_batch = Vec::new();
         let mut y_batch = Vec::new();

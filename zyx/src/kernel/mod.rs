@@ -597,7 +597,7 @@ impl Kernel {
     pub(crate) fn remove_unused_chain(&mut self, x: OpId, keep_alive: &[OpId], loads: &[TensorId]) -> Vec<TensorId> {
         let mut chain: Set<OpId> = Set::default();
         let mut stack = vec![x];
-        for _ in 0..10_000 {
+        for _ in 0..30_000 {
             let Some(op) = stack.pop() else { break };
             if chain.insert(op) {
                 stack.extend(self.ops[op].op.parameters().filter(|&p| !p.is_null()));
@@ -610,7 +610,7 @@ impl Kernel {
         let mut live: Set<OpId> = Set::default();
         stack.extend_from_slice(keep_alive);
         let mut op_id = self.head;
-        for _ in 0..10_000 {
+        for _ in 0..30_000 {
             if op_id.is_null() {
                 break;
             }
@@ -622,7 +622,7 @@ impl Kernel {
         if !op_id.is_null() {
             panic!("remove_unused_chain did not finish in 10000 steps");
         }
-        for _ in 0..10_000 {
+        for _ in 0..30_000 {
             let Some(op) = stack.pop() else { break };
             if live.insert(op) {
                 stack.extend(self.ops[op].op.parameters().filter(|&p| !p.is_null()));
@@ -638,7 +638,7 @@ impl Kernel {
         let param_ops: Vec<OpId> = {
             let mut ops = Vec::new();
             let mut id = self.head;
-            for _ in 0..10_000 {
+            for _ in 0..30_000 {
                 if id.is_null() {
                     break;
                 }
@@ -657,7 +657,7 @@ impl Kernel {
 
         let to_remove: Set<OpId> = chain.difference(&live).copied().collect();
         let mut op_id = self.head;
-        for _ in 0..10_000 {
+        for _ in 0..30_000 {
             if op_id.is_null() {
                 break;
             }

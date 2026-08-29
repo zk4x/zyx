@@ -115,7 +115,7 @@ impl Kernel {
         let global_params: Vec<(DType, ParamKind)> = {
             let mut params = Vec::new();
             let mut op_id = self.head;
-            for _ in 0..10_000 {
+            for _ in 0..50_000 {
                 if op_id.is_null() {
                     break;
                 }
@@ -125,7 +125,7 @@ impl Kernel {
                 op_id = self.next_op(op_id);
             }
             if !op_id.is_null() {
-                panic!("linearize did not finish in 10000 steps");
+                panic!("linearize did not finish in 50000 steps");
             }
             params
         };
@@ -148,7 +148,7 @@ impl Kernel {
         let mut rw_params: Vec<OpId> = Vec::new();
         {
             let mut op_id = self.head;
-            for _ in 0..10_000 {
+            for _ in 0..50_000 {
                 if op_id.is_null() {
                     break;
                 }
@@ -161,7 +161,7 @@ impl Kernel {
                 op_id = self.next_op(op_id);
             }
             if !op_id.is_null() {
-                panic!("linearize did not finish in 10000 steps");
+                panic!("linearize did not finish in 50000 steps");
             }
         }
         self.toposort(&ro_params, &rw_params);
@@ -171,7 +171,7 @@ impl Kernel {
         debug_assert!({
             let mut params = Vec::new();
             let mut op_id = self.head;
-            for _ in 0..10_000 {
+            for _ in 0..50_000 {
                 if op_id.is_null() {
                     break;
                 }
@@ -214,7 +214,7 @@ impl Kernel {
             let mut canonical: Map<u32, OpId> = Map::default();
             let mut lengths: Map<u32, Dim> = Map::default();
             let mut op_id = self.head;
-            for _ in 0..10_000 {
+            for _ in 0..50_000 {
                 if op_id.is_null() {
                     break;
                 }
@@ -233,7 +233,7 @@ impl Kernel {
                 op_id = next;
             }
             if !op_id.is_null() {
-                panic!("linearize did not finish in 10000 steps");
+                panic!("linearize did not finish in 50000 steps");
             }
         }
 
@@ -276,7 +276,7 @@ impl Kernel {
         // (their views are never seeded, and touching them would panic).
         let mut roots: Vec<OpId> = Vec::new();
         let mut op_id = self.head;
-        for _ in 0..10_000 {
+        for _ in 0..50_000 {
             if op_id.is_null() {
                 break;
             }
@@ -290,7 +290,7 @@ impl Kernel {
         }
         let mut reachable = Set::default();
         let mut pending = roots;
-        for _ in 0..10_000 {
+        for _ in 0..50_000 {
             let Some(op_id) = pending.pop() else { break };
             if self.ops.contains_id(op_id) {
                 if reachable.insert(op_id) {
@@ -303,7 +303,7 @@ impl Kernel {
         }
         let mut op_ids: Vec<OpId> = Vec::new();
         let mut op_id = self.head;
-        for _ in 0..10_000 {
+        for _ in 0..50_000 {
             if op_id.is_null() {
                 break;
             }
@@ -468,7 +468,7 @@ impl Kernel {
                     // domain; the Param handler computes the flat write index from
                     // that shifted view.
                     let mut dst_param = dst;
-                    for _ in 0..10_000 {
+                    for _ in 0..50_000 {
                         let Op::Move { x, .. } = self.ops[dst_param].op else { break };
                         dst_param = x;
                     }
@@ -797,7 +797,7 @@ impl Kernel {
         // chain is dead and removed.
         let mut reachable = Set::default();
         let mut pending = roots;
-        for _ in 0..10_000 {
+        for _ in 0..50_000 {
             let Some(op_id) = pending.pop() else { break };
             if self.ops.contains_id(op_id) {
                 if reachable.insert(op_id) {
@@ -806,7 +806,7 @@ impl Kernel {
             }
         }
         if !pending.is_empty() {
-            panic!("toposort did not finish in 10000 steps");
+            panic!("toposort did not finish in 50000 steps");
         }
 
         for op_id in self.ops.ids().collect::<Vec<_>>() {
@@ -818,7 +818,7 @@ impl Kernel {
         // Get reduce ids in sorted order, from innermost to outermost
         let mut reduce_ids: Vec<OpId> = Vec::new();
         let mut op_id = self.head;
-        for _ in 0..10_000 {
+        for _ in 0..50_000 {
             if op_id.is_null() {
                 break;
             }
@@ -844,7 +844,7 @@ impl Kernel {
             };
             let mut stack: Vec<OpId> = vec![x];
             let mut seen: Set<OpId> = Set::default();
-            for _ in 0..10_000 {
+            for _ in 0..50_000 {
                 let Some(p) = stack.pop() else { break };
                 if p.is_null() || !seen.insert(p) {
                     continue;
@@ -891,7 +891,7 @@ impl Kernel {
             let Op::Reduce { x, .. } = self.ops[r].op else { unreachable!() };
             let mut stack: Vec<OpId> = vec![x];
             let mut seen = Set::default();
-            for _ in 0..10_000 {
+            for _ in 0..50_000 {
                 let Some(p) = stack.pop() else { break };
                 if p.is_null() || !seen.insert(p) {
                     continue;
@@ -941,7 +941,7 @@ impl Kernel {
             }
         }
         let mut order = Vec::with_capacity(reachable.len());
-        for _ in 0..10_000 {
+        for _ in 0..50_000 {
             let Some(std::cmp::Reverse((_, _, op_id))) = heap.pop() else {
                 break;
             };
@@ -995,7 +995,7 @@ impl Kernel {
         let ops: Vec<OpId> = {
             let mut v = Vec::new();
             let mut op_id = self.head;
-            for _ in 0..10_000 {
+            for _ in 0..50_000 {
                 if op_id.is_null() {
                     break;
                 }

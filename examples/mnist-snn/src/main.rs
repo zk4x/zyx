@@ -4,7 +4,7 @@
 use std::collections::HashMap;
 use std::time::Instant;
 
-use zyx::{DType, ReduceOp, Tensor, ZyxError};
+use zyx::{DType, ReduceOp, Tape, Tensor, ZyxError};
 use zyx_optim::Adam;
 
 struct Snn {
@@ -84,19 +84,22 @@ impl Snn {
         for _ in 0..self.t {
             let v1_pre = alpha_t * &v1 + oma_t * (x.matmul(&self.w1)? + &self.b1);
             let spike1 = v1_pre.cmpgt(th_t)?.cast(DType::F32);
-            v1 = &v1_pre - &spike1 * th_t;
+            v1 = (&v1_pre - &spike1 * th_t).contiguous()?;
 
             let v2_pre = alpha_t * &v2 + oma_t * (spike1.matmul(&self.w2)? + &self.b2);
             let spike2 = v2_pre.cmpgt(th_t)?.cast(DType::F32);
-            v2 = &v2_pre - &spike2 * th_t;
+            v2 = (&v2_pre - &spike2 * th_t).contiguous()?;
 
-            sum_out = &sum_out + spike2.matmul(&self.w3)? + &self.b3;
+            sum_out = (&sum_out + spike2.matmul(&self.w3)? + &self.b3).contiguous()?;
 
             cache.push((spike1, spike2, v1_pre, v2_pre));
         }
 
-        let output = &sum_out * &self._inv_t;
-        Ok((output, cache))
+            let output = &sum_out * &self._inv_t;
+            // Break fusion: without a manual break the whole 30-timestep
+            // forward fuses into one ever-growing kernel (30k+ ops).
+            let output = output.contiguous()?;
+            Ok((output, cache))
     }
 
     fn backward(
@@ -130,8 +133,8 @@ impl Snn {
             let db3_t = d_sum_out.sum([0])?;
             let d_spike2 = d_sum_out.matmul(&self.w3.t())?;
 
-            dw3_acc = &dw3_acc + dw3_t;
-            db3_acc = &db3_acc + db3_t;
+            dw3_acc = (&dw3_acc + dw3_t).contiguous()?;
+            db3_acc = (&db3_acc + db3_t).contiguous()?;
 
             let diff2 = v2_pre - &self._th_t;
             let surr2 = &self._sigma * (&self._neg_one * &self._sigma * &diff2.abs()).exp();
@@ -140,11 +143,11 @@ impl Snn {
             let d_pre2 = &self._oma_t * &dv2_pre;
             let dw2_t = spike1.t().matmul(&d_pre2)?;
             let db2_t = d_pre2.sum([0])?;
-            dw2_acc = &dw2_acc + dw2_t;
-            db2_acc = &db2_acc + db2_t;
+            dw2_acc = (&dw2_acc + dw2_t).contiguous()?;
+            db2_acc = (&db2_acc + db2_t).contiguous()?;
             let d_spike1 = d_pre2.matmul(&self.w2.t())?;
 
-            dv2 = &dv2_pre * &self._alpha_t;
+            dv2 = (&dv2_pre * &self._alpha_t).contiguous()?;
 
             let diff1 = v1_pre - &self._th_t;
             let surr1 = &self._sigma * (&self._neg_one * &self._sigma * &diff1.abs()).exp();
@@ -153,10 +156,10 @@ impl Snn {
             let d_pre1 = &self._oma_t * &dv1_pre;
             let dw1_t = x.t().matmul(&d_pre1)?;
             let db1_t = d_pre1.sum([0])?;
-            dw1_acc = &dw1_acc + dw1_t;
-            db1_acc = &db1_acc + db1_t;
+            dw1_acc = (&dw1_acc + dw1_t).contiguous()?;
+            db1_acc = (&db1_acc + db1_t).contiguous()?;
 
-            dv1 = &dv1_pre * &self._alpha_t;
+            dv1 = (&dv1_pre * &self._alpha_t).contiguous()?;
         }
 
         Ok(vec![dw1_acc, db1_acc, dw2_acc, db2_acc, dw3_acc, db3_acc])
@@ -237,7 +240,18 @@ fn train() -> Result<(), ZyxError> {
 
         let t0 = Instant::now();
 
-        let (output, stored) = model.forward_store(&x)?;
+        let (output, stored) = {
+            // Wrap the forward in a tape and realize the forward outputs —
+            // otherwise the manual backward keeps extending one ever-growing
+            // eager kernel (30k+ ops). Realizing materializes the forward
+            // graph, so backward runs on buffers.
+            let tape = Tape::new([&x])?;
+            let (output, stored) = model.forward_store(&x)?;
+            let mut outs: Vec<&Tensor> = stored.iter().flat_map(|(s1, s2, v1p, v2p)| [s1, s2, v1p, v2p]).collect();
+            outs.push(&output);
+            tape.realize(outs)?;
+            (output, stored)
+        };
 
         let loss = output.cross_entropy(y.clone(), ReduceOp::Mean)?;
         let pred = output.argmax_axis(-1)?;
