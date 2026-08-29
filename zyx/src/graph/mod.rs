@@ -2008,7 +2008,7 @@ impl Runtime {
             // realized tensor (Graph state) or the load tensor of a promoted
             // kernel (Eager state) — both carry a buffer.
             for &tid in self.graphs[graph_id].leaf_map.values() {
-                debug_assert!(self.buffer_map.contains_key(&tid), "leaf {tid} not realized");
+                debug_assert!(self.buffer_map.contains_key(&tid) | self.variable_map.contains_key(&tid), "leaf {tid} not realized");
                 let affiliated = match self.tensors[tid] {
                     TensorData::Graph { graph_id: g, .. } | TensorData::Promoted { graph_id: g, .. } => g == graph_id,
                     ref t => panic!("leaf {tid} is not a graph tensor: {t:?}"),

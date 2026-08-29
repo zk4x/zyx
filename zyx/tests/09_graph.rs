@@ -331,3 +331,21 @@ fn use_frozen_output_panics() {
     }
     let _ = z + 1.0f32;
 }
+
+// A tensor promoted into a tape as a leaf must stay alive for the whole tape
+// scope even after the caller drops its handle: the tape holds a reference.
+// Without that, `drop(x)` releases the underlying tensor and `realize` then
+// reads a freed tensor.
+#[test]
+fn drop_leaf_handle_before_realize() -> Result<(), ZyxError> {
+    let x = Tensor::from([3, 2, 1]).expand([2, 3])?;
+    let tape = Tape::new([&x])?;
+    // `x + 2` borrows then `drop(x)` drops the `x` handle while `x` is a tape
+    // leaf; with no tape-held reference the leaf tensor is freed and `realize`
+    // reads a dangling tensor.
+    let z = &x + 2;
+    drop(x);
+    tape.realize([&z])?;
+    println!("{z}");
+    Ok(())
+}

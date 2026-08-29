@@ -711,14 +711,14 @@ impl Runtime {
 
         debug_assert!(!op_id.is_null());
         debug_assert!(!kernel_id.is_null());
-        debug_assert!(!self.kernels[kernel_id].loads.contains(&x));
         debug_assert!(!self.kernels[kernel_id].stores.contains(&x));
 
         self.kernels[kernel_id].outputs.remove(&x);
 
         if self.kernels[kernel_id].outputs.is_empty() && self.kernels[kernel_id].stores.is_empty() {
-            let loads = std::mem::take(&mut self.kernels[kernel_id].loads);
+            let mut loads = std::mem::take(&mut self.kernels[kernel_id].loads);
             self.kernels.remove(kernel_id);
+            loads.retain(|&id| id != x);
             for tid in loads {
                 self.release(tid);
             }
@@ -784,10 +784,15 @@ impl Runtime {
         // Drop one reference. Handles and edges (kernel loads, symbolic-node
         // children) all count through here.
         let rc = {
-            let r = match &mut self.tensors[x] {
-                TensorData::Eager { rc, .. }
-                | TensorData::Graph { rc, .. }
-                | TensorData::Promoted { rc, .. }
+            match &mut self.tensors[x] {
+                TensorData::Promoted { rc, kernel_id, .. } | TensorData::Eager { rc, kernel_id, .. } => {
+                    *rc -= 1;
+                    if *rc == 1 && self.kernels[*kernel_id].loads.contains(&x) {
+                        *rc -= 1;
+                    }
+                    *rc
+                }
+                TensorData::Graph { rc, .. }
                 | TensorData::Constant { rc, .. }
                 | TensorData::Variable { rc, .. }
                 | TensorData::Cast { rc, .. }
@@ -797,9 +802,9 @@ impl Runtime {
                     *rc -= 1;
                     *rc
                 }
-            };
-            r
+            }
         };
+
         // Every variant dies purely on its refcount. `rc` is decremented above;
         // a still-positive count means another live reference (handle, kernel
         // self-load edge, or symbolic-node child) keeps the entry alive.
