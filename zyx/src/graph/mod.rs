@@ -1655,6 +1655,7 @@ impl Runtime {
             };
             let (_, class_id) = self.push_leaf_node(graph_id, dtype, shape_class);
             self.graphs[graph_id].leaf_map.insert(class_id, tid);
+            self.retain(tid);
             self.graphs[graph_id].leaf_classes.push(class_id);
             self.graphs[graph_id].ref_count += 1;
             match &mut self.tensors[tid] {
@@ -1782,6 +1783,7 @@ impl Runtime {
                             };
                             let (_, class_id) = self.push_leaf_node(graph_id, dtype, shape_class);
                             self.graphs[graph_id].leaf_map.insert(class_id, load_tid);
+                            self.retain(load_tid);
                             self.graphs[graph_id].leaf_classes.push(class_id);
                             self.graphs[graph_id].ref_count += 1;
                             match &mut self.tensors[load_tid] {

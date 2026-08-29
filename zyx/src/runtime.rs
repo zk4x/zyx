@@ -879,7 +879,6 @@ impl Runtime {
     }
 
     pub(crate) fn remove_dead_graph(&mut self, graph_id: GraphId) {
-        debug_assert!(self.graphs[graph_id].leaf_map.values().copied().all(|id| !self.tensors.contains_id(id)));
         self.graphs.remove(graph_id);
     }
 
