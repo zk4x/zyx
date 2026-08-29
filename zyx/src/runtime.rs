@@ -847,7 +847,12 @@ impl Runtime {
                         debug_assert!(*rc >= n, "rc {rc} below own-kernel entry count {n} for {x}: ledger desync");
                         if n > 0 && *rc == n {
                             let outs = &self.kernels[*kernel_id].outputs;
-                            if outs.len() == 1 && outs.contains(&x) {
+                            // The kernel must owe no pending stores: their
+                            // value chains consume x's load — x's buffer is
+                            // still needed until they launch. A kernel with
+                            // only x as output and no stores has no other
+                            // purpose: the cycle is real.
+                            if outs.len() == 1 && outs.contains(&x) && self.kernels[*kernel_id].stores.is_empty() {
                                 // Breaker: the kernel's only remaining purpose was
                                 // producing x — the tensor↔kernel cycle is real and
                                 // nothing else can ever reference x. Consume ALL n
@@ -909,8 +914,9 @@ impl Runtime {
                 };
                 debug_assert!(!kernel_id.is_null());
                 debug_assert!(
-                    !(self.kernels[kernel_id].outputs.len() == 1 && self.kernels[kernel_id].outputs.contains(&x)),
-                    "disown: kernel outputs must have other members"
+                    !(self.kernels[kernel_id].outputs.len() == 1 && self.kernels[kernel_id].outputs.contains(&x))
+                        || !self.kernels[kernel_id].stores.is_empty(),
+                    "disown: kernel outputs must have other members (or pending stores)"
                 );
                 self.kernels[kernel_id].outputs.remove(&x);
             }
@@ -958,7 +964,7 @@ impl Runtime {
                     }
                 }
             }
-            TensorData::Eager { kernel_id, op_id, shape_id, .. } => {
+            TensorData::Eager { kernel_id, op_id, depends_on, shape_id, .. } => {
                 // Detach from the producer kernel (inlined; the former
                 // `detach_from_kernel`, duplicated per death arm by design).
                 if !kernel_id.is_null() {
@@ -1038,6 +1044,113 @@ impl Runtime {
                             // Materialize, which removes the kernel
                             self.materialize_kernel(kernel_id).expect("materialization in tensor detach from kernel failed");
                         }
+                    }
+                }
+                // x may still be pending a store in its `depends_on` kernel:
+                // `add_store` pushed the store there and re-pointed x onto a
+                // fresh load kernel, so the entry in the producer's `stores`
+                // outlives the re-point. x is dying: consume the store edge.
+                // The GlobalMut params pair positionally with `stores` (this
+                // is the same order kernel launch binds buffers in), so find
+                // x's param, delete every store writing to it, and prune the
+                // now-dead value chains — the kernel must never launch a
+                // write into x's freed buffer.
+                if !depends_on.is_null() && self.kernels.contains_id(depends_on) {
+                    let mut_params: Vec<OpId> = {
+                        let kd = &self.kernels[depends_on];
+                        let mut mut_params: Vec<OpId> = Vec::new();
+                        let mut i = kd.kernel.head;
+                        for _ in 0..100_000 {
+                            if i.is_null() {
+                                break;
+                            }
+                            if matches!(kd.kernel.ops[i].op, Op::Param { kind: ParamKind::GlobalMut, .. }) {
+                                mut_params.push(i);
+                            }
+                            i = kd.kernel.next_op(i);
+                        }
+                        debug_assert_eq!(mut_params.len(), kd.stores.len(), "GlobalMut params and stores vec diverged in {depends_on:?}");
+                        mut_params
+                    };
+                    let dead_params: Vec<OpId> = {
+                        let kd = &self.kernels[depends_on];
+                        mut_params
+                            .iter()
+                            .enumerate()
+                            .filter(|(idx, _)| kd.stores[*idx] == x)
+                            .map(|(_, op)| *op)
+                            .collect()
+                    };
+                    if !dead_params.is_empty() {
+                        // Keep-alive for the chain prune: the value roots of
+                        // the surviving stores and every op owned by a live
+                        // tensor affiliated with this kernel.
+                        let mut keep_alive: Vec<OpId> = {
+                            let kd = &self.kernels[depends_on];
+                            mut_params
+                                .iter()
+                                .enumerate()
+                                .filter(|&(idx, _)| kd.stores[idx] != x)
+                                .flat_map(|(_, param)| {
+                                    let mut stores_to_param: Vec<OpId> = Vec::new();
+                                    let mut i = kd.kernel.head;
+                                    for _ in 0..100_000 {
+                                        if i.is_null() {
+                                            break;
+                                        }
+                                        if let Op::Store { dst, .. } = kd.kernel.ops[i].op {
+                                            if dst == *param {
+                                                stores_to_param.push(i);
+                                            }
+                                        }
+                                        i = kd.kernel.next_op(i);
+                                    }
+                                    debug_assert!(!stores_to_param.is_empty(), "store entry without store op in {depends_on:?}");
+                                    stores_to_param
+                                })
+                                .collect()
+                        };
+                        {
+                            let kd = &self.kernels[depends_on];
+                            for &tid in kd.outputs.iter().chain(kd.loads.iter()) {
+                                if let TensorData::Eager { op_id, .. } | TensorData::Promoted { op_id, .. } = self.tensors[tid] {
+                                    if kd.kernel.ops.contains_id(op_id) {
+                                        keep_alive.push(op_id);
+                                    }
+                                }
+                            }
+                        }
+                        let mut loads = self.kernels[depends_on].loads.clone();
+                        for &param in &dead_params {
+                            // Delete every store op writing to this param, then
+                            // prune each one's now-unreachable value chain.
+                            while let Some((store_op, src)) = {
+                                let kd = &self.kernels[depends_on];
+                                let mut found = None;
+                                let mut i = kd.kernel.head;
+                                for _ in 0..100_000 {
+                                    if i.is_null() {
+                                        break;
+                                    }
+                                    if let Op::Store { dst, src, .. } = kd.kernel.ops[i].op {
+                                        if dst == param {
+                                            found = Some((i, src));
+                                            break;
+                                        }
+                                    }
+                                    i = kd.kernel.next_op(i);
+                                }
+                                found
+                            } {
+                                self.kernels[depends_on].kernel.remove_op(store_op);
+                                loads = self.kernels[depends_on].kernel.remove_unused_chain(src, &keep_alive, &loads);
+                            }
+                            // The store target param itself is now unused.
+                            self.kernels[depends_on].kernel.remove_op(param);
+                        }
+                        let kd = &mut self.kernels[depends_on];
+                        kd.stores.retain(|&t| t != x);
+                        kd.loads = loads;
                     }
                 }
                 self.free_buffer(x);
@@ -3969,27 +4082,58 @@ impl Runtime {
             );
         }
 
-        // Recursive materialization: find producer kernels (those that have stores for our loads)
-        // and materialize them so our loads become available.
+        // Recursive materialization: realize every load, first via each
+        // unrealized load's `depends_on` producer (add_store-ing its outputs
+        // launches the pending store that produces the load), then via
+        // `add_store` on whatever is still unrealized. Scalars may live in
+        // variable_map instead of buffer_map.
         for &load in &loads {
+            if self.buffer_map.contains_key(&load)
+                || self.variable_map.contains_key(&load)
+                || self.resolve_symbolic(load).is_some()
+            {
+                continue;
+            }
             // An `Eager` tensor never carries a graph class, so its
             // depends_on is the pending producer.
             let pending = match self.tensors[load] {
                 TensorData::Eager { depends_on, .. } => depends_on,
-                TensorData::Graph { .. } | TensorData::Promoted { .. } => KernelId::NULL,
                 _ => KernelId::NULL,
             };
             if pending.is_null() {
                 continue;
             }
             let outputs: Set<TensorId> = self.kernels[pending].outputs.iter().copied().collect();
+            if outputs.is_empty() {
+                // The producer's outputs were all add_store'd away while its
+                // stores are still pending — the only way to realize the load
+                // is to launch the producer directly (its precondition "all
+                // outputs stored" holds: outputs is empty).
+                self.materialize_kernel(pending)?;
+                continue;
+            }
             for output in outputs {
                 self.add_store(output)?;
             }
         }
+        for &load in &loads {
+            if self.buffer_map.contains_key(&load)
+                || self.variable_map.contains_key(&load)
+                || self.resolve_symbolic(load).is_some()
+            {
+                continue;
+            }
+            if matches!(self.tensors[load], TensorData::Eager { .. } | TensorData::Promoted { .. }) {
+                self.add_store(load)?;
+            }
+        }
 
         debug_assert!(
-            loads.iter().all(|&tid| self.buffer_map.contains_key(&tid) || self.resolve_symbolic(tid).is_some()),
+            loads
+                .iter()
+                .all(|&tid| self.buffer_map.contains_key(&tid)
+                    || self.variable_map.contains_key(&tid)
+                    || self.resolve_symbolic(tid).is_some()),
             "all loads must be realized after recursive materialization"
         );
 
