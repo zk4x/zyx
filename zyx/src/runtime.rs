@@ -679,7 +679,11 @@ impl Runtime {
                 | TensorData::Cast { rc, .. }
                 | TensorData::Unary { rc, .. }
                 | TensorData::Binary { rc, .. }
-                | TensorData::Stack { rc, .. } => *rc += 1,
+                | TensorData::Stack { rc, .. } => {
+                    *rc += 1;
+                    #[cfg(feature = "debug_tensor_op")]
+                    println!("rc::retain({x}) -> {rc}");
+                }
             };
         }
     }
@@ -775,7 +779,6 @@ impl Runtime {
                 TensorData::Unary { x: a, uop, .. } => format!("unary {uop:?}({a})"),
                 TensorData::Binary { x: a, y: b, bop, .. } => format!("binary {bop:?}({a},{b})"),
                 TensorData::Stack { tensors, .. } => format!("stack len={}", tensors.len()),
-                TensorData::DeadGraph { graph_id, .. } => format!("dead graph={graph_id:?}"),
                 TensorData::Cast { x: a, dtype, .. } => format!("cast {a} -> {dtype:?}"),
             };
             println!("runtime::release(tid={x}) kind={desc}");
@@ -783,11 +786,15 @@ impl Runtime {
 
         // Drop one reference. Handles and edges (kernel loads, symbolic-node
         // children) all count through here.
+        #[cfg(feature = "debug_tensor_op")]
+        println!("rc::release({x}) pre: {:?}", self.tensors[x]);
         let rc = {
             match &mut self.tensors[x] {
                 TensorData::Promoted { rc, kernel_id, .. } | TensorData::Eager { rc, kernel_id, .. } => {
                     *rc -= 1;
                     if *rc == 1 && self.kernels[*kernel_id].loads.contains(&x) {
+                        #[cfg(feature = "debug_tensor_op")]
+                        println!("rc::release({x}) BREAKER fires: own kernel loads={:?}", self.kernels[*kernel_id].loads);
                         *rc -= 1;
                     }
                     *rc
@@ -805,6 +812,8 @@ impl Runtime {
             }
         };
 
+        #[cfg(feature = "debug_tensor_op")]
+        println!("rc::release({x}) -> rc={rc}");
         // Every variant dies purely on its refcount. `rc` is decremented above;
         // a still-positive count means another live reference (handle, kernel
         // self-load edge, or symbolic-node child) keeps the entry alive.
@@ -1101,6 +1110,8 @@ impl Runtime {
         // own self-load edge (see `release`'s eager arm, which releases that
         // edge through the op-chain prune).
         let tid = self.tensors.push(TensorData::Eager { kernel_id, op_id, depends_on: KernelId::NULL, shape_id, rc: 2 });
+        #[cfg(feature = "debug_tensor_op")]
+        println!("rc::new_eager_tensor -> tid={tid} kernel_id={kernel_id:?} shape_id={shape_id} rc=2 (handle + self-load)");
         self.kernels[kernel_id].loads.push(tid);
         self.kernels[kernel_id].outputs.insert(tid);
         tid
