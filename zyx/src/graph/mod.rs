@@ -1618,6 +1618,9 @@ impl Runtime {
             TensorData::Eager { kernel_id, op_id, .. } | TensorData::Promoted { kernel_id, op_id, .. } => (kernel_id, op_id),
             ref t => panic!("promote_to_graph: tensor {tid} has no eager kernel: {t:?}"),
         };
+        if !self.kernels[kernel_id].outputs.contains(&tid) {
+            eprintln!(">>> PROMOTE tid={tid} kernel={kernel_id:?} NOT in outputs, data={:?}", self.tensors[tid]);
+        }
 
         // Already realized eager tensors promote to the graph as leaves directly.
         // Their buffer is read by the plan as an input; the value is preserved and
@@ -1789,6 +1792,14 @@ impl Runtime {
                             match &mut self.tensors[load_tid] {
                                 TensorData::Graph { class_id: c, .. } | TensorData::Promoted { class_id: c, .. } => *c = class_id,
                                 TensorData::Eager { .. } => {
+                                    // A disowned load (user handle gone, not in
+                                    // its producer's `outputs`) has no eager
+                                    // future: after the tape dies nobody can use
+                                    // it eagerly, so drop the eager side and
+                                    // make it a pure graph leaf. Its buffer (the
+                                    // Param branch just materialized it) stays
+                                    // alive through the leaf edge and is freed
+                                    // by its death path.
                                     let (kernel_id, op_id, shape_id, rc, dtype) = match self.tensors[load_tid] {
                                         TensorData::Eager { kernel_id, op_id, depends_on, shape_id, rc, dtype } => {
                                             debug_assert!(
@@ -1799,8 +1810,12 @@ impl Runtime {
                                         }
                                         ref t => unreachable!("{t:?}"),
                                     };
-                                    self.tensors[load_tid] =
-                                        TensorData::Promoted { kernel_id, op_id, class_id, graph_id, shape_id, dtype, rc };
+                                    if self.kernels[kernel_id].outputs.contains(&load_tid) {
+                                        self.tensors[load_tid] =
+                                            TensorData::Promoted { kernel_id, op_id, class_id, graph_id, shape_id, dtype, rc };
+                                    } else {
+                                        self.tensors[load_tid] = TensorData::Graph { class_id, graph_id, shape_id, dtype, rc };
+                                    }
                                 }
                                 ref t => panic!("promote_to_graph: cannot attach load tensor {load_tid} to the graph: {t:?}"),
                             }
@@ -2010,7 +2025,10 @@ impl Runtime {
             // realized tensor (Graph state) or the load tensor of a promoted
             // kernel (Eager state) — both carry a buffer.
             for &tid in self.graphs[graph_id].leaf_map.values() {
-                debug_assert!(self.buffer_map.contains_key(&tid) | self.variable_map.contains_key(&tid), "leaf {tid} not realized");
+                debug_assert!(
+                    self.buffer_map.contains_key(&tid) | self.variable_map.contains_key(&tid),
+                    "leaf {tid} not realized"
+                );
                 let affiliated = match self.tensors[tid] {
                     TensorData::Graph { graph_id: g, .. } | TensorData::Promoted { graph_id: g, .. } => g == graph_id,
                     ref t => panic!("leaf {tid} is not a graph tensor: {t:?}"),
@@ -2193,7 +2211,7 @@ impl Runtime {
                             }
                         }
                     }
-                    let mut loads = std::mem::take(&mut self.kernels[old_kernel_id].loads);
+                    let loads = std::mem::take(&mut self.kernels[old_kernel_id].loads);
                     self.kernels.remove(old_kernel_id);
                     for t in loads {
                         self.release(t);

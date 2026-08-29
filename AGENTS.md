@@ -86,7 +86,8 @@ Zyx is all about the graph. Lazy (no compute until `Tensor::realize`), dynamic, 
 ## The Egraph
 
 Lives in `zyx/src/graph/`:
-- `mod.rs` — the equivalence graph. Each `EClass` holds all equivalent node forms; rewrites produce equivalent forms (CSE via hashconsing, algebraic rewrites, layout rewrites, shape rewrites). A **cost model selects the cheapest extraction** (`Graph::extract`, `mod.rs:687`) for kernel compilation.
+- `mod.rs` — the equivalence graph. Heuristics generate a **few fusion variants** of each subgraph (CSE via hashconsing, algebraic rewrites, layout rewrites, shape rewrites). The egraph itself has **NO cost model** — it does not rank or pick a form statically. Each fusion variant is individually **autotuned** (see Optimization Passes); the egraph then uses the measured **timings** returned by the autotuner to extract the fastest path (`Graph::extract`).
+- **Vendor kernels**: a vendor can contribute a kernel for a subgraph written either in any backend language (CUDA, SPIR-V, ...) **or** in the zyx kernel IR API. Kernels built via the kernel IR API go through all the usual optimizations, including autotuning. Vendor kernels **compete alongside** the heuristics-based fusion variants in the egraph — they are extracted by the same timing-driven path, so the fastest measured variant (heuristic or vendor) wins.
 - `kernelizer.rs` — pattern-matches subgraphs and replaces them with custom JIT kernels
 - `autograd.rs` — gradients on the same graph
 - `plan.rs` — execution plans from compiled graphs
@@ -94,7 +95,7 @@ Lives in `zyx/src/graph/`:
 How to work with it:
 - `ZYX_DEBUG=2` prints the egraph (class structure) after realize — the starting point for graph debugging.
 - To replace a graph pattern with a custom kernel, add the match in `kernelizer.rs`.
-- Rewrites must preserve semantic equivalence; the egraph picks the cheapest form, so a wrong-cost model surfaces as slow (not wrong) kernels.
+- Rewrites must preserve semantic equivalence. The egraph does **NOT** pick a form by cost — it relies on the autotuner's measured timings to extract the fastest path. A wrong rewrite therefore surfaces as a WRONG (not slow) kernel, so every rewrite must be semantically exact.
 
 ## Symbolic Dims
 
@@ -151,10 +152,14 @@ All kernel optimizations live in `zyx/src/kernel/` (`autotune.rs` driver + one f
 
 **Correctness is critical**: no optimization is required for tests to pass; ALL tests must pass with ANY optimization sequence (including empty). If a sequence breaks correctness, the pass that produced invalid IR from valid code is BUGGY — fix or disable it. Run the full `cargo test` after touching any pass; a single failing integration test means the pass produces wrong results.
 
+### The autotuner
+
+The autotuner runs on each kernel (every egraph fusion variant). For a given kernel it generates **thousands of variants** by running the different optimizations and the different **configurations** of those optimizations (each `config()` returns a `#variants` count — see below). Variant selection uses a **combination of a cost model and measured timings**: the cost model is **regression / neural-net based** (learned, not a hand-written analytic estimate), and the **user configures the ratio** between how many variants are scored by the cost model versus actually launched and timed. Regardless of that ratio, the autotuner **always runs (times) each variant at least once** — there is no path that picks a kernel purely on the cost model without a real launch. The measured timing is what the egraph consumes to extract the fastest path.
+
 ### Two pipelines
 
 - `run_always_on_optimizations` (`autotune.rs:336`) — always runs before compilation, fixed order, **`dead_code_elimination` must stay last** (backends fail on unused ops, e.g. missing ref-count entries).
-- `AVAILABLE_OPTIMIZATIONS` (`autotune.rs:59`) — 9 passes the autotuner tries in combination (split_global_to_local, reassociate_commutative, coarsen, register_blocking, local_reduce, split_loop, pad_index, vectorize, merge_nested_loops).
+- `AVAILABLE_OPTIMIZATIONS` (`autotune.rs:59`) — 9 passes the autotuner tries in combination to generate the thousands of per-kernel variants (split_global_to_local, reassociate_commutative, coarsen, register_blocking, local_reduce, split_loop, pad_index, vectorize, merge_nested_loops).
 
 ### Adding an optimization
 

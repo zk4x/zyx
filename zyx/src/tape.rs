@@ -261,6 +261,13 @@ impl Drop for Tape {
         // promoted multiple times (e.g. as a tape param and again by an in-scope
         // op), and each occurrence carries its own retain. Do NOT deduplicate.
         let leafs: Vec<TensorId> = rt.graphs[graph_id].leaf_map.values().copied().collect();
+        // A leaf that is already `Eager` was converted by `realize`'s output
+        // eagerify — its graph affiliation (and the ref_count decrement) was
+        // deleted then. The visit loop's `Eager` arm exists for tensors
+        // re-homed mid-drop by add_store cascades and must not decrement
+        // these a second time.
+        let eager_leafs: Set<TensorId> =
+            leafs.iter().copied().filter(|&tid| matches!(rt.tensors[tid], TensorData::Eager { .. })).collect();
         let affiliated: Vec<TensorId> = rt
             .tensors
             .iter()
@@ -321,7 +328,11 @@ impl Drop for Tape {
                     // cascade triggered by an earlier release in this loop
                     // re-homed it as a pure eager load. It no longer holds the
                     // graph variant; just drop the graph's affiliation count.
-                    rt.graphs[graph_id].ref_count -= 1;
+                    // Leafs already `Eager` at collection were eagerified by
+                    // `realize` (see `eager_leafs`): their edge is already gone.
+                    if !eager_leafs.contains(&tid) {
+                        rt.graphs[graph_id].ref_count -= 1;
+                    }
                 }
                 ref t => unreachable!("affiliated tensor changed variant: {t:?}"),
             };
