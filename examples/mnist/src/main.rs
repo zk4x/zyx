@@ -37,7 +37,7 @@ fn main() -> Result<(), ZyxError> {
     let _test_y = train_dataset["test_y"].clone();
 
     let batch_size = 128;
-    let n_train = train_x.shape()[0] as i64;
+    let n_train = train_x.shape()[0].item::<i64>();
 
     let mut net = MnistNet::new(DType::F32)?;
 

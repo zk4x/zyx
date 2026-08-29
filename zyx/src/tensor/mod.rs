@@ -319,19 +319,20 @@ impl Tensor {
     /// # use zyx::Tensor;
     /// let t = Tensor::from([[2, 3, 2], [4, 5, 1]]);
     /// let [d2] = t.rdims().unwrap();
-    /// assert_eq!(d2, 3);
+    /// assert_eq!(d2.item::<i64>(), 3);
     /// ```
-    pub fn rdims<const N: usize>(&self) -> Result<[Dim; N], ZyxError> {
-        let shape = self.resolve_shape();
+    pub fn rdims<const N: usize>(&self) -> Result<[Tensor; N], ZyxError> {
+        let shape = self.shape();
 
         if N > shape.len() {
             return Err(ZyxError::shape_error(format!("Requested {N} dims, but tensor only has rank of {}", shape.len()).into()));
         }
 
-        let slice = &shape[shape.len() - N..];
-        let mut last_dims = [1; N];
-        last_dims.copy_from_slice(slice);
-        Ok(last_dims)
+        let mut res: [Option<Tensor>; N] = std::array::from_fn(|_| None);
+        for (i, d) in shape[shape.len() - N..].iter().enumerate() {
+            res[i] = Some(d.clone());
+        }
+        Ok(res.map(|d| d.unwrap()))
     }
 
     /// Returns the total number of elements in the tensor.
@@ -744,20 +745,20 @@ impl Tensor {
     #[allow(clippy::missing_panics_doc)]
     pub fn kaiming_uniform<T: Float>(shape: impl IntoIterator<Item = impl Into<Tensor>>, a: T) -> Result<Tensor, ZyxError> {
         let dims: Vec<Tensor> = shape.into_iter().map(Into::into).collect();
-        {
+        // Stack outside the RT lock — Tensor::stack locks internally.
+        let shape_st = Tensor::stack(&dims).ok();
+        let resolved: Vec<Dim> = {
             let rt = RT.lock();
-            let shape_st = Tensor::stack(&dims).ok();
-            let resolved: Vec<Dim> = shape_st.as_ref().map(|s| rt.resolve_shape(s.id)).unwrap_or_default();
-            let n = T::from_i64(resolved.iter().skip(1).product::<Dim>().try_into().unwrap());
-            let one = T::one();
-            let x = Scalar::add(one, Scalar::mul(a, a));
-            let two = Scalar::add(one, one);
-            let three = Scalar::add(two, one);
-            let x = Scalar::div(two, x).sqrt();
-            let bound = Scalar::mul(three.sqrt(), Scalar::div(x, n));
-            drop(rt);
-            Tensor::uniform(dims, bound.neg()..bound)
-        }
+            shape_st.as_ref().map(|s| rt.resolve_shape(s.id)).unwrap_or_default()
+        };
+        let n = T::from_i64(resolved.iter().skip(1).product::<Dim>().try_into().unwrap());
+        let one = T::one();
+        let x = Scalar::add(one, Scalar::mul(a, a));
+        let two = Scalar::add(one, one);
+        let three = Scalar::add(two, one);
+        let x = Scalar::div(two, x).sqrt();
+        let bound = Scalar::mul(three.sqrt(), Scalar::div(x, n));
+        Tensor::uniform(dims, bound.neg()..bound)
     }
 
     /// Create tensor sampled from glorot uniform distribution.
@@ -766,9 +767,10 @@ impl Tensor {
     #[allow(clippy::cast_precision_loss)]
     pub fn glorot_uniform(shape: impl IntoIterator<Item = impl Into<Tensor>>, dtype: DType) -> Result<Tensor, ZyxError> {
         let dims: Vec<Tensor> = shape.into_iter().map(Into::into).collect();
+        // Stack outside the RT lock — Tensor::stack locks internally.
+        let shape_st = Tensor::stack(&dims).ok();
         let c = {
             let rt = RT.lock();
-            let shape_st = Tensor::stack(&dims).ok();
             let resolved: Vec<Dim> = shape_st.as_ref().map(|s| rt.resolve_shape(s.id)).unwrap_or_default();
             6. / (resolved[0] + resolved.iter().skip(1).product::<Dim>()) as f32
         };
@@ -2681,7 +2683,7 @@ impl Tensor {
     pub fn triu(&self, diagonal: i64) -> Result<Tensor, ZyxError> {
         //return Tensor._tri(self.shape[-2], self.shape[-1], diagonal=diagonal, device=self.device, dtype=dtypes.bool).where(self, self.zeros_like())
         let [r, c] = self.rdims::<2>()?;
-        Tensor::tri(r, c, diagonal, DType::Bool).where_(self, Tensor::zeros_like(self))
+        Tensor::tri(r.item::<Dim>(), c.item::<Dim>(), diagonal, DType::Bool).where_(self, Tensor::zeros_like(self))
     }
 
     /// Returns lower triangular part of the input tensor, other elements are set to zero
@@ -2690,7 +2692,7 @@ impl Tensor {
     pub fn tril(&self, diagonal: i64) -> Result<Tensor, ZyxError> {
         //return Tensor._tri(self.shape[-2], self.shape[-1], diagonal=diagonal+1, device=self.device, dtype=dtypes.bool).where(self.zeros_like(), self)
         let [r, c] = self.rdims::<2>()?;
-        Tensor::tri(r, c, diagonal + 1, DType::Bool).where_(Tensor::zeros_like(self), self)
+        Tensor::tri(r.item::<Dim>(), c.item::<Dim>(), diagonal + 1, DType::Bool).where_(Tensor::zeros_like(self), self)
     }
 
     /// Pooling function with kernel size, stride and dilation

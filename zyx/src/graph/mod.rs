@@ -1616,11 +1616,22 @@ impl Runtime {
 
         let (kernel_id, my_op_id) = match self.tensors[tid] {
             TensorData::Eager { kernel_id, op_id, .. } | TensorData::Promoted { kernel_id, op_id, .. } => (kernel_id, op_id),
+            // A NULL-ids Graph variant is the tombstone left by `Tape::drop`
+            // for a graph tensor that still had a user handle when its tape
+            // died without `realize`. Its value was never computed and cannot
+            // be recomputed (the graph is gone), so it can never be promoted
+            // into a new tape. This is intended behaviour, not a bug: call
+            // `tape.realize` before the tape is dropped (the training-loop
+            // pattern: gradient → optim.update → tape.realize(params)).
+            TensorData::Graph { class_id: ClassId::NULL, .. } => panic!(
+                "tensor {tid} belongs to a tape that was dropped without `realize`: its value was never computed and cannot be used. This is intended behaviour — realize the tape's outputs before it is dropped."
+            ),
             ref t => panic!("promote_to_graph: tensor {tid} has no eager kernel: {t:?}"),
         };
-        if !self.kernels[kernel_id].outputs.contains(&tid) {
-            eprintln!(">>> PROMOTE tid={tid} kernel={kernel_id:?} NOT in outputs, data={:?}", self.tensors[tid]);
-        }
+        debug_assert!(
+            self.kernels[kernel_id].outputs.contains(&tid),
+            "promote_to_graph: tensor {tid} kernel {kernel_id:?} not in outputs"
+        );
 
         // Already realized eager tensors promote to the graph as leaves directly.
         // Their buffer is read by the plan as an input; the value is preserved and

@@ -511,6 +511,24 @@ pub struct Runtime {
 }
 
 impl Runtime {
+    /// Cache key for the plan cache: the graph's content key (structure +
+    /// outputs) folded together with the pool each leaf class's buffer lives
+    /// in at call time. The compiled plan bakes pool-dependent bindings
+    /// (`ExecPlan::leaf_pools`, cross-pool alias handling), so two realizations
+    /// of the same graph shape may only share a plan when the leaf pool layout
+    /// matches; otherwise the plan recompiles.
+    pub(crate) fn plan_cache_key(&self, graph_id: GraphId, outputs: &BTreeSet<ClassId>) -> u64 {
+        use std::hash::{Hash, Hasher};
+        let graph = &self.graphs[graph_id];
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        graph.cache_key(outputs).hash(&mut hasher);
+        for &cid in &graph.leaf_classes {
+            let &tid = graph.leaf_map.get(&cid).unwrap();
+            self.buffer_map.get(&tid).map(|b| b.pool).hash(&mut hasher);
+        }
+        hasher.finish()
+    }
+
     pub const fn new() -> Self {
         Runtime {
             graphs: Slab::new(),

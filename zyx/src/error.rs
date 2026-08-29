@@ -26,6 +26,10 @@ pub enum ZyxError {
     KernelLaunchFailure,
     /// Tried to load a graph tensor without calling realize first
     GraphTensorNotRealized(Box<str>),
+    /// A frozen tape's leaf bindings (buffer pools) changed since `freeze` —
+    /// the compiled plan no longer matches the inputs. The tape must be
+    /// re-frozen.
+    FrozenPlanStale(Box<str>),
 }
 
 impl ZyxError {
@@ -75,6 +79,17 @@ impl ZyxError {
             .into(),
         )
     }
+
+    /// A frozen tape was replayed with inputs whose buffer bindings changed
+    /// since `freeze` compiled the plan. The frozen contract is that bindings
+    /// are fixed; the tape must be re-frozen for the new inputs.
+    #[track_caller]
+    pub fn frozen_plan_stale(e: Box<str>) -> Self {
+        let location = std::panic::Location::caller();
+        let mut e: String = e.into();
+        write!(e, ", {}:{}:{}", location.file(), location.line(), location.column()).unwrap();
+        Self::FrozenPlanStale(e.into())
+    }
 }
 
 impl std::fmt::Display for ZyxError {
@@ -91,6 +106,7 @@ impl std::fmt::Display for ZyxError {
                 "Multiple kernel variations failed to launch. Could be autotuner issue, but more likely faulty hardware driver."
             )),
             ZyxError::GraphTensorNotRealized(e) => f.write_str(e),
+            ZyxError::FrozenPlanStale(e) => f.write_str(e),
         }
     }
 }

@@ -170,7 +170,7 @@ impl Tape {
         rt.debug_assert_pre_realize(graph_id);
 
         let output_set: BTreeSet<ClassId> = output_classes.iter().copied().collect();
-        let cache_key = rt.graphs[graph_id].cache_key(&output_set);
+        let cache_key = rt.plan_cache_key(graph_id, &output_set);
 
         if let Some(plan) = rt.plan_cache.get(&cache_key) {
             let mut class_buf: Map<ClassId, BufferId> = Map::default();
@@ -401,7 +401,7 @@ impl Tape {
         rt.debug_assert_pre_realize(graph_id);
 
         let output_set: BTreeSet<ClassId> = outputs.iter().map(|x| x.0).collect();
-        let cache_key = rt.graphs[graph_id].cache_key(&output_set);
+        let cache_key = rt.plan_cache_key(graph_id, &output_set);
 
         if rt.plan_cache.contains_key(&cache_key) {
             return Ok(FrozenTape { cache_key, outputs });
@@ -428,7 +428,23 @@ impl FrozenTape {
         let mut class_buf: Map<ClassId, BufferId> = Map::default();
         let mut class_vars: Map<ClassId, Constant> = Map::default();
         for (tid, &cid) in inputs.into_iter().zip(rt.plan_cache[&self.cache_key].leaf_classes.iter()) {
+            // The frozen contract: leaf bindings are fixed since `freeze` — a
+            // compiled plan bakes pool-dependent decisions (ExecPlan::new's
+            // cross-pool alias handling), so replaying with a leaf buffer in a
+            // different pool would execute a wrong plan. Loud error instead:
+            // re-freeze the tape.
             if let Some(&buf_id) = rt.buffer_map.get(&tid.id) {
+                let expected = rt.plan_cache[&self.cache_key].leaf_pools.get(&cid).copied();
+                if expected != Some(buf_id.pool) {
+                    return Err(ZyxError::frozen_plan_stale(
+                        format!(
+                            "frozen tape replayed with leaf class {cid:?} in pool {:?}, but the frozen plan compiled it in pool {:?} — bindings changed since freeze, re-freeze the tape",
+                            buf_id.pool,
+                            expected
+                        )
+                        .into(),
+                    ));
+                }
                 class_buf.insert(cid, buf_id);
             } else {
                 // Variable leaf: no buffer anywhere; its scalar value

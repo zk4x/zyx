@@ -1,7 +1,7 @@
 // Copyright (C) 2025 zk4x
 // SPDX-License-Identifier: LGPL-3.0-only
 
-use zyx::{DType, Tape, Tensor, ZyxError};
+use zyx::{DType, Module, Tape, Tensor, ZyxError};
 use zyx_nn::{Linear, Module};
 use zyx_optim::SGD;
 
@@ -41,7 +41,10 @@ fn main() -> Result<(), ZyxError> {
         let grads = tape.gradient(&loss, &net);
         optim.update(&mut net, grads);
 
-        //
+        // The optimizer update replaced the parameters with graph tensors of
+        // this tape; without `realize` their values are never computed and
+        // the dropped tape leaves them as unusable tombstones.
+        tape.realize(net.iter().chain(optim.iter()).chain([&loss]))?;
     }
 
     Ok(())

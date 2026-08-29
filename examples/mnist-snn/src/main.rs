@@ -66,7 +66,7 @@ impl Snn {
     }
 
     fn forward_store(&self, x: &Tensor) -> Result<(Tensor, SpikeCache), ZyxError> {
-        let b = x.shape()[0];
+        let b = x.shape()[0].item::<i64>();
         let h1 = 256;
         let h2 = 128;
         let n_out = 10;
@@ -106,7 +106,7 @@ impl Snn {
         output: &Tensor,
         stored: &SpikeCache,
     ) -> Result<Vec<Tensor>, ZyxError> {
-        let b = x.shape()[0] as f32;
+        let b = x.shape()[0].item::<f32>();
         let t = self.t;
 
         let bs: Tensor = (1.0f32 / b).into();
@@ -120,8 +120,8 @@ impl Snn {
         let mut dw3_acc = Tensor::zeros([128, 10], DType::F32);
         let mut db3_acc = Tensor::zeros([10], DType::F32);
 
-        let mut dv1 = Tensor::zeros([x.shape()[0], 256], DType::F32);
-        let mut dv2 = Tensor::zeros([x.shape()[0], 128], DType::F32);
+        let mut dv1 = Tensor::zeros([x.shape()[0].item::<i64>(), 256], DType::F32);
+        let mut dv2 = Tensor::zeros([x.shape()[0].item::<i64>(), 128], DType::F32);
 
         for t_idx in (0..t).rev() {
             let (spike1, spike2, v1_pre, v2_pre) = &stored[t_idx];
@@ -181,8 +181,8 @@ fn evaluate(model: &Snn, test_x: &Tensor, test_y: &Tensor) -> Result<f32, ZyxErr
     let pred = logits.argmax_axis(-1)?;
     let correct_f32 = pred.equal(test_y)?.cast(DType::F32);
     let correct = correct_f32.sum_all().item::<f32>();
-    let total = test_y.shape()[0];
-    let accuracy = 100.0 * correct / total as f32;
+    let total = test_y.shape()[0].item::<f32>();
+    let accuracy = 100.0 * correct / total;
 
     println!("\nOverall Test Accuracy: {accuracy:.2}% ({correct:.0}/{total})");
 

@@ -349,3 +349,28 @@ fn drop_leaf_handle_before_realize() -> Result<(), ZyxError> {
     println!("{z}");
     Ok(())
 }
+
+// Two sequential tapes sharing a parameter, each doing gradient + manual SGD
+// update, with realize (the training-loop pattern). Without realize the
+// optimizer update leaves the parameters as graph tensors of the dropped
+// tape — unusable tombstones (promote_to_graph panics by design on the
+// second Tape::new; see the tombstone arm in promote_to_graph).
+#[test]
+fn two_tapes_update_repro() -> Result<(), ZyxError> {
+    let mut w = Tensor::from([1.0f32, 2.0, 3.0]);
+    let target = Tensor::from([1.0f32, 0.0, 0.0]);
+    let mut bias = Tensor::from([0.0f32, 0.0, 0.0]);
+    for _ in 0..2 {
+        let tape = Tape::new([&w])?;
+        let y = &w * &w;
+        let loss = y.mse_loss(&target)?;
+        let grads = tape.gradient(&loss, [&w]);
+        // manual SGD update with momentum + nesterov (mirrors zyx-optim SGD)
+        bias = &bias * 0.9f32 + &grads[0] * 0.01f32;
+        let g = &grads[0] + &bias * 0.9f32;
+        w = (&w - &g * 0.01f32).cast(w.dtype());
+        tape.realize([&w, &bias, &loss])?;
+    }
+    Ok(())
+}
+
