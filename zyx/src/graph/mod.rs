@@ -2142,6 +2142,7 @@ impl Runtime {
             // then build a fresh load kernel sharing the existing buffer —
             // no data moves. The slab-side `shape_id` is replayed into the
             // new kernel.
+            let mut old_load_duplicates = 0usize;
             if !old_kernel_id.is_null() {
                 // Live detach: this tensor is still alive (rc > 0), only its
                 // affiliation moves to a fresh load kernel below. A kernel can
@@ -2151,6 +2152,7 @@ impl Runtime {
                 // `on_rc_zero`); no death bookkeeping here.
                 let removed = self.kernels[old_kernel_id].outputs.remove(&tid);
                 debug_assert!(removed, "eagerify: tid {tid} not listed in outputs of producer {old_kernel_id:?}");
+                old_load_duplicates = self.kernels[old_kernel_id].loads.iter().filter(|&&t| t == tid).count();
             }
             let dtype = self.dtype(tid);
             let kernel_id = self.kernels.push(KernelData {
@@ -2169,6 +2171,35 @@ impl Runtime {
             self.tensors[tid] = TensorData::Eager { kernel_id, op_id, depends_on: KernelId::NULL, shape_id, rc };
             // The new kernel-load occurrence carries its own rc reference.
             self.retain(tid);
+            // Fully detach from the old producer: its load entries on tid are
+            // released — the fresh kernel's entry (retained above) replaces
+            // them. Without this the old kernel keeps a stale edge whose count
+            // pins tid above the breaker threshold forever.
+            if old_load_duplicates > 0 {
+                self.kernels[old_kernel_id].loads.retain(|&t| t != tid);
+                for _ in 0..old_load_duplicates {
+                    self.release(tid);
+                }
+                if self.kernels[old_kernel_id].outputs.is_empty() && self.kernels[old_kernel_id].stores.is_empty() {
+                    // The old producer is dead wood: drop it and release its
+                    // remaining load edges (same recursion as release's
+                    // kernel-drop branch).
+                    for &t in &self.kernels[old_kernel_id].loads {
+                        if let TensorData::Eager { kernel_id: k, .. } | TensorData::Promoted { kernel_id: k, .. } =
+                            &mut self.tensors[t]
+                        {
+                            if *k == old_kernel_id {
+                                *k = KernelId::NULL;
+                            }
+                        }
+                    }
+                    let mut loads = std::mem::take(&mut self.kernels[old_kernel_id].loads);
+                    self.kernels.remove(old_kernel_id);
+                    for t in loads {
+                        self.release(t);
+                    }
+                }
+            }
         }
 
         self.graphs[graph_id].ref_count -= 1;

@@ -29,23 +29,75 @@
 //!    `Tensor::reshape`) while already holding the guard. Scope every `let rt = RT.lock()`
 //!    tightly so the guard is released before the next call.
 //!
-//! # Refcount rules (the only places the runtime mutates refcounts)
+//! # The reference counting model
 //!
-//! Refcounting is done **purely inside the runtime** — `Tensor` is a thin handle. The
-//! rules:
+//! Every tensor's liveness is a plain refcount (`rc`) on its slab entry, and **every edge
+//! to a tensor counts**. There are exactly four edge kinds; each increments the target's
+//! `rc` when created and decrements it exactly once when the edge dies:
 //!
-//! - **Fresh stacks own their result.** `self.stack(&dims)` returns a new `shape_id` with
-//!   `rc = 1` which is the result's ownership. Callers must **not** `retain` a freshly built
-//!   stack — that double-counts and leaks. Retain only when *sharing* an existing shape_id
-//!   (e.g. `flip`, `bitcast`, eager `cast`, eager `binary`).
-//! - **Symbolic nodes retain.** Every runtime function that takes a `TensorId` and stores
-//!   it somewhere must `retain` it if the stored id is symbolic (the structural nodes:
-//!   `Constant`, `Variable`, `Stack`, `Cast`, `Unary`, `Binary`). Eager / Graph / Promoted
-//!   nodes are not retain-counted by consumers — shared kernels/graphs carry their own
-//!   reference counts and the tensor `Clone` / `Drop` handles handle accounting.
-//! - **Eager / Graph / Promoted share kernels/graphs.** A tensor in one of those states
-//!   shares ownership with the kernel or graph it lives in; do not `retain` it from a
-//!   consumer — the kernelizer and the kernel's `loads`/`stores` are the source of truth.
+//! 1. **User handle.** The caller's `Tensor` value. Created by tensor construction /
+//!    `Clone`, released by `Tensor::drop` → [`Runtime::release`].
+//! 2. **Symbolic tensor edges.** The pure-slab symbolic nodes reference each other:
+//!    `Cast.x`, `Unary.x`, `Binary { x, y }`, `Stack.tensors`. Each held child is one
+//!    edge: retained when the node is created (see `stack` / `binary` symbolic arms),
+//!    released when the node dies ([`Runtime::release`]'s death path).
+//! 3. **Kernel load edges.** `KernelData.loads` lists the tensors a kernel reads; each
+//!    entry is one edge counted in the loaded tensor's `rc`. A tensor may appear more
+//!    than once in the same kernel's `loads` (one entry per read occurrence) and in
+//!    several kernels at once. Edges are created when the read is introduced (kernel
+//!    build, fusion, symbolic replay) and released when the reader's interest ends —
+//!    at op-chain prune ([`Runtime::release`] death path) or at kernel death, when the
+//!    kernel launches (`materialize_kernel`) and has consumed its loads. Moving ops
+//!    between kernels (`merge_kernel`) moves the load entries with them — an ownership
+//!    transfer, **no rc change**.
+//! 4. **Graph leaf edges.** A leaf promoted into a tape's graph is retained by the tape
+//!    (`promote_to_graph`); the tape releases the edge when it dies.
+//!
+//! `shape_id` is also an edge: a kernel-backed tensor holds an edge to the symbolic
+//! expression describing its shape, released on the tensor's death.
+//!
+//! **Fresh stacks own their result.** `self.stack(&dims)` returns a new `shape_id` with
+//! `rc = 1` which is the result's ownership. Callers must **not** `retain` a freshly built
+//! stack — that double-counts and leaks. Retain only when *sharing* an existing shape_id
+//! (e.g. `flip`, `bitcast`, eager `cast`, eager `binary`).
+//!
+//! A tensor's `rc` is therefore: user handles + symbolic children it is referenced by +
+//! kernel load entries + (for graph leaves) the tape's edge. Every variant dies purely on
+//! `rc == 0`; nothing else keeps a kernel-backed tensor alive.
+//!
+//! # Kernel / tensor lifecycle
+//!
+//! - A kernel's `outputs` set tracks what the kernel still **owes** (unrealized results a
+//!   user may still be waiting for). `outputs` membership is **not** an edge and does not
+//!   keep the tensor alive. `stores` lists already-realized outputs.
+//! - A kernel-backed tensor is born with `rc = 2`: the user's handle plus its producer
+//!   kernel's load edge (`KernelData.loads` contains the tensor itself — the kernel may
+//!   read what it writes). Exactly one kernel holds it: its `kernel_id`, which lists the
+//!   tensor in `outputs` and/or `loads`.
+//! - **Disown.** When a user handle drops and the tensor's remaining `rc` is exactly its
+//!   producer kernel's load edge, the tensor is disowned: removed from the kernel's
+//!   `outputs`, but kept alive (rc stays 1) as input for the kernel's still-pending
+//!   computations. Other surviving outputs may still read its buffer.
+//! - **Breaker.** When a handle drops, the remaining rc is 1 and the producer kernel's
+//!   `outputs` is exactly `{x}` — the kernel's only remaining purpose was producing x, so
+//!   the tensor↔kernel cycle is real and nothing else can ever reference the tensor — the
+//!   cycle is broken: x dies and takes the (now purposeless) kernel with it. Without this
+//!   the pair would deadlock: x kept alive by its kernel's load edge, the kernel kept
+//!   alive by x being its last output.
+//! - **Death (rc == 0).** The tensor detaches from its producer kernel: removed from
+//!   `outputs`, its now-unreferenced op chain pruned, the pruned ops' load edges released.
+//!   If the kernel's `outputs` and `stores` are then empty the kernel is dropped and its
+//!   remaining load edges are released, which recursively kills tensors nothing else
+//!   reads (including `depends_on` producers). Then: free the buffer, remove the slab
+//!   entry, release the `shape_id` edge.
+//! - **Kernel death tolerates `kernel_id == NULL`.** Before a kernel is dropped or
+//!   materialized, every load tensor whose `kernel_id` points at it has that field
+//!   nulled: the kernel is gone, its edges are being released, and a later death must not
+//!   dereference the dead kernel. (This also matters because `materialize_kernel` uses
+//!   `remove_and_return` — a `swap_remove` — so `kernel_id` values pointing at the
+//!   removed kernel would silently alias a different kernel afterwards.)
+//! - `depends_on` is never released directly: it dies through the same recursion when
+//!   the loading kernel's loads are released.
 //!
 //! # Invariants carried into the kernelizer
 //!
@@ -664,7 +716,9 @@ impl Runtime {
     ///
     /// Invariants:
     /// - while a tensor exists in the slab, every non-null `kernel_id` it holds
-    ///   lists that tensor in the kernel's `outputs`;
+    ///   lists that tensor in the kernel's `outputs` **and/or** `loads` (a
+    ///   disowned tensor — user handle dropped, kept alive as input — is listed
+    ///   in `loads` only);
     /// - a promoted ("both") tensor is removed only through its graph branch,
     ///   which must therefore also restore eager consistency for any surviving
     ///   siblings of its producer kernel.
@@ -685,69 +739,6 @@ impl Runtime {
                     println!("rc::retain({x}) -> {rc}");
                 }
             };
-        }
-    }
-
-    /// Detach `x` from its producer kernel's outputs, pruning the op chain
-    /// that only x referenced, then drop the kernel if x was its last live
-    /// output or materialize it if it still holds stores.
-    ///
-    /// This is the **live** detach: `x` may well still be alive afterwards
-    /// (its handle and any other edges keep `rc` positive). It performs NO
-    /// death bookkeeping — no buffer free, no slab removal, no shape-edge
-    /// release. Callers detaching a truly dying tensor use [`Self::on_rc_zero`].
-    ///
-    /// # Edge refcounting
-    /// Both the caller's handle AND each kernel-load occurrence hold their own
-    /// reference (`rc` counts every edge). There is no special-casing of
-    /// "self-loads": when pruning drops a load occurrence — even one pointing
-    /// back at `x` itself — that edge is released exactly once and the plain
-    /// refcount does the rest. Materialization on an emptied store-holding
-    /// producer is intentionally unconditional here too (defensive): an old
-    /// producer should be store-free in this path, but launching it anyway is
-    /// always correct.
-    pub fn detach_from_kernel(&mut self, x: TensorId, kernel_id: KernelId, op_id: OpId) {
-        debug_assert!(!x.is_null());
-
-        if kernel_id.is_null() && op_id.is_null() {
-            return;
-        }
-
-        debug_assert!(!op_id.is_null());
-        debug_assert!(!kernel_id.is_null());
-        debug_assert!(!self.kernels[kernel_id].stores.contains(&x));
-
-        self.kernels[kernel_id].outputs.remove(&x);
-
-        if self.kernels[kernel_id].outputs.is_empty() && self.kernels[kernel_id].stores.is_empty() {
-            let mut loads = std::mem::take(&mut self.kernels[kernel_id].loads);
-            self.kernels.remove(kernel_id);
-            loads.retain(|&id| id != x);
-            for tid in loads {
-                self.release(tid);
-            }
-            return;
-        }
-
-        let out_ops: Vec<OpId> = self.kernels[kernel_id]
-            .outputs
-            .iter()
-            .map(|&tid| match self.tensors[tid] {
-                TensorData::Eager { op_id, .. } | TensorData::Promoted { op_id, .. } => op_id,
-                ref t => panic!("kernel output tid {tid} has unexpected tensor data {t:?}"),
-            })
-            .collect();
-        let loads = self.kernels[kernel_id].loads.clone();
-        let new_loads = self.kernels[kernel_id].kernel.remove_unused_chain(op_id, &out_ops, &loads);
-        let pruned = loads_dropped_by_prune(&loads, &new_loads);
-        for load in pruned {
-            self.release(load);
-        }
-        self.kernels[kernel_id].loads = new_loads;
-
-        if self.kernels[kernel_id].outputs.is_empty() {
-            // Materialize, which removes the kernel
-            self.materialize_kernel(kernel_id).expect("materialization in tensor detach from kernel failed");
         }
     }
 
@@ -788,14 +779,33 @@ impl Runtime {
         // children) all count through here.
         #[cfg(feature = "debug_tensor_op")]
         println!("rc::release({x}) pre: {:?}", self.tensors[x]);
+        let mut disown = false;
         let rc = {
             match &mut self.tensors[x] {
                 TensorData::Promoted { rc, kernel_id, .. } | TensorData::Eager { rc, kernel_id, .. } => {
                     *rc -= 1;
-                    if *rc == 1 && self.kernels[*kernel_id].loads.contains(&x) {
-                        #[cfg(feature = "debug_tensor_op")]
-                        println!("rc::release({x}) BREAKER fires: own kernel loads={:?}", self.kernels[*kernel_id].loads);
-                        *rc -= 1;
+                    if !kernel_id.is_null() {
+                        // Entries of x in its own kernel — each holds one rc
+                        // count. `rc == n` (with n >= 1) means every remaining
+                        // reference is such an entry: no handles, no other
+                        // kernels' entries, no symbolic edges.
+                        let n = self.kernels[*kernel_id].loads.iter().filter(|&&t| t == x).count() as u16;
+                        debug_assert!(*rc >= n, "rc {rc} below own-kernel entry count {n} for {x}: ledger desync");
+                        if n > 0 && *rc == n {
+                            let outs = &self.kernels[*kernel_id].outputs;
+                            if outs.len() == 1 && outs.contains(&x) {
+                                // Breaker: the kernel's only remaining purpose was
+                                // producing x — the tensor↔kernel cycle is real and
+                                // nothing else can ever reference x. Consume ALL n
+                                // entry counts; the death path drops exactly those
+                                // entries.
+                                #[cfg(feature = "debug_tensor_op")]
+                                println!("rc::release({x}) BREAKER fires: rc == {n} entries, kernel outputs={{x}} — cycle broken");
+                                *rc = 0;
+                            } else {
+                                disown = true;
+                            }
+                        }
                     }
                     *rc
                 }
@@ -818,6 +828,23 @@ impl Runtime {
         // a still-positive count means another live reference (handle, kernel
         // self-load edge, or symbolic-node child) keeps the entry alive.
         if rc != 0 {
+            if disown {
+                // The user handle is gone; the remaining rc is this kernel's load
+                // edge. The kernel still owes other outputs whose computations may
+                // read x — disown it: drop it from `outputs` (the kernel no longer
+                // owes x to anyone) but keep it alive as input. Its load edge is
+                // released when the kernel dies or materializes.
+                let kernel_id = match self.tensors[x] {
+                    TensorData::Eager { kernel_id, .. } | TensorData::Promoted { kernel_id, .. } => kernel_id,
+                    ref t => unreachable!("disown on non-kernel-backed tensor: {t:?}"),
+                };
+                debug_assert!(!kernel_id.is_null());
+                debug_assert!(
+                    !(self.kernels[kernel_id].outputs.len() == 1 && self.kernels[kernel_id].outputs.contains(&x)),
+                    "disown: kernel outputs must have other members"
+                );
+                self.kernels[kernel_id].outputs.remove(&x);
+            }
             return;
         }
 
@@ -863,7 +890,62 @@ impl Runtime {
                 }
             }
             TensorData::Eager { kernel_id, op_id, shape_id, .. } => {
-                self.detach_from_kernel(x, kernel_id, op_id);
+                // Detach from the producer kernel (inlined; the former
+                // `detach_from_kernel`, duplicated per death arm by design).
+                if !kernel_id.is_null() {
+                    debug_assert!(!op_id.is_null());
+                    debug_assert!(!self.kernels[kernel_id].stores.contains(&x));
+                    self.kernels[kernel_id].outputs.remove(&x);
+                    if self.kernels[kernel_id].outputs.is_empty() && self.kernels[kernel_id].stores.is_empty() {
+                        // The kernel dies. Null out the kernel_ids of its loads
+                        // first (they point at this kernel): their death paths,
+                        // triggered by the load releases below, must not
+                        // dereference the dead kernel.
+                        for &tid in &self.kernels[kernel_id].loads {
+                            if let TensorData::Eager { kernel_id: k, .. }
+                            | TensorData::Promoted { kernel_id: k, .. } = &mut self.tensors[tid]
+                            {
+                                if *k == kernel_id {
+                                    *k = KernelId::NULL;
+                                }
+                            }
+                        }
+                        let mut loads = std::mem::take(&mut self.kernels[kernel_id].loads);
+                        self.kernels.remove(kernel_id);
+                        #[cfg(feature = "debug_tensor_op")]
+                        eprintln!("KDROP {kernel_id:?} dying={x} all_loads={loads:?}");
+                        loads.retain(|&id| id != x);
+                        for tid in loads {
+                            self.release(tid);
+                        }
+                    } else {
+                        let out_ops: Vec<OpId> = self.kernels[kernel_id]
+                            .outputs
+                            .iter()
+                            .map(|&tid| match self.tensors[tid] {
+                                TensorData::Eager { op_id, .. } | TensorData::Promoted { op_id, .. } => op_id,
+                                ref t => panic!("kernel output tid {tid} has unexpected tensor data {t:?}"),
+                            })
+                            .collect();
+                        let loads = self.kernels[kernel_id].loads.clone();
+                        let new_loads = self.kernels[kernel_id].kernel.remove_unused_chain(op_id, &out_ops, &loads);
+                        let pruned = loads_dropped_by_prune(&loads, &new_loads);
+                        for load in pruned {
+                            // Skip x itself: its own load entry's count is already
+                            // consumed by this death (releasing again would
+                            // underflow a zero rc).
+                            if load != x {
+                                self.release(load);
+                            }
+                        }
+                        self.kernels[kernel_id].loads = new_loads;
+                        if self.kernels[kernel_id].outputs.is_empty() {
+                            // Materialize, which removes the kernel
+                            self.materialize_kernel(kernel_id)
+                                .expect("materialization in tensor detach from kernel failed");
+                        }
+                    }
+                }
                 self.free_buffer(x);
                 self.tensors.remove(x);
                 if !shape_id.is_null() {
@@ -871,7 +953,62 @@ impl Runtime {
                 }
             }
             TensorData::Promoted { kernel_id, op_id, graph_id, shape_id, .. } => {
-                self.detach_from_kernel(x, kernel_id, op_id);
+                // Detach from the producer kernel (inlined; the former
+                // `detach_from_kernel`, duplicated per death arm by design).
+                if !kernel_id.is_null() {
+                    debug_assert!(!op_id.is_null());
+                    debug_assert!(!self.kernels[kernel_id].stores.contains(&x));
+                    self.kernels[kernel_id].outputs.remove(&x);
+                    if self.kernels[kernel_id].outputs.is_empty() && self.kernels[kernel_id].stores.is_empty() {
+                        // The kernel dies. Null out the kernel_ids of its loads
+                        // first (they point at this kernel): their death paths,
+                        // triggered by the load releases below, must not
+                        // dereference the dead kernel.
+                        for &tid in &self.kernels[kernel_id].loads {
+                            if let TensorData::Eager { kernel_id: k, .. }
+                            | TensorData::Promoted { kernel_id: k, .. } = &mut self.tensors[tid]
+                            {
+                                if *k == kernel_id {
+                                    *k = KernelId::NULL;
+                                }
+                            }
+                        }
+                        let mut loads = std::mem::take(&mut self.kernels[kernel_id].loads);
+                        self.kernels.remove(kernel_id);
+                        #[cfg(feature = "debug_tensor_op")]
+                        eprintln!("KDROP {kernel_id:?} dying={x} all_loads={loads:?}");
+                        loads.retain(|&id| id != x);
+                        for tid in loads {
+                            self.release(tid);
+                        }
+                    } else {
+                        let out_ops: Vec<OpId> = self.kernels[kernel_id]
+                            .outputs
+                            .iter()
+                            .map(|&tid| match self.tensors[tid] {
+                                TensorData::Eager { op_id, .. } | TensorData::Promoted { op_id, .. } => op_id,
+                                ref t => panic!("kernel output tid {tid} has unexpected tensor data {t:?}"),
+                            })
+                            .collect();
+                        let loads = self.kernels[kernel_id].loads.clone();
+                        let new_loads = self.kernels[kernel_id].kernel.remove_unused_chain(op_id, &out_ops, &loads);
+                        let pruned = loads_dropped_by_prune(&loads, &new_loads);
+                        for load in pruned {
+                            // Skip x itself: its own load entry's count is already
+                            // consumed by this death (releasing again would
+                            // underflow a zero rc).
+                            if load != x {
+                                self.release(load);
+                            }
+                        }
+                        self.kernels[kernel_id].loads = new_loads;
+                        if self.kernels[kernel_id].outputs.is_empty() {
+                            // Materialize, which removes the kernel
+                            self.materialize_kernel(kernel_id)
+                                .expect("materialization in tensor detach from kernel failed");
+                        }
+                    }
+                }
                 self.free_buffer(x);
                 self.tensors.remove(x);
                 if !shape_id.is_null() {
@@ -889,6 +1026,37 @@ impl Runtime {
 
     pub(crate) fn remove_dead_graph(&mut self, graph_id: GraphId) {
         self.graphs.remove(graph_id);
+    }
+
+    /// Number of live slab entries and live buffer_map entries.
+    ///
+    /// Unit-test surface (runtime is not publicly exported): after a full
+    /// create/operate/drop cycle both must be zero — anything else is a leak.
+    pub fn live_inventory(&self) -> (usize, usize) {
+        (self.tensors.iter().count(), self.buffer_map.len())
+    }
+
+    /// Assert the graph affiliation invariant: `graph.ref_count` equals the
+    /// number of live tensors (rc > 0) whose `graph_id` points at `graph_id`.
+    ///
+    /// Any desync means an increment/decrement was missed somewhere (promotion,
+    /// conversion, eagerify, orphaning, death) — i.e. the graph will either
+    /// never be removed (leak) or was torn down early.
+    pub fn assert_graph_inventory(&self, graph_id: GraphId) {
+        let live = self
+            .tensors
+            .iter()
+            .filter(|(_, td)| match td {
+                TensorData::Graph { graph_id: g, rc, .. } | TensorData::Promoted { graph_id: g, rc, .. } if *g == graph_id => *rc > 0,
+                _ => false,
+            })
+            .count();
+        assert_eq!(
+            live as u64,
+            self.graphs[graph_id].ref_count,
+            "graph {graph_id:?} affiliation desync: {live} live affiliated tensors but ref_count = {}",
+            self.graphs[graph_id].ref_count
+        );
     }
 
     /// Push a symbolic scalar expression (a tensors-slab tree: Constant /
@@ -1697,13 +1865,27 @@ impl Runtime {
                 // Reduce one axis at a time, permuting each to be last. Reduce the
                 // highest axis first so lower indices stay valid as the rank shrinks.
                 let mut cur = x;
+                // Ownership: `owns_cur` tells whether reduce holds exactly one
+                // reference on `cur` that it must release before overwriting
+                // it. Entering the loop, `cur` is the caller's `x` — reduce
+                // holds nothing on it.
+                let mut owns_cur = false;
                 let n_axes = axes.len();
                 axes.sort_unstable_by(|a, b| b.cmp(a));
                 let mut dims = self.shape(x);
                 for axis in axes {
                     let rank = self.resolve_shape(cur).len();
                     let permute_axes: Vec<UAxis> = (0..rank as UAxis).filter(|&i| i != axis).chain([axis]).collect();
+                    let prev = cur;
+                    let prev_owned = owns_cur;
                     cur = self.permute(cur, permute_axes);
+                    // `permute` grants one reference on its result — including
+                    // the identity fast path, which retains and returns the
+                    // same tid.
+                    owns_cur = true;
+                    if prev_owned {
+                        self.release(prev);
+                    }
 
                     let (kid, op_id) = self.duplicate_or_store(cur, false)?;
                     let dims_ops = self.kernels[kid].kernel.shape_ids(op_id);
@@ -1731,6 +1913,11 @@ impl Runtime {
 
                     debug_assert_eq!(self.kernels[kid].outputs.len(), 0, "input into reduce must have empty outputs");
                     self.kernels[kid].outputs.insert(tid);
+                    // Overwrite `cur` with the reduce result: release the
+                    // reference reduce holds on the permuted intermediate
+                    // (granted by `permute` above).
+                    self.release(cur);
+                    owns_cur = true;
                     cur = tid;
                 }
 
@@ -3126,6 +3313,8 @@ impl Runtime {
             let self_c = self_loads.iter().filter(|&&t| t == tid).count();
             let new_c = self_c + new_loads.iter().filter(|&&t| t == tid).count();
             let delta = (new_c as i64) - (old_c as i64);
+            #[cfg(feature = "debug_tensor_op")]
+            eprintln!("DUP split kid={kid:?}: tid={tid} old={old_c} self={self_c} new={new_c} delta={delta}");
             for _ in 0..delta {
                 self.retain(tid);
             }
@@ -3195,11 +3384,11 @@ impl Runtime {
         let store_tids: Vec<TensorId> = merge_stores.clone();
         let keep_data = &mut self.kernels[keep_kid];
         keep_data.outputs.extend(merge_outputs);
+        // Load entries move with their ops — an ownership transfer between
+        // kernels. The edges (and their rc counts) persist unchanged; a retain
+        // here would double-count every moved entry.
         keep_data.loads.extend(merge_loads.iter().copied());
         keep_data.stores.extend(merge_stores);
-        for tid in &merge_loads {
-            self.retain(*tid);
-        }
         for &tid in &store_tids {
             if let TensorData::Eager { depends_on, .. } = &mut self.tensors[tid] {
                 *depends_on = keep_kid;
@@ -3284,9 +3473,10 @@ impl Runtime {
             TensorData::Eager { shape_id, rc, .. }
             | TensorData::Graph { shape_id, rc, .. }
             | TensorData::Promoted { shape_id, rc, .. } => {
-                if !shape_id.is_null() {
-                    self.retain(shape_id);
-                }
+                // NOTE: no `retain(shape_id)` here — the re-home keeps the same
+                // slab entry and the same `shape_id` field, so the existing
+                // edge count persists unchanged. A retain would double-count
+                // the shape edge and orphan it at this tensor's death.
                 (shape_id, rc)
             }
             ref t => panic!("add_store: tensor {x} is not a kernel-backed tensor: {t:?}"),
@@ -3408,11 +3598,30 @@ impl Runtime {
         // below, self.dtype on those tensors would panic on the removed kernel.
         let dtypes: Map<TensorId, DType> =
             self.kernels[kid].loads.iter().chain(&self.kernels[kid].stores).map(|&tid| (tid, self.dtype(tid))).collect();
+        // Null out kernel_ids of disowned loads pointing at this kernel: it dies
+        // below, and `remove_and_return` is a swap_remove — a stale kernel_id
+        // would alias a *different* kernel afterwards. Their edges are released
+        // after the launch; the NULL kernel_id ends that recursion cleanly.
+        for &tid in &self.kernels[kid].loads {
+            if let TensorData::Eager { kernel_id: k, .. } | TensorData::Promoted { kernel_id: k, .. } =
+                &mut self.tensors[tid]
+            {
+                if *k == kid {
+                    *k = KernelId::NULL;
+                }
+            }
+        }
         let KernelData { outputs, loads, stores, mut kernel } = unsafe { self.kernels.remove_and_return(kid) };
 
         debug_assert!(outputs.is_empty(), "all outputs must be stored before materialize");
 
         if stores.is_empty() {
+            // Nothing to launch, but the kernel is still being removed: its
+            // load edges must be released exactly as in the launch path, or
+            // the counts orphan and the tensors leak.
+            for &tid in &loads {
+                self.release(tid);
+            }
             return Ok(());
         }
 
@@ -3712,3 +3921,127 @@ impl Runtime {
         }
     }
 }
+
+/*#[cfg(test)]
+mod leak_tests {
+    use super::*;
+    use crate::{RT, Tape, Tensor};
+    use std::sync::{Mutex, OnceLock};
+
+    /// RT is process-global: serialize the inventory tests so parallel unit
+    /// tests never observe each other's live tensors.
+    fn test_lock() -> &'static Mutex<()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+    }
+
+    /// After a full create/operate/drop cycle the runtime must have drained
+    /// completely: no live slab entries, no live buffers.
+    fn assert_drained() {
+        let rt = RT.lock();
+        let (t, b) = rt.live_inventory();
+        if (t, b) != (0, 0) {
+            // Ledger check (handles are 0 at drain time): expected rc per tid =
+            // kernel load entries + symbolic children edges. Any excess is an
+            // orphan count (retain whose edge/entry no longer exists).
+            let mut expected: Map<TensorId, usize> = Map::with_hasher(BuildHasherDefault::new());
+            for kd in rt.kernels.values() {
+                for &l in &kd.loads {
+                    *expected.entry(l).or_insert(0) += 1;
+                }
+            }
+            for (tid, td) in rt.tensors.iter() {
+                match td {
+                    TensorData::Cast { x, .. } | TensorData::Unary { x, .. } => {
+                        *expected.entry(*x).or_insert(0) += 1;
+                    }
+                    TensorData::Binary { x, y, .. } => {
+                        *expected.entry(*x).or_insert(0) += 1;
+                        *expected.entry(*y).or_insert(0) += 1;
+                    }
+                    TensorData::Stack { tensors, .. } => {
+                        for t in tensors.iter() {
+                            *expected.entry(*t).or_insert(0) += 1;
+                        }
+                    }
+                    TensorData::Eager { shape_id, .. } | TensorData::Graph { shape_id, .. }
+                    | TensorData::Promoted { shape_id, .. } => {
+                        if !shape_id.is_null() {
+                            *expected.entry(*shape_id).or_insert(0) += 1;
+                        }
+                    }
+                    _ => {}
+                }
+                let _ = tid;
+            }
+            for (tid, td) in rt.tensors.iter() {
+                let rc = match td {
+                    TensorData::Eager { rc, .. } | TensorData::Graph { rc, .. } | TensorData::Promoted { rc, .. }
+                    | TensorData::Constant { rc, .. } | TensorData::Variable { rc, .. } | TensorData::Cast { rc, .. }
+                    | TensorData::Unary { rc, .. } | TensorData::Binary { rc, .. } | TensorData::Stack { rc, .. } => *rc as usize,
+                };
+                let exp = expected.get(&tid).copied().unwrap_or(0);
+                if rc != exp {
+                    eprintln!("LEDGER tid={tid} rc={rc} expected={exp} orphan={}", rc as isize - exp as isize);
+                }
+                eprintln!("ITER leak-check tid={tid} rc={rc} {td:?}");
+                if let TensorData::Eager { kernel_id, .. } | TensorData::Promoted { kernel_id, .. } = td {
+                    if !kernel_id.is_null() {
+                        if let Some(kd) = rt.kernels.get(*kernel_id) {
+                            eprintln!("   kernel {kernel_id:?}: outputs={:?} loads={:?} stores={:?}", kd.outputs, kd.loads, kd.stores);
+                        } else {
+                            eprintln!("   kernel {kernel_id:?}: REMOVED from slab (stale kernel_id)");
+                        }
+                    }
+                }
+            }
+        }
+        assert_eq!((t, b), (0, 0), "runtime did not drain: leaked tensors or buffers");
+    }
+
+    #[test]
+    fn eager_ops_drain_inventory() -> Result<(), ZyxError> {
+        let _guard = test_lock().lock().unwrap();
+        for _ in 0..8 {
+            {
+                let x = Tensor::from([[1.0f32, 2.0, 3.0, 4.0], [5.0, 6.0, 7.0, 8.0]]);
+                let y = Tensor::from([1.0f32, 2.0, 3.0, 4.0]);
+                let z = x + y; // broadcast + binary fusion
+                let w = z * 2.0; // scalar binary
+                let e = w.exp(); // unary
+                let r = e.reshape([2, 4])?; // movement
+                let p = r.t(); // permute (duplicate_or_store path)
+                let s = p.sum_all(); // reduce
+                let v: Vec<f32> = s.try_into()?; // force execution
+                assert_eq!(v.len(), 1);
+            } // every handle drops here
+            assert_drained();
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn eager_and_tape_drain_inventory() -> Result<(), ZyxError> {
+        let _guard = test_lock().lock().unwrap();
+        for iteration in 0..8 {
+            {
+                // Buffer-backed leaf (stays eager-side, promoted as leaf).
+                let x = Tensor::from([[1.0f32, 2.0, 3.0, 4.0], [5.0, 6.0, 7.0, 8.0]]);
+                let w = Tensor::from([1.0f32, 2.0, 3.0, 4.0]);
+                {
+                    let tape = Tape::new([&x, &w])?;
+                    // Non-leaf promoted intermediates: freely droppable, the
+                    // graph replays their computation.
+                    let y = x.exp() + w; // x promoted, exp replayed, binary
+                    let z = y * 2.0;
+                    let r = z.reshape([2, 4])?;
+                    tape.realize([&r])?;
+                    let v: Vec<f32> = r.try_into()?;
+                    assert_eq!(v.len(), 8);
+                } // tape drops here: revert loop + graph teardown
+            }
+            assert_drained();
+        }
+        Ok(())
+    }
+}*/

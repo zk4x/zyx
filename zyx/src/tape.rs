@@ -257,7 +257,10 @@ impl Drop for Tape {
         // with a `Vec<TensorId>` of affiliated tensors kept on `Graph` and pushed
         // in every `promote_to_graph` path (leaf + non-buffer), iterating that
         // instead. A debug-only full scan can stay to assert the set is complete.
-        let leafs: Set<TensorId> = rt.graphs[graph_id].leaf_map.values().copied().collect();
+        // Leaf edges: one per leaf_map OCCURRENCE — the same tensor id may be
+        // promoted multiple times (e.g. as a tape param and again by an in-scope
+        // op), and each occurrence carries its own retain. Do NOT deduplicate.
+        let leafs: Vec<TensorId> = rt.graphs[graph_id].leaf_map.values().copied().collect();
         let affiliated: Vec<TensorId> = rt
             .tensors
             .iter()
@@ -273,10 +276,32 @@ impl Drop for Tape {
             })
             .collect();
         for &tid in affiliated.iter().chain(&leafs) {
+            if !rt.tensors.contains_id(tid) {
+                // Already dead: a disowned tensor released earlier in this loop
+                // can cascade (shared producer kernel dies, its load releases
+                // kill its other disowned inputs). Legitimate — its death path
+                // already cleared the graph affiliation.
+                continue;
+            }
             match rt.tensors[tid] {
-                TensorData::Promoted { rc, .. } => {
-                    if rc > 0 {
-                        rt.eagerify(tid);
+                TensorData::Promoted { rc, kernel_id, .. } => {
+                    if rc > 0 && !kernel_id.is_null() {
+                        // Disowned detection: rc equals x's entry count in its own
+                        // kernel ⟺ every remaining reference is a kernel load
+                        // edge (no handles, no other kernels' entries). A
+                        // disowned tensor is *not* in its kernel's `outputs`
+                        // (disown removed it); a handle-held one is.
+                        let n = rt.kernels[kernel_id].loads.iter().filter(|&&t| t == tid).count() as u16;
+                        let disowned = n > 0 && rc == n && !rt.kernels[kernel_id].outputs.contains(&tid);
+                        if disowned {
+                            // The user handle is gone and the only remaining
+                            // references are the producer kernel's load edges.
+                            // Nothing to preserve — release it; the death path
+                            // clears the graph affiliation.
+                            rt.release(tid);
+                        } else {
+                            rt.eagerify(tid);
+                        }
                     }
                 }
                 TensorData::Graph { graph_id: _g, rc, .. } => {
@@ -291,19 +316,31 @@ impl Drop for Tape {
                         }
                     }
                 }
+                TensorData::Eager { .. } => {
+                    // Converted after collection by `add_store` — a materialize
+                    // cascade triggered by an earlier release in this loop
+                    // re-homed it as a pure eager load. It no longer holds the
+                    // graph variant; just drop the graph's affiliation count.
+                    rt.graphs[graph_id].ref_count -= 1;
+                }
                 ref t => unreachable!("affiliated tensor changed variant: {t:?}"),
             };
         }
         for tid in leafs {
-            rt.release(tid);
+            if rt.tensors.contains_id(tid) {
+                rt.release(tid);
+            }
         }
 
         for tid in affiliated {
             if !rt.tensors.contains_id(tid) {
-                panic!("affiliated dead");
+                // Disowned tensor, released during the revert loop (directly or
+                // via a kernel-death cascade) — legitimate death.
+                continue;
             }
             let rc = match rt.tensors[tid] {
                 TensorData::Promoted { rc, .. } | TensorData::Graph { rc, .. } => rc,
+                TensorData::Eager { .. } => continue,
                 _ => panic!("affiliated wrong"),
             };
             if rc == 0 {
@@ -319,6 +356,10 @@ impl Drop for Tape {
                 rt.tensors.remove(*tid);*/
             }
         }
+
+        // The affiliation invariant must hold before the graph is torn down:
+        // ref_count equals the number of live tensors still pointing at it.
+        rt.assert_graph_inventory(graph_id);
 
         rt.graphs[graph_id].mark_dead();
 
