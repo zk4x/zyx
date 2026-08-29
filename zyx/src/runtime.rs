@@ -858,6 +858,19 @@ impl Runtime {
                                     "rc::release({x}) BREAKER fires: rc == {n} entries, kernel outputs={{x}} — cycle broken"
                                 );
                                 *rc = 0;
+                                // The n consumed counts ARE these load entries:
+                                // remove them NOW. Anything triggered by the death
+                                // path below (e.g. materialize_kernel's post-launch
+                                // release loop) would otherwise release them again.
+                                self.kernels[*kernel_id].loads.retain(|&t| t != x);
+                                // Consume the outputs edge too (here it is exactly
+                                // {x}): with kernel_id nulled below, the death
+                                // path's detach can no longer remove it.
+                                self.kernels[*kernel_id].outputs.remove(&x);
+                                // The edge is fully consumed — the pointer must go
+                                // with it, so no observer sees the half-consumed
+                                // state (kernel_id set, no membership, rc 0).
+                                *kernel_id = KernelId::NULL;
                             } else {
                                 disown = true;
                             }
@@ -976,16 +989,41 @@ impl Runtime {
                             self.release(tid);
                         }
                     } else {
-                        let out_ops: Vec<OpId> = self.kernels[kernel_id]
-                            .outputs
-                            .iter()
-                            .map(|&tid| match self.tensors[tid] {
-                                TensorData::Eager { op_id, .. } | TensorData::Promoted { op_id, .. } => op_id,
-                                ref t => panic!("kernel output tid {tid} has unexpected tensor data {t:?}"),
-                            })
-                            .collect();
-                        let loads = self.kernels[kernel_id].loads.clone();
+                        // Keep-alive set for the prune: every op owned by a
+                        // live tensor affiliated with this kernel (outputs ∪
+                        // loads). A load-affiliated tensor's op can point into
+                        // this kernel (e.g. after a merge re-point); pruning it
+                        // would orphan the tensor underneath its owner.
+                        let (out_ops, loads) = {
+                            let kd = &self.kernels[kernel_id];
+                            let mut out_ops: Vec<OpId> = kd
+                                .outputs
+                                .iter()
+                                .map(|&tid| match self.tensors[tid] {
+                                    TensorData::Eager { op_id, .. } | TensorData::Promoted { op_id, .. } => op_id,
+                                    ref t => panic!("kernel output tid {tid} has unexpected tensor data {t:?}"),
+                                })
+                                .collect();
+                            for &tid in &kd.loads {
+                                if let TensorData::Eager { op_id, .. } | TensorData::Promoted { op_id, .. } = self.tensors[tid] {
+                                    if kd.kernel.ops.contains_id(op_id) {
+                                        out_ops.push(op_id);
+                                    }
+                                }
+                            }
+                            (out_ops, kd.loads.clone())
+                        };
                         let new_loads = self.kernels[kernel_id].kernel.remove_unused_chain(op_id, &out_ops, &loads);
+                        {
+                            let live_ops: Set<OpId> = self.kernels[kernel_id].kernel.ops.ids().collect();
+                            for (tid, td) in self.tensors.iter() {
+                                if let TensorData::Eager { kernel_id: k, op_id: o, .. } | TensorData::Promoted { kernel_id: k, op_id: o, .. } = td {
+                                    if *k == kernel_id && !live_ops.contains(o) {
+                                        eprintln!("$$$ PRUNE-ORPHAN dying={x} kernel={kernel_id:?} orphan-tid={tid} orphan-op={o:?} dying-op={op_id:?}");
+                                    }
+                                }
+                            }
+                        }
                         let pruned = loads_dropped_by_prune(&loads, &new_loads);
                         for load in pruned {
                             // Skip x itself: its own load entry's count is already
@@ -1039,15 +1077,30 @@ impl Runtime {
                             self.release(tid);
                         }
                     } else {
-                        let out_ops: Vec<OpId> = self.kernels[kernel_id]
-                            .outputs
-                            .iter()
-                            .map(|&tid| match self.tensors[tid] {
-                                TensorData::Eager { op_id, .. } | TensorData::Promoted { op_id, .. } => op_id,
-                                ref t => panic!("kernel output tid {tid} has unexpected tensor data {t:?}"),
-                            })
-                            .collect();
-                        let loads = self.kernels[kernel_id].loads.clone();
+                        // Keep-alive set for the prune: every op owned by a
+                        // live tensor affiliated with this kernel (outputs ∪
+                        // loads). A load-affiliated tensor's op can point into
+                        // this kernel (e.g. after a merge re-point); pruning it
+                        // would orphan the tensor underneath its owner.
+                        let (out_ops, loads) = {
+                            let kd = &self.kernels[kernel_id];
+                            let mut out_ops: Vec<OpId> = kd
+                                .outputs
+                                .iter()
+                                .map(|&tid| match self.tensors[tid] {
+                                    TensorData::Eager { op_id, .. } | TensorData::Promoted { op_id, .. } => op_id,
+                                    ref t => panic!("kernel output tid {tid} has unexpected tensor data {t:?}"),
+                                })
+                                .collect();
+                            for &tid in &kd.loads {
+                                if let TensorData::Eager { op_id, .. } | TensorData::Promoted { op_id, .. } = self.tensors[tid] {
+                                    if kd.kernel.ops.contains_id(op_id) {
+                                        out_ops.push(op_id);
+                                    }
+                                }
+                            }
+                            (out_ops, kd.loads.clone())
+                        };
                         let new_loads = self.kernels[kernel_id].kernel.remove_unused_chain(op_id, &out_ops, &loads);
                         let pruned = loads_dropped_by_prune(&loads, &new_loads);
                         for load in pruned {
@@ -1090,6 +1143,54 @@ impl Runtime {
     /// create/operate/drop cycle both must be zero — anything else is a leak.
     pub fn live_inventory(&self) -> (usize, usize) {
         (self.tensors.iter().count(), self.buffer_map.len())
+    }
+
+    /// Assert the kernel-affiliation invariants for every eager/promoted
+    /// tensor: a non-NULL `kernel_id` must reference a live kernel, the tensor
+    /// must be listed in that kernel's `outputs`, and its `op_id` must be live
+    /// in the kernel's op slab AND reachable from the op list head.
+    ///
+    /// Temporary debugging aid: called at the entry of every tensor op.
+    pub(crate) fn verify_tensor_invariants(&self) {
+        if !cfg!(debug_assertions) {
+            return;
+        }
+        for (tid, td) in self.tensors.iter() {
+            let (kernel_id, op_id) = match td {
+                TensorData::Eager { kernel_id, op_id, .. } | TensorData::Promoted { kernel_id, op_id, .. } => (*kernel_id, *op_id),
+                _ => continue,
+            };
+            if kernel_id.is_null() {
+                continue;
+            }
+            assert!(
+                self.kernels.contains_id(kernel_id),
+                "verify: tensor {tid} points at deleted kernel {kernel_id:?}"
+            );
+            let kd = &self.kernels[kernel_id];
+            assert!(
+                kd.outputs.contains(&tid) || kd.loads.contains(&tid),
+                "verify: tensor {tid} has kernel_id {kernel_id:?} but is neither in its outputs nor loads"
+            );
+            assert!(!op_id.is_null(), "verify: tensor {tid} has NULL op_id with live kernel {kernel_id:?}");
+            assert!(
+                kd.kernel.ops.contains_id(op_id),
+                "verify: tensor {tid} op {op_id:?} is not in kernel {kernel_id:?}'s op slab"
+            );
+            let mut reachable = false;
+            let mut i = kd.kernel.head;
+            for _ in 0..100_000 {
+                if i.is_null() {
+                    break;
+                }
+                if i == op_id {
+                    reachable = true;
+                    break;
+                }
+                i = kd.kernel.next_op(i);
+            }
+            assert!(reachable, "verify: tensor {tid} op {op_id:?} is not reachable from kernel {kernel_id:?}'s op list");
+        }
     }
 
     /// Assert the graph affiliation invariant: `graph.ref_count` equals the
@@ -1533,6 +1634,7 @@ impl Runtime {
     pub fn unary(&mut self, x: TensorId, uop: UOp) -> TensorId {
         #[cfg(feature = "debug_tensor_op")]
         println!("runtime::unary(x={x}, uop={uop:?})");
+        self.verify_tensor_invariants();
         debug_assert!(!self.resolve_shape(x).is_empty(), "unary input must have at least one dim");
 
         match self.tensors[x] {
@@ -1577,6 +1679,7 @@ impl Runtime {
     pub fn binary(&mut self, x: TensorId, y: TensorId, bop: BOp) -> Result<TensorId, ZyxError> {
         #[cfg(feature = "debug_tensor_op")]
         println!("runtime::binary(x={x}, y={y}, bop={bop:?})");
+        self.verify_tensor_invariants();
         // Scalars broadcast implicitly. Non-scalar operands must already be
         // broadcast to equal shapes by the time they reach a binary op: any
         // non-scalar broadcasting is performed upstream by `Tensor::broadcast`.
@@ -1860,6 +1963,7 @@ impl Runtime {
     pub fn contiguous(&mut self, x: TensorId) -> Result<TensorId, ZyxError> {
         #[cfg(feature = "debug_tensor_op")]
         println!("runtime::contiguous(x={x})");
+        self.verify_tensor_invariants();
 
         if self.is_graph(x) {
             let (class_id, graph_id, shape_id) = match self.tensors[x] {
@@ -1898,6 +2002,7 @@ impl Runtime {
     }
 
     pub fn reduce(&mut self, x: TensorId, mut axes: Vec<UAxis>, rop: BOp) -> Result<TensorId, ZyxError> {
+        self.verify_tensor_invariants();
         let rank = self.shape(x).len();
         debug_assert!(!axes.is_empty(), "reduce must specify at least one axis");
         debug_assert!(axes.iter().all(|&a| (a as usize) < rank), "reduce axis {axes:?} out of bounds for rank {rank}");
@@ -2345,6 +2450,7 @@ impl Runtime {
     pub fn permute(&mut self, x: TensorId, axes: Vec<UAxis>) -> TensorId {
         #[cfg(feature = "debug_tensor_op")]
         println!("runtime::permute(x={x}, axes={axes:?})");
+        self.verify_tensor_invariants();
         let sh = self.resolve_shape(x).to_vec();
         debug_assert_eq!(axes.len(), sh.len(), "permute: axes length {} != rank {}", axes.len(), sh.len());
         {
@@ -2405,6 +2511,7 @@ impl Runtime {
     pub fn pad_zeros(&mut self, x: TensorId, axis: UAxis, lp: TensorId, len: TensorId) -> TensorId {
         #[cfg(feature = "debug_tensor_op")]
         println!("runtime::pad_zeros(x={x}, axis={axis}, lp={lp}, len={len})");
+        self.verify_tensor_invariants();
         let rank = self.resolve_shape(x).len();
         debug_assert!((axis as usize) < rank, "pad_zeros axis {axis} out of bounds for rank {rank}");
         debug_assert!(
@@ -2504,6 +2611,7 @@ impl Runtime {
     pub fn narrow(&mut self, x: TensorId, axis: UAxis, start: TensorId, len: TensorId) -> TensorId {
         #[cfg(feature = "debug_tensor_op")]
         println!("runtime::narrow(x={x}, axis={axis}, start={start}, len={len})");
+        self.verify_tensor_invariants();
         // Dtypes are fully static: shape descriptors must be integer-typed.
         debug_assert!(
             self.dtype(start).is_int() && self.dtype(len).is_int(),
@@ -2588,6 +2696,7 @@ impl Runtime {
     pub fn flip(&mut self, x: TensorId, mut axes: Vec<UAxis>) -> Result<TensorId, ZyxError> {
         #[cfg(feature = "debug_tensor_op")]
         println!("runtime::flip(x={x}, axes={axes:?})");
+        self.verify_tensor_invariants();
 
         let sh = self.resolve_shape(x).to_vec();
         if axes.is_empty() {
@@ -2641,6 +2750,7 @@ impl Runtime {
     pub fn load<T: Scalar>(&mut self, x: TensorId, data: &mut [T]) -> Result<(), ZyxError> {
         #[cfg(feature = "debug_tensor_op")]
         println!("runtime::load(x={x})");
+        self.verify_tensor_invariants();
 
         // Symbolic (slab) tensors carry no buffer; resolve their value directly,
         // no kernel launch needed. They are constants/broadcast scalars, so the
@@ -2806,6 +2916,7 @@ impl Runtime {
     pub fn assign(&mut self, dst: TensorId, src: TensorId) -> Result<(), ZyxError> {
         #[cfg(feature = "debug_tensor_op")]
         println!("runtime::assign(dst={dst}, src={src})");
+        self.verify_tensor_invariants();
 
         let dst_dtype = self.dtype(dst);
         let src_dtype = self.dtype(src);
@@ -3395,16 +3506,46 @@ impl Runtime {
         debug_assert!(self.kernels[kid].stores.is_empty(), "duplicated kernel must not have stores");
 
         let old_loads = self.kernels[kid].loads.clone();
-        let out_op_ids: Vec<OpId> = self.kernels[kid]
-            .outputs
-            .iter()
-            .map(|&tid| match &self.tensors[tid] {
-                TensorData::Eager { op_id, .. } | TensorData::Promoted { op_id, .. } => *op_id,
-                t => panic!("kernel output tid {tid} has unexpected tensor data {t:?}"),
-            })
-            .collect();
+        // Keep-alive set for the split: every op owned by a live tensor
+        // affiliated with this kernel (outputs ∪ loads) must stay in the old
+        // kernel — pruning a load-affiliated tensor's op orphans it.
+        let out_op_ids: Vec<OpId> = {
+            let kd = &self.kernels[kid];
+            let mut out_op_ids: Vec<OpId> = kd
+                .outputs
+                .iter()
+                .map(|&tid| match &self.tensors[tid] {
+                    TensorData::Eager { op_id, .. } | TensorData::Promoted { op_id, .. } => *op_id,
+                    t => panic!("kernel output tid {tid} has unexpected tensor data {t:?}"),
+                })
+                .collect();
+            for &tid in &kd.loads {
+                if let TensorData::Eager { op_id, .. } | TensorData::Promoted { op_id, .. } = self.tensors[tid] {
+                    if kd.kernel.ops.contains_id(op_id) {
+                        out_op_ids.push(op_id);
+                    }
+                }
+            }
+            out_op_ids
+        };
+        let pre_live_ops: Set<OpId> = self.kernels[kid].kernel.ops.ids().collect();
         let (kernel, op_id, self_loads, new_loads) = self.kernels[kid].kernel.extract_subkernel(op_id, &out_op_ids, &old_loads);
         self.kernels[kid].loads = self_loads.clone();
+        {
+            let live_ops: Set<OpId> = self.kernels[kid].kernel.ops.ids().collect();
+            for (tid, td) in self.tensors.iter() {
+                if let TensorData::Eager { kernel_id: k, op_id: o, .. } | TensorData::Promoted { kernel_id: k, op_id: o, .. } = td {
+                    if *k == kid && !live_ops.contains(o) {
+                        eprintln!(
+                            ">>> SPLIT-ORPHAN kid={kid:?} orphan-tid={tid} orphan-op={o:?} root-op={op_id:?} outputs={:?} pre_had_op={} pre_in_outputs={}",
+                            self.kernels[kid].outputs,
+                            pre_live_ops.contains(o),
+                            self.kernels[kid].outputs.contains(&tid),
+                        );
+                    }
+                }
+            }
+        }
 
         // Each kernel-load occurrence carries its own rc reference. The split
         // may duplicate a load into both kernels (an extra ref) or drop it
@@ -3486,6 +3627,27 @@ impl Runtime {
             };
             if *kernel_id == merge_kid {
                 debug_assert_ne!(keep_kid, merge_kid);
+                if !op_map.contains_key(op_id) {
+                    let in_slab = merge_ops.contains_id(*op_id);
+                    let in_list = {
+                        let mut j = merge_head;
+                        let mut found = false;
+                        for _ in 0..100_000 {
+                            if j.is_null() {
+                                break;
+                            }
+                            if j == *op_id {
+                                found = true;
+                                break;
+                            }
+                            j = merge_ops[j].next;
+                        }
+                        found
+                    };
+                    eprintln!(
+                        ">>> MERGE-MISS holder={_tid:?} op_id={op_id:?} in_slab={in_slab} in_list={in_list} merge_kid={merge_kid:?} keep_kid={keep_kid:?}"
+                    );
+                }
                 *kernel_id = keep_kid;
                 *op_id = op_map[op_id];
             }
