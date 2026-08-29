@@ -1602,9 +1602,9 @@ impl Runtime {
             // affiliation before promoting it into a new scope. Its pending
             // store is gone because promotion materializes pending stores.
             match &mut self.tensors[tid] {
-                TensorData::Promoted { kernel_id, op_id, shape_id, rc, .. } => {
-                    let (kernel_id, op_id, shape_id, rc) = (*kernel_id, *op_id, *shape_id, *rc);
-                    self.tensors[tid] = TensorData::Eager { kernel_id, op_id, depends_on: KernelId::NULL, shape_id, rc };
+                TensorData::Promoted { kernel_id, op_id, shape_id, rc, dtype, .. } => {
+                    let (kernel_id, op_id, shape_id, rc, dtype) = (*kernel_id, *op_id, *shape_id, *rc, *dtype);
+                    self.tensors[tid] = TensorData::Eager { kernel_id, op_id, depends_on: KernelId::NULL, shape_id, dtype, rc };
                 }
                 ref t => panic!("promote_to_graph: dead-graph tensor {tid} has no eager side to revert to: {t:?}"),
             }
@@ -1661,14 +1661,14 @@ impl Runtime {
             match &mut self.tensors[tid] {
                 TensorData::Graph { class_id: c, .. } | TensorData::Promoted { class_id: c, .. } => *c = class_id,
                 TensorData::Eager { .. } => {
-                    let (kernel_id, op_id, shape_id, rc) = match self.tensors[tid] {
-                        TensorData::Eager { kernel_id, op_id, depends_on, shape_id, rc } => {
+                    let (kernel_id, op_id, shape_id, rc, dtype) = match self.tensors[tid] {
+                        TensorData::Eager { kernel_id, op_id, depends_on, shape_id, rc, dtype } => {
                             debug_assert!(depends_on.is_null(), "promoting unrealized tensor {tid} with pending store");
-                            (kernel_id, op_id, shape_id, rc)
+                            (kernel_id, op_id, shape_id, rc, dtype)
                         }
                         ref t => unreachable!("{t:?}"),
                     };
-                    self.tensors[tid] = TensorData::Promoted { kernel_id, op_id, class_id, graph_id, shape_id, rc };
+                    self.tensors[tid] = TensorData::Promoted { kernel_id, op_id, class_id, graph_id, shape_id, dtype, rc };
                 }
                 ref t => panic!("promote_to_graph: cannot attach tensor {tid} to the graph: {t:?}"),
             }
@@ -1789,18 +1789,18 @@ impl Runtime {
                             match &mut self.tensors[load_tid] {
                                 TensorData::Graph { class_id: c, .. } | TensorData::Promoted { class_id: c, .. } => *c = class_id,
                                 TensorData::Eager { .. } => {
-                                    let (kernel_id, op_id, shape_id, rc) = match self.tensors[load_tid] {
-                                        TensorData::Eager { kernel_id, op_id, depends_on, shape_id, rc } => {
+                                    let (kernel_id, op_id, shape_id, rc, dtype) = match self.tensors[load_tid] {
+                                        TensorData::Eager { kernel_id, op_id, depends_on, shape_id, rc, dtype } => {
                                             debug_assert!(
                                                 depends_on.is_null(),
                                                 "promoting unrealized tensor {load_tid} with pending store"
                                             );
-                                            (kernel_id, op_id, shape_id, rc)
+                                            (kernel_id, op_id, shape_id, rc, dtype)
                                         }
                                         ref t => unreachable!("{t:?}"),
                                     };
                                     self.tensors[load_tid] =
-                                        TensorData::Promoted { kernel_id, op_id, class_id, graph_id, shape_id, rc };
+                                        TensorData::Promoted { kernel_id, op_id, class_id, graph_id, shape_id, dtype, rc };
                                 }
                                 ref t => panic!("promote_to_graph: cannot attach load tensor {load_tid} to the graph: {t:?}"),
                             }
@@ -1916,14 +1916,14 @@ impl Runtime {
         match &mut self.tensors[tid] {
             TensorData::Graph { class_id: c, .. } | TensorData::Promoted { class_id: c, .. } => *c = class_id,
             TensorData::Eager { .. } => {
-                let (kernel_id, op_id, shape_id, rc) = match self.tensors[tid] {
-                    TensorData::Eager { kernel_id, op_id, depends_on, shape_id, rc } => {
+                let (kernel_id, op_id, shape_id, rc, dtype) = match self.tensors[tid] {
+                    TensorData::Eager { kernel_id, op_id, depends_on, shape_id, rc, dtype } => {
                         debug_assert!(depends_on.is_null(), "promoting unrealized tensor {tid} with pending store");
-                        (kernel_id, op_id, shape_id, rc)
+                        (kernel_id, op_id, shape_id, rc, dtype)
                     }
                     ref t => unreachable!("{t:?}"),
                 };
-                self.tensors[tid] = TensorData::Promoted { kernel_id, op_id, class_id, graph_id, shape_id, rc };
+                self.tensors[tid] = TensorData::Promoted { kernel_id, op_id, class_id, graph_id, shape_id, dtype, rc };
             }
             ref t => panic!("promote_to_graph: cannot attach tensor {tid} to the graph: {t:?}"),
         }
@@ -2124,10 +2124,10 @@ impl Runtime {
 
         if !realized {
             match self.tensors[tid] {
-                TensorData::Promoted { kernel_id, op_id, shape_id, rc, .. } => {
+                TensorData::Promoted { kernel_id, op_id, shape_id, rc, dtype, .. } => {
                     // Unrealized promoted tensor: the eager producer kernel was
                     // never mutated, so just demote in place.
-                    self.tensors[tid] = TensorData::Eager { kernel_id, op_id, depends_on: KernelId::NULL, shape_id, rc };
+                    self.tensors[tid] = TensorData::Eager { kernel_id, op_id, depends_on: KernelId::NULL, shape_id, dtype, rc };
                 }
                 TensorData::Graph { .. } => {
                     // Unrealized graph-only tensor: its value can only be
@@ -2164,11 +2164,11 @@ impl Runtime {
             let shape_op = self.replay_symbolic_into_kernel(kernel_id, shape_id);
             let op_id = self.kernels[kernel_id].kernel.push_back(Op::Param { dtype, kind: ParamKind::Global, shape: shape_op });
             self.kernels[kernel_id].loads.push(tid);
-            let rc = match self.tensors[tid] {
-                TensorData::Graph { rc, .. } | TensorData::Promoted { rc, .. } => rc,
+            let (rc, dtype) = match self.tensors[tid] {
+                TensorData::Graph { rc, dtype, .. } | TensorData::Promoted { rc, dtype, .. } => (rc, dtype),
                 ref t => unreachable!("eagerify: {t:?}"),
             };
-            self.tensors[tid] = TensorData::Eager { kernel_id, op_id, depends_on: KernelId::NULL, shape_id, rc };
+            self.tensors[tid] = TensorData::Eager { kernel_id, op_id, depends_on: KernelId::NULL, shape_id, dtype, rc };
             // The new kernel-load occurrence carries its own rc reference.
             self.retain(tid);
             // Fully detach from the old producer: its load entries on tid are

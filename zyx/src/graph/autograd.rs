@@ -359,8 +359,8 @@ impl Runtime {
         let mut res = Map::default();
         for tid in sources {
             // The gradient result shares the source's shape expression.
-            let shape_id = match self.tensors[tid] {
-                TensorData::Graph { shape_id, .. } | TensorData::Promoted { shape_id, .. } => shape_id,
+            let (shape_id, dtype) = match self.tensors[tid] {
+                TensorData::Graph { shape_id, dtype, .. } | TensorData::Promoted { shape_id, dtype, .. } => (shape_id, dtype),
                 ref t => panic!("gradient source {tid} is not a graph tensor: {t:?}"),
             };
             if !shape_id.is_null() {
@@ -385,7 +385,7 @@ impl Runtime {
                 }
             };
             self.graphs[graph_id].ref_count += 1;
-            let grad_tid = self.tensors.push(TensorData::Graph { class_id: grad_tid, graph_id, shape_id, rc: 1 });
+            let grad_tid = self.tensors.push(TensorData::Graph { class_id: grad_tid, graph_id, shape_id, dtype, rc: 1 });
             res.insert(tid, grad_tid);
         }
         res

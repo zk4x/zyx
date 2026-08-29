@@ -667,11 +667,12 @@ impl CompiledKernel {
                 op_id: OpId::NULL,
                 depends_on: KernelId::NULL,
                 shape_id,
+                dtype,
                 rc: 1,
             });
             let load_kid =
                 rt.kernels.push(KernelData { outputs: Set::from_iter([id]), loads: vec![id], stores: Vec::new(), kernel });
-            rt.tensors[id] = TensorData::Eager { kernel_id: load_kid, op_id, depends_on: KernelId::NULL, shape_id, rc: 1 };
+            rt.tensors[id] = TensorData::Eager { kernel_id: load_kid, op_id, depends_on: KernelId::NULL, shape_id, dtype, rc: 1 };
             rt.retain(id);
             rt.buffer_map.insert(id, buf_id);
             tensors.push(Tensor { id })
