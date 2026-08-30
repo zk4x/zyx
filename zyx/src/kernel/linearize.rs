@@ -75,6 +75,13 @@ impl Kernel {
             return;
         }
 
+        // Duplicating multi-use constants repoints `Param { shape }` fields at
+        // fresh constants, invalidating the memoized `shape_ids`; drop the
+        // cache so `add_indexing` re-derives shapes from the actual
+        // (repointed) parameters.
+        self.shape_cache = Map::default();
+        self.duplicate_multi_use_consts();
+
         #[cfg(debug_assertions)]
         {
             let has_gidx = self.ops.values().any(|n| matches!(n.op, Op::Index { kind: IdxKind::Group(_), .. }));
@@ -244,6 +251,88 @@ impl Kernel {
         // The shape_ids cache is only valid pre-linearization; drop it so
         // autotuned kernels stay free of cached shape scaffolding.
         self.shape_cache = Map::default();
+    }
+
+    /// Duplicates multi-use constants so every `Op::Const` ends up with
+    /// exactly one use.
+    ///
+    /// The eager fusion path (`duplicate_or_store`) intentionally duplicates
+    /// values consumed under different indexing/loop schemes: after
+    /// linearization a value computed inside one loop scope cannot be
+    /// referenced from another, because the scope's declaration set is popped
+    /// at `EndLoop`. Kernel merging may however collapse identical constants
+    /// from contributing kernels into one shared op, leaving a single `Const`
+    /// whose users sit in different scopes — linearize would schedule it in
+    /// one scope while a user lives in another, and verify rejects the
+    /// resulting use-before-declaration.
+    ///
+    /// Constants are pure leaves, so duplicating them is always semantically
+    /// exact: each use gets its own copy and linearize schedules every copy
+    /// in its user's scope. Runs after the kernel cache lookup, so the extra
+    /// ops never reach the cache key.
+    fn duplicate_multi_use_consts(&mut self) {
+        // Phase 1: count references per op over the linked list.
+        let mut use_count: Map<OpId, u32> = Map::default();
+        let mut op_id = self.head;
+        for _ in 0..50_000 {
+            if op_id.is_null() {
+                break;
+            }
+            for param in self.ops[op_id].op.parameters() {
+                *use_count.entry(param).or_default() += 1;
+            }
+            op_id = self.next_op(op_id);
+        }
+        if !op_id.is_null() {
+            panic!("duplicate_multi_use_consts did not finish in 50000 steps");
+        }
+
+        // Only constants referenced more than once need duplication; the
+        // original keeps its last use in chain order, every earlier use gets
+        // a fresh copy. No dead ops are created.
+        let mut multi: Map<OpId, (Constant, u32)> = Map::default();
+        for (&id, &count) in use_count.iter() {
+            if count > 1 {
+                if let Op::Const(value) = self.ops[id].op {
+                    multi.insert(id, (value, count - 1));
+                }
+            }
+        }
+        if multi.is_empty() {
+            return;
+        }
+
+        // Phase 2: repoint each extra use at a fresh constant inserted
+        // directly before its user. Constants are pure leaves, so this is
+        // always in topological order.
+        let mut op_id = self.head;
+        for _ in 0..50_000 {
+            if op_id.is_null() {
+                break;
+            }
+            let next = self.next_op(op_id);
+            let params: Vec<OpId> = self.ops[op_id].op.parameters().collect();
+            for (position, param) in params.into_iter().enumerate() {
+                let Some(entry) = multi.get_mut(&param) else {
+                    continue;
+                };
+                if entry.1 == 0 {
+                    // Last use in chain order keeps the original constant.
+                    continue;
+                }
+                entry.1 -= 1;
+                let value = entry.0;
+                let fresh = self.insert_before(op_id, Op::Const(value));
+                let Some(param) = self.ops[op_id].op.parameters_mut().nth(position) else {
+                    panic!("duplicate_multi_use_consts: param position {position} out of range for op {op_id:?}");
+                };
+                *param = fresh;
+            }
+            op_id = next;
+        }
+        if !op_id.is_null() {
+            panic!("duplicate_multi_use_consts did not finish in 50000 steps");
+        }
     }
 
     /// Inserts index arithmetic (views, strides, pads, bounds checks) for

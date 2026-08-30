@@ -4119,6 +4119,22 @@ impl Runtime {
             unsafe { self.kernels.remove_and_return(merge_kid) };
         let Kernel { ops: merge_ops, head: merge_head, .. } = kernel;
 
+        // Seed the Const map from keep's existing ops (chain walk — slab
+        // order is NOT chain order after prunes, so a slab walk could hand
+        // out dead ops as survivors). Merged Consts then collapse onto
+        // keep's or earlier-merged identical values instead of piling up.
+        let mut const_map: Map<Constant, OpId> = Map::with_hasher(BuildHasherDefault::new());
+        {
+            let keep = &self.kernels[keep_kid].kernel;
+            let mut i = keep.head;
+            while !i.is_null() {
+                if let Op::Const(c) = keep.ops[i].op {
+                    const_map.insert(c, i);
+                }
+                i = keep.ops[i].next;
+            }
+        }
+
         let mut op_map: Map<OpId, OpId> = Map::with_hasher(BuildHasherDefault::new());
         let mut i = merge_head;
         while !i.is_null() {
@@ -4128,7 +4144,20 @@ impl Runtime {
                     *param = new_param;
                 }
             }
+            // Const dedup: an identical Const (value + dtype) already in
+            // keep or earlier in this merge is reused — its consumers and
+            // any tensor holding it as op_id repoint to the survivor below.
+            if let Op::Const(c) = op {
+                if let Some(&survivor) = const_map.get(&c) {
+                    op_map.insert(i, survivor);
+                    i = merge_ops[i].next;
+                    continue;
+                }
+            }
             let new_op_id = self.kernels[keep_kid].kernel.push_back(op);
+            if let Op::Const(c) = merge_ops[i].op {
+                const_map.insert(c, new_op_id);
+            }
             op_map.insert(i, new_op_id);
             i = merge_ops[i].next;
         }

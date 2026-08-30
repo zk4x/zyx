@@ -1426,6 +1426,11 @@ impl Kernel {
                     IdxKind::Group(len) => stack.push(len),
                     IdxKind::Local(_) | IdxKind::Warp(_) => {}
                 },
+                Op::Mad { x, y, z } => {
+                    stack.push(*x);
+                    stack.push(*y);
+                    stack.push(*z);
+                }
                 _ => {}
             }
         }
@@ -1449,6 +1454,19 @@ impl Kernel {
                         Constant::binary(a.cast(dt), b.cast(dt), *bop)
                     })
                 }
+                // Fused multiply add: x * y + z, evaluated in the operands'
+                // least upper dtype (same rule as Binary).
+                Op::Mad { x, y, z } => values
+                    .get(x)
+                    .copied()
+                    .flatten()
+                    .zip(values.get(y).copied().flatten())
+                    .zip(values.get(z).copied().flatten())
+                    .map(|((a, b), c)| {
+                        let dt = a.dtype().least_upper_dtype(b.dtype()).least_upper_dtype(c.dtype());
+                        let prod = Constant::binary(a.cast(dt), b.cast(dt), BOp::Mul);
+                        Constant::binary(prod, c.cast(dt), BOp::Add)
+                    }),
                 Op::Loop { len } => values.get(len).copied().flatten(),
                 &Op::Index { kind, .. } => match kind {
                     IdxKind::Group(len) => values.get(&len).copied().flatten(),
