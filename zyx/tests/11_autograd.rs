@@ -722,6 +722,112 @@ fn grad_max_1() -> Result<(), ZyxError> {
 }
 
 #[test]
+fn grad_prod() -> Result<(), ZyxError> {
+    let x = Tensor::from([[1f32, 2.], [3., 4.]]);
+    let tape = Tape::new([&x])?;
+
+    let y = x.prod([1])?;
+    let mut grads = tape.gradient(&y, [&x]);
+    let x_grad = grads.pop().unwrap();
+    tape.realize([&x_grad])?;
+
+    // d(a*b)/da = b, d(a*b)/db = a
+    assert_eq!(x_grad, [[2f32, 1.], [4., 3.]]);
+    Ok(())
+}
+
+#[test]
+fn grad_prod_all() -> Result<(), ZyxError> {
+    let x = Tensor::from([2f32, 3., 4.]);
+    let tape = Tape::new([&x])?;
+
+    let y = x.prod_all();
+    let mut grads = tape.gradient(&y, [&x]);
+    let x_grad = grads.pop().unwrap();
+    tape.realize([&x_grad])?;
+
+    let expected = vec![12f32, 8., 6.];
+    assert_eq!(x_grad, expected);
+    Ok(())
+}
+
+#[test]
+fn grad_prod_one_zero() -> Result<(), ZyxError> {
+    // With a single zero along the axis the whole gradient sits on the zero:
+    // every other element multiplies by it and gets 0.
+    let x = Tensor::from([[1f32, 0., 3.], [2., 3., 4.]]);
+    let tape = Tape::new([&x])?;
+
+    let y = x.prod([1])?;
+    let mut grads = tape.gradient(&y, [&x]);
+    let x_grad = grads.pop().unwrap();
+    tape.realize([&x_grad])?;
+
+    assert_eq!(x_grad, [[0f32, 3., 0.], [12., 8., 6.]]);
+    Ok(())
+}
+
+#[test]
+fn grad_prod_two_zeros() -> Result<(), ZyxError> {
+    // Two zeros along the axis: every partial product still contains a zero.
+    let x = Tensor::from([0f32, 0., 5.]);
+    let tape = Tape::new([&x])?;
+
+    let y = x.prod_all();
+    let mut grads = tape.gradient(&y, [&x]);
+    let x_grad = grads.pop().unwrap();
+    tape.realize([&x_grad])?;
+
+    let expected = vec![0f32, 0., 0.];
+    assert_eq!(x_grad, expected);
+    Ok(())
+}
+
+#[test]
+fn grad_prod_multi_axis() -> Result<(), ZyxError> {
+    let x = Tensor::from([[[1f32, 2.], [3., 4.]], [[5., 6.], [0., 8.]]]);
+    let tape = Tape::new([&x])?;
+
+    let y = x.prod([1, 2])?;
+    let mut grads = tape.gradient(&y, [&x]);
+    let x_grad = grads.pop().unwrap();
+    tape.realize([&x_grad])?;
+
+    // First batch has no zero: 24 / x. Second batch has one zero: 5*6*8 = 240 lands on it.
+    assert_eq!(x_grad, [[[24f32, 12.], [8., 6.]], [[0., 0.], [240., 0.]]]);
+    Ok(())
+}
+
+#[test]
+fn grad_prod_vs_exp_sum_ln() -> Result<(), ZyxError> {
+    // For strictly positive x, prod(x) == exp(sum(ln(x))), so the gradients
+    // must agree. The right hand side only uses ops that already differentiate.
+    let data = [[0.7f32, 1.3, 2.9], [4.1, 0.5, 3.3]];
+
+    let x = Tensor::from(data);
+    let tape = Tape::new([&x])?;
+    let y = x.prod([1])?;
+    let mut grads = tape.gradient(&y, [&x]);
+    let x_grad = grads.pop().unwrap();
+
+    let r = Tensor::from(data);
+    let rtape = Tape::new([&r])?;
+    let ry = r.ln().sum([1])?.exp();
+    let mut rgrads = rtape.gradient(&ry, [&r]);
+    let r_grad = rgrads.pop().unwrap();
+
+    tape.realize([&x_grad])?;
+    rtape.realize([&r_grad])?;
+
+    let x_vec: Vec<f32> = x_grad.try_into()?;
+    let r_vec: Vec<f32> = r_grad.try_into()?;
+    for (a, b) in x_vec.iter().zip(r_vec.iter()) {
+        assert!((a - b).abs() < 1e-4, "a={a}, b={b}");
+    }
+    Ok(())
+}
+
+#[test]
 fn grad_cmplt_none() -> Result<(), ZyxError> {
     let x = Tensor::from(vec![1f32, 2., 3.]);
     let y = Tensor::from(vec![2f32, 2., 2.]);
