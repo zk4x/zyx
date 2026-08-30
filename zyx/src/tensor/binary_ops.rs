@@ -10,7 +10,6 @@ impl<IT: Into<Tensor>> Add<IT> for Tensor {
     type Output = Tensor;
     fn add(self, rhs: IT) -> Self::Output {
         let (x, y) = Tensor::broadcast(self, rhs).unwrap();
-        eprintln!("DL:add");
         #[allow(clippy::let_and_return)] // otherwise it deadlocks
         let tensor = Tensor { id: RT.lock().binary(x.id, y.id, BOp::Add).unwrap() };
         tensor
@@ -52,7 +51,6 @@ impl<IT: Into<Tensor>> Mul<IT> for Tensor {
     fn mul(self, rhs: IT) -> Self::Output {
         let rhs = rhs.into();
         let (x, y) = Tensor::broadcast(self, rhs).unwrap();
-        eprintln!("DL:mul");
         #[allow(clippy::let_and_return)] // otherwise it deadlocks
         let tensor = Tensor { id: RT.lock().binary(x.id, y.id, BOp::Mul).unwrap() };
         tensor

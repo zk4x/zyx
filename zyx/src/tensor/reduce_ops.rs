@@ -74,7 +74,6 @@ impl Tensor {
                 } else {
                     self.cast(reduce_acc_dtype(x_dtype))
                 };
-                eprintln!("DL:reduce_sum");
                 Tensor { id: RT.lock().reduce(x.id, axes_vec.clone(), BOp::Add)? }
             }
             ReduceOp::Max => {

@@ -76,7 +76,6 @@ impl Tape {
     /// parameters. Input tensors (x, target) are auto-detected as boundary
     /// inputs — they don't need to be promoted explicitly.
     pub fn new<'a>(params: impl IntoIterator<Item = &'a Tensor>) -> Result<Tape, ZyxError> {
-        eprintln!("DL:tape_new");
         let mut rt = RT.lock();
 
         let graph_id = rt.graphs.push(Graph::new());
@@ -150,7 +149,6 @@ impl Tape {
     /// subgraph they depend on. The tape is consumed — graph mode ends and
     /// all output tensors become realized (buffers allocated).
     pub fn realize<'a>(self, tensors: impl IntoIterator<Item = &'a Tensor>) -> Result<(), ZyxError> {
-        eprintln!("DL:tape_realize");
         let mut rt = RT.lock();
         let graph_id = self.graph_id;
 
@@ -183,18 +181,14 @@ impl Tape {
 
         let output_tids: Vec<TensorId> = output_pairs.iter().map(|(tid, _)| *tid).collect();
         let output_classes: Vec<ClassId> = output_pairs.iter().map(|(_, cid)| *cid).collect();
-        eprintln!("DL:R1");
 
         debug_assert!(rt.graphs.contains_id(graph_id));
         rt.debug_assert_pre_realize(graph_id);
-        eprintln!("DL:R2");
 
         let output_set: BTreeSet<ClassId> = output_classes.iter().copied().collect();
         let cache_key = rt.plan_cache_key(graph_id, &output_set);
-        eprintln!("DL:R3");
 
         if let Some(plan) = rt.plan_cache.get(&cache_key) {
-            eprintln!("DL:R4cache");
             let mut class_buf: Map<ClassId, BufferId> = Map::default();
             let mut class_vars: Map<ClassId, Constant> = Map::default();
             for &cid in &plan.leaf_classes {
@@ -220,7 +214,6 @@ impl Tape {
         }
 
         let plan = rt.compile_graph(graph_id, &output_set)?;
-        eprintln!("DL:R5compiled");
 
         let mut class_buf: Map<ClassId, BufferId> = Map::default();
         let mut class_vars: Map<ClassId, Constant> = Map::default();

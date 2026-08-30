@@ -2153,10 +2153,6 @@ impl Runtime {
                 .iter()
                 .any(|&nid| matches!(&self.graphs[graph_id].nodes[nid].node, Node::Leaf { .. }));
             if has_leaf {
-                if !self.graphs[graph_id].leaf_map.contains_key(&cid) {
-                    eprintln!("DL:leafcheck: offending cid {cid:?} nodes {:?}", self.graphs[graph_id].classes[cid].nodes);
-                    eprintln!("DL:leafcheck: leaf_map {:?}", self.graphs[graph_id].leaf_map);
-                }
                 let &tid = self.graphs[graph_id].leaf_map.get(&cid).expect("class {cid:?} has Leaf node but not in leaf_map");
                 assert!(
                     self.buffer_map.contains_key(&tid) || matches!(self.tensors[tid], TensorData::Variable { .. }),
