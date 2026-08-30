@@ -210,6 +210,27 @@ pub struct Kernel {
     /// [`linearize`](crate::kernel::linearize) clears it so kernels stay
     /// lightweight during autotuning.
     pub(crate) shape_cache: Map<OpId, Vec<OpId>>,
+    /// Argument slot owner of each non-store `Param` define, in head order.
+    ///
+    /// A define is not "an argument", it is *one read of a buffer through one
+    /// view at one point in the loop nest*: [`add_indexing`] keys views by op
+    /// id and rewrites the define itself into the load, so two reads of the
+    /// same buffer through different views (`&x + x.t()`) or from inside
+    /// different reduce loops (`x.sum(0) + x.max(0)`) need two defines. They
+    /// still bind the same pointer, and with one argument per define they bind
+    /// it twice.
+    ///
+    /// `arg_alias[i]` is the index of the define that owns slot `i`'s
+    /// argument, `i` itself when the define owns one. Empty means every define
+    /// owns its own. [`Self::apply_arg_alias`] folds the aliases away once
+    /// linearization has turned the defines into plain pointers.
+    ///
+    /// This is part of the kernel's identity: the compile cache is keyed on
+    /// the kernel, and `&x + x.t()` and `&x + y.t()` build the same IR and
+    /// differ only here.
+    ///
+    /// [`add_indexing`]: crate::kernel::linearize
+    pub(crate) arg_alias: Vec<u32>,
 }
 
 /// Scope for memory.
@@ -257,7 +278,7 @@ pub enum MemLayout {
 
 impl PartialEq for Kernel {
     fn eq(&self, other: &Self) -> bool {
-        self.ops == other.ops && self.head == other.head && self.device_id == other.device_id
+        self.ops == other.ops && self.head == other.head && self.device_id == other.device_id && self.arg_alias == other.arg_alias
     }
 }
 
@@ -268,6 +289,7 @@ impl SerBin for Kernel {
         self.ops.ser_bin(output);
         self.head.ser_bin(output);
         self.tail.ser_bin(output);
+        self.arg_alias.ser_bin(output);
     }
 }
 
@@ -285,6 +307,7 @@ impl Hash for Kernel {
         self.head.hash(state);
         self.ops.hash(state);
         self.device_id.hash(state);
+        self.arg_alias.hash(state);
     }
 }
 
@@ -1475,6 +1498,90 @@ impl Kernel {
         }
     }
 
+    /// Point every non-store define that re-reads an already-bound buffer at
+    /// the define that owns that buffer's argument slot.
+    ///
+    /// `load_keys[i]` names the buffer bound to the i-th non-store `Param`
+    /// (`Global` or `Variable`) in head order — the positional law the launch
+    /// args follow. Two entries naming the same buffer are the same pointer,
+    /// so only the first needs an argument.
+    ///
+    /// Returns the indices of `load_keys` that keep an argument, in head
+    /// order. The caller passes only those args at launch; the kernel drops
+    /// the other defines in [`Self::apply_arg_alias`] after linearization.
+    /// A `GlobalMut` store target is not a load and keeps its own slot.
+    pub(crate) fn set_arg_alias<T: Copy + Eq>(&mut self, load_keys: &[T]) -> Vec<usize> {
+        // Owning define per (key, kind, dtype). A `Variable` binds a scalar by
+        // value and a `Global` a pointer, so kind and dtype have to match too.
+        let mut owners: Vec<(T, ParamKind, DType, u32)> = Vec::new();
+        let mut owned: Vec<usize> = Vec::new();
+        let mut alias: Vec<u32> = Vec::new();
+        let mut op_id = self.head;
+        while !op_id.is_null() {
+            if let Op::Param { dtype, kind, .. } = *self.at(op_id)
+                && kind != ParamKind::GlobalMut
+            {
+                let i = alias.len();
+                debug_assert!(i < load_keys.len(), "more non-store defines than load keys");
+                let key = load_keys[i];
+                match owners.iter().find(|&&(k, ki, d, _)| k == key && ki == kind && d == dtype) {
+                    Some(&(_, _, _, owner)) => alias.push(owner),
+                    None => {
+                        owners.push((key, kind, dtype, i as u32));
+                        owned.push(i);
+                        alias.push(i as u32);
+                    }
+                }
+            }
+            op_id = self.next_op(op_id);
+        }
+        debug_assert_eq!(alias.len(), load_keys.len(), "load keys must be parallel to the non-store defines");
+        // An identity alias is the default; storing it would split the compile
+        // cache between two spellings of the same kernel.
+        self.arg_alias = if owned.len() == alias.len() { Vec::new() } else { alias };
+        return owned;
+    }
+
+    /// Fold the aliases recorded by [`Self::set_arg_alias`] into the IR:
+    /// every aliased define is remapped onto its owner and removed, leaving
+    /// one define, and one argument, per buffer.
+    ///
+    /// Only valid after [`linearize`](crate::kernel::linearize). Before it a
+    /// define still carries the view it is read through and is the load site
+    /// itself, so merging two of them hands both reads the same view and the
+    /// same position in the loop nest. Afterwards a define is a plain pointer
+    /// and every read is a `Load` with its own index, which is what makes the
+    /// merge a no-op for everything except the argument list.
+    pub(crate) fn apply_arg_alias(&mut self) {
+        let alias = std::mem::take(&mut self.arg_alias);
+        if alias.is_empty() {
+            return;
+        }
+        // Defines in head order; linearize preserves their relative order
+        // because the launch args bind over it.
+        let mut defines: Vec<OpId> = Vec::with_capacity(alias.len());
+        let mut op_id = self.head;
+        while !op_id.is_null() {
+            if let Op::Param { kind, .. } = *self.at(op_id)
+                && kind != ParamKind::GlobalMut
+            {
+                defines.push(op_id);
+            }
+            op_id = self.next_op(op_id);
+        }
+        assert_eq!(defines.len(), alias.len(), "linearize changed the non-store define count");
+        // Remap before removing, so no live op is left pointing at a define
+        // that is about to leave the slab.
+        for (i, &owner) in alias.iter().enumerate() {
+            if owner as usize == i {
+                continue;
+            }
+            self.remap(defines[i], defines[owner as usize]);
+            self.remove_op(defines[i]);
+        }
+        self.shape_cache = Map::default();
+    }
+
     /// Add an operation to the kernel.
     pub(crate) fn push_back(&mut self, op: Op) -> OpId {
         let op_node = OpNode { prev: self.tail, next: OpId::NULL, op };
@@ -1745,5 +1852,93 @@ impl Kernel {
             panic!("is_preceded_by_compute did not finish in 10000 steps");
         }
         has_compute && has_param
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::{
+        DType,
+        kernel::{DeviceId, Kernel, MemLayout, Op, OpId, ParamKind},
+    };
+
+    fn params(k: &Kernel) -> Vec<(ParamKind, OpId)> {
+        let mut out = Vec::new();
+        let mut op_id = k.head;
+        while !op_id.is_null() {
+            if let Op::Param { kind, .. } = k.ops[op_id].op {
+                out.push((kind, op_id));
+            }
+            op_id = k.next_op(op_id);
+        }
+        return out;
+    }
+
+    fn loads(k: &Kernel) -> Vec<(OpId, OpId)> {
+        let mut out = Vec::new();
+        let mut op_id = k.head;
+        while !op_id.is_null() {
+            if let Op::Load { src, index, .. } = k.ops[op_id].op {
+                out.push((src, index));
+            }
+            op_id = k.next_op(op_id);
+        }
+        return out;
+    }
+
+    /// `&x + x.t()`: both defines read one buffer, through different views.
+    /// They must survive linearization as two defines (a define carries the
+    /// view it is read through) and collapse to one argument afterwards, with
+    /// the two reads keeping their own index expressions.
+    #[test]
+    fn shared_input_read_through_two_views_takes_one_arg() {
+        let mut k = Kernel::new(DeviceId::AUTO);
+        let shape = k.add_shape(&[2, 3]);
+        let plain = k.param(DType::F32, ParamKind::Global, shape);
+        let t_shape = k.add_shape(&[2, 3]);
+        let transposed = k.param(DType::F32, ParamKind::Global, t_shape);
+        let t = k.permute(transposed, &[1, 0]);
+        let sum = k.add(plain, t);
+        let out_shape = k.add_shape(&[2, 3]);
+        let out = k.param(DType::F32, ParamKind::GlobalMut, out_shape);
+        k.store(out, sum, OpId::NULL, MemLayout::Scalar);
+
+        // Both defines name the same buffer, the store target is its own.
+        let owned = k.set_arg_alias(&[7u32, 7]);
+        assert_eq!(owned, vec![0]);
+
+        k.linearize();
+        assert_eq!(params(&k).len(), 3, "linearize must keep one define per view");
+        k.apply_arg_alias();
+
+        let params = params(&k);
+        assert_eq!(params.iter().filter(|(kind, _)| *kind != ParamKind::GlobalMut).count(), 1, "the two reads bind one argument");
+        let loads = loads(&k);
+        assert_eq!(loads.len(), 2, "collapsing the defines must not collapse the reads");
+        assert_eq!(loads[0].0, loads[1].0, "both reads come from the surviving define");
+        assert_ne!(loads[0].1, loads[1].1, "each read keeps its own index");
+    }
+
+    /// Two defines naming different buffers each keep their argument, and a
+    /// kernel with nothing to alias is left alone.
+    #[test]
+    fn distinct_inputs_keep_their_args() {
+        let mut k = Kernel::new(DeviceId::AUTO);
+        let shape = k.add_shape(&[4]);
+        let x = k.param(DType::F32, ParamKind::Global, shape);
+        let y_shape = k.add_shape(&[4]);
+        let y = k.param(DType::F32, ParamKind::Global, y_shape);
+        let sum = k.add(x, y);
+        let out_shape = k.add_shape(&[4]);
+        let out = k.param(DType::F32, ParamKind::GlobalMut, out_shape);
+        k.store(out, sum, OpId::NULL, MemLayout::Scalar);
+
+        let owned = k.set_arg_alias(&[7u32, 8]);
+        assert_eq!(owned, vec![0, 1]);
+        assert!(k.arg_alias.is_empty(), "an identity alias must not split the compile cache");
+
+        k.linearize();
+        k.apply_arg_alias();
+        assert_eq!(params(&k).iter().filter(|(kind, _)| *kind != ParamKind::GlobalMut).count(), 2);
     }
 }

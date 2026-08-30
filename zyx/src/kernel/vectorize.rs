@@ -358,21 +358,24 @@ impl Kernel {
 
                 let first = selected[0].0;
 
-                // For Binary: guard against other_ops defined after `first`
-                // (would create use-before-declaration).
-                if let OpType::Binary(_, devec_pos) = op_type {
-                    let mut other_ops = Vec::with_capacity(vec_len);
-                    for &(consumer, _) in &selected {
-                        let (x, y) = match &self.ops[consumer].op {
-                            Op::Binary { x, y, .. } => (*x, *y),
-                            _ => unreachable!(),
-                        };
-                        let o = if *devec_pos == 0 { y } else { x };
-                        other_ops.push(o);
+                // The vector op and the `Stack`s feeding it are inserted at
+                // `first`, so every operand they stack has to be declared
+                // before that. A group whose consumers are spread across the
+                // kernel (repeat reads of one buffer through one vector load)
+                // can hold operands that are not. Leave those scalar.
+                let mut operands = Vec::with_capacity(vec_len * 2);
+                for &(consumer, _) in &selected {
+                    match &self.ops[consumer].op {
+                        Op::Unary { x, .. } | Op::Cast { x, .. } => operands.push(*x),
+                        Op::Binary { x, y, .. } => {
+                            operands.push(*x);
+                            operands.push(*y);
+                        }
+                        _ => unreachable!(),
                     }
-                    if other_ops.iter().any(|&o| !self.op_is_before(o, first)) {
-                        continue;
-                    }
+                }
+                if operands.iter().any(|&o| !self.op_is_before(o, first)) {
+                    continue;
                 }
 
                 // Apply vectorization

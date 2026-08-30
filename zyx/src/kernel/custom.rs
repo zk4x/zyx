@@ -66,7 +66,14 @@ impl Kernel {
     /// kernel.store(out, doubled, gidx, MemLayout::Scalar);
     /// ```
     pub fn new(device_id: DeviceId) -> Self {
-        Self { ops: Slab::new(), head: OpId::NULL, tail: OpId::NULL, device_id, shape_cache: Map::default() }
+        Self {
+            ops: Slab::new(),
+            head: OpId::NULL,
+            tail: OpId::NULL,
+            device_id,
+            shape_cache: Map::default(),
+            arg_alias: Vec::new(),
+        }
     }
 
     /// Compile the kernel. Consumes `self`.

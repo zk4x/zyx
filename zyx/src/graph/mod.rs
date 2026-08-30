@@ -1976,6 +1976,12 @@ impl Runtime {
                 let pool_id = self.devices[dev_id].memory_pool_id();
                 let mut kernel = ek.kernel.clone();
                 kernel.device_id = dev_id;
+                // A class read by both sides of a fusion has one define per
+                // side, all binding the same buffer. Point the repeats at the
+                // first define's slot; `inputs` then carries one class per
+                // argument, which is what the exec plan binds over.
+                let arg_loads = kernel.set_arg_alias(&ek.loads);
+                let inputs: Vec<ClassId> = arg_loads.iter().map(|&i| ek.loads[i]).collect();
                 bar.inc(1, &format!("autotune {} on dev={}", kernel.name(), dev_id.0));
                 let (dev_prog, _opts, timing) = self.get_or_autotune(kernel, pool_id, flop, read, write, &[])?;
                 let prog = ProgramId { device: dev_id, program: dev_prog };
@@ -1996,7 +2002,7 @@ impl Runtime {
 
                 let knid = self.graphs[graph_id].nodes.push(NodeData {
                     node: Node::Kernel {
-                        inputs: ek.loads.clone().into(),
+                        inputs: inputs.clone().into(),
                         outputs: ek.stores.clone().into(),
                         program_id: prog,
                         time: timing,

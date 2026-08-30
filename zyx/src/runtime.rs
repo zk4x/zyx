@@ -3925,6 +3925,7 @@ impl Runtime {
 
             if let Some(opt_seq) = self.optimizations.get(&(cached_kid, dev_info_id)) {
                 kernel.linearize();
+                kernel.apply_arg_alias();
                 kernel.common_subexpression_elimination();
                 kernel.dead_code_elimination();
                 kernel.instruction_schedule();
@@ -4316,8 +4317,15 @@ impl Runtime {
             assert_eq!(n_non_mut, loads.len(), "materialize: {} non-store defines but {} load entries", n_non_mut, loads.len());
             assert!(n_mut <= stores.len(), "materialize: {} GlobalMut defines but only {} stores", n_mut, stores.len());
         }
+        // A tensor read twice by one kernel has one define per read and would
+        // bind the same pointer to two argument slots. Point the repeats at
+        // the first define's slot and pass one arg per owning define. `loads`
+        // itself keeps every entry: an entry is a load edge holding an rc
+        // reference, and they are all released after the launch below.
+        let arg_loads = kernel.set_arg_alias(&loads);
         let mut buffers: Vec<LaunchArg> = Vec::new();
-        for &tid in &loads {
+        for &i in &arg_loads {
+            let tid = loads[i];
             if let Some(&value) = self.variable_map.get(&tid) {
                 // Variables live only in variable_map — they never have a
                 // buffer or pool storage; the value is bound at launch.

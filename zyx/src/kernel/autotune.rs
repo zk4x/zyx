@@ -364,6 +364,7 @@ impl Kernel {
         buffers: &[LaunchArg],
     ) -> Result<(Vec<LaunchArg>, Vec<PoolBufferId>), BackendError> {
         let mut buf_idx = 0usize;
+        let mut load_idx = 0usize;
         let mut used_bufs = Vec::new();
         let mut new_bufs = Vec::new();
         let mut events = Vec::new();
@@ -371,6 +372,18 @@ impl Kernel {
         while !op_id.is_null() {
             match self.ops[op_id].op {
                 Op::Param { kind, dtype, shape } => {
+                    // `self` is pre-linearization, so its aliased defines are
+                    // still here while the launched kernel has dropped them in
+                    // `apply_arg_alias`. Skip them, or every later arg lands
+                    // one slot off.
+                    if kind != ParamKind::GlobalMut {
+                        let define = load_idx;
+                        load_idx += 1;
+                        if self.arg_alias.get(define).is_some_and(|&owner| owner as usize != define) {
+                            op_id = self.next_op(op_id);
+                            continue;
+                        }
+                    }
                     if buf_idx < buffers.len() {
                         // Caller-provided argument (a bound buffer or a
                         // variable value) — pass through unchanged.
@@ -530,6 +543,10 @@ impl Kernel {
         // working clone into the SSA form the passes and launches expect.
         let mut kernel = self.clone();
         kernel.linearize();
+        // Defines are plain pointers now, so the repeat reads of a buffer can
+        // share one argument. `alloc_buffers` skips the same defines, keeping
+        // `args` aligned with the launched kernel.
+        kernel.apply_arg_alias();
         kernel.common_subexpression_elimination();
         kernel.dead_code_elimination();
         kernel.instruction_schedule();
