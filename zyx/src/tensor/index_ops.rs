@@ -590,6 +590,30 @@ impl From<RangeTo<u64>> for DimIndex {
     }
 }
 
+impl From<Range<Tensor>> for DimIndex {
+    fn from(val: Range<Tensor>) -> DimIndex {
+        DimIndex::Range { start: val.start.item::<i64>(), end: val.end.item::<i64>() }
+    }
+}
+
+impl From<RangeInclusive<Tensor>> for DimIndex {
+    fn from(val: RangeInclusive<Tensor>) -> DimIndex {
+        DimIndex::Range { start: val.start().item::<i64>(), end: val.end().item::<i64>() + 1 }
+    }
+}
+
+impl From<RangeFrom<Tensor>> for DimIndex {
+    fn from(val: RangeFrom<Tensor>) -> DimIndex {
+        DimIndex::RangeFrom { start: val.start.item::<i64>() }
+    }
+}
+
+impl From<RangeTo<Tensor>> for DimIndex {
+    fn from(val: RangeTo<Tensor>) -> DimIndex {
+        DimIndex::RangeTo { end: val.end.item::<i64>() }
+    }
+}
+
 impl From<RangeFull> for DimIndex {
     fn from(_val: RangeFull) -> DimIndex {
         DimIndex::RangeFull

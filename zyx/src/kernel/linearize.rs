@@ -603,11 +603,14 @@ impl Kernel {
                             let shape = match &self.ops[op_id].op {
                                 Op::Move { mop, .. } => match mop.as_ref() {
                                     MoveOp::Reshape { shape, .. } | MoveOp::Expand { shape } => match &self.ops[*shape].op {
-                                        Op::Stack { ops } => ops.to_vec(),
-                                        // Bare descriptor: a single dim value (const
-                                        // or runtime-loaded scalar).
-                                        Op::Const(_) | Op::Param { .. } => vec![*shape],
-                                        op => todo!("invalid shape descriptor {op:?}"),
+                                    Op::Stack { ops } => ops.to_vec(),
+                                    // Bare descriptor: a single dim value (const,
+                                    // runtime-loaded scalar, or a dim *expression*
+                                    // over them) — mirrors `shape_ids`'s `descriptor`.
+                                    Op::Const(_) | Op::Param { .. } | Op::Unary { .. } | Op::Binary { .. } | Op::Load { .. } => {
+                                        vec![*shape]
+                                    }
+                                    op => todo!("invalid shape descriptor {op:?}"),
                                     },
                                     _ => unreachable!(),
                                 },

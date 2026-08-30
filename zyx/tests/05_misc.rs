@@ -939,9 +939,9 @@ fn rope_3() -> Result<(), ZyxError> {
         let [d] = xs.rdims()?;
         let sin_freqs = sin.squeeze([0, 1]);
         let cos_freqs = cos.squeeze([0, 1]);
-        let a = xs.slice((.., .., .., ..d / 2)).unwrap();
+        let a = xs.slice((.., .., .., ..d.clone() / 2i64)).unwrap();
         //assert_eq!(a, [[[[1f32, 4., 2.], [4., 2., 4.]]]]);
-        let b = -xs.slice((.., .., .., d / 2..)).unwrap();
+        let b = -xs.slice((.., .., .., d.clone() / 2i64..)).unwrap();
         //assert_eq!(b, [[[[-4f32, -4., -3.], [-4., -3., -4.]]]]);
         let ro = a.clone() * cos_freqs.clone() - b.clone() * sin_freqs.clone();
         assert_eq!(ro, [[[[5f32, 32., 10.], [32., 20., 24.]]]]);

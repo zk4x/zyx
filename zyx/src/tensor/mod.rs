@@ -581,7 +581,7 @@ impl Tensor {
         {
             let mut rt = RT.lock();
             let n: Dim = match &shape {
-                Some(s) => rt.resolve_shape(s.id).into_iter().product(),
+                Some(s) => rt.resolve_symbolic_dims(s.id).into_iter().product(),
                 None => 1,
             };
             let shape_id = match &shape {
@@ -734,7 +734,7 @@ impl Tensor {
         }
         let shape = Tensor::stack(&dims)?;
         let mut rt = RT.lock();
-        let n: Dim = rt.resolve_shape(shape.id).into_iter().product();
+        let n: Dim = rt.resolve_symbolic_dims(shape.id).into_iter().product();
         let data: Vec<T> = (0..n).map(|_| rt.rng.range(range.clone())).collect();
         Ok(Tensor { id: rt.new_host_tensor(shape.id, data.into())? })
     }
@@ -749,7 +749,7 @@ impl Tensor {
         let shape_st = Tensor::stack(&dims).ok();
         let resolved: Vec<Dim> = {
             let rt = RT.lock();
-            shape_st.as_ref().map(|s| rt.resolve_shape(s.id)).unwrap_or_default()
+            shape_st.as_ref().map(|s| rt.resolve_symbolic_dims(s.id)).unwrap_or_default()
         };
         let n = T::from_i64(resolved.iter().skip(1).product::<Dim>().try_into().unwrap());
         let one = T::one();
@@ -771,7 +771,7 @@ impl Tensor {
         let shape_st = Tensor::stack(&dims).ok();
         let c = {
             let rt = RT.lock();
-            let resolved: Vec<Dim> = shape_st.as_ref().map(|s| rt.resolve_shape(s.id)).unwrap_or_default();
+            let resolved: Vec<Dim> = shape_st.as_ref().map(|s| rt.resolve_symbolic_dims(s.id)).unwrap_or_default();
             6. / (resolved[0] + resolved.iter().skip(1).product::<Dim>()) as f32
         };
         let mut x = Tensor::uniform(dims, -1f32..1f32)?;

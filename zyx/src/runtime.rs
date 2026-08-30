@@ -38,7 +38,7 @@
 //! 1. **User handle.** The caller's `Tensor` value. Created by tensor construction /
 //!    `Clone`, released by `Tensor::drop` → [`Runtime::release`].
 //! 2. **Symbolic tensor edges.** The pure-slab symbolic nodes reference each other:
-//!    `Cast.x`, `Unary.x`, `Binary { x, y }`, `Stack.tensors`. Each held child is one
+//!    `Cast.x`, `Unary.x`, `Binary { x, y }`, `Stack.tensors`, `Stack2–5.tensors`. Each held child is one
 //!    edge: retained when the node is created (see `stack` / `binary` symbolic arms),
 //!    released when the node dies ([`Runtime::release`]'s death path).
 //! 3. **Kernel load edges.** `KernelData.loads` lists the tensors a kernel reads; each
@@ -175,7 +175,7 @@
 //! `release(x)` decrements x's `rc`; the interesting work happens at `rc == 0` (the
 //! death path), which recurses through three mechanisms:
 //!
-//! 1. **Symbolic edges.** A dead `Cast`/`Unary`/`Binary`/`Stack` releases its operand
+//! 1. **Symbolic edges.** A dead `Cast`/`Unary`/`Binary`/`Stack` (any arity) releases its operand
 //!    tensors; a dead kernel-backed tensor releases its `shape_id` expression tree.
 //!    Each released operand may itself hit `rc == 0` and recurse.
 //! 2. **Kernel detachment.** The death path removes x from its producer's `outputs`,
@@ -424,6 +424,22 @@ pub enum TensorData {
         tensors: Box<[TensorId]>,
         rc: u16,
     },
+    Stack2 {
+        tensors: [TensorId; 2],
+        rc: u16,
+    },
+    Stack3 {
+        tensors: [TensorId; 3],
+        rc: u16,
+    },
+    Stack4 {
+        tensors: [TensorId; 4],
+        rc: u16,
+    },
+    Stack5 {
+        tensors: [TensorId; 5],
+        rc: u16,
+    },
 }
 
 #[derive(Debug)]
@@ -589,6 +605,17 @@ impl Runtime {
     /// symbolic-dim consumers (they end up with a different op than the rest
     /// of the graph for the same dim).
     pub(crate) fn resolve_shape(&self, x: TensorId) -> Vec<Dim> {
+        // A Stack node is a vector of len dim exprs: its ACTUAL shape is
+        // [len] — not its elements' values. Dims described by a shape
+        // expression are `resolve_symbolic_dims`'s job.
+        match &self.tensors[x] {
+            TensorData::Stack { tensors, .. } => return vec![tensors.len() as Dim],
+            TensorData::Stack2 { tensors, .. } => return vec![tensors.len() as Dim],
+            TensorData::Stack3 { tensors, .. } => return vec![tensors.len() as Dim],
+            TensorData::Stack4 { tensors, .. } => return vec![tensors.len() as Dim],
+            TensorData::Stack5 { tensors, .. } => return vec![tensors.len() as Dim],
+            _ => {}
+        }
         // DFS post-order flatten (same traversal as replay_shape_into_kernel):
         // every node lands after its operands, so one flat pass evaluates.
         fn flatten(rt: &Runtime, x: TensorId, order: &mut Vec<TensorId>) {
@@ -605,6 +632,26 @@ impl Runtime {
                         flatten(rt, t, order);
                     }
                 }
+                TensorData::Stack2 { tensors, .. } => {
+                    for &t in tensors.iter() {
+                        flatten(rt, t, order);
+                    }
+                }
+                TensorData::Stack3 { tensors, .. } => {
+                    for &t in tensors.iter() {
+                        flatten(rt, t, order);
+                    }
+                }
+                TensorData::Stack4 { tensors, .. } => {
+                    for &t in tensors.iter() {
+                        flatten(rt, t, order);
+                    }
+                }
+                TensorData::Stack5 { tensors, .. } => {
+                    for &t in tensors.iter() {
+                        flatten(rt, t, order);
+                    }
+                }
                 t => panic!(
                     "shape expression tid {x} contains non-symbolic tensor data {t:?}; shapes must be built from Dim constants, variables and dim ops"
                 ),
@@ -614,6 +661,95 @@ impl Runtime {
 
         let mut dims = Vec::new();
         for root in self.shape(x) {
+            let mut order = Vec::new();
+            flatten(self, root, &mut order);
+            let mut vals: Map<TensorId, Constant> = Map::with_hasher(BuildHasherDefault::new());
+            let mut value = Constant::I64(0i64.to_le_bytes());
+            for tid in order {
+                value = match self.tensors[tid] {
+                    TensorData::Constant { value, .. } => value,
+                    TensorData::Variable { .. } => self.variable_map[&tid],
+                    TensorData::Cast { x: a, dtype, .. } => vals[&a].cast(dtype),
+                    TensorData::Unary { x: a, uop, .. } => vals[&a].unary(uop),
+                    TensorData::Binary { x: a, y: b, bop, .. } => Constant::binary(vals[&a], vals[&b], bop),
+                    ref t => panic!("dimension tid {tid} is not a dim expression: {t:?}"),
+                };
+                vals.insert(tid, value);
+            }
+            dims.push(value.as_dim().expect("dim expression does not evaluate to an integer"));
+        }
+        dims
+    }
+
+    /// Dims described by a SHAPE EXPRESSION (a `shape_id`): a `Stack` (any
+    /// arity) yields one dim per element; a bare dim expr (`Constant`,
+    /// `Variable`, `Cast`, `Unary`, `Binary`) is a single dim — 1d shapes
+    /// skip the Stack node, so their shape_id IS the dim expr. Panics on
+    /// eager/graph/promoted tensors: those are data, not shape expressions —
+    /// use [`Runtime::resolve_shape`] for their actual shape.
+    pub(crate) fn resolve_symbolic_dims(&self, shape_id: TensorId) -> Vec<Dim> {
+        if shape_id.is_null() {
+            return Vec::new();
+        }
+        let roots: Vec<TensorId> = match &self.tensors[shape_id] {
+            TensorData::Stack { tensors, .. } => tensors.to_vec(),
+            TensorData::Stack2 { tensors, .. } => tensors.to_vec(),
+            TensorData::Stack3 { tensors, .. } => tensors.to_vec(),
+            TensorData::Stack4 { tensors, .. } => tensors.to_vec(),
+            TensorData::Stack5 { tensors, .. } => tensors.to_vec(),
+            TensorData::Constant { .. }
+            | TensorData::Variable { .. }
+            | TensorData::Cast { .. }
+            | TensorData::Unary { .. }
+            | TensorData::Binary { .. } => vec![shape_id],
+            t => panic!(
+                "resolve_symbolic_dims: tid {shape_id} is not a shape expression (use resolve_shape for data tensors): {t:?}"
+            ),
+        };
+        // Same DFS post-order flatten + evaluation as `resolve_shape`
+        // (duplicated by design — see STYLE).
+        fn flatten(rt: &Runtime, x: TensorId, order: &mut Vec<TensorId>) {
+            match &rt.tensors[x] {
+                TensorData::Constant { .. } | TensorData::Variable { .. } => (),
+                TensorData::Cast { x: a, .. } => flatten(rt, *a, order),
+                TensorData::Unary { x: a, .. } => flatten(rt, *a, order),
+                TensorData::Binary { x: a, y: b, .. } => {
+                    flatten(rt, *a, order);
+                    flatten(rt, *b, order);
+                }
+                TensorData::Stack { tensors, .. } => {
+                    for &t in tensors.iter() {
+                        flatten(rt, t, order);
+                    }
+                }
+                TensorData::Stack2 { tensors, .. } => {
+                    for &t in tensors.iter() {
+                        flatten(rt, t, order);
+                    }
+                }
+                TensorData::Stack3 { tensors, .. } => {
+                    for &t in tensors.iter() {
+                        flatten(rt, t, order);
+                    }
+                }
+                TensorData::Stack4 { tensors, .. } => {
+                    for &t in tensors.iter() {
+                        flatten(rt, t, order);
+                    }
+                }
+                TensorData::Stack5 { tensors, .. } => {
+                    for &t in tensors.iter() {
+                        flatten(rt, t, order);
+                    }
+                }
+                t => panic!(
+                    "shape expression tid {x} contains non-symbolic tensor data {t:?}; shapes must be built from Dim constants, variables and dim ops"
+                ),
+            }
+            order.push(x);
+        }
+        let mut dims = Vec::new();
+        for root in roots {
             let mut order = Vec::new();
             flatten(self, root, &mut order);
             let mut vals: Map<TensorId, Constant> = Map::with_hasher(BuildHasherDefault::new());
@@ -656,6 +792,10 @@ impl Runtime {
                 TensorData::Cast { x: a, .. } | TensorData::Unary { x: a, .. } => contains_variable(rt, *a),
                 TensorData::Binary { x: a, y: b, .. } => contains_variable(rt, *a) || contains_variable(rt, *b),
                 TensorData::Stack { tensors, .. } => tensors.iter().any(|&t| contains_variable(rt, t)),
+                TensorData::Stack2 { tensors, .. } => tensors.iter().any(|&t| contains_variable(rt, t)),
+                TensorData::Stack3 { tensors, .. } => tensors.iter().any(|&t| contains_variable(rt, t)),
+                TensorData::Stack4 { tensors, .. } => tensors.iter().any(|&t| contains_variable(rt, t)),
+                TensorData::Stack5 { tensors, .. } => tensors.iter().any(|&t| contains_variable(rt, t)),
                 TensorData::Constant { .. } => false,
                 t => panic!(
                     "dim expression tid {x} contains non-symbolic tensor data {t:?}; shapes must be built from Dim constants, variables and dim ops"
@@ -675,6 +815,26 @@ impl Runtime {
                     flatten(rt, *b, order);
                 }
                 TensorData::Stack { tensors, .. } => {
+                    for &t in tensors.iter() {
+                        flatten(rt, t, order);
+                    }
+                }
+                TensorData::Stack2 { tensors, .. } => {
+                    for &t in tensors.iter() {
+                        flatten(rt, t, order);
+                    }
+                }
+                TensorData::Stack3 { tensors, .. } => {
+                    for &t in tensors.iter() {
+                        flatten(rt, t, order);
+                    }
+                }
+                TensorData::Stack4 { tensors, .. } => {
+                    for &t in tensors.iter() {
+                        flatten(rt, t, order);
+                    }
+                }
+                TensorData::Stack5 { tensors, .. } => {
                     for &t in tensors.iter() {
                         flatten(rt, t, order);
                     }
@@ -735,12 +895,20 @@ impl Runtime {
                 return Vec::new();
             }
             TensorData::Stack { ref tensors, .. } => return tensors.to_vec(),
+            TensorData::Stack2 { ref tensors, .. } => return tensors.to_vec(),
+            TensorData::Stack3 { ref tensors, .. } => return tensors.to_vec(),
+            TensorData::Stack4 { ref tensors, .. } => return tensors.to_vec(),
+            TensorData::Stack5 { ref tensors, .. } => return tensors.to_vec(),
         };
         if shape_id.is_null() {
             return Vec::new();
         }
         match &self.tensors[shape_id] {
             TensorData::Stack { tensors, .. } => tensors.to_vec(),
+            TensorData::Stack2 { tensors, .. } => tensors.to_vec(),
+            TensorData::Stack3 { tensors, .. } => tensors.to_vec(),
+            TensorData::Stack4 { tensors, .. } => tensors.to_vec(),
+            TensorData::Stack5 { tensors, .. } => tensors.to_vec(),
             _ => vec![shape_id],
         }
     }
@@ -765,7 +933,11 @@ impl Runtime {
                     self.dtype(x)
                 }
             }
-            TensorData::Stack { .. } => IDX_T,
+            TensorData::Stack { .. }
+            | TensorData::Stack2 { .. }
+            | TensorData::Stack3 { .. }
+            | TensorData::Stack4 { .. }
+            | TensorData::Stack5 { .. } => IDX_T,
         }
     }
 
@@ -785,7 +957,11 @@ impl Runtime {
             | TensorData::Cast { .. }
             | TensorData::Unary { .. }
             | TensorData::Binary { .. }
-            | TensorData::Stack { .. } => false,
+            | TensorData::Stack { .. }
+            | TensorData::Stack2 { .. }
+            | TensorData::Stack3 { .. }
+            | TensorData::Stack4 { .. }
+            | TensorData::Stack5 { .. } => false,
         }
     }
 
@@ -852,7 +1028,11 @@ impl Runtime {
                 | TensorData::Cast { rc, .. }
                 | TensorData::Unary { rc, .. }
                 | TensorData::Binary { rc, .. }
-                | TensorData::Stack { rc, .. } => {
+                | TensorData::Stack { rc, .. }
+                | TensorData::Stack2 { rc, .. }
+                | TensorData::Stack3 { rc, .. }
+                | TensorData::Stack4 { rc, .. }
+                | TensorData::Stack5 { rc, .. } => {
                     *rc += 1;
                     #[cfg(feature = "debug_tensor_op")]
                     println!("rc::retain({x}) -> {rc}");
@@ -889,6 +1069,10 @@ impl Runtime {
                 TensorData::Unary { x: a, uop, .. } => format!("unary {uop:?}({a})"),
                 TensorData::Binary { x: a, y: b, bop, .. } => format!("binary {bop:?}({a},{b})"),
                 TensorData::Stack { tensors, .. } => format!("stack len={}", tensors.len()),
+                TensorData::Stack2 { tensors, .. } => format!("stack len={}", tensors.len()),
+                TensorData::Stack3 { tensors, .. } => format!("stack len={}", tensors.len()),
+                TensorData::Stack4 { tensors, .. } => format!("stack len={}", tensors.len()),
+                TensorData::Stack5 { tensors, .. } => format!("stack len={}", tensors.len()),
                 TensorData::Cast { x: a, dtype, .. } => format!("cast {a} -> {dtype:?}"),
             };
             println!("runtime::release(tid={x}) kind={desc}");
@@ -963,7 +1147,11 @@ impl Runtime {
                 | TensorData::Cast { rc, .. }
                 | TensorData::Unary { rc, .. }
                 | TensorData::Binary { rc, .. }
-                | TensorData::Stack { rc, .. } => {
+                | TensorData::Stack { rc, .. }
+                | TensorData::Stack2 { rc, .. }
+                | TensorData::Stack3 { rc, .. }
+                | TensorData::Stack4 { rc, .. }
+                | TensorData::Stack5 { rc, .. } => {
                     *rc -= 1;
                     *rc
                 }
@@ -1019,6 +1207,34 @@ impl Runtime {
                 self.release(b);
             }
             TensorData::Stack { ref tensors, .. } => {
+                let children: Vec<TensorId> = tensors.to_vec();
+                self.tensors.remove(x);
+                for t in children {
+                    self.release(t);
+                }
+            }
+            TensorData::Stack2 { ref tensors, .. } => {
+                let children: Vec<TensorId> = tensors.to_vec();
+                self.tensors.remove(x);
+                for t in children {
+                    self.release(t);
+                }
+            }
+            TensorData::Stack3 { ref tensors, .. } => {
+                let children: Vec<TensorId> = tensors.to_vec();
+                self.tensors.remove(x);
+                for t in children {
+                    self.release(t);
+                }
+            }
+            TensorData::Stack4 { ref tensors, .. } => {
+                let children: Vec<TensorId> = tensors.to_vec();
+                self.tensors.remove(x);
+                for t in children {
+                    self.release(t);
+                }
+            }
+            TensorData::Stack5 { ref tensors, .. } => {
                 let children: Vec<TensorId> = tensors.to_vec();
                 self.tensors.remove(x);
                 for t in children {
@@ -1410,7 +1626,7 @@ impl Runtime {
     /// # The symbolic closed set
     ///
     /// Every shape and every dimension everywhere in zyx is a value built
-    /// from exactly these six slab variants — nothing else participates in a
+    /// from exactly these slab variants — nothing else participates in a
     /// shape expression, ever:
     ///
     /// - `Constant` — baked at construction; carries its own dtype and is
@@ -1421,7 +1637,9 @@ impl Runtime {
     ///   the owning kernel's `loads` under its originating `TensorId`.
     /// - `Cast`, `Unary`, `Binary` over already-mapped operands — replayed as
     ///   real kernel ops.
-    /// - `Stack` — grouped into a single `Op::Stack`.
+    /// - `Stack`, `Stack2`–`Stack5` — grouped into a single `Op::Stack`
+    ///   (the fixed-arity `Stack2`–`Stack5` variants are the inline-storage
+    ///   forms for 2–5 element shapes).
     ///
     /// Anything else reaching this walk is a bug and panics loudly here. No
     /// fallback, no fabricated dims, no folding: constants are NOT folded
@@ -1461,6 +1679,26 @@ impl Runtime {
                     flatten(rt, *b, order);
                 }
                 TensorData::Stack { tensors, .. } => {
+                    for &t in tensors.iter() {
+                        flatten(rt, t, order);
+                    }
+                }
+                TensorData::Stack2 { tensors, .. } => {
+                    for &t in tensors.iter() {
+                        flatten(rt, t, order);
+                    }
+                }
+                TensorData::Stack3 { tensors, .. } => {
+                    for &t in tensors.iter() {
+                        flatten(rt, t, order);
+                    }
+                }
+                TensorData::Stack4 { tensors, .. } => {
+                    for &t in tensors.iter() {
+                        flatten(rt, t, order);
+                    }
+                }
+                TensorData::Stack5 { tensors, .. } => {
                     for &t in tensors.iter() {
                         flatten(rt, t, order);
                     }
@@ -1505,6 +1743,22 @@ impl Runtime {
                     let ops: Vec<OpId> = tensors.iter().map(|t| op_map[t]).collect();
                     self.kernels[kid].kernel.stack(&ops)
                 }
+                TensorData::Stack2 { ref tensors, .. } => {
+                    let ops: Vec<OpId> = tensors.iter().map(|t| op_map[t]).collect();
+                    self.kernels[kid].kernel.stack(&ops)
+                }
+                TensorData::Stack3 { ref tensors, .. } => {
+                    let ops: Vec<OpId> = tensors.iter().map(|t| op_map[t]).collect();
+                    self.kernels[kid].kernel.stack(&ops)
+                }
+                TensorData::Stack4 { ref tensors, .. } => {
+                    let ops: Vec<OpId> = tensors.iter().map(|t| op_map[t]).collect();
+                    self.kernels[kid].kernel.stack(&ops)
+                }
+                TensorData::Stack5 { ref tensors, .. } => {
+                    let ops: Vec<OpId> = tensors.iter().map(|t| op_map[t]).collect();
+                    self.kernels[kid].kernel.stack(&ops)
+                }
                 ref t => unreachable!("flatten rejected non-symbolic data {t:?}"),
             };
             op_map.insert(tid, op_id);
@@ -1534,7 +1788,8 @@ impl Runtime {
     ///   poison graph hashing and cross-replay plan caching.
     /// - `Cast` / `Unary` / `Binary` → corresponding nodes over operand
     ///   classes (hashconsed normally).
-    /// - `Stack` → a `Stack` node (or folded away for len < 2).
+    /// - `Stack` / `Stack2`–`Stack5` → a `Stack` node (or folded away for
+    ///   len < 2).
     ///
     /// The same closed-set rule applies: anything else panics here.
     fn replay_symbolic_into_graph(&mut self, graph_id: GraphId, shape: TensorId) -> ClassId {
@@ -1549,6 +1804,26 @@ impl Runtime {
                     flatten(rt, *b, order);
                 }
                 TensorData::Stack { tensors, .. } => {
+                    for &t in tensors.iter() {
+                        flatten(rt, t, order);
+                    }
+                }
+                TensorData::Stack2 { tensors, .. } => {
+                    for &t in tensors.iter() {
+                        flatten(rt, t, order);
+                    }
+                }
+                TensorData::Stack3 { tensors, .. } => {
+                    for &t in tensors.iter() {
+                        flatten(rt, t, order);
+                    }
+                }
+                TensorData::Stack4 { tensors, .. } => {
+                    for &t in tensors.iter() {
+                        flatten(rt, t, order);
+                    }
+                }
+                TensorData::Stack5 { tensors, .. } => {
                     for &t in tensors.iter() {
                         flatten(rt, t, order);
                     }
@@ -1580,6 +1855,38 @@ impl Runtime {
                     self.push_binary_node(graph_id, a, b, bop)
                 }
                 TensorData::Stack { ref tensors, .. } => {
+                    let ops: Vec<ClassId> = tensors.iter().map(|t| class_map[t]).collect();
+                    match ops.len() {
+                        0 => ClassId::NULL,
+                        1 => ops[0],
+                        _ => self.push_node(graph_id, Node::Stack { ops: ops.into_boxed_slice() }).1,
+                    }
+                }
+                TensorData::Stack2 { ref tensors, .. } => {
+                    let ops: Vec<ClassId> = tensors.iter().map(|t| class_map[t]).collect();
+                    match ops.len() {
+                        0 => ClassId::NULL,
+                        1 => ops[0],
+                        _ => self.push_node(graph_id, Node::Stack { ops: ops.into_boxed_slice() }).1,
+                    }
+                }
+                TensorData::Stack3 { ref tensors, .. } => {
+                    let ops: Vec<ClassId> = tensors.iter().map(|t| class_map[t]).collect();
+                    match ops.len() {
+                        0 => ClassId::NULL,
+                        1 => ops[0],
+                        _ => self.push_node(graph_id, Node::Stack { ops: ops.into_boxed_slice() }).1,
+                    }
+                }
+                TensorData::Stack4 { ref tensors, .. } => {
+                    let ops: Vec<ClassId> = tensors.iter().map(|t| class_map[t]).collect();
+                    match ops.len() {
+                        0 => ClassId::NULL,
+                        1 => ops[0],
+                        _ => self.push_node(graph_id, Node::Stack { ops: ops.into_boxed_slice() }).1,
+                    }
+                }
+                TensorData::Stack5 { ref tensors, .. } => {
                     let ops: Vec<ClassId> = tensors.iter().map(|t| class_map[t]).collect();
                     match ops.len() {
                         0 => ClassId::NULL,
@@ -1704,7 +2011,7 @@ impl Runtime {
         offset_bytes: u64,
     ) -> Result<TensorId, ZyxError> {
         self.initialize_backends();
-        let resolved = self.resolve_shape(shape);
+        let resolved = self.resolve_symbolic_dims(shape);
         let bytes: Dim = ((resolved.iter().product::<Dim>() * dtype.bit_size() as Dim) + 7) / 8;
 
         let pool = self.pools[PoolId::DISK]
@@ -1730,7 +2037,11 @@ impl Runtime {
             | TensorData::Cast { .. }
             | TensorData::Unary { .. }
             | TensorData::Binary { .. }
-            | TensorData::Stack { .. } => {
+            | TensorData::Stack { .. }
+            | TensorData::Stack2 { .. }
+            | TensorData::Stack3 { .. }
+            | TensorData::Stack4 { .. }
+            | TensorData::Stack5 { .. } => {
                 let tid = self.tensors.push(TensorData::Cast { x, dtype, rc: 1 });
                 // The cast node holds an edge to x.
                 self.retain(x);
@@ -1773,7 +2084,11 @@ impl Runtime {
             | TensorData::Cast { .. }
             | TensorData::Unary { .. }
             | TensorData::Binary { .. }
-            | TensorData::Stack { .. } => {
+            | TensorData::Stack { .. }
+            | TensorData::Stack2 { .. }
+            | TensorData::Stack3 { .. }
+            | TensorData::Stack4 { .. }
+            | TensorData::Stack5 { .. } => {
                 todo!("bitcast of pure-symbolic tensors")
             }
             TensorData::Eager { kernel_id, op_id, shape_id, .. } => {
@@ -1815,7 +2130,11 @@ impl Runtime {
             | TensorData::Cast { .. }
             | TensorData::Unary { .. }
             | TensorData::Binary { .. }
-            | TensorData::Stack { .. } => {
+            | TensorData::Stack { .. }
+            | TensorData::Stack2 { .. }
+            | TensorData::Stack3 { .. }
+            | TensorData::Stack4 { .. }
+            | TensorData::Stack5 { .. } => {
                 let tid = self.tensors.push(TensorData::Unary { x, uop, rc: 1 });
                 // The unary node holds an edge to x.
                 self.retain(x);
@@ -1875,6 +2194,10 @@ impl Runtime {
                 | TensorData::Unary { .. }
                 | TensorData::Binary { .. }
                 | TensorData::Stack { .. }
+                | TensorData::Stack2 { .. }
+                | TensorData::Stack3 { .. }
+                | TensorData::Stack4 { .. }
+                | TensorData::Stack5 { .. }
         );
         let y_sym = matches!(
             self.tensors[y],
@@ -1884,6 +2207,10 @@ impl Runtime {
                 | TensorData::Unary { .. }
                 | TensorData::Binary { .. }
                 | TensorData::Stack { .. }
+                | TensorData::Stack2 { .. }
+                | TensorData::Stack3 { .. }
+                | TensorData::Stack4 { .. }
+                | TensorData::Stack5 { .. }
         );
         if x_sym && y_sym {
             let tid = self.tensors.push(TensorData::Binary { x, y, bop, rc: 1 });
@@ -1947,6 +2274,10 @@ impl Runtime {
                             | TensorData::Unary { .. }
                             | TensorData::Binary { .. }
                             | TensorData::Stack { .. }
+                            | TensorData::Stack2 { .. }
+                            | TensorData::Stack3 { .. }
+                            | TensorData::Stack4 { .. }
+                            | TensorData::Stack5 { .. }
                     ) =>
                 {
                     todo!("promote symbolic scalar tid {x} ({t:?}) into a graph")
@@ -1964,6 +2295,10 @@ impl Runtime {
                             | TensorData::Unary { .. }
                             | TensorData::Binary { .. }
                             | TensorData::Stack { .. }
+                            | TensorData::Stack2 { .. }
+                            | TensorData::Stack3 { .. }
+                            | TensorData::Stack4 { .. }
+                            | TensorData::Stack5 { .. }
                     ) =>
                 {
                     todo!("promote symbolic scalar tid {y} ({t:?}) into a graph")
@@ -2324,9 +2659,31 @@ impl Runtime {
                     | TensorData::Unary { .. }
                     | TensorData::Binary { .. }
                     | TensorData::Stack { .. }
+                    | TensorData::Stack2 { .. }
+                    | TensorData::Stack3 { .. }
+                    | TensorData::Stack4 { .. }
+                    | TensorData::Stack5 { .. }
             )
         }) {
-            let tid = self.tensors.push(TensorData::Stack { tensors: tensors.into(), rc: 1 });
+            // 1d shapes skip the Stack node entirely: the shape_id IS the
+            // single dim tensor (shared, rc'd like any shape expression).
+            if tensors.len() == 1 {
+                self.retain(tensors[0]);
+                #[cfg(feature = "debug_tensor_op")]
+                println!("  -> symbolic: tid={} (1d shape, no stack node)", tensors[0]);
+                return Ok(tensors[0]);
+            }
+            // Arity dispatch: 2-5 element shapes avoid the Box<[TensorId]>
+            // allocation of the generic Stack node.
+            let tid = match tensors.len() {
+                2 => self.tensors.push(TensorData::Stack2 { tensors: [tensors[0], tensors[1]], rc: 1 }),
+                3 => self.tensors.push(TensorData::Stack3 { tensors: [tensors[0], tensors[1], tensors[2]], rc: 1 }),
+                4 => self.tensors.push(TensorData::Stack4 { tensors: [tensors[0], tensors[1], tensors[2], tensors[3]], rc: 1 }),
+                5 => self
+                    .tensors
+                    .push(TensorData::Stack5 { tensors: [tensors[0], tensors[1], tensors[2], tensors[3], tensors[4]], rc: 1 }),
+                _ => self.tensors.push(TensorData::Stack { tensors: tensors.into(), rc: 1 }),
+            };
             // The stack node holds an edge to every element.
             for &t in tensors {
                 self.retain(t);
@@ -2431,7 +2788,7 @@ impl Runtime {
         // over variable_map), so this is a total check.
         debug_assert_eq!(
             self.resolve_shape(x).iter().product::<Dim>(),
-            self.resolve_shape(shape_id).iter().product::<Dim>(),
+            self.resolve_symbolic_dims(shape_id).iter().product::<Dim>(),
             "reshape element count mismatch"
         );
 
@@ -2531,7 +2888,7 @@ impl Runtime {
         println!("runtime::expand(x={x}, shape={shape_id:?})");
         let dtype = self.dtype(x);
         let sh = self.resolve_shape(x);
-        let target = self.resolve_shape(shape_id);
+        let target = self.resolve_symbolic_dims(shape_id);
         debug_assert!(
             sh.len() <= target.len(),
             "expand: input rank {} > target rank {}: {:?} -> {:?}",
@@ -2579,6 +2936,10 @@ impl Runtime {
                 | TensorData::Unary { .. }
                 | TensorData::Binary { .. }
                 | TensorData::Stack { .. }
+                | TensorData::Stack2 { .. }
+                | TensorData::Stack3 { .. }
+                | TensorData::Stack4 { .. }
+                | TensorData::Stack5 { .. }
         ) {
             // Pure-slab operand (e.g. a broadcast scalar): materialize it into
             // a fresh eager kernel that replays the slab expression and
@@ -4412,6 +4773,26 @@ mod leak_tests {
                             *expected.entry(*t).or_insert(0) += 1;
                         }
                     }
+                    TensorData::Stack2 { tensors, .. } => {
+                        for t in tensors.iter() {
+                            *expected.entry(*t).or_insert(0) += 1;
+                        }
+                    }
+                    TensorData::Stack3 { tensors, .. } => {
+                        for t in tensors.iter() {
+                            *expected.entry(*t).or_insert(0) += 1;
+                        }
+                    }
+                    TensorData::Stack4 { tensors, .. } => {
+                        for t in tensors.iter() {
+                            *expected.entry(*t).or_insert(0) += 1;
+                        }
+                    }
+                    TensorData::Stack5 { tensors, .. } => {
+                        for t in tensors.iter() {
+                            *expected.entry(*t).or_insert(0) += 1;
+                        }
+                    }
                     TensorData::Eager { shape_id, .. }
                     | TensorData::Graph { shape_id, .. }
                     | TensorData::Promoted { shape_id, .. } => {
@@ -4433,7 +4814,11 @@ mod leak_tests {
                     | TensorData::Cast { rc, .. }
                     | TensorData::Unary { rc, .. }
                     | TensorData::Binary { rc, .. }
-                    | TensorData::Stack { rc, .. } => *rc as usize,
+                    | TensorData::Stack { rc, .. }
+                    | TensorData::Stack2 { rc, .. }
+                    | TensorData::Stack3 { rc, .. }
+                    | TensorData::Stack4 { rc, .. }
+                    | TensorData::Stack5 { rc, .. } => *rc as usize,
                 };
                 let exp = expected.get(&tid).copied().unwrap_or(0);
                 if rc != exp {
