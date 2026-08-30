@@ -3,6 +3,7 @@
 
 use crate::{
     RT, Tensor, ZyxError,
+    dtype::DType,
     shape::{Dim, into_axis},
     tensor::Axis,
 };
@@ -296,15 +297,16 @@ impl Tensor {
         let axis = into_axis(axis, rank)?;
         let start = start.into();
         let length = length.into();
-        /*let dim = shape[axis];
-        if start > dim {
-            return Err(ZyxError::shape_error(format!("narrow: start {start} out of range on axis {axis} (dim {dim})").into()));
+        // Shape inputs must be IDX_T (I64). Other dtypes would get silently
+        // cast inside the kernel IR, hiding the caller mistake until it
+        // surfaces far away from the cause (e.g. in gws resolution).
+        for (what, tid_dtype) in [("start", start.dtype()), ("length", length.dtype())] {
+            if tid_dtype != DType::I64 {
+                return Err(ZyxError::shape_error(
+                    format!("narrow: {what} must be I64 (IDX_T), got {tid_dtype:?} — cast the tensor to I64 at creation").into(),
+                ));
+            }
         }
-        if length > dim - start {
-            return Err(ZyxError::shape_error(
-                format!("narrow: start {start} + length {length} > dim {dim} on axis {axis}").into(),
-            ));
-        }*/
         let id = RT.lock().narrow(self.id, axis, start.id, length.id);
         Ok(Tensor { id })
     }

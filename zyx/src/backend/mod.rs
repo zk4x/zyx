@@ -82,6 +82,9 @@ pub enum GwsDim {
     /// The group length is a dim *expression* (e.g. an inferred reshape dim):
     /// a binary op over two recursively-evaluable group dims.
     Binary { x: Box<GwsDim>, y: Box<GwsDim>, bop: BOp },
+    /// The group length is a value-preserving cast of a dim expression (e.g.
+    /// a `Variable` param cast to `IDX_T`).
+    Cast { x: Box<GwsDim>, dtype: DType },
 }
 
 impl GwsDim {
@@ -100,6 +103,10 @@ impl GwsDim {
                 let yv = Constant::idx(y.eval(param));
                 Constant::binary(xv, yv, *bop).as_dim().expect("gws expression evaluated to a non-integer dim")
             }
+            GwsDim::Cast { x, dtype } => Constant::idx(x.eval(param))
+                .cast(*dtype)
+                .as_dim()
+                .expect("cast gws expression evaluated to a non-integer dim"),
         }
     }
 }
@@ -108,7 +115,7 @@ impl GwsDim {
 ///
 /// Each group length `op_id` is a dim over `Op::Const` leaves and
 /// `Op::Param { kind: Variable }` leaves (`Const` → `Const`,
-/// `Param { Variable }` → `Param`, unary/binary chains → `Unary`/`Binary`);
+/// `Param { Variable }` → `Param`, cast/unary/binary chains → `Cast`/`Unary`/`Binary`);
 /// anything else is unreachable.
 fn gws_from_kernel(kernel: &Kernel) -> Vec<GwsDim> {
     // Head-order position of every `Op::Param`, matching the arg ordering.
@@ -133,6 +140,7 @@ fn gws_from_kernel(kernel: &Kernel) -> Vec<GwsDim> {
                 y: Box::new(conv(kernel, *y, ordinals)),
                 bop: *bop,
             },
+            Op::Cast { x, dtype } => GwsDim::Cast { x: Box::new(conv(kernel, *x, ordinals)), dtype: *dtype },
             ref op => unreachable!("group length must be a dim over Const/Param Variable, got {op:?}"),
         }
     }

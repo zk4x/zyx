@@ -1830,9 +1830,23 @@ impl Tensor {
     // ternary
     /// Where operation. Replaces elementwise true values with `if_true` and false values with `if_false`.
     ///
+    /// # Note
+    ///
+    /// Implemented with the branchless decomposition
+    /// `cond * if_true + (1 - cond) * if_false` — GPUs hate branching, and a
+    /// ternary select would be much slower. The decomposition is exact for
+    /// finite values, but produces `NaN` whenever a product hits `0 * ±inf`
+    /// (e.g. `where_(-inf, 0)` on a false element). Do NOT pass ±inf values.
+    /// If a model in the future needs true ternary semantics with infinities,
+    /// a proper ternary `Where` op (graph node + kernel IR op + backends) will
+    /// have to be added.
+    ///
     /// # Errors
     ///
     /// Returns error if the tensors have non broadcasteable shapes.
+    // TODO: possibly for some models in the future a ternary where op will be
+    // needed (graph node + kernel IR + backends); the branchless decomposition
+    // below cannot support ±inf values.
     #[allow(clippy::missing_panics_doc)]
     pub fn where_(&self, if_true: impl Into<Tensor>, if_false: impl Into<Tensor>) -> Result<Tensor, ZyxError> {
         let if_true = if_true.into();
@@ -2643,6 +2657,16 @@ impl Tensor {
     }
 
     /// Masked fill
+    ///
+    /// # Note
+    ///
+    /// Delegates to `where_`, so it inherits its branchless decomposition and
+    /// its ±inf limitation: filling with ±inf (or self containing ±inf on
+    /// kept elements) produces `NaN` (`0 * ±inf`). Use a large finite value
+    /// instead, or a host-built mask tensor added to the input.
+    // TODO: possibly for some models in the future a ternary where op will be
+    // needed here (graph node + kernel IR + backends); then masked_fill can
+    // support ±inf values.
     ///
     /// # Errors
     ///

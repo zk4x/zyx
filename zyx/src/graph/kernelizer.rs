@@ -533,6 +533,13 @@ impl Graph {
                                         matches!(kind, ParamKind::GlobalMut | ParamKind::Variable),
                                         "assign: unexpected param kind {kind:?} in dst movement kernel"
                                     );
+                                    // The shape descriptor is an OpId into the
+                                    // dst kernel; ops are re-pushed into the
+                                    // merged kernel with new IDs, so it must be
+                                    // remapped like MoveOp's refs (the shape
+                                    // stack ops precede the param in head
+                                    // order, so the mapping always exists).
+                                    let shape = if shape.is_null() { shape } else { op_map[&shape] };
                                     let id = self.jit_kernels[kid].kernel.push_back(Op::Param { dtype, kind, shape });
                                     // Assign turns dst's base from a load into a
                                     // PURE STORE: it must NOT register in loads —

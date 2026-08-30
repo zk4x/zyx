@@ -365,12 +365,22 @@ impl Kernel {
     ) -> Result<(Vec<LaunchArg>, Vec<PoolBufferId>), BackendError> {
         let mut buf_idx = 0usize;
         let mut used_bufs = Vec::new();
+        // Linearization sorts params: all Global|Variable (read-only) first,
+        // then GlobalMut, relative order preserved within each group (see
+        // `linearize`). The compiled signature follows that order, so args
+        // must be emitted in the same sorted order — track each arg's
+        // GlobalMut-ness and stable-sort at the end. Without this, a kernel
+        // whose GlobalMut params do not already sit last (e.g. the assign
+        // merge replays dst params after src params) binds scalars to
+        // pointer slots and crashes with illegal address.
+        let mut is_global_mut: Vec<bool> = Vec::new();
         let mut new_bufs = Vec::new();
         let mut events = Vec::new();
         let mut op_id = self.head;
         while !op_id.is_null() {
             match self.ops[op_id].op {
                 Op::Param { kind, dtype, shape } => {
+                    is_global_mut.push(kind == ParamKind::GlobalMut);
                     if buf_idx < buffers.len() {
                         // Caller-provided argument (a bound buffer or a
                         // variable value) — pass through unchanged.
@@ -424,6 +434,12 @@ impl Kernel {
             op_id = self.next_op(op_id);
         }
         let _ = memory_pool.sync_events(events);
+        // Stable-sort args to match linearize's param order (read-only first,
+        // then GlobalMut, relative order preserved within each group).
+        let mut args_with_kind: Vec<(bool, LaunchArg)> =
+            used_bufs.into_iter().zip(is_global_mut).map(|(arg, rw)| (rw, arg)).collect();
+        args_with_kind.sort_by_key(|&(rw, _)| rw);
+        used_bufs = args_with_kind.into_iter().map(|(_, arg)| arg).collect();
         Ok((used_bufs, new_bufs))
     }
 

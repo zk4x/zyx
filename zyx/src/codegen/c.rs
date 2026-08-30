@@ -507,6 +507,13 @@ static inline unsigned short f32tobf16(float v) {
 "
             .to_string()
         };
+        let bit_helpers = if !dtypes.values().any(|(dt, _)| matches!(dt, DType::F32 | DType::F64)) {
+            String::new()
+        } else {
+            "static inline float u32tof32(unsigned int b) { union { unsigned int u; float f; } v; v.u = b; return v.f; }\n\
+             static inline double u64tof64(unsigned long b) { union { unsigned long u; double f; } v; v.u = b; return v.f; }\n"
+                .to_string()
+        };
         let omp_include = if has_openmp { "#include <omp.h>\n" } else { "" };
         let mut vec_types = String::new();
         for (dt, _, _) in &registers {
@@ -527,6 +534,7 @@ static inline unsigned short f32tobf16(float v) {
              {omp_include}\
              {vec_types}\
              {f16_helpers}\
+             {bit_helpers}\
              void {name}(void** args, unsigned long nargs) {{\n\
              {nargs_check}\
              {global_cast}\
@@ -646,8 +654,22 @@ impl DType {
 impl Constant {
     pub fn c_code(self) -> String {
         match self {
-            Self::F32(x) => format!("{:.16}f", f32::from_le_bytes(x)),
-            Self::F64(x) => format!("{:.16}", f64::from_le_bytes(x)),
+            Self::F32(x) => {
+                let val = f32::from_le_bytes(x);
+                if val.is_finite() {
+                    format!("{:.16}f", val)
+                } else {
+                    format!("u32tof32(0x{:08X}u)", val.to_bits())
+                }
+            }
+            Self::F64(x) => {
+                let val = f64::from_le_bytes(x);
+                if val.is_finite() {
+                    format!("{:.16}", val)
+                } else {
+                    format!("u64tof64(0x{:016X}ul)", val.to_bits())
+                }
+            }
             Self::U8(x) => format!("{x}"),
             Self::U16(x) => format!("{x}"),
             Self::U32(x) => format!("{x}"),
@@ -657,8 +679,22 @@ impl Constant {
             Self::I32(x) => format!("(int){x}"),
             Self::I64(x) => format!("{}l", i64::from_le_bytes(x)),
             Self::Bool(x) => format!("{}", x as i32),
-            Self::F16(x) => format!("{:.16}f", f16::from_le_bytes(x).to_f32()),
-            Self::BF16(x) => format!("{:.16}f", bf16::from_le_bytes(x).to_f32()),
+            Self::F16(x) => {
+                let val = f16::from_le_bytes(x).to_f32();
+                if val.is_finite() {
+                    format!("{:.16}f", val)
+                } else {
+                    format!("u32tof32(0x{:08X}u)", val.to_bits())
+                }
+            }
+            Self::BF16(x) => {
+                let val = bf16::from_le_bytes(x).to_f32();
+                if val.is_finite() {
+                    format!("{:.16}f", val)
+                } else {
+                    format!("u32tof32(0x{:08X}u)", val.to_bits())
+                }
+            }
         }
     }
 }

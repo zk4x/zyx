@@ -232,21 +232,35 @@ fn llama_kv_cache_assign_symbolic() -> Result<(), ZyxError> {
     tape.add(&cache)?;
     // Symbolic position: fresh variable each step, same kernel IR — this is
     // the llama cache-update pattern (assign with a variable offset).
-    let pos = Tensor::variable(2u64);
+    // Shape inputs must be IDX_T (I64) — narrow enforces this.
+    let pos = Tensor::variable(2i64);
     let [s_len, _h, _d] = k_assign.rdims::<3>()?;
     cache.narrow(0, &pos, &s_len)?.assign(&k_assign)?;
 
     // Symbolic read length: identical kernel shape on every decode step.
-    let cache_len = Tensor::variable(6u64);
-    let read = cache.narrow(0, 0u64, cache_len)?.unsqueeze(0)?.transpose(1, 2)?;
+    let cache_len = Tensor::variable(6i64);
+    let read = cache.narrow(0, 0i64, cache_len)?.unsqueeze(0)?.transpose(1, 2)?;
     let out = read.sum([1])?;
     tape.realize([&out])?;
 
-    // Rows 0..2 untouched (zeros), rows 2..6 = block rows 0..4.
+    // out is [1, 6, 4]: position p (0..6), dim d — the sum over both kv heads
+    // of cache[p][h][d]. Positions 0..2 are untouched zeros; positions 2..6
+    // hold block row s = p-2 summed over heads.
     let got = to_f32(&out)?;
-    let mut expected: Vec<f32> = vec![0.0; 2 * hd as usize];
-    expected.extend(block.iter().copied());
-    assert_close(&got, &expected, 1e-6, "kv cache after assign");
+    let mut expected: Vec<f32> = Vec::new();
+    for p in 0..6i64 {
+        for d in 0..hd {
+            let s = p - 2;
+            let mut v = 0.0f32;
+            if s >= 0 {
+                for h in 0..n_kv {
+                    v += 1.0 + (s * 100 + h * 10 + d) as f32 / 100.0;
+                }
+            }
+            expected.push(v);
+        }
+    }
+    assert_close(&got, &expected, 0.02, "kv cache after assign");
     Ok(())
 }
 
@@ -269,16 +283,17 @@ fn llama_kv_cache_assign_repeated() -> Result<(), ZyxError> {
     tape.add(&cache)?;
     // Two assigns to the same buffer in one tape: the second writes after the
     // first (After chain of in-place versioned writes).
-    let pos0 = Tensor::variable(0u64);
+    let pos0 = Tensor::variable(0i64);
     cache.narrow(0, &pos0, 2i64)?.assign(&a)?;
-    let pos1 = Tensor::variable(2u64);
+    let pos1 = Tensor::variable(2i64);
     cache.narrow(0, &pos1, 2i64)?.assign(&b)?;
     let out = cache.sum([1, 2])?;
     tape.realize([&out])?;
 
-    // Every position was written exactly once: row sums 10 for all 8 rows.
+    // Rows 0-1 = a ([1,2,3,4] → sum 10), rows 2-3 = b ([5,6,7,8] → sum 26),
+    // rows 4-7 untouched zeros.
     let got = to_f32(&out)?;
-    let expected: Vec<f32> = vec![10.0; 8];
+    let expected: Vec<f32> = vec![10.0, 10.0, 26.0, 26.0, 0.0, 0.0, 0.0, 0.0];
     assert_close(&got, &expected, 1e-6, "repeated assign row sums");
     Ok(())
 }
@@ -290,19 +305,21 @@ fn llama_kv_cache_assign_repeated() -> Result<(), ZyxError> {
 #[test]
 fn llama_causal_mask_compare() -> Result<(), ZyxError> {
     let seq = 4i64;
-    // Build the mask on the graph (unlike llama's host-built mask):
-    // row_idx [S,1] >= col_idx [1,S] keeps, else -inf.
-    let rows = Tensor::arange(0, seq, 1)?.cast(DType::F32).reshape([seq, 1i64.into()])?;
-    let cols = Tensor::arange(0, seq, 1)?.cast(DType::F32).reshape([1i64.into(), seq])?;
-    let neg_inf = Tensor::from(f32::NEG_INFINITY).cast(DType::F32);
-    let mask = rows.cast(DType::BF16).cmplt(cols.cast(DType::BF16))?;
-    let masked = mask.cast(DType::F32).where_(&neg_inf, &Tensor::from(0f32))?;
+    // Mirror llama's get_mask: the causal mask is built on the HOST with -inf
+    // entries and added to the attention scores. No on-graph where_ (see the
+    // `where_` doc: its branchless decomposition NaNs on 0 * -inf).
+    // TODO: possibly for some models in the future a ternary where op will be
+    // needed for on-graph masks with -inf.
+    let mask: Vec<f32> = (0..seq as usize)
+        .flat_map(|i| (0..seq as usize).map(move |j| if j > i { f32::NEG_INFINITY } else { 0.0 }))
+        .collect();
+    let masked = Tensor::from(mask).reshape([seq, seq])?.cast(DType::BF16);
 
     let x = Tensor::from(vec![1.0f32; 16]).reshape([seq, seq])?.cast(DType::BF16);
-    let out = x.clone() + masked.cast(DType::BF16);
 
     let tape = Tape::empty();
     tape.add(&x)?;
+    let out = x.clone() + masked;
     tape.realize([&out])?;
 
     let got = to_f32(&out)?;

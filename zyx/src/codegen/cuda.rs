@@ -517,14 +517,32 @@ impl Constant {
         match self {
             &Self::BF16(x) => {
                 let val: f32 = bf16::from_le_bytes(x).into();
-                format!("__float2bfloat16({}f)", format_precise(val, 9))
+                if val.is_finite() {
+                    format!("__float2bfloat16({}f)", format_precise(val, 9))
+                } else {
+                    format!("__float2bfloat16(__int_as_float(0x{:08X}u))", val.to_bits())
+                }
             }
             &Self::F16(x) => {
                 let bits: u16 = f16::from_le_bytes(x).to_bits();
                 format!("(half)0x{:04X}", bits)
             }
-            &Self::F32(x) => format!("{}f", format_precise(f32::from_le_bytes(x), 9)),
-            &Self::F64(x) => format_precise(f64::from_le_bytes(x), 18),
+            &Self::F32(x) => {
+                let val = f32::from_le_bytes(x);
+                if val.is_finite() {
+                    format!("{}f", format_precise(val, 9))
+                } else {
+                    format!("__int_as_float(0x{:08X}u)", val.to_bits())
+                }
+            }
+            &Self::F64(x) => {
+                let val = f64::from_le_bytes(x);
+                if val.is_finite() {
+                    format_precise(val, 18)
+                } else {
+                    format!("__longlong_as_double(0x{:016X}ull)", val.to_bits())
+                }
+            }
             Self::U8(x) => format!("{x}"),
             Self::I8(x) => format!("{x}"),
             Self::I16(x) => format!("{x}"),

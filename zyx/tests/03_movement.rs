@@ -131,7 +131,7 @@ fn contiguous_4() -> Result<(), ZyxError> {
 #[test]
 fn narrow_1() -> Result<(), ZyxError> {
     let x = Tensor::from([[1, 2, 3, 4], [5, 6, 7, 8], [9, 10, 11, 12], [13, 14, 15, 16]]);
-    let y = x.narrow(0, 1, 2)?;
+    let y = x.narrow(0, 1i64, 2i64)?;
     assert_eq!(y, [[5, 6, 7, 8], [9, 10, 11, 12]]);
     // Narrow a single axis of the result with a negative axis.
     let z = y.narrow(-1, 1, 2)?;

@@ -58,10 +58,31 @@ impl Constant {
             if s.contains('.') { s.to_string() } else { format!("{s}.0") }
         }
         match self {
-            Self::BF16(x) => format!("{}f", f32::from(bf16::from_le_bytes(*x))),
+            Self::BF16(x) => {
+                let val = f32::from(bf16::from_le_bytes(*x));
+                if val.is_finite() {
+                    format!("{}f", val)
+                } else {
+                    format!("0f{:08X}", val.to_bits())
+                }
+            }
             Self::F16(x) => format!("0x{:04X}", u16::from_le_bytes(*x)),
-            Self::F32(x) => format_precise(f32::from_le_bytes(*x), 9),
-            Self::F64(x) => format_precise(f64::from_le_bytes(*x), 18),
+            Self::F32(x) => {
+                let val = f32::from_le_bytes(*x);
+                if val.is_finite() {
+                    format_precise(val, 9)
+                } else {
+                    format!("0f{:08X}", val.to_bits())
+                }
+            }
+            Self::F64(x) => {
+                let val = f64::from_le_bytes(*x);
+                if val.is_finite() {
+                    format_precise(val, 18)
+                } else {
+                    format!("0d{:016X}", val.to_bits())
+                }
+            }
             Self::U8(x) => format!("{x}"),
             Self::I8(x) => format!("{x}"),
             Self::I16(x) => format!("{x}"),

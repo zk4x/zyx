@@ -499,10 +499,38 @@ impl DType {
 impl Constant {
     fn ocl(self) -> String {
         match self {
-            Self::BF16(x) => format!("{:.16}f", bf16::from_le_bytes(x)),
-            Self::F16(x) => format!("(half){:.16}", f16::from_le_bytes(x)),
-            Self::F32(x) => format!("{:.16}f", f32::from_le_bytes(x)),
-            Self::F64(x) => format!("(double){:.16}", f64::from_le_bytes(x)),
+            Self::BF16(x) => {
+                let val = f32::from(bf16::from_le_bytes(x));
+                if val.is_finite() {
+                    format!("{:.16}f", val)
+                } else {
+                    format!("as_float(0x{:08X}u)", val.to_bits())
+                }
+            }
+            Self::F16(x) => {
+                let val = f16::from_le_bytes(x).to_f32();
+                if val.is_finite() {
+                    format!("(half){:.16}", val)
+                } else {
+                    format!("(half)as_float(0x{:08X}u)", val.to_bits())
+                }
+            }
+            Self::F32(x) => {
+                let val = f32::from_le_bytes(x);
+                if val.is_finite() {
+                    format!("{:.16}f", val)
+                } else {
+                    format!("as_float(0x{:08X}u)", val.to_bits())
+                }
+            }
+            Self::F64(x) => {
+                let val = f64::from_le_bytes(x);
+                if val.is_finite() {
+                    format!("(double){:.16}", val)
+                } else {
+                    format!("as_double(0x{:016X}ul)", val.to_bits())
+                }
+            }
             Self::U8(x) => format!("{x}"),
             Self::I8(x) => format!("{x}"),
             Self::I16(x) => format!("{x}"),

@@ -1790,13 +1790,12 @@ impl Runtime {
             p = self.kernels[kernel_id].kernel.next_op(p);
         }
         let mut op_to_class: Map<OpId, ClassId> = Map::default();
-        let mut storage_idx = 0;
         let mut op_id = self.kernels[kernel_id].kernel.head;
         while !op_id.is_null() {
             if relevant.contains(&op_id) {
                 let class_id = match self.kernels[kernel_id].kernel.ops[op_id].op {
                     Op::Param { shape, dtype, .. } => {
-                        let load_tid = loads[storage_idx];
+                        let load_tid = loads[load_of_param[&op_id]];
                         if !self.buffer_map.contains_key(&load_tid) {
                             // An `Eager` tensor never carries a graph class,
                             // so its depends_on is the pending producer.
@@ -2002,9 +2001,6 @@ impl Runtime {
                 op_to_class.insert(op_id, class_id);
             }
 
-            if matches!(self.kernels[kernel_id].kernel.at(op_id), Op::Storage { .. }) {
-                storage_idx += 1;
-            }
             op_id = self.kernels[kernel_id].kernel.next_op(op_id);
         }
 
