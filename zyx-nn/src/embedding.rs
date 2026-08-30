@@ -56,24 +56,26 @@ impl Embedding {
     }
 
     /// Forward embedding layer
+    ///
+    /// Torch semantics: `x` is an integer index tensor; the output has
+    /// `weight.dtype()` and shape `x.shape() + [embed_size]`.
     pub fn forward(&self, x: impl Into<Tensor>) -> Result<Tensor, ZyxError> {
         let x: Tensor = x.into();
         let x_sh = x.shape();
+        let xdt = x.dtype();
+        let wdt = self.weight.dtype();
+        if !xdt.is_int() {
+            return Err(ZyxError::DTypeError(
+                format!("Embedding::forward input x must be an integer index dtype, got {xdt}").into(),
+            ));
+        }
         if x.numel().item::<i64>() == 0 {
             let shape: Vec<Tensor> = x_sh
                 .iter()
                 .cloned()
                 .chain(std::iter::once(self.embed_size.clone()))
                 .collect();
-            return Ok(Tensor::zeros(shape, x.dtype()));
-        }
-        let xdt = x.dtype();
-        let wdt = self.weight.dtype();
-        if xdt != wdt {
-            return Err(ZyxError::DTypeError(
-                format!("Embedding::forward input x has dtype {xdt} but weight has dtype {wdt}")
-                    .into(),
-            ));
+            return Ok(Tensor::zeros(shape, wdt));
         }
         let one: Tensor = 1i64.into();
         let big_shp: Vec<Tensor> = x_sh
@@ -81,7 +83,7 @@ impl Embedding {
             .cloned()
             .chain([self.vocab_size.clone(), self.embed_size.clone()])
             .collect();
-        let arange = self.arange.expand(big_shp.clone())?;
+        let arange = self.arange.cast(xdt).expand(big_shp.clone())?;
         let reshape_shape: Vec<Tensor> = x_sh
             .into_iter()
             .chain(std::iter::once(one.clone()))
@@ -89,6 +91,6 @@ impl Embedding {
             .collect();
         let idx = x.reshape(reshape_shape)?.expand(big_shp.clone())?;
         let vals = self.weight.expand(big_shp)?;
-        (arange.equal(idx)?.cast(xdt) * vals).sum([2])
+        (arange.equal(idx)?.cast(wdt) * vals).sum([2])
     }
 }
