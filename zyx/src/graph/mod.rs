@@ -100,40 +100,39 @@ impl SlabId for ClassId {
 pub(crate) enum Node {
     /// A compile-time constant.
     ///
-    /// `cons_id` is **mandatory** and must never be removed. It is assigned by
-    /// `push_node` (constructors pass 0) so that every const is *structurally
-    /// unique*: hashconsing compares it, two consts never compare equal, and
-    /// therefore two consts never merge into one e-class.
+    /// Consts hashcons **by value**: two `Const { value }` nodes with equal
+    /// values merge into one e-class. This is safe because the kernelizer
+    /// duplicates a const class per consumer kernel — a value computed in one
+    /// loop scope cannot be referenced from another after linearization, so a
+    /// shared const class must be re-materialized per kernel — and because
+    /// `Graph::cache_key` hashes the hashcons map, which still distinguishes
+    /// graphs differing only in const values.
     ///
-    /// # Why this id exists (bug history — read before deleting!)
+    /// # Bug history (read before "simplifying" this!)
     ///
-    /// This bug has already happened **twice**:
+    /// Consts and leaves have VALUE semantics, but classes carry IDENTITY:
+    /// placement (which kernel materialized them), refcounts, and plan/kernel
+    /// cache keys all assume it. This bug has already happened twice:
     ///
-    /// 1. Leaves used to be hashconsed without such an id, so two buffers with
-    ///    identical dtype+shape collapsed into one class; `leaf_id` was added
-    ///    to fix it, but the documentation did not explain the underlying
-    ///    invariant, and the same mistake was then repeated for `Const`.
-    /// 2. Consts without an id were hashconsed, so e.g. a narrow's `start=2`
-    ///    and another op's `len=2` merged into ONE class. The class gets pinned
-    ///    to whichever kernel materialized it first; the second consumer then
-    ///    inherits that placement and the kernelizer materializes the constant
-    ///    into a foreign kernel (or skips duplication), producing invalid or
-    ///    silently wrong kernels. Worse, `Graph::cache_key` hashes the
-    ///    hashcons map — without const nodes in it, two graphs differing only
-    ///    in const values (f32[3] vs f32[10] relu) collide on the same plan
-    ///    cache entry and execute with the first graph's allocation sizes.
-    ///
-    /// The invariant: **a class must have exactly one creation site.** Value
-    /// nodes (consts) and buffer nodes (leaves) have value semantics — equal
-    /// values must still stay distinct classes, because classes carry
-    /// identity: placement (which kernel materialized them), refcounts, and
-    /// plan/kernel cache keys all assume it.
+    /// 1. Leaves used to be hashconsed without such an id, so two buffers
+    ///    with identical dtype+shape collapsed into one class; `leaf_id` was
+    ///    added to fix it, but the documentation did not explain the
+    ///    underlying invariant.
+    /// 2. Consts merged by value while the kernelizer still assumed one
+    ///    creation site per class: the class got pinned to whichever kernel
+    ///    materialized it first, the second consumer inherited that placement
+    ///    and the kernelizer materialized the constant into a foreign kernel,
+    ///    producing invalid or silently wrong kernels. This was first
+    ///    "fixed" by keeping every const in its own class (`cons_id`), but
+    ///    that only covered the tape path — `promote_to_graph` replays
+    ///    merged eager kernels into the graph, bypassing it. The real fix is
+    ///    per-consumer duplication inside the kernelizer.
     Const {
-        cons_id: u32,
         value: Constant,
     },
-    /// A realized input buffer. See [`Node::Const`] for why `cons_id` exists
-    /// and must not be removed — the exact same reasoning applies here.
+    /// A realized input buffer. Unlike [`Node::Const`], leaves keep a
+    /// `cons_id` and never merge: each buffer must stay its own stable class
+    /// for graph caching and graph replay.
     Leaf {
         cons_id: u32,
         dtype: DType,
@@ -227,7 +226,7 @@ pub(crate) enum Node {
 impl PartialEq for Node {
     fn eq(&self, other: &Self) -> bool {
         match (self, other) {
-            (Self::Const { cons_id: a, value: av }, Self::Const { cons_id: b, value: bv }) => a == b && av == bv,
+            (Self::Const { value: av }, Self::Const { value: bv }) => av == bv,
             (Self::Leaf { cons_id: a, .. }, Self::Leaf { cons_id: b, .. }) => a == b,
             (Self::Expand { x: a, shape: as_ }, Self::Expand { x: b, shape: bs }) => a == b && as_ == bs,
             (Self::Permute { x: a, axes: aa }, Self::Permute { x: b, axes: ba }) => a == b && aa == ba,
@@ -259,9 +258,8 @@ impl Eq for Node {}
 impl std::hash::Hash for Node {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
         match self {
-            Self::Const { cons_id, value } => {
+            Self::Const { value } => {
                 0u8.hash(state);
-                cons_id.hash(state);
                 value.hash(state);
             }
             Self::Leaf { cons_id, dtype, shape } => {
@@ -445,7 +443,7 @@ pub struct Graph {
     // The graph is removed from the slab only when dead && ref_count == 0, which
     // guarantees no stale tensor ever observes a reused GraphId.
     pub(crate) dead: bool,
-    /// Allocator for [`Node::Const`]/[`Node::Leaf`] `cons_id`s.
+    /// Allocator for [`Node::Leaf`] `cons_id`s.
     pub(crate) max_cons_id: u32,
 }
 
@@ -2241,11 +2239,10 @@ impl Runtime {
 
     /// Pushes a constant node into the graph and returns its class.
     ///
-    /// The preferred way to create consts: `push_node` assigns the fresh
-    /// `cons_id` that keeps every const in its own class (see
-    /// [`Node::Const`] for why that is load-bearing).
+    /// Consts hashcons by value: pushing an equal constant twice returns the
+    /// same class (see [`Node::Const`] for why that is sound).
     pub fn push_const(&mut self, graph_id: GraphId, value: Constant) -> ClassId {
-        self.push_node(graph_id, Node::Const { cons_id: 0, value }).1
+        self.push_node(graph_id, Node::Const { value }).1
     }
 
     pub fn push_leaf_node(&mut self, graph_id: GraphId, dtype: DType, shape: ClassId) -> (NodeId, ClassId) {
@@ -2295,19 +2292,6 @@ impl Runtime {
             _ => {}
         }
         let g = &mut self.graphs[graph_id];
-        // Const and Leaf carry a fresh cons_id (assigned here; constructors
-        // pass 0): they hashcons like everything else, but the unique id means
-        // two consts/leaves never merge into one class — no class is ever
-        // shared between creation sites, so none gets pinned to whichever
-        // kernel materialized it first.
-        let node = match node {
-            Node::Const { value, .. } => {
-                let cons_id = g.max_cons_id;
-                g.max_cons_id += 1;
-                Node::Const { cons_id, value }
-            }
-            node => node,
-        };
         if let Some(&nid) = g.hashcons.get(&node) {
             return (nid, g.nodes[nid].class_of);
         }

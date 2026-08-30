@@ -40,9 +40,11 @@ impl Graph {
     /// # Reference Counts (rcs)
     ///
     /// Before processing, each class's reference count is computed: `rcs[cid]` is the number of
-    /// times `cid` appears as a `class_params` input of another graph node **plus** 1 for each
+    /// times `cid` appears as a **data operand** of another graph node **plus** 1 for each
     /// user-requested output class. The output classes are "consumed" by extraction — a terminal
-    /// output has rcs = 1 rather than 0.
+    /// output has rcs = 1 rather than 0. Data operands exclude shape-descriptor fields
+    /// (`Reshape`/`Expand` shape, `Pad` lp/len, `Narrow` start/len, `Leaf` shape): those are
+    /// replayed metadata, not kernel data, and give no refcounts (see invariant 3 below).
     ///
     /// When a class is produced (its operation is added to a kernel), the producer pushes exactly
     /// `rcs[cid]` copies of `cid` into the kernel's `outputs` list — one copy per consumer.
@@ -69,12 +71,18 @@ impl Graph {
     ///    [`add_store`] removes the entry and restores it via a load kernel if consumers remain.
     /// 3. **Shape replay**: Shape-descriptor classes — the `shape` of `Reshape`/`Expand`, the
     ///    `lp`/`len` of `Pad`, the `start`/`len` of `Narrow` — are pure symbolic metadata and
-    ///    are **never** kernelized. Their transitive subgraph (`Stack` elements, `Binary`/`Unary`/
-    ///    `Cast` operands, `Const` leaves, IDX_T scalar `Leaf` dim-variables) is collected
-    ///    before the refcount walk; those classes are excluded from `rcs`, skipped by the
-    ///    kernelize loop, and replayed into each consumer on demand via
+    ///    are **never** kernelized for their shape role. Their transitive subgraph (`Stack`
+    ///    elements, `Binary`/`Unary`/`Cast` operands, `Const` leaves, IDX_T scalar `Leaf`
+    ///    dim-variables) is collected before the refcount walk into `shape_classes`: those
+    ///    classes get no refcounts from shape edges, are not walked as shape parents, and —
+    ///    unless they also have data consumers — are skipped by the kernelize loop entirely.
+    ///    They are replayed into each consumer on demand via
     ///    [`Graph::replay_shape_into_kernel`]. Replay panics on a non-symbolic node — shapes
     ///    are pure metadata and must never be computed by a kernel.
+    ///    Because consts hashcons **by value**, one class can be both shape metadata and
+    ///    data (e.g. a `Const{1}` inside a dim stack and an Expand's operand). Such a class
+    ///    is kernelized from its data edges; its shape uses replay the node's value
+    ///    directly and are independent of that materialization.
     /// 4. **Eager parity**: The narrow/assign/contiguous arms in this kernelizer mirror
     ///    `Runtime::narrow`/`assign`/`contiguous` exactly. The narrow arm requires the input
     ///    kernel to have empty `outputs` after the input is consumed (mirroring `Runtime::narrow`'s
@@ -149,16 +157,39 @@ impl Graph {
             if inputs.contains(&cid) {
                 continue;
             }
+            // Shape classes' params are shape-context edges: their operands
+            // must not get refcounts from them. A class that is BOTH shape
+            // metadata and data still gets its rc from its data consumers
+            // (walked below), since consts hashcons by value and one class
+            // can serve both roles.
+            if shape_classes.contains(&cid) {
+                continue;
+            }
             for nid in &self.classes[cid].nodes {
                 // Kernel nodes added by pattern matching (e.g. cblas) are never
                 // consumed here — kernelize only processes structural nodes.
                 if matches!(&self.nodes[*nid].node, Node::Kernel { .. }) {
                     continue;
                 }
-                for child in self.nodes[*nid].node.class_params() {
-                    if shape_classes.contains(&child) {
-                        continue;
-                    }
+                // Data slots only: descriptor fields (Reshape/Expand shape,
+                // Pad lp/len, Narrow start/len, Leaf shape) are replayed
+                // metadata, never kernel data — counting them would drag the
+                // shape subgraph into kernels.
+                let data_slots: Vec<ClassId> = match &self.nodes[*nid].node {
+                    Node::Const { .. } | Node::Leaf { .. } => vec![],
+                    Node::Expand { x, .. } | Node::Reshape { x, .. } => vec![*x],
+                    Node::Pad { x, .. } => vec![*x],
+                    Node::Narrow { x, .. } => vec![*x],
+                    Node::Permute { x, .. } | Node::Flip { x, .. } => vec![*x],
+                    Node::Stack { ops } => ops.to_vec(),
+                    Node::Reduce { x, .. } | Node::Cast { x, .. } | Node::Unary { x, .. } => vec![*x],
+                    Node::Binary { x, y, .. } => vec![*x, *y],
+                    Node::Assign { dst, src } => vec![*dst, *src],
+                    Node::After { x, dep } => vec![*x, *dep],
+                    Node::ToDevice { x, .. } | Node::Contiguous { x, .. } => vec![*x],
+                    Node::Kernel { inputs, .. } => inputs.to_vec(),
+                };
+                for child in data_slots {
                     *rcs.entry(child).or_default() += 1;
                 }
             }
@@ -173,9 +204,13 @@ impl Graph {
         for (i, &cid) in order.iter().enumerate() {
             debug_assert!(!visited.contains_key(&cid), "class {cid:?} already visited");
 
-            // Pure shape-descriptor classes are replayed into consumers and
-            // never kernelized.
-            if shape_classes.contains(&cid) {
+            // A class with no data consumers is pure scaffolding (shape
+            // metadata, replayed into consumers by value) and is never
+            // kernelized. A class with rcs is materialized even if it also
+            // appears inside shape descriptors — consts hashcons by value, so
+            // one class can serve both roles; its shape uses replay
+            // independently of its materialization.
+            if !inputs.contains(&cid) && !rcs.contains_key(&cid) {
                 continue;
             }
 

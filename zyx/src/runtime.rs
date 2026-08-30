@@ -1777,7 +1777,7 @@ impl Runtime {
     ///
     /// Middle stage of the symbolic-shapes pipeline (see
     /// [`Runtime::replay_symbolic_into_kernel`] for the full contract):
-    /// - `Constant` → `Const` class (never merged — see [`Node::Const`]).
+    /// - `Constant` → `Const` class (merged by value — see [`Node::Const`]).
     /// - `Variable` → a fresh `IDX_T` **dim-variable leaf**: a `Node::Leaf`
     ///   with `shape == NULL`. Leaves hashcons but never merge (fresh
     ///   `cons_id` every time), so the same logical variable appearing under
