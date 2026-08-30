@@ -1061,15 +1061,19 @@ impl Kernel {
     /// directly accessed `Stack` contributes its element count as a plain
     /// number instead of a const dim op.
     pub(crate) fn shape(&self, op_id: OpId) -> Vec<Dim> {
-        // Unpacks a shape descriptor into its dimension op ids.
+        // Unpacks a shape descriptor into its dimension op ids. A descriptor
+        // is a `Stack` of dims, or a single dim op — a `Const`, a scalar
+        // `Param`, or a dim *expression* (Const/Unary/Binary/Cast/Load tree,
+        // folded per-dim by `resolve_const`, `-1` where it contains a
+        // variable). Anything else resolves to `-1` via `resolve_const` and
+        // fails loudly downstream where the dim is consumed.
         fn descriptor(k: &Kernel, id: OpId) -> Vec<OpId> {
             if id.is_null() {
                 return Vec::new();
             }
             match k.ops[id].op {
                 Op::Stack { ref ops } => ops.to_vec(),
-                Op::Const(_) | Op::Param { shape: OpId::NULL, .. } => vec![id],
-                ref op => todo!("shape: invalid shape descriptor {op:?}"),
+                _ => vec![id],
             }
         }
         if op_id.is_null() {
@@ -1475,6 +1479,10 @@ impl Kernel {
                 },
                 // Param is dynamic
                 Op::Param { .. } => None,
+                // A loaded value (e.g. a lowered variable: Binary{mask, Load})
+                // is runtime data — never compile-time constant, but a
+                // legitimate dynamic length (same as Param).
+                Op::Load { .. } => None,
                 ref op => todo!("{op:?}"),
             };
             values.insert(id, v);

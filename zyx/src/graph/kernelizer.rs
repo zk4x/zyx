@@ -29,6 +29,9 @@ impl Graph {
     /// never fuses *into* them, it only loads them (exactly like [`Node::Leaf`]s).
     /// For the whole graph these are the leaf classes; for a subregion (the gap
     /// between two AOT kernels) they are the region's boundary inputs.
+    /// Shape-NULL leaves (scalar variables) are the one exception: like all
+    /// symbolic expressions they are never materialized — consumers replay
+    /// them on demand (see invariant 3).
     ///
     /// # Allowed set
     ///
@@ -40,17 +43,20 @@ impl Graph {
     /// # Reference Counts (rcs)
     ///
     /// Before processing, each class's reference count is computed: `rcs[cid]` is the number of
-    /// times `cid` appears as a **data operand** of another graph node **plus** 1 for each
-    /// user-requested output class. The output classes are "consumed" by extraction — a terminal
-    /// output has rcs = 1 rather than 0. Data operands exclude shape-descriptor fields
-    /// (`Reshape`/`Expand` shape, `Pad` lp/len, `Narrow` start/len, `Leaf` shape): those are
-    /// replayed metadata, not kernel data, and give no refcounts (see invariant 3 below).
+    /// times `cid` appears as an **operand** of another graph node — descriptor
+    /// fields (`Reshape`/`Expand` shape, `Pad` lp/len, `Narrow` start/len,
+    /// `Leaf` shape) included — **plus** 1 for each user-requested output
+    /// class. The output classes are "consumed" by extraction — a terminal
+    /// output has rcs = 1 rather than 0.
     ///
     /// When a class is produced (its operation is added to a kernel), the producer pushes exactly
     /// `rcs[cid]` copies of `cid` into the kernel's `outputs` list — one copy per consumer.
     /// Each consumer later calls [`remove_first_output`] to remove one copy, and decrements
     /// `rcs[cid]` by 1. When all copies are consumed (`rcs[cid] == 0` and `outputs` contains no
     /// more instances of `cid`), the class no longer holds the kernel open.
+    /// Symbolic classes are the exception on both sides: their producers push
+    /// nothing (they have no kernel) and their consumers only decrement inline
+    /// (see invariant 3).
     ///
     /// # Storage and Load Kernels
     ///
@@ -69,20 +75,20 @@ impl Graph {
     /// 2. **Visited residency**: Every class with `rcs[cid] > 0` that has been produced must have
     ///    exactly one entry in `visited` mapping it to the kernel where its computation lives.
     ///    [`add_store`] removes the entry and restores it via a load kernel if consumers remain.
-    /// 3. **Shape replay**: Shape-descriptor classes — the `shape` of `Reshape`/`Expand`, the
-    ///    `lp`/`len` of `Pad`, the `start`/`len` of `Narrow` — are pure symbolic metadata and
-    ///    are **never** kernelized for their shape role. Their transitive subgraph (`Stack`
-    ///    elements, `Binary`/`Unary`/`Cast` operands, `Const` leaves, IDX_T scalar `Leaf`
-    ///    dim-variables) is collected before the refcount walk into `shape_classes`: those
-    ///    classes get no refcounts from shape edges, are not walked as shape parents, and —
-    ///    unless they also have data consumers — are skipped by the kernelize loop entirely.
-    ///    They are replayed into each consumer on demand via
-    ///    [`Graph::replay_shape_into_kernel`]. Replay panics on a non-symbolic node — shapes
-    ///    are pure metadata and must never be computed by a kernel.
-    ///    Because consts hashcons **by value**, one class can be both shape metadata and
-    ///    data (e.g. a `Const{1}` inside a dim stack and an Expand's operand). Such a class
-    ///    is kernelized from its data edges; its shape uses replay the node's value
-    ///    directly and are independent of that materialization.
+    /// 3. **Symbolic expressions are replayed, never materialized.** Scalar
+    ///    symbolic expressions (consts, dim variables, computed dim
+    ///    expressions) never enter `visited`/`jit_kernels` from their own
+    ///    arms — a class missing from `visited` is replayed into the
+    ///    consumer's kernel on demand via [`Graph::replay_shape_into_kernel`]
+    ///    (the mirror of `Runtime::binary`'s slab passthrough). Every edge is
+    ///    decremented exactly once: by `consume` (data operands) or an inline
+    ///    decrement (replayed/skipped operands, movement descriptors, leaf
+    ///    shapes). Movement ops on a scalar operand build a fresh kernel,
+    ///    replay the operand into it and apply the movement on the replayed
+    ///    op; a scalar final output is materialized the same way before
+    ///    `add_store`. Replay panics on a non-symbolic node, so a
+    ///    missing-from-visited class that is not symbolic fails loudly, never
+    ///    silently.
     /// 4. **Eager parity**: The narrow/assign/contiguous arms in this kernelizer mirror
     ///    `Runtime::narrow`/`assign`/`contiguous` exactly. The narrow arm requires the input
     ///    kernel to have empty `outputs` after the input is consumed (mirroring `Runtime::narrow`'s
@@ -105,50 +111,6 @@ impl Graph {
         let order = self.topo_sort_classes::<true>(inputs, outputs, allowed);
 
         let mut rcs: Map<ClassId, u32> = Map::default();
-        // Shape descriptors (Reshape/Expand shape, Pad lp/len, Narrow
-        // start/len) are purely symbolic metadata: their whole subgraph is
-        // replayed into each consuming kernel (see
-        // `Graph::replay_shape_into_kernel`) and never kernelized. Collect
-        // them before the refcount walk so descriptor params leave no rc
-        // entries and their classes never enter the kernelize loop.
-        let mut shape_classes: Set<ClassId> = Set::default();
-        let mut desc_stack: Vec<ClassId> = Vec::new();
-        for &cid in &order {
-            if inputs.contains(&cid) {
-                continue;
-            }
-            for nid in &self.classes[cid].nodes {
-                match &self.nodes[*nid].node {
-                    Node::Reshape { shape, .. } | Node::Expand { shape, .. } => desc_stack.push(*shape),
-                    Node::Pad { lp, len, .. } => {
-                        desc_stack.push(*lp);
-                        desc_stack.push(*len);
-                    }
-                    Node::Narrow { start, len, .. } => {
-                        desc_stack.push(*start);
-                        desc_stack.push(*len);
-                    }
-                    _ => {}
-                }
-            }
-        }
-        while let Some(c) = desc_stack.pop() {
-            if !shape_classes.insert(c) {
-                continue;
-            }
-            for nid in &self.classes[c].nodes {
-                match &self.nodes[*nid].node {
-                    Node::Stack { ops } => desc_stack.extend(ops.iter().copied()),
-                    Node::Binary { x, y, .. } => {
-                        desc_stack.push(*x);
-                        desc_stack.push(*y);
-                    }
-                    Node::Cast { x, .. } | Node::Unary { x, .. } => desc_stack.push(*x),
-                    Node::Const { .. } | Node::Leaf { .. } => {}
-                    n => panic!("shape descriptor contains non-symbolic node {n:?}; shapes are purely symbolic"),
-                }
-            }
-        }
 
         for &cid in &order {
             // Boundary inputs are loaded, not fused — their structural nodes
@@ -157,29 +119,24 @@ impl Graph {
             if inputs.contains(&cid) {
                 continue;
             }
-            // Shape classes' params are shape-context edges: their operands
-            // must not get refcounts from them. A class that is BOTH shape
-            // metadata and data still gets its rc from its data consumers
-            // (walked below), since consts hashcons by value and one class
-            // can serve both roles.
-            if shape_classes.contains(&cid) {
-                continue;
-            }
             for nid in &self.classes[cid].nodes {
                 // Kernel nodes added by pattern matching (e.g. cblas) are never
                 // consumed here — kernelize only processes structural nodes.
                 if matches!(&self.nodes[*nid].node, Node::Kernel { .. }) {
                     continue;
                 }
-                // Data slots only: descriptor fields (Reshape/Expand shape,
-                // Pad lp/len, Narrow start/len, Leaf shape) are replayed
-                // metadata, never kernel data — counting them would drag the
-                // shape subgraph into kernels.
+                // Everything counts — data operands and descriptor fields
+                // (Reshape/Expand shape, Pad lp/len, Narrow start/len, Leaf
+                // shape) alike. Symbolic classes never materialize; their
+                // consumers replay them on demand and decrement inline.
                 let data_slots: Vec<ClassId> = match &self.nodes[*nid].node {
-                    Node::Const { .. } | Node::Leaf { .. } => vec![],
-                    Node::Expand { x, .. } | Node::Reshape { x, .. } => vec![*x],
-                    Node::Pad { x, .. } => vec![*x],
-                    Node::Narrow { x, .. } => vec![*x],
+                    Node::Const { .. } => vec![],
+                    Node::Leaf { shape, .. } => {
+                        if shape.is_null() { vec![] } else { vec![*shape] }
+                    }
+                    Node::Expand { x, shape, .. } | Node::Reshape { x, shape, .. } => vec![*x, *shape],
+                    Node::Pad { x, lp, len, .. } => vec![*x, *lp, *len],
+                    Node::Narrow { x, start, len, .. } => vec![*x, *start, *len],
                     Node::Permute { x, .. } | Node::Flip { x, .. } => vec![*x],
                     Node::Stack { ops } => ops.to_vec(),
                     Node::Reduce { x, .. } | Node::Cast { x, .. } | Node::Unary { x, .. } => vec![*x],
@@ -220,83 +177,123 @@ impl Graph {
 
             if inputs.contains(&cid) {
                 // Boundary input: load the class from storage, same as a leaf.
+                // A shape-NULL leaf is a scalar variable — replayed on demand
+                // by its consumers, never materialized.
+                if matches!(&self.nodes[nid].node, Node::Leaf { shape, .. } if shape.is_null()) {
+                    continue;
+                }
                 let (kid, op_id) = self.new_load_kernel(cid, rcs[&cid]);
                 visited.insert(cid, (kid, op_id));
             } else {
                 match self.nodes[nid].node {
-                    Node::Leaf { .. } => {
-                        let (kid, op_id) = self.new_load_kernel(cid, rcs[&cid]);
-                        visited.insert(cid, (kid, op_id));
+                    Node::Leaf { shape, .. } => {
+                        if shape.is_null() {
+                            // Scalar dim variable: replayed on demand by its
+                            // consumers, never materialized.
+                        } else {
+                            let (kid, op_id) = self.new_load_kernel(cid, rcs[&cid]);
+                            // The leaf's shape edge is consumed here: the
+                            // shape class is replayed into this load kernel
+                            // (inside new_load_kernel), never visited.
+                            *rcs.get_mut(&shape).unwrap() -= 1;
+                            visited.insert(cid, (kid, op_id));
+                        }
                     }
-                    Node::Const { value, .. } => {
-                        let rc = *rcs.get(&cid).unwrap();
-                        let mut kernel = Kernel::new(DeviceId::NULL);
-                        kernel.push_back(Op::Const(value));
-                        let op_id = kernel.head;
-                        let kid = self.jit_kernels.push(JitKernelData {
-                            kernel,
-                            outputs: vec![cid; rc as usize],
-                            loads: Vec::new(),
-                            stores: Vec::new(),
-                        });
-                        visited.insert(cid, (kid, op_id));
+                    Node::Const { .. } => {
+                        // Scalars are never materialized: consumers replay
+                        // the expression on demand (missing from visited
+                        // ⇒ replay).
                     }
                     Node::Stack { ref ops } => {
                         // Copy the element list out of the node so the shared
                         // borrow of self.nodes ends before we mutate kernels.
                         let ops: Vec<ClassId> = ops.iter().copied().collect();
-                        // Merge every element into the first element's kernel,
-                        // mirroring `Runtime::stack`: fresh `(kid, op)` read
-                        // per element; a source kernel with stores is stored
-                        // and re-read, anything still foreign is merged in.
-                        let (kid, _) = visited[&ops[0]];
-                        // All inputs merge into one kernel with one shared gws
-                        // grid derived from the elements' shapes — they must agree.
-                        if cfg!(debug_assertions) {
-                            let s0 = self.shape(ops[0]);
-                            for &e in ops.iter().skip(1) {
-                                debug_assert_eq!(
-                                    self.shape(e),
-                                    s0,
-                                    "Stack inputs must have identical shapes: {s0:?} vs {:?}",
-                                    self.shape(e)
-                                );
+                        // Symbolic elements never enter visited: record their
+                        // status before any consumption mutates visited.
+                        let sym: Vec<bool> = ops.iter().map(|&e| !visited.contains_key(&e)).collect();
+                        if sym.iter().all(|&s| s) {
+                            // Pure scalar stack: replayed on demand by
+                            // consumers; only the operand edges are consumed.
+                            for (&e, &s) in ops.iter().zip(sym.iter()) {
+                                debug_assert!(s);
+                                *rcs.get_mut(&e).unwrap() -= 1;
                             }
-                        }
-                        let mut op_ids: Vec<OpId> = Vec::with_capacity(ops.len());
-                        for &elem in ops.iter() {
-                            let (mut ekid, mut eop) = visited[&elem];
-                            if ekid != kid {
-                                if self.jit_kernels[ekid].kernel.contains_stores() {
-                                    (ekid, eop) = self.add_store(elem, ekid, eop, &mut visited, &rcs);
+                        } else {
+                            // Anchor: first materialized element's kernel is
+                            // the merge destination, mirroring `Runtime::stack`.
+                            let anchor = ops[ops.iter().zip(sym.iter()).position(|(_, &s)| !s).unwrap()];
+                            let (kid, _) = visited[&anchor];
+                            // All inputs merge into one kernel with one shared
+                            // gws grid derived from the elements' shapes — they
+                            // must agree.
+                            if cfg!(debug_assertions) {
+                                let s0 = self.shape(anchor);
+                                for (&e, &s) in ops.iter().zip(sym.iter()).skip(1) {
+                                    if !s {
+                                        debug_assert_eq!(
+                                            self.shape(e),
+                                            s0,
+                                            "Stack inputs must have identical shapes: {s0:?} vs {:?}",
+                                            self.shape(e)
+                                        );
+                                    }
                                 }
+                            }
+                            let mut op_ids: Vec<OpId> = Vec::with_capacity(ops.len());
+                            for (&elem, &s) in ops.iter().zip(sym.iter()) {
+                                if s {
+                                    *rcs.get_mut(&elem).unwrap() -= 1;
+                                    let op = self.replay_shape_into_kernel(kid, elem);
+                                    op_ids.push(op);
+                                    continue;
+                                }
+                                let (mut ekid, mut eop) = visited[&elem];
                                 if ekid != kid {
-                                    self.merge_kernels(ekid, kid, &mut visited);
-                                    (_, eop) = visited[&elem];
+                                    if self.jit_kernels[ekid].kernel.contains_stores() {
+                                        (ekid, eop) = self.add_store(elem, ekid, eop, &mut visited, &rcs);
+                                    }
+                                    if ekid != kid {
+                                        self.merge_kernels(ekid, kid, &mut visited);
+                                        (_, eop) = visited[&elem];
+                                    }
+                                }
+                                op_ids.push(eop);
+                            }
+                            for (&elem, &s) in ops.iter().zip(sym.iter()) {
+                                if !s {
+                                    self.consume(elem, kid, &mut visited, &mut rcs);
                                 }
                             }
-                            op_ids.push(eop);
+                            let result_op = self.jit_kernels[kid].kernel.stack(&op_ids);
+                            self.push_outputs(kid, cid, rcs[&cid]);
+                            visited.insert(cid, (kid, result_op));
                         }
-                        for &elem in ops.iter() {
-                            self.consume(elem, kid, &mut visited, &mut rcs);
-                        }
-                        let result_op = self.jit_kernels[kid].kernel.stack(&op_ids);
-                        self.push_outputs(kid, cid, rcs[&cid]);
-                        visited.insert(cid, (kid, result_op));
                     }
                     Node::Unary { x, uop } => {
-                        let (kid, op_id) = visited[&x];
-                        self.consume(x, kid, &mut visited, &mut rcs);
-                        let result_op = self.jit_kernels[kid].kernel.unary(op_id, uop);
-                        self.push_outputs(kid, cid, rcs[&cid]);
-                        visited.insert(cid, (kid, result_op));
+                        if !visited.contains_key(&x) {
+                            // Scalar operand: the result is scalar and is
+                            // replayed on demand; only the edge is consumed.
+                            *rcs.get_mut(&x).unwrap() -= 1;
+                        } else {
+                            let (kid, op_id) = visited[&x];
+                            self.consume(x, kid, &mut visited, &mut rcs);
+                            let result_op = self.jit_kernels[kid].kernel.unary(op_id, uop);
+                            self.push_outputs(kid, cid, rcs[&cid]);
+                            visited.insert(cid, (kid, result_op));
+                        }
                     }
                     Node::Cast { x, dtype } => {
-                        let (kid, op_id) = visited[&x];
-                        self.consume(x, kid, &mut visited, &mut rcs);
-                        let result_op = self.jit_kernels[kid].kernel.cast(op_id, dtype);
-                        self.push_outputs(kid, cid, rcs[&cid]);
-                        visited.insert(cid, (kid, result_op));
+                        if !visited.contains_key(&x) {
+                            // Scalar operand: the result is scalar and is
+                            // replayed on demand; only the edge is consumed.
+                            *rcs.get_mut(&x).unwrap() -= 1;
+                        } else {
+                            let (kid, op_id) = visited[&x];
+                            self.consume(x, kid, &mut visited, &mut rcs);
+                            let result_op = self.jit_kernels[kid].kernel.cast(op_id, dtype);
+                            self.push_outputs(kid, cid, rcs[&cid]);
+                            visited.insert(cid, (kid, result_op));
+                        }
                     }
                     Node::Binary { x, y, bop } => {
                         // NOTE: `Node::Binary` does NOT broadcast. Broadcasting is
@@ -304,8 +301,28 @@ impl Graph {
                         // so by the time a binary node reaches the kernelizer its
                         // two operands already have the same (broadcast-compatible)
                         // shape. The kernelizer must never attempt to broadcast here.
-                        let (mut kid, mut op_id) = visited[&x];
-                        let (mut kidy, mut op_idy) = visited[&y];
+                        let x_missing = !visited.contains_key(&x);
+                        let y_missing = !visited.contains_key(&y);
+                        if x_missing && y_missing {
+                            // Both operands scalar: the result is scalar and
+                            // is replayed on demand; only the edges are
+                            // consumed.
+                            *rcs.get_mut(&x).unwrap() -= 1;
+                            *rcs.get_mut(&y).unwrap() -= 1;
+                        } else {
+                            let (mut kid, mut op_id, mut kidy, mut op_idy);
+                            if x_missing {
+                                (kidy, op_idy) = visited[&y];
+                                *rcs.get_mut(&x).unwrap() -= 1;
+                                kid = kidy;
+                                op_id = self.replay_shape_into_kernel(kidy, x);
+                            } else if y_missing {
+                                (kid, op_id) = visited[&x];
+                                *rcs.get_mut(&y).unwrap() -= 1;
+                                op_idy = self.replay_shape_into_kernel(kid, y);
+                            } else {
+                                (kid, op_id) = visited[&x];
+                                (kidy, op_idy) = visited[&y];
 
                         if kid != kidy {
                             // Two kernels whose inputs disagree on dynamism can
@@ -336,10 +353,19 @@ impl Graph {
                                     // `Graph::push_binary_node`); the kernelizer's
                                     // `Node::Binary` does NOT broadcast — except that
                                     // scalars broadcast implicitly in kernel IR.
+                                    // Provably-equal rule (mirrors `Runtime::binary`):
+                                    // per dim, the same resolved constant, or either
+                                    // dim is -1 (symbolic — resolution failed, cannot
+                                    // disprove), or either side is scalar (implicit
+                                    // broadcast).
                                     let sx = self.jit_kernels[kid].kernel.shape(op_id);
                                     let sy = self.jit_kernels[kidy].kernel.shape(op_idy);
+                                    let compatible = sx.is_empty()
+                                        || sy.is_empty()
+                                        || (sx.len() == sy.len()
+                                            && sx.iter().zip(sy.iter()).all(|(&a, &b)| a == b || a < 0 || b < 0));
                                     debug_assert!(
-                                        sx == sy || sx.is_empty() || sy.is_empty(),
+                                        compatible,
                                         "binary operands {sx:?} vs {sy:?} are not broadcast-compatible"
                                     );
                                 }
@@ -376,13 +402,19 @@ impl Graph {
                             self.merge_kernels(kidy, kid, &mut visited);
                             (kid, op_idy) = visited[&y];
                             op_id = visited[&x].1;
+                            }
                         }
 
-                        self.consume(x, kid, &mut visited, &mut rcs);
-                        self.consume(y, kid, &mut visited, &mut rcs);
+                        if !x_missing {
+                            self.consume(x, kid, &mut visited, &mut rcs);
+                        }
+                        if !y_missing {
+                            self.consume(y, kid, &mut visited, &mut rcs);
+                        }
                         let result_op = self.jit_kernels[kid].kernel.binary(op_id, op_idy, bop);
                         self.push_outputs(kid, cid, rcs[&cid]);
                         visited.insert(cid, (kid, result_op));
+                        }
                     }
                     Node::Reduce { x, rop, ref axes } => {
                         // Assumed unique (backed by debug_assert) and in range
@@ -393,7 +425,10 @@ impl Graph {
                         );
                         let axes: Vec<UAxis> = axes.to_vec();
                         let rank = self.shape(x).len();
-                        let (mut kid, mut op_id) = visited[&x];
+                        let (mut kid, mut op_id) = match visited.get(&x) {
+                            Some(&kv) => kv,
+                            None => todo!("reduce of symbolic scalar operand {x:?}"),
+                        };
                         (kid, op_id) = self.duplicate_or_store_class(x, kid, op_id, &mut visited, &mut rcs, false);
                         // Single permute: non-reduced axes first, reduced axes
                         // trailing (order preserved), so each reduce in the
@@ -427,12 +462,18 @@ impl Graph {
                         // and keep its store so extract sees the assign kernel as
                         // cid's producer (this also orders any reader of cid after
                         // the in-place write).
-                        let (dep_kid, _) = visited[&dep];
+                        let (dep_kid, _) = match visited.get(&dep) {
+                            Some(&kv) => kv,
+                            None => todo!("After with symbolic dep {dep:?}"),
+                        };
                         self.consume(dep, dep_kid, &mut visited, &mut rcs);
 
                         // Structurally the After consumes x; the assign kernel now
                         // owns the in-place store, so x's output slot is dropped.
-                        let (kid, _) = visited[&x];
+                        let (kid, _) = match visited.get(&x) {
+                            Some(&kv) => kv,
+                            None => todo!("After with symbolic x {x:?}"),
+                        };
                         self.consume(x, kid, &mut visited, &mut rcs);
                         if self.jit_kernels[kid].outputs.is_empty() && self.jit_kernels[kid].stores.is_empty() {
                             self.jit_kernels.remove(kid);
@@ -447,8 +488,14 @@ impl Graph {
                         visited.insert(cid, (new_kid, new_op));
                     }
                     Node::Assign { dst, src } => {
-                        let (kid, src_op) = visited[&src];
-                        let (dst_kid, dst_op) = visited[&dst];
+                        let (kid, src_op) = match visited.get(&src) {
+                            Some(&kv) => kv,
+                            None => todo!("assign with symbolic src {src:?}"),
+                        };
+                        let (dst_kid, dst_op) = match visited.get(&dst) {
+                            Some(&kv) => kv,
+                            None => todo!("assign with symbolic dst {dst:?}"),
+                        };
 
                         assert_ne!(kid, dst_kid, "assign: src and dst must not share kernel {kid:?}");
                         // The dst kernel's loads mix the owning buffer with
@@ -630,13 +677,29 @@ impl Graph {
                                 debug_assert!(dt.is_int(), "Expand {cid:?} has non-integer dim dtype {dt:?}");
                             }
                         }
-                        let (mut kid, mut op_id) = visited[&x];
-                        let force_store = self.jit_kernels[kid].kernel.is_preceded_by_compute(op_id);
-                        (kid, op_id) = self.duplicate_or_store_class(x, kid, op_id, &mut visited, &mut rcs, force_store);
+                        let (kid, op_id) = if !visited.contains_key(&x) {
+                            // Scalar x: fresh kernel, replay the expression
+                            // into it and apply the movement on the replayed op.
+                            *rcs.get_mut(&x).unwrap() -= 1;
+                            let kid = self.jit_kernels.push(JitKernelData {
+                                kernel: Kernel::new(DeviceId::NULL),
+                                outputs: Vec::new(),
+                                loads: Vec::new(),
+                                stores: Vec::new(),
+                            });
+                            let op = self.replay_shape_into_kernel(kid, x);
+                            (kid, op)
+                        } else {
+                            let (mut kid, mut op_id) = visited[&x];
+                            let force_store = self.jit_kernels[kid].kernel.is_preceded_by_compute(op_id);
+                            (kid, op_id) = self.duplicate_or_store_class(x, kid, op_id, &mut visited, &mut rcs, force_store);
+                            self.consume(x, kid, &mut visited, &mut rcs);
+                            (kid, op_id)
+                        };
                         // The shape descriptor is pure metadata — replay its
                         // symbolic expression directly into this kernel.
                         let sop = self.replay_shape_into_kernel(kid, shape);
-                        self.consume(x, kid, &mut visited, &mut rcs);
+                        *rcs.get_mut(&shape).unwrap() -= 1;
                         let result_op = self.jit_kernels[kid]
                             .kernel
                             .push_back(Op::Move { x: op_id, mop: Box::new(MoveOp::Expand { shape: sop }) });
@@ -655,13 +718,29 @@ impl Graph {
                                 debug_assert!(dt.is_int(), "Reshape {cid:?} has non-integer dim dtype {dt:?}");
                             }
                         }
-                        let (mut kid, mut op_id) = visited[&x];
-                        let force_store = false;
-                        (kid, op_id) = self.duplicate_or_store_class(x, kid, op_id, &mut visited, &mut rcs, force_store);
+                        let (kid, op_id) = if !visited.contains_key(&x) {
+                            // Scalar x: fresh kernel, replay the expression
+                            // into it and apply the movement on the replayed op.
+                            *rcs.get_mut(&x).unwrap() -= 1;
+                            let kid = self.jit_kernels.push(JitKernelData {
+                                kernel: Kernel::new(DeviceId::NULL),
+                                outputs: Vec::new(),
+                                loads: Vec::new(),
+                                stores: Vec::new(),
+                            });
+                            let op = self.replay_shape_into_kernel(kid, x);
+                            (kid, op)
+                        } else {
+                            let (mut kid, mut op_id) = visited[&x];
+                            let force_store = false;
+                            (kid, op_id) = self.duplicate_or_store_class(x, kid, op_id, &mut visited, &mut rcs, force_store);
+                            self.consume(x, kid, &mut visited, &mut rcs);
+                            (kid, op_id)
+                        };
                         // The shape descriptor is pure metadata — replay its
                         // symbolic expression directly into this kernel.
                         let sop = self.replay_shape_into_kernel(kid, shape);
-                        self.consume(x, kid, &mut visited, &mut rcs);
+                        *rcs.get_mut(&shape).unwrap() -= 1;
                         let result_op = self.jit_kernels[kid]
                             .kernel
                             .push_back(Op::Move { x: op_id, mop: Box::new(MoveOp::Reshape { shape: sop }) });
@@ -669,14 +748,31 @@ impl Graph {
                         visited.insert(cid, (kid, result_op));
                     }
                     Node::Pad { x, axis, lp, len } => {
-                        let (mut kid, mut op_id) = visited[&x];
-                        let force_store = false;
-                        (kid, op_id) = self.duplicate_or_store_class(x, kid, op_id, &mut visited, &mut rcs, force_store);
+                        let (kid, op_id) = if !visited.contains_key(&x) {
+                            // Scalar x: fresh kernel, replay the expression
+                            // into it and apply the movement on the replayed op.
+                            *rcs.get_mut(&x).unwrap() -= 1;
+                            let kid = self.jit_kernels.push(JitKernelData {
+                                kernel: Kernel::new(DeviceId::NULL),
+                                outputs: Vec::new(),
+                                loads: Vec::new(),
+                                stores: Vec::new(),
+                            });
+                            let op = self.replay_shape_into_kernel(kid, x);
+                            (kid, op)
+                        } else {
+                            let (mut kid, mut op_id) = visited[&x];
+                            let force_store = false;
+                            (kid, op_id) = self.duplicate_or_store_class(x, kid, op_id, &mut visited, &mut rcs, force_store);
+                            self.consume(x, kid, &mut visited, &mut rcs);
+                            (kid, op_id)
+                        };
                         // Bounds are pure metadata — replay their symbolic
                         // expressions directly into this kernel.
                         let lp_op = self.replay_shape_into_kernel(kid, lp);
                         let len_op = self.replay_shape_into_kernel(kid, len);
-                        self.consume(x, kid, &mut visited, &mut rcs);
+                        *rcs.get_mut(&lp).unwrap() -= 1;
+                        *rcs.get_mut(&len).unwrap() -= 1;
                         let result_op = self.jit_kernels[kid]
                             .kernel
                             .push_back(Op::Move { x: op_id, mop: Box::new(MoveOp::Pad { axis, lp: lp_op, len: len_op }) });
@@ -684,14 +780,31 @@ impl Graph {
                         visited.insert(cid, (kid, result_op));
                     }
                     Node::Narrow { x, axis, start, len } => {
-                        let (mut kid, mut op_id) = visited[&x];
-                        let force_store = false;
-                        (kid, op_id) = self.duplicate_or_store_class(x, kid, op_id, &mut visited, &mut rcs, force_store);
+                        let (kid, op_id) = if !visited.contains_key(&x) {
+                            // Scalar x: fresh kernel, replay the expression
+                            // into it and apply the movement on the replayed op.
+                            *rcs.get_mut(&x).unwrap() -= 1;
+                            let kid = self.jit_kernels.push(JitKernelData {
+                                kernel: Kernel::new(DeviceId::NULL),
+                                outputs: Vec::new(),
+                                loads: Vec::new(),
+                                stores: Vec::new(),
+                            });
+                            let op = self.replay_shape_into_kernel(kid, x);
+                            (kid, op)
+                        } else {
+                            let (mut kid, mut op_id) = visited[&x];
+                            let force_store = false;
+                            (kid, op_id) = self.duplicate_or_store_class(x, kid, op_id, &mut visited, &mut rcs, force_store);
+                            self.consume(x, kid, &mut visited, &mut rcs);
+                            (kid, op_id)
+                        };
                         // Bounds are pure metadata — replay their symbolic
                         // expressions directly into this kernel.
                         let start_op = self.replay_shape_into_kernel(kid, start);
                         let len_op = self.replay_shape_into_kernel(kid, len);
-                        self.consume(x, kid, &mut visited, &mut rcs);
+                        *rcs.get_mut(&start).unwrap() -= 1;
+                        *rcs.get_mut(&len).unwrap() -= 1;
                         // Eager parity: `runtime::narrow` requires the input to
                         // sit alone in a store-free kernel before the bound
                         // kernels merge ("input into narrow must have empty
@@ -712,13 +825,19 @@ impl Graph {
                         self.add_move(cid, x, MoveOp::Flip { axes: axes.clone() }, false, &mut visited, &mut rcs);
                     }
                     Node::ToDevice { x, .. } => {
-                        let (kid, op_id) = visited[&x];
+                        let (kid, op_id) = match visited.get(&x) {
+                            Some(&kv) => kv,
+                            None => todo!("ToDevice of symbolic scalar {x:?}"),
+                        };
                         self.consume(x, kid, &mut visited, &mut rcs);
                         let (kid, op_id) = self.add_store(x, kid, op_id, &mut visited, &rcs);
                         visited.insert(cid, (kid, op_id));
                     }
                     Node::Contiguous { x } => {
-                        let (kid, op_id) = visited[&x];
+                        let (kid, op_id) = match visited.get(&x) {
+                            Some(&kv) => kv,
+                            None => todo!("Contiguous of symbolic scalar {x:?}"),
+                        };
                         self.consume(x, kid, &mut visited, &mut rcs);
                         // Cast-shim semantics (mirrors eager runtime::contiguous):
                         // a same-dtype Cast (value identity) becomes the stored
@@ -748,6 +867,20 @@ impl Graph {
 
             // Post-processing: store if final output
             if outputs.contains(&cid) {
+                if !visited.contains_key(&cid) {
+                    // Symbolic scalar output (e.g. a materialized const):
+                    // give it a real buffer via the same fresh-kernel replay
+                    // the movement arms use, then store normally.
+                    let kid = self.jit_kernels.push(JitKernelData {
+                        kernel: Kernel::new(DeviceId::NULL),
+                        outputs: Vec::new(),
+                        loads: Vec::new(),
+                        stores: Vec::new(),
+                    });
+                    let op = self.replay_shape_into_kernel(kid, cid);
+                    self.push_outputs(kid, cid, 1);
+                    visited.insert(cid, (kid, op));
+                }
                 let (mut kid, op_id) = visited[&cid];
                 // Assign classes are in-place aliases of dst's (leaf) buffer; the
                 // kernelizer already recorded the in-place store, so do not add a
@@ -794,7 +927,6 @@ impl Graph {
                         *counts.entry(ocid).or_default() += 1;
                     }
                     if !counts.is_empty() && counts.iter().any(|(c, &n)| *rcs.get(c).unwrap() != n) {
-                        println!("outputs={:?}, counts={counts:?}", ek.outputs);
                         for (c, n) in counts.iter() {
                             println!("class={c:?}, rcs={}, n={n}", rcs[c]);
                         }
@@ -804,14 +936,8 @@ impl Graph {
                 }
                 for c in &order[..=i] {
                     if let Some(&rc) = rcs.get(c) {
-                        if rc == 0 {
-                            if visited.contains_key(c) {
-                                panic!("class={c:?} with rcs=0 in visited");
-                            }
-                        } else {
-                            if !visited.contains_key(c) {
-                                panic!("class={c:?} with rcs>0 not in visited");
-                            }
+                        if rc == 0 && visited.contains_key(c) {
+                            panic!("class={c:?} with rcs=0 in visited");
                         }
                     }
                 }
@@ -1126,9 +1252,24 @@ impl Graph {
         visited: &mut Map<ClassId, (JitKernelId, OpId)>,
         rcs: &mut Map<ClassId, u32>,
     ) {
-        let (mut kid, mut op_id) = visited[&child];
-        (kid, op_id) = self.duplicate_or_store_class(child, kid, op_id, visited, rcs, force_store);
-        self.consume(child, kid, visited, rcs);
+        let (kid, op_id) = if !visited.contains_key(&child) {
+            // Scalar child: fresh kernel, replay the expression into it and
+            // apply the movement on the replayed op.
+            *rcs.get_mut(&child).unwrap() -= 1;
+            let kid = self.jit_kernels.push(JitKernelData {
+                kernel: Kernel::new(DeviceId::NULL),
+                outputs: Vec::new(),
+                loads: Vec::new(),
+                stores: Vec::new(),
+            });
+            let op = self.replay_shape_into_kernel(kid, child);
+            (kid, op)
+        } else {
+            let (mut kid, mut op_id) = visited[&child];
+            (kid, op_id) = self.duplicate_or_store_class(child, kid, op_id, visited, rcs, force_store);
+            self.consume(child, kid, visited, rcs);
+            (kid, op_id)
+        };
         let kernel = &mut self.jit_kernels[kid].kernel;
         let result_op = kernel.push_back(Op::Move { x: op_id, mop: Box::new(mop) });
         self.push_outputs(kid, cid, *rcs.get(&cid).unwrap());

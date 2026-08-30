@@ -1690,23 +1690,27 @@ impl Tensor {
         let rhs = rhs.into();
         let org_y_shape = rhs.resolve_shape();
         let y = rhs.t();
-        let xshape = self.resolve_shape();
-        let yshape = y.resolve_shape();
-        let xrank = xshape.len();
-        let yrank = yshape.len();
-        if xshape[xrank - 1] != yshape[yrank - 1] {
-            return Err(ZyxError::ShapeError(format!("Cannot dot tensors with shapes {xshape:?} and {org_y_shape:?}").into()));
+        // User-side validation resolves (always resolvable, errors on
+        // mismatch); the computation's reshapes compose the inputs' dim
+        // tensors so symbolic dims stay symbolic (no recompile per value).
+        let xres = self.resolve_shape();
+        let yres = y.resolve_shape();
+        let xshape = self.shape();
+        let yshape = y.shape();
+        let xrank = xres.len();
+        let yrank = yres.len();
+        if xres[xrank - 1] != yres[yrank - 1] {
+            return Err(ZyxError::ShapeError(format!("Cannot dot tensors with shapes {xres:?} and {org_y_shape:?}").into()));
         }
-        let x_shape = xshape[..xrank - 1].iter().copied().chain([1]).chain([xshape[xrank - 1]]).collect::<Vec<i64>>();
-        let y_shape = yshape[0..yrank - 2]
-            .iter()
-            .copied()
-            .chain([1])
-            .chain(yshape[yrank - yrank.min(2)..yrank].iter().copied())
-            .collect::<Vec<i64>>();
-        (self.reshape(x_shape)? * y.reshape(y_shape)?)
-            .sum([-1])?
-            .reshape(xshape[0..xshape.len() - 1].iter().copied().chain([yshape[yshape.len() - 2]]).collect::<Vec<i64>>())
+        let mut x_shape: Vec<Tensor> = xshape[..xrank - 1].to_vec();
+        x_shape.push(Tensor::from(1i64));
+        x_shape.push(xshape[xrank - 1].clone());
+        let mut y_shape: Vec<Tensor> = yshape[..yrank.saturating_sub(2)].to_vec();
+        y_shape.push(Tensor::from(1i64));
+        y_shape.extend(yshape[yrank - yrank.min(2)..].iter().cloned());
+        let mut out_shape: Vec<Tensor> = xshape[..xrank - 1].to_vec();
+        out_shape.push(yshape[yrank - 2].clone());
+        (self.reshape(x_shape)? * y.reshape(y_shape)?).sum([-1])?.reshape(out_shape)
     }
 
     /// Matmul
@@ -1718,23 +1722,25 @@ impl Tensor {
         let rhs: Tensor = rhs.into();
         let org_y_shape = rhs.resolve_shape();
         let y = rhs.t();
-        let xshape = self.resolve_shape();
-        let yshape = y.resolve_shape();
-        let xrank = xshape.len();
-        let yrank = yshape.len();
-        if xshape[xrank - 1] != yshape[yrank - 1] {
-            return Err(ZyxError::ShapeError(format!("Cannot dot tensors with shapes {xshape:?} and {org_y_shape:?}").into()));
+        // See dot: resolve for validation, compose dim tensors for computation.
+        let xres = self.resolve_shape();
+        let yres = y.resolve_shape();
+        let xshape = self.shape();
+        let yshape = y.shape();
+        let xrank = xres.len();
+        let yrank = yres.len();
+        if xres[xrank - 1] != yres[yrank - 1] {
+            return Err(ZyxError::ShapeError(format!("Cannot dot tensors with shapes {xres:?} and {org_y_shape:?}").into()));
         }
-        let x_shape = xshape[..xrank - 1].iter().copied().chain([1]).chain([xshape[xrank - 1]]).collect::<Vec<i64>>();
-        let y_shape = yshape[0..yrank - 2]
-            .iter()
-            .copied()
-            .chain([1])
-            .chain(yshape[yrank - yrank.min(2)..yrank].iter().copied())
-            .collect::<Vec<i64>>();
-        (self.reshape(x_shape)?.cast(out_dtype) * y.reshape(y_shape)?.cast(out_dtype))
-            .sum([-1])?
-            .reshape(xshape[0..xshape.len() - 1].iter().copied().chain([yshape[yshape.len() - 2]]).collect::<Vec<i64>>())
+        let mut x_shape: Vec<Tensor> = xshape[..xrank - 1].to_vec();
+        x_shape.push(Tensor::from(1i64));
+        x_shape.push(xshape[xrank - 1].clone());
+        let mut y_shape: Vec<Tensor> = yshape[..yrank.saturating_sub(2)].to_vec();
+        y_shape.push(Tensor::from(1i64));
+        y_shape.extend(yshape[yrank - yrank.min(2)..].iter().cloned());
+        let mut out_shape: Vec<Tensor> = xshape[..xrank - 1].to_vec();
+        out_shape.push(yshape[yrank - 2].clone());
+        (self.reshape(x_shape)?.cast(out_dtype) * y.reshape(y_shape)?.cast(out_dtype)).sum([-1])?.reshape(out_shape)
     }
 
     /// Matmul is just alias to dot
@@ -2373,7 +2379,7 @@ impl Tensor {
         })
         .try_into()
         .unwrap();
-        // Dimension check
+        // Dimension check (user side — resolve, concrete comparison)
         for tensor in &tensors {
             for (i, (d1, d2)) in shape.iter().zip(tensor.resolve_shape().iter()).enumerate() {
                 if i != dim && *d1 != *d2 {
@@ -2381,22 +2387,25 @@ impl Tensor {
                 }
             }
         }
-        let mut offset = 0i64;
-        let mut offset2 = tensors.iter().fold(0i64, |acc, t| acc + i64::try_from(t.resolve_shape()[dim]).unwrap());
-        let mut shape = tensors[0].resolve_shape();
-        shape[dim] = Dim::try_from(offset2).unwrap();
-        let mut res = None;
-        for tensor in tensors {
-            let d = i64::try_from(tensor.resolve_shape()[dim]).unwrap();
-            offset2 -= d;
-            let padding: Vec<(i64, i64)> = repeat_n((0i64, 0i64), rank - dim - 1).chain([(offset, offset2)]).collect();
-            let t = tensor.rpad_zeros(padding)?;
-            if let Some(r) = res {
-                res = Some(r + t);
-            } else {
-                res = Some(t);
-            }
-            offset += d;
+        // Computation stays SYMBOLIC: the output cat-dim is the sum of the
+        // inputs' dim tensors, and each input's offset is a prefix sum of the
+        // same expressions — no resolved lengths are baked anywhere. Each
+        // input is zero-padded along `axis` to the total length, then the
+        // padded views are summed.
+        let dim_t = |t: &Tensor| -> Tensor { t.shape()[dim].clone() };
+        let mut total = Tensor::from(0i64);
+        for t in &tensors {
+            total = total + dim_t(t);
+        }
+        let mut lp = Tensor::from(0i64);
+        let mut res: Option<Tensor> = None;
+        for tensor in &tensors {
+            let padded = tensor.pad_zeros_axis(dim as UAxis, lp.clone(), total.clone())?;
+            res = Some(match res {
+                Some(r) => r + padded,
+                None => padded,
+            });
+            lp = lp + dim_t(tensor);
         }
         Ok(res.unwrap())
     }
@@ -3174,6 +3183,12 @@ impl Tensor {
             return Err(ZyxError::shape_error(format!("RoPE requires input >= 2d, but current input is {}d", sh.len()).into()));
         }
 
+        let sh_dims = self.shape();
+        let seq_t = sh_dims[sh_dims.len() - 2].clone();
+        let embed_t = sh_dims[sh_dims.len() - 1].clone();
+        // User-side validation resolves (always resolvable); the computation
+        // below composes dim tensors so symbolic dims stay symbolic.
+        let sh = self.resolve_shape();
         let seq_len = sh[sh.len() - 2];
         let embed_dim = sh[sh.len() - 1];
 
@@ -3194,12 +3209,14 @@ impl Tensor {
             ));
         }
 
-        let sin_freqs = sin_freqs.reshape([1i64, 1i64, seq_len, embed_dim / 2 as i64]).unwrap();
-        let cos_freqs = cos_freqs.reshape([1i64, 1i64, seq_len, embed_dim / 2 as i64]).unwrap();
+        // half as a dim expression; the half-slices narrow with dim-tensor
+        // bounds so a symbolic embed/seq dim never gets baked.
+        let half_t = embed_t / Tensor::from(2i64);
+        let sin_freqs = sin_freqs.reshape([Tensor::from(1i64), Tensor::from(1i64), seq_t.clone(), half_t.clone()]).unwrap();
+        let cos_freqs = cos_freqs.reshape([Tensor::from(1i64), Tensor::from(1i64), seq_t, half_t.clone()]).unwrap();
 
-        let half = (embed_dim / 2) as usize;
-        let a = self.rslice(..half).unwrap();
-        let b = -self.rslice(half..).unwrap();
+        let a = self.narrow(-1, Tensor::from(0i64), half_t.clone())?;
+        let b = -self.narrow(-1, half_t.clone(), half_t)?;
         let ro = a.clone() * cos_freqs.clone() - b.clone() * sin_freqs.clone();
         let co = a * sin_freqs + b * cos_freqs;
         let r = Tensor::cat([&co, &ro], -1).unwrap(); // Concatenate along the last dimension

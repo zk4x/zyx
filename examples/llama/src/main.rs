@@ -339,7 +339,7 @@ impl Attention {
         // on every decode step, so the kernels compile exactly once.
         let k = self
             .cache_k
-            .narrow(0, 0u64, cache_len.clone())
+            .narrow(0, 0i64, cache_len.clone())
             .unwrap()
             .unsqueeze(0)
             .unwrap()
@@ -347,7 +347,7 @@ impl Attention {
             .unwrap();
         let v = self
             .cache_v
-            .narrow(0, 0u64, cache_len.clone())
+            .narrow(0, 0i64, cache_len.clone())
             .unwrap()
             .unsqueeze(0)
             .unwrap()
@@ -552,14 +552,14 @@ impl Llama {
         let mut xs = embedding_forward(&self.embed_weight, input_ids);
         // Symbolic positions: fresh variables each call, but identical kernel
         // IR every step (params hash by ordinal, not value) — one compile total.
-        let pos = Tensor::variable(start_pos as u64);
-        let cache_len = Tensor::variable((start_pos as u64) + seq_len.item::<i64>() as u64);
+        let pos = Tensor::variable(start_pos as i64);
+        let cache_len = Tensor::variable(start_pos as i64 + seq_len.item::<i64>());
         for (i, layer) in self.layers.iter_mut().enumerate() {
             let _l_t = PerfTimer::new(format!("  layer {i:2}"));
             xs = layer.forward(&xs, &pos, &cache_len);
         }
         xs = self.norm.forward(xs).unwrap();
-        xs = xs.narrow(1, seq_len - 1, 1).unwrap().squeeze([1]);        let out = self.lm_head.forward(xs).unwrap();
+        xs = xs.narrow(1, seq_len - 1, 1i64).unwrap().squeeze([1]);        let out = self.lm_head.forward(xs).unwrap();
         let mut realize_args: Vec<&Tensor> = vec![&out];
         for layer in &self.layers {
             realize_args.push(&layer.self_attn.cache_k);

@@ -11,17 +11,50 @@ use crate::{
     slab::Slab,
 };
 
+/// One dim of an allocation spec: an expression tree over compile-time
+/// constants and leaf-class values (variables bound between plan runs).
+/// Computation stays symbolic so a plan compiled once serves any variable
+/// values; evaluation happens at execution time.
+#[derive(Debug, Clone)]
+pub enum PlanDim {
+    Const(Dim),
+    Leaf(ClassId),
+    Binary { x: Box<PlanDim>, y: Box<PlanDim>, bop: BOp },
+    Cast { x: Box<PlanDim>, dtype: crate::dtype::DType },
+}
+
+impl PlanDim {
+    /// Evaluate the dim expression against the leaf classes' scalar values.
+    /// Fails loudly on an unbound leaf — a missing value is a bug, never a
+    /// default.
+    fn eval(&self, class_vars: &Map<ClassId, Constant>) -> Dim {
+        match self {
+            PlanDim::Const(c) => *c,
+            PlanDim::Leaf(cid) => class_vars
+                .get(cid)
+                .and_then(|c| c.as_dim())
+                .unwrap_or_else(|| panic!("dynamic dim class {cid:?} is unbound at execution time")),
+            PlanDim::Binary { x, y, bop } => {
+                Constant::binary(Constant::idx(x.eval(class_vars)), Constant::idx(y.eval(class_vars)), *bop)
+                    .as_dim()
+                    .unwrap_or_else(|| panic!("dim binary op {bop:?} did not produce a dim"))
+            }
+            PlanDim::Cast { x, dtype } => {
+                Constant::idx(x.eval(class_vars)).cast(*dtype).as_dim().unwrap_or_else(|| panic!("dim cast to {dtype:?} did not produce a dim"))
+            }
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub enum ExecNode {
     Allocate {
         class: ClassId,
         pool: PoolId,
-        /// Product of the class's static dims, in elements (dynamic dims excluded).
-        static_size: Dim,
         dtype_size: Dim,
-        /// Dynamic dims of the class's shape, each resolved at execution time
-        /// from the scalar value stored in that leaf class's buffer.
-        dynamic_dims: Vec<ClassId>,
+        /// One dim expression per shape axis; the buffer is sized by their
+        /// product, evaluated at execution time.
+        dims: Vec<PlanDim>,
     },
     Copy {
         dst_class: ClassId,
@@ -81,40 +114,30 @@ impl ExecPlan {
         let mut plan_nodes = Vec::new();
         let mut allocated: Set<ClassId> = Set::default();
 
-        // Allocation spec of a class: static element count (product of static
-        // dims), dtype byte size and the leaf classes holding dynamic dim
-        // values. Dynamic dims cannot be resolved here — their values live in
-        // leaf buffers set between plan runs — so execution multiplies them in.
-        // Computed dim classes fold recursively; only Const and leaf dims are
-        // expected to terminate the walk.
-        fn alloc_spec(graph: &Graph, class: ClassId) -> (Dim, Dim, Vec<ClassId>) {
-            fn dim_value(graph: &Graph, dim: ClassId, dynamic_dims: &mut Vec<ClassId>) -> Option<Dim> {
+        // Allocation spec of a class: dtype byte size and one `PlanDim` per
+        // shape axis. Dim expressions over leaf classes stay symbolic — their
+        // values live in leaf buffers set between plan runs — so execution
+        // evaluates the tree and multiplies. Expression trees over Const and
+        // leaf dims must terminate the walk; anything else is unreachable.
+        fn alloc_spec(graph: &Graph, class: ClassId) -> (Dim, Vec<PlanDim>) {
+            fn dim_expr(graph: &Graph, dim: ClassId) -> PlanDim {
                 match &graph.nodes[graph.classes[dim].nodes[0]].node {
                     Node::Const { value: c, .. } => {
-                        Some(c.as_dim().unwrap_or_else(|| panic!("dim class {dim:?} is not a constant")))
+                        PlanDim::Const(c.as_dim().unwrap_or_else(|| panic!("dim class {dim:?} is not a constant")))
                     }
-                    Node::Leaf { .. } => {
-                        dynamic_dims.push(dim);
-                        None
-                    }
-                    Node::Binary { x, y, bop: BOp::Add } => {
-                        match (dim_value(graph, *x, dynamic_dims), dim_value(graph, *y, dynamic_dims)) {
-                            (Some(a), Some(b)) => Some(a + b),
-                            _ => None,
-                        }
-                    }
-                    op => todo!("alloc_spec: computed dim class {dim:?} via {op:?}"),
+                    Node::Leaf { .. } => PlanDim::Leaf(dim),
+                    Node::Binary { x, y, bop } => PlanDim::Binary {
+                        x: Box::new(dim_expr(graph, *x)),
+                        y: Box::new(dim_expr(graph, *y)),
+                        bop: *bop,
+                    },
+                    Node::Cast { x, dtype } => PlanDim::Cast { x: Box::new(dim_expr(graph, *x)), dtype: *dtype },
+                    op => unreachable!("alloc dim class {dim:?} must be a dim over Const/leaf leaves, got {op:?}"),
                 }
             }
             let dtype_size = Dim::from(graph.dtype(class).bit_size() / 8);
-            let mut static_size: Dim = 1;
-            let mut dynamic_dims = Vec::new();
-            for d in graph.shape(class) {
-                if let Some(v) = dim_value(graph, d, &mut dynamic_dims) {
-                    static_size *= v;
-                }
-            }
-            (static_size, dtype_size, dynamic_dims)
+            let dims = graph.shape(class).iter().map(|&d| dim_expr(graph, d)).collect();
+            (dtype_size, dims)
         }
 
         // After output classes alias the buffer of x's base leaf class: the
@@ -122,14 +145,14 @@ impl ExecPlan {
         // so an After class (x's value after the assign) shares the leaf's
         // buffer. They must not be allocated or deallocated — the leaf's buffer
         // is owned by the realized tensor.
-        let mut aliases: Vec<(ClassId, ClassId, Dim, Dim, Vec<ClassId>)> = Vec::new();
+        let mut aliases: Vec<(ClassId, ClassId, Dim, Vec<PlanDim>)> = Vec::new();
         let mut alias_classes: Set<ClassId> = Set::default();
         for cid in graph.classes.ids() {
             for nid in &graph.classes[cid].nodes {
                 if let Node::After { x, .. } = &graph.nodes[*nid].node {
                     let base = graph.base_leaf(*x);
-                    let (static_size, dtype_size, dynamic_dims) = alloc_spec(graph, cid);
-                    aliases.push((cid, base, static_size, dtype_size, dynamic_dims));
+                    let (dtype_size, dims) = alloc_spec(graph, cid);
+                    aliases.push((cid, base, dtype_size, dims));
                     alias_classes.insert(cid);
                 }
             }
@@ -154,16 +177,15 @@ impl ExecPlan {
         // intermediate writes are lost. Mirrors eager assign's store-to-target
         // pool handling.
         let mut leaf_copy: Map<ClassId, ClassId> = Map::default();
-        for &(class, to, static_size, dtype_size, ref dynamic_dims) in &aliases {
+        for &(class, to, dtype_size, ref dims) in &aliases {
             match store_pool.get(&class) {
                 Some(pool) if leaf_pools[&to] != *pool => {
                     let owner = *leaf_copy.entry(to).or_insert_with(|| {
                         plan_nodes.push(ExecNode::Allocate {
                             class,
                             pool: *pool,
-                            static_size,
                             dtype_size,
-                            dynamic_dims: dynamic_dims.clone(),
+                            dims: dims.clone(),
                         });
                         plan_nodes.push(ExecNode::Copy { dst_class: class, src_class: to });
                         class
@@ -188,8 +210,8 @@ impl ExecPlan {
                         // (leaf buffers via leaf_map, aliases share x's leaf
                         // buffer) — never allocate fresh buffers for them.
                         if !graph.leaf_map.contains_key(&oc) && !alias_classes.contains(&oc) {
-                            let (static_size, dtype_size, dynamic_dims) = alloc_spec(graph, oc);
-                            plan_nodes.push(ExecNode::Allocate { class: oc, pool, static_size, dtype_size, dynamic_dims });
+                            let (dtype_size, dims) = alloc_spec(graph, oc);
+                            plan_nodes.push(ExecNode::Allocate { class: oc, pool, dtype_size, dims });
                         }
                     }
                     plan_nodes.push(ExecNode::Launch {
@@ -214,8 +236,8 @@ impl ExecPlan {
                     let class_of = graph.nodes[nid].class_of;
                     if allocated.insert(class_of) && !graph.leaf_map.contains_key(&class_of) && !alias_classes.contains(&class_of)
                     {
-                        let (static_size, dtype_size, dynamic_dims) = alloc_spec(graph, class_of);
-                        plan_nodes.push(ExecNode::Allocate { class: class_of, pool, static_size, dtype_size, dynamic_dims });
+                        let (dtype_size, dims) = alloc_spec(graph, class_of);
+                        plan_nodes.push(ExecNode::Allocate { class: class_of, pool, dtype_size, dims });
                     }
                     plan_nodes.push(ExecNode::Copy { dst_class: class_of, src_class: x });
                     let c = rc.get_mut(&x).unwrap();
@@ -249,10 +271,8 @@ impl ExecPlan {
         println!("{}", line);
         for node in &self.nodes {
             match node {
-                ExecNode::Allocate { class, pool, static_size, dtype_size, dynamic_dims } => {
-                    println!(
-                        "  Allocate class={class:?} pool={pool:?} static={static_size} dtype_size={dtype_size} dyn={dynamic_dims:?}"
-                    );
+                ExecNode::Allocate { class, pool, dtype_size, dims } => {
+                    println!("  Allocate class={class:?} pool={pool:?} dtype_size={dtype_size} dims={dims:?}");
                 }
                 ExecNode::Copy { dst_class, src_class } => {
                     println!("  Copy dst={dst_class:?} src={src_class:?}");
@@ -294,20 +314,15 @@ impl Runtime {
 
         for node in &plan.nodes {
             match node {
-                ExecNode::Allocate { class, pool, static_size, dtype_size, dynamic_dims } => {
-                    // Resolve dynamic dims from their leaf classes' scalar
-                    // values (variables bound between plan runs), then size
-                    // the buffer: one element per static*dynamic element,
+                ExecNode::Allocate { class, pool, dtype_size, dims } => {
+                    // Evaluate the dim expressions against the leaf classes'
+                    // scalar values (variables bound between plan runs), then
+                    // size the buffer: one element per dim-product element,
                     // plus one extra trash element.
-                    let mut elements = *static_size;
-                    for dim in dynamic_dims {
-                        let value = class_vars.get(dim).and_then(|c| c.as_dim());
-                        debug_assert!(
-                            value.is_some(),
-                            "dynamic dim class {dim:?} must resolve to a variable at execution time"
-                        );
-                        let v = value.unwrap_or(0);
-                        debug_assert!(v > 0, "dynamic dim class {dim:?} resolved to non-positive value {v}");
+                    let mut elements: Dim = 1;
+                    for dim in dims {
+                        let v = dim.eval(class_vars);
+                        debug_assert!(v > 0, "dim of class {class:?} evaluated to non-positive value {v}");
                         elements *= v;
                     }
                     debug_assert!(elements > 0, "allocation for class {class:?} would be empty ({elements} elements)");

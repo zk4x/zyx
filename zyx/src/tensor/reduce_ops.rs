@@ -60,7 +60,11 @@ impl Tensor {
         }
 
         // Determine axes
-        let mut shape = self.resolve_shape();
+        let shape = self.resolve_shape();
+        // Dim tensors for CONSTRUCTION: computation must compose these so
+        // symbolic dims stay symbolic (no recompile per variable value).
+        // `shape` (resolved) is for user-side validation and host math only.
+        let shape_dims = self.shape();
         let rank = shape.len();
         let x_dtype = self.dtype();
         let axes: Vec<_> = axes.into_iter().collect();
@@ -100,13 +104,20 @@ impl Tensor {
                 }
             }
             ReduceOp::Mean => {
-                let n: i64 = axes_vec.iter().map(|&a| shape[a]).product::<Dim>().try_into().unwrap();
+                // The divisor is computation — keep it SYMBOLIC: the product
+                // of the reduced dims as dim tensors. Compile-time-constant
+                // dims fold back to a constant in the kernel; variable-backed
+                // dims become a runtime divide (no recompile per value).
+                let mut n_t = Tensor::from(1i64);
+                for &a in &axes_vec {
+                    n_t = n_t * shape_dims[a].clone();
+                }
                 let x = if let Some(dtype) = dtype {
                     self.sum_dtype(axes, dtype)?
                 } else {
                     self.sum(axes)?
                 };
-                x / Tensor::from(n).cast(x_dtype)
+                x / n_t.cast(x_dtype)
             }
             ReduceOp::Var => {
                 if let Some(dtype) = dtype {
@@ -137,12 +148,20 @@ impl Tensor {
             tensor = tensor.cast(x_dtype);
         }
 
-        // Apply keepdim
+        // Apply keepdim — reduced axes become fresh 1 constants; kept axes
+        // stay SYMBOLIC (the input's own dim tensors). Rebuilding from the
+        // resolved shape would bake variable-backed dims into constants and
+        // force recompiles.
         if KEEPDIM {
-            for a in axes_vec {
-                shape[a] = 1;
+            let mut dims: Vec<Tensor> = Vec::with_capacity(rank);
+            for (a, d) in shape_dims.iter().enumerate() {
+                if axes_vec.contains(&(a as UAxis)) {
+                    dims.push(Tensor::from(1i64));
+                } else {
+                    dims.push(d.clone());
+                }
             }
-            tensor = tensor.reshape(shape)?;
+            tensor = tensor.reshape(dims)?;
         }
 
         Ok(tensor)

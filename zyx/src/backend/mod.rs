@@ -113,10 +113,10 @@ impl GwsDim {
 
 /// Walk the kernel's `Op::Index` ops and return one `GwsDim` per gws axis.
 ///
-/// Each group length `op_id` is a dim over `Op::Const` leaves and
-/// `Op::Param { kind: Variable }` leaves (`Const` → `Const`,
-/// `Param { Variable }` → `Param`, cast/unary/binary chains → `Cast`/`Unary`/`Binary`);
-/// anything else is unreachable.
+/// Each group length `op_id` is a dim expression over `Op::Const` and
+/// `Op::Param { kind: Variable }` leaves, composed freely from
+/// unary/binary/cast/load ops (`Const` → `Const`, `Param { Variable }` →
+/// `Param`, and likewise for the composite ops); anything else is unreachable.
 fn gws_from_kernel(kernel: &Kernel) -> Vec<GwsDim> {
     // Head-order position of every `Op::Param`, matching the arg ordering.
     let mut param_ordinal: Map<OpId, usize> = Map::with_hasher(BuildHasherDefault::<FHasher>::new());
@@ -139,6 +139,14 @@ fn gws_from_kernel(kernel: &Kernel) -> Vec<GwsDim> {
                 x: Box::new(conv(kernel, *x, ordinals)),
                 y: Box::new(conv(kernel, *y, ordinals)),
                 bop: *bop,
+            },
+            // A load moves a value from global to local address space — it
+            // never changes the value, so for length purposes it passes its
+            // source through. Lengths only bottom out in `Param { Variable }`
+            // leaves; a load from a buffer would be runtime data, not a dim.
+            Op::Load { src, .. } => match &kernel.ops[*src].op {
+                Op::Param { kind: ParamKind::Variable, .. } => GwsDim::Param(ordinals[src]),
+                ref op => unreachable!("group length load from non-variable storage, got {op:?}"),
             },
             Op::Cast { x, dtype } => GwsDim::Cast { x: Box::new(conv(kernel, *x, ordinals)), dtype: *dtype },
             ref op => unreachable!("group length must be a dim over Const/Param Variable, got {op:?}"),
