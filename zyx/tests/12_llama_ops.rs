@@ -122,7 +122,7 @@ fn llama_rope() -> Result<(), ZyxError> {
     // Same op mix as apply_rope: rdims decomposition, narrow by an offset
     // tensor, rope kernel.
     let [s_len, _hd] = x.rdims::<2>()?;
-    let offset = Tensor::from(0u32);
+    let offset = Tensor::from(0i64);
     let c = cos.narrow(0, offset.clone(), &s_len)?;
     let s = sin.narrow(0, offset, &s_len)?;
     let rotated = x.rope(c, s)?;
@@ -131,8 +131,8 @@ fn llama_rope() -> Result<(), ZyxError> {
     let ones = Tensor::ones([seq, 2], DType::BF16);
     let zeros = Tensor::zeros([seq, 2], DType::BF16);
     let [s_len, _hd] = x.rdims::<2>()?;
-    let c1 = ones.narrow(0, 0u64, &s_len)?;
-    let s1 = zeros.narrow(0, 0u64, &s_len)?;
+    let c1 = ones.narrow(0, 0i64, &s_len)?;
+    let s1 = zeros.narrow(0, 0i64, &s_len)?;
     let identity = x.rope(c1, s1)?;
     tape.realize([&rotated, &identity])?;
 

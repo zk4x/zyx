@@ -325,7 +325,6 @@ impl Runtime {
                         if let Some(&value) = class_vars.get(c) {
                             // Variable leaf: bound from variable_map, no buffer.
                             args.push(LaunchArg::Variable(value));
-                            eprintln!("  arg {c:?} = Variable {value:?}");
                             continue;
                         }
                         let Some(buf) = class_buf.get(c) else {

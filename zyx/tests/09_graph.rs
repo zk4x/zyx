@@ -116,7 +116,7 @@ fn self_attention() -> Result<(), ZyxError> {
 fn narrow_1() -> Result<(), ZyxError> {
     let x = Tensor::from([[1, 2, 3, 4], [5, 6, 7, 8], [9, 10, 11, 12], [13, 14, 15, 16]]);
     let tape = Tape::new([&x])?;
-    let y = x.narrow(0, 1, 2)?;
+    let y = x.narrow(0, 1i64, 2i64)?;
     tape.realize([&y])?;
     assert_eq!(y, [[5, 6, 7, 8], [9, 10, 11, 12]]);
     Ok(())
@@ -126,8 +126,8 @@ fn narrow_1() -> Result<(), ZyxError> {
 fn narrow_2() -> Result<(), ZyxError> {
     let x = Tensor::from([[1, 2, 3, 4], [5, 6, 7, 8], [9, 10, 11, 12], [13, 14, 15, 16]]);
     let tape = Tape::new([&x])?;
-    let y = x.narrow(0, 1, 2)?;
-    let z = y.narrow(-1, 1, 2)?;
+    let y = x.narrow(0, 1i64, 2i64)?;
+    let z = y.narrow(-1, 1i64, 2i64)?;
     tape.realize([&z])?;
     assert_eq!(z, [[6, 7], [10, 11]]);
     Ok(())
@@ -204,8 +204,8 @@ fn assign_narrow_same_root() -> Result<(), ZyxError> {
     let src1 = Tensor::from([1f32, 2f32]);
     let src2 = Tensor::from([3f32, 4f32]);
     let tape = Tape::new([&base])?;
-    base.narrow(0, 0, 2)?.assign(&src1)?;
-    base.narrow(0, 2, 2)?.assign(&src2)?;
+    base.narrow(0, 0i64, 2i64)?.assign(&src1)?;
+    base.narrow(0, 2i64, 2i64)?.assign(&src2)?;
     tape.realize([&base])?;
     let out: Vec<f32> = base.try_into()?;
     assert_eq!(out, vec![1.0, 2.0, 3.0, 4.0, 0.0, 0.0]);

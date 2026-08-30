@@ -91,7 +91,7 @@ impl Kernel {
             }
         }
 
-        /*debug_assert!({
+        debug_assert!({
             let mut live: Set<OpId> = Set::default();
             let mut stack: Vec<OpId> = Vec::new();
             let mut op_id = self.head;
@@ -115,7 +115,7 @@ impl Kernel {
                 op_id = self.next_op(op_id);
             }
             true
-        });*/
+        });
 
         // Snapshot the order of global params so linearize can assert it never
         // reorders the buffers' declaration order.
@@ -692,14 +692,18 @@ impl Kernel {
                             let shape = match &self.ops[op_id].op {
                                 Op::Move { mop, .. } => match mop.as_ref() {
                                     MoveOp::Reshape { shape, .. } | MoveOp::Expand { shape } => match &self.ops[*shape].op {
-                                    Op::Stack { ops } => ops.to_vec(),
-                                    // Bare descriptor: a single dim value (const,
-                                    // runtime-loaded scalar, or a dim *expression*
-                                    // over them) — mirrors `shape_ids`'s `descriptor`.
-                                    Op::Const(_) | Op::Param { .. } | Op::Unary { .. } | Op::Binary { .. } | Op::Load { .. } => {
-                                        vec![*shape]
-                                    }
-                                    op => todo!("invalid shape descriptor {op:?}"),
+                                        Op::Stack { ops } => ops.to_vec(),
+                                        // Bare descriptor: a single dim value (const,
+                                        // runtime-loaded scalar, or a dim *expression*
+                                        // over them) — mirrors `shape_ids`'s `descriptor`.
+                                        Op::Const(_)
+                                        | Op::Param { .. }
+                                        | Op::Unary { .. }
+                                        | Op::Binary { .. }
+                                        | Op::Load { .. } => {
+                                            vec![*shape]
+                                        }
+                                        op => todo!("invalid shape descriptor {op:?}"),
                                     },
                                     _ => unreachable!(),
                                 },
@@ -980,7 +984,9 @@ impl Kernel {
         siblings.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
         let mut closures: Map<OpId, Set<OpId>> = Map::default();
         for &r in &reduce_ids {
-            let Op::Reduce { x, .. } = self.ops[r].op else { unreachable!() };
+            let Op::Reduce { x, .. } = self.ops[r].op else {
+                unreachable!()
+            };
             let mut stack: Vec<OpId> = vec![x];
             let mut seen = Set::default();
             for _ in 0..50_000 {

@@ -533,7 +533,7 @@ fn promote_to_graph_stacked_shape_dims() -> Result<(), ZyxError> {
     let out = emb.clone() + emb;
     // llama's kv-cache flow (the ops between embedding and the failing add):
     // eager Variable scalars as narrow bounds + assign into a promoted cache.
-    let pos = Tensor::variable(0u64);
+    let pos = Tensor::variable(0i64);
     // contiguous() like llama's kv-caches: materialized buffers promote as leaves.
     let cache = Tensor::zeros([4, 2], DType::F32).contiguous()?;
     tape.add(&cache)?;
