@@ -76,6 +76,7 @@ impl Tape {
     /// parameters. Input tensors (x, target) are auto-detected as boundary
     /// inputs — they don't need to be promoted explicitly.
     pub fn new<'a>(params: impl IntoIterator<Item = &'a Tensor>) -> Result<Tape, ZyxError> {
+        eprintln!("DL:tape_new");
         let mut rt = RT.lock();
 
         let graph_id = rt.graphs.push(Graph::new());
@@ -149,6 +150,7 @@ impl Tape {
     /// subgraph they depend on. The tape is consumed — graph mode ends and
     /// all output tensors become realized (buffers allocated).
     pub fn realize<'a>(self, tensors: impl IntoIterator<Item = &'a Tensor>) -> Result<(), ZyxError> {
+        eprintln!("DL:tape_realize");
         let mut rt = RT.lock();
         let graph_id = self.graph_id;
 
@@ -157,7 +159,23 @@ impl Tape {
             .map(|t| {
                 let class_id = match rt.tensors[t.id] {
                     TensorData::Graph { class_id, .. } | TensorData::Promoted { class_id, .. } => class_id,
-                    ref td => panic!("non-graph tensor in realize: tid {t} data {td:?}"),
+                    // NOTE: never format the `Tensor` itself here (Display
+                    // clones + re-locks RT, which deadlocks under this guard);
+                    // `TensorData`'s Debug is lock-free.
+                    ref td => panic!(
+                        "Tape::realize was given a tensor that never entered the tape's graph \
+                         (tid {}, data {:?}).\n\
+                         This is a caller mistake, not a zyx bug: the tensor is eager — it was \
+                         created outside the tape scope, or built entirely from eager inputs, so \
+                         there is no graph class for realize to materialize.\n\
+                         How to fix: realize only tensors whose computation this tape traced. \
+                         Promote tensors you build from with `tape.add(&t)?` before the ops, or \
+                         give the chain at least one promoted operand — ops mixing an eager tensor \
+                         with a graph tensor are pulled into the graph automatically; an all-eager \
+                         chain stays eager.",
+                        t.id(),
+                        td
+                    ),
                 };
                 (t.id, class_id)
             })
@@ -165,14 +183,18 @@ impl Tape {
 
         let output_tids: Vec<TensorId> = output_pairs.iter().map(|(tid, _)| *tid).collect();
         let output_classes: Vec<ClassId> = output_pairs.iter().map(|(_, cid)| *cid).collect();
+        eprintln!("DL:R1");
 
         debug_assert!(rt.graphs.contains_id(graph_id));
         rt.debug_assert_pre_realize(graph_id);
+        eprintln!("DL:R2");
 
         let output_set: BTreeSet<ClassId> = output_classes.iter().copied().collect();
         let cache_key = rt.plan_cache_key(graph_id, &output_set);
+        eprintln!("DL:R3");
 
         if let Some(plan) = rt.plan_cache.get(&cache_key) {
+            eprintln!("DL:R4cache");
             let mut class_buf: Map<ClassId, BufferId> = Map::default();
             let mut class_vars: Map<ClassId, Constant> = Map::default();
             for &cid in &plan.leaf_classes {
@@ -198,6 +220,7 @@ impl Tape {
         }
 
         let plan = rt.compile_graph(graph_id, &output_set)?;
+        eprintln!("DL:R5compiled");
 
         let mut class_buf: Map<ClassId, BufferId> = Map::default();
         let mut class_vars: Map<ClassId, Constant> = Map::default();
@@ -333,6 +356,13 @@ impl Drop for Tape {
                     if !eager_leafs.contains(&tid) {
                         rt.graphs[graph_id].ref_count -= 1;
                     }
+                }
+                TensorData::Variable { .. } => {
+                    // A variable leaf carries no graph state in its
+                    // TensorData — only its leaf edge (retain + ref_count).
+                    // Drop the ref_count edge; the `leafs` loop below
+                    // releases the retain.
+                    rt.graphs[graph_id].ref_count -= 1;
                 }
                 ref t => unreachable!("affiliated tensor changed variant: {t:?}"),
             };

@@ -15,11 +15,11 @@
 
 use super::autotune::Optimization;
 use crate::{
-    shape::Dim,
     Map,
     backend::DeviceInfo,
     dtype::Constant,
     kernel::{BOp, IdxKind, Kernel, MemLayout, MemScope, Op, OpId},
+    shape::Dim,
 };
 
 impl Kernel {
@@ -67,7 +67,7 @@ impl Kernel {
                 };
                 if len >= 16 {
                     for &factor in &candidates {
-                        if len % factor as Dim == 0 && len / factor as Dim >= 4 && remaining_threads  as Dim >= factor as Dim {
+                        if len % factor as Dim == 0 && len / factor as Dim >= 4 && remaining_threads as Dim >= factor as Dim {
                             for &tree_branch in &tree_branch_candidates {
                                 factors.push((op_id, factor, tree_branch));
                             }
@@ -93,7 +93,6 @@ impl Kernel {
     /// * `factor` - The factor for splitting the loop
     /// * `tree_branch` - The tree reduction branching factor
     pub(crate) fn local_reduce(&mut self, loop_start: OpId, factor: u32, tree_branch: u32) {
-        return;
         #[cfg(feature = "time")]
         let _timer = crate::Timer::new("tiled_reduce");
         let loop_len_id = if let Op::Loop { len } = self.at(loop_start) {

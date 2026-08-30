@@ -451,6 +451,8 @@ impl Node {
     /// Classes this node references: operands, and metadata like shape
     /// descriptors (a leaf's shape is a parameter of the leaf).
     fn class_params(&self) -> impl Iterator<Item = ClassId> {
+        // NULL is not a class: rank-0 nodes carry `shape: ClassId::NULL` and
+        // optional fields may be absent — a NULL is never a dependency.
         let v = match self {
             Self::Const { .. } => vec![],
             Self::Leaf { shape, .. } => vec![*shape],
@@ -471,7 +473,7 @@ impl Node {
             Self::Contiguous { x, .. } => vec![*x],
             Self::Kernel { inputs, .. } => inputs.to_vec(),
         };
-        v.into_iter()
+        v.into_iter().filter(|p| !p.is_null())
     }
 }
 
@@ -936,12 +938,17 @@ impl Graph {
                                         .expect("already checked is_leaf");
                                     self.leaf_map[&leaf_cid]
                                 });
-                                let leaf_pool = buffer_map[&tid].pool;
-                                if leaf_pool != dev_pool {
-                                    let to_cid = self.push_to_device(input_cid, device_id, 0);
-                                    if to_cid != cid && to_cid != class_of {
-                                        let new_inputs = new_inputs.get_or_insert_with(|| inputs.clone());
-                                        new_inputs[i] = to_cid;
+                                // A variable leaf has no buffer (host scalar
+                                // bound at launch from the tensors slab) — no
+                                // device placement applies.
+                                if let Some(leaf_buf) = buffer_map.get(&tid) {
+                                    let leaf_pool = leaf_buf.pool;
+                                    if leaf_pool != dev_pool {
+                                        let to_cid = self.push_to_device(input_cid, device_id, 0);
+                                        if to_cid != cid && to_cid != class_of {
+                                            let new_inputs = new_inputs.get_or_insert_with(|| inputs.clone());
+                                            new_inputs[i] = to_cid;
+                                        }
                                     }
                                 }
                             }
@@ -1618,11 +1625,17 @@ impl Runtime {
             // for a graph tensor that still had a user handle when its tape
             // died without `realize`. Its value was never computed and cannot
             // be recomputed (the graph is gone), so it can never be promoted
-            // into a new tape. This is intended behaviour, not a bug: call
-            // `tape.realize` before the tape is dropped (the training-loop
-            // pattern: gradient → optim.update → tape.realize(params)).
+            // into a new tape. This is intended behaviour, not a bug.
             TensorData::Graph { class_id: ClassId::NULL, .. } => panic!(
-                "tensor {tid} belongs to a tape that was dropped without `realize`: its value was never computed and cannot be used. This is intended behaviour — realize the tape's outputs before it is dropped."
+                "tensor {tid} is bound to a tape that was dropped without `Tape::realize`: its \
+                 graph is gone, the value was never computed and cannot be recomputed, so the \
+                 tensor is permanently invalid.\n\
+                 This is a caller mistake, not a zyx bug: a tape must be realized before it is \
+                 dropped or consumed.\n\
+                 How to fix: end every tape scope with `tape.realize(outputs)?` (the training-loop \
+                 pattern: tape.gradient → optim.update → tape.realize(params)), and do not keep \
+                 using tensors traced by a tape after it is gone — rebuild the computation inside \
+                 a fresh tape instead."
             ),
             ref t => panic!("promote_to_graph: tensor {tid} has no eager kernel: {t:?}"),
         };
@@ -1652,11 +1665,43 @@ impl Runtime {
                     _ => vec![shape_op],
                 }
             };
+            // `loads` is parallel to the kernel's Global|Variable Params in
+            // head order (see `Kernel::extract_subkernel`); map each such
+            // Param op to its load index so shape-stack variable dims can be
+            // resolved to their tensors.
+            let loads = self.kernels[kernel_id].loads.clone();
+            let mut load_of_param: Map<OpId, usize> = Map::default();
+            let mut load_idx = 0;
+            let mut p = self.kernels[kernel_id].kernel.head;
+            while !p.is_null() {
+                if let Op::Param { kind: ParamKind::Global | ParamKind::Variable, .. } =
+                    self.kernels[kernel_id].kernel.ops[p].op
+                {
+                    load_of_param.insert(p, load_idx);
+                    load_idx += 1;
+                }
+                p = self.kernels[kernel_id].kernel.next_op(p);
+            }
             let mut dim_classes = Vec::with_capacity(dim_entries.len());
             for entry in dim_entries {
                 dim_classes.push(match self.kernels[kernel_id].kernel.ops[entry].op {
                     Op::Const(c) => self.push_const(graph_id, c),
-                    Op::Param { kind: ParamKind::Variable, .. } => self.push_leaf_node(graph_id, IDX_T, ClassId::NULL).1,
+                    Op::Param { kind: ParamKind::Variable, .. } => {
+                        // A variable dim is an input, not structure: register
+                        // its leaf so the plan binds it via the tensors slab
+                        // and value changes never force recompilation.
+                        let var_tid = loads[load_of_param[&entry]];
+                        debug_assert!(
+                            matches!(self.tensors[var_tid], TensorData::Variable { .. }),
+                            "promote_to_graph: dim variable {var_tid} is not a TensorData::Variable"
+                        );
+                        let (_, dim_cid) = self.push_leaf_node(graph_id, IDX_T, ClassId::NULL);
+                        self.graphs[graph_id].leaf_map.insert(dim_cid, var_tid);
+                        self.retain(var_tid);
+                        self.graphs[graph_id].leaf_classes.push(dim_cid);
+                        self.graphs[graph_id].ref_count += 1;
+                        dim_cid
+                    }
                     ref op => unreachable!("promote_to_graph: dim op {op:?} in param shape stack"),
                 });
             }
@@ -1729,6 +1774,21 @@ impl Runtime {
         };
 
         let loads = self.kernels[kernel_id].loads.clone();
+        // Map each Global|Variable Param op to its index in `loads` (parallel
+        // lists in head order, see `Kernel::extract_subkernel`) so shape-stack
+        // variable dims resolve to their tensors.
+        let mut load_of_param: Map<OpId, usize> = Map::default();
+        let mut load_idx = 0;
+        let mut p = self.kernels[kernel_id].kernel.head;
+        while !p.is_null() {
+            if let Op::Param { kind: ParamKind::Global | ParamKind::Variable, .. } =
+                self.kernels[kernel_id].kernel.ops[p].op
+            {
+                load_of_param.insert(p, load_idx);
+                load_idx += 1;
+            }
+            p = self.kernels[kernel_id].kernel.next_op(p);
+        }
         let mut op_to_class: Map<OpId, ClassId> = Map::default();
         let mut storage_idx = 0;
         let mut op_id = self.kernels[kernel_id].kernel.head;
@@ -1783,7 +1843,20 @@ impl Runtime {
                                 dim_classes.push(match self.kernels[kernel_id].kernel.ops[entry].op {
                                     Op::Const(c) => self.push_const(graph_id, c),
                                     Op::Param { kind: ParamKind::Variable, .. } => {
-                                        self.push_leaf_node(graph_id, IDX_T, ClassId::NULL).1
+                                        // A variable dim is an input, not structure: register
+                                        // its leaf so the plan binds it via the tensors slab
+                                        // and value changes never force recompilation.
+                                        let var_tid = loads[load_of_param[&entry]];
+                                        debug_assert!(
+                                            matches!(self.tensors[var_tid], TensorData::Variable { .. }),
+                                            "promote_to_graph: dim variable {var_tid} is not a TensorData::Variable"
+                                        );
+                                        let (_, dim_cid) = self.push_leaf_node(graph_id, IDX_T, ClassId::NULL);
+                                        self.graphs[graph_id].leaf_map.insert(dim_cid, var_tid);
+                                        self.retain(var_tid);
+                                        self.graphs[graph_id].leaf_classes.push(dim_cid);
+                                        self.graphs[graph_id].ref_count += 1;
+                                        dim_cid
                                     }
                                     ref op => unreachable!("promote_to_graph: dim op {op:?} in param shape stack"),
                                 });
@@ -2035,11 +2108,15 @@ impl Runtime {
             // kernel (Eager state) — both carry a buffer.
             for &tid in self.graphs[graph_id].leaf_map.values() {
                 debug_assert!(
-                    self.buffer_map.contains_key(&tid) | self.variable_map.contains_key(&tid),
+                    self.buffer_map.contains_key(&tid)
+                        | matches!(self.tensors[tid], TensorData::Variable { .. }),
                     "leaf {tid} not realized"
                 );
                 let affiliated = match self.tensors[tid] {
                     TensorData::Graph { graph_id: g, .. } | TensorData::Promoted { graph_id: g, .. } => g == graph_id,
+                    // A variable leaf is a shared input: it carries no graph
+                    // affiliation in its TensorData — nothing to check.
+                    TensorData::Variable { .. } => continue,
                     ref t => panic!("leaf {tid} is not a graph tensor: {t:?}"),
                 };
                 debug_assert!(affiliated, "leaf {tid} belongs to another graph");
@@ -2076,8 +2153,15 @@ impl Runtime {
                 .iter()
                 .any(|&nid| matches!(&self.graphs[graph_id].nodes[nid].node, Node::Leaf { .. }));
             if has_leaf {
+                if !self.graphs[graph_id].leaf_map.contains_key(&cid) {
+                    eprintln!("DL:leafcheck: offending cid {cid:?} nodes {:?}", self.graphs[graph_id].classes[cid].nodes);
+                    eprintln!("DL:leafcheck: leaf_map {:?}", self.graphs[graph_id].leaf_map);
+                }
                 let &tid = self.graphs[graph_id].leaf_map.get(&cid).expect("class {cid:?} has Leaf node but not in leaf_map");
-                assert!(self.buffer_map.contains_key(&tid), "leaf class {cid:?} tid {tid:?} not in buffer_map");
+                assert!(
+                    self.buffer_map.contains_key(&tid) || matches!(self.tensors[tid], TensorData::Variable { .. }),
+                    "leaf class {cid:?} tid {tid:?} neither in buffer_map nor a variable"
+                );
             } else {
                 assert!(!self.graphs[graph_id].leaf_map.contains_key(&cid), "class {cid:?} has no Leaf node but is in leaf_map");
             }
@@ -2128,7 +2212,11 @@ impl Runtime {
         // any cross-pool copy) into its ExecNodes, so leaves must stay put.
         let mut leaf_pools: Map<ClassId, PoolId> = Map::default();
         for (&cid, &tid) in &self.graphs[graph_id].leaf_map {
-            leaf_pools.insert(cid, self.buffer_map[&tid].pool);
+            // Variable leaves have no buffer and no pool — they bind per exec
+            // from the tensors slab, so no pool invariant applies to them.
+            if let Some(buf) = self.buffer_map.get(&tid) {
+                leaf_pools.insert(cid, buf.pool);
+            }
         }
         let plan = ExecPlan::new(&self.graphs[graph_id], &nodes, output_set, &self.devices, &leaf_pools);
         if self.debug.egraph() {

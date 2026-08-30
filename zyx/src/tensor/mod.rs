@@ -99,6 +99,7 @@ impl Tensor {
 
 impl Clone for Tensor {
     fn clone(&self) -> Self {
+        eprintln!("DL:clone");
         RT.lock().retain(self.id);
         Tensor { id: self.id }
     }
@@ -210,6 +211,7 @@ impl Tensor {
     /// ```
     #[must_use]
     pub fn resolve_shape(&self) -> Vec<Dim> {
+        eprintln!("DL:resolve_shape");
         RT.lock().resolve_shape(self.id)
     }
 
@@ -238,6 +240,7 @@ impl Tensor {
     /// ```
     #[must_use]
     pub fn shape(&self) -> Vec<Tensor> {
+        eprintln!("DL:shape");
         let mut rt = RT.lock();
         let tids = rt.shape(self.id);
         // Each returned Tensor takes ownership of a reference to the slab dim
@@ -433,6 +436,7 @@ impl Tensor {
     /// Item
     #[allow(clippy::missing_panics_doc)]
     pub fn item<T: Scalar>(&self) -> T {
+        eprintln!("DL:item");
         let mut rt = RT.lock();
         let mut data = [T::zero(); 1];
         rt.load(self.id, &mut data).unwrap();
@@ -845,6 +849,7 @@ impl Tensor {
     #[allow(clippy::missing_panics_doc)]
     pub fn full(shape: impl IntoIterator<Item = impl Into<Tensor>>, value: impl Scalar) -> Tensor {
         let dims = Self::cast_to_shape(shape);
+        eprintln!("DL:full1");
         {
             let rt = RT.lock();
             for t in &dims {
@@ -856,6 +861,7 @@ impl Tensor {
         } else {
             Some(Tensor::stack(&dims).unwrap())
         };
+        eprintln!("DL:full2");
         let id = {
             let mut rt = RT.lock();
             let shape_id = shape.as_ref().map(|s| s.id).unwrap_or(TensorId::NULL);
@@ -905,6 +911,7 @@ impl Tensor {
     /// Casts self to [dtype](crate::DType).
     #[must_use]
     pub fn cast(&self, dtype: DType) -> Tensor {
+        eprintln!("DL:cast");
         let id = RT.lock().cast(self.id, dtype);
         return Tensor { id };
     }
@@ -1235,6 +1242,7 @@ impl Tensor {
                 format!("Axes has rank {}, but tensor has rank {}. It must be the same for permute.", axes.len(), rank).into(),
             ));
         }
+                eprintln!("DL:permute");
         let id = RT.lock().permute(self.id, axes);
         Ok(Tensor { id })
     }
@@ -1439,6 +1447,7 @@ impl Tensor {
     /// Shape and padding tensors must be `IDX_T`; user-supplied integer literals
     /// infer as `i32`, so this normalizes them before they enter the runtime.
     fn cast_to_dim(&self) -> Tensor {
+        eprintln!("DL:pad");
         if RT.lock().dtype(self.id) == DType::I64 {
             self.clone()
         } else {
@@ -1552,6 +1561,7 @@ impl Tensor {
             }
         }
         let shape = Tensor::stack(&tensors)?;
+        eprintln!("DL:reshape2");
         let id = RT.lock().reshape(self.id, shape.id)?;
         Ok(Tensor { id })
     }
@@ -1801,6 +1811,7 @@ impl Tensor {
     /// Returns error if the tensors have non broadcasteable shapes.
     pub fn equal(&self, rhs: impl Into<Tensor>) -> Result<Tensor, ZyxError> {
         let (x, y) = Tensor::broadcast(self.clone(), rhs)?;
+        eprintln!("DL:equal");
         let id = RT.lock().binary(x.id, y.id, BOp::Eq)?;
         let x = Tensor { id };
         Ok(x)
@@ -2582,6 +2593,7 @@ impl Tensor {
             }
         }
         let ids: Vec<TensorId> = tensors.iter().map(|x| x.id).collect();
+        eprintln!("DL:stack");
         let id = RT.lock().stack(&ids)?;
         Ok(Tensor { id })
     }
@@ -3346,6 +3358,7 @@ impl Tensor {
             // is a normal 1-D tensor and participates in implicit autocast.
             let x_scalar = x_shape.is_empty();
             let y_scalar = y_shape.is_empty();
+            eprintln!("DL:bcast");
             if RT.lock().implicit_casts && !x_scalar && !y_scalar {
                 let common_dtype = x_dtype.least_upper_dtype(y_dtype);
                 if x_dtype != common_dtype {
@@ -3806,6 +3819,7 @@ impl From<&Tensor> for Tensor {
 
 impl<T: Scalar> From<T> for Tensor {
     fn from(value: T) -> Self {
+        eprintln!("DL:FromT");
         let mut rt = RT.lock();
         let id = rt.new_host_tensor(TensorId::NULL, Box::new([value])).unwrap();
         Tensor { id }
@@ -3823,6 +3837,7 @@ impl<T: Scalar> From<Vec<T>> for Tensor {
     fn from(data: Vec<T>) -> Self {
         let len = data.len() as Dim;
         let shape = Tensor::stack(&[Tensor::from(len)]).unwrap();
+        eprintln!("DL:FromVec");
         Tensor { id: RT.lock().new_host_tensor(shape.id, data.into_boxed_slice()).unwrap() }
     }
 }

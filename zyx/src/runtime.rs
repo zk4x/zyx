@@ -514,7 +514,6 @@ pub struct Runtime {
     pub pools: Slab<PoolId, MemoryPool>,
     config_dir: Option<PathBuf>,
     pub buffer_map: Map<TensorId, BufferId>,
-    pub variable_map: Map<TensorId, Constant>,
     pub events: Map<BTreeSet<BufferId>, Event>,
     pub rng: Rng,
     autotune_config: AutotuneConfig,
@@ -559,7 +558,6 @@ impl Runtime {
             config_dir: None,
             optimizations: Map::with_hasher(BuildHasherDefault::new()),
             buffer_map: Map::with_hasher(BuildHasherDefault::new()),
-            variable_map: Map::with_hasher(BuildHasherDefault::new()),
             events: Map::with_hasher(BuildHasherDefault::new()),
             rng: Rng::seed_from_u64(42069),
             autotune_config: AutotuneConfig::new(),
@@ -668,7 +666,7 @@ impl Runtime {
             for tid in order {
                 value = match self.tensors[tid] {
                     TensorData::Constant { value, .. } => value,
-                    TensorData::Variable { .. } => self.variable_map[&tid],
+                    TensorData::Variable { value, .. } => value,
                     TensorData::Cast { x: a, dtype, .. } => vals[&a].cast(dtype),
                     TensorData::Unary { x: a, uop, .. } => vals[&a].unary(uop),
                     TensorData::Binary { x: a, y: b, bop, .. } => Constant::binary(vals[&a], vals[&b], bop),
@@ -757,7 +755,7 @@ impl Runtime {
             for tid in order {
                 value = match self.tensors[tid] {
                     TensorData::Constant { value, .. } => value,
-                    TensorData::Variable { .. } => self.variable_map[&tid],
+                    TensorData::Variable { value, .. } => value,
                     TensorData::Cast { x: a, dtype, .. } => vals[&a].cast(dtype),
                     TensorData::Unary { x: a, uop, .. } => vals[&a].unary(uop),
                     TensorData::Binary { x: a, y: b, bop, .. } => Constant::binary(vals[&a], vals[&b], bop),
@@ -1190,7 +1188,6 @@ impl Runtime {
                 self.tensors.remove(x);
             }
             TensorData::Variable { .. } => {
-                self.variable_map.remove(&x);
                 self.tensors.remove(x);
             }
             TensorData::Cast { x: a, .. } => {
@@ -1840,7 +1837,18 @@ impl Runtime {
         for tid in order {
             let class_id = match self.tensors[tid] {
                 TensorData::Constant { value, .. } => self.push_const(graph_id, value),
-                TensorData::Variable { .. } => self.push_leaf_node(graph_id, IDX_T, ClassId::NULL).1,
+                TensorData::Variable { .. } => {
+                    // A variable in a shape expression is an input, not
+                    // structure: register its leaf so the plan binds it via
+                    // the tensors slab and value changes never force
+                    // recompilation.
+                    let (_, cid) = self.push_leaf_node(graph_id, IDX_T, ClassId::NULL);
+                    self.graphs[graph_id].leaf_map.insert(cid, tid);
+                    self.retain(tid);
+                    self.graphs[graph_id].leaf_classes.push(cid);
+                    self.graphs[graph_id].ref_count += 1;
+                    cid
+                }
                 TensorData::Cast { x, dtype, .. } => {
                     let a = class_map[&x];
                     self.push_node(graph_id, Node::Cast { x: a, dtype }).1
@@ -1944,12 +1952,12 @@ impl Runtime {
     }
 
     pub fn new_variable_tensor<T: Scalar>(&mut self, x: T) -> TensorId {
-        // Variables are pure slab entries + one slot in variable_map; no
-        // kernel, no buffer_map entry. Kernels replay them as
-        // Param { Variable } loads (see replay_shape_into_kernel).
+        // Variables are pure slab entries — the value lives in the
+        // `TensorData::Variable` itself; no kernel, no buffer_map entry.
+        // Kernels replay them as Param { Variable } loads
+        // (see replay_shape_into_kernel).
         let value = Constant::new(x);
         let tid = self.tensors.push(TensorData::Variable { value, rc: 1 });
-        self.variable_map.insert(tid, value);
         tid
     }
 
@@ -3343,9 +3351,10 @@ impl Runtime {
             ));
         }
 
-        // Fast path: variables (and fully-symbolic expressions over them)
-        // live only in `variable_map` — no buffer, no pool storage.
-        if let Some(value) = self.variable_map.get(&x).copied().or_else(|| self.resolve_symbolic(x)) {
+        // Fast path: scalars (constants, variables and fully-symbolic
+        // expressions over them) live in the tensors slab — no buffer, no
+        // pool storage.
+        if let Some(value) = self.resolve_symbolic(x) {
             let bytes = (data.len() * T::bit_size() as usize).div_ceil(8);
             let byte_slice = unsafe { std::slice::from_raw_parts_mut(data.as_mut_ptr().cast(), bytes) };
             let value_bytes = value.to_le_bytes();
@@ -3616,7 +3625,7 @@ impl Runtime {
         // deleted kernel.
         let dst_kernel_loads = self.kernels[dst_kid].loads.clone();
         let dst_org = {
-            let mut buffer_loads = dst_kernel_loads.iter().copied().filter(|&t| !self.variable_map.contains_key(&t));
+            let mut buffer_loads = dst_kernel_loads.iter().copied().filter(|&t| !matches!(self.tensors[t], TensorData::Variable { .. }));
             match (buffer_loads.next(), buffer_loads.next()) {
                 (Some(t), None) => t,
                 (None, _) => {
@@ -3651,7 +3660,7 @@ impl Runtime {
         let KernelData { kernel, loads, .. } = unsafe { self.kernels.remove_and_return(dst_kid) };
         for t in &loads {
             assert!(
-                *t == dst_org || self.variable_map.contains_key(t),
+                *t == dst_org || matches!(self.tensors[*t], TensorData::Variable { .. }),
                 "assign: dst kernel load {t} is neither the buffer nor a known variable"
             );
         }
@@ -4471,13 +4480,11 @@ impl Runtime {
         // Recursive materialization: realize every load, first via each
         // unrealized load's `depends_on` producer (add_store-ing its outputs
         // launches the pending store that produces the load), then via
-        // `add_store` on whatever is still unrealized. Scalars may live in
-        // variable_map instead of buffer_map.
+        // `add_store` on whatever is still unrealized. Scalars (constants/
+        // variables) live in the tensors slab instead of buffer_map —
+        // `resolve_symbolic` covers them.
         for &load in &loads {
-            if self.buffer_map.contains_key(&load)
-                || self.variable_map.contains_key(&load)
-                || self.resolve_symbolic(load).is_some()
-            {
+            if self.buffer_map.contains_key(&load) || self.resolve_symbolic(load).is_some() {
                 continue;
             }
             // An `Eager` tensor never carries a graph class, so its
@@ -4503,10 +4510,7 @@ impl Runtime {
             }
         }
         for &load in &loads {
-            if self.buffer_map.contains_key(&load)
-                || self.variable_map.contains_key(&load)
-                || self.resolve_symbolic(load).is_some()
-            {
+            if self.buffer_map.contains_key(&load) || self.resolve_symbolic(load).is_some() {
                 continue;
             }
             if matches!(self.tensors[load], TensorData::Eager { .. } | TensorData::Promoted { .. }) {
@@ -4515,9 +4519,7 @@ impl Runtime {
         }
 
         debug_assert!(
-            loads.iter().all(|&tid| self.buffer_map.contains_key(&tid)
-                || self.variable_map.contains_key(&tid)
-                || self.resolve_symbolic(tid).is_some()),
+            loads.iter().all(|&tid| self.buffer_map.contains_key(&tid) || self.resolve_symbolic(tid).is_some()),
             "all loads must be realized after recursive materialization"
         );
 
@@ -4653,9 +4655,9 @@ impl Runtime {
         // allocate new buffers for the rest.
         let mut kernel_buffers = BTreeSet::new();
         for &tid in &loads {
-            // Scalars bound via `variable_map` are launch-time values, not
+            // Scalars (`TensorData::Variable`) are launch-time values, not
             // pool storage — they have no buffer and no event dependency.
-            if self.variable_map.contains_key(&tid) {
+            if matches!(self.tensors[tid], TensorData::Variable { .. }) {
                 continue;
             }
             kernel_buffers.insert(self.buffer_map[&tid]);
@@ -4708,8 +4710,8 @@ impl Runtime {
         }
         let mut buffers: Vec<LaunchArg> = Vec::new();
         for &tid in &loads {
-            if let Some(&value) = self.variable_map.get(&tid) {
-                // Variables live only in variable_map — they never have a
+            if let TensorData::Variable { value, .. } = self.tensors[tid] {
+                // Variables live only in the tensors slab — they never have a
                 // buffer or pool storage; the value is bound at launch.
                 buffers.push(LaunchArg::Variable(value));
             } else {

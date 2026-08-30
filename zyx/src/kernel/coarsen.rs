@@ -23,10 +23,10 @@ use std::collections::BTreeMap;
 
 use super::autotune::Optimization;
 use crate::{
-    shape::Dim,
     Map, Set,
     dtype::Constant,
     kernel::{BOp, IdxKind, Kernel, MemLayout, MemScope, Op, OpId},
+    shape::Dim,
 };
 
 // ## Coalesced local+upcast access
@@ -98,7 +98,6 @@ impl Kernel {
     ///
     /// Coarsens threads and applies register blocking for tiled reductions.
     pub fn coarsen(&mut self, gidx_id: OpId, factor: u64) {
-        return;
         #[cfg(feature = "time")]
         let _timer = crate::Timer::new("thread_coarse");
         let Op::Index { axis, kind: IdxKind::Group(len) } = self.ops[gidx_id].op else {

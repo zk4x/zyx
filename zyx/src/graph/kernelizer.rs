@@ -204,13 +204,15 @@ impl Graph {
         for (i, &cid) in order.iter().enumerate() {
             debug_assert!(!visited.contains_key(&cid), "class {cid:?} already visited");
 
-            // A class with no data consumers is pure scaffolding (shape
-            // metadata, replayed into consumers by value) and is never
-            // kernelized. A class with rcs is materialized even if it also
+            // A class with no data consumers is never kernelized: either pure
+            // scaffolding (shape metadata, replayed into consumers by value)
+            // or a variable leaf (a scalar bound per exec from the tensors
+            // slab via class_vars — never materialized, no buffer, no load
+            // kernel). A class with rcs is materialized even if it also
             // appears inside shape descriptors — consts hashcons by value, so
             // one class can serve both roles; its shape uses replay
             // independently of its materialization.
-            if !inputs.contains(&cid) && !rcs.contains_key(&cid) {
+            if !rcs.contains_key(&cid) {
                 continue;
             }
 

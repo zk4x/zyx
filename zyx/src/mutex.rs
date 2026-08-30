@@ -85,7 +85,7 @@ impl<T> Mutex<T> {
                 core::hint::spin_loop();
                 i += 1;
                 if i > 1000000000 {
-                    panic!("DEADLOCK");
+                    panic!("DEADLOCK\n{:?}", std::backtrace::Backtrace::force_capture());
                 }
             }
         }

@@ -493,3 +493,54 @@ fn promote_dead_graph() {
     let _ = &derived + 1.0f32; // triggers promote_to_graph on `derived`.
     tape2.realize([]).unwrap();
 }
+
+// Reproduces the llama prefill panic:
+//   `promote_to_graph` ← `Runtime::binary` ← `Tensor::add` inside a tape scope
+//   → `graph/mod.rs:1822` index out of bounds: the len is 520 but the index is 65535.
+//
+// An eager kernel built from dim Tensors (`dims()`-derived shapes → stack /
+// reshape / expand, plus equal + cast — the embedding one-hot mix) is
+// auto-promoted into the egraph when a binary op runs inside the tape scope.
+// `promote_to_graph` is supposed to handle every op kind; with the bug present
+// it dereferences an `OpId::NULL` (65535) carried by one of the kernel's ops.
+// (The drop-time sibling panic "graph affiliation desync: 0 live affiliated
+// tensors but ref_count = 1" is fallout from the aborted promotion.)
+#[test]
+fn promote_to_graph_stacked_shape_dims() -> Result<(), ZyxError> {
+    let weight = Tensor::from(vec![0.5f32; 8]).reshape([4, 2])?;
+    let idx = Tensor::from(vec![1u32, 3u32]).reshape([1, 2])?;
+
+    let tape = Tape::empty();
+    // Mirror llama: its params are promoted via `tape.add` before the forward.
+    // The embedding chain itself stays eager; the first op mixing an eager
+    // tensor with a graph tensor (`one_hot * w`) then promotes the eager
+    // one-hot kernel into the egraph via `promote_to_graph`.
+    tape.add(&weight)?;
+    // Embedding one-hot built from dim Tensors, same op mix as llama's
+    // embedding_forward: stack shapes, reshape, expand, equal, cast.
+    let [vocab, embed] = weight.dims::<2>()?;
+    let [b, seq] = idx.dims::<2>()?;
+    let idx4 = idx
+        .cast(DType::F32)
+        .reshape([b, seq, 1i64.into(), 1i64.into()])?;
+    let arange = Tensor::arange(0, vocab.item::<i64>(), 1)?
+        .reshape([1i64.into(), 1i64.into(), vocab.clone(), 1i64.into()])?
+        .cast(DType::F32);
+    let w = weight.reshape([1i64.into(), 1i64.into(), vocab.clone(), embed])?;
+    let one_hot = arange.equal(idx4)?.cast(DType::F32);
+    let emb = (one_hot * w).sum([2])?;
+    // Binary op inside the tape forces promotion of the eager kernel.
+    let out = emb.clone() + emb;
+    // llama's kv-cache flow (the ops between embedding and the failing add):
+    // eager Variable scalars as narrow bounds + assign into a promoted cache.
+    let pos = Tensor::variable(0u64);
+    // contiguous() like llama's kv-caches: materialized buffers promote as leaves.
+    let cache = Tensor::zeros([4, 2], DType::F32).contiguous()?;
+    tape.add(&cache)?;
+    let read = cache.narrow(0, &pos, vocab.clone())?;
+    let out2 = read.sum([0])?;
+    tape.realize([&out, &out2])?;
+    let v: Vec<f32> = out.try_into()?;
+    assert_eq!(v.len(), 4);
+    Ok(())
+}

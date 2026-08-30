@@ -55,21 +55,17 @@ fn repeat_kv(xs: Tensor, n_rep: usize) -> Tensor {
     if n_rep == 1 {
         return xs;
     }
-    let [b_sz, n_kv_head, _seq_len, head_dim] = xs.shape()[..] else {
-        panic!("expected 4D tensor for repeat_kv");
-    };
-    // seq_len may be symbolic (reads as 0 here), so every dim involving it
-    // is passed as -1 (infer). Only the static head dims are concrete.
-    let _ = _seq_len;
+    let [b_sz, n_kv_head, _seq_len, head_dim] = xs.dims::<4>().unwrap();
+    // seq_len may be symbolic; dims involving it are passed as -1 (infer).
     xs.unsqueeze(2)
         .unwrap()
         .expand([-1i64, -1, n_rep as i64, -1, -1])
         .unwrap()
         .reshape([
-            b_sz as i64,
-            (n_kv_head * n_rep as i64) as i64,
-            -1i64,
-            head_dim as i64,
+            b_sz.clone(),
+            n_kv_head * (n_rep as i64),
+            (-1i64).into(),
+            head_dim.clone(),
         ])
         .unwrap()
 }
@@ -190,11 +186,9 @@ fn precompute_rope_freqs(cfg: &LlamaConfig) -> (Tensor, Tensor) {
 }
 
 fn apply_rope(xs: &Tensor, cos: &Tensor, sin: &Tensor, seqlen_offset: &Tensor) -> Tensor {
-    let [_b, _nh, seq_len, _hd] = xs.shape()[..] else {
-        panic!("expected 4D for rope");
-    };
-    let c = cos.narrow(0, seqlen_offset.clone(), seq_len).unwrap();
-    let s = sin.narrow(0, seqlen_offset.clone(), seq_len).unwrap();
+    let [seq_len, _hd] = xs.rdims::<2>().unwrap();
+    let c = cos.narrow(0, seqlen_offset, &seq_len).unwrap();
+    let s = sin.narrow(0, seqlen_offset, &seq_len).unwrap();
     xs.rope(c, s).unwrap()
 }
 
@@ -286,25 +280,38 @@ impl Attention {
     }
 
     fn forward(&mut self, xs: &Tensor, start_pos: &Tensor, cache_len: &Tensor) -> Tensor {
-        let [b_size, seq_len, _n_embd] = xs.shape()[..] else {
-            panic!("expected 3D input for attention");
-        };
+        let [b_size, seq_len, _n_embd] = xs.dims::<3>().unwrap();
         let q = self.q_proj.forward(xs).unwrap();
         let k = self.k_proj.forward(xs).unwrap();
         let v = self.v_proj.forward(xs).unwrap();
 
         let q = q
-            .reshape([b_size, seq_len, self.num_heads, self.head_dim])
+            .reshape([
+                b_size.clone(),
+                seq_len.clone(),
+                self.num_heads.into(),
+                self.head_dim.into(),
+            ])
             .unwrap()
             .transpose(1, 2)
             .unwrap();
         let k = k
-            .reshape([b_size, seq_len, self.num_kv_heads, self.head_dim])
+            .reshape([
+                b_size.clone(),
+                seq_len.clone(),
+                self.num_kv_heads.into(),
+                self.head_dim.into(),
+            ])
             .unwrap()
             .transpose(1, 2)
             .unwrap();
         let v = v
-            .reshape([b_size, seq_len, self.num_kv_heads, self.head_dim])
+            .reshape([
+                b_size.clone(),
+                seq_len.clone(),
+                self.num_kv_heads.into(),
+                self.head_dim.into(),
+            ])
             .unwrap()
             .transpose(1, 2)
             .unwrap();
@@ -317,12 +324,12 @@ impl Attention {
         let k_assign = k.squeeze([0]).transpose(0, 1).unwrap();
         let v_assign = v.squeeze([0]).transpose(0, 1).unwrap();
         self.cache_k
-            .narrow(0, start_pos.clone(), seq_len)
+            .narrow(0, start_pos, &seq_len)
             .unwrap()
             .assign(&k_assign)
             .unwrap();
         self.cache_v
-            .narrow(0, start_pos.clone(), seq_len)
+            .narrow(0, start_pos, &seq_len)
             .unwrap()
             .assign(&v_assign)
             .unwrap();
@@ -354,17 +361,20 @@ impl Attention {
         let scale = Tensor::from(1.0f32 / (self.head_dim as f32).sqrt()).cast(q.dtype());
         let attn = q.matmul(k.transpose(2, 3).unwrap()).unwrap() * scale;
 
-        let attn = if seq_len <= 1 {
+        let seq_len_i = seq_len.item::<i64>();
+        let attn = if seq_len_i <= 1 {
             attn
         } else {
-            let mask = get_mask(seq_len as u64).cast(attn.dtype());
+            let mask = get_mask(seq_len_i as u64).cast(attn.dtype());
             attn + mask
         };
         let attn = attn.softmax([-1]).unwrap();
         let out = attn.matmul(&v).unwrap();
         let out = out.transpose(1, 2).unwrap();
         let d = self.num_heads * self.head_dim;
-        let out = out.reshape([b_size, seq_len, d]).unwrap();
+        let out = out
+            .reshape([b_size.clone(), seq_len.clone(), d.into()])
+            .unwrap();
         let out = self.o_proj.forward(out).unwrap();
         out
     }
@@ -451,23 +461,21 @@ impl DecoderLayer {
 }
 
 fn embedding_forward(weight: &Tensor, input: &Tensor) -> Tensor {
-    let [b_size, seq_len] = input.shape()[..] else {
-        panic!("expected 2D input")
-    };
-    let [vocab_size, embed_size] = weight.shape()[..] else {
-        panic!("expected 2D weight")
-    };
+    let [b_size, seq_len] = input.dims::<2>().unwrap();
+    let [vocab_size, embed_size] = weight.dims::<2>().unwrap();
     let idx = input
         .cast(DType::F32)
-        .reshape([b_size, seq_len, 1, 1])
+        .reshape([b_size, seq_len, 1i64.into(), 1i64.into()])
         .unwrap();
-    let arange = Tensor::arange(0, vocab_size as i64, 1)
+    let arange = Tensor::arange(0, vocab_size.item::<i64>(), 1)
         .unwrap()
-        .reshape([1, 1, vocab_size, 1])
+        .reshape([1i64.into(), 1i64.into(), vocab_size.clone(), 1i64.into()])
         .unwrap()
         .cast(DType::F32);
-    let w = weight.reshape([1, 1, vocab_size, embed_size]).unwrap();
-    let one_hot = arange.equal(&idx).unwrap().cast(w.dtype());
+    let w = weight
+        .reshape([1i64.into(), 1i64.into(), vocab_size, embed_size])
+        .unwrap();
+    let one_hot = arange.equal(idx).unwrap().cast(w.dtype());
     (one_hot * w).sum([2]).unwrap()
 }
 
@@ -521,9 +529,7 @@ impl Llama {
 
     fn forward(&mut self, input_ids: &Tensor, start_pos: usize) -> Tensor {
         let _t = PerfTimer::new("forward");
-        let [_b_size, seq_len] = input_ids.shape()[..] else {
-            panic!("expected 2D input");
-        };
+        let [_b_size, seq_len] = input_ids.dims::<2>().unwrap();
         let tape = Tape::empty();
         tape.add(&self.embed_weight).unwrap();
         for layer in &self.layers {
@@ -547,14 +553,13 @@ impl Llama {
         // Symbolic positions: fresh variables each call, but identical kernel
         // IR every step (params hash by ordinal, not value) — one compile total.
         let pos = Tensor::variable(start_pos as u64);
-        let cache_len = Tensor::variable((start_pos as u64) + seq_len as u64);
+        let cache_len = Tensor::variable((start_pos as u64) + seq_len.item::<i64>() as u64);
         for (i, layer) in self.layers.iter_mut().enumerate() {
             let _l_t = PerfTimer::new(format!("  layer {i:2}"));
             xs = layer.forward(&xs, &pos, &cache_len);
         }
         xs = self.norm.forward(xs).unwrap();
-        xs = xs.narrow(1, seq_len - 1, 1).unwrap().squeeze([1]);
-        let out = self.lm_head.forward(xs).unwrap();
+        xs = xs.narrow(1, seq_len - 1, 1).unwrap().squeeze([1]);        let out = self.lm_head.forward(xs).unwrap();
         let mut realize_args: Vec<&Tensor> = vec![&out];
         for layer in &self.layers {
             realize_args.push(&layer.self_attn.cache_k);
