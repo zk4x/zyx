@@ -150,10 +150,7 @@ impl Kernel {
         while !op_id.is_null() {
             let next = self.next_op(op_id);
             if let &Op::Binary { x, y, bop: BOp::Add } = self.at(op_id) {
-                if let Some(a) = self
-                    .match_mod_div_identity(x, y, bounds)
-                    .or_else(|| self.match_mod_div_identity(y, x, bounds))
-                {
+                if let Some(a) = self.match_mod_div_identity(x, y, bounds).or_else(|| self.match_mod_div_identity(y, x, bounds)) {
                     self.remap(op_id, a);
                 }
             }
@@ -276,7 +273,7 @@ impl Kernel {
                         // non-derived constant so it survives the roundtrip.
                         return (vec![], Some(op_id));
                     }
-                    let kk = c.ilog2()  as i64;
+                    let kk = c.ilog2() as i64;
                     let (mut slices, constant) = collect_slices_inner(k, x);
                     for s in &mut slices {
                         s.shift += kk;
@@ -291,7 +288,7 @@ impl Kernel {
                     if !(c > 0 && c & (c - 1) == 0) {
                         return (vec![], Some(op_id));
                     }
-                    let kk = c.ilog2()  as i64;
+                    let kk = c.ilog2() as i64;
                     let (mut slices, constant) = collect_slices_inner(k, x);
                     for s in &mut slices {
                         s.lo += kk;
@@ -317,7 +314,7 @@ impl Kernel {
                     if !(c > 0 && c & (c - 1) == 0) {
                         return (vec![], Some(op_id));
                     }
-                    let width = c.ilog2()  as i64;
+                    let width = c.ilog2() as i64;
                     let (mut slices, constant) = collect_slices_inner(k, x);
                     for s in &mut slices {
                         s.width = s.width.min(width);
@@ -418,7 +415,7 @@ impl Kernel {
                 continue;
             }
 
-            let root_width = bounds.get(&root).map_or(64, |&(_, max)| if max == 0 { 1 } else { (max.ilog2() + 1)  as i64 });
+            let root_width = bounds.get(&root).map_or(64, |&(_, max)| if max == 0 { 1 } else { (max.ilog2() + 1) as i64 });
 
             // Filter zero-width slices (e.g. x%1 == 0) — they are constant 0, not a partition piece.
             slices.retain(|s| s.width != 0);
@@ -474,8 +471,6 @@ impl Kernel {
         }
     }
 
-
-
     fn match_shl_shr_roundtrip(&self, op_id: OpId) -> Option<OpId> {
         let Op::Binary { x: add_op, y: shift_amount, bop: BOp::BitShiftRight } = self.at(op_id) else {
             return None;
@@ -498,8 +493,6 @@ impl Kernel {
         }
         None
     }
-
-
 
     fn match_bitwise_identity(&self, op_id: OpId) -> Option<OpId> {
         if let Op::Binary { x, y, bop: BOp::BitAnd } = self.at(op_id) {
@@ -614,7 +607,8 @@ impl Kernel {
             // Need: min_b == 0 AND max(a*c) + max_b < divisor
             // When max(a*c + b) < divisor, (a*c + b) % divisor = a*c + b, so if max < divisor -> result = b
             if divisor > c
-                && c != 0 && divisor % c == 0
+                && c != 0
+                && divisor % c == 0
                 && let Some(&(_min_a, max_a)) = bounds.get(&a)
                 && let Some(&(min_b, max_b)) = bounds.get(&b)
             {
@@ -870,10 +864,10 @@ fn dtype_max(dtype: DType) -> u64 {
         DType::U16 => u64::from(u16::MAX),
         DType::U32 => u64::from(u32::MAX),
         DType::U64 => u64::MAX,
-        DType::I8 => i8::MAX  as u64,
-        DType::I16 => i16::MAX  as u64,
-        DType::I32 => i32::MAX  as u64,
-        DType::I64 => i64::MAX  as u64,
+        DType::I8 => i8::MAX as u64,
+        DType::I16 => i16::MAX as u64,
+        DType::I32 => i32::MAX as u64,
+        DType::I64 => i64::MAX as u64,
         _ => u64::MAX,
     }
 }
@@ -948,7 +942,13 @@ fn fold_cmp(bop: BOp, lb: Dim, ub: Dim, c: Dim, const_is_left: bool) -> Option<b
     match bop {
         BOp::Cmpge => {
             if const_is_left {
-                if c >= ub { Some(true) } else if c < lb { Some(false) } else { None }
+                if c >= ub {
+                    Some(true)
+                } else if c < lb {
+                    Some(false)
+                } else {
+                    None
+                }
             } else if lb >= c {
                 Some(true)
             } else if ub < c {
@@ -959,7 +959,13 @@ fn fold_cmp(bop: BOp, lb: Dim, ub: Dim, c: Dim, const_is_left: bool) -> Option<b
         }
         BOp::Cmpgt => {
             if const_is_left {
-                if c > ub { Some(true) } else if c <= lb { Some(false) } else { None }
+                if c > ub {
+                    Some(true)
+                } else if c <= lb {
+                    Some(false)
+                } else {
+                    None
+                }
             } else if lb > c {
                 Some(true)
             } else if ub <= c {
@@ -970,7 +976,13 @@ fn fold_cmp(bop: BOp, lb: Dim, ub: Dim, c: Dim, const_is_left: bool) -> Option<b
         }
         BOp::Cmplt => {
             if const_is_left {
-                if c < lb { Some(true) } else if c >= ub { Some(false) } else { None }
+                if c < lb {
+                    Some(true)
+                } else if c >= ub {
+                    Some(false)
+                } else {
+                    None
+                }
             } else if ub < c {
                 Some(true)
             } else if lb >= c {
@@ -1092,7 +1104,7 @@ mod tests {
                             if let Some(v) = c.as_dim() {
                                 vals.insert(id, v);
                             } else if let crate::dtype::Constant::Bool(v) = c {
-                                vals.insert(id, *v  as i64);
+                                vals.insert(id, *v as i64);
                             }
                         }
                         Op::Binary { x, y, bop } => {
@@ -1103,12 +1115,12 @@ mod tests {
                                     BOp::Mul => a.wrapping_mul(b),
                                     BOp::Div => a.wrapping_div(b),
                                     BOp::Mod => a.wrapping_rem(b),
-                                    BOp::Cmpgt => (a > b)  as i64,
-                                    BOp::Cmplt => (a < b)  as i64,
-                                    BOp::Eq => (a == b)  as i64,
+                                    BOp::Cmpgt => (a > b) as i64,
+                                    BOp::Cmplt => (a < b) as i64,
+                                    BOp::Eq => (a == b) as i64,
                                     BOp::BitShiftLeft => a << b,
                                     BOp::BitShiftRight => a >> b,
-                                    BOp::And => (a != 0 && b != 0)  as i64,
+                                    BOp::And => (a != 0 && b != 0) as i64,
                                     _ => continue,
                                 };
                                 vals.insert(id, v);

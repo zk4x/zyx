@@ -17,7 +17,7 @@ use std::collections::BTreeMap;
 use super::autotune::Optimization;
 use crate::{
     dtype::Constant,
-    kernel::{BOp, RangeKind, Kernel, Op, OpId},
+    kernel::{BOp, Kernel, Op, OpId, RangeKind},
     shape::Dim,
 };
 

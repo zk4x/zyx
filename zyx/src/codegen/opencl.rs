@@ -133,6 +133,33 @@ impl Kernel {
                         _ => _ = writeln!(source, "{indent}r{reg} = ({}){x};", dtype.ocl()),
                     }
                 }
+                Op::Bitcast { x: xop, dtype } => {
+                    let layout = dtypes[&xop].1;
+                    let src_dtype = dtypes[&xop].0;
+                    let x = get_var(xop, &constants, &indices, &reg_map, &mut registers, loop_id)?;
+                    let reg = new_reg(op_id, &mut reg_map, &mut registers, (dtype, layout), rcs[&op_id], loop_id);
+                    // `as_type` has no bool variant. A plain value cast is an exact
+                    // bit reinterpretation whenever Bool is on either side: bool's
+                    // representation is 0/1, its numeric value equals its bit pattern,
+                    // and 8-bit `value != 0` equals `bits != 0`.
+                    fn bit_expr(dtype: DType, src_dtype: DType, lane: String) -> String {
+                        if dtype == DType::Bool {
+                            format!("(bool)({lane} != 0)")
+                        } else if src_dtype == DType::Bool {
+                            format!("({}){lane}", dtype.ocl())
+                        } else {
+                            format!("as_{}({lane})", dtype.ocl())
+                        }
+                    }
+                    match layout {
+                        MemLayout::Vector(len) => {
+                            for &c in VEC_COMPONENTS.iter().take(len as usize) {
+                                _ = writeln!(source, "{indent}r{reg}.{c} = {};", bit_expr(dtype, src_dtype, format!("{x}.{c}")));
+                            }
+                        }
+                        _ => _ = writeln!(source, "{indent}r{reg} = {};", bit_expr(dtype, src_dtype, x)),
+                    }
+                }
                 Op::Unary { x, uop } => {
                     let dtype = dtypes[&x];
                     let x = get_var(x, &constants, &indices, &reg_map, &mut registers, loop_id)?;

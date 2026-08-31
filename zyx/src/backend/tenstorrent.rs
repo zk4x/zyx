@@ -167,7 +167,8 @@ pub(super) fn initialize_device(
     let runtime = Arc::new(Mutex::new(RuntimeProcess::new(&runtime_path.to_string_lossy(), &cache_dir.to_string_lossy())?));
 
     let pool_id = memory_pools.len();
-    let pool = MemoryPool::TT(TTMemoryPool { buffers: Slab::new(), runtime: runtime.clone(), free_bytes: Dim::from(dram_bytes as i64) });
+    let pool =
+        MemoryPool::TT(TTMemoryPool { buffers: Slab::new(), runtime: runtime.clone(), free_bytes: Dim::from(dram_bytes as i64) });
     memory_pools.push(pool);
 
     let _device_id = devices.len();

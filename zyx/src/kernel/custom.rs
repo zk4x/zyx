@@ -541,9 +541,13 @@ impl Kernel {
         self.push_back(Op::Binary { x: term_a, y: term_b, bop: BOp::Add })
     }
 
-    /// Bitcast to a different dtype.
-    pub fn bitcast(&mut self, _x: OpId, _dtype: DType) -> OpId {
-        todo!()
+    /// Bitcast to a different dtype: reinterprets the raw bits of `x` without
+    /// a value conversion. Requires equal bit widths of `x`'s dtype and
+    /// `dtype` (`debug_assert`s it; the user-facing check lives in
+    /// `Tensor::bitcast`).
+    pub fn bitcast(&mut self, x: OpId, dtype: DType) -> OpId {
+        debug_assert_eq!(self.dtype(x).bit_size(), dtype.bit_size(), "bitcast requires equal bit widths");
+        self.push_back(Op::Bitcast { x, dtype })
     }
 
     /// `x * y + z`

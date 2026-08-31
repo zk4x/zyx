@@ -1,53 +1,18 @@
 use std::collections::HashMap;
 
 use clap::Parser;
-fn parse_dtype(s: &str) -> Result<DType, String> {
-    match s.to_lowercase().as_str() {
-        "f32" => Ok(DType::F32),
-        "f16" => Ok(DType::F16),
-        "bf16" => Ok(DType::BF16),
-        _ => Err(format!("unsupported dtype: {s} (use f32, f16, bf16)")),
-    }
-}
 use rand::{distr::Distribution, SeedableRng};
 use serde::Deserialize;
 use tokenizers::Tokenizer;
 use zyx::{DType, Tape, Tensor, ZyxError};
 use zyx_nn::{Linear, RMSNorm};
 
-// Debug helpers matching zyx's ZYX_DEBUG bitmask convention:
-//   1 = dev,  2 = perf,  4 = sched,  8 = ir,  16 = asm
-fn debug_enabled(value: u32) -> bool {
-    std::env::var("ZYX_DEBUG")
-        .ok()
-        .and_then(|x| x.parse::<u32>().ok())
-        .is_some_and(|x| (x & value) == value)
-}
-
-struct PerfTimer {
-    name: String,
-    begin: std::time::Instant,
-}
-
-impl PerfTimer {
-    fn new(name: impl Into<String>) -> Self {
-        Self {
-            name: name.into(),
-            begin: std::time::Instant::now(),
-        }
-    }
-}
-
-impl Drop for PerfTimer {
-    fn drop(&mut self) {
-        if debug_enabled(2) {
-            let elapsed = self.begin.elapsed();
-            eprintln!(
-                "  llama perf: {} — {:>8} μs",
-                self.name,
-                elapsed.as_micros()
-            );
-        }
+fn parse_dtype(s: &str) -> Result<DType, String> {
+    match s.to_lowercase().as_str() {
+        "f32" => Ok(DType::F32),
+        "f16" => Ok(DType::F16),
+        "bf16" => Ok(DType::BF16),
+        _ => Err(format!("unsupported dtype: {s} (use f32, f16, bf16)")),
     }
 }
 
@@ -108,7 +73,12 @@ pub struct LlamaConfig {
     pub max_context: usize,
 }
 
-fn default_max_context() -> usize {
+#[derive(Deserialize)]
+struct ShardedIndex {
+    weight_map: HashMap<String, String>,
+}
+
+const fn default_max_context() -> usize {
     4096
 }
 
@@ -121,11 +91,6 @@ impl LlamaConfig {
         self.head_dim
             .unwrap_or(self.hidden_size / self.num_attention_heads)
     }
-}
-
-#[derive(Deserialize)]
-struct ShardedIndex {
-    weight_map: HashMap<String, String>,
 }
 
 impl Default for LlamaConfig {
@@ -531,7 +496,6 @@ impl Llama {
     }
 
     fn forward(&mut self, input_ids: &Tensor, start_pos: usize) -> Tensor {
-        let _t = PerfTimer::new("forward");
         let [_b_size, seq_len] = input_ids.dims::<2>().unwrap();
         let tape = Tape::empty();
         tape.add(&self.embed_weight).unwrap();
@@ -557,8 +521,7 @@ impl Llama {
         // IR every step (params hash by ordinal, not value) — one compile total.
         let pos = Tensor::variable(start_pos as i64);
         let cache_len = Tensor::variable(start_pos as i64 + seq_len.item::<i64>());
-        for (i, layer) in self.layers.iter_mut().enumerate() {
-            let _l_t = PerfTimer::new(format!("  layer {i:2}"));
+        for layer in self.layers.iter_mut() {
             xs = layer.forward(&xs, &pos, &cache_len);
         }
         xs = self.norm.forward(xs).unwrap();
@@ -742,7 +705,6 @@ impl TextGeneration {
 
     fn run(&mut self, prompt: &str, sample_len: usize) -> Result<(), ZyxError> {
         use std::io::Write;
-        let _t = PerfTimer::new("  tokenize");
         let encoding = self.tokenizer.encode(prompt, true).unwrap();
         if encoding.is_empty() {
             panic!("Empty prompts are not supported.");
@@ -761,16 +723,9 @@ impl TextGeneration {
         println!("prompt:\n{prompt}");
         std::io::stdout().flush().unwrap();
         let start_gen = std::time::Instant::now();
-        drop(_t);
-        if debug_enabled(2) {
-            eprintln!("  llama perf: prompt has {} tokens", tokens.len());
-        }
 
         let mut start_pos = 0usize;
         // prefill: process the entire prompt at once
-        if debug_enabled(4) {
-            eprintln!("  llama sched: prefill context_size={}", tokens.len());
-        }
         let input = Tensor::from(tokens.clone()).unsqueeze(0).unwrap();
         let mut logits = self.model.forward(&input, start_pos);
         logits = logits.squeeze([0]);
@@ -782,11 +737,7 @@ impl TextGeneration {
         let mut last_tok = next_token;
 
         // generate one token at a time
-        for index in 1..sample_len {
-            let _step_t = PerfTimer::new(format!("step {index:4}/{sample_len}"));
-            if debug_enabled(4) {
-                eprintln!("  llama sched: step {index} start_pos={start_pos} context_size=1");
-            }
+        for _ in 1..sample_len {
             let input = Tensor::from(vec![last_tok]).unsqueeze(0).unwrap();
             let mut logits = self.model.forward(&input, start_pos);
             logits = logits.squeeze([0]);
@@ -799,9 +750,7 @@ impl TextGeneration {
                     &tokens[tokens.len().saturating_sub(self.repeat_last_n)..],
                 )
             };
-            let _s_t = PerfTimer::new("  sample");
             let next_token = self.logits_processor.sample(&logits);
-            drop(_s_t);
             let token_str = self.tokenizer.decode(&[next_token], true).unwrap();
             println!("{token_str}={next_token}");
             std::io::stdout().flush().unwrap();

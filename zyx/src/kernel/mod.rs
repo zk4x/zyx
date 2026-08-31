@@ -327,6 +327,10 @@ impl Kernel {
                     dtypes.insert(op_id, (dtype, dtypes[&x].1));
                     *rcs.entry(x).or_insert(0) += 1;
                 }
+                Op::Bitcast { x, dtype } => {
+                    dtypes.insert(op_id, (dtype, dtypes[&x].1));
+                    *rcs.entry(x).or_insert(0) += 1;
+                }
                 Op::Unary { x, .. } => {
                     dtypes.insert(op_id, dtypes[&x]);
                     *rcs.entry(x).or_insert(0) += 1;
@@ -409,6 +413,7 @@ impl Kernel {
                 Op::Param { dtype, .. } => return dtype,
                 Op::Storage { dtype, .. } => return dtype,
                 Op::Cast { dtype, .. } => return dtype,
+                Op::Bitcast { dtype, .. } => return dtype,
                 Op::Range { .. } => return IDX_T,
                 Op::Load { src, .. } => op_id = src,
                 Op::Unary { x, .. } => op_id = x,
@@ -743,6 +748,7 @@ impl Kernel {
                 Op::Mad { .. } => parts.push("mad"),
                 Op::Wmma { .. } => parts.push("wmma"),
                 Op::Cast { .. } => parts.push("cast"),
+                Op::Bitcast { .. } => parts.push("bitcast"),
                 _ => {}
             }
             op_id = self.next_op(op_id);
@@ -813,6 +819,11 @@ impl Kernel {
                 Op::Cast { x, .. } => {
                     let Info { shape, .. } = stack[x].clone();
                     let flops = 0; // Cast is not computation
+                    Info { shape, flops, mem_read: 0, mem_write: 0 }
+                }
+                Op::Bitcast { x, .. } => {
+                    let Info { shape, .. } = stack[x].clone();
+                    let flops = 0; // Bitcast is not computation
                     Info { shape, flops, mem_read: 0, mem_write: 0 }
                 }
                 Op::Unary { x, .. } => {
@@ -1025,6 +1036,7 @@ impl Kernel {
                 Op::Load { src: x, .. }
                 | Op::Store { src: x, .. }
                 | Op::Cast { x, .. }
+                | Op::Bitcast { x, .. }
                 | Op::Unary { x, .. }
                 | Op::Mad { x, .. }
                 | Op::MatmulTile { x, .. }
@@ -1193,6 +1205,7 @@ impl Kernel {
                 Op::Load { src: x, .. }
                 | Op::Store { src: x, .. }
                 | Op::Cast { x, .. }
+                | Op::Bitcast { x, .. }
                 | Op::Unary { x, .. }
                 | Op::Mad { x, .. }
                 | Op::MatmulTile { x, .. }
@@ -1425,6 +1438,7 @@ impl Kernel {
             order.push(id);
             match &self.ops[id].op {
                 Op::Cast { x, .. } => stack.push(*x),
+                Op::Bitcast { x, .. } => stack.push(*x),
                 Op::Unary { x, .. } => stack.push(*x),
                 Op::Binary { x, y, .. } => {
                     stack.push(*x);
@@ -1454,6 +1468,8 @@ impl Kernel {
                 Op::Const(c) => Some(*c),
                 // A cast preserves the integer value of a length.
                 Op::Cast { x, dtype } => values.get(x).copied().flatten().map(|v| v.cast(*dtype)),
+                // A bitcast reinterprets the bits (equal widths asserted upstream).
+                Op::Bitcast { x, dtype } => values.get(x).copied().flatten().map(|v| v.bitcast(*dtype)),
                 Op::Unary { x, uop } => values.get(x).copied().flatten().map(|v| v.unary(*uop)),
                 Op::Binary { x, y, bop } => {
                     values.get(x).copied().flatten().zip(values.get(y).copied().flatten()).map(|(a, b)| {

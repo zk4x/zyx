@@ -202,7 +202,7 @@ impl Rng {
                 if s_val == e_val {
                     return s_val.cast();
                 }
-                let range_size = (e_val - s_val)  as i64;
+                let range_size = (e_val - s_val) as i64;
                 let x = self.next_u64();
                 ((x % range_size as u64) as i64 + s_val).cast()
             }

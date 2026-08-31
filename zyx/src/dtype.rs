@@ -499,6 +499,42 @@ impl Constant {
         }
     }
 
+    /// Bit-reinterpret `self` as `dtype`: raw bits are copied, never
+    /// value-converted (unlike [`Constant::cast`]). Requires equal bit widths
+    /// and `debug_assert`s it.
+    #[must_use]
+    pub(crate) fn bitcast(self, dtype: DType) -> Constant {
+        debug_assert_eq!(self.dtype().bit_size(), dtype.bit_size(), "bitcast requires equal bit widths");
+        let mut bytes = [0u8; 8];
+        match self {
+            Constant::BF16(x) | Constant::F16(x) => bytes[..2].copy_from_slice(&x),
+            Constant::F32(x) => bytes[..4].copy_from_slice(&x),
+            Constant::F64(x) | Constant::U64(x) | Constant::I64(x) => bytes.copy_from_slice(&x),
+            Constant::U8(x) => bytes[0] = x,
+            Constant::I8(x) => bytes[0] = x as u8,
+            Constant::U16(x) => bytes[..2].copy_from_slice(&x.to_le_bytes()),
+            Constant::I16(x) => bytes[..2].copy_from_slice(&x.to_le_bytes()),
+            Constant::U32(x) => bytes[..4].copy_from_slice(&x.to_le_bytes()),
+            Constant::I32(x) => bytes[..4].copy_from_slice(&x.to_le_bytes()),
+            Constant::Bool(x) => bytes[0] = u8::from(x),
+        }
+        match dtype {
+            DType::BF16 => Constant::BF16([bytes[0], bytes[1]]),
+            DType::F16 => Constant::F16([bytes[0], bytes[1]]),
+            DType::F32 => Constant::F32([bytes[0], bytes[1], bytes[2], bytes[3]]),
+            DType::F64 => Constant::F64(bytes),
+            DType::U8 => Constant::U8(bytes[0]),
+            DType::U16 => Constant::U16(u16::from_le_bytes([bytes[0], bytes[1]])),
+            DType::U32 => Constant::U32(u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]])),
+            DType::U64 => Constant::U64(bytes),
+            DType::I8 => Constant::I8(bytes[0] as i8),
+            DType::I16 => Constant::I16(i16::from_le_bytes([bytes[0], bytes[1]])),
+            DType::I32 => Constant::I32(i32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]])),
+            DType::I64 => Constant::I64(bytes),
+            DType::Bool => Constant::Bool(bytes[0] != 0),
+        }
+    }
+
     pub(super) fn cast(self, dtype: DType) -> Constant {
         match self {
             Constant::BF16(x) => bf16::from_le_bytes(x).cast_dtype(dtype),

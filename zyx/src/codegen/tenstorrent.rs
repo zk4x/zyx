@@ -237,6 +237,7 @@ impl Kernel {
                     Op::Cast { x, dtype } => {
                         writeln!(reader, "{indent}{} r{op_id} = ({})r{x};", dtype.c_type(), dtype.c_type());
                     }
+                    Op::Bitcast { .. } => todo!("tenstorrent: bitcast not implemented"),
                     Op::Range { kind: RangeKind::Local(_), .. } => {
                         unreachable!(
                             "tenstorrent does not have local threads; local indices should have been converted to loops by the opt_tenstorrent_tile optimization pass"
@@ -376,6 +377,7 @@ impl Kernel {
                             Op::Cast { x, dtype } => {
                                 writeln!(compute, "{indent}{} r{scan} = r{x};", dtype.c_type());
                             }
+                            Op::Bitcast { .. } => todo!("tenstorrent: bitcast not implemented"),
                             _ => {}
                         }
                     }
@@ -785,6 +787,7 @@ impl Kernel {
                         Op::Cast { x, dtype } => {
                             writeln!(writer, "{indent}{} r{scan} = r{x};", dtype.c_type());
                         }
+                        Op::Bitcast { .. } => todo!("tenstorrent: bitcast not implemented"),
                         _ => {}
                     }
                 }
@@ -833,6 +836,7 @@ impl Kernel {
                 Op::Cast { x, dtype } => {
                     writeln!(writer, "{indent}{} r{op_id} = r{x};", dtype.c_type());
                 }
+                Op::Bitcast { .. } => todo!("tenstorrent: bitcast not implemented"),
                 Op::Binary { x, y, bop } => {
                     let dt = self.dtype(op_id);
                     let _ = match bop {

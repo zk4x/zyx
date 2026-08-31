@@ -909,19 +909,32 @@ impl Tensor {
         return Tensor { id };
     }
 
-    /// Changes dtype of the tensor without mutating it.
-    /// Currently this function will also realize the tensor (if it is not already realized)
+    /// Reinterprets the raw bits of the tensor as `dtype` without a value
+    /// conversion. Requires equal bit widths of the current dtype and `dtype`.
     ///
     /// # Safety
     /// Not all bits of one type can be safely reinterpreted as bits of other type,
     /// therefore this function is marked as unsafe.
     ///
     /// # Errors
-    /// Returns device error if the device failed to allocate memory for tensor.
+    /// Returns [`ZyxError::DTypeError`] if the bit widths differ, or a device
+    /// error if the device failed to allocate memory for the tensor.
     #[allow(clippy::missing_panics_doc)]
-    pub unsafe fn bitcast(&self, dtype: DType) -> Tensor {
+    pub unsafe fn bitcast(&self, dtype: DType) -> Result<Tensor, ZyxError> {
+        if self.dtype().bit_size() != dtype.bit_size() {
+            return Err(ZyxError::dtype_error(
+                format!(
+                    "bitcast requires equal bit widths: {} ({} bits) -> {} ({} bits)",
+                    self.dtype(),
+                    self.dtype().bit_size(),
+                    dtype,
+                    dtype.bit_size()
+                )
+                .into(),
+            ));
+        }
         let id = RT.lock().bitcast(self.id, dtype);
-        Tensor { id }
+        Ok(Tensor { id })
     }
 
     /// Applies dropout to the tensor with a given probability.
@@ -2615,20 +2628,13 @@ impl Tensor {
     ///
     /// Returns error if self cannot be split along axis.
     #[allow(clippy::missing_panics_doc)]
-    pub fn split(
-        &self,
-        sizes: impl IntoIterator<Item = impl Into<Tensor>>,
-        axis: isize,
-    ) -> Result<Vec<Tensor>, ZyxError> {
+    pub fn split(&self, sizes: impl IntoIterator<Item = impl Into<Tensor>>, axis: isize) -> Result<Vec<Tensor>, ZyxError> {
         // assert all_int(self.shape), f"does not support symbolic shape {self.shape}"
         // dim = self._resolve_dim(dim)
         // if isinstance(sizes, int): sizes = [min(sizes, self.shape[dim]-i) for i in range(0, max(1, self.shape[dim]), max(1, sizes))]
         // assert sum(sizes) == self.shape[dim], f"expect sizes to sum exactly to {self.shape[dim]}, but got {sum(sizes)}"
         // return tuple(self[sl] for sl in [tuple([slice(None)]*dim + [slice(sum(sizes[:i]), sum(sizes[:i + 1]))]) for i in range(len(sizes))])
-        let sizes: Vec<Dim> = sizes
-            .into_iter()
-            .map(|s| s.into().item::<i64>())
-            .collect();
+        let sizes: Vec<Dim> = sizes.into_iter().map(|s| s.into().item::<i64>()).collect();
         let shape = self.resolve_shape();
         let rank = shape.len();
         let dim: usize = usize::try_from(if axis < 0 {
@@ -2741,18 +2747,9 @@ impl Tensor {
         dilation: impl IntoIterator<Item = impl Into<Tensor>>,
     ) -> Result<Tensor, ZyxError> {
         // What a complex function ...
-        let k_: Vec<Dim> = kernel_size
-            .into_iter()
-            .map(|s| s.into().item::<i64>())
-            .collect();
-        let stride: Vec<Dim> = stride
-            .into_iter()
-            .map(|s| s.into().item::<i64>())
-            .collect();
-        let dilation: Vec<Dim> = dilation
-            .into_iter()
-            .map(|s| s.into().item::<i64>())
-            .collect();
+        let k_: Vec<Dim> = kernel_size.into_iter().map(|s| s.into().item::<i64>()).collect();
+        let stride: Vec<Dim> = stride.into_iter().map(|s| s.into().item::<i64>()).collect();
+        let dilation: Vec<Dim> = dilation.into_iter().map(|s| s.into().item::<i64>()).collect();
 
         let shape = self.resolve_shape();
         let rank = shape.len();
@@ -2928,22 +2925,13 @@ impl Tensor {
 
         let hw = wsh[2..].to_vec();
 
-        let stride: Vec<Dim> = stride
-            .into_iter()
-            .map(|s| s.into().item::<i64>())
-            .collect();
-        let dilation: Vec<Dim> = dilation
-            .into_iter()
-            .map(|s| s.into().item::<i64>())
-            .collect();
+        let stride: Vec<Dim> = stride.into_iter().map(|s| s.into().item::<i64>()).collect();
+        let dilation: Vec<Dim> = dilation.into_iter().map(|s| s.into().item::<i64>()).collect();
         /*if stride.len() != hw.len() || dilation.len() != hw.len() {
             return Err(ZyxError::shape_error("Stride/dilation length must match kernel spatial dimensions".into()));
         }*/
 
-        let padding_dim: Vec<Dim> = padding
-            .into_iter()
-            .map(|s| s.into().item::<i64>())
-            .collect();
+        let padding_dim: Vec<Dim> = padding.into_iter().map(|s| s.into().item::<i64>()).collect();
         let padding_: Vec<i64> = resolve_pool_pads(&padding_dim, hw.len());
 
         if (groups as Dim * cin != cin_) || (self.resolve_shape().len() != wsh.len()) {
@@ -3030,10 +3018,7 @@ impl Tensor {
         ceil_mode: bool,
         return_indices: bool,
     ) -> Result<Tensor, ZyxError> {
-        let kernel_size: Vec<Dim> = kernel_size
-            .into_iter()
-            .map(|s| s.into().item::<i64>())
-            .collect();
+        let kernel_size: Vec<Dim> = kernel_size.into_iter().map(|s| s.into().item::<i64>()).collect();
         let axis: Vec<Axis> = (-(kernel_size.len() as Axis)..0).collect();
 
         let padding: Vec<(i64, i64)> = padding.into_iter().collect();
@@ -3084,14 +3069,8 @@ impl Tensor {
     ///
     /// Returns error if the input tensor has zero dimensions.
     #[allow(clippy::missing_panics_doc)]
-    pub fn repeat(
-        &self,
-        repeats: impl IntoIterator<Item = impl Into<Tensor>>,
-    ) -> Result<Tensor, ZyxError> {
-        let repeats: Vec<Dim> = repeats
-            .into_iter()
-            .map(|s| s.into().item::<i64>())
-            .collect();
+    pub fn repeat(&self, repeats: impl IntoIterator<Item = impl Into<Tensor>>) -> Result<Tensor, ZyxError> {
+        let repeats: Vec<Dim> = repeats.into_iter().map(|s| s.into().item::<i64>()).collect();
         let shape = self.resolve_shape();
         let rank = shape.len();
         if repeats.len() < rank {

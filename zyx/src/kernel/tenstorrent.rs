@@ -6,7 +6,7 @@
 use crate::{
     Map, Set,
     dtype::Constant,
-    kernel::{BOp, IDX_T, RangeKind, Kernel, MemLayout, MemScope, Op, OpId},
+    kernel::{BOp, IDX_T, Kernel, MemLayout, MemScope, Op, OpId, RangeKind},
     shape::Dim,
     slab::SlabId,
 };

@@ -1383,6 +1383,47 @@ impl Kernel {
                         }
                         spv_values.insert(op_id, rid);
                     }
+                    Op::Bitcast { x, dtype } => {
+                        let src_type = dtypes[&x].0;
+                        let src_id = spv_values[&x];
+                        let dst_type = dtype;
+                        let (_, layout) = dtypes[&op_id];
+                        let result_type =
+                            layout_type_id(&mut asm, &mut type_cache, &mut vec_type_cache, &mut type_entries, dst_type, layout);
+
+                        let rid = asm.id();
+                        // OpBitcast requires numeric (non-bool) types. Bool's
+                        // representation is 0/1, so a value-based translation is an
+                        // exact bit reinterpretation: true -> 1, bits != 0 -> true.
+                        if dst_type == DType::Bool {
+                            let src_scalar = emit_type(&mut asm, &mut type_cache, src_type);
+                            let zero_cid = asm.id();
+                            let zero_words = match src_type.bit_size() {
+                                64 => vec![0u32, 0u32],
+                                _ => vec![0u32],
+                            };
+                            const_entries.push((src_scalar, zero_cid, zero_words));
+                            asm.emit_typed(OpINotEqual, result_type, rid, &[src_id, zero_cid]);
+                        } else if src_type == DType::Bool {
+                            let dst_scalar = emit_type(&mut asm, &mut type_cache, dst_type);
+                            let one_cid = asm.id();
+                            let zero_cid = asm.id();
+                            let one_words = match dst_type.bit_size() {
+                                64 => vec![1u32, 0u32],
+                                _ => vec![1u32],
+                            };
+                            let zero_words = match dst_type.bit_size() {
+                                64 => vec![0u32, 0u32],
+                                _ => vec![0u32],
+                            };
+                            const_entries.push((dst_scalar, one_cid, one_words));
+                            const_entries.push((dst_scalar, zero_cid, zero_words));
+                            asm.emit_typed(OpSelect, result_type, rid, &[src_id, one_cid, zero_cid]);
+                        } else {
+                            asm.emit_typed(OpBitcast, result_type, rid, &[src_id]);
+                        }
+                        spv_values.insert(op_id, rid);
+                    }
                     Op::Unary { x, uop } => {
                         let src_id = spv_values[&x];
                         let (dt, layout) = dtypes[&x];

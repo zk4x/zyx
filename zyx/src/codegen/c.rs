@@ -273,6 +273,25 @@ impl Kernel {
                         _ => _ = writeln!(source, "{indent}r{reg} = ({}){x};", dtype.c_type()),
                     }
                 }
+                Op::Bitcast { x, dtype } => {
+                    let vlen = dtypes[&x].1;
+                    let x = get_var(x, &constants, &indices, &reg_map, &mut registers, loop_id)?;
+                    let reg = new_reg(op_id, &mut reg_map, &mut registers, (dtype, vlen), rcs[&op_id], loop_id);
+                    let byte_size = dtype.bit_size() as usize / 8;
+                    match vlen {
+                        MemLayout::Vector(n) => {
+                            for i in 0..n {
+                                _ = writeln!(
+                                    source,
+                                    "memcpy(&{}, &{}, {byte_size});",
+                                    lane_access(&format!("r{reg}"), i as usize),
+                                    lane_access(&x, i as usize)
+                                );
+                            }
+                        }
+                        _ => _ = writeln!(source, "memcpy(&r{reg}, &{x}, {byte_size});"),
+                    }
+                }
                 Op::Unary { x, uop } => {
                     let dtype = dtypes[&x];
                     let x = get_var(x, &constants, &indices, &reg_map, &mut registers, loop_id)?;

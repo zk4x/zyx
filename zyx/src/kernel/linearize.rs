@@ -814,7 +814,7 @@ impl Kernel {
                     self.remap(op_id, x);
                     self.remove_op(op_id);
                 }
-                Op::Cast { x, .. } | Op::Unary { x, .. } => {
+                Op::Cast { x, .. } | Op::Bitcast { x, .. } | Op::Unary { x, .. } => {
                     if let Some(view) = views.get(&op_id).cloned() {
                         views.insert(x, view);
                     }
@@ -884,6 +884,7 @@ impl Kernel {
                 | Op::Binary { .. }
                 | Op::Unary { .. }
                 | Op::Cast { .. }
+                | Op::Bitcast { .. }
                 | Op::Mad { .. }
                 | Op::Load { .. }
                 | Op::Range { .. }

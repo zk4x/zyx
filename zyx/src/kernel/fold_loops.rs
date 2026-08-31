@@ -29,7 +29,7 @@
 use crate::{
     Set,
     dtype::{Constant, DType},
-    kernel::{BOp, IDX_T, RangeKind, Kernel, MemLayout, MemScope, Op, OpId},
+    kernel::{BOp, IDX_T, Kernel, MemLayout, MemScope, Op, OpId, RangeKind},
     shape::Dim,
 };
 

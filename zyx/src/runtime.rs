@@ -2262,6 +2262,7 @@ impl Runtime {
     pub fn bitcast(&mut self, x: TensorId, dtype: DType) -> TensorId {
         #[cfg(feature = "debug_tensor_op")]
         println!("runtime::bitcast(x={x}, dtype={dtype:?})");
+        debug_assert_eq!(self.dtype(x).bit_size(), dtype.bit_size(), "bitcast requires equal bit widths");
 
         match self.tensors[x] {
             TensorData::Constant { .. }
@@ -2304,7 +2305,7 @@ impl Runtime {
             TensorData::Graph { class_id, graph_id, shape_id, .. }
             | TensorData::Promoted { class_id, graph_id, shape_id, .. } => {
                 self.assert_graph_alive(graph_id);
-                let (_, class_id) = self.push_node(graph_id, Node::Cast { x: class_id, dtype });
+                let (_, class_id) = self.push_node(graph_id, Node::Bitcast { x: class_id, dtype });
                 self.graphs[graph_id].ref_count += 1;
                 // Shape-preserving op: share the input's shape expression, like eager.
                 debug_assert!(!shape_id.is_null(), "bitcast: input graph tensor {x} has no shape expression");

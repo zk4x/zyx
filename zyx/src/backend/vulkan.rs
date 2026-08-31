@@ -16,7 +16,7 @@ use std::sync::{
 use libloading::Library;
 use nanoserde::DeJson;
 
-use crate::kernel::{RangeKind, Op};
+use crate::kernel::{Op, RangeKind};
 use crate::{
     DType,
     error::{BackendError, ErrorStatus},

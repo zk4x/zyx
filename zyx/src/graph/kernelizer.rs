@@ -143,7 +143,7 @@ impl Graph {
                     Node::Narrow { x, start, len, .. } => vec![*x, *start, *len],
                     Node::Permute { x, .. } | Node::Flip { x, .. } => vec![*x],
                     Node::Stack { ops } => ops.to_vec(),
-                    Node::Reduce { x, .. } | Node::Cast { x, .. } | Node::Unary { x, .. } => vec![*x],
+                    Node::Reduce { x, .. } | Node::Cast { x, .. } | Node::Bitcast { x, .. } | Node::Unary { x, .. } => vec![*x],
                     Node::Binary { x, y, .. } => vec![*x, *y],
                     Node::Assign { dst, src } => vec![*dst, *src],
                     Node::After { x, dep } => vec![*x, *dep],
@@ -295,6 +295,19 @@ impl Graph {
                             let (kid, op_id) = visited[&x];
                             self.consume(x, kid, &mut visited, &mut rcs);
                             let result_op = self.jit_kernels[kid].kernel.cast(op_id, dtype);
+                            self.push_outputs(kid, cid, rcs[&cid]);
+                            visited.insert(cid, (kid, result_op));
+                        }
+                    }
+                    Node::Bitcast { x, dtype } => {
+                        if !visited.contains_key(&x) {
+                            // Scalar operand: the result is scalar and is
+                            // replayed on demand; only the edge is consumed.
+                            *rcs.get_mut(&x).unwrap() -= 1;
+                        } else {
+                            let (kid, op_id) = visited[&x];
+                            self.consume(x, kid, &mut visited, &mut rcs);
+                            let result_op = self.jit_kernels[kid].kernel.bitcast(op_id, dtype);
                             self.push_outputs(kid, cid, rcs[&cid]);
                             visited.insert(cid, (kid, result_op));
                         }

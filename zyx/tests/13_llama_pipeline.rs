@@ -18,10 +18,7 @@ fn to_f32(t: &Tensor) -> Result<Vec<f32>, ZyxError> {
 fn assert_close(got: &[f32], expected: &[f32], tol: f32, what: &str) {
     assert_eq!(got.len(), expected.len(), "{what}: length mismatch");
     for (i, (g, e)) in got.iter().zip(expected.iter()).enumerate() {
-        assert!(
-            (g - e).abs() <= tol + 0.01 * e.abs(),
-            "{what}[{i}]: got {g}, expected {e} (tol {tol})"
-        );
+        assert!((g - e).abs() <= tol + 0.01 * e.abs(), "{what}[{i}]: got {g}, expected {e} (tol {tol})");
     }
 }
 
@@ -170,10 +167,7 @@ fn llama_forward_mini_reference() -> Result<(), ZyxError> {
             .transpose(1, 2)?;
         k.rope(c.clone(), s.clone())?
     };
-    let v = h
-        .matmul(&wvt)?
-        .reshape([1i64.into(), s_len.clone(), (HEADS as i64).into(), (HD as i64).into()])?
-        .transpose(1, 2)?;
+    let v = h.matmul(&wvt)?.reshape([1i64.into(), s_len.clone(), (HEADS as i64).into(), (HD as i64).into()])?.transpose(1, 2)?;
 
     // Causal mask, host-built with real -inf data (llama's get_mask).
     let mut mask = vec![0.0f32; SEQ * SEQ];
@@ -194,9 +188,7 @@ fn llama_forward_mini_reference() -> Result<(), ZyxError> {
 
     // ---- Exact f32 reference ----
     let matmul = |a: &[f32], b: &[f32], m: usize, kk: usize, n: usize| -> Vec<f32> {
-        (0..m)
-            .flat_map(|i| (0..n).map(move |j| (0..kk).map(|p| a[i * kk + p] * b[p * n + j]).sum::<f32>()))
-            .collect()
+        (0..m).flat_map(|i| (0..n).map(move |j| (0..kk).map(|p| a[i * kk + p] * b[p * n + j]).sum::<f32>())).collect()
     };
     let rms_ref = |v: &mut [f32]| {
         for row in v.chunks_mut(D) {
@@ -235,10 +227,7 @@ fn llama_forward_mini_reference() -> Result<(), ZyxError> {
             let mut scores = [0.0f32; SEQ];
             for j in 0..SEQ {
                 if j <= i {
-                    scores[j] = (0..HD)
-                        .map(|p| q[i * D + head * HD + p] * k[j * D + head * HD + p])
-                        .sum::<f32>()
-                        * scale;
+                    scores[j] = (0..HD).map(|p| q[i * D + head * HD + p] * k[j * D + head * HD + p]).sum::<f32>() * scale;
                 } else {
                     scores[j] = f32::NEG_INFINITY;
                 }

@@ -41,7 +41,7 @@ use crate::dtype::{Constant, DType};
 use crate::error::{BackendError, ErrorStatus};
 use crate::hashers::AHasher;
 use crate::kernel::cost::Cost;
-use crate::kernel::{RangeKind, Kernel, Op, OpId, ParamKind};
+use crate::kernel::{Kernel, Op, OpId, ParamKind, RangeKind};
 use crate::rng::Rng;
 use crate::scalar::{bf16, f16};
 use crate::shape::Dim;

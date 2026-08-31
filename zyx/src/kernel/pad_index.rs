@@ -16,7 +16,7 @@
 use crate::{
     Set,
     dtype::Constant,
-    kernel::{BOp, IDX_T, RangeKind, Kernel, MemLayout, Op, OpId},
+    kernel::{BOp, IDX_T, Kernel, MemLayout, Op, OpId, RangeKind},
     shape::Dim,
 };
 

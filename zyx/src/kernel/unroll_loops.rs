@@ -20,7 +20,7 @@ use crate::kernel::MemLayout;
 use crate::{
     Map, Set,
     dtype::Constant,
-    kernel::{BOp, RangeKind, Kernel, MemScope, Op, OpId},
+    kernel::{BOp, Kernel, MemScope, Op, OpId, RangeKind},
     shape::Dim,
 };
 

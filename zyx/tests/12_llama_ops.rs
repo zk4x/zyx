@@ -18,10 +18,7 @@ fn to_f32(t: &Tensor) -> Result<Vec<f32>, ZyxError> {
 fn assert_close(got: &[f32], expected: &[f32], tol: f32, what: &str) {
     assert_eq!(got.len(), expected.len(), "{what}: length mismatch");
     for (i, (g, e)) in got.iter().zip(expected.iter()).enumerate() {
-        assert!(
-            (g - e).abs() <= tol + 0.01 * e.abs(),
-            "{what}[{i}]: got {g}, expected {e} (tol {tol})"
-        );
+        assert!((g - e).abs() <= tol + 0.01 * e.abs(), "{what}[{i}]: got {g}, expected {e} (tol {tol})");
     }
 }
 
@@ -52,10 +49,7 @@ fn llama_embedding_one_hot() -> Result<(), ZyxError> {
     tape.realize([&out])?;
 
     let got = to_f32(&out)?;
-    let expected: Vec<f32> = [0usize, 3, 7, 1]
-        .iter()
-        .flat_map(|&r| vec![r as f32 + 1.0; 8])
-        .collect();
+    let expected: Vec<f32> = [0usize, 3, 7, 1].iter().flat_map(|&r| vec![r as f32 + 1.0; 8]).collect();
     assert_close(&got, &expected, 1e-6, "embedding gather");
     Ok(())
 }
@@ -66,9 +60,7 @@ fn llama_embedding_one_hot() -> Result<(), ZyxError> {
 
 #[test]
 fn llama_rms_norm() -> Result<(), ZyxError> {
-    let x = Tensor::from(vec![1.0f32, 2.0, 3.0, 4.0, -1.0, 0.5, 2.0, 1.0])
-        .reshape([2, 4])?
-        .cast(DType::BF16);
+    let x = Tensor::from(vec![1.0f32, 2.0, 3.0, 4.0, -1.0, 0.5, 2.0, 1.0]).reshape([2, 4])?.cast(DType::BF16);
     let scale = Tensor::from(vec![1.0f32; 4]).cast(DType::BF16);
     let eps = Tensor::from(1e-6f32).cast(DType::BF16);
 
@@ -104,15 +96,15 @@ fn llama_rope() -> Result<(), ZyxError> {
     // llama's precompute_rope_freqs: t [max_pos, 1] @ inv_freq [1, hd/2].
     let inv_freq: Vec<f32> = (0..2).map(|i| 1.0 / 10_000f32.powf(2.0 * i as f32 / 4.0)).collect();
     let inv_freq = Tensor::from(inv_freq).reshape([1, 2])?;
-    let t = Tensor::arange(0u32, 4u32, 1)?
-        .cast(DType::F32)
-        .reshape([4, 1])?;
+    let t = Tensor::arange(0u32, 4u32, 1)?.cast(DType::F32).reshape([4, 1])?;
     let freqs = t.matmul(&inv_freq)?;
     let cos = freqs.cos().cast(DType::BF16);
     let sin = freqs.sin().cast(DType::BF16);
-    let x = Tensor::from(vec![1.0f32, 0.0, 2.0, 0.0, 0.0, 1.0, 0.0, 3.0, 1.0, 1.0, 1.0, 1.0, 2.0, -1.0, 0.5, 3.0])
-        .reshape([seq, head_dim])?
-        .cast(DType::BF16);
+    let x = Tensor::from(vec![
+        1.0f32, 0.0, 2.0, 0.0, 0.0, 1.0, 0.0, 3.0, 1.0, 1.0, 1.0, 1.0, 2.0, -1.0, 0.5, 3.0,
+    ])
+    .reshape([seq, head_dim])?
+    .cast(DType::BF16);
 
     let tape = Tape::empty();
     tape.add(&x)?;
@@ -148,10 +140,7 @@ fn llama_rope() -> Result<(), ZyxError> {
             let i = r * 4 + p;
             let before = orig[i] * orig[i] + orig[i + 2] * orig[i + 2];
             let after = got[i] * got[i] + got[i + 2] * got[i + 2];
-            assert!(
-                (before - after).abs() <= 0.05 + 0.05 * before,
-                "rope magnitude [{r}][{p}]: before {before}, after {after}"
-            );
+            assert!((before - after).abs() <= 0.05 + 0.05 * before, "rope magnitude [{r}][{p}]: before {before}, after {after}");
         }
     }
     Ok(())
@@ -167,18 +156,20 @@ fn llama_attention_softmax() -> Result<(), ZyxError> {
     let d = 4i64;
     let scale = (1.0f32 / (d as f32).sqrt()) as f32;
     // Fixed, bf16-exact q/k/v so the reference is computable host-side.
-    let q = Tensor::from(vec![1.0f32, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0])
-        .reshape([1, 1, seq, d])?
-        .cast(DType::BF16);
+    let q = Tensor::from(vec![
+        1.0f32, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0,
+    ])
+    .reshape([1, 1, seq, d])?
+    .cast(DType::BF16);
     let k = q.clone();
-    let v = Tensor::from(vec![1.0f32, 2.0, 4.0, 8.0, 1.0, 2.0, 4.0, 8.0, 1.0, 2.0, 4.0, 8.0, 1.0, 2.0, 4.0, 8.0])
-        .reshape([1, 1, seq, d])?
-        .cast(DType::BF16);
+    let v = Tensor::from(vec![
+        1.0f32, 2.0, 4.0, 8.0, 1.0, 2.0, 4.0, 8.0, 1.0, 2.0, 4.0, 8.0, 1.0, 2.0, 4.0, 8.0,
+    ])
+    .reshape([1, 1, seq, d])?
+    .cast(DType::BF16);
 
     // Host-built causal mask, same as llama's get_mask.
-    let mask: Vec<f32> = (0..seq)
-        .flat_map(|i| (0..seq).map(move |j| if j > i { f32::NEG_INFINITY } else { 0.0 }))
-        .collect();
+    let mask: Vec<f32> = (0..seq).flat_map(|i| (0..seq).map(move |j| if j > i { f32::NEG_INFINITY } else { 0.0 })).collect();
     let mask = Tensor::from(mask).reshape([seq, seq])?.cast(DType::BF16);
 
     let tape = Tape::empty();
@@ -390,9 +381,8 @@ fn llama_causal_mask_compare() -> Result<(), ZyxError> {
     // `where_` doc: its branchless decomposition NaNs on 0 * -inf).
     // TODO: possibly for some models in the future a ternary where op will be
     // needed for on-graph masks with -inf.
-    let mask: Vec<f32> = (0..seq as usize)
-        .flat_map(|i| (0..seq as usize).map(move |j| if j > i { f32::NEG_INFINITY } else { 0.0 }))
-        .collect();
+    let mask: Vec<f32> =
+        (0..seq as usize).flat_map(|i| (0..seq as usize).map(move |j| if j > i { f32::NEG_INFINITY } else { 0.0 })).collect();
     let masked = Tensor::from(mask).reshape([seq, seq])?.cast(DType::BF16);
 
     let x = Tensor::from(vec![1.0f32; 16]).reshape([seq, seq])?.cast(DType::BF16);

@@ -276,6 +276,7 @@ impl Kernel {
         enum OpType {
             Unary(UOp),
             Cast(DType),
+            Bitcast(DType),
             Binary(BOp, u8), // (op, devec_operand_index)
         }
 
@@ -303,6 +304,13 @@ impl Kernel {
                             _ => None,
                         }
                     }
+                    Op::Bitcast { dtype, x } => {
+                        let (dtype, x) = (*dtype, *x);
+                        match &self.ops[x].op {
+                            Op::Index { vec, idx } => Some((*vec, OpType::Bitcast(dtype), op_id, *idx)),
+                            _ => None,
+                        }
+                    }
                     Op::Binary { bop, x, y } => {
                         let (bop, x, y) = (*bop, *x, *y);
                         if let Op::Index { vec, idx } = &self.ops[x].op {
@@ -326,6 +334,7 @@ impl Kernel {
                         && match (t, &op_type) {
                             (OpType::Unary(a), OpType::Unary(b)) => a == b,
                             (OpType::Cast(a), OpType::Cast(b)) => a == b,
+                            (OpType::Bitcast(a), OpType::Bitcast(b)) => a == b,
                             (OpType::Binary(a, ap), OpType::Binary(b, bp)) => a == b && ap == bp,
                             _ => false,
                         }
@@ -398,6 +407,17 @@ impl Kernel {
                             .collect();
                         let vd = self.insert_before(first, Op::Stack { ops });
                         self.insert_before(first, Op::Cast { x: vd, dtype: *dtype })
+                    }
+                    OpType::Bitcast(dtype) => {
+                        let ops: Box<[OpId]> = selected
+                            .iter()
+                            .map(|&(c, _)| match &self.ops[c].op {
+                                Op::Bitcast { x, .. } => *x,
+                                _ => unreachable!(),
+                            })
+                            .collect();
+                        let vd = self.insert_before(first, Op::Stack { ops });
+                        self.insert_before(first, Op::Bitcast { x: vd, dtype: *dtype })
                     }
                     OpType::Binary(bop, devec_pos) => {
                         let n = selected.len();
@@ -497,6 +517,25 @@ impl Kernel {
                         let last = self.last_in_kernel_order(&sources);
                         let v_src = self.insert_after(last, Op::Stack { ops: sources.into_boxed_slice() });
                         let v_op = self.insert_after(v_src, Op::Cast { x: v_src, dtype });
+                        self.remap(op_id, v_op);
+                    }
+                }
+                Op::Bitcast { dtype, .. } => {
+                    let dtype = *dtype;
+                    let mut sources = Vec::with_capacity(n);
+                    for &sub in ops.iter() {
+                        match &self.ops[sub].op {
+                            Op::Bitcast { x, dtype: d } if *d == dtype => sources.push(*x),
+                            _ => {
+                                sources.clear();
+                                break;
+                            }
+                        }
+                    }
+                    if !sources.is_empty() && !sources.iter().any(|s| ops.contains(s)) {
+                        let last = self.last_in_kernel_order(&sources);
+                        let v_src = self.insert_after(last, Op::Stack { ops: sources.into_boxed_slice() });
+                        let v_op = self.insert_after(v_src, Op::Bitcast { x: v_src, dtype });
                         self.remap(op_id, v_op);
                     }
                 }

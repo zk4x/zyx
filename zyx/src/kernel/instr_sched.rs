@@ -150,6 +150,7 @@ impl Kernel {
             }
             match self.at(id) {
                 Op::Cast { x, .. }
+                | Op::Bitcast { x, .. }
                 | Op::Unary { x, .. }
                 | Op::Move { x, .. }
                 | Op::Reduce { x, .. }

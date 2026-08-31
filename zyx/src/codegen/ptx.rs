@@ -8,7 +8,7 @@ use crate::{
     backend::DeviceInfo,
     dtype::Constant,
     error::{BackendError, ErrorStatus},
-    kernel::{BOp, IDX_T, RangeKind, Kernel, MemScope, Op, OpId, ParamKind, UOp},
+    kernel::{BOp, IDX_T, Kernel, MemScope, Op, OpId, ParamKind, RangeKind, UOp},
     scalar::bf16,
     shape::Dim,
 };
@@ -557,6 +557,12 @@ impl Kernel {
                             _ = writeln!(comp.body, "{}cvt.{}.{} %r{reg}, %r{x};", comp.indent, dtype.ptx(), xdtype.ptx());
                         }
                     }
+                }
+                Op::Bitcast { x, dtype } => {
+                    // Equal bit widths (asserted upstream): a raw bit move.
+                    let x = comp.get_var(x);
+                    let reg = comp.new_var(op_id, dtype, rcs[&op_id]);
+                    _ = writeln!(comp.body, "{}mov.b{} %r{reg}, %r{x};", comp.indent, dtype.bit_size());
                 }
                 Op::Unary { x, uop } => {
                     let dtype = dtypes[&x].0;

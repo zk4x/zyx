@@ -190,6 +190,12 @@ pub(crate) enum Node {
         x: ClassId,
         dtype: DType,
     },
+    /// Bitcast: reinterprets the raw bits of `x` as `dtype` (no value
+    /// conversion). Requires equal bit widths.
+    Bitcast {
+        x: ClassId,
+        dtype: DType,
+    },
     Unary {
         x: ClassId,
         uop: UOp,
@@ -239,6 +245,7 @@ impl PartialEq for Node {
                 a == b && ar == br && aa == ba
             }
             (Self::Cast { x: a, dtype: ad }, Self::Cast { x: b, dtype: bd }) => a == b && ad == bd,
+            (Self::Bitcast { x: a, dtype: ad }, Self::Bitcast { x: b, dtype: bd }) => a == b && ad == bd,
             (Self::Unary { x: a, uop: au }, Self::Unary { x: b, uop: bu }) => a == b && au == bu,
             (Self::Binary { x: a, y: ay, bop: ab }, Self::Binary { x: b, y: by, bop: bb }) => a == b && ay == by && ab == bb,
             (Self::Assign { dst: a, src: as_ }, Self::Assign { dst: b, src: bs }) => a == b && as_ == bs,
@@ -314,6 +321,11 @@ impl std::hash::Hash for Node {
             }
             Self::Cast { x, dtype } => {
                 7u8.hash(state);
+                x.hash(state);
+                dtype.hash(state);
+            }
+            Self::Bitcast { x, dtype } => {
+                17u8.hash(state);
                 x.hash(state);
                 dtype.hash(state);
             }
@@ -465,6 +477,7 @@ impl Node {
             Self::Stack { ops } => ops.to_vec(),
             Self::Reduce { x, .. } => vec![*x],
             Self::Cast { x, .. } => vec![*x],
+            Self::Bitcast { x, .. } => vec![*x],
             Self::Unary { x, .. } => vec![*x],
             Self::Binary { x, y, .. } => vec![*x, *y],
             Self::Assign { dst, src } => vec![*dst, *src],
@@ -853,6 +866,7 @@ impl Graph {
                     Node::After { .. } => "After".into(),
                     Node::Unary { uop, .. } => format!("Unary {:?}", uop),
                     Node::Cast { dtype, .. } => format!("Cast {:?}", dtype),
+                    Node::Bitcast { dtype, .. } => format!("Bitcast {:?}", dtype),
                     Node::Kernel { program_id, time, .. } => format!("Kernel prog={:?} time={}", program_id, time),
                     Node::Expand { .. } => "Expand".into(),
                     Node::Permute { axes, .. } => format!("Permute {:?}", axes),
@@ -1336,6 +1350,7 @@ impl Graph {
             }
             Node::Flip { x, .. }
             | Node::Cast { x, .. }
+            | Node::Bitcast { x, .. }
             | Node::Unary { x, .. }
             | Node::After { x, .. }
             | Node::ToDevice { x, .. }
@@ -1501,6 +1516,7 @@ impl Graph {
             Node::Const { value: c, .. } => c.dtype(),
             Node::Leaf { dtype, .. } => *dtype,
             Node::Cast { dtype, .. } => *dtype,
+            Node::Bitcast { dtype, .. } => *dtype,
             Node::Assign { dst, .. } => self.dtype(*dst),
             Node::Kernel { outputs, .. } => self.dtype(outputs[0]),
             Node::Stack { ops } => self.dtype(ops[0]),
@@ -1538,6 +1554,7 @@ impl Graph {
             }
             match &self.nodes[node_id].node {
                 Node::Cast { x, .. } => stack.push(*x),
+                Node::Bitcast { x, .. } => stack.push(*x),
                 Node::Unary { x, .. } => stack.push(*x),
                 Node::Binary { x, y, .. } => {
                     stack.push(*y);
@@ -1574,6 +1591,7 @@ impl Graph {
             let value = match &self.nodes[node_id].node {
                 Node::Const { value, .. } => *value,
                 Node::Cast { x, dtype } => values[&self.classes[*x].nodes[0]].cast(*dtype),
+                Node::Bitcast { x, dtype } => values[&self.classes[*x].nodes[0]].bitcast(*dtype),
                 Node::Unary { x, uop } => values[&self.classes[*x].nodes[0]].unary(*uop),
                 Node::Binary { x, y, bop } => {
                     Constant::binary(values[&self.classes[*x].nodes[0]], values[&self.classes[*y].nodes[0]], *bop)
@@ -1787,6 +1805,7 @@ impl Runtime {
                         stack.push(*y);
                     }
                     Op::Cast { x, .. } => stack.push(*x),
+                    Op::Bitcast { x, .. } => stack.push(*x),
                     Op::Reduce { x, .. } => stack.push(*x),
                     Op::Move { x, mop } => {
                         stack.push(*x);
@@ -1924,6 +1943,9 @@ impl Runtime {
                                     Op::Binary { .. } | Op::Unary { .. } | Op::Cast { .. } | Op::Stack { .. } => {
                                         op_to_class[&entry]
                                     }
+                                    Op::Bitcast { .. } => {
+                                        unreachable!("promote_to_graph: bitcast in param shape stack")
+                                    }
                                     Op::Param { kind: ParamKind::Global, .. } | Op::Param { kind: ParamKind::GlobalMut, .. } => {
                                         unreachable!("promote_to_graph: buffer param as dim in param shape stack")
                                     }
@@ -2026,6 +2048,11 @@ impl Runtime {
                     Op::Cast { x, dtype } => {
                         let x_class = op_to_class[&x];
                         let (_, class_id) = self.push_node(graph_id, Node::Cast { x: x_class, dtype });
+                        class_id
+                    }
+                    Op::Bitcast { x, dtype } => {
+                        let x_class = op_to_class[&x];
+                        let (_, class_id) = self.push_node(graph_id, Node::Bitcast { x: x_class, dtype });
                         class_id
                     }
                     Op::Stack { ref ops } => {

@@ -189,6 +189,10 @@ impl Kernel {
                     check(op_id, x, &stack);
                     dtypes.insert(op_id, dtype);
                 }
+                Op::Bitcast { x, dtype } => {
+                    check(op_id, x, &stack);
+                    dtypes.insert(op_id, dtype);
+                }
                 Op::Reduce { x, .. } => {
                     check(op_id, x, &stack);
                     dtypes.insert(op_id, dtypes[&x]);

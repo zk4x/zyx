@@ -60,9 +60,12 @@ impl Kernel {
                     // vectorize[devec(v,0), devec(v,1), ..., devec(v,n-1)] → v
                     if let Op::Index { vec, idx: 0 } = self.at(ops[0]) {
                         let vec = *vec;
-                        if ops.iter().skip(1).enumerate().all(
-                            |(i, &sub)| matches!(self.at(sub), Op::Index { vec: v, idx } if *v == vec && *idx == i + 1),
-                        ) {
+                        if ops
+                            .iter()
+                            .skip(1)
+                            .enumerate()
+                            .all(|(i, &sub)| matches!(self.at(sub), Op::Index { vec: v, idx } if *v == vec && *idx == i + 1))
+                        {
                             self.remap(op_id, vec);
                         }
                     }
@@ -96,6 +99,11 @@ impl Kernel {
                         {
                             self.ops[op_id].op = Op::Cast { x: inner_add_x, dtype };
                         }
+                    }
+                }
+                Op::Bitcast { x, dtype } => {
+                    if let Op::Const(cx) = self.at(x) {
+                        self.ops[op_id].op = Op::Const(cx.bitcast(dtype));
                     }
                 }
                 Op::Unary { x, uop } => {

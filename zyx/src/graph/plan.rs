@@ -39,9 +39,10 @@ impl PlanDim {
                     .as_dim()
                     .unwrap_or_else(|| panic!("dim binary op {bop:?} did not produce a dim"))
             }
-            PlanDim::Cast { x, dtype } => {
-                Constant::idx(x.eval(class_vars)).cast(*dtype).as_dim().unwrap_or_else(|| panic!("dim cast to {dtype:?} did not produce a dim"))
-            }
+            PlanDim::Cast { x, dtype } => Constant::idx(x.eval(class_vars))
+                .cast(*dtype)
+                .as_dim()
+                .unwrap_or_else(|| panic!("dim cast to {dtype:?} did not produce a dim")),
         }
     }
 }
@@ -126,11 +127,9 @@ impl ExecPlan {
                         PlanDim::Const(c.as_dim().unwrap_or_else(|| panic!("dim class {dim:?} is not a constant")))
                     }
                     Node::Leaf { .. } => PlanDim::Leaf(dim),
-                    Node::Binary { x, y, bop } => PlanDim::Binary {
-                        x: Box::new(dim_expr(graph, *x)),
-                        y: Box::new(dim_expr(graph, *y)),
-                        bop: *bop,
-                    },
+                    Node::Binary { x, y, bop } => {
+                        PlanDim::Binary { x: Box::new(dim_expr(graph, *x)), y: Box::new(dim_expr(graph, *y)), bop: *bop }
+                    }
                     Node::Cast { x, dtype } => PlanDim::Cast { x: Box::new(dim_expr(graph, *x)), dtype: *dtype },
                     op => unreachable!("alloc dim class {dim:?} must be a dim over Const/leaf leaves, got {op:?}"),
                 }
@@ -181,12 +180,7 @@ impl ExecPlan {
             match store_pool.get(&class) {
                 Some(pool) if leaf_pools[&to] != *pool => {
                     let owner = *leaf_copy.entry(to).or_insert_with(|| {
-                        plan_nodes.push(ExecNode::Allocate {
-                            class,
-                            pool: *pool,
-                            dtype_size,
-                            dims: dims.clone(),
-                        });
+                        plan_nodes.push(ExecNode::Allocate { class, pool: *pool, dtype_size, dims: dims.clone() });
                         plan_nodes.push(ExecNode::Copy { dst_class: class, src_class: to });
                         class
                     });

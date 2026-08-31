@@ -18,7 +18,7 @@ use crate::{
     Map,
     backend::DeviceInfo,
     dtype::Constant,
-    kernel::{BOp, RangeKind, Kernel, MemLayout, MemScope, Op, OpId},
+    kernel::{BOp, Kernel, MemLayout, MemScope, Op, OpId, RangeKind},
     shape::Dim,
 };
 

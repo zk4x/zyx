@@ -51,6 +51,13 @@ pub enum Op {
         x: OpId,
         dtype: DType,
     },
+    /// Bitcast: reinterprets the raw bits of `x` as `dtype` without a value
+    /// conversion. Requires equal bit widths of `x`'s dtype and `dtype`
+    /// (`debug_assert` in [`Kernel::bitcast`]).
+    Bitcast {
+        x: OpId,
+        dtype: DType,
+    },
     Unary {
         x: OpId,
         uop: UOp,
@@ -492,6 +499,7 @@ impl Op {
                 }
             }
             Op::Cast { x, .. } => vec![*x],
+            Op::Bitcast { x, .. } => vec![*x],
             Op::Unary { x, .. } => vec![*x],
             &Op::Binary { x, y, .. } => vec![x, y],
             &Op::Load { src, index, .. } => vec![src, index],
@@ -534,6 +542,7 @@ impl Op {
                 if index.is_null() { vec![dst, x] } else { vec![dst, x, index] }
             }
             Op::Cast { x, .. } => vec![x],
+            Op::Bitcast { x, .. } => vec![x],
             Op::Unary { x, .. } => vec![x],
             Op::Binary { x, y, .. } => vec![x, y],
             Op::Load { src, index, .. } => vec![src, index],

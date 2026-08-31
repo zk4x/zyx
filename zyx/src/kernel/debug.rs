@@ -191,6 +191,15 @@ impl Display for Kernel {
                         writeln!(f, "{indent}r{out_id}{grey}: {dtype}{reset} = {dtype}(r{x})").unwrap();
                     }
                 }
+                Op::Bitcast { x, dtype } => {
+                    dtypes.insert(op_id, dtype);
+                    let x = id_map.get(&x).copied().unwrap_or(x);
+                    if let Some((lb, ub)) = bounds.get(&op_id) {
+                        writeln!(f, "{indent}r{out_id}{grey}: {dtype}{reset} = bits({dtype})r{x}    // {lb}..={ub}").unwrap();
+                    } else {
+                        writeln!(f, "{indent}r{out_id}{grey}: {dtype}{reset} = bits({dtype})r{x}").unwrap();
+                    }
+                }
                 Op::Unary { x, uop, .. } => {
                     let dtype = dtypes.get(&x).copied().unwrap_or(DType::U8);
                     dtypes.insert(op_id, dtype);

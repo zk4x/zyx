@@ -118,6 +118,7 @@ impl Kernel {
         while !op_id.is_null() {
             let (text, dtype, reg_values) = match self.ops[op_id].op {
                 Op::Cast { x, dtype } => todo!(),
+                Op::Bitcast { x: _, dtype: _ } => todo!(),
                 Op::Unary { x, uop } => todo!(),
                 Op::Binary { x, y, bop } => todo!(),
                 Op::Const(constant) => {

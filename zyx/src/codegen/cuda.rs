@@ -164,6 +164,20 @@ impl Kernel {
                         }
                     }
                 }
+                Op::Bitcast { x, dtype } => {
+                    let x_var = get_var(x, &constants, &indices, &reg_map, &mut registers, loop_id, &var_params)?;
+                    let mem_layout = dtypes[&x].1;
+                    let reg = new_reg(op_id, &mut reg_map, &mut registers, (dtype, mem_layout), rcs[&op_id], loop_id);
+                    let byte_size = dtype.bit_size() as usize / 8;
+                    match mem_layout {
+                        MemLayout::Vector(len) => {
+                            for &c in VEC_COMPONENTS.iter().take(len as usize) {
+                                _ = writeln!(source, "{indent}memcpy(&r{reg}.{c}, &{x_var}.{c}, {byte_size});");
+                            }
+                        }
+                        _ => _ = writeln!(source, "{indent}memcpy(&r{reg}, &{x_var}, {byte_size});"),
+                    }
+                }
                 Op::Unary { x, uop } => {
                     let dtype = dtypes[&x];
                     let x = get_var(x, &constants, &indices, &reg_map, &mut registers, loop_id, &var_params)?;

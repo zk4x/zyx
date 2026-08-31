@@ -198,6 +198,10 @@ impl Runtime {
                     let g = self.push_node(graph_id, Node::Cast { x: grad, dtype: self.graphs[graph_id].dtype(x) }).1;
                     accum_grad(self, graph_id, &mut grads, x, g);
                 }
+                Node::Bitcast { x, .. } => {
+                    let g = self.push_node(graph_id, Node::Bitcast { x: grad, dtype: self.graphs[graph_id].dtype(x) }).1;
+                    accum_grad(self, graph_id, &mut grads, x, g);
+                }
                 Node::Reshape { x, .. } => {
                     let in_dims = self.graphs[graph_id].shape(x);
                     let x_shape = self.shape_class(graph_id, in_dims.clone());

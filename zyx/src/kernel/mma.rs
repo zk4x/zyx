@@ -30,7 +30,7 @@ use crate::{
     DType, Map,
     backend::DeviceInfo,
     dtype::Constant,
-    kernel::{BOp, RangeKind, Kernel, MMADType, MMADims, MMALayout, MemLayout, MemScope, Op, OpId},
+    kernel::{BOp, Kernel, MMADType, MMADims, MMALayout, MemLayout, MemScope, Op, OpId, RangeKind},
     shape::Dim,
     types::TinyVec,
 };
@@ -318,7 +318,8 @@ impl Kernel {
             return false;
         }
 
-        let warp_loop = self.insert_before(local_loops[0], Op::Range { axis: 0, kind: RangeKind::Warp((local_dims[0] * n) as u8) });
+        let warp_loop =
+            self.insert_before(local_loops[0], Op::Range { axis: 0, kind: RangeKind::Warp((local_dims[0] * n) as u8) });
         let y = self.insert_before(warp_loop, Op::Const(Constant::idx(n)));
         self.ops[local_loops[0]].op = Op::Binary { x: warp_loop, y, bop: BOp::Div };
         let y = self.insert_before(warp_loop, Op::Const(Constant::idx(n)));

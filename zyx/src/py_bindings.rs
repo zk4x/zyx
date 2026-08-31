@@ -6,9 +6,9 @@
 use crate::DebugMask;
 use crate::kernel::{CompiledKernel, DeviceId, Kernel, MemLayout, MemScope, OpId, ParamKind};
 use crate::shape::Dim;
+use crate::tape::FrozenTape;
 use crate::tensor::{Axis, DebugGuard, ReduceOp};
 use crate::{DType, Tape, Tensor, ZyxError};
-use crate::tape::FrozenTape;
 use pyo3::buffer::PyBuffer;
 use pyo3::exceptions::PyIndexError;
 use pyo3::prelude::*;
@@ -468,9 +468,7 @@ impl Tensor {
     #[pyo3(name = "kaiming_uniform", signature = (*shape, a=0.0, dtype=DType::F32))]
     pub fn kaiming_uniform_py(shape: &Bound<'_, PyTuple>, a: f64, dtype: DType) -> PyResult<Tensor> {
         let shape_vec = parse_shape(shape).map_err(|e| PyOSError::new_err(format!("{e:?}")))?;
-        Tensor::kaiming_uniform::<f32>(shape_vec, a as f32)
-            .map(|t| t.cast(dtype))
-            .map_err(|e| e.into())
+        Tensor::kaiming_uniform::<f32>(shape_vec, a as f32).map(|t| t.cast(dtype)).map_err(|e| e.into())
     }
 
     #[staticmethod]
@@ -561,7 +559,7 @@ impl Tensor {
     }
 
     #[pyo3(name = "bitcast")]
-    pub unsafe fn bitcast_py(&self, dtype: DType) -> Tensor {
+    pub unsafe fn bitcast_py(&self, dtype: DType) -> Result<Tensor, ZyxError> {
         unsafe { self.bitcast(dtype) }
     }
 
@@ -594,43 +592,191 @@ impl Tensor {
 
     // elementwise
 
-    #[must_use] #[pyo3(name = "abs")] pub fn abs_py(&self) -> Tensor { self.abs() }
-    #[must_use] #[pyo3(name = "square")] pub fn square_py(&self) -> Tensor { self.square() }
-    #[must_use] #[pyo3(name = "sign")] pub fn sign_py(&self) -> Tensor { self.sign() }
-    #[must_use] #[pyo3(name = "erf")] pub fn erf_py(&self) -> Tensor { self.erf() }
-    #[must_use] #[pyo3(name = "erfinv")] pub fn erfinv_py(&self) -> Tensor { self.erfinv() }
-    #[must_use] #[pyo3(name = "cos")] pub fn cos_py(&self) -> Tensor { self.cos() }
-    #[must_use] #[pyo3(name = "cosh")] pub fn cosh_py(&self) -> Tensor { self.cosh() }
-    #[must_use] #[pyo3(name = "exp")] pub fn exp_py(&self) -> Tensor { self.exp() }
-    #[must_use] #[pyo3(name = "exp2")] pub fn exp2_py(&self) -> Tensor { self.exp2() }
-    #[must_use] #[pyo3(name = "floor")] pub fn floor_py(&self) -> Tensor { self.floor() }
-    #[must_use] #[pyo3(name = "trunc")] pub fn trunc_py(&self) -> Tensor { self.trunc() }
-    #[must_use] #[pyo3(name = "log2")] pub fn log2_py(&self) -> Tensor { self.log2() }
-    #[must_use] #[pyo3(name = "ln")] pub fn ln_py(&self) -> Tensor { self.ln() }
-    #[must_use] #[pyo3(name = "reciprocal")] pub fn reciprocal_py(&self) -> Tensor { self.reciprocal() }
-    #[must_use] #[pyo3(name = "relu")] pub fn relu_py(&self) -> Tensor { self.relu() }
-    #[must_use] #[pyo3(name = "rsqrt")] pub fn rsqrt_py(&self) -> Tensor { self.rsqrt() }
-    #[must_use] #[pyo3(name = "sigmoid")] pub fn sigmoid_py(&self) -> Tensor { self.sigmoid() }
-    #[must_use] #[pyo3(name = "sin")] pub fn sin_py(&self) -> Tensor { self.sin() }
-    #[must_use] #[pyo3(name = "sinh")] pub fn sinh_py(&self) -> Tensor { self.sinh() }
-    #[must_use] #[pyo3(name = "sqrt")] pub fn sqrt_py(&self) -> Tensor { self.sqrt() }
-    #[must_use] #[pyo3(name = "tan")] pub fn tan_py(&self) -> Tensor { self.tan() }
-    #[must_use] #[pyo3(name = "tanh")] pub fn tanh_py(&self) -> Tensor { self.tanh() }
-    #[must_use] #[pyo3(name = "gelu")] pub fn gelu_py(&self) -> Tensor { self.gelu() }
-    #[must_use] #[pyo3(name = "bitnot")] pub fn bitnot_py(&self) -> Tensor { self.bitnot() }
-    #[must_use] #[pyo3(name = "ceil")] pub fn ceil_py(&self) -> Tensor { self.ceil() }
-    #[must_use] #[pyo3(name = "frac")] pub fn frac_py(&self) -> Tensor { self.frac() }
-    #[must_use] #[pyo3(name = "isnan")] pub fn isnan_py(&self) -> Tensor { self.isnan() }
-    #[must_use] #[pyo3(name = "isinf")] pub fn isinf_py(&self) -> Tensor { self.isinf() }
-    #[must_use] #[pyo3(name = "log10")] pub fn log10_py(&self) -> Tensor { self.log10() }
-    #[must_use] #[pyo3(name = "rad2deg")] pub fn rad2deg_py(&self) -> Tensor { self.rad2deg() }
-    #[must_use] #[pyo3(name = "deg2rad")] pub fn deg2rad_py(&self) -> Tensor { self.deg2rad() }
-    #[must_use] #[pyo3(name = "round")] pub fn round_py(&self) -> Tensor { self.round() }
-    #[must_use] #[pyo3(name = "mish")] pub fn mish_py(&self) -> Tensor { self.mish() }
-    #[must_use] #[pyo3(name = "quick_gelu")] pub fn quick_gelu_py(&self) -> Tensor { self.quick_gelu() }
-    #[must_use] #[pyo3(name = "selu")] pub fn selu_py(&self) -> Tensor { self.selu() }
-    #[must_use] #[pyo3(name = "hard_sigmoid")] pub fn hard_sigmoid_py(&self) -> Tensor { self.hard_sigmoid() }
-    #[must_use] #[pyo3(name = "swish")] pub fn swish_py(&self) -> Tensor { self.swish() }
+    #[must_use]
+    #[pyo3(name = "abs")]
+    pub fn abs_py(&self) -> Tensor {
+        self.abs()
+    }
+    #[must_use]
+    #[pyo3(name = "square")]
+    pub fn square_py(&self) -> Tensor {
+        self.square()
+    }
+    #[must_use]
+    #[pyo3(name = "sign")]
+    pub fn sign_py(&self) -> Tensor {
+        self.sign()
+    }
+    #[must_use]
+    #[pyo3(name = "erf")]
+    pub fn erf_py(&self) -> Tensor {
+        self.erf()
+    }
+    #[must_use]
+    #[pyo3(name = "erfinv")]
+    pub fn erfinv_py(&self) -> Tensor {
+        self.erfinv()
+    }
+    #[must_use]
+    #[pyo3(name = "cos")]
+    pub fn cos_py(&self) -> Tensor {
+        self.cos()
+    }
+    #[must_use]
+    #[pyo3(name = "cosh")]
+    pub fn cosh_py(&self) -> Tensor {
+        self.cosh()
+    }
+    #[must_use]
+    #[pyo3(name = "exp")]
+    pub fn exp_py(&self) -> Tensor {
+        self.exp()
+    }
+    #[must_use]
+    #[pyo3(name = "exp2")]
+    pub fn exp2_py(&self) -> Tensor {
+        self.exp2()
+    }
+    #[must_use]
+    #[pyo3(name = "floor")]
+    pub fn floor_py(&self) -> Tensor {
+        self.floor()
+    }
+    #[must_use]
+    #[pyo3(name = "trunc")]
+    pub fn trunc_py(&self) -> Tensor {
+        self.trunc()
+    }
+    #[must_use]
+    #[pyo3(name = "log2")]
+    pub fn log2_py(&self) -> Tensor {
+        self.log2()
+    }
+    #[must_use]
+    #[pyo3(name = "ln")]
+    pub fn ln_py(&self) -> Tensor {
+        self.ln()
+    }
+    #[must_use]
+    #[pyo3(name = "reciprocal")]
+    pub fn reciprocal_py(&self) -> Tensor {
+        self.reciprocal()
+    }
+    #[must_use]
+    #[pyo3(name = "relu")]
+    pub fn relu_py(&self) -> Tensor {
+        self.relu()
+    }
+    #[must_use]
+    #[pyo3(name = "rsqrt")]
+    pub fn rsqrt_py(&self) -> Tensor {
+        self.rsqrt()
+    }
+    #[must_use]
+    #[pyo3(name = "sigmoid")]
+    pub fn sigmoid_py(&self) -> Tensor {
+        self.sigmoid()
+    }
+    #[must_use]
+    #[pyo3(name = "sin")]
+    pub fn sin_py(&self) -> Tensor {
+        self.sin()
+    }
+    #[must_use]
+    #[pyo3(name = "sinh")]
+    pub fn sinh_py(&self) -> Tensor {
+        self.sinh()
+    }
+    #[must_use]
+    #[pyo3(name = "sqrt")]
+    pub fn sqrt_py(&self) -> Tensor {
+        self.sqrt()
+    }
+    #[must_use]
+    #[pyo3(name = "tan")]
+    pub fn tan_py(&self) -> Tensor {
+        self.tan()
+    }
+    #[must_use]
+    #[pyo3(name = "tanh")]
+    pub fn tanh_py(&self) -> Tensor {
+        self.tanh()
+    }
+    #[must_use]
+    #[pyo3(name = "gelu")]
+    pub fn gelu_py(&self) -> Tensor {
+        self.gelu()
+    }
+    #[must_use]
+    #[pyo3(name = "bitnot")]
+    pub fn bitnot_py(&self) -> Tensor {
+        self.bitnot()
+    }
+    #[must_use]
+    #[pyo3(name = "ceil")]
+    pub fn ceil_py(&self) -> Tensor {
+        self.ceil()
+    }
+    #[must_use]
+    #[pyo3(name = "frac")]
+    pub fn frac_py(&self) -> Tensor {
+        self.frac()
+    }
+    #[must_use]
+    #[pyo3(name = "isnan")]
+    pub fn isnan_py(&self) -> Tensor {
+        self.isnan()
+    }
+    #[must_use]
+    #[pyo3(name = "isinf")]
+    pub fn isinf_py(&self) -> Tensor {
+        self.isinf()
+    }
+    #[must_use]
+    #[pyo3(name = "log10")]
+    pub fn log10_py(&self) -> Tensor {
+        self.log10()
+    }
+    #[must_use]
+    #[pyo3(name = "rad2deg")]
+    pub fn rad2deg_py(&self) -> Tensor {
+        self.rad2deg()
+    }
+    #[must_use]
+    #[pyo3(name = "deg2rad")]
+    pub fn deg2rad_py(&self) -> Tensor {
+        self.deg2rad()
+    }
+    #[must_use]
+    #[pyo3(name = "round")]
+    pub fn round_py(&self) -> Tensor {
+        self.round()
+    }
+    #[must_use]
+    #[pyo3(name = "mish")]
+    pub fn mish_py(&self) -> Tensor {
+        self.mish()
+    }
+    #[must_use]
+    #[pyo3(name = "quick_gelu")]
+    pub fn quick_gelu_py(&self) -> Tensor {
+        self.quick_gelu()
+    }
+    #[must_use]
+    #[pyo3(name = "selu")]
+    pub fn selu_py(&self) -> Tensor {
+        self.selu()
+    }
+    #[must_use]
+    #[pyo3(name = "hard_sigmoid")]
+    pub fn hard_sigmoid_py(&self) -> Tensor {
+        self.hard_sigmoid()
+    }
+    #[must_use]
+    #[pyo3(name = "swish")]
+    pub fn swish_py(&self) -> Tensor {
+        self.swish()
+    }
 
     #[pyo3(name = "log")]
     pub fn log_py(&self, base: &Bound<'_, PyAny>) -> PyResult<Tensor> {
@@ -652,16 +798,24 @@ impl Tensor {
 
     #[pyo3(name = "celu")]
     pub fn celu_py(&self, alpha: &Bound<'_, PyAny>) -> PyResult<Tensor> {
-        if let Ok(v) = alpha.extract::<f64>() { Ok(self.celu(v)) }
-        else if let Ok(v) = alpha.extract::<i64>() { Ok(self.celu(v)) }
-        else { Err(PyTypeError::new_err("alpha must be numeric")) }
+        if let Ok(v) = alpha.extract::<f64>() {
+            Ok(self.celu(v))
+        } else if let Ok(v) = alpha.extract::<i64>() {
+            Ok(self.celu(v))
+        } else {
+            Err(PyTypeError::new_err("alpha must be numeric"))
+        }
     }
 
     #[pyo3(name = "elu")]
     pub fn elu_py(&self, alpha: &Bound<'_, PyAny>) -> PyResult<Tensor> {
-        if let Ok(v) = alpha.extract::<f64>() { Ok(self.elu(v)) }
-        else if let Ok(v) = alpha.extract::<i64>() { Ok(self.elu(v)) }
-        else { Err(PyTypeError::new_err("alpha must be numeric")) }
+        if let Ok(v) = alpha.extract::<f64>() {
+            Ok(self.elu(v))
+        } else if let Ok(v) = alpha.extract::<i64>() {
+            Ok(self.elu(v))
+        } else {
+            Err(PyTypeError::new_err("alpha must be numeric"))
+        }
     }
 
     #[pyo3(name = "softmax")]
@@ -720,7 +874,13 @@ impl Tensor {
     }
 
     #[pyo3(name = "var", signature = (dim=None, keepdim=false, unbiased=true, dtype=None))]
-    pub fn var_py(&self, dim: Option<&Bound<'_, PyAny>>, keepdim: bool, unbiased: bool, dtype: Option<DType>) -> Result<Tensor, ZyxError> {
+    pub fn var_py(
+        &self,
+        dim: Option<&Bound<'_, PyAny>>,
+        keepdim: bool,
+        unbiased: bool,
+        dtype: Option<DType>,
+    ) -> Result<Tensor, ZyxError> {
         let correction: Dim = if unbiased { 1 } else { 0 };
         if let Some(d) = dim {
             let axes = to_ax(d);
@@ -740,7 +900,13 @@ impl Tensor {
     }
 
     #[pyo3(name = "std", signature = (dim=None, keepdim=false, unbiased=true, dtype=None))]
-    pub fn std_py(&self, dim: Option<&Bound<'_, PyAny>>, keepdim: bool, unbiased: bool, dtype: Option<DType>) -> Result<Tensor, ZyxError> {
+    pub fn std_py(
+        &self,
+        dim: Option<&Bound<'_, PyAny>>,
+        keepdim: bool,
+        unbiased: bool,
+        dtype: Option<DType>,
+    ) -> Result<Tensor, ZyxError> {
         let correction: Dim = if unbiased { 1 } else { 0 };
         if let Some(d) = dim {
             let axes = to_ax(d);
@@ -1008,10 +1174,13 @@ impl Tensor {
         }
         // convert to Dim via Tensor shape? Actually split expects Vec<Dim> but now symbolic? check impl
         // For now pass as dims resolved? Use old Dim API via resolve
-        let dims: Vec<Dim> = vec.iter().map(|t| {
-            // try to resolve const
-            t.clone().item::<i64>()
-        }).collect();
+        let dims: Vec<Dim> = vec
+            .iter()
+            .map(|t| {
+                // try to resolve const
+                t.clone().item::<i64>()
+            })
+            .collect();
         self.split(dims, axis)
     }
 
@@ -1288,7 +1457,13 @@ impl Tensor {
     }
 
     #[pyo3(name = "nll_loss")]
-    pub fn nll_loss_py(&self, target: &Bound<'_, PyAny>, weight: Option<&Bound<'_, PyAny>>, ignore_index: Option<i64>, reduction: &Bound<'_, PyAny>) -> Result<Tensor, ZyxError> {
+    pub fn nll_loss_py(
+        &self,
+        target: &Bound<'_, PyAny>,
+        weight: Option<&Bound<'_, PyAny>>,
+        ignore_index: Option<i64>,
+        reduction: &Bound<'_, PyAny>,
+    ) -> Result<Tensor, ZyxError> {
         let target = extract_tensor_or_scalar(target).map_err(|e| ZyxError::DTypeError(format!("{e:?}").into()))?;
         let weight = match weight {
             Some(w) => Some(w.extract::<Tensor>().map_err(|_| ZyxError::DTypeError("weight must be Tensor".into()))?),
@@ -1323,7 +1498,15 @@ impl Tensor {
     }
 
     #[pyo3(name = "triplet_margin_loss")]
-    pub fn triplet_margin_loss_py(&self, positive: &Bound<'_, PyAny>, negative: &Bound<'_, PyAny>, margin: f32, p: i32, swap: bool, reduction: &Bound<'_, PyAny>) -> Result<Tensor, ZyxError> {
+    pub fn triplet_margin_loss_py(
+        &self,
+        positive: &Bound<'_, PyAny>,
+        negative: &Bound<'_, PyAny>,
+        margin: f32,
+        p: i32,
+        swap: bool,
+        reduction: &Bound<'_, PyAny>,
+    ) -> Result<Tensor, ZyxError> {
         let positive = extract_tensor_or_scalar(positive).map_err(|e| ZyxError::DTypeError(format!("{e:?}").into()))?;
         let negative = extract_tensor_or_scalar(negative).map_err(|e| ZyxError::DTypeError(format!("{e:?}").into()))?;
         let r = if let Ok(s) = reduction.extract::<String>() {
@@ -1364,7 +1547,15 @@ impl Tensor {
     }
 
     #[pyo3(name = "conv")]
-    pub fn conv_py(&self, weight: &Bound<'_, PyAny>, bias: Option<&Bound<'_, PyAny>>, groups: u64, stride: &Bound<'_, PyTuple>, dilation: &Bound<'_, PyTuple>, padding: &Bound<'_, PyTuple>) -> Result<Tensor, ZyxError> {
+    pub fn conv_py(
+        &self,
+        weight: &Bound<'_, PyAny>,
+        bias: Option<&Bound<'_, PyAny>>,
+        groups: u64,
+        stride: &Bound<'_, PyTuple>,
+        dilation: &Bound<'_, PyTuple>,
+        padding: &Bound<'_, PyTuple>,
+    ) -> Result<Tensor, ZyxError> {
         let weight = weight.extract::<Tensor>().map_err(|e| ZyxError::DTypeError(format!("weight: {e}").into()))?;
         let bias = bias.and_then(|b| b.extract::<Tensor>().ok());
         // to_sh for conv expects Vec<Dim> but handle symbolic similarly
@@ -1375,16 +1566,46 @@ impl Tensor {
     }
 
     #[pyo3(name = "max_pool")]
-    pub fn max_pool_py(&self, kernel_shape: &Bound<'_, PyTuple>, stride: Option<&Bound<'_, PyTuple>>, _padding: Option<&Bound<'_, PyTuple>>) -> Result<Tensor, ZyxError> {
-        let ks: Vec<Dim> = kernel_shape.iter().map(|x| Ok(x.extract::<i64>().map_err(|e| ZyxError::ParseError(format!("{e:?}").into()))? as Dim)).collect::<Result<_, ZyxError>>()?;
-        let st = stride.map(|t| t.iter().map(|x| Ok(x.extract::<i64>().map_err(|e| ZyxError::ParseError(format!("{e:?}").into()))? as Dim)).collect::<Result<Vec<_>, ZyxError>>()).transpose()?.unwrap_or_else(|| ks.clone());
-        self.max_pool(ks.clone(), st.clone(), vec![1; ks.len()], vec![(0,0); ks.len()], false, false)
+    pub fn max_pool_py(
+        &self,
+        kernel_shape: &Bound<'_, PyTuple>,
+        stride: Option<&Bound<'_, PyTuple>>,
+        _padding: Option<&Bound<'_, PyTuple>>,
+    ) -> Result<Tensor, ZyxError> {
+        let ks: Vec<Dim> = kernel_shape
+            .iter()
+            .map(|x| Ok(x.extract::<i64>().map_err(|e| ZyxError::ParseError(format!("{e:?}").into()))? as Dim))
+            .collect::<Result<_, ZyxError>>()?;
+        let st = stride
+            .map(|t| {
+                t.iter()
+                    .map(|x| Ok(x.extract::<i64>().map_err(|e| ZyxError::ParseError(format!("{e:?}").into()))? as Dim))
+                    .collect::<Result<Vec<_>, ZyxError>>()
+            })
+            .transpose()?
+            .unwrap_or_else(|| ks.clone());
+        self.max_pool(ks.clone(), st.clone(), vec![1; ks.len()], vec![(0, 0); ks.len()], false, false)
     }
 
     #[pyo3(name = "pool")]
-    pub fn pool_py(&self, kernel_shape: &Bound<'_, PyTuple>, stride: Option<&Bound<'_, PyTuple>>, _padding: Option<&Bound<'_, PyTuple>>) -> Result<Tensor, ZyxError> {
-        let ks: Vec<Dim> = kernel_shape.iter().map(|x| Ok(x.extract::<i64>().map_err(|e| ZyxError::ParseError(format!("{e:?}").into()))? as Dim)).collect::<Result<_, ZyxError>>()?;
-        let st = stride.map(|t| t.iter().map(|x| Ok(x.extract::<i64>().map_err(|e| ZyxError::ParseError(format!("{e:?}").into()))? as Dim)).collect::<Result<Vec<_>, ZyxError>>()).transpose()?.unwrap_or_else(|| ks.clone());
+    pub fn pool_py(
+        &self,
+        kernel_shape: &Bound<'_, PyTuple>,
+        stride: Option<&Bound<'_, PyTuple>>,
+        _padding: Option<&Bound<'_, PyTuple>>,
+    ) -> Result<Tensor, ZyxError> {
+        let ks: Vec<Dim> = kernel_shape
+            .iter()
+            .map(|x| Ok(x.extract::<i64>().map_err(|e| ZyxError::ParseError(format!("{e:?}").into()))? as Dim))
+            .collect::<Result<_, ZyxError>>()?;
+        let st = stride
+            .map(|t| {
+                t.iter()
+                    .map(|x| Ok(x.extract::<i64>().map_err(|e| ZyxError::ParseError(format!("{e:?}").into()))? as Dim))
+                    .collect::<Result<Vec<_>, ZyxError>>()
+            })
+            .transpose()?
+            .unwrap_or_else(|| ks.clone());
         self.pool(ks.clone(), st.clone(), vec![1; ks.len()])
     }
 
@@ -1507,13 +1728,21 @@ impl PyKernel {
 
     #[pyo3(name = "load")]
     fn load_py(&mut self, src: u32, index: u32, layout: u8) -> u32 {
-        let layout = if layout == 0 { MemLayout::Scalar } else { MemLayout::Vector(layout as u16) };
+        let layout = if layout == 0 {
+            MemLayout::Scalar
+        } else {
+            MemLayout::Vector(layout as u16)
+        };
         self.inner.as_mut().unwrap().load(OpId(src), OpId(index), layout).0
     }
 
     #[pyo3(name = "store")]
     fn store_py(&mut self, dst: u32, src: u32, index: u32, layout: u8) {
-        let layout = if layout == 0 { MemLayout::Scalar } else { MemLayout::Vector(layout as u16) };
+        let layout = if layout == 0 {
+            MemLayout::Scalar
+        } else {
+            MemLayout::Vector(layout as u16)
+        };
         self.inner.as_mut().unwrap().store(OpId(dst), OpId(src), OpId(index), layout)
     }
 
@@ -1528,26 +1757,77 @@ impl PyKernel {
     }
 
     // unary
-    #[pyo3(name = "neg")] fn neg_py(&mut self, x: u32) -> u32 { self.inner.as_mut().unwrap().neg(OpId(x)).0 }
-    #[pyo3(name = "exp")] fn exp_py(&mut self, x: u32) -> u32 { self.inner.as_mut().unwrap().exp(OpId(x)).0 }
-    #[pyo3(name = "ln")] fn ln_py(&mut self, x: u32) -> u32 { self.inner.as_mut().unwrap().ln(OpId(x)).0 }
-    #[pyo3(name = "sin")] fn sin_py(&mut self, x: u32) -> u32 { self.inner.as_mut().unwrap().sin(OpId(x)).0 }
-    #[pyo3(name = "cos")] fn cos_py(&mut self, x: u32) -> u32 { self.inner.as_mut().unwrap().cos(OpId(x)).0 }
-    #[pyo3(name = "sqrt")] fn sqrt_py(&mut self, x: u32) -> u32 { self.inner.as_mut().unwrap().sqrt(OpId(x)).0 }
-    #[pyo3(name = "abs")] fn abs_py(&mut self, x: u32) -> u32 { self.inner.as_mut().unwrap().abs(OpId(x)).0 }
+    #[pyo3(name = "neg")]
+    fn neg_py(&mut self, x: u32) -> u32 {
+        self.inner.as_mut().unwrap().neg(OpId(x)).0
+    }
+    #[pyo3(name = "exp")]
+    fn exp_py(&mut self, x: u32) -> u32 {
+        self.inner.as_mut().unwrap().exp(OpId(x)).0
+    }
+    #[pyo3(name = "ln")]
+    fn ln_py(&mut self, x: u32) -> u32 {
+        self.inner.as_mut().unwrap().ln(OpId(x)).0
+    }
+    #[pyo3(name = "sin")]
+    fn sin_py(&mut self, x: u32) -> u32 {
+        self.inner.as_mut().unwrap().sin(OpId(x)).0
+    }
+    #[pyo3(name = "cos")]
+    fn cos_py(&mut self, x: u32) -> u32 {
+        self.inner.as_mut().unwrap().cos(OpId(x)).0
+    }
+    #[pyo3(name = "sqrt")]
+    fn sqrt_py(&mut self, x: u32) -> u32 {
+        self.inner.as_mut().unwrap().sqrt(OpId(x)).0
+    }
+    #[pyo3(name = "abs")]
+    fn abs_py(&mut self, x: u32) -> u32 {
+        self.inner.as_mut().unwrap().abs(OpId(x)).0
+    }
 
     // binary
-    #[pyo3(name = "add")] fn add_py(&mut self, x: u32, y: u32) -> u32 { self.inner.as_mut().unwrap().add(OpId(x), OpId(y)).0 }
-    #[pyo3(name = "sub")] fn sub_py(&mut self, x: u32, y: u32) -> u32 { self.inner.as_mut().unwrap().sub(OpId(x), OpId(y)).0 }
-    #[pyo3(name = "mul")] fn mul_py(&mut self, x: u32, y: u32) -> u32 { self.inner.as_mut().unwrap().mul(OpId(x), OpId(y)).0 }
-    #[pyo3(name = "div")] fn div_py(&mut self, x: u32, y: u32) -> u32 { self.inner.as_mut().unwrap().div(OpId(x), OpId(y)).0 }
-    #[pyo3(name = "max")] fn max_py(&mut self, x: u32, y: u32) -> u32 { self.inner.as_mut().unwrap().max(OpId(x), OpId(y)).0 }
-    #[pyo3(name = "cmplt")] fn cmplt_py(&mut self, x: u32, y: u32) -> u32 { self.inner.as_mut().unwrap().cmplt(OpId(x), OpId(y)).0 }
-    #[pyo3(name = "cmpgt")] fn cmpgt_py(&mut self, x: u32, y: u32) -> u32 { self.inner.as_mut().unwrap().cmpgt(OpId(x), OpId(y)).0 }
+    #[pyo3(name = "add")]
+    fn add_py(&mut self, x: u32, y: u32) -> u32 {
+        self.inner.as_mut().unwrap().add(OpId(x), OpId(y)).0
+    }
+    #[pyo3(name = "sub")]
+    fn sub_py(&mut self, x: u32, y: u32) -> u32 {
+        self.inner.as_mut().unwrap().sub(OpId(x), OpId(y)).0
+    }
+    #[pyo3(name = "mul")]
+    fn mul_py(&mut self, x: u32, y: u32) -> u32 {
+        self.inner.as_mut().unwrap().mul(OpId(x), OpId(y)).0
+    }
+    #[pyo3(name = "div")]
+    fn div_py(&mut self, x: u32, y: u32) -> u32 {
+        self.inner.as_mut().unwrap().div(OpId(x), OpId(y)).0
+    }
+    #[pyo3(name = "max")]
+    fn max_py(&mut self, x: u32, y: u32) -> u32 {
+        self.inner.as_mut().unwrap().max(OpId(x), OpId(y)).0
+    }
+    #[pyo3(name = "cmplt")]
+    fn cmplt_py(&mut self, x: u32, y: u32) -> u32 {
+        self.inner.as_mut().unwrap().cmplt(OpId(x), OpId(y)).0
+    }
+    #[pyo3(name = "cmpgt")]
+    fn cmpgt_py(&mut self, x: u32, y: u32) -> u32 {
+        self.inner.as_mut().unwrap().cmpgt(OpId(x), OpId(y)).0
+    }
 
-    #[pyo3(name = "mad")] fn mad_py(&mut self, x: u32, y: u32, z: u32) -> u32 { self.inner.as_mut().unwrap().mad(OpId(x), OpId(y), OpId(z)).0 }
-    #[pyo3(name = "cast")] fn cast_py(&mut self, x: u32, dtype: DType) -> u32 { self.inner.as_mut().unwrap().cast(OpId(x), dtype).0 }
-    #[pyo3(name = "stack")] fn stack_py(&mut self, ops: Vec<u32>) -> u32 { self.inner.as_mut().unwrap().stack(&ops.iter().map(|&o| OpId(o)).collect::<Vec<_>>()).0 }
+    #[pyo3(name = "mad")]
+    fn mad_py(&mut self, x: u32, y: u32, z: u32) -> u32 {
+        self.inner.as_mut().unwrap().mad(OpId(x), OpId(y), OpId(z)).0
+    }
+    #[pyo3(name = "cast")]
+    fn cast_py(&mut self, x: u32, dtype: DType) -> u32 {
+        self.inner.as_mut().unwrap().cast(OpId(x), dtype).0
+    }
+    #[pyo3(name = "stack")]
+    fn stack_py(&mut self, ops: Vec<u32>) -> u32 {
+        self.inner.as_mut().unwrap().stack(&ops.iter().map(|&o| OpId(o)).collect::<Vec<_>>()).0
+    }
 }
 
 #[pyo3::pyclass]

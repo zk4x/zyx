@@ -288,11 +288,7 @@ impl Drop for Tape {
             .iter()
             .filter_map(|(tid, td)| match td {
                 TensorData::Graph { graph_id: g, .. } | TensorData::Promoted { graph_id: g, .. } if *g == graph_id => {
-                    if leafs.contains(&tid) {
-                        None
-                    } else {
-                        Some(tid)
-                    }
+                    if leafs.contains(&tid) { None } else { Some(tid) }
                 }
                 _ => None,
             })
@@ -464,6 +460,7 @@ impl Tape {
 }
 
 /// Frozen tape for minimal overhead tape replay, no branching
+#[cfg_attr(feature = "py", pyo3::pyclass)]
 pub struct FrozenTape {
     cache_key: u64,
     outputs: Vec<(ClassId, Vec<Dim>, DType)>,

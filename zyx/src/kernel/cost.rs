@@ -142,6 +142,10 @@ impl Kernel {
                         dtypes.insert(op_id, (dtype, dtypes[&x].1));
                         *rcs.entry(x).or_insert(0) += 1;
                     }
+                    Op::Bitcast { x, dtype } => {
+                        dtypes.insert(op_id, (dtype, dtypes[&x].1));
+                        *rcs.entry(x).or_insert(0) += 1;
+                    }
                     Op::Unary { x, .. } => {
                         dtypes.insert(op_id, dtypes[&x]);
                         *rcs.entry(x).or_insert(0) += 1;
@@ -221,6 +225,7 @@ impl Kernel {
                 Op::Storage { scope: MemScope::Register, .. } => true,
                 Op::Load { .. }
                 | Op::Cast { .. }
+                | Op::Bitcast { .. }
                 | Op::Unary { .. }
                 | Op::Binary { .. }
                 | Op::Mad { .. }
@@ -275,7 +280,7 @@ impl Kernel {
 
             // Instruction counting
             match self.ops[op_id].op {
-                Op::Cast { .. } | Op::Unary { .. } | Op::Binary { .. } => {
+                Op::Cast { .. } | Op::Bitcast { .. } | Op::Unary { .. } | Op::Binary { .. } => {
                     wi_ops += loop_mult;
                     if !indexing_ops.contains(&op_id) {
                         wi_compute_ops += loop_mult;

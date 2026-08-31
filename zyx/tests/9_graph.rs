@@ -520,9 +520,7 @@ fn promote_to_graph_stacked_shape_dims() -> Result<(), ZyxError> {
     // embedding_forward: stack shapes, reshape, expand, equal, cast.
     let [vocab, embed] = weight.dims::<2>()?;
     let [b, seq] = idx.dims::<2>()?;
-    let idx4 = idx
-        .cast(DType::F32)
-        .reshape([b, seq, 1i64.into(), 1i64.into()])?;
+    let idx4 = idx.cast(DType::F32).reshape([b, seq, 1i64.into(), 1i64.into()])?;
     let arange = Tensor::arange(0, vocab.item::<i64>(), 1)?
         .reshape([1i64.into(), 1i64.into(), vocab.clone(), 1i64.into()])?
         .cast(DType::F32);

@@ -258,9 +258,15 @@ impl CblasDevice {
             .map_err(|_| BackendError { status: ErrorStatus::IncorrectKernelArg, context: "k exceeds i32 range".into() })?;
 
         // args are [a, b, out] — loads first, then stores
-        let LaunchArg::Buffer(b0) = args[0] else { unreachable!("cblas sgemm args are plain buffers") };
-        let LaunchArg::Buffer(b1) = args[1] else { unreachable!("cblas sgemm args are plain buffers") };
-        let LaunchArg::Buffer(b2) = args[2] else { unreachable!("cblas sgemm args are plain buffers") };
+        let LaunchArg::Buffer(b0) = args[0] else {
+            unreachable!("cblas sgemm args are plain buffers")
+        };
+        let LaunchArg::Buffer(b1) = args[1] else {
+            unreachable!("cblas sgemm args are plain buffers")
+        };
+        let LaunchArg::Buffer(b2) = args[2] else {
+            unreachable!("cblas sgemm args are plain buffers")
+        };
         let a = memory_pool.buffer_ptr_mut(b0) as *mut f32;
         let b = memory_pool.buffer_ptr_mut(b1) as *mut f32;
         let c = memory_pool.buffer_ptr_mut(b2) as *mut f32;

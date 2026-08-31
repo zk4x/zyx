@@ -2,10 +2,15 @@
 // SPDX-License-Identifier: LGPL-3.0-only
 
 use super::{
-    BackendError, Device, DeviceId, DeviceInfo, ErrorStatus, Event, GwsDim, LaunchArg, MemoryPool, PoolId,
-    gws_from_kernel,
+    BackendError, Device, DeviceId, DeviceInfo, ErrorStatus, Event, GwsDim, LaunchArg, MemoryPool, PoolId, gws_from_kernel,
 };
-use crate::{DType, backend::{DTypeCapability, DeviceProgramId, PoolBufferId}, kernel::{IdxKind, Kernel, MemScope, Op}, shape::Dim, slab::Slab};
+use crate::{
+    DType,
+    backend::{DTypeCapability, DeviceProgramId, PoolBufferId},
+    kernel::{IdxKind, Kernel, MemScope, Op},
+    shape::Dim,
+    slab::Slab,
+};
 use nanoserde::DeJson;
 use pollster::FutureExt;
 use std::{sync::Arc, time::Duration};
@@ -250,7 +255,7 @@ impl WGPUMemoryPool {
             // Write the remaining bytes padded with zeros
             if remaining > 0 {
                 padded[..remaining].copy_from_slice(&src[full_chunks * ALIGN..]);
-                self.queue.write_buffer(dst, (full_chunks * ALIGN)  as i64, &padded);
+                self.queue.write_buffer(dst, (full_chunks * ALIGN) as i64, &padded);
             }
         } else {
             // Already aligned
@@ -295,7 +300,7 @@ impl WGPUMemoryPool {
         // Create a temporary download buffer to receive data from the GPU
         let download_buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("DownloadBuffer"), // You can try removing or adjusting the label if needed
-            size: dst.len()  as i64,
+            size: dst.len() as i64,
             usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST, // Ensure proper usage flags
             mapped_at_creation: false,
         });
@@ -310,7 +315,7 @@ impl WGPUMemoryPool {
             0, // Start at the beginning of the source buffer
             &download_buffer,
             0,                // Start at the beginning of the destination buffer
-            dst.len()  as i64, // The number of bytes to copy
+            dst.len() as i64, // The number of bytes to copy
         );
 
         // Submit the command to the GPU
