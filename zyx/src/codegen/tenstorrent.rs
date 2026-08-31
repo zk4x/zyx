@@ -5,7 +5,7 @@ use crate::{
     DType, Map, Set,
     dtype::Constant,
     error::{BackendError, ErrorStatus},
-    kernel::{BOp, IdxKind, Kernel, MemLayout, MemScope, Op, OpId, ParamKind, UOp},
+    kernel::{BOp, Kernel, MemLayout, MemScope, Op, OpId, ParamKind, RangeKind, UOp},
 };
 use std::fmt::Write;
 
@@ -227,7 +227,7 @@ impl Kernel {
                     Op::Const(val) => {
                         writeln!(reader, "{indent}{} r{op_id} = {};", val.dtype().c_type(), val.c_code());
                     }
-                    Op::Index { axis, kind: IdxKind::Group(_), .. } => {
+                    Op::Range { axis, kind: RangeKind::Group(_), .. } => {
                         writeln!(reader, "{indent}uint32_t r{op_id} = get_arg_val<uint32_t>({});", n_inputs + axis as usize);
                         writeln!(reader, "{indent}DEVICE_PRINT(\"r{op_id}=gidx{axis}={{}}\\n\", r{op_id});");
                     }
@@ -237,7 +237,7 @@ impl Kernel {
                     Op::Cast { x, dtype } => {
                         writeln!(reader, "{indent}{} r{op_id} = ({})r{x};", dtype.c_type(), dtype.c_type());
                     }
-                    Op::Index { kind: IdxKind::Local(_), .. } => {
+                    Op::Range { kind: RangeKind::Local(_), .. } => {
                         unreachable!(
                             "tenstorrent does not have local threads; local indices should have been converted to loops by the opt_tenstorrent_tile optimization pass"
                         )
@@ -351,7 +351,7 @@ impl Kernel {
                     }
                     if compute_deps.contains(&scan) {
                         match &self.ops[scan].op {
-                            Op::Index { axis, kind: IdxKind::Local(_), .. } => {
+                            Op::Range { axis, kind: RangeKind::Local(_), .. } => {
                                 writeln!(
                                     compute,
                                     "{indent}uint32_t r{scan} = get_arg_val<uint32_t>({});",
@@ -763,7 +763,7 @@ impl Kernel {
                 }
                 if writer_deps.contains(&scan) {
                     match &self.ops[scan].op {
-                        Op::Index { axis, kind: IdxKind::Group(_), .. } => {
+                        Op::Range { axis, kind: RangeKind::Group(_), .. } => {
                             writeln!(writer, "{indent}uint32_t r{scan} = get_arg_val<uint32_t>({});", n_outputs + *axis as usize);
                             writeln!(writer, "{indent}DPRINT << \"writer r{scan}=gidx{axis}=\" << r{scan} << ENDL();");
                         }
@@ -827,7 +827,7 @@ impl Kernel {
                 Op::Const(val) => {
                     writeln!(writer, "{indent}{} r{op_id} = {};", val.dtype().c_type(), val.c_code());
                 }
-                Op::Index { axis, kind: IdxKind::Group(_), .. } => {
+                Op::Range { axis, kind: RangeKind::Group(_), .. } => {
                     writeln!(writer, "{indent}uint32_t r{op_id} = get_arg_val<uint32_t>({});", n_outputs + axis as usize);
                 }
                 Op::Cast { x, dtype } => {
