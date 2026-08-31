@@ -3829,18 +3829,13 @@ impl Runtime {
             println!("  -> assign_cid={assign_cid:?}");
             return Ok(());
         }
-        // Merge dst's (movement-only) kernel into src's kernel, then store src's
-        // value into dst's base buffer in-place. A Leaf src has no kernel:
-        // mint a fresh load kernel for its buffer — the same clean placement
-        // the old load-kernel path produced.
-        let (src_kid, src_op, src_is_leaf) = match self.tensors[src] {
-            TensorData::Eager { kernel_id, op_id, .. } | TensorData::Promoted { kernel_id, op_id, .. } => {
-                (kernel_id, op_id, false)
-            }
-            TensorData::Leaf { .. } => {
-                let (kid, op) = self.leaf_load(src);
-                (kid, op, true)
-            }
+        // Merge dst's (movement-only) kernel ops into src's kernel, then store
+        // src's value into dst's base buffer in-place. A Leaf src has no
+        // kernel: mint a fresh load kernel for its buffer — the same clean
+        // placement the old load-kernel path produced.
+        let (src_kid, src_op) = match self.tensors[src] {
+            TensorData::Eager { kernel_id, op_id, .. } | TensorData::Promoted { kernel_id, op_id, .. } => (kernel_id, op_id),
+            TensorData::Leaf { .. } => self.leaf_load(src),
             ref t => panic!("assign: src {src} is not an eager/promoted tensor: {t:?}"),
         };
         // A bare Leaf dst (realized buffer, no view kernel): write src's value
@@ -3904,7 +3899,7 @@ impl Runtime {
             ));
         }
 
-        // Validate the dst kernel's loads BEFORE removing it: a failed
+        // Validate the dst kernel's loads before using them: a failed
         // validation must leave the kernel intact so the dst view tensor (still
         // pointing at dst_kid) stays valid and its later drop does not index a
         // deleted kernel.
@@ -3931,19 +3926,26 @@ impl Runtime {
         // The base's backing store may still be deferred (e.g. `contiguous`
         // marks the store but leaves it unmaterialized for fusion). Assign
         // writes in-place, so the storage must exist NOW: force-materialize
-        // the producer kernel that holds the pending store.
+        // the producer kernel that holds the pending store (after the
+        // replayed store is in place, see below).
         match self.tensors[dst_org] {
-            TensorData::Eager { depends_on, .. } if !depends_on.is_null() => {
+            TensorData::Eager { depends_on, .. } | TensorData::Leaf { depends_on, .. } if !depends_on.is_null() => {
                 assert!(
                     depends_on != src_kid,
                     "assign: dst base {dst_org} is pending on src's kernel {src_kid:?}; assign would interleave with its own store"
                 );
             }
-            _ => {}
+            TensorData::Eager { .. } | TensorData::Leaf { .. } => {}
+            ref t => panic!("assign: dst base {dst_org} in unexpected state {t:?}"),
         }
-        // Remove the dst (movement-only) kernel; its base buffer is dst_org.
-        // The removed kernel held a kernel-load reference on dst_org.
-        let KernelData { kernel, loads, .. } = unsafe { self.kernels.remove_and_return(dst_kid) };
+        // dst's movement-only kernel STAYS ALIVE: dst remains a live view over
+        // dst_org and keeps reading the base buffer through it. The replay
+        // below only reads the kernel's ops; the in-place store lands in
+        // src's kernel instead. Nothing about dst or its kernel is mutated,
+        // and no refcounts change — after the store is force-realized the
+        // view simply observes the post-assign buffer on its next read.
+        let kernel = self.kernels[dst_kid].kernel.clone();
+        let loads = self.kernels[dst_kid].loads.clone();
         for t in &loads {
             assert!(
                 *t == dst_org || matches!(self.tensors[*t], TensorData::Variable { .. }),
@@ -4064,8 +4066,14 @@ impl Runtime {
         self.kernels[src_kid].stores.push(dst_org);
         // Register every replayed define's load in define order. Variables
         // only — the GlobalMut base is a PURE STORE now and must not appear
-        // in loads (its buffer slot comes via `stores`).
-        self.kernels[src_kid].loads.extend(new_def_loads);
+        // in loads (its buffer slot comes via `stores`). dst's kernel stays
+        // alive and keeps its own load edges, so these are NEW edges on
+        // src's kernel — each holds one rc (released when src's kernel dies
+        // or materializes), same convention as `leaf_load`.
+        for load in new_def_loads {
+            self.kernels[src_kid].loads.push(load);
+            self.retain(load);
+        }
         #[cfg(debug_assertions)]
         {
             let kd = &self.kernels[src_kid];
@@ -4084,76 +4092,33 @@ impl Runtime {
             assert_eq!(n_non_mut, kd.loads.len(), "assign: loads/defines alignment broken for kernel {:?}", src_kid);
         }
 
-        // Re-point dst BEFORE any cascade-triggering call below. The removal of
-        // dst_kid left dst's `kernel_id` stale (pointing at a deleted kernel);
-        // the force-materialize / release cascades must never observe it.
-        // - dst owns the target buffer (dst == dst_org): keep it valid but
-        //   pending on the store kernel so a read of dst runs the in-place
-        //   write first. Re-point dst onto src_kid (as add_store does) so
-        //   clone drops / releases target a live kernel instead of the store
-        //   kernel that gets consumed on materialization.
-        // - dst is a movement view (dst != dst_org): it has no buffer and is
-        //   invalid after the in-place write — null it out immediately.
-        let rehomed = dst == dst_org;
-        if rehomed {
-            self.kernels[src_kid].outputs.insert(dst);
-        }
-        match &mut self.tensors[dst] {
-            TensorData::Eager { kernel_id, op_id, depends_on, .. } => {
-                if rehomed {
-                    *kernel_id = src_kid;
-                    *op_id = dst_op;
-                    *depends_on = src_kid;
-                } else {
-                    *kernel_id = KernelId::NULL;
-                    *op_id = OpId::NULL;
-                    *depends_on = KernelId::NULL;
-                }
-            }
-            TensorData::Promoted { kernel_id, op_id, .. } => {
-                if rehomed {
-                    *kernel_id = src_kid;
-                    *op_id = dst_op;
-                } else {
-                    *kernel_id = KernelId::NULL;
-                    *op_id = OpId::NULL;
-                }
-            }
-            ref t => panic!("assign: dst {dst} is not an eager/promoted tensor: {t:?}"),
-        }
-
         // The base's backing store may still be deferred (e.g. `contiguous`
         // marks the store but leaves it unmaterialized for fusion). Assign
         // writes in-place, so the storage must exist NOW: force-materialize
-        // the producer kernel that holds the pending store.
-        let pending_kid = match self.tensors[dst_org] {
+        // the producer kernel that holds the pending store, then assert the
+        // buffer actually exists.
+        match self.tensors[dst_org] {
             TensorData::Eager { depends_on, .. } | TensorData::Leaf { depends_on, .. } if !depends_on.is_null() => {
-                Some(depends_on)
+                for out in self.kernels[depends_on].outputs.clone() {
+                    self.add_store(out)?;
+                }
             }
-            _ => None,
-        };
-        if let Some(kid) = pending_kid {
-            // Convention (see `materialize_kernel`): a kernel is materialized by
-            // `add_store`-ing all of its outputs — the last call materializes it
-            // automatically. `materialize_kernel` must not be called directly on
-            // a kernel with unstored outputs.
-            for out in self.kernels[kid].outputs.clone() {
-                self.add_store(out)?;
-            }
+            TensorData::Eager { .. } | TensorData::Leaf { .. } => {}
+            ref t => panic!("assign: dst base {dst_org} in unexpected state {t:?}"),
         }
-        // Drop the kernel-load edge the removed kernel held on dst_org; the
-        // user's handle keeps it alive.
-        self.release(dst_org);
-
-        if rehomed {
-            self.add_store(dst)?;
-        } else if src_is_leaf {
-            // The Leaf-src load kernel has empty outputs, so no add_store
-            // cascade materializes it — launch the in-place store directly.
+        debug_assert!(
+            self.buffer_map.contains_key(&dst_org),
+            "assign: dst base {dst_org} not in buffer_map after materialization"
+        );
+        // Torch semantics: the in-place write is a completed fact before
+        // assign returns — force-realize the store kernel NOW so every view
+        // of the base (dst and any other view over dst_org) observes the
+        // write on its next read, with no per-view ordering bookkeeping.
+        let outputs: Vec<TensorId> = self.kernels[src_kid].outputs.iter().copied().collect();
+        if outputs.is_empty() {
             self.materialize_kernel(src_kid)?;
         } else {
-            let seen: Set<TensorId> = self.kernels[src_kid].outputs.iter().copied().collect();
-            for tid in seen {
+            for tid in outputs {
                 self.add_store(tid)?;
             }
         }
