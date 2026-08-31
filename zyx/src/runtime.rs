@@ -788,6 +788,15 @@ impl Runtime {
     /// two shapes may only merge if every dim is provably equal — same
     /// constant, or the SAME symbolic dim tensor in both operands. If only
     /// the bound values agree, the merge is rejected with an error instead.
+    ///
+    /// TODO: the same-TensorId identity rule is a conservative proxy for
+    /// algebraic equality of dim expressions. A factored normal form (split
+    /// each dim expr into a multiset of irreducible atoms — every additive
+    /// subexpression is one atom, constants folded — then cancel numerator
+    /// against denominator atoms) would make e.g. `numel / divisor` Div nodes
+    /// provably equal to the original symbolic dim, without requiring
+    /// construction sites to preserve the exact same TensorId (see the `-1`
+    /// inference in `Tensor::reshape` and llama's `repeat_kv`).
     pub(crate) fn resolve_shape_without_variables(&self, x: TensorId) -> Vec<ResolvedDim> {
         // Post-order check: does this dim expression contain a Variable anywhere?
         fn contains_variable(rt: &Runtime, x: TensorId) -> bool {

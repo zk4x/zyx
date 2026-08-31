@@ -55,8 +55,11 @@ fn repeat_kv(xs: Tensor, n_rep: usize) -> Tensor {
     if n_rep == 1 {
         return xs;
     }
-    let [b_sz, n_kv_head, _seq_len, head_dim] = xs.dims::<4>().unwrap();
-    // seq_len may be symbolic; dims involving it are passed as -1 (infer).
+    let [b_sz, n_kv_head, seq_len, head_dim] = xs.dims::<4>().unwrap();
+    // seq_len may be symbolic: pass its dim tensor directly (NOT -1) so the
+    // inferred dim keeps the original TensorId — the merge-time provability
+    // checks in binary/assign require the SAME dim tensor, not just equal
+    // values.
     xs.unsqueeze(2)
         .unwrap()
         .expand([-1i64, -1, n_rep as i64, -1, -1])
@@ -64,7 +67,7 @@ fn repeat_kv(xs: Tensor, n_rep: usize) -> Tensor {
         .reshape([
             b_sz.clone(),
             n_kv_head * (n_rep as i64),
-            (-1i64).into(),
+            seq_len.clone(),
             head_dim.clone(),
         ])
         .unwrap()
@@ -559,7 +562,8 @@ impl Llama {
             xs = layer.forward(&xs, &pos, &cache_len);
         }
         xs = self.norm.forward(xs).unwrap();
-        xs = xs.narrow(1, seq_len - 1, 1i64).unwrap().squeeze([1]);        let out = self.lm_head.forward(xs).unwrap();
+        xs = xs.narrow(1, seq_len - 1i64, 1i64).unwrap().squeeze([1]);
+        let out = self.lm_head.forward(xs).unwrap();
         let mut realize_args: Vec<&Tensor> = vec![&out];
         for layer in &self.layers {
             realize_args.push(&layer.self_attn.cache_k);

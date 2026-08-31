@@ -12,3 +12,14 @@ members = [
     "llama",
     "probe",
 ]
+
+[profile.release]
+opt-level = 1
+strip = false
+debug-assertions = true
+overflow-checks = true
+lto = false
+panic = "unwind"
+incremental = true
+codegen-units = 16
+debug = true
