@@ -132,10 +132,55 @@ mod tests {
     }
 
     #[test]
+    fn test_tape_add_direct() -> Result<(), ZyxError> {
+        let a = Tensor::from([[1.0f32, 2.0], [3.0, 4.0]]);
+        let b = Tensor::from([[5.0f32, 6.0], [7.0, 8.0]]);
+        let expected = &a + &b;
+        let tape = zyx::Tape::empty();
+        tape.add(&a)?;
+        tape.add(&b)?;
+        let c = &a + &b;
+        let frozen = tape.freeze([&c])?;
+        let outs = frozen.replay([&a, &b])?;
+        let ov: Vec<f32> = outs[0].clone().try_into()?;
+        eprintln!("direct tape add out: {:?}", ov);
+        let ev: Vec<f32> = expected.clone().try_into()?;
+        eprintln!("expected: {:?}", ev);
+        assert_close(&outs[0], &expected, 1e-5)?;
+        Ok(())
+    }
+
+    #[test]
+    fn test_tape_add_with_zeros_placeholder() -> Result<(), ZyxError> {
+        // Mimic OnnxModel's placeholder zeros as Leaf (host-backed)
+        let a_ph = Tensor::from(vec![0.0f32; 4]).reshape([2, 2])?;
+        let b_ph = Tensor::from(vec![0.0f32; 4]).reshape([2, 2])?;
+        let tape = zyx::Tape::empty();
+        tape.add(&a_ph)?;
+        tape.add(&b_ph)?;
+        let c_ph = &a_ph + &b_ph;
+        let frozen = tape.freeze([&c_ph])?;
+        let a = Tensor::from([[1.0f32, 2.0], [3.0, 4.0]]);
+        let b = Tensor::from([[5.0f32, 6.0], [7.0, 8.0]]);
+        let expected = &a + &b;
+        let outs = frozen.replay([&a, &b])?;
+        let ov: Vec<f32> = outs[0].clone().try_into()?;
+        eprintln!("zeros placeholder tape out: {:?}", ov);
+        assert_close(&outs[0], &expected, 1e-5)?;
+        Ok(())
+    }
+
+    #[test]
     fn test_add() -> Result<(), ZyxError> {
         let a = Tensor::from([[1.0f32, 2.0], [3.0, 4.0]]);
         let b = Tensor::from([[5.0f32, 6.0], [7.0, 8.0]]);
         let expected = &a + &b;
+        let ev: Vec<f32> = expected.clone().try_into()?;
+        eprintln!("expected: {:?}", ev);
+        let av: Vec<f32> = a.clone().try_into()?;
+        eprintln!("a: {:?}", av);
+        let bv: Vec<f32> = b.clone().try_into()?;
+        eprintln!("b: {:?}", bv);
         let model = make_model(
             vec![onnx::NodeProto {
                 input: vec!["a".to_string(), "b".to_string()],
@@ -157,6 +202,15 @@ mod tests {
         inputs.insert("a".to_string(), a.clone());
         inputs.insert("b".to_string(), b.clone());
         let outs = run_onnx(&model, inputs)?;
+        let ov: Vec<f32> = outs["c"].clone().try_into()?;
+        eprintln!("onnx out: {:?}", ov);
+        let simple_out: Vec<f32> = simple_eval(&model, {
+            let mut m = HashMap::new();
+            m.insert("a".to_string(), a.clone());
+            m.insert("b".to_string(), b.clone());
+            m
+        })?["c"].clone().try_into()?;
+        eprintln!("simple_eval out: {:?}", simple_out);
         assert_close(&outs["c"], &expected, 1e-5)?;
         Ok(())
     }
@@ -267,10 +321,17 @@ mod tests {
         let out1 = model.run(inputs.clone())?;
         let out2 = simple_eval(&mp, inputs)?;
         assert_close(&out1["4"], &out2["4"], 1e-4)?;
-        // test replay alias
+        // test second run
         let mut inputs2 = HashMap::new();
         inputs2.insert("x".to_string(), Tensor::rand([8, 128], DType::F32)?);
-        let _ = model.replay(inputs2)?;
+        let _ = model.run(inputs2)?;
+        Ok(())
+    }
+
+    #[test]
+    fn test_from_file_convenience() -> Result<(), ZyxError> {
+        let model = OnnxModel::from_file("model.onnx")?;
+        assert_eq!(model.input_names(), &["x"]);
         Ok(())
     }
 

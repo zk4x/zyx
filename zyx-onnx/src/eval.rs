@@ -118,41 +118,8 @@ impl AttrOwned for Tensor {
             ),
         };
 
-        let data_type = match data_type_from_i32(tensor_proto.data_type) {
-            Some(value) => value,
-            None => panic!(
-                "attribute {} of type TENSOR was an invalid data_type number {}",
-                attr.name,
-                tensor_proto.data_type
-            ),
-        };
-
-        let dtype = match dtype(data_type) {
-            Some(value) => value,
-            None => panic!(
-                "attribute {} of type TENSOR has an unsupported data_type {}",
-                attr.name,
-                data_type.as_str_name()
-            ),
-        };
-
-        let mut dims = Vec::with_capacity(tensor_proto.dims.len());
-        for dim in &tensor_proto.dims {
-            if dim < &0 {
-                panic!(
-                    "attribute {} of type TENSOR has a negative dimension, which is unsupported",
-                    attr.name
-                )
-            }
-            dims.push(Tensor::from(*dim));
-        }
-
-        let base = Tensor::from(tensor_proto.raw_data.clone()).cast(dtype);
-        if dims.is_empty() {
-            Ok(base)
-        } else {
-            base.reshape(dims)
-        }
+        // Reuse get_tensor so raw_data is interpreted correctly (typed, not cast).
+        return get_tensor(tensor_proto, &attr.name);
     }
 }
 
@@ -226,10 +193,11 @@ pub fn get_tensor(t: &onnx::TensorProto, name: &str) -> Result<Tensor, ZyxError>
     match data_type_from_i32(t.data_type) {
         Some(DataType::Int32) => {
             if t.int32_data.is_empty() {
-                let len = t.raw_data.len() / 4;
-                let data: &[i32] =
-                    unsafe { std::slice::from_raw_parts(t.raw_data.as_ptr() as *const i32, len) };
-                let data = data.iter().map(|v| *v as i64).collect::<Vec<_>>();
+                let data: Vec<i64> = t
+                    .raw_data
+                    .chunks_exact(4)
+                    .map(|c| i32::from_le_bytes(c.try_into().unwrap()) as i64)
+                    .collect();
                 let base = Tensor::from(data);
                 if dims.is_empty() {
                     Ok(base)
@@ -258,8 +226,45 @@ pub fn get_tensor(t: &onnx::TensorProto, name: &str) -> Result<Tensor, ZyxError>
                     let base = Tensor::from(t.int64_data.clone());
                     if dims.is_empty() { Ok(base) } else { base.reshape(dims) }
                 } else {
-                    let base = Tensor::from(t.raw_data.clone());
-                    let base = unsafe { base.bitcast(dtype) };
+                    // raw_data is little-endian bytes for `dtype`; interpret
+                    // without `bitcast` (which requires equal bit widths for
+                    // the current zyx custom kernel).
+                    let base = match dtype {
+                        DType::F32 => {
+                            let v: Vec<f32> = t
+                                .raw_data
+                                .chunks_exact(4)
+                                .map(|c| f32::from_le_bytes(c.try_into().unwrap()))
+                                .collect();
+                            Tensor::from(v)
+                        }
+                        DType::F64 => {
+                            let v: Vec<f64> = t
+                                .raw_data
+                                .chunks_exact(8)
+                                .map(|c| f64::from_le_bytes(c.try_into().unwrap()))
+                                .collect();
+                            Tensor::from(v)
+                        }
+                        DType::I64 => {
+                            let v: Vec<i64> = t
+                                .raw_data
+                                .chunks_exact(8)
+                                .map(|c| i64::from_le_bytes(c.try_into().unwrap()))
+                                .collect();
+                            Tensor::from(v)
+                        }
+                        DType::I32 => {
+                            let v: Vec<i64> = t
+                                .raw_data
+                                .chunks_exact(4)
+                                .map(|c| i32::from_le_bytes(c.try_into().unwrap()) as i64)
+                                .collect();
+                            Tensor::from(v)
+                        }
+                        DType::U8 => Tensor::from(t.raw_data.clone()),
+                        _ => panic!("unsupported raw_data dtype {dtype:?}"),
+                    };
                     if dims.is_empty() { Ok(base) } else { base.reshape(dims) }
                 }
             }
@@ -1053,6 +1058,11 @@ impl OnnxModel {
         Self::from_model(&model)
     }
 
+    /// Convenience alias for `load` — `OnnxModel::from_file("my_model.onnx")`.
+    pub fn from_file<P: AsRef<std::path::Path>>(path: P) -> Result<Self, ZyxError> {
+        Self::load(path)
+    }
+
     /// Freeze an already-decoded `ModelProto`.
     pub fn from_model(model: &crate::onnx::ModelProto) -> Result<Self, ZyxError> {
         let graph = model
@@ -1099,13 +1109,38 @@ impl OnnxModel {
         let output_names: Vec<String> = graph.output.iter().map(|o| o.name.clone()).collect();
 
         // Build tape with placeholders for each model input.
+        // Use host-backed Leaf tensors (not `Tensor::zeros` which is an
+        // Eager Expand) so the leaf is a buffer-backed Leaf that can be
+        // rebound at replay time.  `Tensor::zeros` creates an Eager Expand
+        // of a Constant, which has no valid producer path for the frozen
+        // graph (see `test_tape_add_with_zeros_placeholder`).
         let tape = Tape::empty();
         let mut values: HashMap<String, Tensor> = HashMap::new();
         for (name, dtype, shape) in &input_infos {
             let placeholder = if shape.is_empty() {
-                Tensor::zeros(Vec::<Tensor>::new(), *dtype)
+                match dtype {
+                    DType::F32 => Tensor::from(0.0f32),
+                    DType::F64 => Tensor::from(0.0f64),
+                    DType::I64 => Tensor::from(0i64),
+                    DType::I32 => Tensor::from(0i32),
+                    DType::U8 => Tensor::from(0u8),
+                    _ => Tensor::zeros(Vec::<Tensor>::new(), *dtype),
+                }
             } else {
-                Tensor::zeros(shape.clone(), *dtype)
+                let shape_concrete: Vec<i64> =
+                    shape.iter().map(|t| t.item::<i64>()).collect();
+                let n: usize = shape_concrete.iter().map(|&x| x as usize).product();
+                let ph = match dtype {
+                    DType::F32 => Tensor::from(vec![0.0f32; n]).reshape(shape_concrete.clone())?,
+                    DType::F64 => Tensor::from(vec![0.0f64; n]).reshape(shape_concrete.clone())?,
+                    DType::I64 => Tensor::from(vec![0i64; n]).reshape(shape_concrete.clone())?,
+                    DType::I32 => Tensor::from(vec![0i32; n])
+                        .reshape(shape_concrete.clone())?
+                        .cast(DType::I64),
+                    DType::U8 => Tensor::from(vec![0u8; n]).reshape(shape_concrete.clone())?,
+                    _ => Tensor::zeros(shape.clone(), *dtype),
+                };
+                ph
             };
             tape.add(&placeholder)?;
             values.insert(name.clone(), placeholder);
@@ -1115,12 +1150,12 @@ impl OnnxModel {
         // initializers, validates inputs, and creates graph nodes for every
         // ONNX op. Because at least one input is a graph tensor, all
         // downstream ops become graph nodes.
-        simple_eval_(graph, &mut values)?;
+        let outputs_map = simple_eval_(graph, &mut values)?;
 
         // Collect output tensors (they are graph tensors) and freeze.
         let mut outputs = Vec::new();
         for name in &output_names {
-            let t = values
+            let t = outputs_map
                 .get(name)
                 .unwrap_or_else(|| panic!("output {} not found after eval", name))
                 .clone();
@@ -1155,11 +1190,6 @@ impl OnnxModel {
             map.insert(name.clone(), t);
         }
         Ok(map)
-    }
-
-    /// Alias for `run`, mirroring `FrozenTape::replay` naming.
-    pub fn replay(&self, inputs: HashMap<String, Tensor>) -> Result<HashMap<String, Tensor>, ZyxError> {
-        self.run(inputs)
     }
 
     /// ONNX input names in tape order.
