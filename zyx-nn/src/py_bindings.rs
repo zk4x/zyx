@@ -13,26 +13,26 @@ use zyx::{DType, Tensor, ZyxError};
 
 type ZyxResult<T> = std::result::Result<T, ZyxError>;
 
-/// Convert a Python tuple of two u64 values to a Vec<u64> for shape parameters.
-fn to_sh_from_tuple(t: (u64, u64)) -> Vec<u64> {
+/// Convert a Python tuple of two i64 values to a Vec<i64> for shape parameters.
+fn to_sh_from_tuple(t: (i64, i64)) -> Vec<i64> {
     vec![t.0, t.1]
 }
 
-/// Convert a Python tuple or nested list/tuple to a Vec<u64> for shape parameters.
-fn to_sh(shape: &Bound<'_, PyTuple>) -> Vec<u64> {
+/// Convert a Python tuple or nested list/tuple to a Vec<i64> for shape parameters.
+fn to_sh(shape: &Bound<'_, PyTuple>) -> Vec<i64> {
     if shape.len() == 1 {
         let first = shape.get_item(0).unwrap();
         if first.is_instance_of::<PyList>() || first.is_instance_of::<PyTuple>() {
             let iter = PyIterator::from_object(&first).unwrap();
             return iter
-                .filter_map(|item| item.ok().and_then(|v| v.extract::<u64>().ok()))
+                .filter_map(|item| item.ok().and_then(|v| v.extract::<i64>().ok()))
                 .collect();
         }
     }
     shape
         .as_slice()
         .iter()
-        .filter_map(|x| x.extract::<u64>().ok())
+        .filter_map(|x| x.extract::<i64>().ok())
         .collect()
 }
 
@@ -44,8 +44,8 @@ impl Linear {
     #[new]
     #[pyo3(signature = (in_features, out_features, bias=true, dtype=DType::F32))]
     pub fn py_new(
-        in_features: u64,
-        out_features: u64,
+        in_features: i64,
+        out_features: i64,
         bias: bool,
         dtype: DType,
     ) -> ZyxResult<Self> {
@@ -73,12 +73,12 @@ impl Conv2d {
     #[new]
     #[pyo3(signature = (in_channels, out_channels, kernel_size, stride=(1,1), padding=(0,0), dilation=(1,1), groups=1, bias=true, dtype=DType::F32))]
     pub fn py_new(
-        in_channels: u64,
-        out_channels: u64,
-        kernel_size: (u64, u64),
-        stride: (u64, u64),
-        padding: (u64, u64),
-        dilation: (u64, u64),
+        in_channels: i64,
+        out_channels: i64,
+        kernel_size: (i64, i64),
+        stride: (i64, i64),
+        padding: (i64, i64),
+        dilation: (i64, i64),
         groups: u64,
         bias: bool,
         dtype: DType,
@@ -116,7 +116,7 @@ impl Embedding {
     /// Create a new Embedding layer.
     #[new]
     #[pyo3(signature = (num_embeddings, embedding_dim, dtype=DType::F32))]
-    pub fn py_new(num_embeddings: u64, embedding_dim: u64, dtype: DType) -> ZyxResult<Self> {
+    pub fn py_new(num_embeddings: i64, embedding_dim: i64, dtype: DType) -> ZyxResult<Self> {
         Self::new(num_embeddings, embedding_dim, dtype)
     }
 
@@ -177,7 +177,7 @@ impl BatchNorm {
     #[new]
     #[pyo3(signature = (num_features, eps=1e-5, momentum=0.1, affine=true, track_running_stats=true, dtype=DType::F32))]
     pub fn py_new(
-        num_features: u64,
+        num_features: i64,
         eps: f64,
         momentum: f64,
         affine: bool,
@@ -189,29 +189,29 @@ impl BatchNorm {
             momentum: momentum as f32,
             track_running_stats,
             weight: if affine {
-                Some(Tensor::ones(num_features, dtype))
+                Some(Tensor::ones([num_features], dtype))
             } else {
                 None
             },
             bias: if affine {
-                Some(Tensor::zeros(num_features, dtype))
+                Some(Tensor::zeros([num_features], dtype))
             } else {
                 None
             },
             running_mean: if track_running_stats {
-                Tensor::zeros(num_features, dtype)
+                Tensor::zeros([num_features], dtype)
             } else {
-                Tensor::zeros(0, dtype)
+                Tensor::zeros([0i64], dtype)
             },
             running_var: if track_running_stats {
-                Tensor::ones(num_features, dtype)
+                Tensor::ones([num_features], dtype)
             } else {
-                Tensor::zeros(0, dtype)
+                Tensor::zeros([0i64], dtype)
             },
             num_batches_tracked: if track_running_stats {
-                Tensor::zeros(1, dtype)
+                Tensor::zeros([1i64], dtype)
             } else {
-                Tensor::zeros(0, dtype)
+                Tensor::zeros([0i64], dtype)
             },
         }
     }
@@ -225,8 +225,8 @@ impl GroupNorm {
     #[new]
     #[pyo3(signature = (num_groups, num_channels, eps=1e-5, affine=true, dtype=DType::F32))]
     pub fn py_new(
-        num_groups: u64,
-        num_channels: u64,
+        num_groups: i64,
+        num_channels: i64,
         eps: f64,
         affine: bool,
         dtype: DType,
@@ -258,7 +258,7 @@ impl RMSNorm {
     /// Create a new RMSNorm layer.
     #[new]
     #[pyo3(signature = (dim, dtype=DType::F32))]
-    pub fn py_new(dim: u64, dtype: DType) -> Self {
+    pub fn py_new(dim: i64, dtype: DType) -> Self {
         Self::new(dim, dtype)
     }
 
@@ -283,8 +283,8 @@ impl CausalSelfAttention {
     #[new]
     #[pyo3(signature = (embed_dim, num_heads, bias=true, dropout=0.0, dtype=DType::F32))]
     pub fn py_new(
-        embed_dim: u64,
-        num_heads: u64,
+        embed_dim: i64,
+        num_heads: i64,
         bias: bool,
         dropout: f32,
         dtype: DType,
@@ -313,14 +313,14 @@ impl MultiheadAttention {
     #[new]
     #[pyo3(signature = (embed_dim, num_heads, dropout=0.0, bias=true, add_bias_kv=false, add_zero_attn=false, kdim=None, vdim=None, batch_first=false, dtype=DType::F32))]
     pub fn py_new(
-        embed_dim: u64,
-        num_heads: u64,
+        embed_dim: i64,
+        num_heads: i64,
         dropout: f32,
         bias: bool,
         add_bias_kv: bool,
         add_zero_attn: bool,
-        kdim: Option<u64>,
-        vdim: Option<u64>,
+        kdim: Option<i64>,
+        vdim: Option<i64>,
         batch_first: bool,
         dtype: DType,
     ) -> ZyxResult<Self> {
@@ -386,7 +386,7 @@ impl PositionalEncoding {
     /// Create a new PositionalEncoding layer.
     #[new]
     #[pyo3(signature = (d_model, max_len=5000, dropout=0.1, dtype=DType::F32))]
-    pub fn py_new(d_model: u64, max_len: usize, dropout: f32, dtype: DType) -> ZyxResult<Self> {
+    pub fn py_new(d_model: i64, max_len: usize, dropout: f32, dtype: DType) -> ZyxResult<Self> {
         Self::new(d_model, max_len, dropout, dtype)
     }
 
@@ -411,9 +411,9 @@ impl TransformerEncoderLayer {
     #[new]
     #[pyo3(signature = (d_model, nhead, dim_feedforward=2048, dropout=0.1, layer_norm_eps=1e-5, batch_first=false, norm_first=false, bias=true, dtype=DType::F32))]
     pub fn py_new(
-        d_model: u64,
-        nhead: u64,
-        dim_feedforward: u64,
+        d_model: i64,
+        nhead: i64,
+        dim_feedforward: i64,
         dropout: f32,
         layer_norm_eps: f64,
         batch_first: bool,
@@ -456,9 +456,9 @@ impl TransformerDecoderLayer {
     #[new]
     #[pyo3(signature = (d_model, nhead, dim_feedforward=2048, dropout=0.1, layer_norm_eps=1e-5, batch_first=false, norm_first=false, bias=true, dtype=DType::F32))]
     pub fn py_new(
-        d_model: u64,
-        nhead: u64,
-        dim_feedforward: u64,
+        d_model: i64,
+        nhead: i64,
+        dim_feedforward: i64,
         dropout: f32,
         layer_norm_eps: f64,
         batch_first: bool,
@@ -519,8 +519,8 @@ impl RNNCell {
     #[new]
     #[pyo3(signature = (input_size, hidden_size, bias=true, nonlinearity="tanh", dtype=DType::F32))]
     pub fn py_new(
-        input_size: u64,
-        hidden_size: u64,
+        input_size: i64,
+        hidden_size: i64,
         bias: bool,
         nonlinearity: &str,
         dtype: DType,
@@ -549,7 +549,7 @@ impl GRUCell {
     /// Create a new GRUCell.
     #[new]
     #[pyo3(signature = (input_size, hidden_size, bias=true, dtype=DType::F32))]
-    pub fn py_new(input_size: u64, hidden_size: u64, bias: bool, dtype: DType) -> ZyxResult<Self> {
+    pub fn py_new(input_size: i64, hidden_size: i64, bias: bool, dtype: DType) -> ZyxResult<Self> {
         Self::new(input_size, hidden_size, bias, dtype)
     }
 
@@ -573,7 +573,7 @@ impl LSTMCell {
     /// Create a new LSTMCell.
     #[new]
     #[pyo3(signature = (input_size, hidden_size, bias=true, dtype=DType::F32))]
-    pub fn py_new(input_size: u64, hidden_size: u64, bias: bool, dtype: DType) -> ZyxResult<Self> {
+    pub fn py_new(input_size: i64, hidden_size: i64, bias: bool, dtype: DType) -> ZyxResult<Self> {
         Self::new(input_size, hidden_size, bias, Some(dtype))
     }
 

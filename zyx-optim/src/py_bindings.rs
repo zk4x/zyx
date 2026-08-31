@@ -11,7 +11,7 @@ use zyx::Tensor;
 fn do_update(
     model: &Bound<'_, PyAny>,
     grads_list: &Bound<'_, PyList>,
-    update_fn: impl FnOnce(&mut Vec<Tensor>, Vec<Option<Tensor>>),
+    update_fn: impl FnOnce(&mut Vec<Tensor>, Vec<Tensor>),
     py: Python<'_>,
 ) -> PyResult<()> {
     let params_obj = model.call_method0("get_params")?;
@@ -20,13 +20,14 @@ fn do_update(
         .iter()
         .map(|t| t.extract::<Tensor>().expect("params must be list of Tensor"))
         .collect();
-    let grads: Vec<Option<Tensor>> = grads_list
+    let grads: Vec<Tensor> = grads_list
         .iter()
-        .map(|t| {
+        .enumerate()
+        .map(|(i, t)| {
             if t.is_none() {
-                None
+                Tensor::zeros_like(params[i].clone())
             } else {
-                Some(t.extract::<Tensor>().expect("gradients must be list of Tensor or None"))
+                t.extract::<Tensor>().expect("gradients must be list of Tensor or None")
             }
         })
         .collect();

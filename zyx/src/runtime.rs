@@ -2321,15 +2321,6 @@ impl Runtime {
         #[cfg(feature = "debug_tensor_op")]
         println!("runtime::unary(x={x}, uop={uop:?})");
         self.verify_tensor_invariants();
-        debug_assert!(
-            !self.resolve_shape(x).is_empty(),
-            "unary input must have at least one dim; x={x} state={:?} shape={:?}\n  t0={:?}\n  t1={:?}\n  kernels={:?}",
-            self.tensors[x],
-            self.shape(x),
-            self.tensors.iter().filter(|(i, _)| i.0 <= 3).collect::<Vec<_>>(),
-            self.tensors.iter().filter(|(i, _)| i.0 == 1).map(|(_, t)| t).collect::<Vec<_>>(),
-            self.kernels.iter().collect::<Vec<_>>()
-        );
 
         match self.tensors[x] {
             TensorData::Constant { value, .. } => self.new_constant_tensor(value.unary(uop)),

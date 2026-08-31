@@ -89,7 +89,7 @@ pub use dtype::DType;
 pub use error::ZyxError;
 pub use module::Module;
 pub use scalar::{Float, Scalar, bf16, f16};
-pub use tape::Tape;
+pub use tape::{FrozenTape, Tape};
 pub use tensor::ReduceOp;
 pub use tensor::Tensor;
 
