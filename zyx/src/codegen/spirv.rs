@@ -5,11 +5,11 @@
 //! Translates kernel IR ops to SPIR-V machine code (`Vec<u32>`).
 
 use crate::{
-    shape::Dim,
     DType, Map,
     dtype::Constant,
     error::{BackendError, ErrorStatus},
-    kernel::{BOp, IDX_T, IdxKind, Kernel, MemLayout, MemScope, Op, OpId, ParamKind, UOp},
+    kernel::{BOp, IDX_T, Kernel, MemLayout, MemScope, Op, OpId, ParamKind, RangeKind, UOp},
+    shape::Dim,
 };
 use std::hash::BuildHasherDefault;
 
@@ -840,7 +840,7 @@ impl Kernel {
                             let key = match IDX_T {
                                 DType::U32 => Constant::U32(val),
                                 DType::I32 => Constant::I32(val as i32),
-                                DType::U64 => Constant::U64((val  as i64).to_le_bytes()),
+                                DType::U64 => Constant::U64((val as i64).to_le_bytes()),
                                 dt => {
                                     return Err(BackendError {
                                         status: ErrorStatus::KernelCompilation,
@@ -871,15 +871,15 @@ impl Kernel {
                     _ => {}
                 }
                 // Track work sizes from Index ops
-                if let Op::Index { axis, kind: scope } = self.ops[op_id].op {
+                if let Op::Range { axis, kind: scope } = self.ops[op_id].op {
                     match scope {
-                        IdxKind::Group(_) => {}
-                        IdxKind::Local(len) => {
+                        RangeKind::Group(_) => {}
+                        RangeKind::Local(len) => {
                             if axis < 3 {
                                 lws[axis as usize] = lws[axis as usize].max(u64::from(len));
                             }
                         }
-                        IdxKind::Warp(_) => todo!(),
+                        RangeKind::Warp(_) => todo!(),
                     }
                 }
                 op_id = self.next_op(op_id);
@@ -964,7 +964,7 @@ impl Kernel {
                 if steps_op_id > 10_000 {
                     panic!("generate_spirv did not finish in 10000 steps");
                 }
-                if let &Op::Index { .. } = self.at(op_id) {
+                if let &Op::Range { .. } = self.at(op_id) {
                     found = true;
                     break;
                 }
@@ -1114,7 +1114,7 @@ impl Kernel {
                         asm.emit_typed(OpCompositeConstruct, result_type, rid, &operands);
                         spv_values.insert(op_id, rid);
                     }
-                    Op::Devectorize { vec, idx } => {
+                    Op::Index { vec, idx } => {
                         let scalar_type = push_dtype(&mut asm, &mut type_cache, &mut type_entries, dtypes[&op_id].0);
                         let rid = asm.id();
                         asm.emit_typed(OpCompositeExtract, scalar_type, rid, &[spv_values[&vec], idx as u32]);
@@ -1578,13 +1578,13 @@ impl Kernel {
                         }
                         spv_values.insert(op_id, rid);
                     }
-                    Op::Index { axis, kind: scope, .. } => {
+                    Op::Range { axis, kind: scope, .. } => {
                         let result_type = emit_type(&mut asm, &mut type_cache, IDX_T);
                         let loaded = asm.id();
                         match scope {
-                            IdxKind::Group(_) => asm.emit_typed(OpLoad, vec3_id, loaded, &[wg_id_var]),
-                            IdxKind::Local(_) => asm.emit_typed(OpLoad, vec3_id, loaded, &[local_inv_var]),
-                            IdxKind::Warp(_) => todo!(),
+                            RangeKind::Group(_) => asm.emit_typed(OpLoad, vec3_id, loaded, &[wg_id_var]),
+                            RangeKind::Local(_) => asm.emit_typed(OpLoad, vec3_id, loaded, &[local_inv_var]),
+                            RangeKind::Warp(_) => todo!(),
                         }
                         let elem = asm.id();
                         asm.emit_typed(OpCompositeExtract, u32_id, elem, &[loaded, axis]);

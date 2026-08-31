@@ -116,9 +116,9 @@ impl Kernel {
                         loads[0].id,
                         Op::Load { src, index: loads[0].index, layout: MemLayout::Vector(vec_len as u16) },
                     );
-                    self.ops[loads[0].id].op = Op::Devectorize { vec: vload, idx: 0 };
+                    self.ops[loads[0].id].op = Op::Index { vec: vload, idx: 0 };
                     for (load, &off) in loads[1..].iter().zip(&offset_order) {
-                        self.ops[load.id].op = Op::Devectorize { vec: vload, idx: off as usize };
+                        self.ops[load.id].op = Op::Index { vec: vload, idx: off as usize };
                     }
                 }
             }
@@ -292,22 +292,22 @@ impl Kernel {
                     Op::Unary { uop, x } => {
                         let (uop, x) = (*uop, *x);
                         match &self.ops[x].op {
-                            Op::Devectorize { vec, idx } => Some((*vec, OpType::Unary(uop), op_id, *idx)),
+                            Op::Index { vec, idx } => Some((*vec, OpType::Unary(uop), op_id, *idx)),
                             _ => None,
                         }
                     }
                     Op::Cast { dtype, x } => {
                         let (dtype, x) = (*dtype, *x);
                         match &self.ops[x].op {
-                            Op::Devectorize { vec, idx } => Some((*vec, OpType::Cast(dtype), op_id, *idx)),
+                            Op::Index { vec, idx } => Some((*vec, OpType::Cast(dtype), op_id, *idx)),
                             _ => None,
                         }
                     }
                     Op::Binary { bop, x, y } => {
                         let (bop, x, y) = (*bop, *x, *y);
-                        if let Op::Devectorize { vec, idx } = &self.ops[x].op {
+                        if let Op::Index { vec, idx } = &self.ops[x].op {
                             Some((*vec, OpType::Binary(bop, 0), op_id, *idx))
-                        } else if let Op::Devectorize { vec, idx } = &self.ops[y].op {
+                        } else if let Op::Index { vec, idx } = &self.ops[y].op {
                             Some((*vec, OpType::Binary(bop, 1), op_id, *idx))
                         } else {
                             None
@@ -423,7 +423,7 @@ impl Kernel {
                     }
                 };
                 for (i, &(consumer, _)) in selected.iter().enumerate() {
-                    self.ops[consumer].op = Op::Devectorize { vec: vec_op_id, idx: i };
+                    self.ops[consumer].op = Op::Index { vec: vec_op_id, idx: i };
                 }
                 applied = true;
                 break;
@@ -542,8 +542,8 @@ mod tests {
 
     // Helper to verify c0/c1 were replaced with devecs, find vectorize + vector op
     fn check_forward_result(k: &Kernel, c0: crate::kernel::OpId, c1: crate::kernel::OpId) {
-        assert!(matches!(k.ops[c0].op, Op::Devectorize { .. }));
-        assert!(matches!(k.ops[c1].op, Op::Devectorize { .. }));
+        assert!(matches!(k.ops[c0].op, Op::Index { .. }));
+        assert!(matches!(k.ops[c1].op, Op::Index { .. }));
         let mut found_v = false;
         let mut found_vop = false;
         let mut op_id = k.head;
@@ -579,8 +579,8 @@ mod tests {
 
         k.vectorize_ops_forward(&[2]);
 
-        assert!(matches!(k.ops[s0].op, Op::Devectorize { .. }));
-        assert!(matches!(k.ops[s1].op, Op::Devectorize { .. }));
+        assert!(matches!(k.ops[s0].op, Op::Index { .. }));
+        assert!(matches!(k.ops[s1].op, Op::Index { .. }));
         check_forward_result(&k, c0, c1);
     }
 
@@ -610,11 +610,11 @@ mod tests {
         k.vectorize_ops_forward(&[2, 4]);
 
         // All 4 should be devecs after one pass (vectorized as length 4)
-        assert!(matches!(k.ops[s0].op, Op::Devectorize { .. }));
-        assert!(matches!(k.ops[c0].op, Op::Devectorize { .. }));
-        assert!(matches!(k.ops[c1].op, Op::Devectorize { .. }));
-        assert!(matches!(k.ops[c2].op, Op::Devectorize { .. }));
-        assert!(matches!(k.ops[c3].op, Op::Devectorize { .. }));
+        assert!(matches!(k.ops[s0].op, Op::Index { .. }));
+        assert!(matches!(k.ops[c0].op, Op::Index { .. }));
+        assert!(matches!(k.ops[c1].op, Op::Index { .. }));
+        assert!(matches!(k.ops[c2].op, Op::Index { .. }));
+        assert!(matches!(k.ops[c3].op, Op::Index { .. }));
 
         let mut found_v = false;
         let mut found_vop = false;
@@ -668,10 +668,10 @@ mod tests {
 
         // After full run: all 4 consumers should be devecs
         // (cos was vectorized first as length-2, then sin as length-2)
-        assert!(matches!(k.ops[c0].op, Op::Devectorize { .. }));
-        assert!(matches!(k.ops[c1].op, Op::Devectorize { .. }));
-        assert!(matches!(k.ops[c2].op, Op::Devectorize { .. }));
-        assert!(matches!(k.ops[c3].op, Op::Devectorize { .. }));
+        assert!(matches!(k.ops[c0].op, Op::Index { .. }));
+        assert!(matches!(k.ops[c1].op, Op::Index { .. }));
+        assert!(matches!(k.ops[c2].op, Op::Index { .. }));
+        assert!(matches!(k.ops[c3].op, Op::Index { .. }));
 
         // Should have two Vectorize ops (cos group and sin group)
         let mut v_count = 0;
@@ -711,10 +711,10 @@ mod tests {
 
         k.vectorize_ops_forward(&[2]);
 
-        assert!(matches!(k.ops[s0].op, Op::Devectorize { .. }));
-        assert!(matches!(k.ops[s1].op, Op::Devectorize { .. }));
-        assert!(matches!(k.ops[r0].op, Op::Devectorize { .. }));
-        assert!(matches!(k.ops[r1].op, Op::Devectorize { .. }));
+        assert!(matches!(k.ops[s0].op, Op::Index { .. }));
+        assert!(matches!(k.ops[s1].op, Op::Index { .. }));
+        assert!(matches!(k.ops[r0].op, Op::Index { .. }));
+        assert!(matches!(k.ops[r1].op, Op::Index { .. }));
 
         // Find the vector Binary op
         let mut found_vec_bin = false;
@@ -753,8 +753,8 @@ mod tests {
 
         k.vectorize_ops_forward(&[2]);
 
-        assert!(matches!(k.ops[r0].op, Op::Devectorize { .. }));
-        assert!(matches!(k.ops[r1].op, Op::Devectorize { .. }));
+        assert!(matches!(k.ops[r0].op, Op::Index { .. }));
+        assert!(matches!(k.ops[r1].op, Op::Index { .. }));
     }
 
     #[test]
@@ -783,7 +783,7 @@ mod tests {
         let mut op_id = k.head;
         while !op_id.is_null() {
             match k.ops[op_id].op {
-                Op::Stack { .. } | Op::Devectorize { .. } => {
+                Op::Stack { .. } | Op::Index { .. } => {
                     panic!("Found Vectorize/Devectorize op at {op_id} after passes");
                 }
                 _ => {}

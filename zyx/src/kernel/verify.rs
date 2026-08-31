@@ -6,7 +6,7 @@ use std::ops::RangeInclusive;
 use crate::{
     DType, Map, Set,
     dtype::Constant,
-    kernel::{BOp, IDX_T, IdxKind, Kernel, MemScope, Op, OpId, ParamKind},
+    kernel::{BOp, IDX_T, Kernel, MemScope, Op, OpId, ParamKind, RangeKind},
     shape::Dim,
 };
 
@@ -63,13 +63,13 @@ impl Kernel {
                     }
                     Op::Load { .. }
                     | Op::Storage { .. }
-                    | Op::Index { .. }
+                    | Op::Range { .. }
                     | Op::Loop { .. }
                     | Op::EndLoop
                     | Op::If { .. }
                     | Op::EndIf
                     | Op::Mad { .. }
-                    | Op::Devectorize { .. }
+                    | Op::Index { .. }
                     | Op::Barrier
                     | Op::Wmma { .. }
                     | Op::ReduceTile { .. }
@@ -124,7 +124,9 @@ impl Kernel {
                             }
                         }
                     },
-                    Op::Storage { scope: MemScope::Local, .. } | Op::Storage { scope: MemScope::CircularReader, .. } | Op::Storage { scope: MemScope::CircularWriter, .. } => {
+                    Op::Storage { scope: MemScope::Local, .. }
+                    | Op::Storage { scope: MemScope::CircularReader, .. }
+                    | Op::Storage { scope: MemScope::CircularWriter, .. } => {
                         if phase == Phase::GlobalRo || phase == Phase::GlobalRw || phase == Phase::LocalRo {
                             phase = Phase::LocalRw;
                         }
@@ -249,7 +251,7 @@ impl Kernel {
                     }
                     dtypes.insert(op_id, dtype);
                 }
-                Op::Devectorize { vec, .. } => {
+                Op::Index { vec, .. } => {
                     let dtype = dtypes[&vec];
                     dtypes.insert(op_id, dtype);
                 }
@@ -301,9 +303,9 @@ impl Kernel {
                     check(op_id, index, &stack);
                     dtypes.insert(op_id, dtypes[&src]);
                 }
-                Op::Index { axis, kind: scope, .. } => {
+                Op::Range { axis, kind: scope, .. } => {
                     match scope {
-                        IdxKind::Group(len) => {
+                        RangeKind::Group(len) => {
                             if !gids.insert(axis) {
                                 println!("index={op_id} is using {scope} axis={axis} for the second time");
                                 self.debug();
@@ -317,14 +319,14 @@ impl Kernel {
                                 panic!();
                             }
                         }
-                        IdxKind::Local(_) => {
+                        RangeKind::Local(_) => {
                             if !lids.insert(axis) {
                                 println!("index={op_id} is using {scope} axis={axis} for the second time");
                                 self.debug();
                                 panic!();
                             }
                         }
-                        IdxKind::Warp(_) => todo!(),
+                        RangeKind::Warp(_) => todo!(),
                     }
                     dtypes.insert(op_id, IDX_T);
                 }
@@ -464,11 +466,11 @@ impl Kernel {
                     self.rederive_bounds(&mut bounds, op_id);
                 }
                 Op::If { .. } | Op::EndIf => {}
-                Op::Index { kind: scope, .. } => {
+                Op::Range { kind: scope, .. } => {
                     let len = match scope {
-                        IdxKind::Group(len) => self.resolve_const(len).and_then(crate::dtype::Constant::as_dim),
-                        IdxKind::Local(len) => Some(i64::from(len)),
-                        IdxKind::Warp(len) => Some(i64::from(len)),
+                        RangeKind::Group(len) => self.resolve_const(len).and_then(crate::dtype::Constant::as_dim),
+                        RangeKind::Local(len) => Some(i64::from(len)),
+                        RangeKind::Warp(len) => Some(i64::from(len)),
                     };
                     // An unresolved (dynamic) group length is UNKNOWN: no bounds
                     // must be fabricated for it. A huge sentinel here would wrap
@@ -580,14 +582,14 @@ impl Kernel {
                         } else if min_x == 0 {
                             0
                         } else {
-                            min_x.saturating_pow(min_y.min(u32::MAX  as i64) as u32)
+                            min_x.saturating_pow(min_y.min(u32::MAX as i64) as u32)
                         };
                         let max_val = if max_y == 0 {
                             1
                         } else if max_x == 0 {
                             0
                         } else {
-                            max_x.saturating_pow(max_y.min(u32::MAX  as i64) as u32)
+                            max_x.saturating_pow(max_y.min(u32::MAX as i64) as u32)
                         };
                         (min_val, max_val)
                     }

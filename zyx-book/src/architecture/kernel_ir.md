@@ -56,7 +56,7 @@ Op::Barrier { scope }
 
 ### Indexing
 ```rust,ignore
-Op::Index { len, scope, axis }
+Op::Range { axis, kind: RangeKind }  // Group / Local / Warp
 ```
 
 ### Hardware Accelerators
@@ -67,7 +67,7 @@ Op::Wmma { dims, layout, dtype, a, b, c }
 ### Vectorization
 ```rust,ignore
 Op::Vectorize { ops: Vec<OpId> }
-Op::Devectorize { vec: OpId, idx }
+Op::Index { vec: OpId, idx }  // select a single value from a vector
 ```
 
 ### View (before unfolding)

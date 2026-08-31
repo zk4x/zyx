@@ -112,7 +112,7 @@ use crate::{
     dtype::Constant,
     error::{BackendError, ErrorStatus},
     graph::{ClassId, Graph, Node, NodeData},
-    kernel::{IdxKind, Kernel, MMADType, MMADims, Op, OpId},
+    kernel::{Kernel, MMADType, MMADims, Op, OpId, RangeKind},
     runtime::ShapeId,
     shape::Dim,
     slab::{Slab, SlabId},
@@ -132,8 +132,7 @@ macro_rules! send_or_continue {
 
 use super::{
     DTypeCapability, Device, DeviceId, DeviceInfo, DeviceProgramId, Event, GwsDim, LaunchArg, MemoryPool, PoolBufferId, PoolId,
-    ProgramId,
-    gws_from_kernel,
+    ProgramId, gws_from_kernel,
 };
 
 /// CUDA configuration
@@ -684,10 +683,13 @@ pub(super) fn initialize_device(
                                     let mut scalar_values: Vec<Box<[u8]>> = Vec::new();
                                     // Stable storage for the device pointers of buffer args —
                                     // cuLaunchKernel receives their addresses by reference.
-                                    let mut buffer_ptrs: Vec<u64> = args.iter().filter_map(|arg| match arg {
-                                        LaunchArg::Buffer(buffer_id) => Some(buffers[*buffer_id].ptr),
-                                        LaunchArg::Variable(_) => None,
-                                    }).collect();
+                                    let mut buffer_ptrs: Vec<u64> = args
+                                        .iter()
+                                        .filter_map(|arg| match arg {
+                                            LaunchArg::Buffer(buffer_id) => Some(buffers[*buffer_id].ptr),
+                                            LaunchArg::Variable(_) => None,
+                                        })
+                                        .collect();
                                     let mut buf_ptr_idx = 0usize;
                                     for arg in args.iter() {
                                         match arg {
@@ -843,7 +845,7 @@ pub(super) fn initialize_device(
                 dev.get(CUdevice_attribute::CU_DEVICE_ATTRIBUTE_MAX_SHARED_MEMORY_PER_BLOCK, cuDeviceGetAttribute)?,
             )
             .unwrap(),
-            max_register_bytes: (max_regs_per_block  as i64 / max_threads_per_block  as i64).min(256) * 4,
+            max_register_bytes: (max_regs_per_block as i64 / max_threads_per_block as i64).min(256) * 4,
             preferred_vector_size: 16,
             tensor_cores: major >= 7,
             warp_size: 32,
@@ -898,7 +900,7 @@ impl CUDAMemoryPool {
     pub fn host_to_pool(&mut self, src: &[u8], dst: PoolBufferId, event_wait_list: Vec<Event>) -> Result<Event, BackendError> {
         let (reply, reply_rx) = channel();
         self.tx
-            .send(CUDACommand::HostToPool { src: src.as_ptr(), bytes: src.len()  as i64, dst, event_wait_list, reply })
+            .send(CUDACommand::HostToPool { src: src.as_ptr(), bytes: src.len() as i64, dst, event_wait_list, reply })
             .unwrap();
         reply_rx.recv().unwrap()
     }
@@ -907,7 +909,7 @@ impl CUDAMemoryPool {
     pub fn pool_to_host(&mut self, src: PoolBufferId, dst: &mut [u8], event_wait_list: Vec<Event>) -> Result<(), BackendError> {
         let (reply, reply_rx) = channel();
         self.tx
-            .send(CUDACommand::PoolToHost { src, dst: dst.as_mut_ptr(), bytes: dst.len()  as i64, event_wait_list, reply })
+            .send(CUDACommand::PoolToHost { src, dst: dst.as_mut_ptr(), bytes: dst.len() as i64, event_wait_list, reply })
             .unwrap();
         reply_rx.recv().unwrap()
     }
@@ -1815,11 +1817,11 @@ impl CUDADevice {
             if steps_op_id > 10_000 {
                 panic!("compile_cuda did not finish in 10000 steps");
             }
-            if let Op::Index { axis, kind: scope } = kernel.ops[op_id].op {
+            if let Op::Range { axis, kind: scope } = kernel.ops[op_id].op {
                 match scope {
-                    IdxKind::Group(_) => {}
-                    IdxKind::Local(len) => lws[axis as usize] = i64::from(len),
-                    IdxKind::Warp(_) => todo!(),
+                    RangeKind::Group(_) => {}
+                    RangeKind::Local(len) => lws[axis as usize] = i64::from(len),
+                    RangeKind::Warp(_) => todo!(),
                 }
             }
             op_id = kernel.next_op(op_id);

@@ -22,13 +22,13 @@ use crate::Map;
 use crate::backend::{BufferId, DeviceInfo, LaunchArg, MemoryPool, ProgramId};
 use crate::dtype::Constant;
 use crate::error::BackendError;
-use crate::tensor::TensorId;
 use crate::kernel::{
-    BOp, DeviceId, IDX_T, IdxKind, Kernel, MMADType, MMADims, MMALayout, MemLayout, MemScope, MoveOp, Op, OpId, ParamKind, UOp,
+    BOp, DeviceId, IDX_T, Kernel, MMADType, MMADims, MMALayout, MemLayout, MemScope, MoveOp, Op, OpId, ParamKind, RangeKind, UOp,
 };
 use crate::runtime::{KernelId, TensorData};
 use crate::shape::UAxis;
 use crate::slab::{Slab, SlabId};
+use crate::tensor::TensorId;
 use crate::types::{TinyString, TinyVec};
 use crate::{DType, Tensor, ZyxError, shape::Dim};
 
@@ -267,12 +267,12 @@ impl Kernel {
 
     /// Group (block) index.
     pub fn group_index(&mut self, axis: u32, len: OpId) -> OpId {
-        self.push_back(Op::Index { axis, kind: IdxKind::Group(len) })
+        self.push_back(Op::Range { axis, kind: RangeKind::Group(len) })
     }
 
     /// Local thread index.
     pub fn local_index(&mut self, axis: u32, len: u32) -> OpId {
-        self.push_back(Op::Index { axis, kind: IdxKind::Local(len) })
+        self.push_back(Op::Range { axis, kind: RangeKind::Local(len) })
     }
 
     /// Store `x` to `dst` at `index`.
@@ -497,7 +497,7 @@ impl Kernel {
 
     /// Extract one element from a vectorized value.
     pub fn devectorize_one(&mut self, vec: OpId, idx: usize) -> OpId {
-        self.push_back(Op::Devectorize { vec, idx })
+        self.push_back(Op::Index { vec, idx })
     }
 
     /// Extract all elements from a vectorized value.
@@ -565,10 +565,7 @@ impl CompiledKernel {
         shapes: Vec<impl IntoIterator<Item = impl Into<Tensor>>>,
     ) -> Result<Vec<Tensor>, ZyxError> {
         debug_assert_eq!(inputs.len(), self.inputs.len());
-        let shapes: Vec<Vec<Dim>> = shapes
-            .into_iter()
-            .map(|s| s.into_iter().map(|t| t.into().item::<i64>()).collect())
-            .collect();
+        let shapes: Vec<Vec<Dim>> = shapes.into_iter().map(|s| s.into_iter().map(|t| t.into().item::<i64>()).collect()).collect();
         debug_assert_eq!(shapes.len(), self.outputs.len());
 
         let mut rt = crate::RT.lock();
@@ -649,10 +646,7 @@ impl CompiledKernel {
         for ((dtype, buf_id), shape) in self.outputs.iter().copied().zip(output_bufs).zip(shapes) {
             // Build the slab-side shape expression (constant dims) for the
             // new tensor before pushing it.
-            let dim_tids: Vec<TensorId> = shape
-                .iter()
-                .map(|&d| rt.new_constant_tensor(crate::dtype::Constant::idx(d)))
-                .collect();
+            let dim_tids: Vec<TensorId> = shape.iter().map(|&d| rt.new_constant_tensor(crate::dtype::Constant::idx(d))).collect();
             let shape_id = if dim_tids.is_empty() {
                 TensorId::NULL
             } else {

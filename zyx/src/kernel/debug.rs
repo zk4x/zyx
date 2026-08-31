@@ -22,7 +22,7 @@
 /// ZYX_DEBUG=8 cargo run  # Print IR during kernel compilation
 /// ZYX_DEBUG=16 cargo run # Print generated assembly
 /// ```
-use crate::kernel::{BOp, IDX_T, IdxKind, MoveOp, UOp};
+use crate::kernel::{BOp, IDX_T, MoveOp, RangeKind, UOp};
 use crate::slab::SlabId;
 use crate::{
     BLUE, BOLD, CYAN, DType, GREEN, GREY, MAGENTA, Map, ORANGE, RED, RESET, YELLOW,
@@ -134,14 +134,26 @@ impl Display for Kernel {
                 Op::Param { dtype, kind, shape } => {
                     dtypes.insert(op_id, dtype);
                     if shape.is_null() {
-                        writeln!(f, "{indent}{red}r{out_id}{reset}{grey}: {dtype}{reset} = {yellow}param{reset} {kind} shape=NULL").unwrap();
+                        writeln!(
+                            f,
+                            "{indent}{red}r{out_id}{reset}{grey}: {dtype}{reset} = {yellow}param{reset} {kind} shape=NULL"
+                        )
+                        .unwrap();
                     } else {
-                        writeln!(f, "{indent}{red}r{out_id}{reset}{grey}: {dtype}{reset} = {yellow}param{reset} {kind} shape=r{shape}").unwrap();
+                        writeln!(
+                            f,
+                            "{indent}{red}r{out_id}{reset}{grey}: {dtype}{reset} = {yellow}param{reset} {kind} shape=r{shape}"
+                        )
+                        .unwrap();
                     }
                 }
                 Op::Storage { dtype, scope, len } => {
                     dtypes.insert(op_id, dtype);
-                    writeln!(f, "{indent}{red}r{out_id}{reset}{grey}: {dtype}{reset} = {yellow}storage{reset} {scope}, len={len:?}").unwrap();
+                    writeln!(
+                        f,
+                        "{indent}{red}r{out_id}{reset}{grey}: {dtype}{reset} = {yellow}storage{reset} {scope}, len={len:?}"
+                    )
+                    .unwrap();
                 }
                 Op::Const(value) => {
                     let dtype = value.dtype();
@@ -167,7 +179,8 @@ impl Display for Kernel {
                     let dst = id_map.get(&dst).copied().unwrap_or(dst);
                     let index = id_map.get(&index).copied().unwrap_or(index);
                     let x = id_map.get(&x).copied().unwrap_or(x);
-                    writeln!(f, "{indent}{red}r{dst}{reset}[r{index} @ {layout}] = r{x}    // {lb}..={ub} {red}store{reset}").unwrap();
+                    writeln!(f, "{indent}{red}r{dst}{reset}[r{index} @ {layout}] = r{x}    // {lb}..={ub} {red}store{reset}")
+                        .unwrap();
                 }
                 Op::Cast { x, dtype } => {
                     dtypes.insert(op_id, dtype);
@@ -234,7 +247,8 @@ impl Display for Kernel {
                     let x = id_map.get(&x).copied().unwrap_or(x);
                     let y = id_map.get(&y).copied().unwrap_or(y);
                     if let Some((lb, ub)) = bounds.get(&op_id) {
-                        writeln!(f, "{indent}r{out_id}{grey}: {dtype}{reset} = {op1}r{x}{op2}r{y}{op3}    // {lb}..={ub}").unwrap();
+                        writeln!(f, "{indent}r{out_id}{grey}: {dtype}{reset} = {op1}r{x}{op2}r{y}{op3}    // {lb}..={ub}")
+                            .unwrap();
                     } else {
                         writeln!(f, "{indent}r{out_id}{grey}: {dtype}{reset} = {op1}r{x}{op2}r{y}{op3}").unwrap();
                     }
@@ -259,19 +273,33 @@ impl Display for Kernel {
                     let c = id_map.get(&c).copied().unwrap_or(c);
                     writeln!(f, "{indent}r{out_id}{grey}: {cdtype}{reset} = {orange}wmma{reset}.{dims:?}.{layout:?}.{dtype:?}(c={c}, a={a}, b={b})").unwrap();
                 }
-                Op::Index { axis, kind } => {
+                Op::Range { axis, kind } => {
                     dtypes.insert(op_id, IDX_T);
                     match kind {
-                        IdxKind::Group(len) => {
-                            let ub = self.resolve_const(len).and_then(crate::dtype::Constant::as_dim).unwrap_or(Dim::MAX).saturating_sub(1);
+                        RangeKind::Group(len) => {
+                            let ub = self
+                                .resolve_const(len)
+                                .and_then(crate::dtype::Constant::as_dim)
+                                .unwrap_or(Dim::MAX)
+                                .saturating_sub(1);
                             let len = id_map.get(&len).copied().unwrap_or(len);
                             writeln!(f, "{indent}r{out_id}{grey}: {IDX_T}{reset} = {blue}{kind}_index({axis}){reset} over {len}    // 0..={ub}").unwrap();
                         }
-                        IdxKind::Local(len) => {
-                            writeln!(f, "{indent}r{out_id}{grey}: {IDX_T}{reset} = {blue}{kind}_index({axis}){reset}    // 0..={}", len - 1).unwrap();
+                        RangeKind::Local(len) => {
+                            writeln!(
+                                f,
+                                "{indent}r{out_id}{grey}: {IDX_T}{reset} = {blue}{kind}_index({axis}){reset}    // 0..={}",
+                                len - 1
+                            )
+                            .unwrap();
                         }
-                        IdxKind::Warp(len) => {
-                            writeln!(f, "{indent}r{out_id}{grey}: {IDX_T}{reset} = {blue}local_index({axis}){reset}    // 0..={}", len - 1).unwrap();
+                        RangeKind::Warp(len) => {
+                            writeln!(
+                                f,
+                                "{indent}r{out_id}{grey}: {IDX_T}{reset} = {blue}local_index({axis}){reset}    // 0..={}",
+                                len - 1
+                            )
+                            .unwrap();
                         }
                     }
                 }
@@ -310,17 +338,19 @@ impl Display for Kernel {
                     dtypes.insert(op_id, dtype);
                     let ops: Vec<OpId> = ops.iter().map(|x| id_map.get(x).copied().unwrap_or(OpId::NULL)).collect();
                     if let Some((lb, ub)) = bounds.get(&op_id) {
-                        writeln!(f, "{indent}r{out_id}{grey}: {dtype}{reset} = {orange}stack{reset}{ops:?}    // {lb}..={ub}").unwrap();
+                        writeln!(f, "{indent}r{out_id}{grey}: {dtype}{reset} = {orange}stack{reset}{ops:?}    // {lb}..={ub}")
+                            .unwrap();
                     } else {
                         writeln!(f, "{indent}r{out_id}{grey}: {dtype}{reset} = {orange}stack{reset}{ops:?}").unwrap();
                     }
                 }
-                Op::Devectorize { vec, idx } => {
+                Op::Index { vec, idx } => {
                     let dtype = dtypes.get(&vec).copied().unwrap_or(DType::U8);
                     dtypes.insert(op_id, dtype);
                     let vec = id_map.get(&vec).copied().unwrap_or(OpId::NULL);
                     if let Some((l, u)) = bounds.get(&op_id) {
-                        writeln!(f, "{indent}r{out_id}{grey}: {dtype}{reset} = r{vec}{orange}.s{idx}{reset}    // {l}..={u}",).unwrap();
+                        writeln!(f, "{indent}r{out_id}{grey}: {dtype}{reset} = r{vec}{orange}.s{idx}{reset}    // {l}..={u}",)
+                            .unwrap();
                     } else {
                         writeln!(f, "{indent}r{out_id}{grey}: {dtype}{reset} = r{vec}{orange}.s{idx}{reset}").unwrap();
                     }
@@ -332,19 +362,26 @@ impl Display for Kernel {
                     match mop.as_ref() {
                         &MoveOp::Reshape { shape, .. } => {
                             let shape = id_map.get(&shape).copied().unwrap_or(shape);
-                            writeln!(f, "{indent}r{out_id}{grey}: {dtype}{reset} = {cyan}reshape{reset} r{x} -> {shape:?}").unwrap();
+                            writeln!(f, "{indent}r{out_id}{grey}: {dtype}{reset} = {cyan}reshape{reset} r{x} -> {shape:?}")
+                                .unwrap();
                         }
                         &MoveOp::Expand { shape } => {
                             let shape = id_map.get(&shape).copied().unwrap_or(shape);
-                            writeln!(f, "{indent}r{out_id}{grey}: {dtype}{reset} = {cyan}expand{reset} r{x} -> {shape:?}").unwrap();
+                            writeln!(f, "{indent}r{out_id}{grey}: {dtype}{reset} = {cyan}expand{reset} r{x} -> {shape:?}")
+                                .unwrap();
                         }
                         MoveOp::Permute { axes } => {
-                            writeln!(f, "{indent}r{out_id}{grey}: {dtype}{reset} = {cyan}permute{reset} r{x} axes={axes:?}").unwrap();
+                            writeln!(f, "{indent}r{out_id}{grey}: {dtype}{reset} = {cyan}permute{reset} r{x} axes={axes:?}")
+                                .unwrap();
                         }
                         &MoveOp::Pad { ref axis, lp, len } => {
                             let lp = id_map.get(&lp).copied().unwrap_or(lp);
                             let len = id_map.get(&len).copied().unwrap_or(len);
-                            writeln!(f, "{indent}r{out_id}{grey}: {dtype}{reset} = {cyan}pad{reset} r{x} axis={axis} lp=r{lp} len=r{len}").unwrap();
+                            writeln!(
+                                f,
+                                "{indent}r{out_id}{grey}: {dtype}{reset} = {cyan}pad{reset} r{x} axis={axis} lp=r{lp} len=r{len}"
+                            )
+                            .unwrap();
                         }
                         &MoveOp::Narrow { ref axis, start, len } => {
                             let start = id_map.get(&start).copied().unwrap_or(start);
@@ -352,7 +389,8 @@ impl Display for Kernel {
                             writeln!(f, "{indent}r{out_id}{grey}: {dtype}{reset} = {cyan}narrow{reset} r{x} axis={axis} start=r{start} len=r{len}").unwrap();
                         }
                         MoveOp::Flip { axes } => {
-                            writeln!(f, "{indent}r{out_id}{grey}: {dtype}{reset} = {cyan}flip{reset} r{x} axes={axes:?}").unwrap();
+                            writeln!(f, "{indent}r{out_id}{grey}: {dtype}{reset} = {cyan}flip{reset} r{x} axes={axes:?}")
+                                .unwrap();
                         }
                     }
                 }

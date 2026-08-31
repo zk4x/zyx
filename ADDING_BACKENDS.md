@@ -42,7 +42,7 @@ of operations that backends must handle:
 | `Define` | Yes | Declares a global/local/register variable |
 | `Const` | Yes | Constant value |
 | `Cast` | Yes | Type conversion |
-| `Index` | Yes | Thread/block index (gidx, gidy, lidx, etc.) |
+| `Range` | Yes | Thread/block index (gidx, gidy, lidx, etc.) |
 | `Load` | Yes | Load from memory with pointer + offset |
 | `Store` | Yes | Store to memory with pointer + offset |
 | `Unary` | Yes | Element-wise (neg, exp, sqrt, sin, etc.) |
@@ -52,7 +52,7 @@ of operations that backends must handle:
 | `If` / `EndIf` | No | Conditional branch (optional) |
 | `Mad` | No | Fused multiply-add (optional optimization) |
 | `Wmma` | No | Warp matrix multiply-accumulate (optional) |
-| `Vectorize` / `Devectorize` | No | Explicit vectorization (optional) |
+| `Vectorize` / `Index` | No | Explicit vectorization / element select (optional) |
 
 ## The DeviceInfo capability matrix
 

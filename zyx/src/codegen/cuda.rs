@@ -6,7 +6,7 @@ use crate::{
     backend::DeviceInfo,
     dtype::Constant,
     error::{BackendError, ErrorStatus},
-    kernel::{BOp, IdxKind, Kernel, MemLayout, MemScope, Op, OpId, ParamKind, UOp},
+    kernel::{BOp, Kernel, MemLayout, MemScope, Op, OpId, ParamKind, RangeKind, UOp},
     scalar::{bf16, f16},
 };
 use std::hash::BuildHasherDefault;
@@ -300,7 +300,7 @@ impl Kernel {
                     let reg = new_reg(op_id, &mut reg_map, &mut registers, dtype, rcs[&op_id], loop_id);
                     _ = writeln!(source, "{indent}r{reg} = {{{vars}}};");
                 }
-                Op::Devectorize { vec, idx } => {
+                Op::Index { vec, idx } => {
                     let dtype = dtypes[&op_id];
                     let x = get_var(vec, &constants, &indices, &reg_map, &mut registers, loop_id, &var_params)?;
                     let reg = new_reg(op_id, &mut reg_map, &mut registers, dtype, rcs[&op_id], loop_id);
@@ -321,21 +321,21 @@ impl Kernel {
                         _ => _ = writeln!(source, "{indent}r{reg} = {x} * {y} + {z};"),
                     }
                 }
-                Op::Index { axis, kind: scope } => {
+                Op::Range { axis, kind: scope } => {
                     indices.insert(op_id, loop_id);
                     let max_idx = match scope {
                         // Dynamic dims are `-1`; the bound is only a source comment.
-                        IdxKind::Group(len_id) => {
+                        RangeKind::Group(len_id) => {
                             self.resolve_const(len_id).and_then(crate::dtype::Constant::as_dim).unwrap_or(-1).saturating_sub(1)
                         }
-                        IdxKind::Local(len) => i64::from(len).saturating_sub(1),
-                        IdxKind::Warp(_) => todo!(),
+                        RangeKind::Local(len) => i64::from(len).saturating_sub(1),
+                        RangeKind::Warp(_) => todo!(),
                     };
                     let idx_type = self.dtype(op_id).cu();
                     let idx_src = match scope {
-                        IdxKind::Group(_) => "block",
-                        IdxKind::Local(_) => "thread",
-                        IdxKind::Warp(_) => todo!(),
+                        RangeKind::Group(_) => "block",
+                        RangeKind::Local(_) => "thread",
+                        RangeKind::Warp(_) => todo!(),
                     };
                     _ = writeln!(
                         source,

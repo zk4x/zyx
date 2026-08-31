@@ -27,10 +27,10 @@
 //! 3. If it's a simple pattern (like sum of 0+1+2+...), replace with arithmetic formula
 
 use crate::{
-    shape::Dim,
     Set,
     dtype::{Constant, DType},
-    kernel::{BOp, IDX_T, IdxKind, Kernel, MemLayout, MemScope, Op, OpId},
+    kernel::{BOp, IDX_T, RangeKind, Kernel, MemLayout, MemScope, Op, OpId},
+    shape::Dim,
 };
 
 impl Kernel {
@@ -374,7 +374,8 @@ impl Kernel {
             return false;
         }
 
-        let Some((a, b, c, mul_const, gidx_id, inclusive)) = self.trace_to_linear_comparison(accumulated_value_id, loop_id) else {
+        let Some((a, b, c, mul_const, gidx_id, inclusive)) = self.trace_to_linear_comparison(accumulated_value_id, loop_id)
+        else {
             return false;
         };
 
@@ -388,7 +389,11 @@ impl Kernel {
 
         let step = mul_const;
         // `a OP b > c` counts `loop_len - c - 1` iterations; `>= c` counts one more.
-        let offset = if inclusive { loop_len - c as Dim } else { loop_len - c as Dim - 1 };
+        let offset = if inclusive {
+            loop_len - c as Dim
+        } else {
+            loop_len - c as Dim - 1
+        };
         let offset_id = self.insert_before(after_loop_load_id, Op::Const(Constant::idx(offset)));
         let sum_id = self.insert_before(after_loop_load_id, Op::Binary { x: gidx_id, y: offset_id, bop: BOp::Add });
         let step_id = self.insert_before(after_loop_load_id, Op::Const(Constant::idx(step)));
@@ -429,7 +434,7 @@ impl Kernel {
     /// For example, if accumulating `i` (the loop index directly):
     ///   a=1, b=1, c=n, `mul_const`=1, gidx is the loop index variable
     fn trace_to_linear_comparison(&self, accumulated_value_id: OpId, loop_id: OpId) -> Option<(Dim, Dim, Dim, Dim, OpId, bool)> {
-        if let Op::Index { kind: IdxKind::Group(_), .. } = self.at(accumulated_value_id) {
+        if let Op::Range { kind: RangeKind::Group(_), .. } = self.at(accumulated_value_id) {
             return None;
         }
 
@@ -683,7 +688,7 @@ mod tests {
         let zf = k.const_val(0.0f32);
         k.store(acc, zf, zi, MemLayout::Scalar);
 
-        let lc = k.const_idx(loop_len  as i64);
+        let lc = k.const_idx(loop_len as i64);
         let loop_id = k.loop_(lc);
 
         // Some computation before load(acc) — e.g. loading source
@@ -717,7 +722,7 @@ mod tests {
         let zf = k.const_val(0.0f32);
         k.store(acc, zf, zi, MemLayout::Scalar);
 
-        let lc = k.const_idx(loop_len  as i64);
+        let lc = k.const_idx(loop_len as i64);
         let loop_id = k.loop_(lc);
 
         let index_val = k.const_idx(5u32);

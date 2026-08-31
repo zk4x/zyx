@@ -40,7 +40,7 @@ impl Kernel {
                 }
                 Op::MatmulTile { x, y } => loop_dep[&x].max(loop_dep[&y]),
                 Op::TransposeTile { x } => loop_dep[&x],
-                Op::Asm { .. } | Op::Devectorize { .. } | Op::Wmma { .. } | Op::Stack { .. } => loop_depth,
+                Op::Asm { .. } | Op::Index { .. } | Op::Wmma { .. } | Op::Stack { .. } => loop_depth,
                 Op::If { .. } | Op::Loop { .. } => {
                     loop_depth += 1;
                     loop_depth
@@ -65,7 +65,7 @@ impl Kernel {
                 Op::Mad { x, y, z } => loop_dep[&x].max(loop_dep[&y]).max(loop_dep[&z]),
                 Op::Param { .. }
                 | Op::Barrier
-                | Op::Index { .. }
+                | Op::Range { .. }
                 | Op::Load { .. }
                 | Op::Store { .. }
                 | Op::Const(_)
@@ -113,7 +113,7 @@ impl Kernel {
                     }
                     max
                 }
-                Op::Devectorize { vec, .. } => loop_dep[vec],
+                Op::Index { vec, .. } => loop_dep[vec],
                 Op::Mad { x, y, z } => loop_dep[x].max(loop_dep[y]).max(loop_dep[z]),
                 Op::Loop { .. } | Op::If { .. } => {
                     loop_depth += 1;
@@ -125,7 +125,7 @@ impl Kernel {
                 }
                 Op::Unary { x, .. } | Op::Cast { x, .. } => loop_dep[x],
                 Op::Binary { x, y, .. } => loop_dep[x].max(loop_dep[y]),
-                Op::Index { .. }
+                Op::Range { .. }
                 | Op::Barrier
                 | Op::Load { .. }
                 | Op::Store { .. }

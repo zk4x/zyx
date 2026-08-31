@@ -18,7 +18,7 @@ use crate::{
     Map,
     backend::DeviceInfo,
     dtype::Constant,
-    kernel::{BOp, IdxKind, Kernel, MemLayout, MemScope, Op, OpId},
+    kernel::{BOp, RangeKind, Kernel, MemLayout, MemScope, Op, OpId},
     shape::Dim,
 };
 
@@ -28,7 +28,7 @@ impl Kernel {
         let _timer = crate::Timer::new("opt_tiled_reduce");
         // Let's not tile reduce kernel with barriers for now
         // Don't apply tiled reduce if there's already a barrier or local index
-        if self.ops.values().any(|node| matches!(node.op, Op::Barrier | Op::Index { kind: IdxKind::Local(_), .. })) {
+        if self.ops.values().any(|node| matches!(node.op, Op::Barrier | Op::Range { kind: RangeKind::Local(_), .. })) {
             return (Optimization::TiledReduce { factors: Vec::new() }, 0);
         }
         // Only apply tiled reduce if there's exactly one loop in the kernel
@@ -39,7 +39,7 @@ impl Kernel {
 
         let mut local_axis_sizes: Map<u32, u32> = crate::Map::default();
         for op in self.ops.values() {
-            if let Op::Index { axis, kind: IdxKind::Local(len) } = op.op {
+            if let Op::Range { axis, kind: RangeKind::Local(len) } = op.op {
                 if let Some(&existing) = local_axis_sizes.get(&axis) {
                     debug_assert_eq!(existing, len);
                 } else {
@@ -109,7 +109,7 @@ impl Kernel {
             .ops
             .values()
             .filter_map(|node| {
-                if let Op::Index { axis, kind: IdxKind::Local(_), .. } = node.op {
+                if let Op::Range { axis, kind: RangeKind::Local(_), .. } = node.op {
                     Some(axis + 1)
                 } else {
                     None
@@ -196,7 +196,7 @@ impl Kernel {
             None => self.head,
         };
         let loc_acc = self.insert_before(insert_at, Op::Storage { dtype: acc_dtype, scope: MemScope::Local, len: factor as Dim });
-        let lidx = self.insert_before(insert_at, Op::Index { axis: laxis, kind: IdxKind::Local(factor) });
+        let lidx = self.insert_before(insert_at, Op::Range { axis: laxis, kind: RangeKind::Local(factor) });
 
         // Divide reduce loop by factor
         let factor_const = self.insert_before(loop_start, Op::Const(Constant::idx(factor)));

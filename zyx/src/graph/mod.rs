@@ -1705,8 +1705,7 @@ impl Runtime {
             let mut load_idx = 0;
             let mut p = self.kernels[kernel_id].kernel.head;
             while !p.is_null() {
-                if let Op::Param { kind: ParamKind::Global | ParamKind::Variable, .. } =
-                    self.kernels[kernel_id].kernel.ops[p].op
+                if let Op::Param { kind: ParamKind::Global | ParamKind::Variable, .. } = self.kernels[kernel_id].kernel.ops[p].op
                 {
                     load_of_param.insert(p, load_idx);
                     load_idx += 1;
@@ -1813,13 +1812,13 @@ impl Runtime {
                     Op::EndLoop
                     | Op::EndIf
                     | Op::Barrier
-                    | Op::Index { .. }
+                    | Op::Range { .. }
                     | Op::Loop { .. }
                     | Op::Load { .. }
                     | Op::Mad { .. }
                     | Op::If { .. }
                     | Op::Asm { .. }
-                    | Op::Devectorize { .. }
+                    | Op::Index { .. }
                     | Op::Wmma { .. }
                     | Op::MatmulTile { .. }
                     | Op::TransposeTile { .. } => {
@@ -1838,9 +1837,7 @@ impl Runtime {
         let mut load_idx = 0;
         let mut p = self.kernels[kernel_id].kernel.head;
         while !p.is_null() {
-            if let Op::Param { kind: ParamKind::Global | ParamKind::Variable, .. } =
-                self.kernels[kernel_id].kernel.ops[p].op
-            {
+            if let Op::Param { kind: ParamKind::Global | ParamKind::Variable, .. } = self.kernels[kernel_id].kernel.ops[p].op {
                 load_of_param.insert(p, load_idx);
                 load_idx += 1;
             }
@@ -1861,9 +1858,9 @@ impl Runtime {
                             // it is registered as a leaf below.
                             let pending = match &self.tensors[load_tid] {
                                 TensorData::Eager { depends_on, .. } | TensorData::Leaf { depends_on, .. } => *depends_on,
-                                TensorData::Graph { .. }
-                                | TensorData::Promoted { .. }
-                                | TensorData::Variable { .. } => KernelId::NULL,
+                                TensorData::Graph { .. } | TensorData::Promoted { .. } | TensorData::Variable { .. } => {
+                                    KernelId::NULL
+                                }
                                 ref t => panic!("promote_to_graph: load tid {load_tid} is not a kernel tensor: {t:?}"),
                             };
                             if !pending.is_null() {
@@ -1927,15 +1924,14 @@ impl Runtime {
                                     Op::Binary { .. } | Op::Unary { .. } | Op::Cast { .. } | Op::Stack { .. } => {
                                         op_to_class[&entry]
                                     }
-                                    Op::Param { kind: ParamKind::Global, .. }
-                                    | Op::Param { kind: ParamKind::GlobalMut, .. } => {
+                                    Op::Param { kind: ParamKind::Global, .. } | Op::Param { kind: ParamKind::GlobalMut, .. } => {
                                         unreachable!("promote_to_graph: buffer param as dim in param shape stack")
                                     }
                                     Op::Storage { .. }
                                     | Op::EndLoop
                                     | Op::EndIf
                                     | Op::Barrier
-                                    | Op::Index { .. }
+                                    | Op::Range { .. }
                                     | Op::Loop { .. }
                                     | Op::Move { .. }
                                     | Op::Reduce { .. }
@@ -1945,7 +1941,7 @@ impl Runtime {
                                     | Op::Mad { .. }
                                     | Op::If { .. }
                                     | Op::Asm { .. }
-                                    | Op::Devectorize { .. }
+                                    | Op::Index { .. }
                                     | Op::Wmma { .. }
                                     | Op::MatmulTile { .. }
                                     | Op::TransposeTile { .. } => {
@@ -2006,8 +2002,7 @@ impl Runtime {
                                     // dropped before the tape still keeps the
                                     // inventory consistent.
                                     let (shape_id, dtype, rc) = (*shape_id, *dtype, *rc);
-                                    self.tensors[load_tid] =
-                                        TensorData::Graph { class_id, graph_id, shape_id, dtype, rc };
+                                    self.tensors[load_tid] = TensorData::Graph { class_id, graph_id, shape_id, dtype, rc };
                                 }
                                 ref t => panic!("promote_to_graph: cannot attach load tensor {load_tid} to the graph: {t:?}"),
                             }
@@ -2215,8 +2210,7 @@ impl Runtime {
             // kernel (Eager state) — both carry a buffer.
             for &tid in self.graphs[graph_id].leaf_map.values() {
                 debug_assert!(
-                    self.buffer_map.contains_key(&tid)
-                        | matches!(self.tensors[tid], TensorData::Variable { .. }),
+                    self.buffer_map.contains_key(&tid) | matches!(self.tensors[tid], TensorData::Variable { .. }),
                     "leaf {tid} not realized"
                 );
                 let affiliated = match self.tensors[tid] {

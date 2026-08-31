@@ -16,7 +16,7 @@ use std::sync::{
 use libloading::Library;
 use nanoserde::DeJson;
 
-use crate::kernel::{IdxKind, Op};
+use crate::kernel::{RangeKind, Op};
 use crate::{
     DType,
     error::{BackendError, ErrorStatus},
@@ -25,7 +25,9 @@ use crate::{
     slab::Slab,
 };
 
-use super::{DTypeCapability, DeviceInfo, DeviceProgramId, Event, GwsDim, LaunchArg, MemoryPool, PoolBufferId, PoolId, gws_from_kernel};
+use super::{
+    DTypeCapability, DeviceInfo, DeviceProgramId, Event, GwsDim, LaunchArg, MemoryPool, PoolBufferId, PoolId, gws_from_kernel,
+};
 
 // ── Vulkan FFI types ─────────────────────────────────────────────────────────
 
@@ -1279,11 +1281,11 @@ pub(super) fn initialize_device(
                                 if steps_op_id > 10_000 {
                                     panic!("find_mem_type did not finish in 10000 steps");
                                 }
-                                if let Op::Index { axis, kind: scope } = kernel.ops[op_id].op {
+                                if let Op::Range { axis, kind: scope } = kernel.ops[op_id].op {
                                     match scope {
-                                        IdxKind::Group(_) => {}
-                                        IdxKind::Local(len) => lws[axis as usize] = len,
-                                        IdxKind::Warp(_) => todo!(),
+                                        RangeKind::Group(_) => {}
+                                        RangeKind::Local(len) => lws[axis as usize] = len,
+                                        RangeKind::Warp(_) => todo!(),
                                     }
                                 }
                                 op_id = kernel.next_op(op_id);

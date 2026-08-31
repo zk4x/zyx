@@ -41,7 +41,7 @@ use crate::dtype::{Constant, DType};
 use crate::error::{BackendError, ErrorStatus};
 use crate::hashers::AHasher;
 use crate::kernel::cost::Cost;
-use crate::kernel::{IdxKind, Kernel, Op, OpId, ParamKind};
+use crate::kernel::{RangeKind, Kernel, Op, OpId, ParamKind};
 use crate::rng::Rng;
 use crate::scalar::{bf16, f16};
 use crate::shape::Dim;
@@ -238,7 +238,7 @@ impl Optimization {
                 #[cfg(feature = "time")]
                 let _timer = crate::Timer::new("SplitGlobalToLocal");
                 let (op_id, factor) = factors[config];
-                let Op::Index { axis, kind: IdxKind::Group(len) } = kernel.ops[op_id].op else {
+                let Op::Range { axis, kind: RangeKind::Group(len) } = kernel.ops[op_id].op else {
                     unreachable!()
                 };
                 // valid factors are checked by opt init
@@ -247,8 +247,8 @@ impl Optimization {
                 kernel.split_dim(
                     op_id,
                     vec![
-                        Op::Index { axis, kind: IdxKind::Group(group_len) },
-                        Op::Index { axis, kind: IdxKind::Local(factor) },
+                        Op::Range { axis, kind: RangeKind::Group(group_len) },
+                        Op::Range { axis, kind: RangeKind::Local(factor) },
                     ],
                 );
             }
@@ -286,13 +286,13 @@ impl Optimization {
                     return;
                 }
                 let (idx_id, pad_to) = factors[config];
-                let Op::Index { kind, .. } = kernel.ops[idx_id].op else {
+                let Op::Range { kind, .. } = kernel.ops[idx_id].op else {
                     unreachable!()
                 };
                 let current_len = match kind {
-                    IdxKind::Group(len) => kernel.resolve_const(len).and_then(crate::dtype::Constant::as_dim).unwrap(),
-                    IdxKind::Local(len) => i64::from(len),
-                    IdxKind::Warp(_) => todo!(),
+                    RangeKind::Group(len) => kernel.resolve_const(len).and_then(crate::dtype::Constant::as_dim).unwrap(),
+                    RangeKind::Local(len) => i64::from(len),
+                    RangeKind::Warp(_) => todo!(),
                 };
                 let pad_len = (pad_to - current_len % pad_to) % pad_to;
                 if pad_len > 0 {
@@ -623,7 +623,8 @@ impl Kernel {
                     config_id += 1;
                     continue;
                 }
-                let cost = new_kernel.get_cost(device.info());                let new_seq = OptSeq { opts: vec![(opt_id, config_id)], cost };
+                let cost = new_kernel.get_cost(device.info());
+                let new_seq = OptSeq { opts: vec![(opt_id, config_id)], cost };
                 visited.insert(hash);
                 items.push(new_seq);
                 config_id += 1;

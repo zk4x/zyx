@@ -48,20 +48,20 @@ impl Kernel {
                 | Op::EndIf
                 | Op::MatmulTile { .. }
                 | Op::TransposeTile { .. }
-                | Op::Devectorize { .. }
+                | Op::Index { .. }
                 | Op::Const(_)
                 | Op::Param { .. }
                 | Op::Storage { .. }
                 | Op::Load { .. }
-                | Op::Index { .. }
+                | Op::Range { .. }
                 | Op::Loop { .. }
                 | Op::EndLoop => {}
                 Op::Stack { ref ops } => {
                     // vectorize[devec(v,0), devec(v,1), ..., devec(v,n-1)] → v
-                    if let Op::Devectorize { vec, idx: 0 } = self.at(ops[0]) {
+                    if let Op::Index { vec, idx: 0 } = self.at(ops[0]) {
                         let vec = *vec;
                         if ops.iter().skip(1).enumerate().all(
-                            |(i, &sub)| matches!(self.at(sub), Op::Devectorize { vec: v, idx } if *v == vec && *idx == i + 1),
+                            |(i, &sub)| matches!(self.at(sub), Op::Index { vec: v, idx } if *v == vec && *idx == i + 1),
                         ) {
                             self.remap(op_id, vec);
                         }
@@ -599,7 +599,7 @@ impl Kernel {
         let mut start = self.prev_op(start);
         while !op_id.is_null() && !start.is_null() {
             let next = self.next_op(op_id);
-            if let Op::Index { .. } = self.at(op_id) {
+            if let Op::Range { .. } = self.at(op_id) {
                 self.move_op_after(op_id, start);
                 start = op_id;
             }

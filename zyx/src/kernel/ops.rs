@@ -92,9 +92,9 @@ pub enum Op {
         layout: MemLayout,
     },
     // Like loop, but for dimensions always executed in parallel
-    Index {
+    Range {
         axis: u32,
-        kind: IdxKind,
+        kind: RangeKind,
     },
     // Control flow
     Loop {
@@ -111,7 +111,7 @@ pub enum Op {
         y: OpId,
         z: OpId,
     },
-    Devectorize {
+    Index {
         vec: OpId,
         idx: usize,
     }, // select a single value from a vector
@@ -165,7 +165,7 @@ pub enum TileReduceKind {
 
 /// Scope of index. Index is like loop, but purely parallel acess
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, SerBin, DeBin)]
-pub enum IdxKind {
+pub enum RangeKind {
     /// Group scope. Represents blocks in cuda, cores in CPU and tenstorrent.
     Group(OpId),
     /// Local scope. Represents cuda threads.
@@ -174,12 +174,12 @@ pub enum IdxKind {
     Warp(u8),
 }
 
-impl std::fmt::Display for IdxKind {
+impl std::fmt::Display for RangeKind {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            IdxKind::Group(x) => f.write_fmt(format_args!("group_r{x}")),
-            IdxKind::Local(x) => f.write_fmt(format_args!("local_{x}")),
-            IdxKind::Warp(x) => f.write_fmt(format_args!("warp_{x}")),
+            RangeKind::Group(x) => f.write_fmt(format_args!("group_r{x}")),
+            RangeKind::Local(x) => f.write_fmt(format_args!("local_{x}")),
+            RangeKind::Warp(x) => f.write_fmt(format_args!("warp_{x}")),
         }
     }
 }
@@ -469,10 +469,10 @@ impl Op {
                 // Shape is null after linearize
                 if shape.is_null() { vec![] } else { vec![shape] }
             }
-            &Op::Index { kind, .. } => match kind {
-                IdxKind::Group(len) => vec![len],
-                IdxKind::Local(_) => vec![],
-                IdxKind::Warp(_) => vec![],
+            &Op::Range { kind, .. } => match kind {
+                RangeKind::Group(len) => vec![len],
+                RangeKind::Local(_) => vec![],
+                RangeKind::Warp(_) => vec![],
             },
             &Op::Loop { len, .. } => vec![len],
             &Op::Move { x, ref mop } => match mop.as_ref() {
@@ -498,7 +498,7 @@ impl Op {
             &Op::Mad { x, y, z } => vec![x, y, z],
             Op::Asm { ops, .. } => ops.iter().copied().collect(),
             Op::Stack { ops } => ops.iter().copied().collect(),
-            &Op::Devectorize { vec, .. } => vec![vec],
+            &Op::Index { vec, .. } => vec![vec],
             &Op::Wmma { a, b, c, .. } => vec![a, b, c],
             Op::If { condition } => vec![*condition],
             Op::MatmulTile { x, y } => vec![*x, *y],
@@ -515,10 +515,10 @@ impl Op {
                 // Shape is null after linearize
                 if shape.is_null() { vec![] } else { vec![shape] }
             }
-            Op::Index { kind, .. } => match kind {
-                IdxKind::Group(len) => vec![len],
-                IdxKind::Local(_) => vec![],
-                IdxKind::Warp(_) => vec![],
+            Op::Range { kind, .. } => match kind {
+                RangeKind::Group(len) => vec![len],
+                RangeKind::Local(_) => vec![],
+                RangeKind::Warp(_) => vec![],
             },
             Op::Loop { len, .. } => vec![len],
             Op::Move { x, mop } => match mop.as_mut() {
@@ -539,7 +539,7 @@ impl Op {
             Op::Load { src, index, .. } => vec![src, index],
             Op::Mad { x, y, z } => vec![x, y, z],
             Op::Stack { ops } => ops.iter_mut().collect(),
-            Op::Devectorize { vec, .. } => vec![vec],
+            Op::Index { vec, .. } => vec![vec],
             Op::Wmma { a, b, c, .. } => vec![a, b, c],
             Op::If { condition } => vec![condition],
             Op::MatmulTile { x, y } => vec![x, y],

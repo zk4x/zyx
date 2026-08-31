@@ -20,7 +20,7 @@ use crate::kernel::MemLayout;
 use crate::{
     Map, Set,
     dtype::Constant,
-    kernel::{BOp, IdxKind, Kernel, MemScope, Op, OpId},
+    kernel::{BOp, RangeKind, Kernel, MemScope, Op, OpId},
     shape::Dim,
 };
 
@@ -51,10 +51,10 @@ impl Kernel {
         let node_ids: Vec<OpId> = self.ops.ids().collect();
         for id in node_ids.iter().copied() {
             let is_len1 = match &self.ops[id].op {
-                Op::Index { kind, .. } => match kind {
-                    IdxKind::Group(len) => self.resolve_const(*len).and_then(crate::dtype::Constant::as_dim) == Some(1),
-                    IdxKind::Local(len) => *len == 1,
-                    IdxKind::Warp(len) => *len == 1,
+                Op::Range { kind, .. } => match kind {
+                    RangeKind::Group(len) => self.resolve_const(*len).and_then(crate::dtype::Constant::as_dim) == Some(1),
+                    RangeKind::Local(len) => *len == 1,
+                    RangeKind::Warp(len) => *len == 1,
                 },
                 _ => false,
             };
@@ -291,7 +291,7 @@ impl Kernel {
             return;
         }
 
-        if self.ops.len().0  as i64 * factor > 5000 {
+        if self.ops.len().0 as i64 * factor > 5000 {
             return;
         }
 

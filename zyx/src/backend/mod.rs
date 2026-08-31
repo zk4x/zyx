@@ -18,7 +18,7 @@ use crate::{
     dtype::{Constant, DType},
     error::{BackendError, ErrorStatus},
     graph::{ClassId, Graph},
-    kernel::{BOp, IdxKind, Kernel, Op, OpId, ParamKind, UOp},
+    kernel::{BOp, Kernel, Op, OpId, ParamKind, RangeKind, UOp},
     shape::Dim,
     slab::{Slab, SlabId},
 };
@@ -103,10 +103,9 @@ impl GwsDim {
                 let yv = Constant::idx(y.eval(param));
                 Constant::binary(xv, yv, *bop).as_dim().expect("gws expression evaluated to a non-integer dim")
             }
-            GwsDim::Cast { x, dtype } => Constant::idx(x.eval(param))
-                .cast(*dtype)
-                .as_dim()
-                .expect("cast gws expression evaluated to a non-integer dim"),
+            GwsDim::Cast { x, dtype } => {
+                Constant::idx(x.eval(param)).cast(*dtype).as_dim().expect("cast gws expression evaluated to a non-integer dim")
+            }
         }
     }
 }
@@ -135,11 +134,9 @@ fn gws_from_kernel(kernel: &Kernel) -> Vec<GwsDim> {
             Op::Const(c) => GwsDim::Const(c.as_dim().unwrap()),
             Op::Param { kind: ParamKind::Variable, .. } => GwsDim::Param(ordinals[&len]),
             Op::Unary { x, uop } => GwsDim::Unary { x: Box::new(conv(kernel, *x, ordinals)), uop: *uop },
-            Op::Binary { x, y, bop } => GwsDim::Binary {
-                x: Box::new(conv(kernel, *x, ordinals)),
-                y: Box::new(conv(kernel, *y, ordinals)),
-                bop: *bop,
-            },
+            Op::Binary { x, y, bop } => {
+                GwsDim::Binary { x: Box::new(conv(kernel, *x, ordinals)), y: Box::new(conv(kernel, *y, ordinals)), bop: *bop }
+            }
             // A load moves a value from global to local address space — it
             // never changes the value, so for length purposes it passes its
             // source through. Lengths only bottom out in `Param { Variable }`
@@ -161,7 +158,7 @@ fn gws_from_kernel(kernel: &Kernel) -> Vec<GwsDim> {
         if steps_op_id > 10_000 {
             panic!("gws_from_kernel did not finish in 10000 steps");
         }
-        if let Op::Index { axis, kind: IdxKind::Group(len) } = kernel.ops[op_id].op {
+        if let Op::Range { axis, kind: RangeKind::Group(len) } = kernel.ops[op_id].op {
             let gdim = conv(kernel, len, &param_ordinal);
             let axis = axis as usize;
             if gws.len() <= axis {
@@ -945,7 +942,7 @@ impl Device {
     }
 
     /// Human-readable device name (e.g. "CUDA", "OpenCL", "C").
-    #[cfg(feature="viz")]
+    #[cfg(feature = "viz")]
     pub const fn name(&self) -> &'static str {
         match self {
             Device::C(_) => "C",
@@ -963,7 +960,7 @@ impl Device {
     }
 
     /// CUDA/HIP compute capability, if available.
-    #[cfg(feature="viz")]
+    #[cfg(feature = "viz")]
     pub fn compute_capability(&self) -> Option<[i32; 2]> {
         match self {
             Device::CUDA(dev) => Some(dev.compute_capability),
@@ -973,7 +970,7 @@ impl Device {
     }
 
     /// Whether the C backend was compiled with OpenMP support.
-    #[cfg(feature="viz")]
+    #[cfg(feature = "viz")]
     pub fn has_openmp(&self) -> bool {
         match self {
             Device::C(dev) => dev.has_openmp,

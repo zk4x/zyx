@@ -166,7 +166,7 @@ impl Kernel {
                 Op::Param { .. }
                 | Op::Const(_)
                 | Op::Storage { .. }
-                | Op::Index { .. }
+                | Op::Range { .. }
                 | Op::EndLoop
                 | Op::Barrier
                 | Op::EndIf => {}
@@ -201,7 +201,7 @@ impl Kernel {
                         add_param!(p);
                     }
                 }
-                Op::Devectorize { vec, .. } => add_param!(vec),
+                Op::Index { vec, .. } => add_param!(vec),
             }
             n_params[i] = count;
         }
@@ -227,7 +227,7 @@ impl Kernel {
             .iter()
             .enumerate()
             .filter_map(|(i, &id)| match self.at(id) {
-                Op::Index { axis, .. } => Some((*axis, i)),
+                Op::Range { axis, .. } => Some((*axis, i)),
                 _ => None,
             })
             .collect();

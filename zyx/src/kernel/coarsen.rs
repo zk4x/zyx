@@ -25,7 +25,7 @@ use super::autotune::Optimization;
 use crate::{
     Map, Set,
     dtype::Constant,
-    kernel::{BOp, IdxKind, Kernel, MemLayout, MemScope, Op, OpId},
+    kernel::{BOp, RangeKind, Kernel, MemLayout, MemScope, Op, OpId},
     shape::Dim,
 };
 
@@ -76,7 +76,7 @@ impl Kernel {
         let mut op_id = self.head;
         while !op_id.is_null() {
             let next = self.next_op(op_id);
-            if let Op::Index { kind: IdxKind::Group(len), .. } = self.ops[op_id].op {
+            if let Op::Range { kind: RangeKind::Group(len), .. } = self.ops[op_id].op {
                 let Some(len) = self.resolve_const(len).and_then(crate::dtype::Constant::as_dim) else {
                     op_id = next;
                     continue;
@@ -100,7 +100,7 @@ impl Kernel {
     pub fn coarsen(&mut self, gidx_id: OpId, factor: u64) {
         #[cfg(feature = "time")]
         let _timer = crate::Timer::new("thread_coarse");
-        let Op::Index { axis, kind: IdxKind::Group(len) } = self.ops[gidx_id].op else {
+        let Op::Range { axis, kind: RangeKind::Group(len) } = self.ops[gidx_id].op else {
             unreachable!()
         };
         let Some(len) = self.resolve_const(len).and_then(crate::dtype::Constant::as_dim) else {
@@ -133,7 +133,7 @@ impl Kernel {
                 self.ops[op_id].op,
                 Op::Storage { scope: MemScope::Global | MemScope::Local, .. }
                     | Op::Param { .. }
-                    | Op::Index { .. }
+                    | Op::Range { .. }
                     | Op::Const(_)
             )
         {
@@ -157,7 +157,7 @@ impl Kernel {
 
         // Group index now split into multiple indices with constant offsets
         let new_len = self.const_idx(len / factor as Dim);
-        let x = self.insert_before(gidx_id, Op::Index { axis, kind: IdxKind::Group(new_len) });
+        let x = self.insert_before(gidx_id, Op::Range { axis, kind: RangeKind::Group(new_len) });
         self.ops[gidx_id].op = Op::Binary { x, y: const_factor, bop: BOp::Mul };
         let mut ids = Vec::with_capacity((factor - 1) as usize);
         let mut id = gidx_id;
@@ -176,7 +176,7 @@ impl Kernel {
                     *len *= factor as Dim;
                     accumulator_storages.insert(op_id);
                 }
-                Op::Index { .. } | Op::Loop { .. } | Op::EndLoop | Op::If { .. } | Op::EndIf | Op::Barrier => {}
+                Op::Range { .. } | Op::Loop { .. } | Op::EndLoop | Op::If { .. } | Op::EndIf | Op::Barrier => {}
                 Op::Store { dst, src: x, index, layout } => {
                     let mut ids = Vec::with_capacity((factor - 1) as usize);
                     let mut id = op_id;
@@ -281,7 +281,7 @@ impl Kernel {
                     }
                 }
             }
-            if let Op::Index { kind: IdxKind::Group(len), .. } = self.ops[op_id].op {
+            if let Op::Range { kind: RangeKind::Group(len), .. } = self.ops[op_id].op {
                 let Some(len) = self.resolve_const(len).and_then(crate::dtype::Constant::as_dim) else {
                     op_id = next;
                     continue;

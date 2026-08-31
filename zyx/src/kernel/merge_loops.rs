@@ -17,7 +17,7 @@ use std::collections::BTreeMap;
 use super::autotune::Optimization;
 use crate::{
     dtype::Constant,
-    kernel::{BOp, IdxKind, Kernel, Op, OpId},
+    kernel::{BOp, RangeKind, Kernel, Op, OpId},
     shape::Dim,
 };
 
@@ -25,7 +25,7 @@ impl Kernel {
     /// Get last op in the given loop scope
     pub(crate) fn get_last_dim_op(&self, loop_id: OpId) -> OpId {
         match self.ops[loop_id].op {
-            Op::Index { .. } => return self.tail,
+            Op::Range { .. } => return self.tail,
             Op::Loop { .. } => {}
             _ => unreachable!(),
         }
@@ -151,13 +151,13 @@ impl Kernel {
         while axes.len() != loops.len() {
             if loops.contains(&op_id) {
                 // TODO check all scopes are the same
-                let Op::Index { axis, kind } = self.ops[op_id].op else {
+                let Op::Range { axis, kind } = self.ops[op_id].op else {
                     unreachable!()
                 };
                 let len = match kind {
-                    IdxKind::Group(op_id) => self.resolve_const(op_id).and_then(crate::dtype::Constant::as_dim),
-                    IdxKind::Local(len) => Some(len as Dim),
-                    IdxKind::Warp(len) => Some(len as Dim),
+                    RangeKind::Group(op_id) => self.resolve_const(op_id).and_then(crate::dtype::Constant::as_dim),
+                    RangeKind::Local(len) => Some(len as Dim),
+                    RangeKind::Warp(len) => Some(len as Dim),
                 };
                 let Some(len) = len else { return };
                 acc *= len;
@@ -183,15 +183,15 @@ impl Kernel {
             }
         }
 
-        let Op::Index { axis, kind, .. } = self.ops[first_id.unwrap()].op else {
+        let Op::Range { axis, kind, .. } = self.ops[first_id.unwrap()].op else {
             unreachable!()
         };
         let kind = match kind {
-            IdxKind::Group(_) => IdxKind::Group(self.insert_before(first_id.unwrap(), Op::Const(Constant::idx(acc)))),
-            IdxKind::Local(_) => IdxKind::Local(acc as u32),
-            IdxKind::Warp(_) => IdxKind::Warp(acc as u8),
+            RangeKind::Group(_) => RangeKind::Group(self.insert_before(first_id.unwrap(), Op::Const(Constant::idx(acc)))),
+            RangeKind::Local(_) => RangeKind::Local(acc as u32),
+            RangeKind::Warp(_) => RangeKind::Warp(acc as u8),
         };
-        let mut x = self.insert_before(first_id.unwrap(), Op::Index { axis, kind });
+        let mut x = self.insert_before(first_id.unwrap(), Op::Range { axis, kind });
 
         for (.., (loop_id, len)) in axes {
             let y = self.insert_before(loop_id, Op::Const(Constant::idx(len)));

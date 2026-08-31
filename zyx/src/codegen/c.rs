@@ -6,7 +6,7 @@ use crate::{
     backend::DeviceInfo,
     dtype::Constant,
     error::{BackendError, ErrorStatus},
-    kernel::{BOp, IdxKind, Kernel, MemLayout, MemScope, Op, OpId, ParamKind, UOp},
+    kernel::{BOp, Kernel, MemLayout, MemScope, Op, OpId, ParamKind, RangeKind, UOp},
     scalar::{bf16, f16},
 };
 use std::{fmt::Write, hash::BuildHasherDefault};
@@ -33,8 +33,8 @@ impl Kernel {
                     panic!("generate_c did not finish in 10000 steps");
                 }
                 match self.ops[op_id].op {
-                    Op::Index { kind: scope, .. } => {
-                        if !matches!(scope, IdxKind::Group(_)) {
+                    Op::Range { kind: scope, .. } => {
+                        if !matches!(scope, RangeKind::Group(_)) {
                             return Err(BackendError {
                                 status: ErrorStatus::KernelCompilation,
                                 context: "C codegen: C only supports group index".into(),
@@ -89,8 +89,8 @@ impl Kernel {
                 panic!("generate_c did not finish in 10000 steps");
             }
             match self.ops[op_id].op {
-                Op::Index { kind: scope, .. } => {
-                    let IdxKind::Group(len) = scope else {
+                Op::Range { kind: scope, .. } => {
+                    let RangeKind::Group(len) = scope else {
                         return Err(BackendError {
                             status: ErrorStatus::KernelCompilation,
                             context: "C codegen: LocalIndex not expected".into(),
@@ -346,7 +346,7 @@ impl Kernel {
                         context: "C codegen does not support WMMA".into(),
                     });
                 }
-                Op::Devectorize { vec, idx } => {
+                Op::Index { vec, idx } => {
                     let dtype = dtypes[&op_id];
                     let vec = get_var(vec, &constants, &indices, &reg_map, &mut registers, loop_id)?;
                     let reg = new_reg(op_id, &mut reg_map, &mut registers, dtype, rcs[&op_id], loop_id);

@@ -6,7 +6,7 @@ use crate::{
     backend::DeviceInfo,
     dtype::Constant,
     error::{BackendError, ErrorStatus},
-    kernel::{BOp, IdxKind, Kernel, MemLayout, MemScope, Op, OpId, ParamKind, UOp},
+    kernel::{BOp, Kernel, MemLayout, MemScope, Op, OpId, ParamKind, RangeKind, UOp},
     scalar::{bf16, f16},
 };
 use std::{fmt::Write, hash::BuildHasherDefault};
@@ -230,7 +230,7 @@ impl Kernel {
                     };
                     _ = writeln!(source, "{indent}r{reg} = ({})({vars});", dtype.0.ocl_vec_type(vlen));
                 }
-                Op::Devectorize { vec, idx } => {
+                Op::Index { vec, idx } => {
                     let dtype = dtypes[&op_id];
                     let vec = get_var(vec, &constants, &indices, &reg_map, &mut registers, loop_id)?;
                     let reg = new_reg(op_id, &mut reg_map, &mut registers, dtype, rcs[&op_id], loop_id);
@@ -319,19 +319,19 @@ impl Kernel {
                         _ => _ = writeln!(source, "{indent}r{reg} = {x} * {y} + {z};"),
                     }
                 }
-                Op::Index { axis, kind: scope } => {
+                Op::Range { axis, kind: scope } => {
                     indices.insert(op_id, loop_id);
                     let id_fn = match scope {
-                        IdxKind::Group(_) => "get_group_id",
-                        IdxKind::Local(_) => "get_local_id",
-                        IdxKind::Warp(_) => todo!(),
+                        RangeKind::Group(_) => "get_group_id",
+                        RangeKind::Local(_) => "get_local_id",
+                        RangeKind::Warp(_) => todo!(),
                     };
                     let max_idx = match scope {
-                        IdxKind::Group(len_id) => {
+                        RangeKind::Group(len_id) => {
                             self.resolve_const(len_id).and_then(crate::dtype::Constant::as_dim).unwrap().saturating_sub(1)
                         }
-                        IdxKind::Local(len) => i64::from(len).saturating_sub(1),
-                        IdxKind::Warp(_) => todo!(),
+                        RangeKind::Local(len) => i64::from(len).saturating_sub(1),
+                        RangeKind::Warp(_) => todo!(),
                     };
                     _ = writeln!(
                         source,

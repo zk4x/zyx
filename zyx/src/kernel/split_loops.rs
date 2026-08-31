@@ -16,10 +16,10 @@
 
 use super::autotune::Optimization;
 use crate::{
-    shape::Dim,
     backend::DeviceInfo,
     dtype::Constant,
-    kernel::{BOp, IdxKind, Kernel, Op, OpId},
+    kernel::{BOp, RangeKind, Kernel, Op, OpId},
+    shape::Dim,
 };
 
 impl Kernel {
@@ -38,7 +38,7 @@ impl Kernel {
         }
         let mut local_axis_sizes: crate::Map<u32, u32> = crate::Map::default();
         for op in self.ops.values() {
-            if let Op::Index { axis, kind: IdxKind::Local(len) } = op.op {
+            if let Op::Range { axis, kind: RangeKind::Local(len) } = op.op {
                 if let Some(&existing) = local_axis_sizes.get(&axis) {
                     debug_assert_eq!(existing, len);
                 } else {
@@ -56,7 +56,7 @@ impl Kernel {
         let mut op_id = self.head;
         let mut factors = Vec::new();
         while !op_id.is_null() {
-            if let Op::Index { axis, kind: IdxKind::Group(len) } = self.ops[op_id].op {
+            if let Op::Range { axis, kind: RangeKind::Group(len) } = self.ops[op_id].op {
                 let mut l_factors: Vec<u32> = vec![64, 32, 16, 8, 4, 2];
                 if !local_axis_sizes.contains_key(&axis) {
                     let max_per_axis = dev_info.max_local_work_dims[axis as usize];
@@ -130,33 +130,33 @@ impl Kernel {
                             break;
                         }
                     },
-                    Op::Index { kind, .. } => match kind {
-                        IdxKind::Group(len) => match self.resolve_const(len).and_then(crate::dtype::Constant::as_dim) {
+                    Op::Range { kind, .. } => match kind {
+                        RangeKind::Group(len) => match self.resolve_const(len).and_then(crate::dtype::Constant::as_dim) {
                             Some(l) => dim *= l,
                             None => {
                                 ok = false;
                                 break;
                             }
                         },
-                        IdxKind::Local(len) => dim *= len as Dim,
-                        IdxKind::Warp(len) => dim *= len as Dim,
+                        RangeKind::Local(len) => dim *= len as Dim,
+                        RangeKind::Warp(len) => dim *= len as Dim,
                     },
                     _ => unreachable!("split can be only index or loop"),
                 }
             }
             if ok {
                 match self.ops[dim_id].op {
-                    Op::Index { kind, .. } => {
+                    Op::Range { kind, .. } => {
                         use crate::shape::Dim;
 
                         match kind {
-                            IdxKind::Group(len) => {
+                            RangeKind::Group(len) => {
                                 if let Some(l) = self.resolve_const(len).and_then(crate::dtype::Constant::as_dim) {
                                     debug_assert_eq!(l, dim);
                                 }
                             }
-                            IdxKind::Local(l) => debug_assert_eq!(l as Dim, dim),
-                            IdxKind::Warp(l) => debug_assert_eq!(l as Dim, dim),
+                            RangeKind::Local(l) => debug_assert_eq!(l as Dim, dim),
+                            RangeKind::Warp(l) => debug_assert_eq!(l as Dim, dim),
                         }
                     }
                     Op::Loop { len, .. } => {
@@ -186,10 +186,10 @@ impl Kernel {
             strides.push(st);
             match op {
                 Op::Loop { len, .. } => st *= self.resolve_const(*len).and_then(crate::dtype::Constant::as_dim).unwrap(),
-                Op::Index { kind, .. } => match kind {
-                    IdxKind::Group(len) => st *= self.resolve_const(*len).and_then(crate::dtype::Constant::as_dim).unwrap(),
-                    IdxKind::Local(len) => st *= i64::from(*len),
-                    IdxKind::Warp(len) => st *= i64::from(*len),
+                Op::Range { kind, .. } => match kind {
+                    RangeKind::Group(len) => st *= self.resolve_const(*len).and_then(crate::dtype::Constant::as_dim).unwrap(),
+                    RangeKind::Local(len) => st *= i64::from(*len),
+                    RangeKind::Warp(len) => st *= i64::from(*len),
                 },
                 _ => unreachable!("split can be only index or loop"),
             }

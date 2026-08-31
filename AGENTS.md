@@ -134,8 +134,8 @@ group lengths MUST work — this is not a future nicety.
 - Each gws dimension is a `Group` index length. Its length `op_id` is either
   `Op::Param { kind: Variable }` (dtype `IDX_T`) or `Op::Const`; **anything else is
   unreachable**.
-- Backends walk their own `Op::Index` ops themselves — **no kernel helpers**. For each
-  `IdxKind::Group(op_id)`:
+- Backends walk their own `Op::Range` ops themselves — **no kernel helpers**. For each
+  `RangeKind::Group(op_id)`:
   - `Op::Const(c)` → `GwsDim::Const(size)`
   - `Op::Param { Variable }` → `GwsDim::Param(ordinal)`
 - At compile each backend stores one `GwsDim` per gws axis in its program struct.
@@ -320,7 +320,7 @@ Tensors are lazy: an op builds a graph/eager kernel but does **not** compute unt
 - **`ZYX_DEBUG=8` (post-linearize):** the `shape` field on ops is NULL for **everything** — shapes have been lowered into loop bounds and index arithmetic, so a NULL `shape` here is expected and does NOT mean scalar.
 - **Buffer dimensions are NOT stored in the post-linearize `shape` field.** Pre-linearize they live in the `shape` field on the `Param` (input) op. After linearization that dimension becomes a loop bound / group-index length.
 - **A negative dimension (`-1`, printed as `r4294967295` / ~4.29×10⁹) on a `Param` shape (pre-linearize) or as a loop bound / group-index length (post-linearize) is a BUG.** It is NOT "scalar" and NOT "infer a dimension" — it produces a ~4.29×10⁹-element loop and hangs. `kernel::verify` must catch it loudly (panic on a resolvable negative loop/group length), not let it hang.
-- **To resolve an `OpId` to a concrete `Dim` constant in kernel code, use `self.resolve_const(op).and_then(Constant::as_dim)`.** There is NO `Kernel::resolve_dim` method (the name `resolve_dim` refers to the private `resolve_dim_op` in `runtime.rs`). A `Loop`'s `len` and an `IdxKind::Group(len)`'s `len` are `OpId`s; resolve them this way and, if the result is a constant, assert it is `>= 0`.
+- **To resolve an `OpId` to a concrete `Dim` constant in kernel code, use `self.resolve_const(op).and_then(Constant::as_dim)`.** There is NO `Kernel::resolve_dim` method (the name `resolve_dim` refers to the private `resolve_dim_op` in `runtime.rs`). A `Loop`'s `len` and a `RangeKind::Group(len)`'s `len` are `OpId`s; resolve them this way and, if the result is a constant, assert it is `>= 0`.
 
 ## Interaction Rules
 

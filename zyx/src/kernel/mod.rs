@@ -128,7 +128,7 @@ mod unroll_loops;
 mod vectorize;
 mod verify;
 
-pub(crate) use ops::{BOp, IdxKind, MoveOp, Op, OpNode, UOp};
+pub(crate) use ops::{BOp, MoveOp, Op, OpNode, RangeKind, UOp};
 pub use ops::{MMADType, MMADims, MMALayout, OpId, ParamKind};
 
 // TODO later make this dynamic u32 or u64 depending on max range
@@ -355,7 +355,7 @@ impl Kernel {
                         *rcs.entry(x).or_insert(0) += 1;
                     }
                 }
-                Op::Devectorize { vec, idx: _ } => {
+                Op::Index { vec, idx: _ } => {
                     let dtype = dtypes[&vec];
                     dtypes.insert(op_id, (dtype.0, MemLayout::Scalar));
                     *rcs.entry(vec).or_insert(0) += 1;
@@ -384,7 +384,7 @@ impl Kernel {
                     *rcs.entry(y).or_insert(0) += 1;
                     *rcs.entry(z).or_insert(0) += 1;
                 }
-                Op::Index { .. } | Op::Loop { .. } => {
+                Op::Range { .. } | Op::Loop { .. } => {
                     dtypes.insert(op_id, (IDX_T, MemLayout::Scalar));
                 }
                 Op::If { condition } => {
@@ -409,7 +409,7 @@ impl Kernel {
                 Op::Param { dtype, .. } => return dtype,
                 Op::Storage { dtype, .. } => return dtype,
                 Op::Cast { dtype, .. } => return dtype,
-                Op::Index { .. } => return IDX_T,
+                Op::Range { .. } => return IDX_T,
                 Op::Load { src, .. } => op_id = src,
                 Op::Unary { x, .. } => op_id = x,
                 Op::Binary { x, bop, .. } => {
@@ -426,7 +426,7 @@ impl Kernel {
                 Op::TransposeTile { x } => op_id = x,
                 Op::Stack { ref ops } => op_id = ops[0],
                 Op::Asm { ref ops, .. } => op_id = ops[0],
-                Op::Devectorize { vec, .. } => op_id = vec,
+                Op::Index { vec, .. } => op_id = vec,
                 Op::Store { src: x, .. } => op_id = x,
                 Op::Move { x, .. } => op_id = x,
                 Op::Reduce { x, .. } => op_id = x,
@@ -835,12 +835,12 @@ impl Kernel {
                 }
                 Op::Wmma { .. }
                 | Op::Asm { .. }
-                | Op::Devectorize { .. }
+                | Op::Index { .. }
                 | Op::If { .. }
                 | Op::EndIf
                 | Op::Barrier
                 | Op::Mad { .. }
-                | Op::Index { .. }
+                | Op::Range { .. }
                 | Op::Loop { .. }
                 | Op::EndLoop => todo!(),
             };
@@ -912,12 +912,17 @@ impl Kernel {
                 ref op => todo!("shape_ids: invalid shape descriptor {op:?}"),
             };
             debug_assert!(dtype == IDX_T, "shape tensor must be {IDX_T:?}, got {dtype:?}");
-            let rank = if shape.is_null() { 1 } else { k.shape(shape).len() };
+            // A scalar shape tensor (shape == NULL) IS its single dim: the
+            // param op itself is the length (a variable is its value — no
+            // load). Only a 1-d shape tensor needs element-wise loads.
+            if shape.is_null() {
+                return vec![id];
+            }
+            let rank = k.shape(shape).len();
             debug_assert!(rank <= 1, "shape_ids: param shape descriptor must be 0d or 1d, got rank {rank}");
             let mut dims = Vec::with_capacity(rank);
-            for i in 0..rank as u32 {
-                let idx = k.const_idx(i);
-                dims.push(k.push_back(Op::Load { src: id, index: idx, layout: MemLayout::Scalar }));
+            for i in 0..rank {
+                dims.push(k.push_back(Op::Index { vec: id, idx: i }));
             }
             dims
         }
@@ -1024,7 +1029,7 @@ impl Kernel {
                 | Op::Mad { x, .. }
                 | Op::MatmulTile { x, .. }
                 | Op::ReduceTile { x, .. }
-                | Op::Devectorize { vec: x, .. }
+                | Op::Index { vec: x, .. }
                 | Op::TransposeTile { x } => match visited.get(&x) {
                     Some(dims) => {
                         visited.insert(op_id, dims.clone());
@@ -1044,7 +1049,7 @@ impl Kernel {
                     }
                 },
                 // Group/loop indices and scalar storages are scalar values.
-                Op::Index { .. } | Op::Loop { .. } => {
+                Op::Range { .. } | Op::Loop { .. } => {
                     visited.insert(op_id, vec![]);
                 }
                 Op::Storage { len, .. } if len == 1 => {
@@ -1192,7 +1197,7 @@ impl Kernel {
                 | Op::Mad { x, .. }
                 | Op::MatmulTile { x, .. }
                 | Op::ReduceTile { x, .. }
-                | Op::Devectorize { vec: x, .. }
+                | Op::Index { vec: x, .. }
                 | Op::TransposeTile { x } => match visited.get(&x) {
                     Some(dims) => {
                         visited.insert(id, dims.clone());
@@ -1212,7 +1217,7 @@ impl Kernel {
                     }
                 },
                 // Group/loop indices and scalar storages are scalar values.
-                Op::Index { .. } | Op::Loop { .. } => {
+                Op::Range { .. } | Op::Loop { .. } => {
                     visited.insert(id, vec![]);
                 }
                 Op::Storage { len, .. } if len == 1 => {
@@ -1244,11 +1249,11 @@ impl Kernel {
 
         let index_len_of = |op: &Op| -> Dim {
             match op {
-                Op::Index { kind, .. } => match kind {
+                Op::Range { kind, .. } => match kind {
                     // Dynamic dims are `-1`; autotune substitutes 42 (see `alloc_buffers`).
-                    IdxKind::Group(len) => self.resolve_const(*len).and_then(crate::dtype::Constant::as_dim).unwrap_or(42),
-                    IdxKind::Local(len) => i64::from(*len),
-                    IdxKind::Warp(len) => i64::from(*len),
+                    RangeKind::Group(len) => self.resolve_const(*len).and_then(crate::dtype::Constant::as_dim).unwrap_or(42),
+                    RangeKind::Local(len) => i64::from(*len),
+                    RangeKind::Warp(len) => i64::from(*len),
                 },
                 _ => unreachable!(),
             }
@@ -1265,13 +1270,13 @@ impl Kernel {
                         if let Op::Loop { len, .. } = self.ops[x].op {
                             indices.insert(x, (self.resolve_const(len).and_then(crate::dtype::Constant::as_dim).unwrap(), 1));
                             params.push((y, scale));
-                        } else if let Op::Index { .. } = self.ops[x].op {
+                        } else if let Op::Range { .. } = self.ops[x].op {
                             indices.insert(x, (index_len_of(&self.ops[x].op), 1));
                             params.push((y, scale));
                         } else if let Op::Loop { len, .. } = self.ops[y].op {
                             indices.insert(y, (self.resolve_const(len).and_then(crate::dtype::Constant::as_dim).unwrap(), 1));
                             params.push((x, scale));
-                        } else if let Op::Index { .. } = self.ops[y].op {
+                        } else if let Op::Range { .. } = self.ops[y].op {
                             indices.insert(y, (index_len_of(&self.ops[y].op), 1));
                             params.push((x, scale));
                         } else {
@@ -1299,10 +1304,10 @@ impl Kernel {
                                     ),
                                 );
                             }
-                            (Op::Index { .. }, Op::Const(c)) => {
+                            (Op::Range { .. }, Op::Const(c)) => {
                                 indices.insert(x, (index_len_of(&self.ops[x].op), c.as_dim().unwrap() * scale));
                             }
-                            (Op::Const(c), Op::Index { .. }) => {
+                            (Op::Const(c), Op::Range { .. }) => {
                                 indices.insert(y, (index_len_of(&self.ops[y].op), c.as_dim().unwrap() * scale));
                             }
                             _ => {}
@@ -1319,10 +1324,10 @@ impl Kernel {
                                     ),
                                 );
                             }
-                            (Op::Index { .. }, Op::Const(c)) => {
+                            (Op::Range { .. }, Op::Const(c)) => {
                                 indices.insert(x, (index_len_of(&self.ops[x].op), (1i64 << c.as_dim().unwrap()) * scale));
                             }
-                            (Op::Const(c), Op::Index { .. }) => {
+                            (Op::Const(c), Op::Range { .. }) => {
                                 indices.insert(y, (index_len_of(&self.ops[y].op), (1i64 << c.as_dim().unwrap()) * scale));
                             }
                             (Op::Const(c), Op::Loop { len, .. }) => {
@@ -1347,7 +1352,7 @@ impl Kernel {
                         Op::Loop { len, .. } => {
                             indices.insert(z, (self.resolve_const(*len).and_then(crate::dtype::Constant::as_dim).unwrap(), 1));
                         }
-                        Op::Index { .. } => {
+                        Op::Range { .. } => {
                             indices.insert(z, (index_len_of(&self.ops[z].op), 1));
                         }
                         _ => {
@@ -1364,7 +1369,7 @@ impl Kernel {
                                 ),
                             );
                         }
-                        (Op::Index { .. }, Op::Const(c)) => {
+                        (Op::Range { .. }, Op::Const(c)) => {
                             indices.insert(x, (index_len_of(&self.ops[x].op), c.as_dim().unwrap() * scale));
                         }
                         (Op::Const(c), Op::Loop { len, .. }) => {
@@ -1376,7 +1381,7 @@ impl Kernel {
                                 ),
                             );
                         }
-                        (Op::Const(c), Op::Index { .. }) => {
+                        (Op::Const(c), Op::Range { .. }) => {
                             indices.insert(y, (index_len_of(&self.ops[y].op), c.as_dim().unwrap() * scale));
                         }
                         _ => {}
@@ -1427,9 +1432,9 @@ impl Kernel {
                 }
                 Op::Stack { ops } => stack.extend(ops.iter().copied()),
                 Op::Loop { len } => stack.push(*len),
-                &Op::Index { kind, .. } => match kind {
-                    IdxKind::Group(len) => stack.push(len),
-                    IdxKind::Local(_) | IdxKind::Warp(_) => {}
+                &Op::Range { kind, .. } => match kind {
+                    RangeKind::Group(len) => stack.push(len),
+                    RangeKind::Local(_) | RangeKind::Warp(_) => {}
                 },
                 Op::Mad { x, y, z } => {
                     stack.push(*x);
@@ -1473,10 +1478,10 @@ impl Kernel {
                         Constant::binary(prod, c.cast(dt), BOp::Add)
                     }),
                 Op::Loop { len } => values.get(len).copied().flatten(),
-                &Op::Index { kind, .. } => match kind {
-                    IdxKind::Group(len) => values.get(&len).copied().flatten(),
-                    IdxKind::Local(len) => Some(Constant::idx(len)),
-                    IdxKind::Warp(len) => Some(Constant::idx(len)),
+                &Op::Range { kind, .. } => match kind {
+                    RangeKind::Group(len) => values.get(&len).copied().flatten(),
+                    RangeKind::Local(len) => Some(Constant::idx(len)),
+                    RangeKind::Warp(len) => Some(Constant::idx(len)),
                 },
                 // Param is dynamic
                 Op::Param { .. } => None,
@@ -1551,11 +1556,7 @@ impl Kernel {
     /// cloned, in the fresh kernel's Param order. Every `new_loads` entry is
     /// an additional reader of the underlying tensor: the runtime caller
     /// retains one reference per occurrence.
-    pub(crate) fn duplicate_subkernel<T: Copy>(
-        &mut self,
-        root_op: OpId,
-        loads: &[T],
-    ) -> (Self, OpId, Vec<T>) {
+    pub(crate) fn duplicate_subkernel<T: Copy>(&mut self, root_op: OpId, loads: &[T]) -> (Self, OpId, Vec<T>) {
         // Walk 1: from root_op
         let mut root_required = Set::default();
         let mut stack = vec![root_op];
@@ -1634,7 +1635,7 @@ impl Kernel {
     pub(crate) fn get_group_indices(&self) -> std::collections::BTreeMap<u32, OpId> {
         let mut indices = std::collections::BTreeMap::new();
         for (op_id, op_node) in self.ops.iter() {
-            if let Op::Index { axis, kind: IdxKind::Group(_), .. } = op_node.op {
+            if let Op::Range { axis, kind: RangeKind::Group(_), .. } = op_node.op {
                 indices.insert(axis, op_id);
             }
         }
@@ -1647,21 +1648,21 @@ impl Kernel {
         let mut local_indices = BTreeMap::default();
         for (op_id, op_node) in self.ops.iter() {
             match op_node.op {
-                Op::Index { axis, kind: IdxKind::Group(_), .. } => group_indices.insert(axis, op_id),
-                Op::Index { axis, kind: IdxKind::Local(_), .. } => local_indices.insert(axis, op_id),
+                Op::Range { axis, kind: RangeKind::Group(_), .. } => group_indices.insert(axis, op_id),
+                Op::Range { axis, kind: RangeKind::Local(_), .. } => local_indices.insert(axis, op_id),
                 _ => None,
             };
         }
         let mut ax = 0;
         for &idx_id in group_indices.values() {
-            let Op::Index { axis, kind: IdxKind::Group(_), .. } = &mut self.ops[idx_id].op else {
+            let Op::Range { axis, kind: RangeKind::Group(_), .. } = &mut self.ops[idx_id].op else {
                 unreachable!()
             };
             *axis = ax;
             ax += 1;
         }
         for &idx_id in local_indices.values() {
-            let Op::Index { axis, kind: IdxKind::Local(_), .. } = &mut self.ops[idx_id].op else {
+            let Op::Range { axis, kind: RangeKind::Local(_), .. } = &mut self.ops[idx_id].op else {
                 unreachable!()
             };
             *axis = ax;

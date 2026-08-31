@@ -8,7 +8,7 @@ use crate::{
     backend::DeviceInfo,
     dtype::Constant,
     error::{BackendError, ErrorStatus},
-    kernel::{BOp, IDX_T, IdxKind, Kernel, MemScope, Op, OpId, ParamKind, UOp},
+    kernel::{BOp, IDX_T, RangeKind, Kernel, MemScope, Op, OpId, ParamKind, UOp},
     scalar::bf16,
     shape::Dim,
 };
@@ -269,11 +269,11 @@ impl Kernel {
             if steps_op_id > 10_000 {
                 panic!("generate_ptx did not finish in 10000 steps");
             }
-            if let Op::Index { axis, kind: scope } = self.ops[op_id].op {
+            if let Op::Range { axis, kind: scope } = self.ops[op_id].op {
                 match scope {
-                    IdxKind::Group(_) => {}
-                    IdxKind::Local(len) => lws[axis as usize] = Dim::from(len),
-                    IdxKind::Warp(_) => todo!(),
+                    RangeKind::Group(_) => {}
+                    RangeKind::Local(len) => lws[axis as usize] = Dim::from(len),
+                    RangeKind::Warp(_) => todo!(),
                 }
             }
             op_id = self.next_op(op_id);
@@ -340,10 +340,12 @@ impl Kernel {
                                 dtype.ptx()
                             );
                         }
-                        MemScope::CircularReader | MemScope::CircularWriter | MemScope::Global => unreachable!("ptx only supports local or register storage"),
+                        MemScope::CircularReader | MemScope::CircularWriter | MemScope::Global => {
+                            unreachable!("ptx only supports local or register storage")
+                        }
                     }
                 }
-                Op::Index { axis, kind: scope, .. } => {
+                Op::Range { axis, kind: scope, .. } => {
                     let reg = comp.new_var(op_id, IDX_T, rcs[&op_id]);
                     _ = writeln!(
                         comp.body,
@@ -351,9 +353,9 @@ impl Kernel {
                         comp.indent,
                         if IDX_T == DType::U64 { "cvt.u64" } else { "mov" },
                         match scope {
-                            IdxKind::Group(_) => "cta",
-                            IdxKind::Local(_) => "t",
-                            IdxKind::Warp(_) => todo!(),
+                            RangeKind::Group(_) => "cta",
+                            RangeKind::Local(_) => "t",
+                            RangeKind::Warp(_) => todo!(),
                         },
                         ["x", "y", "z"][axis as usize],
                     );

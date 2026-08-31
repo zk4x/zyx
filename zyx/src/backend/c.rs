@@ -14,7 +14,7 @@ use super::{
 };
 use crate::DType;
 use crate::error::{BackendError, ErrorStatus};
-use crate::kernel::{IdxKind, Kernel, Op};
+use crate::kernel::{Kernel, Op, RangeKind};
 use crate::shape::Dim;
 use crate::slab::Slab;
 use libloading::{Library, Symbol};
@@ -194,7 +194,7 @@ impl CDevice {
             if steps_op_id > 10_000 {
                 panic!("compile did not finish in 10000 steps");
             }
-            if let Op::Index { axis, kind: IdxKind::Group(len) } = kernel.ops[op_id].op
+            if let Op::Range { axis, kind: RangeKind::Group(len) } = kernel.ops[op_id].op
                 && axis == 0
             {
                 gws0 = kernel.resolve_const(len).and_then(crate::dtype::Constant::as_dim).unwrap_or(1).max(1);

@@ -17,10 +17,10 @@
 //! used to guide the autotuning search.
 
 use crate::{
-    shape::Dim,
     DType, Map, Set,
     backend::DeviceInfo,
-    kernel::{IDX_T, IdxKind, Kernel, MemLayout, MemScope, Op, OpId, ParamKind},
+    kernel::{IDX_T, Kernel, MemLayout, MemScope, Op, OpId, ParamKind, RangeKind},
+    shape::Dim,
 };
 use nanoserde::{DeBin, SerBin};
 
@@ -108,7 +108,7 @@ impl Kernel {
                             *rcs.entry(x).or_insert(0) += 1;
                         }
                     }
-                    Op::Devectorize { vec, .. } => {
+                    Op::Index { vec, .. } => {
                         let dtype = dtypes[&vec];
                         dtypes.insert(op_id, (dtype.0, MemLayout::Scalar));
                         *rcs.entry(vec).or_insert(0) += 1;
@@ -162,7 +162,7 @@ impl Kernel {
                         *rcs.entry(y).or_insert(0) += 1;
                         *rcs.entry(z).or_insert(0) += 1;
                     }
-                    Op::Index { .. } | Op::Loop { .. } => {
+                    Op::Range { .. } | Op::Loop { .. } => {
                         dtypes.insert(op_id, (DType::U32, MemLayout::Scalar));
                     }
                     Op::ReduceTile { x, .. } => {
@@ -230,11 +230,11 @@ impl Kernel {
                 | Op::MatmulTile { .. }
                 | Op::TransposeTile { .. }
                 | Op::Loop { .. }
-                | Op::Devectorize { .. }
+                | Op::Index { .. }
                 | Op::Param { .. }
                 | Op::Storage { .. }
                 | Op::Const(_)
-                | Op::Index { .. } => true,
+                | Op::Range { .. } => true,
                 Op::Store { .. } | Op::EndLoop | Op::Barrier | Op::If { .. } | Op::EndIf => false,
                 Op::Move { .. } => todo!(),
                 Op::Reduce { .. } => todo!(),
@@ -262,7 +262,7 @@ impl Kernel {
             let op = &self.ops[op_id].op;
 
             // Is this indexing or compute?
-            if (matches!(op, Op::Index { .. } | Op::Loop { .. })
+            if (matches!(op, Op::Range { .. } | Op::Loop { .. })
                 || (op.parameters().count() > 0 && op.parameters().all(|p| indexing_ops.contains(&p))))
             {
                 indexing_ops.insert(op_id);
@@ -291,7 +291,7 @@ impl Kernel {
                 | Op::Param { .. }
                 | Op::Storage { .. }
                 | Op::EndIf
-                | Op::Devectorize { .. }
+                | Op::Index { .. }
                 | Op::Stack { .. }
                 | Op::Move { .. }
                 | Op::Reduce { .. }
@@ -308,7 +308,7 @@ impl Kernel {
                     let total_elements = loop_mult * layout.n_elements();
                     match scope {
                         MemScope::Global => {
-                            let n_bits = total_elements * dtypes[&op_id].0.bit_size()  as i64;
+                            let n_bits = total_elements * dtypes[&op_id].0.bit_size() as i64;
                             n_scoped_load_bits[0] += n_bits;
                             // Track stride: prefer lidx > gidx > loop
                             let strides = self.get_strides(index);
@@ -318,7 +318,7 @@ impl Kernel {
                                     if oid.is_null() || *st == 0 {
                                         return None;
                                     }
-                                    if matches!(self.ops[*oid].op, Op::Index { .. }) {
+                                    if matches!(self.ops[*oid].op, Op::Range { .. }) {
                                         Some(*st)
                                     } else {
                                         None
@@ -339,13 +339,13 @@ impl Kernel {
                             if let Some(st) = stride {
                                 glb_load_lidx_stride_weighted += st * n_bits;
                                 glb_load_lidx_stride_weight += n_bits;
-                            } else if let Op::Index { .. } = self.ops[index].op {
+                            } else if let Op::Range { .. } = self.ops[index].op {
                                 glb_load_lidx_stride_weighted += n_bits;
                                 glb_load_lidx_stride_weight += n_bits;
                             }
                         }
                         MemScope::Local | MemScope::CircularReader | MemScope::CircularWriter => {
-                            let n_bits = total_elements * dtypes[&op_id].0.bit_size()  as i64;
+                            let n_bits = total_elements * dtypes[&op_id].0.bit_size() as i64;
                             n_scoped_load_bits[1] += n_bits;
                             let strides = self.get_strides(index);
                             let stride = strides
@@ -354,7 +354,7 @@ impl Kernel {
                                     if oid.is_null() || *st == 0 {
                                         return None;
                                     }
-                                    if matches!(self.ops[*oid].op, Op::Index { .. }) {
+                                    if matches!(self.ops[*oid].op, Op::Range { .. }) {
                                         Some(*st)
                                     } else {
                                         None
@@ -375,13 +375,13 @@ impl Kernel {
                             if let Some(st) = stride {
                                 loc_load_lidx_stride_weighted += st * n_bits;
                                 loc_load_lidx_stride_weight += n_bits;
-                            } else if let Op::Index { .. } = self.ops[index].op {
+                            } else if let Op::Range { .. } = self.ops[index].op {
                                 loc_load_lidx_stride_weighted += n_bits;
                                 loc_load_lidx_stride_weight += n_bits;
                             }
                         }
                         MemScope::Register => {
-                            n_scoped_load_bits[2] += total_elements * dtypes[&op_id].0.bit_size()  as i64;
+                            n_scoped_load_bits[2] += total_elements * dtypes[&op_id].0.bit_size() as i64;
                         }
                     }
                 }
@@ -393,7 +393,7 @@ impl Kernel {
                     let scope = mem_scope(&self.ops[dst].op);
                     match scope {
                         MemScope::Global => {
-                            let n_bits = loop_mult * layout.n_elements() * dtypes[&op_id].0.bit_size()  as i64;
+                            let n_bits = loop_mult * layout.n_elements() * dtypes[&op_id].0.bit_size() as i64;
                             n_scoped_store_bits[0] += n_bits;
                             // Track stride: prefer lidx > gidx > loop
                             let strides = self.get_strides(index);
@@ -403,7 +403,7 @@ impl Kernel {
                                     if oid.is_null() || *st == 0 {
                                         return None;
                                     }
-                                    if matches!(self.ops[*oid].op, Op::Index { .. }) {
+                                    if matches!(self.ops[*oid].op, Op::Range { .. }) {
                                         Some(*st)
                                     } else {
                                         None
@@ -424,13 +424,13 @@ impl Kernel {
                             if let Some(st) = stride {
                                 glb_store_lidx_stride_weighted += st * n_bits;
                                 glb_store_lidx_stride_weight += n_bits;
-                            } else if let Op::Index { .. } = self.ops[index].op {
+                            } else if let Op::Range { .. } = self.ops[index].op {
                                 glb_store_lidx_stride_weighted += n_bits;
                                 glb_store_lidx_stride_weight += n_bits;
                             }
                         }
                         MemScope::Local | MemScope::CircularReader | MemScope::CircularWriter => {
-                            let n_bits = loop_mult * layout.n_elements() * dtypes[&op_id].0.bit_size()  as i64;
+                            let n_bits = loop_mult * layout.n_elements() * dtypes[&op_id].0.bit_size() as i64;
                             n_scoped_store_bits[1] += n_bits;
                             let strides = self.get_strides(index);
                             let stride = strides
@@ -439,7 +439,7 @@ impl Kernel {
                                     if oid.is_null() || *st == 0 {
                                         return None;
                                     }
-                                    if matches!(self.ops[*oid].op, Op::Index { .. }) {
+                                    if matches!(self.ops[*oid].op, Op::Range { .. }) {
                                         Some(*st)
                                     } else {
                                         None
@@ -460,23 +460,23 @@ impl Kernel {
                             if let Some(st) = stride {
                                 loc_store_lidx_stride_weighted += st * n_bits;
                                 loc_store_lidx_stride_weight += n_bits;
-                            } else if let Op::Index { .. } = self.ops[index].op {
+                            } else if let Op::Range { .. } = self.ops[index].op {
                                 loc_store_lidx_stride_weighted += n_bits;
                                 loc_store_lidx_stride_weight += n_bits;
                             }
                         }
                         MemScope::Register => {
-                            n_scoped_store_bits[2] += loop_mult * layout.n_elements() * dtypes[&op_id].0.bit_size()  as i64
+                            n_scoped_store_bits[2] += loop_mult * layout.n_elements() * dtypes[&op_id].0.bit_size() as i64
                         }
                     }
                 }
-                Op::Index { axis, kind: scope } => match scope {
-                    IdxKind::Group(len) => {
+                Op::Range { axis, kind: scope } => match scope {
+                    RangeKind::Group(len) => {
                         // Dynamic dims are `-1`; autotune substitutes 42 (see `alloc_buffers`).
                         gws[axis as usize] = self.resolve_const(len).and_then(crate::dtype::Constant::as_dim).unwrap_or(42)
                     }
-                    IdxKind::Local(len) => lws[axis as usize] = len,
-                    IdxKind::Warp(_) => todo!(),
+                    RangeKind::Local(len) => lws[axis as usize] = len,
+                    RangeKind::Warp(_) => todo!(),
                 },
                 Op::Loop { len: len_id } => {
                     wi_ops += loop_mult * 3;
@@ -486,8 +486,14 @@ impl Kernel {
                     if let Some(len) = self.resolve_const(len_id).and_then(crate::dtype::Constant::as_dim) {
                         loop_mult *= len;
                         latest_loop_lengths.push(len);
+                    } else {
+                        // Dynamic dim length at cost time (e.g. a variable
+                        // loop bound; autotune substitutes the real value at
+                        // launch). Keep the loop stack balanced with a
+                        // neutral entry.
+                        latest_loop_lengths.push(1);
                     }
-                    let depth = latest_loop_lengths.len()  as i64;
+                    let depth = latest_loop_lengths.len() as i64;
                     if depth > max_loop_depth {
                         max_loop_depth = depth;
                     }
@@ -518,8 +524,11 @@ impl Kernel {
             }
 
             // Track peak register bytes
-            let bytes: u64 =
-                reg_slots.iter().filter(|(r, _)| *r > 0).map(|(_, dt)| u64::from(dt.0.bit_size() / 8) * dt.1.n_elements() as u64).sum();
+            let bytes: u64 = reg_slots
+                .iter()
+                .filter(|(r, _)| *r > 0)
+                .map(|(_, dt)| u64::from(dt.0.bit_size() / 8) * dt.1.n_elements() as u64)
+                .sum();
             if bytes > wi_peak_reg_bytes {
                 wi_peak_reg_bytes = bytes;
             }
@@ -591,7 +600,7 @@ impl Kernel {
             dev_info.preferred_vector_size as u32,
             dev_info.local_mem_size as u32,
         );
-        let cost = cost.max(1.0)  as i64;
+        let cost = cost.max(1.0) as i64;
 
         Cost { cost: cost as u64 }
     }

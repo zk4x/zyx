@@ -10,10 +10,16 @@
 #![allow(clippy::unused_self)]
 
 use super::{
-    DTypeCapability, Device, DeviceId, DeviceInfo, DeviceProgramId, Event, GwsDim, LaunchArg, MemoryPool, PoolBufferId,
-    PoolId, gws_from_kernel,
+    DTypeCapability, Device, DeviceId, DeviceInfo, DeviceProgramId, Event, GwsDim, LaunchArg, MemoryPool, PoolBufferId, PoolId,
+    gws_from_kernel,
 };
-use crate::{DType, error::{BackendError, ErrorStatus}, kernel::{IdxKind, Kernel, Op}, shape::Dim, slab::Slab};
+use crate::{
+    DType,
+    error::{BackendError, ErrorStatus},
+    kernel::{Kernel, Op, RangeKind},
+    shape::Dim,
+    slab::Slab,
+};
 use libloading::Library;
 use nanoserde::DeJson;
 use std::{
@@ -847,11 +853,11 @@ impl OpenCLDevice {
             if steps_op_id > 10_000 {
                 panic!("compile did not finish in 10000 steps");
             }
-            if let Op::Index { axis, kind: scope } = kernel.ops[op_id].op {
+            if let Op::Range { axis, kind: scope } = kernel.ops[op_id].op {
                 match scope {
-                    IdxKind::Group(_) => {}
-                    IdxKind::Local(len) => lws[axis as usize] = i64::from(len),
-                    IdxKind::Warp(_) => todo!(),
+                    RangeKind::Group(_) => {}
+                    RangeKind::Local(len) => lws[axis as usize] = i64::from(len),
+                    RangeKind::Warp(_) => todo!(),
                 }
             }
             op_id = kernel.next_op(op_id);

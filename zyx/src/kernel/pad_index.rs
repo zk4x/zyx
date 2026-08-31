@@ -14,10 +14,10 @@
 //! - Skipping out-of-range stores with conditionals
 
 use crate::{
-    shape::Dim,
     Set,
     dtype::Constant,
-    kernel::{BOp, IDX_T, IdxKind, Kernel, MemLayout, Op, OpId},
+    kernel::{BOp, IDX_T, RangeKind, Kernel, MemLayout, Op, OpId},
+    shape::Dim,
 };
 
 use super::autotune::Optimization;
@@ -42,29 +42,29 @@ impl Kernel {
         }
 
         // 1. Extend the index length
-        let Op::Index { axis, kind } = self.ops[gidx_id].op else {
+        let Op::Range { axis, kind } = self.ops[gidx_id].op else {
             panic!("pad_index: op is not an Index");
         };
         let (current_len, new_kind) = match kind {
-            IdxKind::Group(len) => match self.resolve_const(len).and_then(crate::dtype::Constant::as_dim) {
+            RangeKind::Group(len) => match self.resolve_const(len).and_then(crate::dtype::Constant::as_dim) {
                 Some(current_len) => {
                     let new_len = self.insert_before(gidx_id, Op::Const(Constant::idx(current_len + pad_len)));
-                    (current_len, IdxKind::Group(new_len))
+                    (current_len, RangeKind::Group(new_len))
                 }
                 None => return,
             },
-            IdxKind::Local(len) => {
+            RangeKind::Local(len) => {
                 let current_len = Dim::from(len);
                 let new_len = len + u32::try_from(pad_len).expect("pad_len too large for local index");
-                (current_len, IdxKind::Local(new_len))
+                (current_len, RangeKind::Local(new_len))
             }
-            IdxKind::Warp(len) => {
+            RangeKind::Warp(len) => {
                 let current_len = Dim::from(len);
                 let new_len = len + u8::try_from(pad_len).expect("pad_len too large for warp index");
-                (current_len, IdxKind::Warp(new_len))
+                (current_len, RangeKind::Warp(new_len))
             }
         };
-        self.ops[gidx_id].op = Op::Index { axis, kind: new_kind };
+        self.ops[gidx_id].op = Op::Range { axis, kind: new_kind };
 
         // 2. Create limit constant for comparison
         let limit = self.insert_before(gidx_id, Op::Const(Constant::idx(current_len)));
@@ -185,14 +185,14 @@ impl Kernel {
         let mut op_id = self.head;
         while !op_id.is_null() {
             let next = self.next_op(op_id);
-            if let Op::Index { kind, .. } = self.ops[op_id].op {
+            if let Op::Range { kind, .. } = self.ops[op_id].op {
                 let len = match kind {
-                    IdxKind::Group(len) => match self.resolve_const(len).and_then(crate::dtype::Constant::as_dim) {
+                    RangeKind::Group(len) => match self.resolve_const(len).and_then(crate::dtype::Constant::as_dim) {
                         Some(len) => len,
                         None => continue,
                     },
-                    IdxKind::Local(len) => Dim::from(len),
-                    IdxKind::Warp(len) => Dim::from(len),
+                    RangeKind::Local(len) => Dim::from(len),
+                    RangeKind::Warp(len) => Dim::from(len),
                 };
                 for pad_to in [8, 16, 32] {
                     if len % pad_to as Dim != 0 {
@@ -211,7 +211,7 @@ impl Kernel {
             return expr == target;
         }
         match self.at(expr) {
-            Op::Const(_) | Op::Index { .. } | Op::Storage { .. } | Op::Loop { .. } | Op::EndLoop => false,
+            Op::Const(_) | Op::Range { .. } | Op::Storage { .. } | Op::Loop { .. } | Op::EndLoop => false,
             op => op.parameters().any(|p| self.depends_on(p, target, visited)),
         }
     }
