@@ -19,7 +19,6 @@
 use std::collections::BTreeSet;
 
 use crate::Map;
-use crate::Set;
 use crate::backend::{BufferId, DeviceInfo, LaunchArg, MemoryPool, ProgramId};
 use crate::dtype::Constant;
 use crate::error::BackendError;
@@ -27,7 +26,7 @@ use crate::tensor::TensorId;
 use crate::kernel::{
     BOp, DeviceId, IDX_T, IdxKind, Kernel, MMADType, MMADims, MMALayout, MemLayout, MemScope, MoveOp, Op, OpId, ParamKind, UOp,
 };
-use crate::runtime::{KernelData, KernelId, TensorData};
+use crate::runtime::{KernelId, TensorData};
 use crate::shape::UAxis;
 use crate::slab::{Slab, SlabId};
 use crate::types::{TinyString, TinyVec};
@@ -642,10 +641,10 @@ impl CompiledKernel {
         let event = unsafe { device.launch(self.program.program, &mut *pool_ptr, &args, event_wait_list)? };
         rt.events.insert(all_bufs, event);
 
-        // Put to tensors. Each output gets its own load kernel: a realized
-        // tensor is referenced through a read-only global Param (like
-        // Runtime::eagerify/add_store does), never a NULL op id. NULL op ids
-        // break any eager op built on the forward result (e.g. a .cast()).
+        // Put to tensors. Each output becomes a **Leaf**: the launched buffer
+        // is its backing store (set in buffer_map), no kernel is created.
+        // Consumers mint their own load kernels (Runtime::leaf_load), so no
+        // NULL op ids ever leak into eager ops built on the result.
         let mut tensors = Vec::new();
         for ((dtype, buf_id), shape) in self.outputs.iter().copied().zip(output_bufs).zip(shapes) {
             // Build the slab-side shape expression (constant dims) for the
@@ -659,21 +658,7 @@ impl CompiledKernel {
             } else {
                 rt.stack(&dim_tids).expect("custom kernel output: failed to build shape stack")
             };
-            let mut kernel = Kernel::new(DeviceId::AUTO);
-            let shape_op = kernel.add_shape(&shape);
-            let op_id = kernel.push_back(Op::Param { dtype, kind: ParamKind::Global, shape: shape_op });
-            let id = rt.tensors.push(TensorData::Eager {
-                kernel_id: KernelId::NULL,
-                op_id: OpId::NULL,
-                depends_on: KernelId::NULL,
-                shape_id,
-                dtype,
-                rc: 1,
-            });
-            let load_kid =
-                rt.kernels.push(KernelData { outputs: Set::from_iter([id]), loads: vec![id], stores: Vec::new(), kernel });
-            rt.tensors[id] = TensorData::Eager { kernel_id: load_kid, op_id, depends_on: KernelId::NULL, shape_id, dtype, rc: 1 };
-            rt.retain(id);
+            let id = rt.tensors.push(TensorData::Leaf { depends_on: KernelId::NULL, shape_id, dtype, rc: 1 });
             rt.buffer_map.insert(id, buf_id);
             tensors.push(Tensor { id })
         }

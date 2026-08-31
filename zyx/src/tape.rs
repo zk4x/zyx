@@ -48,8 +48,7 @@ use crate::{
     backend::BufferId,
     dtype::Constant,
     graph::{ClassId, Graph, GraphId},
-    kernel::ParamKind,
-    runtime::{Runtime, TensorData},
+    runtime::{KernelId, Runtime, TensorData},
     shape::Dim,
     slab::SlabId,
     tensor::TensorId,
@@ -329,13 +328,34 @@ impl Drop for Tape {
                 }
                 TensorData::Graph { graph_id: _g, rc, .. } => {
                     if rc > 0 {
-                        rt.graphs[graph_id].ref_count -= 1;
-                        match &mut rt.tensors[tid] {
-                            TensorData::Graph { graph_id, class_id, .. } => {
-                                *graph_id = GraphId::NULL;
-                                *class_id = ClassId::NULL;
+                        // A buffer-backed Graph tensor is a promoted **Leaf**:
+                        // its value is computed and its buffer lives on —
+                        // revert it to a Leaf instead of tombstoning, so the
+                        // eager handle stays usable after the tape dies. The
+                        // leaf-edge rc is released by the `leafs` loop below.
+                        if rt.buffer_map.contains_key(&tid) {
+                            rt.graphs[graph_id].ref_count -= 1;
+                            match &mut rt.tensors[tid] {
+                                TensorData::Graph { graph_id, class_id, .. } => {
+                                    *graph_id = GraphId::NULL;
+                                    *class_id = ClassId::NULL;
+                                }
+                                _ => unreachable!(),
                             }
-                            _ => unreachable!(),
+                            let (shape_id, dtype, rc) = match rt.tensors[tid] {
+                                TensorData::Graph { shape_id, dtype, rc, .. } => (shape_id, dtype, rc),
+                                _ => unreachable!(),
+                            };
+                            rt.tensors[tid] = TensorData::Leaf { depends_on: KernelId::NULL, shape_id, dtype, rc };
+                        } else {
+                            rt.graphs[graph_id].ref_count -= 1;
+                            match &mut rt.tensors[tid] {
+                                TensorData::Graph { graph_id, class_id, .. } => {
+                                    *graph_id = GraphId::NULL;
+                                    *class_id = ClassId::NULL;
+                                }
+                                _ => unreachable!(),
+                            }
                         }
                     }
                 }
@@ -356,6 +376,12 @@ impl Drop for Tape {
                     // Drop the ref_count edge; the `leafs` loop below
                     // releases the retain.
                     rt.graphs[graph_id].ref_count -= 1;
+                }
+                TensorData::Leaf { .. } => {
+                    // A reverted promoted-Leaf (buffer-backed Graph, visited
+                    // as affiliated first) or a Leaf that became Graph and
+                    // was already handled. The `leafs` loop below releases
+                    // the leaf-edge retain; nothing else to do.
                 }
                 ref t => unreachable!("affiliated tensor changed variant: {t:?}"),
             };
@@ -491,7 +517,7 @@ impl FrozenTape {
                 }
                 s
             };
-            let tid = rt.new_eager_tensor(stid, *dtype, ParamKind::Global);
+            let tid = rt.new_eager_tensor(stid, *dtype);
             rt.buffer_map.insert(tid, class_buf[cid]);
             outputs.push(Tensor::from_id(tid));
         }

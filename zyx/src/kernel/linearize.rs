@@ -91,7 +91,7 @@ impl Kernel {
             }
         }
 
-        /*debug_assert!({
+        debug_assert!({
             let mut live: Set<OpId> = Set::default();
             let mut stack: Vec<OpId> = Vec::new();
             let mut op_id = self.head;
@@ -115,7 +115,7 @@ impl Kernel {
                 op_id = self.next_op(op_id);
             }
             true
-        });*/
+        });
 
         // Snapshot the order of global params so linearize can assert it never
         // reorders the buffers' declaration order.
@@ -495,12 +495,13 @@ impl Kernel {
                                 let t_hi = self.cmplt(d.idx, d.len);
                                 pc = self.and(t_hi, pc);
                             }
-                            // Insert the ro source storage immediately before this op so the
-                            // global param order (which buffer args bind to) is
-                            // preserved.
+                            // A variable IS its value: like a constant it needs only
+                            // the pad mask — no storage insert, no load. A fresh
+                            // param is inserted so the define order (which scalar
+                            // args bind to) is preserved, then the value is
+                            // multiplied by the mask.
                             let src = self.insert_before(op_id, Op::Param { dtype, kind, shape });
-                            let z = self.load(src, zero, MemLayout::Scalar);
-                            self.ops[op_id].op = Op::Binary { x: pc, y: z, bop: BOp::Mul };
+                            self.ops[op_id].op = Op::Binary { x: pc, y: src, bop: BOp::Mul };
                         }
                         ParamKind::Global => {
                             let view = views.remove(&op_id).unwrap();

@@ -19,7 +19,7 @@ use crate::{
     backend::{BufferId, Device, PoolId, ProgramId},
     dtype::Constant,
     kernel::{BOp, DeviceId, IDX_T, Kernel, MoveOp, Op, OpId, ParamKind, UOp},
-    runtime::{KernelData, KernelId, Runtime, TensorData},
+    runtime::{KernelId, Runtime, TensorData},
     shape::{Dim, UAxis},
     slab::{Slab, SlabId},
     tensor::TensorId,
@@ -1619,6 +1619,37 @@ impl Runtime {
             }
         }
 
+        // A **Leaf** is a buffer-backed value with no kernel. It promotes as a
+        // pure leaf: its shape class is replayed from the slab-side shape
+        // expression, the class binds to the tid via `leaf_map` (the plan
+        // reads its buffer), and the tensor becomes `TensorData::Graph` —
+        // affiliated with the graph (ref_count + rc incremented), so
+        // `Tape::drop`'s visit loop handles it; the buffer survives in
+        // `buffer_map` and the drop arm reverts buffer-backed Graph tensors
+        // back to `Leaf` (the value is preserved, not tombstoned).
+        if matches!(self.tensors[tid], TensorData::Leaf { .. }) {
+            let (shape_id, dtype, rc) = match self.tensors[tid] {
+                TensorData::Leaf { shape_id, dtype, rc, .. } => (shape_id, dtype, rc),
+                ref t => unreachable!("{t:?}"),
+            };
+            debug_assert!(
+                self.buffer_map.contains_key(&tid),
+                "promote_to_graph: Leaf {tid} has no buffer (pending store not realized)"
+            );
+            let shape_class = if shape_id.is_null() {
+                ClassId::NULL
+            } else {
+                self.replay_symbolic_into_graph(graph_id, shape_id)
+            };
+            let (_, class_id) = self.push_leaf_node(graph_id, dtype, shape_class);
+            self.graphs[graph_id].leaf_map.insert(class_id, tid);
+            self.retain(tid);
+            self.graphs[graph_id].leaf_classes.push(class_id);
+            self.graphs[graph_id].ref_count += 1;
+            self.tensors[tid] = TensorData::Graph { class_id, graph_id, shape_id, dtype, rc: rc + 1 };
+            return Ok(class_id);
+        }
+
         let (kernel_id, my_op_id) = match self.tensors[tid] {
             TensorData::Eager { kernel_id, op_id, .. } | TensorData::Promoted { kernel_id, op_id, .. } => (kernel_id, op_id),
             // A NULL-ids Graph variant is the tombstone left by `Tape::drop`
@@ -1743,7 +1774,14 @@ impl Runtime {
                     continue;
                 }
                 match &kernel.ops[oid].op {
-                    Op::Storage { .. } | Op::Const(_) | Op::Param { .. } => {}
+                    Op::Storage { .. } | Op::Const(_) => {}
+                    Op::Param { shape, .. } => {
+                        // The Param's shape stack is part of its structure:
+                        // dim expressions feeding it must be replayed too.
+                        if !shape.is_null() {
+                            stack.push(*shape);
+                        }
+                    }
                     Op::Unary { x, .. } => stack.push(*x),
                     Op::Binary { x, y, .. } => {
                         stack.push(*x);
@@ -1767,7 +1805,26 @@ impl Runtime {
                         }
                     }
                     Op::Stack { ops } => stack.extend(ops.iter().copied()),
-                    op => unreachable!("promote_to_graph: eager kernel op {op:?}"),
+                    Op::Store { dst, src, .. } => {
+                        stack.push(*dst);
+                        stack.push(*src);
+                    }
+                    Op::ReduceTile { x, .. } => stack.push(*x),
+                    Op::EndLoop
+                    | Op::EndIf
+                    | Op::Barrier
+                    | Op::Index { .. }
+                    | Op::Loop { .. }
+                    | Op::Load { .. }
+                    | Op::Mad { .. }
+                    | Op::If { .. }
+                    | Op::Asm { .. }
+                    | Op::Devectorize { .. }
+                    | Op::Wmma { .. }
+                    | Op::MatmulTile { .. }
+                    | Op::TransposeTile { .. } => {
+                        unreachable!("promote_to_graph: eager kernel op {oid:?}")
+                    }
                 }
             }
             relevant
@@ -1803,7 +1860,7 @@ impl Runtime {
                             // its value comes from the variable slots at launch;
                             // it is registered as a leaf below.
                             let pending = match &self.tensors[load_tid] {
-                                TensorData::Eager { depends_on, .. } => *depends_on,
+                                TensorData::Eager { depends_on, .. } | TensorData::Leaf { depends_on, .. } => *depends_on,
                                 TensorData::Graph { .. }
                                 | TensorData::Promoted { .. }
                                 | TensorData::Variable { .. } => KernelId::NULL,
@@ -1863,7 +1920,37 @@ impl Runtime {
                                         self.graphs[graph_id].ref_count += 1;
                                         dim_cid
                                     }
-                                    ref op => unreachable!("promote_to_graph: dim op {op:?} in param shape stack"),
+                                    // Computed dim expressions (rope half, mean
+                                    // divisor, ...) are parameters of the Param
+                                    // op, so the replay above already mapped
+                                    // them to graph classes — just reuse.
+                                    Op::Binary { .. } | Op::Unary { .. } | Op::Cast { .. } | Op::Stack { .. } => {
+                                        op_to_class[&entry]
+                                    }
+                                    Op::Param { kind: ParamKind::Global, .. }
+                                    | Op::Param { kind: ParamKind::GlobalMut, .. } => {
+                                        unreachable!("promote_to_graph: buffer param as dim in param shape stack")
+                                    }
+                                    Op::Storage { .. }
+                                    | Op::EndLoop
+                                    | Op::EndIf
+                                    | Op::Barrier
+                                    | Op::Index { .. }
+                                    | Op::Loop { .. }
+                                    | Op::Move { .. }
+                                    | Op::Reduce { .. }
+                                    | Op::ReduceTile { .. }
+                                    | Op::Store { .. }
+                                    | Op::Load { .. }
+                                    | Op::Mad { .. }
+                                    | Op::If { .. }
+                                    | Op::Asm { .. }
+                                    | Op::Devectorize { .. }
+                                    | Op::Wmma { .. }
+                                    | Op::MatmulTile { .. }
+                                    | Op::TransposeTile { .. } => {
+                                        unreachable!("promote_to_graph: dim op {entry:?} in param shape stack")
+                                    }
                                 });
                             }
                             let shape_class = match dim_classes.len() {
@@ -1879,7 +1966,6 @@ impl Runtime {
                             match &mut self.tensors[load_tid] {
                                 TensorData::Graph { class_id: c, .. } | TensorData::Promoted { class_id: c, .. } => *c = class_id,
                                 TensorData::Eager { .. } => {
-                                    eprintln!("DEBUG attach Eager load_tid={load_tid} state={:?}", self.tensors[load_tid]);
                                     // A disowned load (user handle gone, not in
                                     // its producer's `outputs`) has no eager
                                     // future: after the tape dies nobody can use
@@ -1910,6 +1996,18 @@ impl Runtime {
                                     // value is read from the variable slots at
                                     // launch — `leaf_map` binds the leaf class
                                     // to this tid, nothing else to attach.
+                                }
+                                TensorData::Leaf { shape_id, dtype, rc, .. } => {
+                                    // A Leaf load becomes a **Graph** leaf:
+                                    // affiliated (ref_count + this rc edge),
+                                    // buffer preserved in `buffer_map`, class
+                                    // bound via `leaf_map`. Its death path
+                                    // decrements the affiliation — so a Leaf
+                                    // dropped before the tape still keeps the
+                                    // inventory consistent.
+                                    let (shape_id, dtype, rc) = (*shape_id, *dtype, *rc);
+                                    self.tensors[load_tid] =
+                                        TensorData::Graph { class_id, graph_id, shape_id, dtype, rc };
                                 }
                                 ref t => panic!("promote_to_graph: cannot attach load tensor {load_tid} to the graph: {t:?}"),
                             }
@@ -2258,14 +2356,17 @@ impl Runtime {
                 ref t => unreachable!("eagerify: unexpected variant after affiliation match: {t:?}"),
             }
         } else {
-            // Realized: detach from any old eager producer (promoted only),
-            // then build a fresh load kernel sharing the existing buffer —
-            // no data moves. The slab-side `shape_id` is replayed into the
-            // new kernel.
+            // Realized: the value lives in `buffer_map`. Under the Leaf design
+            // there is no eager producer kernel to rebuild — the tensor
+            // becomes a **Leaf** (no kernel, no load edge, so no retain). A
+            // Promoted detaches from its old producer first. The promotion's
+            // leaf-edge rc is NOT undone here: `Tape::drop`'s leafs loop
+            // releases it (the ref_count decrement happens at the tail
+            // below).
             let mut old_load_duplicates = 0usize;
             if !old_kernel_id.is_null() {
                 // Live detach: this tensor is still alive (rc > 0), only its
-                // affiliation moves to a fresh load kernel below. A kernel can
+                // affiliation moves to the Leaf state. A kernel can
                 // be used by MULTIPLE tensors, so the old producer survives
                 // intact — just remove this tensor from its outputs. Its fate
                 // is settled later by whoever truly kills it (`release` →
@@ -2274,27 +2375,15 @@ impl Runtime {
                 debug_assert!(removed, "eagerify: tid {tid} not listed in outputs of producer {old_kernel_id:?}");
                 old_load_duplicates = self.kernels[old_kernel_id].loads.iter().filter(|&&t| t == tid).count();
             }
-            let dtype = self.dtype(tid);
-            let kernel_id = self.kernels.push(KernelData {
-                outputs: Set::from_iter([tid]),
-                loads: Vec::new(),
-                stores: Vec::new(),
-                kernel: Kernel::new(DeviceId::AUTO),
-            });
-            let shape_op = self.replay_symbolic_into_kernel(kernel_id, shape_id);
-            let op_id = self.kernels[kernel_id].kernel.push_back(Op::Param { dtype, kind: ParamKind::Global, shape: shape_op });
-            self.kernels[kernel_id].loads.push(tid);
             let (rc, dtype) = match self.tensors[tid] {
                 TensorData::Graph { rc, dtype, .. } | TensorData::Promoted { rc, dtype, .. } => (rc, dtype),
                 ref t => unreachable!("eagerify: {t:?}"),
             };
-            self.tensors[tid] = TensorData::Eager { kernel_id, op_id, depends_on: KernelId::NULL, shape_id, dtype, rc };
-            // The new kernel-load occurrence carries its own rc reference.
-            self.retain(tid);
+            let _ = dtype;
+            self.tensors[tid] = TensorData::Leaf { depends_on: KernelId::NULL, shape_id, dtype, rc };
             // Fully detach from the old producer: its load entries on tid are
-            // released — the fresh kernel's entry (retained above) replaces
-            // them. Without this the old kernel keeps a stale edge whose count
-            // pins tid above the breaker threshold forever.
+            // released. Without this the old kernel keeps a stale edge whose
+            // count pins tid above the death threshold forever.
             if old_load_duplicates > 0 {
                 self.kernels[old_kernel_id].loads.retain(|&t| t != tid);
                 for _ in 0..old_load_duplicates {
