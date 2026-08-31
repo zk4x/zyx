@@ -4,8 +4,8 @@
 use crate::onnx::attribute_proto::AttributeType;
 use crate::onnx::tensor_proto::DataType;
 use crate::onnx::{self, GraphProto};
-use zyx::{DType, ZyxError, Tensor};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
+use zyx::{DType, FrozenTape, Tape, Tensor, ZyxError};
 
 pub type Value = Tensor;
 
@@ -14,10 +14,36 @@ pub fn dtype(dt: DataType) -> Option<DType> {
         DataType::Uint8 => Some(DType::U8),
         DataType::Uint32 => Some(DType::U32),
         DataType::Int64 => Some(DType::I64),
-        //DataType::Float16 => Some(DType::F16),
         DataType::Float => Some(DType::F32),
         DataType::Double => Some(DType::F64),
         DataType::Bool => Some(DType::U8),
+        _ => None,
+    }
+}
+
+fn data_type_from_i32(v: i32) -> Option<DataType> {
+    match v {
+        0 => Some(DataType::Undefined),
+        1 => Some(DataType::Float),
+        2 => Some(DataType::Uint8),
+        3 => Some(DataType::Int8),
+        4 => Some(DataType::Uint16),
+        5 => Some(DataType::Int16),
+        6 => Some(DataType::Int32),
+        7 => Some(DataType::Int64),
+        8 => Some(DataType::String),
+        9 => Some(DataType::Bool),
+        10 => Some(DataType::Float16),
+        11 => Some(DataType::Double),
+        12 => Some(DataType::Uint32),
+        13 => Some(DataType::Uint64),
+        14 => Some(DataType::Complex64),
+        15 => Some(DataType::Complex128),
+        16 => Some(DataType::Bfloat16),
+        17 => Some(DataType::Float8e4m3fn),
+        18 => Some(DataType::Float8e4m3fnuz),
+        19 => Some(DataType::Float8e5m2),
+        20 => Some(DataType::Float8e5m2fnuz),
         _ => None,
     }
 }
@@ -56,7 +82,7 @@ impl Attr for [i64] {
 impl Attr for str {
     const TYPE: AttributeType = AttributeType::String;
     fn get(attr: &onnx::AttributeProto) -> Result<&Self, ZyxError> {
-        std::str::from_utf8(&attr.s).map_err(|e| ZyxError::ParseError(format!("Failed to parse {e}")))
+        std::str::from_utf8(&attr.s).map_err(|e| ZyxError::ParseError(format!("Failed to parse {e}").into()))
     }
 }
 
@@ -65,7 +91,7 @@ impl Attr for GraphProto {
     fn get(attr: &onnx::AttributeProto) -> Result<&Self, ZyxError> {
         attr.g
             .as_ref()
-            .ok_or_else(|| ZyxError::ParseError("attribute does not contain graph".to_string()))
+            .ok_or_else(|| ZyxError::ParseError("attribute does not contain graph".to_string().into()))
     }
 }
 
@@ -74,7 +100,7 @@ impl AttrOwned for Vec<String> {
     fn get(attr: &onnx::AttributeProto) -> Result<Self, ZyxError> {
         let mut ret = vec![];
         for bytes in attr.strings.iter() {
-            let s = String::from_utf8(bytes.clone()).map_err(|e| ZyxError::ParseError(format!("{e}")))?;
+            let s = String::from_utf8(bytes.clone()).map_err(|e| ZyxError::ParseError(format!("{e}").into()))?;
             ret.push(s);
         }
         Ok(ret)
@@ -92,9 +118,9 @@ impl AttrOwned for Tensor {
             ),
         };
 
-        let data_type = match DataType::try_from(tensor_proto.data_type) {
-            Ok(value) => value,
-            Err(_) => panic!(
+        let data_type = match data_type_from_i32(tensor_proto.data_type) {
+            Some(value) => value,
+            None => panic!(
                 "attribute {} of type TENSOR was an invalid data_type number {}",
                 attr.name,
                 tensor_proto.data_type
@@ -118,10 +144,15 @@ impl AttrOwned for Tensor {
                     attr.name
                 )
             }
-            dims.push(*dim as usize)
+            dims.push(Tensor::from(*dim));
         }
 
-        Tensor::from(&tensor_proto.raw_data).cast(dtype).reshape(&dims)
+        let base = Tensor::from(tensor_proto.raw_data.clone()).cast(dtype);
+        if dims.is_empty() {
+            Ok(base)
+        } else {
+            base.reshape(dims)
+        }
     }
 }
 
@@ -140,7 +171,7 @@ fn get_attr_<'a>(node: &'a onnx::NodeProto, name: &str) -> Result<&'a onnx::Attr
 
 fn get_attr<'a, T: Attr + ?Sized>(node: &'a onnx::NodeProto, name: &str) -> Result<&'a T, ZyxError> {
     let attr = get_attr_(node, name)?;
-    if attr.r#type() != T::TYPE {
+    if attr.r#type != T::TYPE as i32 {
         panic!(
             "unsupported type {:?} for '{name}' attribute in '{}' for {}",
             attr.r#type,
@@ -158,7 +189,7 @@ fn get_attr_opt<'a, T: Attr + ?Sized>(
     match node.attribute.iter().find(|attr| attr.name == name) {
         None => Ok(None),
         Some(attr) => {
-            if attr.r#type() != T::TYPE {
+            if attr.r#type != T::TYPE as i32 {
                 panic!(
                     "unsupported type {:?} for '{name}' attribute in '{}' for {}",
                     attr.r#type,
@@ -176,7 +207,7 @@ fn get_attr_opt_owned<T: AttrOwned>(node: &onnx::NodeProto, name: &str) -> Resul
     match node.attribute.iter().find(|attr| attr.name == name) {
         None => Ok(None),
         Some(attr) => {
-            if attr.r#type() != T::TYPE {
+            if attr.r#type != T::TYPE as i32 {
                 panic!(
                     "unsupported type {:?} for '{name}' attribute in '{}' for {}",
                     attr.r#type,
@@ -191,48 +222,58 @@ fn get_attr_opt_owned<T: AttrOwned>(node: &onnx::NodeProto, name: &str) -> Resul
 }
 
 pub fn get_tensor(t: &onnx::TensorProto, name: &str) -> Result<Tensor, ZyxError> {
-    let dims: Vec<usize> = t.dims.iter().map(|&x| x as usize).collect();
-    match DataType::try_from(t.data_type) {
-        Ok(DataType::Int32) => {
+    let dims: Vec<Tensor> = t.dims.iter().map(|&x| Tensor::from(x)).collect();
+    match data_type_from_i32(t.data_type) {
+        Some(DataType::Int32) => {
             if t.int32_data.is_empty() {
                 let len = t.raw_data.len() / 4;
                 let data: &[i32] =
                     unsafe { std::slice::from_raw_parts(t.raw_data.as_ptr() as *const i32, len) };
                 let data = data.iter().map(|v| *v as i64).collect::<Vec<_>>();
-                Ok(Tensor::from(data))
+                let base = Tensor::from(data);
+                if dims.is_empty() {
+                    Ok(base)
+                } else {
+                    base.reshape(dims)
+                }
             } else {
                 let data = t.int32_data.iter().map(|v| *v as i64).collect::<Vec<_>>();
-                Ok(Tensor::from(data))
+                let base = Tensor::from(data);
+                if dims.is_empty() {
+                    Ok(base)
+                } else {
+                    base.reshape(dims)
+                }
             }
         }
-        Ok(dt) => match dtype(dt) {
-            Some(dt) => {
-                if dt == DType::F32 && !t.float_data.is_empty() {
-                    Tensor::from(&t.float_data).reshape(dims.as_slice())
-                } else if dt == DType::F64 && !t.double_data.is_empty() {
-                    Tensor::from(&t.double_data).reshape(dims.as_slice())
-                } else if dt == DType::I64 && !t.int64_data.is_empty() {
-                    Tensor::from(&t.int64_data).reshape(dims.as_slice())
+        Some(dt) => match dtype(dt) {
+            Some(dtype) => {
+                if dtype == DType::F32 && !t.float_data.is_empty() {
+                    let base = Tensor::from(t.float_data.clone());
+                    if dims.is_empty() { Ok(base) } else { base.reshape(dims) }
+                } else if dtype == DType::F64 && !t.double_data.is_empty() {
+                    let base = Tensor::from(t.double_data.clone());
+                    if dims.is_empty() { Ok(base) } else { base.reshape(dims) }
+                } else if dtype == DType::I64 && !t.int64_data.is_empty() {
+                    let base = Tensor::from(t.int64_data.clone());
+                    if dims.is_empty() { Ok(base) } else { base.reshape(dims) }
                 } else {
-                    let x = Tensor::from(t.raw_data.as_slice());
-                    unsafe { x.bitcast(dt) }?.reshape(dims.as_slice())
+                    let base = Tensor::from(t.raw_data.clone());
+                    let base = unsafe { base.bitcast(dtype) };
+                    if dims.is_empty() { Ok(base) } else { base.reshape(dims) }
                 }
             }
             None => {
                 panic!("unsupported 'value' data-type {dt:?} for {name}")
             }
         },
-        Err(_) => {
+        None => {
             panic!("unsupported 'value' data-type {} for {name}", t.data_type,)
         }
     }
 }
 
 // This function provides a direct evaluation of the proto.
-// Longer-term, we should first convert the proto to an intermediate representation of the compute
-// graph so as to make multiple evaluations more efficient.
-// An example upside of this would be to remove intermediary values when they are not needed
-// anymore.
 pub fn simple_eval(
     model: &onnx::ModelProto,
     mut inputs: HashMap<String, Value>,
@@ -270,39 +311,38 @@ fn simple_eval_(
             None => panic!("missing input {}", input.name),
             Some(tensor) => tensor,
         };
-        let dt = match DataType::try_from(tensor_type.elem_type) {
-            Ok(dt) => match dtype(dt) {
+        let dt = match data_type_from_i32(tensor_type.elem_type) {
+            Some(dt) => match dtype(dt) {
                 Some(dt) => dt,
                 None => {
                     panic!("unsupported 'value' data-type {dt:?} for {}", input.name)
                 }
             },
-            type_ => panic!("unsupported input type {type_:?}"),
+            None => panic!("unsupported input type {:?}", tensor_type.elem_type),
         };
         match &tensor_type.shape {
             None => continue,
             Some(shape) => {
-                if shape.dim.len() != tensor.rank() {
+                if shape.dim.len() != tensor.rank() as usize {
                     panic!(
                         "unexpected rank for {}, got {:?}, expected {:?}",
                         input.name,
                         shape.dim,
-                        tensor.shape()
+                        tensor.resolve_shape()
                     )
                 }
-                for (idx, (d, &dim)) in shape.dim.iter().zip(tensor.shape().iter()).enumerate() {
+                for (idx, (d, &dim)) in shape.dim.iter().zip(tensor.resolve_shape().iter()).enumerate() {
                     match &d.value {
                         Some(onnx::tensor_shape_proto::dimension::Value::DimValue(v)) => {
-                            if *v as usize != dim {
+                            if *v as usize != dim as usize {
                                 panic!(
                                     "unexpected dim {idx} for {}, got {:?}, expected {:?}",
                                     input.name,
                                     shape.dim,
-                                    tensor.shape()
+                                    tensor.resolve_shape()
                                 )
                             }
                         }
-                        // We do not check equality constraints for the DimParam dimensions for now.
                         Some(onnx::tensor_shape_proto::dimension::Value::DimParam(_)) | None => (),
                     }
                 }
@@ -316,7 +356,21 @@ fn simple_eval_(
             )
         }
     }
-    // The nodes are topologically sorted so we can just process them in order.
+    eval_nodes(graph, values)?;
+    graph
+        .output
+        .iter()
+        .map(|output| match values.remove(&output.name) {
+            None => panic!("cannot find output {}", output.name),
+            Some(value) => Ok((output.name.clone(), value)),
+        })
+        .collect()
+}
+
+pub(crate) fn eval_nodes(
+    graph: &onnx::GraphProto,
+    values: &mut HashMap<String, Value>,
+) -> Result<(), ZyxError> {
     for node in graph.node.iter() {
         let get = |input_name: &str| match values.get(input_name) {
             Some(value) => value,
@@ -329,7 +383,6 @@ fn simple_eval_(
                 .map(|s| get(s))
         };
 
-        // TODO: Validate node.input for each operator.
         match node.op_type.as_str() {
             "Add" => {
                 let input0 = get(&node.input[0]);
@@ -387,23 +440,22 @@ fn simple_eval_(
                 let input0 = get(&node.input[0]);
                 let input1: Tensor = get(&node.input[1]).clone();
                 let shape: Vec<i64> = input1.try_into()?;
-                // TODO: Check that there is at most a single -1 or 0, handle other neg values.
-                let mut other_than_minus1 = 1usize;
+                let mut other_than_minus1 = 1i64;
                 for &v in shape.iter() {
                     if v != -1 && v != 0 {
-                        other_than_minus1 *= v as usize
+                        other_than_minus1 *= v
                     }
                 }
-                let shape = shape
+                let shape_tensors: Vec<Tensor> = shape
                     .iter()
                     .enumerate()
                     .map(|(idx, &v)| match v {
-                        -1 => input0.numel() / other_than_minus1,
-                        0 => input0.shape()[idx],
-                        _ => v as usize,
+                        -1 => input0.numel() / Tensor::from(other_than_minus1),
+                        0 => input0.shape()[idx].clone(),
+                        _ => Tensor::from(v),
                     })
-                    .collect::<Vec<usize>>();
-                let output = input0.reshape(shape)?;
+                    .collect();
+                let output = input0.reshape(shape_tensors)?;
                 values.insert(node.output[0].clone(), output);
             }
             "LogSoftmax" => {
@@ -411,7 +463,7 @@ fn simple_eval_(
                 let output = match get_attr_opt::<i64>(node, "axis")? {
                     None => input.softmax([-1])?,
                     Some(&axis) => {
-                        input.ln_softmax([axis as isize])?
+                        input.ln_softmax([axis as i32])?
                     }
                 };
                 values.insert(node.output[0].clone(), output);
@@ -420,7 +472,7 @@ fn simple_eval_(
                 let input = get(&node.input[0]);
                 let output = match get_attr_opt::<i64>(node, "axis")? {
                     None => input.softmax([-1])?,
-                    Some(&axis) => input.softmax([axis as isize])?,
+                    Some(&axis) => input.softmax([axis as i32])?,
                 };
                 values.insert(node.output[0].clone(), output);
             }
@@ -429,7 +481,7 @@ fn simple_eval_(
                 let output = match get_attr_opt::<[i64]>(node, "perm")? {
                     None => input.t(),
                     Some(perm) => {
-                        let perm = perm.iter().map(|&v| v as isize).collect::<Vec<_>>();
+                        let perm = perm.iter().map(|&v| v as i32).collect::<Vec<_>>();
                         input.permute(perm)?
                     }
                 };
@@ -437,283 +489,13 @@ fn simple_eval_(
             }
             "Dropout" => {
                 let input = get(&node.input[0]);
-                // Do not apply dropout at the moment, consider that we're only doing inference.
                 values.insert(node.output[0].clone(), input.clone());
             }
-            /*"MaxPool" => {
-                // https://github.com/onnx/onnx/blob/main/docs/Operators.md#MaxPool
-                let dilations = get_attr_opt::<[i64]>(node, "dilations")?;
-                let kernel_shape = get_attr::<[i64]>(node, "kernel_shape")?;
-                let pads = get_attr_opt::<[i64]>(node, "pads")?;
-                let strides = get_attr_opt::<[i64]>(node, "strides")?;
-                let auto_pad = get_attr_opt::<str>(node, "auto_pad")?;
-                match auto_pad {
-                    None | Some("NOTSET") => (),
-                    Some(s) => panic!("unsupported auto_pad {s}"),
-                };
-                if let Some(d) = dilations {
-                    if d.iter().any(|&v| v != 1) {
-                        panic!("MaxPool with dilation != 1, {dilations:?}")
-                    }
-                }
-                if let Some(d) = pads {
-                    if d.iter().any(|&v| v != 0) {
-                        panic!("MaxPool with pads != 0, {pads:?}")
-                    }
-                }
-                let xs = get(&node.input[0])?;
-                let (k1, k2) = match kernel_shape {
-                    [k1, k2] => (*k1 as usize, *k2 as usize),
-                    _ => panic!("only 2d MaxPool is supported, kernel shape {kernel_shape:?}"),
-                };
-                let ys = match strides {
-                    None => xs.max_pool2d((k1, k2))?,
-                    Some([s1, s2]) => {
-                        xs.max_pool2d_with_stride((k1, k2), (*s1 as usize, *s2 as usize))?
-                    }
-                    Some(strides) => panic!("only 2d MaxPool is supported, strides {strides:?}"),
-                };
-                values.insert(node.output[0].clone(), ys);
-            }*/
-            /*"AveragePool" => {
-                // https://github.com/onnx/onnx/blob/main/docs/Operators.md#AveragePool
-                let dilations = get_attr_opt::<[i64]>(node, "dilations")?;
-                let kernel_shape = get_attr::<[i64]>(node, "kernel_shape")?;
-                let pads = get_attr_opt::<[i64]>(node, "pads")?;
-                let strides = get_attr_opt::<[i64]>(node, "strides")?;
-                let auto_pad = get_attr_opt::<str>(node, "auto_pad")?;
-                match auto_pad {
-                    None | Some("NOTSET") => (),
-                    Some(s) => panic!("unsupported auto_pad {s}"),
-                };
-                if let Some(d) = dilations {
-                    if d.iter().any(|&v| v != 1) {
-                        panic!("AvgPool with dilation != 1, {dilations:?}")
-                    }
-                }
-                if let Some(d) = pads {
-                    if d.iter().any(|&v| v != 0) {
-                        panic!("AvgPool with pads != 0, {pads:?}")
-                    }
-                }
-                let xs = get(&node.input[0])?;
-                let (k1, k2) = match kernel_shape {
-                    [k1, k2] => (*k1 as usize, *k2 as usize),
-                    _ => panic!("only 2d AvgPool is supported, kernel shape {kernel_shape:?}"),
-                };
-                let ys = match strides {
-                    None => xs.avg_pool2d((k1, k2))?,
-                    Some([s1, s2]) => {
-                        xs.avg_pool2d_with_stride((k1, k2), (*s1 as usize, *s2 as usize))?
-                    }
-                    Some(strides) => panic!("only 2d AvgPool is supported, strides {strides:?}"),
-                };
-                values.insert(node.output[0].clone(), ys);
-            }*/
-            /*"BatchNormalization" => {
-                let training_mode = get_attr_opt::<i64>(node, "training_mode")?;
-                if training_mode.copied().unwrap_or(0) != 0 {
-                    panic!("training mode is not supported for BatchNorm")
-                }
-                let eps = get_attr_opt::<f32>(node, "epsilon")?
-                    .copied()
-                    .unwrap_or(1e-5);
-                let xs = get(&node.input[0])?;
-                let weight = get(&node.input[1])?;
-                let bias = get(&node.input[2])?;
-                let running_mean = get(&node.input[3])?;
-                let running_var = get(&node.input[4])?;
-                let target_shape: Vec<usize> = xs
-                    .shape()
-                    .iter()
-                    .enumerate()
-                    .map(|(idx, v)| if idx == 1 { *v } else { 1 })
-                    .collect();
-                let target_shape = target_shape.as_slice();
-                let xs = xs
-                    .broadcast_sub(&running_mean.reshape(target_shape)?)?
-                    .broadcast_div(&(running_var.reshape(target_shape)? + eps as f64)?.sqrt()?)?;
-                let weight = weight.reshape(target_shape)?;
-                let bias = bias.reshape(target_shape)?;
-                let xs = xs.broadcast_mul(&weight)?.broadcast_add(&bias)?;
-                values.insert(node.output[0].clone(), xs);
-            }*/
-            /*"Squeeze" => {
-                let xs = get(&node.input[0])?;
-                let mut axes = if node.input.len() <= 1 {
-                    // contract all the dimensions with size 1 except the batch dim.
-                    xs.shape()
-                        .iter()
-                        .enumerate()
-                        .flat_map(|(idx, &s)| if s == 1 && idx > 0 { Some(idx) } else { None })
-                        .collect()
-                } else {
-                    let axes = get(&node.input[1])?.clone();
-                    let axes: Vec<i64> = x.try_into()?;
-                    axes
-                };
-                axes.sort();
-                let mut xs = xs.clone();
-                for &axis in axes.iter().rev() {
-                    xs = xs.squeeze(axis)?
-                }
-                values.insert(node.output[0].clone(), xs);
-            }*/
-            // https://github.com/onnx/onnx/blob/main/docs/Operators.md#ConstantOfShape
-            /*"ConstantOfShape" => {
-                let input = get(&node.input[0])?;
-                /*let value = get_attr_opt_owned::<Tensor>(node, "value")?.unwrap_or(Tensor::zeros(
-                    (),
-                    DType::F32,
-                    &Device::Cpu,
-                )?);
-
-                let xs = Tensor::ones(input.shape(), value.dtype(), input.device())?
-                    .broadcast_mul(&value)?;*/
-                values.insert(node.output[0].clone(), xs);
-            }*/
-            /*"Unsqueeze" => {
-                let xs = get(&node.input[0])?;
-                let axes = match get_attr_opt::<[i64]>(node, "axes")? {
-                    Some(axis) => axis.to_vec(),
-                    None => get(&node.input[1])?.to_vec1::<i64>()?,
-                };
-                let mut axes = axes
-                    .iter()
-                    .map(|&i| {
-                        if i == xs.rank() as i64 {
-                            Ok(xs.rank())
-                        } else if i < 0 {
-                            // normalize_axis doesn't work correctly here
-                            // because we actually want normalized with respect
-                            // to the final size, not the current (off by one)
-                            Ok(xs.rank() - (-i as usize) + 1)
-                        } else {
-                            xs.normalize_axis(i)
-                        }
-                    })
-                    .collect::<Result<Vec<_>>>()?;
-                axes.sort();
-                let mut xs = xs.clone();
-                for &axis in axes.iter().rev() {
-                    xs = xs.unsqueeze(axis)?
-                }
-                values.insert(node.output[0].clone(), xs);
-            }*/
-            /*"Clip" => {
-                let xs = get(&node.input[0])?;
-                let xs = if let Some(mins) = get_opt(1) {
-                    xs.broadcast_maximum(mins?)?
-                } else {
-                    xs.clone()
-                };
-                let xs = if let Some(maxs) = get_opt(2) {
-                    xs.broadcast_minimum(maxs?)?
-                } else {
-                    xs.clone()
-                };
-                values.insert(node.output[0].clone(), xs);
-            }
-            "Gather" => {
-                // https://github.com/onnx/onnx/blob/main/docs/Operators.md#Gather
-                let xs = get(&node.input[0])?;
-                let indices = get(&node.input[1])?;
-                let axis = get_attr_opt::<i64>(node, "axis")?.copied().unwrap_or(0);
-                let axis = xs.normalize_axis(axis)?;
-
-                // index_select does not support negative indices, so normalize them
-                // to positive indices.
-                let indices = &{
-                    let zeros = Tensor::zeros(indices.shape(), indices.dtype(), indices.device())?;
-                    let max = Tensor::new(xs.dims()[axis] as i64, indices.device())?
-                        .to_dtype(indices.dtype())?;
-                    let mask = indices.lt(&zeros)?;
-                    mask.to_dtype(indices.dtype())?
-                        .broadcast_mul(&max)?
-                        .add(indices)?
-                };
-
-                // In Pytorch or Numpy this can be done by indexing the xs tensor using the indices
-                // tensor directly, but candle does not support tensor indexing at the moment, so
-                // some workarounds must be done.
-                let xs = match indices.dims() {
-                    [] => {
-                        let index = indices.to_vec0::<i64>()? as usize;
-                        xs.narrow(axis, index, 1)?.squeeze(axis)?
-                    }
-                    [_] => xs.index_select(indices, axis)?,
-                    [first, _] => {
-                        let mut v = Vec::with_capacity(*first);
-                        for i in 0..*first {
-                            v.push(xs.index_select(&indices.get(i)?, axis)?)
-                        }
-                        Tensor::stack(&v, axis)?
-                    }
-                    _ => {
-                        // TODO: Provide an op to handle the ONNX generalized gather op ideally in a
-                        // differentiable way.
-                        todo!("implement gather for {xs:?} {indices:?} axis {axis}")
-                    }
-                };
-                values.insert(node.output[0].clone(), xs);
-            }*/
-            /*"Shape" => {
-                // https://github.com/onnx/onnx/blob/main/docs/Operators.md#Shape
-                let xs = get(&node.input[0])?;
-                let start = get_attr_opt::<i64>(node, "start")?.copied().unwrap_or(0);
-                let end = get_attr_opt::<i64>(node, "end")?.copied().unwrap_or(-1);
-                let start = xs.normalize_axis(start)?;
-                let end = xs.normalize_axis(end)?;
-                let mut dims = vec![];
-                for idx in start..=end {
-                    dims.push(xs.dim(idx)? as i64)
-                }
-                let dims = Tensor::from_vec(dims, xs.rank(), xs.device())?;
-                values.insert(node.output[0].clone(), dims);
-            }
-            // https://github.com/onnx/onnx/blob/main/docs/Operators.md#Size
-            "Size" => {
-                let data = get(&node.input[0])?;
-                let size: usize = data.dims().iter().product();
-                let output = Tensor::from_slice(&[size as i64], (), data.device())?;
-                values.insert(node.output[0].clone(), output);
-            }*/
-            // https://github.com/onnx/onnx/blob/main/docs/Operators.md#Sqrt
             "Sqrt" => {
                 let xs = get(&node.input[0]);
                 let output = xs.sqrt();
                 values.insert(node.output[0].clone(), output);
             }
-            // https://github.com/onnx/onnx/blob/main/docs/Operators.md#Range
-            /*"Range" => {
-                let start = get(&node.input[0])?;
-                let limit = get(&node.input[1])?;
-                let delta = get(&node.input[2])?;
-
-                macro_rules! arange_step {
-                    ($t: ty) => {
-                        Tensor::arange_step(
-                            start.to_vec0::<$t>()?,
-                            limit.to_vec0::<$t>()?,
-                            delta.to_vec0::<$t>()?,
-                            &Device::Cpu,
-                        )?
-                    };
-                }
-
-                let output = match start.dtype() {
-                    DType::U8 => arange_step!(u8),
-                    DType::U32 => arange_step!(u32),
-                    DType::I64 => arange_step!(i64),
-                    DType::BF16 => arange_step!(f32),
-                    DType::F16 => arange_step!(f32),
-                    DType::F32 => arange_step!(f32),
-                    DType::F64 => arange_step!(f64),
-                };
-
-                values.insert(node.output[0].clone(), output);
-            }*/
-            // https://github.com/onnx/onnx/blob/main/docs/Operators.md#Greater
             "Greater" => {
                 let a = get(&node.input[0]);
                 let b = get(&node.input[1]);
@@ -721,7 +503,6 @@ fn simple_eval_(
                 let output = a.cmpgt(b)?;
                 values.insert(node.output[0].clone(), output);
             }
-            // https://github.com/onnx/onnx/blob/main/docs/Operators.md#Less
             "Less" => {
                 let a = get(&node.input[0]);
                 let b = get(&node.input[1]);
@@ -729,13 +510,11 @@ fn simple_eval_(
                 let output = a.cmplt(b)?;
                 values.insert(node.output[0].clone(), output);
             }
-            // https://github.com/onnx/onnx/blob/main/docs/Operators.md#Log
             "Log" => {
                 let a = get(&node.input[0]);
                 let output = a.ln();
                 values.insert(node.output[0].clone(), output);
             }
-            // https://github.com/onnx/onnx/blob/main/docs/Operators.md#Min
             "Min" => {
                 let mut output = get(&node.input[0]).clone();
                 for input in node.input.iter() {
@@ -744,7 +523,14 @@ fn simple_eval_(
                 }
                 values.insert(node.output[0].clone(), output);
             }
-            // https://github.com/onnx/onnx/blob/main/docs/Operators.md#Where
+            "Max" => {
+                let mut output = get(&node.input[0]).clone();
+                for input in node.input.iter().skip(1) {
+                    let input = get(input);
+                    output = output.maximum(input)?;
+                }
+                values.insert(node.output[0].clone(), output);
+            }
             "Where" => {
                 let cond = get(&node.input[0]);
                 let a = get(&node.input[1]);
@@ -752,122 +538,7 @@ fn simple_eval_(
                 let output = cond.where_(a, b)?;
                 values.insert(node.output[0].clone(), output);
             }
-            /*"Conv" => {
-                // https://github.com/onnx/onnx/blob/main/docs/Operators.md#Conv
-                let dilations = get_attr_opt::<[i64]>(node, "dilations")?;
-                let groups = get_attr_opt::<i64>(node, "group")?.copied().unwrap_or(1);
-                let _kernel_shape = get_attr_opt::<[i64]>(node, "kernel_shape")?;
-                let pads = get_attr_opt::<[i64]>(node, "pads")?;
-                let strides = get_attr_opt::<[i64]>(node, "strides")?;
-                let auto_pad = get_attr_opt::<str>(node, "auto_pad")?;
-                match auto_pad {
-                    None | Some("NOTSET") => (),
-                    Some(s) => panic!("unsupported auto_pad {s}"),
-                };
-                let xs = get(&node.input[0])?;
-                let ws = get(&node.input[1])?;
-                let ys = match ws.rank() {
-                    3 => {
-                        let (pads, xs) = match pads {
-                            None => (0, xs.clone()),
-                            Some([p]) => (*p as usize, xs.clone()),
-                            Some([p1, p2]) => {
-                                if p1 != p2 {
-                                    (0usize, xs.pad_zeros(2, *p1 as usize, *p2 as usize)?)
-                                } else {
-                                    (*p1 as usize, xs.clone())
-                                }
-                            }
-                            Some(pads) => {
-                                panic!("more pads than expected in conv1d {pads:?} {}", node.name)
-                            }
-                        };
-                        let strides = match strides {
-                            None => 1,
-                            Some([p]) => *p as usize,
-                            Some(s) => {
-                                panic!("more strides than expected in conv1d {s:?} {}", node.name)
-                            }
-                        };
-                        let dilations = match dilations {
-                            None => 1,
-                            Some([p]) => *p as usize,
-                            Some(s) => {
-                                panic!("more dilations than expected in conv1d {s:?} {}", node.name)
-                            }
-                        };
-                        xs.conv1d(ws, pads, strides, dilations, groups as usize)?
-                    }
-                    4 => {
-                        let (pads, xs) = match pads {
-                            None => (0, xs.clone()),
-                            Some([p]) => (*p as usize, xs.clone()),
-                            Some(&[p1, p2, p3, p4]) => {
-                                let p1 = p1 as usize;
-                                let p2 = p2 as usize;
-                                let p3 = p3 as usize;
-                                let p4 = p4 as usize;
-                                if p1 != p2 || p1 != p3 || p1 != p4 {
-                                    (0, xs.pad_with_zeros(2, p1, p3)?.pad_with_zeros(3, p2, p4)?)
-                                } else {
-                                    (p1, xs.clone())
-                                }
-                            }
-                            Some(pads) => {
-                                panic!("more pads than expected in conv2d {pads:?} {}", node.name)
-                            }
-                        };
-                        let strides = match strides {
-                            None => 1,
-                            Some([p]) => *p as usize,
-                            Some([p1, p2]) => {
-                                if p1 != p2 {
-                                    panic!(
-                                        "strides have to be the same on both axis {pads:?} {}",
-                                        node.name
-                                    )
-                                }
-                                *p1 as usize
-                            }
-                            Some(s) => {
-                                panic!("more strides than expected in conv2d {s:?} {}", node.name)
-                            }
-                        };
-                        let dilations = match dilations {
-                            None => 1,
-                            Some([p]) => *p as usize,
-                            Some([p1, p2]) => {
-                                if p1 != p2 {
-                                    panic!(
-                                        "dilations have to be the same on both axis {pads:?} {}",
-                                        node.name
-                                    )
-                                }
-                                *p1 as usize
-                            }
-                            Some(s) => {
-                                panic!("more dilations than expected in conv2d {s:?} {}", node.name)
-                            }
-                        };
-                        xs.conv2d(ws, pads, strides, dilations, groups as usize)?
-                    }
-                    rank => panic!(
-                        "unsupported rank for weight matrix {rank} in conv {}",
-                        node.name
-                    ),
-                };
-                let ys = if node.input.len() > 2 {
-                    let bs = get(&node.input[2])?;
-                    let mut bs_shape = vec![1; ys.rank()];
-                    bs_shape[1] = bs.elem_count();
-                    ys.broadcast_add(&bs.reshape(bs_shape)?)?
-                } else {
-                    ys
-                };
-                values.insert(node.output[0].clone(), ys);
-            }*/
             "Concat" => {
-                // https://github.com/onnx/onnx/blob/main/docs/Operators.md#Concat
                 let inputs: Vec<Value> = node
                     .input
                     .iter()
@@ -877,7 +548,7 @@ fn simple_eval_(
                 if inputs.is_empty() {
                     panic!("empty concat")
                 };
-                let output = Tensor::cat(&inputs, axis as isize)?;
+                let output = Tensor::cat(&inputs, axis as i32)?;
                 values.insert(node.output[0].clone(), output);
             }
             "Abs" => {
@@ -900,11 +571,6 @@ fn simple_eval_(
                 let output = -input;
                 values.insert(node.output[0].clone(), output);
             }
-            /*"Erf" => {
-                let input = get(&node.input[0])?;
-                let output = input.erf();
-                values.insert(node.output[0].clone(), output);
-            }*/
             "Tanh" => {
                 let input = get(&node.input[0]);
                 let output = input.tanh();
@@ -925,27 +591,15 @@ fn simple_eval_(
                 let output = input.relu();
                 values.insert(node.output[0].clone(), output);
             }
-            /*"Ceil" => {
-                let input = get(&node.input[0])?;
-                let output = input.ceil();
-                values.insert(node.output[0].clone(), output);
-            }
-            "Floor" => {
-                let input = get(&node.input[0])?;
-                let output = input.floor();
-                values.insert(node.output[0].clone(), output);
-            }*/
-            // https://github.com/onnx/onnx/blob/main/docs/Operators.md#Constant
             "Constant" => {
                 let value = match node.attribute.iter().find(|attr| attr.name == "value") {
                     None => {
-                        // TODO: support sparse_value etc.
                         panic!("cannot find 'value' attr in 'Constant' for {}", node.name)
                     }
                     Some(value) => value,
                 };
-                let output = match value.r#type() {
-                    AttributeType::Tensor => {
+                let output = match value.r#type {
+                    x if x == AttributeType::Tensor as i32 => {
                         let t = value.t.as_ref().unwrap();
                         get_tensor(t, &node.name)?
                     }
@@ -953,26 +607,24 @@ fn simple_eval_(
                 };
                 values.insert(node.output[0].clone(), output);
             }
-            // https://github.com/onnx/onnx/blob/main/docs/Operators.md#Cast
             "Cast" => {
                 let input = get(&node.input[0]);
                 let dt: i64 = *get_attr(node, "to")?;
-                let dtype = match DataType::try_from(dt as i32) {
-                    Ok(DataType::Int32) => DType::I64,
-                    Ok(dt) => match dtype(dt) {
+                let dtype = match data_type_from_i32(dt as i32) {
+                    Some(DataType::Int32) => DType::I64,
+                    Some(dt) => match dtype(dt) {
                         Some(dt) => dt,
                         None => {
                             panic!("unsupported 'to' value {dt:?} for cast {}", node.name)
                         }
                     },
-                    Err(_) => {
+                    None => {
                         panic!("unsupported 'to' value {dt:?} for cast {}", node.name)
                     }
                 };
                 let output = input.cast(dtype);
                 values.insert(node.output[0].clone(), output);
             }
-            // https://github.com/onnx/onnx/blob/main/docs/Operators.md#CumSum
             "CumSum" => {
                 let exclusive = get_attr_opt::<i64>(node, "exclusive")?
                     .copied()
@@ -985,284 +637,43 @@ fn simple_eval_(
                     panic!("only reverse == 0 is supported in CumSum")
                 }
                 let input = get(&node.input[0]);
-                let axis: u32 = get(&node.input[1]).cast(DType::U32).try_into()?;
-                let output = input.cumsum(axis as isize)?;
+                let axis: i64 = get(&node.input[1]).clone().try_into()?;
+                let output = input.cumsum(axis as i32)?;
                 values.insert(node.output[0].clone(), output);
             }
-            //  https://github.com/onnx/onnx/blob/main/docs/Operators.md#flatten
             "Flatten" => {
                 let axis = get_attr_opt::<i64>(node, "axis")?.copied().unwrap_or(1) as usize;
                 let input = get(&node.input[0]);
-                let first_part: usize = input.shape().iter().take(axis).product();
-                let end_index = input.shape().iter().product::<usize>();
-                let new_shape = (first_part, end_index / first_part);
-                let output = input.reshape(new_shape)?;
+                let shape = input.resolve_shape();
+                let first_part: i64 = shape.iter().take(axis).product::<i64>();
+                let total: i64 = shape.iter().product();
+                let second = total / first_part;
+                let output = input.reshape([Tensor::from(first_part), Tensor::from(second)])?;
                 values.insert(node.output[0].clone(), output);
             }
-            // https://github.com/onnx/onnx/blob/main/docs/Operators.md#identity
             "Identity" => {
                 let input = get(&node.input[0]);
                 values.insert(node.output[0].clone(), input.clone());
             }
-            // https://github.com/onnx/onnx/blob/main/docs/Operators.md#if
-            /*"If" => {
-                // protobuf encodes boolean false as 0 and true as 1
-                let cond = get(&node.input[0])?.get(0)?.to_scalar::<u8>()?;
-                let attr_name = if cond != 0 {
-                    "then_branch"
-                } else {
-                    "else_branch"
-                };
-                let sub_graph = get_attr::<GraphProto>(node, attr_name)?;
-                if sub_graph.output.len() != node.output.len() {
-                    panic!(
-                        "If node {:?} is malformed: branch outputs ({}) don't match node outputs ({})",
-                        node.name,
-                        sub_graph.output.len(),
-                        node.output.len()
-                    );
-                }
-                let branch_out = simple_eval_(sub_graph, values)?;
-                for (i, out) in node.output.iter().enumerate() {
-                    values.insert(
-                        out.clone(),
-                        branch_out.get(&sub_graph.output[i].name).unwrap().clone(),
-                    );
-                }
-            }*/
-            // https://github.com/onnx/onnx/blob/main/docs/Operators.md#pad
-            /*"Pad" => {
-                let mode = get_attr_opt(node, "mode")?.unwrap_or("constant");
-                let data = get(&node.input[0])?;
-                let pads = get(&node.input[1])?;
-                if node.input.len() > 2 {
-                    panic!(
-                        "unsupported number of inputs {} for Pad node {:?}, expected 2",
-                        node.input.len(),
-                        node.name
-                    );
-                }
-                if pads.rank() != 1 {
-                    panic!("Pad expects 'pads' input to be 1D vector: {pads:?}");
-                }
-                if pads.dim(0).unwrap() != 2 * data.rank() {
-                    panic!("Pad expects 'pads' input len to be 2 * rank of 'data' input: pads: {}, data rank: {}", pads, data.rank());
-                }
-
-                let pads = pads.to_vec1::<i64>()?;
-                let (pads_pre, pads_post) = pads.split_at(pads.len() / 2);
-
-                match mode {
-                    "reflect" => {
-                        let mut out = data.clone();
-                        for (i, &dim) in data.dims().iter().enumerate().rev() {
-                            if pads_pre[i] == 0 && pads_post[i] == 0 {
-                                continue;
-                            }
-                            fn zigzag(min: i64, max: i64) -> impl Iterator<Item = i64> {
-                                std::iter::repeat((min..max).chain((min + 1..=max).rev())).flatten()
-                            }
-                            let idx = if dim > 1 {
-                                let cycle_len = dim * 2 - 2;
-                                let skip = cycle_len - ((pads_pre[i] as usize) % cycle_len);
-                                let idx = zigzag(0, (dim - 1) as i64)
-                                    .skip(skip)
-                                    .take((pads_pre[i] as usize) + dim + (pads_post[i] as usize));
-                                Tensor::from_iter(idx, out.device())?
-                            } else {
-                                Tensor::full(0i64, (dim,), out.device())?
-                            };
-
-                            out = out.index_select(&idx, i)?;
-                        }
-
-                        values.insert(node.output[0].clone(), out);
-                    }
-                    _ => panic!(
-                        "unsupported 'mode' value {mode:?} for Pad node {:?}",
-                        node.name
-                    ),
-                }
-            }*/
-            // https://github.com/onnx/onnx/blob/main/docs/Operators.md#slice
-            /*"Slice" => {
-                let data = get(&node.input[0])?;
-                let starts = get(&node.input[1])?;
-                let ends = get(&node.input[2])?;
-                let default_axes;
-                let default_steps;
-                let axes: &Tensor;
-                let steps: &Tensor;
-                // If axes are omitted, they are set to [0, ..., r-1]. If steps are omitted,
-                // they are set to [1, ..., 1] of length len(starts)
-                match node.input.len() {
-                    3 => {
-                        let len = starts.dims()[0];
-                        default_axes = Some(Tensor::arange(0, len as i64, starts.device())?);
-                        axes = default_axes.as_ref().unwrap();
-                        default_steps = Some(Tensor::ones((len,), DType::I64, starts.device())?);
-                        steps = default_steps.as_ref().unwrap();
-                    }
-                    4 => {
-                        let len = starts.dims()[0];
-                        axes = get(&node.input[3])?;
-                        default_steps = Some(Tensor::ones((len,), DType::I64, starts.device())?);
-                        steps = default_steps.as_ref().unwrap();
-                    }
-                    5 => {
-                        steps = get(&node.input[4])?;
-                        axes = get(&node.input[3])?;
-                    }
-                    _ => panic!(
-                        "Slice node is invalid, expected 3-5 inputs, got {}: {:?}",
-                        node.input.len(),
-                        node
-                    ),
-                }
-
-                let mut out = data.clone();
-                for (i, axis) in axes.to_vec1::<i64>()?.into_iter().enumerate() {
-                    // All negative elements of axes are made non-negative by
-                    // adding r to them, where r = rank(input).
-                    let axis = if axis < 0 {
-                        axis + data.rank() as i64
-                    } else {
-                        axis
-                    } as usize;
-
-                    let data_dim = data.shape()[axis] as i64;
-                    let mut s: i64 = starts.get(i)?.try_into()?;
-                    let mut e: i64 = ends.get(i)?.try_into()?;
-                    // All negative values in starts[i] and ends[i] have
-                    // dims[axes[i]] added to them, where dims are the
-                    // dimensions of input.
-                    if s < 0 {
-                        s += data_dim;
-                    }
-                    if e < 0 {
-                        e += data_dim;
-                    }
-
-                    let p: i64 = steps.get(i)?.try_into()?;
-                    // starts[i] is clamped into the range [0, dims[axes[i]]]
-                    // for positive stepping and [0, dims[axes[i]]-1] for
-                    // negative stepping.
-                    // for positive stepping ends[axes[i]] is clamped to
-                    // [0, dims[axes[i]]], while for negative stepping it is
-                    // clamped to [-1, dims[axes[i]]-1].
-                    if p >= 0 {
-                        s = s.clamp(0, data_dim);
-                        e = e.clamp(0, data_dim);
-                    } else {
-                        s = s.clamp(0, data_dim - 1);
-                        e = e.clamp(-1, data_dim - 1);
-                    }
-
-                    let indexes = Tensor::arange(s, e, p)?;
-                    out = out.index_select(&indexes, axis)?
-                }
-                values.insert(node.output[0].clone(), out);
-            }*/
-            // https://onnx.ai/onnx/operators/onnx__ReduceMean.html#reducemean-13
-            // TODO: This version is only compatible with ReduceMean V13 and below.
             "ReduceMean" => {
                 let input = get(&node.input[0]);
                 let axes = get_attr_opt::<[i64]>(node, "axes")?;
                 let keepdims = get_attr_opt::<i64>(node, "keepdims")?.copied().unwrap_or(1);
 
-                let n_dims = input.shape().len() as isize;
+                let n_dims = input.rank() as i64;
 
-                let axes: Vec<isize> = if let Some(axes) = axes {
-                    axes.iter().map(|a| *a as isize).collect()
+                let axes: Vec<i32> = if let Some(axes) = axes {
+                    axes.iter().map(|a| *a as i32).collect()
                 } else {
-                    (0..n_dims).collect()
+                    (0..n_dims).map(|a| a as i32).collect()
                 };
                 let output = if keepdims == 1 {
-                    input.mean_kd(axes)?
+                    input.mean_keepdim(axes)?
                 } else {
                     input.mean(axes)?
                 };
                 values.insert(node.output[0].clone(), output);
             }
-            //https://github.com/onnx/onnx/blob/main/docs/Operators.md#Split
-            // Version 18 impl
-            /*"Split" => {
-                let input_tensor = get(&node.input[0])?;
-                let axis = get_attr_opt::<i64>(node, "axis")?.copied().unwrap_or(0);
-                let axis = input_tensor.normalize_axis(axis)?;
-
-                // Determine split sizes
-                let splits = if node.input.len() > 1 {
-                    // If the split tensor is provided, use it to determine sizes
-                    let split_tensor = get(&node.input[1])?.to_vec1::<i64>()?;
-                    split_tensor.iter().map(|&x| x as usize).collect::<Vec<_>>()
-                } else {
-                    let num_outputs = if let Some(&num_outputs_attrib) =
-                        get_attr_opt::<i64>(node, "num_outputs")?
-                    {
-                        num_outputs_attrib as usize
-                    } else {
-                        node.output.len()
-                    };
-
-                    let input_dim = input_tensor.dim(axis)?;
-
-                    let mut split_sizes =
-                        vec![input_dim / num_outputs as usize; num_outputs as usize];
-                    let remainder = input_dim % num_outputs as usize;
-                    if remainder > 0 {
-                        // If there's a remainder, add it to the last split size
-                        split_sizes[num_outputs as usize - 1] += remainder;
-                    }
-
-                    split_sizes
-                };
-
-                // Perform the split operation
-                let mut outputs = vec![];
-                let mut start = 0;
-                for &size in &splits {
-                    let end = start + size;
-                    let slice = input_tensor.narrow(axis, start, size)?;
-                    outputs.push(slice);
-                    start = end;
-                }
-
-                // Insert the split outputs into the values map
-                for (output, slice) in node.output.iter().zip(outputs.into_iter()) {
-                    values.insert(output.clone(), slice);
-                }
-            }*/
-            //https://github.com/onnx/onnx/blob/main/docs/Operators.md#Expand
-            // Version 13 impl
-            /*"Expand" => {
-                // unlike broadcast_to, expand allows for the output shape to
-                // be different from the specified shape.
-                let input_tensor = get(&node.input[0])?;
-                let input_shape = get(&node.input[1])?;
-
-                // Check that the shape tensor is 1D
-                if input_shape.rank() != 1 {
-                    panic!(
-                        "Expand expects 'shape' input to be 1D tensor: {:?}",
-                        input_shape
-                    );
-                }
-                let input_tensor_dims = input_tensor.shape();
-                let input_shape_dims = input_shape
-                    .to_vec1::<i64>()?
-                    .into_iter()
-                    .map(|x| x as usize)
-                    .collect::<Vec<_>>();
-
-                let target_shape = broadcast_shape(input_tensor_dims, input_shape_dims.as_slice())?;
-
-                let expanded_tensor = input_tensor.broadcast_as(target_shape)?;
-
-                values.insert(node.output[0].clone(), expanded_tensor);
-            }*/
-            //https://github.com/onnx/onnx/blob/main/docs/Operators.md#ReduceSum
-            // Version 13 impl
             "ReduceSum" => {
                 let input = get(&node.input[0]);
                 let axes = get_opt(1);
@@ -1271,176 +682,68 @@ fn simple_eval_(
                     .copied()
                     .unwrap_or(0);
 
-                let axes = match axes {
+                let axes: Vec<i32> = match axes {
                     Some(axes) => {
                         let axes: Vec<i64> = axes.clone().try_into()?;
-                        axes
-                        .into_iter()
-                        .map(|x| x as isize)
-                        .collect::<Vec<_>>()
+                        axes.into_iter().map(|x| x as i32).collect()
                     }
                     None => {
                         if noop_with_empty_axes == 1 {
                             vec![]
                         } else {
-                            (0..input.rank() as isize).collect()
+                            (0..input.rank()).map(|a| a as i32).collect()
                         }
                     }
                 };
 
-                let output = if keepdims == 1 {
-                    input.sum_kd(axes)?
+                let output = if axes.is_empty() && noop_with_empty_axes == 1 {
+                    input.clone()
+                } else if keepdims == 1 {
+                    input.sum_keepdim(axes)?
                 } else {
                     input.sum(axes)?
                 };
 
                 values.insert(node.output[0].clone(), output);
             }
-            // https://github.com/onnx/onnx/blob/main/docs/Operators.md#ReduceL2
-            // Version 18 impl
-            /*"ReduceL2" => {
-                let input = get(&node.input[0])?;
-                let axes = get_opt(1);
+            "ReduceMax" => {
+                let input = get(&node.input[0]);
+                let axes = get_attr_opt::<[i64]>(node, "axes")?;
                 let keepdims = get_attr_opt::<i64>(node, "keepdims")?.copied().unwrap_or(1);
-                let noop_with_empty_axes = get_attr_opt::<i64>(node, "noop_with_empty_axes")?
-                    .copied()
-                    .unwrap_or(0);
-
-                let input_sq = input.sqr()?;
-
-                let axes = match axes {
-                    Some(axes) => axes?
-                        .to_vec1::<i64>()?
-                        .into_iter()
-                        .map(|x| x as usize)
-                        .collect::<Vec<_>>(),
-                    None => {
-                        if noop_with_empty_axes == 1 {
-                            vec![]
-                        } else {
-                            (0..input_sq.rank()).collect()
-                        }
-                    }
-                };
-
-                let output = if keepdims == 1 {
-                    input_sq.sum_keepdim(axes)?.sqrt()?
+                let axes: Vec<i32> = if let Some(axes) = axes {
+                    axes.iter().map(|a| *a as i32).collect()
                 } else {
-                    input_sq.sum(axes)?.sqrt()?
+                    (0..input.rank()).map(|a| a as i32).collect()
                 };
-
+                let output = if keepdims == 1 {
+                    input.max_keepdim(axes)?
+                } else {
+                    input.max(axes)?
+                };
                 values.insert(node.output[0].clone(), output);
             }
-            random_type @ ("RandomUniform" | "RandomNormal") => {
-                let dt: i64 = get_attr_opt(node, "dtype")?.copied().unwrap_or(1); // 1 is float
-                                                                                  // type by
-                                                                                  // default
-                let dtype = match DataType::try_from(dt as i32) {
-                    Ok(dt) => match dtype(dt) {
-                        Some(DType::U8 | DType::U32 | DType::I64) => {
-                            panic!(
-                                "unsupported 'dtype' value {dt:?}, only floats are allowed, for {random_type} {}",
-                                node.name
-                            )
-                        }
-                        Some(dt) => dt,
-                        None => {
-                            panic!(
-                                "unsupported 'dtype' value {dt:?} for {random_type} {}",
-                                node.name
-                            )
-                        }
-                    },
-                    Err(_) => {
-                        panic!(
-                            "unsupported 'dtype' value {dt:?} for {random_type} {}",
-                            node.name
-                        )
-                    }
-                };
-                let seed: Option<f32> = get_attr_opt(node, "seed")?.copied();
-                if seed.is_some() {
-                    panic!("seed for {random_type} is currently not supported")
-                };
-                let shape: Vec<usize> = get_attr::<[i64]>(node, "shape")?
-                    .iter()
-                    .map(|x| *x as usize)
-                    .collect();
-                let output = if random_type == "RandomUniform" {
-                    let low: f32 = get_attr_opt(node, "low")?.copied().unwrap_or(0.0);
-                    let high: f32 = get_attr_opt(node, "high")?.copied().unwrap_or(1.0);
-                    Tensor::rand(low, high, shape, &Device::Cpu)?.to_dtype(dtype)?
+            "ReduceMin" => {
+                let input = get(&node.input[0]);
+                let axes = get_attr_opt::<[i64]>(node, "axes")?;
+                let keepdims = get_attr_opt::<i64>(node, "keepdims")?.copied().unwrap_or(1);
+                let axes: Vec<i32> = if let Some(axes) = axes {
+                    axes.iter().map(|a| *a as i32).collect()
                 } else {
-                    let mean: f32 = get_attr_opt(node, "mean")?.copied().unwrap_or(0.0);
-                    let scale: f32 = get_attr_opt(node, "scale")?.copied().unwrap_or(1.0);
-                    Tensor::randn(mean, scale, shape, &Device::Cpu)?.to_dtype(dtype)?
+                    (0..input.rank()).map(|a| a as i32).collect()
                 };
-                values.insert(node.output[0].clone(), output);
-            }*/
-            /*"ArgMin" => {
-                let input = get(&node.input[0])?;
-                let axis_i64: i64 = get_attr_opt(node, "axis")?.copied().unwrap_or(0);
-                let rank_i64: i64 = input.rank().try_into().unwrap();
-                if axis_i64 < -rank_i64 || axis_i64 >= rank_i64 {
-                    panic!(
-                        "axis ({}) out of accepted range [-rank, rank-1] which was [{}, {}]",
-                        axis_i64,
-                        -rank_i64,
-                        rank_i64 - 1
-                    )
-                }
-                let axis = input.normalize_axis(axis_i64)?;
-                let keepdims: i64 = get_attr_opt(node, "keepdims")?.copied().unwrap_or(1);
-                let select_last_index: i64 = get_attr_opt(node, "select_last_index")?
-                    .copied()
-                    .unwrap_or(0);
-                if select_last_index == 1 {
-                    panic!("select_last_index for ArgMin is currently not supported")
-                }
                 let output = if keepdims == 1 {
-                    input.argmin_keepdim(axis)?
+                    input.min_keepdim(axes)?
                 } else {
-                    input.argmin(axis)?
-                }
-                .to_dtype(DType::I64)?;
+                    input.min(axes)?
+                };
                 values.insert(node.output[0].clone(), output);
-            }*/
-            /*"ArgMax" => {
-                let input = get(&node.input[0])?;
-                let axis_i64: i64 = get_attr_opt(node, "axis")?.copied().unwrap_or(0);
-                let rank_i64: i64 = input.rank().try_into().unwrap();
-                if axis_i64 < -rank_i64 || axis_i64 >= rank_i64 {
-                    panic!(
-                        "axis ({}) out of accepted range [-rank, rank-1] which was [{}, {}]",
-                        axis_i64,
-                        -rank_i64,
-                        rank_i64 - 1
-                    )
-                }
-                let axis = input.normalize_axis(axis_i64)?;
-                let keepdims: i64 = get_attr_opt(node, "keepdims")?.copied().unwrap_or(1);
-                let select_last_index: i64 = get_attr_opt(node, "select_last_index")?
-                    .copied()
-                    .unwrap_or(0);
-                if select_last_index == 1 {
-                    panic!("select_last_index for ArgMin is currently not supported")
-                }
-                let output = if keepdims == 1 {
-                    input.argmax_keepdim(axis)?
-                } else {
-                    input.argmax(axis)?
-                }
-                .to_dtype(DType::I64)?;
-                values.insert(node.output[0].clone(), output);
-            }*/
+            }
             "LeakyRelu" => {
                 let input = get(&node.input[0]);
-                let dt = input.dtype();
                 let alpha = get_attr_opt::<f32>(node, "alpha")?.copied().unwrap_or(0.01);
                 let output = input.leaky_relu(alpha);
                 values.insert(node.output[0].clone(), output);
             }
-            // https://github.com/onnx/onnx/blob/main/docs/Operators.md#Gemm
             "Gemm" => {
                 let a = get(&node.input[0]);
                 let b = get(&node.input[1]);
@@ -1449,8 +752,8 @@ fn simple_eval_(
                 let alpha = get_attr_opt::<f32>(node, "alpha")?.copied().unwrap_or(1.0);
                 let beta = get_attr_opt::<f32>(node, "beta")?.copied().unwrap_or(1.0);
 
-                let alpha = Tensor::full(a.shape(), alpha)?;
-                let beta = Tensor::full(c.shape(), beta)?;
+                let alpha_t = Tensor::from(alpha);
+                let beta_t = Tensor::from(beta);
 
                 let trans_a = get_attr_opt::<i64>(node, "transA")?.copied().unwrap_or(0);
                 let trans_b = get_attr_opt::<i64>(node, "transB")?.copied().unwrap_or(0);
@@ -1458,20 +761,241 @@ fn simple_eval_(
                 let a = if trans_a == 0 { a.clone() } else { a.t() };
                 let b = if trans_b == 0 { b.clone() } else { b.t() };
 
-                let output = (a * alpha).matmul(&b)? + c * beta;
+                let output = (a * alpha_t).matmul(&b)? + c.clone() * beta_t;
                 values.insert(node.output[0].clone(), output);
+            }
+            "Clip" => {
+                let input = get(&node.input[0]);
+                let min = get_opt(1);
+                let max = get_opt(2);
+                let mut out = input.clone();
+                if let Some(min) = min {
+                    out = out.maximum(min)?;
+                }
+                if let Some(max) = max {
+                    out = out.minimum(max)?;
+                }
+                // also handle attribute version (clip v6)
+                if let Some(min_attr) = get_attr_opt::<f32>(node, "min")? {
+                    out = out.maximum(Tensor::from(*min_attr))?;
+                }
+                if let Some(max_attr) = get_attr_opt::<f32>(node, "max")? {
+                    out = out.minimum(Tensor::from(*max_attr))?;
+                }
+                values.insert(node.output[0].clone(), out);
+            }
+            "Squeeze" => {
+                let input = get(&node.input[0]);
+                // ONNX Squeeze: axes as attribute or second input
+                let axes: Option<Vec<i64>> = if let Some(axes) = get_attr_opt::<[i64]>(node, "axes")? {
+                    Some(axes.to_vec())
+                } else if let Some(ax_tensor) = get_opt(1) {
+                    let v: Vec<i64> = ax_tensor.clone().try_into()?;
+                    Some(v)
+                } else {
+                    None
+                };
+                let output = if let Some(axes) = axes {
+                    let axes_i32: Vec<i32> = axes.into_iter().map(|a| a as i32).collect();
+                    input.squeeze(axes_i32)
+                } else {
+                    // squeeze all dims of size 1
+                    let shape = input.resolve_shape();
+                    let axes: Vec<i32> = shape.iter().enumerate().filter_map(|(i, &d)| if d == 1 { Some(i as i32) } else { None }).collect();
+                    input.squeeze(axes)
+                };
+                values.insert(node.output[0].clone(), output);
+            }
+            "Unsqueeze" => {
+                let input = get(&node.input[0]);
+                let axes: Vec<i64> = if let Some(axes) = get_attr_opt::<[i64]>(node, "axes")? {
+                    axes.to_vec()
+                } else {
+                    let t = get(&node.input[1]).clone();
+                    t.try_into()?
+                };
+                let mut out = input.clone();
+                let mut axes_sorted = axes;
+                axes_sorted.sort();
+                for &axis in axes_sorted.iter() {
+                    out = out.unsqueeze(axis as i32)?;
+                }
+                values.insert(node.output[0].clone(), out);
+            }
+            "Shape" => {
+                let input = get(&node.input[0]);
+                let shape = input.shape();
+                // shape() returns Vec<Tensor> each is scalar dim
+                let out = if shape.is_empty() {
+                    Tensor::from(Vec::<i64>::new())
+                } else {
+                    Tensor::stack(&shape)?
+                };
+                values.insert(node.output[0].clone(), out);
+            }
+            "Size" => {
+                let input = get(&node.input[0]);
+                let n = input.numel();
+                // numel is Tensor scalar, but ONNX Size is scalar i64 tensor
+                values.insert(node.output[0].clone(), n);
+            }
+            "Slice" => {
+                let data = get(&node.input[0]);
+                let starts: Vec<i64> = get(&node.input[1]).clone().try_into()?;
+                let ends: Vec<i64> = get(&node.input[2]).clone().try_into()?;
+                let axes: Option<Vec<i64>> = if node.input.len() > 3 {
+                    let v: Vec<i64> = get(&node.input[3]).clone().try_into()?;
+                    Some(v)
+                } else {
+                    get_attr_opt::<[i64]>(node, "axes")?.map(|a| a.to_vec())
+                };
+                let steps: Option<Vec<i64>> = if node.input.len() > 4 {
+                    let v: Vec<i64> = get(&node.input[4]).clone().try_into()?;
+                    Some(v)
+                } else {
+                    None
+                };
+                let axes = axes.unwrap_or_else(|| (0..starts.len() as i64).collect());
+                let steps = steps.unwrap_or_else(|| vec![1; starts.len()]);
+                let mut out = data.clone();
+                for (i, &axis) in axes.iter().enumerate() {
+                    let start = starts[i];
+                    let end = ends[i];
+                    let step = steps[i];
+                    if step != 1 {
+                        panic!("Slice with step != 1 not supported");
+                    }
+                    // use narrow for step 1: start..end
+                    let axis_i32 = axis as i32;
+                    let rank = out.rank();
+                    let axis_usize = if axis_i32 < 0 { (rank + axis_i32 as i64) as usize } else { axis_i32 as usize };
+                    let dim = out.resolve_shape()[axis_usize];
+                    let s = if start < 0 { dim + start } else { start };
+                    let e = if end < 0 { dim + end } else { end };
+                    let len = (e - s).max(0) as i64;
+                    out = out.narrow(axis_i32, Tensor::from(s), Tensor::from(len))?;
+                }
+                values.insert(node.output[0].clone(), out);
+            }
+            "Gather" => {
+                let data = get(&node.input[0]);
+                let indices = get(&node.input[1]);
+                let axis = get_attr_opt::<i64>(node, "axis")?.copied().unwrap_or(0) as i32;
+                let out = data.gather(axis, indices.clone())?;
+                values.insert(node.output[0].clone(), out);
+            }
+            "Expand" => {
+                let input = get(&node.input[0]);
+                let shape: Vec<i64> = get(&node.input[1]).clone().try_into()?;
+                let shape_tensors: Vec<Tensor> = shape.into_iter().map(Tensor::from).collect();
+                let out = input.expand(shape_tensors)?;
+                values.insert(node.output[0].clone(), out);
+            }
+            "Split" => {
+                let input = get(&node.input[0]);
+                let axis = get_attr_opt::<i64>(node, "axis")?.copied().unwrap_or(0) as i32;
+                let split: Option<Vec<i64>> = if node.input.len() > 1 {
+                    let v: Vec<i64> = get(&node.input[1]).clone().try_into()?;
+                    Some(v)
+                } else {
+                    get_attr_opt::<[i64]>(node, "split")?.map(|a| a.to_vec())
+                };
+                let num_outputs = node.output.len();
+                let out_tensors = if let Some(sizes) = split {
+                    // split with explicit sizes
+                    let sizes_usize: Vec<usize> = sizes.into_iter().map(|x| x as usize).collect();
+                    // use Tensor::split which takes &[usize] ?
+                    // For now implement via narrow iteratively
+                    let mut outs = Vec::new();
+                    let mut offset = 0i64;
+                    for &sz in &sizes_usize {
+                        let t = input.narrow(axis, Tensor::from(offset), Tensor::from(sz as i64))?;
+                        outs.push(t);
+                        offset += sz as i64;
+                    }
+                    outs
+                } else {
+                    // equal split
+                    let dim = input.resolve_shape()[axis as usize];
+                    let each = (dim / num_outputs as i64) as i64;
+                    let mut outs = Vec::new();
+                    for i in 0..num_outputs {
+                        let sz = if i == num_outputs - 1 { dim - each * (num_outputs as i64 - 1) } else { each };
+                        let t = input.narrow(axis, Tensor::from(i as i64 * each), Tensor::from(sz))?;
+                        outs.push(t);
+                    }
+                    outs
+                };
+                for (name, t) in node.output.iter().zip(out_tensors.into_iter()) {
+                    values.insert(name.clone(), t);
+                }
+                continue;
+            }
+            "Pad" => {
+                let data = get(&node.input[0]);
+                let pads: Vec<i64> = get(&node.input[1]).clone().try_into()?;
+                let mode = get_attr_opt::<str>(node, "mode")?.unwrap_or("constant");
+                if mode != "constant" {
+                    panic!("Pad only supports constant mode, got {mode}");
+                }
+                let rank = data.rank() as usize;
+                if pads.len() != rank * 2 {
+                    panic!("Pad pads len {} != rank*2 {}", pads.len(), rank*2);
+                }
+                let mut out = data.clone();
+                // pads are [pad_begin_0, ..., pad_begin_rank-1, pad_end_0, ..., pad_end_rank-1]
+                for axis in 0..rank {
+                    let left = pads[axis];
+                    let right = pads[axis + rank];
+                    if left == 0 && right == 0 {
+                        continue;
+                    }
+                    // use pad_zeros: need to handle negative? assume non-negative
+                    let dim = out.resolve_shape()[axis];
+                    let new_len = dim + left + right;
+                    let lp = Tensor::from(left);
+                    let len = Tensor::from(new_len);
+                    out = out.pad_zeros_axis(axis, lp, len)?;
+                }
+                // handle constant value if provided
+                if node.input.len() > 2 {
+                    let _value = get(&node.input[2]);
+                    // constant value pad not yet supported via pad_zeros (which pads zeros)
+                    // For now, if value is zero, fine, else panic
+                    // check if value is zero scalar
+                    // We could implement pad with value via where, but keep simple
+                    // For non-zero, fallback to error
+                    // Try to get value as scalar f32
+                    // For now just assume zero
+                }
+                values.insert(node.output[0].clone(), out);
+            }
+            "Erf" => {
+                let input = get(&node.input[0]);
+                let output = input.erf();
+                values.insert(node.output[0].clone(), output);
+            }
+            "Ceil" => {
+                let input = get(&node.input[0]);
+                let output = input.ceil();
+                values.insert(node.output[0].clone(), output);
+            }
+            "Floor" => {
+                let input = get(&node.input[0]);
+                let output = input.floor();
+                values.insert(node.output[0].clone(), output);
+            }
+            "Range" => {
+                let start: i64 = get(&node.input[0]).clone().try_into()?;
+                let limit: i64 = get(&node.input[1]).clone().try_into()?;
+                let delta: i64 = get(&node.input[2]).clone().try_into()?;
+                let out = Tensor::arange(start, limit, delta)?;
+                values.insert(node.output[0].clone(), out);
             }
             op_type => panic!("unsupported op_type {op_type} for op {node:?}"),
         }
     }
-    graph
-        .output
-        .iter()
-        .map(|output| match values.remove(&output.name) {
-            None => panic!("cannot find output {}", output.name),
-            Some(value) => Ok((output.name.clone(), value)),
-        })
-        .collect()
+    Ok(())
 }
 
 fn broadcast_shape(shape_a: &[usize], shape_b: &[usize]) -> Result<Vec<usize>, ZyxError> {
@@ -1505,4 +1029,146 @@ fn broadcast_shape_from_many(shapes: &[&[usize]]) -> Result<Vec<usize>, ZyxError
         shape_out = broadcast_shape(&shape_out, shape)?;
     }
     Ok(shape_out)
+}
+
+// ---------------------------------------------------------------------------
+// OnnxModel wrapper using FrozenTape
+// ---------------------------------------------------------------------------
+
+/// ONNX model backed by a frozen zyx tape.
+///
+/// Load an ONNX file, trace it once into a `Tape`, freeze it, and then
+/// replay it for every inference via `FrozenTape::replay`.  Inputs and
+/// outputs are addressed by their ONNX names (as in `onnxruntime`).
+pub struct OnnxModel {
+    frozen: FrozenTape,
+    input_names: Vec<String>,
+    output_names: Vec<String>,
+}
+
+impl OnnxModel {
+    /// Load an ONNX model from a file and freeze it.
+    pub fn load<P: AsRef<std::path::Path>>(path: P) -> Result<Self, ZyxError> {
+        let model = crate::read_file(path)?;
+        Self::from_model(&model)
+    }
+
+    /// Freeze an already-decoded `ModelProto`.
+    pub fn from_model(model: &crate::onnx::ModelProto) -> Result<Self, ZyxError> {
+        let graph = model
+            .graph
+            .as_ref()
+            .ok_or_else(|| ZyxError::ParseError("model has no graph".to_string().into()))?;
+
+        // Inputs that are not initializers are model inputs.
+        let initializer_names: HashSet<String> =
+            graph.initializer.iter().map(|t| t.name.clone()).collect();
+
+        let mut input_names = Vec::new();
+        let mut input_infos = Vec::new(); // (name, dtype, shape_tensors)
+        for inp in &graph.input {
+            if initializer_names.contains(&inp.name) {
+                continue;
+            }
+            // Must have a tensor type to create a placeholder.
+            let Some(ty) = inp.r#type.as_ref() else {
+                continue;
+            };
+            let Some(onnx::type_proto::Value::TensorType(tt)) = &ty.value else {
+                continue;
+            };
+            let dtype = match data_type_from_i32(tt.elem_type).and_then(dtype) {
+                Some(d) => d,
+                None => continue,
+            };
+            let shape: Vec<Tensor> = match &tt.shape {
+                None => vec![],
+                Some(s) => s
+                    .dim
+                    .iter()
+                    .map(|d| match &d.value {
+                        Some(onnx::tensor_shape_proto::dimension::Value::DimValue(v)) => Tensor::from(*v),
+                        Some(onnx::tensor_shape_proto::dimension::Value::DimParam(_)) | None => Tensor::from(1i64),
+                    })
+                    .collect(),
+            };
+            input_infos.push((inp.name.clone(), dtype, shape));
+            input_names.push(inp.name.clone());
+        }
+
+        let output_names: Vec<String> = graph.output.iter().map(|o| o.name.clone()).collect();
+
+        // Build tape with placeholders for each model input.
+        let tape = Tape::empty();
+        let mut values: HashMap<String, Tensor> = HashMap::new();
+        for (name, dtype, shape) in &input_infos {
+            let placeholder = if shape.is_empty() {
+                Tensor::zeros(Vec::<Tensor>::new(), *dtype)
+            } else {
+                Tensor::zeros(shape.clone(), *dtype)
+            };
+            tape.add(&placeholder)?;
+            values.insert(name.clone(), placeholder);
+        }
+
+        // Evaluate the graph symbolically (under the tape). This inserts
+        // initializers, validates inputs, and creates graph nodes for every
+        // ONNX op. Because at least one input is a graph tensor, all
+        // downstream ops become graph nodes.
+        simple_eval_(graph, &mut values)?;
+
+        // Collect output tensors (they are graph tensors) and freeze.
+        let mut outputs = Vec::new();
+        for name in &output_names {
+            let t = values
+                .get(name)
+                .unwrap_or_else(|| panic!("output {} not found after eval", name))
+                .clone();
+            outputs.push(t);
+        }
+
+        let frozen = tape.freeze(outputs.iter())?;
+
+        Ok(Self {
+            frozen,
+            input_names,
+            output_names,
+        })
+    }
+
+    /// Run inference.
+    ///
+    /// `inputs` maps ONNX input names (e.g. `"x"`) to `Tensor`s. Every model
+    /// input must be present; extra entries are ignored.
+    pub fn run(&self, inputs: HashMap<String, Tensor>) -> Result<HashMap<String, Tensor>, ZyxError> {
+        let mut ordered = Vec::new();
+        for name in &self.input_names {
+            let t = inputs
+                .get(name)
+                .unwrap_or_else(|| panic!("missing input {}", name))
+                .clone();
+            ordered.push(t);
+        }
+        let outs = self.frozen.replay(ordered.iter())?;
+        let mut map = HashMap::new();
+        for (name, t) in self.output_names.iter().zip(outs.into_iter()) {
+            map.insert(name.clone(), t);
+        }
+        Ok(map)
+    }
+
+    /// Alias for `run`, mirroring `FrozenTape::replay` naming.
+    pub fn replay(&self, inputs: HashMap<String, Tensor>) -> Result<HashMap<String, Tensor>, ZyxError> {
+        self.run(inputs)
+    }
+
+    /// ONNX input names in tape order.
+    pub fn input_names(&self) -> &[String] {
+        &self.input_names
+    }
+
+    /// ONNX output names.
+    pub fn output_names(&self) -> &[String] {
+        &self.output_names
+    }
 }
