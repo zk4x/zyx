@@ -299,6 +299,86 @@ fn llama_kv_cache_assign_repeated() -> Result<(), ZyxError> {
 }
 
 // ============================================================================
+// Generation loop: one FRESH tape per step, each with freshly created
+// Tensor::variable scalars, earlier steps realized and dropped back to eager
+// before the next tape starts (mirrors llama's per-step forward).
+// ============================================================================
+
+#[test]
+fn llama_kv_cache_assign_generations() -> Result<(), ZyxError> {
+    let max_ctx = 8i64;
+    let n_kv = 1i64;
+    let hd = 4i64;
+    let cache = Tensor::zeros([max_ctx, n_kv, hd], DType::BF16).contiguous()?;
+    let block_a: Vec<f32> = (0..2).flat_map(|_| vec![1.0f32, 2.0, 3.0, 4.0]).collect();
+    let block_b: Vec<f32> = (0..2).flat_map(|_| vec![5.0f32, 6.0, 7.0, 8.0]).collect();
+    let a = Tensor::from(block_a).reshape([2, n_kv, hd])?.cast(DType::BF16);
+    let b = Tensor::from(block_b).reshape([2, n_kv, hd])?.cast(DType::BF16);
+
+    // Step 0 and step 1: a new tape each, a new variable each. Step 1 starts
+    // only after step 0's tape was realized and consumed.
+    for (step, block) in [(0i64, &a), (2, &b)] {
+        let tape = Tape::empty();
+        tape.add(&cache)?;
+        let pos = Tensor::variable(step);
+        cache.narrow(0, &pos, 2i64)?.assign(block)?;
+        let out = cache.sum([1, 2])?;
+        tape.realize([&out])?;
+    }
+
+    let got = to_f32(&cache)?;
+    let expected: Vec<f32> = (0..2)
+        .flat_map(|_| vec![1.0f32, 2.0, 3.0, 4.0])
+        .chain((0..2).flat_map(|_| vec![5.0f32, 6.0, 7.0, 8.0]))
+        .chain(std::iter::repeat(0.0).take(16))
+        .collect();
+    assert_close(&got, &expected, 1e-6, "generation assign rows");
+    Ok(())
+}
+
+// ============================================================================
+// promote_to_graph: an eager load that was REALIZED BY A PREVIOUS TAPE and
+// dropped back to eager (its producer was the graph — kernel_id NULL), then
+// consumed by a binary op with a graph operand — mirrors llama's cross-step
+// tensor reuse.
+// ============================================================================
+
+#[test]
+fn llama_promote_realized_eager_load() -> Result<(), ZyxError> {
+    let x = Tensor::ones([4], DType::F32).contiguous()?;
+
+    // Tape 1: produce y, realize it. After the tape dies y is eager again.
+    let t1 = Tape::empty();
+    t1.add(&x)?;
+    let y = x.sum([0])?;
+    t1.realize([&y])?;
+
+    // Tape 2: x re-added as a graph leaf; y (eager, graph-produced) enters
+    // the binary as a load and must be promoted.
+    let t2 = Tape::empty();
+    t2.add(&x)?;
+    let z = &y * &x;
+    t2.realize([&z])?;
+
+    let got = to_f32(&z)?;
+    assert_close(&got, &[4.0; 4], 1e-6, "realized eager load across tapes");
+
+    // Tape 3: a DISOWNED eager load — the eager tensor's handle is dropped
+    // after it entered the graph as a binary load (llama drops temps like
+    // the one-hot immediately after the embedding gather).
+    let t3 = Tape::empty();
+    t3.add(&x)?;
+    let z3 = {
+        let w = Tensor::from(vec![1.0f32, 2.0, 3.0, 4.0]);
+        &w * &x
+    };
+    t3.realize([&z3])?;
+    let got3 = to_f32(&z3)?;
+    assert_close(&got3, &[1.0, 2.0, 3.0, 4.0], 1e-6, "disowned eager load");
+    Ok(())
+}
+
+// ============================================================================
 // Causal mask: broadcast compare + where/-inf add built on the graph
 // ============================================================================
 

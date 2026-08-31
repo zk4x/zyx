@@ -1666,7 +1666,7 @@ impl Runtime {
                 }
             };
             // `loads` is parallel to the kernel's Global|Variable Params in
-            // head order (see `Kernel::extract_subkernel`); map each such
+            // head order (see `Kernel::duplicate_subkernel`); map each such
             // Param op to its load index so shape-stack variable dims can be
             // resolved to their tensors.
             let loads = self.kernels[kernel_id].loads.clone();
@@ -1775,7 +1775,7 @@ impl Runtime {
 
         let loads = self.kernels[kernel_id].loads.clone();
         // Map each Global|Variable Param op to its index in `loads` (parallel
-        // lists in head order, see `Kernel::extract_subkernel`) so shape-stack
+        // lists in head order, see `Kernel::duplicate_subkernel`) so shape-stack
         // variable dims resolve to their tensors.
         let mut load_of_param: Map<OpId, usize> = Map::default();
         let mut load_idx = 0;
@@ -1798,16 +1798,22 @@ impl Runtime {
                         let load_tid = loads[load_of_param[&op_id]];
                         if !self.buffer_map.contains_key(&load_tid) {
                             // An `Eager` tensor never carries a graph class,
-                            // so its depends_on is the pending producer.
+                            // so its depends_on is the pending producer. A
+                            // `Variable` scalar has no buffer and no producer —
+                            // its value comes from the variable slots at launch;
+                            // it is registered as a leaf below.
                             let pending = match &self.tensors[load_tid] {
                                 TensorData::Eager { depends_on, .. } => *depends_on,
-                                TensorData::Graph { .. } | TensorData::Promoted { .. } => KernelId::NULL,
+                                TensorData::Graph { .. }
+                                | TensorData::Promoted { .. }
+                                | TensorData::Variable { .. } => KernelId::NULL,
                                 ref t => panic!("promote_to_graph: load tid {load_tid} is not a kernel tensor: {t:?}"),
                             };
-                            debug_assert!(!pending.is_null());
-                            let outputs: Vec<TensorId> = self.kernels[pending].outputs.iter().copied().collect();
-                            for &otid in &outputs {
-                                self.add_store(otid)?;
+                            if !pending.is_null() {
+                                let outputs: Vec<TensorId> = self.kernels[pending].outputs.iter().copied().collect();
+                                for &otid in &outputs {
+                                    self.add_store(otid)?;
+                                }
                             }
                         }
 
@@ -1873,6 +1879,7 @@ impl Runtime {
                             match &mut self.tensors[load_tid] {
                                 TensorData::Graph { class_id: c, .. } | TensorData::Promoted { class_id: c, .. } => *c = class_id,
                                 TensorData::Eager { .. } => {
+                                    eprintln!("DEBUG attach Eager load_tid={load_tid} state={:?}", self.tensors[load_tid]);
                                     // A disowned load (user handle gone, not in
                                     // its producer's `outputs`) has no eager
                                     // future: after the tape dies nobody can use
@@ -1897,6 +1904,12 @@ impl Runtime {
                                     } else {
                                         self.tensors[load_tid] = TensorData::Graph { class_id, graph_id, shape_id, dtype, rc };
                                     }
+                                }
+                                TensorData::Variable { .. } => {
+                                    // A scalar variable stays `Variable`: its
+                                    // value is read from the variable slots at
+                                    // launch — `leaf_map` binds the leaf class
+                                    // to this tid, nothing else to attach.
                                 }
                                 ref t => panic!("promote_to_graph: cannot attach load tensor {load_tid} to the graph: {t:?}"),
                             }

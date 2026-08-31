@@ -270,13 +270,16 @@ Add `println!` markers along the suspect path and run with `-- --nocapture`: the
 `src/tape.rs` — the training-loop API around the graph.
 
 - `Tape::realize` takes **persistent state only** (params + optimizer internals). Intermediates don't need realization.
-- Eager tensors used inside a tape scope auto-promote to graph (`promote_to_graph`) — optimizer momentum buffers carry across steps without manual `tape.add()`.
+- **Eager tensors are promoted to graph (`promote_to_graph`) in only TWO cases**: (1) registered explicitly via `Tape::new`/`Tape::add`, or (2) used in a binary op where one operand is a graph tensor and the other is a tensor. There is no temporal "tape scope" that sweeps up ops — routing is decided per op by its operands. An op whose operands are all eager runs eagerly even mid-forward. Optimizer momentum buffers carry across steps via case (2) binary ops, not automatic promotion.
 - Training step: `Tape::new(&net)` → forward/loss → `tape.gradient(&loss, &net)` → `optim.update(&mut net, grads)` → `tape.realize(net.iter().chain(optim.iter()))`. After drop, realized tensors become eager again.
 - Fixed control flow: `tape.freeze(&outputs)` once, then `frozen.replay(&inputs)` per step.
 
 ### Two execution paths: eager vs graph
 
-Every tensor op has **two** possible paths, chosen by whether the caller is inside a tape scope:
+Every tensor op has **two** possible paths, chosen per op by its operands — NOT by any
+temporal "scope": an op takes the graph path iff one of its operands is a graph tensor of
+the current tape (or it is registered via `Tape::new`/`Tape::add`); ops whose operands are
+all eager run eagerly:
 
 - **Eager path** (no tape): `Runtime::{pad_zeros, unary, binary, ...}` directly pushes the
   `Op` (a `MoveOp`, or a compute op like `Unary`/`Binary`/`Reduce`) into the tensor's
@@ -288,8 +291,8 @@ Every tensor op has **two** possible paths, chosen by whether the caller is insi
   does the kernelizer (`kernelizer.rs`) turn those nodes into `Op`s.
 
 This dual path applies to **every op** — unary, binary, reduce, pad, cast, etc. all either push an `Op` into an eager kernel (`runtime.rs`) or push a
-`Node` into the egraph (`graph/mod.rs`) depending purely on whether the caller is in a
-tape scope. When reasoning about kernel identity / recompilation (e.g. the kv-cache
+`Node` into the egraph (`graph/mod.rs`) depending purely on whether one of the op's
+operands is a graph tensor of the current tape. When reasoning about kernel identity / recompilation (e.g. the kv-cache
 `narrow(0, start, len)` case), consider which path the consumer actually runs, and
 note that changing an `Op` means changing it in **both** places unless the two share a
 construction point.

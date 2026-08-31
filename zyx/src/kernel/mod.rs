@@ -96,7 +96,6 @@
 
 pub use crate::backend::DeviceId;
 
-use crate::tensor::TensorId;
 use crate::{DType, Map, Set, dtype::Constant, shape::Dim, slab::Slab};
 use nanoserde::{DeBin, SerBin};
 use std::collections::BTreeMap;
@@ -594,7 +593,9 @@ impl Kernel {
     /// Removes ops from `x` backwards that are no longer needed.
     /// Returns a filtered version of `loads` with entries for removed LoadViews removed.
     /// The i-th entry in `loads` corresponds to the i-th LoadView in op order.
-    pub(crate) fn remove_unused_chain(&mut self, x: OpId, keep_alive: &[OpId], loads: &[TensorId]) -> Vec<TensorId> {
+    /// Generic over the load payload (`TensorId` in runtime kernels,
+    /// `ClassId` in kernelizer jit kernels) — it is never inspected.
+    pub(crate) fn remove_unused_chain<T: Copy>(&mut self, x: OpId, keep_alive: &[OpId], loads: &[T]) -> Vec<T> {
         let mut chain: Set<OpId> = Set::default();
         let mut stack = vec![x];
         for _ in 0..30_000 {
@@ -1514,30 +1515,47 @@ impl Kernel {
         op_id
     }
 
-    /// Extracts the single `root_op` into a fresh kernel.
+    /// Duplicates the dependency chain of `root_op` into a fresh kernel.
     ///
-    /// Semantics — there is exactly ONE remapped op:
-    /// - The root op is **cloned** into the returned kernel under a NEW
-    ///   OpId (the returned one). It is removed from `self`.
-    /// - Every op reachable from the root that is not needed for any other
-    ///   reason in `self` (another output, or a store chain) is deleted
-    ///   from `self`; it exists only in the new kernel now.
-    /// - **Everything else stays in `self` with its ORIGINAL OpId.** There
-    ///   is no remapping of non-root ops and no remap map; caller-side
-    ///   bookkeeping (`visited` entries etc.) for them does NOT change.
-    /// - Loads are the exception to "ids stay": each load op is cloned into
-    ///   whichever kernel still needs it, which is why `loads` is split
-    ///   into `self_loads` / `new_loads` (parallel to the LoadView ops,
-    ///   linked-list order) and must be assigned by the caller.
+    /// # The duplication design (runtime vs kernelizer)
     ///
-    /// `all_outputs` contains all output OpIds in this kernel (including `root_op`).
-    /// The new kernel contains only ops that `root_op` transitively depends on.
-    pub(crate) fn extract_subkernel<T: Copy>(
+    /// Kernels can share their ops' results in two ways, and the two callers
+    /// of this method use two different ownership models:
+    ///
+    /// - **Runtime** (eager tensors): ops never *consume* — they only create
+    ///   new tensors. When a kernel must be split, the original kernel keeps
+    ///   the output tensor in its `outputs` and keeps ALL of its ops; the
+    ///   fresh kernel receives a **clone** of the root chain and *recomputes*
+    ///   the same values from the shared input loads. Nothing is removed,
+    ///   no refcount changes hands — the only bookkeeping is that every load
+    ///   the fresh kernel reads gains one reference (retain per `new_loads`
+    ///   occurrence). The fresh kernel's `outputs` stays empty: it produces
+    ///   values only for the ops built on it afterwards.
+    /// - **Kernelizer** (graph classes): ops DO consume edges (`rcs`,
+    ///   `visited`, `outputs`). The split keeps the same observable
+    ///   accounting as a move: one `outputs` occurrence of the child class
+    ///   leaves the original kernel and is pushed onto the fresh kernel,
+    ///   where the caller's `consume` immediately removes it. The original
+    ///   kernel keeps its output registration for its remaining consumers;
+    ///   if the split consumer was the last one, the original's orphaned
+    ///   chain is cleaned up separately via [`Kernel::remove_unused_chain`].
+    ///
+    /// In both models this method is a **pure duplication**: `self` is left
+    /// completely untouched (ops AND loads), and the fresh kernel contains
+    /// exactly the ops `root_op` transitively depends on, cloned in topo
+    /// order with remapped OpIds.
+    ///
+    /// Returns the fresh kernel, the remapped `root_op` OpId inside it, and
+    /// `new_loads` — the caller's `loads` entries (parallel to the input
+    /// `Param` ops, linked-list order) for the Params the fresh kernel
+    /// cloned, in the fresh kernel's Param order. Every `new_loads` entry is
+    /// an additional reader of the underlying tensor: the runtime caller
+    /// retains one reference per occurrence.
+    pub(crate) fn duplicate_subkernel<T: Copy>(
         &mut self,
         root_op: OpId,
-        all_outputs: &[OpId],
         loads: &[T],
-    ) -> (Self, OpId, Vec<T>, Vec<T>) {
+    ) -> (Self, OpId, Vec<T>) {
         // Walk 1: from root_op
         let mut root_required = Set::default();
         let mut stack = vec![root_op];
@@ -1548,51 +1566,14 @@ impl Kernel {
             }
         }
         if !stack.is_empty() {
-            panic!("extract_subkernel did not finish in 10000 steps");
+            panic!("duplicate_subkernel did not finish in 10000 steps");
         }
 
-        // Walk 2: from other outputs
-        let mut other_required = Set::default();
-        let mut stack = Vec::new();
-        for &out in all_outputs {
-            stack.push(out);
-        }
-        // Stores (and the value/param chains feeding them) always stay in this
-        // kernel: extraction must never pull a store into the extracted
-        // subkernel, nor delete a store that external kernels still load.
-        let mut oid = self.head;
-        for _ in 0..10_000 {
-            if oid.is_null() {
-                break;
-            }
-            if matches!(self.at(oid), Op::Store { .. }) && !other_required.contains(&oid) {
-                let mut deps = vec![oid];
-                while let Some(op) = deps.pop() {
-                    if other_required.insert(op) {
-                        deps.extend(self.at(op).parameters().filter(|&p| !p.is_null()));
-                    }
-                }
-            }
-            oid = self.next_op(oid);
-        }
-        if !oid.is_null() {
-            panic!("extract_subkernel did not finish in 10000 steps");
-        }
-        for _ in 0..10_000 {
-            let Some(op) = stack.pop() else { break };
-            if other_required.insert(op) {
-                stack.extend(self.at(op).parameters());
-            }
-        }
-        if !stack.is_empty() {
-            panic!("extract_subkernel did not finish in 10000 steps");
-        }
-
-        // Partition loads: for each kernel Param (Global/Variable), dispatch to
-        // the set(s) that keep it. `loads` is parallel to the Param ops. Kernels
-        // before linearize contain only Params — Storage (accumulators etc.) is
-        // resolved later, so none may appear here.
-        let mut self_loads: Vec<T> = Vec::new();
+        // Partition loads: the fresh kernel receives the caller's `loads`
+        // entries for every input Param it cloned. `self` keeps ALL of its
+        // loads — it is untouched. `loads` is parallel to the kernel Param
+        // ops. Kernels before linearize contain only Params — Storage
+        // (accumulators etc.) is resolved later, so none may appear here.
         let mut new_loads: Vec<T> = Vec::new();
         let mut load_idx = 0;
         let mut oid = self.head;
@@ -1604,9 +1585,6 @@ impl Kernel {
                 // Global and Variable Params are loads; GlobalMut is a store and
                 // is not part of the loads list.
                 Op::Param { kind: ParamKind::Global | ParamKind::Variable, .. } => {
-                    if other_required.contains(&oid) {
-                        self_loads.push(loads[load_idx]);
-                    }
                     if root_required.contains(&oid) {
                         new_loads.push(loads[load_idx]);
                     }
@@ -1614,14 +1592,14 @@ impl Kernel {
                 }
                 Op::Param { kind: ParamKind::GlobalMut, .. } => {}
                 Op::Storage { .. } => {
-                    panic!("extract_subkernel: unexpected Op::Storage (pre-linearize kernels contain only Params)")
+                    panic!("duplicate_subkernel: unexpected Op::Storage (pre-linearize kernels contain only Params)")
                 }
                 _ => {}
             }
             oid = self.next_op(oid);
         }
         if !oid.is_null() {
-            panic!("extract_subkernel did not finish in 10000 steps");
+            panic!("duplicate_subkernel did not finish in 10000 steps");
         }
 
         // Build new kernel by cloning root's ops (in topo order) with remapped OpIds
@@ -1646,27 +1624,10 @@ impl Kernel {
             old_id = self.next_op(old_id);
         }
         if !old_id.is_null() {
-            panic!("extract_subkernel did not finish in 10000 steps");
+            panic!("duplicate_subkernel did not finish in 10000 steps");
         }
 
-        // Remove from self ops not needed by other outputs: they were only
-        // kept alive by root, which has moved to the new kernel.
-        let mut old_id = self.head;
-        for _ in 0..10_000 {
-            if old_id.is_null() {
-                break;
-            }
-            let next = self.next_op(old_id);
-            if !other_required.contains(&old_id) {
-                self.remove_op(old_id);
-            }
-            old_id = next;
-        }
-        if !old_id.is_null() {
-            panic!("extract_subkernel did not finish in 10000 steps");
-        }
-
-        (new_kernel, new_root_op, self_loads, new_loads)
+        (new_kernel, new_root_op, new_loads)
     }
 
     /// Get all group indices used in the kernel.

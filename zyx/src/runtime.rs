@@ -3625,7 +3625,8 @@ impl Runtime {
         // deleted kernel.
         let dst_kernel_loads = self.kernels[dst_kid].loads.clone();
         let dst_org = {
-            let mut buffer_loads = dst_kernel_loads.iter().copied().filter(|&t| !matches!(self.tensors[t], TensorData::Variable { .. }));
+            let mut buffer_loads =
+                dst_kernel_loads.iter().copied().filter(|&t| !matches!(self.tensors[t], TensorData::Variable { .. }));
             match (buffer_loads.next(), buffer_loads.next()) {
                 (Some(t), None) => t,
                 (None, _) => {
@@ -4029,13 +4030,24 @@ impl Runtime {
     /// Steps:
     /// 1. If the producer kernel already has stores, or `x`'s op is preceded by a reduce,
     ///    or `force_store` was set: call [`add_store`] so `x` lands in a fresh load kernel.
-    /// 2. Extract `x`'s op (and any other outputs) into a **brand-new** kernel with empty
+    /// 2. **Duplicate** `x`'s dependency chain into a brand-new kernel with empty
     ///    `outputs` and no stores, retargeting the variables/loads correctly.
     ///
     /// The returned kernel is therefore a **fresh, store-free, outputs-empty** kernel that
     /// contains `x` and nothing else pending — this is the contract that makes
     /// `Runtime::narrow`'s "input into narrow must have empty outputs" assertion hold
     /// unconditionally, and that the kernelizer's `Node::Narrow` arm mirrors.
+    ///
+    /// # Runtime duplication semantics
+    ///
+    /// Runtime ops never *consume*: they only create new tensors. The original
+    /// kernel is left completely untouched — it keeps all its ops, all its
+    /// loads and `x` stays in its `outputs` (the single producer). The fresh
+    /// kernel **recomputes** `x`'s chain from the shared input loads; its
+    /// `outputs` stays empty because it produces values only for the op the
+    /// caller is about to build on it. The only bookkeeping is reference
+    /// sharing: every load the fresh kernel reads (one `new_loads` entry per
+    /// occurrence) gains one reference.
     fn duplicate_or_store(&mut self, x: TensorId, force_store: bool) -> Result<(KernelId, OpId), ZyxError> {
         fn eager_ids(rt: &Runtime, x: TensorId) -> (KernelId, OpId) {
             match rt.tensors[x] {
@@ -4056,51 +4068,14 @@ impl Runtime {
         debug_assert!(self.kernels[kid].stores.is_empty(), "duplicated kernel must not have stores");
 
         let old_loads = self.kernels[kid].loads.clone();
-        // Keep-alive set for the split: every op owned by a live tensor
-        // affiliated with this kernel (outputs ∪ loads) must stay in the old
-        // kernel — pruning a load-affiliated tensor's op orphans it.
-        let out_op_ids: Vec<OpId> = {
-            let kd = &self.kernels[kid];
-            let mut out_op_ids: Vec<OpId> = kd
-                .outputs
-                .iter()
-                .map(|&tid| match &self.tensors[tid] {
-                    TensorData::Eager { op_id, .. } | TensorData::Promoted { op_id, .. } => *op_id,
-                    t => panic!("kernel output tid {tid} has unexpected tensor data {t:?}"),
-                })
-                .collect();
-            for &tid in &kd.loads {
-                if let TensorData::Eager { op_id, .. } | TensorData::Promoted { op_id, .. } = self.tensors[tid] {
-                    if kd.kernel.ops.contains_id(op_id) {
-                        out_op_ids.push(op_id);
-                    }
-                }
-            }
-            out_op_ids
-        };
-        let (kernel, op_id, self_loads, new_loads) = self.kernels[kid].kernel.extract_subkernel(op_id, &out_op_ids, &old_loads);
-        self.kernels[kid].loads = self_loads.clone();
+        // Pure duplication: the original kernel (ops, loads, outputs) is
+        // untouched; the fresh kernel clones x's chain and recomputes it.
+        let (kernel, op_id, new_loads) = self.kernels[kid].kernel.duplicate_subkernel(op_id, &old_loads);
 
-        // Each kernel-load occurrence carries its own rc reference. The split
-        // may duplicate a load into both kernels (an extra ref) or drop it
-        // (release the ref).
-        let mut seen: Set<TensorId> = Set::default();
-        for &tid in old_loads.iter().chain(self_loads.iter()).chain(new_loads.iter()) {
-            if !seen.insert(tid) {
-                continue;
-            }
-            let old_c = old_loads.iter().filter(|&&t| t == tid).count();
-            let self_c = self_loads.iter().filter(|&&t| t == tid).count();
-            let new_c = self_c + new_loads.iter().filter(|&&t| t == tid).count();
-            let delta = (new_c as i64) - (old_c as i64);
-            #[cfg(feature = "debug_tensor_op")]
-            eprintln!("DUP split kid={kid:?}: tid={tid} old={old_c} self={self_c} new={new_c} delta={delta}");
-            for _ in 0..delta {
-                self.retain(tid);
-            }
-            for _ in 0..(-delta) {
-                self.release(tid);
-            }
+        // Each `new_loads` occurrence is an additional reader of the load
+        // tensor: one extra reference per occurrence.
+        for &tid in &new_loads {
+            self.retain(tid);
         }
 
         kid = self.kernels.push(KernelData { outputs: Set::default(), loads: new_loads, stores: Vec::new(), kernel });

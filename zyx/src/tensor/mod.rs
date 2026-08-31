@@ -3470,11 +3470,15 @@ impl Tensor {
                         ));
                     }
                 }
-                (ResolvedDim::Symbolic(_), ResolvedDim::Static(_)) | (ResolvedDim::Static(_), ResolvedDim::Symbolic(_)) => {
-                    return Err(ZyxError::shape_error(
-                        format!("cannot broadcast a symbolic dim against a static dim (n != 1): {x_shape:?} vs {y_shape:?}")
-                            .into(),
-                    ));
+                (ResolvedDim::Symbolic(_), ResolvedDim::Static(_)) => {
+                    // Symbolic vs static (non-1): compatible by assumption
+                    // (torch's guard semantics — the check defers to
+                    // execution, which fails loudly if the values differ).
+                    // The symbolic side provides the target dim.
+                    dtensor(&sdx, i, rank).expect("symbolic dim has a dim tensor").clone()
+                }
+                (ResolvedDim::Static(_), ResolvedDim::Symbolic(_)) => {
+                    dtensor(&sdy, i, rank).expect("symbolic dim has a dim tensor").clone()
                 }
             };
             eshape_sym.push(target);

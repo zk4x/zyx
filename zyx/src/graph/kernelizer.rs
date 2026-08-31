@@ -132,7 +132,11 @@ impl Graph {
                 let data_slots: Vec<ClassId> = match &self.nodes[*nid].node {
                     Node::Const { .. } => vec![],
                     Node::Leaf { shape, .. } => {
-                        if shape.is_null() { vec![] } else { vec![*shape] }
+                        if shape.is_null() {
+                            vec![]
+                        } else {
+                            vec![*shape]
+                        }
                     }
                     Node::Expand { x, shape, .. } | Node::Reshape { x, shape, .. } => vec![*x, *shape],
                     Node::Pad { x, lp, len, .. } => vec![*x, *lp, *len],
@@ -324,96 +328,96 @@ impl Graph {
                                 (kid, op_id) = visited[&x];
                                 (kidy, op_idy) = visited[&y];
 
-                        if kid != kidy {
-                            // Two kernels whose inputs disagree on dynamism can
-                            // never merge: one kernel runs on ONE global work
-                            // grid, and a static grid length cannot drive a
-                            // dynamic computation (or vice versa). Materialize
-                            // the STATIC side; `add_store` returns a fresh load
-                            // kernel which becomes the merge destination, so the
-                            // result (whose broadcast shape is the dynamic one)
-                            // stays inside the dynamic kernel.
-                            // Kernel-level dynamism, straight from the kernel
-                            // IR: a kernel is dynamic if ANY param's shape has
-                            // an unresolved (zero) dim.
-                            match (
-                                self.jit_kernels[kid].kernel.shape(op_id).contains(&0),
-                                self.jit_kernels[kidy].kernel.shape(op_idy).contains(&0),
-                            ) {
-                                (false, true) => {
-                                    (kid, op_id) = self.add_store(x, kid, op_id, &mut visited, &rcs);
-                                }
-                                (true, false) => {
-                                    (kidy, op_idy) = self.add_store(y, kidy, op_idy, &mut visited, &rcs);
-                                }
-                                (_, _) => {
-                                    // Both operands share the same dynamism, so they
-                                    // must already be broadcast-compatible (broadcasting
-                                    // is performed upstream by `Tensor::broadcast` /
-                                    // `Graph::push_binary_node`); the kernelizer's
-                                    // `Node::Binary` does NOT broadcast — except that
-                                    // scalars broadcast implicitly in kernel IR.
-                                    // Provably-equal rule (mirrors `Runtime::binary`):
-                                    // per dim, the same resolved constant, or either
-                                    // dim is -1 (symbolic — resolution failed, cannot
-                                    // disprove), or either side is scalar (implicit
-                                    // broadcast).
-                                    let sx = self.jit_kernels[kid].kernel.shape(op_id);
-                                    let sy = self.jit_kernels[kidy].kernel.shape(op_idy);
-                                    let compatible = sx.is_empty()
-                                        || sy.is_empty()
-                                        || (sx.len() == sy.len()
-                                            && sx.iter().zip(sy.iter()).all(|(&a, &b)| a == b || a < 0 || b < 0));
-                                    debug_assert!(
-                                        compatible,
-                                        "binary operands {sx:?} vs {sy:?} are not broadcast-compatible"
-                                    );
+                                if kid != kidy {
+                                    // Two kernels whose inputs disagree on dynamism can
+                                    // never merge: one kernel runs on ONE global work
+                                    // grid, and a static grid length cannot drive a
+                                    // dynamic computation (or vice versa). Materialize
+                                    // the STATIC side; `add_store` returns a fresh load
+                                    // kernel which becomes the merge destination, so the
+                                    // result (whose broadcast shape is the dynamic one)
+                                    // stays inside the dynamic kernel.
+                                    // Kernel-level dynamism, straight from the kernel
+                                    // IR: a kernel is dynamic if ANY param's shape has
+                                    // an unresolved (zero) dim.
+                                    match (
+                                        self.jit_kernels[kid].kernel.shape(op_id).contains(&0),
+                                        self.jit_kernels[kidy].kernel.shape(op_idy).contains(&0),
+                                    ) {
+                                        (false, true) => {
+                                            (kid, op_id) = self.add_store(x, kid, op_id, &mut visited, &rcs);
+                                        }
+                                        (true, false) => {
+                                            (kidy, op_idy) = self.add_store(y, kidy, op_idy, &mut visited, &rcs);
+                                        }
+                                        (_, _) => {
+                                            // Both operands share the same dynamism, so they
+                                            // must already be broadcast-compatible (broadcasting
+                                            // is performed upstream by `Tensor::broadcast` /
+                                            // `Graph::push_binary_node`); the kernelizer's
+                                            // `Node::Binary` does NOT broadcast — except that
+                                            // scalars broadcast implicitly in kernel IR.
+                                            // Provably-equal rule (mirrors `Runtime::binary`):
+                                            // per dim, the same resolved constant, or either
+                                            // dim is -1 (symbolic — resolution failed, cannot
+                                            // disprove), or either side is scalar (implicit
+                                            // broadcast).
+                                            let sx = self.jit_kernels[kid].kernel.shape(op_id);
+                                            let sy = self.jit_kernels[kidy].kernel.shape(op_idy);
+                                            let compatible = sx.is_empty()
+                                                || sy.is_empty()
+                                                || (sx.len() == sy.len()
+                                                    && sx.iter().zip(sy.iter()).all(|(&a, &b)| a == b || a < 0 || b < 0));
+                                            debug_assert!(
+                                                compatible,
+                                                "binary operands {sx:?} vs {sy:?} are not broadcast-compatible"
+                                            );
+                                        }
+                                    }
+
+                                    let kid_stores = self.jit_kernels[kid].kernel.contains_stores();
+                                    let kidy_stores = self.jit_kernels[kidy].kernel.contains_stores();
+                                    match (kid_stores, kidy_stores) {
+                                        (true, true) => {
+                                            (kid, op_id) = self.add_store(x, kid, op_id, &mut visited, &rcs);
+                                            (kidy, _) = self.add_store(y, kidy, op_idy, &mut visited, &rcs);
+                                        }
+                                        (true, false) => (kid, op_id) = self.add_store(x, kid, op_id, &mut visited, &rcs),
+                                        (false, true) => (kidy, _) = self.add_store(y, kidy, op_idy, &mut visited, &rcs),
+                                        (false, false) => {}
+                                    }
+
+                                    // Restore of the original Binary merge rule
+                                    // (commit 7786c15): the reduce kernel must be the
+                                    // merge DESTINATION — a reduce's output grid is
+                                    // smaller than its input's, so pulling plain
+                                    // compute ops into it is safe, while merging a
+                                    // reduce into a plain compute kernel corrupts the
+                                    // gws. If x's kernel reduces and y's does not,
+                                    // swap the two slots so `merge_kernels` below pulls
+                                    // the non-reduce side into the reduce kernel.
+                                    // Operand order is preserved: both op ids are
+                                    // re-read from `visited` after the merge.
+                                    if self.jit_kernels[kid].kernel.is_reduce() && !self.jit_kernels[kidy].kernel.is_reduce() {
+                                        std::mem::swap(&mut kid, &mut kidy);
+                                        std::mem::swap(&mut op_id, &mut op_idy);
+                                    }
+
+                                    self.merge_kernels(kidy, kid, &mut visited);
+                                    (kid, op_idy) = visited[&y];
+                                    op_id = visited[&x].1;
                                 }
                             }
 
-                            let kid_stores = self.jit_kernels[kid].kernel.contains_stores();
-                            let kidy_stores = self.jit_kernels[kidy].kernel.contains_stores();
-                            match (kid_stores, kidy_stores) {
-                                (true, true) => {
-                                    (kid, op_id) = self.add_store(x, kid, op_id, &mut visited, &rcs);
-                                    (kidy, _) = self.add_store(y, kidy, op_idy, &mut visited, &rcs);
-                                }
-                                (true, false) => (kid, op_id) = self.add_store(x, kid, op_id, &mut visited, &rcs),
-                                (false, true) => (kidy, _) = self.add_store(y, kidy, op_idy, &mut visited, &rcs),
-                                (false, false) => {}
+                            if !x_missing {
+                                self.consume(x, kid, &mut visited, &mut rcs);
                             }
-
-                            // Restore of the original Binary merge rule
-                            // (commit 7786c15): the reduce kernel must be the
-                            // merge DESTINATION — a reduce's output grid is
-                            // smaller than its input's, so pulling plain
-                            // compute ops into it is safe, while merging a
-                            // reduce into a plain compute kernel corrupts the
-                            // gws. If x's kernel reduces and y's does not,
-                            // swap the two slots so `merge_kernels` below pulls
-                            // the non-reduce side into the reduce kernel.
-                            // Operand order is preserved: both op ids are
-                            // re-read from `visited` after the merge.
-                            if self.jit_kernels[kid].kernel.is_reduce() && !self.jit_kernels[kidy].kernel.is_reduce() {
-                                std::mem::swap(&mut kid, &mut kidy);
-                                std::mem::swap(&mut op_id, &mut op_idy);
+                            if !y_missing {
+                                self.consume(y, kid, &mut visited, &mut rcs);
                             }
-
-                            self.merge_kernels(kidy, kid, &mut visited);
-                            (kid, op_idy) = visited[&y];
-                            op_id = visited[&x].1;
-                            }
-                        }
-
-                        if !x_missing {
-                            self.consume(x, kid, &mut visited, &mut rcs);
-                        }
-                        if !y_missing {
-                            self.consume(y, kid, &mut visited, &mut rcs);
-                        }
-                        let result_op = self.jit_kernels[kid].kernel.binary(op_id, op_idy, bop);
-                        self.push_outputs(kid, cid, rcs[&cid]);
-                        visited.insert(cid, (kid, result_op));
+                            let result_op = self.jit_kernels[kid].kernel.binary(op_id, op_idy, bop);
+                            self.push_outputs(kid, cid, rcs[&cid]);
+                            visited.insert(cid, (kid, result_op));
                         }
                     }
                     Node::Reduce { x, rop, ref axes } => {
@@ -980,7 +984,7 @@ impl Graph {
                     );
                 }
                 // Invariant: `loads` is parallel to the Global/Variable Param
-                // ops in head order (extract_subkernel and launch both rely on
+                // ops in head order (duplicate_subkernel and launch both rely on
                 // this).
                 let mut n_params = 0;
                 let mut oid = kernel.kernel.head;
@@ -1162,6 +1166,26 @@ impl Graph {
 
     /// This is called by functions that HAVE TO have only 1 output, because they are movement or reduce.
     /// Movement or reduce change the view of the load, that's why they require that the load is duplicated.
+    ///
+    /// # Duplication semantics (kernelizer vs runtime)
+    ///
+    /// Kernelizer ops DO consume class edges (`rcs`, `visited`, `outputs`);
+    /// runtime ops never consume — they only create new tensors. Both split
+    /// paths end in [`Kernel::duplicate_subkernel`], which is a **pure
+    /// duplication**: the original kernel keeps ALL of its ops and loads.
+    ///
+    /// - Kernelizer (this method, non-store branch): the child's `outputs`
+    ///   occurrence leaves the original kernel (`remove_first_output`) and
+    ///   is pushed onto the fresh kernel, where the caller's `consume`
+    ///   immediately removes it — the same observable accounting as a move,
+    ///   but the original kernel still computes the child for its remaining
+    ///   consumers (the fresh kernel recomputes the chain). If this was the
+    ///   child's last edge, the original no longer lists it and
+    ///   [`Kernel::remove_unused_chain`] prunes the orphaned chain.
+    /// - Runtime (`Runtime::duplicate_or_store`): the fresh kernel's
+    ///   `outputs` stays empty, the output registration stays with the
+    ///   original kernel, and no refcount changes hands — only the shared
+    ///   input loads gain one reference each.
     #[allow(clippy::too_many_arguments)] // graph kernel API, arguments are structural parameters
     fn duplicate_or_store_class(
         &mut self,
@@ -1200,13 +1224,19 @@ impl Graph {
                 }
             } else {
                 remove_first_output(&mut self.jit_kernels, kid, child);
-                let out_op_ids: Vec<OpId> = self.jit_kernels[kid].outputs.iter().map(|&cid| visited[&cid].1).collect();
                 let loads = self.jit_kernels[kid].loads.clone();
-                let (new_kernel, new_op_id, self_loads, new_loads) =
-                    self.jit_kernels[kid].kernel.extract_subkernel(op_id, &out_op_ids, &loads);
-                self.jit_kernels[kid].loads = self_loads;
+                let (new_kernel, new_op_id, new_loads) = self.jit_kernels[kid].kernel.duplicate_subkernel(op_id, &loads);
 
                 debug_assert_eq!(self.jit_kernels[kid].outputs.iter().filter(|&&x| x == child).count(), rcs[&child] as usize - 1);
+
+                // If this was the child's last edge, the original kernel no
+                // longer lists it: its producing chain is orphaned there and
+                // is pruned (keep_alive = the remaining outputs' ops).
+                if !self.jit_kernels[kid].outputs.contains(&child) {
+                    let out_op_ids: Vec<OpId> = self.jit_kernels[kid].outputs.iter().map(|&cid| visited[&cid].1).collect();
+                    let new_loads_old = self.jit_kernels[kid].kernel.remove_unused_chain(op_id, &out_op_ids, &loads);
+                    self.jit_kernels[kid].loads = new_loads_old;
+                }
 
                 let new_kid = self.jit_kernels.push(JitKernelData {
                     kernel: new_kernel,
