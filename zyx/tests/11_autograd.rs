@@ -948,6 +948,21 @@ fn grad_2_tapes() -> Result<(), ZyxError> {
     Ok(())
 }
 
+#[test]
+fn grad_slice() -> Result<(), ZyxError> {
+    // Backward through a slice must not leak gradient into the dropped
+    // elements (issue #8). The slice's validity is carried by an explicit
+    // mask through linearize, so the load is zeroed outside [1, 3).
+    let x = Tensor::from([1f32, 2., 3., 4.]);
+    let tape = Tape::new([&x])?;
+    let y = x.slice(1..3)?;
+    let mut grads = tape.gradient(&y.sum_all(), [&x]);
+    let g = grads.pop().unwrap();
+    tape.realize([&g])?;
+    assert_eq!(g, [0f32, 1., 1., 0.]);
+    Ok(())
+}
+
 /*#[test]
 #[should_panic(expected = "tensor was never realized")]
 fn grad_orphan_then_use_directly() {

@@ -224,6 +224,11 @@ impl Kernel {
                             self.ops[op_id].op = Op::Const(dtype.zero_constant());
                         }
                         BOp::BitAnd | BOp::BitOr | BOp::Max => self.remap(op_id, x),
+                        // Boolean idempotence: x && x -> x, x || x -> x. Mask
+                        // AND-chains (pad/narrow validity terms) can reduce both
+                        // operands to the same comparison; without this rule the
+                        // leftover And breaks fold_loops' condition-chain patterns.
+                        BOp::And | BOp::Or if self.dtype(x) == DType::Bool => self.remap(op_id, x),
                         BOp::Cmpgt | BOp::Cmplt => self.ops[op_id].op = Op::Const(DType::Bool.zero_constant()),
                         BOp::Eq if !self.dtype(x).is_float() => self.ops[op_id].op = Op::Const(DType::Bool.one_constant()),
                         BOp::NotEq if !self.dtype(x).is_float() => self.ops[op_id].op = Op::Const(DType::Bool.zero_constant()),

@@ -292,7 +292,7 @@ impl Display for Kernel {
                                 .unwrap_or(Dim::MAX)
                                 .saturating_sub(1);
                             let len = id_map.get(&len).copied().unwrap_or(len);
-                            writeln!(f, "{indent}r{out_id}{grey}: {IDX_T}{reset} = {blue}{kind}_index({axis}){reset} over {len}    // 0..={ub}").unwrap();
+                            writeln!(f, "{indent}r{out_id}{grey}: {IDX_T}{reset} = {blue}{kind}_index({axis}){reset} over r{len}    // 0..={ub}").unwrap();
                         }
                         RangeKind::Local(len) => {
                             writeln!(
