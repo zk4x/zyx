@@ -14,7 +14,7 @@
 //! - Improving vectorization opportunities
 //! - Unrolling loops with constant lengths
 
-use super::autotune::Optimization;
+use super::autotune::OptimizationKind;
 use crate::kernel::MemLayout;
 #[allow(unused)]
 use crate::{
@@ -29,16 +29,16 @@ impl Kernel {
     ///
     /// Returns the optimization variant and number of variants.
     #[allow(unused)]
-    pub(crate) fn opt_unroll(_: &Kernel) -> (Optimization, usize) {
-        (Optimization::UnrollLoops { factors: vec![8, 4, 16, 2] }, 4)
+    pub(crate) fn opt_unroll(_: &Kernel) -> (OptimizationKind, usize) {
+        (OptimizationKind::UnrollLoops { factors: vec![8, 4, 16, 2] }, 4)
     }
 
     /// Configure loop unrolling for constant-length loops.
     ///
     /// Returns the optimization variant and number of variants.
     #[allow(unused)]
-    pub(crate) const fn opt_unroll_constant_loops(_: &Kernel) -> (Optimization, usize) {
-        (Optimization::UnrollConstantLoops, 1)
+    pub(crate) const fn opt_unroll_constant_loops(_: &Kernel) -> (OptimizationKind, usize) {
+        (OptimizationKind::UnrollConstantLoops, 1)
     }
 
     /// Eliminate zero-length index operations.

@@ -13,7 +13,7 @@
 //! would make performance worse than a naive matmul. It is designed for
 //! standalone reduction ops (e.g. `Tensor::sum` over a large axis).
 
-use super::autotune::Optimization;
+use super::autotune::OptimizationKind;
 use crate::{
     Map,
     backend::DeviceInfo,
@@ -23,18 +23,18 @@ use crate::{
 };
 
 impl Kernel {
-    pub(crate) fn opt_local_reduce(&self, dev_info: &DeviceInfo) -> (Optimization, usize) {
+    pub(crate) fn opt_local_reduce(&self, dev_info: &DeviceInfo) -> (OptimizationKind, usize) {
         #[cfg(feature = "time")]
         let _timer = crate::Timer::new("opt_tiled_reduce");
         // Let's not tile reduce kernel with barriers for now
         // Don't apply tiled reduce if there's already a barrier or local index
         if self.ops.values().any(|node| matches!(node.op, Op::Barrier | Op::Range { kind: RangeKind::Local(_), .. })) {
-            return (Optimization::TiledReduce { factors: Vec::new() }, 0);
+            return (OptimizationKind::TiledReduce { factors: Vec::new() }, 0);
         }
         // Only apply tiled reduce if there's exactly one loop in the kernel
         let n_loops = self.ops.values().filter(|node| matches!(node.op, Op::Loop { .. })).count();
         if n_loops != 1 {
-            return (Optimization::TiledReduce { factors: Vec::new() }, 0);
+            return (OptimizationKind::TiledReduce { factors: Vec::new() }, 0);
         }
 
         let mut local_axis_sizes: Map<u32, u32> = crate::Map::default();
@@ -78,7 +78,7 @@ impl Kernel {
             op_id = next;
         }
         let n = factors.len();
-        (Optimization::TiledReduce { factors }, n)
+        (OptimizationKind::TiledReduce { factors }, n)
     }
 
     /// Apply tiled reduction parallelization.

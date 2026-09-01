@@ -14,7 +14,7 @@
 //! - Improving vectorization opportunities
 //! - Splitting global indices into local factors
 
-use super::autotune::Optimization;
+use super::autotune::OptimizationKind;
 use crate::{
     backend::DeviceInfo,
     dtype::Constant,
@@ -29,12 +29,12 @@ impl Kernel {
     /// parallelization across threads.
     ///
     /// Returns the optimization variant and number of variants.
-    pub(crate) fn opt_split_global_to_local(&self, dev_info: &DeviceInfo) -> (Optimization, usize) {
+    pub(crate) fn opt_split_global_to_local(&self, dev_info: &DeviceInfo) -> (OptimizationKind, usize) {
         #[cfg(feature = "time")]
         let _timer = crate::Timer::new("opt_split_global_to_local");
         if self.ops.values().any(|node| matches!(node.op, Op::EndIf)) {
             let factors = Vec::new();
-            return (Optimization::SplitLoop { factors }, 0);
+            return (OptimizationKind::SplitLoop { factors }, 0);
         }
         let mut local_axis_sizes: crate::Map<u32, u32> = crate::Map::default();
         for op in self.ops.values() {
@@ -73,7 +73,7 @@ impl Kernel {
             op_id = self.next_op(op_id);
         }
         let n_configs = factors.len();
-        (Optimization::SplitGlobalToLocal { factors }, n_configs)
+        (OptimizationKind::SplitGlobalToLocal { factors }, n_configs)
     }
 
     /// Optimize splitting large loops.
@@ -82,7 +82,7 @@ impl Kernel {
     /// better instruction scheduling and vectorization.
     ///
     /// Returns the optimization variant and number of variants.
-    pub(crate) fn opt_split_loop(&self) -> (Optimization, usize) {
+    pub(crate) fn opt_split_loop(&self) -> (OptimizationKind, usize) {
         #[cfg(feature = "time")]
         let _timer = crate::Timer::new("opt_split_loop");
         let candidates = vec![8, 16, 4, 2];
@@ -105,7 +105,7 @@ impl Kernel {
             op_id = self.next_op(op_id);
         }
         let n_configs = factors.len();
-        (Optimization::SplitLoop { factors }, n_configs)
+        (OptimizationKind::SplitLoop { factors }, n_configs)
     }
 
     /// Splits dim (index or loop) into multiple indices or loops

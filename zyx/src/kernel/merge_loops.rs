@@ -14,7 +14,7 @@
 
 use std::collections::BTreeMap;
 
-use super::autotune::Optimization;
+use super::autotune::OptimizationKind;
 use crate::{
     dtype::Constant,
     kernel::{BOp, Kernel, Op, OpId, RangeKind},
@@ -204,10 +204,10 @@ impl Kernel {
 
     /// Returns the Optimization for merging nested loops and the number of nested loop groups.
     /// Each group is a chain of nested loops that can be merged into one loop.
-    pub(crate) fn opt_merge_nested_loops(&self) -> (Optimization, usize) {
+    pub(crate) fn opt_merge_nested_loops(&self) -> (OptimizationKind, usize) {
         let groups = self.find_nested_loop_groups();
         let n = groups.len();
-        (Optimization::MergeNestedLoops { groups }, n)
+        (OptimizationKind::MergeNestedLoops { groups }, n)
     }
 
     /// Find all groups of nested loops in the kernel.

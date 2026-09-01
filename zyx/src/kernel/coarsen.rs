@@ -21,7 +21,7 @@
 
 use std::collections::BTreeMap;
 
-use super::autotune::Optimization;
+use super::autotune::OptimizationKind;
 use crate::{
     Map, Set,
     dtype::Constant,
@@ -69,7 +69,7 @@ use crate::{
 // then rewritten to just `lidx`, and `Const(i)` becomes `Mul(Const(i), V)`.
 
 impl Kernel {
-    pub(crate) fn opt_coarsen(&self) -> (Optimization, usize) {
+    pub(crate) fn opt_coarsen(&self) -> (OptimizationKind, usize) {
         #[cfg(feature = "time")]
         let _timer = crate::Timer::new("opt_upcast");
         let mut factors = Vec::new();
@@ -91,7 +91,7 @@ impl Kernel {
             op_id = next;
         }
         let n_configs = factors.len();
-        (Optimization::ThreadCoarse { factors }, n_configs)
+        (OptimizationKind::ThreadCoarse { factors }, n_configs)
     }
 
     /// Thread coarsening and register blocking optimization.
@@ -258,7 +258,7 @@ impl Kernel {
 }
 
 impl Kernel {
-    pub(crate) fn opt_register_blocking(&self) -> (Optimization, usize) {
+    pub(crate) fn opt_register_blocking(&self) -> (OptimizationKind, usize) {
         #[cfg(feature = "time")]
         let _timer = crate::Timer::new("opt_register_tiling");
         let candidates: Vec<u64> = vec![8, 16, 4, 2];
@@ -296,14 +296,14 @@ impl Kernel {
         }
 
         if global_upcasts.is_empty() || reduce_factor.is_empty() {
-            return (Optimization::RegisterBlocking { reduce_splits: reduce_factor, thread_coarses: global_upcasts }, 0);
+            return (OptimizationKind::RegisterBlocking { reduce_splits: reduce_factor, thread_coarses: global_upcasts }, 0);
         }
 
         let n_global_options: usize = global_upcasts.values().map(|v| v.len() + 1).product();
         let n_reduce_options: usize = reduce_factor.values().map(Vec::len).product();
 
         let n_configs = n_global_options * n_reduce_options;
-        (Optimization::RegisterBlocking { reduce_splits: reduce_factor, thread_coarses: global_upcasts }, n_configs)
+        (OptimizationKind::RegisterBlocking { reduce_splits: reduce_factor, thread_coarses: global_upcasts }, n_configs)
     }
 
     pub(crate) fn apply_register_blocking(

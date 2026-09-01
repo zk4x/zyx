@@ -95,13 +95,15 @@
 //! ```
 
 pub use crate::backend::DeviceId;
+pub use custom::CompiledKernel;
+pub(crate) use ops::{BOp, MoveOp, Op, OpNode, RangeKind, UOp};
+pub use ops::{MMADType, MMADims, MMALayout, OpId, ParamKind};
+pub use autotune::BeamSearch;
 
 use crate::{DType, Map, Set, dtype::Constant, shape::Dim, slab::Slab};
 use nanoserde::{DeBin, SerBin};
 use std::collections::BTreeMap;
 use std::{hash::BuildHasherDefault, hash::Hash};
-
-pub use custom::CompiledKernel;
 
 mod algebraic;
 pub(crate) mod autotune;
@@ -127,9 +129,6 @@ mod transforms;
 mod unroll_loops;
 mod vectorize;
 mod verify;
-
-pub(crate) use ops::{BOp, MoveOp, Op, OpNode, RangeKind, UOp};
-pub use ops::{MMADType, MMADims, MMALayout, OpId, ParamKind};
 
 // TODO later make this dynamic u32 or u64 depending on max range
 /// Type used for indexing into arrays within kernels.

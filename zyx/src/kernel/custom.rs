@@ -253,16 +253,7 @@ impl Kernel {
     /// becomes a const index. Returns `OpId::NULL` for rank-0, the single dim op for rank-1,
     /// or a `Stack` for higher ranks.
     pub fn add_shape(&mut self, shape: &[Dim]) -> OpId {
-        let dim_ops: Vec<OpId> = shape
-            .iter()
-            .map(|&d| {
-                if d < 0 {
-                    self.variable(IDX_T)
-                } else {
-                    self.const_idx(d)
-                }
-            })
-            .collect();
+        let dim_ops: Vec<OpId> = shape.iter().map(|&d| if d < 0 { self.variable(IDX_T) } else { self.const_idx(d) }).collect();
         match dim_ops.len() {
             0 => OpId::NULL,
             1 => dim_ops[0],
@@ -420,15 +411,7 @@ impl Kernel {
     ///
     /// Emits the loop over `cols` itself. `acc` must be a Register storage of
     /// length `cols`; `sa` and `sb` are scalar ops broadcast across the row.
-    pub fn mad_tile_local(
-        &mut self,
-        acc: OpId,
-        sa: OpId,
-        sb: OpId,
-        src: OpId,
-        row: OpId,
-        cols: OpId,
-    ) {
+    pub fn mad_tile_local(&mut self, acc: OpId, sa: OpId, sb: OpId, src: OpId, row: OpId, cols: OpId) {
         let c_loop = self.loop_(cols);
         let tile_idx = self.mad(row, cols, c_loop);
         let v = self.load(src, tile_idx);

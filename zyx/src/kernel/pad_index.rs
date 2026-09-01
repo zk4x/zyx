@@ -20,7 +20,7 @@ use crate::{
     shape::Dim,
 };
 
-use super::autotune::Optimization;
+use super::autotune::OptimizationKind;
 
 impl Kernel {
     /// Pads a global index to the next multiple of `tile_size`, guarding out-of-range loads
@@ -180,7 +180,7 @@ impl Kernel {
     }
 
     #[allow(unused)]
-    pub(crate) fn opt_pad_index(&self) -> (Optimization, usize) {
+    pub(crate) fn opt_pad_index(&self) -> (OptimizationKind, usize) {
         let mut factors = Vec::new();
         let mut op_id = self.head;
         while !op_id.is_null() {
@@ -203,7 +203,7 @@ impl Kernel {
             op_id = next;
         }
         let n_configs = factors.len();
-        (Optimization::PadIndex { factors }, n_configs)
+        (OptimizationKind::PadIndex { factors }, n_configs)
     }
 
     pub(crate) fn depends_on(&self, expr: OpId, target: OpId, visited: &mut Set<OpId>) -> bool {

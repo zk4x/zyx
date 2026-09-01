@@ -14,13 +14,13 @@
 //!
 //! These optimizations reduce redundant computations and improve performance.
 
-use super::autotune::Optimization;
+use super::autotune::OptimizationKind;
 use crate::kernel::{Kernel, Op, OpId};
 use crate::{Map, Set};
 
 impl Kernel {
-    pub(crate) const fn opt_reassociate_commutative(_: &Kernel) -> (Optimization, usize) {
-        (Optimization::ReassociateCommutative, 1)
+    pub(crate) const fn opt_reassociate_commutative(_: &Kernel) -> (OptimizationKind, usize) {
+        (OptimizationKind::ReassociateCommutative, 1)
     }
 
     /// Swap commutative operands for better instruction scheduling.

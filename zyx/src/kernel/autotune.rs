@@ -43,10 +43,11 @@ use crate::hashers::AHasher;
 use crate::kernel::cost::Cost;
 use crate::kernel::{Kernel, Op, OpId, ParamKind, RangeKind};
 use crate::rng::Rng;
+use crate::runtime::Runtime;
 use crate::scalar::{bf16, f16};
 use crate::shape::Dim;
 use crate::slab::SlabId;
-use crate::{DebugMask, Set};
+use crate::{DebugMask, Set, ZyxError};
 use nanoserde::{DeBin, SerBin};
 use std::collections::BTreeMap;
 use std::hash::{Hash, Hasher};
@@ -54,7 +55,7 @@ use std::hash::{Hash, Hasher};
 /// A config function scans the kernel at a stable state and returns an
 /// Optimization with OpIds embedded. No other optimizations run between
 /// config time and apply time, so OpIds remain valid through apply.
-type OptConfigFn = fn(&Kernel, &DeviceInfo) -> (Optimization, usize);
+type OptConfigFn = fn(&Kernel, &DeviceInfo) -> (OptimizationKind, usize);
 
 const AVAILABLE_OPTIMIZATIONS: [OptConfigFn; 8] = [
     |k, d| Kernel::opt_split_global_to_local(k, d),
@@ -64,12 +65,12 @@ const AVAILABLE_OPTIMIZATIONS: [OptConfigFn; 8] = [
     |k, d| Kernel::opt_local_reduce(k, d),
     |k, _| Kernel::opt_split_loop(k),
     //|k, _| Kernel::opt_pad_index(k),
-    |k, d| Kernel::opt_vectorize(k, d),
+    Kernel::opt_vectorize,
     |k, _| Kernel::opt_merge_nested_loops(k),
 ];
 
 #[derive(Debug)]
-pub(crate) enum Optimization {
+pub(crate) enum OptimizationKind {
     /// Reassociate commutative operations (addition, multiplication)
     /// to group them and reduce instruction count.
     ReassociateCommutative,
@@ -127,27 +128,27 @@ pub(crate) enum Optimization {
     },
 }
 
-impl Optimization {
+impl OptimizationKind {
     /// Debug output for the optimization with the given config ID.
     ///
     /// This is used during autotuning to print what optimizations
     /// are being applied for debugging purposes.
     pub fn debug(&self, config: usize) {
         match self {
-            Optimization::ReassociateCommutative => println!("ReassociateCommutative"),
-            Optimization::UnrollLoops { factors } => {
+            OptimizationKind::ReassociateCommutative => println!("ReassociateCommutative"),
+            OptimizationKind::UnrollLoops { factors } => {
                 let factor = factors[config];
                 println!("unroll loop len={factor} by {factor}");
             }
-            Optimization::SplitGlobalToLocal { factors } => {
+            OptimizationKind::SplitGlobalToLocal { factors } => {
                 let (op_id, factor) = factors[config];
                 println!("split global index {op_id} to local by {factor}, cfg_opt={config}");
             }
-            Optimization::ThreadCoarse { factors } => {
+            OptimizationKind::ThreadCoarse { factors } => {
                 let (op_id, factor) = factors[config];
                 println!("thread_coarse axis {op_id} by {factor}, cfg_opt={config}");
             }
-            Optimization::RegisterBlocking { reduce_splits, thread_coarses } => {
+            OptimizationKind::RegisterBlocking { reduce_splits, thread_coarses } => {
                 use std::fmt::Write;
 
                 let mut info = String::new();
@@ -196,23 +197,23 @@ impl Optimization {
                 }
                 println!("{info}");
             }
-            Optimization::UnrollConstantLoops => println!("UnrollConstantLoops"),
-            Optimization::TiledReduce { factors } => {
+            OptimizationKind::UnrollConstantLoops => println!("UnrollConstantLoops"),
+            OptimizationKind::TiledReduce { factors } => {
                 let (op_id, local, global) = factors[config];
                 println!("tiled reduce index {op_id} local={local}, global={global}");
             }
-            Optimization::SplitLoop { factors } => {
+            OptimizationKind::SplitLoop { factors } => {
                 let (op_id, factor) = factors[config];
                 println!("split loop {op_id} by {factor}");
             }
-            Optimization::PadIndex { factors } => {
+            OptimizationKind::PadIndex { factors } => {
                 let (op_id, _) = factors[config];
                 println!("pad index {op_id} by 32, cfg_opt={config}");
             }
-            Optimization::Vectorize { .. } => {
+            OptimizationKind::Vectorize { .. } => {
                 println!("Vectorize");
             }
-            Optimization::MergeNestedLoops { groups } => {
+            OptimizationKind::MergeNestedLoops { groups } => {
                 if let Some(ids) = groups.get(config) {
                     println!("MergeNestedLoops group {} ({} loops)", config, ids.len());
                 }
@@ -225,16 +226,16 @@ impl Optimization {
     /// (e.g., warp size 32 for CUDA, wavefront size 64 for AMD) which are likely to perform better.
     pub fn apply(&self, kernel: &mut Kernel, config: usize) {
         match self {
-            Optimization::ReassociateCommutative => {
+            OptimizationKind::ReassociateCommutative => {
                 kernel.reassociate_commutative();
             }
-            Optimization::UnrollLoops { factors } => {
+            OptimizationKind::UnrollLoops { factors } => {
                 let factor = factors[config];
                 if (kernel.ops.len().0 as usize) < 5000 {
                     kernel.unroll_loops(factor as Dim);
                 }
             }
-            Optimization::SplitGlobalToLocal { factors } => {
+            OptimizationKind::SplitGlobalToLocal { factors } => {
                 #[cfg(feature = "time")]
                 let _timer = crate::Timer::new("SplitGlobalToLocal");
                 let (op_id, factor) = factors[config];
@@ -252,24 +253,24 @@ impl Optimization {
                     ],
                 );
             }
-            Optimization::ThreadCoarse { factors } => {
+            OptimizationKind::ThreadCoarse { factors } => {
                 if factors.is_empty() {
                     return;
                 }
                 let (op_id, factor) = factors[config];
                 kernel.coarsen(op_id, factor);
             }
-            Optimization::RegisterBlocking { reduce_splits, thread_coarses } => {
+            OptimizationKind::RegisterBlocking { reduce_splits, thread_coarses } => {
                 kernel.apply_register_blocking(reduce_splits, thread_coarses, config);
             }
-            Optimization::UnrollConstantLoops => {
+            OptimizationKind::UnrollConstantLoops => {
                 kernel.unroll_constant_loops();
             }
-            Optimization::TiledReduce { factors } => {
+            OptimizationKind::TiledReduce { factors } => {
                 let (op_id, factor, tree_branch) = factors[config];
                 kernel.local_reduce(op_id, factor as u32, tree_branch as u32);
             }
-            Optimization::SplitLoop { factors } => {
+            OptimizationKind::SplitLoop { factors } => {
                 let (op_id, factor) = factors[config];
                 let Op::Loop { len: len_id } = kernel.ops[op_id].op else {
                     unreachable!()
@@ -281,7 +282,7 @@ impl Optimization {
                 let len2 = kernel.const_idx(factor);
                 kernel.split_dim(op_id, vec![Op::Loop { len: len1 }, Op::Loop { len: len2 }]);
             }
-            Optimization::PadIndex { factors } => {
+            OptimizationKind::PadIndex { factors } => {
                 if factors.is_empty() {
                     return;
                 }
@@ -299,7 +300,7 @@ impl Optimization {
                     kernel.pad_index(idx_id, pad_len);
                 }
             }
-            Optimization::Vectorize { supported_lens, vectorize_ops } => {
+            OptimizationKind::Vectorize { supported_lens, vectorize_ops } => {
                 kernel.vectorize_loads(supported_lens);
                 kernel.vectorize_stores(supported_lens);
                 if *vectorize_ops {
@@ -307,7 +308,7 @@ impl Optimization {
                     kernel.vectorize_ops_backward(supported_lens);
                 }
             }
-            Optimization::MergeNestedLoops { groups } => {
+            OptimizationKind::MergeNestedLoops { groups } => {
                 if let Some(loop_ids) = groups.get(config) {
                     kernel.merge_nested_loops(loop_ids);
                 }
@@ -859,7 +860,7 @@ impl OptSeq {
     /// using the provided device information.
     pub fn apply(&self, kernel: &mut Kernel, dev_info: &DeviceInfo) {
         for &(opt_id, opt_cfg) in &self.opts {
-            let (opt, _): (Optimization, usize) = AVAILABLE_OPTIMIZATIONS[opt_id](kernel, dev_info);
+            let (opt, _): (OptimizationKind, usize) = AVAILABLE_OPTIMIZATIONS[opt_id](kernel, dev_info);
             opt.apply(kernel, opt_cfg);
         }
     }
@@ -913,4 +914,49 @@ fn sample_best<'a>(items: &'a [OptSeq], exhausted: &Set<OptSeq>, rng: &mut Rng) 
     }
 
     None
+}
+
+impl Kernel {
+    /// Generate kernel tiling variants
+    pub fn generate_tiling_variants<IT, const N: usize>(&self, ops: [OpId; N], variants: Vec<[Dim; N]>) -> Result<IT, ZyxError>
+    where
+        IT: Iterator<Item = Kernel>,
+    {
+        todo!()
+    }
+
+    /// Estimated cost of the model trained to predict runtime in nanoseconds
+    pub fn base_cost(&self) -> u64 {
+        todo!()
+    }
+}
+
+pub trait Optimization: std::fmt::Debug {
+    fn nconfigs(&self) -> u64;
+    fn apply(&self, kernel: &mut Kernel, config: u64);
+}
+
+/// Beam search
+pub struct BeamSearch {}
+
+impl BeamSearch {
+    /// Autotune using beam search
+    pub fn autotune_beam(
+        seeds: impl IntoIterator<Item = Kernel>,
+        optimizations: &[fn(&Kernel, &DeviceInfo) -> Box<dyn Optimization>],
+        epilogue: impl Fn(&mut Kernel, &DeviceInfo),
+        cost: impl Fn(&Kernel, &DeviceInfo) -> u64,
+    ) -> Result<Kernel, ZyxError> {
+        Self::autotune_beam_(&mut crate::RT.lock(), seeds, optimizations, epilogue, cost)
+    }
+
+    pub(crate) fn autotune_beam_(
+        rt: &mut Runtime,
+        seeds: impl IntoIterator<Item = Kernel>,
+        optimizations: &[fn(&Kernel, &DeviceInfo) -> Box<dyn Optimization>],
+        epilogue: impl Fn(&mut Kernel, &DeviceInfo),
+        cost: impl Fn(&Kernel, &DeviceInfo) -> u64,
+    ) -> Result<Kernel, ZyxError> {
+        todo!()
+    }
 }

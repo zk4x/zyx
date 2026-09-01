@@ -1,7 +1,7 @@
 // Copyright (C) 2025 zk4x
 // SPDX-License-Identifier: LGPL-3.0-only
 
-use super::autotune::Optimization;
+use super::autotune::OptimizationKind;
 use crate::{
     DType, Map, Set,
     backend::DeviceInfo,
@@ -24,9 +24,9 @@ struct StoreInfo {
 
 impl Kernel {
     #[allow(unused)]
-    pub(crate) fn opt_vectorize(&self, dev_info: &DeviceInfo) -> (Optimization, usize) {
+    pub(crate) fn opt_vectorize(&self, dev_info: &DeviceInfo) -> (OptimizationKind, usize) {
         let supported_lens = dev_info.supported_vec_lens.clone();
-        (Optimization::Vectorize { supported_lens, vectorize_ops: !dev_info.supported_vec_lens.is_empty() }, 1)
+        (OptimizationKind::Vectorize { supported_lens, vectorize_ops: !dev_info.supported_vec_lens.is_empty() }, 1)
     }
 
     /// Vectorize loads.
