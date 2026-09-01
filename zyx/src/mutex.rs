@@ -78,15 +78,15 @@ impl<T> Mutex<T> {
                 return MutexGuard { mutex: self };
             }
 
-            let mut i = 0;
+            //let mut i = 0;
             while self.lock.load(Ordering::Relaxed) {
                 //core::sync::atomic::spin_loop_hint();
                 //std::thread::sleep(std::time::Duration::from_secs(1));
                 core::hint::spin_loop();
-                i += 1;
+                /*i += 1;
                 if i > 1000000000 {
                     panic!("DEADLOCK\n{:?}", std::backtrace::Backtrace::force_capture());
-                }
+                }*/
             }
         }
     }
@@ -97,15 +97,15 @@ impl<T> Mutex<T> {
                 return Ok(MutexGuard { mutex: self });
             }
 
-            let mut i = 0;
+            //let mut i = 0;
             while self.lock.load(Ordering::Relaxed) {
                 //core::sync::atomic::spin_loop_hint();
                 //std::thread::sleep(std::time::Duration::from_secs(1));
                 core::hint::spin_loop();
-                i += 1;
+                /*i += 1;
                 if i > 1000000000 {
                     panic!("DEADLOCK");
-                }
+                }*/
             }
         }
     }
