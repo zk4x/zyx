@@ -97,7 +97,7 @@ impl SlabId for ClassId {
 }
 
 #[derive(Debug, Clone)]
-pub(crate) enum Node {
+pub enum Node {
     /// A compile-time constant.
     ///
     /// Consts hashcons **by value**: two `Const { value }` nodes with equal
@@ -898,8 +898,8 @@ impl Graph {
             for &nid in &node_ids {
                 let (device_id, inputs) = match &self.nodes[nid].node {
                     Node::Kernel { program_id, inputs, .. } => {
-                        debug_assert_ne!(program_id.device, DeviceId::NULL);
-                        (program_id.device, inputs.clone())
+                        debug_assert_ne!(program_id.device_id, DeviceId::NULL);
+                        (program_id.device_id, inputs.clone())
                     }
                     _ => continue,
                 };
@@ -913,7 +913,7 @@ impl Graph {
                     for &inid in &self.classes[input_cid].nodes {
                         if let Node::Kernel { program_id, .. } = &self.nodes[inid].node {
                             from_kernel = true;
-                            if program_id.device == device_id {
+                            if program_id.device_id == device_id {
                                 same_device = true;
                                 break;
                             }
@@ -2163,9 +2163,8 @@ impl Runtime {
         let jit_kernels: *const Slab<JitKernelId, JitKernelData> = &self.graphs[graph_id].jit_kernels;
         let jit_kernels: &Slab<JitKernelId, JitKernelData> = unsafe { &*jit_kernels };
         let total = jit_kernels.len().0 as i64 * device_ids.len() as i64;
-        let mut bar = crate::progress::ProgressBar::new(total as u64);
+        let mut progress_bar = crate::progress::ProgressBar::new(total as u64);
         for ek in jit_kernels.values() {
-            let (flop, read, write) = ek.kernel.flop_mem_rw();
             let class_of = ek.stores.first().copied().unwrap();
 
             for &dev_id in device_ids.iter() {
@@ -2173,26 +2172,11 @@ impl Runtime {
                 if self.devices[dev_id].aot_only() {
                     continue;
                 }
-                let pool_id = self.devices[dev_id].memory_pool_id();
                 let mut kernel = ek.kernel.clone();
                 kernel.device_id = dev_id;
-                bar.inc(1, &format!("autotune {} on dev={}", kernel.name(), dev_id.0));
-                let (dev_prog, _opts, timing) = self.get_or_autotune(kernel, pool_id, flop, read, write, &[])?;
-                let prog = ProgramId { device: dev_id, program: dev_prog };
-                #[cfg(feature = "viz")]
-                {
-                    let sched_kernel = ek.kernel.clone();
-                    let dev = &self.devices[dev_id];
-                    let kc = crate::viz::KernelCapture {
-                        sched_kernel,
-                        opt_seq: _opts,
-                        dev_info: dev.info().clone(),
-                        device_label: dev.name(),
-                        cc: dev.compute_capability(),
-                        has_openmp: dev.has_openmp(),
-                    };
-                    self.viz.record(prog, kc);
-                }
+                progress_bar.inc(1, &format!("autotune {} on dev={}", kernel.name(), dev_id.0));
+                let (dev_prog, timing) = self.get_or_autotune(kernel, None)?;
+                let prog = ProgramId { device_id: dev_id, program_id: dev_prog };
 
                 let knid = self.graphs[graph_id].nodes.push(NodeData {
                     node: Node::Kernel {
@@ -2305,7 +2289,7 @@ impl Runtime {
         for cid in self.graphs[graph_id].classes.ids() {
             for nid in &self.graphs[graph_id].classes[cid].nodes {
                 if let Node::Kernel { program_id, .. } = &self.graphs[graph_id].nodes[*nid].node {
-                    let pool = self.devices[program_id.device].memory_pool_id();
+                    let pool = self.devices[program_id.device_id].memory_pool_id();
                     pool_kernel_outputs.entry(pool).or_default().insert(cid);
                 }
             }

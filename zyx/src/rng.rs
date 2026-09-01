@@ -7,7 +7,7 @@
 use crate::{DType, Scalar};
 
 /// Random number generator
-pub(crate) struct Rng {
+pub struct Rng {
     s: [u64; 4],
 }
 

@@ -157,7 +157,7 @@ impl Kernel {
         }
         let debug_asm = rt.debug.asm();
         let program_id = rt.devices[device_id].compile(&self, debug_asm)?;
-        let program = crate::backend::ProgramId { device: device_id, program: program_id };
+        let program = crate::backend::ProgramId { device_id, program_id };
         Ok(CompiledKernel { program, inputs, outputs })
     }
 
@@ -713,7 +713,7 @@ impl Kernel {
 impl CompiledKernel {
     /// Returns the DeviceInfo for the device this kernel was compiled on.
     pub fn device_info(&self) -> DeviceInfo {
-        crate::RT.lock().devices[self.program.device].info().clone()
+        crate::RT.lock().devices[self.program.device_id].info().clone()
     }
 
     /// Execute the compiled kernel with new input tensors.
@@ -735,7 +735,7 @@ impl CompiledKernel {
         debug_assert!(inputs.iter().all(|input| rt.buffer_map.contains_key(&input.id)));
 
         // Launch kernel
-        let device_id = self.program.device;
+        let device_id = self.program.device_id;
         let pool_id = rt.devices[device_id].memory_pool_id();
 
         let mut input_bufs = Vec::new();
@@ -793,7 +793,7 @@ impl CompiledKernel {
         let args: Vec<LaunchArg> = args.into_iter().map(LaunchArg::Buffer).collect();
         let pool_ptr = &mut rt.pools[pool_id] as *mut MemoryPool;
         let device = &mut rt.devices[device_id];
-        let event = unsafe { device.launch(self.program.program, &mut *pool_ptr, &args, event_wait_list)? };
+        let event = unsafe { device.launch(self.program.program_id, &mut *pool_ptr, &args, event_wait_list)? };
         rt.events.insert(all_bufs, event);
 
         // Put to tensors. Each output becomes a **Leaf**: the launched buffer
@@ -821,6 +821,6 @@ impl CompiledKernel {
 
 impl Drop for CompiledKernel {
     fn drop(&mut self) {
-        crate::RT.lock().devices[self.program.device].release(self.program.program);
+        crate::RT.lock().devices[self.program.device_id].release(self.program.program_id);
     }
 }

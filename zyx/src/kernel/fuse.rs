@@ -7,12 +7,33 @@
 //! which combines `x * y + z` patterns into a single MAD instruction.
 //! This reduces instruction count and can improve performance.
 
+use super::autotune::Optimization;
 use crate::{
     Map,
+    backend::DeviceInfo,
     kernel::{BOp, Kernel, Op},
 };
 
+/// Fuse multiply-add operations into MAD instructions.
+#[derive(Debug)]
+pub struct FuseMad;
+
+impl Optimization for FuseMad {
+    fn nconfigs(&self) -> u64 {
+        1
+    }
+
+    fn apply(&self, kernel: &mut Kernel, _config: u64) {
+        kernel.fuse_mad();
+    }
+}
+
 impl Kernel {
+    /// Make the [`FuseMad`] optimization.
+    pub fn opt_fuse_mad(&self, _dev_info: &DeviceInfo) -> Box<dyn Optimization> {
+        Box::new(FuseMad)
+    }
+
     /// Fuse multiply-add operations into MAD instructions.
     ///
     /// This method identifies patterns of the form `x * y + z` and

@@ -15,14 +15,6 @@ Run `ZYX_DEBUG=1` to see which backends initialized.
 
 ```json
 {
-  "autotune": {
-    "save_to_disk": true,
-    "n_launches": 1,
-    "n_seeds": 100,
-    "n_added_per_step": 10,
-    "n_removed_per_step": 5,
-    "n_total_opts": 1000
-  },
   "dummy": {
     "enabled": false
   },
@@ -55,14 +47,13 @@ Any key can be omitted — the missing section falls back to defaults. By defaul
 
 Controls how zyx searches for optimal kernel configurations.
 
-| Field | Type | Default | Description |
-|-------|------|---------|-------------|
-| `save_to_disk` | `bool` | `true` | Cache autotuned kernels to disk |
-| `n_launches` | `usize` | `20` | Max kernel launches during autotune search |
-| `n_seeds` | `usize` | `100` | Number of initial optimization seeds |
-| `n_added_per_step` | `usize` | `10` | Optimizations to try per iteration |
-| `n_removed_per_step` | `usize` | `5` | Optimizations to remove per iteration |
-| `n_total_opts` | `usize` | `1000` | Max total optimizations to try |
+| Field | Type | Description |
+|-------|------|-------------|
+| `n_launches` | `usize` | Max kernel launches during autotune search |
+| `n_seeds` | `usize` | Number of initial optimization seeds |
+| `n_added_per_step` | `usize` | Optimizations to try per iteration |
+| `n_removed_per_step` | `usize` | Optimizations to remove per iteration |
+| `n_total_opts` | `usize` | Max total optimizations to try |
 
 ### `dummy` — Dummy test backend
 

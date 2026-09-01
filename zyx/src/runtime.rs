@@ -240,13 +240,13 @@ use crate::viz::Viz;
 use crate::{
     DType, DebugMask, Map, Scalar, Set, ZyxError,
     backend::{
-        AutotuneConfig, BufferId, Config, DTypeCapability, Device, DeviceInfo, DeviceProgramId, Event, LaunchArg, MemoryPool,
+        BufferId, Config, DTypeCapability, Device, DeviceProgramId, Event, LaunchArg, MemoryPool,
         PoolId, ProgramId,
     },
     dtype::Constant,
     error::{BackendError, ErrorStatus},
     graph::{ClassId, ExecPlan, Graph, GraphId, Node, plan::drain_events_for_buf},
-    kernel::{BOp, DeviceId, IDX_T, Kernel, MoveOp, Op, OpId, ParamKind, UOp, autotune::OptSeq},
+    kernel::{BOp, DeviceId, IDX_T, Kernel, MoveOp, Op, OpId, ParamKind, UOp, autotune::BeamSearch},
     rng::Rng,
     scalar::{bf16, f16},
     shape::{Dim, UAxis},
@@ -293,16 +293,7 @@ impl SlabId for ShapeId {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, PartialOrd, Eq, Ord, Hash)]
-pub(crate) struct DeviceInfoId(u32);
-
-impl From<usize> for DeviceInfoId {
-    fn from(value: usize) -> Self {
-        DeviceInfoId(value as u32)
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, PartialOrd, Eq, Ord, Hash)]
-pub(crate) struct KernelId(u16);
+pub struct KernelId(u16);
 
 impl From<usize> for KernelId {
     fn from(value: usize) -> Self {
@@ -449,7 +440,7 @@ pub enum TensorData {
 }
 
 #[derive(Debug)]
-pub(crate) struct KernelData {
+pub struct KernelData {
     /// Tensors this kernel must produce.
     ///
     /// # Fields
@@ -511,8 +502,6 @@ pub struct Runtime {
     pub tensors: Slab<TensorId, TensorData>,
     pub kernels: Slab<KernelId, KernelData>,
     kernel_map: Map<Kernel, KernelId>,
-    optimizations: Map<(KernelId, DeviceInfoId), OptSeq>,
-    device_infos: Map<DeviceInfo, DeviceInfoId>,
     programs: Map<KernelId, DeviceProgramId>,
     timings: Map<ProgramId, u64>,
     pub devices: Slab<DeviceId, Device>,
@@ -522,7 +511,7 @@ pub struct Runtime {
     pub buffer_map: Map<TensorId, BufferId>,
     pub events: Map<BTreeSet<BufferId>, Event>,
     pub rng: Rng,
-    autotune_config: AutotuneConfig,
+    pub(crate) beam_search: BeamSearch,
     pub implicit_casts: bool,
     pub training: bool,
     pub debug: DebugMask,
@@ -556,17 +545,15 @@ impl Runtime {
             tensors: Slab::new(),
             kernels: Slab::new(),
             kernel_map: Map::with_hasher(BuildHasherDefault::new()),
-            device_infos: Map::with_hasher(BuildHasherDefault::new()),
             devices: Slab::new(),
             pools: Slab::new(),
             programs: Map::with_hasher(BuildHasherDefault::new()),
             timings: Map::with_hasher(BuildHasherDefault::new()),
             config_dir: None,
-            optimizations: Map::with_hasher(BuildHasherDefault::new()),
             buffer_map: Map::with_hasher(BuildHasherDefault::new()),
             events: Map::with_hasher(BuildHasherDefault::new()),
             rng: Rng::seed_from_u64(42069),
-            autotune_config: AutotuneConfig::new(),
+            beam_search: BeamSearch::new(),
             implicit_casts: true,
             training: false,
             debug: DebugMask::new(0),
@@ -956,8 +943,11 @@ impl Runtime {
         }
     }
 
+    /// Realized: the tensor's value is available without further execution —
+    /// it has a backing buffer in `buffer_map`, or it resolves to a constant
+    /// (a variable/scalar expression bound at launch).
     pub fn is_realized(&self, x: TensorId) -> bool {
-        self.buffer_map.contains_key(&x)
+        self.buffer_map.contains_key(&x) || self.resolve_symbolic(x).is_some()
     }
 
     // True if x is currently a graph tensor (class_id set and its graph alive).
@@ -4200,7 +4190,7 @@ impl Runtime {
 
         crate::backend::initialize_backends(&config, &mut self.pools, &mut self.devices, self.debug.dev());
 
-        self.autotune_config = config.autotune;
+        self.beam_search = config.autotune;
         //println!("INIT runtime");
     }
 
@@ -4235,49 +4225,6 @@ impl Runtime {
         }
         self.pools.iter().map(|(_, p)| p.free_bytes()).max().unwrap_or(0)
     }
-}
-
-#[allow(clippy::similar_names)]
-pub fn get_perf(flop: Dim, bytes_read: u64, bytes_written: u64, nanos: u64) -> String {
-    const fn value_unit(x: u64) -> (u64, &'static str) {
-        match x {
-            0..1000 => (x * 100, ""),
-            1_000..1_000_000 => (x / 10, "k"),
-            1_000_000..1_000_000_000 => (x / 10_000, "M"),
-            1_000_000_000..1_000_000_000_000 => (x / 10_000_000, "G"),
-            1_000_000_000_000..1_000_000_000_000_000 => (x / 10_000_000_000, "T"),
-            1_000_000_000_000_000..1_000_000_000_000_000_000 => (x / 10_000_000_000_000, "P"),
-            1_000_000_000_000_000_000.. => (x / 10_000_000_000_000_000, "E"),
-        }
-    }
-
-    if nanos == u64::MAX {
-        return "INF time taken".to_string();
-    }
-
-    let (t, t_u) = match nanos {
-        0..1_000 => (nanos * 10, "ns"),
-        1_000..1_000_000 => (nanos / 100, "μs"),
-        1_000_000..1_000_000_000 => (nanos / 100_000, "ms"),
-        1_000_000_000..1_000_000_000_000 => (nanos / 100_000_000, "s"),
-        1_000_000_000_000.. => (nanos / 6_000_000_000, "min"),
-    };
-
-    let (fs, f_us) = value_unit(flop as u64 * 1_000_000 / nanos * 1000);
-    let (brs, br_us) = value_unit(bytes_read * 1_000_000_000 / nanos);
-    let (bws, bw_us) = value_unit(bytes_written * 1_000_000_000 / nanos);
-
-    format!(
-        "{}.{} {t_u} ~ {}.{:02} {f_us}FLOP/s, {}.{:02} {br_us}B/s r, {}.{:02} {bw_us}B/s w",
-        t / 10,
-        t % 10,
-        fs / 100,
-        fs % 100,
-        brs / 100,
-        brs % 100,
-        bws / 100,
-        bws % 100,
-    )
 }
 
 impl Runtime {
@@ -4541,53 +4488,19 @@ impl Runtime {
         Ok(())
     }
 
-    pub fn get_or_autotune(
-        &mut self,
-        mut kernel: Kernel,
-        pool_id: PoolId,
-        flop: Dim,
-        read: u64,
-        write: u64,
-        buffers: &[LaunchArg],
-    ) -> Result<(DeviceProgramId, OptSeq, u64), ZyxError> {
+    /// Autotune (or fetch from cache) a compiled program for `kernel`.
+    ///
+    /// `buffers` are the launch arguments from the caller (e.g. materialize's
+    /// bound buffers); when `None`, fresh measurement buffers are allocated
+    /// from the device pool and released after the search.
+    pub fn get_or_autotune(&mut self, kernel: Kernel, buffers: Option<&[LaunchArg]>) -> Result<(DeviceProgramId, u64), ZyxError> {
         let kernel_id = if let Some(&cached_kid) = self.kernel_map.get(&kernel) {
             if let Some(&program_id) = self.programs.get(&cached_kid) {
-                let pid = ProgramId { device: kernel.device_id, program: program_id };
+                let pid = ProgramId { device_id: kernel.device_id, program_id };
                 let timing = self.timings.get(&pid).copied().unwrap_or(10_000_000_000);
-                let dev_info = self.devices[kernel.device_id].info().clone();
-                let dev_info_id = self.get_or_add_dev_info(&dev_info);
-                let opt_seq = self.optimizations.get(&(cached_kid, dev_info_id)).cloned().unwrap_or_default();
-                return Ok((program_id, opt_seq, timing));
+                return Ok((program_id, timing));
             }
-
-            let dev_info = self.devices[kernel.device_id].info().clone();
-            let dev_info_id = self.get_or_add_dev_info(&dev_info);
-
-            if let Some(opt_seq) = self.optimizations.get(&(cached_kid, dev_info_id)) {
-                kernel.linearize();
-                kernel.common_subexpression_elimination();
-                kernel.dead_code_elimination();
-                kernel.instruction_schedule();
-                {
-                    let global_indices = kernel.get_group_indices();
-                    let max_global_dims = self.devices[kernel.device_id].info().max_global_work_dims.len();
-                    if global_indices.len() > max_global_dims {
-                        let n = global_indices.len() + 1 - max_global_dims;
-                        let indices: Vec<OpId> = global_indices.values().copied().take(n).collect();
-                        kernel.merge_indices(&indices);
-                    }
-                    kernel.renumber_indices();
-                    kernel.verify();
-                }
-                let opt_seq = opt_seq.clone();
-                opt_seq.apply(&mut kernel, &dev_info);
-                let program_id = {
-                    let device = &mut self.devices[kernel.device_id];
-                    device.compile(&kernel, self.debug.asm())?
-                };
-                self.programs.insert(cached_kid, program_id);
-                return Ok((program_id, opt_seq, 0));
-            }
+            // Kernel cached but program gone: re-run the search.
             cached_kid
         } else {
             let kernel_id =
@@ -4597,34 +4510,88 @@ impl Runtime {
             kernel_id
         };
 
-        let dev_info = self.devices[kernel.device_id].info().clone();
-        let dev_info_id = self.get_or_add_dev_info(&dev_info);
-
         if self.debug.sched() {
             kernel.debug();
         }
 
-        // The kernel is handed to autotune_ PRE-linearization: alloc_buffers
-        // resolves buffer sizes from the param shape stacks, which linearize
-        // nulls. Linearization and the post-linearize passes now live in
-        // autotune_.
+        let device_id = kernel.device_id;
+        #[cfg(feature = "viz")]
+        let sched_kernel = kernel.clone();
 
-        let (program_id, opts, timing) = kernel.autotune_(
-            &mut self.devices[kernel.device_id],
-            &mut self.pools[pool_id],
-            &self.autotune_config,
-            flop,
-            read,
-            write,
-            self.debug,
-            buffers,
+        // Seed preparation happens OUTSIDE the beam search: linearize + the
+        // basic post-linearize passes, then the epilogue runs 3x so loop
+        // folding converges before the search starts. Buffers are bound
+        // BEFORE linearization (alloc_buffers resolves sizes from the intact
+        // param shape stacks, which linearize nulls).
+        let (args, fresh_bufs) = match buffers {
+            Some(buffers) => (buffers.to_vec(), Vec::new()),
+            None => {
+                let pool_id = self.devices[device_id].memory_pool_id();
+                let (args, fresh_bufs) = kernel.alloc_buffers(&mut self.pools[pool_id], &[])?;
+                (args, fresh_bufs)
+            }
+        };
+        let dev_info = self.devices[device_id].info().clone();
+        let mut base = kernel;
+        base.linearize();
+        base.common_subexpression_elimination();
+        base.dead_code_elimination();
+        base.instruction_schedule();
+        {
+            let global_indices = base.get_group_indices();
+            let max_global_dims = dev_info.max_global_work_dims.len();
+            if global_indices.len() > max_global_dims {
+                let n = global_indices.len() + 1 - max_global_dims;
+                let indices: Vec<OpId> = global_indices.values().copied().take(n).collect();
+                base.merge_indices(&indices);
+            }
+            base.renumber_indices();
+            base.verify();
+        }
+        base.delete_zero_len_indices();
+        base.renumber_indices();
+        for _ in 0..3 {
+            base.default_epilogue(&dev_info);
+        }
+
+        let cfg = self.beam_search.clone();
+        let (winner, timing) = cfg.run_(
+            self,
+            [base],
+            &args,
+            &Kernel::default_optimizations(),
+            |kernel, dev_info| kernel.default_epilogue(dev_info),
+            Kernel::base_cost,
         )?;
+        if !fresh_bufs.is_empty() {
+            let pool_id = self.devices[device_id].memory_pool_id();
+            winner.dealloc_buffers(fresh_bufs, &mut self.pools[pool_id]);
+        }
 
+        let program_id = {
+            let device = &mut self.devices[device_id];
+            device.compile(&winner, self.debug.asm())?
+        };
         self.programs.insert(kernel_id, program_id);
-        self.optimizations.insert((kernel_id, dev_info_id), opts.clone());
-        self.timings.insert(ProgramId { device: kernel.device_id, program: program_id }, timing);
+        self.timings.insert(ProgramId { device_id, program_id }, timing);
 
-        Ok((program_id, opts, timing))
+        #[cfg(feature = "viz")]
+        {
+            let kc = {
+                let dev = &self.devices[device_id];
+                crate::viz::KernelCapture {
+                    sched_kernel,
+                    winner: winner.clone(),
+                    dev_info: dev.info().clone(),
+                    device_label: dev.name(),
+                    cc: dev.compute_capability(),
+                    has_openmp: dev.has_openmp(),
+                }
+            };
+            self.viz.record(ProgramId { device: device_id, program: program_id }, kc);
+        }
+
+        Ok((program_id, timing))
     }
 
     /// Materializes a kernel by compiling, launching, then creating load kernels
@@ -4643,7 +4610,7 @@ impl Runtime {
     /// # Invariant
     /// A kernel must never both load and store the same tensor (prevents aliasing).
     /// The debug_assert in the recursive materialization loop enforces this.
-    pub fn materialize_kernel(&mut self, kid: KernelId) -> Result<(), ZyxError> {
+    pub(crate) fn materialize_kernel(&mut self, kid: KernelId) -> Result<(), ZyxError> {
         // Resolve the dtypes of the loads and stores now, while this kernel (and any
         // tensor whose dtype resolves through it) is still alive. After remove_and_return
         // below, self.dtype on those tensors would panic on the removed kernel.
@@ -4965,8 +4932,7 @@ impl Runtime {
         }
 
         // Compile and launch (caches in kernel_map / programs)
-        let (flop, read, write) = kernel.flop_mem_rw();
-        let (dev_prog, _opts, _timing) = self.get_or_autotune(kernel, pool_id, flop, read, write, &buffers)?;
+        let (dev_prog, _timing) = self.get_or_autotune(kernel, Some(&buffers))?;
 
         let event = self.devices[dev_id].launch(dev_prog, &mut self.pools[pool_id], &buffers, event_wait_list)?;
         self.events.insert(kernel_buffers, event);
@@ -4979,18 +4945,6 @@ impl Runtime {
         }
 
         Ok(())
-    }
-
-    fn get_or_add_dev_info(&mut self, device_info: &DeviceInfo) -> DeviceInfoId {
-        if let Some(&dev_info_id) = self.device_infos.get(device_info) {
-            dev_info_id
-        } else {
-            let dev_info_id =
-                DeviceInfoId(self.device_infos.values().copied().max().map_or(0, |id| id.0.checked_add(1).unwrap()));
-            let newly_inserted = self.device_infos.insert(device_info.clone(), dev_info_id).is_none();
-            assert!(newly_inserted);
-            dev_info_id
-        }
     }
 
     /// Number of live slab entries and live buffer_map entries.

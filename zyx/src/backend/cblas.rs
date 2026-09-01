@@ -228,7 +228,7 @@ impl CblasDevice {
                 node: Node::Kernel {
                     inputs: Box::new([mm.a, mm.b]),
                     outputs: Box::new([mm.out]),
-                    program_id: ProgramId { device: self.device_id, program: program_id },
+                    program_id: ProgramId { device_id: self.device_id, program_id },
                     time: 1,
                 },
                 class_of: mm.out,

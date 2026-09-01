@@ -15,12 +15,45 @@
 
 use crate::{
     Set,
+    backend::DeviceInfo,
     dtype::Constant,
     kernel::{BOp, IDX_T, Kernel, MemLayout, Op, OpId, RangeKind},
     shape::Dim,
 };
 
-use super::autotune::OptimizationKind;
+use super::autotune::Optimization;
+
+/// Pad indices to hardware-friendly sizes (e.g., 32 for CUDA warps).
+#[derive(Debug)]
+pub struct PadIndex {
+    /// Pairs of (index_op_id, target_size) for each padding.
+    pub factors: Vec<(OpId, Dim)>,
+}
+
+impl Optimization for PadIndex {
+    fn nconfigs(&self) -> u64 {
+        self.factors.len() as u64
+    }
+
+    fn apply(&self, kernel: &mut Kernel, config: u64) {
+        if self.factors.is_empty() {
+            return;
+        }
+        let (idx_id, pad_to) = self.factors[config as usize];
+        let Op::Range { kind, .. } = kernel.ops[idx_id].op else {
+            unreachable!()
+        };
+        let current_len = match kind {
+            RangeKind::Group(len) => kernel.resolve_const(len).and_then(crate::dtype::Constant::as_dim).unwrap(),
+            RangeKind::Local(len) => i64::from(len),
+            RangeKind::Warp(_) => todo!(),
+        };
+        let pad_len = (pad_to - current_len % pad_to) % pad_to;
+        if pad_len > 0 {
+            kernel.pad_index(idx_id, pad_len);
+        }
+    }
+}
 
 impl Kernel {
     /// Pads a global index to the next multiple of `tile_size`, guarding out-of-range loads
@@ -179,8 +212,9 @@ impl Kernel {
         }
     }
 
-    #[allow(unused)]
-    pub(crate) fn opt_pad_index(&self) -> (OptimizationKind, usize) {
+    /// Make the [`PadIndex`] optimization: scan the kernel for indices whose
+    /// lengths are not multiples of hardware-friendly sizes.
+    pub fn opt_pad_index(&self, _dev_info: &DeviceInfo) -> Box<dyn Optimization> {
         let mut factors = Vec::new();
         let mut op_id = self.head;
         while !op_id.is_null() {
@@ -202,8 +236,7 @@ impl Kernel {
             }
             op_id = next;
         }
-        let n_configs = factors.len();
-        (OptimizationKind::PadIndex { factors }, n_configs)
+        Box::new(PadIndex { factors })
     }
 
     pub(crate) fn depends_on(&self, expr: OpId, target: OpId, visited: &mut Set<OpId>) -> bool {

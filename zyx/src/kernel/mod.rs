@@ -98,7 +98,6 @@ pub use crate::backend::DeviceId;
 pub use custom::CompiledKernel;
 pub(crate) use ops::{BOp, MoveOp, Op, OpNode, RangeKind, UOp};
 pub use ops::{MMADType, MMADims, MMALayout, OpId, ParamKind};
-pub use autotune::BeamSearch;
 
 use crate::{DType, Map, Set, dtype::Constant, shape::Dim, slab::Slab};
 use nanoserde::{DeBin, SerBin};
@@ -106,7 +105,7 @@ use std::collections::BTreeMap;
 use std::{hash::BuildHasherDefault, hash::Hash};
 
 mod algebraic;
-pub(crate) mod autotune;
+pub mod autotune;
 mod coarsen;
 mod cost;
 mod custom;
@@ -760,110 +759,6 @@ impl Kernel {
             return "copy".into();
         }
         parts.join("_")
-    }
-
-    /// Compute flop and memory statistics for the kernel.
-    ///
-    /// Returns estimated flops, memory reads, and memory writes.
-    pub(crate) fn flop_mem_rw(&self) -> (Dim, u64, u64) {
-        #[derive(Clone)]
-        struct Info {
-            shape: Vec<Dim>,
-            flops: Dim,
-            mem_read: u64,
-            mem_write: u64,
-        }
-
-        let mut stack: Map<OpId, Info> = Map::default();
-
-        let mut op_id = self.head;
-        for _ in 0..10_000 {
-            if op_id.is_null() {
-                break;
-            }
-            let info = match self.at(op_id) {
-                // TODO implement
-                Op::Param { .. } => Info { shape: vec![1], flops: 0, mem_read: 0, mem_write: 0 },
-                // TODO implement
-                &Op::Load { .. } => Info { shape: vec![1], flops: 0, mem_read: 1, mem_write: 0 },
-                // TODO implement
-                &Op::Store { .. } => Info { shape: vec![1], flops: 0, mem_read: 0, mem_write: 1 },
-                Op::Const(_) => Info { shape: vec![1], flops: 0, mem_read: 0, mem_write: 0 },
-                Op::Move { x, mop } => match mop.as_ref() {
-                    MoveOp::Reshape { .. } => Info { shape: vec![1], flops: 0, mem_read: 0, mem_write: 0 },
-                    MoveOp::Permute { .. } => Info { shape: stack[x].shape.clone(), flops: 0, mem_read: 0, mem_write: 0 },
-                    MoveOp::Pad { .. } => Info { shape: stack[x].shape.clone(), flops: 0, mem_read: 0, mem_write: 0 },
-                    MoveOp::Expand { .. } => Info { shape: stack[x].shape.clone(), flops: 0, mem_read: 0, mem_write: 0 },
-                    MoveOp::Flip { .. } => Info { shape: stack[x].shape.clone(), flops: 0, mem_read: 0, mem_write: 0 },
-                    MoveOp::Narrow { .. } => Info { shape: stack[x].shape.clone(), flops: 0, mem_read: 0, mem_write: 0 },
-                },
-                Op::Reduce { x, .. } => {
-                    // TODO: track real shapes; stack shapes are approximate
-                    Info { shape: stack[x].shape.clone(), flops: 0, mem_read: 0, mem_write: 0 }
-                }
-                Op::ReduceTile { x, .. } => {
-                    let Info { shape, .. } = stack[x].clone();
-                    let numel: Dim = shape.iter().product();
-                    Info { shape: vec![1], flops: numel - 1, mem_read: 0, mem_write: 0 }
-                }
-                Op::MatmulTile { x, .. } => {
-                    let Info { shape, .. } = stack[x].clone();
-                    let flops = shape.iter().product::<Dim>();
-                    Info { shape, flops, mem_read: 0, mem_write: 0 }
-                }
-                Op::TransposeTile { x } => {
-                    let Info { shape, .. } = stack[x].clone();
-                    Info { shape, flops: 0, mem_read: 0, mem_write: 0 }
-                }
-                Op::Cast { x, .. } => {
-                    let Info { shape, .. } = stack[x].clone();
-                    let flops = 0; // Cast is not computation
-                    Info { shape, flops, mem_read: 0, mem_write: 0 }
-                }
-                Op::Bitcast { x, .. } => {
-                    let Info { shape, .. } = stack[x].clone();
-                    let flops = 0; // Bitcast is not computation
-                    Info { shape, flops, mem_read: 0, mem_write: 0 }
-                }
-                Op::Unary { x, .. } => {
-                    let Info { shape, .. } = stack[x].clone();
-                    let flops = shape.iter().product::<Dim>();
-                    Info { shape, flops, mem_read: 0, mem_write: 0 }
-                }
-                Op::Binary { x, .. } => {
-                    let Info { shape, .. } = stack[x].clone();
-                    let flops = shape.iter().product::<Dim>();
-                    Info { shape, flops, mem_read: 0, mem_write: 0 }
-                }
-                &Op::Storage { len, .. } => {
-                    let shape: Vec<Dim> = vec![len];
-                    Info { shape, flops: 0, mem_read: 0, mem_write: 0 }
-                }
-                Op::Stack { .. } => {
-                    let shape: Vec<Dim> = vec![1];
-                    Info { shape, flops: 0, mem_read: 0, mem_write: 0 }
-                }
-                Op::Wmma { .. }
-                | Op::Asm { .. }
-                | Op::Index { .. }
-                | Op::If { .. }
-                | Op::EndIf
-                | Op::Barrier
-                | Op::Mad { .. }
-                | Op::Range { .. }
-                | Op::Loop { .. }
-                | Op::EndLoop => todo!(),
-            };
-            stack.insert(op_id, info);
-            op_id = self.next_op(op_id);
-        }
-        if !op_id.is_null() {
-            panic!("flop_mem_rw did not finish in 10000 steps");
-        }
-
-        stack
-            .into_values()
-            .fold((0 as Dim, 0, 0), |acc, info| (acc.0 + info.flops, acc.1 + info.mem_read, acc.2 + info.mem_write))
     }
 
     /// Check if the kernel contains any store operations.

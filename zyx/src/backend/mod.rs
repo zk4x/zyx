@@ -308,23 +308,23 @@ impl From<BufferId> for usize {
 /// Globally unique program identifier
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct ProgramId {
-    pub device: DeviceId,
-    pub program: DeviceProgramId,
+    pub device_id: DeviceId,
+    pub program_id: DeviceProgramId,
 }
 
 impl ProgramId {
-    pub const NULL: Self = Self { device: DeviceId::NULL, program: DeviceProgramId(u32::MAX) };
+    pub const NULL: Self = Self { device_id: DeviceId::NULL, program_id: DeviceProgramId(u32::MAX) };
 }
 
 impl From<usize> for ProgramId {
     fn from(value: usize) -> Self {
-        ProgramId { device: DeviceId::ZERO, program: DeviceProgramId(u32::try_from(value).unwrap()) }
+        ProgramId { device_id: DeviceId::ZERO, program_id: DeviceProgramId(u32::try_from(value).unwrap()) }
     }
 }
 
 impl From<ProgramId> for usize {
     fn from(value: ProgramId) -> Self {
-        value.program.0 as usize
+        value.program_id.0 as usize
     }
 }
 
@@ -420,51 +420,13 @@ pub enum Event {
     WGPU(wgpu::WGPUEvent),
 }
 
-#[cfg_attr(feature = "py", pyo3::pyclass)]
-#[derive(DeJson, Debug)]
-#[nserde(default)]
-pub struct AutotuneConfig {
-    #[allow(unused)]
-    /// Should the autotuned kernel be stored to disk?
-    pub save_to_disk: bool,
-    /// Max number of kernel launches
-    pub n_launches: usize, // = 10;
-    /// Number of initial optimization seeds
-    pub n_seeds: usize, // = 100;
-    /// How many optimizations to try each iteration
-    pub n_added_per_step: usize, //: usize = 10;
-    /// How many iterations to remove each iteration
-    pub n_removed_per_step: usize, // = 5;
-    /// Max number of optimizations that can be tried
-    pub n_total_opts: usize, // = 1000;
-}
-
-impl Default for AutotuneConfig {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl AutotuneConfig {
-    pub const fn new() -> AutotuneConfig {
-        AutotuneConfig {
-            save_to_disk: false,
-            n_added_per_step: 200,
-            n_launches: 1,
-            n_removed_per_step: 0,
-            n_seeds: 200,
-            n_total_opts: 1000,
-        }
-    }
-}
-
 /// Device configuration
 #[cfg_attr(feature = "py", pyo3::pyclass)]
 #[derive(DeJson, Debug, Default)]
 #[nserde(default)]
 pub struct Config {
     /// Kernel autotune configuration
-    pub autotune: AutotuneConfig,
+    pub autotune: crate::kernel::autotune::BeamSearch,
     /// C/Clang backend configuration
     pub c: c::CConfig,
     /// CBLAS backend configuration

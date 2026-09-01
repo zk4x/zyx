@@ -3,346 +3,83 @@
 
 //! Autotuning system for kernel optimization.
 //!
-//! This module provides an autotuning framework that explores different kernel
-//! configurations to find optimal performance on the target hardware.
+//! The autotuner ([`BeamSearch`]) is egraph-agnostic — its world is linear
+//! SSA kernels. Its inputs are
 //!
-//! # How It Works
+//! - a **seed** iterator (kernels to start from),
+//! - a list of optimization make functions ([`MakeOpt`], e.g.
+//!   [`Kernel::default_optimizations`]),
+//! - an **epilogue** closure run on every kernel state after each
+//!   optimization step (the default is [`Kernel::default_epilogue`]),
+//! - a **cost** closure ranking candidates without launching them (the
+//!   default is [`Kernel::base_cost`]).
 //!
-//! The autotuning system uses a beam-search algorithm to explore optimization
-//! sequences:
-//!
-//! 1. Start with a base kernel and apply always-on optimizations
-//! 2. Try each available optimization with its variants
-//! 3. Track visited kernel hashes to avoid duplicates
-//! 4. Launch kernels and measure actual timing
-//! 5. Build a cost model from real measurements
-//! 6. Use beam search to find the best configuration
-//!
-//! # Available Optimizations
-//!
-//! The system supports 8 optimization types:
-//!
-//! - `ReassociateCommutative`: Reassociate and group commutative operations
-//! - `UnrollLoops`: Unroll loops with constant or large factors
-//! - `SplitGlobalToLocal`: Split global indices into local factors
-//! - `ThreadCoarse`: Coarsen thread-level parallelism
-//! - `RegisterBlocking`: Block operations for register tiling
-//! - `TiledReduce`: Apply tiled reduction parallelism
-//! - `SplitLoop`: Split large loops into smaller iterations
-//! - `PadIndex`: Pad indices to hardware-friendly sizes
-//! - `Vectorize`: Combine scalar loads, stores and ops into vectorized ops
-//!
+//! The search expands optimization sequences (`OptSeq`, private to this
+//! module) as `state_{i+1} = epilogue(opt_i(state_i))`, ranks candidates by
+//! cost and finally launches the best [`n_launches`](BeamSearch::n_launches)
+//! candidates, keeping the fastest. Every compiled program is released; the
+//! winner is returned as a `Kernel` together with its measured time.
 
 #![allow(clippy::cast_precision_loss)]
 #![allow(clippy::derived_hash_with_manual_eq)]
 
-use crate::backend::{AutotuneConfig, Device, DeviceInfo, DeviceProgramId, LaunchArg, MemoryPool, PoolBufferId};
+use crate::backend::{Device, DeviceInfo, DeviceProgramId, LaunchArg, MemoryPool, PoolBufferId};
 use crate::dtype::{Constant, DType};
-use crate::error::{BackendError, ErrorStatus};
+use crate::error::BackendError;
 use crate::hashers::AHasher;
-use crate::kernel::cost::Cost;
-use crate::kernel::{Kernel, Op, OpId, ParamKind, RangeKind};
+use crate::kernel::{IDX_T, Kernel, Op, OpId, ParamKind};
 use crate::rng::Rng;
 use crate::runtime::Runtime;
 use crate::scalar::{bf16, f16};
 use crate::shape::Dim;
-use crate::slab::SlabId;
 use crate::{DebugMask, Set, ZyxError};
 use nanoserde::{DeBin, SerBin};
-use std::collections::BTreeMap;
 use std::hash::{Hash, Hasher};
 
-/// A config function scans the kernel at a stable state and returns an
-/// Optimization with OpIds embedded. No other optimizations run between
-/// config time and apply time, so OpIds remain valid through apply.
-type OptConfigFn = fn(&Kernel, &DeviceInfo) -> (OptimizationKind, usize);
-
-const AVAILABLE_OPTIMIZATIONS: [OptConfigFn; 8] = [
-    |k, d| Kernel::opt_split_global_to_local(k, d),
-    |k, _| Kernel::opt_reassociate_commutative(k),
-    |k, _| Kernel::opt_coarsen(k),
-    |k, _| Kernel::opt_register_blocking(k),
-    |k, d| Kernel::opt_local_reduce(k, d),
-    |k, _| Kernel::opt_split_loop(k),
-    //|k, _| Kernel::opt_pad_index(k),
-    Kernel::opt_vectorize,
-    |k, _| Kernel::opt_merge_nested_loops(k),
-];
-
-#[derive(Debug)]
-pub(crate) enum OptimizationKind {
-    /// Reassociate commutative operations (addition, multiplication)
-    /// to group them and reduce instruction count.
-    ReassociateCommutative,
-    /// Unroll loops with a specific factor.
-    UnrollLoops {
-        /// Unroll factors to try for each loop.
-        factors: Vec<u64>,
-    },
-    /// Split a global index into local factors for parallelization.
-    SplitGlobalToLocal {
-        /// Pairs of (operation_id, split_factor) for each split.
-        factors: Vec<(OpId, u32)>,
-    },
-    /// Coarsen thread-level parallelism by grouping operations.
-    ThreadCoarse {
-        /// Pairs of (operation_id, coarsening_factor) for each group.
-        factors: Vec<(OpId, u64)>,
-    },
-    /// Register blocking optimization for tiled reductions.
-    RegisterBlocking {
-        /// Reduction splits mapped to tile sizes.
-        reduce_splits: BTreeMap<OpId, Vec<u64>>,
-        /// Thread coarsening factors for each global axis.
-        thread_coarses: BTreeMap<OpId, Vec<u64>>,
-    },
-    /// Unroll loops with constant lengths.
-    UnrollConstantLoops,
-    /// Tiled reduction parallelization.
-    TiledReduce {
-        /// Pairs of (operation_id, local_factor, global_factor) for each tiled reduce.
-        factors: Vec<(OpId, u64, u64)>,
-    },
-    /// Split a loop into smaller iterations.
-    SplitLoop {
-        /// Pairs of (loop_id, split_factor) for each split.
-        factors: Vec<(OpId, u64)>,
-    },
-    /// Pad indices to hardware-friendly sizes (e.g., 32 for CUDA warps).
-    #[allow(unused)]
-    PadIndex {
-        /// Pairs of (index_op_id, target_size) for each padding.
-        factors: Vec<(OpId, Dim)>,
-    },
-    /// Combine scalar loads into vectorized loads for better memory bandwidth.
-    Vectorize {
-        /// Supported vector lengths for this device.
-        supported_lens: Vec<u8>,
-        vectorize_ops: bool,
-    },
-    /// Merge nested loops into a single loop (enables tiled_reduce).
-    MergeNestedLoops {
-        /// Each entry is a nested loop chain (outermost first).
-        /// Config index selects which chain to merge.
-        groups: Vec<Vec<OpId>>,
-    },
+/// A kernel optimization the autotuner can apply.
+///
+/// Instances are created by a make function ([`MakeOpt`]) which scans the
+/// kernel at a stable state and may embed `OpId`s. No other optimization
+/// runs between make and apply, so embedded `OpId`s remain valid through
+/// `apply`.
+pub trait Optimization: std::fmt::Debug {
+    /// Number of configurations this optimization exposes. Config `x` in
+    /// `0..nconfigs` selects a variant; lower ids prefer hardware-aligned
+    /// factors that are likely to perform better.
+    fn nconfigs(&self) -> u64;
+    /// Apply configuration `config` to the kernel in place.
+    fn apply(&self, kernel: &mut Kernel, config: u64);
 }
 
-impl OptimizationKind {
-    /// Debug output for the optimization with the given config ID.
-    ///
-    /// This is used during autotuning to print what optimizations
-    /// are being applied for debugging purposes.
-    pub fn debug(&self, config: usize) {
-        match self {
-            OptimizationKind::ReassociateCommutative => println!("ReassociateCommutative"),
-            OptimizationKind::UnrollLoops { factors } => {
-                let factor = factors[config];
-                println!("unroll loop len={factor} by {factor}");
-            }
-            OptimizationKind::SplitGlobalToLocal { factors } => {
-                let (op_id, factor) = factors[config];
-                println!("split global index {op_id} to local by {factor}, cfg_opt={config}");
-            }
-            OptimizationKind::ThreadCoarse { factors } => {
-                let (op_id, factor) = factors[config];
-                println!("thread_coarse axis {op_id} by {factor}, cfg_opt={config}");
-            }
-            OptimizationKind::RegisterBlocking { reduce_splits, thread_coarses } => {
-                use std::fmt::Write;
-
-                let mut info = String::new();
-
-                let n_global = thread_coarses.len();
-                let n_reduce = reduce_splits.len();
-                if n_global == 0 || n_reduce == 0 {
-                    return;
-                }
-
-                let n_global_options: usize = thread_coarses.values().map(|v| v.len() + 1).product();
-
-                let mut remaining_global = config % n_global_options;
-                let mut remaining_reduce = config / n_global_options;
-
-                let mut reduce_indices: Vec<usize> = Vec::with_capacity(n_reduce);
-                for factors in reduce_splits.values() {
-                    let n_options = factors.len();
-                    let factor_idx = remaining_reduce % n_options;
-                    remaining_reduce /= n_options;
-                    reduce_indices.push(factor_idx);
-                }
-
-                let mut global_indices: Vec<usize> = Vec::with_capacity(n_global);
-                for factors in thread_coarses.values() {
-                    let n_options = factors.len() + 1;
-                    let factor_idx = remaining_global % n_options;
-                    remaining_global /= n_options;
-                    global_indices.push(factor_idx);
-                }
-
-                // Apply unroll FIRST
-                for (i, (&reduce_id, factors)) in reduce_splits.iter().enumerate() {
-                    let factor_idx = reduce_indices[i];
-                    let reduce_factor = factors[factor_idx];
-                    _ = write!(info, "unroll loop_id={reduce_id} by {reduce_factor}");
-                }
-
-                // Then apply thread coarsing
-                for (idx, (op_id, factors)) in thread_coarses.iter().enumerate() {
-                    let factor_idx = global_indices[idx];
-                    let factor = if factor_idx == 0 { 1 } else { factors[factor_idx - 1] };
-                    if factor > 1 {
-                        _ = write!(info, ", thread coarse gidx op_id={op_id} by {factor}");
-                    }
-                }
-                println!("{info}");
-            }
-            OptimizationKind::UnrollConstantLoops => println!("UnrollConstantLoops"),
-            OptimizationKind::TiledReduce { factors } => {
-                let (op_id, local, global) = factors[config];
-                println!("tiled reduce index {op_id} local={local}, global={global}");
-            }
-            OptimizationKind::SplitLoop { factors } => {
-                let (op_id, factor) = factors[config];
-                println!("split loop {op_id} by {factor}");
-            }
-            OptimizationKind::PadIndex { factors } => {
-                let (op_id, _) = factors[config];
-                println!("pad index {op_id} by 32, cfg_opt={config}");
-            }
-            OptimizationKind::Vectorize { .. } => {
-                println!("Vectorize");
-            }
-            OptimizationKind::MergeNestedLoops { groups } => {
-                if let Some(ids) = groups.get(config) {
-                    println!("MergeNestedLoops group {} ({} loops)", config, ids.len());
-                }
-            }
-        }
-    }
-
-    /// Applies the optimization with the given config ID.
-    /// Config IDs are ordered such that lower IDs use hardware-aligned factors
-    /// (e.g., warp size 32 for CUDA, wavefront size 64 for AMD) which are likely to perform better.
-    pub fn apply(&self, kernel: &mut Kernel, config: usize) {
-        match self {
-            OptimizationKind::ReassociateCommutative => {
-                kernel.reassociate_commutative();
-            }
-            OptimizationKind::UnrollLoops { factors } => {
-                let factor = factors[config];
-                if (kernel.ops.len().0 as usize) < 5000 {
-                    kernel.unroll_loops(factor as Dim);
-                }
-            }
-            OptimizationKind::SplitGlobalToLocal { factors } => {
-                #[cfg(feature = "time")]
-                let _timer = crate::Timer::new("SplitGlobalToLocal");
-                let (op_id, factor) = factors[config];
-                let Op::Range { axis, kind: RangeKind::Group(len) } = kernel.ops[op_id].op else {
-                    unreachable!()
-                };
-                // valid factors are checked by opt init
-                let len = kernel.resolve_const(len).and_then(crate::dtype::Constant::as_dim).unwrap();
-                let group_len = kernel.const_idx(len / Dim::from(factor));
-                kernel.split_dim(
-                    op_id,
-                    vec![
-                        Op::Range { axis, kind: RangeKind::Group(group_len) },
-                        Op::Range { axis, kind: RangeKind::Local(factor) },
-                    ],
-                );
-            }
-            OptimizationKind::ThreadCoarse { factors } => {
-                if factors.is_empty() {
-                    return;
-                }
-                let (op_id, factor) = factors[config];
-                kernel.coarsen(op_id, factor);
-            }
-            OptimizationKind::RegisterBlocking { reduce_splits, thread_coarses } => {
-                kernel.apply_register_blocking(reduce_splits, thread_coarses, config);
-            }
-            OptimizationKind::UnrollConstantLoops => {
-                kernel.unroll_constant_loops();
-            }
-            OptimizationKind::TiledReduce { factors } => {
-                let (op_id, factor, tree_branch) = factors[config];
-                kernel.local_reduce(op_id, factor as u32, tree_branch as u32);
-            }
-            OptimizationKind::SplitLoop { factors } => {
-                let (op_id, factor) = factors[config];
-                let Op::Loop { len: len_id } = kernel.ops[op_id].op else {
-                    unreachable!()
-                };
-                let Some(len) = kernel.resolve_const(len_id).and_then(crate::dtype::Constant::as_dim) else {
-                    return;
-                };
-                let len1 = kernel.const_idx(len / factor as Dim);
-                let len2 = kernel.const_idx(factor);
-                kernel.split_dim(op_id, vec![Op::Loop { len: len1 }, Op::Loop { len: len2 }]);
-            }
-            OptimizationKind::PadIndex { factors } => {
-                if factors.is_empty() {
-                    return;
-                }
-                let (idx_id, pad_to) = factors[config];
-                let Op::Range { kind, .. } = kernel.ops[idx_id].op else {
-                    unreachable!()
-                };
-                let current_len = match kind {
-                    RangeKind::Group(len) => kernel.resolve_const(len).and_then(crate::dtype::Constant::as_dim).unwrap(),
-                    RangeKind::Local(len) => i64::from(len),
-                    RangeKind::Warp(_) => todo!(),
-                };
-                let pad_len = (pad_to - current_len % pad_to) % pad_to;
-                if pad_len > 0 {
-                    kernel.pad_index(idx_id, pad_len);
-                }
-            }
-            OptimizationKind::Vectorize { supported_lens, vectorize_ops } => {
-                kernel.vectorize_loads(supported_lens);
-                kernel.vectorize_stores(supported_lens);
-                if *vectorize_ops {
-                    kernel.vectorize_ops_forward(supported_lens);
-                    kernel.vectorize_ops_backward(supported_lens);
-                }
-            }
-            OptimizationKind::MergeNestedLoops { groups } => {
-                if let Some(loop_ids) = groups.get(config) {
-                    kernel.merge_nested_loops(loop_ids);
-                }
-            }
-        }
-    }
-}
+/// A make function scans the kernel at a stable state and returns an
+/// [`Optimization`] instance ready to be applied.
+pub type MakeOpt = fn(&Kernel, &DeviceInfo) -> Box<dyn Optimization>;
 
 impl Kernel {
-    /// Run always-on optimizations on the kernel.
-    ///
-    /// These optimizations should always be applied before kernel compilation
-    /// and are run twice to ensure all opportunities are exploited.
-    ///
-    /// The optimization pipeline includes:
-    ///
-    /// 1. `unroll_len1_loops` - Unroll loops with length 1
-    /// 2. `constant_folding` - Evaluate constant expressions
-    /// 3. `move_constants_to_beginning` - Move constants to the start
-    /// 4. `loop_invariant_code_motion` - Hoist loop-invariant code
-    /// 5. `fold_accs` - Fold accumulator operations
-    /// 6. `delete_empty_loops` - Remove loops with zero iterations
-    /// 7. `unfold_pows` - Unfold power operations
-    /// 8. `algebraic_simplification` - Simplify algebraic expressions
-    /// 9. `simplify_accumulating_loop` - Simplify accumulating loop patterns
-    /// 10. `swap_commutative` - Swap commutative operations
-    /// 11. `common_subexpression_elimination` - Eliminate duplicate computations
-    /// 12. `instruction_schedule` - Schedule instructions for better performance
-    /// 13. `dead_code_elimination` - Remove unused code
-    ///
-    /// Running this twice ensures all optimization opportunities are explored.
-    pub fn run_always_on_optimizations(&mut self) {
+    /// The default optimization set: the search space [`BeamSearch`] explores
+    /// unless the caller provides its own list of make functions.
+    pub const fn default_optimizations() -> [MakeOpt; 9] {
+        [
+            Kernel::opt_split_global_to_local,
+            Kernel::opt_reassociate_commutative,
+            Kernel::opt_coarsen,
+            Kernel::opt_register_blocking,
+            Kernel::opt_local_reduce,
+            Kernel::opt_split_loop,
+            Kernel::opt_vectorize,
+            Kernel::opt_merge_nested_loops,
+            Kernel::opt_fuse_mad,
+        ]
+    }
+
+    /// The default epilogue, run on every kernel state during autotuning and
+    /// before compilation: the standard always-on pipeline (unrolling of
+    /// length-1 loops, constant folding, LICM, algebraic simplification, CSE,
+    /// instruction scheduling, DCE, ...) followed by the hardware-specific
+    /// `exp`/`exp2` conversion. Users can provide their own epilogue.
+    pub fn default_epilogue(&mut self, dev_info: &DeviceInfo) {
         #[cfg(feature = "time")]
-        let _timer = crate::Timer::new("always on optimizations");
+        let _timer = crate::Timer::new("default_epilogue");
         self.unroll_len1_loops();
         self.constant_folding();
         self.move_constants_to_beginning();
@@ -357,9 +94,16 @@ impl Kernel {
         self.common_subexpression_elimination();
         self.instruction_schedule();
         self.dead_code_elimination();
+        if dev_info.has_native_exp2 {
+            self.exp_to_exp2();
+            self.ln_to_log2();
+        } else {
+            self.exp2_to_exp();
+            self.log2_to_ln();
+        }
     }
 
-    fn alloc_buffers(
+    pub(crate) fn alloc_buffers(
         &self,
         memory_pool: &mut MemoryPool,
         buffers: &[LaunchArg],
@@ -455,318 +199,10 @@ impl Kernel {
         Ok((ro_bufs, new_bufs))
     }
 
-    fn dealloc_buffers(&self, args: Vec<PoolBufferId>, memory_pool: &mut MemoryPool) {
+    pub(crate) fn dealloc_buffers(&self, args: Vec<PoolBufferId>, memory_pool: &mut MemoryPool) {
         for buf in args {
             memory_pool.deallocate(buf, Vec::new());
         }
-    }
-
-    /// Autotune for debugging, applying only a selected series of optimizations
-    #[allow(unused)]
-    #[allow(clippy::too_many_arguments)] // autotune internal API, arguments are kernel parameters
-    pub(crate) fn apply_selected_optimizations(
-        &self,
-        device: &mut Device,
-        memory_pool: &mut MemoryPool,
-        _config: &AutotuneConfig,
-        flop: Dim,
-        read_bytes: u64,
-        write_bytes: u64,
-        debug: DebugMask,
-    ) -> Result<(DeviceProgramId, OptSeq, u64), BackendError> {
-        let mut kernel = self.clone();
-
-        /*kernel.run_always_on_optimizations();
-        kernel.run_always_on_optimizations();
-
-        #[cfg(feature = "tenstorrent")]
-        if let Device::TT(_) = device {
-            kernel.opt_tenstorrent_tile();
-        }*/
-
-        /*kernel.run_always_on_optimizations();
-        kernel.run_always_on_optimizations();
-        kernel.fuse_mad();
-        kernel.run_always_on_optimizations();
-        kernel.run_always_on_optimizations();*/
-
-        kernel.dead_code_elimination();
-
-        if debug.ir() {
-            self.debug();
-        }
-
-        let (args, new_bufs) = kernel.alloc_buffers(memory_pool, &[])?;
-        let (program_id, timing) =
-            kernel.launch_with_timings(&args, device, memory_pool, debug, flop, read_bytes, write_bytes, self.get_hash())?;
-        kernel.dealloc_buffers(new_bufs, memory_pool);
-
-        Ok((program_id, OptSeq { opts: Vec::new(), cost: Cost::default() }, timing))
-    }
-
-    /// Release mode autotune with beam-like search and multithreading.
-    ///
-    /// This method explores the optimization space using a beam search algorithm:
-    ///
-    /// 1. Start with a base kernel and apply always-on optimizations
-    /// 2. For each available optimization, generate multiple variants
-    /// 3. Track kernel hashes to avoid exploring duplicate states
-    /// 4. Launch kernels and measure actual timing
-    /// 5. Build a cost model from real measurements
-    /// 6. Use beam search to find the best configuration
-    ///
-    /// The search explores up to `n_total_opts` optimization sequences,
-    /// with `n_seeds` initial seeds and `n_added_per_step` new sequences
-    /// added at each step. The beam width is `n_launches`.
-    ///
-    /// # Arguments
-    ///
-    /// * `device` - Target device for compilation
-    /// * `memory_pool` - Shared memory pool for buffers
-    /// * `config` - Autotuning configuration
-    /// * `flop`, `read_bytes`, `write_bytes` - Profile information for cost modeling
-    /// * `debug` - Debug flags for IR and performance output
-    ///
-    /// # Returns
-    ///
-    /// Returns the best program ID and optimization sequence found.
-    #[allow(clippy::too_many_arguments)] // autotune internal API, arguments are kernel parameters
-    pub(crate) fn autotune_(
-        &self,
-        device: &mut Device,
-        memory_pool: &mut MemoryPool,
-        config: &AutotuneConfig,
-        flop: Dim,
-        read_bytes: u64,
-        write_bytes: u64,
-        debug: DebugMask,
-        buffers: &[LaunchArg],
-    ) -> Result<(DeviceProgramId, OptSeq, u64), BackendError> {
-        if false {
-            return self.apply_selected_optimizations(device, memory_pool, config, flop, read_bytes, write_bytes, debug);
-        }
-
-        let variant_hash = self.get_hash();
-        let n_launches = config.n_launches;
-        let n_seeds = config.n_seeds;
-        let n_added_per_step = config.n_added_per_step;
-        let n_removed_per_step = config.n_removed_per_step;
-        let n_total_opts = config.n_total_opts;
-
-        // The kernel arrives PRE-linearization (buffer sizes in alloc_buffers
-        // are resolved from `self`'s intact param shape stacks). Linearize the
-        // working clone into the SSA form the passes and launches expect.
-        let mut kernel = self.clone();
-        kernel.linearize();
-        kernel.common_subexpression_elimination();
-        kernel.dead_code_elimination();
-        kernel.instruction_schedule();
-        {
-            let global_indices = kernel.get_group_indices();
-            let max_global_dims = device.info().max_global_work_dims.len();
-            if global_indices.len() > max_global_dims {
-                let n = global_indices.len() + 1 - max_global_dims;
-                let indices: Vec<OpId> = global_indices.values().copied().take(n).collect();
-                kernel.merge_indices(&indices);
-            }
-            kernel.renumber_indices();
-            kernel.verify();
-        }
-
-        #[cfg(debug_assertions)]
-        {
-            let n_params = kernel
-                .ops
-                .values()
-                .filter(|op| {
-                    matches!(op.op, Op::Param { kind: ParamKind::Global | ParamKind::GlobalMut | ParamKind::Variable, .. })
-                })
-                .count();
-            let n_buffers = buffers.len();
-            assert!(
-                n_buffers <= n_params,
-                "buffers len ({}) must not exceed number of params ({}) in kernel",
-                n_buffers,
-                n_params,
-            );
-        }
-
-        let mut items = Vec::new();
-        let mut visited = Set::default();
-
-        // Initial seed (`kernel` was cloned and linearized above)
-        kernel.delete_zero_len_indices();
-        kernel.renumber_indices();
-        kernel.run_always_on_optimizations();
-        kernel.run_always_on_optimizations();
-        kernel.run_always_on_optimizations();
-
-        if !device.info().has_native_exp2 {
-            kernel.exp2_to_exp();
-            kernel.log2_to_ln();
-        } else {
-            kernel.exp_to_exp2();
-            kernel.ln_to_log2();
-        }
-
-        let avail_configs = AVAILABLE_OPTIMIZATIONS.map(|config_fn| config_fn(&kernel, device.info()));
-        let total_configs = avail_configs.iter().map(|(_, x)| *x).sum::<usize>();
-        let mult = n_seeds.min(total_configs);
-        for (opt_id, (_, n_configs)) in avail_configs.iter().enumerate() {
-            let n_configs_to_try = ((n_configs * mult) as f32 / total_configs as f32).ceil() as usize;
-            let mut config_id = 0;
-            while config_id < n_configs_to_try {
-                let mut new_kernel = kernel.clone();
-                avail_configs[opt_id].0.apply(&mut new_kernel, config_id);
-                new_kernel.run_always_on_optimizations();
-                let hash = new_kernel.get_hash();
-                if visited.contains(&hash) {
-                    config_id += 1;
-                    continue;
-                }
-                let cost = new_kernel.get_cost(device.info());
-                let new_seq = OptSeq { opts: vec![(opt_id, config_id)], cost };
-                visited.insert(hash);
-                items.push(new_seq);
-                config_id += 1;
-            }
-        }
-
-        let mut rng = Rng::seed_from_u64(3_498_203_498);
-        let mut exhausted = Set::default();
-        let mut i = 0;
-        while i < n_total_opts && !items.is_empty() {
-            i += 1;
-            let mut thread_kernel = kernel.clone();
-            let Some(opt_seq) = sample_best(&items, &exhausted, &mut rng).cloned() else {
-                break;
-            };
-            opt_seq.apply(&mut thread_kernel, device.info());
-            thread_kernel.run_always_on_optimizations();
-
-            //println!("Next opt {i}, kernel size: {:?}", thread_kernel.ops.len());
-
-            let avail_configs = AVAILABLE_OPTIMIZATIONS.map(|config_fn| config_fn(&thread_kernel, device.info()));
-            let total_configs = avail_configs.iter().map(|(_, x)| *x).sum::<usize>();
-            let mult = n_added_per_step.min(total_configs);
-
-            let mut added = 0;
-            for (opt_id, _) in avail_configs.iter().enumerate() {
-                let n_configs_to_try = ((avail_configs[opt_id].1 * mult) as f32 / total_configs as f32).ceil() as usize;
-
-                for config_id in 0..n_configs_to_try {
-                    let mut opts = opt_seq.opts.clone();
-                    opts.push((opt_id, config_id));
-
-                    let mut new_kernel = thread_kernel.clone();
-                    //avail_configs[opt_id].0.debug(config_id);
-                    avail_configs[opt_id].0.apply(&mut new_kernel, config_id);
-                    let hash = new_kernel.get_hash();
-                    if visited.contains(&hash) {
-                        continue;
-                    }
-                    let new_seq = OptSeq { opts, cost: new_kernel.get_cost(device.info()) };
-                    visited.insert(hash);
-
-                    if new_kernel.ops.len().0 > 10000 {
-                        exhausted.insert(new_seq.clone());
-                    }
-
-                    items.push(new_seq);
-                    added += 1;
-                }
-            }
-
-            if added == 0 {
-                // Seed can't be optimized further
-                //exhausted.insert(opt_seq);
-                break;
-            }
-
-            remove_worst(&mut items, n_removed_per_step, &mut rng);
-        }
-
-        let mut launched_kernels = Set::default();
-        let mut best_time = u64::MAX;
-        let mut best_program = DeviceProgramId::NULL;
-        let mut best_opt_seq = OptSeq { opts: Vec::new(), cost: Cost::default() };
-        let mut any_success = false;
-        let mut last_error = None;
-
-        // Sample randomly for variety in cost model data
-        /*let n = n_launches.min(items.len());
-        let mut rng_launch = Rng::seed_from_u64(0xDEAD_BEEF);
-        let mut sampled = Vec::with_capacity(n);
-        while sampled.len() < n && !items.is_empty() {
-            let idx = rng_launch.range::<u64>(0..items.len()  as i64) as usize;
-            sampled.push(items.swap_remove(idx));
-        }
-        items = sampled;*/
-
-        // Sort by cost: try cheaper configs first
-        items.sort_by_key(|opt_seq| opt_seq.cost.cost);
-        items.truncate(n_launches);
-
-        let (args, new_bufs) = self.alloc_buffers(memory_pool, buffers)?;
-
-        for opt_seq in items.iter() {
-            let mut kernel = kernel.clone();
-
-            //println!("launch (cost: {}, n_opts: {}):", opt_seq.cost.cost, opt_seq.opts.len());
-            for &(opt_id, opt_cfg) in &opt_seq.opts {
-                let (opt, _) = AVAILABLE_OPTIMIZATIONS[opt_id](&kernel, device.info());
-                if debug.autotune() {
-                    opt.debug(opt_cfg);
-                }
-                opt.apply(&mut kernel, opt_cfg);
-            }
-            //let (gws, lws) = kernel.work_sizes();
-
-            kernel.run_always_on_optimizations();
-            kernel.run_always_on_optimizations();
-            kernel.run_always_on_optimizations();
-            kernel.fuse_mad();
-            //kernel.fuse_mma(dev_info_ref); // WMMA fusion is not yet correct
-            kernel.run_always_on_optimizations();
-            kernel.run_always_on_optimizations();
-            kernel.run_always_on_optimizations();
-
-            if launched_kernels.insert(kernel.get_hash()) {
-                if debug.ir() {
-                    kernel.debug();
-                }
-
-                match kernel.launch_with_timings(&args, device, memory_pool, debug, flop, read_bytes, write_bytes, variant_hash) {
-                    Ok((program_id, time)) => {
-                        any_success = true;
-                        if time < best_time {
-                            if best_program != DeviceProgramId::NULL {
-                                device.release(best_program);
-                            }
-                            best_program = program_id;
-                            best_time = time;
-                            best_opt_seq = opt_seq.clone();
-                        } else {
-                            device.release(program_id);
-                        }
-                    }
-                    Err(e) => {
-                        last_error = Some(e);
-                    }
-                }
-            }
-        }
-
-        self.dealloc_buffers(new_bufs, memory_pool);
-
-        if !any_success {
-            return Err(last_error.unwrap_or_else(|| BackendError {
-                status: ErrorStatus::KernelCompilation,
-                context: "No successful kernel launches.".into(),
-            }));
-        }
-
-        Ok((best_program, best_opt_seq, best_time))
     }
 
     /// Get a hash of the kernel for deduplication during autotuning.
@@ -779,90 +215,47 @@ impl Kernel {
         hasher.finish()
     }
 
-    /// Launch a kernel and measure its timing.
+    /// Compile the kernel, launch it once and measure the execution time.
     ///
-    /// This method compiles the kernel, launches it on the device,
-    /// and returns the execution time in nanoseconds. It is used
-    /// during autotuning to build a cost model.
-    ///
-    /// # Arguments
-    ///
-    /// * `buffers` - Memory buffers for the kernel
-    /// * `device` - Target device for compilation and execution
-    /// * `memory_pool` - Shared memory pool for buffers
-    /// * `debug` - Debug flags for IR and performance output
-    /// * `flops`, `bytes_read`, `bytes_written` - Profile information
-    /// * `variant_hash` - Hash of the kernel variant for logging
-    ///
-    /// # Returns
-    ///
-    /// Returns a tuple of (program_id, nanoseconds) or an error.
-    #[allow(clippy::too_many_arguments)] // autotune internal API, arguments are kernel parameters
-    pub(crate) fn launch_with_timings(
+    /// Returns the program id and the measured time in nanoseconds.
+    fn launch_with_timings(
         &self,
         buffers: &[LaunchArg],
         device: &mut Device,
         memory_pool: &mut MemoryPool,
         debug: DebugMask,
-        flops: Dim,
-        bytes_read: u64,
-        bytes_written: u64,
-        _variant_hash: u64,
     ) -> Result<(DeviceProgramId, u64), BackendError> {
         let program_id = device.compile(self, debug.asm())?;
         let begin = std::time::Instant::now();
         let event = device.launch(program_id, memory_pool, buffers, Vec::new())?;
         memory_pool.sync_events(vec![event])?;
         let nanos = begin.elapsed().as_nanos() as u64;
-        let perf = crate::runtime::get_perf(flops, bytes_read, bytes_written, nanos);
-        /*self.get_cost(device.info()).debug();
-        println!("variant_hash={variant_hash}, {perf}");*/
-        if debug.dev() {
-            println!("{perf}");
-        }
         Ok((program_id, nanos))
     }
 }
 
-#[derive(Debug, Clone, PartialEq, PartialOrd, Eq, Ord, Hash)]
-pub(crate) struct OptSeq {
+/// A candidate optimization sequence explored by [`BeamSearch`].
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct OptSeq {
     /// List of (optimization_id, config_id) pairs to apply.
-    opts: Vec<(usize, usize)>,
+    opts: Vec<(usize, u64)>,
     /// Cost estimate for this optimization sequence.
-    cost: Cost,
+    cost: u64,
 }
 
-impl Default for OptSeq {
-    fn default() -> Self {
-        Self { opts: Vec::new(), cost: Cost { cost: u64::MAX } }
-    }
-}
-
-impl SerBin for OptSeq {
-    fn ser_bin(&self, output: &mut Vec<u8>) {
-        self.opts.ser_bin(output);
-        self.cost.ser_bin(output);
-    }
-}
-
-impl DeBin for OptSeq {
-    fn de_bin(offset: &mut usize, bytes: &[u8]) -> Result<Self, nanoserde::DeBinErr> {
-        let opts = Vec::<(usize, usize)>::de_bin(offset, bytes)?;
-        let cost = Cost::de_bin(offset, bytes)?;
-        Ok(Self { opts, cost })
-    }
-}
-
-impl OptSeq {
-    /// Apply the optimization sequence to the kernel.
-    ///
-    /// Applies all optimizations in the sequence to the kernel
-    /// using the provided device information.
-    pub fn apply(&self, kernel: &mut Kernel, dev_info: &DeviceInfo) {
-        for &(opt_id, opt_cfg) in &self.opts {
-            let (opt, _): (OptimizationKind, usize) = AVAILABLE_OPTIMIZATIONS[opt_id](kernel, dev_info);
-            opt.apply(kernel, opt_cfg);
-        }
+/// Apply an optimization sequence to the kernel, running the epilogue after
+/// each step: `state_{i+1} = epilogue(opt_i(state_i))`. This is the
+/// deterministic repro of a searched kernel state.
+fn apply_seq(
+    kernel: &mut Kernel,
+    seq: &OptSeq,
+    optimizations: &[MakeOpt],
+    epilogue: &impl Fn(&mut Kernel, &DeviceInfo),
+    dev_info: &DeviceInfo,
+) {
+    for &(opt_id, config) in &seq.opts {
+        optimizations[opt_id](kernel, dev_info).apply(kernel, config);
+        epilogue(kernel, dev_info);
     }
 }
 
@@ -916,47 +309,316 @@ fn sample_best<'a>(items: &'a [OptSeq], exhausted: &Set<OptSeq>, rng: &mut Rng) 
     None
 }
 
-impl Kernel {
-    /// Generate kernel tiling variants
-    pub fn generate_tiling_variants<IT, const N: usize>(&self, ops: [OpId; N], variants: Vec<[Dim; N]>) -> Result<IT, ZyxError>
-    where
-        IT: Iterator<Item = Kernel>,
-    {
-        todo!()
-    }
-
-    /// Estimated cost of the model trained to predict runtime in nanoseconds
-    pub fn base_cost(&self) -> u64 {
-        todo!()
-    }
+/// Beam search autotuner.
+///
+/// Explores optimization sequences over the seed kernels, ranking candidates
+/// with the cost closure and measuring the most promising ones on the device.
+#[cfg_attr(feature = "py", pyo3::pyclass)]
+#[derive(Debug, Clone, SerBin, DeBin, nanoserde::DeJson)]
+#[nserde(default)]
+pub struct BeamSearch {
+    /// Max number of kernel launches
+    pub n_launches: usize,
+    /// Number of initial optimization seeds
+    pub n_seeds: usize,
+    /// How many optimizations to try each iteration
+    pub n_added_per_step: usize,
+    /// How many iterations to remove each iteration
+    pub n_removed_per_step: usize,
+    /// Max number of optimizations that can be tried
+    pub n_total_opts: usize,
 }
 
-pub trait Optimization: std::fmt::Debug {
-    fn nconfigs(&self) -> u64;
-    fn apply(&self, kernel: &mut Kernel, config: u64);
+impl Default for BeamSearch {
+    fn default() -> Self {
+        Self::new()
+    }
 }
-
-/// Beam search
-pub struct BeamSearch {}
 
 impl BeamSearch {
-    /// Autotune using beam search
-    pub fn autotune_beam(
-        seeds: impl IntoIterator<Item = Kernel>,
-        optimizations: &[fn(&Kernel, &DeviceInfo) -> Box<dyn Optimization>],
-        epilogue: impl Fn(&mut Kernel, &DeviceInfo),
-        cost: impl Fn(&Kernel, &DeviceInfo) -> u64,
-    ) -> Result<Kernel, ZyxError> {
-        Self::autotune_beam_(&mut crate::RT.lock(), seeds, optimizations, epilogue, cost)
+    /// Defaults mirroring the config-file fallbacks.
+    pub const fn new() -> Self {
+        Self {
+            n_added_per_step: 200,
+            n_launches: 1,
+            n_removed_per_step: 0,
+            n_seeds: 200,
+            n_total_opts: 1000,
+        }
     }
+}
 
-    pub(crate) fn autotune_beam_(
+impl BeamSearch {
+    /// Autotune using beam search, binding buffers from realized tensors.
+    ///
+    /// Each tensor must be realized: present in the runtime's `buffer_map`
+    /// or resolvable to a constant (bound as a scalar variable argument) —
+    /// `Runtime::is_realized` decides. Tensors are consumed positionally:
+    /// read-only (Global + Variable) params first, then GlobalMut params,
+    /// matching the kernel argument order. Returns an error if a tensor is
+    /// not realized.
+    ///
+    /// See [`BeamSearch::run_`] for the search semantics.
+    pub fn run(
+        &self,
         rt: &mut Runtime,
         seeds: impl IntoIterator<Item = Kernel>,
-        optimizations: &[fn(&Kernel, &DeviceInfo) -> Box<dyn Optimization>],
+        tensors: &[&crate::Tensor],
+        optimizations: &[MakeOpt],
         epilogue: impl Fn(&mut Kernel, &DeviceInfo),
         cost: impl Fn(&Kernel, &DeviceInfo) -> u64,
-    ) -> Result<Kernel, ZyxError> {
-        todo!()
+    ) -> Result<(Kernel, u64), ZyxError> {
+        let mut args: Vec<LaunchArg> = Vec::with_capacity(tensors.len());
+        for tensor in tensors {
+            if let Some(&buf_id) = rt.buffer_map.get(&tensor.id()) {
+                args.push(LaunchArg::Buffer(buf_id.buffer));
+            } else if let Some(value) = rt.resolve_symbolic(tensor.id()) {
+                args.push(LaunchArg::Variable(value));
+            } else {
+                return Err(ZyxError::kernel_error(format!("autotune: tensor {} is not realized", tensor.id()).into()));
+            }
+        }
+        self.run_(rt, seeds, &args, optimizations, epilogue, cost)
+    }
+
+    /// Autotune using beam search.
+    ///
+    /// The seeds must be prepared by the caller: already linearized
+    /// ([`Kernel::is_linearized`]), with basic optimizations and the epilogue
+    /// applied — the search does no seed preprocessing. All seeds must belong
+    /// to the same device and share the same parameter signature; `args` must
+    /// match that signature positionally (read-only params first, then
+    /// GlobalMut params; interleaved GlobalMut is rejected). The epilogue
+    /// runs on every kernel state after each optimization step
+    /// (`state_{i+1} = epilogue(opt_i(state_i))`), so the final state of a
+    /// sequence is exactly what gets launched. Every program compiled during
+    /// measurement is released; the winner is returned as a kernel together
+    /// with its measured time in nanoseconds.
+    pub fn run_(
+        &self,
+        rt: &mut Runtime,
+        seeds: impl IntoIterator<Item = Kernel>,
+        args: &[LaunchArg],
+        optimizations: &[MakeOpt],
+        epilogue: impl Fn(&mut Kernel, &DeviceInfo),
+        cost: impl Fn(&Kernel, &DeviceInfo) -> u64,
+    ) -> Result<(Kernel, u64), ZyxError> {
+        let debug = rt.debug;
+        let seeds: Vec<Kernel> = seeds.into_iter().collect();
+        if seeds.is_empty() {
+            return Err(ZyxError::kernel_error("autotune: no seeds".into()));
+        }
+        let device_id = seeds[0].device_id;
+        if seeds.iter().any(|seed| seed.device_id != device_id) {
+            return Err(ZyxError::kernel_error("autotune: seeds span multiple devices".into()));
+        }
+        let dev_info = rt.devices[device_id].info().clone();
+        let pool_id = rt.devices[device_id].memory_pool_id();
+        let device = &mut rt.devices[device_id];
+        let pool = &mut rt.pools[pool_id];
+
+        // Every seed must be linearized and share one parameter signature;
+        // `args` binds against it positionally (read-only params first, then
+        // GlobalMut params). Interleaved GlobalMut would misbind the args.
+        let mut signature: Option<Vec<(ParamKind, DType)>> = None;
+        for seed in &seeds {
+            if !seed.is_linearized() {
+                return Err(ZyxError::kernel_error("autotune: seed kernel is not linearized".into()));
+            }
+            let params: Vec<(ParamKind, DType)> = {
+                let mut params = Vec::new();
+                let mut op_id = seed.head;
+                while !op_id.is_null() {
+                    if let Op::Param { dtype, kind, .. } = seed.ops[op_id].op {
+                        params.push((kind, dtype));
+                    }
+                    op_id = seed.next_op(op_id);
+                }
+                params
+            };
+            match &signature {
+                None => {
+                    let mut seen_mut = false;
+                    for (kind, _) in &params {
+                        if *kind == ParamKind::GlobalMut {
+                            seen_mut = true;
+                        } else if seen_mut {
+                            return Err(ZyxError::kernel_error(
+                                "autotune: kernel has interleaved GlobalMut params (read-only params must come first)".into(),
+                            ));
+                        }
+                    }
+                    if params.len() != args.len() {
+                        return Err(ZyxError::kernel_error(
+                            format!("autotune: kernel has {} params but {} args were given", params.len(), args.len()).into(),
+                        ));
+                    }
+                    signature = Some(params);
+                }
+                Some(sig) if sig != &params => {
+                    return Err(ZyxError::kernel_error("autotune: seeds have differing parameter signatures".into()));
+                }
+                _ => {}
+            }
+            seed.verify();
+        }
+
+        let mut programs: Vec<DeviceProgramId> = Vec::new();
+        let mut best_kernel: Option<Kernel> = None;
+        let mut best_time = u64::MAX;
+        let mut last_error: Option<BackendError> = None;
+
+        for seed in seeds {
+            let base = seed;
+
+            let mut visited = Set::default();
+            visited.insert(base.get_hash());
+            let mut items: Vec<OptSeq> = vec![OptSeq { opts: Vec::new(), cost: cost(&base, &dev_info) }];
+
+            // Initial candidates: one optimization applied to state_0.
+            let avail_configs: Vec<Box<dyn Optimization>> = optimizations.iter().map(|make| make(&base, &dev_info)).collect();
+            let total_configs: u64 = avail_configs.iter().map(|opt| opt.nconfigs()).sum();
+            let mult = self.n_seeds.min(total_configs as usize) as u64;
+            for (opt_id, opt) in avail_configs.iter().enumerate() {
+                let n_configs = opt.nconfigs();
+                let n_configs_to_try = ((n_configs * mult) as f32 / total_configs as f32).ceil() as u64;
+                for config_id in 0..n_configs_to_try {
+                    let mut new_kernel = base.clone();
+                    opt.apply(&mut new_kernel, config_id);
+                    epilogue(&mut new_kernel, &dev_info);
+                    let hash = new_kernel.get_hash();
+                    if visited.contains(&hash) {
+                        continue;
+                    }
+                    visited.insert(hash);
+                    items.push(OptSeq { opts: vec![(opt_id, config_id)], cost: cost(&new_kernel, &dev_info) });
+                }
+            }
+
+            let mut rng = Rng::seed_from_u64(3_498_203_498);
+            let mut exhausted = Set::default();
+            let mut i = 0;
+            while i < self.n_total_opts && !items.is_empty() {
+                i += 1;
+                let Some(opt_seq) = sample_best(&items, &exhausted, &mut rng).cloned() else {
+                    break;
+                };
+                let mut thread_kernel = base.clone();
+                apply_seq(&mut thread_kernel, &opt_seq, optimizations, &epilogue, &dev_info);
+
+                let avail_configs: Vec<Box<dyn Optimization>> =
+                    optimizations.iter().map(|make| make(&thread_kernel, &dev_info)).collect();
+                let total_configs: u64 = avail_configs.iter().map(|opt| opt.nconfigs()).sum();
+                let mult = self.n_added_per_step.min(total_configs as usize) as u64;
+
+                let mut added = 0;
+                for (opt_id, opt) in avail_configs.iter().enumerate() {
+                    let n_configs = opt.nconfigs();
+                    let n_configs_to_try = ((n_configs * mult) as f32 / total_configs as f32).ceil() as u64;
+                    for config_id in 0..n_configs_to_try {
+                        let mut opts = opt_seq.opts.clone();
+                        opts.push((opt_id, config_id));
+
+                        let mut new_kernel = thread_kernel.clone();
+                        opt.apply(&mut new_kernel, config_id);
+                        epilogue(&mut new_kernel, &dev_info);
+                        let hash = new_kernel.get_hash();
+                        if visited.contains(&hash) {
+                            continue;
+                        }
+                        visited.insert(hash);
+
+                        let new_seq = OptSeq { opts, cost: cost(&new_kernel, &dev_info) };
+                        if new_kernel.ops.len().0 > 10000 {
+                            exhausted.insert(new_seq.clone());
+                        }
+
+                        items.push(new_seq);
+                        added += 1;
+                    }
+                }
+
+                if added == 0 {
+                    // State can't be optimized further
+                    break;
+                }
+
+                remove_worst(&mut items, self.n_removed_per_step, &mut rng);
+            }
+
+            // Measurement: rebuild each candidate deterministically and launch.
+            items.sort_by_key(|seq| seq.cost);
+            items.truncate(self.n_launches);
+            let mut launched = Set::default();
+            for opt_seq in &items {
+                let mut kernel = base.clone();
+                apply_seq(&mut kernel, opt_seq, optimizations, &epilogue, &dev_info);
+                if launched.insert(kernel.get_hash()) {
+                    if debug.ir() {
+                        kernel.debug();
+                    }
+
+                    match kernel.launch_with_timings(&args, device, pool, debug) {
+                        Ok((program_id, time)) => {
+                            programs.push(program_id);
+                            if time < best_time {
+                                best_time = time;
+                                best_kernel = Some(kernel);
+                            }
+                        }
+                        Err(e) => {
+                            last_error = Some(e);
+                        }
+                    }
+                }
+            }
+        }
+
+        // Drop all compiled programs; the winner is returned as a kernel.
+        for program_id in programs {
+            device.release(program_id);
+        }
+
+        match best_kernel {
+            Some(kernel) => Ok((kernel, best_time)),
+            None => Err(last_error
+                .map(ZyxError::from)
+                .unwrap_or_else(|| ZyxError::kernel_error("autotune: no successful kernel launches".into()))),
+        }
+    }
+}
+
+impl Kernel {
+    /// Generate tiling variants of this kernel by replacing the given
+    /// `Const` index operations with concrete values.
+    ///
+    /// Each row of `variants` is one complete configuration — the N values
+    /// replace the N `ops` (row-wise, NOT a cross-product). Chain further
+    /// variant generators on the returned iterator with `flat_map`.
+    ///
+    /// Every op in `ops` must be an `Op::Const` of dtype `IDX_T`.
+    pub fn generate_tiling_variants<const N: usize>(
+        &self,
+        ops: [OpId; N],
+        variants: Vec<[Dim; N]>,
+    ) -> Result<impl Iterator<Item = Kernel>, ZyxError> {
+        for &op_id in &ops {
+            match self.ops[op_id].op {
+                Op::Const(c) if c.dtype() == IDX_T => {}
+                _ => {
+                    return Err(ZyxError::kernel_error(
+                        "generate_tiling_variants: op must be a Const of dtype IDX_T".into(),
+                    ))
+                }
+            }
+        }
+        let base = self.clone();
+        Ok(variants.into_iter().map(move |dims| {
+            let mut kernel = base.clone();
+            for (&op_id, &dim) in ops.iter().zip(dims.iter()) {
+                kernel.ops[op_id].op = Op::Const(Constant::idx(dim));
+            }
+            kernel
+        }))
     }
 }

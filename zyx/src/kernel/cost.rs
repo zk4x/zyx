@@ -22,74 +22,37 @@ use crate::{
     kernel::{IDX_T, Kernel, MemLayout, MemScope, Op, OpId, ParamKind, RangeKind},
     shape::Dim,
 };
-use nanoserde::{DeBin, SerBin};
-
-/// The memory scope of a load source / store destination, which is either an
-/// `Op::Storage` (kernel-internal buffer) or an `Op::Param` (kernel parameter:
-/// a global or a variable).
-fn mem_scope(op: &Op) -> MemScope {
-    match op {
-        Op::Storage { scope, .. } => *scope,
-        Op::Param { kind: ParamKind::Variable, .. } => MemScope::Register,
-        Op::Param { kind: ParamKind::Global | ParamKind::GlobalMut, .. } => MemScope::Global,
-        _ => unreachable!("load/store operand must be a Storage or Param, got {op:?}"),
-    }
-}
-
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash)]
-pub(crate) struct Cost {
-    /// Estimated execution time in microseconds.
-    ///
-    /// This is a learned cost estimate based on the kernel's
-    /// characteristics (instruction count, memory access patterns,
-    /// register usage, etc.). Lower values indicate better performance.
-    pub(crate) cost: u64,
-}
-
-impl SerBin for Cost {
-    fn ser_bin(&self, output: &mut Vec<u8>) {
-        self.cost.ser_bin(output);
-    }
-}
-
-impl DeBin for Cost {
-    fn de_bin(offset: &mut usize, bytes: &[u8]) -> Result<Self, nanoserde::DeBinErr> {
-        let cost = u64::de_bin(offset, bytes)?;
-        Ok(Self { cost })
-    }
-}
-
-impl Ord for Cost {
-    fn cmp(&self, other: &Self) -> core::cmp::Ordering {
-        self.cost.cmp(&other.cost)
-    }
-}
-
-impl PartialOrd for Cost {
-    fn partial_cmp(&self, other: &Self) -> Option<core::cmp::Ordering> {
-        Some(self.cmp(other))
-    }
-}
+use super::predict_cost::predict_time_us;
 
 impl Kernel {
-    /// Get the estimated cost for this kernel.
+    /// Predict the execution time of this kernel in microseconds.
     ///
-    /// This method computes a cost estimate based on the kernel's
-    /// characteristics:
+    /// Complete package: walks the kernel IR twice (reference counts + dtypes,
+    /// then instruction counting and register-allocation simulation) and feeds
+    /// the extracted features to the learned cost model in `predict_cost.rs`.
+    /// Hardware parameters come from `dev_info`. Lower values indicate better
+    /// performance.
     ///
-    /// 1. First pass: compute reference counts and dtypes for register estimation
-    /// 2. Second pass: instruction counting and register allocation simulation
-    /// 3. Compute hardware-specific metrics (warp size, local memory, etc.)
-    /// 4. Apply a learned cost model to predict execution time
-    ///
-    /// # Arguments
-    ///
-    /// * `dev_info` - Device information for hardware-specific parameters
-    ///
-    /// # Returns
-    ///
-    /// Returns a Cost estimate in microseconds.
-    pub(crate) fn get_cost(&self, dev_info: &DeviceInfo) -> Cost {
+    /// Variable-backed (dynamic) group lengths cost as the 42 placeholder: the
+    /// real dims only exist at launch and differ across launches, so the
+    /// placeholder is a fixed convention the trained model is calibrated
+    /// against (TVM-style: only concrete shapes are ever costed).
+    pub fn base_cost(&self, dev_info: &DeviceInfo) -> u64 {
+        // The memory scope of a load source / store destination, which is
+        // either an `Op::Storage` (kernel-internal buffer) or an `Op::Param`
+        // (kernel parameter: a global or a variable).
+        fn mem_scope(op: &Op) -> MemScope {
+            match op {
+                Op::Storage { scope, .. } => *scope,
+                Op::Param { kind: ParamKind::Variable, .. } => MemScope::Register,
+                Op::Param {
+                    kind: ParamKind::Global | ParamKind::GlobalMut,
+                    ..
+                } => MemScope::Global,
+                _ => unreachable!("load/store operand must be a Storage or Param, got {op:?}"),
+            }
+        }
+
         // First pass: compute reference counts and dtypes for register estimation
         let mut rcs: Map<OpId, u32> = Map::default();
         let mut dtypes: Map<OpId, (DType, MemLayout)> = Map::default();
@@ -574,7 +537,7 @@ impl Kernel {
         };
 
         // Learned cost model: rank 0..1 within variant * 1_000_000 (2000 DT leaves + Ridge)
-        let cost = Cost::predict_time_us(
+        let cost = predict_time_us(
             num_groups as u32,
             wi_per_group as u32,
             wi_ops as u32,
@@ -605,8 +568,6 @@ impl Kernel {
             dev_info.preferred_vector_size as u32,
             dev_info.local_mem_size as u32,
         );
-        let cost = cost.max(1.0) as i64;
-
-        Cost { cost: cost as u64 }
+        cost.max(1.0) as u64
     }
 }

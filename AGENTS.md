@@ -152,7 +152,7 @@ group lengths MUST work — this is not a future nicety.
 
 All kernel optimizations live in `zyx/src/kernel/` (`autotune.rs` driver + one file per pass: `split_loops.rs`, `coarsen.rs`, `vectorize.rs`, `fold_loops.rs`, `algebraic.rs`, ...).
 
-**Correctness is critical**: no optimization is required for tests to pass; ALL tests must pass with ANY optimization sequence (including empty). If a sequence breaks correctness, the pass that produced invalid IR from valid code is BUGGY — fix or disable it. Run the full `cargo test` after touching any pass; a single failing integration test means the pass produces wrong results.
+**Correctness is critical**: if a sequence breaks correctness, the pass that produced invalid IR from valid code is BUGGY — fix or disable it. Run the full `cargo test` after touching any pass; a single failing integration test means the pass produces wrong results. Note: kernels are NOT guaranteed to work with zero optimizations — on more complex hardware, backend-specific passes (part of the epilogue) are required before codegen can even consume the IR. This is intended and keeps things inside the IR as long as possible, to make the codegen as simple as possible.
 
 ### The autotuner
 

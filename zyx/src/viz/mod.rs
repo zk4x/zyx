@@ -10,9 +10,10 @@
 //! and generated source code (`ZYX_DEBUG=16` view).
 //!
 //! Kernels are captured during generation (right after compilation), because
-//! optimized kernels are transient. The optimized IR and the generated code
-//! are derived lazily on request by replaying the optimization pipeline on
-//! the captured pre-linearize kernel.
+//! optimized kernels are transient. The capture holds both the pre-linearize
+//! kernel (`ZYX_DEBUG=4` view) and the autotune winner kernel, which is the
+//! optimized IR (`ZYX_DEBUG=8` view); the generated code is derived lazily on
+//! request from the winner.
 mod page;
 mod server;
 
@@ -20,7 +21,7 @@ use crate::{
     Map,
     backend::{DeviceInfo, ProgramId},
     graph::{ClassId, ExecPlan, Graph},
-    kernel::{Kernel, OpId, autotune::OptSeq},
+    kernel::Kernel,
 };
 use std::sync::{Arc, Mutex, OnceLock};
 
@@ -29,13 +30,13 @@ use std::sync::{Arc, Mutex, OnceLock};
 const LAUNCH_NODE_BASE: usize = 1 << 30;
 
 /// A kernel captured during generation together with everything needed to
-/// lazily derive the optimized IR and the generated source code.
+/// show the optimized IR (`ZYX_DEBUG=8` view) and the generated source code.
 #[derive(Clone)]
 pub(crate) struct KernelCapture {
     /// Pre-linearize kernel (`ZYX_DEBUG=4` view).
     pub(crate) sched_kernel: Kernel,
-    /// Optimization sequence chosen by autotune for this program.
-    pub(crate) opt_seq: OptSeq,
+    /// Winner kernel of the autotune search for this program.
+    pub(crate) winner: Kernel,
     /// Device info of the device this program was compiled for.
     pub(crate) dev_info: DeviceInfo,
     /// Human readable device kind ("CUDA", "OpenCL", ...).
@@ -127,7 +128,7 @@ impl Viz {
             };
             kernels.push(captured.map(|cap| KernelCapture {
                 sched_kernel: cap.sched_kernel.clone(),
-                opt_seq: cap.opt_seq.clone(),
+                winner: cap.winner.clone(),
                 dev_info: cap.dev_info.clone(),
                 device_label: cap.device_label,
                 cc: cap.cc,
@@ -213,35 +214,10 @@ impl Target {
     }
 }
 
-/// Derive the optimized kernel (`ZYX_DEBUG=8` view) from the captured
-/// pre-linearize kernel by replaying the exact pipeline the compile cache
-/// replays plus the always-on passes autotune applies before printing IR.
+/// The optimized kernel (`ZYX_DEBUG=8` view): the winner kernel stored by the
+/// autotune search when the program was compiled.
 fn derive_optimized(cap: &KernelCapture) -> Kernel {
-    let mut kernel = cap.sched_kernel.clone();
-    kernel.linearize();
-    kernel.common_subexpression_elimination();
-    kernel.dead_code_elimination();
-    kernel.instruction_schedule();
-    {
-        let global_indices = kernel.get_group_indices();
-        let max_global_dims = cap.dev_info.max_global_work_dims.len();
-        if global_indices.len() > max_global_dims {
-            let n = global_indices.len() + 1 - max_global_dims;
-            let indices: Vec<OpId> = global_indices.values().copied().take(n).collect();
-            kernel.merge_indices(&indices);
-        }
-        kernel.renumber_indices();
-        kernel.verify();
-    }
-    cap.opt_seq.apply(&mut kernel, &cap.dev_info);
-    kernel.run_always_on_optimizations();
-    kernel.run_always_on_optimizations();
-    kernel.run_always_on_optimizations();
-    kernel.fuse_mad();
-    kernel.run_always_on_optimizations();
-    kernel.run_always_on_optimizations();
-    kernel.run_always_on_optimizations();
-    kernel
+    cap.winner.clone()
 }
 
 /// Generate the source code for `target` from the derived optimized kernel.

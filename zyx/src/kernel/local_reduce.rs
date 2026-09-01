@@ -13,7 +13,7 @@
 //! would make performance worse than a naive matmul. It is designed for
 //! standalone reduction ops (e.g. `Tensor::sum` over a large axis).
 
-use super::autotune::OptimizationKind;
+use super::autotune::Optimization;
 use crate::{
     Map,
     backend::DeviceInfo,
@@ -22,19 +22,39 @@ use crate::{
     shape::Dim,
 };
 
+/// Tiled reduction parallelization.
+#[derive(Debug)]
+pub struct TiledReduce {
+    /// Tuples of (operation_id, local_factor, global_factor) for each tiled reduce.
+    pub factors: Vec<(OpId, u64, u64)>,
+}
+
+impl Optimization for TiledReduce {
+    fn nconfigs(&self) -> u64 {
+        self.factors.len() as u64
+    }
+
+    fn apply(&self, kernel: &mut Kernel, config: u64) {
+        let (op_id, factor, tree_branch) = self.factors[config as usize];
+        kernel.local_reduce(op_id, factor as u32, tree_branch as u32);
+    }
+}
+
 impl Kernel {
-    pub(crate) fn opt_local_reduce(&self, dev_info: &DeviceInfo) -> (OptimizationKind, usize) {
+    /// Make the [`TiledReduce`] optimization: scan the kernel for reduction
+    /// loops that can be parallelized across threads.
+    pub fn opt_local_reduce(&self, dev_info: &DeviceInfo) -> Box<dyn Optimization> {
         #[cfg(feature = "time")]
         let _timer = crate::Timer::new("opt_tiled_reduce");
         // Let's not tile reduce kernel with barriers for now
         // Don't apply tiled reduce if there's already a barrier or local index
         if self.ops.values().any(|node| matches!(node.op, Op::Barrier | Op::Range { kind: RangeKind::Local(_), .. })) {
-            return (OptimizationKind::TiledReduce { factors: Vec::new() }, 0);
+            return Box::new(TiledReduce { factors: Vec::new() });
         }
         // Only apply tiled reduce if there's exactly one loop in the kernel
         let n_loops = self.ops.values().filter(|node| matches!(node.op, Op::Loop { .. })).count();
         if n_loops != 1 {
-            return (OptimizationKind::TiledReduce { factors: Vec::new() }, 0);
+            return Box::new(TiledReduce { factors: Vec::new() });
         }
 
         let mut local_axis_sizes: Map<u32, u32> = crate::Map::default();
@@ -77,8 +97,7 @@ impl Kernel {
             }
             op_id = next;
         }
-        let n = factors.len();
-        (OptimizationKind::TiledReduce { factors }, n)
+        Box::new(TiledReduce { factors })
     }
 
     /// Apply tiled reduction parallelization.

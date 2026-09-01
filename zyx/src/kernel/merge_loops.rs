@@ -14,12 +14,33 @@
 
 use std::collections::BTreeMap;
 
-use super::autotune::OptimizationKind;
+use super::autotune::Optimization;
 use crate::{
+    backend::DeviceInfo,
     dtype::Constant,
     kernel::{BOp, Kernel, Op, OpId, RangeKind},
     shape::Dim,
 };
+
+/// Merge nested loops into a single loop (enables tiled_reduce).
+#[derive(Debug)]
+pub struct MergeNestedLoops {
+    /// Each entry is a nested loop chain (outermost first).
+    /// Config index selects which chain to merge.
+    pub groups: Vec<Vec<OpId>>,
+}
+
+impl Optimization for MergeNestedLoops {
+    fn nconfigs(&self) -> u64 {
+        self.groups.len() as u64
+    }
+
+    fn apply(&self, kernel: &mut Kernel, config: u64) {
+        if let Some(loop_ids) = self.groups.get(config as usize) {
+            kernel.merge_nested_loops(loop_ids);
+        }
+    }
+}
 
 impl Kernel {
     /// Get last op in the given loop scope
@@ -202,12 +223,10 @@ impl Kernel {
         self.verify();
     }
 
-    /// Returns the Optimization for merging nested loops and the number of nested loop groups.
-    /// Each group is a chain of nested loops that can be merged into one loop.
-    pub(crate) fn opt_merge_nested_loops(&self) -> (OptimizationKind, usize) {
-        let groups = self.find_nested_loop_groups();
-        let n = groups.len();
-        (OptimizationKind::MergeNestedLoops { groups }, n)
+    /// Make the [`MergeNestedLoops`] optimization: each config merges one
+    /// nested loop chain into a single loop.
+    pub fn opt_merge_nested_loops(&self, _dev_info: &DeviceInfo) -> Box<dyn Optimization> {
+        Box::new(MergeNestedLoops { groups: self.find_nested_loop_groups() })
     }
 
     /// Find all groups of nested loops in the kernel.

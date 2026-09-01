@@ -64,6 +64,15 @@ use crate::{
 };
 
 impl Kernel {
+    /// Has this kernel already been through [`Self::linearize`]?
+    ///
+    /// A pre-linearize kernel stores whole views (store with a `NULL` index);
+    /// after linearization every store carries an actual index op. This is
+    /// the same early-return condition `linearize` uses.
+    pub fn is_linearized(&self) -> bool {
+        !self.ops.values().any(|n| matches!(n.op, Op::Store { index: OpId::NULL, .. }))
+    }
+
     /// Unfold movement operations into index-based operations
     ///
     /// Movement ops (Reshape, Expand, Permute, Pad) are applied directly to axis indices,

@@ -30,6 +30,8 @@ pub enum ZyxError {
     /// the compiled plan no longer matches the inputs. The tape must be
     /// re-frozen.
     FrozenPlanStale(Box<str>),
+    /// Invalid kernel structure (e.g. an op of the wrong kind for a transform)
+    KernelError(Box<str>),
 }
 
 impl ZyxError {
@@ -90,6 +92,16 @@ impl ZyxError {
         write!(e, ", {}:{}:{}", location.file(), location.line(), location.column()).unwrap();
         Self::FrozenPlanStale(e.into())
     }
+
+    /// Kernel error
+    #[track_caller]
+    #[must_use]
+    pub fn kernel_error(e: Box<str>) -> Self {
+        let location = std::panic::Location::caller();
+        let mut e: String = e.into();
+        write!(e, ", {}:{}:{}", location.file(), location.line(), location.column()).unwrap();
+        Self::KernelError(e.into())
+    }
 }
 
 impl std::fmt::Display for ZyxError {
@@ -107,6 +119,7 @@ impl std::fmt::Display for ZyxError {
             )),
             ZyxError::GraphTensorNotRealized(e) => f.write_str(e),
             ZyxError::FrozenPlanStale(e) => f.write_str(e),
+            ZyxError::KernelError(e) => f.write_str(e),
         }
     }
 }

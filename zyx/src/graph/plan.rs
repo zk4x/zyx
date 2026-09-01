@@ -162,7 +162,7 @@ impl ExecPlan {
         let mut store_pool: Map<ClassId, PoolId> = Map::default();
         for &nid in nodes {
             if let Node::Kernel { outputs, program_id, .. } = &graph.nodes[nid].node {
-                let pool = devices[program_id.device].memory_pool_id();
+                let pool = devices[program_id.device_id].memory_pool_id();
                 for &oc in &**outputs {
                     store_pool.insert(oc, pool);
                 }
@@ -195,7 +195,7 @@ impl ExecPlan {
         for &nid in nodes {
             match &graph.nodes[nid].node {
                 Node::Kernel { inputs, outputs, program_id, .. } => {
-                    let pool = devices[program_id.device].memory_pool_id();
+                    let pool = devices[program_id.device_id].memory_pool_id();
                     for &oc in &**outputs {
                         if !allocated.insert(oc) {
                             continue;
@@ -327,7 +327,7 @@ impl Runtime {
                     self.events.insert(BTreeSet::from([buf_id]), event);
                 }
                 ExecNode::Launch { program_id, load_classes, store_classes } => {
-                    let pool_id = self.devices[program_id.device].memory_pool_id();
+                    let pool_id = self.devices[program_id.device_id].memory_pool_id();
                     let mut args = Vec::new();
                     let mut kernel_bufs = BTreeSet::new();
                     for c in load_classes.iter().chain(store_classes.iter()) {
@@ -349,7 +349,7 @@ impl Runtime {
                         println!("launching kernel {program_id:?}");
                     }
                     let event =
-                        self.devices[program_id.device].launch(program_id.program, &mut self.pools[pool_id], &args, wait_list)?;
+                        self.devices[program_id.device_id].launch(program_id.program_id, &mut self.pools[pool_id], &args, wait_list)?;
                     self.events.insert(kernel_bufs, event);
                 }
                 ExecNode::Copy { dst_class, src_class } => {

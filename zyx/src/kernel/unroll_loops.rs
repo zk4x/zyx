@@ -14,7 +14,8 @@
 //! - Improving vectorization opportunities
 //! - Unrolling loops with constant lengths
 
-use super::autotune::OptimizationKind;
+use super::autotune::Optimization;
+use crate::backend::DeviceInfo;
 use crate::kernel::MemLayout;
 #[allow(unused)]
 use crate::{
@@ -24,21 +25,49 @@ use crate::{
     shape::Dim,
 };
 
-impl Kernel {
-    /// Configure loop unrolling optimization.
-    ///
-    /// Returns the optimization variant and number of variants.
-    #[allow(unused)]
-    pub(crate) fn opt_unroll(_: &Kernel) -> (OptimizationKind, usize) {
-        (OptimizationKind::UnrollLoops { factors: vec![8, 4, 16, 2] }, 4)
+/// Unroll loops with a specific factor.
+#[derive(Debug)]
+pub struct UnrollLoops {
+    /// Unroll factors to try for each loop.
+    pub factors: Vec<u64>,
+}
+
+impl Optimization for UnrollLoops {
+    fn nconfigs(&self) -> u64 {
+        self.factors.len() as u64
     }
 
-    /// Configure loop unrolling for constant-length loops.
-    ///
-    /// Returns the optimization variant and number of variants.
-    #[allow(unused)]
-    pub(crate) const fn opt_unroll_constant_loops(_: &Kernel) -> (OptimizationKind, usize) {
-        (OptimizationKind::UnrollConstantLoops, 1)
+    fn apply(&self, kernel: &mut Kernel, config: u64) {
+        let factor = self.factors[config as usize];
+        if (kernel.ops.len().0 as usize) < 5000 {
+            kernel.unroll_loops(factor as Dim);
+        }
+    }
+}
+
+/// Unroll loops with constant lengths.
+#[derive(Debug)]
+pub struct UnrollConstantLoops;
+
+impl Optimization for UnrollConstantLoops {
+    fn nconfigs(&self) -> u64 {
+        1
+    }
+
+    fn apply(&self, kernel: &mut Kernel, _config: u64) {
+        kernel.unroll_constant_loops();
+    }
+}
+
+impl Kernel {
+    /// Make the [`UnrollLoops`] optimization.
+    pub fn opt_unroll(&self, _dev_info: &DeviceInfo) -> Box<dyn Optimization> {
+        Box::new(UnrollLoops { factors: vec![8, 4, 16, 2] })
+    }
+
+    /// Make the [`UnrollConstantLoops`] optimization.
+    pub fn opt_unroll_constant_loops(&self, _dev_info: &DeviceInfo) -> Box<dyn Optimization> {
+        Box::new(UnrollConstantLoops)
     }
 
     /// Eliminate zero-length index operations.

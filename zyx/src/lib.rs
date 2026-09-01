@@ -78,7 +78,7 @@ mod slab;
 mod tape;
 mod tensor;
 mod types;
-mod vendor;
+mod aot;
 #[cfg(feature = "viz")]
 mod viz;
 

@@ -27,7 +27,7 @@ pub trait SlabId: std::fmt::Debug + Clone + Copy + PartialEq + Eq + PartialOrd +
 }
 
 #[derive(Debug)]
-pub(crate) struct Slab<Id: SlabId, T> {
+pub struct Slab<Id: SlabId, T> {
     values: Vec<MaybeUninit<T>>,
     empty: Set<Id>,
     _index: PhantomData<Id>,

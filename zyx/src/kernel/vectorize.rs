@@ -1,13 +1,36 @@
 // Copyright (C) 2025 zk4x
 // SPDX-License-Identifier: LGPL-3.0-only
 
-use super::autotune::OptimizationKind;
+use super::autotune::Optimization;
 use crate::{
     DType, Map, Set,
     backend::DeviceInfo,
     kernel::{BOp, Kernel, MemLayout, Op, OpId, UOp},
     shape::Dim,
 };
+
+/// Combine scalar loads into vectorized loads for better memory bandwidth.
+#[derive(Debug)]
+pub struct Vectorize {
+    /// Supported vector lengths for this device.
+    pub supported_lens: Vec<u8>,
+    pub vectorize_ops: bool,
+}
+
+impl Optimization for Vectorize {
+    fn nconfigs(&self) -> u64 {
+        1
+    }
+
+    fn apply(&self, kernel: &mut Kernel, _config: u64) {
+        kernel.vectorize_loads(&self.supported_lens);
+        kernel.vectorize_stores(&self.supported_lens);
+        if self.vectorize_ops {
+            kernel.vectorize_ops_forward(&self.supported_lens);
+            kernel.vectorize_ops_backward(&self.supported_lens);
+        }
+    }
+}
 
 #[derive(Debug)]
 struct LoadInfo {
@@ -23,10 +46,9 @@ struct StoreInfo {
 }
 
 impl Kernel {
-    #[allow(unused)]
-    pub(crate) fn opt_vectorize(&self, dev_info: &DeviceInfo) -> (OptimizationKind, usize) {
-        let supported_lens = dev_info.supported_vec_lens.clone();
-        (OptimizationKind::Vectorize { supported_lens, vectorize_ops: !dev_info.supported_vec_lens.is_empty() }, 1)
+    /// Make the [`Vectorize`] optimization.
+    pub fn opt_vectorize(&self, dev_info: &DeviceInfo) -> Box<dyn Optimization> {
+        Box::new(Vectorize { supported_lens: dev_info.supported_vec_lens.clone(), vectorize_ops: !dev_info.supported_vec_lens.is_empty() })
     }
 
     /// Vectorize loads.

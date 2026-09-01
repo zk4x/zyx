@@ -21,13 +21,59 @@
 
 use std::collections::BTreeMap;
 
-use super::autotune::OptimizationKind;
+use super::autotune::Optimization;
 use crate::{
     Map, Set,
+    backend::DeviceInfo,
     dtype::Constant,
     kernel::{BOp, Kernel, MemLayout, MemScope, Op, OpId, RangeKind},
     shape::Dim,
 };
+
+/// Coarsen thread-level parallelism by grouping operations.
+#[derive(Debug)]
+pub struct ThreadCoarse {
+    /// Pairs of (operation_id, coarsening_factor) for each group.
+    pub factors: Vec<(OpId, u64)>,
+}
+
+impl Optimization for ThreadCoarse {
+    fn nconfigs(&self) -> u64 {
+        self.factors.len() as u64
+    }
+
+    fn apply(&self, kernel: &mut Kernel, config: u64) {
+        if self.factors.is_empty() {
+            return;
+        }
+        let (op_id, factor) = self.factors[config as usize];
+        kernel.coarsen(op_id, factor);
+    }
+}
+
+/// Register blocking optimization for tiled reductions.
+#[derive(Debug)]
+pub struct RegisterBlocking {
+    /// Reduction splits mapped to tile sizes.
+    pub reduce_splits: BTreeMap<OpId, Vec<u64>>,
+    /// Thread coarsening factors for each global axis.
+    pub thread_coarses: BTreeMap<OpId, Vec<u64>>,
+}
+
+impl Optimization for RegisterBlocking {
+    fn nconfigs(&self) -> u64 {
+        if self.reduce_splits.is_empty() || self.thread_coarses.is_empty() {
+            return 0;
+        }
+        let n_global_options: usize = self.thread_coarses.values().map(|v| v.len() + 1).product();
+        let n_reduce_options: usize = self.reduce_splits.values().map(Vec::len).product();
+        (n_global_options * n_reduce_options) as u64
+    }
+
+    fn apply(&self, kernel: &mut Kernel, config: u64) {
+        kernel.apply_register_blocking(&self.reduce_splits, &self.thread_coarses, config as usize);
+    }
+}
 
 // ## Coalesced local+upcast access
 //
@@ -69,7 +115,9 @@ use crate::{
 // then rewritten to just `lidx`, and `Const(i)` becomes `Mul(Const(i), V)`.
 
 impl Kernel {
-    pub(crate) fn opt_coarsen(&self) -> (OptimizationKind, usize) {
+    /// Make the [`ThreadCoarse`] optimization: scan the kernel for global
+    /// indices that can be coarsened.
+    pub fn opt_coarsen(&self, _dev_info: &DeviceInfo) -> Box<dyn Optimization> {
         #[cfg(feature = "time")]
         let _timer = crate::Timer::new("opt_upcast");
         let mut factors = Vec::new();
@@ -90,8 +138,7 @@ impl Kernel {
             }
             op_id = next;
         }
-        let n_configs = factors.len();
-        (OptimizationKind::ThreadCoarse { factors }, n_configs)
+        Box::new(ThreadCoarse { factors })
     }
 
     /// Thread coarsening and register blocking optimization.
@@ -258,7 +305,9 @@ impl Kernel {
 }
 
 impl Kernel {
-    pub(crate) fn opt_register_blocking(&self) -> (OptimizationKind, usize) {
+    /// Make the [`RegisterBlocking`] optimization: scan the kernel for
+    /// reduction loops and global axes that can be register-blocked.
+    pub fn opt_register_blocking(&self, _dev_info: &DeviceInfo) -> Box<dyn Optimization> {
         #[cfg(feature = "time")]
         let _timer = crate::Timer::new("opt_register_tiling");
         let candidates: Vec<u64> = vec![8, 16, 4, 2];
@@ -296,14 +345,10 @@ impl Kernel {
         }
 
         if global_upcasts.is_empty() || reduce_factor.is_empty() {
-            return (OptimizationKind::RegisterBlocking { reduce_splits: reduce_factor, thread_coarses: global_upcasts }, 0);
+            return Box::new(RegisterBlocking { reduce_splits: reduce_factor, thread_coarses: global_upcasts });
         }
 
-        let n_global_options: usize = global_upcasts.values().map(|v| v.len() + 1).product();
-        let n_reduce_options: usize = reduce_factor.values().map(Vec::len).product();
-
-        let n_configs = n_global_options * n_reduce_options;
-        (OptimizationKind::RegisterBlocking { reduce_splits: reduce_factor, thread_coarses: global_upcasts }, n_configs)
+        Box::new(RegisterBlocking { reduce_splits: reduce_factor, thread_coarses: global_upcasts })
     }
 
     pub(crate) fn apply_register_blocking(

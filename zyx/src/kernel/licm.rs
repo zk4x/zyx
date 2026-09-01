@@ -14,13 +14,32 @@
 //!
 //! These optimizations reduce redundant computations and improve performance.
 
-use super::autotune::OptimizationKind;
-use crate::kernel::{Kernel, Op, OpId};
+use super::autotune::Optimization;
+use crate::{
+    backend::DeviceInfo,
+    kernel::{Kernel, Op, OpId},
+};
 use crate::{Map, Set};
 
+/// Reassociate commutative operations (addition, multiplication)
+/// to group them and reduce instruction count.
+#[derive(Debug)]
+pub struct ReassociateCommutative;
+
+impl Optimization for ReassociateCommutative {
+    fn nconfigs(&self) -> u64 {
+        1
+    }
+
+    fn apply(&self, kernel: &mut Kernel, _config: u64) {
+        kernel.reassociate_commutative();
+    }
+}
+
 impl Kernel {
-    pub(crate) const fn opt_reassociate_commutative(_: &Kernel) -> (OptimizationKind, usize) {
-        (OptimizationKind::ReassociateCommutative, 1)
+    /// Make the [`ReassociateCommutative`] optimization.
+    pub fn opt_reassociate_commutative(&self, _dev_info: &DeviceInfo) -> Box<dyn Optimization> {
+        Box::new(ReassociateCommutative)
     }
 
     /// Swap commutative operands for better instruction scheduling.

@@ -14,7 +14,7 @@
 //! - Improving vectorization opportunities
 //! - Splitting global indices into local factors
 
-use super::autotune::OptimizationKind;
+use super::autotune::Optimization;
 use crate::{
     backend::DeviceInfo,
     dtype::Constant,
@@ -22,19 +22,75 @@ use crate::{
     shape::Dim,
 };
 
+/// Split a global index into local factors for parallelization.
+#[derive(Debug)]
+pub struct SplitGlobalToLocal {
+    /// Pairs of (operation_id, split_factor) for each split.
+    pub factors: Vec<(OpId, u32)>,
+}
+
+impl Optimization for SplitGlobalToLocal {
+    fn nconfigs(&self) -> u64 {
+        self.factors.len() as u64
+    }
+
+    fn apply(&self, kernel: &mut Kernel, config: u64) {
+        #[cfg(feature = "time")]
+        let _timer = crate::Timer::new("SplitGlobalToLocal");
+        let (op_id, factor) = self.factors[config as usize];
+        let Op::Range { axis, kind: RangeKind::Group(len) } = kernel.ops[op_id].op else {
+            unreachable!()
+        };
+        // valid factors are checked by opt init
+        let len = kernel.resolve_const(len).and_then(crate::dtype::Constant::as_dim).unwrap();
+        let group_len = kernel.const_idx(len / Dim::from(factor));
+        kernel.split_dim(
+            op_id,
+            vec![
+                Op::Range { axis, kind: RangeKind::Group(group_len) },
+                Op::Range { axis, kind: RangeKind::Local(factor) },
+            ],
+        );
+    }
+}
+
+/// Split a loop into smaller iterations.
+#[derive(Debug)]
+pub struct SplitLoop {
+    /// Pairs of (loop_id, split_factor) for each split.
+    pub factors: Vec<(OpId, u64)>,
+}
+
+impl Optimization for SplitLoop {
+    fn nconfigs(&self) -> u64 {
+        self.factors.len() as u64
+    }
+
+    fn apply(&self, kernel: &mut Kernel, config: u64) {
+        let (op_id, factor) = self.factors[config as usize];
+        let Op::Loop { len: len_id } = kernel.ops[op_id].op else {
+            unreachable!()
+        };
+        let Some(len) = kernel.resolve_const(len_id).and_then(crate::dtype::Constant::as_dim) else {
+            return;
+        };
+        let len1 = kernel.const_idx(len / factor as Dim);
+        let len2 = kernel.const_idx(factor);
+        kernel.split_dim(op_id, vec![Op::Loop { len: len1 }, Op::Loop { len: len2 }]);
+    }
+}
+
 impl Kernel {
-    /// Optimize splitting global indices to local factors.
+    /// Make the [`SplitGlobalToLocal`] optimization: scan the kernel for
+    /// global indices that can be split into local factors.
     ///
-    /// This method splits global indices into local factors for
-    /// parallelization across threads.
-    ///
-    /// Returns the optimization variant and number of variants.
-    pub(crate) fn opt_split_global_to_local(&self, dev_info: &DeviceInfo) -> (OptimizationKind, usize) {
+    /// Config ids are ordered by factor, hardware-aligned factors first
+    /// (e.g. 64/32 for warp-sized groups).
+    pub fn opt_split_global_to_local(&self, dev_info: &DeviceInfo) -> Box<dyn Optimization> {
         #[cfg(feature = "time")]
         let _timer = crate::Timer::new("opt_split_global_to_local");
         if self.ops.values().any(|node| matches!(node.op, Op::EndIf)) {
-            let factors = Vec::new();
-            return (OptimizationKind::SplitLoop { factors }, 0);
+            return Box::new(SplitGlobalToLocal { factors: Vec::new() });
         }
         let mut local_axis_sizes: crate::Map<u32, u32> = crate::Map::default();
         for op in self.ops.values() {
@@ -72,17 +128,12 @@ impl Kernel {
             }
             op_id = self.next_op(op_id);
         }
-        let n_configs = factors.len();
-        (OptimizationKind::SplitGlobalToLocal { factors }, n_configs)
+        Box::new(SplitGlobalToLocal { factors })
     }
 
-    /// Optimize splitting large loops.
-    ///
-    /// This method splits large loops into smaller iterations for
-    /// better instruction scheduling and vectorization.
-    ///
-    /// Returns the optimization variant and number of variants.
-    pub(crate) fn opt_split_loop(&self) -> (OptimizationKind, usize) {
+    /// Make the [`SplitLoop`] optimization: scan the kernel for large loops
+    /// that can be split into smaller iterations.
+    pub fn opt_split_loop(&self, _dev_info: &DeviceInfo) -> Box<dyn Optimization> {
         #[cfg(feature = "time")]
         let _timer = crate::Timer::new("opt_split_loop");
         let candidates = vec![8, 16, 4, 2];
@@ -104,8 +155,7 @@ impl Kernel {
             }
             op_id = self.next_op(op_id);
         }
-        let n_configs = factors.len();
-        (OptimizationKind::SplitLoop { factors }, n_configs)
+        Box::new(SplitLoop { factors })
     }
 
     /// Splits dim (index or loop) into multiple indices or loops
