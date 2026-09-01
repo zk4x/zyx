@@ -339,6 +339,57 @@ impl Runtime {
                             let grad_x = self.push_binary_node(graph_id, mask, grad_e, BOp::Mul);
                             accum_grad(self, graph_id, &mut grads, x, grad_x);
                         }
+                        BOp::Mul => {
+                            // d(prod x)/dx_i is the product of every *other* element.
+                            // The short form grad * z / x breaks as soon as x holds a
+                            // zero, so build it from the product of the nonzero
+                            // elements (p) and the number of zeros (nz) along the
+                            // reduced axes:
+                            //   nz == 0 -> p / x_i
+                            //   nz == 1 -> p at the zero itself, 0 everywhere else
+                            //   nz > 1  -> 0
+                            let x_dims = self.graphs[graph_id].shape(x);
+                            let dtype = self.graphs[graph_id].dtype(x);
+                            let zero = self.push_const(graph_id, Constant::new(0u8).cast(dtype));
+                            let one = self.push_const(graph_id, Constant::new(1u8).cast(dtype));
+                            // Shape dims are lengths: always integer-typed,
+                            // never the tensor's data dtype.
+                            let one_dim = self.push_const(graph_id, Constant::new(1i64));
+                            let kept: Vec<ClassId> = x_dims
+                                .iter()
+                                .enumerate()
+                                .map(|(i, &d)| if axes.contains(&(i as UAxis)) { one_dim } else { d })
+                                .collect();
+                            let kept_shape = self.shape_class(graph_id, kept);
+                            let x_shape = self.shape_class(graph_id, x_dims);
+                            // 1 at every zero of x, 0 elsewhere.
+                            let is_zero_b = self.push_binary_node(graph_id, x, zero, BOp::Eq);
+                            let is_zero = self.push_node(graph_id, Node::Cast { x: is_zero_b, dtype }).1;
+                            // Zeros become ones, so the product below keeps only the
+                            // nonzero factors and the division never divides by zero.
+                            let safe_x = self.push_binary_node(graph_id, x, is_zero, BOp::Add);
+                            let p = self.push_node(graph_id, Node::Reduce { x: safe_x, rop: BOp::Mul, axes: axes.clone() }).1;
+                            let nz = self.push_node(graph_id, Node::Reduce { x: is_zero, rop: BOp::Add, axes: axes.clone() }).1;
+                            let p_r = self.push_node(graph_id, Node::Reshape { x: p, shape: kept_shape }).1;
+                            let p_e = self.push_node(graph_id, Node::Expand { x: p_r, shape: x_shape }).1;
+                            let nz_r = self.push_node(graph_id, Node::Reshape { x: nz, shape: kept_shape }).1;
+                            let nz_e = self.push_node(graph_id, Node::Expand { x: nz_r, shape: x_shape }).1;
+                            // No zero along the axis: every element divides p.
+                            let no_zero_b = self.push_binary_node(graph_id, nz_e, zero, BOp::Eq);
+                            let no_zero = self.push_node(graph_id, Node::Cast { x: no_zero_b, dtype }).1;
+                            let quot = self.push_binary_node(graph_id, p_e, safe_x, BOp::Div);
+                            let dense = self.push_binary_node(graph_id, quot, no_zero, BOp::Mul);
+                            // Exactly one zero along the axis: p goes to that element.
+                            let one_zero_b = self.push_binary_node(graph_id, nz_e, one, BOp::Eq);
+                            let one_zero = self.push_node(graph_id, Node::Cast { x: one_zero_b, dtype }).1;
+                            let at_zero = self.push_binary_node(graph_id, one_zero, is_zero, BOp::Mul);
+                            let sparse = self.push_binary_node(graph_id, p_e, at_zero, BOp::Mul);
+                            let partial = self.push_binary_node(graph_id, dense, sparse, BOp::Add);
+                            let grad_r = self.push_node(graph_id, Node::Reshape { x: grad, shape: kept_shape }).1;
+                            let grad_e = self.push_node(graph_id, Node::Expand { x: grad_r, shape: x_shape }).1;
+                            let grad_x = self.push_binary_node(graph_id, partial, grad_e, BOp::Mul);
+                            accum_grad(self, graph_id, &mut grads, x, grad_x);
+                        }
                         _ => {}
                     }
                 }
