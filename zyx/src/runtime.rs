@@ -2086,8 +2086,8 @@ impl Runtime {
             stores: Vec::new(),
             kernel: Kernel::new(DeviceId::AUTO),
         });
-        let shape_op = self.replay_symbolic_into_kernel(kernel_id, shape_id);
-        let op_id = self.kernels[kernel_id].kernel.param(dtype, shape_op);
+        let shape = self.replay_symbolic_into_kernel(kernel_id, shape_id);
+        let op_id = self.kernels[kernel_id].kernel.push_back(Op::Param { dtype, kind: ParamKind::Global, shape });
         self.kernels[kernel_id].loads.push(x);
         self.retain(x);
         (kernel_id, op_id)
@@ -3856,7 +3856,8 @@ impl Runtime {
                 ref t => panic!("assign: src {src} is not an eager/promoted tensor: {t:?}"),
             };
             let dst_shape_op = self.replay_symbolic_into_kernel(kernel_id, dst_shape_id);
-            let mut_param = self.kernels[kernel_id].kernel.param_mut(dtype, dst_shape_op);
+            let mut_param =
+                self.kernels[kernel_id].kernel.push_back(Op::Param { dtype, kind: ParamKind::GlobalMut, shape: dst_shape_op });
             self.kernels[kernel_id].kernel.store(mut_param, src_op, OpId::NULL);
             self.kernels[kernel_id].stores.push(dst);
             if let TensorData::Leaf { depends_on, .. } = &mut self.tensors[dst] {
@@ -4505,7 +4506,8 @@ impl Runtime {
             debug_assert!(!self.kernels[kid].loads.contains(&x), "kernel {kid:?} both loads and stores tid {x}");
 
             let store_shape_id = self.kernels[kid].kernel.stack_shape_dims(op_id);
-            let dst_id = self.kernels[kid].kernel.param_mut(dtype, store_shape_id);
+            let dst_id =
+                self.kernels[kid].kernel.push_back(Op::Param { dtype, kind: ParamKind::GlobalMut, shape: store_shape_id });
             self.kernels[kid].kernel.store(dst_id, op_id, OpId::NULL);
             self.kernels[kid].stores.push(x);
             kid

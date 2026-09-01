@@ -1073,7 +1073,7 @@ impl Graph {
         let dims = self.shape(cid);
         let shape = self.replay_symbolic_into_kernel(kid, &dims);
         let dtype = self.dtype(cid);
-        let op_id = self.jit_kernels[kid].kernel.param(dtype, shape);
+        let op_id = self.jit_kernels[kid].kernel.push_back(Op::Param { dtype, kind: ParamKind::Global, shape });
         let data = &mut self.jit_kernels[kid];
         data.outputs = vec![cid; rc as usize];
         data.loads.push(cid);
@@ -1119,7 +1119,7 @@ impl Graph {
             let dtype = self.dtype(cid);
             let kernel = &mut self.jit_kernels[kid].kernel;
             let shape = kernel.stack_shape_dims(op_id);
-            let dst = kernel.param_mut(dtype, shape);
+            let dst = kernel.push_back(Op::Param { dtype, kind: ParamKind::GlobalMut, shape });
             kernel.store(dst, op_id, OpId::NULL);
             self.jit_kernels[kid].stores.push(cid);
             visited.remove(&cid);

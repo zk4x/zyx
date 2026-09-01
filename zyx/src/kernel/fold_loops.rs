@@ -763,9 +763,9 @@ mod tests {
     fn make_gather_kernel_with_source_before_indices() -> (Kernel, OpId) {
         let mut k = Kernel::new(DeviceId::AUTO);
 
-        let r95 = k.param(DType::U16, OpId::NULL);
-        let r114 = k.param(DType::U16, OpId::NULL);
-        let r122 = k.param_mut(DType::U16, OpId::NULL);
+        let r95 = k.param(DType::U16);
+        let r114 = k.param(DType::U16);
+        let r122 = k.param_mut(DType::U16);
         let sh3 = k.const_idx(3u32);
         let r7 = k.const_idx(0u32);
         let r22 = k.const_val(0u16);
@@ -843,10 +843,10 @@ mod tests {
     fn make_mnist_gather_kernel(dim: u64) -> (Kernel, OpId) {
         let mut k = Kernel::new(DeviceId::AUTO);
 
-        let r29 = k.param(DType::I32, OpId::NULL);
-        let r38 = k.param(DType::I32, OpId::NULL);
-        let r49 = k.param(DType::F32, OpId::NULL);
-        let r57 = k.param_mut(DType::F32, OpId::NULL);
+        let r29 = k.param(DType::I32);
+        let r38 = k.param(DType::I32);
+        let r49 = k.param(DType::F32);
+        let r57 = k.param_mut(DType::F32);
         let r1 = k.const_idx(0u32);
         let r8 = k.const_val(0.0f32);
         let r15 = k.const_idx(dim);
@@ -923,10 +923,10 @@ mod tests {
     fn make_scatter_kernel(dim: u64, num_indices: u64) -> (Kernel, OpId) {
         let mut k = Kernel::new(DeviceId::AUTO);
 
-        let r29 = k.param(DType::I32, OpId::NULL);
-        let r38 = k.param(DType::I32, OpId::NULL);
-        let r47 = k.param(DType::I32, OpId::NULL);
-        let r61 = k.param_mut(DType::I32, OpId::NULL);
+        let r29 = k.param(DType::I32);
+        let r38 = k.param(DType::I32);
+        let r47 = k.param(DType::I32);
+        let r61 = k.param_mut(DType::I32);
         let r14 = k.const_idx(0u32);
         let r1 = k.const_val(0i32);
         let r10 = k.const_idx(num_indices);
@@ -985,7 +985,7 @@ mod tests {
     #[test]
     fn test_ceil_mask_loop_folds() {
         let mut k = Kernel::new(DeviceId::AUTO);
-        let out = k.param_mut(DType::I32, OpId::NULL);
+        let out = k.param_mut(DType::I32);
         let out_shape = k.const_idx(2u32);
         let g = k.group_range(0, out_shape);
         let acc = k.storage(DType::I32, MemScope::Register, 1);
@@ -1037,8 +1037,8 @@ mod tests {
     fn test_llama_onehot_loop_folds() {
         let mut k = Kernel::new(DeviceId::AUTO);
 
-        let r67 = k.param(DType::U32, OpId::NULL);
-        let r30 = k.param_mut(DType::F16, OpId::NULL);
+        let r67 = k.param(DType::U32);
+        let r30 = k.param_mut(DType::F16);
         let c0 = k.const_idx(0u32);
         let c1 = k.const_idx(1u32);
         let c2 = k.const_idx(2u32);
@@ -1148,7 +1148,7 @@ mod tests {
     #[test]
     fn test_cmpge_arange_loop_folds() {
         let mut k = Kernel::new(DeviceId::AUTO);
-        let out = k.param_mut(DType::I64, OpId::NULL);
+        let out = k.param_mut(DType::I64);
         let out_shape = k.const_idx(2u32);
         let g = k.group_range(0, out_shape);
         let acc = k.storage(DType::I64, MemScope::Register, 1);

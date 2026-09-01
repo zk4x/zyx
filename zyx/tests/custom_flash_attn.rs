@@ -26,7 +26,6 @@ fn flash_attention_compiles() -> Result<(), ZyxError> {
     let mut k = Kernel::new(DeviceId::AUTO);
 
     // Dims / constants
-    let s_c = k.const_idx(S);
     let d_c = k.const_idx(D);
     let bm_c = k.const_idx(BLOCK_M);
     let bn_c = k.const_idx(BLOCK_N);
@@ -36,11 +35,10 @@ fn flash_attention_compiles() -> Result<(), ZyxError> {
     let scale = k.const_val(1.0 / (D as f32).sqrt());
 
     // Params: Q, K, V inputs + Out output, all [S, D] row-major
-    let q_shape = k.stack(&[s_c, d_c]);
-    let q = k.param(DType::F32, q_shape);
-    let k_param = k.param(DType::F32, q_shape);
-    let v = k.param(DType::F32, q_shape);
-    let out = k.param_mut(DType::F32, q_shape);
+    let q = k.param(DType::F32);
+    let k_param = k.param(DType::F32);
+    let v = k.param(DType::F32);
+    let out = k.param_mut(DType::F32);
 
     // Shared memory tiles (SRAM): one K and one V tile per workgroup
     let k_tile = k.storage(DType::F32, MemScope::Local, BLOCK_N * D);

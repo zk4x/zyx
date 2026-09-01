@@ -1026,9 +1026,9 @@ mod tests {
     fn make_mask_kernel() -> (Kernel, OpId) {
         let mut k = Kernel::new(DeviceId::AUTO);
 
-        let r72 = k.param(DType::I32, OpId::NULL);
-        let r65 = k.param(DType::F32, OpId::NULL);
-        let r41 = k.param_mut(DType::F32, OpId::NULL);
+        let r72 = k.param(DType::I32);
+        let r65 = k.param(DType::F32);
+        let r41 = k.param_mut(DType::F32);
 
         let c0 = k.const_idx(0u32);
         let c1 = k.const_idx(1u32);
