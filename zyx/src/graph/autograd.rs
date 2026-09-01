@@ -390,7 +390,7 @@ impl Runtime {
                             let grad_x = self.push_binary_node(graph_id, partial, grad_e, BOp::Mul);
                             accum_grad(self, graph_id, &mut grads, x, grad_x);
                         }
-                        _ => {}
+                        ref bop => todo!("gradient for reduce {bop:?} is not yet supported"),
                     }
                 }
                 Node::ToDevice { x, .. } => {
@@ -405,7 +405,9 @@ impl Runtime {
                 Node::After { x, .. } => {
                     accum_grad(self, graph_id, &mut grads, x, grad);
                 }
-                Node::Leaf { .. } | Node::Const { .. } | Node::Stack { .. } | Node::Kernel { .. } => {}
+                Node::Stack { .. } => todo!("stack backward"),
+                Node::Leaf { .. } | Node::Const { .. } => {}
+                Node::Kernel { .. } => todo!("backward through custom kernel"),
             }
         }
 
