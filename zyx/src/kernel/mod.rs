@@ -21,9 +21,9 @@
 //! let a_shape = kernel.add_shape(&[m, k]);
 //! let b_shape = kernel.add_shape(&[k, n]);
 //! let c_shape = kernel.add_shape(&[m, n]);
-//! let a_buf = kernel.param(DType::F16, a_shape);
-//! let b_buf = kernel.param(DType::F16, b_shape);
-//! let c_buf = kernel.param_mut(DType::F32, c_shape);
+//! let a_buf = kernel.param(DType::F16);
+//! let b_buf = kernel.param(DType::F16);
+//! let c_buf = kernel.param_mut(DType::F32);
 //!
 //! let glen_x = kernel.const_idx(m / 16);
 //! let glen_y = kernel.const_idx(n / 8);
@@ -157,13 +157,13 @@ pub(crate) const IDX_T: DType = DType::I64;
 /// let n = 256;
 /// let shape = kernel.add_shape(&[n]);
 /// let len = kernel.const_idx(n);
-/// let inp = kernel.param(DType::F32, shape);
+/// let inp = kernel.param(DType::F32);
 /// let gidx = kernel.group_range(0, len);
 /// let loaded = kernel.load(inp, gidx);
 /// let s = kernel.sin(loaded);
 /// let c = kernel.cos(loaded);
 /// let result = kernel.add(s, c);
-/// let out = kernel.param_mut(DType::F32, shape);
+/// let out = kernel.param_mut(DType::F32);
 /// kernel.store(out, result, gidx);
 /// ```
 ///
@@ -178,12 +178,12 @@ pub(crate) const IDX_T: DType = DType::I64;
 /// let mut kernel = Kernel::new(DeviceId::AUTO);
 /// let n = 4;
 /// let shape = kernel.add_shape(&[n]);
-/// let inp = kernel.param(DType::F32, shape);
+/// let inp = kernel.param(DType::F32);
 /// let len = kernel.const_idx(n);
 /// let gidx = kernel.group_range(0, len);
 /// let loaded = kernel.load(inp, gidx);
 /// let result = kernel.mad(loaded, loaded, loaded); // x*x + x
-/// let out = kernel.param_mut(DType::F32, shape);
+/// let out = kernel.param_mut(DType::F32);
 /// kernel.store(out, result, gidx);
 ///
 /// let compiled = kernel.compile()?;

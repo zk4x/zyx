@@ -262,6 +262,11 @@ Add `kernel.debug()` temporarily in code to print the IR (op IDs, args, loop sco
 
 Write a minimal reproducer test, then add `panic!("A")`, `panic!("B")`, ... along the suspect path (panics flush; `eprintln!` may not before a SIGSEGV). Narrow down from the last printed marker.
 
+### Lock watchdog (src/mutex.rs)
+
+`mutex.rs` contains a **commented-out watchdog** that panics (at lines ~88/107) when `RT.lock()` is held for too long. It is NOT a deadlock detector in the reentrancy sense — a "deadlock" panic from it means some path holds the RT lock for an excessive time (e.g. a slow autotune run starving everything else), not a real deadlock. Re-enable it (uncomment in `mutex.rs`) when a hang appears: the panic prints a backtrace naming the code path that holds the lock too long.
+
+
 ### Hangs
 
 Add `println!` markers along the suspect path and run with `-- --nocapture`: the LAST printed marker localizes the hang. Combine with `timeout N` so the run terminates on its own, then read the tail of the output.
