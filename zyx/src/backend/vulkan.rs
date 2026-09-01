@@ -617,6 +617,8 @@ pub(super) fn initialize_device(
     }
 
     let vulkan_paths = [
+        "libvulkan.so.1",
+        "libvulkan.so",
         "/lib64/libvulkan.so",
         "/lib64/libvulkan.so.1",
         "/lib/libvulkan.so",

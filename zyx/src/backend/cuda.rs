@@ -326,6 +326,8 @@ pub(super) fn initialize_device(
     }
 
     let cuda_paths = [
+        "libcuda.so.1",
+        "libcuda.so",
         "/lib64/libcuda.so",
         "/lib/libcuda.so",
         "/usr/lib64/libcuda.so",

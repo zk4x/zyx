@@ -182,6 +182,8 @@ pub(super) fn initialize_device(
 
     // Search for opencl dynamic library path, kinda primitive, but fast and mostly works
     let mut opencl_paths = Vec::new();
+    opencl_paths.push(std::path::PathBuf::from("libOpenCL.so"));
+    opencl_paths.push(std::path::PathBuf::from("libOpenCL.so.1"));
     for lib_folder in ["/lib", "/lib64", "/usr/lib", "/usr/lib64", "/usr/lib/x86_64-linux-gnu"] {
         if let Ok(lib_folder) = std::fs::read_dir(lib_folder) {
             for entry in lib_folder.flatten() {

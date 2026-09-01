@@ -135,6 +135,8 @@ pub(super) fn initialize_device(
     }
 
     let hip_paths = [
+        "libamdhip64.so",
+        "libamdhip64.so.1",
         "/lib64/libamdhip64.so",
         "/lib/x86_64-linux-gnu/libamdhip64.so",
         "/usr/lib64/hip/libhip_hcc.so",
