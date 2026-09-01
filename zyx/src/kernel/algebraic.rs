@@ -1016,7 +1016,7 @@ fn fold_cmp(bop: BOp, lb: Dim, ub: Dim, c: Dim, const_is_left: bool) -> Option<b
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::kernel::{DeviceId, MemLayout, MemScope, ParamKind};
+    use crate::kernel::{DeviceId, MemScope};
 
     /// Build the cumsum-window mask kernel exactly as linearize produces it
     /// for the gather_f32_dtype one-hot reduce: thread index r47 (outer loop)
@@ -1026,9 +1026,9 @@ mod tests {
     fn make_mask_kernel() -> (Kernel, OpId) {
         let mut k = Kernel::new(DeviceId::AUTO);
 
-        let r72 = k.param(DType::I32, ParamKind::Global, OpId::NULL);
-        let r65 = k.param(DType::F32, ParamKind::Global, OpId::NULL);
-        let r41 = k.param(DType::F32, ParamKind::GlobalMut, OpId::NULL);
+        let r72 = k.param(DType::I32, OpId::NULL);
+        let r65 = k.param(DType::F32, OpId::NULL);
+        let r41 = k.param_mut(DType::F32, OpId::NULL);
 
         let c0 = k.const_idx(0u32);
         let c1 = k.const_idx(1u32);
@@ -1037,13 +1037,13 @@ mod tests {
         let c4 = k.const_idx(4u32);
         let c7 = k.const_idx(7u32);
 
-        let r37 = k.group_index(0, c4);
+        let r37 = k.group_range(0, c4);
 
         // Outer loop r47 (0..4), inner loop r81 (0..4).
         let r47 = k.loop_(c4);
         let r78 = k.storage(DType::I64, MemScope::Register, 1);
         let r77 = k.const_val(0i64);
-        k.store(r78, r77, c0, MemLayout::Scalar);
+        k.store(r78, r77, c0);
         let r81 = k.loop_(c4);
 
         let r92 = k.binary(r81, c2, BOp::BitShiftLeft);
@@ -1064,19 +1064,19 @@ mod tests {
 
         // Keep the mask alive via an accumulate that feeds a store.
         let r131 = k.cast(r129, DType::I64);
-        let r85 = k.load(r78, c0, MemLayout::Scalar);
+        let r85 = k.load(r78, c0);
         let r86 = k.binary(r131, r85, BOp::Add);
-        k.store(r78, r86, c0, MemLayout::Scalar);
+        k.store(r78, r86, c0);
         k.end_loop();
 
-        let r14 = k.load(r78, c0, MemLayout::Scalar);
+        let r14 = k.load(r78, c0);
         let r21 = k.cast(r14, DType::I32);
-        let r23 = k.load(r72, r37, MemLayout::Scalar);
+        let r23 = k.load(r72, r37);
         let r25 = k.binary(r23, r21, BOp::Eq);
         let r26 = k.cast(r25, DType::F32);
-        let r27 = k.load(r65, r47, MemLayout::Scalar);
+        let r27 = k.load(r65, r47);
         let r32 = k.binary(r26, r27, BOp::Mul);
-        k.store(r41, r32, r37, MemLayout::Scalar);
+        k.store(r41, r32, r37);
         k.end_loop();
 
         (k, r129)

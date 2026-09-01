@@ -1,7 +1,7 @@
 // Copyright (C) 2025 zk4x
 // SPDX-License-Identifier: LGPL-3.0-only
 
-use zyx::kernel::{DeviceId, Kernel, MMADType, MMADims, MMALayout, MemLayout, MemScope, OpId, ParamKind};
+use zyx::kernel::{DeviceId, Kernel, MMADType, MMADims, MMALayout, MemScope, OpId, ParamKind};
 use zyx::{DType, ReduceOp, Scalar, Tensor, ZyxError};
 
 /// Tensor-core matmul: C = A @ B where A(M×K, FP16), B(K×N, FP16), C(M×N, FP32).
@@ -26,15 +26,15 @@ fn wmma_matmul() -> Result<(), ZyxError> {
     //let shape_kn = kernel.stack(&[k_c, n_c]);
     //let shape_mn = kernel.stack(&[m_c, n_c]);
 
-    let a_buf = kernel.param(DType::F16, ParamKind::Global, OpId::NULL);
-    let b_buf = kernel.param(DType::F16, ParamKind::Global, OpId::NULL);
-    let c_buf = kernel.param(DType::F32, ParamKind::GlobalMut, OpId::NULL);
+    let a_buf = kernel.param(DType::F16, OpId::NULL);
+    let b_buf = kernel.param(DType::F16, OpId::NULL);
+    let c_buf = kernel.param_mut(DType::F32, OpId::NULL);
 
     let gidx_len = kernel.const_idx((m / 16) as u32);
     let gidy_len = kernel.const_idx((n / 8) as u32);
-    let gidx = kernel.group_index(0, gidx_len);
-    let gidy = kernel.group_index(1, gidy_len);
-    let wid = kernel.local_index(0, 32);
+    let gidx = kernel.group_range(0, gidx_len);
+    let gidy = kernel.group_range(1, gidy_len);
+    let wid = kernel.local_range(0, 32);
 
     let [c0, c1, c2, c4, c8, c16] = kernel.const_idxs([0u32, 1, 2, 4, 8, 16]);
     let n_const = kernel.const_idx(n as u32);
@@ -56,7 +56,7 @@ fn wmma_matmul() -> Result<(), ZyxError> {
     let acc = kernel.storage(DType::F32, MemScope::Register, 4);
     let zf = kernel.const_val(0.0f32);
     let zero_acc = kernel.stack(&[zf, zf, zf, zf]);
-    kernel.store(acc, zero_acc, c0, MemLayout::Vector(4));
+    kernel.store_vector(acc, zero_acc, c0, 4);
 
     // K loop (k/8 iterations)
     let k_loop = kernel.loop_(k_div_8);
@@ -65,42 +65,42 @@ fn wmma_matmul() -> Result<(), ZyxError> {
     // Load A fragment: 4 f16 per thread (m16 × k8)
     let a_base = kernel.mad(a_row, k_const, k_off);
     let a_base = kernel.add(a_base, col_in_tile);
-    let a_load_0 = kernel.load(a_buf, a_base, MemLayout::Scalar);
+    let a_load_0 = kernel.load(a_buf, a_base);
     let a_base_p1 = kernel.add(a_base, c1);
-    let a_load_1 = kernel.load(a_buf, a_base_p1, MemLayout::Scalar);
+    let a_load_1 = kernel.load(a_buf, a_base_p1);
     let a_base2 = kernel.mad(c8, k_const, a_base);
-    let a_load_2 = kernel.load(a_buf, a_base2, MemLayout::Scalar);
+    let a_load_2 = kernel.load(a_buf, a_base2);
     let a_base2_p1 = kernel.add(a_base2, c1);
-    let a_load_3 = kernel.load(a_buf, a_base2_p1, MemLayout::Scalar);
+    let a_load_3 = kernel.load(a_buf, a_base2_p1);
     let a_frag = kernel.stack(&[a_load_0, a_load_1, a_load_2, a_load_3]);
 
     // Load B fragment: 2 f16 per thread (k8 × n8)
     let b_row = kernel.add(k_off, col_in_tile);
     let b_base = kernel.mad(b_row, n_const, b_col);
-    let b_load_0 = kernel.load(b_buf, b_base, MemLayout::Scalar);
+    let b_load_0 = kernel.load(b_buf, b_base);
     let b_base_n = kernel.add(b_base, n_const);
-    let b_load_1 = kernel.load(b_buf, b_base_n, MemLayout::Scalar);
+    let b_load_1 = kernel.load(b_buf, b_base_n);
     let b_frag = kernel.stack(&[b_load_0, b_load_1]);
 
     // WMMA: acc = A_frag @ B_frag + acc
-    let acc_old = kernel.load(acc, c0, MemLayout::Vector(4));
+    let acc_old = kernel.load_vector(acc, c0, 4);
     let acc_new = kernel.wmma(MMADims::m16n8k8, MMALayout::row_col, MMADType::f16_f16_f16_f32, a_frag, b_frag, acc_old);
-    kernel.store(acc, acc_new, c0, MemLayout::Vector(4));
+    kernel.store_vector(acc, acc_new, c0, 4);
     kernel.end_loop();
 
     // Store result to C
-    let acc_final = kernel.load(acc, c0, MemLayout::Vector(4));
+    let acc_final = kernel.load_vector(acc, c0, 4);
     let [co, c1v, c2v, c3v] = kernel.devectorize(acc_final);
 
     let c_col = kernel.add(tile_base_col, col_in_tile);
     let c_base = kernel.mad(a_row, n_const, c_col);
-    kernel.store(c_buf, co, c_base, MemLayout::Scalar);
+    kernel.store(c_buf, co, c_base);
     let c_base_p1 = kernel.add(c_base, c1);
-    kernel.store(c_buf, c1v, c_base_p1, MemLayout::Scalar);
+    kernel.store(c_buf, c1v, c_base_p1);
     let c_base2 = kernel.mad(c8, n_const, c_base);
-    kernel.store(c_buf, c2v, c_base2, MemLayout::Scalar);
+    kernel.store(c_buf, c2v, c_base2);
     let c_base2_p1 = kernel.add(c_base2, c1);
-    kernel.store(c_buf, c3v, c_base2_p1, MemLayout::Scalar);
+    kernel.store(c_buf, c3v, c_base2_p1);
 
     // Compile & run
     let compiled = match kernel.compile() {

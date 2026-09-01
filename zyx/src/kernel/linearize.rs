@@ -540,7 +540,7 @@ impl Kernel {
                             // Zero the offset where the padding condition fails, so the load
                             // always reads in-bounds, then zero the loaded value itself.
                             let offset = self.mul(pc, index);
-                            let z = self.load(src, offset, MemLayout::Scalar);
+                            let z = self.load(src, offset);
                             self.ops[op_id].op = Op::Binary { x: pc, y: z, bop: BOp::Mul };
                         }
                     }
@@ -579,7 +579,7 @@ impl Kernel {
                     let dims = self.shape_ids(dst);
                     let mut view = Vec::new();
                     for (axis, &len) in dims.iter().enumerate().rev() {
-                        let idx = self.group_index(axis as u32, len);
+                        let idx = self.group_range(axis as u32, len);
                         view.push(SDim::new(idx, len));
                     }
                     view.reverse();

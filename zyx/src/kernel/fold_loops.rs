@@ -660,7 +660,7 @@ impl Kernel {
 mod tests {
     use crate::dtype::Constant;
     use crate::dtype::DType;
-    use crate::kernel::{BOp, DeviceId, Kernel, MemLayout, MemScope, Op, OpId, ParamKind};
+    use crate::kernel::{BOp, DeviceId, Kernel, MemScope, Op, OpId};
 
     /// Build a kernel matching the REAL index_select IR pattern
     /// where the accumulated value is computed AFTER load(acc).
@@ -686,7 +686,7 @@ mod tests {
 
         let zi = k.const_idx(0u32);
         let zf = k.const_val(0.0f32);
-        k.store(acc, zf, zi, MemLayout::Scalar);
+        k.store(acc, zf, zi);
 
         let lc = k.const_idx(loop_len as i64);
         let loop_id = k.loop_(lc);
@@ -695,7 +695,7 @@ mod tests {
         let _source = k.const_val(42.0f32); // simplified: no tensor load
 
         // LOAD ACC — identify_accumulate_pattern finds this
-        let load_acc = k.load(acc, zi, MemLayout::Scalar);
+        let load_acc = k.load(acc, zi);
 
         // Accumulated value computation AFTER load(acc) — interleaved!
         let index_val = k.const_idx(5u32);
@@ -706,9 +706,9 @@ mod tests {
 
         // ADD: references load_acc (tmp), but next_op(load_acc) is NOT add
         let add = k.binary(mul, load_acc, BOp::Add);
-        k.store(acc, add, zi, MemLayout::Scalar);
+        k.store(acc, add, zi);
         k.end_loop();
-        let _result = k.load(acc, zi, MemLayout::Scalar);
+        let _result = k.load(acc, zi);
 
         (k, loop_id)
     }
@@ -720,7 +720,7 @@ mod tests {
 
         let zi = k.const_idx(0u32);
         let zf = k.const_val(0.0f32);
-        k.store(acc, zf, zi, MemLayout::Scalar);
+        k.store(acc, zf, zi);
 
         let lc = k.const_idx(loop_len as i64);
         let loop_id = k.loop_(lc);
@@ -731,11 +731,11 @@ mod tests {
         let source = k.const_val(42.0f32);
         let mul = k.binary(eq_f32, source, BOp::Mul);
 
-        let load_acc = k.load(acc, zi, MemLayout::Scalar);
+        let load_acc = k.load(acc, zi);
         let add = k.binary(mul, load_acc, BOp::Add);
-        k.store(acc, add, zi, MemLayout::Scalar);
+        k.store(acc, add, zi);
         k.end_loop();
-        let result = k.load(acc, zi, MemLayout::Scalar);
+        let result = k.load(acc, zi);
 
         (k, loop_id, result)
     }
@@ -763,9 +763,9 @@ mod tests {
     fn make_gather_kernel_with_source_before_indices() -> (Kernel, OpId) {
         let mut k = Kernel::new(DeviceId::AUTO);
 
-        let r95 = k.param(DType::U16, ParamKind::Global, OpId::NULL);
-        let r114 = k.param(DType::U16, ParamKind::Global, OpId::NULL);
-        let r122 = k.param(DType::U16, ParamKind::GlobalMut, OpId::NULL);
+        let r95 = k.param(DType::U16, OpId::NULL);
+        let r114 = k.param(DType::U16, OpId::NULL);
+        let r122 = k.param_mut(DType::U16, OpId::NULL);
         let sh3 = k.const_idx(3u32);
         let r7 = k.const_idx(0u32);
         let r22 = k.const_val(0u16);
@@ -773,10 +773,10 @@ mod tests {
         let r26 = k.const_val(0i32);
         let r31 = k.const_val(5i32);
         let r110 = k.const_idx(5u32);
-        let r37 = k.group_index(0, sh3);
-        let r5 = k.group_index(1, sh3);
+        let r37 = k.group_range(0, sh3);
+        let r5 = k.group_range(1, sh3);
         let r1 = k.storage(DType::U16, MemScope::Register, 1);
-        k.store(r1, r22, r7, MemLayout::Scalar);
+        k.store(r1, r22, r7);
         let r123 = k.binary(r37, r74, BOp::Mul);
         let r92 = k.binary(r123, r5, BOp::Add);
         let r71 = k.binary(r37, r110, BOp::Mul);
@@ -785,10 +785,10 @@ mod tests {
         let loop_id = k.loop_(c5);
 
         let r20 = k.cast(loop_id, DType::I32);
-        let r96 = k.load(r95, r92, MemLayout::Scalar);
+        let r96 = k.load(r95, r92);
         let r111 = k.binary(r71, loop_id, BOp::Add);
-        let r115 = k.load(r114, r111, MemLayout::Scalar);
-        let r18 = k.load(r1, r7, MemLayout::Scalar);
+        let r115 = k.load(r114, r111);
+        let r18 = k.load(r1, r7);
         let r24 = k.cast(r96, DType::I32);
         let r29 = k.binary(r24, r26, BOp::Cmplt);
         let r30 = k.cast(r29, DType::I32);
@@ -798,13 +798,13 @@ mod tests {
         let r39 = k.cast(r38, DType::U16);
         let r97 = k.binary(r39, r115, BOp::Mul);
         let r42 = k.binary(r97, r18, BOp::Add);
-        k.store(r1, r42, r7, MemLayout::Scalar);
+        k.store(r1, r42, r7);
 
         k.end_loop();
 
-        let r46 = k.load(r1, r7, MemLayout::Scalar);
+        let r46 = k.load(r1, r7);
         let r121 = k.binary(r5, r123, BOp::Add);
-        k.store(r122, r46, r121, MemLayout::Scalar);
+        k.store(r122, r46, r121);
 
         (k, loop_id)
     }
@@ -843,44 +843,44 @@ mod tests {
     fn make_mnist_gather_kernel(dim: u64) -> (Kernel, OpId) {
         let mut k = Kernel::new(DeviceId::AUTO);
 
-        let r29 = k.param(DType::I32, ParamKind::Global, OpId::NULL);
-        let r38 = k.param(DType::I32, ParamKind::Global, OpId::NULL);
-        let r49 = k.param(DType::F32, ParamKind::Global, OpId::NULL);
-        let r57 = k.param(DType::F32, ParamKind::GlobalMut, OpId::NULL);
+        let r29 = k.param(DType::I32, OpId::NULL);
+        let r38 = k.param(DType::I32, OpId::NULL);
+        let r49 = k.param(DType::F32, OpId::NULL);
+        let r57 = k.param_mut(DType::F32, OpId::NULL);
         let r1 = k.const_idx(0u32);
         let r8 = k.const_val(0.0f32);
         let r15 = k.const_idx(dim);
         let r25 = k.const_idx(dim);
-        let r7 = k.group_index(0, r15);
-        let r10 = k.group_index(1, r25);
+        let r7 = k.group_range(0, r15);
+        let r10 = k.group_range(1, r25);
 
         let r3 = k.storage(DType::F32, MemScope::Register, 1);
-        k.store(r3, r8, r1, MemLayout::Scalar);
+        k.store(r3, r8, r1);
 
         let r58 = k.binary(r7, r25, BOp::Mul);
         let r26 = k.binary(r58, r10, BOp::Add);
 
         let loop_id = k.loop_(r15);
 
-        let r30 = k.load(r29, r26, MemLayout::Scalar);
-        let r39 = k.load(r38, loop_id, MemLayout::Scalar);
+        let r30 = k.load(r29, r26);
+        let r39 = k.load(r38, loop_id);
         let r4 = k.binary(r30, r39, BOp::Eq);
         let r5 = k.cast(r4, DType::F32);
         let r44 = k.binary(loop_id, r25, BOp::Mul);
         let r46 = k.binary(r10, r44, BOp::Add);
-        let r50 = k.load(r49, r46, MemLayout::Scalar);
+        let r50 = k.load(r49, r46);
         let r11 = k.binary(r5, r50, BOp::Mul);
         let r12 = k.cast(r11, DType::F32);
-        let r17 = k.load(r3, r1, MemLayout::Scalar);
+        let r17 = k.load(r3, r1);
         let r18 = k.binary(r12, r17, BOp::Add);
-        k.store(r3, r18, r1, MemLayout::Scalar);
+        k.store(r3, r18, r1);
 
         k.end_loop();
 
-        let r13 = k.load(r3, r1, MemLayout::Scalar);
+        let r13 = k.load(r3, r1);
         let r54 = k.binary(r7, r25, BOp::Mul);
         let r56 = k.binary(r10, r54, BOp::Add);
-        k.store(r57, r13, r56, MemLayout::Scalar);
+        k.store(r57, r13, r56);
 
         (k, loop_id)
     }
@@ -908,7 +908,7 @@ mod tests {
     /// `scatter_1d`, /tmp/scatter_dump.txt lines 598-624).
     ///
     /// Structure (note: the loop-dependent mask operand is the INDICES load,
-    /// indexed by loop_id; the arange load is loop-invariant at group_index):
+    /// indexed by loop_id; the arange load is loop-invariant at group_range):
     ///   acc = 0
     ///   for i in 0..3:
     ///     idx  = load(indices, i)          // LOOP-DEPENDENT
@@ -923,36 +923,36 @@ mod tests {
     fn make_scatter_kernel(dim: u64, num_indices: u64) -> (Kernel, OpId) {
         let mut k = Kernel::new(DeviceId::AUTO);
 
-        let r29 = k.param(DType::I32, ParamKind::Global, OpId::NULL);
-        let r38 = k.param(DType::I32, ParamKind::Global, OpId::NULL);
-        let r47 = k.param(DType::I32, ParamKind::Global, OpId::NULL);
-        let r61 = k.param(DType::I32, ParamKind::GlobalMut, OpId::NULL);
+        let r29 = k.param(DType::I32, OpId::NULL);
+        let r38 = k.param(DType::I32, OpId::NULL);
+        let r47 = k.param(DType::I32, OpId::NULL);
+        let r61 = k.param_mut(DType::I32, OpId::NULL);
         let r14 = k.const_idx(0u32);
         let r1 = k.const_val(0i32);
         let r10 = k.const_idx(num_indices);
         let sh_dim = k.const_idx(dim);
-        let r7 = k.group_index(0, sh_dim);
+        let r7 = k.group_range(0, sh_dim);
 
         let r9 = k.storage(DType::I32, MemScope::Register, 1);
-        k.store(r9, r1, r14, MemLayout::Scalar);
+        k.store(r9, r1, r14);
 
         let loop_id = k.loop_(r10);
 
-        let r30 = k.load(r29, loop_id, MemLayout::Scalar);
-        let r39 = k.load(r38, r7, MemLayout::Scalar);
+        let r30 = k.load(r29, loop_id);
+        let r39 = k.load(r38, r7);
         let r4 = k.binary(r30, r39, BOp::Eq);
         let r5 = k.cast(r4, DType::I32);
-        let r48 = k.load(r47, loop_id, MemLayout::Scalar);
+        let r48 = k.load(r47, loop_id);
         let r8 = k.binary(r5, r48, BOp::Mul);
         let r11 = k.cast(r8, DType::I32);
-        let r19 = k.load(r9, r14, MemLayout::Scalar);
+        let r19 = k.load(r9, r14);
         let r20 = k.binary(r11, r19, BOp::Add);
-        k.store(r9, r20, r14, MemLayout::Scalar);
+        k.store(r9, r20, r14);
 
         k.end_loop();
 
-        let r12 = k.load(r9, r14, MemLayout::Scalar);
-        k.store(r61, r12, r7, MemLayout::Scalar);
+        let r12 = k.load(r9, r14);
+        k.store(r61, r12, r7);
 
         (k, loop_id)
     }
@@ -985,13 +985,13 @@ mod tests {
     #[test]
     fn test_ceil_mask_loop_folds() {
         let mut k = Kernel::new(DeviceId::AUTO);
-        let out = k.param(DType::I32, ParamKind::GlobalMut, OpId::NULL);
+        let out = k.param_mut(DType::I32, OpId::NULL);
         let out_shape = k.const_idx(2u32);
-        let g = k.group_index(0, out_shape);
+        let g = k.group_range(0, out_shape);
         let acc = k.storage(DType::I32, MemScope::Register, 1);
         let zi = k.const_idx(0u32);
         let ziv = k.const_val(0i32);
-        k.store(acc, ziv, zi, MemLayout::Scalar);
+        k.store(acc, ziv, zi);
 
         let ilen = k.const_idx(2u32);
         let loop_id = k.loop_(ilen);
@@ -1005,14 +1005,14 @@ mod tests {
         let z = k.const_idx(0u32);
         let cmp = k.binary(sh, z, BOp::Cmpgt);
         let mask = k.cast(cmp, DType::I32);
-        let l = k.load(acc, zi, MemLayout::Scalar);
+        let l = k.load(acc, zi);
         let sum = k.binary(mask, l, BOp::Add);
-        k.store(acc, sum, zi, MemLayout::Scalar);
+        k.store(acc, sum, zi);
 
         k.end_loop();
 
-        let res = k.load(acc, zi, MemLayout::Scalar);
-        k.store(out, res, g, MemLayout::Scalar);
+        let res = k.load(acc, zi);
+        k.store(out, res, g);
 
         k.simplify_accumulating_loop();
 
@@ -1037,8 +1037,8 @@ mod tests {
     fn test_llama_onehot_loop_folds() {
         let mut k = Kernel::new(DeviceId::AUTO);
 
-        let r67 = k.param(DType::U32, ParamKind::Global, OpId::NULL);
-        let r30 = k.param(DType::F16, ParamKind::GlobalMut, OpId::NULL);
+        let r67 = k.param(DType::U32, OpId::NULL);
+        let r30 = k.param_mut(DType::F16, OpId::NULL);
         let c0 = k.const_idx(0u32);
         let c1 = k.const_idx(1u32);
         let c2 = k.const_idx(2u32);
@@ -1051,11 +1051,11 @@ mod tests {
         let c1i = k.const_val(1i64);
 
         let r97_len = k.const_idx(2);
-        let r97 = k.group_index(0, r97_len);
+        let r97 = k.group_range(0, r97_len);
         let r37_len = k.const_idx(8);
-        let r37 = k.group_index(1, r37_len);
+        let r37 = k.group_range(1, r37_len);
         let r34_len = k.const_idx(1);
-        let r34 = k.group_index(2, r34_len);
+        let r34 = k.group_range(2, r34_len);
 
         let r43 = k.mod_(r97, c1);
         let r3 = k.div(r97, c1);
@@ -1079,10 +1079,10 @@ mod tests {
         let r75 = k.mad(r34, c1, r74);
 
         let r81 = k.storage(DType::I64, MemScope::Register, 1);
-        k.store(r81, c0i, c0, MemLayout::Scalar);
+        k.store(r81, c0i, c0);
         let r84 = k.loop_(c8);
 
-        let r88 = k.load(r81, c0, MemLayout::Scalar);
+        let r88 = k.load(r81, c0);
         let r95 = k.mad(r84, c8, c0);
         let r96 = k.mad(r75, c1, r95);
         let r98 = k.div(r96, c8);
@@ -1107,18 +1107,18 @@ mod tests {
         let r0 = k.mul(r150, c1i);
         let r13 = k.cast(r0, DType::I64);
         let r89 = k.add(r13, r88);
-        k.store(r81, r89, c0, MemLayout::Scalar);
+        k.store(r81, r89, c0);
         k.end_loop();
 
-        let r14 = k.load(r81, c0, MemLayout::Scalar);
+        let r14 = k.load(r81, c0);
         let r17 = k.add(r14, c0i);
         let r20 = k.sub(r17, c1i);
         let r22 = k.cast(r20, DType::F32);
-        let r24 = k.load(r67, r66, MemLayout::Scalar);
+        let r24 = k.load(r67, r66);
         let r25 = k.cast(r24, DType::F32);
         let r28 = k.binary(r22, r25, BOp::Eq);
         let r29 = k.cast(r28, DType::F16);
-        k.store(r30, r29, r49, MemLayout::Scalar);
+        k.store(r30, r29, r49);
 
         k.constant_folding();
         k.algebraic_simplifications();
@@ -1148,13 +1148,13 @@ mod tests {
     #[test]
     fn test_cmpge_arange_loop_folds() {
         let mut k = Kernel::new(DeviceId::AUTO);
-        let out = k.param(DType::I64, ParamKind::GlobalMut, OpId::NULL);
+        let out = k.param_mut(DType::I64, OpId::NULL);
         let out_shape = k.const_idx(2u32);
-        let g = k.group_index(0, out_shape);
+        let g = k.group_range(0, out_shape);
         let acc = k.storage(DType::I64, MemScope::Register, 1);
         let zi = k.const_idx(0u32);
         let ziv = k.const_val(0i64);
-        k.store(acc, ziv, zi, MemLayout::Scalar);
+        k.store(acc, ziv, zi);
 
         let ilen = k.const_idx(60u32);
         let loop_id = k.loop_(ilen);
@@ -1164,14 +1164,14 @@ mod tests {
         let c59 = k.const_idx(59u32);
         let cmp = k.binary(r350, c59, BOp::Cmpge);
         let mask = k.cast(cmp, DType::I64);
-        let l = k.load(acc, zi, MemLayout::Scalar);
+        let l = k.load(acc, zi);
         let sum = k.binary(mask, l, BOp::Add);
-        k.store(acc, sum, zi, MemLayout::Scalar);
+        k.store(acc, sum, zi);
 
         k.end_loop();
 
-        let res = k.load(acc, zi, MemLayout::Scalar);
-        k.store(out, res, g, MemLayout::Scalar);
+        let res = k.load(acc, zi);
+        k.store(out, res, g);
 
         k.simplify_accumulating_loop();
 

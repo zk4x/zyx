@@ -3,7 +3,7 @@ use std::collections::BTreeSet;
 use crate::{
     Map, Set,
     graph::{ClassId, Graph, JitKernelData, JitKernelId, Node},
-    kernel::{DeviceId, IDX_T, Kernel, MemLayout, MoveOp, Op, OpId, ParamKind},
+    kernel::{DeviceId, IDX_T, Kernel, MoveOp, Op, OpId, ParamKind},
     shape::UAxis,
     slab::{Slab, SlabId},
 };
@@ -646,7 +646,7 @@ impl Graph {
                         }
 
                         let dst_op = op_map.get(&dst_op).copied().unwrap_or(op_map[&dst_param]);
-                        self.jit_kernels[kid].kernel.store(dst_op, src_op, OpId::NULL, MemLayout::Scalar);
+                        self.jit_kernels[kid].kernel.store(dst_op, src_op, OpId::NULL);
                         self.jit_kernels[kid].stores.push(dst_leaf);
                         // Register every replayed define's load class in define
                         // order (variables and the GlobalMut base buffer alike)
@@ -1073,7 +1073,7 @@ impl Graph {
         let dims = self.shape(cid);
         let shape = self.replay_symbolic_into_kernel(kid, &dims);
         let dtype = self.dtype(cid);
-        let op_id = self.jit_kernels[kid].kernel.param(dtype, ParamKind::Global, shape);
+        let op_id = self.jit_kernels[kid].kernel.param(dtype, shape);
         let data = &mut self.jit_kernels[kid];
         data.outputs = vec![cid; rc as usize];
         data.loads.push(cid);
@@ -1119,8 +1119,8 @@ impl Graph {
             let dtype = self.dtype(cid);
             let kernel = &mut self.jit_kernels[kid].kernel;
             let shape = kernel.stack_shape_dims(op_id);
-            let dst = kernel.param(dtype, ParamKind::GlobalMut, shape);
-            kernel.store(dst, op_id, OpId::NULL, MemLayout::Scalar);
+            let dst = kernel.param_mut(dtype, shape);
+            kernel.store(dst, op_id, OpId::NULL);
             self.jit_kernels[kid].stores.push(cid);
             visited.remove(&cid);
         }

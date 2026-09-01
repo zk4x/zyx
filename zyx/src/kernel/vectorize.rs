@@ -576,7 +576,7 @@ impl Kernel {
 mod tests {
     use crate::{
         DType,
-        kernel::{BOp, DeviceId, Kernel, MemLayout, Op, OpId, ParamKind, UOp},
+        kernel::{BOp, DeviceId, Kernel, Op, OpId, ParamKind, UOp},
     };
 
     // Helper to verify c0/c1 were replaced with devecs, find vectorize + vector op
@@ -601,20 +601,20 @@ mod tests {
     #[test]
     fn vectorize_ops_forward_2_lane() {
         let mut k = Kernel::new(DeviceId::AUTO);
-        let src = k.param(DType::F32, ParamKind::Global, OpId::NULL);
-        let dst = k.param(DType::F32, ParamKind::Global, OpId::NULL);
+        let src = k.param(DType::F32, OpId::NULL);
+        let dst = k.param(DType::F32, OpId::NULL);
         let g0_len = k.const_idx(4);
-        let g0 = k.group_index(0, g0_len);
+        let g0 = k.group_range(0, g0_len);
         let two = k.const_idx(2u32);
         let offset = k.binary(g0, two, BOp::BitShiftLeft);
-        let vec_load = k.load(src, offset, MemLayout::Vector(2));
+        let vec_load = k.load_vector(src, offset, 2);
         let [s0, s1] = k.devectorize::<2>(vec_load);
         let c0 = k.unary(s0, UOp::Cos);
         let c1 = k.unary(s1, UOp::Cos);
-        k.store(dst, c0, g0, MemLayout::Scalar);
+        k.store(dst, c0, g0);
         let four = k.const_idx(4u32);
         let idx_c1 = k.binary(g0, four, BOp::Add);
-        k.store(dst, c1, idx_c1, MemLayout::Scalar);
+        k.store(dst, c1, idx_c1);
 
         k.vectorize_ops_forward(&[2]);
 
@@ -626,13 +626,13 @@ mod tests {
     #[test]
     fn vectorize_ops_forward_4_lane() {
         let mut k = Kernel::new(DeviceId::AUTO);
-        let src = k.param(DType::F32, ParamKind::Global, OpId::NULL);
-        let dst = k.param(DType::F32, ParamKind::Global, OpId::NULL);
+        let src = k.param(DType::F32, OpId::NULL);
+        let dst = k.param(DType::F32, OpId::NULL);
         let g0_len = k.const_idx(4);
-        let g0 = k.group_index(0, g0_len);
+        let g0 = k.group_range(0, g0_len);
         let two = k.const_idx(2u32);
         let offset = k.binary(g0, two, BOp::BitShiftLeft);
-        let vec_load = k.load(src, offset, MemLayout::Vector(4));
+        let vec_load = k.load_vector(src, offset, 4);
         let [s0, s1, s2, s3] = k.devectorize::<4>(vec_load);
         let [c0, c1, c2, c3] = [s0, s1, s2, s3].map(|s| k.unary(s, UOp::Cos));
         let c1i = k.const_idx(1u32);
@@ -641,10 +641,10 @@ mod tests {
         let i1 = k.binary(g0, c1i, BOp::Add);
         let i2 = k.binary(g0, c2i, BOp::Add);
         let i3 = k.binary(g0, c3i, BOp::Add);
-        k.store(dst, c0, g0, MemLayout::Scalar);
-        k.store(dst, c1, i1, MemLayout::Scalar);
-        k.store(dst, c2, i2, MemLayout::Scalar);
-        k.store(dst, c3, i3, MemLayout::Scalar);
+        k.store(dst, c0, g0);
+        k.store(dst, c1, i1);
+        k.store(dst, c2, i2);
+        k.store(dst, c3, i3);
 
         k.vectorize_ops_forward(&[2, 4]);
 
@@ -679,29 +679,29 @@ mod tests {
         // After first pass: cos(2) is vectorized
         // After second pass: sin(2) is vectorized
         let mut k = Kernel::new(DeviceId::AUTO);
-        let src = k.param(DType::F32, ParamKind::Global, OpId::NULL);
-        let dst = k.param(DType::F32, ParamKind::Global, OpId::NULL);
+        let src = k.param(DType::F32, OpId::NULL);
+        let dst = k.param(DType::F32, OpId::NULL);
         let g0_len = k.const_idx(4);
-        let g0 = k.group_index(0, g0_len);
+        let g0 = k.group_range(0, g0_len);
         let two = k.const_idx(2u32);
         let offset = k.binary(g0, two, BOp::BitShiftLeft);
-        let vec_load = k.load(src, offset, MemLayout::Vector(4));
+        let vec_load = k.load_vector(src, offset, 4);
         let [s0, s1, s2, s3] = k.devectorize::<4>(vec_load);
         let c0 = k.unary(s0, UOp::Cos);
         let c1 = k.unary(s1, UOp::Sin);
         let c2 = k.unary(s2, UOp::Cos);
         let c3 = k.unary(s3, UOp::Sin);
-        k.store(dst, c0, g0, MemLayout::Scalar);
+        k.store(dst, c0, g0);
         let c1i = k.const_idx(1u32);
         let c2i = k.const_idx(2u32);
         let c3i = k.const_idx(3u32);
         let i1 = k.binary(g0, c1i, BOp::Add);
         let i2 = k.binary(g0, c2i, BOp::Add);
         let i3 = k.binary(g0, c3i, BOp::Add);
-        k.store(dst, c0, g0, MemLayout::Scalar);
-        k.store(dst, c1, i1, MemLayout::Scalar);
-        k.store(dst, c2, i2, MemLayout::Scalar);
-        k.store(dst, c3, i3, MemLayout::Scalar);
+        k.store(dst, c0, g0);
+        k.store(dst, c1, i1);
+        k.store(dst, c2, i2);
+        k.store(dst, c3, i3);
 
         k.vectorize_ops_forward(&[2, 4]);
 
@@ -732,21 +732,21 @@ mod tests {
     #[test]
     fn vectorize_ops_forward_binary() {
         let mut k = Kernel::new(DeviceId::AUTO);
-        let src = k.param(DType::F32, ParamKind::Global, OpId::NULL);
-        let dst = k.param(DType::F32, ParamKind::Global, OpId::NULL);
+        let src = k.param(DType::F32, OpId::NULL);
+        let dst = k.param(DType::F32, OpId::NULL);
         let g0_len = k.const_idx(4);
-        let g0 = k.group_index(0, g0_len);
+        let g0 = k.group_range(0, g0_len);
         let two = k.const_idx(2u32);
         let offset = k.binary(g0, two, BOp::BitShiftLeft);
-        let vec_load = k.load(src, offset, MemLayout::Vector(2));
+        let vec_load = k.load_vector(src, offset, 2);
         let [s0, s1] = k.devectorize::<2>(vec_load);
         let c = k.const_val(1.0f32);
         let r0 = k.binary(s0, c, BOp::Add);
         let r1 = k.binary(s1, c, BOp::Add);
         let four = k.const_idx(4u32);
         let idx1 = k.binary(g0, four, BOp::Add);
-        k.store(dst, r0, g0, MemLayout::Scalar);
-        k.store(dst, r1, idx1, MemLayout::Scalar);
+        k.store(dst, r0, g0);
+        k.store(dst, r1, idx1);
 
         k.vectorize_ops_forward(&[2]);
 
@@ -774,21 +774,21 @@ mod tests {
     fn vectorize_ops_forward_binary_y_pos() {
         // devec in Y position: c + devec(v, i)
         let mut k = Kernel::new(DeviceId::AUTO);
-        let src = k.param(DType::F32, ParamKind::Global, OpId::NULL);
-        let dst = k.param(DType::F32, ParamKind::Global, OpId::NULL);
+        let src = k.param(DType::F32, OpId::NULL);
+        let dst = k.param(DType::F32, OpId::NULL);
         let g0_len = k.const_idx(4);
-        let g0 = k.group_index(0, g0_len);
+        let g0 = k.group_range(0, g0_len);
         let two = k.const_idx(2u32);
         let offset = k.binary(g0, two, BOp::BitShiftLeft);
-        let vec_load = k.load(src, offset, MemLayout::Vector(2));
+        let vec_load = k.load_vector(src, offset, 2);
         let [s0, s1] = k.devectorize::<2>(vec_load);
         let c = k.const_val(1.0f32);
         let r0 = k.binary(c, s0, BOp::Add); // devec in Y
         let r1 = k.binary(c, s1, BOp::Add); // devec in Y
         let four = k.const_idx(4u32);
         let idx1 = k.binary(g0, four, BOp::Add);
-        k.store(dst, r0, g0, MemLayout::Scalar);
-        k.store(dst, r1, idx1, MemLayout::Scalar);
+        k.store(dst, r0, g0);
+        k.store(dst, r1, idx1);
 
         k.vectorize_ops_forward(&[2]);
 
@@ -800,20 +800,20 @@ mod tests {
     fn vectorize_ops_and_constfold_clears_vectorize_devectorize() {
         let mut k = Kernel::new(DeviceId::AUTO);
 
-        let src = k.param(DType::F32, ParamKind::Global, OpId::NULL);
-        let dst = k.param(DType::F32, ParamKind::Global, OpId::NULL);
+        let src = k.param(DType::F32, OpId::NULL);
+        let dst = k.param(DType::F32, OpId::NULL);
         let g0_len = k.const_idx(4);
-        let g0 = k.group_index(0, g0_len);
+        let g0 = k.group_range(0, g0_len);
         let two = k.const_idx(2u32);
         let offset = k.binary(g0, two, BOp::BitShiftLeft);
-        let vec_load = k.load(src, offset, MemLayout::Vector(4));
+        let vec_load = k.load_vector(src, offset, 4);
         let [s0, s1, s2, s3] = k.devectorize::<4>(vec_load);
         let c0 = k.unary(s0, UOp::Cos);
         let c1 = k.unary(s1, UOp::Cos);
         let c2 = k.unary(s2, UOp::Cos);
         let c3 = k.unary(s3, UOp::Cos);
         let vec = k.stack(&[c0, c1, c2, c3]);
-        k.store(dst, vec, offset, MemLayout::Vector(4));
+        k.store_vector(dst, vec, offset, 4);
 
         k.vectorize_ops_backward(&[4]);
         k.constant_folding();

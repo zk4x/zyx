@@ -1456,7 +1456,7 @@ impl Graph {
                     Node::Leaf { dtype, shape, .. } => {
                         debug_assert!(shape.is_null(), "dim-variable leaf must be scalar, got shape {:?}", shape);
                         debug_assert!(dtype == IDX_T, "dim-variable leaf must be {:?}-typed, got {:?}", IDX_T, dtype);
-                        let op_id = self.jit_kernels[kid].kernel.param(IDX_T, ParamKind::Variable, OpId::NULL);
+                        let op_id = self.jit_kernels[kid].kernel.variable(IDX_T);
                         self.jit_kernels[kid].loads.push(c);
                         op_id
                     }

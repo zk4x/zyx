@@ -21,15 +21,15 @@
 //! let a_shape = kernel.add_shape(&[m, k]);
 //! let b_shape = kernel.add_shape(&[k, n]);
 //! let c_shape = kernel.add_shape(&[m, n]);
-//! let a_buf = kernel.param(DType::F16, ParamKind::Global, a_shape);
-//! let b_buf = kernel.param(DType::F16, ParamKind::Global, b_shape);
-//! let c_buf = kernel.param(DType::F32, ParamKind::GlobalMut, c_shape);
+//! let a_buf = kernel.param(DType::F16, a_shape);
+//! let b_buf = kernel.param(DType::F16, b_shape);
+//! let c_buf = kernel.param_mut(DType::F32, c_shape);
 //!
 //! let glen_x = kernel.const_idx(m / 16);
 //! let glen_y = kernel.const_idx(n / 8);
-//! let gidx = kernel.group_index(0, glen_x);
-//! let gidy = kernel.group_index(1, glen_y);
-//! let wid = kernel.local_index(0, 32);
+//! let gidx = kernel.group_range(0, glen_x);
+//! let gidy = kernel.group_range(1, glen_y);
+//! let wid = kernel.local_range(0, 32);
 //!
 //! let [c0, c1, c2, c4, c8, c16] = kernel.const_idxs([0u32, 1, 2, 4, 8, 16]);
 //! let n_const = kernel.const_idx(n);
@@ -46,7 +46,7 @@
 //! let acc = kernel.storage(DType::F32, MemScope::Register, 4);
 //! let zf = kernel.const_val(0.0f32);
 //! let zero_acc = kernel.stack(&[zf, zf, zf, zf]);
-//! kernel.store(acc, zero_acc, c0, MemLayout::Vector(4));
+//! kernel.store_vector(acc, zero_acc, c0, 4);
 //!
 //! let k_div_8 = kernel.const_idx(k / 8);
 //! let k_loop = kernel.loop_(k_div_8);
@@ -54,42 +54,42 @@
 //!
 //! let a_base = kernel.mad(a_row, k_const, k_off);
 //! let a_base = kernel.add(a_base, col_in_tile);
-//! let a_load_0 = kernel.load(a_buf, a_base, MemLayout::Scalar);
+//! let a_load_0 = kernel.load(a_buf, a_base);
 //! let a_base_p1 = kernel.add(a_base, c1);
-//! let a_load_1 = kernel.load(a_buf, a_base_p1, MemLayout::Scalar);
+//! let a_load_1 = kernel.load(a_buf, a_base_p1);
 //! let a_base2 = kernel.mad(c8, k_const, a_base);
-//! let a_load_2 = kernel.load(a_buf, a_base2, MemLayout::Scalar);
+//! let a_load_2 = kernel.load(a_buf, a_base2);
 //! let a_base2_p1 = kernel.add(a_base2, c1);
-//! let a_load_3 = kernel.load(a_buf, a_base2_p1, MemLayout::Scalar);
+//! let a_load_3 = kernel.load(a_buf, a_base2_p1);
 //! let a_frag = kernel.stack(&[a_load_0, a_load_1, a_load_2, a_load_3]);
 //!
 //! let b_row = kernel.add(k_off, col_in_tile);
 //! let b_base = kernel.mad(b_row, n_const, b_col);
-//! let b_load_0 = kernel.load(b_buf, b_base, MemLayout::Scalar);
+//! let b_load_0 = kernel.load(b_buf, b_base);
 //! let b_base_n = kernel.add(b_base, n_const);
-//! let b_load_1 = kernel.load(b_buf, b_base_n, MemLayout::Scalar);
+//! let b_load_1 = kernel.load(b_buf, b_base_n);
 //! let b_frag = kernel.stack(&[b_load_0, b_load_1]);
 //!
-//! let acc_old = kernel.load(acc, c0, MemLayout::Vector(4));
+//! let acc_old = kernel.load_vector(acc, c0, 4);
 //! let acc_new = kernel.wmma(
 //!     MMADims::m16n8k8, MMALayout::row_col, MMADType::f16_f16_f16_f32,
 //!     a_frag, b_frag, acc_old,
 //! );
-//! kernel.store(acc, acc_new, c0, MemLayout::Vector(4));
+//! kernel.store_vector(acc, acc_new, c0, 4);
 //! kernel.end_loop();
 //!
-//! let acc_final = kernel.load(acc, c0, MemLayout::Vector(4));
+//! let acc_final = kernel.load_vector(acc, c0, 4);
 //! let [co, c1v, c2v, c3v] = kernel.devectorize(acc_final);
 //!
 //! let c_col = kernel.add(tile_base_col, col_in_tile);
 //! let c_base = kernel.mad(a_row, n_const, c_col);
-//! kernel.store(c_buf, co, c_base, MemLayout::Scalar);
+//! kernel.store(c_buf, co, c_base);
 //! let c_base_p1 = kernel.add(c_base, c1);
-//! kernel.store(c_buf, c1v, c_base_p1, MemLayout::Scalar);
+//! kernel.store(c_buf, c1v, c_base_p1);
 //! let c_base2 = kernel.mad(c8, n_const, c_base);
-//! kernel.store(c_buf, c2v, c_base2, MemLayout::Scalar);
+//! kernel.store(c_buf, c2v, c_base2);
 //! let c_base2_p1 = kernel.add(c_base2, c1);
-//! kernel.store(c_buf, c3v, c_base2_p1, MemLayout::Scalar);
+//! kernel.store(c_buf, c3v, c_base2_p1);
 //!
 //! // kernel.compile()?;  // requires CUDA with tensor cores
 //! ```
@@ -159,14 +159,14 @@ pub(crate) const IDX_T: DType = DType::I64;
 /// let n = 256;
 /// let shape = kernel.add_shape(&[n]);
 /// let len = kernel.const_idx(n);
-/// let inp = kernel.param(DType::F32, ParamKind::Global, shape);
-/// let gidx = kernel.group_index(0, len);
-/// let loaded = kernel.load(inp, gidx, MemLayout::Scalar);
+/// let inp = kernel.param(DType::F32, shape);
+/// let gidx = kernel.group_range(0, len);
+/// let loaded = kernel.load(inp, gidx);
 /// let s = kernel.sin(loaded);
 /// let c = kernel.cos(loaded);
 /// let result = kernel.add(s, c);
-/// let out = kernel.param(DType::F32, ParamKind::GlobalMut, shape);
-/// kernel.store(out, result, gidx, MemLayout::Scalar);
+/// let out = kernel.param_mut(DType::F32, shape);
+/// kernel.store(out, result, gidx);
 /// ```
 ///
 /// # Compile
@@ -180,13 +180,13 @@ pub(crate) const IDX_T: DType = DType::I64;
 /// let mut kernel = Kernel::new(DeviceId::AUTO);
 /// let n = 4;
 /// let shape = kernel.add_shape(&[n]);
-/// let inp = kernel.param(DType::F32, ParamKind::Global, shape);
+/// let inp = kernel.param(DType::F32, shape);
 /// let len = kernel.const_idx(n);
-/// let gidx = kernel.group_index(0, len);
-/// let loaded = kernel.load(inp, gidx, MemLayout::Scalar);
+/// let gidx = kernel.group_range(0, len);
+/// let loaded = kernel.load(inp, gidx);
 /// let result = kernel.mad(loaded, loaded, loaded); // x*x + x
-/// let out = kernel.param(DType::F32, ParamKind::GlobalMut, shape);
-/// kernel.store(out, result, gidx, MemLayout::Scalar);
+/// let out = kernel.param_mut(DType::F32, shape);
+/// kernel.store(out, result, gidx);
 ///
 /// let compiled = kernel.compile()?;
 /// let x = Tensor::from([1.0f32, 2.0, 3.0, 4.0]);

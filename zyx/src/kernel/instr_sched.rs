@@ -388,7 +388,7 @@ impl Kernel {
 #[cfg(test)]
 mod tests {
     use crate::DType;
-    use crate::kernel::{DeviceId, Kernel, MemLayout, MemScope, Op, OpId, ParamKind};
+    use crate::kernel::{DeviceId, Kernel, MemScope, Op, OpId, ParamKind};
 
     fn params_storages_in_order(k: &Kernel) -> Vec<(MemScope, bool)> {
         let mut order = Vec::new();
@@ -421,16 +421,16 @@ mod tests {
     fn test_instruction_schedule_orders_params_and_storages() {
         let mut k = Kernel::new(DeviceId::AUTO);
         let _local_rw = k.storage(DType::F32, MemScope::Local, 4);
-        let global_ro = k.param(DType::F32, ParamKind::Global, OpId::NULL);
+        let global_ro = k.param(DType::F32, OpId::NULL);
         let _local_ro = k.storage(DType::F32, MemScope::Local, 4);
-        let global_rw = k.param(DType::F32, ParamKind::GlobalMut, OpId::NULL);
+        let global_rw = k.param_mut(DType::F32, OpId::NULL);
 
         let gidx_len = k.const_idx(4);
-        let gidx = k.group_index(0, gidx_len);
+        let gidx = k.group_range(0, gidx_len);
         let c = k.const_val(1.0f32);
-        let load = k.load(global_ro, gidx, MemLayout::Scalar);
+        let load = k.load(global_ro, gidx);
         let add = k.add(load, c);
-        k.store(global_rw, add, gidx, MemLayout::Scalar);
+        k.store(global_rw, add, gidx);
 
         k.instruction_schedule();
 
@@ -454,14 +454,14 @@ mod tests {
     #[test]
     fn test_instruction_schedule_keeps_stores_in_loops() {
         let mut k = Kernel::new(DeviceId::AUTO);
-        let src = k.param(DType::F32, ParamKind::Global, OpId::NULL);
-        let dst = k.param(DType::F32, ParamKind::GlobalMut, OpId::NULL);
+        let src = k.param(DType::F32, OpId::NULL);
+        let dst = k.param_mut(DType::F32, OpId::NULL);
 
         let len = k.const_idx(4u32);
         let loop_id = k.loop_(len);
-        let in_loop_load = k.load(src, loop_id, MemLayout::Scalar);
+        let in_loop_load = k.load(src, loop_id);
         let add = k.add(in_loop_load, in_loop_load);
-        k.store(dst, add, loop_id, MemLayout::Scalar);
+        k.store(dst, add, loop_id);
         k.end_loop();
 
         k.instruction_schedule();
@@ -477,14 +477,14 @@ mod tests {
     #[test]
     fn test_instruction_schedule_keeps_memory_order_per_target() {
         let mut k = Kernel::new(DeviceId::AUTO);
-        let buf = k.param(DType::F32, ParamKind::Global, OpId::NULL);
+        let buf = k.param(DType::F32, OpId::NULL);
 
         let gidx_len = k.const_idx(4);
-        let gidx = k.group_index(0, gidx_len);
+        let gidx = k.group_range(0, gidx_len);
         let val = k.const_val(1.0f32);
-        k.store(buf, val, gidx, MemLayout::Scalar);
-        let load = k.load(buf, gidx, MemLayout::Scalar);
-        k.store(buf, load, gidx, MemLayout::Scalar);
+        k.store(buf, val, gidx);
+        let load = k.load(buf, gidx);
+        k.store(buf, load, gidx);
 
         k.instruction_schedule();
 
@@ -502,10 +502,10 @@ mod tests {
         let buf = k.storage(DType::F32, MemScope::Local, 4);
 
         let gidx_len = k.const_idx(4);
-        let gidx = k.group_index(0, gidx_len);
+        let gidx = k.group_range(0, gidx_len);
         let val = k.const_val(1.0f32);
         k.barrier();
-        k.store(buf, val, gidx, MemLayout::Scalar);
+        k.store(buf, val, gidx);
 
         k.instruction_schedule();
 
@@ -519,15 +519,15 @@ mod tests {
     #[test]
     fn test_instruction_schedule_topological() {
         let mut k = Kernel::new(DeviceId::AUTO);
-        let src = k.param(DType::F32, ParamKind::Global, OpId::NULL);
-        let dst = k.param(DType::F32, ParamKind::GlobalMut, OpId::NULL);
+        let src = k.param(DType::F32, OpId::NULL);
+        let dst = k.param_mut(DType::F32, OpId::NULL);
 
         let gidx_len = k.const_idx(4);
-        let gidx = k.group_index(0, gidx_len);
-        let a = k.load(src, gidx, MemLayout::Scalar);
-        let b = k.load(src, gidx, MemLayout::Scalar);
+        let gidx = k.group_range(0, gidx_len);
+        let a = k.load(src, gidx);
+        let b = k.load(src, gidx);
         let add = k.add(a, b);
-        k.store(dst, add, gidx, MemLayout::Scalar);
+        k.store(dst, add, gidx);
 
         k.instruction_schedule();
 
@@ -540,8 +540,8 @@ mod tests {
     #[test]
     fn test_instruction_schedule_never_sinks_across_loops() {
         let mut k = Kernel::new(DeviceId::AUTO);
-        let src = k.param(DType::F32, ParamKind::Global, OpId::NULL);
-        let dst = k.param(DType::F32, ParamKind::GlobalMut, OpId::NULL);
+        let src = k.param(DType::F32, OpId::NULL);
+        let dst = k.param_mut(DType::F32, OpId::NULL);
         let local = k.storage(DType::F32, MemScope::Local, 4);
 
         let c0 = k.const_idx(0u32);
@@ -551,16 +551,16 @@ mod tests {
 
         let loop1 = k.loop_(c4);
         let idx1 = k.add(invariant, loop1);
-        let v1 = k.load(src, idx1, MemLayout::Scalar);
-        k.store(local, v1, idx1, MemLayout::Scalar);
+        let v1 = k.load(src, idx1);
+        k.store(local, v1, idx1);
         k.end_loop();
 
         k.barrier();
 
         let loop2 = k.loop_(c4);
         let idx2 = k.add(invariant, loop2);
-        let v2 = k.load(local, idx2, MemLayout::Scalar);
-        k.store(dst, v2, idx2, MemLayout::Scalar);
+        let v2 = k.load(local, idx2);
+        k.store(dst, v2, idx2);
         k.end_loop();
 
         k.instruction_schedule();
@@ -574,20 +574,20 @@ mod tests {
     #[test]
     fn _bench_instruction_schedule_large_kernel() {
         let mut k = Kernel::new(DeviceId::AUTO);
-        let a = k.param(DType::F32, ParamKind::Global, OpId::NULL);
-        let b = k.param(DType::F32, ParamKind::Global, OpId::NULL);
-        let out = k.param(DType::F32, ParamKind::GlobalMut, OpId::NULL);
+        let a = k.param(DType::F32, OpId::NULL);
+        let b = k.param(DType::F32, OpId::NULL);
+        let out = k.param_mut(DType::F32, OpId::NULL);
         let gidx_len = k.const_idx(1024);
-        let gidx = k.group_index(0, gidx_len);
-        let mut acc = k.load(a, gidx, MemLayout::Scalar);
+        let gidx = k.group_range(0, gidx_len);
+        let mut acc = k.load(a, gidx);
         for _ in 0..200 {
-            let x = k.load(b, gidx, MemLayout::Scalar);
+            let x = k.load(b, gidx);
             acc = k.add(acc, x);
             let two = k.const_val(2.0f32);
             let y = k.mul(acc, two);
             acc = k.add(acc, y);
         }
-        k.store(out, acc, gidx, MemLayout::Scalar);
+        k.store(out, acc, gidx);
 
         let start = std::time::Instant::now();
         for _ in 0..1000 {

@@ -1718,12 +1718,12 @@ impl PyKernel {
 
     #[pyo3(name = "group_index")]
     fn group_index_py(&mut self, axis: u32, len: u32) -> u32 {
-        self.inner.as_mut().unwrap().group_index(axis, OpId(len)).0
+        self.inner.as_mut().unwrap().group_range(axis, OpId(len)).0
     }
 
     #[pyo3(name = "local_index")]
     fn local_index_py(&mut self, axis: u32, len: u32) -> u32 {
-        self.inner.as_mut().unwrap().local_index(axis, len).0
+        self.inner.as_mut().unwrap().local_range(axis, len).0
     }
 
     #[pyo3(name = "load")]

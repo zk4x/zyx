@@ -44,7 +44,7 @@ impl Kernel {
     /// Create a new custom kernel targeting a specific device.
     ///
     /// Two approaches for inputs:
-    /// - **Manual gidx**: `param(dtype, ParamKind::Global, shape)` + [`Kernel::gidx`]
+    /// - **Manual gidx**: `param(dtype, shape)` + [`Kernel::gidx`]
     /// - **LoadView**: `push_back(Op::LoadView(...))` — `compile()` adds thread indices.
     ///
     /// # Example
@@ -57,12 +57,12 @@ impl Kernel {
     /// let n = 4;
     /// let shape = kernel.add_shape(&[n]);
     /// let len = kernel.const_idx(n);
-    /// let inp = kernel.param(DType::F32, ParamKind::Global, shape);
-    /// let gidx = kernel.group_index(0, len);
-    /// let loaded = kernel.load(inp, gidx, MemLayout::Scalar);
+    /// let inp = kernel.param(DType::F32, shape);
+    /// let gidx = kernel.group_range(0, len);
+    /// let loaded = kernel.load(inp, gidx);
     /// let doubled = kernel.add(loaded, loaded);
-    /// let out = kernel.param(DType::F32, ParamKind::GlobalMut, shape);
-    /// kernel.store(out, doubled, gidx, MemLayout::Scalar);
+    /// let out = kernel.param_mut(DType::F32, shape);
+    /// kernel.store(out, doubled, gidx);
     /// ```
     pub fn new(device_id: DeviceId) -> Self {
         Self { ops: Slab::new(), head: OpId::NULL, tail: OpId::NULL, device_id, shape_cache: Map::default() }
@@ -93,12 +93,12 @@ impl Kernel {
     /// let n = 4;
     /// let shape = kernel.add_shape(&[n]);
     /// let len = kernel.const_idx(n);
-    /// let inp = kernel.param(DType::F32, ParamKind::Global, shape);
-    /// let gidx = kernel.group_index(0, len);
-    /// let loaded = kernel.load(inp, gidx, MemLayout::Scalar);
+    /// let inp = kernel.param(DType::F32, shape);
+    /// let gidx = kernel.group_range(0, len);
+    /// let loaded = kernel.load(inp, gidx);
     /// let doubled = kernel.add(loaded, loaded);
-    /// let out = kernel.param(DType::F32, ParamKind::GlobalMut, shape);
-    /// kernel.store(out, doubled, gidx, MemLayout::Scalar);
+    /// let out = kernel.param_mut(DType::F32, shape);
+    /// kernel.store(out, doubled, gidx);
     ///
     /// let compiled = kernel.compile()?;
     /// let x = Tensor::from([1.0f32, 2.0, 3.0, 4.0]);
@@ -231,9 +231,19 @@ impl Kernel {
         core::array::from_fn(|i| self.const_idx(vals[i]))
     }
 
-    /// Define a kernel param (a launch argument).
-    pub fn param(&mut self, dtype: DType, kind: ParamKind, shape: OpId) -> OpId {
-        self.push_back(Op::Param { dtype, kind, shape })
+    /// Define a kernel input param (global memory read-only argument).
+    pub fn param(&mut self, dtype: DType, shape: OpId) -> OpId {
+        self.push_back(Op::Param { dtype, kind: ParamKind::Global, shape })
+    }
+
+    /// Define a kernel output param (global memory mutable argument).
+    pub fn param_mut(&mut self, dtype: DType, shape: OpId) -> OpId {
+        self.push_back(Op::Param { dtype, kind: ParamKind::GlobalMut, shape })
+    }
+
+    /// Define a scalar variable param (its value lives in the backend pools' variable slots).
+    pub fn variable(&mut self, dtype: DType) -> OpId {
+        self.push_back(Op::Param { dtype, kind: ParamKind::Variable, shape: OpId::NULL })
     }
 
     /// Build a shape op from dimension values.
@@ -247,7 +257,7 @@ impl Kernel {
             .iter()
             .map(|&d| {
                 if d < 0 {
-                    self.param(IDX_T, ParamKind::Variable, OpId::NULL)
+                    self.variable(IDX_T)
                 } else {
                     self.const_idx(d)
                 }
@@ -265,24 +275,66 @@ impl Kernel {
         self.push_back(Op::Storage { dtype, scope, len })
     }
 
+    /// Create a zero-initialized `MemScope::Register` storage of `len` elements.
+    ///
+    /// Returns the storage id; the zero-init is emitted as a loop storing the
+    /// dtype's zero value over the whole storage.
+    pub fn zeros(&mut self, dtype: DType, len: Dim) -> OpId {
+        let acc = self.storage(dtype, MemScope::Register, len);
+        let len_c = self.const_idx(len);
+        let zero = self.push_back(Op::Const(dtype.zero_constant()));
+        let l = self.loop_(len_c);
+        self.store(acc, zero, l);
+        self.end_loop();
+        acc
+    }
+
     /// Group (block) index.
-    pub fn group_index(&mut self, axis: u32, len: OpId) -> OpId {
+    pub fn group_range(&mut self, axis: u32, len: OpId) -> OpId {
         self.push_back(Op::Range { axis, kind: RangeKind::Group(len) })
     }
 
     /// Local thread index.
-    pub fn local_index(&mut self, axis: u32, len: u32) -> OpId {
+    pub fn local_range(&mut self, axis: u32, len: u32) -> OpId {
         self.push_back(Op::Range { axis, kind: RangeKind::Local(len) })
     }
 
-    /// Store `x` to `dst` at `index`.
-    pub fn store(&mut self, dst: OpId, x: OpId, index: OpId, layout: MemLayout) {
-        self.push_back(Op::Store { dst, src: x, index, layout });
+    /// Load from `src` at `index` (scalar layout: one element).
+    pub fn load(&mut self, src: OpId, index: OpId) -> OpId {
+        self.load_op(src, index, MemLayout::Scalar)
     }
 
-    /// Load from `src` at `index`.
-    pub fn load(&mut self, src: OpId, index: OpId, layout: MemLayout) -> OpId {
+    /// Load a vector of `size` elements from `src` at `index`.
+    pub fn load_vector(&mut self, src: OpId, index: OpId, size: u16) -> OpId {
+        self.load_op(src, index, MemLayout::Vector(size))
+    }
+
+    /// Load an `x` × `y` tile with `stride` from `src` at `index`.
+    pub fn load_tile(&mut self, src: OpId, index: OpId, x: u16, y: u16, stride: u32) -> OpId {
+        self.load_op(src, index, MemLayout::Tile { x, y, stride })
+    }
+
+    fn load_op(&mut self, src: OpId, index: OpId, layout: MemLayout) -> OpId {
         self.push_back(Op::Load { src, index, layout })
+    }
+
+    /// Store `x` to `dst` at `index` (scalar layout: one element).
+    pub fn store(&mut self, dst: OpId, x: OpId, index: OpId) {
+        self.store_op(dst, x, index, MemLayout::Scalar)
+    }
+
+    /// Store a vector of `size` elements to `dst` at `index`.
+    pub fn store_vector(&mut self, dst: OpId, x: OpId, index: OpId, size: u16) {
+        self.store_op(dst, x, index, MemLayout::Vector(size))
+    }
+
+    /// Store an `x` × `y` tile with `stride` to `dst` at `index`.
+    pub fn store_tile(&mut self, dst: OpId, x: OpId, index: OpId, x_size: u16, y_size: u16, stride: u32) {
+        self.store_op(dst, x, index, MemLayout::Tile { x: x_size, y: y_size, stride })
+    }
+
+    fn store_op(&mut self, dst: OpId, x: OpId, index: OpId, layout: MemLayout) {
+        self.push_back(Op::Store { dst, src: x, index, layout });
     }
 
     /// Begin a loop.
@@ -290,9 +342,101 @@ impl Kernel {
         self.push_back(Op::Loop { len })
     }
 
+    /// Emit a loop over `len`, call `f` to build the body (the closure
+    /// receives the kernel and the loop variable), then close the loop.
+    pub fn loop_over(&mut self, len: OpId, f: impl FnOnce(&mut Kernel, OpId)) {
+        let lv = self.loop_(len);
+        f(self, lv);
+        self.end_loop();
+    }
+
     /// End the current loop.
     pub fn end_loop(&mut self) {
         self.push_back(Op::EndLoop);
+    }
+
+    /// Accumulate `a * b` over the currently open loop into a fresh scalar
+    /// accumulator (a `MemScope::Register` storage of `dtype`), returning the
+    /// accumulator's storage id.
+    ///
+    /// The loop must be open: `loop_(len)` emitted, `end_loop()` not yet. The
+    /// helper hoists the accumulator and its zero-init before the loop
+    /// (via `move_op_before`) and appends the per-iteration
+    /// `acc = a[i] * b[i] + acc` block inside the loop body. The caller closes
+    /// the loop and loads the result from the returned storage afterwards.
+    ///
+    /// # Arguments
+    ///
+    /// - `loop_op`: the open loop (`loop_()` return value)
+    /// - `a`, `b`: sources to multiply
+    /// - `index_a`, `index_b`: index ops for `a` and `b`, typically built from `loop_op`
+    pub fn dot(&mut self, dtype: DType, loop_op: OpId, a: OpId, index_a: OpId, b: OpId, index_b: OpId) -> OpId {
+        let acc = self.storage(dtype, MemScope::Register, 1);
+        let idx0 = self.const_idx(0);
+        let zero = self.push_back(Op::Const(dtype.zero_constant()));
+        self.move_op_before(acc, loop_op);
+        self.move_op_before(idx0, loop_op);
+        self.move_op_before(zero, loop_op);
+        let init = self.push_back(Op::Store { dst: acc, src: zero, index: idx0, layout: MemLayout::Scalar });
+        self.move_op_before(init, loop_op);
+
+        let av = self.load(a, index_a);
+        let bv = self.load(b, index_b);
+        let old = self.load(acc, idx0);
+        let sum = self.mad(av, bv, old);
+        self.store(acc, sum, idx0);
+        acc
+    }
+
+    /// Cooperatively copy a tile into a `MemScope::Local` storage (shared memory).
+    ///
+    /// Emits a loop over `cols`; iteration `c` copies
+    /// `src[(row_base + thread_row) * cols + c]` to `dst[thread_row * cols + c]`
+    /// — i.e. each of `rows` workgroup threads fetches the `thread_row`-th row of
+    /// the tile. The caller is responsible for the surrounding `barrier()`s.
+    ///
+    /// Returns nothing; `dst` must be a `MemScope::Local` storage with room for
+    /// `rows * cols` elements.
+    ///
+    /// # Arguments
+    ///
+    /// - `src`, `dst`: global source and local destination storages
+    /// - `rows`, `cols`: tile dimensions (`rows` = number of threads participating)
+    /// - `row_base`: op giving the first global row to copy (tile origin)
+    /// - `thread_row`: the calling thread's row within the tile
+    pub fn copy_tile_local(&mut self, src: OpId, dst: OpId, rows: OpId, row_base: OpId, cols: OpId, thread_row: OpId) {
+        let c_loop = self.loop_(cols);
+        let dst_idx = self.mad(thread_row, cols, c_loop);
+        let src_row = self.mad(row_base, rows, thread_row);
+        let src_idx = self.mad(src_row, cols, c_loop);
+        let v = self.load(src, src_idx);
+        self.store(dst, v, dst_idx);
+        self.end_loop();
+    }
+
+    /// For each column `c` of the `row`-th row of a `MemScope::Local` tile,
+    /// update a `MemScope::Register` accumulator vector:
+    /// `acc[c] = sa * acc[c] + sb * src[row * cols + c]`.
+    ///
+    /// Emits the loop over `cols` itself. `acc` must be a Register storage of
+    /// length `cols`; `sa` and `sb` are scalar ops broadcast across the row.
+    pub fn mad_tile_local(
+        &mut self,
+        acc: OpId,
+        sa: OpId,
+        sb: OpId,
+        src: OpId,
+        row: OpId,
+        cols: OpId,
+    ) {
+        let c_loop = self.loop_(cols);
+        let tile_idx = self.mad(row, cols, c_loop);
+        let v = self.load(src, tile_idx);
+        let old = self.load(acc, c_loop);
+        let scaled = self.mul(old, sa);
+        let new = self.mad(sb, v, scaled);
+        self.store(acc, new, c_loop);
+        self.end_loop();
     }
 
     pub(crate) fn unary(&mut self, x: OpId, uop: UOp) -> OpId {
@@ -310,8 +454,13 @@ impl Kernel {
     }
 
     /// `e^x`
+    ///
+    /// Decomposed as `exp2(x * log2(e))` — backends only implement `Exp2`
+    /// natively (e.g. CUDA has no `expf` in its supported instruction set).
     pub fn exp(&mut self, x: OpId) -> OpId {
-        self.unary(x, UOp::Exp)
+        let log2e = self.const_val(std::f32::consts::LOG2_E);
+        let scaled = self.mul(x, log2e);
+        self.exp2(scaled)
     }
 
     /// `2^x`
@@ -539,6 +688,28 @@ impl Kernel {
         let not_sel = self.push_back(Op::Binary { x: one, y: sel, bop: BOp::Sub });
         let term_b = self.push_back(Op::Binary { x: b, y: not_sel, bop: BOp::Mul });
         self.push_back(Op::Binary { x: term_a, y: term_b, bop: BOp::Add })
+    }
+
+    /// `cond ? a : b` as real control flow (`Op::If` / `Op::EndIf`).
+    ///
+    /// Unlike [`Kernel::branchless_where`] this works with any operand values,
+    /// including `±inf` (the arithmetic version computes `a*sel + b*(1-sel)`,
+    /// which turns `±inf * 0` into `NaN`). Returns the selected value (loaded
+    /// from a temporary register).
+    pub fn ternary_where(&mut self, cond: OpId, a: OpId, b: OpId) -> OpId {
+        let dtype = self.dtype(a);
+        let out = self.storage(dtype, MemScope::Register, 1);
+        let idx0 = self.const_idx(0);
+        let false_c = self.push_back(Op::Const(DType::Bool.zero_constant()));
+        let not_cond = self.eq(cond, false_c);
+
+        self.if_(cond);
+        self.store(out, a, idx0);
+        self.end_if();
+        self.if_(not_cond);
+        self.store(out, b, idx0);
+        self.end_if();
+        self.load(out, idx0)
     }
 
     /// Bitcast to a different dtype: reinterprets the raw bits of `x` without

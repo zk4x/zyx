@@ -305,7 +305,7 @@ impl Display for Kernel {
                         RangeKind::Warp(len) => {
                             writeln!(
                                 f,
-                                "{indent}r{out_id}{grey}: {IDX_T}{reset} = {blue}local_index({axis}){reset}    // 0..={}",
+                                "{indent}r{out_id}{grey}: {IDX_T}{reset} = {blue}local_range({axis}){reset}    // 0..={}",
                                 len - 1
                             )
                             .unwrap();

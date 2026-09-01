@@ -246,7 +246,7 @@ use crate::{
     dtype::Constant,
     error::{BackendError, ErrorStatus},
     graph::{ClassId, ExecPlan, Graph, GraphId, Node, plan::drain_events_for_buf},
-    kernel::{BOp, DeviceId, IDX_T, Kernel, MemLayout, MoveOp, Op, OpId, ParamKind, UOp, autotune::OptSeq},
+    kernel::{BOp, DeviceId, IDX_T, Kernel, MoveOp, Op, OpId, ParamKind, UOp, autotune::OptSeq},
     rng::Rng,
     scalar::{bf16, f16},
     shape::{Dim, UAxis},
@@ -1863,7 +1863,7 @@ impl Runtime {
                 // mixing with the surrounding expression.
                 TensorData::Constant { value, .. } => self.kernels[kid].kernel.push_back(Op::Const(value)),
                 TensorData::Variable { value, .. } => {
-                    let op_id = self.kernels[kid].kernel.param(value.dtype(), ParamKind::Variable, OpId::NULL);
+                    let op_id = self.kernels[kid].kernel.variable(value.dtype());
                     self.kernels[kid].loads.push(tid);
                     self.retain(tid);
                     op_id
@@ -2087,7 +2087,7 @@ impl Runtime {
             kernel: Kernel::new(DeviceId::AUTO),
         });
         let shape_op = self.replay_symbolic_into_kernel(kernel_id, shape_id);
-        let op_id = self.kernels[kernel_id].kernel.param(dtype, ParamKind::Global, shape_op);
+        let op_id = self.kernels[kernel_id].kernel.param(dtype, shape_op);
         self.kernels[kernel_id].loads.push(x);
         self.retain(x);
         (kernel_id, op_id)
@@ -3856,8 +3856,8 @@ impl Runtime {
                 ref t => panic!("assign: src {src} is not an eager/promoted tensor: {t:?}"),
             };
             let dst_shape_op = self.replay_symbolic_into_kernel(kernel_id, dst_shape_id);
-            let mut_param = self.kernels[kernel_id].kernel.param(dtype, ParamKind::GlobalMut, dst_shape_op);
-            self.kernels[kernel_id].kernel.store(mut_param, src_op, OpId::NULL, MemLayout::Scalar);
+            let mut_param = self.kernels[kernel_id].kernel.param_mut(dtype, dst_shape_op);
+            self.kernels[kernel_id].kernel.store(mut_param, src_op, OpId::NULL);
             self.kernels[kernel_id].stores.push(dst);
             if let TensorData::Leaf { depends_on, .. } = &mut self.tensors[dst] {
                 *depends_on = kernel_id;
@@ -4063,7 +4063,7 @@ impl Runtime {
 
         let dst_op = op_map.get(&dst_op).copied().unwrap_or(op_map[&dst_param]);
         // Store src's value into dst's base buffer through the replayed chain.
-        self.kernels[src_kid].kernel.store(dst_op, src_op, OpId::NULL, MemLayout::Scalar);
+        self.kernels[src_kid].kernel.store(dst_op, src_op, OpId::NULL);
         self.kernels[src_kid].stores.push(dst_org);
         // Register every replayed define's load in define order. Variables
         // only — the GlobalMut base is a PURE STORE now and must not appear
@@ -4505,8 +4505,8 @@ impl Runtime {
             debug_assert!(!self.kernels[kid].loads.contains(&x), "kernel {kid:?} both loads and stores tid {x}");
 
             let store_shape_id = self.kernels[kid].kernel.stack_shape_dims(op_id);
-            let dst_id = self.kernels[kid].kernel.param(dtype, ParamKind::GlobalMut, store_shape_id);
-            self.kernels[kid].kernel.store(dst_id, op_id, OpId::NULL, MemLayout::Scalar);
+            let dst_id = self.kernels[kid].kernel.param_mut(dtype, store_shape_id);
+            self.kernels[kid].kernel.store(dst_id, op_id, OpId::NULL);
             self.kernels[kid].stores.push(x);
             kid
         } else {
