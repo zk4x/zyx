@@ -115,7 +115,7 @@ impl Optimization for RegisterBlocking {
 // then rewritten to just `lidx`, and `Const(i)` becomes `Mul(Const(i), V)`.
 
 impl Kernel {
-    /// Make the [`ThreadCoarse`] optimization: scan the kernel for global
+    /// Make the `ThreadCoarse` optimization: scan the kernel for global
     /// indices that can be coarsened.
     pub fn opt_coarsen(&self, _dev_info: &DeviceInfo) -> Box<dyn Optimization> {
         #[cfg(feature = "time")]
@@ -305,7 +305,7 @@ impl Kernel {
 }
 
 impl Kernel {
-    /// Make the [`RegisterBlocking`] optimization: scan the kernel for
+    /// Make the `RegisterBlocking` optimization: scan the kernel for
     /// reduction loops and global axes that can be register-blocked.
     pub fn opt_register_blocking(&self, _dev_info: &DeviceInfo) -> Box<dyn Optimization> {
         #[cfg(feature = "time")]

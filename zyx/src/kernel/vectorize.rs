@@ -46,9 +46,12 @@ struct StoreInfo {
 }
 
 impl Kernel {
-    /// Make the [`Vectorize`] optimization.
+    /// Make the `Vectorize` optimization.
     pub fn opt_vectorize(&self, dev_info: &DeviceInfo) -> Box<dyn Optimization> {
-        Box::new(Vectorize { supported_lens: dev_info.supported_vec_lens.clone(), vectorize_ops: !dev_info.supported_vec_lens.is_empty() })
+        Box::new(Vectorize {
+            supported_lens: dev_info.supported_vec_lens.clone(),
+            vectorize_ops: !dev_info.supported_vec_lens.is_empty(),
+        })
     }
 
     /// Vectorize loads.
@@ -478,7 +481,7 @@ impl Kernel {
     }
 
     /// Walk backward, find Vectorize[X0..Xn] where all Xi are the same compute op.
-    /// Replace Vectorize with compute_op(vectorize[inputs_of_Xi]),
+    /// Replace Vectorize with compute_op(vectorize[inputs of Xi]),
     /// replace the first Xi with that vectorize of inputs, and keep walking.
     pub fn vectorize_ops_backward(&mut self, supported_lens: &[u8]) {
         let mut op_id = self.tail;

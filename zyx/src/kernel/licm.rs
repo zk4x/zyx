@@ -15,11 +15,11 @@
 //! These optimizations reduce redundant computations and improve performance.
 
 use super::autotune::Optimization;
+use crate::{Map, Set};
 use crate::{
     backend::DeviceInfo,
     kernel::{Kernel, Op, OpId},
 };
-use crate::{Map, Set};
 
 /// Reassociate commutative operations (addition, multiplication)
 /// to group them and reduce instruction count.
@@ -37,7 +37,7 @@ impl Optimization for ReassociateCommutative {
 }
 
 impl Kernel {
-    /// Make the [`ReassociateCommutative`] optimization.
+    /// Make the `ReassociateCommutative` optimization.
     pub fn opt_reassociate_commutative(&self, _dev_info: &DeviceInfo) -> Box<dyn Optimization> {
         Box::new(ReassociateCommutative)
     }

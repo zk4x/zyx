@@ -41,7 +41,7 @@ impl Optimization for TiledReduce {
 }
 
 impl Kernel {
-    /// Make the [`TiledReduce`] optimization: scan the kernel for reduction
+    /// Make the `TiledReduce` optimization: scan the kernel for reduction
     /// loops that can be parallelized across threads.
     pub fn opt_local_reduce(&self, dev_info: &DeviceInfo) -> Box<dyn Optimization> {
         #[cfg(feature = "time")]

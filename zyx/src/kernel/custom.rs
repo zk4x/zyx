@@ -44,7 +44,7 @@ impl Kernel {
     /// Create a new custom kernel targeting a specific device.
     ///
     /// Two approaches for inputs:
-    /// - **Manual gidx**: `param(dtype, shape)` + [`Kernel::gidx`]
+    /// - **Manual gidx**: `param(dtype, shape)` + manual global index computation
     /// - **LoadView**: `push_back(Op::LoadView(...))` — `compile()` adds thread indices.
     ///
     /// # Example
@@ -70,7 +70,7 @@ impl Kernel {
 
     /// Compile the kernel. Consumes `self`.
     ///
-    /// Runs [`Kernel::unfold_movement_ops`] and [`Kernel::verify`] before compilation.
+    /// Runs movement-op unfolding and [`Kernel::verify`] before compilation.
     ///
     /// # Panics
     ///

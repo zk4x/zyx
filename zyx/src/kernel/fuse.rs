@@ -29,7 +29,7 @@ impl Optimization for FuseMad {
 }
 
 impl Kernel {
-    /// Make the [`FuseMad`] optimization.
+    /// Make the `FuseMad` optimization.
     pub fn opt_fuse_mad(&self, _dev_info: &DeviceInfo) -> Box<dyn Optimization> {
         Box::new(FuseMad)
     }

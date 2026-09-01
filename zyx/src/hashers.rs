@@ -5,6 +5,7 @@
 
 use std::hash::Hasher;
 
+/// FNV-1a hasher, state is a single `u64` so it can be const-initialized.
 pub struct FHasher(u64);
 
 impl Default for FHasher {

@@ -239,10 +239,7 @@ use nanoserde::DeJson;
 use crate::viz::Viz;
 use crate::{
     DType, DebugMask, Map, Scalar, Set, ZyxError,
-    backend::{
-        BufferId, Config, DTypeCapability, Device, DeviceProgramId, Event, LaunchArg, MemoryPool,
-        PoolId, ProgramId,
-    },
+    backend::{BufferId, Config, DTypeCapability, Device, DeviceProgramId, Event, LaunchArg, MemoryPool, PoolId, ProgramId},
     dtype::Constant,
     error::{BackendError, ErrorStatus},
     graph::{ClassId, ExecPlan, Graph, GraphId, Node, plan::drain_events_for_buf},

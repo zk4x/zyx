@@ -223,7 +223,7 @@ impl Kernel {
         self.verify();
     }
 
-    /// Make the [`MergeNestedLoops`] optimization: each config merges one
+    /// Make the `MergeNestedLoops` optimization: each config merges one
     /// nested loop chain into a single loop.
     pub fn opt_merge_nested_loops(&self, _dev_info: &DeviceInfo) -> Box<dyn Optimization> {
         Box::new(MergeNestedLoops { groups: self.find_nested_loop_groups() })

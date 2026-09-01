@@ -81,7 +81,7 @@ impl Optimization for SplitLoop {
 }
 
 impl Kernel {
-    /// Make the [`SplitGlobalToLocal`] optimization: scan the kernel for
+    /// Make the `SplitGlobalToLocal` optimization: scan the kernel for
     /// global indices that can be split into local factors.
     ///
     /// Config ids are ordered by factor, hardware-aligned factors first
@@ -131,7 +131,7 @@ impl Kernel {
         Box::new(SplitGlobalToLocal { factors })
     }
 
-    /// Make the [`SplitLoop`] optimization: scan the kernel for large loops
+    /// Make the `SplitLoop` optimization: scan the kernel for large loops
     /// that can be split into smaller iterations.
     pub fn opt_split_loop(&self, _dev_info: &DeviceInfo) -> Box<dyn Optimization> {
         #[cfg(feature = "time")]

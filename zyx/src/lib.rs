@@ -58,12 +58,13 @@
 
 use crate::runtime::Runtime;
 
+mod aot;
 mod backend;
 mod codegen;
 mod dtype;
 mod error;
 mod graph;
-mod hashers;
+pub mod hashers;
 pub mod kernel;
 mod module;
 mod mutex;
@@ -74,11 +75,10 @@ mod rng;
 mod runtime;
 mod scalar;
 mod shape;
-mod slab;
+pub mod slab;
 mod tape;
 mod tensor;
 mod types;
-mod aot;
 #[cfg(feature = "viz")]
 mod viz;
 

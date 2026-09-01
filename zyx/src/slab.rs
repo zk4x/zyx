@@ -17,15 +17,24 @@ use nanoserde::{DeBin, SerBin};
 
 use crate::Set;
 
+/// Index type usable as a [`Slab`] key: a compact integer with a null sentinel.
 pub trait SlabId: std::fmt::Debug + Clone + Copy + PartialEq + Eq + PartialOrd + Ord + From<usize> + Into<usize> + Hash {
+    /// First valid index (0).
     const ZERO: Self;
+    /// Sentinel for "no index".
     const NULL: Self;
+    /// Advance to the next index.
     fn inc(&mut self);
+    /// Whether this is [`SlabId::NULL`].
     fn is_null(self) -> bool {
         self == Self::NULL
     }
 }
 
+/// Index map using unsigned integer indices to index
+/// into a vector of T. Pushing new values returns their
+/// index. Removing elements is O(1), does not reallocate
+/// and it does not change existing indices.
 #[derive(Debug)]
 pub struct Slab<Id: SlabId, T> {
     values: Vec<MaybeUninit<T>>,
@@ -134,6 +143,7 @@ impl<Id: SlabId, T> Slab<Id, T> {
         IdIter::new(&self.empty, Id::from(self.values.len())).map(|id| unsafe { self.values[id.into()].assume_init_ref() })
     }
 
+    /// Mutable iterator over live values.
     pub fn values_mut(&mut self) -> impl Iterator<Item = &mut T> {
         self.values
             .iter_mut()
@@ -213,6 +223,7 @@ impl<Id: SlabId, T> Slab<Id, T> {
     }
 
     #[allow(unused)]
+    /// Mutable reference to the value at `index`, if live.
     pub fn get_mut(&mut self, index: Id) -> Option<&mut T> {
         if self.empty.contains(&index) {
             return None;

@@ -16,13 +16,13 @@
 //! The cost model is learned from actual kernel execution times and
 //! used to guide the autotuning search.
 
+use super::predict_cost::predict_time_us;
 use crate::{
     DType, Map, Set,
     backend::DeviceInfo,
     kernel::{IDX_T, Kernel, MemLayout, MemScope, Op, OpId, ParamKind, RangeKind},
     shape::Dim,
 };
-use super::predict_cost::predict_time_us;
 
 impl Kernel {
     /// Predict the execution time of this kernel in microseconds.
@@ -45,10 +45,7 @@ impl Kernel {
             match op {
                 Op::Storage { scope, .. } => *scope,
                 Op::Param { kind: ParamKind::Variable, .. } => MemScope::Register,
-                Op::Param {
-                    kind: ParamKind::Global | ParamKind::GlobalMut,
-                    ..
-                } => MemScope::Global,
+                Op::Param { kind: ParamKind::Global | ParamKind::GlobalMut, .. } => MemScope::Global,
                 _ => unreachable!("load/store operand must be a Storage or Param, got {op:?}"),
             }
         }

@@ -212,7 +212,7 @@ impl Kernel {
         }
     }
 
-    /// Make the [`PadIndex`] optimization: scan the kernel for indices whose
+    /// Make the `PadIndex` optimization: scan the kernel for indices whose
     /// lengths are not multiples of hardware-friendly sizes.
     pub fn opt_pad_index(&self, _dev_info: &DeviceInfo) -> Box<dyn Optimization> {
         let mut factors = Vec::new();

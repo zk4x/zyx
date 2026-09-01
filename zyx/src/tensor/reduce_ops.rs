@@ -783,7 +783,7 @@ impl Tensor {
 // ---------------------------------------------------------------------------
 
 impl Tensor {
-    /// Computes the [var] reduction over **all elements**.
+    /// Computes the variance reduction over **all elements**.
     ///
     /// # Returns
     /// A scalar tensor containing the reduction result.
@@ -792,7 +792,7 @@ impl Tensor {
         self.reduce_impl::<false>(ReduceOp::Var, [], None, 1).unwrap()
     }
 
-    /// Computes the [var] reduction over all elements, keeping reduced dimensions.
+    /// Computes the variance reduction over all elements, keeping reduced dimensions.
     ///
     /// Reduced axes are retained with length 1.
     #[must_use]
@@ -800,13 +800,13 @@ impl Tensor {
         self.reduce_impl::<true>(ReduceOp::Var, [], None, 1).unwrap()
     }
 
-    /// Computes the [var] reduction over all elements, casting the result to `dtype`.
+    /// Computes the variance reduction over all elements, casting the result to `dtype`.
     #[must_use]
     pub fn var_all_dtype(&self, dtype: DType) -> Tensor {
         self.reduce_impl::<false>(ReduceOp::Var, [], Some(dtype), 1).unwrap()
     }
 
-    /// Computes the [var] reduction along specified `axes`.
+    /// Computes the variance reduction along specified `axes`.
     ///
     /// # Arguments
     /// * `axes` — Iterable of axes to reduce over.
@@ -817,7 +817,7 @@ impl Tensor {
         self.reduce_impl::<false>(ReduceOp::Var, axes, None, 1)
     }
 
-    /// Computes the [var] reduction along specified `axes`, keeping reduced dimensions.
+    /// Computes the variance reduction along specified `axes`, keeping reduced dimensions.
     ///
     /// # Errors
     /// When axes are out of range
@@ -825,7 +825,7 @@ impl Tensor {
         self.reduce_impl::<true>(ReduceOp::Var, axes, None, 1)
     }
 
-    /// Computes the [var] reduction along specified `axes`, casting the result to `dtype`.
+    /// Computes the variance reduction along specified `axes`, casting the result to `dtype`.
     ///
     /// # Errors
     /// When axes are out of range
@@ -833,7 +833,7 @@ impl Tensor {
         self.reduce_impl::<false>(ReduceOp::Var, axes, Some(dtype), 1)
     }
 
-    /// Computes the [var] reduction along specified `axes` with a `correction` factor.
+    /// Computes the variance reduction along specified `axes` with a `correction` factor.
     ///
     /// # Arguments
     /// * `axes` — Iterable of axes to reduce over.
@@ -853,25 +853,25 @@ impl Tensor {
         self.reduce_impl::<false>(ReduceOp::Var, [], None, correction)
     }
 
-    /// Computes the [var] reduction over all elements, keeping reduced dimensions and casting to `dtype`.
+    /// Computes the variance reduction over all elements, keeping reduced dimensions and casting to `dtype`.
     #[must_use]
     pub fn var_keepdim_dtype(&self, dtype: DType) -> Tensor {
         self.reduce_impl::<true>(ReduceOp::Var, [], Some(dtype), 1).unwrap()
     }
 
-    /// Computes the [var] reduction over all elements, keeping reduced dimensions, with `correction`.
+    /// Computes the variance reduction over all elements, keeping reduced dimensions, with `correction`.
     #[must_use]
     pub fn var_all_keepdim_correction(&self, correction: Dim) -> Tensor {
         self.reduce_impl::<true>(ReduceOp::Var, [], None, correction).unwrap()
     }
 
-    /// Computes the [var] reduction over all elements, casting to `dtype`, with `correction`.
+    /// Computes the variance reduction over all elements, casting to `dtype`, with `correction`.
     #[must_use]
     pub fn var_all_dtype_correction(&self, dtype: DType, correction: Dim) -> Tensor {
         self.reduce_impl::<false>(ReduceOp::Var, [], Some(dtype), correction).unwrap()
     }
 
-    /// Computes the [var] reduction along `axes`, keeping reduced dimensions, casting to `dtype`.
+    /// Computes the variance reduction along `axes`, keeping reduced dimensions, casting to `dtype`.
     ///
     /// # Errors
     /// When axes are out of range
@@ -879,7 +879,7 @@ impl Tensor {
         self.reduce_impl::<true>(ReduceOp::Var, axes, Some(dtype), 1)
     }
 
-    /// Computes the [var] reduction along `axes`, keeping reduced dimensions, with `correction`.
+    /// Computes the variance reduction along `axes`, keeping reduced dimensions, with `correction`.
     ///
     /// # Errors
     /// When axes are out of range
@@ -887,7 +887,7 @@ impl Tensor {
         self.reduce_impl::<true>(ReduceOp::Var, axes, None, correction)
     }
 
-    /// Computes the [var] reduction along `axes`, casting to `dtype`, with `correction`.
+    /// Computes the variance reduction along `axes`, casting to `dtype`, with `correction`.
     ///
     /// # Errors
     /// When axes are out of range
@@ -900,13 +900,13 @@ impl Tensor {
         self.reduce_impl::<false>(ReduceOp::Var, axes, Some(dtype), correction)
     }
 
-    /// Computes the [var] reduction over all elements, keeping reduced dimensions, casting to `dtype`, with `correction`.
+    /// Computes the variance reduction over all elements, keeping reduced dimensions, casting to `dtype`, with `correction`.
     #[must_use]
     pub fn var_all_keepdim_dtype_correction(&self, dtype: DType, correction: Dim) -> Tensor {
         self.reduce_impl::<true>(ReduceOp::Var, [], Some(dtype), correction).unwrap()
     }
 
-    /// Computes the [var] reduction along `axes`, keeping reduced dimensions, casting to `dtype`.
+    /// Computes the variance reduction along `axes`, keeping reduced dimensions, casting to `dtype`.
     /// Includes `correction` if specified.
     ///
     /// # Errors

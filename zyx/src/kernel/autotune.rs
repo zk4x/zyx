@@ -338,13 +338,7 @@ impl Default for BeamSearch {
 impl BeamSearch {
     /// Defaults mirroring the config-file fallbacks.
     pub const fn new() -> Self {
-        Self {
-            n_added_per_step: 200,
-            n_launches: 1,
-            n_removed_per_step: 0,
-            n_seeds: 200,
-            n_total_opts: 1000,
-        }
+        Self { n_added_per_step: 200, n_launches: 1, n_removed_per_step: 0, n_seeds: 200, n_total_opts: 1000 }
     }
 }
 
@@ -605,11 +599,7 @@ impl Kernel {
         for &op_id in &ops {
             match self.ops[op_id].op {
                 Op::Const(c) if c.dtype() == IDX_T => {}
-                _ => {
-                    return Err(ZyxError::kernel_error(
-                        "generate_tiling_variants: op must be a Const of dtype IDX_T".into(),
-                    ))
-                }
+                _ => return Err(ZyxError::kernel_error("generate_tiling_variants: op must be a Const of dtype IDX_T".into())),
             }
         }
         let base = self.clone();

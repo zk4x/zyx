@@ -60,12 +60,12 @@ impl Optimization for UnrollConstantLoops {
 }
 
 impl Kernel {
-    /// Make the [`UnrollLoops`] optimization.
+    /// Make the `UnrollLoops` optimization.
     pub fn opt_unroll(&self, _dev_info: &DeviceInfo) -> Box<dyn Optimization> {
         Box::new(UnrollLoops { factors: vec![8, 4, 16, 2] })
     }
 
-    /// Make the [`UnrollConstantLoops`] optimization.
+    /// Make the `UnrollConstantLoops` optimization.
     pub fn opt_unroll_constant_loops(&self, _dev_info: &DeviceInfo) -> Box<dyn Optimization> {
         Box::new(UnrollConstantLoops)
     }

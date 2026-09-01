@@ -228,7 +228,7 @@ pub enum MemScope {
 ///
 /// Specifies how data is laid out in memory for efficient access.
 ///
-/// The layout also determines how much a **single** [`Op::Store`] / load op
+/// The layout also determines how much a **single** store / load op
 /// writes (reads): it is the *indexing granularity* of the op, not the rank
 /// or scalarity of the value being moved. `Scalar` means the op writes one
 /// single element per op; `Vector` writes a full vector with a single op;
