@@ -120,7 +120,7 @@ mod local_reduce;
 mod merge_loops;
 mod mma;
 mod ops;
-mod pad_index;
+mod pad_range;
 mod predict_cost;
 mod split_loops;
 mod tenstorrent;

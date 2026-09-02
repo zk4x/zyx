@@ -129,6 +129,7 @@ pub(super) fn initialize_device(
             dtype_capability: [DTypeCapability::all(); DType::N_DTYPES],
             has_native_exp2: false,
             supported_vec_lens: vec![2, 4, 8, 16],
+            tenstorrent: false,
         },
         memory_pool_id: pool_id,
         programs: Slab::new(),

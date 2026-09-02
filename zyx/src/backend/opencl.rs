@@ -971,6 +971,7 @@ fn query_device_info(
         has_native_exp2: true,
         supported_vec_lens: vec![2, 3, 4, 8, 16],
         tensor_cores: false,
+        tenstorrent: false,
         warp_size: {
             if let Ok(device_type_data) = get_device_data(device, clGetDeviceInfo, CL_DEVICE_TYPE) {
                 let device_type = u64::from_ne_bytes(device_type_data.try_into().unwrap_or_default());

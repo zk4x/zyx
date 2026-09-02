@@ -101,6 +101,14 @@ impl Kernel {
             self.exp2_to_exp();
             self.log2_to_ln();
         }
+        if dev_info.tenstorrent {
+            self.opt_tenstorrent_tile();
+            self.common_subexpression_elimination();
+            self.instruction_schedule();
+            self.dead_code_elimination();
+            self.debug();
+            panic!();
+        }
     }
 
     pub(crate) fn alloc_buffers(

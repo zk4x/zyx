@@ -76,7 +76,7 @@ impl Kernel {
                 for &(id, _axis, len) in &gidxs {
                     let pad = round_up(len, 32);
                     if pad > 0 {
-                        self.pad_index(id, pad);
+                        self.pad_range(id, pad);
                     }
                 }
             }
@@ -84,7 +84,7 @@ impl Kernel {
                 let (id, _axis, len) = gidxs[0];
                 let pad = round_up(len, 1024);
                 if pad > 0 {
-                    self.pad_index(id, pad);
+                    self.pad_range(id, pad);
                 }
                 let new_len = if let Op::Range { kind: RangeKind::Group(len), .. } = self.ops[id].op {
                     self.resolve_const(len).and_then(crate::dtype::Constant::as_dim).unwrap()
@@ -112,7 +112,7 @@ impl Kernel {
                 for &(id, _axis, len) in &gidxs[..2] {
                     let pad = round_up(len, 32);
                     if pad > 0 {
-                        self.pad_index(id, pad);
+                        self.pad_range(id, pad);
                     }
                 }
                 let len_const = self.insert_before(last_id, Op::Const(Constant::idx(last_len)));

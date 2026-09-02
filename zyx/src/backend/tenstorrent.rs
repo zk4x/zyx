@@ -186,6 +186,7 @@ pub(super) fn initialize_device(
             dtype_capability: [DTypeCapability::all(); DType::N_DTYPES],
             has_native_exp2: false,
             supported_vec_lens: vec![32],
+            tenstorrent: true,
         },
         memory_pool_id: pool_id,
         runtime,

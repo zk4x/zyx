@@ -289,6 +289,7 @@ pub(super) fn initialize_device(
                 dtype_capability: [DTypeCapability::all(); DType::N_DTYPES],
                 has_native_exp2: true,
                 supported_vec_lens: vec![2, 4],
+                tenstorrent: false,
             },
             streams,
             programs: Slab::new(),
@@ -333,6 +334,7 @@ pub(super) fn initialize_device(
             dtype_capability: [DTypeCapability::all(); DType::N_DTYPES],
             has_native_exp2: true,
             supported_vec_lens: vec![2, 4],
+            tenstorrent: false,
         };
         devices.push(Device::HIP(dev));
         //queues,

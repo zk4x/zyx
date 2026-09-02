@@ -564,6 +564,8 @@ pub struct DeviceInfo {
     pub has_native_exp2: bool,
     /// Supported vector lengths for loads/stores/compute
     pub supported_vec_lens: Vec<u8>,
+    /// Whether this device is a Tenstorrent Tensix accelerator
+    pub tenstorrent: bool,
 }
 
 impl DeviceInfo {

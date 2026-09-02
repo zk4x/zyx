@@ -50,7 +50,7 @@ impl Optimization for PadIndex {
         };
         let pad_len = (pad_to - current_len % pad_to) % pad_to;
         if pad_len > 0 {
-            kernel.pad_index(idx_id, pad_len);
+            kernel.pad_range(idx_id, pad_len);
         }
     }
 }
@@ -69,7 +69,7 @@ impl Kernel {
     ///
     /// # Panics
     /// - If `gidx_id` is not an `Op::Index` node.
-    pub(crate) fn pad_index(&mut self, gidx_id: OpId, pad_len: Dim) {
+    pub(crate) fn pad_range(&mut self, gidx_id: OpId, pad_len: Dim) {
         if pad_len == 0 {
             return;
         }

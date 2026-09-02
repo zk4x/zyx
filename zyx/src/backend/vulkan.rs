@@ -1802,6 +1802,7 @@ pub(super) fn initialize_device(
                 },
                 has_native_exp2: false,
                 supported_vec_lens: vec![2, 3, 4],
+                tenstorrent: false,
             },
             memory_pool_id: PoolId::from(usize::from(memory_pools.len()) - 1),
         };

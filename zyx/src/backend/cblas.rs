@@ -164,6 +164,7 @@ pub(super) fn initialize_device(
             dtype_capability: [DTypeCapability::none(); DType::N_DTYPES],
             has_native_exp2: false,
             supported_vec_lens: vec![],
+            tenstorrent: false,
         },
         device_id: DeviceId::NULL,
         // cblas reuses the host pool (like the C backend)
