@@ -227,6 +227,14 @@ pub enum Node {
         program_id: ProgramId,
         time: u64,
     },
+    Custom {
+        inputs: Box<[ClassId]>,
+        outputs: Box<[(ClassId, ClassId, DType)]>,
+        program_id: ProgramId,
+        // TODO this should just work?
+        //backward: ProgramId,
+        time: u64,
+    },
 }
 
 impl PartialEq for Node {
@@ -365,6 +373,12 @@ impl std::hash::Hash for Node {
                 outputs.hash(state);
                 program_id.hash(state);
             }
+            Self::Custom { inputs, outputs, program_id, .. } => {
+                18u8.hash(state);
+                inputs.hash(state);
+                outputs.hash(state);
+                program_id.hash(state);
+            }
         }
     }
 }
@@ -485,6 +499,7 @@ impl Node {
             Self::ToDevice { x, .. } => vec![*x],
             Self::Contiguous { x, .. } => vec![*x],
             Self::Kernel { inputs, .. } => inputs.to_vec(),
+            Self::Custom { inputs, .. } => inputs.to_vec(),
         };
         v.into_iter().filter(|p| !p.is_null())
     }
@@ -868,6 +883,7 @@ impl Graph {
                     Node::Cast { dtype, .. } => format!("Cast {:?}", dtype),
                     Node::Bitcast { dtype, .. } => format!("Bitcast {:?}", dtype),
                     Node::Kernel { program_id, time, .. } => format!("Kernel prog={:?} time={}", program_id, time),
+                    Node::Custom { program_id, time, .. } => format!("Custom prog={:?} time={}", program_id, time),
                     Node::Expand { .. } => "Expand".into(),
                     Node::Permute { axes, .. } => format!("Permute {:?}", axes),
                     Node::Reshape { shape, .. } => format!("Reshape shape={shape:?}"),
@@ -1368,6 +1384,15 @@ impl Graph {
             }
             Node::Assign { dst, .. } => self.shape(*dst),
             Node::Kernel { outputs, .. } => self.shape(outputs[0]),
+            // A Custom node is a member of every one of its output classes, so
+            // the queried class selects the matching output's shape metadata.
+            Node::Custom { outputs, .. } => {
+                let (_, shape, _) = outputs
+                    .iter()
+                    .find(|(c, _, _)| *c == class)
+                    .expect("Custom node queried outside its output classes");
+                self.dims(*shape)
+            }
         }
     }
 
@@ -1519,6 +1544,13 @@ impl Graph {
             Node::Bitcast { dtype, .. } => *dtype,
             Node::Assign { dst, .. } => self.dtype(*dst),
             Node::Kernel { outputs, .. } => self.dtype(outputs[0]),
+            Node::Custom { outputs, .. } => {
+                let (_, _, dtype) = outputs
+                    .iter()
+                    .find(|(c, ..)| *c == class)
+                    .expect("Custom node queried outside its output classes");
+                *dtype
+            }
             Node::Stack { ops } => self.dtype(ops[0]),
             Node::Expand { x, .. }
             | Node::Permute { x, .. }
@@ -1576,7 +1608,8 @@ impl Graph {
                 | Node::After { .. }
                 | Node::ToDevice { .. }
                 | Node::Contiguous { .. }
-                | Node::Kernel { .. } => return None,
+                | Node::Kernel { .. }
+                | Node::Custom { .. } => return None,
             }
             order.push(node_id);
         }
@@ -2283,6 +2316,10 @@ impl Runtime {
         for dev_id in dev_ids {
             self.devices[dev_id].match_graph(unsafe { &mut *graph_ptr }, output_set);
         }
+
+        // Lower user custom kernels into Kernel twins so the pool grouping and
+        // gap filling below see them alongside the AOT kernels.
+        self.graphs[graph_id].lower_custom_kernels();
 
         // AOT kernel output classes, grouped by the memory pool they run in.
         let mut pool_kernel_outputs: Map<PoolId, Set<ClassId>> = Map::default();

@@ -2,7 +2,7 @@ use std::collections::BTreeSet;
 
 use crate::{
     Map, Set,
-    graph::{ClassId, Graph, JitKernelData, JitKernelId, Node},
+    graph::{ClassId, Graph, JitKernelData, JitKernelId, Node, NodeData, NodeId},
     kernel::{DeviceId, IDX_T, Kernel, MoveOp, Op, OpId, ParamKind},
     shape::UAxis,
     slab::{Slab, SlabId},
@@ -122,7 +122,10 @@ impl Graph {
             for nid in &self.classes[cid].nodes {
                 // Kernel nodes added by pattern matching (e.g. cblas) are never
                 // consumed here — kernelize only processes structural nodes.
-                if matches!(&self.nodes[*nid].node, Node::Kernel { .. }) {
+                // The same holds for user custom kernels (`Node::Custom` and its
+                // lowered `Node::Kernel` twin): their inputs are materialized via
+                // `kernel_inputs` in `fill_gaps`, not via reference counting here.
+                if matches!(&self.nodes[*nid].node, Node::Kernel { .. } | Node::Custom { .. }) {
                     continue;
                 }
                 // Everything counts — data operands and descriptor fields
@@ -149,6 +152,7 @@ impl Graph {
                     Node::After { x, dep } => vec![*x, *dep],
                     Node::ToDevice { x, .. } | Node::Contiguous { x, .. } => vec![*x],
                     Node::Kernel { inputs, .. } => inputs.to_vec(),
+                    Node::Custom { inputs, .. } => inputs.to_vec(),
                 };
                 for child in data_slots {
                     *rcs.entry(child).or_default() += 1;
@@ -868,6 +872,11 @@ impl Graph {
                         visited.insert(cid, (kid, op_id));
                     }
                     Node::Kernel { .. } => {}
+                    // Lowered by `lower_custom_kernels` before kernelize runs:
+                    // the `Node::Kernel` twin carries the producer edge, and the
+                    // Custom class is always a region input (its output class is
+                    // an active kernel output), so it is loaded, never fused.
+                    Node::Custom { .. } => {}
                 }
             }
 
@@ -1319,9 +1328,46 @@ impl Graph {
         visited.insert(cid, (kid, result_op));
     }
 
+    /// Lowers user custom kernels (`Node::Custom`) into producer `Node::Kernel`
+    /// twins so every downstream AOT consumer — pool grouping, gap filling,
+    /// extraction, plan launch — treats them like any backend kernel.
+    ///
+    /// The twin carries the same program, inputs and output classes with a
+    /// fixed `time = 10`, so extraction always prefers it over autotuned
+    /// fusion variants. The Custom node itself stays in each output class as
+    /// the structural anchor: `Graph::shape`/`Graph::dtype` resolve the
+    /// per-output metadata through it, and extraction skips it (only
+    /// Kernel/ToDevice nodes are producer candidates).
+    ///
+    /// Must run before the kernel-output pool grouping in `compile_graph`.
+    pub fn lower_custom_kernels(&mut self) {
+        let node_ids: Vec<NodeId> = self.nodes.ids().collect();
+        for nid in node_ids {
+            let custom = match &self.nodes[nid].node {
+                Node::Custom { inputs, outputs, program_id, .. } => Some((
+                    inputs.clone(),
+                    outputs.iter().map(|(c, _, _)| *c).collect::<Vec<ClassId>>(),
+                    *program_id,
+                )),
+                _ => None,
+            };
+            if let Some((inputs, outputs, program_id)) = custom {
+                let class_of = self.nodes[nid].class_of;
+                let knid = self.nodes.push(NodeData {
+                    node: Node::Kernel { inputs, outputs: outputs.clone().into(), program_id, time: 10 },
+                    class_of,
+                });
+                for &ocid in &outputs {
+                    self.classes[ocid].nodes.push(knid);
+                }
+            }
+        }
+    }
+
     /// Fills the gaps between AOT kernels with fused kernels.
     ///
     /// The classes in `active_outputs` are outputs of AOT kernels that are in
+    /// play for this pass. Together with the leaf classes they form producer
     /// play for this pass. Together with the leaf classes they form producer
     /// boundaries: the kernelizer never fuses into them, it only loads them.
     /// Everything else on output paths decomposes into connected structural

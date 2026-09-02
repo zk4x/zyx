@@ -408,6 +408,7 @@ impl Runtime {
                 Node::Stack { .. } => todo!("stack backward"),
                 Node::Leaf { .. } | Node::Const { .. } => {}
                 Node::Kernel { .. } => todo!("backward through custom kernel"),
+                Node::Custom { .. } => todo!("backward through custom kernel"),
             }
         }
 

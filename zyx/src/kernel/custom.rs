@@ -22,6 +22,7 @@ use crate::Map;
 use crate::backend::{BufferId, DeviceInfo, LaunchArg, MemoryPool, ProgramId};
 use crate::dtype::Constant;
 use crate::error::BackendError;
+use crate::graph::{ClassId, EClass, Node, NodeData};
 use crate::kernel::{
     BOp, DeviceId, IDX_T, Kernel, MMADType, MMADims, MMALayout, MemLayout, MemScope, MoveOp, Op, OpId, ParamKind, RangeKind, UOp,
 };
@@ -33,6 +34,13 @@ use crate::types::{TinyString, TinyVec};
 use crate::{DType, Tensor, ZyxError, shape::Dim};
 
 /// A compiled kernel ready for repeated execution.
+///
+/// Dropping a `CompiledKernel` does **not** release the device program:
+/// the program registry is intentionally append-only (programs leak, bounded
+/// by kernel-hash deduplication), so `ProgramId`s held by egraph nodes and
+/// execution plans stay valid for the process lifetime. Releasing a program
+/// whose id is still referenced elsewhere could silently launch a *different*
+/// program after slab id reuse.
 #[derive(Debug)]
 pub struct CompiledKernel {
     program: ProgramId,
@@ -715,13 +723,21 @@ impl CompiledKernel {
     }
 
     /// Execute the compiled kernel with new input tensors.
+    ///
+    /// Routing mirrors every other op: if **any** input is a graph tensor of
+    /// the current tape, the kernel is appended to the egraph as a
+    /// [`Node::Custom`] and the outputs are returned lazily (mixed graph/eager
+    /// inputs promote the eager ones); with all-eager inputs the kernel
+    /// launches directly. The node references the device program, which is
+    /// never released (append-only registry) — a dropped `CompiledKernel`
+    /// leaves it valid.
     pub fn forward(
         &self,
         inputs: &[&Tensor],
         shapes: Vec<impl IntoIterator<Item = impl Into<Tensor>>>,
     ) -> Result<Vec<Tensor>, ZyxError> {
         debug_assert_eq!(inputs.len(), self.inputs.len());
-        let shapes: Vec<Vec<Dim>> = shapes.into_iter().map(|s| s.into_iter().map(|t| t.into().item::<i64>()).collect()).collect();
+        let shapes: Vec<Vec<Tensor>> = shapes.into_iter().map(|s| s.into_iter().map(|t| t.into()).collect()).collect();
         debug_assert_eq!(shapes.len(), self.outputs.len());
 
         let mut rt = crate::RT.lock();
@@ -731,6 +747,124 @@ impl CompiledKernel {
             }
         }
         debug_assert!(inputs.iter().all(|input| rt.buffer_map.contains_key(&input.id)));
+
+        if inputs.iter().any(|input| rt.is_graph(input.id)) {
+            let graph_id = inputs
+                .iter()
+                .find(|input| rt.is_graph(input.id))
+                .map(|input| match rt.tensors[input.id] {
+                    TensorData::Graph { graph_id, .. } | TensorData::Promoted { graph_id, .. } => graph_id,
+                    ref t => unreachable!("{t:?}"),
+                })
+                .unwrap();
+            rt.assert_graph_alive(graph_id);
+
+            // Eager inputs must live in the program's memory pool. Graph
+            // inputs have no device yet; cross-device placement for them is
+            // resolved at compile time by `Graph::add_memory_ops`.
+            let prog_pool = rt.devices[self.program.device_id].memory_pool_id();
+            for input in inputs {
+                if !rt.is_graph(input.id) && rt.buffer_map[&input.id].pool != prog_pool {
+                    return Err(ZyxError::BackendError(BackendError {
+                        status: crate::error::ErrorStatus::IncorrectKernelArg,
+                        context: format!(
+                            "custom kernel input tensor {input:?} is on a different device than the compiled kernel"
+                        )
+                        .into(),
+                    }));
+                }
+            }
+
+            // Promote eager inputs into the graph and resolve every input to
+            // a class (mirrors `Runtime::binary`).
+            let mut input_classes = Vec::with_capacity(inputs.len());
+            for input in inputs {
+                if !rt.is_graph(input.id) && !matches!(rt.tensors[input.id], TensorData::Constant { .. }) {
+                    rt.promote_to_graph(input.id, graph_id)?;
+                }
+                input_classes.push(match rt.tensors[input.id] {
+                    TensorData::Graph { class_id, .. } | TensorData::Promoted { class_id, .. } => class_id,
+                    TensorData::Constant { value, .. } => rt.push_const(graph_id, value),
+                    ref t
+                        if matches!(
+                            t,
+                            TensorData::Variable { .. }
+                                | TensorData::Cast { .. }
+                                | TensorData::Unary { .. }
+                                | TensorData::Binary { .. }
+                                | TensorData::Stack { .. }
+                                | TensorData::Stack2 { .. }
+                                | TensorData::Stack3 { .. }
+                                | TensorData::Stack4 { .. }
+                                | TensorData::Stack5 { .. }
+                        ) =>
+                    {
+                        todo!("promote symbolic scalar tid {} ({t:?}) into a graph", input.id)
+                    }
+                    ref t => unreachable!("unreachable after promote: {t:?}"),
+                });
+            }
+
+            // Per output: resolve the shape dims to classes (mirrors
+            // `Runtime::stack`'s graph arm) and build the slab-side shape
+            // expression for the output tensor.
+            let mut shape_classes = Vec::with_capacity(shapes.len());
+            let mut shape_ids = Vec::with_capacity(shapes.len());
+            for shape in shapes.iter() {
+                let dim_tids: Vec<TensorId> = shape.iter().map(|t| t.id).collect();
+                let mut dim_classes = Vec::with_capacity(dim_tids.len());
+                for &tid in &dim_tids {
+                    if !rt.is_graph(tid) && !matches!(rt.tensors[tid], TensorData::Constant { .. }) {
+                        rt.promote_to_graph(tid, graph_id)?;
+                    }
+                    dim_classes.push(match rt.tensors[tid] {
+                        TensorData::Graph { class_id, .. } | TensorData::Promoted { class_id, .. } => class_id,
+                        TensorData::Constant { value, .. } => rt.push_const(graph_id, value),
+                        ref t => todo!("promote symbolic shape dim tid {tid} ({t:?}) into a graph"),
+                    });
+                }
+                shape_classes.push(rt.shape_class(graph_id, dim_classes));
+                shape_ids.push(if dim_tids.is_empty() {
+                    TensorId::NULL
+                } else {
+                    rt.stack(&dim_tids)?
+                });
+            }
+
+            // Fresh output classes (empty until the Custom node joins them),
+            // then the Custom node itself: member of every output class,
+            // `class_of` the first. Hashcons is bypassed — the node references
+            // output classes that must exist before it, mirroring how
+            // `Node::Kernel`s are minted in `autotune_jit_kernels`.
+            let mut out_cids = Vec::with_capacity(shapes.len());
+            for _ in 0..shapes.len() {
+                out_cids.push(rt.graphs[graph_id].classes.push(EClass { nodes: vec![] }));
+            }
+            let outputs: Vec<(ClassId, ClassId, DType)> = out_cids
+                .iter()
+                .copied()
+                .zip(shape_classes)
+                .zip(self.outputs.iter().copied())
+                .map(|((cid, shape), dtype)| (cid, shape, dtype))
+                .collect();
+            let node = Node::Custom { inputs: input_classes.into(), outputs: outputs.into(), program_id: self.program, time: 10 };
+            let nid = rt.graphs[graph_id].nodes.push(NodeData { node: node.clone(), class_of: out_cids[0] });
+            rt.graphs[graph_id].hashcons.insert(node, nid);
+            for &ocid in &out_cids {
+                rt.graphs[graph_id].classes[ocid].nodes.push(nid);
+            }
+
+            // Output tensors: lazy graph tensors backed by the output classes.
+            let mut tensors = Vec::with_capacity(out_cids.len());
+            for ((cid, shape_id), dtype) in out_cids.into_iter().zip(shape_ids).zip(self.outputs.iter().copied()) {
+                rt.graphs[graph_id].ref_count += 1;
+                let id = rt.tensors.push(TensorData::Graph { class_id: cid, graph_id, shape_id, dtype, rc: 1 });
+                tensors.push(Tensor { id });
+            }
+            return Ok(tensors);
+        }
+
+        let shapes: Vec<Vec<Dim>> = shapes.into_iter().map(|s| s.into_iter().map(|t| t.item::<i64>()).collect()).collect();
 
         // Launch kernel
         let device_id = self.program.device_id;
@@ -814,11 +948,5 @@ impl CompiledKernel {
         }
 
         Ok(tensors)
-    }
-}
-
-impl Drop for CompiledKernel {
-    fn drop(&mut self) {
-        crate::RT.lock().devices[self.program.device_id].release(self.program.program_id);
     }
 }
