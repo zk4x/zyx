@@ -741,14 +741,13 @@ impl CompiledKernel {
         debug_assert_eq!(shapes.len(), self.outputs.len());
 
         let mut rt = crate::RT.lock();
-        for input in inputs {
-            if !rt.buffer_map.contains_key(&input.id) {
-                rt.add_store(input.id)?;
-            }
-        }
-        debug_assert!(inputs.iter().all(|input| rt.buffer_map.contains_key(&input.id)));
 
-        if inputs.iter().any(|input| rt.is_graph(input.id)) {
+        // Routing mirrors `Runtime::stack`: the graph path runs iff any
+        // operand is a graph tensor of the current tape; otherwise the
+        // kernel launches eagerly.
+        let any_graph = inputs.iter().any(|input| rt.is_graph(input.id));
+
+        if any_graph {
             let graph_id = inputs
                 .iter()
                 .find(|input| rt.is_graph(input.id))
@@ -759,12 +758,17 @@ impl CompiledKernel {
                 .unwrap();
             rt.assert_graph_alive(graph_id);
 
-            // Eager inputs must live in the program's memory pool. Graph
-            // inputs have no device yet; cross-device placement for them is
-            // resolved at compile time by `Graph::add_memory_ops`.
+            // Materialized eager inputs must live in the program's memory
+            // pool (they are read as buffers at launch). Unmaterialized eager
+            // kernels have no device yet; cross-device placement for them and
+            // for graph inputs is resolved at compile time by
+            // `Graph::add_memory_ops`.
             let prog_pool = rt.devices[self.program.device_id].memory_pool_id();
             for input in inputs {
-                if !rt.is_graph(input.id) && rt.buffer_map[&input.id].pool != prog_pool {
+                if !rt.is_graph(input.id)
+                    && rt.buffer_map.contains_key(&input.id)
+                    && rt.buffer_map[&input.id].pool != prog_pool
+                {
                     return Err(ZyxError::BackendError(BackendError {
                         status: crate::error::ErrorStatus::IncorrectKernelArg,
                         context: format!(
@@ -776,7 +780,7 @@ impl CompiledKernel {
             }
 
             // Promote eager inputs into the graph and resolve every input to
-            // a class (mirrors `Runtime::binary`).
+            // a class (mirrors `Runtime::binary` / `stack`'s graph arm).
             let mut input_classes = Vec::with_capacity(inputs.len());
             for input in inputs {
                 if !rt.is_graph(input.id) && !matches!(rt.tensors[input.id], TensorData::Constant { .. }) {
@@ -785,50 +789,42 @@ impl CompiledKernel {
                 input_classes.push(match rt.tensors[input.id] {
                     TensorData::Graph { class_id, .. } | TensorData::Promoted { class_id, .. } => class_id,
                     TensorData::Constant { value, .. } => rt.push_const(graph_id, value),
-                    ref t
-                        if matches!(
-                            t,
-                            TensorData::Variable { .. }
-                                | TensorData::Cast { .. }
-                                | TensorData::Unary { .. }
-                                | TensorData::Binary { .. }
-                                | TensorData::Stack { .. }
-                                | TensorData::Stack2 { .. }
-                                | TensorData::Stack3 { .. }
-                                | TensorData::Stack4 { .. }
-                                | TensorData::Stack5 { .. }
-                        ) =>
-                    {
-                        todo!("promote symbolic scalar tid {} ({t:?}) into a graph", input.id)
-                    }
-                    ref t => unreachable!("unreachable after promote: {t:?}"),
+                    ref t => todo!("forward: promote symbolic scalar tid {} ({t:?}) into a graph", input.id),
                 });
             }
 
-            // Per output: resolve the shape dims to classes (mirrors
-            // `Runtime::stack`'s graph arm) and build the slab-side shape
-            // expression for the output tensor.
+            // Per output: the shape expression. `Runtime::stack` routes by
+            // the dims themselves — all-slab dims (constants, variables, dim
+            // arithmetic) build a slab shape expression; graph dims promote
+            // and stack in the egraph. The kernel-node shape CLASS comes from
+            // the same call: a graph stack tensor already IS classes; a slab
+            // expression replays into the graph.
             let mut shape_classes = Vec::with_capacity(shapes.len());
             let mut shape_ids = Vec::with_capacity(shapes.len());
             for shape in shapes.iter() {
                 let dim_tids: Vec<TensorId> = shape.iter().map(|t| t.id).collect();
-                let mut dim_classes = Vec::with_capacity(dim_tids.len());
-                for &tid in &dim_tids {
-                    if !rt.is_graph(tid) && !matches!(rt.tensors[tid], TensorData::Constant { .. }) {
-                        rt.promote_to_graph(tid, graph_id)?;
-                    }
-                    dim_classes.push(match rt.tensors[tid] {
-                        TensorData::Graph { class_id, .. } | TensorData::Promoted { class_id, .. } => class_id,
-                        TensorData::Constant { value, .. } => rt.push_const(graph_id, value),
-                        ref t => todo!("promote symbolic shape dim tid {tid} ({t:?}) into a graph"),
-                    });
+                if dim_tids.is_empty() {
+                    shape_classes.push(ClassId::NULL);
+                    shape_ids.push(TensorId::NULL);
+                    continue;
                 }
-                shape_classes.push(rt.shape_class(graph_id, dim_classes));
-                shape_ids.push(if dim_tids.is_empty() {
-                    TensorId::NULL
-                } else {
-                    rt.stack(&dim_tids)?
-                });
+                let sid = rt.stack(&dim_tids)?;
+                let shape_class = match &rt.tensors[sid] {
+                    TensorData::Graph { class_id, .. } => *class_id,
+                    TensorData::Constant { .. }
+                    | TensorData::Variable { .. }
+                    | TensorData::Cast { .. }
+                    | TensorData::Unary { .. }
+                    | TensorData::Binary { .. }
+                    | TensorData::Stack { .. }
+                    | TensorData::Stack2 { .. }
+                    | TensorData::Stack3 { .. }
+                    | TensorData::Stack4 { .. }
+                    | TensorData::Stack5 { .. } => rt.replay_symbolic_into_graph(graph_id, sid),
+                    ref t => todo!("forward: output shape dim tid {sid} is neither slab nor graph ({t:?})"),
+                };
+                shape_classes.push(shape_class);
+                shape_ids.push(sid);
             }
 
             // Fresh output classes (empty until the Custom node joins them),
@@ -864,7 +860,29 @@ impl CompiledKernel {
             return Ok(tensors);
         }
 
-        let shapes: Vec<Vec<Dim>> = shapes.into_iter().map(|s| s.into_iter().map(|t| t.item::<i64>()).collect()).collect();
+        // Eager launch: materialize inputs, then resolve the shape args.
+        // `Runtime::stack` builds each shape expression (routing by the dims
+        // themselves) and `resolve_symbolic_dims` evaluates it — variables
+        // read their slots, exprs fold; every variable is resolvable.
+        for input in inputs {
+            if !rt.buffer_map.contains_key(&input.id) {
+                rt.add_store(input.id)?;
+            }
+        }
+        debug_assert!(inputs.iter().all(|input| rt.buffer_map.contains_key(&input.id)));
+
+        let mut dims: Vec<Vec<Dim>> = Vec::with_capacity(shapes.len());
+        for shape in shapes.iter() {
+            let dim_tids: Vec<TensorId> = shape.iter().map(|t| t.id).collect();
+            if dim_tids.is_empty() {
+                dims.push(Vec::new());
+                continue;
+            }
+            let sid = rt.stack(&dim_tids)?;
+            dims.push(rt.resolve_symbolic_dims(sid));
+            rt.release(sid);
+        }
+        let shapes = dims;
 
         // Launch kernel
         let device_id = self.program.device_id;

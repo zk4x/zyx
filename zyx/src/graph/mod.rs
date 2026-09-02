@@ -1701,6 +1701,58 @@ impl Runtime {
             return Ok(class_id);
         }
 
+        // Pure-slab symbolic tensors (dim expressions: constants, variables,
+        // dim arithmetic, shape stacks) have no eager kernel. They promote by
+        // replaying the slab expression into the egraph
+        // (`replay_symbolic_into_graph`): constants become Const classes,
+        // variables become IDX_T leaf inputs (registered in `leaf_map` by the
+        // replay itself), and arithmetic replays as graph nodes. No buffer is
+        // involved. NOTE: a tape dropped without `realize` cannot revert
+        // these to their slab state — the drop arm panics loudly for them.
+        if matches!(
+            self.tensors[tid],
+            TensorData::Constant { .. }
+                | TensorData::Variable { .. }
+                | TensorData::Cast { .. }
+                | TensorData::Unary { .. }
+                | TensorData::Binary { .. }
+                | TensorData::Stack { .. }
+                | TensorData::Stack2 { .. }
+                | TensorData::Stack3 { .. }
+                | TensorData::Stack4 { .. }
+                | TensorData::Stack5 { .. }
+        ) {
+            let dtype = self.dtype(tid);
+            let rc = match self.tensors[tid] {
+                TensorData::Constant { rc, .. }
+                | TensorData::Variable { rc, .. }
+                | TensorData::Cast { rc, .. }
+                | TensorData::Unary { rc, .. }
+                | TensorData::Binary { rc, .. }
+                | TensorData::Stack { rc, .. }
+                | TensorData::Stack2 { rc, .. }
+                | TensorData::Stack3 { rc, .. }
+                | TensorData::Stack4 { rc, .. }
+                | TensorData::Stack5 { rc, .. } => rc,
+                ref t => unreachable!("{t:?}"),
+            };
+            // Rank: dim exprs are scalars; shape stacks are rank-1 with one
+            // dim per element. A bare const is a valid 1d shape expression.
+            let rank = match &self.tensors[tid] {
+                TensorData::Stack { tensors, .. } => tensors.len(),
+                TensorData::Stack2 { .. } => 2,
+                TensorData::Stack3 { .. } => 3,
+                TensorData::Stack4 { .. } => 4,
+                TensorData::Stack5 { .. } => 5,
+                _ => 0,
+            };
+            let class_id = self.replay_symbolic_into_graph(graph_id, tid);
+            let shape_id = if rank == 0 { TensorId::NULL } else { self.new_constant_tensor(Constant::idx(rank as i64)) };
+            self.graphs[graph_id].ref_count += 1;
+            self.tensors[tid] = TensorData::Graph { class_id, graph_id, shape_id, dtype, rc: rc + 1 };
+            return Ok(class_id);
+        }
+
         let (kernel_id, my_op_id) = match self.tensors[tid] {
             TensorData::Eager { kernel_id, op_id, .. } | TensorData::Promoted { kernel_id, op_id, .. } => (kernel_id, op_id),
             // A NULL-ids Graph variant is the tombstone left by `Tape::drop`

@@ -474,6 +474,131 @@ fn ce_two_layer() -> Result<(), ZyxError> {
     Ok(())
 }
 
+// ============================================================================
+// Custom kernels (CompiledKernel::forward) inside a tape
+// ============================================================================
+
+use zyx::kernel::{CompiledKernel, DeviceId, Kernel};
+
+// `out = x * 2 + y`, elementwise over 8 f32 elements. Shared by the tests
+// below, which vary HOW the kernel interacts with the tape/graph — symbolic
+// dims, eager-view promotion, custom→custom chaining, interleaved routing.
+fn elementwise_kernel() -> Result<CompiledKernel, ZyxError> {
+    let mut k = Kernel::new(DeviceId::AUTO);
+    let n = k.const_idx(8i64);
+    let two = k.const_val(2.0f32);
+    let x = k.param(DType::F32);
+    let y = k.param(DType::F32);
+    let out = k.param_mut(DType::F32);
+    let i = k.group_range(0, n);
+    let xv = k.load(x, i);
+    let yv = k.load(y, i);
+    let m = k.mul(xv, two);
+    let r = k.add(m, yv);
+    k.store(out, r, i);
+    k.compile()
+}
+
+const X: [f32; 8] = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0];
+const Y: [f32; 8] = [10.0, 20.0, 30.0, 40.0, 50.0, 60.0, 70.0, 80.0];
+
+// 1. Symbolic dims end-to-end: a single variable-backed dim shapes BOTH
+//    inputs and is the kernel's shape arg, so the output shape is symbolic
+//    until the variable slot is read.
+#[test]
+fn custom_kernel_symbolic_dims_end_to_end() -> Result<(), ZyxError> {
+    let n = Tensor::variable(8i64);
+    let x = Tensor::randn([n.clone()], DType::F32)?;
+    let y = Tensor::randn([n.clone()], DType::F32)?;
+    let tape = Tape::new([&x, &y])?;
+    let prog = elementwise_kernel()?;
+    let out = prog.forward(&[&x, &y], vec![vec![n]])?;
+    assert_eq!(out[0].resolve_shape(), [8]);
+    tape.realize([&out[0]])?;
+    let v: Vec<f32> = out[0].clone().try_into()?;
+    assert_eq!(v.len(), 8);
+    Ok(())
+}
+
+// 2. Mixed promotion of a NON-LEAF eager input: `y.flip` is a whole eager
+//    movement-op kernel that must be promoted into the egraph before the
+//    custom kernel can reference its class.
+#[test]
+fn custom_kernel_promotes_eager_view_input() -> Result<(), ZyxError> {
+    let x = Tensor::from(X.to_vec());
+    let y = Tensor::from(Y.to_vec());
+    let tape = Tape::new([&x])?;
+    let prog = elementwise_kernel()?;
+    let yf = y.flip([0])?;
+    let n = x.dims::<1>()?[0].clone();
+    let out = prog.forward(&[&x, &yf], vec![vec![n]])?;
+    tape.realize([&out[0]])?;
+    let v: Vec<f32> = out[0].clone().try_into()?;
+    let yf_v: Vec<f32> = Y.iter().rev().copied().collect();
+    assert_eq!(v, X.iter().zip(yf_v).map(|(x, y)| x * 2.0 + y).collect::<Vec<_>>());
+    Ok(())
+}
+
+// 3. Symbolic output shape consumed by symbolic downstream ops: narrow the
+//    custom kernel's output with variable bounds inside the tape, then
+//    reduce. The output's symbolic dim must survive into the slice.
+#[test]
+fn custom_kernel_symbolic_output_downstream_narrow() -> Result<(), ZyxError> {
+    let x = Tensor::from(X.to_vec());
+    let y = Tensor::from(Y.to_vec());
+    let n = Tensor::variable(8i64);
+    let start = Tensor::variable(2i64);
+    let len = Tensor::variable(6i64);
+    let tape = Tape::new([&x, &y])?;
+    let prog = elementwise_kernel()?;
+    let out = prog.forward(&[&x, &y], vec![vec![n]])?;
+    let sliced = out[0].clone().narrow(0, start, len)?;
+    let total = sliced.sum_all();
+    tape.realize([&total])?;
+    let expected: f32 = X.iter().zip(Y).skip(2).map(|(x, y)| x * 2.0 + y).sum();
+    assert!(total.item::<f32>().is_equal(expected));
+    Ok(())
+}
+
+// 4. Chained custom kernels sharing ONE dim tensor as shape arg: both
+//    Node::Customs reference the same (hashcons-deduped) shape class, and
+//    both share one ProgramId.
+#[test]
+fn custom_kernel_chain_shared_symbolic_shape() -> Result<(), ZyxError> {
+    let x = Tensor::from(X.to_vec());
+    let y = Tensor::from(Y.to_vec());
+    let tape = Tape::new([&x, &y])?;
+    let prog = elementwise_kernel()?;
+    let n = x.dims::<1>()?[0].clone();
+    let o1 = prog.forward(&[&x, &y], vec![vec![n.clone()]])?;
+    let o2 = prog.forward(&[&o1[0], &y], vec![vec![n]])?;
+    let total = o2[0].clone().sum_all();
+    tape.realize([&total])?;
+    let expected: f32 = X.iter().zip(Y).map(|(x, y)| (x * 2.0 + y) * 2.0 + y).sum();
+    assert!(total.item::<f32>().is_equal(expected));
+    Ok(())
+}
+
+// 5. Interleaved routing: custom → binary with an eager operand (promoted
+//    mid-tape) → custom again. Exercises Custom/Binary/Custom class chains
+//    in one graph.
+#[test]
+fn custom_kernel_binary_custom_interleave() -> Result<(), ZyxError> {
+    let x = Tensor::from(X.to_vec());
+    let y = Tensor::from(Y.to_vec());
+    let e = Tensor::from(vec![1.0f32; 8]);
+    let tape = Tape::new([&x, &y])?;
+    let prog = elementwise_kernel()?;
+    let n = x.dims::<1>()?[0].clone();
+    let o1 = prog.forward(&[&x, &y], vec![vec![n.clone()]])?;
+    let m = &o1[0] + &e;
+    let o2 = prog.forward(&[&m, &y], vec![vec![n]])?;
+    tape.realize([&o2[0]])?;
+    let v: Vec<f32> = o2[0].clone().try_into()?;
+    assert_eq!(v, X.iter().zip(Y).map(|(x, y)| (x * 2.0 + y + 1.0) * 2.0 + y).collect::<Vec<_>>());
+    Ok(())
+}
+
 #[test]
 #[should_panic]
 fn promote_dead_graph() {
