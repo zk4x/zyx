@@ -566,6 +566,8 @@ pub struct DeviceInfo {
     pub supported_vec_lens: Vec<u8>,
     /// Whether this device is a Tenstorrent Tensix accelerator
     pub tenstorrent: bool,
+    /// Native tile shape [x, y] for tile-based (SIMD) accelerators
+    pub tile: [Dim; 2],
 }
 
 impl DeviceInfo {

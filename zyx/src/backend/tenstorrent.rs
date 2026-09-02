@@ -187,6 +187,7 @@ pub(super) fn initialize_device(
             has_native_exp2: false,
             supported_vec_lens: vec![32],
             tenstorrent: true,
+            tile: [32, 32],
         },
         memory_pool_id: pool_id,
         runtime,

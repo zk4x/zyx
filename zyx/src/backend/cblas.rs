@@ -165,6 +165,7 @@ pub(super) fn initialize_device(
             has_native_exp2: false,
             supported_vec_lens: vec![],
             tenstorrent: false,
+            tile: [1, 1],
         },
         device_id: DeviceId::NULL,
         // cblas reuses the host pool (like the C backend)

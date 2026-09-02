@@ -290,6 +290,7 @@ pub(super) fn initialize_device(
                 has_native_exp2: true,
                 supported_vec_lens: vec![2, 4],
                 tenstorrent: false,
+                tile: [1, 1],
             },
             streams,
             programs: Slab::new(),
@@ -335,6 +336,7 @@ pub(super) fn initialize_device(
             has_native_exp2: true,
             supported_vec_lens: vec![2, 4],
             tenstorrent: false,
+            tile: [1, 1],
         };
         devices.push(Device::HIP(dev));
         //queues,

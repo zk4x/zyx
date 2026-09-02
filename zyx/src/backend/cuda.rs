@@ -821,6 +821,7 @@ pub(super) fn initialize_device(
                 has_native_exp2: true,
                 supported_vec_lens: vec![],
                 tenstorrent: false,
+                tile: [1, 1],
             },
             memory_pool_id: PoolId::from(usize::from(memory_pools.len()) - 1),
             compute_capability: [major, minor],
@@ -866,6 +867,7 @@ pub(super) fn initialize_device(
             has_native_exp2: true,
             supported_vec_lens: vec![],
             tenstorrent: false,
+            tile: [1, 1],
         };
         let cuda_id = devices.push(Device::CUDA(dev));
         if let Device::CUDA(dev) = &mut devices[cuda_id] {

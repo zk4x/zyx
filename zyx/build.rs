@@ -23,15 +23,31 @@ fn main() {
 
     // Find the spdlog CPM cache directory for bundled fmt headers
     let cpm_spdlog = std::path::PathBuf::from(&tt_metal_root).join(".cpmcache").join("spdlog");
-    let cpm_include = std::fs::read_dir(&cpm_spdlog).ok().and_then(|mut it| {
-        it.find_map(|e| {
-            let e = e.ok()?;
-            let path = e.path();
-            if path.is_dir() && path.file_name().and_then(|s| s.to_str()).is_some_and(|s| s.len() == 40) {
-                Some(path.join("include"))
-            } else {
-                None
-            }
+    let cpm_fmt = std::path::PathBuf::from(&tt_metal_root).join(".cpmcache").join("fmt");
+    let cpm_caches = [
+        cpm_spdlog,
+        cpm_fmt,
+        std::path::PathBuf::from(&tt_metal_root).join(".cpmcache").join("nlohmann_json"),
+        std::path::PathBuf::from(&tt_metal_root).join(".cpmcache").join("tt-logger"),
+        std::path::PathBuf::from(&tt_metal_root).join(".cpmcache").join("enchantum"),
+    ];
+    let cpm_include = cpm_caches.iter().filter_map(|cache| {
+        std::fs::read_dir(cache).ok().and_then(|mut it| {
+            it.find_map(|e| {
+                let e = e.ok()?;
+                let path = e.path();
+                if path.is_dir() && path.file_name().and_then(|s| s.to_str()).is_some_and(|s| s.len() == 40) {
+                    let include = path.join("include");
+                    if include.is_dir() {
+                        Some(include)
+                    } else {
+                        let sub = path.join("enchantum/include");
+                        if sub.is_dir() { Some(sub) } else { None }
+                    }
+                } else {
+                    None
+                }
+            })
         })
     });
 
@@ -42,10 +58,14 @@ fn main() {
     // Include paths
     cmd.arg(format!("-I{tt_metal_root}/tt_metal/include"));
     cmd.arg(format!("-I{}", build_dir.join("include").display()));
+    cmd.arg(format!("-I{tt_metal_root}/tt_metal/api"));
     cmd.arg(format!("-I{tt_metal_root}/tt_metal/api/tt-metalium"));
+    cmd.arg(format!("-I{tt_metal_root}/tt_metal/third_party/umd/device/api"));
+    cmd.arg(format!("-I{tt_metal_root}/tt_stl"));
+    cmd.arg(format!("-I{tt_metal_root}/tt_metal/hostdevcommon/api"));
     cmd.arg(format!("-I{tt_metal_root}/src"));
-    if let Some(p) = cpm_include {
-        cmd.arg(format!("-I{}", p.display()));
+    for include in cpm_include {
+        cmd.arg(format!("-I{}", include.display()));
     }
 
     // Compile-time default for TT_METAL_ROOT (used by runtime.cpp for setenv)
@@ -55,10 +75,20 @@ fn main() {
     let src_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src").join("backend");
     cmd.arg(src_dir.join("tt_runtime.cpp"));
 
-    // Link flags
-    cmd.arg(format!("-L{}", lib_dir.display()));
+    // Link flags (v0.75 layout: tt_metal/tt_stl/umd/fmt/spdlog all in separate dirs)
+    let lib_dirs = [
+        lib_dir.clone(),
+        build_dir.join("tt_metal"),
+        build_dir.join("tt_stl"),
+        build_dir.join("tt_metal/third_party/umd/lib"),
+        build_dir.join("_deps/fmt-build"),
+        build_dir.join("_deps/spdlog-build"),
+    ];
+    for dir in &lib_dirs {
+        cmd.arg(format!("-L{}", dir.display()));
+        cmd.arg(format!("-Wl,-rpath,{}", dir.display()));
+    }
     cmd.arg("-ltt_metal").arg("-ltt-umd").arg("-ltt_stl").arg("-lfmt").arg("-lspdlog");
-    cmd.arg(format!("-Wl,-rpath,{}", lib_dir.display()));
 
     // Output to config dir
     let config_base = std::env::var("XDG_CONFIG_HOME")
