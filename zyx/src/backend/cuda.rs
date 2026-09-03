@@ -164,6 +164,8 @@ pub struct CUDADevice {
     tx: Sender<CUDACommand>,
     device: CUdevice,
     device_id: DeviceId,
+    /// Real CUDA driver ordinal (nvidia-smi id), set at init. Not the slab index.
+    pub(crate) dev_id: u32,
     memory_pool_id: PoolId,
     dev_info: DeviceInfo,
     pub compute_capability: [c_int; 2],
@@ -827,6 +829,7 @@ pub(super) fn initialize_device(
             compute_capability: [major, minor],
             cudnn_available: cudnn.is_some(),
             device_id: DeviceId::NULL,
+            dev_id: u32::try_from(dev_id).unwrap(),
         };
         let max_regs_per_block: i32 =
             dev.get(CUdevice_attribute::CU_DEVICE_ATTRIBUTE_MAX_REGISTERS_PER_BLOCK, cuDeviceGetAttribute)?;

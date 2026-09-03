@@ -14,7 +14,7 @@
 
 use zyx::DType;
 use zyx::ZyxError;
-use zyx::kernel::{DeviceId, Kernel, MemScope, OpId};
+use zyx::kernel::{Dev, Kernel, MemScope, OpId};
 
 const S: i64 = 128; // sequence length (one batch, one head)
 const D: i64 = 64; // head dim
@@ -23,7 +23,7 @@ const BLOCK_N: i64 = 32; // keys per shared-memory tile
 
 #[test]
 fn flash_attention_compiles() -> Result<(), ZyxError> {
-    let mut k = Kernel::new(DeviceId::AUTO);
+    let mut k = Kernel::new(Dev::Auto);
 
     // Dims / constants
     let d_c = k.const_idx(D);

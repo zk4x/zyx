@@ -478,13 +478,13 @@ fn ce_two_layer() -> Result<(), ZyxError> {
 // Custom kernels (CompiledKernel::forward) inside a tape
 // ============================================================================
 
-use zyx::kernel::{CompiledKernel, DeviceId, Kernel};
+use zyx::kernel::{CompiledKernel, Dev, Kernel};
 
 // `out = x * 2 + y`, elementwise over 8 f32 elements. Shared by the tests
 // below, which vary HOW the kernel interacts with the tape/graph — symbolic
 // dims, eager-view promotion, custom→custom chaining, interleaved routing.
 fn elementwise_kernel() -> Result<CompiledKernel, ZyxError> {
-    let mut k = Kernel::new(DeviceId::AUTO);
+    let mut k = Kernel::new(Dev::Auto);
     let n = k.const_idx(8i64);
     let two = k.const_val(2.0f32);
     let x = k.param(DType::F32);

@@ -1024,7 +1024,7 @@ mod tests {
     /// back into (row, col) via >>2 / %4, repacked as `col + 8*row`, then
     /// masked with `% 7 > 2`. Returns the kernel and the mask cmpgt op.
     fn make_mask_kernel() -> (Kernel, OpId) {
-        let mut k = Kernel::new(DeviceId::AUTO);
+        let mut k = Kernel::from_device_id(DeviceId::AUTO);
 
         let r72 = k.param(DType::I32);
         let r65 = k.param(DType::F32);

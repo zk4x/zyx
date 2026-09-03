@@ -16,7 +16,7 @@
 //! use zyx::DType;
 //!
 //! let (m, n, k) = (1024, 1024, 1024);
-//! let mut kernel = Kernel::new(DeviceId::AUTO);
+//! let mut kernel = Kernel::from_device_id(DeviceId::AUTO);
 //!
 //! let a_shape = kernel.add_shape(&[m, k]);
 //! let b_shape = kernel.add_shape(&[k, n]);
@@ -94,7 +94,8 @@
 //! // kernel.compile()?;  // requires CUDA with tensor cores
 //! ```
 
-pub use crate::backend::DeviceId;
+pub(crate) use crate::backend::DeviceId;
+pub use crate::tensor::Dev;
 pub use custom::CompiledKernel;
 pub(crate) use ops::{BOp, MoveOp, Op, OpNode, RangeKind, UOp};
 pub use ops::{MMADType, MMADims, MMALayout, OpId, ParamKind};
@@ -153,7 +154,7 @@ pub(crate) const IDX_T: DType = DType::I64;
 /// use zyx::kernel::{Kernel, MemLayout, DeviceId, ParamKind};
 /// use zyx::DType;
 ///
-/// let mut kernel = Kernel::new(DeviceId::AUTO);
+/// let mut kernel = Kernel::from_device_id(DeviceId::AUTO);
 /// let n = 256;
 /// let shape = kernel.add_shape(&[n]);
 /// let len = kernel.const_idx(n);
@@ -175,7 +176,7 @@ pub(crate) const IDX_T: DType = DType::I64;
 /// use zyx::kernel::{Kernel, MemLayout, DeviceId, ParamKind};
 /// use zyx::{DType, Tensor, ZyxError};
 ///
-/// let mut kernel = Kernel::new(DeviceId::AUTO);
+/// let mut kernel = Kernel::from_device_id(DeviceId::AUTO);
 /// let n = 4;
 /// let shape = kernel.add_shape(&[n]);
 /// let inp = kernel.param(DType::F32);
@@ -285,6 +286,11 @@ impl Hash for Kernel {
 
 // Custom kernel machinery
 impl Kernel {
+    /// Creates an empty kernel bound to the given internal device id.
+    pub fn from_device_id(device_id: DeviceId) -> Self {
+        Self { ops: Slab::new(), head: OpId::NULL, tail: OpId::NULL, device_id, shape_cache: Map::default() }
+    }
+
     /// Compute dtypes and reference counts for all operations.
     pub(crate) fn compute_dtypes_and_rcs(&self) -> (Map<OpId, (DType, MemLayout)>, Map<OpId, u32>) {
         let mut rcs: Map<OpId, u32> = Map::with_capacity_and_hasher(self.ops.len().into(), BuildHasherDefault::new());
@@ -1513,7 +1519,7 @@ impl Kernel {
         }
 
         // Build new kernel by cloning root's ops (in topo order) with remapped OpIds
-        let mut new_kernel = Kernel::new(self.device_id);
+        let mut new_kernel = Kernel::from_device_id(self.device_id);
         let mut remap: Map<OpId, OpId> =
             Map::with_capacity_and_hasher(root_required.len(), core::hash::BuildHasherDefault::default());
         let mut new_root_op = OpId::NULL;

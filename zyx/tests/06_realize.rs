@@ -1,7 +1,7 @@
 // Copyright (C) 2025 zk4x
 // SPDX-License-Identifier: LGPL-3.0-only
 
-use zyx::kernel::{DeviceId, Kernel, MMADType, MMADims, MMALayout, MemScope};
+use zyx::kernel::{Dev, Kernel, MMADType, MMADims, MMALayout, MemScope};
 use zyx::{DType, ReduceOp, Scalar, Tensor, ZyxError};
 
 /// Tensor-core matmul: C = A @ B where A(M×K, FP16), B(K×N, FP16), C(M×N, FP32).
@@ -17,7 +17,7 @@ fn wmma_matmul() -> Result<(), ZyxError> {
     let n = 1024;
     let k = 1024;
 
-    let mut kernel = Kernel::new(DeviceId::AUTO);
+    let mut kernel = Kernel::new(Dev::Auto);
 
     //let m_c = kernel.const_idx(m as u32);
     //let n_c = kernel.const_idx(n as u32);

@@ -254,7 +254,7 @@ impl std::ops::AddAssign<u32> for PoolId {
 
 /// Device identifier for use with `Slab<DeviceId, Device>`
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, DeBin, SerBin)]
-pub struct DeviceId(pub u32);
+pub struct DeviceId(pub(crate) u32);
 
 impl From<usize> for DeviceId {
     fn from(value: usize) -> Self {

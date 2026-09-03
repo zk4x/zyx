@@ -91,7 +91,7 @@ pub use module::Module;
 pub use scalar::{Float, Scalar, bf16, f16};
 pub use tape::{FrozenTape, Tape};
 pub use tensor::ReduceOp;
-pub use tensor::Tensor;
+pub use tensor::{Dev, Tensor};
 
 // Works, but rust does not call drop on this when exiting the program, which causes all sorts of problems ...
 static RT: mutex::Mutex<Runtime> = mutex::Mutex::new(Runtime::new());

@@ -642,7 +642,7 @@ mod tests {
 
     #[test]
     fn vectorize_ops_forward_2_lane() {
-        let mut k = Kernel::new(DeviceId::AUTO);
+        let mut k = Kernel::from_device_id(DeviceId::AUTO);
         let src = k.param(DType::F32);
         let dst = k.param(DType::F32);
         let g0_len = k.const_idx(4);
@@ -667,7 +667,7 @@ mod tests {
 
     #[test]
     fn vectorize_ops_forward_4_lane() {
-        let mut k = Kernel::new(DeviceId::AUTO);
+        let mut k = Kernel::from_device_id(DeviceId::AUTO);
         let src = k.param(DType::F32);
         let dst = k.param(DType::F32);
         let g0_len = k.const_idx(4);
@@ -720,7 +720,7 @@ mod tests {
         // 4 devecs, but only 2 have cos, other 2 have sin
         // After first pass: cos(2) is vectorized
         // After second pass: sin(2) is vectorized
-        let mut k = Kernel::new(DeviceId::AUTO);
+        let mut k = Kernel::from_device_id(DeviceId::AUTO);
         let src = k.param(DType::F32);
         let dst = k.param(DType::F32);
         let g0_len = k.const_idx(4);
@@ -773,7 +773,7 @@ mod tests {
 
     #[test]
     fn vectorize_ops_forward_binary() {
-        let mut k = Kernel::new(DeviceId::AUTO);
+        let mut k = Kernel::from_device_id(DeviceId::AUTO);
         let src = k.param(DType::F32);
         let dst = k.param(DType::F32);
         let g0_len = k.const_idx(4);
@@ -815,7 +815,7 @@ mod tests {
     #[test]
     fn vectorize_ops_forward_binary_y_pos() {
         // devec in Y position: c + devec(v, i)
-        let mut k = Kernel::new(DeviceId::AUTO);
+        let mut k = Kernel::from_device_id(DeviceId::AUTO);
         let src = k.param(DType::F32);
         let dst = k.param(DType::F32);
         let g0_len = k.const_idx(4);
@@ -840,7 +840,7 @@ mod tests {
 
     #[test]
     fn vectorize_ops_and_constfold_clears_vectorize_devectorize() {
-        let mut k = Kernel::new(DeviceId::AUTO);
+        let mut k = Kernel::from_device_id(DeviceId::AUTO);
 
         let src = k.param(DType::F32);
         let dst = k.param(DType::F32);

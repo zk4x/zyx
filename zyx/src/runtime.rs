@@ -240,6 +240,7 @@ use crate::viz::Viz;
 use crate::{
     DType, DebugMask, Map, Scalar, Set, ZyxError,
     backend::{BufferId, Config, DTypeCapability, Device, DeviceProgramId, Event, LaunchArg, MemoryPool, PoolId, ProgramId},
+    Dev,
     dtype::Constant,
     error::{BackendError, ErrorStatus},
     graph::{ClassId, ExecPlan, Graph, GraphId, Node, plan::drain_events_for_buf},
@@ -2071,7 +2072,7 @@ impl Runtime {
             outputs: Set::default(),
             loads: Vec::new(),
             stores: Vec::new(),
-            kernel: Kernel::new(DeviceId::AUTO),
+            kernel: Kernel::from_device_id(DeviceId::AUTO),
         });
         let shape = self.replay_symbolic_into_kernel(kernel_id, shape_id);
         let op_id = self.kernels[kernel_id].kernel.push_back(Op::Param { dtype, kind: ParamKind::Global, shape });
@@ -2640,15 +2641,92 @@ impl Runtime {
         }
     }
 
-    pub fn device(&self, x: TensorId) -> DeviceId {
-        todo!()
+    /// Returns the device the tensor lives on.
+    ///
+    /// Realized tensors map through their buffer's pool to the owning device;
+    /// unrealized eager tensors use their kernel's device; graph/slab tensors
+    /// have no device and return [`Dev::Auto`](Dev::Auto).
+    ///
+    /// # Panics
+    ///
+    /// If the tensor's buffer pool is owned by no device.
+    pub fn device(&self, x: TensorId) -> Dev {
+        if let Some(buf_id) = self.buffer_map.get(&x) {
+            let found = self.devices.iter().find(|(_, device)| device.memory_pool_id() == buf_id.pool);
+            return match found {
+                Some((_, device)) => match device {
+                    Device::C(_) | Device::Cblas(_) => Dev::C,
+                    Device::CUDA(d) => Dev::Cuda(d.dev_id as u16),
+                    #[cfg(feature = "tenstorrent")]
+                    Device::TT(d) => Dev::TT(d.dev_id as u16),
+                    Device::Vulkan(d) => Dev::Vulkan(d.dev_id as u16),
+                    Device::OpenCL(d) => Dev::OpenCL(d.device_idx as u16),
+                    Device::HIP(_) | Device::Dummy(_) => todo!(),
+                    #[cfg(feature = "wgpu")]
+                    Device::WGPU(_) => todo!(),
+                },
+                None => panic!("device: tensor {x}'s pool {:?} is owned by no device", buf_id.pool),
+            };
+        }
+        match self.tensors[x] {
+            TensorData::Eager { kernel_id, .. } => {
+                let device_id = self.kernels[kernel_id].kernel.device_id;
+                if device_id == DeviceId::AUTO || device_id.is_null() {
+                    return Dev::Auto;
+                }
+                match &self.devices[device_id] {
+                    Device::C(_) | Device::Cblas(_) => Dev::C,
+                    Device::CUDA(d) => Dev::Cuda(d.dev_id as u16),
+                    #[cfg(feature = "tenstorrent")]
+                    Device::TT(d) => Dev::TT(d.dev_id as u16),
+                    Device::Vulkan(d) => Dev::Vulkan(d.dev_id as u16),
+                    Device::OpenCL(d) => Dev::OpenCL(d.device_idx as u16),
+                    Device::HIP(_) | Device::Dummy(_) => todo!(),
+                    #[cfg(feature = "wgpu")]
+                    Device::WGPU(_) => todo!(),
+                }
+            }
+            _ => Dev::Auto,
+        }
+    }
+
+    /// Resolves a public [`Dev`] selector to an internal slab `DeviceId`.
+    ///
+    /// `Dev::Auto` picks the first initialized device. Backend variants match on the
+    /// device's real hardware id (`dev_id` / driver ordinal), never the slab order.
+    ///
+    /// # Panics
+    ///
+    /// If no initialized device matches `dev`.
+    pub fn resolve_dev(&self, dev: Dev) -> DeviceId {
+        let find =
+            |f: &dyn Fn(&Device) -> bool| self.devices.iter().find(|(_, device)| f(device)).map(|(id, _)| id);
+        let found = match dev {
+            Dev::Auto => self.devices.ids().next(),
+            Dev::C => find(&|device| matches!(device, Device::C(_) | Device::Cblas(_))),
+            Dev::Cuda(id) => {
+                find(&|device| matches!(device, Device::CUDA(d) if d.dev_id == u32::from(id)))
+            }
+            #[cfg(feature = "tenstorrent")]
+            Dev::TT(id) => find(&|device| matches!(device, Device::TT(d) if d.dev_id == u32::from(id))),
+            #[cfg(not(feature = "tenstorrent"))]
+            Dev::TT(_) => None,
+            Dev::Vulkan(id) => {
+                find(&|device| matches!(device, Device::Vulkan(d) if d.dev_id == u32::from(id)))
+            }
+            Dev::OpenCL(id) => {
+                find(&|device| matches!(device, Device::OpenCL(d) if d.device_idx as u32 == u32::from(id)))
+            }
+        };
+        found.unwrap_or_else(|| panic!("resolve_dev: no initialized device matches {dev:?}"))
     }
 
     #[allow(clippy::wrong_self_convention)] // naming convention from GPU API, not a conversion method
-    pub fn to_device(&mut self, x: TensorId, device_id: DeviceId) -> Result<TensorId, ZyxError> {
+    pub fn to_device(&mut self, x: TensorId, device: Dev) -> Result<TensorId, ZyxError> {
         #[cfg(feature = "debug_tensor_op")]
-        println!("runtime::to_device(x={x}, device_id={device_id:?})");
-        if self.device(x) == device_id {
+        println!("runtime::to_device(x={x}, device={device:?})");
+        let device_id = self.resolve_dev(device);
+        if self.device(x) == device {
             self.retain(x);
             return Ok(x);
         }
@@ -3220,7 +3298,7 @@ impl Runtime {
                 outputs: Set::default(),
                 loads: Vec::new(),
                 stores: Vec::new(),
-                kernel: Kernel::new(DeviceId::AUTO),
+                kernel: Kernel::from_device_id(DeviceId::AUTO),
             });
             let val_op = self.replay_symbolic_into_kernel(kid, x);
             let shape_op = self.replay_symbolic_into_kernel(kid, shape_id);

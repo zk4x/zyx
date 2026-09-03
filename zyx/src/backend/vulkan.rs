@@ -543,6 +543,8 @@ pub(super) struct VulkanBuffer {
 pub struct VulkanDevice {
     tx: Sender<VulkanCommand>,
     dev_info: DeviceInfo,
+    /// Real Vulkan physical device index, set at init. Not the slab index.
+    pub(crate) dev_id: u32,
     memory_pool_id: PoolId,
 }
 
@@ -1783,6 +1785,7 @@ pub(super) fn initialize_device(
         memory_pools.push(MemoryPool::Vulkan(mem_pool));
         let dev = VulkanDevice {
             tx,
+            dev_id: u32::try_from(gpu_i).unwrap(),
             dev_info: DeviceInfo {
                 compute: 1_000_000_000_000,
                 max_global_work_dims: vec![Dim::from(max_wg_count[0]); max_wg_count.len()],

@@ -74,6 +74,26 @@ impl Display for TensorId {
     }
 }
 
+/// Device selector. Public, stable way to name a device — resolved to an
+/// internal slab id via `Runtime::resolve_dev`. The number in a variant is the
+/// device's real hardware/driver ordinal (e.g. nvidia-smi id), matching torch
+/// semantics, not zyx's internal slab order.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Dev {
+    /// Auto-select: resolves to the first initialized device.
+    Auto,
+    /// CPU backend.
+    C,
+    /// CUDA GPU with the given driver ordinal.
+    Cuda(u16),
+    /// Tenstorrent chip with the given id.
+    TT(u16),
+    /// Vulkan physical device with the given index.
+    Vulkan(u16),
+    /// OpenCL device with the given index.
+    OpenCL(u16),
+}
+
 /// A tensor represents a multi-dimensional array of values. This is the primary data structure in the library.
 ///
 /// The `Tensor` struct contains an internal identifier (`id`) that uniquely identifies each tensor.
@@ -398,6 +418,12 @@ impl Tensor {
     #[must_use]
     pub fn dtype(&self) -> DType {
         RT.lock().dtype(self.id)
+    }
+
+    /// Returns the device of the tensor.
+    #[must_use]
+    pub fn device(&self) -> Dev {
+        RT.lock().device(self.id)
     }
 
     /// Is zyx in training mode?
@@ -3310,7 +3336,7 @@ impl Tensor {
 
     /// Move this tensor to the specified device. Creates a new graph node
     /// that will be realized via a cross-device copy during kernelization.
-    pub fn to(&self, device: crate::kernel::DeviceId) -> Result<Tensor, ZyxError> {
+    pub fn to(&self, device: crate::Dev) -> Result<Tensor, ZyxError> {
         let id = RT.lock().to_device(self.id, device)?;
         Ok(Tensor { id })
     }

@@ -4,7 +4,8 @@
 //! Python bindings for zyx - updated for symbolic shapes
 
 use crate::DebugMask;
-use crate::kernel::{CompiledKernel, DeviceId, Kernel, MemLayout, MemScope, OpId, ParamKind};
+use crate::kernel::{CompiledKernel, Kernel, MemLayout, MemScope, OpId, ParamKind};
+use crate::Dev;
 use crate::shape::Dim;
 use crate::tape::FrozenTape;
 use crate::tensor::{Axis, DebugGuard, ReduceOp};
@@ -1635,11 +1636,11 @@ impl Tensor {
     #[pyo3(name = "to")]
     pub fn to_py(&self, device: &Bound<'_, PyAny>) -> Result<Tensor, ZyxError> {
         if let Ok(id) = device.extract::<usize>() {
-            self.to(crate::kernel::DeviceId(id as u32))
+            self.to(Dev::Cuda(id as u16))
         } else if let Ok(s) = device.extract::<String>() {
             // string like "cpu", "cuda:0" - fallback to AUTO
             let _ = s;
-            self.to(crate::kernel::DeviceId::AUTO)
+            self.to(Dev::Auto)
         } else {
             Err(ZyxError::ParseError("invalid device".into()))
         }

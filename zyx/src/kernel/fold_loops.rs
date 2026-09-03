@@ -681,7 +681,7 @@ mod tests {
     ///
     /// identify_accumulate_pattern fails because next_op(load(tmp)) is eq, not Add.
     fn make_interleaved_gather_kernel(loop_len: u32) -> (Kernel, OpId) {
-        let mut k = Kernel::new(DeviceId::AUTO);
+        let mut k = Kernel::from_device_id(DeviceId::AUTO);
         let acc = k.storage(DType::F32, MemScope::Register, 1);
 
         let zi = k.const_idx(0u32);
@@ -715,7 +715,7 @@ mod tests {
 
     /// Sanity test: the simple pattern (accum value BEFORE load) IS optimized.
     fn make_flat_gather_kernel(loop_len: u32) -> (Kernel, OpId, OpId) {
-        let mut k = Kernel::new(DeviceId::AUTO);
+        let mut k = Kernel::from_device_id(DeviceId::AUTO);
         let acc = k.storage(DType::F32, MemScope::Register, 1);
 
         let zi = k.const_idx(0u32);
@@ -761,7 +761,7 @@ mod tests {
     /// leaving it to reference the loop op which later becomes Const(0) — producing
     /// source[row*5+0] instead of source[row*5+indices[row][col]].
     fn make_gather_kernel_with_source_before_indices() -> (Kernel, OpId) {
-        let mut k = Kernel::new(DeviceId::AUTO);
+        let mut k = Kernel::from_device_id(DeviceId::AUTO);
 
         let r95 = k.param(DType::U16);
         let r114 = k.param(DType::U16);
@@ -841,7 +841,7 @@ mod tests {
     /// The mask's loop operand is a Load indexed by the loop, so check_loop
     /// (which only peels casts) fails to recognize it → not folded.
     fn make_mnist_gather_kernel(dim: u64) -> (Kernel, OpId) {
-        let mut k = Kernel::new(DeviceId::AUTO);
+        let mut k = Kernel::from_device_id(DeviceId::AUTO);
 
         let r29 = k.param(DType::I32);
         let r38 = k.param(DType::I32);
@@ -921,7 +921,7 @@ mod tests {
     /// scatter_1d: x=zeros(10), src=[100,200,300], indices=[0,5,9]
     /// expected result = [100, 0, 0, 0, 0, 200, 0, 0, 0, 300]
     fn make_scatter_kernel(dim: u64, num_indices: u64) -> (Kernel, OpId) {
-        let mut k = Kernel::new(DeviceId::AUTO);
+        let mut k = Kernel::from_device_id(DeviceId::AUTO);
 
         let r29 = k.param(DType::I32);
         let r38 = k.param(DType::I32);
@@ -984,7 +984,7 @@ mod tests {
     /// kernel should write `out[g] = g + 1` (i.e. `[1, 2]`).
     #[test]
     fn test_ceil_mask_loop_folds() {
-        let mut k = Kernel::new(DeviceId::AUTO);
+        let mut k = Kernel::from_device_id(DeviceId::AUTO);
         let out = k.param_mut(DType::I32);
         let out_shape = k.const_idx(2u32);
         let g = k.group_range(0, out_shape);
@@ -1035,7 +1035,7 @@ mod tests {
     /// (v == tokens[b,p])`. The loop must fold.
     #[test]
     fn test_llama_onehot_loop_folds() {
-        let mut k = Kernel::new(DeviceId::AUTO);
+        let mut k = Kernel::from_device_id(DeviceId::AUTO);
 
         let r67 = k.param(DType::U32);
         let r30 = k.param_mut(DType::F16);
@@ -1147,7 +1147,7 @@ mod tests {
     /// and `>=` (`loop_len - c`) must be honored.
     #[test]
     fn test_cmpge_arange_loop_folds() {
-        let mut k = Kernel::new(DeviceId::AUTO);
+        let mut k = Kernel::from_device_id(DeviceId::AUTO);
         let out = k.param_mut(DType::I64);
         let out_shape = k.const_idx(2u32);
         let g = k.group_range(0, out_shape);

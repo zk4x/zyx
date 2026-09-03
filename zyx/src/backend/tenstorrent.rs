@@ -172,7 +172,9 @@ pub(super) fn initialize_device(
     memory_pools.push(pool);
 
     let _device_id = devices.len();
+    let dev_id = config.device_ids.as_ref().and_then(|ids| ids.first().copied()).unwrap_or(0);
     devices.push(Device::TT(TTDevice {
+        dev_id: u32::try_from(dev_id).unwrap(),
         device_info: DeviceInfo {
             compute: 200_000_000_000_000, // ~200 TFLOPS BF16
             max_global_work_dims: vec![Dim::from(u32::MAX); 3],
@@ -700,6 +702,8 @@ struct TTProgram {
 #[derive(Debug)]
 pub struct TTDevice {
     device_info: DeviceInfo,
+    /// Real Tenstorrent chip id (from device_ids config), set at init. Not the slab index.
+    pub(crate) dev_id: u32,
     memory_pool_id: PoolId,
     runtime: Arc<Mutex<RuntimeProcess>>,
     programs: Slab<DeviceProgramId, TTProgram>,

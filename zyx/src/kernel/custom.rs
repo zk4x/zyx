@@ -18,7 +18,7 @@
 
 use std::collections::BTreeSet;
 
-use crate::Map;
+use crate::{Dev, Map};
 use crate::backend::{BufferId, DeviceInfo, LaunchArg, MemoryPool, ProgramId};
 use crate::dtype::Constant;
 use crate::error::BackendError;
@@ -71,7 +71,10 @@ impl Kernel {
     /// let out = kernel.param_mut(DType::F32);
     /// kernel.store(out, doubled, gidx);
     /// ```
-    pub fn new(device_id: DeviceId) -> Self {
+    pub fn new(dev: Dev) -> Self {
+        let mut rt = crate::RT.lock();
+        rt.initialize_backends();
+        let device_id = rt.resolve_dev(dev);
         Self { ops: Slab::new(), head: OpId::NULL, tail: OpId::NULL, device_id, shape_cache: Map::default() }
     }
 

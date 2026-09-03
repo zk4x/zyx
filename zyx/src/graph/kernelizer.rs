@@ -703,7 +703,7 @@ impl Graph {
                             // into it and apply the movement on the replayed op.
                             *rcs.get_mut(&x).unwrap() -= 1;
                             let kid = self.jit_kernels.push(JitKernelData {
-                                kernel: Kernel::new(DeviceId::NULL),
+                                kernel: Kernel::from_device_id(DeviceId::NULL),
                                 outputs: Vec::new(),
                                 loads: Vec::new(),
                                 stores: Vec::new(),
@@ -744,7 +744,7 @@ impl Graph {
                             // into it and apply the movement on the replayed op.
                             *rcs.get_mut(&x).unwrap() -= 1;
                             let kid = self.jit_kernels.push(JitKernelData {
-                                kernel: Kernel::new(DeviceId::NULL),
+                                kernel: Kernel::from_device_id(DeviceId::NULL),
                                 outputs: Vec::new(),
                                 loads: Vec::new(),
                                 stores: Vec::new(),
@@ -774,7 +774,7 @@ impl Graph {
                             // into it and apply the movement on the replayed op.
                             *rcs.get_mut(&x).unwrap() -= 1;
                             let kid = self.jit_kernels.push(JitKernelData {
-                                kernel: Kernel::new(DeviceId::NULL),
+                                kernel: Kernel::from_device_id(DeviceId::NULL),
                                 outputs: Vec::new(),
                                 loads: Vec::new(),
                                 stores: Vec::new(),
@@ -806,7 +806,7 @@ impl Graph {
                             // into it and apply the movement on the replayed op.
                             *rcs.get_mut(&x).unwrap() -= 1;
                             let kid = self.jit_kernels.push(JitKernelData {
-                                kernel: Kernel::new(DeviceId::NULL),
+                                kernel: Kernel::from_device_id(DeviceId::NULL),
                                 outputs: Vec::new(),
                                 loads: Vec::new(),
                                 stores: Vec::new(),
@@ -898,7 +898,7 @@ impl Graph {
                     // give it a real buffer via the same fresh-kernel replay
                     // the movement arms use, then store normally.
                     let kid = self.jit_kernels.push(JitKernelData {
-                        kernel: Kernel::new(DeviceId::NULL),
+                        kernel: Kernel::from_device_id(DeviceId::NULL),
                         outputs: Vec::new(),
                         loads: Vec::new(),
                         stores: Vec::new(),
@@ -1067,7 +1067,7 @@ impl Graph {
     /// re-enter a kernel whose `outputs` no longer contains the class.
     fn new_load_kernel(&mut self, cid: ClassId, rc: u32) -> (JitKernelId, OpId) {
         let kid = self.jit_kernels.push(JitKernelData {
-            kernel: Kernel::new(DeviceId::NULL),
+            kernel: Kernel::from_device_id(DeviceId::NULL),
             outputs: Vec::new(),
             loads: Vec::new(),
             stores: Vec::new(),
@@ -1309,7 +1309,7 @@ impl Graph {
             // apply the movement on the replayed op.
             *rcs.get_mut(&child).unwrap() -= 1;
             let kid = self.jit_kernels.push(JitKernelData {
-                kernel: Kernel::new(DeviceId::NULL),
+                kernel: Kernel::from_device_id(DeviceId::NULL),
                 outputs: Vec::new(),
                 loads: Vec::new(),
                 stores: Vec::new(),

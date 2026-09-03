@@ -61,7 +61,7 @@ pub struct OpenCLDevice {
     tx: Sender<Command>,
     dev_info: DeviceInfo,
     memory_pool_id: PoolId,
-    device_idx: usize,
+    pub(crate) device_idx: usize,
 }
 
 #[derive(Debug)]
