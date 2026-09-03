@@ -392,6 +392,23 @@ impl Kernel {
 
                 let first = selected[0].0;
 
+                // The Stack is inserted before `first`, so every lane it
+                // references must already be declared there. Lanes defined
+                // after `first` (e.g. devec lanes interleaved with their
+                // consumers after load vectorization) cannot join this
+                // group; they stay scalar here and remain available to the
+                // store-driven backward pass, which inserts after the last
+                // operand and can still vectorize them legally.
+                if !matches!(op_type, OpType::Binary(_, _)) {
+                    let lane_of = |consumer: OpId| match &self.ops[consumer].op {
+                        Op::Unary { x, .. } | Op::Cast { x, .. } | Op::Bitcast { x, .. } => *x,
+                        _ => unreachable!(),
+                    };
+                    if selected.iter().any(|&(c, _)| !self.op_is_before(lane_of(c), first)) {
+                        continue;
+                    }
+                }
+
                 // For Binary: guard against other_ops defined after `first`
                 // (would create use-before-declaration).
                 if let OpType::Binary(_, devec_pos) = op_type {
