@@ -439,6 +439,25 @@ impl Tensor {
         data[0]
     }
 
+    /// Copies the tensor's data to the host as a `Vec<T>`.
+    ///
+    /// Dtype-strict, mirroring [`Runtime::load`]: returns
+    /// [`ZyxError::DTypeError`] if the tensor's dtype is not `T::dtype()`
+    /// (cast explicitly with [`Tensor::cast`] first for conversion).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ZyxError::DTypeError`] if the tensor dtype is not `T`.
+    ///
+    /// Returns [`ZyxError::AllocationError`] if the tensor has more elements
+    /// than the host can hold or the read buffer would overflow the tensor.
+    pub fn to_vec<T: Scalar>(&self) -> Result<Vec<T>, ZyxError> {
+        let numel = self.numel().item::<Dim>() as usize;
+        let mut data = vec![T::zero(); numel];
+        RT.lock().load(self.id, &mut data)?;
+        Ok(data)
+    }
+
     /// Assigns the value of `src` to this tensor in-place using StoreView.
     ///
     /// A StoreView is added to `src`'s kernel that writes into this

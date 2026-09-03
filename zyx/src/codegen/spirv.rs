@@ -744,7 +744,7 @@ impl Kernel {
                     }
                     &Op::Storage { dtype, scope, len } => {
                         match scope {
-                            MemScope::CircularReader | MemScope::CircularWriter => unreachable!(),
+                            MemScope::Circular => unreachable!(),
                             MemScope::Global => {
                                 unreachable!()
                             }
@@ -1159,7 +1159,7 @@ impl Kernel {
                     }
                     Op::Storage { scope, .. } => {
                         match scope {
-                            MemScope::CircularReader | MemScope::CircularWriter => unreachable!(),
+                            MemScope::Circular => unreachable!(),
                             MemScope::Global | MemScope::Local => {
                                 // Already declared as module-level variable
                             }

@@ -8,7 +8,8 @@
 // Tensor data is transferred via temporary shared memory regions
 // (shm_open + unlink per transfer), created by the Rust side.
 
-#include "tt-metalium/kernel_types.hpp"
+#include <tt-metalium/kernel_types.hpp>
+#include <algorithm>
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
@@ -19,6 +20,7 @@
 #include <sys/mman.h>
 #include <sys/stat.h>
 #include <unistd.h>
+#include <unordered_map>
 #include <vector>
 
 #include <tt-metalium/bfloat16.hpp>
@@ -27,6 +29,10 @@
 #include <tt-metalium/distributed.hpp>
 #include <tt-metalium/host_api.hpp>
 #include <tt-metalium/tensor_accessor_args.hpp>
+#if __has_include(<umd/device/utils/mmio_timeout_config.hpp>)
+#define ZYX_HAS_MMIO_TIMEOUT_CONFIG 1
+#include <umd/device/utils/mmio_timeout_config.hpp>
+#endif
 
 using namespace std;
 using namespace tt;
@@ -92,6 +98,32 @@ static uint32_t extract_u32(const string &json, const string &key) {
     return 0;
   size_t end = 0;
   return (uint32_t)stoul(json.substr(start), &end);
+}
+
+// Parse `"key":[1,2,3]` into a vector of u32.
+static vector<uint32_t> extract_u32_vec(const string &json, const string &key) {
+  vector<uint32_t> out;
+  auto k = json.find("\"" + key + "\"");
+  if (k == string::npos)
+    return {};
+  auto start = json.find('[', k);
+  if (start == string::npos)
+    return {};
+  auto end = json.find(']', start);
+  if (end == string::npos)
+    return {};
+  string body = json.substr(start + 1, end - start - 1);
+  size_t pos = 0;
+  while (pos < body.size()) {
+    auto next = body.find(',', pos);
+    if (next == string::npos)
+      next = body.size();
+    string tok = trim(body.substr(pos, next - pos));
+    if (!tok.empty())
+      out.push_back((uint32_t)stoul(tok));
+    pos = next + 1;
+  }
+  return {};
 }
 
 static uint64_t extract_u64(const string &json, const string &key) {
@@ -171,6 +203,13 @@ struct ProgramConfig {
   vector<uint32_t> cb_indices;
   vector<uint32_t> cb_formats;
   vector<uint32_t> cb_tile_bytes;
+  // Total kernel param count (Global + Variable + GlobalMut, head order).
+  uint32_t n_params = 0;
+  // Head-order param ordinals each section needs as runtime args
+  // (transitive closure of that section's scalar deps, sorted).
+  vector<uint32_t> reader_params;
+  vector<uint32_t> compute_params;
+  vector<uint32_t> writer_params;
 };
 
 int main() {
@@ -212,6 +251,12 @@ int main() {
       }
 
       try {
+#if ZYX_HAS_MMIO_TIMEOUT_CONFIG
+        // fw 19.13.1 ARC telemetry reads take ~40ms; UMD's default 10ms per-op
+        // MMIO budget aborts init on healthy boards. Raise it to 1000ms.
+        // (Header only exists in tt-metal >= 0.74; older UMD has no per-op budget.)
+        tt::umd::MmioTimeoutConfig::set_op_timeout(std::chrono::milliseconds(1000));
+#endif
         cerr << "[TT_CPP] calling create_unit_mesh(0)" << endl;
         mesh_device = MeshDevice::create_unit_mesh(0);
         cq = &mesh_device->mesh_command_queue();
@@ -355,6 +400,32 @@ int main() {
           cb_tile_bytes[i] = extract_u32(line, "cb_tb" + to_string(i));
         }
 
+        uint32_t n_params = extract_u32(line, "n_params");
+        uint32_t n_reader_params = extract_u32(line, "n_reader_params");
+        uint32_t n_compute_params = extract_u32(line, "n_compute_params");
+        uint32_t n_writer_params = extract_u32(line, "n_writer_params");
+        vector<uint32_t> reader_params(n_reader_params);
+        vector<uint32_t> compute_params(n_compute_params);
+        vector<uint32_t> writer_params(n_writer_params);
+        for (uint32_t i = 0; i < n_reader_params; i++) {
+          reader_params[i] = extract_u32(line, "rp" + to_string(i));
+        }
+        for (uint32_t i = 0; i < n_compute_params; i++) {
+          compute_params[i] = extract_u32(line, "cp" + to_string(i));
+        }
+        for (uint32_t i = 0; i < n_writer_params; i++) {
+          writer_params[i] = extract_u32(line, "wp" + to_string(i));
+        }
+        for (uint32_t p : reader_params)
+          if (p >= n_params)
+            throw runtime_error("reader param ordinal " + to_string(p) + " >= n_params " + to_string(n_params));
+        for (uint32_t p : compute_params)
+          if (p >= n_params)
+            throw runtime_error("compute param ordinal " + to_string(p) + " >= n_params " + to_string(n_params));
+        for (uint32_t p : writer_params)
+          if (p >= n_params)
+            throw runtime_error("writer param ordinal " + to_string(p) + " >= n_params " + to_string(n_params));
+
         // Read reader + compute + writer sources sent as raw bytes after JSON line
         uint32_t reader_source_len = extract_u32(line, "reader_source_len");
         string reader_source(reader_source_len, '\0');
@@ -373,6 +444,10 @@ int main() {
         cfg.cb_indices = cb_indices;
         cfg.cb_formats = cb_formats;
         cfg.cb_tile_bytes = cb_tile_bytes;
+        cfg.n_params = n_params;
+        cfg.reader_params = reader_params;
+        cfg.compute_params = compute_params;
+        cfg.writer_params = writer_params;
 
         if (id >= program_cache.size()) {
           program_cache.resize(id + 1);
@@ -416,6 +491,15 @@ int main() {
       uint32_t n_inputs = src_indices.size();
       uint32_t n_outputs = dst_indices.size();
 
+      // Variable param values: vord{i} -> vval{i}. Buffer params (src/dst)
+      // are NOT in this map; their addresses come from the buffers.
+      unordered_map<uint32_t, uint32_t> vars;
+      uint32_t n_vars = extract_u32(line, "n_vars");
+      for (uint32_t i = 0; i < n_vars; i++) {
+        vars[extract_u32(line, "vord" + to_string(i))] =
+            extract_u32(line, "vval" + to_string(i));
+      }
+
       // Validate indices
       for (uint32_t i = 0; i < n_inputs; i++) {
         if (src_indices[i] >= buffers.size() || !buffers[src_indices[i]]) {
@@ -443,22 +527,64 @@ int main() {
       uint32_t gidx0_sz = extract_u32(line, "gd0");
       uint32_t gidx1_sz = extract_u32(line, "gd1");
 
+      // GlobalMut params occupy the tail of the head-order param list
+      // (n_inputs .. n_params-1); Global params are src_indices[i], Variable
+      // params are in `vars`.
+      uint32_t n_params = cfg.n_params;
+
+      // TensorAccessorArgs compile args for ONE section: buffer params of the
+      // section in ascending ordinal order (Variable params get no accessor).
+      auto section_compile_args = [&](const vector<uint32_t> &params) {
+        vector<uint32_t> args;
+        uint32_t next_src = 0, next_dst = 0;
+        for (uint32_t p : params) {
+          if (vars.count(p))
+            continue;
+          const shared_ptr<MeshBuffer> &b =
+              (p >= n_inputs) ? buffers[dst_indices[next_dst++]]
+                              : buffers[src_indices[next_src++]];
+          TensorAccessorArgs(*b).append_to(args);
+        }
+        return args;
+      };
+
+      // Runtime args for ONE section: full padded param list (get_arg_val
+      // uses the GLOBAL param ordinal in every section), then row/col at
+      // n_inputs + axis.
+      auto section_rt_args = [&](const vector<uint32_t> &params, uint32_t row,
+                                 uint32_t col) {
+        vector<uint32_t> rt;
+        uint32_t next_src = 0, next_dst = 0;
+        for (uint32_t p = 0; p < n_params; p++) {
+          if (std::find(params.begin(), params.end(), p) == params.end()) {
+            rt.push_back(0);
+            continue;
+          }
+          auto vit = vars.find(p);
+          if (vit != vars.end()) {
+            rt.push_back(vit->second);
+          } else if (p >= n_inputs) {
+            uint64_t a = buffers[dst_indices[next_dst++]]->address();
+            rt.push_back(static_cast<uint32_t>(a));
+          } else {
+            uint64_t a = buffers[src_indices[next_src++]]->address();
+            rt.push_back(static_cast<uint32_t>(a));
+          }
+        }
+        rt.push_back(row);
+        rt.push_back(col);
+        return rt;
+      };
+
       try {
         Program program = CreateProgram();
         MeshWorkload workload;
         MeshCoordinateRange device_range(mesh_device->shape());
 
-        // Build compile-time args from actual buffer pointers
-        vector<uint32_t> reader_compile_args;
-        for (uint32_t i = 0; i < n_inputs; i++) {
-          TensorAccessorArgs(*buffers[src_indices[i]])
-              .append_to(reader_compile_args);
-        }
-        vector<uint32_t> writer_compile_args;
-        for (uint32_t i = 0; i < n_outputs; i++) {
-          TensorAccessorArgs(*buffers[dst_indices[i]])
-              .append_to(writer_compile_args);
-        }
+        vector<uint32_t> reader_compile_args =
+            section_compile_args(cfg.reader_params);
+        vector<uint32_t> writer_compile_args =
+            section_compile_args(cfg.writer_params);
 
         // Circular buffers from cached config
         constexpr uint32_t tiles_per_cb = 2;
@@ -535,31 +661,12 @@ int main() {
         for (uint32_t row = 0; row < gidx0_sz; row++) {
           for (uint32_t col = 0; col < gidx1_sz; col++) {
             CoreCoord core = {col, row};
-            {
-              vector<uint32_t> reader_rt_args;
-              for (uint32_t i = 0; i < n_inputs; i++) {
-                uint64_t a = buffers[src_indices[i]]->address();
-                reader_rt_args.push_back(static_cast<uint32_t>(a));
-              }
-              reader_rt_args.push_back(row);
-              reader_rt_args.push_back(col);
-              cerr << "[TT_RT] reader core={" << col << "," << row << "} gidx0=" << row << " gidx1=" << col << endl;
-              SetRuntimeArgs(program, reader, core, reader_rt_args);
-            }
-            {
-              vector<uint32_t> writer_rt_args;
-              for (uint32_t i = 0; i < n_outputs; i++) {
-                uint64_t a = buffers[dst_indices[i]]->address();
-                writer_rt_args.push_back(static_cast<uint32_t>(a));
-              }
-              writer_rt_args.push_back(row);
-              writer_rt_args.push_back(col);
-              cerr << "[TT_RT] writer core={" << col << "," << row << "} gidx0=" << row << " gidx1=" << col << endl;
-              SetRuntimeArgs(program, writer, core, writer_rt_args);
-            }
-            {
-              SetRuntimeArgs(program, compute, core, {});
-            }
+            SetRuntimeArgs(program, reader, core,
+                           section_rt_args(cfg.reader_params, row, col));
+            SetRuntimeArgs(program, writer, core,
+                           section_rt_args(cfg.writer_params, row, col));
+            SetRuntimeArgs(program, compute, core,
+                           section_rt_args(cfg.compute_params, row, col));
           }
         }
 

@@ -865,12 +865,41 @@ impl CompiledKernel {
         // `Runtime::stack` builds each shape expression (routing by the dims
         // themselves) and `resolve_symbolic_dims` evaluates it — variables
         // read their slots, exprs fold; every variable is resolvable.
+        // Scalar inputs (Constant/Variable tensors and const expressions)
+        // resolve to a `Constant` here and are passed as `LaunchArg::Variable`
+        // (mirroring the graph path's `class_vars` binding in plan.rs) — they
+        // are kernel params, never buffers.
+        let device_id = self.program.device_id;
+        let pool_id = rt.devices[device_id].memory_pool_id();
+        let mut input_args: Vec<LaunchArg> = Vec::with_capacity(inputs.len());
+        let mut all_bufs = BTreeSet::new();
+        let mut event_wait_list = Vec::new();
         for input in inputs {
+            if let Some(value) = rt.resolve_symbolic(input.id) {
+                input_args.push(LaunchArg::Variable(value));
+                continue;
+            }
             if !rt.buffer_map.contains_key(&input.id) {
                 rt.add_store(input.id)?;
             }
+            let buf_id = rt.buffer_map[&input.id];
+            if buf_id.pool != pool_id {
+                return Err(ZyxError::BackendError(BackendError {
+                    status: crate::error::ErrorStatus::IncorrectKernelArg,
+                    context: format!(
+                        "custom kernel input tensor {input:?} is on a different device than the compiled kernel"
+                    )
+                    .into(),
+                }));
+            }
+            let keys: Vec<BTreeSet<BufferId>> = rt.events.keys().filter(|k| k.contains(&buf_id)).cloned().collect();
+            for key in keys {
+                event_wait_list.push(rt.events.remove(&key).unwrap());
+            }
+            input_args.push(LaunchArg::Buffer(buf_id.buffer));
+            all_bufs.insert(buf_id);
         }
-        debug_assert!(inputs.iter().all(|input| rt.buffer_map.contains_key(&input.id)));
+        debug_assert!(inputs.iter().all(|input| rt.buffer_map.contains_key(&input.id) || rt.resolve_symbolic(input.id).is_some()));
 
         let mut dims: Vec<Vec<Dim>> = Vec::with_capacity(shapes.len());
         for shape in shapes.iter() {
@@ -885,47 +914,6 @@ impl CompiledKernel {
         }
         let shapes = dims;
 
-        // Launch kernel
-        let device_id = self.program.device_id;
-        let pool_id = rt.devices[device_id].memory_pool_id();
-
-        let mut input_bufs = Vec::new();
-        let mut all_bufs = BTreeSet::new();
-        let mut event_wait_list = Vec::new();
-        for input in inputs {
-            let buf_id = rt.buffer_map[&input.id];
-            let dev_buf_id = if buf_id.pool != pool_id {
-                let mut pool_events = Vec::new();
-                let keys: Vec<BTreeSet<BufferId>> = rt.events.keys().filter(|k| k.contains(&buf_id)).cloned().collect();
-                for key in keys {
-                    pool_events.push(rt.events.remove(&key).unwrap());
-                }
-                let dtype = rt.dtype(input.id);
-                let bytes = ((rt.resolve_shape(input.id).iter().product::<Dim>() * dtype.bit_size() as Dim) + 7) / 8;
-                let alloc_bytes = bytes + dtype.bit_size() as Dim / 8;
-                let (dev_buf, alloc_ev) = rt.pools[pool_id].allocate(alloc_bytes)?;
-                pool_events.push(alloc_ev);
-                let dev_buf_id = BufferId { pool: pool_id, buffer: dev_buf };
-                let src_pool_ptr: *mut MemoryPool = &mut rt.pools[buf_id.pool];
-                let copy_ev = rt.pools[pool_id].pool_to_pool(
-                    unsafe { &mut *src_pool_ptr },
-                    buf_id.buffer,
-                    dev_buf_id.buffer,
-                    pool_events,
-                )?;
-                event_wait_list.push(copy_ev);
-                dev_buf_id
-            } else {
-                let keys: Vec<BTreeSet<BufferId>> = rt.events.keys().filter(|k| k.contains(&buf_id)).cloned().collect();
-                for key in keys {
-                    event_wait_list.push(rt.events.remove(&key).unwrap());
-                }
-                buf_id
-            };
-            input_bufs.push(dev_buf_id.buffer);
-            all_bufs.insert(dev_buf_id);
-        }
-
         let mut output_bufs = Vec::new();
         for (i, shape) in shapes.iter().enumerate() {
             let dtype = self.outputs[i];
@@ -937,11 +925,10 @@ impl CompiledKernel {
             all_bufs.insert(buf_id);
         }
 
-        let mut args = input_bufs;
+        let mut args = input_args;
         for buf in &output_bufs {
-            args.push(buf.buffer);
+            args.push(LaunchArg::Buffer(buf.buffer));
         }
-        let args: Vec<LaunchArg> = args.into_iter().map(LaunchArg::Buffer).collect();
         let pool_ptr = &mut rt.pools[pool_id] as *mut MemoryPool;
         let device = &mut rt.devices[device_id];
         let event = unsafe { device.launch(self.program.program_id, &mut *pool_ptr, &args, event_wait_list)? };

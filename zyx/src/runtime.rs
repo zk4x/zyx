@@ -2640,27 +2640,81 @@ impl Runtime {
         }
     }
 
+    pub fn device(&self, x: TensorId) -> DeviceId {
+        todo!()
+    }
+
     #[allow(clippy::wrong_self_convention)] // naming convention from GPU API, not a conversion method
     pub fn to_device(&mut self, x: TensorId, device_id: DeviceId) -> Result<TensorId, ZyxError> {
         #[cfg(feature = "debug_tensor_op")]
         println!("runtime::to_device(x={x}, device_id={device_id:?})");
-        let (class_id, graph_id, shape_id) = match self.tensors[x] {
-            TensorData::Graph { class_id, graph_id, shape_id, .. }
-            | TensorData::Promoted { class_id, graph_id, shape_id, .. } => (class_id, graph_id, shape_id),
-            ref t => panic!("to_device: tensor tid {x} is not graph-affiliated (graph-only op for now): {t:?}"),
-        };
-        assert!(!self.graphs[graph_id].dead, "tape scope has ended (tensor belongs to a dead tape scope");
-        // TODO measure actual time by running a test copy
-        let (_node_id, cid) = self.push_node(graph_id, Node::ToDevice { x: class_id, device: device_id, time: 0 });
-        self.graphs[graph_id].ref_count += 1;
-        // Shape-preserving op: share the input's shape expression.
-        debug_assert!(!shape_id.is_null(), "to_device: input graph tensor {x} has no shape expression");
-        self.retain(shape_id);
-        let dtype = self.dtype(x);
-        let tid = self.tensors.push(TensorData::Graph { class_id: cid, graph_id, shape_id, dtype, rc: 1 });
-        #[cfg(feature = "debug_tensor_op")]
-        println!("  -> tid={tid}, nid={_node_id:?}, cid={cid:?}");
-        Ok(tid)
+        if self.device(x) == device_id {
+            self.retain(x);
+            return Ok(x);
+        }
+        match self.tensors[x] {
+            TensorData::Leaf { depends_on: kernel_id, shape_id, dtype, .. } |
+            TensorData::Eager { kernel_id, shape_id, dtype, .. } => {
+                let outputs: Vec<TensorId> = self.kernels[kernel_id].outputs.iter().copied().collect();
+                for out in outputs {
+                    self.add_store(out)?;
+                }
+                debug_assert!(self.buffer_map.contains_key(&x), "to_device: tensor {x} was not materialized");
+                let buf_id = self.buffer_map[&x];
+                let dst_pool = self.devices[device_id].memory_pool_id();
+                let shape = self.resolve_shape(x);
+                let bytes = ((shape.iter().product::<Dim>() * dtype.bit_size() as Dim) + 7) / 8;
+                let alloc_bytes = bytes + dtype.bit_size() as Dim / 8;
+                let (dst_buf, alloc_ev) = self.pools[dst_pool].allocate(alloc_bytes)?;
+                let dst_id = BufferId { pool: dst_pool, buffer: dst_buf };
+                // Drain pending events on the source buffer before the copy.
+                let mut events: Vec<Event> = Vec::new();
+                let keys: Vec<BTreeSet<BufferId>> = self.events.keys().filter(|k| k.contains(&buf_id)).cloned().collect();
+                for key in keys {
+                    events.push(self.events.remove(&key).unwrap());
+                }
+                events.push(alloc_ev);
+                let src_pool_ptr: *mut MemoryPool = &mut self.pools[buf_id.pool];
+                let copy_ev =
+                    self.pools[dst_pool].pool_to_pool(unsafe { &mut *src_pool_ptr }, buf_id.buffer, dst_id.buffer, events)?;
+                self.events.insert(BTreeSet::from([dst_id]), copy_ev);
+                debug_assert!(!shape_id.is_null(), "to_device: eager tensor {x} has no shape expression");
+                self.retain(shape_id);
+                let tid = self.tensors.push(TensorData::Leaf { depends_on: KernelId::NULL, shape_id, dtype, rc: 1 });
+                self.buffer_map.insert(tid, dst_id);
+                #[cfg(feature = "debug_tensor_op")]
+                println!("  -> tid={tid} (cross-pool copy {buf_id:?} -> {dst_id:?})");
+                Ok(tid)
+            }
+            TensorData::Graph { class_id, graph_id, shape_id, .. } |
+            TensorData::Promoted { class_id, graph_id, shape_id, .. } => {
+                assert!(!self.graphs[graph_id].dead, "tape scope has ended (tensor belongs to a dead tape scope");
+                // TODO measure actual time by running a test copy
+                let (_node_id, cid) = self.push_node(graph_id, Node::ToDevice { x: class_id, device: device_id, time: 0 });
+                self.graphs[graph_id].ref_count += 1;
+                // Shape-preserving op: share the input's shape expression.
+                debug_assert!(!shape_id.is_null(), "to_device: input graph tensor {x} has no shape expression");
+                self.retain(shape_id);
+                let dtype = self.dtype(x);
+                let tid = self.tensors.push(TensorData::Graph { class_id: cid, graph_id, shape_id, dtype, rc: 1 });
+                #[cfg(feature = "debug_tensor_op")]
+                println!("  -> tid={tid}, nid={_node_id:?}, cid={cid:?}");
+                Ok(tid)
+            }
+            TensorData::Constant { .. } |
+            TensorData::Variable { .. } |
+            TensorData::Cast { .. } |
+            TensorData::Unary { .. } |
+            TensorData::Binary { .. } |
+            TensorData::Stack { .. } |
+            TensorData::Stack2 { .. } |
+            TensorData::Stack3 { .. } |
+            TensorData::Stack4 { .. } |
+            TensorData::Stack5 { .. } => {
+                self.retain(x);
+                Ok(x)
+            }
+        }
     }
 
     /// Forces a contiguous, materialized view of `x` (breaks aliasing / forces a fresh buffer).

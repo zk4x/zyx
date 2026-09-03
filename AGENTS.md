@@ -126,6 +126,17 @@ How to work with it:
 - Only two backends need cargo features: `--features wgpu` and `--features tenstorrent`.
 - Defaults with no config: C on, Dummy off, CUDA/HIP/Vulkan/OpenCL try to init and silently skip if the driver is missing, HIP always tries (ignores config; skipped only if `libamdhip64.so` is missing). If all backends fail, tests print nothing.
 
+### HARDWARE SAFETY — the Tenstorrent board (READ THIS BEFORE ANYTHING TT-RELATED)
+
+**The board is HALF A YEAR of the user's income. It is not replaceable. Losing it = destroying the user's savings. Every rule here exists because on 2026-09-02 an agent chained `tt-smi -r` with a device-init test in ONE command; the board's mid-wedge reset hard-rebooted the whole PC (empty kernel log = power-level event) and flipped the board into its fallback firmware slot.**
+
+- **NEVER run hardware-touching commands.** `tt-smi`, `tt-flash`, `tt-kmd` interactions, and tests that init TT devices are run BY THE USER. The agent reads pasted output, reasons, and advises — the user's hand is on the trigger for every hardware action. No exceptions. No "it's just a reset".
+- **ONE ACTION PER STEP.** NEVER chain board-touching commands with anything else (`tt-smi -r && test` is FORBIDDEN forever). Every hardware action is a separate step, separated by the user's explicit go.
+- **NEVER reset the board** (`tt-smi -r`, `tt-flash`, anything writing/reading firmware or driving reinit) without the user's explicit approval in the current message. "No flashing" was once ignored; the user was furious. Resetting is nearly as destructive — it wedged the board AND crashed the PC.
+- **A failed device init WEDGES the board** (all later access reads 0xffffffff, "board should be reset"). A reset applied to a wedged board can hard-reset the whole platform (verified: whole PC rebooted, board firmware slot flipped). After a failed init: STOP, report the error, ASK. NEVER retry-loop inits.
+- **Never power/flash/reset anything to "fix" a wedged state autonomously.** Suggest the action, in one line, and wait.
+- If any task touches the board's power, firmware, PCIe link, or reset state: treat it as irreversible until proven otherwise. Half a year of the user's income rides on this card.
+
 ## gws (Global Work Size)
 
 `gws` is **not** a launch argument and is **not** a kernel concept. It is purely

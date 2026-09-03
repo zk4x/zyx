@@ -586,8 +586,7 @@ impl std::fmt::Display for MemScope {
             MemScope::Global => "global",
             MemScope::Local => "local",
             MemScope::Register => "reg",
-            MemScope::CircularReader => "cb_reader",
-            MemScope::CircularWriter => "cb_writer",
+            MemScope::Circular => "cb",
         })
     }
 }

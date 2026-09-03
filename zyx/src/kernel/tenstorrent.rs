@@ -230,7 +230,7 @@ impl Kernel {
                 continue;
             }
             let local = self
-                .insert_after(last_global, Op::Storage { dtype: self.dtype(src), scope: MemScope::CircularReader, len: 1024 });
+                .insert_after(last_global, Op::Storage { dtype: self.dtype(src), scope: MemScope::Circular, len: 1024 });
             last_global = local;
             src_to_local.insert(src, local);
         }
@@ -285,7 +285,7 @@ impl Kernel {
                 continue;
             }
             let local =
-                self.insert_after(last_local, Op::Storage { dtype: self.dtype(dst), scope: MemScope::CircularWriter, len: 1024 });
+                self.insert_after(last_local, Op::Storage { dtype: self.dtype(dst), scope: MemScope::Circular, len: 1024 });
             last_local = local;
             dst_to_local.insert(dst, local);
         }
@@ -636,7 +636,7 @@ impl Kernel {
                 continue;
             }
             let cb = self
-                .insert_after(last_global, Op::Storage { dtype: self.dtype(src), scope: MemScope::CircularReader, len: 1024 });
+                .insert_after(last_global, Op::Storage { dtype: self.dtype(src), scope: MemScope::Circular, len: 1024 });
             last_global = cb;
             src_to_cb.insert(src, cb);
         }

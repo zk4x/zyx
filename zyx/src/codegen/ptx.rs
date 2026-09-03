@@ -341,7 +341,7 @@ impl Kernel {
                                 dtype.ptx()
                             );
                         }
-                        MemScope::CircularReader | MemScope::CircularWriter | MemScope::Global => {
+                        MemScope::Circular | MemScope::Global => {
                             unreachable!("ptx only supports local or register storage")
                         }
                     }
@@ -373,7 +373,7 @@ impl Kernel {
                 Op::Load { src, index, .. } => {
                     let dtype = dtypes[&src].0;
                     match comp.get_scope(src) {
-                        MemScope::CircularReader | MemScope::CircularWriter => unreachable!(),
+                        MemScope::Circular => unreachable!(),
                         MemScope::Global => {
                             let byte_shift = (dtype.bit_size() / 8).ilog2();
                             let idx = comp.get_var(index);
@@ -437,7 +437,7 @@ impl Kernel {
                     let byte_shift = (dtype.bit_size() / 8).ilog2();
                     let offset = comp.new_reg(DType::U64, 1);
                     match comp.get_scope(dst) {
-                        MemScope::CircularReader | MemScope::CircularWriter => unreachable!(),
+                        MemScope::Circular => unreachable!(),
                         MemScope::Global => {
                             if dtype == DType::Bool {
                                 let gstu = comp.new_reg(DType::U32, 1);

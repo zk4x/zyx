@@ -218,10 +218,8 @@ pub enum MemScope {
     Local,
     /// Register scope (registers).
     Register,
-    /// Circular buffer for reading, SRAM (tenstorrent)
-    CircularReader,
-    /// Circular buffer for writing, SRAM (tenstorrent)
-    CircularWriter,
+    /// Circular buffer, SRAM (tenstorrent)
+    Circular,
 }
 
 /// Memory layout for kernel operations.

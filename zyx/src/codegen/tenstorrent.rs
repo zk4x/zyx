@@ -75,8 +75,13 @@ impl Kernel {
     /// # Parameters
     /// - `kernel` — zyx kernel IR (after tiling passes: pad, local, group, loop_local)
     /// - `debug_asm` — if true, print each generated source to stdout
-    /// - `n_inputs` — number of readonly global tensors (used as arg offset for `get_arg_val`)
+    /// - `n_inputs` — total number of kernel params (Global + Variable interleaved,
+    ///   followed by GlobalMut). Runtime-arg ordinals: param `i` is `get_arg_val(i)`,
+    ///   group range `axis` is `get_arg_val(n_inputs + axis)`.
     /// - `n_outputs` — number of writable global tensors (used as arg offset for `get_arg_val`)
+    /// - `reader_params` / `compute_params` / `writer_params` — per-section lists of
+    ///   param ordinals that section needs; a section only declares runtime args
+    ///   for the params it references.
     /// - `input_cb_map` — maps local Defines → input CB index (reader pushes to these)
     /// - `output_cb_map` — maps local Defines → output CB index (writer pulls from these)
     ///
@@ -91,6 +96,9 @@ impl Kernel {
         n_outputs: usize,
         input_cb_map: &Map<OpId, u32>,
         output_cb_map: &Map<OpId, u32>,
+        reader_params: &[u32],
+        compute_params: &[u32],
+        writer_params: &[u32],
     ) -> Result<(String, String, String), BackendError> {
         // f64 is not supported by the tenstorrent tile path. Reject it up front
         // so downstream codegen never has to reason about f64 tiles.
@@ -129,6 +137,8 @@ impl Kernel {
         {
             const PAGE_SIZE: u32 = 4096;
             let mut input_arg_idx = 0u32;
+            // Head-order param ordinal: Global + Variable interleaved, GlobalMut after.
+            let mut param_idx = 0u32;
             let mut loop_depth = 0u32;
             let mut steps_op_id = 0usize;
             while !op_id.is_null() {
@@ -138,32 +148,46 @@ impl Kernel {
                 }
                 match self.ops[op_id].op {
                     Op::Param { dtype: _, kind: ParamKind::Global, .. } => {
-                        writeln!(reader, "{indent}uint32_t src{op_id} = get_arg_val<uint32_t>({input_arg_idx});");
-                        writeln!(
-                            reader,
-                            "{indent}auto args{op_id} = TensorAccessorArgs<{}>({input_arg_idx});",
-                            input_arg_idx * 2
-                        );
-                        writeln!(reader, "{indent}auto p{op_id} = TensorAccessor(args{op_id}, src{op_id}, {PAGE_SIZE});");
-                        input_arg_idx += 1;
+                        if reader_params.contains(&param_idx) {
+                            writeln!(reader, "{indent}uint32_t src{op_id} = get_arg_val<uint32_t>({param_idx});");
+                            writeln!(
+                                reader,
+                                "{indent}auto args{op_id} = TensorAccessorArgs<{}>({param_idx});",
+                                input_arg_idx * 2
+                            );
+                            writeln!(reader, "{indent}auto p{op_id} = TensorAccessor(args{op_id}, src{op_id}, {PAGE_SIZE});");
+                            input_arg_idx += 1;
+                        }
+                        param_idx += 1;
+                    }
+                    Op::Param { dtype, kind: ParamKind::Variable, .. } => {
+                        if reader_params.contains(&param_idx) {
+                            // Scalar runtime arg (I64 values must fit u32; larger
+                            // values are unsupported on this path).
+                            writeln!(
+                                reader,
+                                "{indent}{} r{op_id} = ({})get_arg_val<uint32_t>({param_idx});",
+                                dtype.c_type(),
+                                dtype.c_type()
+                            );
+                        }
+                        param_idx += 1;
                     }
                     Op::Param { kind: ParamKind::GlobalMut, .. } => {
-                        writeln!(reader, "{indent}uint32_t dst{op_id} = get_arg_val<uint32_t>({input_arg_idx});");
-                        writeln!(
-                            reader,
-                            "{indent}auto args{op_id} = TensorAccessorArgs<{}>({input_arg_idx});",
-                            input_arg_idx * 2
-                        );
-                        writeln!(reader, "{indent}auto p{op_id} = TensorAccessor(args{op_id}, dst{op_id}, {PAGE_SIZE});");
-                        input_arg_idx += 1;
-                    }
-                    Op::Storage { dtype: _, scope: MemScope::CircularReader, .. } => {
-                        if let Some(cb_id) = input_cb_map.get(&op_id) {
-                            writeln!(reader, "{indent}CircularBuffer cb{cb_id}(tt::CBIndex::c_{cb_id});");
+                        if reader_params.contains(&param_idx) {
+                            writeln!(reader, "{indent}uint32_t dst{op_id} = get_arg_val<uint32_t>({param_idx});");
+                            writeln!(
+                                reader,
+                                "{indent}auto args{op_id} = TensorAccessorArgs<{}>({param_idx});",
+                                input_arg_idx * 2
+                            );
+                            writeln!(reader, "{indent}auto p{op_id} = TensorAccessor(args{op_id}, dst{op_id}, {PAGE_SIZE});");
+                            input_arg_idx += 1;
                         }
+                        param_idx += 1;
                     }
-                    Op::Storage { scope: MemScope::CircularWriter, .. } => {
-                        if let Some(cb_id) = output_cb_map.get(&op_id) {
+                    Op::Storage { dtype: _, scope: MemScope::Circular, .. } => {
+                        if let Some(cb_id) = input_cb_map.get(&op_id) {
                             writeln!(reader, "{indent}CircularBuffer cb{cb_id}(tt::CBIndex::c_{cb_id});");
                         }
                     }
@@ -177,7 +201,7 @@ impl Kernel {
                         let Op::Param { kind: ParamKind::Global, .. } = self.ops[ld_src].op else {
                             unreachable!()
                         };
-                        let Op::Storage { dtype, scope: MemScope::CircularReader, .. } = self.ops[dst].op else {
+                        let Op::Storage { dtype, scope: MemScope::Circular, .. } = self.ops[dst].op else {
                             unreachable!()
                         };
 
@@ -208,6 +232,10 @@ impl Kernel {
                             BOp::Cmplt => writeln!(reader, "{indent}{} r{op_id} = r{x} < r{y};", dt.c_type()),
                             _ => unreachable!("{bop:?}"),
                         };
+                    }
+                    Op::Mad { x, y, z } => {
+                        let dt = self.dtype(op_id);
+                        writeln!(reader, "{indent}{} r{op_id} = r{x} * r{y} + r{z};", dt.c_type());
                     }
                     Op::Loop { len } => {
                         if loop_depth == 0 {
@@ -345,6 +373,7 @@ impl Kernel {
             };
             {
                 let mut scan = self.head;
+                let mut param_idx = 0u32;
                 let mut steps_scan = 0usize;
                 while scan != op_id {
                     steps_scan += 1;
@@ -360,6 +389,23 @@ impl Kernel {
                                     n_outputs + *axis as usize
                                 );
                                 writeln!(compute, "{indent}DPRINT << \"compute r{scan}=gidx{axis}=\" << r{scan} << ENDL();");
+                            }
+                            Op::Range { axis, kind: RangeKind::Group(_), .. } => {
+                                writeln!(
+                                    compute,
+                                    "{indent}uint32_t r{scan} = get_arg_val<uint32_t>({});",
+                                    n_inputs + *axis as usize
+                                );
+                            }
+                            Op::Param { dtype, kind: ParamKind::Variable, .. } => {
+                                if compute_params.contains(&param_idx) {
+                                    writeln!(
+                                        compute,
+                                        "{indent}{} r{scan} = ({})get_arg_val<uint32_t>({param_idx});",
+                                        dtype.c_type(),
+                                        dtype.c_type()
+                                    );
+                                }
                             }
                             Op::Const(val) => {
                                 writeln!(compute, "{indent}{} r{scan} = {};", val.dtype().c_type(), val.c_code());
@@ -381,6 +427,9 @@ impl Kernel {
                             Op::Bitcast { .. } => todo!("tenstorrent: bitcast not implemented"),
                             _ => {}
                         }
+                    }
+                    if matches!(&self.ops[scan].op, Op::Param { .. }) {
+                        param_idx += 1;
                     }
                     scan = self.next_op(scan);
                 }
@@ -667,8 +716,11 @@ impl Kernel {
             writeln!(writer, "{indent}CircularBuffer cb{cb_id}(tt::CBIndex::c_{cb_id});");
         }
 
-        let mut out_global_count = 0u32;
+        // Emit accessors only for the GlobalMut params this section needs.
+        // Runtime ordinal = head-order param index; compile-arg index = per-section counter.
+        let mut out_accessor_idx = 0u32;
         {
+            let mut param_idx = 0u32;
             let mut scan = self.head;
             let mut steps_scan = 0usize;
             while !scan.is_null() {
@@ -677,14 +729,17 @@ impl Kernel {
                     panic!("tt_binary_init did not finish in 10000 steps");
                 }
                 if let Op::Param { kind: ParamKind::GlobalMut, .. } = self.ops[scan].op {
-                    writeln!(writer, "{indent}uint32_t out{scan} = get_arg_val<uint32_t>({out_global_count});");
-                    writeln!(
-                        writer,
-                        "{indent}auto args_out{scan} = TensorAccessorArgs<{}>({out_global_count});",
-                        out_global_count * 2
-                    );
-                    writeln!(writer, "{indent}auto p_out{scan} = TensorAccessor(args_out{scan}, out{scan}, {PAGE_SIZE});");
-                    out_global_count += 1;
+                    if writer_params.contains(&param_idx) {
+                        writeln!(writer, "{indent}uint32_t out{scan} = get_arg_val<uint32_t>({param_idx});");
+                        writeln!(
+                            writer,
+                            "{indent}auto args_out{scan} = TensorAccessorArgs<{}>({param_idx});",
+                            out_accessor_idx * 2
+                        );
+                        writeln!(writer, "{indent}auto p_out{scan} = TensorAccessor(args_out{scan}, out{scan}, {PAGE_SIZE});");
+                        out_accessor_idx += 1;
+                    }
+                    param_idx += 1;
                 }
                 scan = self.next_op(scan);
             }
@@ -759,6 +814,7 @@ impl Kernel {
             };
 
             let mut scan = self.head;
+            let mut param_idx = 0u32;
             let mut steps_scan = 0usize;
             while scan != op_id {
                 steps_scan += 1;
@@ -768,8 +824,18 @@ impl Kernel {
                 if writer_deps.contains(&scan) {
                     match &self.ops[scan].op {
                         Op::Range { axis, kind: RangeKind::Group(_), .. } => {
-                            writeln!(writer, "{indent}uint32_t r{scan} = get_arg_val<uint32_t>({});", n_outputs + *axis as usize);
+                            writeln!(writer, "{indent}uint32_t r{scan} = get_arg_val<uint32_t>({});", n_inputs + *axis as usize);
                             writeln!(writer, "{indent}DPRINT << \"writer r{scan}=gidx{axis}=\" << r{scan} << ENDL();");
+                        }
+                        Op::Param { dtype, kind: ParamKind::Variable, .. } => {
+                            if writer_params.contains(&param_idx) {
+                                writeln!(
+                                    writer,
+                                    "{indent}{} r{scan} = ({})get_arg_val<uint32_t>({param_idx});",
+                                    dtype.c_type(),
+                                    dtype.c_type()
+                                );
+                            }
                         }
                         Op::Const(val) => {
                             writeln!(writer, "{indent}{} r{scan} = {};", val.dtype().c_type(), val.c_code());
@@ -786,12 +852,19 @@ impl Kernel {
                                 _ => unreachable!("{bop:?}"),
                             };
                         }
+                        Op::Mad { x, y, z } => {
+                            let dt = self.dtype(scan);
+                            writeln!(writer, "{indent}{} r{scan} = r{x} * r{y} + r{z};", dt.c_type());
+                        }
                         Op::Cast { x, dtype } => {
                             writeln!(writer, "{indent}{} r{scan} = r{x};", dtype.c_type());
                         }
                         Op::Bitcast { .. } => todo!("tenstorrent: bitcast not implemented"),
                         _ => {}
                     }
+                }
+                if matches!(&self.ops[scan].op, Op::Param { .. }) {
+                    param_idx += 1;
                 }
                 scan = self.next_op(scan);
             }
@@ -811,8 +884,8 @@ impl Kernel {
                     }
                     if let Op::Load { src: cb_src, index: ld_idx, .. } = self.ops[src].op {
                         if let Some(&cb_id) = output_cb_map.get(&cb_src) {
-                            let Op::Storage { dtype, .. } = self.ops[dst].op else {
-                                unreachable!()
+                            let Op::Param { dtype, kind: ParamKind::GlobalMut, .. } = self.ops[dst].op else {
+                                panic!("tt writer store dst must be a GlobalMut Param, got {:?}", self.ops[dst].op)
                             };
                             let elem_size = dtype.bit_size() as u32 / 8;
                             if loop_depth == 0 {
@@ -833,7 +906,7 @@ impl Kernel {
                     writeln!(writer, "{indent}{} r{op_id} = {};", val.dtype().c_type(), val.c_code());
                 }
                 Op::Range { axis, kind: RangeKind::Group(_), .. } => {
-                    writeln!(writer, "{indent}uint32_t r{op_id} = get_arg_val<uint32_t>({});", n_outputs + axis as usize);
+                    writeln!(writer, "{indent}uint32_t r{op_id} = get_arg_val<uint32_t>({});", n_inputs + axis as usize);
                 }
                 Op::Cast { x, dtype } => {
                     writeln!(writer, "{indent}{} r{op_id} = r{x};", dtype.c_type());
@@ -850,6 +923,10 @@ impl Kernel {
                         BOp::Cmplt => writeln!(writer, "{indent}{} r{op_id} = r{x} < r{y};", dt.c_type()),
                         _ => unreachable!("{bop:?}"),
                     };
+                }
+                Op::Mad { x, y, z } => {
+                    let dt = self.dtype(op_id);
+                    writeln!(writer, "{indent}{} r{op_id} = r{x} * r{y} + r{z};", dt.c_type());
                 }
                 Op::Loop { len } => {
                     if loop_depth == 0 {
