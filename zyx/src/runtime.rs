@@ -2733,9 +2733,11 @@ impl Runtime {
         match self.tensors[x] {
             TensorData::Leaf { depends_on: kernel_id, shape_id, dtype, .. } |
             TensorData::Eager { kernel_id, shape_id, dtype, .. } => {
-                let outputs: Vec<TensorId> = self.kernels[kernel_id].outputs.iter().copied().collect();
-                for out in outputs {
-                    self.add_store(out)?;
+                if !kernel_id.is_null() {
+                    let outputs: Vec<TensorId> = self.kernels[kernel_id].outputs.iter().copied().collect();
+                    for out in outputs {
+                        self.add_store(out)?;
+                    }
                 }
                 debug_assert!(self.buffer_map.contains_key(&x), "to_device: tensor {x} was not materialized");
                 let buf_id = self.buffer_map[&x];
@@ -4739,6 +4741,22 @@ impl Runtime {
     /// # Invariant
     /// A kernel must never both load and store the same tensor (prevents aliasing).
     /// The debug_assert in the recursive materialization loop enforces this.
+    /// Picks the fastest device (by compute) that has at least `bytes` free.
+    fn pick_device(&self, bytes: Dim) -> Result<DeviceId, ZyxError> {
+        let mut dev_ids: Vec<DeviceId> = self
+            .devices
+            .iter()
+            .filter(|(_, device)| !device.aot_only() && self.pools[device.memory_pool_id()].free_bytes() >= bytes)
+            .map(|(dev_id, _)| dev_id)
+            .collect();
+        if dev_ids.is_empty() {
+            return Err(ZyxError::AllocationError(format!("no device with {bytes} bytes free").into()));
+        }
+        dev_ids.sort_unstable_by_key(|&dev_id| self.devices[dev_id].free_compute());
+        dev_ids.reverse();
+        Ok(dev_ids[0])
+    }
+
     pub(crate) fn materialize_kernel(&mut self, kid: KernelId) -> Result<(), ZyxError> {
         // Resolve the dtypes of the loads and stores now, while this kernel (and any
         // tensor whose dtype resolves through it) is still alive. After remove_and_return
@@ -4875,25 +4893,58 @@ impl Runtime {
                 store_pools.insert(buf_id.pool);
             }
         }
+        // Bytes needed for all outputs that don't already have buffers.
+        let out_bytes: Dim = stores
+            .iter()
+            .filter(|&tid| !self.buffer_map.contains_key(tid))
+            .map(|&tid| {
+                let dtype = dtypes[&tid];
+                (self.resolve_shape(tid).iter().product::<Dim>() * dtype.bit_size() as Dim + 7) / 8
+            })
+            .sum();
         let (dev_id, pool_id) = if store_pools.len() == 1 {
             let pool_id = *store_pools.iter().next().unwrap();
             let dev_id = self.devices.ids().find(|&dev_id| self.devices[dev_id].memory_pool_id() == pool_id);
             match dev_id {
                 Some(dev_id) => (dev_id, pool_id),
                 None => {
-                    let mut dev_ids: Vec<DeviceId> = self.devices.ids().collect();
-                    dev_ids.sort_unstable_by_key(|&dev_id| self.devices[dev_id].free_compute());
-                    dev_ids.reverse();
-                    let dev_id = *dev_ids.first().ok_or_else(|| ZyxError::AllocationError("no available device".into()))?;
+                    let dev_id = self.pick_device(out_bytes)?;
                     (dev_id, self.devices[dev_id].memory_pool_id())
                 }
             }
         } else if store_pools.is_empty() {
-            let mut dev_ids: Vec<DeviceId> = self.devices.ids().collect();
-            dev_ids.sort_unstable_by_key(|&dev_id| self.devices[dev_id].free_compute());
-            dev_ids.reverse();
-            let dev_id = *dev_ids.first().ok_or_else(|| ZyxError::AllocationError("no available device".into()))?;
-            (dev_id, self.devices[dev_id].memory_pool_id())
+            // Pick the device where most loaded bytes reside, provided it has
+            // enough memory for the outputs; otherwise the fastest device
+            // with enough memory.
+            let mut loaded_bytes: Map<PoolId, Dim> = Map::default();
+            for &tid in &loads {
+                if let Some(buf_id) = self.buffer_map.get(&tid) {
+                    let dtype = dtypes[&tid];
+                    *loaded_bytes.entry(buf_id.pool).or_insert(0) +=
+                        (self.resolve_shape(tid).iter().product::<Dim>() * dtype.bit_size() as Dim + 7) / 8;
+                }
+            }
+            let mut best: Option<(DeviceId, PoolId)> = None;
+            for (dev_id, device) in self.devices.iter() {
+                if device.aot_only() {
+                    continue;
+                }
+                let pool_id = device.memory_pool_id();
+                if self.pools[pool_id].free_bytes() < out_bytes {
+                    continue;
+                }
+                let bytes = loaded_bytes.get(&pool_id).copied().unwrap_or(0);
+                if best.is_none_or(|(_, best_pool)| loaded_bytes.get(&best_pool).copied().unwrap_or(0) < bytes) {
+                    best = Some((dev_id, pool_id));
+                }
+            }
+            match best {
+                Some((dev_id, pool_id)) => (dev_id, pool_id),
+                None => {
+                    let dev_id = self.pick_device(out_bytes)?;
+                    (dev_id, self.devices[dev_id].memory_pool_id())
+                }
+            }
         } else {
             return Err(ZyxError::AllocationError(
                 format!("stores span multiple pools {store_pools:?}; a kernel can only touch memory of a single pool").into(),
