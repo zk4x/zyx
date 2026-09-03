@@ -793,6 +793,9 @@ pub(super) fn initialize_device(
 
         let bf16_device_features;
         let has_shader_bf16;
+        // VkPhysicalDeviceFeatures index of shaderInt64 (index math is i64).
+        const SHADER_INT64_IDX: usize = 38;
+        let mut has_shader_int64 = false;
         let has_shader_float16 = if vkGetPhysicalDeviceFeatures2 as usize != 0 {
             let mut float16_features = VkPhysicalDeviceShaderFloat16Int8Features {
                 sType: VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_FLOAT16_INT8_FEATURES,
@@ -813,6 +816,7 @@ pub(super) fn initialize_device(
                 features: [0u32; 55],
             };
             unsafe { vkGetPhysicalDeviceFeatures2(gpu, &mut features2) };
+            has_shader_int64 = features2.features[SHADER_INT64_IDX] != 0;
             has_shader_bf16 = ext_supports_bf16 && bf16_features.shaderBFloat16Type != 0;
             bf16_device_features = if has_shader_bf16 {
                 VkPhysicalDeviceShaderBfloat16FeaturesKHR {
@@ -872,6 +876,14 @@ pub(super) fn initialize_device(
         } else {
             std::ptr::null_mut()
         };
+        if debug_dev {
+            println!("[vulkan] {name}: shaderInt64: {has_shader_int64}");
+        }
+
+        let mut enabled_features = [0u32; 55];
+        if has_shader_int64 {
+            enabled_features[SHADER_INT64_IDX] = 1;
+        }
         let dci = VkDeviceCreateInfo {
             sType: VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO,
             pNext: dci_pnext,
@@ -882,7 +894,7 @@ pub(super) fn initialize_device(
             ppEnabledLayerNames: std::ptr::null(),
             enabledExtensionCount: ext_ptrs.len() as u32,
             ppEnabledExtensionNames: ext_ptrs.as_ptr(),
-            pEnabledFeatures: std::ptr::null(),
+            pEnabledFeatures: enabled_features.as_ptr() as *const std::ffi::c_void,
         };
         let mut device = std::ptr::null_mut();
         let res = unsafe { vkCreateDevice(gpu, &dci, std::ptr::null(), &mut device) };
@@ -1189,7 +1201,7 @@ pub(super) fn initialize_device(
                 while let Ok(cmd) = rx.recv() {
                     match cmd {
                         VulkanCommand::Allocate { bytes, reply } => {
-                            let size = (bytes + 3) / 4;
+                            let size = (bytes + 3) & !3;
                             let (buf, mem, ptr) = send_or_continue!(create_buffer(size as u64), reply);
                             let id = buffers.push(VulkanBuffer { buf, mem, ptr, bytes: bytes as usize });
                             free_bytes_atomic.fetch_sub(size as u64, Ordering::SeqCst);
@@ -1329,8 +1341,11 @@ pub(super) fn initialize_device(
                                     if steps_op > 10_000 {
                                         panic!("find_mem_type did not finish in 10000 steps");
                                     }
-                                    if let crate::kernel::Op::Storage { scope, .. } = kernel.at(op)
-                                        && *scope == crate::kernel::MemScope::Global
+                                    if let crate::kernel::Op::Param { kind, .. } = kernel.at(op)
+                                        && matches!(
+                                            kind,
+                                            crate::kernel::ParamKind::Global | crate::kernel::ParamKind::GlobalMut
+                                        )
                                     {
                                         n += 1;
                                     }

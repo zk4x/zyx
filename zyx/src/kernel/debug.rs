@@ -205,6 +205,7 @@ impl Display for Kernel {
                     dtypes.insert(op_id, dtype);
                     let (op1, op2) = match uop {
                         UOp::Neg => ("-", ""),
+                        UOp::Not => ("!", ""),
                         UOp::BitNot => ("~", ""),
                         UOp::Exp => ("exp(", ")"),
                         UOp::Exp2 => ("exp2(", ")"),

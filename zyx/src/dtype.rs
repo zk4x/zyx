@@ -555,6 +555,12 @@ impl Constant {
 
     pub(super) fn unary(self, uop: UOp) -> Constant {
         use crate::Float;
+        if uop == UOp::Not {
+            return match self {
+                Constant::Bool(x) => Constant::Bool(!x),
+                _ => unreachable!("Not is only supported for bool"),
+            };
+        }
         if uop == UOp::BitNot {
             return match self {
                 Constant::U8(x) => Constant::U8(!x),
@@ -575,6 +581,7 @@ impl Constant {
                     unreachable!()
                 }
                 UOp::BitNot => unreachable!(),
+                UOp::Not => unreachable!(),
                 UOp::Neg => x.neg(),
                 UOp::Exp2 => x.exp2(),
                 UOp::Log2 => x.log2(),
@@ -584,6 +591,7 @@ impl Constant {
         fn unary_func_float<T: Float>(x: T, uop: UOp) -> T {
             match uop {
                 UOp::BitNot => unreachable!(),
+                UOp::Not => unreachable!(),
                 UOp::Neg => x.neg(),
                 UOp::Reciprocal => x.reciprocal(),
                 UOp::Sqrt => x.sqrt(),

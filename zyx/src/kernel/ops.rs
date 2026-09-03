@@ -200,6 +200,8 @@ impl std::fmt::Display for RangeKind {
 pub enum UOp {
     /// Negation: -x
     Neg,
+    /// Logical NOT: !x
+    Not,
     /// Bitwise NOT: ~x
     BitNot,
     /// Exponential: e^x

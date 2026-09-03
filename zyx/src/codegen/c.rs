@@ -303,6 +303,7 @@ impl Kernel {
                                 let dst = lane_access(&format!("r{reg}"), i as usize);
                                 match uop {
                                     UOp::BitNot => _ = writeln!(source, "{indent}{dst} = ~{lane};"),
+                                    UOp::Not => _ = writeln!(source, "{indent}{dst} = !{lane};"),
                                     UOp::Neg => _ = writeln!(source, "{indent}{dst} = -{lane};"),
                                     UOp::Exp => _ = writeln!(source, "{indent}{dst} = exp({lane});"),
                                     UOp::Exp2 => _ = writeln!(source, "{indent}{dst} = exp2({lane});"),
@@ -322,6 +323,7 @@ impl Kernel {
                         }
                         _ => match uop {
                             UOp::BitNot => _ = writeln!(source, "{indent}r{reg} = ~{x};"),
+                            UOp::Not => _ = writeln!(source, "{indent}r{reg} = !{x};"),
                             UOp::Neg => _ = writeln!(source, "{indent}r{reg} = -{x};"),
                             UOp::Exp => _ = writeln!(source, "{indent}r{reg} = exp({x});"),
                             UOp::Exp2 => _ = writeln!(source, "{indent}r{reg} = exp2({x});"),

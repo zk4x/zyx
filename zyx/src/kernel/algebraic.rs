@@ -1132,6 +1132,7 @@ mod tests {
                                     id,
                                     match uop {
                                         crate::kernel::UOp::BitNot => !a,
+                                        crate::kernel::UOp::Not => (a == 0) as i64,
                                         _ => a,
                                     },
                                 );

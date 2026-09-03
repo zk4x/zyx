@@ -7,7 +7,7 @@ use super::{
 use crate::{
     DType,
     backend::{DTypeCapability, DeviceProgramId, PoolBufferId},
-    kernel::{IdxKind, Kernel, MemScope, Op},
+    kernel::{IdxKind, Kernel, MemScope, Op, ParamKind},
     shape::Dim,
     slab::Slab,
 };
@@ -430,7 +430,7 @@ impl WGPUDevice {
             return Err(BackendError { status: ErrorStatus::KernelCompilation, context: "Invalid local work size.".into() });
         }
 
-        let name = format!("k_{}", lws.iter().map(ToString::to_string).collect::<Vec<_>>().join("_"),);
+        let name = format!("k_lws_{}", lws.iter().map(ToString::to_string).collect::<Vec<_>>().join("_"),);
 
         // Read only flags
         let mut arg_ro_flags = Vec::new();
@@ -441,10 +441,10 @@ impl WGPUDevice {
             if steps_op_id > 10_000 {
                 panic!("compile did not finish in 10000 steps");
             }
-            if let &Op::Define { dtype: _, scope, ro, len: _ } = kernel.at(op_id)
-                && scope == MemScope::Global
+            if let &Op::Param { kind, .. } = kernel.at(op_id)
+                && matches!(kind, ParamKind::Global | ParamKind::GlobalMut)
             {
-                arg_ro_flags.push(ro);
+                arg_ro_flags.push(kind == ParamKind::Global);
             }
             op_id = kernel.next_op(op_id);
         }

@@ -126,6 +126,7 @@ impl Kernel {
             }
         }
         self.instruction_schedule();
+        self.constant_folding();
         self.dead_code_elimination();
         self.verify();
 

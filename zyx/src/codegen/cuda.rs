@@ -187,6 +187,7 @@ impl Kernel {
                             for &c in VEC_COMPONENTS.iter().take(len as usize) {
                                 _ = match uop {
                                     UOp::BitNot => writeln!(source, "{indent}r{reg}.{c} = ~{x}.{c};"),
+                                    UOp::Not => writeln!(source, "{indent}r{reg}.{c} = !{x}.{c};"),
                                     UOp::Neg => writeln!(source, "{indent}r{reg}.{c} = -{x}.{c};"),
                                     UOp::Exp => return Err(BackendError { status: ErrorStatus::KernelCompilation, context: "CUDA codegen: UOp::Exp should be converted to Exp2 + mul by ln2(e) before reaching CUDA backend".into() }),
                                     UOp::Exp2 => {
@@ -212,6 +213,7 @@ impl Kernel {
                         }
                         MemLayout::Scalar => match uop {
                             UOp::BitNot => _ = writeln!(source, "{indent}r{reg} = ~{x};"),
+                            UOp::Not => _ = writeln!(source, "{indent}r{reg} = !{x};"),
                             UOp::Neg => _ = writeln!(source, "{indent}r{reg} = -{x};"),
                             UOp::Exp => return Err(BackendError { status: ErrorStatus::KernelCompilation, context: "CUDA codegen: UOp::Exp should be converted to Exp2 + mul by ln2(e) before reaching CUDA backend".into() }),
                             UOp::Exp2 => {

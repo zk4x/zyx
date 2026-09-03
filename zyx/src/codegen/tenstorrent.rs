@@ -39,6 +39,7 @@ fn tt_dtype_format(dt: DType) -> u32 {
 fn tt_unary_init(uop: UOp) -> Option<&'static str> {
     match uop {
         UOp::Neg => Some("negative_tile_init();"),
+        UOp::Not => todo!("logical not tile"),
         UOp::BitNot => Some("bitwise_not_tile_init();"),
         UOp::Exp => Some("exp_tile_init();"),
         UOp::Exp2 => Some("exp2_tile_init();"),
@@ -569,6 +570,7 @@ impl Kernel {
                         dst_slots.insert(op_id, vec![slot; n]);
                         match uop {
                             UOp::Neg => writeln!(compute, "{indent}negative_tile({slot});"),
+                            UOp::Not => todo!("logical not tile"),
                             UOp::BitNot => writeln!(compute, "{indent}bitwise_not_tile({slot});"),
                             UOp::Exp => writeln!(compute, "{indent}exp_tile({slot});"),
                             UOp::Exp2 => writeln!(compute, "{indent}exp2_tile({slot});"),

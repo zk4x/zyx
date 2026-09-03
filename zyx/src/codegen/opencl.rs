@@ -169,6 +169,7 @@ impl Kernel {
                             for &c in VEC_COMPONENTS.iter().take(len as usize) {
                                 _ = match uop {
                                     UOp::BitNot => writeln!(source, "{indent}r{reg}.{c} = ~{x}.{c};"),
+                                    UOp::Not => writeln!(source, "{indent}r{reg}.{c} = !{x}.{c};"),
                                     UOp::Neg => writeln!(source, "{indent}r{reg}.{c} = -{x}.{c};"),
                                     UOp::Exp => {
                                         if dtype.0 == DType::F16 {
@@ -200,6 +201,7 @@ impl Kernel {
                         }
                         MemLayout::Scalar => match uop {
                             UOp::BitNot => _ = writeln!(source, "{indent}r{reg} = ~{x};"),
+                            UOp::Not => _ = writeln!(source, "{indent}r{reg} = !{x};"),
                             UOp::Neg => _ = writeln!(source, "{indent}r{reg} = -{x};"),
                             UOp::Exp => {
                                 if dtype.0 == DType::F16 {

@@ -126,7 +126,7 @@ impl Runtime {
                         let g = self.push_binary_node(graph_id, grad, sign, BOp::Mul);
                         accum_grad(self, graph_id, &mut grads, x, g);
                     }
-                    UOp::Floor | UOp::Trunc | UOp::BitNot => {}
+                    UOp::Floor | UOp::Trunc | UOp::BitNot | UOp::Not => {}
                 },
                 Node::Binary { x, y, bop } => match bop {
                     BOp::Add => {

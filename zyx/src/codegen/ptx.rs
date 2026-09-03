@@ -150,6 +150,7 @@ impl Compiler {
     fn uop_to_ptx(&self, uop: UOp, dtype: DType) -> Result<&'static str, BackendError> {
         match uop {
             UOp::Neg => Ok("neg"),
+            UOp::Not => Ok("not"),
             UOp::BitNot => Ok("not"),
             UOp::Exp => Err(BackendError {
                 status: ErrorStatus::KernelCompilation,

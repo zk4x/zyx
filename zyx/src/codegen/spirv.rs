@@ -95,6 +95,8 @@ pub enum OpCode {
     OpTypePointer = 32,
     OpTypeFunction = 33,
     OpConstant = 43,
+    OpConstantTrue = 44,
+    OpConstantFalse = 45,
     OpVariable = 59,
     OpFunction = 54,
     OpFunctionEnd = 56,
@@ -121,6 +123,7 @@ pub enum OpCode {
     OpSRem = 138,
     OpSNegate = 126,
     OpNot = 200,
+    OpLogicalNot = 168,
     OpShiftLeftLogical = 196,
     OpShiftRightLogical = 194,
     OpBitwiseAnd = 199,
@@ -128,6 +131,10 @@ pub enum OpCode {
     OpBitwiseXOr = 198,
     OpIEqual = 170,
     OpINotEqual = 171,
+    OpLogicalEqual = 164,
+    OpLogicalNotEqual = 165,
+    OpLogicalOr = 166,
+    OpLogicalAnd = 167,
     OpULessThan = 176,
     OpUGreaterThan = 172,
     OpSLessThan = 177,
@@ -176,6 +183,8 @@ impl TryFrom<u16> for OpCode {
             32 => Ok(Self::OpTypePointer),
             33 => Ok(Self::OpTypeFunction),
             43 => Ok(Self::OpConstant),
+            44 => Ok(Self::OpConstantTrue),
+            45 => Ok(Self::OpConstantFalse),
             59 => Ok(Self::OpVariable),
             54 => Ok(Self::OpFunction),
             56 => Ok(Self::OpFunctionEnd),
@@ -202,6 +211,7 @@ impl TryFrom<u16> for OpCode {
             138 => Ok(Self::OpSRem),
             126 => Ok(Self::OpSNegate),
             200 => Ok(Self::OpNot),
+            168 => Ok(Self::OpLogicalNot),
             196 => Ok(Self::OpShiftLeftLogical),
             194 => Ok(Self::OpShiftRightLogical),
             199 => Ok(Self::OpBitwiseAnd),
@@ -209,6 +219,10 @@ impl TryFrom<u16> for OpCode {
             198 => Ok(Self::OpBitwiseXOr),
             170 => Ok(Self::OpIEqual),
             171 => Ok(Self::OpINotEqual),
+            164 => Ok(Self::OpLogicalEqual),
+            165 => Ok(Self::OpLogicalNotEqual),
+            166 => Ok(Self::OpLogicalOr),
+            167 => Ok(Self::OpLogicalAnd),
             176 => Ok(Self::OpULessThan),
             172 => Ok(Self::OpUGreaterThan),
             177 => Ok(Self::OpSLessThan),
@@ -422,7 +436,9 @@ impl Kernel {
                 if steps_op_id > 10_000 {
                     panic!("generate_spirv did not finish in 10000 steps");
                 }
-                if let Op::Storage { dtype: DType::Bool, scope: MemScope::Global, .. } = self.at(op_id) {
+                if let Op::Param { dtype: DType::Bool, kind, .. } = self.at(op_id)
+                    && matches!(kind, ParamKind::Global | ParamKind::GlobalMut)
+                {
                     found = true;
                     break;
                 }
@@ -452,6 +468,7 @@ impl Kernel {
 
         // Required SPIR-V instructions
         asm.emit(OpCapability, &[1]); // Shader capability
+        asm.emit(OpCapability, &[11]); // Int64 (IDX_T is i64, index math is 64-bit)
         if needs_u8 {
             asm.emit(OpCapability, &[44]); // StorageUniform8BitAccess (for bool buffers)
         }
@@ -599,6 +616,8 @@ impl Kernel {
         // Batch-emitted before the function body so all types are pre-declared.
         let mut type_entries: Vec<(OpCode, u32, Vec<u32>)> = Vec::with_capacity(32);
         let mut const_entries: Vec<(u32, u32, Vec<u32>)> = Vec::with_capacity(16);
+        // Bool constants must use OpConstantTrue/False, never OpConstant.
+        let mut bool_const_entries: Vec<(u32, u32, bool)> = Vec::new();
         let mut len_const_ids: std::collections::HashSet<u32> = std::collections::HashSet::new(); // constant IDs used as array lengths
         let mut spv_values: Map<OpId, u32> = Map::with_capacity_and_hasher(100, BuildHasherDefault::new());
         let mut var_entries: Vec<(u32, u32, u32, bool)> = Vec::with_capacity(16);
@@ -672,9 +691,13 @@ impl Kernel {
                     Op::Const(c) => {
                         let dt = c.dtype();
                         let st = push_dtype(&mut asm, &mut type_cache, &mut type_entries, dt);
-                        let words = const_to_words(c);
                         let cid = asm.id();
-                        const_entries.push((st, cid, words));
+                        if let Constant::Bool(v) = c {
+                            bool_const_entries.push((st, cid, *v));
+                        } else {
+                            let words = const_to_words(c);
+                            const_entries.push((st, cid, words));
+                        }
                         spv_values.insert(op_id, cid);
                     }
                     &Op::Param { dtype, kind, .. } => {
@@ -841,6 +864,7 @@ impl Kernel {
                                 DType::U32 => Constant::U32(val),
                                 DType::I32 => Constant::I32(val as i32),
                                 DType::U64 => Constant::U64((val as i64).to_le_bytes()),
+                                DType::I64 => Constant::I64((val as i64).to_le_bytes()),
                                 dt => {
                                     return Err(BackendError {
                                         status: ErrorStatus::KernelCompilation,
@@ -995,7 +1019,7 @@ impl Kernel {
         let func_id = asm.id();
 
         // Entry point: GLCompute %func_id "name" %interfaces...
-        let ep_name = format!("k_{}", lws.iter().map(|v| v.to_string()).collect::<Vec<_>>().join("_"),);
+        let ep_name = format!("k_lws_{}", lws.iter().map(|v| v.to_string()).collect::<Vec<_>>().join("_"),);
         {
             let mut ep_words = vec![EXEC_GL_COMPUTE, func_id];
             let name_bytes: Vec<u8> = ep_name.bytes().chain(std::iter::once(0)).collect();
@@ -1051,6 +1075,13 @@ impl Kernel {
         for &(type_id, result_id, ref words) in &const_entries {
             if emitted_consts.insert(result_id) {
                 asm.emit_typed(OpConstant, type_id, result_id, words);
+            }
+        }
+        // Bool constants use dedicated opcodes (OpConstant cannot encode a bool).
+        for &(type_id, result_id, value) in &bool_const_entries {
+            if emitted_consts.insert(result_id) {
+                let op = if value { OpConstantTrue } else { OpConstantFalse };
+                asm.emit_typed(op, type_id, result_id, &[]);
             }
         }
 
@@ -1328,6 +1359,12 @@ impl Kernel {
                     }
                     Op::Cast { x, dtype } => {
                         let src_type = dtypes[&x].0;
+                        if src_type == dtype {
+                            return Err(BackendError {
+                                status: ErrorStatus::KernelCompilation,
+                                context: format!("SPIR-V: same-type cast {src_type:?} at {op_id:?}, const folding should have removed it").into(),
+                            });
+                        }
                         let src_id = spv_values[&x];
                         let dst_type = dtype;
                         let (_, layout) = dtypes[&op_id];
@@ -1385,6 +1422,12 @@ impl Kernel {
                     }
                     Op::Bitcast { x, dtype } => {
                         let src_type = dtypes[&x].0;
+                        if src_type == dtype {
+                            return Err(BackendError {
+                                status: ErrorStatus::KernelCompilation,
+                                context: format!("SPIR-V: same-type bitcast {src_type:?}, const folding should have removed it").into(),
+                            });
+                        }
                         let src_id = spv_values[&x];
                         let dst_type = dtype;
                         let (_, layout) = dtypes[&op_id];
@@ -1441,6 +1484,9 @@ impl Kernel {
                             }
                             UOp::BitNot => {
                                 asm.emit_typed(OpNot, result_type, rid, &[src_id]);
+                            }
+                            UOp::Not => {
+                                asm.emit_typed(OpLogicalNot, result_type, rid, &[src_id]);
                             }
                             UOp::Exp => {
                                 asm.emit_typed(OpExtInst, result_type, rid, &[glsl_set, glsl::Exp, src_id]);
@@ -1582,11 +1628,20 @@ impl Kernel {
                         };
 
                         if dt == DType::Bool {
-                            if matches!(bop, BOp::Or) {
-                                asm.emit_typed(OpBitwiseOr, result_type, rid, &[x_id, y_id]);
-                            } else if matches!(bop, BOp::And) {
-                                asm.emit_typed(OpBitwiseAnd, result_type, rid, &[x_id, y_id]);
-                            }
+                            // Bool algebra uses the Logical family (bitwise ops are integer-only).
+                            let op = match bop {
+                                BOp::Or => OpLogicalOr,
+                                BOp::And => OpLogicalAnd,
+                                BOp::Eq => OpLogicalEqual,
+                                BOp::NotEq => OpLogicalNotEqual,
+                                _ => {
+                                    return Err(BackendError {
+                                        status: ErrorStatus::KernelCompilation,
+                                        context: format!("SPIR-V: unsupported bool binary op {bop:?}").into(),
+                                    });
+                                }
+                            };
+                            asm.emit_typed(op, result_type, rid, &[x_id, y_id]);
                         } else if dt.is_float() {
                             if let Some(op) = float_op {
                                 asm.emit_typed(op, result_type, rid, &[x_id, y_id]);
@@ -1650,7 +1705,7 @@ impl Kernel {
                         let counter_ptr_type = push_ptr_type(&mut asm, &mut ptr_cache, &mut type_entries, SC_FUNCTION, idx_type);
                         let counter_var = asm.id();
                         asm.emit(OpVariable, &[counter_ptr_type, counter_var, SC_FUNCTION]);
-                        let zero = const_pool[&Constant::U32(0)];
+                        let zero = const_pool[&Constant::idx(0)];
                         asm.emit(OpStore, &[counter_var, zero]);
                         asm.emit(OpBranch, &[header]);
 
@@ -1680,13 +1735,13 @@ impl Kernel {
                         asm.emit(OpLabel, &[continue_lbl]);
                         let old = asm.id();
                         asm.emit_typed(OpLoad, idx_type, old, &[counter_var]);
-                        let one = const_pool[&Constant::U32(1)];
+                        let one = const_pool[&Constant::idx(1)];
                         let inc = asm.id();
                         asm.emit_typed(OpIAdd, idx_type, inc, &[old, one]);
                         asm.emit(OpStore, &[counter_var, inc]);
 
                         // Check if counter < len
-                        let len_cid = const_pool[&Constant::U32(len as u32)];
+                        let len_cid = const_pool[&Constant::idx(len)];
                         let cmp_type = emit_type(&mut asm, &mut type_cache, DType::Bool);
                         let cmp = asm.id();
                         asm.emit_typed(OpULessThan, cmp_type, cmp, &[inc, len_cid]);

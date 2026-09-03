@@ -82,7 +82,10 @@ impl Kernel {
                     if let Op::Const(cx) = self.at(x) {
                         self.ops[op_id].op = Op::Const(cx.cast(dtype));
                     }
-                    // Cast of Cast: remove intermediate cast
+                    // Cast of Cast: remove intermediate cast. NOTE: collapsing
+                    // can itself produce a same-type cast (Cast(Cast(a→B)→A)
+                    // becomes Cast(a→A)), so the same-type check must run
+                    // after this rewrite, not before.
                     if let Op::Cast { x: inner_x, .. } = *self.at(x) {
                         self.ops[op_id].op = Op::Cast { x: inner_x, dtype };
                     }
@@ -100,8 +103,20 @@ impl Kernel {
                             self.ops[op_id].op = Op::Cast { x: inner_add_x, dtype };
                         }
                     }
+                    // Same-type cast is a no-op. Runs after the rewrites
+                    // above: collapsing Cast(Cast(a)) can itself produce a
+                    // same-type cast, and a single pass never revisits.
+                    if let Op::Cast { x: final_x, .. } = self.at(op_id)
+                        && self.dtype(*final_x) == dtype
+                    {
+                        self.remap(op_id, *final_x);
+                    }
                 }
                 Op::Bitcast { x, dtype } => {
+                    // Same-type bitcast is a no-op
+                    if self.dtype(x) == dtype {
+                        self.remap(op_id, x);
+                    }
                     if let Op::Const(cx) = self.at(x) {
                         self.ops[op_id].op = Op::Const(cx.bitcast(dtype));
                     }
@@ -127,6 +142,14 @@ impl Kernel {
                         BOp::And if cx.dtype() == DType::Bool && cx.is_one() => self.remap(op_id, y),
                         BOp::Or if cx.dtype() == DType::Bool && cx.is_zero() => self.remap(op_id, y),
                         BOp::Or if cx.dtype() == DType::Bool && cx.is_one() => self.remap(op_id, x),
+                        BOp::Eq if cx.dtype() == DType::Bool && cx.is_zero() => {
+                            self.ops[op_id].op = Op::Unary { x: y, uop: UOp::Not }
+                        }
+                        BOp::Eq if cx.dtype() == DType::Bool && cx.is_one() => self.remap(op_id, y),
+                        BOp::NotEq if cx.dtype() == DType::Bool && cx.is_zero() => self.remap(op_id, y),
+                        BOp::NotEq if cx.dtype() == DType::Bool && cx.is_one() => {
+                            self.ops[op_id].op = Op::Unary { x: y, uop: UOp::Not }
+                        }
                         BOp::Add if cx.is_zero() => self.remap(op_id, y),
                         BOp::Sub if cx.is_zero() => self.ops[op_id].op = Op::Unary { x: y, uop: UOp::Neg },
                         BOp::Mul | BOp::Div if cx.is_zero() => self.ops[op_id].op = Op::Const(cx),
@@ -156,6 +179,14 @@ impl Kernel {
                         BOp::And if cy.dtype() == DType::Bool && cy.is_one() => self.remap(op_id, x),
                         BOp::Or if cy.dtype() == DType::Bool && cy.is_zero() => self.remap(op_id, x),
                         BOp::Or if cy.dtype() == DType::Bool && cy.is_one() => self.remap(op_id, y),
+                        BOp::Eq if cy.dtype() == DType::Bool && cy.is_zero() => {
+                            self.ops[op_id].op = Op::Unary { x, uop: UOp::Not }
+                        }
+                        BOp::Eq if cy.dtype() == DType::Bool && cy.is_one() => self.remap(op_id, x),
+                        BOp::NotEq if cy.dtype() == DType::Bool && cy.is_zero() => self.remap(op_id, x),
+                        BOp::NotEq if cy.dtype() == DType::Bool && cy.is_one() => {
+                            self.ops[op_id].op = Op::Unary { x, uop: UOp::Not }
+                        }
                         BOp::Add | BOp::Sub if cy.is_zero() => self.remap(op_id, x),
                         BOp::Mul if cy.is_zero() => self.ops[op_id].op = Op::Const(cy),
                         BOp::Mul if cy.is_one() => self.remap(op_id, x),

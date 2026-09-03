@@ -697,6 +697,7 @@ impl Kernel {
             match self.at(op_id) {
                 Op::Unary { uop, .. } => parts.push(match uop {
                     UOp::Neg => "neg",
+                    UOp::Not => "not",
                     UOp::BitNot => "bitnot",
                     UOp::Exp => "exp",
                     UOp::Exp2 => "exp2",
