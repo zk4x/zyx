@@ -328,6 +328,75 @@ impl Kernel {
             }
         }
 
+        // A load of a storage that is also stored inside a loop must stay
+        // inside that loop: it reads a loop-carried value (e.g. an accumulator
+        // register). Hoisting such a load above the loop opener would replace
+        // every iteration's load with the pre-loop value and silently break
+        // the accumulation. Mirror of the store-pinning rule above, applied
+        // only to loads whose target is stored in the enclosing loop.
+        //
+        // First match every loop opener with its closer.
+        let mut loop_bounds: Vec<(usize, usize)> = Vec::new();
+        {
+            let mut open_stack: Vec<usize> = Vec::new();
+            for &i in &structural_positions {
+                match self.at(rest[i]) {
+                    Op::Loop { .. } => open_stack.push(i),
+                    Op::EndLoop => {
+                        if let Some(opener) = open_stack.pop() {
+                            loop_bounds.push((opener, i));
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+        // Then collect, per storage, every loop that encloses a store to it.
+        let mut storage_loops: Map<OpId, Vec<(usize, usize)>> = Map::default();
+        {
+            let mut open_stack: Vec<usize> = Vec::new();
+            let mut closer_of: Map<usize, usize> = Map::default();
+            for &(opener, closer) in &loop_bounds {
+                closer_of.insert(opener, closer);
+            }
+            for i in 0..n {
+                match self.at(rest[i]) {
+                    Op::Loop { .. } => open_stack.push(i),
+                    Op::EndLoop => {
+                        open_stack.pop();
+                    }
+                    Op::Store { dst, .. } => {
+                        for &opener in &open_stack {
+                            let bound = (opener, closer_of[&opener]);
+                            let loops = storage_loops.entry(*dst).or_default();
+                            if !loops.contains(&bound) {
+                                loops.push(bound);
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+        // Pin affected loads inside every enclosing loop that stores their
+        // target. A load is inside a loop iff `opener < i < closer` in the
+        // original order; the edges keep it there.
+        for i in 0..n {
+            if !load[i] {
+                continue;
+            }
+            let Op::Load { src, .. } = self.at(rest[i]) else { continue };
+            let Some(loops) = storage_loops.get(src) else { continue };
+            for &(opener, closer) in loops {
+                if opener < i && i < closer {
+                    edges.push((opener, i));
+                    in_degree[i] += 1;
+                    edges.push((i, closer));
+                    in_degree[closer] += 1;
+                }
+            }
+        }
+
         let barrier_positions: Vec<usize> = (0..n).filter(|&i| barrier[i]).collect();
         // Loads never cross barriers.
         for i in 0..n {
