@@ -702,6 +702,59 @@ int main() {
       }
     }
 
+    // ---- probe_scatter (TEMP: old-API scattered-write reproducer) ----
+    else if (cmd == "probe_scatter") {
+      if (!mesh_device.get()) {
+        cout << R"({"status":"error","msg":"not initialized"})" << endl;
+        continue;
+      }
+      try {
+        uint32_t source_len = extract_u32(line, "source_len");
+        string source(source_len, '\0');
+        cin.read(&source[0], source_len);
+        cerr << "[PROBE] source read ok" << endl;
+
+        DeviceLocalBufferConfig dram_config{
+            .page_size = PAGE_SIZE,
+            .buffer_type = BufferType::DRAM
+        };
+        ReplicatedBufferConfig buf_config{.size = PAGE_SIZE};
+        auto buf = MeshBuffer::create(buf_config, dram_config, mesh_device.get());
+        uint32_t idx = buffers.size();
+        buffers.push_back(buf);
+
+        Program program = CreateProgram();
+        MeshWorkload workload;
+        MeshCoordinateRange device_range(mesh_device->shape());
+        CoreCoord core{0, 0};
+        CoreRangeSet one_core(CoreRange(core, core));
+        auto kern = CreateKernelFromString(
+            program, source, one_core,
+            DataMovementConfig{
+                .processor = DataMovementProcessor::RISCV_1,
+                .noc = NOC::RISCV_1_default,
+                .noc_mode = NOC_MODE::DM_DEDICATED_NOC,
+                .compile_args = {},
+                .defines = {},
+                .named_compile_args = {},
+                .opt_level = KernelBuildOptLevel::O2,
+                .compiler_include_paths = {},
+            });
+        uint64_t a = buf->address();
+        SetRuntimeArgs(program, kern, core, {static_cast<uint32_t>(a)});
+        cerr << "[PROBE] kernel created" << endl;
+        workload.add_program(device_range, std::move(program));
+        EnqueueMeshWorkload(*cq, workload, false);
+        cerr << "[PROBE] enqueued" << endl;
+        Finish(*cq);
+        cerr << "[PROBE] finished" << endl;
+        cout << R"({"status":"ok","index":")" << idx << R"("})" << endl;
+      } catch (const exception &e) {
+        cerr << "probe_scatter error: " << e.what() << endl;
+        cout << R"({"status":"error","msg":")" << e.what() << R"("})" << endl;
+      }
+    }
+
     // ---- exit ----
     else if (cmd == "exit") {
       buffers.clear();

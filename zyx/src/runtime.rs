@@ -5131,16 +5131,13 @@ impl Runtime {
 
         let event = self.devices[dev_id].launch(dev_prog, &mut self.pools[pool_id], &buffers, event_wait_list)?;
         self.events.insert(kernel_buffers, event);
-        eprintln!("[M-MARK] materialize launched, releasing loads");
 
         // The kernel has consumed its loads. Release the load references so
         // dead load tensors and their buffers are reclaimed. Buffers still in
         // use keep rc > 0 via other kernels' load references or handles.
         for &tid in &loads {
-            eprintln!("[M-MARK] release {tid}");
             self.release(tid);
         }
-        eprintln!("[M-MARK] materialize done");
 
         Ok(())
     }

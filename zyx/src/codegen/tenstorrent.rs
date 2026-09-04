@@ -86,8 +86,8 @@ impl Kernel {
     ///   different in each core. Tenstorrent has no SIMT threads, so there are no
     ///   local ranges — local indices must have been converted to loops by the
     ///   opt_tenstorrent_tile pass before codegen.
-    /// - `input_cb_map` — maps local Defines → input CB index (reader pushes to these)
-    /// - `output_cb_map` — maps local Defines → output CB index (writer pulls from these)
+    /// - `cb_map` — maps each Circular storage op to its single CB index,
+    ///   shared by reader, compute, and writer sections
     ///
     /// # Returns
     /// `(reader_source, compute_source, writer_source)` as C++ strings ready
@@ -96,10 +96,7 @@ impl Kernel {
     pub(crate) fn generate_tenstorrent(
         &self,
         debug_asm: bool,
-        n_inputs: usize,
-        n_outputs: usize,
-        input_cb_map: &Map<OpId, u32>,
-        output_cb_map: &Map<OpId, u32>,
+        cb_map: &Map<OpId, u32>,
         reader_params: &[u32],
         compute_params: &[u32],
         writer_params: &[u32],
@@ -142,7 +139,6 @@ impl Kernel {
         writeln!(reader, "#include \"api/debug/device_print.h\"");
         writeln!(reader, "void kernel_main() {{");
         let mut indent = String::from("  ");
-        writeln!(reader, "{indent}Noc noc;");
 
         let mut op_id = self.head;
         {
@@ -162,11 +158,7 @@ impl Kernel {
                         if reader_params.contains(&param_idx) {
                             let arg = reader_pos[&param_idx];
                             writeln!(reader, "{indent}uint32_t src{op_id} = get_arg_val<uint32_t>({arg});");
-                            writeln!(
-                                reader,
-                                "{indent}auto args{op_id} = TensorAccessorArgs<{}>({arg});",
-                                input_arg_idx * 2
-                            );
+                            writeln!(reader, "{indent}auto args{op_id} = TensorAccessorArgs<{}>({arg});", input_arg_idx * 2);
                             writeln!(reader, "{indent}auto p{op_id} = TensorAccessor(args{op_id}, src{op_id}, {PAGE_SIZE});");
                             input_arg_idx += 1;
                         }
@@ -190,18 +182,14 @@ impl Kernel {
                         if reader_params.contains(&param_idx) {
                             let arg = reader_pos[&param_idx];
                             writeln!(reader, "{indent}uint32_t dst{op_id} = get_arg_val<uint32_t>({arg});");
-                            writeln!(
-                                reader,
-                                "{indent}auto args{op_id} = TensorAccessorArgs<{}>({arg});",
-                                input_arg_idx * 2
-                            );
+                            writeln!(reader, "{indent}auto args{op_id} = TensorAccessorArgs<{}>({arg});", input_arg_idx * 2);
                             writeln!(reader, "{indent}auto p{op_id} = TensorAccessor(args{op_id}, dst{op_id}, {PAGE_SIZE});");
                             input_arg_idx += 1;
                         }
                         param_idx += 1;
                     }
                     Op::Storage { dtype: _, scope: MemScope::Circular, .. } => {
-                        if let Some(cb_id) = input_cb_map.get(&op_id) {
+                        if let Some(cb_id) = cb_map.get(&op_id) {
                             writeln!(reader, "{indent}CircularBuffer cb{cb_id}(tt::CBIndex::c_{cb_id});");
                         }
                     }
@@ -220,15 +208,46 @@ impl Kernel {
                         };
 
                         let elem_size = dtype.bit_size() as u32 / 8;
-                        if let Some(cb_id) = input_cb_map.get(&dst) {
+                        if let Some(cb_id) = cb_map.get(&dst) {
                             match (ld_layout, st_layout) {
                                 (MemLayout::Scalar, MemLayout::Scalar) => {
                                     if loop_depth == 0 {
                                         writeln!(reader, "{indent}cb{cb_id}.reserve_back(1);");
+                                        writeln!(reader, "{indent}uint32_t rbase{cb_id} = cb{cb_id}.get_write_ptr();");
+                                        writeln!(reader, "{indent}DEVICE_PRINT(\"rbase{cb_id}={{}}\\n\", rbase{cb_id});");
                                     }
+                                    // Old dataflow API with raw L1 addresses
+                                    // (mirrors TT's own readers): the Noc-class
+                                    // CB-endpoint forms misaddress sub-tile
+                                    // offsets (bit9 := bit5 substitution).
                                     writeln!(
                                         reader,
-                                        "{indent}noc.async_read(p{ld_src}, cb{cb_id}, {elem_size},\n{indent}  {{ .page_id = (uint32_t)((r{ld_idx}*{elem_size})/{PAGE_SIZE}), .offset_bytes = (uint32_t)((r{ld_idx}*{elem_size})%{PAGE_SIZE}) }},\n{indent}  {{ .offset_bytes = (uint32_t)(r{st_idx}*{elem_size}) }});"
+                                        "{indent}uint64_t rnoc{op_id} = p{ld_src}.get_noc_addr((uint32_t)((r{ld_idx}*{elem_size})/{PAGE_SIZE}), (uint32_t)((r{ld_idx}*{elem_size})%{PAGE_SIZE}));"
+                                    );
+                                    writeln!(
+                                        reader,
+                                        "{indent}noc_async_read(rnoc{op_id}, rbase{cb_id} + (uint32_t)(r{st_idx}*{elem_size}), {elem_size});"
+                                    );
+                                }
+                                (
+                                    MemLayout::Tile { x, y, .. },
+                                    MemLayout::Tile { .. },
+                                ) => {
+                                    // Whole-tile DRAM -> CB transfer (tile-layout
+                                    // DRAM): a single sequential NOC read.
+                                    let tile_bytes =
+                                        x as u32 * y as u32 * elem_size;
+                                    writeln!(
+                                        reader,
+                                        "{indent}cb{cb_id}.reserve_back(1);"
+                                    );
+                                    writeln!(
+                                        reader,
+                                        "{indent}uint64_t rnoc{op_id} = p{ld_src}.get_noc_addr((uint32_t)((r{ld_idx}*{elem_size})/{PAGE_SIZE}), (uint32_t)((r{ld_idx}*{elem_size})%{PAGE_SIZE}));"
+                                    );
+                                    writeln!(
+                                        reader,
+                                        "{indent}noc_async_read(rnoc{op_id}, cb{cb_id}.get_write_ptr(), {tile_bytes});"
                                     );
                                 }
                                 _ => todo!(),
@@ -241,6 +260,8 @@ impl Kernel {
                             BOp::Add => writeln!(reader, "{indent}{} r{op_id} = r{x} + r{y};", dt.c_type()),
                             BOp::Sub => writeln!(reader, "{indent}{} r{op_id} = r{x} - r{y};", dt.c_type()),
                             BOp::Mul => writeln!(reader, "{indent}{} r{op_id} = r{x} * r{y};", dt.c_type()),
+                            BOp::Div => writeln!(reader, "{indent}{} r{op_id} = r{x} / r{y};", dt.c_type()),
+                            BOp::Mod => writeln!(reader, "{indent}{} r{op_id} = r{x} % r{y};", dt.c_type()),
                             BOp::Max => writeln!(reader, "{indent}{} r{op_id} = r{x} > r{y} ? r{x} : r{y};", dt.c_type()),
                             BOp::BitShiftLeft => writeln!(reader, "{indent}{} r{op_id} = r{x} << r{y};", dt.c_type()),
                             BOp::Cmplt => writeln!(reader, "{indent}{} r{op_id} = r{x} < r{y};", dt.c_type()),
@@ -253,8 +274,10 @@ impl Kernel {
                     }
                     Op::Loop { len } => {
                         if loop_depth == 0 {
-                            for cb_id in input_cb_map.values() {
+                            for cb_id in cb_map.values() {
                                 writeln!(reader, "{indent}cb{cb_id}.reserve_back(1);");
+                                writeln!(reader, "{indent}uint32_t rbase{cb_id} = cb{cb_id}.get_write_ptr();");
+                                writeln!(reader, "{indent}DEVICE_PRINT(\"rbase{cb_id}={{}}\\n\", rbase{cb_id});");
                             }
                         }
                         writeln!(reader, "{indent}for (uint32_t r{op_id} = 0; r{op_id} < r{len}; r{op_id}++) {{");
@@ -271,7 +294,11 @@ impl Kernel {
                         writeln!(reader, "{indent}{} r{op_id} = {};", val.dtype().c_type(), val.c_code());
                     }
                     Op::Range { axis, kind: RangeKind::Group(_), .. } => {
-                        writeln!(reader, "{indent}uint32_t r{op_id} = get_arg_val<uint32_t>({});", reader_params.len() + axis as usize);
+                        writeln!(
+                            reader,
+                            "{indent}uint32_t r{op_id} = get_arg_val<uint32_t>({});",
+                            reader_params.len() + axis as usize
+                        );
                         writeln!(reader, "{indent}DEVICE_PRINT(\"r{op_id}=gidx{axis}={{}}\\n\", r{op_id});");
                     }
                     Op::Barrier => {
@@ -290,8 +317,8 @@ impl Kernel {
                 }
                 op_id = self.next_op(op_id);
             }
-            writeln!(reader, "{indent}noc.async_read_barrier();");
-            for cb_id in input_cb_map.values() {
+            writeln!(reader, "{indent}noc_async_read_barrier();");
+            for cb_id in cb_map.values() {
                 writeln!(reader, "{indent}cb{cb_id}.push_back(1);");
             }
             writeln!(reader, "}}");
@@ -324,8 +351,8 @@ impl Kernel {
         writeln!(compute, "void kernel_main() {{");
         let mut indent = String::from("  ");
         {
-            let mut cb_ids: Vec<u32> = input_cb_map.values().copied().collect();
-            for cb_id in output_cb_map.values() {
+            let mut cb_ids: Vec<u32> = cb_map.values().copied().collect();
+            for cb_id in cb_map.values() {
                 if !cb_ids.contains(cb_id) {
                     cb_ids.push(*cb_id);
                 }
@@ -335,8 +362,8 @@ impl Kernel {
                 writeln!(compute, "{indent}CircularBuffer cb{cb_id}(tt::CBIndex::c_{cb_id});");
             }
 
-            let input_ids: Vec<u32> = input_cb_map.values().copied().collect();
-            let output_ids: Vec<u32> = output_cb_map.values().copied().collect();
+            let input_ids: Vec<u32> = cb_map.values().copied().collect();
+            let output_ids: Vec<u32> = cb_map.values().copied().collect();
             if !input_ids.is_empty() && !output_ids.is_empty() {
                 let in0 = input_ids[0];
                 let _in1 = input_ids.get(1).copied().unwrap_or(in0);
@@ -426,6 +453,8 @@ impl Kernel {
                                     BOp::Add => writeln!(compute, "{indent}{} r{scan} = r{x} + r{y};", dt.c_type()),
                                     BOp::Sub => writeln!(compute, "{indent}{} r{scan} = r{x} - r{y};", dt.c_type()),
                                     BOp::Mul => writeln!(compute, "{indent}{} r{scan} = r{x} * r{y};", dt.c_type()),
+                                    BOp::Div => writeln!(compute, "{indent}{} r{scan} = r{x} / r{y};", dt.c_type()),
+                                    BOp::Mod => writeln!(compute, "{indent}{} r{scan} = r{x} % r{y};", dt.c_type()),
                                     BOp::BitShiftLeft => writeln!(compute, "{indent}{} r{scan} = r{x} << r{y};", dt.c_type()),
                                     BOp::Cmplt => writeln!(compute, "{indent}{} r{scan} = r{x} < r{y};", dt.c_type()),
                                     _ => unreachable!("{bop:?}"),
@@ -516,7 +545,7 @@ impl Kernel {
                 }
                 match self.ops[pre_scan].op {
                     Op::Load { src, layout: MemLayout::Tile { .. }, .. } => {
-                        if let Some(&cb_id) = input_cb_map.get(&src) {
+                        if let Some(&cb_id) = cb_map.get(&src) {
                             if !load_input_cbs.contains(&cb_id) {
                                 load_input_cbs.push(cb_id);
                             }
@@ -586,7 +615,7 @@ impl Kernel {
                                 context: "tenstorrent has no f64 compute units -- f64 is unsupported, use f32 or bf16".into(),
                             });
                         }
-                        if let Some(&cb_id) = input_cb_map.get(&src) {
+                        if let Some(&cb_id) = cb_map.get(&src) {
                             let n = rcs.get(&op_id).copied().unwrap_or(1).max(1) as usize;
                             let mut slots = Vec::with_capacity(n);
                             for _ in 0..n {
@@ -676,7 +705,7 @@ impl Kernel {
                         };
                     }
                     Op::Store { dst, src, index: _, layout: MemLayout::Tile { .. } } => {
-                        if let Some(&cb_id) = output_cb_map.get(&dst) {
+                        if let Some(&cb_id) = cb_map.get(&dst) {
                             let idx = consumer_count.entry(src).or_insert(0);
                             let slot = dst_slots.get(&src).expect("dst slot must exist")[*idx as usize];
                             *idx += 1;
@@ -720,9 +749,8 @@ impl Kernel {
         writeln!(writer, "#include \"api/tensor/noc_traits.h\"");
         writeln!(writer, "#include \"api/debug/dprint.h\"");
         writeln!(writer, "void kernel_main() {{");
-        writeln!(writer, "{indent}Noc noc(1);");
 
-        for cb_id in output_cb_map.values() {
+        for cb_id in cb_map.values() {
             writeln!(writer, "{indent}CircularBuffer cb{cb_id}(tt::CBIndex::c_{cb_id});");
         }
 
@@ -743,11 +771,7 @@ impl Kernel {
                     if writer_params.contains(&param_idx) {
                         let arg = writer_pos[&param_idx];
                         writeln!(writer, "{indent}uint32_t out{scan} = get_arg_val<uint32_t>({arg});");
-                        writeln!(
-                            writer,
-                            "{indent}auto args_out{scan} = TensorAccessorArgs<{}>({arg});",
-                            out_accessor_idx * 2
-                        );
+                        writeln!(writer, "{indent}auto args_out{scan} = TensorAccessorArgs<{}>({arg});", out_accessor_idx * 2);
                         writeln!(writer, "{indent}auto p_out{scan} = TensorAccessor(args_out{scan}, out{scan}, {PAGE_SIZE});");
                         out_accessor_idx += 1;
                     }
@@ -759,12 +783,11 @@ impl Kernel {
             }
         }
 
-        let mut writer_loop_cbs: Vec<u32> = output_cb_map.values().copied().collect();
-        writer_loop_cbs.sort();
+        // CBs the writer section reads (any depth): wait/push/pop these at
+        // loop boundaries. Collected here because cb_map now spans sections.
+        let mut writer_loop_cbs: Vec<u32> = Vec::new();
         {
             let mut scan = op_id;
-            let mut depth = 0u32;
-            let mut in_loop_cbs: Vec<u32> = Vec::new();
             let mut steps_scan = 0usize;
             while !scan.is_null() {
                 steps_scan += 1;
@@ -772,26 +795,21 @@ impl Kernel {
                     panic!("tt_binary_init did not finish in 10000 steps");
                 }
                 match self.ops[scan].op {
-                    Op::Loop { .. } => depth += 1,
-                    Op::EndLoop => depth -= 1,
-                    Op::Store { src, .. } if depth > 0 => {
+                    Op::Store { src, .. } => {
                         if let Op::Load { src: cb_src, .. } = self.ops[src].op {
-                            if let Some(&cb_id) = output_cb_map.get(&cb_src) {
-                                if !in_loop_cbs.contains(&cb_id) {
-                                    in_loop_cbs.push(cb_id);
+                            if let Some(&cb_id) = cb_map.get(&cb_src) {
+                                if !writer_loop_cbs.contains(&cb_id) {
+                                    writer_loop_cbs.push(cb_id);
                                 }
                             }
                         }
                     }
-                    Op::Barrier if depth == 0 => break,
+                    Op::Barrier => break,
                     _ => {}
                 }
                 scan = self.next_op(scan);
             }
-            if !in_loop_cbs.is_empty() {
-                writer_loop_cbs = in_loop_cbs;
-                writer_loop_cbs.sort();
-            }
+            writer_loop_cbs.sort();
         }
 
         // Gather transitive deps of all writer stores and emit them in kernel order
@@ -838,7 +856,11 @@ impl Kernel {
                 if writer_deps.contains(&scan) {
                     match &self.ops[scan].op {
                         Op::Range { axis, kind: RangeKind::Group(_), .. } => {
-                            writeln!(writer, "{indent}uint32_t r{scan} = get_arg_val<uint32_t>({});", writer_params.len() + *axis as usize);
+                            writeln!(
+                                writer,
+                                "{indent}uint32_t r{scan} = get_arg_val<uint32_t>({});",
+                                writer_params.len() + *axis as usize
+                            );
                         }
                         Op::Param { dtype, kind: ParamKind::Variable, .. } => {
                             if writer_params.contains(&param_idx) {
@@ -860,6 +882,8 @@ impl Kernel {
                                 BOp::Add => writeln!(writer, "{indent}{} r{scan} = r{x} + r{y};", dt.c_type()),
                                 BOp::Sub => writeln!(writer, "{indent}{} r{scan} = r{x} - r{y};", dt.c_type()),
                                 BOp::Mul => writeln!(writer, "{indent}{} r{scan} = r{x} * r{y};", dt.c_type()),
+                                BOp::Div => writeln!(writer, "{indent}{} r{scan} = r{x} / r{y};", dt.c_type()),
+                                BOp::Mod => writeln!(writer, "{indent}{} r{scan} = r{x} % r{y};", dt.c_type()),
                                 BOp::Max => writeln!(writer, "{indent}{} r{scan} = r{x} > r{y} ? r{x} : r{y};", dt.c_type()),
                                 BOp::BitShiftLeft => writeln!(writer, "{indent}{} r{scan} = r{x} << r{y};", dt.c_type()),
                                 BOp::Cmplt => writeln!(writer, "{indent}{} r{scan} = r{x} < r{y};", dt.c_type()),
@@ -893,24 +917,49 @@ impl Kernel {
             }
             match self.ops[op_id].op {
                 Op::Store { dst, src, index: st_idx, layout } => {
-                    if layout != MemLayout::Scalar {
-                        todo!("add support for non-scalar stores back to DRAM")
-                    }
-                    if let Op::Load { src: cb_src, index: ld_idx, .. } = self.ops[src].op {
-                        if let Some(&cb_id) = output_cb_map.get(&cb_src) {
+                    if let Op::Load { src: cb_src, index: ld_idx, layout: ld_layout } = self.ops[src].op {
+                        if let Some(&cb_id) = cb_map.get(&cb_src) {
                             let Op::Param { dtype, kind: ParamKind::GlobalMut, .. } = self.ops[dst].op else {
                                 panic!("tt writer store dst must be a GlobalMut Param, got {:?}", self.ops[dst].op)
                             };
                             let elem_size = dtype.bit_size() as u32 / 8;
-                            if loop_depth == 0 {
-                                writeln!(writer, "{indent}cb{cb_id}.wait_front(1);");
-                            }
-                            writeln!(
-                                writer,
-                                "{indent}noc.async_write(use<CircularBuffer::AddrSelector::READ_PTR>(cb{cb_id}),\n{indent}  p_out{dst}, {elem_size}, {{ .offset_bytes = (uint32_t)(r{ld_idx}*{elem_size}) }},\n{indent}  {{ .page_id = (uint32_t)((r{st_idx}*{elem_size})/{PAGE_SIZE}), .offset_bytes = (uint32_t)((r{st_idx}*{elem_size})%{PAGE_SIZE}) }});"
-                            );
-                            if loop_depth == 0 {
-                                writeln!(writer, "{indent}cb{cb_id}.pop_front(1);");
+                            match (ld_layout, layout) {
+                                (MemLayout::Scalar, MemLayout::Scalar) => {
+                                    if loop_depth == 0 {
+                                        writeln!(writer, "{indent}cb{cb_id}.wait_front(1);");
+                                        writeln!(writer, "{indent}uint32_t wbase{cb_id} = cb{cb_id}.get_read_ptr();");
+                                    }
+                                    // Old dataflow API with raw L1 addresses (mirrors TT's own
+                                    // writers): the Noc-class READ_PTR-selector source path
+                                    // misaddresses CB offsets with bit9 != bit5.
+                                    writeln!(
+                                        writer,
+                                        "{indent}uint64_t wnoc{dst} = p_out{dst}.get_noc_addr((uint32_t)((r{st_idx}*{elem_size})/{PAGE_SIZE}), (uint32_t)((r{st_idx}*{elem_size})%{PAGE_SIZE}));"
+                                    );
+                                    writeln!(
+                                        writer,
+                                        "{indent}noc_async_write(wbase{cb_id} + (uint32_t)(r{ld_idx}*{elem_size}), wnoc{dst}, {elem_size});"
+                                    );
+                                    if loop_depth == 0 {
+                                        writeln!(writer, "{indent}cb{cb_id}.pop_front(1);");
+                                    }
+                                }
+                                (MemLayout::Tile { x, y, .. }, MemLayout::Tile { .. }) => {
+                                    // Whole-tile CB -> DRAM transfer (tile-layout
+                                    // DRAM): a single sequential NOC write.
+                                    let tile_bytes = x as u32 * y as u32 * elem_size;
+                                    writeln!(writer, "{indent}cb{cb_id}.wait_front(1);");
+                                    writeln!(
+                                        writer,
+                                        "{indent}uint64_t wnoc{dst} = p_out{dst}.get_noc_addr((uint32_t)((r{st_idx}*{elem_size})/{PAGE_SIZE}), (uint32_t)((r{st_idx}*{elem_size})%{PAGE_SIZE}));"
+                                    );
+                                    writeln!(
+                                        writer,
+                                        "{indent}noc_async_write(cb{cb_id}.get_read_ptr(), wnoc{dst}, {tile_bytes});"
+                                    );
+                                    writeln!(writer, "{indent}cb{cb_id}.pop_front(1);");
+                                }
+                                _ => todo!("add support for non-scalar stores back to DRAM"),
                             }
                         }
                     }
@@ -920,7 +969,11 @@ impl Kernel {
                     writeln!(writer, "{indent}{} r{op_id} = {};", val.dtype().c_type(), val.c_code());
                 }
                 Op::Range { axis, kind: RangeKind::Group(_), .. } => {
-                    writeln!(writer, "{indent}uint32_t r{op_id} = get_arg_val<uint32_t>({});", writer_params.len() + axis as usize);
+                    writeln!(
+                        writer,
+                        "{indent}uint32_t r{op_id} = get_arg_val<uint32_t>({});",
+                        writer_params.len() + axis as usize
+                    );
                 }
                 Op::Cast { x, dtype } => {
                     writeln!(writer, "{indent}{} r{op_id} = r{x};", dtype.c_type());
@@ -932,6 +985,8 @@ impl Kernel {
                         BOp::Add => writeln!(writer, "{indent}{} r{op_id} = r{x} + r{y};", dt.c_type()),
                         BOp::Sub => writeln!(writer, "{indent}{} r{op_id} = r{x} - r{y};", dt.c_type()),
                         BOp::Mul => writeln!(writer, "{indent}{} r{op_id} = r{x} * r{y};", dt.c_type()),
+                        BOp::Div => writeln!(writer, "{indent}{} r{op_id} = r{x} / r{y};", dt.c_type()),
+                        BOp::Mod => writeln!(writer, "{indent}{} r{op_id} = r{x} % r{y};", dt.c_type()),
                         BOp::Max => writeln!(writer, "{indent}{} r{op_id} = r{x} > r{y} ? r{x} : r{y};", dt.c_type()),
                         BOp::BitShiftLeft => writeln!(writer, "{indent}{} r{op_id} = r{x} << r{y};", dt.c_type()),
                         BOp::Cmplt => writeln!(writer, "{indent}{} r{op_id} = r{x} < r{y};", dt.c_type()),
@@ -946,6 +1001,7 @@ impl Kernel {
                     if loop_depth == 0 {
                         for cb_id in &writer_loop_cbs {
                             writeln!(writer, "{indent}cb{cb_id}.wait_front(1);");
+                            writeln!(writer, "{indent}uint32_t wbase{cb_id} = cb{cb_id}.get_read_ptr();");
                         }
                     }
                     writeln!(writer, "{indent}for (uint32_t r{op_id} = 0; r{op_id} < r{len}; r{op_id}++) {{");
@@ -957,7 +1013,7 @@ impl Kernel {
                     indent.pop();
                     writeln!(writer, "{indent}}}");
                     if loop_depth == 1 {
-                        writeln!(writer, "{indent}noc.async_write_barrier();");
+                        writeln!(writer, "{indent}noc_async_write_barrier();");
                         for cb_id in &writer_loop_cbs {
                             writeln!(writer, "{indent}cb{cb_id}.pop_front(1);");
                         }

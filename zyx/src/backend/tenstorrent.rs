@@ -320,10 +320,10 @@ impl TTMemoryPool {
             _ => {
                 eprintln!("[TT-MARK] pool_to_pool src=other-pool, staging via host");
                 let len = {
-                    let dst_buf = self
-                        .buffers
-                        .get(dst)
-                        .ok_or_else(|| BackendError { status: ErrorStatus::MemoryCopyP2H, context: "invalid dst buffer id".into() })?;
+                    let dst_buf = self.buffers.get(dst).ok_or_else(|| BackendError {
+                        status: ErrorStatus::MemoryCopyP2H,
+                        context: "invalid dst buffer id".into(),
+                    })?;
                     dst_buf.size as usize
                 };
                 let mut staging = vec![0u8; len];
@@ -639,7 +639,12 @@ impl RuntimeProcess {
         grid_dims: [u32; 2],
         vars: &[(u32, u32)],
     ) -> Result<(), BackendError> {
-        let mut cmd = format!(r#"{{"cmd":"run","id":{id},"gd0":{gd0},"gd1":{gd1},"n_vars":{}"#, vars.len(), gd0 = grid_dims[0], gd1 = grid_dims[1]);
+        let mut cmd = format!(
+            r#"{{"cmd":"run","id":{id},"gd0":{gd0},"gd1":{gd1},"n_vars":{}"#,
+            vars.len(),
+            gd0 = grid_dims[0],
+            gd1 = grid_dims[1]
+        );
         for (i, idx) in src_indices.iter().enumerate() {
             cmd.push_str(&format!(r#","src{i}":{idx}"#));
         }
@@ -733,13 +738,9 @@ impl TTDevice {
         //
         // Sections are delimited by Barriers: reader (head -> 1st barrier),
         // compute (1st -> 2nd), writer (2nd -> end). Circular storages are
-        // plain rw L1 SRAM — no reader/writer role: a CB used by the reader
-        // section lands in input_cb_map, one used by the writer section in
-        // output_cb_map (a CB used by both lands in both). The maps only tell
-        // codegen which sections touch a CB; ids come from one shared counter
-        // so a CB has a single id across both maps.
-        let mut input_cb_map: Map<OpId, u32> = Map::default();
-        let mut output_cb_map: Map<OpId, u32> = Map::default();
+        // plain rw L1 SRAM with ONE id each: a CB touched by any section is
+        // registered once, in head order, and every section uses that id.
+        let mut cb_map: Map<OpId, u32> = Map::default();
         let mut input_dtypes: Vec<DType> = Vec::new();
         let mut output_dtypes: Vec<DType> = Vec::new();
         {
@@ -758,26 +759,24 @@ impl TTDevice {
                     Op::Param { dtype, kind: ParamKind::GlobalMut, .. } => output_dtypes.push(*dtype),
                     Op::Load { src, .. } => {
                         if let Op::Storage { scope: MemScope::Circular, .. } = kernel.ops[*src].op {
-                            if section == 0 && !input_cb_map.contains_key(src) {
-                                input_cb_map.insert(*src, max_cb);
-                                max_cb += 1;
-                            } else if section == 2 && !output_cb_map.contains_key(src) {
-                                output_cb_map.insert(*src, max_cb);
+                            // Reader loads and writer loads register; compute
+                            // loads use CBs already registered by whoever
+                            // fills/drains them.
+                            if section != 1 && !cb_map.contains_key(src) {
+                                cb_map.insert(*src, max_cb);
                                 max_cb += 1;
                             }
-                            // compute section: CBs are already registered by
-                            // the reader/writer sections that fill/drain them.
                         }
                     }
                     Op::Store { dst, .. } => {
                         match &kernel.ops[*dst].op {
                             Op::Storage { scope: MemScope::Circular, .. } => {
-                                if section == 0 && !input_cb_map.contains_key(dst) {
-                                    input_cb_map.insert(*dst, max_cb);
+                                if section == 0 && !cb_map.contains_key(dst) {
+                                    cb_map.insert(*dst, max_cb);
                                     max_cb += 1;
                                 }
                                 // compute/writer CB stores need no registration:
-                                // the writer section's loads register output CBs.
+                                // the loads register CBs.
                             }
                             Op::Storage { scope, .. } => {
                                 todo!("store into non-CB storage scope {scope:?}")
@@ -889,33 +888,23 @@ impl TTDevice {
             .iter()
             .map(|&len| match &kernel.ops[len].op {
                 Op::Const(c) => GwsDim::Const(c.as_dim().expect("gws const length has a concrete dim")),
-                Op::Param { kind: ParamKind::Variable, .. } => {
-                    GwsDim::Param(param_ordinal_of[&len] as usize)
-                }
+                Op::Param { kind: ParamKind::Variable, .. } => GwsDim::Param(param_ordinal_of[&len] as usize),
                 op => todo!("tenstorrent gws: group length must be Const or Param Variable, got {op:?}"),
             })
             .collect();
 
-        let n_outputs = output_dtypes.len();
         let (reader, compute, writer) = kernel.generate_tenstorrent(
             debug_asm,
-            n_params as usize,
-            n_outputs,
-            &input_cb_map,
-            &output_cb_map,
+            &cb_map,
             &reader_params,
             &compute_params,
             &writer_params,
         )?;
 
-        let prog_id = self.programs.push(TTProgram {
-            input_dtypes,
-            output_dtypes,
-            gws,
-        });
+        let prog_id = self.programs.push(TTProgram { input_dtypes, output_dtypes, gws });
 
         {
-            let mut cb_config = Vec::with_capacity(input_cb_map.len() + output_cb_map.len());
+            let mut cb_config = Vec::with_capacity(cb_map.len());
             let dtype_to_tt_fmt = |dt: DType| -> u32 {
                 match dt {
                     DType::F32 => 0,
@@ -933,20 +922,11 @@ impl TTDevice {
                 }) as u32
             };
 
-            let mut cb_ids: Vec<u32> = input_cb_map.values().copied().collect();
-            for cb_id in output_cb_map.values() {
-                if !cb_ids.contains(cb_id) {
-                    cb_ids.push(*cb_id);
-                }
-            }
+            let mut cb_ids: Vec<u32> = cb_map.values().copied().collect();
             cb_ids.sort();
             for cb_id in &cb_ids {
                 // Find the local define for this CB to get its dtype
-                let local_op = input_cb_map
-                    .iter()
-                    .find(|(_, v)| *v == cb_id)
-                    .or_else(|| output_cb_map.iter().find(|(_, v)| *v == cb_id))
-                    .map(|(op, _)| *op);
+                let local_op = cb_map.iter().find(|(_, v)| *v == cb_id).map(|(op, _)| *op);
                 let dt = local_op
                     .and_then(|op| {
                         if let Op::Storage { dtype, .. } = &kernel.ops[op].op {
@@ -1009,7 +989,14 @@ impl TTDevice {
         if args.len() < n_inputs + n_outputs {
             return Err(BackendError {
                 status: ErrorStatus::KernelLaunch,
-                context: format!("expected at least {} args ({} inputs + {} outputs), got {}", n_inputs + n_outputs, n_inputs, n_outputs, args.len()).into(),
+                context: format!(
+                    "expected at least {} args ({} inputs + {} outputs), got {}",
+                    n_inputs + n_outputs,
+                    n_inputs,
+                    n_outputs,
+                    args.len()
+                )
+                .into(),
             });
         }
         let n_params = args.len();
@@ -1065,14 +1052,12 @@ impl TTDevice {
                     status: ErrorStatus::KernelLaunch,
                     context: format!("gws axis {axis} const dim {dim} does not fit u32").into(),
                 })?,
-                GwsDim::Param(ordinal) => vars
-                    .iter()
-                    .find(|(o, _)| *o == *ordinal as u32)
-                    .map(|(_, v)| *v)
-                    .ok_or_else(|| BackendError {
+                GwsDim::Param(ordinal) => {
+                    vars.iter().find(|(o, _)| *o == *ordinal as u32).map(|(_, v)| *v).ok_or_else(|| BackendError {
                         status: ErrorStatus::KernelLaunch,
                         context: format!("gws axis {axis} param {ordinal} has no Variable launch arg").into(),
-                    })?,
+                    })?
+                }
                 g => todo!("tenstorrent gws: unhandled GwsDim variant {g:?}"),
             };
         }
