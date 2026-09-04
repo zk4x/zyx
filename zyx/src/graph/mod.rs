@@ -2474,7 +2474,7 @@ impl Runtime {
                 ref t => unreachable!("eagerify: {t:?}"),
             };
             let _ = dtype;
-            self.tensors[tid] = TensorData::Leaf { depends_on: KernelId::NULL, shape_id, dtype, rc };
+            self.tensors[tid] = TensorData::Leaf { depends_on: KernelId::NULL, shape_id, dtype, device_id: DeviceId::AUTO, rc };
             // Fully detach from the old producer: its load entries on tid are
             // released. Without this the old kernel keeps a stale edge whose
             // count pins tid above the death threshold forever.

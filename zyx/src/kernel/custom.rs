@@ -964,7 +964,8 @@ impl Runtime {
             } else {
                 self.stack(&dim_tids).expect("custom kernel output: failed to build shape stack")
             };
-            let id = self.tensors.push(TensorData::Leaf { depends_on: KernelId::NULL, shape_id, dtype, rc: 1 });
+            let id =
+                self.tensors.push(TensorData::Leaf { depends_on: KernelId::NULL, shape_id, dtype, device_id: program.device_id, rc: 1 });
             self.buffer_map.insert(id, buf_id);
             tensors.push(id);
         }

@@ -333,7 +333,7 @@ pub enum TensorData {
         depends_on: KernelId,
         shape_id: TensorId,
         dtype: DType,
-        //device_id: DeviceId,
+        device_id: DeviceId,
         rc: u16,
     },
     // Eager only
@@ -2051,7 +2051,8 @@ impl Runtime {
     /// no self-referencing "tensor is its own kernel's load" cycle can exist
     /// anymore (the old rc==2 handle+self-load construction is gone).
     pub fn new_eager_tensor(&mut self, shape_id: TensorId, dtype: DType) -> TensorId {
-        let tid = self.tensors.push(TensorData::Leaf { depends_on: KernelId::NULL, shape_id, dtype, rc: 1 });
+        let tid =
+            self.tensors.push(TensorData::Leaf { depends_on: KernelId::NULL, shape_id, dtype, device_id: DeviceId::AUTO, rc: 1 });
         #[cfg(feature = "debug_tensor_op")]
         println!("rc::new_eager_tensor -> tid={tid} Leaf shape_id={shape_id} rc=1 (handle only)");
         tid
@@ -2064,15 +2065,15 @@ impl Runtime {
     pub(crate) fn leaf_load(&mut self, x: TensorId) -> (KernelId, OpId) {
         debug_assert!(matches!(self.tensors[x], TensorData::Leaf { .. }), "leaf_load: tensor {x} is not a Leaf");
         let dtype = self.dtype(x);
-        let shape_id = match self.tensors[x] {
-            TensorData::Leaf { shape_id, .. } => shape_id,
+        let (shape_id, device_id) = match self.tensors[x] {
+            TensorData::Leaf { shape_id, device_id, .. } => (shape_id, device_id),
             ref t => unreachable!("leaf_load: {t:?}"),
         };
         let kernel_id = self.kernels.push(KernelData {
             outputs: Set::default(),
             loads: Vec::new(),
             stores: Vec::new(),
-            kernel: Kernel::from_device_id(DeviceId::AUTO),
+            kernel: Kernel::from_device_id(device_id),
         });
         let shape = self.replay_symbolic_into_kernel(kernel_id, shape_id);
         let op_id = self.kernels[kernel_id].kernel.push_back(Op::Param { dtype, kind: ParamKind::Global, shape });
@@ -2755,7 +2756,7 @@ impl Runtime {
                 self.events.insert(BTreeSet::from([dst_id]), copy_ev);
                 debug_assert!(!shape_id.is_null(), "to_device: eager tensor {x} has no shape expression");
                 self.retain(shape_id);
-                let tid = self.tensors.push(TensorData::Leaf { depends_on: KernelId::NULL, shape_id, dtype, rc: 1 });
+                let tid = self.tensors.push(TensorData::Leaf { depends_on: KernelId::NULL, shape_id, dtype, device_id, rc: 1 });
                 self.buffer_map.insert(tid, dst_id);
                 #[cfg(feature = "debug_tensor_op")]
                 println!("  -> tid={tid} (cross-pool copy {buf_id:?} -> {dst_id:?})");
@@ -3199,7 +3200,11 @@ impl Runtime {
                     self.retain(shape_id);
                 }
                 let dtype = self.dtype(x);
-                let tid = self.tensors.push(TensorData::Leaf { depends_on: KernelId::NULL, shape_id, dtype, rc: 1 });
+                let device_id = match self.tensors[x] {
+                    TensorData::Leaf { device_id, .. } => device_id,
+                    _ => DeviceId::AUTO,
+                };
+                let tid = self.tensors.push(TensorData::Leaf { depends_on: KernelId::NULL, shape_id, dtype, device_id, rc: 1 });
                 self.buffer_map.insert(tid, buf_id);
                 #[cfg(feature = "debug_tensor_op")]
                 println!("  -> eager: tid={tid} (Leaf, shares buffer with x={x})");
@@ -4606,7 +4611,8 @@ impl Runtime {
             }
             ref t => panic!("add_store: tensor {x} is not a kernel-backed tensor: {t:?}"),
         };
-        self.tensors[x] = TensorData::Leaf { depends_on: pending, shape_id, dtype, rc };
+        self.tensors[x] =
+            TensorData::Leaf { depends_on: pending, shape_id, dtype, device_id: self.kernels[kid].kernel.device_id, rc };
 
         if outputs_empty {
             self.materialize_kernel(kid)?;
