@@ -492,7 +492,6 @@ impl Kernel {
             for &(cb_id, depth) in &filled_cbs {
                 writeln!(reader, "{indent}cb{cb_id}.push_back({depth});");
             }
-            writeln!(reader, "{indent}DEVICE_PRINT(\"TEMP reader done\\n\");"); // TEMP debug, remove
             writeln!(reader, "}}");
         }
         op_id = self.next_op(op_id);
@@ -975,7 +974,6 @@ impl Kernel {
             if (next_slot as usize) > compute_slot_limit {
                 panic!("tenstorrent compute uses {} DST slots, hardware holds {}", next_slot, compute_slot_limit);
             }
-            writeln!(compute, "{indent}DEVICE_PRINT(\"TEMP compute done\\n\");"); // TEMP debug, remove
             writeln!(compute, "}}");
             // compute_kernel_hw_startup must precede every other compute
             // API init (header docs: MMIO races and undefined behavior
@@ -993,9 +991,8 @@ impl Kernel {
                 if compute[start..].starts_with("compute_kernel_hw_startup<") {
                     panic!("tenstorrent compute_kernel_hw_startup takes no template args on tt-metal v0.72.0");
                 }
-                let before = &compute[..start];
-                let before = &compute[..start];
-                if before.contains("init_sfpu(") || before.contains("_init(") {
+                let _before = &compute[..start];
+                if _before.contains("init_sfpu(") || _before.contains("_init(") {
                     panic!("tenstorrent compute_kernel_hw_startup must be the first compute API call, an init precedes it");
                 }
             }
@@ -1016,7 +1013,6 @@ impl Kernel {
         writeln!(writer, "#include \"api/dataflow/circular_buffer.h\"");
         writeln!(writer, "#include \"api/tensor/noc_traits.h\"");
         writeln!(writer, "#include \"api/debug/dprint.h\"");
-        writeln!(writer, "#include \"api/debug/device_print.h\""); // TEMP debug, remove
         writeln!(writer, "void kernel_main() {{");
 
         for cb_id in cb_map.values() {
@@ -1226,6 +1222,7 @@ impl Kernel {
                                         writer,
                                         "{indent}noc_async_write(cb{cb_id}.get_read_ptr(), wnoc{dst}, {tile_bytes});"
                                     );
+                                    writeln!(writer, "{indent}noc_async_write_barrier();");
                                     writeln!(writer, "{indent}cb{cb_id}.pop_front(1);");
                                 }
                                 _ => todo!("add support for non-scalar stores back to DRAM"),
@@ -1294,7 +1291,6 @@ impl Kernel {
             }
             op_id = self.next_op(op_id);
         }
-        writeln!(writer, "{indent}DEVICE_PRINT(\"TEMP writer done\\n\");"); // TEMP debug, remove
         writeln!(writer, "}}");
 
         if debug_asm {
