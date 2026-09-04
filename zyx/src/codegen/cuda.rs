@@ -66,7 +66,6 @@ impl Kernel {
         let mut loop_id = 0;
         let mut indent = String::from("  ");
         let mut source = String::with_capacity(1000);
-        let mut helper_funcs = String::new();
 
         let mut op_id = self.head;
         let mut steps_op_id = 0usize;
@@ -131,16 +130,6 @@ impl Kernel {
                     }
                 }
                 Op::Wmma { c, a, b, .. } => {
-                    helper_funcs += r#"__device__ float4 wmma_m16n8k8_row_col_f32_f16_f16_f32(half4 a, half2 b, float4 c) {
-  int *a_pk = (int *)(&a), *b_pk = (int *)(&b), *c_pk = (int *)(&c);
-  asm("mma.sync.aligned.m16n8k8.row.col.f32.f16.f16.f32"
-    "{%0, %1, %2, %3}, {%4, %5},"
-    "{%6}, {%0, %1, %2, %3};"
-  : "+r"(c_pk[0]), "+r"(c_pk[1]), "+r"(c_pk[2]), "+r"(c_pk[3])
-  : "r"(a_pk[0]), "r"(a_pk[1]), "r"(b_pk[0]));
-  return c;
-}
-"#;
                     let a = get_var(a, &constants, &indices, &reg_map, &mut registers, loop_id, &var_params)?;
                     let b = get_var(b, &constants, &indices, &reg_map, &mut registers, loop_id, &var_params)?;
                     let c = get_var(c, &constants, &indices, &reg_map, &mut registers, loop_id, &var_params)?;
@@ -439,6 +428,21 @@ impl Kernel {
         }
         if dtypes.values().any(|&x| x.0 == DType::BF16) {
             pragma += "#include <cuda_bf16.h>\n";
+        }
+
+        // Emit the wmma helper once per kernel if the IR contains any wmma op.
+        let mut helper_funcs = String::new();
+        if self.iter_unordered().any(|(_, op)| matches!(op, Op::Wmma { .. })) {
+            helper_funcs += r#"__device__ float4 wmma_m16n8k8_row_col_f32_f16_f16_f32(half4 a, half2 b, float4 c) {
+  int *a_pk = (int *)(&a), *b_pk = (int *)(&b), *c_pk = (int *)(&c);
+  asm("mma.sync.aligned.m16n8k8.row.col.f32.f16.f16.f32"
+    "{%0, %1, %2, %3}, {%4, %5},"
+    "{%6}, {%0, %1, %2, %3};"
+  : "+r"(c_pk[0]), "+r"(c_pk[1]), "+r"(c_pk[2]), "+r"(c_pk[3])
+  : "r"(a_pk[0]), "r"(a_pk[1]), "r"(b_pk[0]));
+  return c;
+}
+"#;
         }
 
         Ok(format!("{pragma}{helper_funcs}extern \"C\"\n__global__ void {name}(\n{global_args}) {{\n{reg_str}{source}}}\n\t\0"))
