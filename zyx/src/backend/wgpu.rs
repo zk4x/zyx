@@ -419,7 +419,7 @@ impl WGPUDevice {
             op_id = kernel.next_op(op_id);
         }
 
-        let spirv_words = kernel.generate_spirv(debug_asm)?;
+        let spirv_words = kernel.generate_spirv(&self.dev_info, debug_asm)?;
 
         let shader_module = self.device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: None,
@@ -481,7 +481,7 @@ impl WGPUDevice {
             compilation_options: wgpu::PipelineCompilationOptions::default(),
         });
 
-        let gws = gws_from_kernel(kernel);
+        let gws = gws_from_kernel(kernel, &self.dev_info.max_global_work_dims)?;
         let id = self.programs.push(WGPUProgram { name, arg_ro_flags, shader: shader_module, pipeline, bind_group_layout, gws });
 
         Ok(id)

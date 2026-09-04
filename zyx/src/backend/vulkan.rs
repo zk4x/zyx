@@ -1077,9 +1077,49 @@ pub(super) fn initialize_device(
 
         // Clone library Arc for worker thread (OpenCL pattern)
         let worker_library = Arc::clone(&library);
+        // Built up-front so the worker thread can validate group lengths at
+        // compile and launch time against the device grid limits.
+        let dev_info = DeviceInfo {
+            compute: 1_000_000_000_000,
+            max_global_work_dims: max_wg_count.iter().map(|&c| Dim::from(c)).collect(),
+            max_local_threads: max_wg_invocations,
+            max_local_work_dims: vec![u32::from(max_wg_size[0]); max_wg_size.len()],
+            preferred_vector_size: 4,
+            local_mem_size: Dim::from(props.max_compute_shared_memory_size),
+            max_register_bytes: 1024,
+            tensor_cores: false,
+            warp_size: 32,
+            dtype_capability: {
+                let mut all = [DTypeCapability::all(); DType::N_DTYPES];
+                // Vulkan/SPIR-V f64 transcendentals crash or produce garbage
+                all[DType::F64 as usize] = all[DType::F64 as usize].exclude(
+                    DTypeCapability::EXP
+                        | DTypeCapability::EXP2
+                        | DTypeCapability::LN
+                        | DTypeCapability::LOG2
+                        | DTypeCapability::SIN
+                        | DTypeCapability::COS
+                        | DTypeCapability::POW,
+                );
+                // Turing/NVIDIA driver crashes on BF16 compute even when
+                // VK_KHR_shader_bfloat16 is enabled. SPIR-V codegen would
+                // need explicit OpFConvert around GLSL.std.450 intrinsics.
+                // Disable until that's implemented.
+                all[DType::BF16 as usize] = DTypeCapability::none();
+                if !has_shader_float16 {
+                    all[DType::F16 as usize] = DTypeCapability::none();
+                }
+                all
+            },
+            has_native_exp2: false,
+            supported_vec_lens: vec![2, 3, 4],
+            tenstorrent: false,
+            tile: [1, 1],
+        };
 
         std::thread::spawn({
             let free_bytes_atomic = Arc::clone(&free_bytes_atomic);
+            let dev_info = dev_info.clone();
             move || {
                 let _worker_library = worker_library; // keep libvulkan.so alive
                 let instance = instance_raw as VkInstance;
@@ -1307,7 +1347,7 @@ pub(super) fn initialize_device(
                                 op_id = kernel.next_op(op_id);
                             }
 
-                            let spirv = match kernel.generate_spirv(debug_asm) {
+                            let spirv = match kernel.generate_spirv(&dev_info, debug_asm) {
                                 Ok(spirv) => spirv,
                                 Err(e) => {
                                     let _ = reply.send(Err(e));
@@ -1479,12 +1519,19 @@ pub(super) fn initialize_device(
 
                             unsafe { vkDestroyShaderModule(device, shader, std::ptr::null()) };
 
+                            let gws = match gws_from_kernel(&kernel, &dev_info.max_global_work_dims) {
+                                Ok(gws) => gws,
+                                Err(err) => {
+                                    let _ = reply.send(Err(err));
+                                    continue;
+                                }
+                            };
                             let id = programs.push(VulkanProgram {
                                 pipeline,
                                 pipeline_layout,
                                 desc_layout,
                                 push_constants_size,
-                                gws: gws_from_kernel(&kernel),
+                                gws,
                             });
                             let _ = reply.send(Ok(id));
                         }
@@ -1606,25 +1653,36 @@ pub(super) fn initialize_device(
                             }
 
                             let default_gws = GwsDim::Const(1);
-                            let grid = |gdim: &GwsDim| -> u32 {
+                            let grid = |gdim: &GwsDim| -> Dim {
                                 gdim.eval(&mut |ordinal| match &args[ordinal] {
                                     LaunchArg::Variable(c) => c.as_dim().unwrap(),
                                     LaunchArg::Buffer(_) => unreachable!("gws param must be a Variable launch arg"),
                                 })
-                                .try_into()
-                                .unwrap_or(1)
                             };
                             let gx = grid(prog.gws.first().unwrap_or(&default_gws));
                             let gy = grid(prog.gws.get(1).unwrap_or(&default_gws));
                             let gz = grid(prog.gws.get(2).unwrap_or(&default_gws));
 
-                            if gx == 0 || gy == 0 || gz == 0 {
+                            if gx <= 0 || gy <= 0 || gz <= 0 {
                                 let _ = reply.send(Err(BackendError {
                                     status: ErrorStatus::KernelLaunch,
-                                    context: format!("dispatch dims zero: ({gx},{gy},{gz})").into(),
+                                    context: format!("dispatch dims non-positive: ({gx},{gy},{gz})").into(),
                                 }));
                                 continue;
                             }
+                            let max_grid = &dev_info.max_global_work_dims;
+                            if gx > max_grid[0] || gy > max_grid[1] || gz > max_grid[2] {
+                                let _ = reply.send(Err(BackendError {
+                                    status: ErrorStatus::KernelLaunch,
+                                    context: format!("grid dims ({gx},{gy},{gz}) exceed device max {max_grid:?}").into(),
+                                }));
+                                continue;
+                            }
+                            let (gx, gy, gz) = (
+                                u32::try_from(gx).unwrap(),
+                                u32::try_from(gy).unwrap(),
+                                u32::try_from(gz).unwrap(),
+                            );
 
                             unsafe {
                                 vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, prog.pipeline);
@@ -1786,43 +1844,7 @@ pub(super) fn initialize_device(
         let dev = VulkanDevice {
             tx,
             dev_id: u32::try_from(gpu_i).unwrap(),
-            dev_info: DeviceInfo {
-                compute: 1_000_000_000_000,
-                max_global_work_dims: vec![Dim::from(max_wg_count[0]); max_wg_count.len()],
-                max_local_threads: max_wg_invocations,
-                max_local_work_dims: vec![u32::from(max_wg_size[0]); max_wg_size.len()],
-                preferred_vector_size: 4,
-                local_mem_size: Dim::from(props.max_compute_shared_memory_size),
-                max_register_bytes: 1024,
-                tensor_cores: false,
-                warp_size: 32,
-                dtype_capability: {
-                    let mut all = [DTypeCapability::all(); DType::N_DTYPES];
-                    // Vulkan/SPIR-V f64 transcendentals crash or produce garbage
-                    all[DType::F64 as usize] = all[DType::F64 as usize].exclude(
-                        DTypeCapability::EXP
-                            | DTypeCapability::EXP2
-                            | DTypeCapability::LN
-                            | DTypeCapability::LOG2
-                            | DTypeCapability::SIN
-                            | DTypeCapability::COS
-                            | DTypeCapability::POW,
-                    );
-                    // Turing/NVIDIA driver crashes on BF16 compute even when
-                    // VK_KHR_shader_bfloat16 is enabled. SPIR-V codegen would
-                    // need explicit OpFConvert around GLSL.std.450 intrinsics.
-                    // Disable until that's implemented.
-                    all[DType::BF16 as usize] = DTypeCapability::none();
-                    if !has_shader_float16 {
-                        all[DType::F16 as usize] = DTypeCapability::none();
-                    }
-                    all
-                },
-                has_native_exp2: false,
-                supported_vec_lens: vec![2, 3, 4],
-                tenstorrent: false,
-                tile: [1, 1],
-            },
+            dev_info,
             memory_pool_id: PoolId::from(usize::from(memory_pools.len()) - 1),
         };
 

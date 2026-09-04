@@ -116,7 +116,13 @@ impl GwsDim {
 /// `Op::Param { kind: Variable }` leaves, composed freely from
 /// unary/binary/cast/load ops (`Const` → `Const`, `Param { Variable }` →
 /// `Param`, and likewise for the composite ops); anything else is unreachable.
-fn gws_from_kernel(kernel: &Kernel) -> Vec<GwsDim> {
+///
+/// Constant group lengths are validated against `max_grid_dims` (the device's
+/// per-axis max grid extent, `DeviceInfo::max_global_work_dims`); a constant
+/// group length that exceeds the device limit is a compilation error. Symbolic
+/// (param-backed) lengths cannot be checked here — backends must check the
+/// evaluated grid extents before launching.
+pub(crate) fn gws_from_kernel(kernel: &Kernel, max_grid_dims: &[Dim]) -> Result<Vec<GwsDim>, BackendError> {
     // Head-order position of every `Op::Param`, matching the arg ordering.
     let mut param_ordinal: Map<OpId, usize> = Map::with_hasher(BuildHasherDefault::<FHasher>::new());
     let mut param_idx = 0usize;
@@ -161,6 +167,15 @@ fn gws_from_kernel(kernel: &Kernel) -> Vec<GwsDim> {
         if let Op::Range { axis, kind: RangeKind::Group(len) } = kernel.ops[op_id].op {
             let gdim = conv(kernel, len, &param_ordinal);
             let axis = axis as usize;
+            if let GwsDim::Const(c) = gdim
+                && let Some(&max) = max_grid_dims.get(axis)
+                && c > max
+            {
+                return Err(BackendError {
+                    status: ErrorStatus::KernelCompilation,
+                    context: format!("grid dim {axis} {c} exceeds device max {max}").into(),
+                });
+            }
             if gws.len() <= axis {
                 gws.resize(axis + 1, GwsDim::Const(1));
             }
@@ -168,7 +183,7 @@ fn gws_from_kernel(kernel: &Kernel) -> Vec<GwsDim> {
         }
         op_id = kernel.next_op(op_id);
     }
-    gws
+    Ok(gws)
 }
 
 impl From<usize> for PoolBufferId {

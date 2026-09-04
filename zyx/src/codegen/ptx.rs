@@ -5,7 +5,7 @@
 
 use crate::{
     DType, Map,
-    backend::DeviceInfo,
+    backend::{DeviceInfo, gws_from_kernel},
     dtype::Constant,
     error::{BackendError, ErrorStatus},
     kernel::{BOp, IDX_T, Kernel, MemScope, Op, OpId, ParamKind, RangeKind, UOp},
@@ -249,7 +249,9 @@ impl Compiler {
 impl Kernel {
     /// Compile kernel to PTX assembly.
     #[allow(clippy::type_complexity)] // complex return type inherent to PTX backend API
-    pub fn generate_ptx(&self, cc: [i32; 2], _dev_info: &DeviceInfo) -> Result<(Vec<u8>, Box<str>, Vec<Dim>), BackendError> {
+    pub fn generate_ptx(&self, cc: [i32; 2], dev_info: &DeviceInfo) -> Result<(Vec<u8>, Box<str>, Vec<Dim>), BackendError> {
+        // Reject group lengths that are constant and exceed the device grid limits.
+        gws_from_kernel(self, &dev_info.max_global_work_dims)?;
         let mut comp = Compiler {
             var_map: Map::default(),
             loops: Vec::new(),
@@ -279,7 +281,7 @@ impl Kernel {
             }
             op_id = self.next_op(op_id);
         }
-        if lws.iter().product::<Dim>() > _dev_info.max_local_threads as Dim {
+        if lws.iter().product::<Dim>() > dev_info.max_local_threads as Dim {
             return Err(BackendError { status: ErrorStatus::KernelCompilation, context: "Invalid local work size.".into() });
         }
         let name = format!("k_{}", lws.iter().map(ToString::to_string).collect::<Vec<_>>().join("_"),).into_boxed_str();

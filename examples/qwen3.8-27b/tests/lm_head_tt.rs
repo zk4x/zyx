@@ -107,9 +107,9 @@ fn lm_head_tt() -> Result<(), ZyxError> {
     // Host: pad X rows 8->32, face-encode A/B tiles, compare decoded C
     // tile rows 0..8 against the model-shaped golden.
     let goldens = Tensor::load("../data/qwen3_8b_lm_head.safetensors")?;
-    let x: Vec<f32> = goldens["input"].to_vec()?;
-    let w: Vec<f32> = goldens["weight"].to_vec()?;
-    let y: Vec<f32> = goldens["output"].to_vec()?;
+    let x: Vec<f32> = goldens["input"].cast(DType::F32).to_vec()?;
+    let w: Vec<f32> = goldens["weight"].cast(DType::F32).to_vec()?;
+    let y: Vec<f32> = goldens["output"].cast(DType::F32).to_vec()?;
 
     // A[kt] = Xp[0:32, kt*32:(kt+1)*32], Xp = x rows + 24 zero rows.
     let mut ap = Vec::with_capacity(2048);
@@ -145,7 +145,9 @@ fn lm_head_tt() -> Result<(), ZyxError> {
     for n in 0..N_TILES {
         let n_t = Tensor::variable(n as i64);
         let out = compiled.forward(&[&a_t, &b_t, &n_t], vec![[8192i64]])?;
-        let z_face: Vec<f32> = out[0].to(Dev::C)?.cast(DType::F32).to_vec()?;
+        let z_host = out[0].to(Dev::C)?;
+        let z_f32 = z_host.cast(DType::F32);
+        let z_face: Vec<f32> = z_f32.to_vec()?;
         tiles.push(tile_decode(&z_face[n * 1024..(n + 1) * 1024]));
     }
     // C[n] tile rows 0..8 hold y[b, s, n*32:(n+1)*32].

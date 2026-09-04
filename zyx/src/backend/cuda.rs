@@ -496,6 +496,30 @@ pub(super) fn initialize_device(
                     streams.push(CUDAStream { stream, load: 0 });
                 }
 
+                // Per-axis max grid extents, checked against every evaluated
+                // grid dimension before launching (see gws_from_kernel for the
+                // compile-time counterpart covering constant dims).
+                let mut max_grid = [0; 3];
+                for (axis, attr) in [
+                    CUdevice_attribute::CU_DEVICE_ATTRIBUTE_MAX_GRID_DIM_X,
+                    CUdevice_attribute::CU_DEVICE_ATTRIBUTE_MAX_GRID_DIM_Y,
+                    CUdevice_attribute::CU_DEVICE_ATTRIBUTE_MAX_GRID_DIM_Z,
+                ]
+                .into_iter()
+                .enumerate()
+                {
+                    let mut value: c_int = 0;
+                    if let Err(err) = unsafe { (cuDeviceGetAttribute)(&raw mut value, attr, device) }
+                        .check(ErrorStatus::DeviceQuery)
+                    {
+                        if debug_dev {
+                            println!("[cuda] device {dev_id}: grid dim query failed: {err:?}");
+                        }
+                        return;
+                    }
+                    max_grid[axis] = i64::from(value);
+                }
+
                 let mut buffers: Slab<PoolBufferId, CUDABuffer> = Slab::new();
                 let mut programs: Slab<DeviceProgramId, CUDAProgram> = Slab::new();
 
@@ -710,19 +734,29 @@ pub(super) fn initialize_device(
                                             }
                                         }
                                     }
-                                    let grid = |gdim: &GwsDim| -> u32 {
+                                    let grid = |gdim: &GwsDim| -> Dim {
                                         gdim.eval(&mut |ordinal| match &args[ordinal] {
                                             LaunchArg::Variable(c) => c.as_dim().unwrap(),
                                             LaunchArg::Buffer(_) => unreachable!("gws param must be a Variable launch arg"),
                                         })
-                                        .try_into()
-                                        .unwrap()
                                     };
                                     let default_gws = GwsDim::Const(1);
                                     let (gx, gy, gz) = (
                                         grid(gws.first().unwrap_or(&default_gws)),
                                         grid(gws.get(1).unwrap_or(&default_gws)),
                                         grid(gws.get(2).unwrap_or(&default_gws)),
+                                    );
+                                    if gx < 0 || gy < 0 || gz < 0 || gx > max_grid[0] || gy > max_grid[1] || gz > max_grid[2] {
+                                        _ = reply.send(Err(BackendError {
+                                            status: ErrorStatus::KernelLaunch,
+                                            context: format!("grid dims ({gx},{gy},{gz}) exceed device max {max_grid:?}").into(),
+                                        }));
+                                        continue 'work_thread_loop;
+                                    }
+                                    let (gx, gy, gz) = (
+                                        u32::try_from(gx).unwrap(),
+                                        u32::try_from(gy).unwrap(),
+                                        u32::try_from(gz).unwrap(),
                                     );
                                     unsafe {
                                         (cuLaunchKernel)(
@@ -977,7 +1011,7 @@ impl CUDADevice {
     pub fn compile(&mut self, kernel: &Kernel, debug_asm: bool) -> Result<DeviceProgramId, BackendError> {
         let (lws, name, ptx) = self.compile_cuda(kernel, debug_asm)?;
         //let (lws, name, ptx) = self.compile_ptx(kernel, debug_asm)?;
-        let gws = gws_from_kernel(kernel);
+        let gws = gws_from_kernel(kernel, &self.dev_info.max_global_work_dims)?;
         let (reply, reply_rx) = channel();
         self.tx.send(CUDACommand::Compile { lws, gws, name, ptx, reply }).unwrap();
         reply_rx.recv().unwrap()

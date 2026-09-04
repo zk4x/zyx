@@ -6,6 +6,7 @@
 
 use crate::{
     DType, Map,
+    backend::{DeviceInfo, gws_from_kernel},
     dtype::Constant,
     error::{BackendError, ErrorStatus},
     kernel::{BOp, IDX_T, Kernel, MemLayout, MemScope, Op, OpId, ParamKind, RangeKind, UOp},
@@ -414,8 +415,10 @@ fn elem_stride(dt: DType) -> usize {
 
 impl Kernel {
     /// Compile kernel to SPIR-V binary.
-    pub fn generate_spirv(&self, debug_asm: bool) -> Result<Vec<u32>, BackendError> {
+    pub fn generate_spirv(&self, device_info: &DeviceInfo, debug_asm: bool) -> Result<Vec<u32>, BackendError> {
         use OpCode::*;
+        // Reject group lengths that are constant and exceed the device grid limits.
+        gws_from_kernel(self, &device_info.max_global_work_dims)?;
         let dtypes = compute_dtypes(self);
         let mut asm = Asm::new();
 

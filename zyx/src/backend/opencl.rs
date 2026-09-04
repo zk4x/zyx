@@ -683,6 +683,19 @@ pub(super) fn initialize_device(
                             } else {
                                 program.lws.as_ptr().cast()
                             };
+                            // Global work size is checked against the device
+                            // grid limits before enqueueing (same values the
+                            // compile-time check in gws_from_kernel uses).
+                            let max_grid = [2_147_483_647i64, 65_535, 65_535];
+                            for (i, g) in global_size.iter().enumerate().take(3) {
+                                if *g < 0 || *g > max_grid[i] {
+                                    let _ = reply.send(Err(BackendError {
+                                        status: ErrorStatus::KernelLaunch,
+                                        context: format!("global work size dim {i} {g} exceeds device max {}", max_grid[i]).into(),
+                                    }));
+                                    continue 'work_thread_loop;
+                                }
+                            }
                             if let Err(e) = unsafe {
                                 clEnqueueNDRangeKernel(
                                     queues[device_idx][queue_id].queue,
@@ -877,7 +890,7 @@ impl OpenCLDevice {
             println!("{source}");
         }
 
-        let gws = gws_from_kernel(kernel);
+        let gws = gws_from_kernel(kernel, &self.dev_info.max_global_work_dims)?;
         let (reply, reply_rx) = channel();
         self.tx.send(Command::Compile { name: name.into(), source, lws, gws, reply }).unwrap();
         reply_rx.recv().unwrap()
@@ -953,9 +966,14 @@ fn query_device_info(
         max_local_work_dims[i] = max_dim_size as u32;
     }
     let mlt = 256;
+    // No portable global-size query exists in OpenCL; hardcode the limits the
+    // major implementations (NVIDIA/AMD) enforce: x up to 2^31-1, y/z 65535.
+    let max_global_work_dims: Vec<Dim> = (0..max_work_item_dims)
+        .map(|i| if i == 0 { Dim::from(2_147_483_647i64) } else { Dim::from(65_535i64) })
+        .collect();
     *dev_info = DeviceInfo {
         compute: 1024 * 1024 * 1024,
-        max_global_work_dims: vec![100_000; max_work_item_dims],
+        max_global_work_dims,
         max_local_threads: mlt,
         max_local_work_dims,
         preferred_vector_size: u8::try_from(u32::from_ne_bytes(

@@ -246,7 +246,7 @@ pub(crate) fn generate_source(cap: &KernelCapture, target: Target) -> String {
             Ok(source) => source,
             Err(e) => format!("generate_c failed: {e:?}"),
         },
-        Target::Spirv => match kernel.generate_spirv(false) {
+        Target::Spirv => match kernel.generate_spirv(&cap.dev_info, false) {
             Ok(words) => crate::codegen::spirv::debug_string(&words),
             Err(e) => format!("generate_spirv failed: {e:?}"),
         },

@@ -3,7 +3,7 @@
 
 use crate::{
     DType, Map,
-    backend::DeviceInfo,
+    backend::{DeviceInfo, gws_from_kernel},
     dtype::Constant,
     error::{BackendError, ErrorStatus},
     kernel::{BOp, Kernel, MemLayout, MemScope, Op, OpId, ParamKind, RangeKind, UOp},
@@ -17,7 +17,9 @@ const VEC_COMPONENTS: [&str; 16] = [
 
 impl Kernel {
     /// Compile kernel to OpenCL C source code.
-    pub fn generate_opencl(&self, _device_info: &DeviceInfo, name: &str) -> Result<String, BackendError> {
+    pub fn generate_opencl(&self, device_info: &DeviceInfo, name: &str) -> Result<String, BackendError> {
+        // Reject group lengths that are constant and exceed the device grid limits.
+        gws_from_kernel(self, &device_info.max_global_work_dims)?;
         let mut global_args = String::new();
         let mut op_id = self.head;
         let mut steps_op_id = 0usize;

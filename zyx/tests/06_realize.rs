@@ -488,8 +488,8 @@ fn opt_local() -> Result<(), ZyxError> {
     if !Tensor::dtype_capability(DType::BF16).any() {
         return Ok(());
     }
-    let x = Tensor::rand([2, 128255, 1], DType::BF16)?;
-    let y = Tensor::rand([2, 128255, 1], DType::F32)?;
+    let x = Tensor::rand([128255, 2, 1], DType::BF16)?;
+    let y = Tensor::rand([128255, 2, 1], DType::F32)?;
     let tape = zyx::Tape::new([&x])?;
     let z = x + y.cast(DType::BF16);
     tape.realize([&z])?;
