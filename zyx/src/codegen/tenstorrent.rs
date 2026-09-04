@@ -127,11 +127,14 @@ impl Kernel {
         // recovers), so refuse to emit sources unless every CB balances.
         // Sections split at barriers (exactly 2: reader | compute |
         // writer). Const-trip loops expand; anything else countable
-        // panics instead of risking a hang.
-        {
+        // panics instead of risking a hang. Evaluates to the DST slot
+        // limit for the compute section (docs: 16 sixteen-bit tiles,
+        // 8 thirty-two-bit).
+        let compute_slot_limit: usize = {
             struct Bal {
                 cb: u32,
                 depth_bytes: i64,
+                is_f32: bool,
                 reader_store: bool,
                 compute_load: bool,
                 compute_stores: i64,
@@ -142,6 +145,12 @@ impl Kernel {
                 let Op::Storage { dtype, len, .. } = self.ops[storage].op else {
                     panic!("tenstorrent cb_map entry {storage} is not a storage op");
                 };
+                if cb >= 32 {
+                    panic!("tenstorrent CB{cb} out of range, hardware has CB0-CB31");
+                }
+                if bals.iter().any(|b: &Bal| b.cb == cb) {
+                    panic!("tenstorrent CB{cb} assigned to two storages, sharing is unsupported");
+                }
                 let elem = dtype.bit_size() as i64 / 8;
                 let bytes = len * elem;
                 if bytes % 2048 != 0 {
@@ -156,12 +165,15 @@ impl Kernel {
                 bals.push(Bal {
                     cb,
                     depth_bytes: bytes,
+                    is_f32: dtype == DType::F32,
                     reader_store: false,
                     compute_load: false,
                     compute_stores: 0,
                     writer_bytes: 0,
                 });
             }
+            let mut matmul_seen = false;
+            let mut compute_out_cbs: Vec<u32> = Vec::new();
             let mut section = 0u32;
             let mut trips: Vec<i64> = Vec::new();
             let mut scan = self.head;
@@ -184,15 +196,26 @@ impl Kernel {
                     }
                     Op::Store { dst, src, layout, .. } => {
                         let trip: i64 = trips.iter().product();
-                        if section == 0 {
-                            if let Some(&cb) = cb_map.get(&dst) {
-                                bals.iter_mut().find(|b| b.cb == cb).expect("tenstorrent op hit a CB missing from cb_map").reader_store = true;
+                        if let MemLayout::Tile { x, y, .. } = layout {
+                            if x != 32 || y != 32 {
+                                panic!("tenstorrent supports only 32x32 tiles, op {scan} is {x}x{y}");
                             }
+                        }
+                        if section == 0 {
+                            let Some(&cb) = cb_map.get(&dst) else {
+                                panic!("tenstorrent reader stores must target circular buffers, op {scan} targets {dst}");
+                            };
+                            bals.iter_mut().find(|b| b.cb == cb).expect("tenstorrent op hit a CB missing from cb_map").reader_store = true;
                         } else if section == 1 {
-                            if matches!(layout, MemLayout::Tile { .. }) {
-                                if let Some(&cb) = cb_map.get(&dst) {
-                                    bals.iter_mut().find(|b| b.cb == cb).expect("tenstorrent op hit a CB missing from cb_map").compute_stores += trip;
-                                }
+                            if !matches!(layout, MemLayout::Tile { .. }) {
+                                panic!("tenstorrent compute stores must be tiles, op {scan} is {layout:?}");
+                            }
+                            let Some(&cb) = cb_map.get(&dst) else {
+                                panic!("tenstorrent compute stores must target circular buffers, op {scan} targets {dst}");
+                            };
+                            bals.iter_mut().find(|b| b.cb == cb).expect("tenstorrent op hit a CB missing from cb_map").compute_stores += trip;
+                            if !compute_out_cbs.contains(&cb) {
+                                compute_out_cbs.push(cb);
                             }
                         } else if section == 2 {
                             if let Op::Load { src: cb_src, .. } = self.ops[src].op {
@@ -213,7 +236,10 @@ impl Kernel {
                             panic!("tenstorrent kernels have exactly 3 sections (2 barriers), found section {section}");
                         }
                     }
-                    Op::Load { src, layout: MemLayout::Tile { .. }, .. } => {
+                    Op::Load { src, layout: MemLayout::Tile { x, y, .. }, .. } => {
+                        if x != 32 || y != 32 {
+                            panic!("tenstorrent supports only 32x32 tiles, op {scan} is {x}x{y}");
+                        }
                         if section == 1 {
                             if let Some(&cb) = cb_map.get(&src) {
                                 bals
@@ -224,12 +250,23 @@ impl Kernel {
                             }
                         }
                     }
+                    Op::MatmulTile { .. } => {
+                        if section == 1 {
+                            matmul_seen = true;
+                        }
+                    }
                     _ => {}
                 }
                 scan = self.next_op(scan);
             }
             if section != 2 {
                 panic!("tenstorrent kernels need exactly 2 barriers (3 sections), found {section}");
+            }
+            // Codegen emits one mm_init triple from the first circular
+            // store, so every matmul in the kernel must pack into the same
+            // output CB.
+            if matmul_seen && compute_out_cbs.len() != 1 {
+                panic!("tenstorrent matmul kernels need exactly one output CB, found {:?}", compute_out_cbs);
             }
             for b in &bals {
                 if b.reader_store != b.compute_load {
@@ -245,7 +282,9 @@ impl Kernel {
                     );
                 }
             }
-        }
+            // DST capacity (docs: 16 sixteen-bit tiles, 8 thirty-two-bit).
+            if bals.iter().any(|b| b.is_f32) { 8 } else { 16 }
+        };
         // Per-section runtime-arg position of a param ordinal: the section's args are
         // exactly its needed params (head order; GlobalMut already trails Global +
         // Variable because GlobalMut occupies the tail of the head-order param list),
@@ -926,6 +965,9 @@ impl Kernel {
             writeln!(compute, "{indent}tile_regs_release();");
             for &(_, cb_id) in &output_stores {
                 writeln!(compute, "{indent}cb{cb_id}.push_back(1);");
+            }
+            if (next_slot as usize) > compute_slot_limit {
+                panic!("tenstorrent compute uses {} DST slots, hardware holds {}", next_slot, compute_slot_limit);
             }
             writeln!(compute, "}}");
         }
