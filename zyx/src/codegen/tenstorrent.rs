@@ -492,6 +492,7 @@ impl Kernel {
             for &(cb_id, depth) in &filled_cbs {
                 writeln!(reader, "{indent}cb{cb_id}.push_back({depth});");
             }
+            writeln!(reader, "{indent}DEVICE_PRINT(\"TEMP reader done\\n\");"); // TEMP debug, remove
             writeln!(reader, "}}");
         }
         op_id = self.next_op(op_id);
@@ -532,15 +533,6 @@ impl Kernel {
             cb_ids.sort();
             for cb_id in &cb_ids {
                 writeln!(compute, "{indent}CircularBuffer cb{cb_id}(tt::CBIndex::c_{cb_id});");
-            }
-
-            let input_ids: Vec<u32> = cb_map.values().copied().collect();
-            let output_ids: Vec<u32> = cb_map.values().copied().collect();
-            if !input_ids.is_empty() && !output_ids.is_empty() {
-                let in0 = input_ids[0];
-                let _in1 = input_ids.get(1).copied().unwrap_or(in0);
-                let out0 = output_ids[0];
-                writeln!(compute, "{indent}init_sfpu({in0}, {out0});");
             }
 
             let mut unary_inits: Set<&'static str> = Set::default();
@@ -719,15 +711,8 @@ impl Kernel {
                 scan = self.next_op(scan);
             }
 
-            if has_fill {
-                writeln!(compute, "{indent}fill_tile_init();");
-            }
-            for init in unary_inits {
-                writeln!(compute, "{indent}{init}");
-            }
-            for init in binary_inits {
-                writeln!(compute, "{indent}{init}");
-            }
+            // compute_kernel_hw_startup first: the header requires it
+            // before any other compute API call (inits included).
             if !mm_inits.is_empty() {
                 let out_cb = mm_out_cb.expect("tenstorrent matmul kernel needs a tile store to a circular buffer");
                 // One-time HW setup (like the official matmul example):
@@ -737,6 +722,27 @@ impl Kernel {
                 for (cb_a, cb_b) in &mm_inits {
                     writeln!(compute, "{indent}mm_init({cb_a}, {cb_b}, {out_cb});");
                 }
+            }
+            let input_ids: Vec<u32> = cb_map.values().copied().collect();
+            let output_ids: Vec<u32> = cb_map.values().copied().collect();
+            // init_sfpu programs the unpacker for its CBs; mm_init owns the
+            // unpacker in matmul kernels, so emitting both clobbers the
+            // matmul config and stalls UNPACK (wedges the board).
+            // Non-matmul kernels keep init_sfpu as their only unpack config.
+            if mm_inits.is_empty() && !input_ids.is_empty() && !output_ids.is_empty() {
+                let in0 = input_ids[0];
+                let _in1 = input_ids.get(1).copied().unwrap_or(in0);
+                let out0 = output_ids[0];
+                writeln!(compute, "{indent}init_sfpu({in0}, {out0});");
+            }
+            if has_fill {
+                writeln!(compute, "{indent}fill_tile_init();");
+            }
+            for init in unary_inits {
+                writeln!(compute, "{indent}{init}");
+            }
+            for init in binary_inits {
+                writeln!(compute, "{indent}{init}");
             }
             for (in_fmt, out_fmt) in &typecast_inits {
                 writeln!(compute, "{indent}typecast_tile_init<{in_fmt}, {out_fmt}>();");
@@ -969,7 +975,30 @@ impl Kernel {
             if (next_slot as usize) > compute_slot_limit {
                 panic!("tenstorrent compute uses {} DST slots, hardware holds {}", next_slot, compute_slot_limit);
             }
+            writeln!(compute, "{indent}DEVICE_PRINT(\"TEMP compute done\\n\");"); // TEMP debug, remove
             writeln!(compute, "}}");
+            // compute_kernel_hw_startup must precede every other compute
+            // API init (header docs: MMIO races and undefined behavior
+            // otherwise -- wedges the board). init_sfpu must never co-occur
+            // with mm_init (it clobbers mm_init's unpacker config and stalls
+            // UNPACK). The startup call takes no template args: our pinned
+            // tt-metal (v0.72.0) declares it plain (icb0, icb1, ocb); the
+            // <SrcOrder::Reverse> form in the latest docs does not exist
+            // here. Verify on the emitted source so no future edit can
+            // silently reintroduce the hang.
+            if compute.contains("mm_init(") && compute.contains("init_sfpu(") {
+                panic!("tenstorrent init_sfpu clobbers mm_init unpacker config, they are mutually exclusive");
+            }
+            if let Some(start) = compute.find("compute_kernel_hw_startup") {
+                if compute[start..].starts_with("compute_kernel_hw_startup<") {
+                    panic!("tenstorrent compute_kernel_hw_startup takes no template args on tt-metal v0.72.0");
+                }
+                let before = &compute[..start];
+                let before = &compute[..start];
+                if before.contains("init_sfpu(") || before.contains("_init(") {
+                    panic!("tenstorrent compute_kernel_hw_startup must be the first compute API call, an init precedes it");
+                }
+            }
         }
 
         if debug_asm {
@@ -987,6 +1016,7 @@ impl Kernel {
         writeln!(writer, "#include \"api/dataflow/circular_buffer.h\"");
         writeln!(writer, "#include \"api/tensor/noc_traits.h\"");
         writeln!(writer, "#include \"api/debug/dprint.h\"");
+        writeln!(writer, "#include \"api/debug/device_print.h\""); // TEMP debug, remove
         writeln!(writer, "void kernel_main() {{");
 
         for cb_id in cb_map.values() {
@@ -1264,6 +1294,7 @@ impl Kernel {
             }
             op_id = self.next_op(op_id);
         }
+        writeln!(writer, "{indent}DEVICE_PRINT(\"TEMP writer done\\n\");"); // TEMP debug, remove
         writeln!(writer, "}}");
 
         if debug_asm {
