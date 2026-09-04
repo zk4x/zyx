@@ -777,7 +777,6 @@ impl Runtime {
         // operand is a graph tensor of the current tape; otherwise the
         // kernel launches eagerly.
         let any_graph = inputs.iter().any(|&input| self.is_graph(input));
-
         if any_graph {
             let graph_id = inputs
                 .iter()
@@ -936,8 +935,8 @@ impl Runtime {
         let shapes = dims;
 
         let mut output_bufs = Vec::new();
-        for (i, shape) in shapes.iter().enumerate() {
-            let dtype = output_dtypes[i];
+        for (i, dtype) in output_dtypes.iter().enumerate() {
+            let shape = &shapes[i];
             let bytes = ((shape.iter().product::<Dim>() * dtype.bit_size() as Dim) + 7) / 8;
             let (buf, ev) = self.pools[pool_id].allocate(bytes)?;
             event_wait_list.push(ev);

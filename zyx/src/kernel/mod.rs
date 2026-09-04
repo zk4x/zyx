@@ -390,7 +390,20 @@ impl Kernel {
                     *rcs.entry(y).or_insert(0) += 1;
                     *rcs.entry(z).or_insert(0) += 1;
                 }
-                Op::Range { .. } | Op::Loop { .. } => {
+                Op::Range { kind, .. } => {
+                    // Group length is a consumed operand (e.g. a Binary
+                    // expression) and needs a refcount for codegen register
+                    // allocation.
+                    if let RangeKind::Group(len) = kind {
+                        *rcs.entry(len).or_insert(0) += 1;
+                    }
+                    dtypes.insert(op_id, (IDX_T, MemLayout::Scalar));
+                }
+                Op::Loop { len, .. } => {
+                    // Loop length is a consumed operand (e.g. a Binary
+                    // expression) and needs a refcount for codegen register
+                    // allocation.
+                    *rcs.entry(len).or_insert(0) += 1;
                     dtypes.insert(op_id, (IDX_T, MemLayout::Scalar));
                 }
                 Op::If { condition } => {
