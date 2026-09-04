@@ -529,7 +529,11 @@ int main() {
 
       // GlobalMut params occupy the tail of the head-order param list
       // (n_inputs .. n_params-1); Global params are src_indices[i], Variable
-      // params are in `vars`.
+      // params are in `vars`. Per-section runtime args (reader, compute,
+      // writer each get ONLY the params they need): the section's Global +
+      // Variable params interleaved in head order, then its GlobalMut
+      // params, then gidx0 (row) and gidx1 (col) — the core's coordinates
+      // in the tensix grid.
       uint32_t n_params = cfg.n_params;
 
       // TensorAccessorArgs compile args for ONE section: buffer params of the
@@ -548,18 +552,17 @@ int main() {
         return args;
       };
 
-      // Runtime args for ONE section: full padded param list (get_arg_val
-      // uses the GLOBAL param ordinal in every section), then row/col at
-      // n_inputs + axis.
+      // Runtime args for ONE section: exactly the params this section needs,
+      // in its section list order (Global|Variable interleaved first, then
+      // GlobalMut — the lists are sorted by head ordinal and GlobalMut
+      // occupies the tail of the head-order param list), followed by the
+      // core's coordinates in the tensix grid: gidx0 = row, gidx1 = col
+      // (different in each core).
       auto section_rt_args = [&](const vector<uint32_t> &params, uint32_t row,
                                  uint32_t col) {
         vector<uint32_t> rt;
         uint32_t next_src = 0, next_dst = 0;
-        for (uint32_t p = 0; p < n_params; p++) {
-          if (std::find(params.begin(), params.end(), p) == params.end()) {
-            rt.push_back(0);
-            continue;
-          }
+        for (uint32_t p : params) {
           auto vit = vars.find(p);
           if (vit != vars.end()) {
             rt.push_back(vit->second);

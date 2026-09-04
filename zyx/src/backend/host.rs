@@ -118,6 +118,14 @@ impl HostMemoryPool {
                 src_pool.pool_to_host(src, &mut byte_slice, Vec::new())?;
                 self.host_to_pool(&byte_slice, dst, event_wait_list)
             }
+            // TT -> host: read the device DRAM buffer into host bytes via the
+            // runtime shim (read_buf), then memcpy into the host buffer.
+            #[cfg(feature = "tenstorrent")]
+            MemoryPool::TT(src_pool) => {
+                let mut byte_slice = vec![0u8; src_pool.buffers[src].size as usize];
+                src_pool.pool_to_host(src, &mut byte_slice, Vec::new())?;
+                self.host_to_pool(&byte_slice, dst, event_wait_list)
+            }
             _ => todo!(),
         }
     }

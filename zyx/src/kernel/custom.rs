@@ -742,10 +742,16 @@ impl CompiledKernel {
     ) -> Result<Vec<Tensor>, ZyxError> {
         debug_assert_eq!(inputs.len(), self.inputs.len());
         debug_assert_eq!(shapes.len(), self.outputs.len());
-        let input_ids: Vec<TensorId> = inputs.iter().map(|t| t.id).collect();
-        let shape_ids: Vec<Vec<TensorId>> = shapes.into_iter().map(|s| s.into_iter().map(|t| t.into().id).collect()).collect();
-        let shape_tids: Vec<&[TensorId]> = shape_ids.iter().map(|s| s.as_slice()).collect();
-        let ids = crate::RT.lock().forward(self.program, &input_ids, &self.outputs, &shape_tids)?;
+        let shape_tensors: Vec<Vec<Tensor>> = shapes.into_iter().map(|s| s.into_iter().map(|t| t.into()).collect()).collect();
+        // Handles must stay alive until the locked body is done: an inline
+        // temporary (e.g. `Tensor::from(1024i64)` as a shape dim) drops at the
+        // end of the expression and its slab entry is freed with it.
+        let shape_tids: Vec<Vec<TensorId>> =
+            shape_tensors.iter().map(|s| s.iter().map(|t| t.id).collect()).collect();
+        let shape_tids: Vec<&[TensorId]> = shape_tids.iter().map(|s| s.as_slice()).collect();
+        let ids = crate::RT
+            .lock()
+            .forward(self.program, &inputs.iter().map(|t| t.id).collect::<Vec<_>>(), &self.outputs, &shape_tids)?;
         Ok(ids.into_iter().map(Tensor::from_id).collect())
     }
 }

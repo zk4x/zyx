@@ -101,9 +101,9 @@ pub struct TTConfig {
 // ---------------------------------------------------------------------------
 
 #[derive(Debug)]
-struct TTBuffer {
+pub(crate) struct TTBuffer {
     dev_index: u32,
-    size: u64,
+    pub(crate) size: u64,
 }
 
 // ---------------------------------------------------------------------------
@@ -114,7 +114,7 @@ struct TTBuffer {
 
 #[derive(Debug)]
 pub struct TTMemoryPool {
-    buffers: Slab<PoolBufferId, TTBuffer>,
+    pub(crate) buffers: Slab<PoolBufferId, TTBuffer>,
     runtime: Arc<Mutex<RuntimeProcess>>,
     free_bytes: Dim,
 }
@@ -850,6 +850,17 @@ impl TTDevice {
                 scan = kernel.next_op(scan);
             }
         }
+        // Per-section params (0 = reader, 1 = compute, 2 = writer): the
+        // ordinals of the params each section's stores depend on, in
+        // ascending head order. These lists define the sections' runtime
+        // args: each section gets exactly its own params — its Global +
+        // Variable params interleaved in head order first, then its
+        // GlobalMut params — followed by the core's tensix-grid coordinates
+        // gidx0 (row) / gidx1 (col). GlobalMut occupies the tail of the
+        // head-order param list, so the ascending sort already yields the
+        // Global|Variable-then-GlobalMut layout; see
+        // `Kernel::generate_tenstorrent` and `tt_runtime.cpp`
+        // `section_rt_args` for the consumption side.
         let per_section_params: Vec<Vec<u32>> = section_stores
             .iter()
             .map(|stores| {
