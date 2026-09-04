@@ -7,8 +7,9 @@
 # ⚠️  python/sed/awk/heredoc SCRIPTS FOR FILE      ⚠️
 # ⚠️  EDITS ARE FORBIDDEN. USE THE edit TOOL.      ⚠️
 # ⚠️  VIOLATIONS = BROKEN. REPEATEDLY. FOREVER.   ⚠️
+# ⚠️  SCRIPTS DESTROYED FILES TWICE ALREADY.      ⚠️
 # ⚠️  ASK OR EDIT. DO NOT THINK.                   ⚠️
-# ⚠️  (asking questions, editing, or both; never
+# ⚠️  (asking questions, editing, or both; never   ⚠️
 # ⚠️   burn context on internal deliberation)      ⚠️
 # ⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️
 

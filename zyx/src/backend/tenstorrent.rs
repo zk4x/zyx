@@ -309,13 +309,16 @@ impl TTMemoryPool {
         dst: PoolBufferId,
         event_wait_list: Vec<Event>,
     ) -> Result<Event, BackendError> {
+        eprintln!("[TT-MARK] pool_to_pool start");
         match src_pool {
             MemoryPool::Host(host_pool) => {
+                eprintln!("[TT-MARK] pool_to_pool src=host");
                 let data = host_pool.get_buffer(src);
                 self.host_to_pool(data, dst, event_wait_list)
             }
             // No P2P path in the tt-runtime shim yet — stage through host.
             _ => {
+                eprintln!("[TT-MARK] pool_to_pool src=other-pool, staging via host");
                 let len = {
                     let dst_buf = self
                         .buffers

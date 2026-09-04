@@ -238,9 +238,8 @@ use nanoserde::DeJson;
 #[cfg(feature = "viz")]
 use crate::viz::Viz;
 use crate::{
-    DType, DebugMask, Map, Scalar, Set, ZyxError,
+    DType, DebugMask, Dev, Map, Scalar, Set, ZyxError,
     backend::{BufferId, Config, DTypeCapability, Device, DeviceProgramId, Event, LaunchArg, MemoryPool, PoolId, ProgramId},
-    Dev,
     dtype::Constant,
     error::{BackendError, ErrorStatus},
     graph::{ClassId, ExecPlan, Graph, GraphId, Node, plan::drain_events_for_buf},
@@ -334,6 +333,7 @@ pub enum TensorData {
         depends_on: KernelId,
         shape_id: TensorId,
         dtype: DType,
+        //device_id: DeviceId,
         rc: u16,
     },
     // Eager only
@@ -2699,24 +2699,17 @@ impl Runtime {
     ///
     /// If no initialized device matches `dev`.
     pub fn resolve_dev(&self, dev: Dev) -> DeviceId {
-        let find =
-            |f: &dyn Fn(&Device) -> bool| self.devices.iter().find(|(_, device)| f(device)).map(|(id, _)| id);
+        let find = |f: &dyn Fn(&Device) -> bool| self.devices.iter().find(|(_, device)| f(device)).map(|(id, _)| id);
         let found = match dev {
             Dev::Auto => self.devices.ids().next(),
             Dev::C => find(&|device| matches!(device, Device::C(_) | Device::Cblas(_))),
-            Dev::Cuda(id) => {
-                find(&|device| matches!(device, Device::CUDA(d) if d.dev_id == u32::from(id)))
-            }
+            Dev::Cuda(id) => find(&|device| matches!(device, Device::CUDA(d) if d.dev_id == u32::from(id))),
             #[cfg(feature = "tenstorrent")]
             Dev::TT(id) => find(&|device| matches!(device, Device::TT(d) if d.dev_id == u32::from(id))),
             #[cfg(not(feature = "tenstorrent"))]
             Dev::TT(_) => None,
-            Dev::Vulkan(id) => {
-                find(&|device| matches!(device, Device::Vulkan(d) if d.dev_id == u32::from(id)))
-            }
-            Dev::OpenCL(id) => {
-                find(&|device| matches!(device, Device::OpenCL(d) if d.device_idx as u32 == u32::from(id)))
-            }
+            Dev::Vulkan(id) => find(&|device| matches!(device, Device::Vulkan(d) if d.dev_id == u32::from(id))),
+            Dev::OpenCL(id) => find(&|device| matches!(device, Device::OpenCL(d) if d.device_idx as u32 == u32::from(id))),
         };
         found.unwrap_or_else(|| panic!("resolve_dev: no initialized device matches {dev:?}"))
     }
@@ -2731,8 +2724,8 @@ impl Runtime {
             return Ok(x);
         }
         match self.tensors[x] {
-            TensorData::Leaf { depends_on: kernel_id, shape_id, dtype, .. } |
-            TensorData::Eager { kernel_id, shape_id, dtype, .. } => {
+            TensorData::Leaf { depends_on: kernel_id, shape_id, dtype, .. }
+            | TensorData::Eager { kernel_id, shape_id, dtype, .. } => {
                 if !kernel_id.is_null() {
                     let outputs: Vec<TensorId> = self.kernels[kernel_id].outputs.iter().copied().collect();
                     for out in outputs {
@@ -2740,6 +2733,7 @@ impl Runtime {
                     }
                 }
                 debug_assert!(self.buffer_map.contains_key(&x), "to_device: tensor {x} was not materialized");
+                eprintln!("[RT-MARK] to_device materialized, doing copy");
                 let buf_id = self.buffer_map[&x];
                 let dst_pool = self.devices[device_id].memory_pool_id();
                 let shape = self.resolve_shape(x);
@@ -2757,6 +2751,7 @@ impl Runtime {
                 let src_pool_ptr: *mut MemoryPool = &mut self.pools[buf_id.pool];
                 let copy_ev =
                     self.pools[dst_pool].pool_to_pool(unsafe { &mut *src_pool_ptr }, buf_id.buffer, dst_id.buffer, events)?;
+                eprintln!("[RT-MARK] to_device copy done");
                 self.events.insert(BTreeSet::from([dst_id]), copy_ev);
                 debug_assert!(!shape_id.is_null(), "to_device: eager tensor {x} has no shape expression");
                 self.retain(shape_id);
@@ -2766,8 +2761,8 @@ impl Runtime {
                 println!("  -> tid={tid} (cross-pool copy {buf_id:?} -> {dst_id:?})");
                 Ok(tid)
             }
-            TensorData::Graph { class_id, graph_id, shape_id, .. } |
-            TensorData::Promoted { class_id, graph_id, shape_id, .. } => {
+            TensorData::Graph { class_id, graph_id, shape_id, .. }
+            | TensorData::Promoted { class_id, graph_id, shape_id, .. } => {
                 assert!(!self.graphs[graph_id].dead, "tape scope has ended (tensor belongs to a dead tape scope");
                 // TODO measure actual time by running a test copy
                 let (_node_id, cid) = self.push_node(graph_id, Node::ToDevice { x: class_id, device: device_id, time: 0 });
@@ -2781,16 +2776,16 @@ impl Runtime {
                 println!("  -> tid={tid}, nid={_node_id:?}, cid={cid:?}");
                 Ok(tid)
             }
-            TensorData::Constant { .. } |
-            TensorData::Variable { .. } |
-            TensorData::Cast { .. } |
-            TensorData::Unary { .. } |
-            TensorData::Binary { .. } |
-            TensorData::Stack { .. } |
-            TensorData::Stack2 { .. } |
-            TensorData::Stack3 { .. } |
-            TensorData::Stack4 { .. } |
-            TensorData::Stack5 { .. } => {
+            TensorData::Constant { .. }
+            | TensorData::Variable { .. }
+            | TensorData::Cast { .. }
+            | TensorData::Unary { .. }
+            | TensorData::Binary { .. }
+            | TensorData::Stack { .. }
+            | TensorData::Stack2 { .. }
+            | TensorData::Stack3 { .. }
+            | TensorData::Stack4 { .. }
+            | TensorData::Stack5 { .. } => {
                 self.retain(x);
                 Ok(x)
             }
@@ -4740,7 +4735,6 @@ impl Runtime {
     ///
     /// # Invariant
     /// A kernel must never both load and store the same tensor (prevents aliasing).
-    /// The debug_assert in the recursive materialization loop enforces this.
     /// Picks the fastest device (by compute) that has at least `bytes` free.
     fn pick_device(&self, bytes: Dim) -> Result<DeviceId, ZyxError> {
         let mut dev_ids: Vec<DeviceId> = self
@@ -4902,7 +4896,22 @@ impl Runtime {
                 (self.resolve_shape(tid).iter().product::<Dim>() * dtype.bit_size() as Dim + 7) / 8
             })
             .sum();
-        let (dev_id, pool_id) = if store_pools.len() == 1 {
+        // A pinned device (kernel built with a concrete `Dev`) wins over
+        // everything — when the user moves a tensor to a device, that has to
+        // take effect. Only a `DeviceId::AUTO` kernel gets auto-picked.
+        let (dev_id, pool_id) = if kernel.device_id != DeviceId::AUTO {
+            let dev_id = kernel.device_id;
+            if store_pools.len() > 1 || !store_pools.iter().all(|&pool| pool == self.devices[dev_id].memory_pool_id()) {
+                return Err(ZyxError::AllocationError(
+                    format!(
+                        "stores {store_pools:?} do not match the kernel's pinned device {} and cannot span multiple pools",
+                        dev_id.0
+                    )
+                    .into(),
+                ));
+            }
+            (dev_id, self.devices[dev_id].memory_pool_id())
+        } else if store_pools.len() == 1 {
             let pool_id = *store_pools.iter().next().unwrap();
             let dev_id = self.devices.ids().find(|&dev_id| self.devices[dev_id].memory_pool_id() == pool_id);
             match dev_id {
@@ -5116,13 +5125,16 @@ impl Runtime {
 
         let event = self.devices[dev_id].launch(dev_prog, &mut self.pools[pool_id], &buffers, event_wait_list)?;
         self.events.insert(kernel_buffers, event);
+        eprintln!("[M-MARK] materialize launched, releasing loads");
 
         // The kernel has consumed its loads. Release the load references so
         // dead load tensors and their buffers are reclaimed. Buffers still in
         // use keep rc > 0 via other kernels' load references or handles.
         for &tid in &loads {
+            eprintln!("[M-MARK] release {tid}");
             self.release(tid);
         }
+        eprintln!("[M-MARK] materialize done");
 
         Ok(())
     }

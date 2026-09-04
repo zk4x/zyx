@@ -205,6 +205,7 @@ impl CDevice {
         }
 
         // --- Codegen ---
+        eprintln!("[C-MARK] codegen start");
         let tmp_dir = std::env::temp_dir().join(format!("zyx_c_{}", std::process::id()));
         let _ = std::fs::create_dir_all(&tmp_dir);
         let c_path = tmp_dir.join(format!("{name}.c"));
@@ -236,6 +237,7 @@ impl CDevice {
             status: ErrorStatus::KernelCompilation,
             context: format!("Failed to run compiler '{compiler}': {e}. Is a C compiler installed?").into(),
         })?;
+        eprintln!("[C-MARK] compiler done, status={}", output.status);
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
             if debug_asm {
@@ -299,6 +301,7 @@ impl CDevice {
             }
         }
 
+        eprintln!("[C-MARK] launch start, args={}", args.len());
         let func_name = CString::new(program.name.as_str()).unwrap();
         unsafe {
             let func: Symbol<unsafe extern "C" fn(*const *mut std::ffi::c_void, usize)> =
@@ -307,7 +310,9 @@ impl CDevice {
                     context: format!("Failed to find kernel symbol: {e}").into(),
                 })?;
             let ptrs_raw: Vec<*mut std::ffi::c_void> = ptrs.iter().map(|p| (*p).cast::<std::ffi::c_void>()).collect();
+            eprintln!("[C-MARK] calling kernel, ptrs={}", ptrs_raw.len());
             func(ptrs_raw.as_ptr(), ptrs_raw.len());
+            eprintln!("[C-MARK] kernel returned");
         }
 
         Ok(Event::Host(super::host::HostEvent))
