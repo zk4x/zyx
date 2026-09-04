@@ -8,7 +8,6 @@
 // Tensor data is transferred via temporary shared memory regions
 // (shm_open + unlink per transfer), created by the Rust side.
 
-#include <tt-metalium/kernel_types.hpp>
 #include <algorithm>
 #include <cstdint>
 #include <cstdlib>
@@ -19,6 +18,7 @@
 #include <string>
 #include <sys/mman.h>
 #include <sys/stat.h>
+#include <tt-metalium/kernel_types.hpp>
 #include <unistd.h>
 #include <unordered_map>
 #include <vector>
@@ -251,12 +251,6 @@ int main() {
       }
 
       try {
-#if ZYX_HAS_MMIO_TIMEOUT_CONFIG
-        // fw 19.13.1 ARC telemetry reads take ~40ms; UMD's default 10ms per-op
-        // MMIO budget aborts init on healthy boards. Raise it to 1000ms.
-        // (Header only exists in tt-metal >= 0.74; older UMD has no per-op budget.)
-        tt::umd::MmioTimeoutConfig::set_op_timeout(std::chrono::milliseconds(1000));
-#endif
         cerr << "[TT_CPP] calling create_unit_mesh(0)" << endl;
         mesh_device = MeshDevice::create_unit_mesh(0);
         cq = &mesh_device->mesh_command_queue();
@@ -285,14 +279,13 @@ int main() {
         if (n_pages == 0)
           n_pages = 1;
 
-        DeviceLocalBufferConfig dram_config{};
-        dram_config.page_size = PAGE_SIZE;
-        dram_config.buffer_type = BufferType::DRAM;
-        ReplicatedBufferConfig buf_config{.size =
-                                              (uint64_t)n_pages * PAGE_SIZE};
+        DeviceLocalBufferConfig dram_config{
+            .page_size = PAGE_SIZE,
+            .buffer_type = BufferType::DRAM
+        };
+        ReplicatedBufferConfig buf_config{.size = (uint32_t)n_pages * PAGE_SIZE};
 
-        auto buf =
-            MeshBuffer::create(buf_config, dram_config, mesh_device.get());
+        auto buf = MeshBuffer::create(buf_config, dram_config, mesh_device.get());
         uint32_t idx = buffers.size();
         cerr << "[TT_ALLOC] idx=" << idx << " size=" << size
              << " page=" << PAGE_SIZE << " addr=" << buf->address()
@@ -418,15 +411,19 @@ int main() {
         }
         for (uint32_t p : reader_params)
           if (p >= n_params)
-            throw runtime_error("reader param ordinal " + to_string(p) + " >= n_params " + to_string(n_params));
+            throw runtime_error("reader param ordinal " + to_string(p) +
+                                " >= n_params " + to_string(n_params));
         for (uint32_t p : compute_params)
           if (p >= n_params)
-            throw runtime_error("compute param ordinal " + to_string(p) + " >= n_params " + to_string(n_params));
+            throw runtime_error("compute param ordinal " + to_string(p) +
+                                " >= n_params " + to_string(n_params));
         for (uint32_t p : writer_params)
           if (p >= n_params)
-            throw runtime_error("writer param ordinal " + to_string(p) + " >= n_params " + to_string(n_params));
+            throw runtime_error("writer param ordinal " + to_string(p) +
+                                " >= n_params " + to_string(n_params));
 
-        // Read reader + compute + writer sources sent as raw bytes after JSON line
+        // Read reader + compute + writer sources sent as raw bytes after JSON
+        // line
         uint32_t reader_source_len = extract_u32(line, "reader_source_len");
         string reader_source(reader_source_len, '\0');
         cin.read(&reader_source[0], reader_source_len);
@@ -601,19 +598,31 @@ int main() {
         for (uint32_t i = 0; i < cfg.cb_indices.size(); i++) {
           DataFormat df;
           switch (cfg.cb_formats[i]) {
-          case 0: df = DataFormat::Float32; break;
-          case 1: df = DataFormat::Float16; break;
-          case 2: df = DataFormat::Float16_b; break;
-          default: throw runtime_error("unsupported data_format " + to_string(cfg.cb_formats[i]));
+          case 0:
+            df = DataFormat::Float32;
+            break;
+          case 1:
+            df = DataFormat::Float16;
+            break;
+          case 2:
+            df = DataFormat::Float16_b;
+            break;
+          default:
+            throw runtime_error("unsupported data_format " +
+                                to_string(cfg.cb_formats[i]));
           }
           CreateCircularBuffer(
               program, all_cores,
-              CircularBufferConfig(tiles_per_cb * cfg.cb_tile_bytes[i], {{static_cast<CBIndex>(cfg.cb_indices[i]), df}})
-                  .set_page_size(static_cast<CBIndex>(cfg.cb_indices[i]), cfg.cb_tile_bytes[i]));
+              CircularBufferConfig(
+                  tiles_per_cb * cfg.cb_tile_bytes[i],
+                  {{static_cast<CBIndex>(cfg.cb_indices[i]), df}})
+                  .set_page_size(static_cast<CBIndex>(cfg.cb_indices[i]),
+                                 cfg.cb_tile_bytes[i]));
         }
 
         // Create ONE reader kernel on all cores (standard TT SPMD pattern)
-        cerr << "[TT] creating reader kernel on cores [0,0.." << (gidx1_sz-1) << "," << (gidx0_sz-1) << "]" << endl;
+        cerr << "[TT] creating reader kernel on cores [0,0.." << (gidx1_sz - 1)
+             << "," << (gidx0_sz - 1) << "]" << endl;
         auto reader = CreateKernelFromString(
             program, cfg.reader_source, all_cores,
             DataMovementConfig{
@@ -628,7 +637,8 @@ int main() {
             });
 
         // Create ONE writer kernel on all cores
-        cerr << "[TT] creating writer kernel on cores [0,0.." << (gidx1_sz-1) << "," << (gidx0_sz-1) << "]" << endl;
+        cerr << "[TT] creating writer kernel on cores [0,0.." << (gidx1_sz - 1)
+             << "," << (gidx0_sz - 1) << "]" << endl;
         auto writer = CreateKernelFromString(
             program, cfg.writer_source, all_cores,
             DataMovementConfig{
@@ -643,22 +653,23 @@ int main() {
             });
 
         // Create ONE compute kernel on all cores
-        cerr << "[TT] creating compute kernel on cores [0,0.." << (gidx1_sz-1) << "," << (gidx0_sz-1) << "]" << endl;
-        auto compute = CreateKernelFromString(
-            program, cfg.compute_source, all_cores,
-            ComputeConfig{
-                .math_fidelity = MathFidelity::HiFi4,
-                .fp32_dest_acc_en = true,
-                .dst_full_sync_en = false,
-                .unpack_to_dest_mode = {},
-                .bfp8_pack_precise = false,
-                .math_approx_mode = false,
-                .compile_args = {},
-                .defines = {},
-                .named_compile_args = {},
-                .opt_level = KernelBuildOptLevel::O3,
-                .compiler_include_paths = {},
-            });
+        cerr << "[TT] creating compute kernel on cores [0,0.." << (gidx1_sz - 1)
+             << "," << (gidx0_sz - 1) << "]" << endl;
+        auto compute =
+            CreateKernelFromString(program, cfg.compute_source, all_cores,
+                                   ComputeConfig{
+                                       .math_fidelity = MathFidelity::HiFi4,
+                                       .fp32_dest_acc_en = true,
+                                       .dst_full_sync_en = false,
+                                       .unpack_to_dest_mode = {},
+                                       .bfp8_pack_precise = false,
+                                       .math_approx_mode = false,
+                                       .compile_args = {},
+                                       .defines = {},
+                                       .named_compile_args = {},
+                                       .opt_level = KernelBuildOptLevel::O3,
+                                       .compiler_include_paths = {},
+                                   });
 
         // Set per-core runtime args using the single kernel handle
         for (uint32_t row = 0; row < gidx0_sz; row++) {
