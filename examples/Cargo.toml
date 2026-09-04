@@ -11,6 +11,7 @@ members = [
     "tiny-net2",
     "llama",
     "probe",
+    "qwen3.8-27b",
 ]
 
 [profile.release]

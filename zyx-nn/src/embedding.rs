@@ -78,19 +78,29 @@ impl Embedding {
             return Ok(Tensor::zeros(shape, wdt));
         }
         let one: Tensor = 1i64.into();
+        // Torch semantics for any input rank (including 0-d and 1-d): align
+        // trailing dims. big = x.shape + [vocab, embed]; the vocab axis is
+        // x_rank. arange/weight are reshaped to rank big_rank with leading
+        // ones first so expand works regardless of their stored rank.
+        let x_rank = x_sh.len();
         let big_shp: Vec<Tensor> = x_sh
             .iter()
             .cloned()
             .chain([self.vocab_size.clone(), self.embed_size.clone()])
             .collect();
-        let arange = self.arange.cast(xdt).expand(big_shp.clone())?;
+        let mut ar_shp: Vec<Tensor> = vec![one.clone(); x_rank];
+        ar_shp.push(self.vocab_size.clone());
+        ar_shp.push(one.clone());
+        let arange = self.arange.reshape(ar_shp)?.cast(xdt).expand(big_shp.clone())?;
         let reshape_shape: Vec<Tensor> = x_sh
             .into_iter()
-            .chain(std::iter::once(one.clone()))
-            .chain(std::iter::once(one))
+            .chain([one.clone(), one.clone()])
             .collect();
         let idx = x.reshape(reshape_shape)?.expand(big_shp.clone())?;
-        let vals = self.weight.expand(big_shp)?;
-        (arange.equal(idx)?.cast(wdt) * vals).sum([2])
+        let mut w_shp: Vec<Tensor> = vec![one.clone(); x_rank];
+        w_shp.push(self.vocab_size.clone());
+        w_shp.push(self.embed_size.clone());
+        let vals = self.weight.reshape(w_shp)?.expand(big_shp)?;
+        (arange.equal(idx)?.cast(wdt) * vals).sum([x_rank as i32])
     }
 }

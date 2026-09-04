@@ -122,6 +122,130 @@ impl Kernel {
                 scan = self.next_op(scan);
             }
         }
+        // CB sync balance check. A push/wait/pop mismatch deadlocks the
+        // tensix cores and wedges the board (only an external reset
+        // recovers), so refuse to emit sources unless every CB balances.
+        // Sections split at barriers (exactly 2: reader | compute |
+        // writer). Const-trip loops expand; anything else countable
+        // panics instead of risking a hang.
+        {
+            struct Bal {
+                cb: u32,
+                depth_bytes: i64,
+                reader_store: bool,
+                compute_load: bool,
+                compute_stores: i64,
+                writer_bytes: i64,
+            }
+            let mut bals: Vec<Bal> = Vec::new();
+            for (&storage, &cb) in cb_map.iter() {
+                let Op::Storage { dtype, len, .. } = self.ops[storage].op else {
+                    panic!("tenstorrent cb_map entry {storage} is not a storage op");
+                };
+                let elem = dtype.bit_size() as i64 / 8;
+                let bytes = len * elem;
+                if bytes % 2048 != 0 {
+                    panic!("tenstorrent CB{cb} holds {bytes} bytes, not whole 2048B pages");
+                }
+                if len / 1024 != bytes / 2048 {
+                    panic!("tenstorrent CB{cb} dtype {dtype:?} breaks the 2-byte-element depth math in codegen");
+                }
+                if bytes > 4096 {
+                    panic!("tenstorrent CB{cb} needs {bytes} bytes, CB capacity is 4096 (2 pages)");
+                }
+                bals.push(Bal {
+                    cb,
+                    depth_bytes: bytes,
+                    reader_store: false,
+                    compute_load: false,
+                    compute_stores: 0,
+                    writer_bytes: 0,
+                });
+            }
+            let mut section = 0u32;
+            let mut trips: Vec<i64> = Vec::new();
+            let mut scan = self.head;
+            let mut steps = 0usize;
+            while !scan.is_null() {
+                steps += 1;
+                if steps > 10_000 {
+                    panic!("tenstorrent CB balance scan did not finish in 10000 steps");
+                }
+                match self.ops[scan].op {
+                    Op::Barrier => section += 1,
+                    Op::Loop { len } => {
+                        let Op::Const(c) = self.ops[len].op else {
+                            panic!("tenstorrent CB balance needs a const loop trip count, op {scan} is dynamic");
+                        };
+                        trips.push(c.as_dim().expect("tenstorrent loop trip count must be a concrete dim"));
+                    }
+                    Op::EndLoop => {
+                        trips.pop().expect("tenstorrent EndLoop without Loop");
+                    }
+                    Op::Store { dst, src, layout, .. } => {
+                        let trip: i64 = trips.iter().product();
+                        if section == 0 {
+                            if let Some(&cb) = cb_map.get(&dst) {
+                                bals.iter_mut().find(|b| b.cb == cb).expect("tenstorrent op hit a CB missing from cb_map").reader_store = true;
+                            }
+                        } else if section == 1 {
+                            if matches!(layout, MemLayout::Tile { .. }) {
+                                if let Some(&cb) = cb_map.get(&dst) {
+                                    bals.iter_mut().find(|b| b.cb == cb).expect("tenstorrent op hit a CB missing from cb_map").compute_stores += trip;
+                                }
+                            }
+                        } else if section == 2 {
+                            if let Op::Load { src: cb_src, .. } = self.ops[src].op {
+                                if let Some(&cb) = cb_map.get(&cb_src) {
+                                    let Op::Param { dtype, kind: ParamKind::GlobalMut, .. } = self.ops[dst].op else {
+                                        panic!("tenstorrent writer store dst must be GlobalMut");
+                                    };
+                                    let elem = dtype.bit_size() as i64 / 8;
+                                    let bytes = match layout {
+                                        MemLayout::Scalar => elem,
+                                        MemLayout::Tile { x, y, .. } => x as i64 * y as i64 * elem,
+                                        _ => panic!("tenstorrent CB balance: unsupported writer layout {layout:?}"),
+                                    };
+                                    bals.iter_mut().find(|b| b.cb == cb).expect("tenstorrent op hit a CB missing from cb_map").writer_bytes += trip * bytes;
+                                }
+                            }
+                        } else {
+                            panic!("tenstorrent kernels have exactly 3 sections (2 barriers), found section {section}");
+                        }
+                    }
+                    Op::Load { src, layout: MemLayout::Tile { .. }, .. } => {
+                        if section == 1 {
+                            if let Some(&cb) = cb_map.get(&src) {
+                                bals
+                                    .iter_mut()
+                                    .find(|b| b.cb == cb)
+                                    .expect("tenstorrent op hit a CB missing from cb_map")
+                                    .compute_load = true;
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+                scan = self.next_op(scan);
+            }
+            if section != 2 {
+                panic!("tenstorrent kernels need exactly 2 barriers (3 sections), found {section}");
+            }
+            for b in &bals {
+                if b.reader_store != b.compute_load {
+                    panic!(
+                        "tenstorrent CB{} imbalance: reader_store={} compute_load={} (depth {} bytes)",
+                        b.cb, b.reader_store, b.compute_load, b.depth_bytes
+                    );
+                }
+                if b.compute_stores * 2048 != b.writer_bytes {
+                    panic!(
+                        "tenstorrent CB{} imbalance: compute pushes {} pages but writer consumes {} bytes",
+                        b.cb, b.compute_stores, b.writer_bytes
+                    );
+                }
+            }
+        }
         // Per-section runtime-arg position of a param ordinal: the section's args are
         // exactly its needed params (head order; GlobalMut already trails Global +
         // Variable because GlobalMut occupies the tail of the head-order param list),
@@ -147,6 +271,9 @@ impl Kernel {
             // Head-order param ordinal: Global + Variable interleaved, GlobalMut after.
             let mut param_idx = 0u32;
             let mut loop_depth = 0u32;
+            // CBs this section fills, with depth in tiles (from storage
+            // len): push the full depth at the end, not the whole cb_map.
+            let mut filled_cbs: Vec<(u32, i64)> = Vec::new();
             let mut steps_op_id = 0usize;
             while !op_id.is_null() {
                 steps_op_id += 1;
@@ -209,6 +336,11 @@ impl Kernel {
 
                         let elem_size = dtype.bit_size() as u32 / 8;
                         if let Some(cb_id) = cb_map.get(&dst) {
+                            if !filled_cbs.iter().any(|(id, _)| *id == *cb_id) {
+                                if let Op::Storage { len, .. } = self.ops[dst].op {
+                                    filled_cbs.push((*cb_id, len / 1024));
+                                }
+                            }
                             match (ld_layout, st_layout) {
                                 (MemLayout::Scalar, MemLayout::Scalar) => {
                                     if loop_depth == 0 {
@@ -318,8 +450,8 @@ impl Kernel {
                 op_id = self.next_op(op_id);
             }
             writeln!(reader, "{indent}noc_async_read_barrier();");
-            for cb_id in cb_map.values() {
-                writeln!(reader, "{indent}cb{cb_id}.push_back(1);");
+            for &(cb_id, depth) in &filled_cbs {
+                writeln!(reader, "{indent}cb{cb_id}.push_back({depth});");
             }
             writeln!(reader, "}}");
         }
@@ -346,6 +478,7 @@ impl Kernel {
         writeln!(compute, "#include \"api/compute/eltwise_unary/bitwise_not.h\"");
         writeln!(compute, "#include \"api/compute/eltwise_unary/typecast.h\"");
         writeln!(compute, "#include \"api/compute/eltwise_unary/fill.h\"");
+        writeln!(compute, "#include \"api/compute/matmul.h\"");
         writeln!(compute, "#include \"api/dataflow/circular_buffer.h\"");
         writeln!(compute, "#include \"api/debug/device_print.h\"");
         writeln!(compute, "void kernel_main() {{");
@@ -374,6 +507,10 @@ impl Kernel {
             let mut unary_inits: Set<&'static str> = Set::default();
             let mut binary_inits: Set<&'static str> = Set::default();
             let mut typecast_inits: Set<(u32, u32)> = Set::default();
+            // (in0_cb, in1_cb) pairs used by MatmulTile ops; mm_init needs
+            // them plus the section's output CB (for packer config).
+            let mut mm_inits: Vec<(u32, u32)> = Vec::new();
+            let mut mm_out_cb: Option<u32> = None;
             let mut has_fill = false;
             let (_dtypes, rcs) = self.compute_dtypes_and_rcs();
             let mut dst_slots: Map<OpId, Vec<u32>> = Map::default();
@@ -510,9 +647,30 @@ impl Kernel {
                             binary_inits.insert(init);
                         }
                     }
-                    Op::Store { src, .. } => {
+                    Op::Store { dst, src, .. } => {
                         if matches!(self.ops[src].op, Op::Const(_)) {
                             has_fill = true;
+                        }
+                        if mm_out_cb.is_none() {
+                            if let Op::Storage { scope: MemScope::Circular, .. } = self.ops[dst].op {
+                                if let Some(&cb_id) = cb_map.get(&dst) {
+                                    mm_out_cb = Some(cb_id);
+                                }
+                            }
+                        }
+                    }
+                    Op::MatmulTile { x, y } => {
+                        let Op::Load { src: cb_a, layout: MemLayout::Tile { .. }, .. } = self.ops[x].op else {
+                            panic!("tenstorrent matmul_tile x must be a tile load from a circular buffer")
+                        };
+                        let Op::Load { src: cb_b, layout: MemLayout::Tile { .. }, .. } = self.ops[y].op else {
+                            panic!("tenstorrent matmul_tile y must be a tile load from a circular buffer")
+                        };
+                        let (Some(&cb_a_id), Some(&cb_b_id)) = (cb_map.get(&cb_a), cb_map.get(&cb_b)) else {
+                            panic!("tenstorrent matmul_tile inputs must be circular buffers")
+                        };
+                        if !mm_inits.contains(&(cb_a_id, cb_b_id)) {
+                            mm_inits.push((cb_a_id, cb_b_id));
                         }
                     }
                     Op::Const(_) => has_fill = true,
@@ -531,11 +689,24 @@ impl Kernel {
             for init in binary_inits {
                 writeln!(compute, "{indent}{init}");
             }
+            if !mm_inits.is_empty() {
+                let out_cb = mm_out_cb.expect("tenstorrent matmul kernel needs a tile store to a circular buffer");
+                // One-time HW setup (like the official matmul example):
+                // all matmuls in the kernel must share this triple.
+                let (first_a, first_b) = mm_inits[0];
+                writeln!(compute, "{indent}compute_kernel_hw_startup({first_a}, {first_b}, {out_cb});");
+                for (cb_a, cb_b) in &mm_inits {
+                    writeln!(compute, "{indent}mm_init({cb_a}, {cb_b}, {out_cb});");
+                }
+            }
             for (in_fmt, out_fmt) in &typecast_inits {
                 writeln!(compute, "{indent}typecast_tile_init<{in_fmt}, {out_fmt}>();");
             }
 
-            let mut load_input_cbs: Vec<u32> = Vec::new();
+            // Input CBs with their depth in tiles (from storage len).
+            // CBs are sized exactly, so wait/pop the full depth: the
+            // reader pushes everything up front (sections are sequential).
+            let mut load_input_cbs: Vec<(u32, i64)> = Vec::new();
             let mut pre_scan = op_id;
             let mut steps_pre_scan = 0usize;
             while !pre_scan.is_null() {
@@ -546,8 +717,13 @@ impl Kernel {
                 match self.ops[pre_scan].op {
                     Op::Load { src, layout: MemLayout::Tile { .. }, .. } => {
                         if let Some(&cb_id) = cb_map.get(&src) {
-                            if !load_input_cbs.contains(&cb_id) {
-                                load_input_cbs.push(cb_id);
+                            if !load_input_cbs.iter().any(|(id, _)| *id == cb_id) {
+                                let depth = if let Op::Storage { len, .. } = self.ops[src].op {
+                                    len / 1024
+                                } else {
+                                    1
+                                };
+                                load_input_cbs.push((cb_id, depth));
                             }
                         }
                     }
@@ -556,8 +732,8 @@ impl Kernel {
                 }
                 pre_scan = self.next_op(pre_scan);
             }
-            for &cb_id in &load_input_cbs {
-                writeln!(compute, "{indent}cb{cb_id}.wait_front(1);");
+            for &(cb_id, depth) in &load_input_cbs {
+                writeln!(compute, "{indent}cb{cb_id}.wait_front({depth});");
             }
             writeln!(compute, "{indent}tile_regs_acquire();");
 
@@ -704,6 +880,27 @@ impl Kernel {
                             BOp::Cmpge => todo!(),
                         };
                     }
+                    Op::MatmulTile { x, y } => {
+                        let Op::Load { src: cb_a, layout: MemLayout::Tile { .. }, .. } = self.ops[x].op else {
+                            panic!("tenstorrent matmul_tile x must be a tile load from a circular buffer")
+                        };
+                        let Op::Load { src: cb_b, layout: MemLayout::Tile { .. }, .. } = self.ops[y].op else {
+                            panic!("tenstorrent matmul_tile y must be a tile load from a circular buffer")
+                        };
+                        let (Some(&cb_a_id), Some(&cb_b_id)) = (cb_map.get(&cb_a), cb_map.get(&cb_b)) else {
+                            panic!("tenstorrent matmul_tile inputs must be circular buffers")
+                        };
+                        let n = rcs.get(&op_id).copied().unwrap_or(1).max(1) as usize;
+                        let slot = next_slot;
+                        next_slot += 1;
+                        dst_slots.insert(op_id, vec![slot; n]);
+                        // matmul_tiles accumulates into DST, which
+                        // tile_regs_acquire() zeroes up front: each call
+                        // computes slot = previous + A@B. K-loop
+                        // accumulation is expressed in the IR with add,
+                        // never in codegen.
+                        writeln!(compute, "{indent}matmul_tiles({cb_a_id}, {cb_b_id}, 0, 0, {slot});");
+                    }
                     Op::Store { dst, src, index: _, layout: MemLayout::Tile { .. } } => {
                         if let Some(&cb_id) = cb_map.get(&dst) {
                             let idx = consumer_count.entry(src).or_insert(0);
@@ -723,8 +920,8 @@ impl Kernel {
                 writeln!(compute, "{indent}cb{cb_id}.reserve_back(1);");
                 writeln!(compute, "{indent}pack_tile({slot}, {cb_id});");
             }
-            for &loaded_cb in &load_input_cbs {
-                writeln!(compute, "{indent}cb{loaded_cb}.pop_front(1);");
+            for &(loaded_cb, depth) in &load_input_cbs {
+                writeln!(compute, "{indent}cb{loaded_cb}.pop_front({depth});");
             }
             writeln!(compute, "{indent}tile_regs_release();");
             for &(_, cb_id) in &output_stores {

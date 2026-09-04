@@ -2650,7 +2650,7 @@ impl Runtime {
     ///
     /// # Panics
     ///
-    /// If the tensor's buffer pool is owned by no device.
+    /// If the tensor's buffer pool has no devices attached.
     pub fn device(&self, x: TensorId) -> Dev {
         if let Some(buf_id) = self.buffer_map.get(&x) {
             let found = self.devices.iter().find(|(_, device)| device.memory_pool_id() == buf_id.pool);
@@ -2666,7 +2666,29 @@ impl Runtime {
                     #[cfg(feature = "wgpu")]
                     Device::WGPU(_) => todo!(),
                 },
-                None => panic!("device: tensor {x}'s pool {:?} is owned by no device", buf_id.pool),
+                None => {
+                    let mut attached = String::from("[");
+                    for (_, device) in self.devices.iter() {
+                        let name = match device {
+                            Device::C(_) | Device::Cblas(_) => "C",
+                            Device::CUDA(_) => "CUDA",
+                            #[cfg(feature = "tenstorrent")]
+                            Device::TT(_) => "TT",
+                            Device::Vulkan(_) => "Vulkan",
+                            Device::OpenCL(_) => "OpenCL",
+                            Device::HIP(_) => "HIP",
+                            Device::Dummy(_) => "Dummy",
+                            #[cfg(feature = "wgpu")]
+                            Device::WGPU(_) => "WGPU",
+                        };
+                        attached.push_str(&format!("{name} -> {:?}, ", device.memory_pool_id()));
+                    }
+                    attached.push(']');
+                    panic!(
+                        "device: tensor {x} lives in pool {:?}, which has no devices attached. Attached devices: {attached}. The backend operating this pool was likely configured out or never initialized.",
+                        buf_id.pool
+                    )
+                }
             };
         }
         match self.tensors[x] {
@@ -2720,9 +2742,15 @@ impl Runtime {
         #[cfg(feature = "debug_tensor_op")]
         println!("runtime::to_device(x={x}, device={device:?})");
         let device_id = self.resolve_dev(device);
-        if self.device(x) == device {
-            self.retain(x);
-            return Ok(x);
+        let dst_pool = self.devices[device_id].memory_pool_id();
+        // Fast path: tensor already lives in the destination pool. Compares
+        // pools (not devices via device(x)): the source pool may have no
+        // devices attached at all (e.g. disk), which device(x) panics on.
+        if let Some(buf_id) = self.buffer_map.get(&x) {
+            if buf_id.pool == dst_pool {
+                self.retain(x);
+                return Ok(x);
+            }
         }
         match self.tensors[x] {
             TensorData::Leaf { depends_on: kernel_id, shape_id, dtype, .. }
@@ -2734,9 +2762,15 @@ impl Runtime {
                     }
                 }
                 debug_assert!(self.buffer_map.contains_key(&x), "to_device: tensor {x} was not materialized");
-                eprintln!("[RT-MARK] to_device materialized, doing copy");
                 let buf_id = self.buffer_map[&x];
-                let dst_pool = self.devices[device_id].memory_pool_id();
+                // Materialization may have placed x in the destination pool
+                // already (e.g. an unrealized eager tensor on the target
+                // device). Copying pool-to-itself is unsupported: skip it.
+                if buf_id.pool == dst_pool {
+                    self.retain(x);
+                    return Ok(x);
+                }
+                eprintln!("[RT-MARK] to_device materialized, doing copy");
                 let shape = self.resolve_shape(x);
                 let bytes = ((shape.iter().product::<Dim>() * dtype.bit_size() as Dim) + 7) / 8;
                 let alloc_bytes = bytes + dtype.bit_size() as Dim / 8;
