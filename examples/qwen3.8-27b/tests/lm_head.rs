@@ -181,15 +181,32 @@ fn lm_head_cuda() -> Result<(), ZyxError> {
         }
     }
 
-    // Timing.
-    let iters = 1000;
+    // Timing with real Qwen3-8B lm_head dims: vocab 151936, hidden 2048,
+    // tokens 8 (single-token generation). The kernel structure is unchanged —
+    // rows-per-block (32), MMA_N (8) and the warp size are the only constants
+    // baked in, and 151936 % 32 == 0, 2048 % 8 == 0.
+    let weight_r = Tensor::rand([151936i64, 2048i64], DType::F16)?.to(Dev::Cuda(0))?;
+    let input_r = Tensor::rand([TOKENS as i64, 2048i64], DType::F16)?.to(Dev::Cuda(0))?;
+    let hidden_r = Tensor::from(2048i64);
+    let tokens_r = Tensor::from(TOKENS as i64);
+    let glen_x_r = Tensor::from((151936 / ROWS_PER_BLOCK) as i64);
+    let glen_y_r = Tensor::from((TOKENS / MMA_N) as i64);
+
+    let launch_r = || -> Result<Vec<Tensor>, ZyxError> {
+        compiled.forward(
+            &[&hidden_r, &tokens_r, &glen_x_r, &glen_y_r, &weight_r, &input_r],
+            vec![[151936i64, TOKENS as i64]],
+        )
+    };
+
+    let iters = 100;
     let start = Instant::now();
     for _ in 0..iters {
-        launch()?;
+        launch_r()?;
     }
-    let _ = launch()?.remove(0).to_vec::<f32>()?;
+    let _ = launch_r()?.remove(0).to_vec::<f32>()?;
     let us_per_iter = start.elapsed().as_secs_f64() * 1e6 / (iters + 1) as f64;
-    let flops = 2.0 * VOCAB as f64 * TOKENS as f64 * HIDDEN as f64;
+    let flops = 2.0 * 151936.0 * TOKENS as f64 * 2048.0;
     println!(
         "lm_head_cuda: {us_per_iter:.2} µs/iter, {:.2} GFLOP/s",
         flops / us_per_iter / 1e3
