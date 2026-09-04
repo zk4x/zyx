@@ -746,12 +746,14 @@ impl CompiledKernel {
         // Handles must stay alive until the locked body is done: an inline
         // temporary (e.g. `Tensor::from(1024i64)` as a shape dim) drops at the
         // end of the expression and its slab entry is freed with it.
-        let shape_tids: Vec<Vec<TensorId>> =
-            shape_tensors.iter().map(|s| s.iter().map(|t| t.id).collect()).collect();
+        let shape_tids: Vec<Vec<TensorId>> = shape_tensors.iter().map(|s| s.iter().map(|t| t.id).collect()).collect();
         let shape_tids: Vec<&[TensorId]> = shape_tids.iter().map(|s| s.as_slice()).collect();
-        let ids = crate::RT
-            .lock()
-            .forward(self.program, &inputs.iter().map(|t| t.id).collect::<Vec<_>>(), &self.outputs, &shape_tids)?;
+        let ids = crate::RT.lock().forward(
+            self.program,
+            &inputs.iter().map(|t| t.id).collect::<Vec<_>>(),
+            &self.outputs,
+            &shape_tids,
+        )?;
         Ok(ids.into_iter().map(Tensor::from_id).collect())
     }
 }
@@ -969,12 +971,52 @@ impl Runtime {
             } else {
                 self.stack(&dim_tids).expect("custom kernel output: failed to build shape stack")
             };
-            let id =
-                self.tensors.push(TensorData::Leaf { depends_on: KernelId::NULL, shape_id, dtype, device_id: program.device_id, rc: 1 });
+            let id = self.tensors.push(TensorData::Leaf {
+                depends_on: KernelId::NULL,
+                shape_id,
+                dtype,
+                device_id: program.device_id,
+                rc: 1,
+            });
             self.buffer_map.insert(id, buf_id);
             tensors.push(id);
         }
 
         Ok(tensors)
+    }
+}
+
+/// Partition for auto indexing and ease of use
+pub struct RegisterPartition {
+    shape: Vec<OpId>,
+    ids: Vec<OpId>,
+    reg_sizes: Vec<Dim>,
+    dtype: DType,
+}
+
+impl Kernel {
+    pub fn partition<const N: usize>(&mut self, shape: [OpId; N], ids: [OpId; N], reg_sizes: [Dim; N]) -> RegisterPartition {
+        todo!()
+    }
+
+    pub fn acc_init<const N: usize>(&mut self, shape: [Dim; N], dtype: DType) -> RegisterPartition {
+        todo!()
+    }
+
+    /// Returns vec/tile
+    pub fn load_partition(&mut self, x: &RegisterPartition) -> OpId {
+        todo!()
+    }
+
+    pub fn loop_partition(&mut self, partition: &RegisterPartition, axis: u16, f: impl FnOnce(&mut Kernel, OpId)) {
+        todo!()
+    }
+
+    pub fn store_partition(&mut self, global_param: OpId, x: &RegisterPartition) {
+        todo!()
+    }
+
+    pub fn mma(&mut self, acc: &RegisterPartition, a: &RegisterPartition, b: &RegisterPartition) {
+        todo!()
     }
 }
