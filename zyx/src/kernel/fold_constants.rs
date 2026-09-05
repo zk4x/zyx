@@ -648,9 +648,7 @@ impl Kernel {
                 // (const or param). A computed length (binary/unary/...) must
                 // stay in topological order behind its definition.
                 let hoistable = match *kind {
-                    RangeKind::Group(len) => {
-                        self.resolve_const(len).is_some() || matches!(self.at(len), Op::Param { .. })
-                    }
+                    RangeKind::Group(len) => self.resolve_const(len).is_some() || matches!(self.at(len), Op::Param { .. }),
                     RangeKind::Warp(_) => true,
                     RangeKind::Local(_) => true,
                 };

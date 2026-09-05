@@ -1389,10 +1389,8 @@ impl Graph {
             // A Custom node is a member of every one of its output classes, so
             // the queried class selects the matching output's shape metadata.
             Node::Custom { outputs, .. } => {
-                let (_, shape, _) = outputs
-                    .iter()
-                    .find(|(c, _, _)| *c == class)
-                    .expect("Custom node queried outside its output classes");
+                let (_, shape, _) =
+                    outputs.iter().find(|(c, _, _)| *c == class).expect("Custom node queried outside its output classes");
                 self.dims(*shape)
             }
         }
@@ -1547,10 +1545,8 @@ impl Graph {
             Node::Assign { dst, .. } => self.dtype(*dst),
             Node::Kernel { outputs, .. } => self.dtype(outputs[0]),
             Node::Custom { outputs, .. } => {
-                let (_, _, dtype) = outputs
-                    .iter()
-                    .find(|(c, ..)| *c == class)
-                    .expect("Custom node queried outside its output classes");
+                let (_, _, dtype) =
+                    outputs.iter().find(|(c, ..)| *c == class).expect("Custom node queried outside its output classes");
                 *dtype
             }
             Node::Stack { ops } => self.dtype(ops[0]),
@@ -1749,7 +1745,11 @@ impl Runtime {
                 _ => 0,
             };
             let class_id = self.replay_symbolic_into_graph(graph_id, tid);
-            let shape_id = if rank == 0 { TensorId::NULL } else { self.new_constant_tensor(Constant::idx(rank as i64)) };
+            let shape_id = if rank == 0 {
+                TensorId::NULL
+            } else {
+                self.new_constant_tensor(Constant::idx(rank as i64))
+            };
             self.graphs[graph_id].ref_count += 1;
             self.tensors[tid] = TensorData::Graph { class_id, graph_id, shape_id, dtype, rc: rc + 1 };
             return Ok(class_id);

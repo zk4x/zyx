@@ -1366,7 +1366,10 @@ impl Kernel {
                         if src_type == dtype {
                             return Err(BackendError {
                                 status: ErrorStatus::KernelCompilation,
-                                context: format!("SPIR-V: same-type cast {src_type:?} at {op_id:?}, const folding should have removed it").into(),
+                                context: format!(
+                                    "SPIR-V: same-type cast {src_type:?} at {op_id:?}, const folding should have removed it"
+                                )
+                                .into(),
                             });
                         }
                         let src_id = spv_values[&x];
@@ -1429,7 +1432,8 @@ impl Kernel {
                         if src_type == dtype {
                             return Err(BackendError {
                                 status: ErrorStatus::KernelCompilation,
-                                context: format!("SPIR-V: same-type bitcast {src_type:?}, const folding should have removed it").into(),
+                                context: format!("SPIR-V: same-type bitcast {src_type:?}, const folding should have removed it")
+                                    .into(),
                             });
                         }
                         let src_id = spv_values[&x];

@@ -1343,7 +1343,7 @@ pub(super) fn initialize_device(
                                         RangeKind::Group(_) => {}
                                         RangeKind::Local(len) => lws[axis as usize] = len,
                                         // A warp is a view over a local range — adds no threads.
-                    RangeKind::Warp(_) => {}
+                                        RangeKind::Warp(_) => {}
                                     }
                                 }
                                 op_id = kernel.next_op(op_id);
@@ -1386,10 +1386,7 @@ pub(super) fn initialize_device(
                                         panic!("find_mem_type did not finish in 10000 steps");
                                     }
                                     if let crate::kernel::Op::Param { kind, .. } = kernel.at(op)
-                                        && matches!(
-                                            kind,
-                                            crate::kernel::ParamKind::Global | crate::kernel::ParamKind::GlobalMut
-                                        )
+                                        && matches!(kind, crate::kernel::ParamKind::Global | crate::kernel::ParamKind::GlobalMut)
                                     {
                                         n += 1;
                                     }
@@ -1528,13 +1525,8 @@ pub(super) fn initialize_device(
                                     continue;
                                 }
                             };
-                            let id = programs.push(VulkanProgram {
-                                pipeline,
-                                pipeline_layout,
-                                desc_layout,
-                                push_constants_size,
-                                gws,
-                            });
+                            let id =
+                                programs.push(VulkanProgram { pipeline, pipeline_layout, desc_layout, push_constants_size, gws });
                             let _ = reply.send(Ok(id));
                         }
                         VulkanCommand::Launch { program_id, args, mut event_wait_list, reply } => {
@@ -1680,11 +1672,8 @@ pub(super) fn initialize_device(
                                 }));
                                 continue;
                             }
-                            let (gx, gy, gz) = (
-                                u32::try_from(gx).unwrap(),
-                                u32::try_from(gy).unwrap(),
-                                u32::try_from(gz).unwrap(),
-                            );
+                            let (gx, gy, gz) =
+                                (u32::try_from(gx).unwrap(), u32::try_from(gy).unwrap(), u32::try_from(gz).unwrap());
 
                             unsafe {
                                 vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, prog.pipeline);

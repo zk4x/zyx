@@ -60,32 +60,32 @@ fn wmma_matmul() -> Result<(), ZyxError> {
 
     // K loop (k/8 iterations)
     kernel.loop_over(k_div_8, |kernel, k_loop| {
-    let k_off = kernel.mul(k_loop, c8);
+        let k_off = kernel.mul(k_loop, c8);
 
-    // Load A fragment: 4 f16 per thread (m16 × k8)
-    let a_base = kernel.mad(a_row, k_const, k_off);
-    let a_base = kernel.add(a_base, col_in_tile);
-    let a_load_0 = kernel.load(a_buf, a_base);
-    let a_base_p1 = kernel.add(a_base, c1);
-    let a_load_1 = kernel.load(a_buf, a_base_p1);
-    let a_base2 = kernel.mad(c8, k_const, a_base);
-    let a_load_2 = kernel.load(a_buf, a_base2);
-    let a_base2_p1 = kernel.add(a_base2, c1);
-    let a_load_3 = kernel.load(a_buf, a_base2_p1);
-    let a_frag = kernel.stack(&[a_load_0, a_load_1, a_load_2, a_load_3]);
+        // Load A fragment: 4 f16 per thread (m16 × k8)
+        let a_base = kernel.mad(a_row, k_const, k_off);
+        let a_base = kernel.add(a_base, col_in_tile);
+        let a_load_0 = kernel.load(a_buf, a_base);
+        let a_base_p1 = kernel.add(a_base, c1);
+        let a_load_1 = kernel.load(a_buf, a_base_p1);
+        let a_base2 = kernel.mad(c8, k_const, a_base);
+        let a_load_2 = kernel.load(a_buf, a_base2);
+        let a_base2_p1 = kernel.add(a_base2, c1);
+        let a_load_3 = kernel.load(a_buf, a_base2_p1);
+        let a_frag = kernel.stack(&[a_load_0, a_load_1, a_load_2, a_load_3]);
 
-    // Load B fragment: 2 f16 per thread (k8 × n8)
-    let b_row = kernel.add(k_off, col_in_tile);
-    let b_base = kernel.mad(b_row, n_const, b_col);
-    let b_load_0 = kernel.load(b_buf, b_base);
-    let b_base_n = kernel.add(b_base, n_const);
-    let b_load_1 = kernel.load(b_buf, b_base_n);
-    let b_frag = kernel.stack(&[b_load_0, b_load_1]);
+        // Load B fragment: 2 f16 per thread (k8 × n8)
+        let b_row = kernel.add(k_off, col_in_tile);
+        let b_base = kernel.mad(b_row, n_const, b_col);
+        let b_load_0 = kernel.load(b_buf, b_base);
+        let b_base_n = kernel.add(b_base, n_const);
+        let b_load_1 = kernel.load(b_buf, b_base_n);
+        let b_frag = kernel.stack(&[b_load_0, b_load_1]);
 
-    // WMMA: acc = A_frag @ B_frag + acc
-    let acc_old = kernel.load_vector(acc, c0, 4);
-    let acc_new = kernel.wmma(MMADims::m16n8k8, MMALayout::row_col, MMADType::f16_f16_f16_f32, a_frag, b_frag, acc_old);
-    kernel.store_vector(acc, acc_new, c0, 4);
+        // WMMA: acc = A_frag @ B_frag + acc
+        let acc_old = kernel.load_vector(acc, c0, 4);
+        let acc_new = kernel.wmma(MMADims::m16n8k8, MMALayout::row_col, MMADType::f16_f16_f16_f32, a_frag, b_frag, acc_old);
+        kernel.store_vector(acc, acc_new, c0, 4);
     });
 
     // Store result to C

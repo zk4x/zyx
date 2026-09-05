@@ -164,6 +164,10 @@ impl Kernel {
         } else {
             self.device_id
         };
+        // Bind the resolved device so codegen can read dev_info
+        // (mirrors Kernel::new; from_device_id placeholders carry None).
+        self.device_id = device_id;
+        self.dev_info = Some(rt.devices[device_id].info());
         if rt.debug.ir() {
             self.debug();
         }
@@ -1292,5 +1296,148 @@ impl Kernel {
             self.store(c.src, elems[2 * b], o);
             self.store(c.src, elems[2 * b + 1], o_p1);
         }
+    }
+}
+
+/// Shared-memory tile: a `MemScope::Local` buffer bound to a global
+/// partition, filled by [`Kernel::load_local`] and viewed as a plain
+/// [`Partition`] (via [`LocalPartition::storage`] + [`Kernel::partition`])
+/// for `mma` consumption. Carries `depth` buffer generations:
+/// `load_local` writes generation `k_coord % depth`, so `depth = 1` is
+/// classic single buffering and `depth = 2` is double buffering — the
+/// surrounding barrier structure (explicit, user-written) is identical.
+pub struct LocalPartition {
+    /// Global source the tile stages from (validated at `load_local`).
+    src: OpId,
+    /// Element dtype.
+    dtype: DType,
+    /// Tile shape as bound ops; the logical shape of one generation.
+    shape: Vec<OpId>,
+    /// Buffering depth (generations).
+    depth: u32,
+    /// Elements per generation.
+    tile_len: Dim,
+    /// `MemScope::Local` storage of `depth * tile_len` elements.
+    storage: OpId,
+}
+
+impl LocalPartition {
+    /// The underlying `MemScope::Local` storage op — pass to
+    /// [`Kernel::partition`] to obtain a view for `mma`/fragment loads.
+    pub fn storage(&self) -> OpId {
+        self.storage
+    }
+
+    /// Tile shape as bound ops (one generation).
+    pub fn shape(&self) -> &[OpId] {
+        &self.shape
+    }
+}
+
+impl Kernel {
+    /// Create a shared-memory tile for `global`: a `MemScope::Local`
+    /// storage of `depth` generations of `total(shape)` elements.
+    /// `shape` is the tile geometry in the global view's axis order;
+    /// staging is performed by [`Kernel::load_local`]. Emits only the
+    /// `Op::Storage` — no addressing IR.
+    pub fn partition_local<const N: usize>(&mut self, global: &Partition, shape: [OpId; N], depth: u32) -> LocalPartition {
+        debug_assert_eq!(global.shape.len(), N, "partition_local: shape rank must match the global partition");
+        debug_assert!(depth >= 1, "partition_local: depth must be >= 1");
+        let mut tile_len: Dim = 1;
+        for &d in &shape {
+            let dim = self
+                .resolve_const(d)
+                .and_then(crate::dtype::Constant::as_dim)
+                .expect("partition_local: tile shape dim must resolve to a constant (const or variable op)");
+            tile_len *= dim;
+        }
+        debug_assert!(tile_len > 0, "partition_local: tile must be non-empty");
+        let storage = self.storage(global.dtype, MemScope::Local, tile_len * depth as Dim);
+        LocalPartition { src: global.src, dtype: global.dtype, shape: shape.to_vec(), depth, tile_len, storage }
+    }
+
+    /// Cooperatively stage a tile from a global partition into a
+    /// [`LocalPartition`] (shared memory): the block's threads jointly
+    /// load the row-major tile, thread `tid` handling elements
+    /// `tid, tid + T, tid + 2T, ...` (`T` = the enclosing `local_range`
+    /// length; block-linear id = the `warp` op's local id, so the local
+    /// range must be 1-dimensional).
+    ///
+    /// `coords` map positionally to the global view's axes; the LAST
+    /// coord must be the open loop variable — the K axis — and `k` is
+    /// the tile's extent along it (must match the tile shape's last dim).
+    /// The tile lands in generation `coords[last] % depth`.
+    ///
+    /// Emits no barrier: staging handoffs are explicit `barrier()` calls
+    /// in user code (paper-pseudocode style). Divisibility of the tile
+    /// over the block's threads is assumed and asserted. v1: rank-2
+    /// tiles, row-major global views, divisibility of tile bounds.
+    pub fn load_local(&mut self, global: &Partition, shared: &LocalPartition, coords: &[OpId], k: OpId) {
+        debug_assert_eq!(global.shape.len(), coords.len(), "load_local: one coord per global axis");
+        debug_assert_eq!(global.src, shared.src, "load_local: shared tile was not created from this global partition");
+        debug_assert_eq!(global.dtype, shared.dtype, "load_local: shared tile dtype mismatch");
+        debug_assert_eq!(shared.shape.len(), 2, "load_local v1: rank-2 tiles only");
+        let k_dim =
+            self.resolve_const(k).and_then(crate::dtype::Constant::as_dim).expect("load_local: k must resolve to a constant");
+        let tile_k = self
+            .resolve_const(shared.shape[1])
+            .and_then(crate::dtype::Constant::as_dim)
+            .expect("load_local: tile K dim must resolve to a constant");
+        debug_assert_eq!(k_dim, tile_k, "load_local: k must match the tile's K extent");
+
+        // Block-linear thread machinery: the enclosing warp op's local id
+        // (the IR is the state) and the enclosing local_range length.
+        let warp_op = self.open_warp();
+        let tid = match &self.ops[warp_op].op {
+            Op::Range { kind: RangeKind::Warp(local_id), .. } => *local_id,
+            _ => unreachable!("open_warp returned a non-warp range"),
+        };
+        let threads = self.open_local_len();
+        debug_assert!(
+            shared.tile_len % threads as Dim == 0,
+            "load_local: tile of {} elements must divide evenly over {threads} block threads",
+            shared.tile_len
+        );
+        let iters = (shared.tile_len / threads as Dim) as u32;
+
+        // Generation offset: tile lands in buffer `k_coord % depth`
+        // (single buffering: offset 0).
+        let smem_base = if shared.depth > 1 {
+            let cdepth = self.const_idx(shared.depth);
+            let generation = self.mod_(coords[coords.len() - 1], cdepth);
+            let ctile = self.const_idx(shared.tile_len);
+            self.mul(generation, ctile)
+        } else {
+            self.const_idx(0u32)
+        };
+
+        let [ct, ctiles] = self.const_idxs([threads, iters]);
+        let loop_op = self.push_back(Op::Loop { len: ctiles });
+        // Flat tile element f = j * T + tid; row-major tile addressing.
+        let f = self.mad(loop_op, ct, tid);
+        let row = self.div(f, shared.shape[1]);
+        let col = self.mod_(f, shared.shape[1]);
+        let g_row = self.add(coords[0], row);
+        let g_col = self.add(coords[1], col);
+        let col_off = self.stride_mul(g_col, global.strides[1]);
+        let g_idx = self.mad(g_row, global.strides[0], col_off);
+        let s_idx = self.add(smem_base, f);
+        let v = self.load(global.src, g_idx);
+        self.store(shared.storage, v, s_idx);
+        self.push_back(Op::EndLoop);
+    }
+
+    /// Length (u32) of the innermost open `local_range`, found by walking
+    /// back from the tail — the thread count `load_local` distributes
+    /// the tile over.
+    fn open_local_len(&self) -> u32 {
+        let mut op_id = self.tail;
+        while !op_id.is_null() {
+            if let Op::Range { kind: RangeKind::Local(len), .. } = self.ops[op_id].op {
+                return len;
+            }
+            op_id = self.prev_op(op_id);
+        }
+        panic!("load_local: no local_range behind this point — call k.local_range(..) before load_local");
     }
 }

@@ -1346,11 +1346,9 @@ impl Graph {
         let node_ids: Vec<NodeId> = self.nodes.ids().collect();
         for nid in node_ids {
             let custom = match &self.nodes[nid].node {
-                Node::Custom { inputs, outputs, program_id, .. } => Some((
-                    inputs.clone(),
-                    outputs.iter().map(|(c, _, _)| *c).collect::<Vec<ClassId>>(),
-                    *program_id,
-                )),
+                Node::Custom { inputs, outputs, program_id, .. } => {
+                    Some((inputs.clone(), outputs.iter().map(|(c, _, _)| *c).collect::<Vec<ClassId>>(), *program_id))
+                }
                 _ => None,
             };
             if let Some((inputs, outputs, program_id)) = custom {

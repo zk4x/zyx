@@ -345,7 +345,8 @@ impl Drop for Tape {
                                 TensorData::Graph { shape_id, dtype, rc, .. } => (shape_id, dtype, rc),
                                 _ => unreachable!(),
                             };
-                            rt.tensors[tid] = TensorData::Leaf { depends_on: KernelId::NULL, shape_id, dtype, device_id: DeviceId::AUTO, rc };
+                            rt.tensors[tid] =
+                                TensorData::Leaf { depends_on: KernelId::NULL, shape_id, dtype, device_id: DeviceId::AUTO, rc };
                         } else {
                             rt.graphs[graph_id].ref_count -= 1;
                             match &mut rt.tensors[tid] {

@@ -509,8 +509,8 @@ pub(super) fn initialize_device(
                 .enumerate()
                 {
                     let mut value: c_int = 0;
-                    if let Err(err) = unsafe { (cuDeviceGetAttribute)(&raw mut value, attr, device) }
-                        .check(ErrorStatus::DeviceQuery)
+                    if let Err(err) =
+                        unsafe { (cuDeviceGetAttribute)(&raw mut value, attr, device) }.check(ErrorStatus::DeviceQuery)
                     {
                         if debug_dev {
                             println!("[cuda] device {dev_id}: grid dim query failed: {err:?}");
@@ -753,11 +753,8 @@ pub(super) fn initialize_device(
                                         }));
                                         continue 'work_thread_loop;
                                     }
-                                    let (gx, gy, gz) = (
-                                        u32::try_from(gx).unwrap(),
-                                        u32::try_from(gy).unwrap(),
-                                        u32::try_from(gz).unwrap(),
-                                    );
+                                    let (gx, gy, gz) =
+                                        (u32::try_from(gx).unwrap(), u32::try_from(gy).unwrap(), u32::try_from(gz).unwrap());
                                     unsafe {
                                         (cuLaunchKernel)(
                                             *function,

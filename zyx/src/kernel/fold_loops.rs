@@ -691,24 +691,24 @@ mod tests {
         let lc = k.const_idx(loop_len as i64);
         let mut loop_id = OpId::NULL;
         k.loop_over(lc, |k, lv| {
-        loop_id = lv;
+            loop_id = lv;
 
-        // Some computation before load(acc) — e.g. loading source
-        let _source = k.const_val(42.0f32); // simplified: no tensor load
+            // Some computation before load(acc) — e.g. loading source
+            let _source = k.const_val(42.0f32); // simplified: no tensor load
 
-        // LOAD ACC — identify_accumulate_pattern finds this
-        let load_acc = k.load(acc, zi);
+            // LOAD ACC — identify_accumulate_pattern finds this
+            let load_acc = k.load(acc, zi);
 
-        // Accumulated value computation AFTER load(acc) — interleaved!
-        let index_val = k.const_idx(5u32);
-        let eq = k.binary(loop_id, index_val, BOp::Eq);
-        let eq_f32 = k.cast(eq, DType::F32);
-        let _src = k.const_val(42.0f32); // source value (could be from tensor load above)
-        let mul = k.binary(eq_f32, _src, BOp::Mul);
+            // Accumulated value computation AFTER load(acc) — interleaved!
+            let index_val = k.const_idx(5u32);
+            let eq = k.binary(loop_id, index_val, BOp::Eq);
+            let eq_f32 = k.cast(eq, DType::F32);
+            let _src = k.const_val(42.0f32); // source value (could be from tensor load above)
+            let mul = k.binary(eq_f32, _src, BOp::Mul);
 
-        // ADD: references load_acc (tmp), but next_op(load_acc) is NOT add
-        let add = k.binary(mul, load_acc, BOp::Add);
-        k.store(acc, add, zi);
+            // ADD: references load_acc (tmp), but next_op(load_acc) is NOT add
+            let add = k.binary(mul, load_acc, BOp::Add);
+            k.store(acc, add, zi);
         });
         let _result = k.load(acc, zi);
 
@@ -727,17 +727,17 @@ mod tests {
         let lc = k.const_idx(loop_len as i64);
         let mut loop_id = OpId::NULL;
         k.loop_over(lc, |k, lv| {
-        loop_id = lv;
+            loop_id = lv;
 
-        let index_val = k.const_idx(5u32);
-        let eq = k.binary(loop_id, index_val, BOp::Eq);
-        let eq_f32 = k.cast(eq, DType::F32);
-        let source = k.const_val(42.0f32);
-        let mul = k.binary(eq_f32, source, BOp::Mul);
+            let index_val = k.const_idx(5u32);
+            let eq = k.binary(loop_id, index_val, BOp::Eq);
+            let eq_f32 = k.cast(eq, DType::F32);
+            let source = k.const_val(42.0f32);
+            let mul = k.binary(eq_f32, source, BOp::Mul);
 
-        let load_acc = k.load(acc, zi);
-        let add = k.binary(mul, load_acc, BOp::Add);
-        k.store(acc, add, zi);
+            let load_acc = k.load(acc, zi);
+            let add = k.binary(mul, load_acc, BOp::Add);
+            k.store(acc, add, zi);
         });
         let result = k.load(acc, zi);
 
@@ -788,23 +788,23 @@ mod tests {
         let c5 = k.const_idx(5u32);
         let mut loop_id = OpId::NULL;
         k.loop_over(c5, |k, lv| {
-        loop_id = lv;
+            loop_id = lv;
 
-        let r20 = k.cast(loop_id, DType::I32);
-        let r96 = k.load(r95, r92);
-        let r111 = k.binary(r71, loop_id, BOp::Add);
-        let r115 = k.load(r114, r111);
-        let r18 = k.load(r1, r7);
-        let r24 = k.cast(r96, DType::I32);
-        let r29 = k.binary(r24, r26, BOp::Cmplt);
-        let r30 = k.cast(r29, DType::I32);
-        let r118 = k.binary(r30, r31, BOp::Mul);
-        let r35 = k.binary(r24, r118, BOp::Add);
-        let r38 = k.binary(r35, r20, BOp::Eq);
-        let r39 = k.cast(r38, DType::U16);
-        let r97 = k.binary(r39, r115, BOp::Mul);
-        let r42 = k.binary(r97, r18, BOp::Add);
-        k.store(r1, r42, r7);
+            let r20 = k.cast(loop_id, DType::I32);
+            let r96 = k.load(r95, r92);
+            let r111 = k.binary(r71, loop_id, BOp::Add);
+            let r115 = k.load(r114, r111);
+            let r18 = k.load(r1, r7);
+            let r24 = k.cast(r96, DType::I32);
+            let r29 = k.binary(r24, r26, BOp::Cmplt);
+            let r30 = k.cast(r29, DType::I32);
+            let r118 = k.binary(r30, r31, BOp::Mul);
+            let r35 = k.binary(r24, r118, BOp::Add);
+            let r38 = k.binary(r35, r20, BOp::Eq);
+            let r39 = k.cast(r38, DType::U16);
+            let r97 = k.binary(r39, r115, BOp::Mul);
+            let r42 = k.binary(r97, r18, BOp::Add);
+            k.store(r1, r42, r7);
         });
 
         let r46 = k.load(r1, r7);
@@ -867,20 +867,20 @@ mod tests {
 
         let mut loop_id = OpId::NULL;
         k.loop_over(r15, |k, lv| {
-        loop_id = lv;
+            loop_id = lv;
 
-        let r30 = k.load(r29, r26);
-        let r39 = k.load(r38, loop_id);
-        let r4 = k.binary(r30, r39, BOp::Eq);
-        let r5 = k.cast(r4, DType::F32);
-        let r44 = k.binary(loop_id, r25, BOp::Mul);
-        let r46 = k.binary(r10, r44, BOp::Add);
-        let r50 = k.load(r49, r46);
-        let r11 = k.binary(r5, r50, BOp::Mul);
-        let r12 = k.cast(r11, DType::F32);
-        let r17 = k.load(r3, r1);
-        let r18 = k.binary(r12, r17, BOp::Add);
-        k.store(r3, r18, r1);
+            let r30 = k.load(r29, r26);
+            let r39 = k.load(r38, loop_id);
+            let r4 = k.binary(r30, r39, BOp::Eq);
+            let r5 = k.cast(r4, DType::F32);
+            let r44 = k.binary(loop_id, r25, BOp::Mul);
+            let r46 = k.binary(r10, r44, BOp::Add);
+            let r50 = k.load(r49, r46);
+            let r11 = k.binary(r5, r50, BOp::Mul);
+            let r12 = k.cast(r11, DType::F32);
+            let r17 = k.load(r3, r1);
+            let r18 = k.binary(r12, r17, BOp::Add);
+            k.store(r3, r18, r1);
         });
 
         let r13 = k.load(r3, r1);
@@ -944,18 +944,18 @@ mod tests {
 
         let mut loop_id = OpId::NULL;
         k.loop_over(r10, |k, lv| {
-        loop_id = lv;
+            loop_id = lv;
 
-        let r30 = k.load(r29, loop_id);
-        let r39 = k.load(r38, r7);
-        let r4 = k.binary(r30, r39, BOp::Eq);
-        let r5 = k.cast(r4, DType::I32);
-        let r48 = k.load(r47, loop_id);
-        let r8 = k.binary(r5, r48, BOp::Mul);
-        let r11 = k.cast(r8, DType::I32);
-        let r19 = k.load(r9, r14);
-        let r20 = k.binary(r11, r19, BOp::Add);
-        k.store(r9, r20, r14);
+            let r30 = k.load(r29, loop_id);
+            let r39 = k.load(r38, r7);
+            let r4 = k.binary(r30, r39, BOp::Eq);
+            let r5 = k.cast(r4, DType::I32);
+            let r48 = k.load(r47, loop_id);
+            let r8 = k.binary(r5, r48, BOp::Mul);
+            let r11 = k.cast(r8, DType::I32);
+            let r19 = k.load(r9, r14);
+            let r20 = k.binary(r11, r19, BOp::Add);
+            k.store(r9, r20, r14);
         });
 
         let r12 = k.load(r9, r14);
@@ -1002,19 +1002,18 @@ mod tests {
 
         let ilen = k.const_idx(2u32);
         k.loop_over(ilen, |k, loop_id| {
-
-        let i2 = k.binary(loop_id, loop_id, BOp::Add);
-        let body = k.binary(g, i2, BOp::Add);
-        let c1 = k.const_idx(1u32);
-        let b2 = k.binary(c1, body, BOp::Add);
-        let shr1 = k.const_idx(1u32);
-        let sh = k.binary(b2, shr1, BOp::BitShiftRight);
-        let z = k.const_idx(0u32);
-        let cmp = k.binary(sh, z, BOp::Cmpgt);
-        let mask = k.cast(cmp, DType::I32);
-        let l = k.load(acc, zi);
-        let sum = k.binary(mask, l, BOp::Add);
-        k.store(acc, sum, zi);
+            let i2 = k.binary(loop_id, loop_id, BOp::Add);
+            let body = k.binary(g, i2, BOp::Add);
+            let c1 = k.const_idx(1u32);
+            let b2 = k.binary(c1, body, BOp::Add);
+            let shr1 = k.const_idx(1u32);
+            let sh = k.binary(b2, shr1, BOp::BitShiftRight);
+            let z = k.const_idx(0u32);
+            let cmp = k.binary(sh, z, BOp::Cmpgt);
+            let mask = k.cast(cmp, DType::I32);
+            let l = k.load(acc, zi);
+            let sum = k.binary(mask, l, BOp::Add);
+            k.store(acc, sum, zi);
         });
 
         let res = k.load(acc, zi);
@@ -1087,33 +1086,32 @@ mod tests {
         let r81 = k.storage(DType::I64, MemScope::Register, 1);
         k.store(r81, c0i, c0);
         k.loop_over(c8, |k, r84| {
-
-        let r88 = k.load(r81, c0);
-        let r95 = k.mad(r84, c8, c0);
-        let r96 = k.mad(r75, c1, r95);
-        let r98 = k.div(r96, c8);
-        let r99 = k.mod_(r96, c8);
-        let _r102 = k.div(r99, c1);
-        let r103 = k.mod_(r99, c1);
-        let r113 = k.mad(r98, c8, c0);
-        let r114 = k.mad(_r102, c1, r113);
-        let r115 = k.mad(r103, c1, r114);
-        let r117 = k.div(r115, c8);
-        let r118 = k.mod_(r115, c8);
-        let r126 = k.mad(r117, c16, c0);
-        let r127 = k.mad(r118, c1, r126);
-        let r132 = k.mad(r127, c1, c0);
-        let r134 = k.div(r132, c15);
-        let r135 = k.mod_(r132, c15);
-        let r140 = k.mad(r134, c0, c0);
-        let r141 = k.mad(r135, c1, r140);
-        let r148 = k.cmpgt(r141, c6);
-        let r149 = k.and_(r148, ctrue);
-        let r150 = k.cast(r149, DType::I64);
-        let r0 = k.mul(r150, c1i);
-        let r13 = k.cast(r0, DType::I64);
-        let r89 = k.add(r13, r88);
-        k.store(r81, r89, c0);
+            let r88 = k.load(r81, c0);
+            let r95 = k.mad(r84, c8, c0);
+            let r96 = k.mad(r75, c1, r95);
+            let r98 = k.div(r96, c8);
+            let r99 = k.mod_(r96, c8);
+            let _r102 = k.div(r99, c1);
+            let r103 = k.mod_(r99, c1);
+            let r113 = k.mad(r98, c8, c0);
+            let r114 = k.mad(_r102, c1, r113);
+            let r115 = k.mad(r103, c1, r114);
+            let r117 = k.div(r115, c8);
+            let r118 = k.mod_(r115, c8);
+            let r126 = k.mad(r117, c16, c0);
+            let r127 = k.mad(r118, c1, r126);
+            let r132 = k.mad(r127, c1, c0);
+            let r134 = k.div(r132, c15);
+            let r135 = k.mod_(r132, c15);
+            let r140 = k.mad(r134, c0, c0);
+            let r141 = k.mad(r135, c1, r140);
+            let r148 = k.cmpgt(r141, c6);
+            let r149 = k.and_(r148, ctrue);
+            let r150 = k.cast(r149, DType::I64);
+            let r0 = k.mul(r150, c1i);
+            let r13 = k.cast(r0, DType::I64);
+            let r89 = k.add(r13, r88);
+            k.store(r81, r89, c0);
         });
 
         let r14 = k.load(r81, c0);
@@ -1164,15 +1162,14 @@ mod tests {
 
         let ilen = k.const_idx(60u32);
         k.loop_over(ilen, |k, loop_id| {
-
-        // r350 = g + loop
-        let r350 = k.binary(g, loop_id, BOp::Add);
-        let c59 = k.const_idx(59u32);
-        let cmp = k.binary(r350, c59, BOp::Cmpge);
-        let mask = k.cast(cmp, DType::I64);
-        let l = k.load(acc, zi);
-        let sum = k.binary(mask, l, BOp::Add);
-        k.store(acc, sum, zi);
+            // r350 = g + loop
+            let r350 = k.binary(g, loop_id, BOp::Add);
+            let c59 = k.const_idx(59u32);
+            let cmp = k.binary(r350, c59, BOp::Cmpge);
+            let mask = k.cast(cmp, DType::I64);
+            let l = k.load(acc, zi);
+            let sum = k.binary(mask, l, BOp::Add);
+            k.store(acc, sum, zi);
         });
 
         let res = k.load(acc, zi);

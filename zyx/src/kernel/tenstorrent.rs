@@ -229,8 +229,8 @@ impl Kernel {
             if src_to_local.contains_key(&src) {
                 continue;
             }
-            let local = self
-                .insert_after(last_global, Op::Storage { dtype: self.dtype(src), scope: MemScope::Circular, len: 1024 });
+            let local =
+                self.insert_after(last_global, Op::Storage { dtype: self.dtype(src), scope: MemScope::Circular, len: 1024 });
             last_global = local;
             src_to_local.insert(src, local);
         }
@@ -635,8 +635,7 @@ impl Kernel {
             if src_to_cb.contains_key(&src) {
                 continue;
             }
-            let cb = self
-                .insert_after(last_global, Op::Storage { dtype: self.dtype(src), scope: MemScope::Circular, len: 1024 });
+            let cb = self.insert_after(last_global, Op::Storage { dtype: self.dtype(src), scope: MemScope::Circular, len: 1024 });
             last_global = cb;
             src_to_cb.insert(src, cb);
         }

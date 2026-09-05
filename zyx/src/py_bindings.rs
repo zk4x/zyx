@@ -4,8 +4,8 @@
 //! Python bindings for zyx - updated for symbolic shapes
 
 use crate::DebugMask;
-use crate::kernel::{CompiledKernel, Kernel, MemLayout, MemScope, OpId, ParamKind};
 use crate::Dev;
+use crate::kernel::{CompiledKernel, Kernel, MemLayout, MemScope, OpId, ParamKind};
 use crate::shape::Dim;
 use crate::tape::FrozenTape;
 use crate::tensor::{Axis, DebugGuard, ReduceOp};

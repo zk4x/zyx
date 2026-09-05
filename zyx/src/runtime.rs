@@ -2071,7 +2071,11 @@ impl Runtime {
         };
         // NULL device (unbound placeholder) gets no info, mirroring the old
         // from_device_id behavior — without taking the RT lock (not reentrant).
-        let dev_info = if device_id.is_null() { None } else { Some(self.devices[device_id].info()) };
+        let dev_info = if device_id.is_null() {
+            None
+        } else {
+            Some(self.devices[device_id].info())
+        };
         let kernel_id = self.kernels.push(KernelData {
             outputs: Set::default(),
             loads: Vec::new(),

@@ -691,7 +691,8 @@ pub(super) fn initialize_device(
                                 if *g < 0 || *g > max_grid[i] {
                                     let _ = reply.send(Err(BackendError {
                                         status: ErrorStatus::KernelLaunch,
-                                        context: format!("global work size dim {i} {g} exceeds device max {}", max_grid[i]).into(),
+                                        context: format!("global work size dim {i} {g} exceeds device max {}", max_grid[i])
+                                            .into(),
                                     }));
                                     continue 'work_thread_loop;
                                 }
@@ -739,7 +740,12 @@ pub(super) fn initialize_device(
 
         memory_pools.push(MemoryPool::OpenCL(OpenCLMemoryPool { tx: tx.clone(), total_bytes, free_bytes: free_bytes_atomic }));
         for (orig_idx, dev_info) in dev_infos.into_iter() {
-            devices.push(Device::OpenCL(OpenCLDevice { tx: tx.clone(), dev_info: Arc::new(dev_info), memory_pool_id, device_idx: orig_idx }));
+            devices.push(Device::OpenCL(OpenCLDevice {
+                tx: tx.clone(),
+                dev_info: Arc::new(dev_info),
+                memory_pool_id,
+                device_idx: orig_idx,
+            }));
         }
         memory_pool_id += 1;
     }
@@ -970,7 +976,13 @@ fn query_device_info(
     // No portable global-size query exists in OpenCL; hardcode the limits the
     // major implementations (NVIDIA/AMD) enforce: x up to 2^31-1, y/z 65535.
     let max_global_work_dims: Vec<Dim> = (0..max_work_item_dims)
-        .map(|i| if i == 0 { Dim::from(2_147_483_647i64) } else { Dim::from(65_535i64) })
+        .map(|i| {
+            if i == 0 {
+                Dim::from(2_147_483_647i64)
+            } else {
+                Dim::from(65_535i64)
+            }
+        })
         .collect();
     *dev_info = DeviceInfo {
         compute: 1024 * 1024 * 1024,

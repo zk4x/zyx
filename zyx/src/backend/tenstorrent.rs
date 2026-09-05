@@ -894,13 +894,8 @@ impl TTDevice {
             })
             .collect();
 
-        let (reader, compute, writer) = kernel.generate_tenstorrent(
-            debug_asm,
-            &cb_map,
-            &reader_params,
-            &compute_params,
-            &writer_params,
-        )?;
+        let (reader, compute, writer) =
+            kernel.generate_tenstorrent(debug_asm, &cb_map, &reader_params, &compute_params, &writer_params)?;
 
         let prog_id = self.programs.push(TTProgram { input_dtypes, output_dtypes, gws });
 

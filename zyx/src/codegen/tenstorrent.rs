@@ -205,7 +205,10 @@ impl Kernel {
                             let Some(&cb) = cb_map.get(&dst) else {
                                 panic!("tenstorrent reader stores must target circular buffers, op {scan} targets {dst}");
                             };
-                            bals.iter_mut().find(|b| b.cb == cb).expect("tenstorrent op hit a CB missing from cb_map").reader_store = true;
+                            bals.iter_mut()
+                                .find(|b| b.cb == cb)
+                                .expect("tenstorrent op hit a CB missing from cb_map")
+                                .reader_store = true;
                         } else if section == 1 {
                             if !matches!(layout, MemLayout::Tile { .. }) {
                                 panic!("tenstorrent compute stores must be tiles, op {scan} is {layout:?}");
@@ -213,7 +216,10 @@ impl Kernel {
                             let Some(&cb) = cb_map.get(&dst) else {
                                 panic!("tenstorrent compute stores must target circular buffers, op {scan} targets {dst}");
                             };
-                            bals.iter_mut().find(|b| b.cb == cb).expect("tenstorrent op hit a CB missing from cb_map").compute_stores += trip;
+                            bals.iter_mut()
+                                .find(|b| b.cb == cb)
+                                .expect("tenstorrent op hit a CB missing from cb_map")
+                                .compute_stores += trip;
                             if !compute_out_cbs.contains(&cb) {
                                 compute_out_cbs.push(cb);
                             }
@@ -229,7 +235,10 @@ impl Kernel {
                                         MemLayout::Tile { x, y, .. } => x as i64 * y as i64 * elem,
                                         _ => panic!("tenstorrent CB balance: unsupported writer layout {layout:?}"),
                                     };
-                                    bals.iter_mut().find(|b| b.cb == cb).expect("tenstorrent op hit a CB missing from cb_map").writer_bytes += trip * bytes;
+                                    bals.iter_mut()
+                                        .find(|b| b.cb == cb)
+                                        .expect("tenstorrent op hit a CB missing from cb_map")
+                                        .writer_bytes += trip * bytes;
                                 }
                             }
                         } else {
@@ -242,8 +251,7 @@ impl Kernel {
                         }
                         if section == 1 {
                             if let Some(&cb) = cb_map.get(&src) {
-                                bals
-                                    .iter_mut()
+                                bals.iter_mut()
                                     .find(|b| b.cb == cb)
                                     .expect("tenstorrent op hit a CB missing from cb_map")
                                     .compute_load = true;
@@ -416,10 +424,7 @@ impl Kernel {
                                         "{indent}noc_async_read(rnoc{op_id}, rbase{cb_id} + (uint32_t)(r{st_idx}*{elem_size}), {elem_size});"
                                     );
                                 }
-                                (
-                                    MemLayout::Tile { x, y, .. },
-                                    MemLayout::Tile { .. },
-                                ) => {
+                                (MemLayout::Tile { x, y, .. }, MemLayout::Tile { .. }) => {
                                     // Whole-tile DRAM -> CB transfer (tile-layout
                                     // DRAM): a single sequential NOC read.
                                     // Reference pattern (TT's own readers):
@@ -429,12 +434,8 @@ impl Kernel {
                                     // reserves overwrites the same page (last
                                     // tile wins, later pages stay empty).
                                     // Inside loops keep the old batched shape.
-                                    let tile_bytes =
-                                        x as u32 * y as u32 * elem_size;
-                                    writeln!(
-                                        reader,
-                                        "{indent}cb{cb_id}.reserve_back(1);"
-                                    );
+                                    let tile_bytes = x as u32 * y as u32 * elem_size;
+                                    writeln!(reader, "{indent}cb{cb_id}.reserve_back(1);");
                                     writeln!(
                                         reader,
                                         "{indent}uint64_t rnoc{op_id} = p{ld_src}.get_noc_addr((uint32_t)((r{ld_idx}*{elem_size})/{PAGE_SIZE}), (uint32_t)((r{ld_idx}*{elem_size})%{PAGE_SIZE}));"
@@ -706,9 +707,7 @@ impl Kernel {
                     }
                     sec = self.next_op(sec);
                 }
-                let sole_user = |v: OpId, who: OpId| {
-                    matches!(consumers.get(&v), Some(users) if users.as_slice() == [who])
-                };
+                let sole_user = |v: OpId, who: OpId| matches!(consumers.get(&v), Some(users) if users.as_slice() == [who]);
                 let mut open: Map<OpId, usize> = Map::default();
                 let mut members: Vec<Vec<OpId>> = Vec::new();
                 let mut chain_seeds: Vec<OpId> = Vec::new();
@@ -752,44 +751,41 @@ impl Kernel {
                                 // Accumulator chain: add(acc, m) where acc is
                                 // a zero seed or a previously folded add.
                                 let (m, a) = if matches!(self.ops[x].op, Op::MatmulTile { .. }) {
-                                (x, y)
-                            } else if matches!(self.ops[y].op, Op::MatmulTile { .. }) {
-                                (y, x)
-                            } else {
-                                (OpId::NULL, OpId::NULL)
-                            };
-                            if !m.is_null()
-                                && rcs.get(&m).copied().unwrap_or(0) == 1
-                                && sole_user(m, walk)
-                                && rcs.get(&walk).copied().unwrap_or(0) == 1
-                            {
-                                eprintln!("TEMP fold struct-ok {walk} m={m} a={a}"); // TEMP debug
-                                if let Some(&c) = open.get(&a) {
-                                    folded_adds.insert(walk);
-                                    matmul_chain.insert(m, c);
-                                    members[c].push(walk);
-                                    chain_mats[c].push(m);
-                                    open.remove(&a);
-                                    open.insert(walk, c);
-                                } else if let Op::Const(k) = &self.ops[a].op {
-                                    if is_zero(k)
-                                        && rcs.get(&a).copied().unwrap_or(0) == 1
-                                        && sole_user(a, walk)
-                                    {
-                                        let c = members.len();
-                                        members.push(vec![walk]);
-                                        chain_seeds.push(a);
-                                        chain_mats.push(vec![m]);
+                                    (x, y)
+                                } else if matches!(self.ops[y].op, Op::MatmulTile { .. }) {
+                                    (y, x)
+                                } else {
+                                    (OpId::NULL, OpId::NULL)
+                                };
+                                if !m.is_null()
+                                    && rcs.get(&m).copied().unwrap_or(0) == 1
+                                    && sole_user(m, walk)
+                                    && rcs.get(&walk).copied().unwrap_or(0) == 1
+                                {
+                                    eprintln!("TEMP fold struct-ok {walk} m={m} a={a}"); // TEMP debug
+                                    if let Some(&c) = open.get(&a) {
                                         folded_adds.insert(walk);
-                                        folded_seeds.insert(a);
                                         matmul_chain.insert(m, c);
+                                        members[c].push(walk);
+                                        chain_mats[c].push(m);
+                                        open.remove(&a);
                                         open.insert(walk, c);
+                                    } else if let Op::Const(k) = &self.ops[a].op {
+                                        if is_zero(k) && rcs.get(&a).copied().unwrap_or(0) == 1 && sole_user(a, walk) {
+                                            let c = members.len();
+                                            members.push(vec![walk]);
+                                            chain_seeds.push(a);
+                                            chain_mats.push(vec![m]);
+                                            folded_adds.insert(walk);
+                                            folded_seeds.insert(a);
+                                            matmul_chain.insert(m, c);
+                                            open.insert(walk, c);
+                                        }
                                     }
                                 }
                             }
                         }
                     }
-                }
                     walk = self.next_op(walk);
                 }
                 // Roll back chains whose tail does not feed exactly one CB store.
@@ -836,9 +832,7 @@ impl Kernel {
                                 }
                                 s2 = self.next_op(s2);
                             }
-                            if !uses.is_empty()
-                                && uses.iter().all(|&u| matches!(self.ops[u].op, Op::MatmulTile { .. }))
-                            {
+                            if !uses.is_empty() && uses.iter().all(|&u| matches!(self.ops[u].op, Op::MatmulTile { .. })) {
                                 matmul_only_loads.insert(sec);
                             }
                         }
@@ -879,9 +873,7 @@ impl Kernel {
                         // Folded K-accumulation adds emit nothing (DST
                         // accumulation), so they contribute no init or fill.
                         if !folded_adds.contains(&scan) {
-                            if matches!(self.ops[x].op, Op::Const(_))
-                                || matches!(self.ops[y].op, Op::Const(_))
-                            {
+                            if matches!(self.ops[x].op, Op::Const(_)) || matches!(self.ops[y].op, Op::Const(_)) {
                                 has_fill = true;
                             }
                             if let Some(init) = tt_binary_init(bop) {
@@ -1197,27 +1189,27 @@ impl Kernel {
                             *y_idx += 1;
                             let n = rcs.get(&op_id).copied().unwrap_or(1).max(1) as usize;
                             dst_slots.insert(op_id, vec![slot_x; n]);
-                        match bop {
-                            BOp::Add => writeln!(compute, "{indent}add_binary_tile({slot_x}, {slot_y}, {slot_x});"),
-                            BOp::Sub => writeln!(compute, "{indent}sub_binary_tile({slot_x}, {slot_y}, {slot_x});"),
-                            BOp::Mul => writeln!(compute, "{indent}mul_binary_tile({slot_x}, {slot_y}, {slot_x});"),
-                            BOp::Div => writeln!(compute, "{indent}div_binary_tile({slot_x}, {slot_y}, {slot_x});"),
-                            BOp::Pow => todo!(),
-                            BOp::Mod => todo!(),
-                            BOp::Cmplt => todo!(),
-                            BOp::Cmpgt => todo!(),
-                            BOp::Max => todo!(),
-                            BOp::Or => todo!(),
-                            BOp::And => todo!(),
-                            BOp::BitXor => todo!(),
-                            BOp::BitOr => todo!(),
-                            BOp::BitAnd => todo!(),
-                            BOp::BitShiftLeft => todo!(),
-                            BOp::BitShiftRight => todo!(),
-                            BOp::NotEq => todo!(),
-                            BOp::Eq => todo!(),
-                            BOp::Cmpge => todo!(),
-                        };
+                            match bop {
+                                BOp::Add => writeln!(compute, "{indent}add_binary_tile({slot_x}, {slot_y}, {slot_x});"),
+                                BOp::Sub => writeln!(compute, "{indent}sub_binary_tile({slot_x}, {slot_y}, {slot_x});"),
+                                BOp::Mul => writeln!(compute, "{indent}mul_binary_tile({slot_x}, {slot_y}, {slot_x});"),
+                                BOp::Div => writeln!(compute, "{indent}div_binary_tile({slot_x}, {slot_y}, {slot_x});"),
+                                BOp::Pow => todo!(),
+                                BOp::Mod => todo!(),
+                                BOp::Cmplt => todo!(),
+                                BOp::Cmpgt => todo!(),
+                                BOp::Max => todo!(),
+                                BOp::Or => todo!(),
+                                BOp::And => todo!(),
+                                BOp::BitXor => todo!(),
+                                BOp::BitOr => todo!(),
+                                BOp::BitAnd => todo!(),
+                                BOp::BitShiftLeft => todo!(),
+                                BOp::BitShiftRight => todo!(),
+                                BOp::NotEq => todo!(),
+                                BOp::Eq => todo!(),
+                                BOp::Cmpge => todo!(),
+                            };
                         }
                     }
                     Op::MatmulTile { x, y } => {
@@ -1274,17 +1266,17 @@ impl Kernel {
                                 s
                             };
                             dst_slots.insert(op_id, vec![slot; n]);
-                        // matmul_tiles accumulates into DST, which
-                        // tile_regs_acquire() zeroes up front: each call
-                        // computes slot = previous + A@B. Pure K-loop
-                        // accumulation is folded onto DST by codegen (see
-                        // folded_adds); only non-foldable adds are emitted.
-                        writeln!(compute, "{indent}matmul_tiles({cb_a_id}, {cb_b_id}, {tile_a}, {tile_b}, {slot});");
-                        // No pops between chain matmuls: popping before a
-                        // later FPU consumption defeats it (adds nothing);
-                        // the epilogue drains everything once at the end.
-                        // (Upfront wait_front(depth) already guarantees all
-                        // tiles are present.)
+                            // matmul_tiles accumulates into DST, which
+                            // tile_regs_acquire() zeroes up front: each call
+                            // computes slot = previous + A@B. Pure K-loop
+                            // accumulation is folded onto DST by codegen (see
+                            // folded_adds); only non-foldable adds are emitted.
+                            writeln!(compute, "{indent}matmul_tiles({cb_a_id}, {cb_b_id}, {tile_a}, {tile_b}, {slot});");
+                            // No pops between chain matmuls: popping before a
+                            // later FPU consumption defeats it (adds nothing);
+                            // the epilogue drains everything once at the end.
+                            // (Upfront wait_front(depth) already guarantees all
+                            // tiles are present.)
                         }
                     }
                     Op::Store { dst, src, index: _, layout: MemLayout::Tile { .. } } => {
@@ -1538,8 +1530,8 @@ impl Kernel {
         }
 
         let mut loop_depth = 0u32;
-            let mut steps_op_id = 0usize;
-            while !op_id.is_null() {
+        let mut steps_op_id = 0usize;
+        while !op_id.is_null() {
             steps_op_id += 1;
             if steps_op_id > 10_000 {
                 panic!("tt_binary_init did not finish in 10000 steps");

@@ -441,7 +441,11 @@ impl Kernel {
                     let (idx_expr, max_idx) = match scope {
                         // Dynamic dims are `-1`; the bound is only a source comment.
                         RangeKind::Group(len_id) => {
-                            let max = self.resolve_const(len_id).and_then(crate::dtype::Constant::as_dim).unwrap_or(-1).saturating_sub(1);
+                            let max = self
+                                .resolve_const(len_id)
+                                .and_then(crate::dtype::Constant::as_dim)
+                                .unwrap_or(-1)
+                                .saturating_sub(1);
                             (format!("blockIdx.{axis_letter}"), max)
                         }
                         RangeKind::Local(len) => (format!("threadIdx.{axis_letter}"), i64::from(len).saturating_sub(1)),
@@ -449,7 +453,10 @@ impl Kernel {
                         // referenced local range is emitted before (head order),
                         // so its index variable already exists.
                         RangeKind::Warp(local_id) => {
-                            let lidx = indices.get(&local_id).copied().expect("warp range must reference an already-emitted local range");
+                            let lidx = indices
+                                .get(&local_id)
+                                .copied()
+                                .expect("warp range must reference an already-emitted local range");
                             let warp_size = self.dev_info().warp_size;
                             (format!("idx{lidx} % {warp_size}"), i64::from(warp_size) - 1)
                         }

@@ -124,8 +124,7 @@ impl Kernel {
                             }
                         }
                     },
-                    Op::Storage { scope: MemScope::Local, .. }
-                    | Op::Storage { scope: MemScope::Circular, .. } => {
+                    Op::Storage { scope: MemScope::Local, .. } | Op::Storage { scope: MemScope::Circular, .. } => {
                         if phase == Phase::GlobalRo || phase == Phase::GlobalRw || phase == Phase::LocalRo {
                             phase = Phase::LocalRw;
                         }
@@ -336,7 +335,9 @@ impl Kernel {
                             match self.ops[local_id].op {
                                 Op::Range { axis: ref_axis, kind: RangeKind::Local(_) } if ref_axis == axis => {}
                                 _ => {
-                                    println!("index={op_id} warp references op {local_id}, which is not a local range on axis {axis}");
+                                    println!(
+                                        "index={op_id} warp references op {local_id}, which is not a local range on axis {axis}"
+                                    );
                                     self.debug();
                                     panic!();
                                 }
