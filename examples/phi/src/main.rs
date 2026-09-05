@@ -5,6 +5,8 @@
 // This implementation is based on:
 // https://huggingface.co/microsoft/Phi-3-mini-4k-instruct/blob/main/modeling_phi3.py
 
+#![allow(unused)]
+
 use std::collections::HashMap;
 use tokenizers::Tokenizer;
 use zyx::{DType, Tensor, ZyxError};
@@ -23,7 +25,7 @@ use zyx_nn::{Embedding, LayerNorm, Linear};
         .reshape([bs, seqlen, n_kv_heads * n_rep, head_dim]);
 }*/
 
-fn repeat_kv(xs: Tensor, n_rep: i64) -> Tensor {
+fn repeat_kv(xs: Tensor, n_rep: Tensor) -> Tensor {
     if n_rep == 1 {
         xs
     } else {
@@ -31,7 +33,7 @@ fn repeat_kv(xs: Tensor, n_rep: i64) -> Tensor {
         // Using cat is faster than a broadcast as it avoids going through a potentially
         // strided copy.
         // https://github.com/huggingface/candle/pull/2043
-        Tensor::cat(vec![&xs; n_rep as usize], 2)
+        Tensor::cat(vec![&xs; n_rep.item::<i64>() as usize], 2)
             .unwrap()
             .reshape([b_sz, n_kv_head * n_rep, seq_len, head_dim])
             .unwrap()
@@ -98,14 +100,14 @@ impl Activation {
 use serde::Deserialize;
 
 // https://huggingface.co/microsoft/phi-2/blob/main/configuration_phi.py
-#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[derive(Debug, Clone)]
 pub struct Config {
-    pub(crate) vocab_size: usize,
-    pub(crate) hidden_size: usize,
-    pub(crate) intermediate_size: usize,
-    pub(crate) num_hidden_layers: usize,
-    pub(crate) num_attention_heads: usize,
-    pub(crate) num_key_value_heads: Option<usize>,
+    pub(crate) vocab_size: i64,
+    pub(crate) hidden_size: i64,
+    pub(crate) intermediate_size: i64,
+    pub(crate) num_hidden_layers: i64,
+    pub(crate) num_attention_heads: Tensor,
+    pub(crate) num_key_value_heads: Option<Tensor>,
     pub(crate) hidden_act: Activation,
     pub(crate) max_position_embeddings: i64,
     pub(crate) layer_norm_eps: f64,
@@ -116,12 +118,12 @@ pub struct Config {
 }
 
 impl Config {
-    fn num_key_value_heads(&self) -> usize {
-        self.num_key_value_heads.unwrap_or(self.num_attention_heads)
+    fn num_key_value_heads(&self) -> Tensor {
+        self.num_key_value_heads.clone().unwrap_or(self.num_attention_heads.clone())
     }
 
-    fn head_dim(&self) -> usize {
-        self.hidden_size / self.num_attention_heads
+    fn head_dim(&self) -> Tensor {
+        self.hidden_size / &self.num_attention_heads
     }
 }
 
@@ -134,7 +136,7 @@ struct RotaryEmbedding {
 
 impl RotaryEmbedding {
     fn new(cfg: &Config) -> Result<Self, ZyxError> {
-        let dim = (cfg.partial_rotary_factor * cfg.head_dim() as f64) as i64;
+        let dim = (cfg.partial_rotary_factor * cfg.head_dim().item::<f64>()) as i64;
         let inv_freq: Vec<_> = (0..dim)
             .step_by(2)
             .map(|i| 1f32 / cfg.rope_theta.powf(i as f32 / dim as f32))
@@ -212,9 +214,9 @@ struct Attention {
     k_layernorm: Option<LayerNorm>,
     rotary_emb: RotaryEmbedding,
     //softmax_scale: f64,
-    num_heads: i64,
-    num_kv_heads: i64,
-    head_dim: i64,
+    num_heads: Tensor,
+    num_kv_heads: Tensor,
+    head_dim: Tensor,
 }
 
 fn get_mask(size: i64) -> Result<Tensor, ZyxError> {
@@ -230,7 +232,7 @@ fn get_mask(size: i64) -> Result<Tensor, ZyxError> {
 
 impl Attention {
     fn new(cfg: &Config, vb: &mut HashMap<String, Tensor>) -> Result<Self, ZyxError> {
-        let num_heads = cfg.num_attention_heads;
+        let num_heads = cfg.num_attention_heads.clone();
         let num_kv_heads = cfg.num_key_value_heads();
         let head_dim = cfg.head_dim();
         //let q_proj = linear(cfg.hidden_size, num_heads * head_dim, vb.pp("q_proj")).unwrap();
@@ -257,19 +259,9 @@ impl Attention {
         let rotary_emb = RotaryEmbedding::new(cfg).unwrap();
         let (q_layernorm, k_layernorm) = if cfg.qk_layernorm {
             //let q_layernorm = layer_norm(head_dim, cfg.layer_norm_eps, vb.pp("q_layernorm")).unwrap();
-            let q_layernorm = LayerNorm {
-                weight: Some(vb.t("q_layernorm.weight")),
-                bias: Some(vb.t("q_layernorm.bias")),
-                eps: cfg.layer_norm_eps,
-                d_dims: head_dim,
-            };
+            let q_layernorm = LayerNorm::new([head_dim.clone()], cfg.layer_norm_eps, true, true, DType::F16).unwrap();
             //let k_layernorm = layer_norm(head_dim, cfg.layer_norm_eps, vb.pp("k_layernorm")).unwrap();
-            let k_layernorm = LayerNorm {
-                weight: Some(vb.t("k_layernorm.weight")),
-                bias: Some(vb.t("k_layernorm.bias")),
-                eps: cfg.layer_norm_eps,
-                d_dims: head_dim,
-            };
+            let k_layernorm = LayerNorm::new([head_dim.clone()], cfg.layer_norm_eps, true, true, DType::F16).unwrap();
             (Some(q_layernorm), Some(k_layernorm))
         } else {
             (None, None)
@@ -296,9 +288,7 @@ impl Attention {
     }*/
 
     fn forward(&mut self, xs: &Tensor, attention_mask: Option<&Tensor>) -> Tensor {
-        let [b_size, seq_len, _n_embd] = xs.shape()[..] else {
-            panic!()
-        };
+        let [b_size, seq_len, _n_embd] = xs.dims().unwrap();
         let query_states = self.q_proj.forward(xs).unwrap();
         let key_states = self.k_proj.forward(xs).unwrap();
         let value_states = self.v_proj.forward(xs).unwrap();
@@ -313,17 +303,17 @@ impl Attention {
         };
 
         let query_states = query_states
-            .reshape([b_size, seq_len, self.num_heads, self.head_dim])
+            .reshape([&b_size, &seq_len, &self.num_heads, &self.head_dim])
             .unwrap()
             .transpose(1, 2)
             .unwrap();
         let key_states = key_states
-            .reshape([b_size, seq_len, self.num_kv_heads, self.head_dim])
+            .reshape([&b_size, &seq_len, &self.num_kv_heads, &self.head_dim])
             .unwrap()
             .transpose(1, 2)
             .unwrap();
         let value_states = value_states
-            .reshape([b_size, seq_len, self.num_kv_heads, self.head_dim])
+            .reshape([&b_size, &seq_len, &self.num_kv_heads, &self.head_dim])
             .unwrap()
             .transpose(1, 2)
             .unwrap();
@@ -331,7 +321,7 @@ impl Attention {
         // Rotary embeddings.
         let seqlen_offset = match &self.kv_cache {
             None => 0,
-            Some((prev_k, _)) => prev_k.shape()[2],
+            Some((prev_k, _)) => prev_k.shape()[2].item::<i64>(),
         };
         let query_states = self
             .rotary_emb
@@ -353,12 +343,12 @@ impl Attention {
         };
         self.kv_cache = Some((key_states.clone(), value_states.clone()));
 
-        let num_kv_groups = self.num_heads / self.num_kv_heads;
-        let key_states = repeat_kv(key_states, num_kv_groups);
+        let num_kv_groups = self.num_heads.clone() / &self.num_kv_heads;
+        let key_states = repeat_kv(key_states, num_kv_groups.clone());
         let value_states = repeat_kv(value_states, num_kv_groups);
 
         let attn_output = {
-            let scale = half::f16::from_f64(1f64 / f64::sqrt(self.head_dim as f64));
+            let scale = Tensor::from(1f64 / f64::sqrt(self.head_dim.item::<f64>())).cast(DType::F16);
             let attn_weights = query_states
                 .matmul(key_states.transpose(2, 3).unwrap())
                 .unwrap()
@@ -372,8 +362,12 @@ impl Attention {
             attn_weights.matmul(&value_states).unwrap()
         };
         let attn_output = attn_output.transpose(1, 2).unwrap();
-        let d: usize = attn_output.shape()[2..].iter().product();
-        let attn_output = attn_output.reshape([b_size, seq_len, d]).unwrap();
+        let d: i64 = attn_output
+            .shape()[2..]
+            .iter()
+            .map(|d| d.item::<i64>())
+            .product();
+        let attn_output = attn_output.reshape([b_size, seq_len, Tensor::from(d)]).unwrap();
         self.o_proj.forward(attn_output).unwrap()
     }
 
@@ -398,12 +392,8 @@ impl DecoderLayer {
             vb.pp("input_layernorm"),
         )?;*/
         let weight = vb.t("input_layernorm.weight");
-        let input_layernorm = LayerNorm {
-            d_dims: weight.rank(),
-            weight: Some(weight),
-            bias: Some(vb.t("input_layernorm.bias")),
-            eps: cfg.layer_norm_eps,
-        };
+        let input_layernorm =
+            LayerNorm::new(weight.shape(), cfg.layer_norm_eps, true, true, DType::F16).unwrap();
         Ok(Self {
             self_attn,
             mlp,
@@ -444,13 +434,9 @@ impl Model {
             vb_m.pp("final_layernorm"),
         )?;*/
         let weight = vb_m.t("final_layernorm.weight");
-        let final_layernorm = LayerNorm {
-            d_dims: weight.rank(),
-            weight: Some(weight),
-            bias: Some(vb_m.t("final_layernorm.bias")),
-            eps: cfg.layer_norm_eps,
-        };
-        let mut layers = Vec::with_capacity(cfg.num_hidden_layers);
+        let final_layernorm =
+            LayerNorm::new(weight.shape(), cfg.layer_norm_eps, true, true, DType::F16).unwrap();
+        let mut layers = Vec::with_capacity(cfg.num_hidden_layers as usize);
         let mut vb_m = vb_m.g("layers");
         for layer_idx in 0..cfg.num_hidden_layers {
             let layer = DecoderLayer::new(cfg, &mut vb_m.g(&format!("{layer_idx}"))).unwrap();
@@ -470,14 +456,12 @@ impl Model {
     }
 
     pub fn forward(&mut self, xs: &Tensor) -> Tensor {
-        let [_b_size, seq_len] = xs.shape()[..] else {
-            panic!()
-        };
+        let [_b_size, seq_len] = xs.dims().unwrap();
         let mut xs = self.embed_tokens.forward(xs.cast(DType::F16)).unwrap();
-        let mask = if seq_len <= 1 {
+        let mask = if seq_len.item::<i64>() <= 1 {
             None
         } else {
-            Some(get_mask(seq_len).unwrap())
+            Some(get_mask(seq_len.item()).unwrap())
         };
         xs = xs.cast(DType::F32);
         for layer in self.layers.iter_mut() {
@@ -968,8 +952,8 @@ fn main() -> Result<(), ZyxError> {
             hidden_size: 2048,
             intermediate_size: 8192,
             num_hidden_layers: 24,
-            num_attention_heads: 32,
-            num_key_value_heads: Some(32),
+            num_attention_heads: Tensor::from(32u32),
+            num_key_value_heads: Some(Tensor::from(32u32)),
             hidden_act: Activation::GeLU,
             max_position_embeddings: 2048,
             layer_norm_eps: 1e-5,
