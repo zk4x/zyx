@@ -1747,16 +1747,6 @@ impl PyKernel {
         self.inner.as_mut().unwrap().store(OpId(dst), OpId(src), OpId(index), layout)
     }
 
-    #[pyo3(name = "loop_")]
-    fn loop_py(&mut self, len: u32) -> u32 {
-        self.inner.as_mut().unwrap().loop_(OpId(len)).0
-    }
-
-    #[pyo3(name = "end_loop")]
-    fn end_loop_py(&mut self) {
-        self.inner.as_mut().unwrap().end_loop()
-    }
-
     // unary
     #[pyo3(name = "neg")]
     fn neg_py(&mut self, x: u32) -> u32 {

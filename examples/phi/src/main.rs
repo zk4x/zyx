@@ -134,7 +134,7 @@ struct RotaryEmbedding {
 
 impl RotaryEmbedding {
     fn new(cfg: &Config) -> Result<Self, ZyxError> {
-        let dim = (cfg.partial_rotary_factor * cfg.head_dim() as f64) as usize;
+        let dim = (cfg.partial_rotary_factor * cfg.head_dim() as f64) as i64;
         let inv_freq: Vec<_> = (0..dim)
             .step_by(2)
             .map(|i| 1f32 / cfg.rope_theta.powf(i as f32 / dim as f32))
@@ -154,13 +154,11 @@ impl RotaryEmbedding {
         })
     }
 
-    fn apply_rotary_emb(&self, xs: &Tensor, seqlen_offset: usize) -> Result<Tensor, ZyxError> {
-        let [_b_size, _num_heads, seq_len, _headdim] = xs.shape()[..] else {
-            panic!()
-        };
+    fn apply_rotary_emb(&self, xs: &Tensor, seqlen_offset: i64) -> Result<Tensor, ZyxError> {
+        let [_b_size, _num_heads, seq_len, _headdim] = xs.dims().unwrap();
         let xs_rot = xs.slice((.., .., .., ..self.dim)).unwrap();
         let xs_pass = xs.slice((.., .., .., self.dim..)).unwrap();
-        let c = self.cos.narrow(0, seqlen_offset, seq_len).unwrap();
+        let c = self.cos.narrow(0, seqlen_offset, &seq_len).unwrap();
         let s = self.sin.narrow(0, seqlen_offset, seq_len).unwrap();
         let xs_rot = xs_rot.rope(c, s).unwrap();
         Tensor::cat([&xs_rot, &xs_pass], -1)
@@ -214,12 +212,12 @@ struct Attention {
     k_layernorm: Option<LayerNorm>,
     rotary_emb: RotaryEmbedding,
     //softmax_scale: f64,
-    num_heads: usize,
-    num_kv_heads: usize,
-    head_dim: usize,
+    num_heads: i64,
+    num_kv_heads: i64,
+    head_dim: i64,
 }
 
-fn get_mask(size: usize) -> Result<Tensor, ZyxError> {
+fn get_mask(size: i64) -> Result<Tensor, ZyxError> {
     let mask: Vec<_> = (0..size)
         .flat_map(|i| (0..size).map(move |j| u8::from(j > i)))
         .collect();

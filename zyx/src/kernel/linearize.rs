@@ -648,7 +648,7 @@ impl Kernel {
                     // that loop so the loop gets ordered before the reduce's input
                     // computation in Phase 2 (outer loops before inner ones).
                     let out_view = views.remove(&op_id).unwrap();
-                    let loop_id = self.loop_(reduce_axis);
+                    let loop_id = self.push_back(Op::Loop { len: reduce_axis });
                     // Non-reduced axes must use the reduce input `x`'s row-major
                     // strides (idx/lp/rp/len come from the output view, stride is
                     // recomputed from the input shape, which includes the reduced
