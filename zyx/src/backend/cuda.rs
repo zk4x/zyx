@@ -167,7 +167,7 @@ pub struct CUDADevice {
     /// Real CUDA driver ordinal (nvidia-smi id), set at init. Not the slab index.
     pub(crate) dev_id: u32,
     memory_pool_id: PoolId,
-    dev_info: DeviceInfo,
+    dev_info: Arc<DeviceInfo>,
     pub compute_capability: [c_int; 2],
     cudnn_available: bool,
 }
@@ -843,7 +843,7 @@ pub(super) fn initialize_device(
         let mut dev = CUDADevice {
             tx,
             device,
-            dev_info: DeviceInfo {
+            dev_info: Arc::new(DeviceInfo {
                 compute: 1024 * 1024 * 1024 * 1024,
                 max_global_work_dims: vec![64, 64, 64],
                 max_local_threads: 1,
@@ -853,12 +853,13 @@ pub(super) fn initialize_device(
                 preferred_vector_size: 16,
                 tensor_cores: major >= 7,
                 warp_size: 32,
+                cc: [major, minor],
                 dtype_capability: [DTypeCapability::none(); DType::N_DTYPES],
                 has_native_exp2: true,
                 supported_vec_lens: vec![],
                 tenstorrent: false,
                 tile: [1, 1],
-            },
+            }),
             memory_pool_id: PoolId::from(usize::from(memory_pools.len()) - 1),
             compute_capability: [major, minor],
             cudnn_available: cudnn.is_some(),
@@ -869,7 +870,7 @@ pub(super) fn initialize_device(
             dev.get(CUdevice_attribute::CU_DEVICE_ATTRIBUTE_MAX_REGISTERS_PER_BLOCK, cuDeviceGetAttribute)?;
         let max_threads_per_block: i32 =
             dev.get(CUdevice_attribute::CU_DEVICE_ATTRIBUTE_MAX_THREADS_PER_BLOCK, cuDeviceGetAttribute)?;
-        dev.dev_info = DeviceInfo {
+        dev.dev_info = Arc::new(DeviceInfo {
             compute: 1024 * 1024 * 1024 * 1024, // TODO run a kernel to get an estimate
             max_global_work_dims: vec![
                 Dim::try_from(dev.get(CUdevice_attribute::CU_DEVICE_ATTRIBUTE_MAX_GRID_DIM_X, cuDeviceGetAttribute)?).unwrap(),
@@ -890,6 +891,7 @@ pub(super) fn initialize_device(
             preferred_vector_size: 16,
             tensor_cores: major >= 7,
             warp_size: 32,
+            cc: [major, minor],
             dtype_capability: {
                 let mut capability = [DTypeCapability::all(); DType::N_DTYPES];
                 if major < 8 {
@@ -905,7 +907,7 @@ pub(super) fn initialize_device(
             supported_vec_lens: vec![],
             tenstorrent: false,
             tile: [1, 1],
-        };
+        });
         let cuda_id = devices.push(Device::CUDA(dev));
         if let Device::CUDA(dev) = &mut devices[cuda_id] {
             dev.device_id = cuda_id;
@@ -995,15 +997,15 @@ impl CUDADevice {
         let _ = self;
     }
 
-    pub const fn info(&self) -> &DeviceInfo {
-        &self.dev_info
+    pub fn info(&self) -> Arc<DeviceInfo> {
+        self.dev_info.clone()
     }
 
     pub const fn memory_pool_id(&self) -> PoolId {
         self.memory_pool_id
     }
 
-    pub const fn free_compute(&self) -> u128 {
+    pub fn free_compute(&self) -> u128 {
         self.dev_info.compute
     }
 
@@ -1864,7 +1866,8 @@ impl CUDADevice {
                 match scope {
                     RangeKind::Group(_) => {}
                     RangeKind::Local(len) => lws[axis as usize] = i64::from(len),
-                    RangeKind::Warp(_) => todo!(),
+                    // A warp is a view over a local range — adds no threads.
+                    RangeKind::Warp(_) => {}
                 }
             }
             op_id = kernel.next_op(op_id);
@@ -1877,7 +1880,7 @@ impl CUDADevice {
         // --- Codegen ---
         let mut name = format!("k_{}", lws.iter().map(ToString::to_string).collect::<Vec<_>>().join("_"),);
 
-        let source = kernel.generate_cuda(&self.dev_info, &name)?;
+        let source = kernel.generate_cuda(&name)?;
 
         if debug_asm {
             println!();
@@ -1984,12 +1987,33 @@ impl CUDADevice {
     }
 
     pub fn compile_ptx(&mut self, kernel: &Kernel, debug_asm: bool) -> Result<(Vec<Dim>, Box<str>, Vec<u8>), BackendError> {
-        let (mut ptx, name, lws) = kernel.generate_ptx(self.compute_capability, &self.dev_info)?;
+        let mut lws = vec![1; 3];
+        let mut op_id = kernel.head;
+        let mut steps_op_id = 0usize;
+        while !op_id.is_null() {
+            steps_op_id += 1;
+            if steps_op_id > 10_000 {
+                panic!("compile_ptx did not finish in 10000 steps");
+            }
+            if let Op::Range { axis, kind: scope } = kernel.ops[op_id].op {
+                match scope {
+                    RangeKind::Group(_) => {}
+                    RangeKind::Local(len) => lws[axis as usize] = i64::from(len),
+                    // A warp is a view over a local range — adds no threads.
+                    RangeKind::Warp(_) => {}
+                }
+            }
+            op_id = kernel.next_op(op_id);
+        }
+        if lws.iter().product::<i64>() > self.dev_info.max_local_threads as i64 {
+            return Err(BackendError { status: ErrorStatus::KernelCompilation, context: "Invalid local work size.".into() });
+        }
+        let mut name = format!("k_{}", lws.iter().map(ToString::to_string).collect::<Vec<_>>().join("_"),);
+        let (mut ptx, _) = kernel.generate_ptx(&name)?;
         if debug_asm {
             eprintln!("{}", std::str::from_utf8(&ptx).unwrap_or("<invalid utf8>"));
         }
         ptx.push(0);
-        let mut name = String::from(name.as_ref());
         name += "\0";
         Ok((lws, name.into_boxed_str(), ptx))
     }

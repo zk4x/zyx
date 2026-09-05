@@ -23,17 +23,15 @@ use zyx_nn::{Embedding, LayerNorm, Linear};
         .reshape([bs, seqlen, n_kv_heads * n_rep, head_dim]);
 }*/
 
-fn repeat_kv(xs: Tensor, n_rep: usize) -> Tensor {
+fn repeat_kv(xs: Tensor, n_rep: i64) -> Tensor {
     if n_rep == 1 {
         xs
     } else {
-        let [b_sz, n_kv_head, seq_len, head_dim] = xs.shape()[..] else {
-            panic!()
-        };
+        let [b_sz, n_kv_head, seq_len, head_dim] = xs.dims().unwrap();
         // Using cat is faster than a broadcast as it avoids going through a potentially
         // strided copy.
         // https://github.com/huggingface/candle/pull/2043
-        Tensor::cat(vec![&xs; n_rep], 2)
+        Tensor::cat(vec![&xs; n_rep as usize], 2)
             .unwrap()
             .reshape([b_sz, n_kv_head * n_rep, seq_len, head_dim])
             .unwrap()
@@ -109,7 +107,7 @@ pub struct Config {
     pub(crate) num_attention_heads: usize,
     pub(crate) num_key_value_heads: Option<usize>,
     pub(crate) hidden_act: Activation,
-    pub(crate) max_position_embeddings: usize,
+    pub(crate) max_position_embeddings: i64,
     pub(crate) layer_norm_eps: f64,
     pub(crate) tie_word_embeddings: bool,
     pub(crate) rope_theta: f32,
@@ -129,7 +127,7 @@ impl Config {
 
 #[derive(Debug, Clone)]
 struct RotaryEmbedding {
-    dim: usize,
+    dim: i64,
     sin: Tensor,
     cos: Tensor,
 }
@@ -141,12 +139,12 @@ impl RotaryEmbedding {
             .step_by(2)
             .map(|i| 1f32 / cfg.rope_theta.powf(i as f32 / dim as f32))
             .collect();
-        let inv_freq_len = inv_freq.len();
+        let inv_freq_len = inv_freq.len() as i64;
         let inv_freq = Tensor::from(inv_freq).reshape([1, inv_freq_len]).unwrap();
         let t = Tensor::arange(0u32, cfg.max_position_embeddings as u32, 1)
             .unwrap()
             .cast(DType::F32)
-            .reshape((cfg.max_position_embeddings, 1))
+            .reshape([cfg.max_position_embeddings, 1])
             .unwrap();
         let freqs = t.matmul(&inv_freq).unwrap().cast(DType::F16);
         Ok(Self {
@@ -160,8 +158,8 @@ impl RotaryEmbedding {
         let [_b_size, _num_heads, seq_len, _headdim] = xs.shape()[..] else {
             panic!()
         };
-        let xs_rot = xs.slice((.., .., .., ..self.dim as isize)).unwrap();
-        let xs_pass = xs.slice((.., .., .., self.dim as isize..)).unwrap();
+        let xs_rot = xs.slice((.., .., .., ..self.dim)).unwrap();
+        let xs_pass = xs.slice((.., .., .., self.dim..)).unwrap();
         let c = self.cos.narrow(0, seqlen_offset, seq_len).unwrap();
         let s = self.sin.narrow(0, seqlen_offset, seq_len).unwrap();
         let xs_rot = xs_rot.rope(c, s).unwrap();

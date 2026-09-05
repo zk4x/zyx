@@ -59,7 +59,7 @@ pub struct OpenCLBuffer {
 #[derive(Debug)]
 pub struct OpenCLDevice {
     tx: Sender<Command>,
-    dev_info: DeviceInfo,
+    dev_info: Arc<DeviceInfo>,
     memory_pool_id: PoolId,
     pub(crate) device_idx: usize,
 }
@@ -739,7 +739,7 @@ pub(super) fn initialize_device(
 
         memory_pools.push(MemoryPool::OpenCL(OpenCLMemoryPool { tx: tx.clone(), total_bytes, free_bytes: free_bytes_atomic }));
         for (orig_idx, dev_info) in dev_infos.into_iter() {
-            devices.push(Device::OpenCL(OpenCLDevice { tx: tx.clone(), dev_info, memory_pool_id, device_idx: orig_idx }));
+            devices.push(Device::OpenCL(OpenCLDevice { tx: tx.clone(), dev_info: Arc::new(dev_info), memory_pool_id, device_idx: orig_idx }));
         }
         memory_pool_id += 1;
     }
@@ -850,8 +850,8 @@ impl OpenCLDevice {
         let _ = self;
     }
 
-    pub const fn info(&self) -> &DeviceInfo {
-        &self.dev_info
+    pub fn info(&self) -> Arc<DeviceInfo> {
+        self.dev_info.clone()
     }
 
     pub const fn memory_pool_id(&self) -> PoolId {
@@ -872,7 +872,8 @@ impl OpenCLDevice {
                 match scope {
                     RangeKind::Group(_) => {}
                     RangeKind::Local(len) => lws[axis as usize] = i64::from(len),
-                    RangeKind::Warp(_) => todo!(),
+                    // A warp is a view over a local range — adds no threads.
+                    RangeKind::Warp(_) => {}
                 }
             }
             op_id = kernel.next_op(op_id);
@@ -884,7 +885,7 @@ impl OpenCLDevice {
 
         let name = format!("k_{}", lws.iter().map(ToString::to_string).collect::<Vec<_>>().join("_"),);
 
-        let source = kernel.generate_opencl(&self.dev_info, &name)?;
+        let source = kernel.generate_opencl(&name)?;
         if debug_asm {
             println!();
             println!("{source}");
@@ -922,7 +923,7 @@ impl OpenCLDevice {
         self.tx.send(Command::ReleaseProgram { program_id }).unwrap();
     }
 
-    pub const fn free_compute(&self) -> u128 {
+    pub fn free_compute(&self) -> u128 {
         self.dev_info.compute
     }
 }
@@ -999,6 +1000,7 @@ fn query_device_info(
                 1
             }
         },
+        cc: [0, 0],
         dtype_capability: [DTypeCapability::all(); DType::N_DTYPES],
     };
     dev_info.dtype_capability[DType::BF16 as usize] = DTypeCapability::none();

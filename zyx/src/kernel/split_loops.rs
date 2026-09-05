@@ -189,7 +189,11 @@ impl Kernel {
                             }
                         },
                         RangeKind::Local(len) => dim *= len as Dim,
-                        RangeKind::Warp(len) => dim *= len as Dim,
+                        // A warp is a view over a local range — it is never split.
+                        RangeKind::Warp(_) => {
+                            ok = false;
+                            break;
+                        }
                     },
                     _ => unreachable!("split can be only index or loop"),
                 }
@@ -206,7 +210,7 @@ impl Kernel {
                                 }
                             }
                             RangeKind::Local(l) => debug_assert_eq!(l as Dim, dim),
-                            RangeKind::Warp(l) => debug_assert_eq!(l as Dim, dim),
+                            RangeKind::Warp(_) => unreachable!("warp dims are never split"),
                         }
                     }
                     Op::Loop { len, .. } => {
@@ -239,7 +243,7 @@ impl Kernel {
                 Op::Range { kind, .. } => match kind {
                     RangeKind::Group(len) => st *= self.resolve_const(*len).and_then(crate::dtype::Constant::as_dim).unwrap(),
                     RangeKind::Local(len) => st *= i64::from(*len),
-                    RangeKind::Warp(len) => st *= i64::from(*len),
+                    RangeKind::Warp(_) => unreachable!("warp dims are never split"),
                 },
                 _ => unreachable!("split can be only index or loop"),
             }

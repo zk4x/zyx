@@ -3,7 +3,7 @@
 
 use crate::{
     DType, Map,
-    backend::{DeviceInfo, gws_from_kernel},
+    backend::gws_from_kernel,
     dtype::Constant,
     error::{BackendError, ErrorStatus},
     kernel::{BOp, Kernel, MemLayout, MemScope, Op, OpId, ParamKind, RangeKind, UOp},
@@ -17,11 +17,11 @@ const VEC_COMPONENTS: [&str; 16] = [
 
 impl Kernel {
     /// Compile kernel to CUDA C++ source code.
-    pub fn generate_cuda(&self, device_info: &DeviceInfo, name: &str) -> Result<String, BackendError> {
+    pub fn generate_cuda(&self, name: &str) -> Result<String, BackendError> {
         use std::fmt::Write;
 
         // Reject group lengths that are constant and exceed the device grid limits.
-        gws_from_kernel(self, &device_info.max_global_work_dims)?;
+        gws_from_kernel(self, &self.dev_info().max_global_work_dims)?;
 
         let mut global_args = String::new();
         let mut op_id = self.head;
@@ -331,25 +331,25 @@ impl Kernel {
                 }
                 Op::Range { axis, kind: scope } => {
                     indices.insert(op_id, loop_id);
-                    let max_idx = match scope {
+                    let axis_letter = ["x", "y", "z"][axis as usize];
+                    let (idx_expr, max_idx) = match scope {
                         // Dynamic dims are `-1`; the bound is only a source comment.
                         RangeKind::Group(len_id) => {
-                            self.resolve_const(len_id).and_then(crate::dtype::Constant::as_dim).unwrap_or(-1).saturating_sub(1)
+                            let max = self.resolve_const(len_id).and_then(crate::dtype::Constant::as_dim).unwrap_or(-1).saturating_sub(1);
+                            (format!("blockIdx.{axis_letter}"), max)
                         }
-                        RangeKind::Local(len) => i64::from(len).saturating_sub(1),
-                        RangeKind::Warp(_) => todo!(),
+                        RangeKind::Local(len) => (format!("threadIdx.{axis_letter}"), i64::from(len).saturating_sub(1)),
+                        // Lane id: the referenced thread id mod warp size. The
+                        // referenced local range is emitted before (head order),
+                        // so its index variable already exists.
+                        RangeKind::Warp(local_id) => {
+                            let lidx = indices.get(&local_id).copied().expect("warp range must reference an already-emitted local range");
+                            let warp_size = self.dev_info().warp_size;
+                            (format!("idx{lidx} % {warp_size}"), i64::from(warp_size) - 1)
+                        }
                     };
                     let idx_type = self.dtype(op_id).cu();
-                    let idx_src = match scope {
-                        RangeKind::Group(_) => "block",
-                        RangeKind::Local(_) => "thread",
-                        RangeKind::Warp(_) => todo!(),
-                    };
-                    _ = writeln!(
-                        source,
-                        "{indent}{idx_type} idx{loop_id} = {idx_src}Idx.{}; // 0..={max_idx}",
-                        ["x", "y", "z"][axis as usize],
-                    );
+                    _ = writeln!(source, "{indent}{idx_type} idx{loop_id} = {idx_expr}; // 0..={max_idx}");
                     loop_id += 1;
                 }
                 Op::Loop { len, .. } => {

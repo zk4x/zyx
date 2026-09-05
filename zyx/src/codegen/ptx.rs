@@ -5,7 +5,7 @@
 
 use crate::{
     DType, Map,
-    backend::{DeviceInfo, gws_from_kernel},
+    backend::gws_from_kernel,
     dtype::Constant,
     error::{BackendError, ErrorStatus},
     kernel::{BOp, IDX_T, Kernel, MemScope, Op, OpId, ParamKind, RangeKind, UOp},
@@ -249,9 +249,9 @@ impl Compiler {
 impl Kernel {
     /// Compile kernel to PTX assembly.
     #[allow(clippy::type_complexity)] // complex return type inherent to PTX backend API
-    pub fn generate_ptx(&self, cc: [i32; 2], dev_info: &DeviceInfo) -> Result<(Vec<u8>, Box<str>, Vec<Dim>), BackendError> {
+    pub fn generate_ptx(&self, name: &str) -> Result<(Vec<u8>, Vec<Dim>), BackendError> {
         // Reject group lengths that are constant and exceed the device grid limits.
-        gws_from_kernel(self, &dev_info.max_global_work_dims)?;
+        gws_from_kernel(self, &self.dev_info().max_global_work_dims)?;
         let mut comp = Compiler {
             var_map: Map::default(),
             loops: Vec::new(),
@@ -276,16 +276,16 @@ impl Kernel {
                 match scope {
                     RangeKind::Group(_) => {}
                     RangeKind::Local(len) => lws[axis as usize] = Dim::from(len),
-                    RangeKind::Warp(_) => todo!(),
+                    // A warp is a view over a local range — adds no threads.
+                    RangeKind::Warp(_) => {}
                 }
             }
             op_id = self.next_op(op_id);
         }
-        if lws.iter().product::<Dim>() > dev_info.max_local_threads as Dim {
+        if lws.iter().product::<Dim>() > self.dev_info().max_local_threads as Dim {
             return Err(BackendError { status: ErrorStatus::KernelCompilation, context: "Invalid local work size.".into() });
         }
-        let name = format!("k_{}", lws.iter().map(ToString::to_string).collect::<Vec<_>>().join("_"),).into_boxed_str();
-
+        let cc = self.dev_info().cc;
         _ = writeln!(comp.header, ".version {0}.{1}\n.target sm_{0}{1}\n.address_size 64\n.visible .entry {name}(", cc[0], cc[1]);
         let mut op_id = self.head;
         let mut steps_op_id = 0usize;
@@ -350,18 +350,38 @@ impl Kernel {
                 }
                 Op::Range { axis, kind: scope, .. } => {
                     let reg = comp.new_var(op_id, IDX_T, rcs[&op_id]);
-                    _ = writeln!(
-                        comp.body,
-                        "{}{}.u32 %r{reg}, %{}id.{};",
-                        comp.indent,
-                        if IDX_T == DType::U64 { "cvt.u64" } else { "mov" },
-                        match scope {
-                            RangeKind::Group(_) => "cta",
-                            RangeKind::Local(_) => "t",
-                            RangeKind::Warp(_) => todo!(),
-                        },
-                        ["x", "y", "z"][axis as usize],
-                    );
+                    let axis_letter = ["x", "y", "z"][axis as usize];
+                    match scope {
+                        RangeKind::Group(_) => {
+                            _ = writeln!(
+                                comp.body,
+                                "{}{}.u32 %r{reg}, %{}id.{};",
+                                comp.indent,
+                                if IDX_T == DType::U64 { "cvt.u64" } else { "mov" },
+                                "cta",
+                                axis_letter,
+                            );
+                        }
+                        RangeKind::Local(_) => {
+                            _ = writeln!(
+                                comp.body,
+                                "{}{}.u32 %r{reg}, %{}id.{};",
+                                comp.indent,
+                                if IDX_T == DType::U64 { "cvt.u64" } else { "mov" },
+                                "t",
+                                axis_letter,
+                            );
+                        }
+                        // Lane id within the warp: local thread id mod warp size.
+                        RangeKind::Warp(local_id) => {
+                            let local_reg = comp.var_map[&local_id];
+                            let warp_size = self.dev_info().warp_size;
+                            _ = writeln!(comp.body, "{}rem.u32 %r{reg}, %r{local_reg}, {warp_size};", comp.indent);
+                            if IDX_T == DType::U64 {
+                                _ = writeln!(comp.body, "{}cvt.u64.u32 %r{reg}, %r{reg};", comp.indent);
+                            }
+                        }
+                    }
                 }
                 Op::Const(ref constant) => {
                     let reg = comp.new_var(op_id, constant.dtype(), u32::MAX);
@@ -710,6 +730,6 @@ impl Kernel {
 
         comp.header.push_str(&comp.body);
 
-        Ok((comp.header.into_bytes(), name, lws))
+        Ok((comp.header.into_bytes(), lws))
     }
 }

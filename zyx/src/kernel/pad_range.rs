@@ -46,7 +46,8 @@ impl Optimization for PadIndex {
         let current_len = match kind {
             RangeKind::Group(len) => kernel.resolve_const(len).and_then(crate::dtype::Constant::as_dim).unwrap(),
             RangeKind::Local(len) => i64::from(len),
-            RangeKind::Warp(_) => todo!(),
+            // opt_pad_index never collects warp factors (warp views can't be padded).
+            RangeKind::Warp(_) => unreachable!("PadIndex never collects warp factors"),
         };
         let pad_len = (pad_to - current_len % pad_to) % pad_to;
         if pad_len > 0 {
@@ -91,10 +92,8 @@ impl Kernel {
                 let new_len = len + u32::try_from(pad_len).expect("pad_len too large for local index");
                 (current_len, RangeKind::Local(new_len))
             }
-            RangeKind::Warp(len) => {
-                let current_len = Dim::from(len);
-                let new_len = len + u8::try_from(pad_len).expect("pad_len too large for warp index");
-                (current_len, RangeKind::Warp(new_len))
+            RangeKind::Warp(_) => {
+                panic!("pad_range: cannot pad a warp view; pad its underlying local range instead")
             }
         };
         self.ops[gidx_id].op = Op::Range { axis, kind: new_kind };
@@ -226,7 +225,8 @@ impl Kernel {
                         None => continue,
                     },
                     RangeKind::Local(len) => Dim::from(len),
-                    RangeKind::Warp(len) => Dim::from(len),
+                    // Warp views can't be padded — skip them entirely.
+                    RangeKind::Warp(_) => continue,
                 };
                 for pad_to in [8, 16, 32] {
                     if len % pad_to as Dim != 0 {

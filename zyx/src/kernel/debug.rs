@@ -303,11 +303,11 @@ impl Display for Kernel {
                             )
                             .unwrap();
                         }
-                        RangeKind::Warp(len) => {
+                        RangeKind::Warp(local_id) => {
+                            let local_id = id_map.get(&local_id).copied().unwrap_or(local_id);
                             writeln!(
                                 f,
-                                "{indent}r{out_id}{grey}: {IDX_T}{reset} = {blue}local_range({axis}){reset}    // 0..={}",
-                                len - 1
+                                "{indent}r{out_id}{grey}: {IDX_T}{reset} = {blue}{kind}_index({axis}){reset} over r{local_id}    // lane id"
                             )
                             .unwrap();
                         }

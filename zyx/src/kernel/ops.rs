@@ -177,8 +177,10 @@ pub enum RangeKind {
     Group(OpId),
     /// Local scope. Represents cuda threads.
     Local(u32),
-    /// Warp scope. Represents warps and wavefronts.
-    Warp(u8),
+    /// Warp scope. Represents warps and wavefronts. References a `Local`
+    /// range whose threads form hardware warps; the op's value is the lane
+    /// id within the warp (`0..warp_size`, warp size from `DeviceInfo`).
+    Warp(OpId),
 }
 
 impl std::fmt::Display for RangeKind {
@@ -481,7 +483,7 @@ impl Op {
             &Op::Range { kind, .. } => match kind {
                 RangeKind::Group(len) => vec![len],
                 RangeKind::Local(_) => vec![],
-                RangeKind::Warp(_) => vec![],
+                RangeKind::Warp(local_id) => vec![local_id],
             },
             &Op::Loop { len, .. } => vec![len],
             &Op::Move { x, ref mop } => match mop.as_ref() {
@@ -528,7 +530,7 @@ impl Op {
             Op::Range { kind, .. } => match kind {
                 RangeKind::Group(len) => vec![len],
                 RangeKind::Local(_) => vec![],
-                RangeKind::Warp(_) => vec![],
+                RangeKind::Warp(local_id) => vec![local_id],
             },
             Op::Loop { len, .. } => vec![len],
             Op::Move { x, mop } => match mop.as_mut() {

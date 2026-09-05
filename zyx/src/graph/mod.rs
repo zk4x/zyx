@@ -2259,6 +2259,7 @@ impl Runtime {
                 }
                 let mut kernel = ek.kernel.clone();
                 kernel.device_id = dev_id;
+                kernel.dev_info = Some(self.devices[dev_id].info());
                 progress_bar.inc(1, &format!("autotune {} on dev={}", kernel.name(), dev_id.0));
                 let (dev_prog, timing) = self.get_or_autotune(kernel, None)?;
                 let prog = ProgramId { device_id: dev_id, program_id: dev_prog };

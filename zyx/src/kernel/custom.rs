@@ -17,6 +17,7 @@
 //! to their native instruction set and cache them for repeated use.
 
 use std::collections::BTreeSet;
+use std::sync::Arc;
 
 use crate::backend::{BufferId, DeviceInfo, LaunchArg, MemoryPool, ProgramId};
 use crate::dtype::Constant;
@@ -75,7 +76,8 @@ impl Kernel {
         let mut rt = crate::RT.lock();
         rt.initialize_backends();
         let device_id = rt.resolve_dev(dev);
-        Self { ops: Slab::new(), head: OpId::NULL, tail: OpId::NULL, device_id, shape_cache: Map::default() }
+        let dev_info = Some(rt.devices[device_id].info());
+        Self { ops: Slab::new(), head: OpId::NULL, tail: OpId::NULL, device_id, dev_info, shape_cache: Map::default() }
     }
 
     /// Compile the kernel. Consumes `self`.
@@ -298,6 +300,17 @@ impl Kernel {
     /// Local thread index.
     pub fn local_range(&mut self, axis: u32, len: u32) -> OpId {
         self.push_back(Op::Range { axis, kind: RangeKind::Local(len) })
+    }
+
+    /// Warp lane index derived from a local thread range: the threads of
+    /// `local_id` form hardware warps and the op's value is the lane id
+    /// within the warp (`0..warp_size`, warp size from the device info).
+    pub fn warp(&mut self, local_id: OpId) -> OpId {
+        let axis = match &self.ops[local_id].op {
+            Op::Range { axis, kind: RangeKind::Local(_), .. } => *axis,
+            _ => panic!("warp: local_id must reference a local range op"),
+        };
+        self.push_back(Op::Range { axis, kind: RangeKind::Warp(local_id) })
     }
 
     /// Load from `src` at `index` (scalar layout: one element).
@@ -722,8 +735,8 @@ impl Kernel {
 
 impl CompiledKernel {
     /// Returns the DeviceInfo for the device this kernel was compiled on.
-    pub fn device_info(&self) -> DeviceInfo {
-        crate::RT.lock().devices[self.program.device_id].info().clone()
+    pub fn device_info(&self) -> Arc<DeviceInfo> {
+        crate::RT.lock().devices[self.program.device_id].info()
     }
 
     /// Execute the compiled kernel with new input tensors.
@@ -986,37 +999,297 @@ impl Runtime {
     }
 }
 
-/// Partition for auto indexing and ease of use
+/// Register partition: auto-indexing handle over a global tensor (or an
+/// accumulator tile) distributed across the workgroup's threads.
+///
+/// Builder-side state only — a monad, not an IR op. Every method consumes the
+/// handle's geometry and emits plain load/store/loop IR; nothing partition-
+/// specific ever reaches the kernel IR, which keeps its single canonical SSA
+/// form (no tile constructs for passes/backends to preserve).
 pub struct RegisterPartition {
+    /// Raw local thread (warp lane) id op used for fragment lane math.
+    lane: OpId,
+    /// Global tensor being partitioned (`OpId::NULL` for accumulators).
+    src: OpId,
+    /// Global tensor dims, row-major (strides are derived from these).
     shape: Vec<OpId>,
+    /// Per-axis element index base. The loop axis entry is `OpId::NULL`.
     ids: Vec<OpId>,
+    /// Loop axis, if the partition is iterated (`loop_partition`).
+    loop_axis: Option<u16>,
+    /// Loop trip count, pre-built at `partition` time.
+    loop_len: Option<OpId>,
+    /// Per-axis per-thread tile size; the loop axis entry is the number of
+    /// elements processed per iteration.
     reg_sizes: Vec<Dim>,
+    /// Element dtype.
     dtype: DType,
+    /// Accumulator register storage (`acc_init` only).
+    storage: Option<OpId>,
 }
 
 impl Kernel {
-    pub fn partition<const N: usize>(&mut self, shape: [OpId; N], ids: [OpId; N], reg_sizes: [Dim; N]) -> RegisterPartition {
-        todo!()
+    /// Partition a global tensor across the workgroup's threads.
+    ///
+    /// Emits no IR by itself — it only records the partition geometry. The
+    /// loop over the loop axis is emitted by [`Kernel::loop_partition`], and
+    /// per-thread loads by [`Kernel::load_partition`].
+    ///
+    /// # Arguments
+    ///
+    /// - `lane`: the raw local thread id op (warp lane index)
+    /// - `src`: the global tensor (param) being partitioned
+    /// - `shape`: the global tensor dims (row-major; strides derived)
+    /// - `ids`: per-axis element index base; exactly one axis must be
+    ///   `OpId::NULL`, marking the loop-driven axis (e.g. K)
+    /// - `reg_sizes`: per-axis per-thread tile size; the loop axis entry is
+    ///   the number of elements processed per iteration (e.g. the K chunk)
+    pub fn partition<const N: usize>(
+        &mut self,
+        lane: OpId,
+        src: OpId,
+        shape: [OpId; N],
+        ids: [OpId; N],
+        reg_sizes: [Dim; N],
+    ) -> RegisterPartition {
+        debug_assert!(
+            matches!(&self.ops[lane].op, Op::Range { kind: RangeKind::Warp(_), .. }),
+            "partition: lane must be a warp range op (Kernel::warp_range)"
+        );
+        debug_assert_eq!(ids.len(), N, "partition: ids/shape rank mismatch");
+        debug_assert_eq!(reg_sizes.len(), N, "partition: reg_sizes/shape rank mismatch");
+        debug_assert_eq!(
+            ids.iter().filter(|id| id.is_null()).count(),
+            1,
+            "partition: exactly one axis must be the loop axis (OpId::NULL id)"
+        );
+        let loop_axis = ids.iter().position(|id| id.is_null()).expect("partition: no loop axis") as u16;
+        // Trip count: shape[axis] / reg_sizes[axis].
+        let axis_len = self.const_idx(reg_sizes[loop_axis as usize]);
+        let loop_len = self.div(shape[loop_axis as usize], axis_len);
+        RegisterPartition {
+            lane,
+            src,
+            shape: shape.to_vec(),
+            ids: ids.to_vec(),
+            loop_axis: Some(loop_axis),
+            loop_len: Some(loop_len),
+            reg_sizes: reg_sizes.to_vec(),
+            dtype: self.dtype(src),
+            storage: None,
+        }
     }
 
-    pub fn acc_init<const N: usize>(&mut self, shape: [Dim; N], dtype: DType) -> RegisterPartition {
-        todo!()
+    /// Create an accumulator partition: a zero-initialized per-warp register
+    /// tile of `acc_shape` elements (distributed over 32 lanes), to be filled
+    /// by [`Kernel::mma`] and written out by [`Kernel::store_partition`].
+    ///
+    /// # Arguments
+    ///
+    /// - `lane`: the raw local thread id op (warp lane index)
+    /// - `shape`: the global output tensor dims (row-major; strides derived)
+    /// - `ids`: per-axis element index base of the accumulator tile within
+    ///   the output (tile origins); no loop axis
+    /// - `acc_shape`: the accumulator tile shape (e.g. `[16, 8]` for one
+    ///   m16n8k8 wmma per warp)
+    /// - `dtype`: accumulator dtype (f32)
+    pub fn acc_init<const N: usize>(
+        &mut self,
+        lane: OpId,
+        shape: [OpId; N],
+        ids: [OpId; N],
+        acc_shape: [Dim; N],
+        dtype: DType,
+    ) -> RegisterPartition {
+        debug_assert!(
+            matches!(&self.ops[lane].op, Op::Range { kind: RangeKind::Warp(_), .. }),
+            "acc_init: lane must be a warp range op (Kernel::warp_range)"
+        );
+        debug_assert_eq!(ids.len(), N, "acc_init: ids/shape rank mismatch");
+        debug_assert!(ids.iter().all(|id| !id.is_null()), "acc_init: accumulator has no loop axis");
+        let total: Dim = acc_shape.iter().product();
+        debug_assert_eq!(total % 32, 0, "acc_init: tile must cover whole warps");
+        let storage = self.zeros(dtype, total / 32);
+        RegisterPartition {
+            lane,
+            src: OpId::NULL,
+            shape: shape.to_vec(),
+            ids: ids.to_vec(),
+            loop_axis: None,
+            loop_len: None,
+            reg_sizes: acc_shape.to_vec(),
+            dtype,
+            storage: Some(storage),
+        }
     }
 
-    /// Returns vec/tile
+    /// Emit the loop over the partition's loop axis and build the body with
+    /// `f` (closure args identical to [`Kernel::loop_over`]: the kernel and
+    /// the loop variable).
+    pub fn loop_partition(&mut self, partition: &RegisterPartition, f: impl FnOnce(&mut Kernel, OpId)) {
+        let len = partition.loop_len.expect("loop_partition: partition has no loop axis");
+        self.loop_over(len, f);
+    }
+
+    /// Find the innermost open loop's variable by walking back from the tail.
+    ///
+    /// The IR is the state: ops inside a loop body always sit after their
+    /// `Op::Loop`, so the nearest `Op::Loop` behind the tail *is* the open
+    /// loop's variable. No builder-side mutable state needed.
+    fn open_loop_var(&self) -> OpId {
+        let mut op_id = self.tail;
+        while !op_id.is_null() {
+            if matches!(self.ops[op_id].op, Op::Loop { .. }) {
+                return op_id;
+            }
+            op_id = self.prev_op(op_id);
+        }
+        panic!("partition auto indexing: no open loop (call inside loop_partition)");
+    }
+
+    /// Row-major stride op for `axis` of a tensor with dims `shape`.
+    fn row_major_stride(&mut self, shape: &[OpId], axis: usize) -> OpId {
+        let mut stride = self.const_idx(1u32);
+        for &dim in &shape[axis + 1..] {
+            stride = self.mul(stride, dim);
+        }
+        stride
+    }
+
+    /// Load the calling thread's register tile from a partitioned tensor.
+    ///
+    /// Emits one scalar load per element of the `reg_sizes` grid (row-major
+    /// element order, flattened into a single stacked op). The loop axis
+    /// base is derived from the open partition loop; the other axes from the
+    /// partition's ids. Requires being inside [`Kernel::loop_partition`].
     pub fn load_partition(&mut self, x: &RegisterPartition) -> OpId {
-        todo!()
+        debug_assert!(!x.src.is_null(), "load_partition: partition has no source tensor");
+        let loop_axis = x.loop_axis.expect("load_partition: partition has no loop axis") as usize;
+        let lv = self.open_loop_var();
+        let total: usize = x.reg_sizes.iter().product::<Dim>() as usize;
+        debug_assert!(total > 0, "load_partition: empty register tile");
+        let mut elems = Vec::with_capacity(total);
+        for linear in 0..total {
+            let mut rem = linear;
+            let mut addr: Option<OpId> = None;
+            for axis in (0..x.reg_sizes.len()).rev() {
+                let off = rem % x.reg_sizes[axis] as usize;
+                rem /= x.reg_sizes[axis] as usize;
+                let base = if axis == loop_axis {
+                    let chunk_len = self.const_idx(x.reg_sizes[axis]);
+                    let chunk_base = self.mul(lv, chunk_len);
+                    if off > 0 {
+                        let off_op = self.const_idx(off as i64);
+                        self.add(chunk_base, off_op)
+                    } else {
+                        chunk_base
+                    }
+                } else if off > 0 {
+                    let off_op = self.const_idx(off as i64);
+                    self.add(x.ids[axis], off_op)
+                } else {
+                    x.ids[axis]
+                };
+                let stride = self.row_major_stride(&x.shape, axis);
+                let term = self.mul(base, stride);
+                addr = Some(match addr {
+                    None => term,
+                    Some(prev) => self.add(prev, term),
+                });
+            }
+            elems.push(self.load(x.src, addr.expect("load_partition: rank-0 partition")));
+        }
+        self.stack(&elems)
     }
 
-    pub fn loop_partition(&mut self, partition: &RegisterPartition, axis: u16, f: impl FnOnce(&mut Kernel, OpId)) {
-        todo!()
-    }
-
-    pub fn store_partition(&mut self, global_param: OpId, x: &RegisterPartition) {
-        todo!()
-    }
-
+    /// Warp matrix multiply-accumulate with fully automatic indexing.
+    ///
+    /// Emits the A/B fragment loads (lane-mapped, per the m16n8k8 geometry),
+    /// the wmma, and the accumulator store. The per-warp tile geometry is
+    /// inferred from the partitions: `acc` `[16, 8]`, K chunk 8 (from the
+    /// loop axis `reg_sizes`), A row-major and B column-major.
     pub fn mma(&mut self, acc: &RegisterPartition, a: &RegisterPartition, b: &RegisterPartition) {
-        todo!()
+        debug_assert!(acc.storage.is_some(), "mma: acc must come from acc_init");
+        debug_assert_eq!(acc.reg_sizes, vec![16, 8], "mma v1: acc tile must be [16, 8] (m16n8k8)");
+        debug_assert_eq!(acc.dtype, DType::F32, "mma v1: f32 accumulator");
+        debug_assert_eq!(a.dtype, b.dtype, "mma: a/b dtype mismatch");
+        debug_assert_eq!(a.dtype, DType::F16, "mma v1: f16 inputs");
+        debug_assert_eq!(a.lane, b.lane, "mma: a/b lane mismatch");
+        debug_assert_eq!(a.lane, acc.lane, "mma: acc lane mismatch");
+        debug_assert_eq!(a.loop_axis, Some(1), "mma v1: K must be the last axis of a");
+        debug_assert_eq!(b.loop_axis, Some(1), "mma v1: K must be the last axis of b");
+        debug_assert_eq!(a.reg_sizes[1], 8, "mma v1: K chunk must be 8 (m16n8k8)");
+        debug_assert_eq!(b.reg_sizes[1], 8, "mma v1: K chunk must be 8 (m16n8k8)");
+        debug_assert_eq!(a.shape.len(), 2, "mma v1: a must be rank 2");
+        debug_assert_eq!(b.shape.len(), 2, "mma v1: b must be rank 2");
+
+        let lv = self.open_loop_var();
+        let [c1, c2, c4, c8] = self.const_idxs([1u32, 2, 4, 8]);
+        // Fixed m16n8k8 lane geometry: gid = lane/4, tig = lane%4.
+        let gid = self.div(a.lane, c4);
+        let tig = self.mod_(a.lane, c4);
+        let tig2 = self.mul(tig, c2);
+        let k0 = self.mul(lv, c8);
+
+        // A fragment (row-major): rows {row + gid, row + 8 + gid}, k {k0 + 2*tig, +1}.
+        let a_row_stride = self.row_major_stride(&a.shape, 0);
+        let a_row = self.add(a.ids[0], gid);
+        let a_row_hi = self.add(a_row, c8);
+        let a_col = self.add(k0, tig2);
+        let a_col_p1 = self.add(a_col, c1);
+        let a_idx0 = self.mad(a_row, a_row_stride, a_col);
+        let a_idx1 = self.mad(a_row, a_row_stride, a_col_p1);
+        let a_idx2 = self.mad(a_row_hi, a_row_stride, a_col);
+        let a_idx3 = self.mad(a_row_hi, a_row_stride, a_col_p1);
+        let a00 = self.load(a.src, a_idx0);
+        let a01 = self.load(a.src, a_idx1);
+        let a02 = self.load(a.src, a_idx2);
+        let a03 = self.load(a.src, a_idx3);
+        let a_frag = self.stack(&[a00, a01, a02, a03]);
+
+        // B fragment: token {tok + gid}, k {k0 + 2*tig, +1}.
+        let b_row_stride = self.row_major_stride(&b.shape, 0);
+        let b_row = self.add(b.ids[0], gid);
+        let b_idx0 = self.mad(b_row, b_row_stride, a_col);
+        let b_idx1 = self.mad(b_row, b_row_stride, a_col_p1);
+        let b0 = self.load(b.src, b_idx0);
+        let b1 = self.load(b.src, b_idx1);
+        let b_frag = self.stack(&[b0, b1]);
+
+        let storage = acc.storage.expect("mma: acc storage");
+        let idx0 = self.const_idx(0u32);
+        let acc_old = self.load_vector(storage, idx0, 4);
+        let acc_new = self.wmma(MMADims::m16n8k8, MMALayout::row_col, MMADType::f16_f16_f16_f32, a_frag, b_frag, acc_old);
+        self.store_vector(storage, acc_new, idx0, 4);
+    }
+
+    /// Store an accumulator partition to a global output tensor with fully
+    /// automatic indexing: each lane scatters its C-fragment values to their
+    /// global positions (m16n8 mapping: rows {row + gid, +8}, cols
+    /// {col + 2*tig, +1}).
+    pub fn store_partition(&mut self, global_param: OpId, x: &RegisterPartition) {
+        let storage = x.storage.expect("store_partition v1: accumulator partitions only");
+        debug_assert_eq!(x.reg_sizes, vec![16, 8], "store_partition v1: acc tile must be [16, 8]");
+        debug_assert_eq!(x.shape.len(), 2, "store_partition v1: output must be rank 2");
+        debug_assert!(x.ids.iter().all(|id| !id.is_null()), "store_partition: acc ids must be tile origins");
+        let [c1, c2, c4, c8] = self.const_idxs([1u32, 2, 4, 8]);
+        let gid = self.div(x.lane, c4);
+        let tig = self.mod_(x.lane, c4);
+
+        let row_stride = self.row_major_stride(&x.shape, 0);
+        let row = self.add(x.ids[0], gid);
+        let col = self.mad(tig, c2, x.ids[1]);
+        let o0 = self.mad(row, row_stride, col);
+        let o0_p1 = self.add(o0, c1);
+
+        let idx0 = self.const_idx(0u32);
+        let acc_final = self.load_vector(storage, idx0, 4);
+        let [d00, d01, d02, d03] = self.devectorize(acc_final);
+        let o0_hi_idx = self.mad(c8, row_stride, o0);
+        let o0_hi_p1 = self.add(o0_hi_idx, c1);
+        self.store(global_param, d00, o0);
+        self.store(global_param, d01, o0_p1);
+        self.store(global_param, d02, o0_hi_idx);
+        self.store(global_param, d03, o0_hi_p1);
     }
 }

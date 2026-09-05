@@ -74,10 +74,9 @@ impl Display for TensorId {
     }
 }
 
-/// Device selector. Public, stable way to name a device — resolved to an
-/// internal slab id via `Runtime::resolve_dev`. The number in a variant is the
-/// device's real hardware/driver ordinal (e.g. nvidia-smi id), matching torch
-/// semantics, not zyx's internal slab order.
+/// Device selector. The number in a variant is the device's
+/// hardware/driver ordinal (e.g. nvidia-smi id), matching torch
+/// semantics
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Dev {
     /// Auto-select: resolves to the first initialized device.

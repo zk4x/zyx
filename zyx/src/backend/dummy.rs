@@ -13,7 +13,7 @@ use crate::{
     slab::{Slab, SlabId},
 };
 use nanoserde::DeJson;
-use std::ptr;
+use std::{ptr, sync::Arc};
 
 #[derive(Default, Debug, DeJson)]
 #[nserde(default)]
@@ -29,7 +29,7 @@ pub struct DummyMemoryPool {
 
 #[derive(Debug)]
 pub struct DummyDevice {
-    device_info: DeviceInfo,
+    device_info: Arc<DeviceInfo>,
     memory_pool_id: PoolId,
 }
 
@@ -54,7 +54,7 @@ pub(super) fn initialize_device(
     }
     memory_pools.push(pool);
     devices.push(Device::Dummy(DummyDevice {
-        device_info: DeviceInfo {
+        device_info: Arc::new(DeviceInfo {
             compute: 20 * 1024 * 1024 * 1024 * 1024 * 1024,
             max_global_work_dims: vec![Dim::from(u32::MAX); 3],
             max_local_threads: 256 * 256,
@@ -64,12 +64,13 @@ pub(super) fn initialize_device(
             max_register_bytes: 128,
             tensor_cores: true,
             warp_size: 32,
+            cc: [0, 0],
             dtype_capability: [DTypeCapability::all(); DType::N_DTYPES],
             has_native_exp2: true,
             supported_vec_lens: vec![2, 4, 8, 16],
             tenstorrent: false,
             tile: [1, 1],
-        },
+        }),
         memory_pool_id: PoolId::from(usize::from(memory_pools.len()) - 1),
     }));
     Ok(())
@@ -156,15 +157,15 @@ impl DummyDevice {
         let _ = self;
     }
 
-    pub const fn info(&self) -> &super::DeviceInfo {
-        &self.device_info
+    pub fn info(&self) -> Arc<DeviceInfo> {
+        self.device_info.clone()
     }
 
     pub const fn memory_pool_id(&self) -> PoolId {
         self.memory_pool_id
     }
 
-    pub const fn free_compute(&self) -> u128 {
+    pub fn free_compute(&self) -> u128 {
         self.device_info.compute
     }
 

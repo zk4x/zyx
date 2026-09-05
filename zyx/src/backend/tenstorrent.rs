@@ -175,7 +175,7 @@ pub(super) fn initialize_device(
     let dev_id = config.device_ids.as_ref().and_then(|ids| ids.first().copied()).unwrap_or(0);
     devices.push(Device::TT(TTDevice {
         dev_id: u32::try_from(dev_id).unwrap(),
-        device_info: DeviceInfo {
+        device_info: Arc::new(DeviceInfo {
             compute: 200_000_000_000_000, // ~200 TFLOPS BF16
             max_global_work_dims: vec![Dim::from(u32::MAX); 3],
             max_local_threads: 1024,
@@ -185,12 +185,13 @@ pub(super) fn initialize_device(
             max_register_bytes: 128,
             tensor_cores: true,
             warp_size: 1, // Tensix has no SIMT warps
+            cc: [0, 0],
             dtype_capability: [DTypeCapability::all(); DType::N_DTYPES],
             has_native_exp2: false,
             supported_vec_lens: vec![32],
             tenstorrent: true,
             tile: [32, 32],
-        },
+        }),
         memory_pool_id: pool_id,
         runtime,
         programs: Slab::new(),
@@ -709,7 +710,7 @@ struct TTProgram {
 
 #[derive(Debug)]
 pub struct TTDevice {
-    device_info: DeviceInfo,
+    device_info: Arc<DeviceInfo>,
     /// Real Tenstorrent chip id (from device_ids config), set at init. Not the slab index.
     pub(crate) dev_id: u32,
     memory_pool_id: PoolId,
@@ -720,8 +721,8 @@ pub struct TTDevice {
 impl TTDevice {
     pub fn deinitialize(&mut self) {}
 
-    pub const fn info(&self) -> &DeviceInfo {
-        &self.device_info
+    pub fn info(&self) -> Arc<DeviceInfo> {
+        self.device_info.clone()
     }
 
     pub const fn memory_pool_id(&self) -> PoolId {

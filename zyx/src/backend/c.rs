@@ -19,7 +19,7 @@ use crate::shape::Dim;
 use crate::slab::Slab;
 use libloading::{Library, Symbol};
 use nanoserde::DeJson;
-use std::{ffi::CString, path::PathBuf, process::Command};
+use std::{ffi::CString, path::PathBuf, process::Command, sync::Arc};
 
 #[derive(Debug, DeJson)]
 #[nserde(default)]
@@ -42,7 +42,7 @@ pub struct CProgram {
 
 #[derive(Debug)]
 pub struct CDevice {
-    device_info: DeviceInfo,
+    device_info: Arc<DeviceInfo>,
     memory_pool_id: PoolId,
     programs: Slab<DeviceProgramId, CProgram>,
     pub has_openmp: bool,
@@ -116,7 +116,7 @@ pub(super) fn initialize_device(
         .map(|s| s.success())
         .unwrap_or(false);
     devices.push(Device::C(CDevice {
-        device_info: DeviceInfo {
+        device_info: Arc::new(DeviceInfo {
             compute: 10 * 1024 * 1024 * 1024 * 1024,
             max_global_work_dims: vec![Dim::from(1_000_000_000); 3],
             max_local_threads: 1,
@@ -126,12 +126,13 @@ pub(super) fn initialize_device(
             max_register_bytes: 1000,
             tensor_cores: false,
             warp_size: 1,
+            cc: [0, 0],
             dtype_capability: [DTypeCapability::all(); DType::N_DTYPES],
             has_native_exp2: false,
             supported_vec_lens: vec![2, 4, 8, 16],
             tenstorrent: false,
             tile: [1, 1],
-        },
+        }),
         memory_pool_id: pool_id,
         programs: Slab::new(),
         has_openmp,
@@ -146,15 +147,15 @@ pub(super) fn initialize_device(
 impl CDevice {
     pub const fn deinitialize(&mut self) {}
 
-    pub const fn info(&self) -> &DeviceInfo {
-        &self.device_info
+    pub fn info(&self) -> Arc<DeviceInfo> {
+        self.device_info.clone()
     }
 
     pub const fn memory_pool_id(&self) -> PoolId {
         self.memory_pool_id
     }
 
-    pub const fn free_compute(&self) -> u128 {
+    pub fn free_compute(&self) -> u128 {
         self.device_info.compute
     }
 
@@ -210,7 +211,7 @@ impl CDevice {
         let c_path = tmp_dir.join(format!("{name}.c"));
         let so_path = tmp_dir.join(format!("{name}.so"));
 
-        let full_source = kernel.generate_c(&self.device_info, self.has_openmp, &name)?;
+        let full_source = kernel.generate_c(self.has_openmp, &name)?;
         std::fs::write(&c_path, &full_source).map_err(|e| BackendError {
             status: ErrorStatus::KernelCompilation,
             context: format!("Failed to write C source: {e}").into(),

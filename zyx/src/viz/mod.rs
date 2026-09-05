@@ -38,7 +38,7 @@ pub(crate) struct KernelCapture {
     /// Winner kernel of the autotune search for this program.
     pub(crate) winner: Kernel,
     /// Device info of the device this program was compiled for.
-    pub(crate) dev_info: DeviceInfo,
+    pub(crate) dev_info: Arc<DeviceInfo>,
     /// Human readable device kind ("CUDA", "OpenCL", ...).
     pub(crate) device_label: &'static str,
     /// CUDA compute capability (for PTX codegen).
@@ -225,28 +225,28 @@ fn derive_optimized(cap: &KernelCapture) -> Kernel {
 pub(crate) fn generate_source(cap: &KernelCapture, target: Target) -> String {
     let kernel = derive_optimized(cap);
     match target {
-        Target::CudaC => match kernel.generate_cuda(&cap.dev_info, "zyx_viz") {
+        Target::CudaC => match kernel.generate_cuda("zyx_viz") {
             Ok(source) => source,
             Err(e) => format!("generate_cuda failed: {e:?}"),
         },
         Target::Ptx => {
-            let Some(cc) = cap.cc else {
+            if cap.cc.is_none() {
                 return "PTX requires a CUDA device (no compute capability recorded).".to_string();
-            };
-            match kernel.generate_ptx(cc, &cap.dev_info) {
-                Ok((ptx, _, _)) => String::from_utf8_lossy(&ptx).into_owned(),
+            }
+            match kernel.generate_ptx("zyx_viz") {
+                Ok((ptx, _)) => String::from_utf8_lossy(&ptx).into_owned(),
                 Err(e) => format!("generate_ptx failed: {e:?}"),
             }
         }
-        Target::OpenCL => match kernel.generate_opencl(&cap.dev_info, "zyx_viz") {
+        Target::OpenCL => match kernel.generate_opencl("zyx_viz") {
             Ok(source) => source,
             Err(e) => format!("generate_opencl failed: {e:?}"),
         },
-        Target::C => match kernel.generate_c(&cap.dev_info, cap.has_openmp, "zyx_viz") {
+        Target::C => match kernel.generate_c(cap.has_openmp, "zyx_viz") {
             Ok(source) => source,
             Err(e) => format!("generate_c failed: {e:?}"),
         },
-        Target::Spirv => match kernel.generate_spirv(&cap.dev_info, false) {
+        Target::Spirv => match kernel.generate_spirv(false) {
             Ok(words) => crate::codegen::spirv::debug_string(&words),
             Err(e) => format!("generate_spirv failed: {e:?}"),
         },

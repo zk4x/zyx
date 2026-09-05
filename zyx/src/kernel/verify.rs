@@ -329,7 +329,18 @@ impl Kernel {
                                 panic!();
                             }
                         }
-                        RangeKind::Warp(_) => todo!(),
+                        RangeKind::Warp(local_id) => {
+                            // A warp is a view over a local range on the same axis: the
+                            // local range owns the axis, so only the reference is validated.
+                            match self.ops[local_id].op {
+                                Op::Range { axis: ref_axis, kind: RangeKind::Local(_) } if ref_axis == axis => {}
+                                _ => {
+                                    println!("index={op_id} warp references op {local_id}, which is not a local range on axis {axis}");
+                                    self.debug();
+                                    panic!();
+                                }
+                            }
+                        }
                     }
                     dtypes.insert(op_id, IDX_T);
                 }
@@ -473,7 +484,8 @@ impl Kernel {
                     let len = match scope {
                         RangeKind::Group(len) => self.resolve_const(len).and_then(crate::dtype::Constant::as_dim),
                         RangeKind::Local(len) => Some(i64::from(len)),
-                        RangeKind::Warp(len) => Some(i64::from(len)),
+                        // A warp's value is the lane id: bounded by the warp size.
+                        RangeKind::Warp(_) => Some(i64::from(self.dev_info().warp_size)),
                     };
                     // An unresolved (dynamic) group length is UNKNOWN: no bounds
                     // must be fabricated for it. A huge sentinel here would wrap

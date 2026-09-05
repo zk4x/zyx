@@ -3,7 +3,7 @@
 
 use crate::{
     DType, Map,
-    backend::{DeviceInfo, gws_from_kernel},
+    backend::gws_from_kernel,
     dtype::Constant,
     error::{BackendError, ErrorStatus},
     kernel::{BOp, Kernel, MemLayout, MemScope, Op, OpId, ParamKind, RangeKind, UOp},
@@ -17,9 +17,9 @@ const VEC_COMPONENTS: [&str; 16] = [
 
 impl Kernel {
     /// Compile kernel to OpenCL C source code.
-    pub fn generate_opencl(&self, device_info: &DeviceInfo, name: &str) -> Result<String, BackendError> {
+    pub fn generate_opencl(&self, name: &str) -> Result<String, BackendError> {
         // Reject group lengths that are constant and exceed the device grid limits.
-        gws_from_kernel(self, &device_info.max_global_work_dims)?;
+        gws_from_kernel(self, &self.dev_info().max_global_work_dims)?;
         let mut global_args = String::new();
         let mut op_id = self.head;
         let mut steps_op_id = 0usize;
@@ -352,21 +352,24 @@ impl Kernel {
                 }
                 Op::Range { axis, kind: scope } => {
                     indices.insert(op_id, loop_id);
-                    let id_fn = match scope {
-                        RangeKind::Group(_) => "get_group_id",
-                        RangeKind::Local(_) => "get_local_id",
-                        RangeKind::Warp(_) => todo!(),
-                    };
-                    let max_idx = match scope {
+                    let (idx_expr, max_idx) = match scope {
                         RangeKind::Group(len_id) => {
-                            self.resolve_const(len_id).and_then(crate::dtype::Constant::as_dim).unwrap().saturating_sub(1)
+                            let max = self.resolve_const(len_id).and_then(crate::dtype::Constant::as_dim).unwrap().saturating_sub(1);
+                            (format!("get_group_id({axis})"), max)
                         }
-                        RangeKind::Local(len) => i64::from(len).saturating_sub(1),
-                        RangeKind::Warp(_) => todo!(),
+                        RangeKind::Local(len) => (format!("get_local_id({axis})"), i64::from(len).saturating_sub(1)),
+                        // Lane id: the referenced thread id mod warp size. The
+                        // referenced local range is emitted before (head order),
+                        // so its index variable already exists.
+                        RangeKind::Warp(local_id) => {
+                            let lidx = indices.get(&local_id).copied().expect("warp range must reference an already-emitted local range");
+                            let warp_size = self.dev_info().warp_size;
+                            (format!("idx{lidx} % {warp_size}"), i64::from(warp_size) - 1)
+                        }
                     };
                     _ = writeln!(
                         source,
-                        "{indent}{idx_type} idx{loop_id} = {id_fn}({axis}); // 0..={max_idx}",
+                        "{indent}{idx_type} idx{loop_id} = {idx_expr}; // 0..={max_idx}",
                         idx_type = self.dtype(op_id).ocl(),
                     );
                     loop_id += 1;

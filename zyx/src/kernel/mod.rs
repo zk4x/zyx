@@ -95,14 +95,16 @@
 //! ```
 
 pub(crate) use crate::backend::DeviceId;
+use crate::backend::DeviceInfo;
 pub use crate::tensor::Dev;
 pub use custom::CompiledKernel;
 pub(crate) use ops::{BOp, MoveOp, Op, OpNode, RangeKind, UOp};
 pub use ops::{MMADType, MMADims, MMALayout, OpId, ParamKind};
 
-use crate::{DType, Map, Set, dtype::Constant, shape::Dim, slab::Slab};
+use crate::{DType, Map, Set, dtype::Constant, shape::Dim, slab::{Slab, SlabId}};
 use nanoserde::{DeBin, SerBin};
 use std::collections::BTreeMap;
+use std::sync::Arc;
 use std::{hash::BuildHasherDefault, hash::Hash};
 
 mod algebraic;
@@ -204,6 +206,13 @@ pub struct Kernel {
     pub(crate) tail: OpId,
     /// Target device for compilation.
     pub(crate) device_id: DeviceId,
+    /// Snapshot of the device's [`DeviceInfo`] taken when a device is bound —
+    /// the warp size and limits live here so kernel passes never need to lock
+    /// the RT (it is not reentrant). Shared via `Arc` so kernel clones
+    /// (autotune creates thousands) don't re-allocate. `None` only for
+    /// placeholder kernels (`DeviceId::NULL`) before their device is bound.
+    /// Hardware properties are fixed, so the snapshot cannot go stale.
+    pub(crate) dev_info: Option<Arc<DeviceInfo>>,
     /// Memoized [`Self::shape_ids`] results. Only valid pre-linearization —
     /// [`linearize`](crate::kernel::linearize) clears it so kernels stay
     /// lightweight during autotuning.
@@ -287,8 +296,28 @@ impl Hash for Kernel {
 // Custom kernel machinery
 impl Kernel {
     /// Creates an empty kernel bound to the given internal device id.
+    ///
+    /// `DeviceId::NULL` (placeholder kernels) gets no [`DeviceInfo`] — it is
+    /// bound together with the real device before compilation
+    /// (`kernel.device_id = dev` sites must set both).
     pub fn from_device_id(device_id: DeviceId) -> Self {
-        Self { ops: Slab::new(), head: OpId::NULL, tail: OpId::NULL, device_id, shape_cache: Map::default() }
+        let dev_info = if device_id.is_null() {
+            None
+        } else {
+            let rt = crate::RT.lock();
+            Some(rt.devices[device_id].info())
+        };
+        Self { ops: Slab::new(), head: OpId::NULL, tail: OpId::NULL, device_id, dev_info, shape_cache: Map::default() }
+    }
+
+    /// The device info snapshot bound to this kernel.
+    ///
+    /// # Panics
+    ///
+    /// If the kernel has no device bound (placeholder kernels with
+    /// `DeviceId::NULL` that were never compiled).
+    pub(crate) fn dev_info(&self) -> &DeviceInfo {
+        self.dev_info.as_ref().expect("kernel has no device bound (DeviceId::NULL placeholder)")
     }
 
     /// Compute dtypes and reference counts for all operations.
@@ -1178,7 +1207,7 @@ impl Kernel {
                     // Dynamic dims are `-1`; autotune substitutes 42 (see `alloc_buffers`).
                     RangeKind::Group(len) => self.resolve_const(*len).and_then(crate::dtype::Constant::as_dim).unwrap_or(42),
                     RangeKind::Local(len) => i64::from(*len),
-                    RangeKind::Warp(len) => i64::from(*len),
+                    RangeKind::Warp(_) => i64::from(self.dev_info().warp_size),
                 },
                 _ => unreachable!(),
             }
@@ -1409,7 +1438,8 @@ impl Kernel {
                 &Op::Range { kind, .. } => match kind {
                     RangeKind::Group(len) => values.get(&len).copied().flatten(),
                     RangeKind::Local(len) => Some(Constant::idx(len)),
-                    RangeKind::Warp(len) => Some(Constant::idx(len)),
+                    // The warp op's value is the lane id — runtime data.
+                    RangeKind::Warp(_) => None,
                 },
                 // Param is dynamic
                 Op::Param { .. } => None,

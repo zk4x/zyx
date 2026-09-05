@@ -31,7 +31,7 @@ use dummy::{DummyDevice, DummyMemoryPool};
 use host::HostMemoryPool;
 use nanoserde::{DeBin, DeJson, SerBin};
 use opencl::{OpenCLDevice, OpenCLMemoryPool};
-use std::{collections::BTreeSet, hash::BuildHasherDefault};
+use std::{collections::BTreeSet, hash::BuildHasherDefault, sync::Arc};
 #[cfg(feature = "tenstorrent")]
 use tenstorrent::{TTDevice, TTMemoryPool};
 use vulkan::{VulkanDevice, VulkanMemoryPool};
@@ -553,7 +553,7 @@ impl DTypeCapability {
 }
 
 /// Hardware information needed for applying optimizations
-#[derive(Debug, Default, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, SerBin, DeBin)]
+#[derive(Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash, SerBin, DeBin)]
 pub struct DeviceInfo {
     /// Device compute in flops
     pub compute: u128,
@@ -573,6 +573,9 @@ pub struct DeviceInfo {
     pub tensor_cores: bool,
     /// Warp size
     pub warp_size: u16,
+    /// Compute capability as [major, minor] (e.g. [7, 5] = sm_75).
+    /// [0, 0] on devices without NVIDIA-style compute capability.
+    pub cc: [i32; 2],
     /// Per-dtype operation capabilities
     pub dtype_capability: [DTypeCapability; DType::N_DTYPES],
     /// Whether the device has a native exp2 instruction
@@ -864,7 +867,7 @@ impl Device {
         }
     }
 
-    pub const fn info(&self) -> &DeviceInfo {
+    pub fn info(&self) -> Arc<DeviceInfo> {
         match self {
             Device::C(dev) => dev.info(),
             Device::Cblas(dev) => dev.info(),
@@ -899,7 +902,7 @@ impl Device {
     /// How much compute is available on the device,
     /// Internally this should be adjusted for current `device_usage`,
     /// so that we spread the laod across all available devices appropriatelly.
-    pub const fn free_compute(&self) -> u128 {
+    pub fn free_compute(&self) -> u128 {
         match self {
             Device::C(dev) => dev.free_compute(),
             Device::Cblas(dev) => dev.free_compute(),

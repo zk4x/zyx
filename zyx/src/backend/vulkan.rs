@@ -542,7 +542,7 @@ pub(super) struct VulkanBuffer {
 
 pub struct VulkanDevice {
     tx: Sender<VulkanCommand>,
-    dev_info: DeviceInfo,
+    dev_info: Arc<DeviceInfo>,
     /// Real Vulkan physical device index, set at init. Not the slab index.
     pub(crate) dev_id: u32,
     memory_pool_id: PoolId,
@@ -556,8 +556,8 @@ impl std::fmt::Debug for VulkanDevice {
 
 impl VulkanDevice {
     pub(super) const fn deinitialize(&mut self) {}
-    pub(super) const fn info(&self) -> &DeviceInfo {
-        &self.dev_info
+    pub(super) fn info(&self) -> Arc<DeviceInfo> {
+        self.dev_info.clone()
     }
     pub(super) const fn memory_pool_id(&self) -> PoolId {
         self.memory_pool_id
@@ -1079,7 +1079,7 @@ pub(super) fn initialize_device(
         let worker_library = Arc::clone(&library);
         // Built up-front so the worker thread can validate group lengths at
         // compile and launch time against the device grid limits.
-        let dev_info = DeviceInfo {
+        let dev_info = Arc::new(DeviceInfo {
             compute: 1_000_000_000_000,
             max_global_work_dims: max_wg_count.iter().map(|&c| Dim::from(c)).collect(),
             max_local_threads: max_wg_invocations,
@@ -1089,6 +1089,7 @@ pub(super) fn initialize_device(
             max_register_bytes: 1024,
             tensor_cores: false,
             warp_size: 32,
+            cc: [0, 0],
             dtype_capability: {
                 let mut all = [DTypeCapability::all(); DType::N_DTYPES];
                 // Vulkan/SPIR-V f64 transcendentals crash or produce garbage
@@ -1115,7 +1116,7 @@ pub(super) fn initialize_device(
             supported_vec_lens: vec![2, 3, 4],
             tenstorrent: false,
             tile: [1, 1],
-        };
+        });
 
         std::thread::spawn({
             let free_bytes_atomic = Arc::clone(&free_bytes_atomic);
@@ -1341,13 +1342,14 @@ pub(super) fn initialize_device(
                                     match scope {
                                         RangeKind::Group(_) => {}
                                         RangeKind::Local(len) => lws[axis as usize] = len,
-                                        RangeKind::Warp(_) => todo!(),
+                                        // A warp is a view over a local range — adds no threads.
+                    RangeKind::Warp(_) => {}
                                     }
                                 }
                                 op_id = kernel.next_op(op_id);
                             }
 
-                            let spirv = match kernel.generate_spirv(&dev_info, debug_asm) {
+                            let spirv = match kernel.generate_spirv(debug_asm) {
                                 Ok(spirv) => spirv,
                                 Err(e) => {
                                     let _ = reply.send(Err(e));

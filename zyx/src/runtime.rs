@@ -4697,7 +4697,7 @@ impl Runtime {
                 (args, fresh_bufs)
             }
         };
-        let dev_info = self.devices[device_id].info().clone();
+        let dev_info = self.devices[device_id].info();
         let mut base = kernel;
         base.linearize();
         base.common_subexpression_elimination();
@@ -5000,6 +5000,7 @@ impl Runtime {
             ));
         };
         kernel.device_id = dev_id;
+        kernel.dev_info = Some(self.devices[dev_id].info());
 
         // Ensure loads are in target pool. Variables and symbolic leaves are
         // not backed by any buffer — they bind at launch from `variable_map`.

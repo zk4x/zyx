@@ -41,7 +41,7 @@ pub struct WGPUMemoryPool {
 
 #[derive(Debug)]
 pub struct WGPUDevice {
-    dev_info: DeviceInfo,
+    dev_info: Arc<DeviceInfo>,
     memory_pool_id: PoolId,
     device: Arc<wgpu::Device>,
     #[allow(unused)]
@@ -163,7 +163,7 @@ pub(super) fn initialize_device(
     devices.push(Device::WGPU(WGPUDevice {
         device,
         adapter: wgpu_adapter,
-        dev_info: DeviceInfo {
+        dev_info: Arc::new(DeviceInfo {
             compute: 1024 * 1024 * 1024 * 1024,
             max_global_work_dims: vec![100_000; 3],
             max_local_threads: Dim::from(limits.max_compute_invocations_per_workgroup),
@@ -177,12 +177,13 @@ pub(super) fn initialize_device(
             max_register_bytes: 512,
             tensor_cores: false,
             warp_size: 32,
+            cc: [0, 0],
             has_native_exp2: true,
             supported_vec_lens: vec![2, 3, 4],
             dtype_capability,
             tenstorrent: false,
             tile: [1, 1],
-        },
+        }),
         memory_pool_id: PoolId::from(usize::from(memory_pools.len()) - 1),
         programs: Slab::new(),
         queue,
@@ -388,8 +389,8 @@ impl WGPUDevice {
     #[allow(clippy::unused_self)]
     pub const fn deinitialize(&mut self) {}
 
-    pub const fn info(&self) -> &DeviceInfo {
-        &self.dev_info
+    pub fn info(&self) -> Arc<DeviceInfo> {
+        self.dev_info.clone()
     }
 
     pub const fn memory_pool_id(&self) -> PoolId {
@@ -419,7 +420,7 @@ impl WGPUDevice {
             op_id = kernel.next_op(op_id);
         }
 
-        let spirv_words = kernel.generate_spirv(&self.dev_info, debug_asm)?;
+        let spirv_words = kernel.generate_spirv(debug_asm)?;
 
         let shader_module = self.device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: None,

@@ -3,7 +3,7 @@
 
 use crate::{
     DType, Map,
-    backend::{DeviceInfo, gws_from_kernel},
+    backend::gws_from_kernel,
     dtype::Constant,
     error::{BackendError, ErrorStatus},
     kernel::{BOp, Kernel, MemLayout, MemScope, Op, OpId, ParamKind, RangeKind, UOp},
@@ -13,9 +13,9 @@ use std::{fmt::Write, hash::BuildHasherDefault};
 
 impl Kernel {
     /// Compile kernel to C source code.
-    pub fn generate_c(&self, device_info: &DeviceInfo, has_openmp: bool, name: &str) -> Result<String, BackendError> {
+    pub fn generate_c(&self, has_openmp: bool, name: &str) -> Result<String, BackendError> {
         // Reject group lengths that are constant and exceed the device grid limits.
-        gws_from_kernel(self, &device_info.max_global_work_dims)?;
+        gws_from_kernel(self, &self.dev_info().max_global_work_dims)?;
         let (dtypes, rcs) = self.compute_dtypes_and_rcs();
 
         let mut reg_map: Map<OpId, usize> = Map::with_capacity_and_hasher(self.ops.len().into(), BuildHasherDefault::new());
@@ -177,7 +177,7 @@ impl Kernel {
                                             );
                                         }
                                     }
-                                    _ if !device_info.supported_vec_lens.is_empty() => {
+                                    _ if !self.dev_info().supported_vec_lens.is_empty() => {
                                         _ = writeln!(
                                             source,
                                             "{indent}r{reg} = *(({}*)(p{src} + {idx}));",
@@ -238,7 +238,7 @@ impl Kernel {
                                     );
                                 }
                             }
-                            _ if !device_info.supported_vec_lens.is_empty() => {
+                            _ if !self.dev_info().supported_vec_lens.is_empty() => {
                                 let ocl_type = dtypes[&dst].0.c_type();
                                 _ = writeln!(source, "{indent}*(({ocl_type}{len}*)(p{dst} + {idx})) = {x};");
                             }

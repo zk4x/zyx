@@ -30,7 +30,7 @@ use crate::{
 };
 use libloading::Library;
 use nanoserde::DeJson;
-use std::collections::BTreeSet;
+use std::{collections::BTreeSet, sync::Arc};
 
 /// `cblas_sgemm(Order, TransA, TransB, M, N, K, alpha, A, lda, B, ldb, beta, C, ldc)`
 type SgemmFn = unsafe extern "C" fn(
@@ -111,7 +111,7 @@ pub struct CblasProgram {
 
 #[derive(Debug)]
 pub struct CblasDevice {
-    device_info: DeviceInfo,
+    device_info: Arc<DeviceInfo>,
     device_id: DeviceId,
     memory_pool_id: PoolId,
     /// Keeps the libopenblas library loaded so the [`CblasKernel`] fn pointers stay valid.
@@ -151,7 +151,7 @@ pub(super) fn initialize_device(
     let device_id = devices.push(Device::Cblas(CblasDevice {
         // Tiny compute and no dtype capabilities: this device never gets picked
         // for generic (eager) kernels, it only runs matched AOT matmuls.
-        device_info: DeviceInfo {
+        device_info: Arc::new(DeviceInfo {
             compute: 1,
             max_global_work_dims: vec![Dim::from(0i64); 3],
             max_local_threads: 1,
@@ -161,12 +161,13 @@ pub(super) fn initialize_device(
             max_register_bytes: 0,
             tensor_cores: false,
             warp_size: 1,
+            cc: [0, 0],
             dtype_capability: [DTypeCapability::none(); DType::N_DTYPES],
             has_native_exp2: false,
             supported_vec_lens: vec![],
             tenstorrent: false,
             tile: [1, 1],
-        },
+        }),
         device_id: DeviceId::NULL,
         // cblas reuses the host pool (like the C backend)
         memory_pool_id: PoolId::from(0),
@@ -186,15 +187,15 @@ pub(super) fn initialize_device(
 impl CblasDevice {
     pub const fn deinitialize(&mut self) {}
 
-    pub const fn info(&self) -> &DeviceInfo {
-        &self.device_info
+    pub fn info(&self) -> Arc<DeviceInfo> {
+        self.device_info.clone()
     }
 
     pub const fn memory_pool_id(&self) -> PoolId {
         self.memory_pool_id
     }
 
-    pub const fn free_compute(&self) -> u128 {
+    pub fn free_compute(&self) -> u128 {
         self.device_info.compute
     }
 

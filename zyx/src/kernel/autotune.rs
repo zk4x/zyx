@@ -414,7 +414,7 @@ impl BeamSearch {
         if seeds.iter().any(|seed| seed.device_id != device_id) {
             return Err(ZyxError::kernel_error("autotune: seeds span multiple devices".into()));
         }
-        let dev_info = rt.devices[device_id].info().clone();
+        let dev_info = rt.devices[device_id].info();
         let pool_id = rt.devices[device_id].memory_pool_id();
         let device = &mut rt.devices[device_id];
         let pool = &mut rt.pools[pool_id];

@@ -318,13 +318,10 @@ impl Kernel {
             return false;
         }
 
-        let warp_loop =
-            self.insert_before(local_loops[0], Op::Range { axis: 0, kind: RangeKind::Warp((local_dims[0] * n) as u8) });
-        let y = self.insert_before(warp_loop, Op::Const(Constant::idx(n)));
-        self.ops[local_loops[0]].op = Op::Binary { x: warp_loop, y, bop: BOp::Div };
-        let y = self.insert_before(warp_loop, Op::Const(Constant::idx(n)));
-        self.ops[local_loops[1]].op = Op::Binary { x: warp_loop, y, bop: BOp::Mod };
-
-        true
+        // TODO redesign for `RangeKind::Warp(OpId)`: a warp is now a lane-id view
+        // over ONE local range (`local_id % warp_size`), so it cannot span
+        // `local_dims[0] * n` threads across two local axes like the old
+        // `Warp(u8)` did. Redesign pending — fail loudly instead.
+        todo!("warpize_threads is not redesigned for RangeKind::Warp(OpId) yet");
     }
 }

@@ -63,7 +63,7 @@ pub(super) struct HIPBuffer {
 pub struct HIPDevice {
     device: HIPdevice,
     memory_pool_id: PoolId,
-    dev_info: DeviceInfo,
+    dev_info: Arc<DeviceInfo>,
     pub compute_capability: [c_int; 2],
     streams: Vec<HIPStream>,
     programs: Slab<DeviceProgramId, HIPProgram>,
@@ -276,7 +276,7 @@ pub(super) fn initialize_device(
         }
         let mut dev = HIPDevice {
             device,
-            dev_info: DeviceInfo {
+            dev_info: Arc::new(DeviceInfo {
                 compute: 1024 * 1024 * 1024 * 1024,
                 max_global_work_dims: vec![64, 64, 64],
                 max_local_threads: 1,
@@ -286,12 +286,13 @@ pub(super) fn initialize_device(
                 preferred_vector_size: 16,
                 tensor_cores: major >= 7,
                 warp_size: 64,
+                cc: [major, minor],
                 dtype_capability: [DTypeCapability::all(); DType::N_DTYPES],
                 has_native_exp2: true,
                 supported_vec_lens: vec![2, 4],
                 tenstorrent: false,
                 tile: [1, 1],
-            },
+            }),
             streams,
             programs: Slab::new(),
             memory_pool_id: PoolId::from(usize::from(memory_pools.len()) - 1),
@@ -305,7 +306,7 @@ pub(super) fn initialize_device(
             hipEventRecord,
             hipStreamWaitEvent,
         };
-        dev.dev_info = DeviceInfo {
+        dev.dev_info = Arc::new(DeviceInfo {
             compute: 1024 * 1024 * 1024 * 1024,
             max_global_work_dims: vec![
                 Dim::try_from(dev.get(HIPdevice_attribute::hipDeviceAttributeMaxGridDimX, hipDeviceGetAttribute)?).unwrap(),
@@ -332,12 +333,13 @@ pub(super) fn initialize_device(
                 .unwrap()
                 .try_into()
                 .unwrap(),
+            cc: [major, minor],
             dtype_capability: [DTypeCapability::all(); DType::N_DTYPES],
             has_native_exp2: true,
             supported_vec_lens: vec![2, 4],
             tenstorrent: false,
             tile: [1, 1],
-        };
+        });
         devices.push(Device::HIP(dev));
         //queues,
     }
@@ -490,8 +492,8 @@ impl HIPDevice {
         id
     }
 
-    pub(super) const fn info(&self) -> &DeviceInfo {
-        &self.dev_info
+    pub(super) fn info(&self) -> Arc<DeviceInfo> {
+        self.dev_info.clone()
     }
 
     // Memory pool id out of OpenCLMemoryPools
@@ -739,7 +741,7 @@ impl HIPDevice {
         self.programs.remove(program_id);
     }
 
-    pub const fn free_compute(&self) -> u128 {
+    pub fn free_compute(&self) -> u128 {
         self.dev_info.compute
     }
 

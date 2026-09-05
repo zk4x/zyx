@@ -178,7 +178,8 @@ impl Kernel {
                 let len = match kind {
                     RangeKind::Group(op_id) => self.resolve_const(op_id).and_then(crate::dtype::Constant::as_dim),
                     RangeKind::Local(len) => Some(len as Dim),
-                    RangeKind::Warp(len) => Some(len as Dim),
+                    // Warp views are never merged — bail out (kernel stays untouched).
+                    RangeKind::Warp(_) => None,
                 };
                 let Some(len) = len else { return };
                 acc *= len;
@@ -210,7 +211,7 @@ impl Kernel {
         let kind = match kind {
             RangeKind::Group(_) => RangeKind::Group(self.insert_before(first_id.unwrap(), Op::Const(Constant::idx(acc)))),
             RangeKind::Local(_) => RangeKind::Local(acc as u32),
-            RangeKind::Warp(_) => RangeKind::Warp(acc as u8),
+            RangeKind::Warp(_) => unreachable!("warp ranges are never merged (bail-out above)"),
         };
         let mut x = self.insert_before(first_id.unwrap(), Op::Range { axis, kind });
 

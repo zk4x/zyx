@@ -83,7 +83,8 @@ impl Kernel {
                 Op::Range { kind, .. } => match kind {
                     RangeKind::Group(len) => self.resolve_const(*len).and_then(crate::dtype::Constant::as_dim) == Some(1),
                     RangeKind::Local(len) => *len == 1,
-                    RangeKind::Warp(len) => *len == 1,
+                    // A warp is a view over a local range — never a removable len-1 index.
+                    RangeKind::Warp(_) => false,
                 },
                 _ => false,
             };

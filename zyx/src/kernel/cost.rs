@@ -441,7 +441,8 @@ impl Kernel {
                         gws[axis as usize] = self.resolve_const(len).and_then(crate::dtype::Constant::as_dim).unwrap_or(42)
                     }
                     RangeKind::Local(len) => lws[axis as usize] = len,
-                    RangeKind::Warp(_) => todo!(),
+                    // A warp is a view over a local range — adds no threads.
+                    RangeKind::Warp(_) => {}
                 },
                 Op::Loop { len: len_id } => {
                     wi_ops += loop_mult * 3;

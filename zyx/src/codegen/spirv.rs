@@ -6,7 +6,7 @@
 
 use crate::{
     DType, Map,
-    backend::{DeviceInfo, gws_from_kernel},
+    backend::gws_from_kernel,
     dtype::Constant,
     error::{BackendError, ErrorStatus},
     kernel::{BOp, IDX_T, Kernel, MemLayout, MemScope, Op, OpId, ParamKind, RangeKind, UOp},
@@ -415,10 +415,10 @@ fn elem_stride(dt: DType) -> usize {
 
 impl Kernel {
     /// Compile kernel to SPIR-V binary.
-    pub fn generate_spirv(&self, device_info: &DeviceInfo, debug_asm: bool) -> Result<Vec<u32>, BackendError> {
+    pub fn generate_spirv(&self, debug_asm: bool) -> Result<Vec<u32>, BackendError> {
         use OpCode::*;
         // Reject group lengths that are constant and exceed the device grid limits.
-        gws_from_kernel(self, &device_info.max_global_work_dims)?;
+        gws_from_kernel(self, &self.dev_info().max_global_work_dims)?;
         let dtypes = compute_dtypes(self);
         let mut asm = Asm::new();
 
@@ -906,7 +906,8 @@ impl Kernel {
                                 lws[axis as usize] = lws[axis as usize].max(u64::from(len));
                             }
                         }
-                        RangeKind::Warp(_) => todo!(),
+                        // A warp is a view over a local range — adds no threads.
+                        RangeKind::Warp(_) => {}
                     }
                 }
                 op_id = self.next_op(op_id);
@@ -1683,10 +1684,21 @@ impl Kernel {
                         match scope {
                             RangeKind::Group(_) => asm.emit_typed(OpLoad, vec3_id, loaded, &[wg_id_var]),
                             RangeKind::Local(_) => asm.emit_typed(OpLoad, vec3_id, loaded, &[local_inv_var]),
-                            RangeKind::Warp(_) => todo!(),
+                            // Lane id: local invocation id mod warp size.
+                            RangeKind::Warp(_) => asm.emit_typed(OpLoad, vec3_id, loaded, &[local_inv_var]),
                         }
                         let elem = asm.id();
                         asm.emit_typed(OpCompositeExtract, u32_id, elem, &[loaded, axis]);
+                        let elem = match scope {
+                            RangeKind::Warp(_) => {
+                                let ws_id = asm.id();
+                                asm.emit_typed(OpConstant, u32_id, ws_id, &[u32::from(self.dev_info().warp_size)]);
+                                let rem = asm.id();
+                                asm.emit_typed(OpSRem, u32_id, rem, &[elem, ws_id]);
+                                rem
+                            }
+                            _ => elem,
+                        };
                         if IDX_T == DType::U32 {
                             spv_values.insert(op_id, elem);
                         } else {
