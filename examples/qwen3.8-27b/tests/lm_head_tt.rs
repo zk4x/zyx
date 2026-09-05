@@ -112,12 +112,14 @@ fn lm_head_tt() -> Result<(), ZyxError> {
     let y: Vec<f32> = goldens["output"].cast(DType::F32).to_vec()?;
 
     // A[kt] = Xp[0:32, kt*32:(kt+1)*32], Xp = x rows + 24 zero rows.
+    // TEMP DIAG accum probe: A0 = A1 = identity rows, B1 = 0, so
+    // S = B0 iff DST accumulates, S = 0 iff matmul overwrites.
     let mut ap = Vec::with_capacity(2048);
-    for kt in 0..K_TILES {
+    for _kt in 0..K_TILES {
         let mut tile = vec![0.0f32; 1024];
-        for r in 0..8 {
+        for r in 0..32 {
             for c in 0..32 {
-                tile[r * 32 + c] = x[r * 64 + kt * 32 + c];
+                tile[r * 32 + c] = if r == c { 1.0 } else { 0.0 };
             }
         }
         ap.extend(tile_encode(&tile));
@@ -128,9 +130,12 @@ fn lm_head_tt() -> Result<(), ZyxError> {
     for n in 0..N_TILES {
         for kt in 0..K_TILES {
             let mut tile = vec![0.0f32; 1024];
-            for r in 0..32 {
-                for c in 0..32 {
-                    tile[r * 32 + c] = w[(n * 32 + c) * 64 + kt * 32 + r];
+            // TEMP DIAG accum probe: B1 = 0 (see above).
+            if kt == 0 {
+                for r in 0..32 {
+                    for c in 0..32 {
+                        tile[r * 32 + c] = w[(n * 32 + c) * 64 + kt * 32 + r];
+                    }
                 }
             }
             bp.extend(tile_encode(&tile));
@@ -138,13 +143,19 @@ fn lm_head_tt() -> Result<(), ZyxError> {
     }
 
     let a_t = Tensor::from(ap).to(Dev::C)?.cast(DType::BF16).to(Dev::TT(0))?;
-    let b_t = Tensor::from(bp).to(Dev::C)?.cast(DType::BF16).to(Dev::TT(0))?;
+    let b_t = Tensor::from(bp.clone()).to(Dev::C)?.cast(DType::BF16).to(Dev::TT(0))?;
+    // TEMP DIAG: round-trip B host->device->host (no NOC reads involved).
+    let b_back: Vec<f32> = b_t.to(Dev::C)?.cast(DType::F32).to_vec()?;
+    let b_src: Vec<f32> = Tensor::from(bp.clone()).to(Dev::C)?.cast(DType::F32).to_vec()?;
+    println!("TEMP b_roundtrip first8={:?}", &b_back[..8]);
+    println!("TEMP b_source first8={:?}", &b_src[..8]);
 
     // Each launch returns a fresh z (8192 elems); only tile n is written.
+    // TEMP DIAG swap probe: feed B through the A read path.
     let mut tiles = Vec::with_capacity(N_TILES);
     for n in 0..N_TILES {
         let n_t = Tensor::variable(n as i64);
-        let out = compiled.forward(&[&a_t, &b_t, &n_t], vec![[8192i64]])?;
+        let out = compiled.forward(&[&b_t, &b_t, &n_t], vec![[8192i64]])?;
         let z_host = out[0].to(Dev::C)?;
         let z_f32 = z_host.cast(DType::F32);
         let z_face: Vec<f32> = z_f32.to_vec()?;
@@ -170,6 +181,16 @@ fn lm_head_tt() -> Result<(), ZyxError> {
         }
     }
     println!("bad: {bad} / 2048");
+    // TEMP DIAG: padding rows 8..32 should be ~0 (X rows 8+ are zero).
+    // TEMP DIAG one-hot probe expects tiles[m][r][c] == w[(m*32+c)*64 + r].
+    for m in 0..N_TILES {
+        let row8: Vec<f32> = tiles[m][8 * 32..8 * 32 + 4].to_vec();
+        let row0: Vec<f32> = tiles[m][0..8].to_vec();
+        println!("TEMP m={m} row0={row0:?} row8={row8:?}");
+    }
+    if N_TILES > 0 {
+        println!("TEMP wcol0: {:?}", (0..8).map(|c| w[c * 64]).collect::<Vec<f32>>());
+    }
     assert_eq!(bad, 0);
     Ok(())
 }

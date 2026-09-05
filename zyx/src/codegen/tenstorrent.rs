@@ -324,6 +324,7 @@ impl Kernel {
                         if reader_params.contains(&param_idx) {
                             let arg = reader_pos[&param_idx];
                             writeln!(reader, "{indent}uint32_t src{op_id} = get_arg_val<uint32_t>({arg});");
+                            writeln!(reader, "{indent}DEVICE_PRINT(\"TEMP src{op_id}={{}}\\n\", src{op_id});"); // TEMP debug
                             writeln!(reader, "{indent}auto args{op_id} = TensorAccessorArgs<{}>({arg});", input_arg_idx * 2);
                             writeln!(reader, "{indent}auto p{op_id} = TensorAccessor(args{op_id}, src{op_id}, {PAGE_SIZE});");
                             input_arg_idx += 1;
@@ -641,6 +642,179 @@ impl Kernel {
                 }
             }
 
+            // Fold pure K-accumulation add chains onto matmul DST accumulation:
+            // add(acc, matmul) with a zero seed and a single final CB store
+            // becomes repeated matmul_tiles into one shared DST slot (the
+            // reference demo accumulates in DST across K exactly this way).
+            // Anything else keeps its add — and trips the mixed-init rule
+            // below instead of wedging the board.
+            let mut folded_adds: Set<OpId> = Set::default();
+            let mut folded_seeds: Set<OpId> = Set::default();
+            let mut matmul_chain: Map<OpId, usize> = Map::default();
+            {
+                let is_zero = |c: &Constant| {
+                    matches!(c, Constant::BF16(b) if b == &[0, 0])
+                        || matches!(c, Constant::F16(b) if b == &[0, 0])
+                        || matches!(c, Constant::F32(b) if b == &[0, 0, 0, 0])
+                };
+                let mut consumers: Map<OpId, Vec<OpId>> = Map::default();
+                let mut sec = op_id;
+                let mut sec_steps = 0usize;
+                while !sec.is_null() {
+                    sec_steps += 1;
+                    if sec_steps > 10_000 {
+                        panic!("tenstorrent fold scan did not finish in 10000 steps");
+                    }
+                    if matches!(self.ops[sec].op, Op::Barrier) {
+                        break;
+                    }
+                    eprintln!("TEMP sec {sec}: {:?}", self.ops[sec].op); // TEMP debug
+                    for p in self.ops[sec].op.parameters() {
+                        consumers.entry(p).or_default().push(sec);
+                    }
+                    sec = self.next_op(sec);
+                }
+                let sole_user = |v: OpId, who: OpId| {
+                    matches!(consumers.get(&v), Some(users) if users.as_slice() == [who])
+                };
+                let mut open: Map<OpId, usize> = Map::default();
+                let mut members: Vec<Vec<OpId>> = Vec::new();
+                let mut chain_seeds: Vec<OpId> = Vec::new();
+                let mut chain_mats: Vec<Vec<OpId>> = Vec::new();
+                let mut walk = op_id;
+                let mut walk_steps = 0usize;
+                while !walk.is_null() {
+                    walk_steps += 1;
+                    if walk_steps > 10_000 {
+                        panic!("tenstorrent fold scan did not finish in 10000 steps");
+                    }
+                    if matches!(self.ops[walk].op, Op::Barrier) {
+                        break;
+                    }
+                    if let Op::Binary { x, y, bop } = self.ops[walk].op {
+                        if bop == BOp::Add {
+                            eprintln!("TEMP fold cand {walk}"); // TEMP debug
+                            let x_is_mm = matches!(self.ops[x].op, Op::MatmulTile { .. });
+                            let y_is_mm = matches!(self.ops[y].op, Op::MatmulTile { .. });
+                            // Sum of two matmuls: add(m0, m1). Constant
+                            // folding already removes zero seeds, so this is
+                            // the shape K-accumulation actually takes.
+                            if x_is_mm
+                                && y_is_mm
+                                && rcs.get(&x).copied().unwrap_or(0) == 1
+                                && rcs.get(&y).copied().unwrap_or(0) == 1
+                                && sole_user(x, walk)
+                                && sole_user(y, walk)
+                                && rcs.get(&walk).copied().unwrap_or(0) == 1
+                            {
+                                eprintln!("TEMP fold sum-ok {walk}"); // TEMP debug
+                                let c = members.len();
+                                members.push(vec![walk]);
+                                chain_seeds.push(OpId::NULL);
+                                chain_mats.push(vec![x, y]);
+                                folded_adds.insert(walk);
+                                matmul_chain.insert(x, c);
+                                matmul_chain.insert(y, c);
+                                open.insert(walk, c);
+                            } else {
+                                // Accumulator chain: add(acc, m) where acc is
+                                // a zero seed or a previously folded add.
+                                let (m, a) = if matches!(self.ops[x].op, Op::MatmulTile { .. }) {
+                                (x, y)
+                            } else if matches!(self.ops[y].op, Op::MatmulTile { .. }) {
+                                (y, x)
+                            } else {
+                                (OpId::NULL, OpId::NULL)
+                            };
+                            if !m.is_null()
+                                && rcs.get(&m).copied().unwrap_or(0) == 1
+                                && sole_user(m, walk)
+                                && rcs.get(&walk).copied().unwrap_or(0) == 1
+                            {
+                                eprintln!("TEMP fold struct-ok {walk} m={m} a={a}"); // TEMP debug
+                                if let Some(&c) = open.get(&a) {
+                                    folded_adds.insert(walk);
+                                    matmul_chain.insert(m, c);
+                                    members[c].push(walk);
+                                    chain_mats[c].push(m);
+                                    open.remove(&a);
+                                    open.insert(walk, c);
+                                } else if let Op::Const(k) = &self.ops[a].op {
+                                    if is_zero(k)
+                                        && rcs.get(&a).copied().unwrap_or(0) == 1
+                                        && sole_user(a, walk)
+                                    {
+                                        let c = members.len();
+                                        members.push(vec![walk]);
+                                        chain_seeds.push(a);
+                                        chain_mats.push(vec![m]);
+                                        folded_adds.insert(walk);
+                                        folded_seeds.insert(a);
+                                        matmul_chain.insert(m, c);
+                                        open.insert(walk, c);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                    walk = self.next_op(walk);
+                }
+                // Roll back chains whose tail does not feed exactly one CB store.
+                for (tail, c) in open.iter() {
+                    eprintln!("TEMP fold tail {tail} chain {c}"); // TEMP debug
+                    let ok = matches!(consumers.get(tail), Some(users) if users.len() == 1)
+                        && matches!(self.ops[consumers[tail][0]].op, Op::Store { dst, .. } if cb_map.contains_key(&dst));
+                    if !ok {
+                        for &add in &members[*c] {
+                            folded_adds.remove(&add);
+                        }
+                        folded_seeds.remove(&chain_seeds[*c]);
+                        for &m in &chain_mats[*c] {
+                            matmul_chain.remove(&m);
+                        }
+                    }
+                }
+            }
+            // Loads consumed only by MatmulTile ops need no copy_tile:
+            // matmul reads CBs directly (like the reference demo), and a
+            // copy under mm_init's unpacker config stalls UNPACK.
+            let mut matmul_only_loads: Set<OpId> = Set::default();
+            {
+                let mut sec = op_id;
+                let mut sec_steps = 0usize;
+                while !sec.is_null() {
+                    sec_steps += 1;
+                    if sec_steps > 10_000 {
+                        panic!("tenstorrent load-use scan did not finish in 10000 steps");
+                    }
+                    if matches!(self.ops[sec].op, Op::Barrier) {
+                        break;
+                    }
+                    if let Op::Load { src, layout: MemLayout::Tile { .. }, .. } = self.ops[sec].op {
+                        if cb_map.contains_key(&src) {
+                            let mut uses = Vec::new();
+                            let mut s2 = op_id;
+                            loop {
+                                if s2.is_null() || matches!(self.ops[s2].op, Op::Barrier) {
+                                    break;
+                                }
+                                if self.ops[s2].op.parameters().any(|p| p == sec) {
+                                    uses.push(s2);
+                                }
+                                s2 = self.next_op(s2);
+                            }
+                            if !uses.is_empty()
+                                && uses.iter().all(|&u| matches!(self.ops[u].op, Op::MatmulTile { .. }))
+                            {
+                                matmul_only_loads.insert(sec);
+                            }
+                        }
+                    }
+                    sec = self.next_op(sec);
+                }
+            }
+
             // First pass: collect init headers from ops
             let mut scan = op_id;
             let mut steps_scan = 0usize;
@@ -670,11 +844,17 @@ impl Kernel {
                         }
                     }
                     Op::Binary { x, y, bop } => {
-                        if matches!(self.ops[x].op, Op::Const(_)) || matches!(self.ops[y].op, Op::Const(_)) {
-                            has_fill = true;
-                        }
-                        if let Some(init) = tt_binary_init(bop) {
-                            binary_inits.insert(init);
+                        // Folded K-accumulation adds emit nothing (DST
+                        // accumulation), so they contribute no init or fill.
+                        if !folded_adds.contains(&scan) {
+                            if matches!(self.ops[x].op, Op::Const(_))
+                                || matches!(self.ops[y].op, Op::Const(_))
+                            {
+                                has_fill = true;
+                            }
+                            if let Some(init) = tt_binary_init(bop) {
+                                binary_inits.insert(init);
+                            }
                         }
                     }
                     Op::Store { dst, src, .. } => {
@@ -710,14 +890,34 @@ impl Kernel {
                 scan = self.next_op(scan);
             }
 
+            // Mixed matmul + SFPU inits wedge the board: mm_init owns the
+            // unpacker config, and any *_tile_init emitted after it reprograms
+            // the unpacker for SFPU ops, stalling UNPACK at launch (only an
+            // external reset recovers). Refuse to emit the wedging order;
+            // mixed kernels need init interleaving, which codegen does not
+            // implement yet.
+            if !mm_inits.is_empty() && (!binary_inits.is_empty() || !unary_inits.is_empty() || !typecast_inits.is_empty()) {
+                return Err(BackendError {
+                    status: ErrorStatus::KernelCompilation,
+                    context: "tenstorrent mixed matmul + SFPU tile inits wedge UNPACK (mm_init unpacker config is clobbered by *_tile_init); init interleaving is unimplemented".into(),
+                });
+            }
+
             // compute_kernel_hw_startup first: the header requires it
             // before any other compute API call (inits included).
-            if !mm_inits.is_empty() {
+            // TEMP DIAG no-FPU stub: replace matmul compute with
+            // a cb0->out copy (14_t-shaped: init_sfpu + copy + pack) to
+            // read out reader data as the FPU sees it. Revert after.
+            const TEMP_STUB_NO_FPU: bool = true;
+            const EMIT_HW_STARTUP: bool = false;
+            if !mm_inits.is_empty() && !TEMP_STUB_NO_FPU {
                 let out_cb = mm_out_cb.expect("tenstorrent matmul kernel needs a tile store to a circular buffer");
                 // One-time HW setup (like the official matmul example):
                 // all matmuls in the kernel must share this triple.
                 let (first_a, first_b) = mm_inits[0];
-                writeln!(compute, "{indent}compute_kernel_hw_startup({first_a}, {first_b}, {out_cb});");
+                if EMIT_HW_STARTUP {
+                    writeln!(compute, "{indent}compute_kernel_hw_startup({first_a}, {first_b}, {out_cb});");
+                }
                 for (cb_a, cb_b) in &mm_inits {
                     writeln!(compute, "{indent}mm_init({cb_a}, {cb_b}, {out_cb});");
                 }
@@ -779,7 +979,37 @@ impl Kernel {
             for &(cb_id, depth) in &load_input_cbs {
                 writeln!(compute, "{indent}cb{cb_id}.wait_front({depth});");
             }
-            writeln!(compute, "{indent}tile_regs_acquire();");
+            // TEMP DIAG no-FPU stub (see TEMP_STUB_NO_FPU): wait inputs,
+            // fill a constant tile, pack it out, drain inputs. Exercises
+            // the full CB/dataflow protocol with zero FPU involvement.
+            let mut stubbed = false;
+            if TEMP_STUB_NO_FPU && !mm_inits.is_empty() {
+                stubbed = true;
+                let out_cb = mm_out_cb.expect("tenstorrent stub needs the matmul output CB");
+                writeln!(compute, "{indent}init_sfpu(0, {out_cb});");
+                writeln!(compute, "{indent}tile_regs_acquire();");
+                // TEMP DIAG init-arg probe: proven init form (0, out) with
+                // copy from cb1. If B data appears, init_sfpu(1, .) was
+                // the probe bug, not B data.
+                writeln!(compute, "{indent}copy_tile(1, 0, 0);");
+                writeln!(compute, "{indent}tile_regs_commit();");
+                writeln!(compute, "{indent}tile_regs_wait();");
+                writeln!(compute, "{indent}cb{out_cb}.reserve_back(1);");
+                writeln!(compute, "{indent}pack_tile(0, {out_cb});");
+                for &(loaded_cb, depth) in &load_input_cbs {
+                    writeln!(compute, "{indent}cb{loaded_cb}.pop_front({depth});");
+                }
+                writeln!(compute, "{indent}tile_regs_release();");
+                writeln!(compute, "{indent}cb{out_cb}.push_back(1);");
+                while !op_id.is_null() {
+                    if matches!(self.ops[op_id].op, Op::Barrier) {
+                        break;
+                    }
+                    op_id = self.next_op(op_id);
+                }
+            } else {
+                writeln!(compute, "{indent}tile_regs_acquire();");
+            }
 
             // Materialize constants used as tile operands (defined outside the
             // compute range) into DST slots before the tile op loop runs
@@ -822,6 +1052,12 @@ impl Kernel {
             }
 
             let mut steps_op_id = 0usize;
+            let mut chain_slots: Map<usize, u32> = Map::default();
+            // TEMP DIAG single-matmul probe (see below).
+            let mut chain_done: Map<usize, usize> = Map::default();
+            // Tiles already popped per CB by streaming folded matmuls;
+            // the epilogue pops only the remainder.
+            let mut popped: Map<u32, i64> = Map::default();
             while !op_id.is_null() {
                 steps_op_id += 1;
                 if steps_op_id > 10_000 {
@@ -835,28 +1071,37 @@ impl Kernel {
                                 context: "tenstorrent has no f64 compute units -- f64 is unsupported, use f32 or bf16".into(),
                             });
                         }
-                        if let Some(&cb_id) = cb_map.get(&src) {
+                        // Loads consumed only by matmuls need no copy_tile:
+                        // matmul reads CBs directly. Skipped like folded
+                        // seeds (no slots, nothing looks them up).
+                        if !matmul_only_loads.contains(&op_id) {
+                            if let Some(&cb_id) = cb_map.get(&src) {
+                                let n = rcs.get(&op_id).copied().unwrap_or(1).max(1) as usize;
+                                let mut slots = Vec::with_capacity(n);
+                                for _ in 0..n {
+                                    let slot = next_slot;
+                                    next_slot += 1;
+                                    slots.push(slot);
+                                    writeln!(compute, "{indent}copy_tile({cb_id}, 0, {slot});");
+                                }
+                                dst_slots.insert(op_id, slots);
+                            }
+                        }
+                    }
+                    Op::Const(val) => {
+                        // Folded zero seeds emit nothing; their add is folded
+                        // into DST accumulation.
+                        if !folded_seeds.contains(&op_id) {
                             let n = rcs.get(&op_id).copied().unwrap_or(1).max(1) as usize;
                             let mut slots = Vec::with_capacity(n);
                             for _ in 0..n {
                                 let slot = next_slot;
                                 next_slot += 1;
                                 slots.push(slot);
-                                writeln!(compute, "{indent}copy_tile({cb_id}, 0, {slot});");
+                                writeln!(compute, "{indent}fill_tile_bitcast({slot}, {});", tt_fill_bits(val));
                             }
                             dst_slots.insert(op_id, slots);
                         }
-                    }
-                    Op::Const(val) => {
-                        let n = rcs.get(&op_id).copied().unwrap_or(1).max(1) as usize;
-                        let mut slots = Vec::with_capacity(n);
-                        for _ in 0..n {
-                            let slot = next_slot;
-                            next_slot += 1;
-                            slots.push(slot);
-                            writeln!(compute, "{indent}fill_tile_bitcast({slot}, {});", tt_fill_bits(val));
-                        }
-                        dst_slots.insert(op_id, slots);
                     }
                     Op::Cast { x, dtype } if matches!(dtype, DType::BF16 | DType::F16 | DType::F32) => {
                         let idx = consumer_count.entry(x).or_insert(0);
@@ -894,14 +1139,27 @@ impl Kernel {
                         };
                     }
                     Op::Binary { x, y, bop } => {
-                        let x_idx = consumer_count.entry(x).or_insert(0);
-                        let slot_x = dst_slots[&x][*x_idx as usize];
-                        *x_idx += 1;
-                        let y_idx = consumer_count.entry(y).or_insert(0);
-                        let slot_y = dst_slots[&y][*y_idx as usize];
-                        *y_idx += 1;
-                        let n = rcs.get(&op_id).copied().unwrap_or(1).max(1) as usize;
-                        dst_slots.insert(op_id, vec![slot_x; n]);
+                        if folded_adds.contains(&op_id) {
+                            // Folded K-accumulation: the matmul already
+                            // accumulated into the shared DST slot; only
+                            // alias it, emit nothing.
+                            let m = if matches!(self.ops[x].op, Op::MatmulTile { .. }) {
+                                x
+                            } else {
+                                y
+                            };
+                            let acc = dst_slots[&m][0];
+                            let n = rcs.get(&op_id).copied().unwrap_or(1).max(1) as usize;
+                            dst_slots.insert(op_id, vec![acc; n]);
+                        } else {
+                            let x_idx = consumer_count.entry(x).or_insert(0);
+                            let slot_x = dst_slots[&x][*x_idx as usize];
+                            *x_idx += 1;
+                            let y_idx = consumer_count.entry(y).or_insert(0);
+                            let slot_y = dst_slots[&y][*y_idx as usize];
+                            *y_idx += 1;
+                            let n = rcs.get(&op_id).copied().unwrap_or(1).max(1) as usize;
+                            dst_slots.insert(op_id, vec![slot_x; n]);
                         match bop {
                             BOp::Add => writeln!(compute, "{indent}add_binary_tile({slot_x}, {slot_y}, {slot_x});"),
                             BOp::Sub => writeln!(compute, "{indent}sub_binary_tile({slot_x}, {slot_y}, {slot_x});"),
@@ -923,6 +1181,7 @@ impl Kernel {
                             BOp::Eq => todo!(),
                             BOp::Cmpge => todo!(),
                         };
+                        }
                     }
                     Op::MatmulTile { x, y } => {
                         let Op::Load { src: cb_a, layout: MemLayout::Tile { .. }, .. } = self.ops[x].op else {
@@ -935,15 +1194,52 @@ impl Kernel {
                             panic!("tenstorrent matmul_tile inputs must be circular buffers")
                         };
                         let n = rcs.get(&op_id).copied().unwrap_or(1).max(1) as usize;
-                        let slot = next_slot;
-                        next_slot += 1;
-                        dst_slots.insert(op_id, vec![slot; n]);
+                        // Folded K-accumulation shares one DST slot across
+                        // the chain (matmul_tiles accumulates into DST);
+                        // unfolded matmuls keep a fresh slot each.
+                        // TEMP DIAG single-matmul probe: emit only the first
+                        // matmul per chain (skip the rest, consuming nothing).
+                        const TEMP_SINGLE_MATMUL: bool = true;
+                        let chain = matmul_chain.get(&op_id).copied();
+                        let done = chain.map(|c| chain_done.get(&c).copied().unwrap_or(0)).unwrap_or(0);
+                        if let Some(c) = chain {
+                            chain_done.insert(c, done + 1);
+                        }
+                        if TEMP_SINGLE_MATMUL && done > 0 {
+                            let acc = chain_slots[&chain.expect("tenstorrent chain slot missing")];
+                            dst_slots.insert(op_id, vec![acc; n]);
+                        } else {
+                            let slot = if let Some(c) = chain {
+                                if let Some(&s) = chain_slots.get(&c) {
+                                    s
+                                } else {
+                                    let s = next_slot;
+                                    next_slot += 1;
+                                    chain_slots.insert(c, s);
+                                    s
+                                }
+                            } else {
+                                let s = next_slot;
+                                next_slot += 1;
+                                s
+                            };
+                            dst_slots.insert(op_id, vec![slot; n]);
                         // matmul_tiles accumulates into DST, which
                         // tile_regs_acquire() zeroes up front: each call
-                        // computes slot = previous + A@B. K-loop
-                        // accumulation is expressed in the IR with add,
-                        // never in codegen.
+                        // computes slot = previous + A@B. Pure K-loop
+                        // accumulation is folded onto DST by codegen (see
+                        // folded_adds); only non-foldable adds are emitted.
                         writeln!(compute, "{indent}matmul_tiles({cb_a_id}, {cb_b_id}, 0, 0, {slot});");
+                        // Folded chains stream tiles: pop this matmul's
+                        // inputs so the next chain matmul reads the next
+                        // tiles. The epilogue pops only what remains.
+                        if matmul_chain.contains_key(&op_id) {
+                            for &cb in &[cb_a_id, cb_b_id] {
+                                writeln!(compute, "{indent}cb{cb}.pop_front(1);");
+                                *popped.entry(cb).or_insert(0) += 1;
+                            }
+                        }
+                        }
                     }
                     Op::Store { dst, src, index: _, layout: MemLayout::Tile { .. } } => {
                         if let Some(&cb_id) = cb_map.get(&dst) {
@@ -958,16 +1254,24 @@ impl Kernel {
                 }
                 op_id = self.next_op(op_id);
             }
-            writeln!(compute, "{indent}tile_regs_commit();");
-            writeln!(compute, "{indent}tile_regs_wait();");
+            // TEMP DIAG stub emits its own epilogue; skip the shared one.
+            if !stubbed {
+                writeln!(compute, "{indent}tile_regs_commit();");
+                writeln!(compute, "{indent}tile_regs_wait();");
+            }
             for &(slot, cb_id) in &output_stores {
                 writeln!(compute, "{indent}cb{cb_id}.reserve_back(1);");
                 writeln!(compute, "{indent}pack_tile({slot}, {cb_id});");
             }
-            for &(loaded_cb, depth) in &load_input_cbs {
-                writeln!(compute, "{indent}cb{loaded_cb}.pop_front({depth});");
+            if !stubbed {
+                for &(loaded_cb, depth) in &load_input_cbs {
+                    let rem = depth - popped.get(&loaded_cb).copied().unwrap_or(0);
+                    if rem > 0 {
+                        writeln!(compute, "{indent}cb{loaded_cb}.pop_front({rem});");
+                    }
+                }
+                writeln!(compute, "{indent}tile_regs_release();");
             }
-            writeln!(compute, "{indent}tile_regs_release();");
             for &(_, cb_id) in &output_stores {
                 writeln!(compute, "{indent}cb{cb_id}.push_back(1);");
             }
@@ -986,6 +1290,16 @@ impl Kernel {
             // silently reintroduce the hang.
             if compute.contains("mm_init(") && compute.contains("init_sfpu(") {
                 panic!("tenstorrent init_sfpu clobbers mm_init unpacker config, they are mutually exclusive");
+            }
+            // A copy_tile under mm_init's unpacker config stalls UNPACK and
+            // wedges the board (only an external reset recovers). Matmuls
+            // read CBs directly, so no emitted matmul kernel may contain a
+            // copy. Fail the compile instead of shipping the hang.
+            if compute.contains("mm_init(") && compute.contains("copy_tile(") {
+                return Err(BackendError {
+                    status: ErrorStatus::KernelCompilation,
+                    context: "tenstorrent copy_tile under mm_init unpacker config stalls UNPACK; matmul inputs must be read from CBs directly".into(),
+                });
             }
             if let Some(start) = compute.find("compute_kernel_hw_startup") {
                 if compute[start..].starts_with("compute_kernel_hw_startup<") {
@@ -1174,8 +1488,8 @@ impl Kernel {
         }
 
         let mut loop_depth = 0u32;
-        let mut steps_op_id = 0usize;
-        while !op_id.is_null() {
+            let mut steps_op_id = 0usize;
+            while !op_id.is_null() {
             steps_op_id += 1;
             if steps_op_id > 10_000 {
                 panic!("tt_binary_init did not finish in 10000 steps");

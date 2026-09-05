@@ -173,13 +173,6 @@ impl Kernel {
         Ok(CompiledKernel { program, inputs, outputs })
     }
 
-    // Run autotuning then compile the kernel.
-    // Consumes the kernel.
-    /*#[allow(unused)]
-    fn autotune(self) -> Result<CompiledKernel, crate::ZyxError> {
-        self.compile()
-    }*/
-
     /// Permute tensor axes.
     pub fn permute(&mut self, x: OpId, axes: &[UAxis]) -> OpId {
         let axes = axes.into();
@@ -1048,12 +1041,7 @@ impl Kernel {
     }
 
     /// Partition with explicit strides (e.g. transposed or offset views).
-    pub fn partition_strided<const N: usize>(
-        &mut self,
-        src: OpId,
-        shape: [OpId; N],
-        strides: [OpId; N],
-    ) -> Partition {
+    pub fn partition_strided<const N: usize>(&mut self, src: OpId, shape: [OpId; N], strides: [OpId; N]) -> Partition {
         debug_assert!(shape.iter().all(|&d| !d.is_null()), "partition: shape dims must be bound ops");
         debug_assert!(strides.iter().all(|&s| !s.is_null()), "partition: strides must be bound ops");
         Partition { src, shape: shape.to_vec(), strides: strides.to_vec(), dtype: self.dtype(src) }
@@ -1221,7 +1209,11 @@ impl Kernel {
         let tile_dims: Vec<Dim> = acc
             .tile
             .iter()
-            .map(|&d| self.resolve_const(d).and_then(crate::dtype::Constant::as_dim).expect("store_partition: acc tile dim must resolve"))
+            .map(|&d| {
+                self.resolve_const(d)
+                    .and_then(crate::dtype::Constant::as_dim)
+                    .expect("store_partition: acc tile dim must resolve")
+            })
             .collect();
         debug_assert_eq!(tile_dims, vec![16, 8], "store_partition v1: acc tile must be [16, 8]");
         debug_assert_eq!(c.shape.len(), 2, "store_partition v1: output must be rank 2");
