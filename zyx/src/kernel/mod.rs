@@ -12,11 +12,11 @@
 //! Requires CUDA with tensor cores (compute capability ≥ 7.0).
 //!
 //! ```rust
-//! use zyx::kernel::{DeviceId, Kernel, MMADType, MMADims, MMALayout, MemLayout, MemScope, ParamKind};
+//! use zyx::kernel::{Dev, Kernel, MMADType, MMADims, MMALayout, MemLayout, MemScope, ParamKind};
 //! use zyx::DType;
 //!
 //! let (m, n, k) = (1024, 1024, 1024);
-//! let mut kernel = Kernel::from_device_id(DeviceId::AUTO);
+//! let mut kernel = Kernel::new(Dev::Auto);
 //!
 //! let a_shape = kernel.add_shape(&[m, k]);
 //! let b_shape = kernel.add_shape(&[k, n]);
@@ -153,10 +153,10 @@ pub(crate) const IDX_T: DType = DType::I64;
 /// Build a kernel that computes `sin(x) + cos(x)` element-wise:
 ///
 /// ```
-/// use zyx::kernel::{Kernel, MemLayout, DeviceId, ParamKind};
+/// use zyx::kernel::{Kernel, MemLayout, Dev, ParamKind};
 /// use zyx::DType;
 ///
-/// let mut kernel = Kernel::from_device_id(DeviceId::AUTO);
+/// let mut kernel = Kernel::new(Dev::Auto);
 /// let n = 256;
 /// let shape = kernel.add_shape(&[n]);
 /// let len = kernel.const_idx(n);
@@ -175,10 +175,10 @@ pub(crate) const IDX_T: DType = DType::I64;
 /// Build a kernel using fused multiply-add and compile it:
 ///
 /// ```
-/// use zyx::kernel::{Kernel, MemLayout, DeviceId, ParamKind};
+/// use zyx::kernel::{Kernel, MemLayout, Dev, ParamKind};
 /// use zyx::{DType, Tensor, ZyxError};
 ///
-/// let mut kernel = Kernel::from_device_id(DeviceId::AUTO);
+/// let mut kernel = Kernel::new(Dev::Auto);
 /// let n = 4;
 /// let shape = kernel.add_shape(&[n]);
 /// let inp = kernel.param(DType::F32);
@@ -300,13 +300,11 @@ impl Kernel {
     /// `DeviceId::NULL` (placeholder kernels) gets no [`DeviceInfo`] — it is
     /// bound together with the real device before compilation
     /// (`kernel.device_id = dev` sites must set both).
-    pub fn from_device_id(device_id: DeviceId) -> Self {
-        let dev_info = if device_id.is_null() {
-            None
-        } else {
-            let rt = crate::RT.lock();
-            Some(rt.devices[device_id].info())
-        };
+    ///
+    /// Takes the device info as an argument and never locks the RT: this
+    /// constructor runs while callers already hold the RT lock (it is not
+    /// reentrant). Pass `None` for late-bound placeholders (`NULL`, `AUTO`).
+    pub(crate) fn from_device_id(device_id: DeviceId, dev_info: Option<Arc<DeviceInfo>>) -> Self {
         Self { ops: Slab::new(), head: OpId::NULL, tail: OpId::NULL, device_id, dev_info, shape_cache: Map::default() }
     }
 
@@ -1562,7 +1560,7 @@ impl Kernel {
         }
 
         // Build new kernel by cloning root's ops (in topo order) with remapped OpIds
-        let mut new_kernel = Kernel::from_device_id(self.device_id);
+        let mut new_kernel = Kernel::from_device_id(self.device_id, self.dev_info.clone());
         let mut remap: Map<OpId, OpId> =
             Map::with_capacity_and_hasher(root_required.len(), core::hash::BuildHasherDefault::default());
         let mut new_root_op = OpId::NULL;

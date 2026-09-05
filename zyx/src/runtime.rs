@@ -2069,11 +2069,14 @@ impl Runtime {
             TensorData::Leaf { shape_id, device_id, .. } => (shape_id, device_id),
             ref t => unreachable!("leaf_load: {t:?}"),
         };
+        // NULL device (unbound placeholder) gets no info, mirroring the old
+        // from_device_id behavior — without taking the RT lock (not reentrant).
+        let dev_info = if device_id.is_null() { None } else { Some(self.devices[device_id].info()) };
         let kernel_id = self.kernels.push(KernelData {
             outputs: Set::default(),
             loads: Vec::new(),
             stores: Vec::new(),
-            kernel: Kernel::from_device_id(device_id),
+            kernel: Kernel::from_device_id(device_id, dev_info),
         });
         let shape = self.replay_symbolic_into_kernel(kernel_id, shape_id);
         let op_id = self.kernels[kernel_id].kernel.push_back(Op::Param { dtype, kind: ParamKind::Global, shape });
@@ -3334,7 +3337,7 @@ impl Runtime {
                 outputs: Set::default(),
                 loads: Vec::new(),
                 stores: Vec::new(),
-                kernel: Kernel::from_device_id(DeviceId::AUTO),
+                kernel: Kernel::from_device_id(DeviceId::AUTO, None),
             });
             let val_op = self.replay_symbolic_into_kernel(kid, x);
             let shape_op = self.replay_symbolic_into_kernel(kid, shape_id);

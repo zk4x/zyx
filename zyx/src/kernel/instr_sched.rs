@@ -488,7 +488,7 @@ mod tests {
 
     #[test]
     fn test_instruction_schedule_orders_params_and_storages() {
-        let mut k = Kernel::from_device_id(DeviceId::AUTO);
+        let mut k = Kernel::from_device_id(DeviceId::AUTO, None);
         let _local_rw = k.storage(DType::F32, MemScope::Local, 4);
         let global_ro = k.param(DType::F32);
         let _local_ro = k.storage(DType::F32, MemScope::Local, 4);
@@ -522,7 +522,7 @@ mod tests {
 
     #[test]
     fn test_instruction_schedule_keeps_stores_in_loops() {
-        let mut k = Kernel::from_device_id(DeviceId::AUTO);
+        let mut k = Kernel::from_device_id(DeviceId::AUTO, None);
         let src = k.param(DType::F32);
         let dst = k.param_mut(DType::F32);
 
@@ -547,7 +547,7 @@ mod tests {
 
     #[test]
     fn test_instruction_schedule_keeps_memory_order_per_target() {
-        let mut k = Kernel::from_device_id(DeviceId::AUTO);
+        let mut k = Kernel::from_device_id(DeviceId::AUTO, None);
         let buf = k.param(DType::F32);
 
         let gidx_len = k.const_idx(4);
@@ -569,7 +569,7 @@ mod tests {
 
     #[test]
     fn test_instruction_schedule_keeps_stores_after_barriers() {
-        let mut k = Kernel::from_device_id(DeviceId::AUTO);
+        let mut k = Kernel::from_device_id(DeviceId::AUTO, None);
         let buf = k.storage(DType::F32, MemScope::Local, 4);
 
         let gidx_len = k.const_idx(4);
@@ -589,7 +589,7 @@ mod tests {
 
     #[test]
     fn test_instruction_schedule_topological() {
-        let mut k = Kernel::from_device_id(DeviceId::AUTO);
+        let mut k = Kernel::from_device_id(DeviceId::AUTO, None);
         let src = k.param(DType::F32);
         let dst = k.param_mut(DType::F32);
 
@@ -610,7 +610,7 @@ mod tests {
 
     #[test]
     fn test_instruction_schedule_never_sinks_across_loops() {
-        let mut k = Kernel::from_device_id(DeviceId::AUTO);
+        let mut k = Kernel::from_device_id(DeviceId::AUTO, None);
         let src = k.param(DType::F32);
         let dst = k.param_mut(DType::F32);
         let local = k.storage(DType::F32, MemScope::Local, 4);
@@ -648,7 +648,7 @@ mod tests {
 
     #[test]
     fn _bench_instruction_schedule_large_kernel() {
-        let mut k = Kernel::from_device_id(DeviceId::AUTO);
+        let mut k = Kernel::from_device_id(DeviceId::AUTO, None);
         let a = k.param(DType::F32);
         let b = k.param(DType::F32);
         let out = k.param_mut(DType::F32);
