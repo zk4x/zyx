@@ -203,7 +203,7 @@ impl Kernel {
         let mut remaps: Map<OpId, Vec<OpId>> = Map::default();
 
         // Group index now split into multiple indices with constant offsets
-        let new_len = self.const_idx(len / factor as Dim);
+        let new_len = self.insert_const_idx_before(gidx_id, len / factor as Dim);
         let x = self.insert_before(gidx_id, Op::Range { axis, kind: RangeKind::Group(new_len) });
         self.ops[gidx_id].op = Op::Binary { x, y: const_factor, bop: BOp::Mul };
         let mut ids = Vec::with_capacity((factor - 1) as usize);

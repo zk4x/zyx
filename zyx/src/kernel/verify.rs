@@ -321,6 +321,7 @@ impl Kernel {
                                 self.debug();
                                 panic!();
                             }
+                            check(op_id, len, &stack);
                         }
                         RangeKind::Local(_) => {
                             if !lids.insert(axis) {
@@ -352,6 +353,7 @@ impl Kernel {
                         self.debug();
                         panic!();
                     }
+                    check(op_id, len, &stack);
                     stack.push(Set::default());
                     dtypes.insert(op_id, IDX_T);
                 }

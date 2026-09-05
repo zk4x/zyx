@@ -534,6 +534,7 @@ impl Kernel {
         if dtypes.values().any(|&x| x.0 == DType::F16) {
             pragma += "#include <cuda_fp16.h>\n";
             pragma += "struct __align__(8) half4 { half x, y, z, w; };\n";
+            pragma += "struct __align__(16) half8 { half x, y, z, w, s4, s5, s6, s7; };\n";
         }
         if dtypes.values().any(|&x| x.0 == DType::BF16) {
             pragma += "#include <cuda_bf16.h>\n";

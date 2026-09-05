@@ -22,6 +22,7 @@ impl Kernel {
         let mut registers: Vec<((DType, MemLayout), u32, u8)> = Vec::new();
         let mut constants: Map<OpId, Constant> = Map::with_capacity_and_hasher(100, BuildHasherDefault::new());
         let mut indices: Map<OpId, u8> = Map::with_capacity_and_hasher(20, BuildHasherDefault::new());
+        let mut var_params: Map<OpId, DType> = Map::with_hasher(BuildHasherDefault::new());
 
         let mut loop_id: u8 = 0;
         let mut global_cast = String::new();
@@ -55,6 +56,7 @@ impl Kernel {
                         n_params += 1;
                     }
                     Op::Param { kind: ParamKind::Variable, dtype, .. } => {
+                        var_params.insert(op_id, dtype);
                         if matches!(dtype, DType::F16 | DType::BF16) {
                             _ = writeln!(global_cast, "  unsigned short p{op_id} = *(unsigned short*)args[{n_params}];");
                         } else {
@@ -101,7 +103,7 @@ impl Kernel {
                     if index_loop_depth == 0 && has_openmp {
                         _ = writeln!(source, "{indent}#pragma omp parallel for");
                     }
-                    let len = get_var(len, &constants, &indices, &reg_map, &mut registers, loop_id)?;
+                    let len = get_var(len, &constants, &indices, &reg_map, &mut registers, loop_id, &var_params)?;
                     _ = writeln!(
                         source,
                         "{indent}for ({idx_type} idx{loop_id} = 0; idx{loop_id} < {len}; ++idx{loop_id}) {{",
@@ -113,7 +115,7 @@ impl Kernel {
                 }
                 Op::Loop { len, .. } => {
                     indices.insert(op_id, loop_id);
-                    let len = get_var(len, &constants, &indices, &reg_map, &mut registers, loop_id)?;
+                    let len = get_var(len, &constants, &indices, &reg_map, &mut registers, loop_id, &var_params)?;
                     _ = writeln!(
                         source,
                         "{indent}for ({idx_type} idx{loop_id} = 0; idx{loop_id} < {len}; ++idx{loop_id}) {{",
@@ -145,7 +147,7 @@ impl Kernel {
                                 _ => _ = writeln!(source, "{indent}r{reg} = p{src};"),
                             }
                         } else {
-                            let idx = get_var(index, &constants, &indices, &reg_map, &mut registers, loop_id)?;
+                            let idx = get_var(index, &constants, &indices, &reg_map, &mut registers, loop_id, &var_params)?;
                             match layout {
                                 MemLayout::Scalar => match dtypes[&src].0 {
                                     DType::F16 => {
@@ -205,8 +207,8 @@ impl Kernel {
                     }
                 }
                 Op::Store { dst, src, index, layout } => {
-                    let idx = get_var(index, &constants, &indices, &reg_map, &mut registers, loop_id)?;
-                    let x = get_var(src, &constants, &indices, &reg_map, &mut registers, loop_id)?;
+                    let idx = get_var(index, &constants, &indices, &reg_map, &mut registers, loop_id, &var_params)?;
+                    let x = get_var(src, &constants, &indices, &reg_map, &mut registers, loop_id, &var_params)?;
                     match layout {
                         MemLayout::Scalar => match dtypes[&dst].0 {
                             DType::F16 => {
@@ -258,7 +260,7 @@ impl Kernel {
                 }
                 Op::Cast { x, dtype } => {
                     let vlen = dtypes[&x].1;
-                    let x = get_var(x, &constants, &indices, &reg_map, &mut registers, loop_id)?;
+                    let x = get_var(x, &constants, &indices, &reg_map, &mut registers, loop_id, &var_params)?;
                     let reg = new_reg(op_id, &mut reg_map, &mut registers, (dtype, vlen), rcs[&op_id], loop_id);
                     match vlen {
                         MemLayout::Vector(n) => {
@@ -277,7 +279,7 @@ impl Kernel {
                 }
                 Op::Bitcast { x, dtype } => {
                     let vlen = dtypes[&x].1;
-                    let x = get_var(x, &constants, &indices, &reg_map, &mut registers, loop_id)?;
+                    let x = get_var(x, &constants, &indices, &reg_map, &mut registers, loop_id, &var_params)?;
                     let reg = new_reg(op_id, &mut reg_map, &mut registers, (dtype, vlen), rcs[&op_id], loop_id);
                     let byte_size = dtype.bit_size() as usize / 8;
                     match vlen {
@@ -296,7 +298,7 @@ impl Kernel {
                 }
                 Op::Unary { x, uop } => {
                     let dtype = dtypes[&x];
-                    let x = get_var(x, &constants, &indices, &reg_map, &mut registers, loop_id)?;
+                    let x = get_var(x, &constants, &indices, &reg_map, &mut registers, loop_id, &var_params)?;
                     let reg = new_reg(op_id, &mut reg_map, &mut registers, dtype, rcs[&op_id], loop_id);
                     match dtype.1 {
                         MemLayout::Vector(n) => {
@@ -345,7 +347,7 @@ impl Kernel {
                     let dtype = dtypes[&op_id];
                     let mut vars = String::new();
                     for &x in ops.iter() {
-                        let x = get_var(x, &constants, &indices, &reg_map, &mut registers, loop_id)?;
+                        let x = get_var(x, &constants, &indices, &reg_map, &mut registers, loop_id, &var_params)?;
                         _ = write!(vars, "{x}, ");
                     }
                     vars.pop();
@@ -371,14 +373,14 @@ impl Kernel {
                 }
                 Op::Index { vec, idx } => {
                     let dtype = dtypes[&op_id];
-                    let vec = get_var(vec, &constants, &indices, &reg_map, &mut registers, loop_id)?;
+                    let vec = get_var(vec, &constants, &indices, &reg_map, &mut registers, loop_id, &var_params)?;
                     let reg = new_reg(op_id, &mut reg_map, &mut registers, dtype, rcs[&op_id], loop_id);
                     _ = writeln!(source, "{indent}r{reg} = {};", lane_access(&vec, idx));
                 }
                 Op::Binary { x, y, bop } => {
                     let dtype = dtypes[&op_id];
-                    let x = get_var(x, &constants, &indices, &reg_map, &mut registers, loop_id)?;
-                    let y = get_var(y, &constants, &indices, &reg_map, &mut registers, loop_id)?;
+                    let x = get_var(x, &constants, &indices, &reg_map, &mut registers, loop_id, &var_params)?;
+                    let y = get_var(y, &constants, &indices, &reg_map, &mut registers, loop_id, &var_params)?;
                     let reg = new_reg(op_id, &mut reg_map, &mut registers, dtype, rcs[&op_id], loop_id);
                     match dtype.1 {
                         MemLayout::Vector(n) => {
@@ -393,14 +395,14 @@ impl Kernel {
                 }
                 Op::Mad { x, y, z } => {
                     let dtype = dtypes[&op_id];
-                    let x = get_var(x, &constants, &indices, &reg_map, &mut registers, loop_id)?;
-                    let y = get_var(y, &constants, &indices, &reg_map, &mut registers, loop_id)?;
-                    let z = get_var(z, &constants, &indices, &reg_map, &mut registers, loop_id)?;
+                    let x = get_var(x, &constants, &indices, &reg_map, &mut registers, loop_id, &var_params)?;
+                    let y = get_var(y, &constants, &indices, &reg_map, &mut registers, loop_id, &var_params)?;
+                    let z = get_var(z, &constants, &indices, &reg_map, &mut registers, loop_id, &var_params)?;
                     let reg = new_reg(op_id, &mut reg_map, &mut registers, dtype, rcs[&op_id], loop_id);
                     _ = writeln!(source, "{indent}r{reg} = {x} * {y} + {z};");
                 }
                 Op::If { condition } => {
-                    let condition = get_var(condition, &constants, &indices, &reg_map, &mut registers, loop_id)?;
+                    let condition = get_var(condition, &constants, &indices, &reg_map, &mut registers, loop_id, &var_params)?;
                     _ = writeln!(source, "{indent}if ({condition}) {{");
                     indent += "  ";
                 }
@@ -596,8 +598,11 @@ fn get_var(
     reg_map: &Map<OpId, usize>,
     registers: &mut [((DType, MemLayout), u32, u8)],
     loop_level: u8,
+    var_params: &Map<OpId, DType>,
 ) -> Result<String, BackendError> {
-    if let Some(c) = constants.get(&op_id) {
+    if var_params.contains_key(&op_id) {
+        Ok(format!("p{op_id}"))
+    } else if let Some(c) = constants.get(&op_id) {
         Ok(c.c_code())
     } else if let Some(&id) = indices.get(&op_id) {
         Ok(format!("idx{id}"))

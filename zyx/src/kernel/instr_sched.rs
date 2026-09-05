@@ -17,7 +17,7 @@ use std::collections::BinaryHeap;
 
 use crate::{
     Map,
-    kernel::{Kernel, MemScope, Op, OpId, ParamKind},
+    kernel::{Kernel, MemScope, Op, OpId, ParamKind, RangeKind},
 };
 
 impl Kernel {
@@ -167,10 +167,14 @@ impl Kernel {
                 Op::Param { .. }
                 | Op::Const(_)
                 | Op::Storage { .. }
-                | Op::Range { .. }
                 | Op::EndLoop
                 | Op::Barrier
                 | Op::EndIf => {}
+                Op::Range { kind, .. } => match kind {
+                    RangeKind::Group(len) => add_param!(len),
+                    RangeKind::Warp(local_id) => add_param!(local_id),
+                    RangeKind::Local(_) => {}
+                },
                 Op::Store { dst, src: x, index, .. } => {
                     add_param!(dst);
                     add_param!(x);

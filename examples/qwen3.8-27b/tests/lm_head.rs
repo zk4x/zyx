@@ -91,8 +91,8 @@ fn lm_head_cuda() -> Result<(), ZyxError> {
 
     // Loop length (hidden / 8) is derived and patched by the first mma.
     kernel.loop_partition(|kernel, k| {
-        kernel.mma(&mut acc0, &wp, &xp, &[r0, n0, k]);
-        kernel.mma(&mut acc1, &wp, &xp, &[r1, n0, k]);
+        kernel.mma(&mut acc0, c8, &wp, &xp, &[r0, n0, k]);
+        kernel.mma(&mut acc1, c8, &wp, &xp, &[r1, n0, k]);
     });
 
     kernel.store_partition(&cp, &acc0);

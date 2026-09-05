@@ -1115,23 +1115,24 @@ impl Kernel {
 
     /// Warp matrix multiply-accumulate with fully automatic indexing.
     ///
-    /// `acc`'s tile defines the mma geometry (v1: `[16, 8]` = m16n8k8, f16
-    /// inputs, f32 accumulator). `a` and `b` are partition views; `coords`
-    /// are the chunk coordinates, assigned positionally: `rank(a) - 1`
-    /// coords for `a`'s non-loop axes (in axis order), then `rank(b) - 1`
-    /// for `b`'s, and the LAST coord must be the open loop variable — the K
-    /// axis of both views, with a chunk of 8. The call derives and patches
-    /// the open loop's length (`shape[K] / 8`), emits the lane-mapped A/B
-    /// fragment loads (lane id found via `open_warp`), the wmma and the
-    /// accumulator update, and captures the output coords on `acc` for
-    /// [`Kernel::store_partition`].
-    pub fn mma(&mut self, acc: &mut Acc, a: &Partition, b: &Partition, coords: &[OpId]) {
+    /// `acc`'s tile defines the mma output geometry (v1: `[16, 8]` = m16n8,
+    /// f16 inputs, f32 accumulator). `k` selects the instruction variant and
+    /// must resolve to a constant: 8 → `m16n8k8`, 16 → `m16n8k16`. `a` and
+    /// `b` are partition views; `coords` are the chunk coordinates, assigned
+    /// positionally: `rank(a) - 1` coords for `a`'s non-loop axes (in axis
+    /// order), then `rank(b) - 1` for `b`'s, and the LAST coord must be the
+    /// open loop variable — the K axis of both views, with a chunk of `k`.
+    /// The call derives and patches the open loop's length (`shape[K] / k`),
+    /// emits the lane-mapped A/B fragment loads (lane id found via
+    /// `open_warp`), the wmma and the accumulator update, and captures the
+    /// output coords on `acc` for [`Kernel::store_partition`].
+    pub fn mma(&mut self, acc: &mut Acc, k: OpId, a: &Partition, b: &Partition, coords: &[OpId]) {
         let tile_dims: Vec<Dim> = acc
             .tile
             .iter()
             .map(|&d| self.resolve_const(d).and_then(crate::dtype::Constant::as_dim).expect("mma: acc tile dim must resolve"))
             .collect();
-        debug_assert_eq!(tile_dims, vec![16, 8], "mma v1: acc tile must be [16, 8] (m16n8k8)");
+        debug_assert_eq!(tile_dims.len(), 2, "mma: acc tile must be rank 2 [m, n]");
         debug_assert_eq!(acc.dtype, DType::F32, "mma v1: f32 accumulator");
         debug_assert_eq!(a.dtype, b.dtype, "mma: a/b dtype mismatch");
         debug_assert_eq!(a.dtype, DType::F16, "mma v1: f16 inputs");
@@ -1145,54 +1146,83 @@ impl Kernel {
         let lv = self.open_loop_var();
         debug_assert_eq!(coords[coords.len() - 1], lv, "mma: the LAST coord must be the open loop variable");
 
-        // Bind the loop length on first use: K chunk is 8 (m16n8k8). The div
-        // is inserted BEFORE the loop so the bound is loop-invariant in the
+        // k must resolve to a constant; (m, n, k) must be a real mma.sync
+        // shape. mma v1 emits f16 inputs with f32 accumulator, so only the
+        // f16 shapes are reachable.
+        let k_dim = self
+            .resolve_const(k)
+            .and_then(crate::dtype::Constant::as_dim)
+            .expect("mma: k must resolve to a constant to select the wmma variant");
+        let dims = match (tile_dims[0], tile_dims[1], k_dim) {
+            (16, 8, 8) => MMADims::m16n8k8,
+            (16, 8, 16) => MMADims::m16n8k16,
+            other => panic!(
+                "mma: unsupported (m, n, k) = {:?} for f16 inputs with f32 accumulator (supported: \
+                 (16, 8, 8) -> m16n8k8, (16, 8, 16) -> m16n8k16; the s8/s4/b1 shapes need dtype \
+                 parameterization in mma)",
+                other
+            ),
+        };
+        // m16n8k16 A/B fragments additionally hold the k+8..+16 half.
+        let k_half = if k_dim == 8 { 0 } else { 8 };
+
+        // Bind the loop length on first use: K chunk is `k_dim`. The div is
+        // inserted BEFORE the loop so the bound is loop-invariant in the
         // linear order.
         if matches!(self.ops[lv].op, Op::Loop { len } if len.is_null()) {
             let a_k = a.shape[1];
-            let c8 = self.insert_before(lv, Op::Const(Constant::idx(8u32)));
-            let len = self.insert_before(lv, Op::Binary { x: a_k, y: c8, bop: BOp::Div });
+            let len = self.insert_before(lv, Op::Binary { x: a_k, y: k, bop: BOp::Div });
             self.ops[lv].op = Op::Loop { len };
         }
 
         let lane = self.open_warp();
         let [c1, c2, c4, c8] = self.const_idxs([1u32, 2, 4, 8]);
-        // Fixed m16n8k8 lane geometry: gid = lane/4, tig = lane%4.
+        // Fixed m16n8 lane geometry: gid = lane/4, tig = lane%4.
         let gid = self.div(lane, c4);
         let tig = self.mod_(lane, c4);
         let tig2 = self.mul(tig, c2);
-        let k0 = self.mul(lv, c8);
+        let k0 = self.mul(lv, k);
 
-        // A fragment: rows {r + gid, r + 8 + gid}, k {k0 + 2*tig, +1}.
+        // A fragment: rows {r + gid, r + 8 + gid}, k cols {k0 + 2*tig, +1}
+        // and (k=16) {k0 + 8 + 2*tig, +1}. Register order: each 2-col pair
+        // holds (row, col0), (row, col1), (row_hi, col0), (row_hi, col1).
         let a_row = self.add(coords[0], gid);
         let a_row_hi = self.add(a_row, c8);
         let a_col = self.add(k0, tig2);
         let a_col_p1 = self.add(a_col, c1);
-        let a_c0 = self.stride_mul(a_col, a.strides[1]);
-        let a_c1 = self.stride_mul(a_col_p1, a.strides[1]);
-        let a_idx0 = self.mad(a_row, a.strides[0], a_c0);
-        let a_idx1 = self.mad(a_row, a.strides[0], a_c1);
-        let a_idx2 = self.mad(a_row_hi, a.strides[0], a_c0);
-        let a_idx3 = self.mad(a_row_hi, a.strides[0], a_c1);
-        let a00 = self.load(a.src, a_idx0);
-        let a01 = self.load(a.src, a_idx1);
-        let a02 = self.load(a.src, a_idx2);
-        let a03 = self.load(a.src, a_idx3);
-        let a_frag = self.stack(&[a00, a01, a02, a03]);
+        let a_cols: Vec<OpId> = if k_half == 0 {
+            vec![a_col, a_col_p1]
+        } else {
+            let k0_hi = self.add(k0, c8);
+            let a_col_hi = self.add(k0_hi, tig2);
+            let a_col_hi_p1 = self.add(a_col_hi, c1);
+            vec![a_col, a_col_p1, a_col_hi, a_col_hi_p1]
+        };
+        let mut a_elems = Vec::new();
+        for col_pair in a_cols.chunks(2) {
+            for row in [a_row, a_row_hi] {
+                for col in col_pair {
+                    let c = self.stride_mul(*col, a.strides[1]);
+                    let idx = self.mad(row, a.strides[0], c);
+                    a_elems.push(self.load(a.src, idx));
+                }
+            }
+        }
+        let a_frag = self.stack(&a_elems);
 
         // B fragment: rows {n + gid}, the same shared k cols (consecutive K).
         let b_row = self.add(coords[1], gid);
-        let b_c0 = self.stride_mul(a_col, b.strides[1]);
-        let b_c1 = self.stride_mul(a_col_p1, b.strides[1]);
-        let b_idx0 = self.mad(b_row, b.strides[0], b_c0);
-        let b_idx1 = self.mad(b_row, b.strides[0], b_c1);
-        let b0 = self.load(b.src, b_idx0);
-        let b1 = self.load(b.src, b_idx1);
-        let b_frag = self.stack(&[b0, b1]);
+        let mut b_elems = Vec::new();
+        for col in &a_cols {
+            let bc = self.stride_mul(*col, b.strides[1]);
+            let idx = self.mad(b_row, b.strides[0], bc);
+            b_elems.push(self.load(b.src, idx));
+        }
+        let b_frag = self.stack(&b_elems);
 
         let idx0 = self.const_idx(0u32);
         let acc_old = self.load_vector(acc.storage, idx0, 4);
-        let acc_new = self.wmma(MMADims::m16n8k8, MMALayout::row_col, MMADType::f16_f16_f16_f32, a_frag, b_frag, acc_old);
+        let acc_new = self.wmma(dims, MMALayout::row_col, MMADType::f16_f16_f16_f32, a_frag, b_frag, acc_old);
         self.store_vector(acc.storage, acc_new, idx0, 4);
 
         // Capture the output coords for the store: a's non-loop coords then
@@ -1202,9 +1232,10 @@ impl Kernel {
 
     /// Store an accumulator to a global output view with fully automatic
     /// indexing: each lane scatters its C-fragment values to their global
-    /// positions (m16n8 mapping: rows {r + gid, + 8}, cols {c + 2*tig, + 1}).
-    /// The output coords were captured at the [`Kernel::mma`] bind; the lane
-    /// id is found via `open_warp`.
+    /// positions (mma.sync C mapping: rows {r + gid + 8*b}, cols
+    /// {c + 2*tig, + 1}, one 2-col pair per 8-row block `b`). The output
+    /// coords were captured at the [`Kernel::mma`] bind; the lane id is
+    /// found via `open_warp`.
     pub fn store_partition(&mut self, c: &Partition, acc: &Acc) {
         let tile_dims: Vec<Dim> = acc
             .tile
@@ -1215,29 +1246,51 @@ impl Kernel {
                     .expect("store_partition: acc tile dim must resolve")
             })
             .collect();
-        debug_assert_eq!(tile_dims, vec![16, 8], "store_partition v1: acc tile must be [16, 8]");
-        debug_assert_eq!(c.shape.len(), 2, "store_partition v1: output must be rank 2");
+        debug_assert_eq!(tile_dims.len(), 2, "store_partition: acc tile must be rank 2 [m, n]");
+        debug_assert_eq!(acc.dtype, DType::F32, "store_partition: f32 accumulator");
+        debug_assert_eq!(c.shape.len(), 2, "store_partition: output must be rank 2");
         let c_coords = acc.c_coords.as_ref().expect("store_partition: acc was never bound by mma");
         debug_assert_eq!(c_coords.len(), 2, "store_partition: captured coords/output rank mismatch");
 
+        // Row-block count per tile: each 8-row block contributes one 2-element
+        // C-fragment pair per lane (m8n8: 1, m16n8: 2, m32n8: 4).
+        let (m, n) = (tile_dims[0], tile_dims[1]);
+        let row_blocks = match (m, n) {
+            (8, 8) => 1,
+            (16, 8) => 2,
+            (32, 8) => 4,
+            (8, 32) => todo!("store_partition: m8n32 C-fragment column layout not implemented"),
+            other => panic!(
+                "store_partition: unsupported acc tile (m, n) = {other:?} (valid mma.sync output tiles: \
+                 8x8, 16x8, 32x8, 8x32)"
+            ),
+        };
+
         let lane = self.open_warp();
-        let [c2, c4, c8] = self.const_idxs([2u32, 4, 8]);
+        let [c2, c4] = self.const_idxs([2u32, 4]);
         let gid = self.div(lane, c4);
         let tig = self.mod_(lane, c4);
 
         let row = self.add(c_coords[0], gid);
         let col = self.mad(tig, c2, c_coords[1]);
         let idx0 = self.const_idx(0u32);
-        let acc_final = self.load_vector(acc.storage, idx0, 4);
-        let [d00, d01, d02, d03] = self.devectorize(acc_final);
+        let acc_final = self.load_vector(acc.storage, idx0, (m * n / 32) as u16);
         let col0 = self.stride_mul(col, c.strides[1]);
-        let o0 = self.mad(row, c.strides[0], col0);
-        let o0_p1 = self.add(o0, c.strides[1]);
-        let o0_hi = self.mad(c8, c.strides[0], o0);
-        let o0_hi_p1 = self.add(o0_hi, c.strides[1]);
-        self.store(c.src, d00, o0);
-        self.store(c.src, d01, o0_p1);
-        self.store(c.src, d02, o0_hi);
-        self.store(c.src, d03, o0_hi_p1);
+        let mut elems = Vec::new();
+        for i in 0..(m * n / 32) as usize {
+            elems.push(self.devectorize_one(acc_final, i));
+        }
+        for b in 0..row_blocks {
+            let o = if b == 0 {
+                self.mad(row, c.strides[0], col0)
+            } else {
+                let rb = self.const_idx((8 * b) as u32);
+                let row_b = self.add(row, rb);
+                self.mad(row_b, c.strides[0], col0)
+            };
+            let o_p1 = self.add(o, c.strides[1]);
+            self.store(c.src, elems[2 * b], o);
+            self.store(c.src, elems[2 * b + 1], o_p1);
+        }
     }
 }
