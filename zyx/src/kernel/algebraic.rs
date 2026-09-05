@@ -1040,11 +1040,12 @@ mod tests {
         let r37 = k.group_range(0, c4);
 
         // Outer loop r47 (0..4), inner loop r81 (0..4).
-        let r47 = k.loop_(c4);
+        let mut mask = OpId::NULL;
+        k.loop_over(c4, |k, r47| {
         let r78 = k.storage(DType::I64, MemScope::Register, 1);
         let r77 = k.const_val(0i64);
         k.store(r78, r77, c0);
-        let r81 = k.loop_(c4);
+        k.loop_over(c4, |k, r81| {
 
         let r92 = k.binary(r81, c2, BOp::BitShiftLeft);
         let r93 = k.binary(r47, r92, BOp::Add);
@@ -1061,13 +1062,14 @@ mod tests {
         let r114 = k.binary(r109, r113, BOp::Add);
         let r120 = k.binary(r114, c7, BOp::Mod);
         let r129 = k.binary(r120, c2, BOp::Cmpgt);
+        mask = r129;
 
         // Keep the mask alive via an accumulate that feeds a store.
         let r131 = k.cast(r129, DType::I64);
         let r85 = k.load(r78, c0);
         let r86 = k.binary(r131, r85, BOp::Add);
         k.store(r78, r86, c0);
-        k.end_loop();
+        });
 
         let r14 = k.load(r78, c0);
         let r21 = k.cast(r14, DType::I32);
@@ -1077,9 +1079,9 @@ mod tests {
         let r27 = k.load(r65, r47);
         let r32 = k.binary(r26, r27, BOp::Mul);
         k.store(r41, r32, r37);
-        k.end_loop();
+        });
 
-        (k, r129)
+        (k, mask)
     }
 
     /// Evaluate the mask (r129) for every (r47, r81) pair using the kernel's op

@@ -49,7 +49,9 @@ fn lm_head() -> Result<(), ZyxError> {
 fn lm_head_cuda() -> Result<(), ZyxError> {
     let goldens = Tensor::load("../data/qwen3_8b_lm_head.safetensors")?;
     let weight = goldens["weight"].to(Dev::Cuda(0))?;
-    let input = goldens["input"].reshape([TOKENS as i64, HIDDEN as i64])?.to(Dev::Cuda(0))?;
+    let input = goldens["input"]
+        .reshape([TOKENS as i64, HIDDEN as i64])?
+        .to(Dev::Cuda(0))?;
     let expected = goldens["output"].to_vec::<f32>()?;
 
     let mut kernel = Kernel::new(Dev::Cuda(0));
@@ -84,13 +86,13 @@ fn lm_head_cuda() -> Result<(), ZyxError> {
     let r1 = kernel.add(r0, c16);
     let n0 = kernel.mul(gidy, c8);
 
-    let mut acc0 = kernel.acc([16, 8], DType::F32);
-    let mut acc1 = kernel.acc([16, 8], DType::F32);
+    let mut acc0 = kernel.acc([c16, c8], DType::F32);
+    let mut acc1 = kernel.acc([c16, c8], DType::F32);
 
     // Loop length (hidden / 8) is derived and patched by the first mma.
-    kernel.loop_over(|k, kk| {
-        k.mma(&mut acc0, &wp, &xp, &[r0, n0, kk]);
-        k.mma(&mut acc1, &wp, &xp, &[r1, n0, kk]);
+    kernel.loop_partition(|kernel, k| {
+        kernel.mma(&mut acc0, &wp, &xp, &[r0, n0, k]);
+        kernel.mma(&mut acc1, &wp, &xp, &[r1, n0, k]);
     });
 
     kernel.store_partition(&cp, &acc0);
@@ -104,20 +106,22 @@ fn lm_head_cuda() -> Result<(), ZyxError> {
     let glen_x_t = Tensor::from((VOCAB / ROWS_PER_BLOCK) as i64);
     let glen_y_t = Tensor::from((TOKENS / MMA_N) as i64);
 
-    let launch = || -> Result<Vec<Tensor>, ZyxError> {
-        compiled.forward(
-            &[&vocab_t, &hidden_t, &tokens_t, &glen_x_t, &glen_y_t, &weight, &input],
-            vec![[VOCAB as i64, TOKENS as i64]],
-        )
-    };
-
     // Correctness: C is [vocab, tokens], golden is [tokens, vocab].
-    let out = launch()?.remove(0).to_vec::<f32>()?;
+    let mut out = compiled.forward(
+        &[
+            &vocab_t, &hidden_t, &tokens_t, &glen_x_t, &glen_y_t, &weight, &input,
+        ],
+        vec![[VOCAB as i64, TOKENS as i64]],
+    )?;
+    let out = out.pop().unwrap().to_vec::<f32>()?;
     for t in 0..TOKENS {
         for v in 0..VOCAB {
             let got = out[v * TOKENS + t];
             let exp = expected[t * VOCAB + v];
-            assert!((got - exp).abs() < 1e-4, "out[{v}, {t}] = {got}, expected {exp}");
+            assert!(
+                (got - exp).abs() < 1e-4,
+                "out[{v}, {t}] = {got}, expected {exp}"
+            );
         }
     }
 
@@ -135,7 +139,9 @@ fn lm_head_cuda() -> Result<(), ZyxError> {
 
     let launch_r = || -> Result<Vec<Tensor>, ZyxError> {
         compiled.forward(
-            &[&vocab_r, &hidden_r, &tokens_r, &glen_x_r, &glen_y_r, &weight_r, &input_r],
+            &[
+                &vocab_r, &hidden_r, &tokens_r, &glen_x_r, &glen_y_r, &weight_r, &input_r,
+            ],
             vec![[151936i64, TOKENS as i64]],
         )
     };

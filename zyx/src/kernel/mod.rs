@@ -49,7 +49,7 @@
 //! kernel.store_vector(acc, zero_acc, c0, 4);
 //!
 //! let k_div_8 = kernel.const_idx(k / 8);
-//! let k_loop = kernel.loop_(k_div_8);
+//! kernel.loop_over(k_div_8, |kernel, k_loop| {
 //! let k_off = kernel.mul(k_loop, c8);
 //!
 //! let a_base = kernel.mad(a_row, k_const, k_off);
@@ -76,7 +76,7 @@
 //!     a_frag, b_frag, acc_old,
 //! );
 //! kernel.store_vector(acc, acc_new, c0, 4);
-//! kernel.end_loop();
+//! });
 //!
 //! let acc_final = kernel.load_vector(acc, c0, 4);
 //! let [co, c1v, c2v, c3v] = kernel.devectorize(acc_final);

@@ -527,11 +527,13 @@ mod tests {
         let dst = k.param_mut(DType::F32);
 
         let len = k.const_idx(4u32);
-        let loop_id = k.loop_(len);
+        let mut loop_id = OpId::NULL;
+        k.loop_over(len, |k, lv| {
+        loop_id = lv;
         let in_loop_load = k.load(src, loop_id);
         let add = k.add(in_loop_load, in_loop_load);
         k.store(dst, add, loop_id);
-        k.end_loop();
+        });
 
         k.instruction_schedule();
 
@@ -618,19 +620,23 @@ mod tests {
         let c4 = k.const_idx(4u32);
         let invariant = k.bit_shift_left(c0, c5);
 
-        let loop1 = k.loop_(c4);
+        let mut loop1 = OpId::NULL;
+        let mut loop2 = OpId::NULL;
+        k.loop_over(c4, |k, lv| {
+        loop1 = lv;
         let idx1 = k.add(invariant, loop1);
         let v1 = k.load(src, idx1);
         k.store(local, v1, idx1);
-        k.end_loop();
+        });
 
         k.barrier();
 
-        let loop2 = k.loop_(c4);
+        k.loop_over(c4, |k, lv| {
+        loop2 = lv;
         let idx2 = k.add(invariant, loop2);
         let v2 = k.load(local, idx2);
         k.store(dst, v2, idx2);
-        k.end_loop();
+        });
 
         k.instruction_schedule();
 

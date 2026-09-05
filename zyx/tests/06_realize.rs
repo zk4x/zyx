@@ -59,7 +59,7 @@ fn wmma_matmul() -> Result<(), ZyxError> {
     kernel.store_vector(acc, zero_acc, c0, 4);
 
     // K loop (k/8 iterations)
-    let k_loop = kernel.loop_(k_div_8);
+    kernel.loop_over(k_div_8, |kernel, k_loop| {
     let k_off = kernel.mul(k_loop, c8);
 
     // Load A fragment: 4 f16 per thread (m16 × k8)
@@ -86,7 +86,7 @@ fn wmma_matmul() -> Result<(), ZyxError> {
     let acc_old = kernel.load_vector(acc, c0, 4);
     let acc_new = kernel.wmma(MMADims::m16n8k8, MMALayout::row_col, MMADType::f16_f16_f16_f32, a_frag, b_frag, acc_old);
     kernel.store_vector(acc, acc_new, c0, 4);
-    kernel.end_loop();
+    });
 
     // Store result to C
     let acc_final = kernel.load_vector(acc, c0, 4);

@@ -351,26 +351,24 @@ impl Kernel {
         self.push_back(Op::Store { dst, src: x, index, layout });
     }
 
-    /// Begin a loop.
-    pub fn loop_(&mut self, len: OpId) -> OpId {
-        self.push_back(Op::Loop { len })
+    /// Emit a loop over `len`, call `f` to build the body (the closure
+    /// receives the kernel and the loop variable), then close the loop.
+    pub fn loop_over(&mut self, len: OpId, f: impl FnOnce(&mut Kernel, OpId)) {
+        let lv = self.push_back(Op::Loop { len });
+        f(self, lv);
+        self.push_back(Op::EndLoop);
     }
 
-    /// Emit a loop whose length is bound later, by the body: the first
-    /// [`Kernel::mma`] inside derives `len = shape[K] / chunk` from its bind
-    /// and patches the `Op::Loop` in place (the IR is the state). Panics
-    /// after the body if no bind ever touched the loop.
-    pub fn loop_over(&mut self, f: impl FnOnce(&mut Kernel, OpId)) {
+    /// Emit a partition loop whose length is bound later, by the body: the
+    /// first [`Kernel::mma`] inside derives `len = shape[K] / chunk` from
+    /// its bind and patches the `Op::Loop` in place (the IR is the state).
+    /// Panics after the body if no bind ever touched the loop.
+    pub fn loop_partition(&mut self, f: impl FnOnce(&mut Kernel, OpId)) {
         let lv = self.push_back(Op::Loop { len: OpId::NULL });
         f(self, lv);
         if matches!(self.ops[lv].op, Op::Loop { len } if len.is_null()) {
-            panic!("loop_over: loop length never bound (no mma used this loop's variable)");
+            panic!("loop_partition: loop length never bound (no mma used this loop's variable)");
         }
-        self.end_loop();
-    }
-
-    /// End the current loop.
-    pub fn end_loop(&mut self) {
         self.push_back(Op::EndLoop);
     }
 
@@ -378,7 +376,7 @@ impl Kernel {
     /// accumulator (a `MemScope::Register` storage of `dtype`), returning the
     /// accumulator's storage id.
     ///
-    /// The loop must be open: `loop_(len)` emitted, `end_loop()` not yet. The
+    /// The loop must be open: an `Op::Loop` emitted, its `Op::EndLoop` not yet. The
     /// helper hoists the accumulator and its zero-init before the loop
     /// (via `move_op_before`) and appends the per-iteration
     /// `acc = a[i] * b[i] + acc` block inside the loop body. The caller closes
@@ -1028,8 +1026,8 @@ pub struct Partition {
 /// also captures the output coords for the store) and written out by
 /// [`Kernel::store_partition`].
 pub struct Acc {
-    /// Per-warp tile shape (e.g. `[16, 8]` for one m16n8k8 wmma per warp).
-    tile: Vec<Dim>,
+    /// Per-warp tile shape as bound ops (e.g. m16n8k8: two consts 16, 8).
+    tile: Vec<OpId>,
     /// Accumulator dtype.
     dtype: DType,
     /// Per-lane register storage (`total / 32` elements).
@@ -1063,8 +1061,15 @@ impl Kernel {
 
     /// Create an accumulator: a zero-initialized per-lane register tile of
     /// `total(tile) / 32` elements.
-    pub fn acc<const N: usize>(&mut self, tile: [Dim; N], dtype: DType) -> Acc {
-        let total: Dim = tile.iter().product();
+    pub fn acc<const N: usize>(&mut self, tile: [OpId; N], dtype: DType) -> Acc {
+        let mut total: Dim = 1;
+        for &d in &tile {
+            let dim = self
+                .resolve_const(d)
+                .and_then(crate::dtype::Constant::as_dim)
+                .expect("acc: tile dim must resolve to a constant (const or variable op)");
+            total *= dim;
+        }
         debug_assert!(total > 0 && total % 32 == 0, "acc: tile must cover whole 32-lane warps");
         let storage = self.zeros(dtype, total / 32);
         Acc { tile: tile.to_vec(), dtype, storage, c_coords: None }
@@ -1133,7 +1138,12 @@ impl Kernel {
     /// accumulator update, and captures the output coords on `acc` for
     /// [`Kernel::store_partition`].
     pub fn mma(&mut self, acc: &mut Acc, a: &Partition, b: &Partition, coords: &[OpId]) {
-        debug_assert_eq!(acc.tile, vec![16, 8], "mma v1: acc tile must be [16, 8] (m16n8k8)");
+        let tile_dims: Vec<Dim> = acc
+            .tile
+            .iter()
+            .map(|&d| self.resolve_const(d).and_then(crate::dtype::Constant::as_dim).expect("mma: acc tile dim must resolve"))
+            .collect();
+        debug_assert_eq!(tile_dims, vec![16, 8], "mma v1: acc tile must be [16, 8] (m16n8k8)");
         debug_assert_eq!(acc.dtype, DType::F32, "mma v1: f32 accumulator");
         debug_assert_eq!(a.dtype, b.dtype, "mma: a/b dtype mismatch");
         debug_assert_eq!(a.dtype, DType::F16, "mma v1: f16 inputs");
@@ -1208,7 +1218,12 @@ impl Kernel {
     /// The output coords were captured at the [`Kernel::mma`] bind; the lane
     /// id is found via `open_warp`.
     pub fn store_partition(&mut self, c: &Partition, acc: &Acc) {
-        debug_assert_eq!(acc.tile, vec![16, 8], "store_partition v1: acc tile must be [16, 8]");
+        let tile_dims: Vec<Dim> = acc
+            .tile
+            .iter()
+            .map(|&d| self.resolve_const(d).and_then(crate::dtype::Constant::as_dim).expect("store_partition: acc tile dim must resolve"))
+            .collect();
+        debug_assert_eq!(tile_dims, vec![16, 8], "store_partition v1: acc tile must be [16, 8]");
         debug_assert_eq!(c.shape.len(), 2, "store_partition v1: output must be rank 2");
         let c_coords = acc.c_coords.as_ref().expect("store_partition: acc was never bound by mma");
         debug_assert_eq!(c_coords.len(), 2, "store_partition: captured coords/output rank mismatch");
