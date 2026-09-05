@@ -6,7 +6,7 @@ use crate::{
     backend::gws_from_kernel,
     dtype::Constant,
     error::{BackendError, ErrorStatus},
-    kernel::{BOp, Kernel, MemLayout, MemScope, Op, OpId, ParamKind, RangeKind, UOp},
+    kernel::{BOp, Kernel, MMADType, MMADims, MMALayout, MemLayout, MemScope, Op, OpId, ParamKind, RangeKind, UOp},
     scalar::{bf16, f16},
 };
 use std::hash::BuildHasherDefault;
@@ -14,6 +14,109 @@ use std::hash::BuildHasherDefault;
 const VEC_COMPONENTS: [&str; 16] = [
     "x", "y", "z", "w", "s0", "s1", "s2", "s3", "s4", "s5", "s6", "s7", "s8", "s9", "sa", "sb",
 ];
+
+/// Bit width of one MMA input element.
+const fn mma_input_bits(dtype: MMADType) -> u64 {
+    match dtype {
+        MMADType::f16_f16_f16_f32 | MMADType::f16_f16_f16_f16 => 16,
+        MMADType::s8_s8_s32_s32 => 8,
+        MMADType::s4_s4_s32_s32 => 4,
+        MMADType::b1_b1_s32_xor_popc | MMADType::b1_b1_s32_and_popc => 1,
+    }
+}
+
+/// (input type, accumulator type, op suffix, accumulator PTX constraint, accumulator C type)
+const fn mma_dtype_parts(dtype: MMADType) -> (&'static str, &'static str, &'static str, char, &'static str) {
+    match dtype {
+        MMADType::f16_f16_f16_f32 => ("f16", "f32", "", 'f', "float"),
+        MMADType::f16_f16_f16_f16 => ("f16", "f16", "", 'r', "unsigned"),
+        MMADType::s8_s8_s32_s32 => ("s8", "s32", "", 'r', "unsigned"),
+        MMADType::s4_s4_s32_s32 => ("s4", "s32", "", 'r', "unsigned"),
+        MMADType::b1_b1_s32_xor_popc => ("b1", "s32", ".xor.popc", 'r', "unsigned"),
+        MMADType::b1_b1_s32_and_popc => ("b1", "s32", ".and.popc", 'r', "unsigned"),
+    }
+}
+
+/// MMA layout as a PTX instruction modifier.
+const fn mma_layout_parts(layout: MMALayout) -> &'static str {
+    match layout {
+        MMALayout::row_col => "row.col",
+    }
+}
+
+/// Name of the generated `__device__` helper for one (dims, layout, dtype) combo.
+fn mma_helper_name(dims: MMADims, layout: MMALayout, dtype: MMADType) -> String {
+    let (m, n, k) = dims.decompose_mnk();
+    let (in_s, acc_s, op_s, _, _) = mma_dtype_parts(dtype);
+    let layout_s = mma_layout_parts(layout).replace('.', "_");
+    let op_name = op_s.replace(['.', '-'], "_");
+    let prefix = if op_s.is_empty() { "" } else { "_" };
+    format!("wmma_m{m}n{n}k{k}_{layout_s}_{acc_s}_{in_s}_{in_s}_{acc_s}{prefix}{op_name}")
+}
+
+/// Emit a `__device__` helper wrapping one `mma.sync` instruction.
+///
+/// Fragments are passed as 32-bit register arrays (a, b) and accumulator array (c).
+/// Per PTX ISA, A holds m*k/32 elements per thread, B holds n*k/32, C/D holds
+/// m*n/32 accumulator elements; sub-32-bit elements are bit-packed into registers.
+fn mma_helper(dims: MMADims, layout: MMALayout, dtype: MMADType) -> String {
+    use std::fmt::Write;
+    let (m, n, k) = dims.decompose_mnk();
+    let (in_s, acc_s, op_s, acc_ptype, acc_ct) = mma_dtype_parts(dtype);
+    let in_bits = mma_input_bits(dtype);
+    let na = (m * k * in_bits / 1024) as usize;
+    let nb = (n * k * in_bits / 1024) as usize;
+    let nc = (if acc_s == "f16" { m * n / 64 } else { m * n / 32 }) as usize;
+
+    // D operands: %0..%{nc-1} (in-out accumulator), then A, then B.
+    let mut d_list = String::from("{");
+    let mut outs = String::new();
+    for i in 0..nc {
+        if i > 0 {
+            d_list.push(',');
+            outs.push_str(", ");
+        }
+        _ = write!(d_list, "%{i}");
+        _ = write!(outs, "\"+{acc_ptype}\"(c[{i}])");
+    }
+    d_list.push('}');
+    let mut a_list = String::from("{");
+    let mut a_ins = String::new();
+    for (i, r) in (0..na).enumerate() {
+        if i > 0 {
+            a_list.push(',');
+            a_ins.push_str(", ");
+        }
+        _ = write!(a_list, "%{}", nc + r);
+        _ = write!(a_ins, "\"r\"(a[{r}])");
+    }
+    a_list.push('}');
+    let mut b_list = String::from("{");
+    let mut b_ins = String::new();
+    for (i, r) in (0..nb).enumerate() {
+        if i > 0 {
+            b_list.push(',');
+            b_ins.push_str(", ");
+        }
+        _ = write!(b_list, "%{}", nc + na + r);
+        _ = write!(b_ins, "\"r\"(b[{r}])");
+    }
+    b_list.push('}');
+
+    let name = mma_helper_name(dims, layout, dtype);
+    let mut s = String::new();
+    _ = writeln!(s, "__device__ void {name}(unsigned* a, unsigned* b, {acc_ct}* c) {{");
+    _ = writeln!(
+        s,
+        "  asm(\"mma.sync.aligned.m{m}n{n}k{k}.{}.{acc_s}.{in_s}.{in_s}.{acc_s}{op_s} \\n\\t\"",
+        mma_layout_parts(layout)
+    );
+    _ = writeln!(s, "    \"{d_list}, {a_list}, {b_list}, {d_list};\"");
+    _ = writeln!(s, "    : {outs}");
+    _ = writeln!(s, "    : {a_ins}, {b_ins});");
+    _ = writeln!(s, "}}");
+    s
+}
 
 impl Kernel {
     /// Compile kernel to CUDA C++ source code.
@@ -132,12 +235,15 @@ impl Kernel {
                         MemLayout::Tile { .. } => todo!(),
                     }
                 }
-                Op::Wmma { c, a, b, .. } => {
+                Op::Wmma { dims, layout, dtype, c, a, b } => {
                     let a = get_var(a, &constants, &indices, &reg_map, &mut registers, loop_id, &var_params)?;
                     let b = get_var(b, &constants, &indices, &reg_map, &mut registers, loop_id, &var_params)?;
                     let c = get_var(c, &constants, &indices, &reg_map, &mut registers, loop_id, &var_params)?;
                     let reg = new_reg(op_id, &mut reg_map, &mut registers, dtypes[&op_id], rcs[&op_id], loop_id);
-                    _ = writeln!(source, "{indent}r{reg} = wmma_m16n8k8_row_col_f32_f16_f16_f32({a}, {b}, {c});");
+                    let name = mma_helper_name(dims, layout, dtype);
+                    let c_cast = mma_dtype_parts(dtype).4;
+                    _ = writeln!(source, "{indent}{name}((unsigned*)&{a}, (unsigned*)&{b}, ({c_cast}*)&{c});");
+                    _ = writeln!(source, "{indent}r{reg} = {c};");
                 }
                 Op::Cast { x, dtype } => {
                     let x_var = get_var(x, &constants, &indices, &reg_map, &mut registers, loop_id, &var_params)?;
@@ -433,19 +539,19 @@ impl Kernel {
             pragma += "#include <cuda_bf16.h>\n";
         }
 
-        // Emit the wmma helper once per kernel if the IR contains any wmma op.
+        // Emit one mma helper per distinct (dims, layout, dtype) combo used by the kernel.
         let mut helper_funcs = String::new();
-        if self.iter_unordered().any(|(_, op)| matches!(op, Op::Wmma { .. })) {
-            helper_funcs += r#"__device__ float4 wmma_m16n8k8_row_col_f32_f16_f16_f32(half4 a, half2 b, float4 c) {
-  int *a_pk = (int *)(&a), *b_pk = (int *)(&b), *c_pk = (int *)(&c);
-  asm("mma.sync.aligned.m16n8k8.row.col.f32.f16.f16.f32"
-    "{%0, %1, %2, %3}, {%4, %5},"
-    "{%6}, {%0, %1, %2, %3};"
-  : "+r"(c_pk[0]), "+r"(c_pk[1]), "+r"(c_pk[2]), "+r"(c_pk[3])
-  : "r"(a_pk[0]), "r"(a_pk[1]), "r"(b_pk[0]));
-  return c;
-}
-"#;
+        let mut wmma_combos: Vec<(MMADims, MMALayout, MMADType)> = vec![];
+        for (_, op) in self.iter_unordered() {
+            if let Op::Wmma { dims, layout, dtype, .. } = op {
+                let combo = (*dims, *layout, *dtype);
+                if !wmma_combos.contains(&combo) {
+                    wmma_combos.push(combo);
+                }
+            }
+        }
+        for combo in &wmma_combos {
+            helper_funcs += &mma_helper(combo.0, combo.1, combo.2);
         }
 
         Ok(format!("{pragma}{helper_funcs}extern \"C\"\n__global__ void {name}(\n{global_args}) {{\n{reg_str}{source}}}\n\t\0"))

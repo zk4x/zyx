@@ -396,6 +396,11 @@ impl Kernel {
                 Op::Wmma { dims: _, layout: _, dtype, a, b, c } => {
                     let out_dtype = match dtype {
                         MMADType::f16_f16_f16_f32 => DType::F32,
+                        MMADType::f16_f16_f16_f16 => DType::F16,
+                        MMADType::s8_s8_s32_s32
+                        | MMADType::s4_s4_s32_s32
+                        | MMADType::b1_b1_s32_xor_popc
+                        | MMADType::b1_b1_s32_and_popc => DType::I32,
                     };
                     dtypes.insert(op_id, (out_dtype, MemLayout::Vector(4)));
                     *rcs.entry(a).or_insert(0) += 1;
@@ -468,6 +473,11 @@ impl Kernel {
                 Op::Mad { x, .. } => op_id = x,
                 Op::Wmma { dtype, .. } => match dtype {
                     MMADType::f16_f16_f16_f32 => return DType::F32,
+                    MMADType::f16_f16_f16_f16 => return DType::F16,
+                    MMADType::s8_s8_s32_s32
+                    | MMADType::s4_s4_s32_s32
+                    | MMADType::b1_b1_s32_xor_popc
+                    | MMADType::b1_b1_s32_and_popc => return DType::I32,
                 },
                 Op::MatmulTile { x, .. } => op_id = x,
                 Op::TransposeTile { x } => op_id = x,

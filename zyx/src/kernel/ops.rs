@@ -362,6 +362,14 @@ pub enum MMADims {
     m16n8k8,
     /// 16x8 with k=16
     m16n8k16,
+    /// 32x8 with k=16 (int8)
+    m32n8k16,
+    /// 8x32 with k=16 (int8)
+    m8n32k16,
+    /// 8x8 with k=32 (int4)
+    m8n8k32,
+    /// 8x8 with k=128 (b1)
+    m8n8k128,
 }
 
 impl MMADims {
@@ -371,6 +379,10 @@ impl MMADims {
             MMADims::m8n8k16 => (8, 8, 16),
             MMADims::m16n8k8 => (16, 8, 8),
             MMADims::m16n8k16 => (16, 8, 16),
+            MMADims::m32n8k16 => (32, 8, 16),
+            MMADims::m8n32k16 => (8, 32, 16),
+            MMADims::m8n8k32 => (8, 8, 32),
+            MMADims::m8n8k128 => (8, 8, 128),
         }
     }
 }
@@ -381,14 +393,8 @@ impl MMADims {
 #[allow(non_camel_case_types)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, SerBin, DeBin)]
 pub enum MMALayout {
-    /// Row-major for both matrices
-    row_row,
-    /// Row-major for A, column-major for B
+    /// Row-major for A, column-major for B — the only layout `mma.sync` accepts
     row_col,
-    /// Column-major for A, row-major for B
-    col_row,
-    /// Column-major for both matrices
-    col_col,
 }
 
 /// Data type for matrix multiply operations.
@@ -397,6 +403,16 @@ pub enum MMALayout {
 pub enum MMADType {
     /// FP16 input with FP32 accumulator
     f16_f16_f16_f32,
+    /// FP16 input with FP16 accumulator
+    f16_f16_f16_f16,
+    /// 8 bit signed integer input with 32 bit signed integer accumulator
+    s8_s8_s32_s32,
+    /// 4 bit signed integer input with 32 bit signed integer accumulator
+    s4_s4_s32_s32,
+    /// 1 bit input with 32 bit signed integer accumulator, XOR + popc reduction
+    b1_b1_s32_xor_popc,
+    /// 1 bit input with 32 bit signed integer accumulator, AND + popc reduction
+    b1_b1_s32_and_popc,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, SerBin)]
