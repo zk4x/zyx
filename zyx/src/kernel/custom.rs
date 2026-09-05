@@ -739,7 +739,7 @@ impl CompiledKernel {
     ///
     /// Routing mirrors every other op: if **any** input is a graph tensor of
     /// the current tape, the kernel is appended to the egraph as a
-    /// [`Node::Custom`] and the outputs are returned lazily (mixed graph/eager
+    /// `Node::Custom` and the outputs are returned lazily (mixed graph/eager
     /// inputs promote the eager ones); with all-eager inputs the kernel
     /// launches directly. The node references the device program, which is
     /// never released (append-only registry) — a dropped `CompiledKernel`

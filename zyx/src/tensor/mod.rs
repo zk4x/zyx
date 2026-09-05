@@ -466,7 +466,7 @@ impl Tensor {
 
     /// Copies the tensor's data to the host as a `Vec<T>`.
     ///
-    /// Dtype-strict, mirroring [`Runtime::load`]: returns
+    /// Dtype-strict, mirroring `Runtime::load`: returns
     /// [`ZyxError::DTypeError`] if the tensor's dtype is not `T::dtype()`
     /// (cast explicitly with [`Tensor::cast`] first for conversion).
     ///

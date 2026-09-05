@@ -43,7 +43,7 @@ impl Optimization for SplitGlobalToLocal {
         };
         // valid factors are checked by opt init
         let len = kernel.resolve_const(len).and_then(crate::dtype::Constant::as_dim).unwrap();
-        let group_len = kernel.const_idx(len / Dim::from(factor));
+        let group_len = kernel.insert_const_idx_before(op_id, len / Dim::from(factor));
         kernel.split_dim(
             op_id,
             vec![
@@ -74,8 +74,8 @@ impl Optimization for SplitLoop {
         let Some(len) = kernel.resolve_const(len_id).and_then(crate::dtype::Constant::as_dim) else {
             return;
         };
-        let len1 = kernel.const_idx(len / factor as Dim);
-        let len2 = kernel.const_idx(factor);
+        let len1 = kernel.insert_const_idx_before(op_id, len / factor as Dim);
+        let len2 = kernel.insert_const_idx_before(op_id, factor);
         kernel.split_dim(op_id, vec![Op::Loop { len: len1 }, Op::Loop { len: len2 }]);
     }
 }

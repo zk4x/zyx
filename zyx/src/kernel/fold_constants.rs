@@ -18,7 +18,7 @@
 use crate::{
     DType, Map, Set,
     dtype::Constant,
-    kernel::{BOp, IDX_T, Kernel, MemLayout, MemScope, Op, OpId, ParamKind, UOp},
+    kernel::{BOp, IDX_T, Kernel, MemLayout, MemScope, Op, OpId, ParamKind, RangeKind, UOp},
 };
 use std::hash::BuildHasherDefault;
 
@@ -643,9 +643,21 @@ impl Kernel {
         let mut start = self.prev_op(start);
         while !op_id.is_null() && !start.is_null() {
             let next = self.next_op(op_id);
-            if let Op::Range { .. } = self.at(op_id) {
-                self.move_op_after(op_id, start);
-                start = op_id;
+            if let Op::Range { kind, .. } = self.at(op_id) {
+                // Only hoist ranges whose length is already at the front
+                // (const or param). A computed length (binary/unary/...) must
+                // stay in topological order behind its definition.
+                let hoistable = match *kind {
+                    RangeKind::Group(len) => {
+                        self.resolve_const(len).is_some() || matches!(self.at(len), Op::Param { .. })
+                    }
+                    RangeKind::Warp(_) => true,
+                    RangeKind::Local(_) => true,
+                };
+                if hoistable {
+                    self.move_op_after(op_id, start);
+                    start = op_id;
+                }
             }
             op_id = next;
         }

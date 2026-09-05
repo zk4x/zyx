@@ -384,7 +384,7 @@ impl Kernel {
 
         let mut map = Map::default();
 
-        let new_len = self.const_idx(len / factor);
+        let new_len = self.insert_const_idx_before(loop_id, len / factor);
         let new_loop = self.insert_before(loop_id, Op::Loop { len: new_len });
         let mut op_id = self.next_op(loop_id);
         let stride = self.insert_before(loop_id, Op::Const(Constant::idx(factor)));
