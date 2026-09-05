@@ -306,13 +306,19 @@ impl Kernel {
         let mut op_id = self.head;
         {
             const PAGE_SIZE: u32 = 4096;
-            let mut input_arg_idx = 0u32;
+            // Chain accessor CTA offsets the documented way: first
+            // TensorAccessorArgs<0>, each later one at the previous
+            // accessor's next_compile_time_args_offset().
+            let mut prev_reader_accessor: Option<String> = None;
             // Head-order param ordinal: Global + Variable interleaved, GlobalMut after.
             let mut param_idx = 0u32;
             let mut loop_depth = 0u32;
             // CBs this section fills, with depth in tiles (from storage
             // len): push the full depth at the end, not the whole cb_map.
             let mut filled_cbs: Vec<(u32, i64)> = Vec::new();
+            // CBs fully pushed per tile store (flat tile path below): the
+            // end-of-reader push must skip these or pushes double up.
+            let mut per_tile_pushed: Vec<u32> = Vec::new();
             let mut steps_op_id = 0usize;
             while !op_id.is_null() {
                 steps_op_id += 1;
@@ -325,9 +331,14 @@ impl Kernel {
                             let arg = reader_pos[&param_idx];
                             writeln!(reader, "{indent}uint32_t src{op_id} = get_arg_val<uint32_t>({arg});");
                             writeln!(reader, "{indent}DEVICE_PRINT(\"TEMP src{op_id}={{}}\\n\", src{op_id});"); // TEMP debug
-                            writeln!(reader, "{indent}auto args{op_id} = TensorAccessorArgs<{}>({arg});", input_arg_idx * 2);
+                            // Chained CTA offsets (documented pattern).
+                            let cta = match &prev_reader_accessor {
+                                None => String::from("0"),
+                                Some(prev) => format!("{prev}.next_compile_time_args_offset()"),
+                            };
+                            writeln!(reader, "{indent}auto args{op_id} = TensorAccessorArgs<{cta}>({arg});");
                             writeln!(reader, "{indent}auto p{op_id} = TensorAccessor(args{op_id}, src{op_id}, {PAGE_SIZE});");
-                            input_arg_idx += 1;
+                            prev_reader_accessor = Some(format!("args{op_id}"));
                         }
                         param_idx += 1;
                     }
@@ -349,9 +360,13 @@ impl Kernel {
                         if reader_params.contains(&param_idx) {
                             let arg = reader_pos[&param_idx];
                             writeln!(reader, "{indent}uint32_t dst{op_id} = get_arg_val<uint32_t>({arg});");
-                            writeln!(reader, "{indent}auto args{op_id} = TensorAccessorArgs<{}>({arg});", input_arg_idx * 2);
+                            let cta = match &prev_reader_accessor {
+                                None => String::from("0"),
+                                Some(prev) => format!("{prev}.next_compile_time_args_offset()"),
+                            };
+                            writeln!(reader, "{indent}auto args{op_id} = TensorAccessorArgs<{cta}>({arg});");
                             writeln!(reader, "{indent}auto p{op_id} = TensorAccessor(args{op_id}, dst{op_id}, {PAGE_SIZE});");
-                            input_arg_idx += 1;
+                            prev_reader_accessor = Some(format!("args{op_id}"));
                         }
                         param_idx += 1;
                     }
@@ -407,6 +422,13 @@ impl Kernel {
                                 ) => {
                                     // Whole-tile DRAM -> CB transfer (tile-layout
                                     // DRAM): a single sequential NOC read.
+                                    // Reference pattern (TT's own readers):
+                                    // reserve, read, barrier, push PER TILE.
+                                    // Back-to-back reserve_back(1) calls do
+                                    // NOT advance the write pointer, so batching
+                                    // reserves overwrites the same page (last
+                                    // tile wins, later pages stay empty).
+                                    // Inside loops keep the old batched shape.
                                     let tile_bytes =
                                         x as u32 * y as u32 * elem_size;
                                     writeln!(
@@ -421,6 +443,13 @@ impl Kernel {
                                         reader,
                                         "{indent}noc_async_read(rnoc{op_id}, cb{cb_id}.get_write_ptr(), {tile_bytes});"
                                     );
+                                    if loop_depth == 0 {
+                                        writeln!(reader, "{indent}noc_async_read_barrier();");
+                                        writeln!(reader, "{indent}cb{cb_id}.push_back(1);");
+                                        if !per_tile_pushed.contains(cb_id) {
+                                            per_tile_pushed.push(*cb_id);
+                                        }
+                                    }
                                 }
                                 _ => todo!(),
                             }
@@ -491,6 +520,9 @@ impl Kernel {
             }
             writeln!(reader, "{indent}noc_async_read_barrier();");
             for &(cb_id, depth) in &filled_cbs {
+                if per_tile_pushed.contains(&cb_id) {
+                    continue;
+                }
                 writeln!(reader, "{indent}cb{cb_id}.push_back({depth});");
             }
             writeln!(reader, "}}");
@@ -908,7 +940,7 @@ impl Kernel {
             // TEMP DIAG no-FPU stub: replace matmul compute with
             // a cb0->out copy (14_t-shaped: init_sfpu + copy + pack) to
             // read out reader data as the FPU sees it. Revert after.
-            const TEMP_STUB_NO_FPU: bool = true;
+            const TEMP_STUB_NO_FPU: bool = false;
             const EMIT_HW_STARTUP: bool = false;
             if !mm_inits.is_empty() && !TEMP_STUB_NO_FPU {
                 let out_cb = mm_out_cb.expect("tenstorrent matmul kernel needs a tile store to a circular buffer");
@@ -988,16 +1020,21 @@ impl Kernel {
                 let out_cb = mm_out_cb.expect("tenstorrent stub needs the matmul output CB");
                 writeln!(compute, "{indent}init_sfpu(0, {out_cb});");
                 writeln!(compute, "{indent}tile_regs_acquire();");
-                // TEMP DIAG init-arg probe: proven init form (0, out) with
-                // copy from cb1. If B data appears, init_sfpu(1, .) was
-                // the probe bug, not B data.
-                writeln!(compute, "{indent}copy_tile(1, 0, 0);");
+                // TEMP DIAG pop-semantics probe (W-full tree): pop one from
+                // each input CB BEFORE copying tile 0. W1 => pops advance;
+                // W0 => pops don't advance; zeros => pops empty/corrupt.
+                for &(loaded_cb, _depth) in &load_input_cbs {
+                    writeln!(compute, "{indent}cb{loaded_cb}.pop_front(1);");
+                }
+                writeln!(compute, "{indent}copy_tile(0, 1, 0);");
                 writeln!(compute, "{indent}tile_regs_commit();");
                 writeln!(compute, "{indent}tile_regs_wait();");
                 writeln!(compute, "{indent}cb{out_cb}.reserve_back(1);");
                 writeln!(compute, "{indent}pack_tile(0, {out_cb});");
                 for &(loaded_cb, depth) in &load_input_cbs {
-                    writeln!(compute, "{indent}cb{loaded_cb}.pop_front({depth});");
+                    // TEMP DIAG pop probe: a pre-copy pop already consumed
+                    // one page above; drain only the remainder here.
+                    writeln!(compute, "{indent}cb{loaded_cb}.pop_front({});", depth - 1);
                 }
                 writeln!(compute, "{indent}tile_regs_release();");
                 writeln!(compute, "{indent}cb{out_cb}.push_back(1);");
@@ -1055,9 +1092,9 @@ impl Kernel {
             let mut chain_slots: Map<usize, u32> = Map::default();
             // TEMP DIAG single-matmul probe (see below).
             let mut chain_done: Map<usize, usize> = Map::default();
-            // Tiles already popped per CB by streaming folded matmuls;
-            // the epilogue pops only the remainder.
-            let mut popped: Map<u32, i64> = Map::default();
+            // Tiles popped per CB (none interleaved anymore; the
+            // epilogue drains everything once at the end).
+            let popped: Map<u32, i64> = Map::default();
             while !op_id.is_null() {
                 steps_op_id += 1;
                 if steps_op_id > 10_000 {
@@ -1184,11 +1221,24 @@ impl Kernel {
                         }
                     }
                     Op::MatmulTile { x, y } => {
-                        let Op::Load { src: cb_a, layout: MemLayout::Tile { .. }, .. } = self.ops[x].op else {
+                        let Op::Load { src: cb_a, index: idx_a, layout: MemLayout::Tile { .. } } = self.ops[x].op else {
                             panic!("tenstorrent matmul_tile x must be a tile load from a circular buffer")
                         };
-                        let Op::Load { src: cb_b, layout: MemLayout::Tile { .. }, .. } = self.ops[y].op else {
+                        let Op::Load { src: cb_b, index: idx_b, layout: MemLayout::Tile { .. } } = self.ops[y].op else {
                             panic!("tenstorrent matmul_tile y must be a tile load from a circular buffer")
+                        };
+                        // CB tile indices must be static: pops between FPU
+                        // consumptions defeat subsequent matmuls (the next
+                        // call adds nothing), so every matmul addresses its
+                        // tiles explicitly and draining happens once in the
+                        // epilogue. A dynamic index is a loud failure.
+                        let tile_a = match self.ops[idx_a].op {
+                            Op::Const(c) => c.as_dim().expect("tenstorrent matmul CB tile index has a concrete dim") as u32,
+                            ref op => todo!("tenstorrent matmul CB tile index must be const, got {op:?}"),
+                        };
+                        let tile_b = match self.ops[idx_b].op {
+                            Op::Const(c) => c.as_dim().expect("tenstorrent matmul CB tile index has a concrete dim") as u32,
+                            ref op => todo!("tenstorrent matmul CB tile index must be const, got {op:?}"),
                         };
                         let (Some(&cb_a_id), Some(&cb_b_id)) = (cb_map.get(&cb_a), cb_map.get(&cb_b)) else {
                             panic!("tenstorrent matmul_tile inputs must be circular buffers")
@@ -1199,7 +1249,7 @@ impl Kernel {
                         // unfolded matmuls keep a fresh slot each.
                         // TEMP DIAG single-matmul probe: emit only the first
                         // matmul per chain (skip the rest, consuming nothing).
-                        const TEMP_SINGLE_MATMUL: bool = true;
+                        const TEMP_SINGLE_MATMUL: bool = false;
                         let chain = matmul_chain.get(&op_id).copied();
                         let done = chain.map(|c| chain_done.get(&c).copied().unwrap_or(0)).unwrap_or(0);
                         if let Some(c) = chain {
@@ -1229,16 +1279,12 @@ impl Kernel {
                         // computes slot = previous + A@B. Pure K-loop
                         // accumulation is folded onto DST by codegen (see
                         // folded_adds); only non-foldable adds are emitted.
-                        writeln!(compute, "{indent}matmul_tiles({cb_a_id}, {cb_b_id}, 0, 0, {slot});");
-                        // Folded chains stream tiles: pop this matmul's
-                        // inputs so the next chain matmul reads the next
-                        // tiles. The epilogue pops only what remains.
-                        if matmul_chain.contains_key(&op_id) {
-                            for &cb in &[cb_a_id, cb_b_id] {
-                                writeln!(compute, "{indent}cb{cb}.pop_front(1);");
-                                *popped.entry(cb).or_insert(0) += 1;
-                            }
-                        }
+                        writeln!(compute, "{indent}matmul_tiles({cb_a_id}, {cb_b_id}, {tile_a}, {tile_b}, {slot});");
+                        // No pops between chain matmuls: popping before a
+                        // later FPU consumption defeats it (adds nothing);
+                        // the epilogue drains everything once at the end.
+                        // (Upfront wait_front(depth) already guarantees all
+                        // tiles are present.)
                         }
                     }
                     Op::Store { dst, src, index: _, layout: MemLayout::Tile { .. } } => {
@@ -1336,7 +1382,7 @@ impl Kernel {
         // Emit accessors only for the GlobalMut params this section needs.
         // `param_idx` is the head-order ordinal over ALL Param kinds; the runtime
         // arg index is the param's position in the writer's section arg list.
-        let mut out_accessor_idx = 0u32;
+        let mut prev_writer_accessor: Option<String> = None;
         {
             let mut param_idx = 0u32;
             let mut scan = self.head;
@@ -1350,9 +1396,13 @@ impl Kernel {
                     if writer_params.contains(&param_idx) {
                         let arg = writer_pos[&param_idx];
                         writeln!(writer, "{indent}uint32_t out{scan} = get_arg_val<uint32_t>({arg});");
-                        writeln!(writer, "{indent}auto args_out{scan} = TensorAccessorArgs<{}>({arg});", out_accessor_idx * 2);
+                        let cta = match &prev_writer_accessor {
+                            None => String::from("0"),
+                            Some(prev) => format!("{prev}.next_compile_time_args_offset()"),
+                        };
+                        writeln!(writer, "{indent}auto args_out{scan} = TensorAccessorArgs<{cta}>({arg});");
                         writeln!(writer, "{indent}auto p_out{scan} = TensorAccessor(args_out{scan}, out{scan}, {PAGE_SIZE});");
-                        out_accessor_idx += 1;
+                        prev_writer_accessor = Some(format!("args_out{scan}"));
                     }
                 }
                 if matches!(self.ops[scan].op, Op::Param { .. }) {

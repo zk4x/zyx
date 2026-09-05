@@ -16,10 +16,10 @@
 //! DST, matmul_tiles accumulates per slot).
 
 use zyx::kernel::{Dev, Kernel, MemScope};
-use zyx::{DType, Tensor, ZyxError, bf16};
+use zyx::{bf16, DType, Tensor, ZyxError};
 
 const TDIM: u16 = 32;
-const N_TILES: usize = 8;
+const N_TILES: usize = 2;
 const K_TILES: usize = 2;
 
 // Face slot -> linear index within a tile.
@@ -66,12 +66,7 @@ fn lm_head_tt() -> Result<(), ZyxError> {
     let two = k.const_idx(2i64);
     let te = k.const_idx(1024i64);
 
-    // ---- Reader: A tiles (const offsets), B tiles for this n ----
-    for kt in 0..K_TILES {
-        let off_a = k.const_idx((kt * 1024) as i64);
-        let t = k.load_tile(a, off_a, TDIM, TDIM, TDIM as u32);
-        k.store_tile(ca, t, zero, TDIM, TDIM, TDIM as u32);
-    }
+    // ---- Reader: B tiles first, then A tiles ----
     for kt in 0..K_TILES {
         // DRAM tile = n*2+kt, element offset = (n*2+kt)*1024.
         let c_kt = k.const_idx(kt as i64);
@@ -80,16 +75,22 @@ fn lm_head_tt() -> Result<(), ZyxError> {
         let t = k.load_tile(b, off, TDIM, TDIM, TDIM as u32);
         k.store_tile(cb, t, zero, TDIM, TDIM, TDIM as u32);
     }
+    for kt in 0..K_TILES {
+        let off_a = k.const_idx((kt * 1024) as i64);
+        let t = k.load_tile(a, off_a, TDIM, TDIM, TDIM as u32);
+        k.store_tile(ca, t, zero, TDIM, TDIM, TDIM as u32);
+    }
     k.barrier();
 
     // ---- Compute: C = A[0]@B[0] + A[1]@B[1] ----
+    // TEMP DIAG distinct-tile probe: second iteration consumes tile 1.
+    // Output B0+W1 => accumulation works; W1 => overwrite (no accum);
+    // B0 => second matmul no-ops.
     let mut acc = k.const_val(bf16::from_f32(0.0));
-    for _ in 0..K_TILES {
-        // NOTE: both iterations load tile 0: multi-tile CB indexing
-        // (copy_tile with tile index) is not implemented yet. Kt=2
-        // accumulation across distinct tiles needs it.
-        let la = k.load_tile(ca, zero, TDIM, TDIM, TDIM as u32);
-        let lb = k.load_tile(cb, zero, TDIM, TDIM, TDIM as u32);
+    for kt2 in 0..K_TILES {
+        let idx = if kt2 == 0 { zero } else { one };
+        let la = k.load_tile(ca, idx, TDIM, TDIM, TDIM as u32);
+        let lb = k.load_tile(cb, idx, TDIM, TDIM, TDIM as u32);
         let t = k.matmul_tile(la, lb);
         acc = k.add(acc, t);
     }
@@ -112,41 +113,49 @@ fn lm_head_tt() -> Result<(), ZyxError> {
     let y: Vec<f32> = goldens["output"].cast(DType::F32).to_vec()?;
 
     // A[kt] = Xp[0:32, kt*32:(kt+1)*32], Xp = x rows + 24 zero rows.
-    // TEMP DIAG accum probe: A0 = A1 = identity rows, B1 = 0, so
-    // S = B0 iff DST accumulates, S = 0 iff matmul overwrites.
     let mut ap = Vec::with_capacity(2048);
-    for _kt in 0..K_TILES {
+    for kt in 0..K_TILES {
         let mut tile = vec![0.0f32; 1024];
         for r in 0..32 {
             for c in 0..32 {
-                tile[r * 32 + c] = if r == c { 1.0 } else { 0.0 };
+                tile[r * 32 + c] = if r < 8 { x[r * 64 + kt * 32 + c] } else { 0.0 };
             }
         }
         ap.extend(tile_encode(&tile));
     }
     // B[n,kt] = W[n*32:(n+1)*32, kt*32:(kt+1)*32] as (k,n) face tile:
-    // tile[r,c] = W[n*32+c, kt*32+r].
+    // tile[r,c] = W[n*32+c, kt*32+r]. TEMP W-full (pop probe needs
+    // distinctive kt1).
     let mut bp = Vec::with_capacity(16384);
     for n in 0..N_TILES {
         for kt in 0..K_TILES {
             let mut tile = vec![0.0f32; 1024];
-            // TEMP DIAG accum probe: B1 = 0 (see above).
-            if kt == 0 {
-                for r in 0..32 {
-                    for c in 0..32 {
-                        tile[r * 32 + c] = w[(n * 32 + c) * 64 + kt * 32 + r];
-                    }
+            for r in 0..32 {
+                for c in 0..32 {
+                    tile[r * 32 + c] = w[(n * 32 + c) * 64 + kt * 32 + r];
                 }
             }
             bp.extend(tile_encode(&tile));
         }
     }
 
-    let a_t = Tensor::from(ap).to(Dev::C)?.cast(DType::BF16).to(Dev::TT(0))?;
-    let b_t = Tensor::from(bp.clone()).to(Dev::C)?.cast(DType::BF16).to(Dev::TT(0))?;
+    // TEMP DIAG alloc-order probe: B allocated first (low address), A
+    // second. Fault following the address = region issue; fault
+    // following the buffer = size/layout issue.
+    let b_t = Tensor::from(bp.clone())
+        .to(Dev::C)?
+        .cast(DType::BF16)
+        .to(Dev::TT(0))?;
+    let a_t = Tensor::from(ap)
+        .to(Dev::C)?
+        .cast(DType::BF16)
+        .to(Dev::TT(0))?;
     // TEMP DIAG: round-trip B host->device->host (no NOC reads involved).
     let b_back: Vec<f32> = b_t.to(Dev::C)?.cast(DType::F32).to_vec()?;
-    let b_src: Vec<f32> = Tensor::from(bp.clone()).to(Dev::C)?.cast(DType::F32).to_vec()?;
+    let b_src: Vec<f32> = Tensor::from(bp.clone())
+        .to(Dev::C)?
+        .cast(DType::F32)
+        .to_vec()?;
     println!("TEMP b_roundtrip first8={:?}", &b_back[..8]);
     println!("TEMP b_source first8={:?}", &b_src[..8]);
 
@@ -155,7 +164,8 @@ fn lm_head_tt() -> Result<(), ZyxError> {
     let mut tiles = Vec::with_capacity(N_TILES);
     for n in 0..N_TILES {
         let n_t = Tensor::variable(n as i64);
-        let out = compiled.forward(&[&b_t, &b_t, &n_t], vec![[8192i64]])?;
+        // TEMP DIAG const-B-small with real matmul.
+        let out = compiled.forward(&[&a_t, &b_t, &n_t], vec![[8192i64]])?;
         let z_host = out[0].to(Dev::C)?;
         let z_f32 = z_host.cast(DType::F32);
         let z_face: Vec<f32> = z_f32.to_vec()?;
@@ -180,7 +190,38 @@ fn lm_head_tt() -> Result<(), ZyxError> {
             }
         }
     }
-    println!("bad: {bad} / 2048");
+    println!("bad: {bad} / {}", N_TILES * 256);
+    // TEMP DIAG bf16-reference: host C_ref with bf16-quantized inputs,
+    // f32 accumulation. If device matches C_ref tightly, the 2 diffs
+    // vs the f32 golden are quantization, not logic.
+    let xb: Vec<f32> = x.iter().map(|&v| bf16::from_f32(v).to_f32()).collect();
+    let wb: Vec<f32> = w.iter().map(|&v| bf16::from_f32(v).to_f32()).collect();
+    let mut maxd = 0.0f32;
+    for m in 0..N_TILES {
+        let got = &tiles[m];
+        for b in 0..2 {
+            for s in 0..4 {
+                for c in 0..32 {
+                    let mut acc = 0.0f32;
+                    for kt in 0..K_TILES {
+                        for r in 0..32 {
+                            let a = if (b * 4 + s) < 8 {
+                                xb[(b * 4 + s) * 64 + kt * 32 + r]
+                            } else {
+                                0.0
+                            };
+                            acc += a * wb[(m * 32 + c) * 64 + kt * 32 + r];
+                        }
+                    }
+                    let d = (got[(b * 4 + s) * 32 + c] - acc).abs();
+                    if d > maxd {
+                        maxd = d;
+                    }
+                }
+            }
+        }
+    }
+    println!("TEMP max diff vs bf16 host ref: {maxd}");
     // TEMP DIAG: padding rows 8..32 should be ~0 (X rows 8+ are zero).
     // TEMP DIAG one-hot probe expects tiles[m][r][c] == w[(m*32+c)*64 + r].
     for m in 0..N_TILES {
@@ -189,7 +230,10 @@ fn lm_head_tt() -> Result<(), ZyxError> {
         println!("TEMP m={m} row0={row0:?} row8={row8:?}");
     }
     if N_TILES > 0 {
-        println!("TEMP wcol0: {:?}", (0..8).map(|c| w[c * 64]).collect::<Vec<f32>>());
+        println!(
+            "TEMP wcol0: {:?}",
+            (0..8).map(|c| w[c * 64]).collect::<Vec<f32>>()
+        );
     }
     assert_eq!(bad, 0);
     Ok(())

@@ -289,7 +289,9 @@ int main() {
         uint32_t idx = buffers.size();
         cerr << "[TT_ALLOC] idx=" << idx << " size=" << size
              << " page=" << PAGE_SIZE << " addr=" << buf->address()
-             << " actual_sz=" << buf->size() << endl;
+             << " actual_sz=" << buf->size()
+             << " bank0pg0=" << buf->get_reference_buffer()->page_address(0, 0)
+             << " bank1pg0=" << buf->get_reference_buffer()->page_address(1, 0) << endl;
         buffers.push_back(buf);
         cout << R"({"status":"ok","index":")" << idx << R"("})" << endl;
       } catch (const exception &e) {
@@ -544,7 +546,9 @@ int main() {
           const shared_ptr<MeshBuffer> &b =
               (p >= n_inputs) ? buffers[dst_indices[next_dst++]]
                               : buffers[src_indices[next_src++]];
-          TensorAccessorArgs(*b).append_to(args);
+          // Match the documented matmul pattern: build blobs from the backing
+          // buffer, not the MeshBuffer wrapper.
+          TensorAccessorArgs(*b->get_backing_buffer()).append_to(args);
         }
         return args;
       };
@@ -671,6 +675,22 @@ int main() {
                                        .compiler_include_paths = {},
                                    });
 
+        // TEMP DIAG: log section runtime + compile args for core (0,0) to
+        // verify kernel-side addresses against TT_ALLOC.
+        {
+          auto rrt = section_rt_args(cfg.reader_params, 0, 0);
+          cerr << "[TT_ARGS] reader_rt:";
+          for (uint32_t v : rrt) cerr << " " << v;
+          cerr << " reader_ct:";
+          for (uint32_t v : reader_compile_args) cerr << " " << v;
+          cerr << endl;
+          auto wrt = section_rt_args(cfg.writer_params, 0, 0);
+          cerr << "[TT_ARGS] writer_rt:";
+          for (uint32_t v : wrt) cerr << " " << v;
+          cerr << " writer_ct:";
+          for (uint32_t v : writer_compile_args) cerr << " " << v;
+          cerr << endl;
+        }
         // Set per-core runtime args using the single kernel handle
         for (uint32_t row = 0; row < gidx0_sz; row++) {
           for (uint32_t col = 0; col < gidx1_sz; col++) {
@@ -693,6 +713,14 @@ int main() {
         cerr << "[TT] before Finish" << endl;
         Finish(*cq);
         cerr << "[TT] after Finish" << endl;
+        // TEMP DIAG post-launch readback: are input buffers intact?
+        for (uint32_t si = 0; si < n_inputs && si < 2; si++) {
+          vector<uint8_t> head(16, 0);
+          EnqueueReadMeshBuffer(*cq, head, buffers[src_indices[si]], true);
+          cerr << "[TT_POST] src" << si << " head:";
+          for (uint8_t x : head) cerr << " " << hex << (int)x << dec;
+          cerr << endl;
+        }
 
         cout << R"({"status":"ok"})" << endl;
 
