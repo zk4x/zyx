@@ -19,6 +19,12 @@ is very easy to understand, it will probably get rejected. However if you can pr
 increases the performance of at least some devices (>10% perf improvement), then this is the best thing you can do to
 help zyx grow.
 
-- Find bugs - finding a bug is amazing news, because correctness is no. ! goal
+- Find bugs - finding a bug is amazing news, because correctness is no. 1 goal
 
 - Fix bugs - this is good too, but finding new bugs is even better
+
+## License
+
+zyx is licensed under `LGPL-3.0-only WITH Classpath-exception-2.0` (see [LICENSE.md](LICENSE.md)).
+
+By contributing code, you agree that your contribution is licensed under the same license — `LGPL-3.0-only WITH Classpath-exception-2.0` — and you retain copyright on your contribution. A `Signed-off-by` line in your commit (Developer Certificate of Origin, `git commit -s`) certifying that you have the right to submit the contribution is required. No CLA is needed.

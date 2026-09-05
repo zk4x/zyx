@@ -1,5 +1,5 @@
 // Copyright (C) 2025 zk4x
-// SPDX-License-Identifier: LGPL-3.0-only
+// SPDX-License-Identifier: LGPL-3.0-only WITH Classpath-exception-2.0
 
 use zyx::kernel::{Dev, Kernel, MMADType, MMADims, MMALayout, MemScope};
 use zyx::{DType, ReduceOp, Scalar, Tensor, ZyxError};

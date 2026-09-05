@@ -11,7 +11,7 @@ dynamic = ["version"]
 authors = [
     {name = "zk4x"},
 ]
-license = {text = "LGPL-3.0-only"}
+license = {text = "LGPL-3.0-only WITH Classpath-exception-2.0"}
 keywords = ["machine-learning", "tensor", "gpu", "autograd", "neural-network", "deep-learning"]
 classifiers = [
     "Development Status :: 3 - Alpha",

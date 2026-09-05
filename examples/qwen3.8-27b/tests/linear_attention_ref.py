@@ -1,3 +1,5 @@
+# Copyright (C) 2025 zk4x
+# SPDX-License-Identifier: LGPL-3.0-only WITH Classpath-exception-2.0
 """Golden reference for the linear-attention (GatedDeltaNet) block.
 
 Uses the real Qwen3_5GatedDeltaNet class (hidden 32, 2 k-heads, 2 v-heads,

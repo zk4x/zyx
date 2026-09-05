@@ -1,3 +1,5 @@
+# Copyright (C) 2025 zk4x
+# SPDX-License-Identifier: LGPL-3.0-only WITH Classpath-exception-2.0
 """Golden reference for the partial-RoPE application.
 
 Uses the real Qwen3_5TextRotaryEmbedding (head_dim 16, partial factor 0.25

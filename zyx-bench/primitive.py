@@ -1,3 +1,5 @@
+# Copyright (C) 2025 zk4x
+# SPDX-License-Identifier: LGPL-3.0-only WITH Classpath-exception-2.0
 #!/usr/bin/env python3
 import numpy as np, pandas as pd
 from sklearn.linear_model import HuberRegressor

@@ -1,3 +1,5 @@
+# Copyright (C) 2025 zk4x
+# SPDX-License-Identifier: LGPL-3.0-only WITH Classpath-exception-2.0
 """Golden reference for the RMSNorm op.
 
 Uses the real Qwen3_5RMSNorm class (tiny dim 64). Note its zero-centered

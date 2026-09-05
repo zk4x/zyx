@@ -1,5 +1,5 @@
 // SPDX-FileCopyrightText: (c) 2025 zk4x
-// SPDX-License-Identifier: LGPL-3.0-only
+// SPDX-License-Identifier: LGPL-3.0-only WITH Classpath-exception-2.0
 
 // Long-lived C++ runtime process for zyx Tenstorrent backend.
 // Reads JSON commands from stdin, manages persistent DRAM buffers,

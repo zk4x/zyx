@@ -1,5 +1,5 @@
 // Copyright (C) 2025 zk4x
-// SPDX-License-Identifier: LGPL-3.0-only
+// SPDX-License-Identifier: LGPL-3.0-only WITH Classpath-exception-2.0
 
 //! Index map using unsinged integer indices to index
 //! into vector of T. Pushing new values returns their

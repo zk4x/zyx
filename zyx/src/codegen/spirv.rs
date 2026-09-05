@@ -1,5 +1,5 @@
 // Copyright (C) 2025 zk4x
-// SPDX-License-Identifier: LGPL-3.0-only
+// SPDX-License-Identifier: LGPL-3.0-only WITH Classpath-exception-2.0
 
 //! SPIR-V binary codegen from zyx kernel IR.
 //! Translates kernel IR ops to SPIR-V machine code (`Vec<u32>`).

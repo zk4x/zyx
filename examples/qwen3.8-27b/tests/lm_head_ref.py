@@ -1,3 +1,5 @@
+# Copyright (C) 2025 zk4x
+# SPDX-License-Identifier: LGPL-3.0-only WITH Classpath-exception-2.0
 """Golden reference for the untied LM head (plain matmul).
 
 vocab 256, hidden 64: logits = x @ W.T (no bias). Dumps weight + input as

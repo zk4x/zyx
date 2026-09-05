@@ -775,14 +775,34 @@ PARTIES OR A FAILURE OF THE PROGRAM TO OPERATE WITH ANY OTHER PROGRAMS),
 EVEN IF SUCH HOLDER OR OTHER PARTY HAS BEEN ADVISED OF THE POSSIBILITY OF
 SUCH DAMAGES.
 
-  17. Interpretation of Sections 15 and 16.
+   17. Interpretation of Sections 15 and 16.
 
-  If the disclaimer of warranty and limitation of liability provided
+   If the disclaimer of warranty and limitation of liability provided
 above cannot be given local legal effect according to their terms,
 reviewing courts shall apply local law that most closely approximates
 an absolute waiver of all civil liability in connection with the
 Program, unless a warranty or assumption of liability accompanies a
 copy of the Program in return for a fee.
 
-                     END OF TERMS AND CONDITIONS
+                      END OF TERMS AND CONDITIONS
 
+                   ADDITIONAL PERMISSION UNDER SECTION 7
+                     OF THE GNU LGPL, VERSION 3.0
+
+                     Classpath Exception 2.0
+
+   Linking this library statically or dynamically with other modules is
+making a combined work based on this library. Thus, the terms and conditions
+of the GNU General Public License version 3 cover the whole combination.
+
+   As a special exception, the copyright holders of this library
+give you permission to link this library with independent modules
+to produce an executable, regardless of the license terms of these
+independent modules, and to copy and distribute the resulting
+executable under terms of your choice, provided that you also meet,
+for each linked independent module, the terms and conditions
+of the license of that module. An independent module is a module
+which is not derived from or based on this library. If you modify
+this library, you may extend this exception to your version of the library,
+but you are not obligated to do so. If you do not wish to do so, delete
+this exception statement from your version.

@@ -7,7 +7,7 @@ description = "Zyx procedural macros"
 documentation = "https://docs.rs/zyx-derive"
 homepage = "https://github.com/zk4x/zyx"
 repository = "https://github.com/zk4x/zyx"
-license = "LGPL-3.0-only"
+license = "LGPL-3.0-only WITH Classpath-exception-2.0"
 keywords = ["tensor", "deep-learning", "neural-network", "autodiff"]
 categories = ["computer-vision", "science"]
 

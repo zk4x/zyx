@@ -1,3 +1,5 @@
+# Copyright (C) 2025 zk4x
+# SPDX-License-Identifier: LGPL-3.0-only WITH Classpath-exception-2.0
 """Golden reference for the SwiGLU MLP block.
 
 Uses the real Qwen3_5MLP class (hidden 64, intermediate 128, no bias):

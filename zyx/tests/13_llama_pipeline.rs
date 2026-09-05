@@ -1,5 +1,5 @@
 // Copyright (C) 2025 zk4x
-// SPDX-License-Identifier: LGPL-3.0-only
+// SPDX-License-Identifier: LGPL-3.0-only WITH Classpath-exception-2.0
 
 //! End-to-end llama-pipeline confidence tests: a worst-case kernel arg-binding
 //! stress (interleaved GlobalMut params, multiple stores), a mini llama forward

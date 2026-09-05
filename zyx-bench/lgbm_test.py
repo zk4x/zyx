@@ -1,3 +1,5 @@
+# Copyright (C) 2025 zk4x
+# SPDX-License-Identifier: LGPL-3.0-only WITH Classpath-exception-2.0
 #!/usr/bin/env python3
 """Quick LGBM test with train/test split to see how far we can push R²/ρ."""
 

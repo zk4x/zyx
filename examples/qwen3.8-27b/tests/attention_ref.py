@@ -1,3 +1,5 @@
+# Copyright (C) 2025 zk4x
+# SPDX-License-Identifier: LGPL-3.0-only WITH Classpath-exception-2.0
 """Golden reference for the full (GQA) attention block.
 
 Uses the real Qwen3_5Attention class (hidden 64, 4 q-heads, 2 kv-heads,

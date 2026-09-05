@@ -1,5 +1,5 @@
 // Copyright (C) 2025 zk4x
-// SPDX-License-Identifier: LGPL-3.0-only
+// SPDX-License-Identifier: LGPL-3.0-only WITH Classpath-exception-2.0
 
 //! Repro for `promote_to_graph` panic in `zyx/src/graph/mod.rs:1609`:
 //!   "promote_to_graph: tensor {tid} has no eager kernel: Constant { value: 64, rc: 1 }"

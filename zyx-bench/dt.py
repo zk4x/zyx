@@ -1,3 +1,5 @@
+# Copyright (C) 2025 zk4x
+# SPDX-License-Identifier: LGPL-3.0-only WITH Classpath-exception-2.0
 #!/usr/bin/env python3
 """Parse bench_output.txt → bench_data.csv → ridge regression for cost model."""
 

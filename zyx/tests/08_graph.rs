@@ -1,5 +1,5 @@
 // Copyright (C) 2025 zk4x
-// SPDX-License-Identifier: LGPL-3.0-only
+// SPDX-License-Identifier: LGPL-3.0-only WITH Classpath-exception-2.0
 
 use std::result::Result;
 use zyx::{DType, ReduceOp, Scalar, Tape, Tensor, ZyxError};

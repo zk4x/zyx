@@ -1,3 +1,5 @@
+// Copyright (C) 2025 zk4x
+// SPDX-License-Identifier: LGPL-3.0-only WITH Classpath-exception-2.0
 //! Tape-scoped lazy graph for autograd and optimization.
 //!
 //! [`Tape::new`] creates a lazy computation graph. Operations on promoted tensors

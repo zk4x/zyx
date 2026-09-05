@@ -1,3 +1,5 @@
+// Copyright (C) 2025 zk4x
+// SPDX-License-Identifier: LGPL-3.0-only WITH Classpath-exception-2.0
 #![forbid(unsafe_op_in_unsafe_fn)]
 use std::{
     alloc::{Layout, alloc, dealloc, handle_alloc_error},
