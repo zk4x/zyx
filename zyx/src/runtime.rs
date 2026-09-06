@@ -4724,7 +4724,7 @@ impl Runtime {
         base.delete_zero_len_indices();
         base.renumber_indices();
         for _ in 0..3 {
-            base.default_epilogue(&dev_info);
+            base.default_epilogue();
         }
 
         let cfg = self.beam_search.clone();
@@ -4733,7 +4733,7 @@ impl Runtime {
             [base],
             &args,
             &Kernel::default_optimizations(),
-            |kernel, dev_info| kernel.default_epilogue(dev_info),
+            Kernel::default_epilogue,
             Kernel::base_cost,
         )?;
         if !fresh_bufs.is_empty() {

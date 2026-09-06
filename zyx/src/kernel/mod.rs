@@ -97,7 +97,7 @@
 pub(crate) use crate::backend::DeviceId;
 use crate::backend::DeviceInfo;
 pub use crate::tensor::Dev;
-pub use custom::CompiledKernel;
+pub use custom::{Acc, CompiledKernel, LocalPartition, Partition};
 pub(crate) use ops::{BOp, MoveOp, Op, OpNode, RangeKind, UOp};
 pub use ops::{MMADType, MMADims, MMALayout, OpId, ParamKind};
 

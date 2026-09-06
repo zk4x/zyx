@@ -23,7 +23,7 @@
 #![allow(clippy::cast_precision_loss)]
 #![allow(clippy::derived_hash_with_manual_eq)]
 
-use crate::backend::{Device, DeviceInfo, DeviceProgramId, LaunchArg, MemoryPool, PoolBufferId};
+use crate::backend::{Device, DeviceProgramId, LaunchArg, MemoryPool, PoolBufferId};
 use crate::dtype::{Constant, DType};
 use crate::error::BackendError;
 use crate::hashers::AHasher;
@@ -53,7 +53,7 @@ pub trait Optimization: std::fmt::Debug {
 
 /// A make function scans the kernel at a stable state and returns an
 /// [`Optimization`] instance ready to be applied.
-pub type MakeOpt = fn(&Kernel, &DeviceInfo) -> Box<dyn Optimization>;
+pub type MakeOpt = fn(&Kernel) -> Box<dyn Optimization>;
 
 impl Kernel {
     /// The default optimization set: the search space [`BeamSearch`] explores
@@ -77,7 +77,7 @@ impl Kernel {
     /// length-1 loops, constant folding, LICM, algebraic simplification, CSE,
     /// instruction scheduling, DCE, ...) followed by the hardware-specific
     /// `exp`/`exp2` conversion. Users can provide their own epilogue.
-    pub fn default_epilogue(&mut self, dev_info: &DeviceInfo) {
+    pub fn default_epilogue(&mut self) {
         #[cfg(feature = "time")]
         let _timer = crate::Timer::new("default_epilogue");
         self.unroll_len1_loops();
@@ -94,6 +94,7 @@ impl Kernel {
         self.common_subexpression_elimination();
         self.instruction_schedule();
         self.dead_code_elimination();
+        let dev_info = self.device_info();
         if dev_info.has_native_exp2 {
             self.exp_to_exp2();
             self.ln_to_log2();
@@ -258,12 +259,11 @@ fn apply_seq(
     kernel: &mut Kernel,
     seq: &OptSeq,
     optimizations: &[MakeOpt],
-    epilogue: &impl Fn(&mut Kernel, &DeviceInfo),
-    dev_info: &DeviceInfo,
+    epilogue: &impl Fn(&mut Kernel),
 ) {
     for &(opt_id, config) in &seq.opts {
-        optimizations[opt_id](kernel, dev_info).apply(kernel, config);
-        epilogue(kernel, dev_info);
+        optimizations[opt_id](kernel).apply(kernel, config);
+        epilogue(kernel);
     }
 }
 
@@ -367,8 +367,8 @@ impl BeamSearch {
         seeds: impl IntoIterator<Item = Kernel>,
         tensors: &[&crate::Tensor],
         optimizations: &[MakeOpt],
-        epilogue: impl Fn(&mut Kernel, &DeviceInfo),
-        cost: impl Fn(&Kernel, &DeviceInfo) -> u64,
+        epilogue: impl Fn(&mut Kernel),
+        cost: impl Fn(&Kernel) -> u64,
     ) -> Result<(Kernel, u64), ZyxError> {
         let mut args: Vec<LaunchArg> = Vec::with_capacity(tensors.len());
         for tensor in tensors {
@@ -402,8 +402,8 @@ impl BeamSearch {
         seeds: impl IntoIterator<Item = Kernel>,
         args: &[LaunchArg],
         optimizations: &[MakeOpt],
-        epilogue: impl Fn(&mut Kernel, &DeviceInfo),
-        cost: impl Fn(&Kernel, &DeviceInfo) -> u64,
+        epilogue: impl Fn(&mut Kernel),
+        cost: impl Fn(&Kernel) -> u64,
     ) -> Result<(Kernel, u64), ZyxError> {
         let debug = rt.debug;
         let seeds: Vec<Kernel> = seeds.into_iter().collect();
@@ -414,7 +414,6 @@ impl BeamSearch {
         if seeds.iter().any(|seed| seed.device_id != device_id) {
             return Err(ZyxError::kernel_error("autotune: seeds span multiple devices".into()));
         }
-        let dev_info = rt.devices[device_id].info();
         let pool_id = rt.devices[device_id].memory_pool_id();
         let device = &mut rt.devices[device_id];
         let pool = &mut rt.pools[pool_id];
@@ -475,10 +474,10 @@ impl BeamSearch {
 
             let mut visited = Set::default();
             visited.insert(base.get_hash());
-            let mut items: Vec<OptSeq> = vec![OptSeq { opts: Vec::new(), cost: cost(&base, &dev_info) }];
+            let mut items: Vec<OptSeq> = vec![OptSeq { opts: Vec::new(), cost: cost(&base) }];
 
             // Initial candidates: one optimization applied to state_0.
-            let avail_configs: Vec<Box<dyn Optimization>> = optimizations.iter().map(|make| make(&base, &dev_info)).collect();
+            let avail_configs: Vec<Box<dyn Optimization>> = optimizations.iter().map(|make| make(&base)).collect();
             let total_configs: u64 = avail_configs.iter().map(|opt| opt.nconfigs()).sum();
             let mult = self.n_seeds.min(total_configs as usize) as u64;
             for (opt_id, opt) in avail_configs.iter().enumerate() {
@@ -487,13 +486,13 @@ impl BeamSearch {
                 for config_id in 0..n_configs_to_try {
                     let mut new_kernel = base.clone();
                     opt.apply(&mut new_kernel, config_id);
-                    epilogue(&mut new_kernel, &dev_info);
+                    epilogue(&mut new_kernel);
                     let hash = new_kernel.get_hash();
                     if visited.contains(&hash) {
                         continue;
                     }
                     visited.insert(hash);
-                    items.push(OptSeq { opts: vec![(opt_id, config_id)], cost: cost(&new_kernel, &dev_info) });
+                    items.push(OptSeq { opts: vec![(opt_id, config_id)], cost: cost(&new_kernel) });
                 }
             }
 
@@ -506,10 +505,10 @@ impl BeamSearch {
                     break;
                 };
                 let mut thread_kernel = base.clone();
-                apply_seq(&mut thread_kernel, &opt_seq, optimizations, &epilogue, &dev_info);
+                apply_seq(&mut thread_kernel, &opt_seq, optimizations, &epilogue);
 
                 let avail_configs: Vec<Box<dyn Optimization>> =
-                    optimizations.iter().map(|make| make(&thread_kernel, &dev_info)).collect();
+                    optimizations.iter().map(|make| make(&thread_kernel)).collect();
                 let total_configs: u64 = avail_configs.iter().map(|opt| opt.nconfigs()).sum();
                 let mult = self.n_added_per_step.min(total_configs as usize) as u64;
 
@@ -523,14 +522,14 @@ impl BeamSearch {
 
                         let mut new_kernel = thread_kernel.clone();
                         opt.apply(&mut new_kernel, config_id);
-                        epilogue(&mut new_kernel, &dev_info);
+                        epilogue(&mut new_kernel);
                         let hash = new_kernel.get_hash();
                         if visited.contains(&hash) {
                             continue;
                         }
                         visited.insert(hash);
 
-                        let new_seq = OptSeq { opts, cost: cost(&new_kernel, &dev_info) };
+                        let new_seq = OptSeq { opts, cost: cost(&new_kernel) };
                         if new_kernel.ops.len().0 > 10000 {
                             exhausted.insert(new_seq.clone());
                         }
@@ -554,7 +553,7 @@ impl BeamSearch {
             let mut launched = Set::default();
             for opt_seq in &items {
                 let mut kernel = base.clone();
-                apply_seq(&mut kernel, opt_seq, optimizations, &epilogue, &dev_info);
+                apply_seq(&mut kernel, opt_seq, optimizations, &epilogue);
                 if launched.insert(kernel.get_hash()) {
                     if debug.ir() {
                         kernel.debug();

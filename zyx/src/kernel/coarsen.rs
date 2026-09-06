@@ -24,7 +24,6 @@ use std::collections::BTreeMap;
 use super::autotune::Optimization;
 use crate::{
     Map, Set,
-    backend::DeviceInfo,
     dtype::Constant,
     kernel::{BOp, Kernel, MemLayout, MemScope, Op, OpId, RangeKind},
     shape::Dim,
@@ -117,7 +116,7 @@ impl Optimization for RegisterBlocking {
 impl Kernel {
     /// Make the `ThreadCoarse` optimization: scan the kernel for global
     /// indices that can be coarsened.
-    pub fn opt_coarsen(&self, _dev_info: &DeviceInfo) -> Box<dyn Optimization> {
+    pub fn opt_coarsen(&self) -> Box<dyn Optimization> {
         #[cfg(feature = "time")]
         let _timer = crate::Timer::new("opt_upcast");
         let mut factors = Vec::new();
@@ -307,7 +306,7 @@ impl Kernel {
 impl Kernel {
     /// Make the `RegisterBlocking` optimization: scan the kernel for
     /// reduction loops and global axes that can be register-blocked.
-    pub fn opt_register_blocking(&self, _dev_info: &DeviceInfo) -> Box<dyn Optimization> {
+    pub fn opt_register_blocking(&self) -> Box<dyn Optimization> {
         #[cfg(feature = "time")]
         let _timer = crate::Timer::new("opt_register_tiling");
         let candidates: Vec<u64> = vec![8, 16, 4, 2];

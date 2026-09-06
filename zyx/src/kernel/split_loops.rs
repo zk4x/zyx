@@ -16,7 +16,6 @@
 
 use super::autotune::Optimization;
 use crate::{
-    backend::DeviceInfo,
     dtype::Constant,
     kernel::{BOp, Kernel, Op, OpId, RangeKind},
     shape::Dim,
@@ -86,9 +85,12 @@ impl Kernel {
     ///
     /// Config ids are ordered by factor, hardware-aligned factors first
     /// (e.g. 64/32 for warp-sized groups).
-    pub fn opt_split_global_to_local(&self, dev_info: &DeviceInfo) -> Box<dyn Optimization> {
+    pub fn opt_split_global_to_local(&self) -> Box<dyn Optimization> {
         #[cfg(feature = "time")]
         let _timer = crate::Timer::new("opt_split_global_to_local");
+
+        let dev_info = self.dev_info();
+
         if self.ops.values().any(|node| matches!(node.op, Op::EndIf)) {
             return Box::new(SplitGlobalToLocal { factors: Vec::new() });
         }
@@ -133,7 +135,7 @@ impl Kernel {
 
     /// Make the `SplitLoop` optimization: scan the kernel for large loops
     /// that can be split into smaller iterations.
-    pub fn opt_split_loop(&self, _dev_info: &DeviceInfo) -> Box<dyn Optimization> {
+    pub fn opt_split_loop(&self) -> Box<dyn Optimization> {
         #[cfg(feature = "time")]
         let _timer = crate::Timer::new("opt_split_loop");
         let candidates = vec![8, 16, 4, 2];

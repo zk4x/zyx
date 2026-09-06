@@ -733,6 +733,13 @@ impl Kernel {
     }
 }
 
+impl Kernel {
+    /// Returns the DeviceInfo of the device this kernel is bound to.
+    pub fn device_info(&self) -> Arc<DeviceInfo> {
+        self.dev_info.clone().expect("kernel has no bound device")
+    }
+}
+
 impl CompiledKernel {
     /// Returns the DeviceInfo for the device this kernel was compiled on.
     pub fn device_info(&self) -> Arc<DeviceInfo> {
@@ -1019,9 +1026,8 @@ pub struct Partition {
 /// Accumulator handle: a per-warp register tile born at [`Kernel::acc`]
 /// (its creation is a bind site — an accumulator has no source tensor to
 /// defer against, so the tile size lives here; it is also what sizes
-/// shared-memory tiles once those exist), filled by [`Kernel::mma`] (which
-/// also captures the output coords for the store) and written out by
-/// [`Kernel::store_partition`].
+/// shared-memory tiles once those exist), filled by [`Kernel::mma`] and
+/// written out by [`Kernel::store_partition`].
 pub struct Acc {
     /// Per-warp tile shape as bound ops (e.g. m16n8k8: two consts 16, 8).
     tile: Vec<OpId>,
@@ -1029,14 +1035,12 @@ pub struct Acc {
     dtype: DType,
     /// Per-lane register storage (`total / 32` elements).
     storage: OpId,
-    /// Output coords captured at the [`Kernel::mma`] bind.
-    c_coords: Option<Vec<OpId>>,
 }
 
 impl Kernel {
-    /// Partition a global tensor into a view: `src` plus a fully symbolic
+    /// View a global tensor in registers: `src` plus a fully symbolic
     /// iteration `shape`. Strides are derived row-major. Emits no IR.
-    pub fn partition<const N: usize>(&mut self, src: OpId, shape: [OpId; N]) -> Partition {
+    pub fn view_global_register<const N: usize>(&mut self, src: OpId, shape: [OpId; N]) -> Partition {
         let mut strides = Vec::with_capacity(N);
         for axis in 0..N {
             strides.push(self.row_major_stride(&shape, axis));
@@ -1064,7 +1068,7 @@ impl Kernel {
         }
         debug_assert!(total > 0 && total % 32 == 0, "acc: tile must cover whole 32-lane warps");
         let storage = self.zeros(dtype, total / 32);
-        Acc { tile: tile.to_vec(), dtype, storage, c_coords: None }
+        Acc { tile: tile.to_vec(), dtype, storage }
     }
 
     /// Find the innermost open warp op by walking back from the tail.
@@ -1092,16 +1096,25 @@ impl Kernel {
         }
     }
 
-    /// Find the innermost open loop's variable by walking back from the tail.
+    /// Find the innermost OPEN loop by walking back from the tail.
     ///
     /// The IR is the state: ops inside a loop body always sit after their
     /// `Op::Loop`, so the nearest `Op::Loop` behind the tail *is* the open
-    /// loop's variable. No builder-side mutable state needed.
+    /// loop's variable — closed loops (their `Op::EndLoop` already emitted)
+    /// are skipped via nesting depth. No builder-side mutable state needed.
     fn open_loop_var(&self) -> OpId {
+        let mut depth = 0usize;
         let mut op_id = self.tail;
         while !op_id.is_null() {
-            if matches!(self.ops[op_id].op, Op::Loop { .. }) {
-                return op_id;
+            match self.ops[op_id].op {
+                Op::EndLoop => depth += 1,
+                Op::Loop { .. } => {
+                    if depth == 0 {
+                        return op_id;
+                    }
+                    depth -= 1;
+                }
+                _ => {}
             }
             op_id = self.prev_op(op_id);
         }
@@ -1124,12 +1137,17 @@ impl Kernel {
     /// must resolve to a constant: 8 → `m16n8k8`, 16 → `m16n8k16`. `a` and
     /// `b` are partition views; `coords` are the chunk coordinates, assigned
     /// positionally: `rank(a) - 1` coords for `a`'s non-loop axes (in axis
-    /// order), then `rank(b) - 1` for `b`'s, and the LAST coord must be the
-    /// open loop variable — the K axis of both views, with a chunk of `k`.
-    /// The call derives and patches the open loop's length (`shape[K] / k`),
-    /// emits the lane-mapped A/B fragment loads (lane id found via
-    /// `open_warp`), the wmma and the accumulator update, and captures the
-    /// output coords on `acc` for [`Kernel::store_partition`].
+    /// order), then `rank(b) - 1` for `b`'s, and the LAST coord is the K axis
+    /// of both views, with a chunk of `k`. Two modes: if the last coord is
+    /// the open loop variable, the call derives and patches the open loop's
+    /// length (`shape[K] / k`) and the K base is `loop_var * k`; otherwise
+    /// the last coord is a fixed K base op and must resolve to fit a single
+    /// wmma (`k <= 8` for m16n8k8 — the m16n8k16 shape needs the loop mode).
+    /// The call emits the lane-mapped A/B fragment loads (lane id found via
+    /// `open_warp`), the wmma and the accumulator update. The coords live in
+    /// the A/B views' own coordinate spaces (tile-local for a shared-memory
+    /// view); output coords for [`Kernel::store_partition`] are passed there
+    /// independently.
     pub fn mma(&mut self, acc: &mut Acc, k: OpId, a: &Partition, b: &Partition, coords: &[OpId]) {
         let tile_dims: Vec<Dim> = acc
             .tile
@@ -1147,8 +1165,6 @@ impl Kernel {
             a.shape.len() + b.shape.len() - 1,
             "mma: coords must be [a non-loop coords..., b non-loop coords..., loop coord]"
         );
-        let lv = self.open_loop_var();
-        debug_assert_eq!(coords[coords.len() - 1], lv, "mma: the LAST coord must be the open loop variable");
 
         // k must resolve to a constant; (m, n, k) must be a real mma.sync
         // shape. mma v1 emits f16 inputs with f32 accumulator, so only the
@@ -1170,10 +1186,19 @@ impl Kernel {
         // m16n8k16 A/B fragments additionally hold the k+8..+16 half.
         let k_half = if k_dim == 8 { 0 } else { 8 };
 
+        // Two modes: loop-patched (last coord is the open loop variable,
+        // K base = loop_var * k) or fixed K base (last coord is any op).
+        let lv = self.open_loop_var();
+        let loop_mode = coords[coords.len() - 1] == lv;
+        debug_assert!(
+            loop_mode || k_dim <= 8,
+            "mma: a fixed K coord must fit a single wmma (k <= 8); use the loop mode for larger chunks"
+        );
+
         // Bind the loop length on first use: K chunk is `k_dim`. The div is
         // inserted BEFORE the loop so the bound is loop-invariant in the
         // linear order.
-        if matches!(self.ops[lv].op, Op::Loop { len } if len.is_null()) {
+        if loop_mode && matches!(self.ops[lv].op, Op::Loop { len } if len.is_null()) {
             let a_k = a.shape[1];
             let len = self.insert_before(lv, Op::Binary { x: a_k, y: k, bop: BOp::Div });
             self.ops[lv].op = Op::Loop { len };
@@ -1185,7 +1210,7 @@ impl Kernel {
         let gid = self.div(lane, c4);
         let tig = self.mod_(lane, c4);
         let tig2 = self.mul(tig, c2);
-        let k0 = self.mul(lv, k);
+        let k0 = if loop_mode { self.mul(lv, k) } else { coords[coords.len() - 1] };
 
         // A fragment: rows {r + gid, r + 8 + gid}, k cols {k0 + 2*tig, +1}
         // and (k=16) {k0 + 8 + 2*tig, +1}. Register order: each 2-col pair
@@ -1228,19 +1253,16 @@ impl Kernel {
         let acc_old = self.load_vector(acc.storage, idx0, 4);
         let acc_new = self.wmma(dims, MMALayout::row_col, MMADType::f16_f16_f16_f32, a_frag, b_frag, acc_old);
         self.store_vector(acc.storage, acc_new, idx0, 4);
-
-        // Capture the output coords for the store: a's non-loop coords then
-        // b's (v1 rank-2: one each).
-        acc.c_coords = Some(vec![coords[0], coords[1]]);
     }
 
     /// Store an accumulator to a global output view with fully automatic
     /// indexing: each lane scatters its C-fragment values to their global
     /// positions (mma.sync C mapping: rows {r + gid + 8*b}, cols
-    /// {c + 2*tig, + 1}, one 2-col pair per 8-row block `b`). The output
-    /// coords were captured at the [`Kernel::mma`] bind; the lane id is
-    /// found via `open_warp`.
-    pub fn store_partition(&mut self, c: &Partition, acc: &Acc) {
+    /// {c + 2*tig, + 1}, one 2-col pair per 8-row block `b`). `coords` are
+    /// the output tile's position in `c`'s own coordinate space (global for
+    /// a gmem view) — mma's fragment coords live in the A/B views' spaces
+    /// and are independent of these. The lane id is found via `open_warp`.
+    pub fn store_partition(&mut self, c: &Partition, acc: &Acc, coords: &[OpId]) {
         let tile_dims: Vec<Dim> = acc
             .tile
             .iter()
@@ -1253,8 +1275,7 @@ impl Kernel {
         debug_assert_eq!(tile_dims.len(), 2, "store_partition: acc tile must be rank 2 [m, n]");
         debug_assert_eq!(acc.dtype, DType::F32, "store_partition: f32 accumulator");
         debug_assert_eq!(c.shape.len(), 2, "store_partition: output must be rank 2");
-        let c_coords = acc.c_coords.as_ref().expect("store_partition: acc was never bound by mma");
-        debug_assert_eq!(c_coords.len(), 2, "store_partition: captured coords/output rank mismatch");
+        debug_assert_eq!(coords.len(), 2, "store_partition: one coord per output axis");
 
         // Row-block count per tile: each 8-row block contributes one 2-element
         // C-fragment pair per lane (m8n8: 1, m16n8: 2, m32n8: 4).
@@ -1275,8 +1296,8 @@ impl Kernel {
         let gid = self.div(lane, c4);
         let tig = self.mod_(lane, c4);
 
-        let row = self.add(c_coords[0], gid);
-        let col = self.mad(tig, c2, c_coords[1]);
+        let row = self.add(coords[0], gid);
+        let col = self.mad(tig, c2, coords[1]);
         let idx0 = self.const_idx(0u32);
         let acc_final = self.load_vector(acc.storage, idx0, (m * n / 32) as u16);
         let col0 = self.stride_mul(col, c.strides[1]);
@@ -1299,145 +1320,158 @@ impl Kernel {
     }
 }
 
-/// Shared-memory tile: a `MemScope::Local` buffer bound to a global
-/// partition, filled by [`Kernel::load_local`] and viewed as a plain
-/// [`Partition`] (via [`LocalPartition::storage`] + [`Kernel::partition`])
-/// for `mma` consumption. Carries `depth` buffer generations:
-/// `load_local` writes generation `k_coord % depth`, so `depth = 1` is
+/// Shape/length argument for builder calls: an already-bound op, or a
+/// constant dimension written inline (`[16, 8]` vs `[c16, c8]`).
+pub trait IntoDimOp: Copy {
+    /// Convert to a bound op (constants become index `Op::Const` ops).
+    fn into_dim_op(self, kernel: &mut Kernel) -> OpId;
+}
+
+impl IntoDimOp for OpId {
+    fn into_dim_op(self, _kernel: &mut Kernel) -> OpId {
+        self
+    }
+}
+
+impl IntoDimOp for Dim {
+    fn into_dim_op(self, kernel: &mut Kernel) -> OpId {
+        if self < 0 {
+            kernel.variable(IDX_T)
+        } else {
+            kernel.const_idx(self)
+        }
+    }
+}
+
+impl IntoDimOp for u32 {
+    fn into_dim_op(self, kernel: &mut Kernel) -> OpId {
+        kernel.const_idx(self)
+    }
+}
+
+/// Shared-memory tile: a `MemScope::Local` buffer of `depth` generations of
+/// `total(tile)` elements, cut from the global view `view_shape`. Created by
+/// [`Kernel::view_global_local`]; staged by [`Kernel::load_global_local`], one
+/// element per call. The tile is viewed in registers via
+/// [`Kernel::view_local_register`].
+/// `load_global_local` writes generation `k_coord % depth`, so `depth = 1` is
 /// classic single buffering and `depth = 2` is double buffering — the
 /// surrounding barrier structure (explicit, user-written) is identical.
-pub struct LocalPartition {
-    /// Global source the tile stages from (validated at `load_local`).
+/// Generic over the view/tile rank `N`.
+pub struct LocalPartition<const N: usize> {
+    /// Global source the tiles are cut from.
     src: OpId,
     /// Element dtype.
     dtype: DType,
-    /// Tile shape as bound ops; the logical shape of one generation.
-    shape: Vec<OpId>,
+    /// Global view iteration shape — the view of the global tensor the
+    /// tiles are cut from; staging strides derive row-major from it.
+    view_shape: [OpId; N],
+    /// Tile geometry as bound ops (one generation).
+    tile: [OpId; N],
+    /// Elements per generation.
+    tile_total: Dim,
+    /// `MemScope::Local` storage of `depth * tile_total` elements.
+    storage: OpId,
     /// Buffering depth (generations).
     depth: u32,
-    /// Elements per generation.
-    tile_len: Dim,
-    /// `MemScope::Local` storage of `depth * tile_len` elements.
-    storage: OpId,
-}
-
-impl LocalPartition {
-    /// The underlying `MemScope::Local` storage op — pass to
-    /// [`Kernel::partition`] to obtain a view for `mma`/fragment loads.
-    pub fn storage(&self) -> OpId {
-        self.storage
-    }
-
-    /// Tile shape as bound ops (one generation).
-    pub fn shape(&self) -> &[OpId] {
-        &self.shape
-    }
 }
 
 impl Kernel {
-    /// Create a shared-memory tile for `global`: a `MemScope::Local`
-    /// storage of `depth` generations of `total(shape)` elements.
-    /// `shape` is the tile geometry in the global view's axis order;
-    /// staging is performed by [`Kernel::load_local`]. Emits only the
-    /// `Op::Storage` — no addressing IR.
-    pub fn partition_local<const N: usize>(&mut self, global: &Partition, shape: [OpId; N], depth: u32) -> LocalPartition {
-        debug_assert_eq!(global.shape.len(), N, "partition_local: shape rank must match the global partition");
-        debug_assert!(depth >= 1, "partition_local: depth must be >= 1");
-        let mut tile_len: Dim = 1;
-        for &d in &shape {
-            let dim = self
-                .resolve_const(d)
-                .and_then(crate::dtype::Constant::as_dim)
-                .expect("partition_local: tile shape dim must resolve to a constant (const or variable op)");
-            tile_len *= dim;
-        }
-        debug_assert!(tile_len > 0, "partition_local: tile must be non-empty");
-        let storage = self.storage(global.dtype, MemScope::Local, tile_len * depth as Dim);
-        LocalPartition { src: global.src, dtype: global.dtype, shape: shape.to_vec(), depth, tile_len, storage }
+    /// View a global tensor as tiles in shared memory: raw global source +
+    /// the view shape of the global tensor + the tile geometry + buffering
+    /// depth. Emits the `MemScope::Local` storage of `depth * total(tile)`
+    /// elements; staging is performed by [`Kernel::load_global_local`], one
+    /// element per call. The rank `N` is carried by the returned
+    /// [`LocalPartition<N>`].
+    pub fn view_global_local<const N: usize, S: IntoDimOp>(&mut self, src: OpId, view_shape: [S; N], tile: [S; N], depth: u32) -> LocalPartition<N> {
+        debug_assert!(N > 0, "view_global_local: rank must be non-zero");
+        debug_assert!(depth >= 1, "view_global_local: depth must be >= 1");
+        let view_shape: [OpId; N] = view_shape.map(|s| s.into_dim_op(self));
+        let tile: [OpId; N] = tile.map(|s| s.into_dim_op(self));
+        let tile_dims: Vec<Dim> = tile
+            .iter()
+            .map(|&d| {
+                self.resolve_const(d)
+                    .and_then(crate::dtype::Constant::as_dim)
+                    .expect("view_global_local: tile dim must resolve to a constant (the smem buffer needs a compile-time size)")
+            })
+            .collect();
+        let tile_total: Dim = tile_dims.iter().product();
+        debug_assert!(tile_total > 0, "partition_local: tile must be non-empty");
+        let storage = self.storage(self.dtype(src), MemScope::Local, tile_total * depth as Dim);
+        LocalPartition { src, dtype: self.dtype(src), view_shape, tile, tile_total, storage, depth }
     }
 
-    /// Cooperatively stage a tile from a global partition into a
-    /// [`LocalPartition`] (shared memory): the block's threads jointly
-    /// load the row-major tile, thread `tid` handling elements
-    /// `tid, tid + T, tid + 2T, ...` (`T` = the enclosing `local_range`
-    /// length; block-linear id = the `warp` op's local id, so the local
-    /// range must be 1-dimensional).
+    /// Load ONE element global → local of a [`LocalPartition`] tile — the
+    /// fully generic primitive. Emits a single gmem load + smem store:
     ///
-    /// `coords` map positionally to the global view's axes; the LAST
-    /// coord must be the open loop variable — the K axis — and `k` is
-    /// the tile's extent along it (must match the tile shape's last dim).
-    /// The tile lands in generation `coords[last] % depth`.
+    /// - gmem address = `Σ origins[a] * (tile[a] * view_stride[a]) + Σ coord[a] * view_stride[a]`
+    /// - smem address = `id + (origins[last] % depth) * tile_total`
     ///
-    /// Emits no barrier: staging handoffs are explicit `barrier()` calls
-    /// in user code (paper-pseudocode style). Divisibility of the tile
-    /// over the block's threads is assumed and asserted. v1: rank-2
-    /// tiles, row-major global views, divisibility of tile bounds.
-    pub fn load_local(&mut self, global: &Partition, shared: &LocalPartition, coords: &[OpId], k: OpId) {
-        debug_assert_eq!(global.shape.len(), coords.len(), "load_local: one coord per global axis");
-        debug_assert_eq!(global.src, shared.src, "load_local: shared tile was not created from this global partition");
-        debug_assert_eq!(global.dtype, shared.dtype, "load_local: shared tile dtype mismatch");
-        debug_assert_eq!(shared.shape.len(), 2, "load_local v1: rank-2 tiles only");
-        let k_dim =
-            self.resolve_const(k).and_then(crate::dtype::Constant::as_dim).expect("load_local: k must resolve to a constant");
-        let tile_k = self
-            .resolve_const(shared.shape[1])
-            .and_then(crate::dtype::Constant::as_dim)
-            .expect("load_local: tile K dim must resolve to a constant");
-        debug_assert_eq!(k_dim, tile_k, "load_local: k must match the tile's K extent");
+    /// where `coord[a] = (id / tile_stride[a]) % tile[a]` is derived
+    /// INTERNALLY from the flat row-major element index `id` — the caller
+    /// never writes index arithmetic. `origins` are per-axis tile origins in
+    /// TILE units (raw index ops — group ids, loop variables, anything).
+    /// Coverage of the tile is user responsibility (thread-cooperative
+    /// mappings like `id = la * threads + tid` are exactly how papers write
+    /// it). Returns `()` — view the staged tile with
+    /// [`Kernel::view_local_register`].
+    pub fn load_global_local<const N: usize>(&mut self, shared: &LocalPartition<N>, origins: [OpId; N], id: OpId) {
+        debug_assert!(N > 0, "load_global_local: rank must be non-zero");
 
-        // Block-linear thread machinery: the enclosing warp op's local id
-        // (the IR is the state) and the enclosing local_range length.
-        let warp_op = self.open_warp();
-        let tid = match &self.ops[warp_op].op {
-            Op::Range { kind: RangeKind::Warp(local_id), .. } => *local_id,
-            _ => unreachable!("open_warp returned a non-warp range"),
-        };
-        let threads = self.open_local_len();
-        debug_assert!(
-            shared.tile_len % threads as Dim == 0,
-            "load_local: tile of {} elements must divide evenly over {threads} block threads",
-            shared.tile_len
-        );
-        let iters = (shared.tile_len / threads as Dim) as u32;
-
-        // Generation offset: tile lands in buffer `k_coord % depth`
+        // Generation offset: tile lands in buffer `origins[last] % depth`
         // (single buffering: offset 0).
         let smem_base = if shared.depth > 1 {
             let cdepth = self.const_idx(shared.depth);
-            let generation = self.mod_(coords[coords.len() - 1], cdepth);
-            let ctile = self.const_idx(shared.tile_len);
+            let generation = self.mod_(origins[N - 1], cdepth);
+            let ctile = self.const_idx(shared.tile_total);
             self.mul(generation, ctile)
         } else {
             self.const_idx(0u32)
         };
 
-        let [ct, ctiles] = self.const_idxs([threads, iters]);
-        let loop_op = self.push_back(Op::Loop { len: ctiles });
-        // Flat tile element f = j * T + tid; row-major tile addressing.
-        let f = self.mad(loop_op, ct, tid);
-        let row = self.div(f, shared.shape[1]);
-        let col = self.mod_(f, shared.shape[1]);
-        let g_row = self.add(coords[0], row);
-        let g_col = self.add(coords[1], col);
-        let col_off = self.stride_mul(g_col, global.strides[1]);
-        let g_idx = self.mad(g_row, global.strides[0], col_off);
-        let s_idx = self.add(smem_base, f);
-        let v = self.load(global.src, g_idx);
+        // Decompose the flat element index through the row-major tile
+        // strides: coord_a = (id / tile_stride[a]) % tile[a]. Axis 0 needs
+        // no modulo (id < tile_total by the coverage contract).
+        let mut coords: Vec<OpId> = Vec::with_capacity(N);
+        for a in 0..N {
+            let t_stride = self.row_major_stride(&shared.tile, a);
+            let coord = if a == 0 {
+                self.div(id, t_stride)
+            } else {
+                let q = self.div(id, t_stride);
+                self.mod_(q, shared.tile[a])
+            };
+            coords.push(coord);
+        }
+
+        // Per-axis stride arithmetic for gmem, accumulated row-major. The
+        // smem side needs no recomposition: the coords are `id`'s row-major
+        // decomposition, so the flat `id` IS the smem address within the
+        // generation.
+        let mut g_idx: Option<OpId> = None;
+        for a in 0..N {
+            let v_stride = self.row_major_stride(&shared.view_shape, a);
+            // gmem: (origins[a] * tile[a] + coord[a]) * view_stride[a]
+            let o = self.mul(origins[a], shared.tile[a]);
+            let o = self.add(o, coords[a]);
+            g_idx = Some(match g_idx {
+                Some(g) => self.mad(o, v_stride, g),
+                None => self.mul(o, v_stride),
+            });
+        }
+        let v = self.load(shared.src, g_idx.unwrap());
+        let s_idx = self.add(id, smem_base);
         self.store(shared.storage, v, s_idx);
-        self.push_back(Op::EndLoop);
     }
 
-    /// Length (u32) of the innermost open `local_range`, found by walking
-    /// back from the tail — the thread count `load_local` distributes
-    /// the tile over.
-    fn open_local_len(&self) -> u32 {
-        let mut op_id = self.tail;
-        while !op_id.is_null() {
-            if let Op::Range { kind: RangeKind::Local(len), .. } = self.ops[op_id].op {
-                return len;
-            }
-            op_id = self.prev_op(op_id);
-        }
-        panic!("load_local: no local_range behind this point — call k.local_range(..) before load_local");
+    /// View the smem tile of a [`LocalPartition`] in registers: row-major
+    /// strides over the tile, src = the smem storage. Emits no IR beyond the
+    /// stride ops. Call it AFTER the staging loop + barrier, so the stride
+    /// ops live in the same scope as their consumers (e.g. `mma`).
+    pub fn view_local_register<const N: usize>(&mut self, shared: &LocalPartition<N>) -> Partition {
+        debug_assert!(N > 0, "view_local_register: rank must be non-zero");
+        let strides: Vec<OpId> = (0..N).map(|axis| self.row_major_stride(&shared.tile, axis)).collect();
+        Partition { src: shared.storage, shape: shared.tile.to_vec(), strides, dtype: shared.dtype }
     }
 }

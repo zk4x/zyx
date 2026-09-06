@@ -9,14 +9,17 @@
 
 use std::time::Instant;
 
-use zyx::kernel::{Dev, Kernel, MemScope};
+use zyx::kernel::{Acc, Dev, Kernel, MemScope};
 use zyx::{bf16, DType};
 use zyx::{Tensor, ZyxError};
 
 const VOCAB: usize = 256;
 const HIDDEN: usize = 64;
 const TOKENS: usize = 8;
-const ROWS_PER_BLOCK: usize = 32;
+/// Number of m-stacked m16n8k8 subtiles per warp (wmma ops in flight per
+/// lane). Block tile = N_MMAS * 16 vocab rows x 8 tokens.
+const N_MMAS: usize = 8;
+const ROWS_PER_BLOCK: usize = N_MMAS * 16;
 const MMA_N: usize = 8;
 
 #[test]
@@ -38,8 +41,9 @@ fn lm_head() -> Result<(), ZyxError> {
 /// Custom CUDA kernel for the LM head: fp16 tensor-core matmul mirroring
 /// llama.cpp's Turing `mul_mat_f` (mmf.cu) structure.
 ///
-/// One warp (32 threads) per block computes a 32 (vocab rows) x 8 (tokens)
-/// output tile as two m16n8k8 mma subtiles with fp32 accumulation. K (hidden)
+/// One warp (32 threads) per block computes an (N_MMAS * 16) vocab rows x
+/// 8 tokens output tile as N_MMAS m-stacked m16n8k8 mma subtiles (N_MMAS
+/// wmma ops in flight per lane) with fp32 accumulation. K (hidden)
 /// is iterated in chunks of 8. A = weight (row-major [vocab, hidden]), B =
 /// input (column-major [hidden, tokens] view of the [tokens, hidden] input),
 /// C = logits ([vocab, tokens]). `hidden`, `tokens` and the grid sizes are
@@ -75,28 +79,34 @@ fn lm_head_cuda() -> Result<(), ZyxError> {
     kernel.warp(lidx);
 
     // Views: fully symbolic iteration shapes, row-major strides derived.
-    let wp = kernel.partition(w, [vocab, hidden]); // A: [vocab, hidden]
-    let xp = kernel.partition(x, [tokens, hidden]); // B: [tokens, hidden], consecutive K
-    let cp = kernel.partition(out, [vocab, tokens]); // C: [vocab, tokens]
+    let wp = kernel.view_global_register(w, [vocab, hidden]); // A: [vocab, hidden]
+    let xp = kernel.view_global_register(x, [tokens, hidden]); // B: [tokens, hidden], consecutive K
+    let cp = kernel.view_global_register(out, [vocab, tokens]); // C: [vocab, tokens]
 
-    let [c8, c16, c32] = kernel.const_idxs([8u32, 16, 32]);
+    let [c8, c16] = kernel.const_idxs([8u32, 16]);
+    let c_block = kernel.const_idx((N_MMAS * 16) as u32);
 
-    // Chunk coords: one [32, 8] block tile = two m16n8k8 subtiles per warp.
-    let r0 = kernel.mul(gidx, c32);
-    let r1 = kernel.add(r0, c16);
+    // Chunk coords: one [(N_MMAS * 16), 8] block tile = N_MMAS m-stacked
+    // m16n8k8 subtiles per warp.
     let n0 = kernel.mul(gidy, c8);
+    let mut r = [n0; N_MMAS]; // placeholder init, replaced below
+    for (i, r_i) in r.iter_mut().enumerate() {
+        let i16 = kernel.const_idx((16 * i) as u32);
+        *r_i = kernel.mad(gidx, c_block, i16);
+    }
 
-    let mut acc0 = kernel.acc([c16, c8], DType::F32);
-    let mut acc1 = kernel.acc([c16, c8], DType::F32);
+    let mut accs: [Acc; N_MMAS] = std::array::from_fn(|_| kernel.acc([c16, c8], DType::F32));
 
     // Loop length (hidden / 8) is derived and patched by the first mma.
     kernel.loop_partition(|kernel, k| {
-        kernel.mma(&mut acc0, c8, &wp, &xp, &[r0, n0, k]);
-        kernel.mma(&mut acc1, c8, &wp, &xp, &[r1, n0, k]);
+        for (acc, &r_i) in accs.iter_mut().zip(r.iter()) {
+            kernel.mma(acc, c8, &wp, &xp, &[r_i, n0, k]);
+        }
     });
 
-    kernel.store_partition(&cp, &acc0);
-    kernel.store_partition(&cp, &acc1);
+    for (acc, &r_i) in accs.iter_mut().zip(r.iter()) {
+        kernel.store_partition(&cp, acc, &[r_i, n0]);
+    }
 
     let compiled = kernel.compile()?;
 
@@ -156,6 +166,167 @@ fn lm_head_cuda() -> Result<(), ZyxError> {
     let flops = 2.0 * 151936.0 * TOKENS as f64 * 2048.0;
     println!(
         "lm_head_cuda: {us_per_iter:.2} µs/iter, {:.2} GFLOP/s",
+        flops / us_per_iter / 1e3
+    );
+    Ok(())
+}
+
+/// Custom CUDA kernel with shared-memory staging, tinygrad-style: ONE warp
+/// per block holds 8 independent m16n8k8 accumulators (8 m-stacked subtiles =
+/// 128 vocab rows x 8 tokens per block), so 8 wmma ops are in flight per
+/// lane. The warp's 32 threads cooperatively stage the A/B K-chunks into
+/// `MemScope::Local` tiles (single buffered, depth = 1); K iterated in
+/// chunks of 16 (outer loop, one smem generation per iteration) with 2
+/// inner mma k-steps per generation. Barriers are explicit,
+/// paper-pseudocode style: one after staging, one before smem reuse.
+#[test]
+fn lm_head_cuda_local() -> Result<(), ZyxError> {
+    let goldens = Tensor::load("../data/qwen3_8b_lm_head.safetensors")?;
+    let weight = goldens["weight"].to(Dev::Cuda(0))?;
+    let input = goldens["input"]
+        .reshape([TOKENS as i64, HIDDEN as i64])?
+        .to(Dev::Cuda(0))?;
+    let expected = goldens["output"].to_vec::<f32>()?;
+
+    let mut kernel = Kernel::new(Dev::Cuda(0));
+
+    // Runtime args (llama.cpp passes these as kernel parameters).
+    let vocab = kernel.variable(DType::I64);
+    let hidden = kernel.variable(DType::I64);
+    let tokens = kernel.variable(DType::I64);
+    let glen_x = kernel.variable(DType::I64); // vocab / 128
+    let glen_y = kernel.variable(DType::I64); // tokens / 8
+
+    let w = kernel.param(DType::F16);
+    let x = kernel.param(DType::F16);
+    let out = kernel.param_mut(DType::F32);
+
+    let gidx = kernel.group_range(0, glen_x);
+    let gidy = kernel.group_range(1, glen_y);
+    // 2D local range: 32 x 4 = 128 threads = 4 warps. Warp boundaries are
+    // axis 0 (x is fastest-varying in CUDA); lidy is the warp index.
+    let tidm = kernel.local_range(0, 32);
+    let tidn = kernel.local_range(1, 4);
+    kernel.warp(tidm);
+
+    // Views: fully symbolic iteration shapes, row-major strides derived.
+    let cp = kernel.view_global_register(out, [vocab, tokens]); // C: [vocab, tokens]
+
+    let [c1, c8, c16, c32, c128] = kernel.const_idxs([1u32, 8, 16, 32, 128]);
+
+    // Shared tiles: raw source + global view shape + tile geometry + depth.
+    // llama.cpp mul_mat_q shape: one mma round per k-half. B is staged as a
+    // single [8, 16] tile per k-block (a [8, 8] half would be 64 elements —
+    // fewer than the 128 threads, which needs a guard), consumed by two
+    // fixed-k mma rounds.
+    let w_shared = kernel.view_global_local(w, [vocab, hidden], [c128, c16], 1);
+    let x_shared = kernel.view_global_local(x, [tokens, hidden], [c8, c16], 1);
+
+    // Subtile row offsets, tile-local (mma coords) and global (store).
+    let zero = kernel.const_idx(0u32);
+    let mut r_local = [zero; 8];
+    let mut r_global = [zero; 8];
+    for (i, (rl, rg)) in r_local.iter_mut().zip(r_global.iter_mut()).enumerate() {
+        let i16 = kernel.const_idx((16 * i) as u32);
+        *rl = i16;
+        *rg = kernel.mad(gidx, c128, i16);
+    }
+
+    // 8 independent accumulators: 8 wmma ops in flight per lane.
+    let mut accs: [Acc; 8] = std::array::from_fn(|_| kernel.acc([c16, c8], DType::F32));
+
+    // Outer K loop: one A smem generation per iteration (hidden / 16).
+    // llama.cpp mul_mat_q shape: A staged once per k-block, one B [8, 16]
+    // tile, two fixed-k mma rounds (k = 0, k = 8).
+    let kt_len = kernel.div(hidden, c16);
+    kernel.loop_over(kt_len, |kernel, kt| {
+        // A tile [128, 16] = 2048 elements: 16 flat iterations.
+        kernel.loop_over(c16, |kernel, la| {
+            let tid = kernel.mad(tidn, c32, tidm);
+            let id = kernel.mad(la, c128, tid);
+            kernel.load_global_local(&w_shared, [gidx, kt], id);
+        });
+
+        // B tile [8, 16] = 128 elements: 1 flat iteration.
+        kernel.loop_over(c1, |kernel, la| {
+            let tid = kernel.mad(tidn, c32, tidm);
+            let id = kernel.mad(la, c128, tid);
+            kernel.load_global_local(&x_shared, [gidy, kt], id);
+        });
+        kernel.barrier();
+
+        // Tile views in registers, declared AFTER the staging loop so the
+        // stride ops live in the same scope as their mma consumers.
+        let sap = kernel.view_local_register(&w_shared);
+        let sbp = kernel.view_local_register(&x_shared);
+        // Two fixed-k mma rounds: one m16n8k8 per k-half, no loop patching.
+        for (acc, &rl) in accs.iter_mut().zip(r_local.iter()) {
+            kernel.mma(acc, c8, &sap, &sbp, &[rl, zero, zero]);
+        }
+        for (acc, &rl) in accs.iter_mut().zip(r_local.iter()) {
+            kernel.mma(acc, c8, &sap, &sbp, &[rl, zero, c8]);
+        }
+        kernel.barrier(); // consume done — next iteration may overwrite
+    });
+
+    let n0 = kernel.mul(gidy, c8);
+    for (acc, &rg) in accs.iter_mut().zip(r_global.iter()) {
+        kernel.store_partition(&cp, acc, &[rg, n0]);
+    }
+
+    kernel.default_epilogue();
+    let compiled = kernel.compile()?;
+
+    let vocab_t = Tensor::from(VOCAB as i64);
+    let hidden_t = Tensor::from(HIDDEN as i64);
+    let tokens_t = Tensor::from(TOKENS as i64);
+    let glen_x_t = Tensor::from((VOCAB / 128) as i64);
+    let glen_y_t = Tensor::from((TOKENS / MMA_N) as i64);
+
+    // Correctness: C is [vocab, tokens], golden is [tokens, vocab].
+    let mut out = compiled.forward(
+        &[&vocab_t, &hidden_t, &tokens_t, &glen_x_t, &glen_y_t, &weight, &input],
+        vec![[VOCAB as i64, TOKENS as i64]],
+    )?;
+    let out = out.pop().unwrap().to_vec::<f32>()?;
+    for t in 0..TOKENS {
+        for v in 0..VOCAB {
+            let got = out[v * TOKENS + t];
+            let exp = expected[t * VOCAB + v];
+            assert!(
+                (got - exp).abs() < 1e-4,
+                "out[{v}, {t}] = {got}, expected {exp}"
+            );
+        }
+    }
+
+    // Timing with real Qwen3-8B lm_head dims: vocab 151936, hidden 2048,
+    // tokens 8. 151936 % 64 == 0, 2048 % 16 == 0.
+    let weight_r = Tensor::rand([151936i64, 2048i64], DType::F16)?.to(Dev::Cuda(0))?;
+    let input_r = Tensor::rand([TOKENS as i64, 2048i64], DType::F16)?.to(Dev::Cuda(0))?;
+    let vocab_r = Tensor::from(151936i64);
+    let hidden_r = Tensor::from(2048i64);
+    let tokens_r = Tensor::from(TOKENS as i64);
+    let glen_x_r = Tensor::from((151936 / 128) as i64);
+    let glen_y_r = Tensor::from((TOKENS / MMA_N) as i64);
+
+    let launch_r = || -> Result<Vec<Tensor>, ZyxError> {
+        compiled.forward(
+            &[&vocab_r, &hidden_r, &tokens_r, &glen_x_r, &glen_y_r, &weight_r, &input_r],
+            vec![[151936i64, TOKENS as i64]],
+        )
+    };
+
+    let iters = 100;
+    let start = Instant::now();
+    for _ in 0..iters {
+        launch_r()?;
+    }
+    let _ = launch_r()?.remove(0).to_vec::<f32>()?;
+    let us_per_iter = start.elapsed().as_secs_f64() * 1e6 / (iters + 1) as f64;
+    let flops = 2.0 * 151936.0 * TOKENS as f64 * 2048.0;
+    println!(
+        "lm_head_cuda_local: {us_per_iter:.2} µs/iter, {:.2} GFLOP/s",
         flops / us_per_iter / 1e3
     );
     Ok(())

@@ -17,7 +17,6 @@
 use super::autotune::Optimization;
 use crate::{Map, Set};
 use crate::{
-    backend::DeviceInfo,
     kernel::{Kernel, Op, OpId},
 };
 
@@ -38,7 +37,7 @@ impl Optimization for ReassociateCommutative {
 
 impl Kernel {
     /// Make the `ReassociateCommutative` optimization.
-    pub fn opt_reassociate_commutative(&self, _dev_info: &DeviceInfo) -> Box<dyn Optimization> {
+    pub fn opt_reassociate_commutative(&self) -> Box<dyn Optimization> {
         Box::new(ReassociateCommutative)
     }
 

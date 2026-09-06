@@ -19,7 +19,6 @@
 use super::predict_cost::predict_time_us;
 use crate::{
     DType, Map, Set,
-    backend::DeviceInfo,
     kernel::{IDX_T, Kernel, MemLayout, MemScope, Op, OpId, ParamKind, RangeKind},
     shape::Dim,
 };
@@ -37,7 +36,7 @@ impl Kernel {
     /// real dims only exist at launch and differ across launches, so the
     /// placeholder is a fixed convention the trained model is calibrated
     /// against (TVM-style: only concrete shapes are ever costed).
-    pub fn base_cost(&self, dev_info: &DeviceInfo) -> u64 {
+    pub fn base_cost(&self) -> u64 {
         // The memory scope of a load source / store destination, which is
         // either an `Op::Storage` (kernel-internal buffer) or an `Op::Param`
         // (kernel parameter: a global or a variable).
@@ -49,6 +48,8 @@ impl Kernel {
                 _ => unreachable!("load/store operand must be a Storage or Param, got {op:?}"),
             }
         }
+
+        let dev_info = self.dev_info();
 
         // First pass: compute reference counts and dtypes for register estimation
         let mut rcs: Map<OpId, u32> = Map::default();

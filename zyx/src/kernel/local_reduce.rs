@@ -16,7 +16,6 @@
 use super::autotune::Optimization;
 use crate::{
     Map,
-    backend::DeviceInfo,
     dtype::Constant,
     kernel::{BOp, Kernel, MemLayout, MemScope, Op, OpId, RangeKind},
     shape::Dim,
@@ -43,9 +42,12 @@ impl Optimization for TiledReduce {
 impl Kernel {
     /// Make the `TiledReduce` optimization: scan the kernel for reduction
     /// loops that can be parallelized across threads.
-    pub fn opt_local_reduce(&self, dev_info: &DeviceInfo) -> Box<dyn Optimization> {
+    pub fn opt_local_reduce(&self) -> Box<dyn Optimization> {
         #[cfg(feature = "time")]
         let _timer = crate::Timer::new("opt_tiled_reduce");
+
+        let dev_info = self.dev_info();
+
         // Let's not tile reduce kernel with barriers for now
         // Don't apply tiled reduce if there's already a barrier or local index
         if self.ops.values().any(|node| matches!(node.op, Op::Barrier | Op::Range { kind: RangeKind::Local(_), .. })) {

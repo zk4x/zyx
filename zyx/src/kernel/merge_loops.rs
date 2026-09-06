@@ -16,7 +16,6 @@ use std::collections::BTreeMap;
 
 use super::autotune::Optimization;
 use crate::{
-    backend::DeviceInfo,
     dtype::Constant,
     kernel::{BOp, Kernel, Op, OpId, RangeKind},
     shape::Dim,
@@ -226,7 +225,7 @@ impl Kernel {
 
     /// Make the `MergeNestedLoops` optimization: each config merges one
     /// nested loop chain into a single loop.
-    pub fn opt_merge_nested_loops(&self, _dev_info: &DeviceInfo) -> Box<dyn Optimization> {
+    pub fn opt_merge_nested_loops(&self) -> Box<dyn Optimization> {
         Box::new(MergeNestedLoops { groups: self.find_nested_loop_groups() })
     }
 

@@ -10,7 +10,6 @@
 use super::autotune::Optimization;
 use crate::{
     Map,
-    backend::DeviceInfo,
     kernel::{BOp, Kernel, Op},
 };
 
@@ -30,7 +29,7 @@ impl Optimization for FuseMad {
 
 impl Kernel {
     /// Make the `FuseMad` optimization.
-    pub fn opt_fuse_mad(&self, _dev_info: &DeviceInfo) -> Box<dyn Optimization> {
+    pub fn opt_fuse_mad(&self) -> Box<dyn Optimization> {
         Box::new(FuseMad)
     }
 
