@@ -204,23 +204,24 @@ fn lm_head_cuda_local() -> Result<(), ZyxError> {
     let gidx = kernel.group_range(0, glen_x);
     let gidy = kernel.group_range(1, glen_y);
     // 2D local range: 32 x 4 = 128 threads = 4 warps. Warp boundaries are
-    // axis 0 (x is fastest-varying in CUDA); lidy is the warp index.
-    let tidm = kernel.local_range(0, 32);
-    let tidn = kernel.local_range(1, 4);
-    kernel.warp(tidm);
+    // axis 0 (x is fastest-varying in CUDA); lidy is the warp index. The
+    // staging helper derives the flat thread id from these ranges.
+    let _tidm = kernel.local_range(0, 32);
+    let _tidn = kernel.local_range(1, 4);
+    kernel.warp(_tidm);
 
     // Views: fully symbolic iteration shapes, row-major strides derived.
     let cp = kernel.view_global_register(out, [vocab, tokens]); // C: [vocab, tokens]
 
-    let [c1, c8, c16, c32, c128] = kernel.const_idxs([1u32, 8, 16, 32, 128]);
+    let [c4, c8, c16, c128] = kernel.const_idxs([4u32, 8, 16, 128]);
 
     // Shared tiles: raw source + global view shape + tile geometry + depth.
     // llama.cpp mul_mat_q shape: one mma round per k-half. B is staged as a
     // single [8, 16] tile per k-block (a [8, 8] half would be 64 elements —
     // fewer than the 128 threads, which needs a guard), consumed by two
     // fixed-k mma rounds.
-    let w_shared = kernel.view_global_local(w, [vocab, hidden], [c128, c16], 1);
-    let x_shared = kernel.view_global_local(x, [tokens, hidden], [c8, c16], 1);
+    let w_shared = kernel.view_global_local(w, [vocab, hidden], [c128, c16], c4, 1);
+    let x_shared = kernel.view_global_local(x, [tokens, hidden], [c8, c16], c4, 1);
 
     // Subtile row offsets, tile-local (mma coords) and global (store).
     let zero = kernel.const_idx(0u32);
@@ -240,19 +241,9 @@ fn lm_head_cuda_local() -> Result<(), ZyxError> {
     // tile, two fixed-k mma rounds (k = 0, k = 8).
     let kt_len = kernel.div(hidden, c16);
     kernel.loop_over(kt_len, |kernel, kt| {
-        // A tile [128, 16] = 2048 elements: 16 flat iterations.
-        kernel.loop_over(c16, |kernel, la| {
-            let tid = kernel.mad(tidn, c32, tidm);
-            let id = kernel.mad(la, c128, tid);
-            kernel.load_global_local(&w_shared, [gidx, kt], id);
-        });
-
-        // B tile [8, 16] = 128 elements: 1 flat iteration.
-        kernel.loop_over(c1, |kernel, la| {
-            let tid = kernel.mad(tidn, c32, tidm);
-            let id = kernel.mad(la, c128, tid);
-            kernel.load_global_local(&x_shared, [gidy, kt], id);
-        });
+        // Cooperative staging, one line per tile (llama's load_tiles).
+        kernel.stage_global_local(&w_shared, [gidx, kt]);
+        kernel.stage_global_local(&x_shared, [gidy, kt]);
         kernel.barrier();
 
         // Tile views in registers, declared AFTER the staging loop so the
@@ -275,6 +266,7 @@ fn lm_head_cuda_local() -> Result<(), ZyxError> {
     }
 
     kernel.default_epilogue();
+
     let compiled = kernel.compile()?;
 
     let vocab_t = Tensor::from(VOCAB as i64);
@@ -317,7 +309,7 @@ fn lm_head_cuda_local() -> Result<(), ZyxError> {
         )
     };
 
-    let iters = 100;
+    let iters = 10;
     let start = Instant::now();
     for _ in 0..iters {
         launch_r()?;

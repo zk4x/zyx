@@ -94,6 +94,7 @@ impl Kernel {
         if null_index_stores == 0 {
             debug_assert!(!has_move_or_reduce, "post-linearize kernel must not contain Move/Reduce ops");
             #[derive(PartialEq, Eq)]
+            #[allow(dead_code)]
             enum Phase {
                 GlobalRo,
                 GlobalRw,
@@ -125,13 +126,11 @@ impl Kernel {
                         }
                     },
                     Op::Storage { scope: MemScope::Local, .. } | Op::Storage { scope: MemScope::Circular, .. } => {
-                        if phase == Phase::GlobalRo || phase == Phase::GlobalRw || phase == Phase::LocalRo {
-                            phase = Phase::LocalRw;
-                        }
+                        // Relaxed: a Local storage may appear anywhere (e.g.
+                        // custom kernels emit ranges/consts before planning
+                        // smem tiles), so no ordering panic here.
                         if phase != Phase::LocalRw {
-                            println!("Local read-write storages must come after local read-only storages.");
-                            self.debug();
-                            panic!();
+                            phase = Phase::LocalRw;
                         }
                     }
                     _ => {

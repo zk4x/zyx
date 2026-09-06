@@ -1368,9 +1368,12 @@ pub struct LocalPartition<const N: usize> {
     view_shape: [OpId; N],
     /// Tile geometry as bound ops (one generation).
     tile: [OpId; N],
-    /// Elements per generation.
-    tile_total: Dim,
-    /// `MemScope::Local` storage of `depth * tile_total` elements.
+    /// Bank-conflict padding: elements added to the LAST axis's smem row
+    /// stride (0 = packed).
+    pad: Dim,
+    /// Elements per generation, padded: `total(tile) + pad * rows(tile)`.
+    gen_total: Dim,
+    /// `MemScope::Local` storage of `depth * gen_total` elements.
     storage: OpId,
     /// Buffering depth (generations).
     depth: u32,
@@ -1378,16 +1381,21 @@ pub struct LocalPartition<const N: usize> {
 
 impl Kernel {
     /// View a global tensor as tiles in shared memory: raw global source +
-    /// the view shape of the global tensor + the tile geometry + buffering
-    /// depth. Emits the `MemScope::Local` storage of `depth * total(tile)`
-    /// elements; staging is performed by [`Kernel::load_global_local`], one
-    /// element per call. The rank `N` is carried by the returned
+    /// the view shape of the global tensor + the tile geometry + a
+    /// bank-conflict padding + buffering depth. `pad` elements are added to
+    /// the LAST axis's smem row stride (0 = packed row-major), so rows of a
+    /// 16-element f16 tile stagger their bank phase; it must resolve to a
+    /// constant (the smem buffer needs a compile-time size). Emits the
+    /// `MemScope::Local` storage of `depth * gen_total(tile, pad)` elements;
+    /// staging is performed by [`Kernel::load_global_local`], one element
+    /// per call. The rank `N` is carried by the returned
     /// [`LocalPartition<N>`].
-    pub fn view_global_local<const N: usize, S: IntoDimOp>(&mut self, src: OpId, view_shape: [S; N], tile: [S; N], depth: u32) -> LocalPartition<N> {
+    pub fn view_global_local<const N: usize, S: IntoDimOp>(&mut self, src: OpId, view_shape: [S; N], tile: [S; N], pad: impl IntoDimOp, depth: u32) -> LocalPartition<N> {
         debug_assert!(N > 0, "view_global_local: rank must be non-zero");
         debug_assert!(depth >= 1, "view_global_local: depth must be >= 1");
         let view_shape: [OpId; N] = view_shape.map(|s| s.into_dim_op(self));
         let tile: [OpId; N] = tile.map(|s| s.into_dim_op(self));
+        let pad_op = pad.into_dim_op(self);
         let tile_dims: Vec<Dim> = tile
             .iter()
             .map(|&d| {
@@ -1396,17 +1404,25 @@ impl Kernel {
                     .expect("view_global_local: tile dim must resolve to a constant (the smem buffer needs a compile-time size)")
             })
             .collect();
+        let pad: Dim = self
+            .resolve_const(pad_op)
+            .and_then(crate::dtype::Constant::as_dim)
+            .expect("view_global_local: pad must resolve to a constant (the smem buffer needs a compile-time size)");
         let tile_total: Dim = tile_dims.iter().product();
-        debug_assert!(tile_total > 0, "partition_local: tile must be non-empty");
-        let storage = self.storage(self.dtype(src), MemScope::Local, tile_total * depth as Dim);
-        LocalPartition { src, dtype: self.dtype(src), view_shape, tile, tile_total, storage, depth }
+        debug_assert!(tile_total > 0, "view_global_local: tile must be non-empty");
+        // Padded generation size: every row block of `tile[last]` elements
+        // grows by `pad`; rank-1 tiles have no row structure to pad.
+        let rows: Dim = if N > 1 { tile_dims[..N - 1].iter().product() } else { 0 };
+        let gen_total: Dim = tile_total + pad * rows;
+        let storage = self.storage(self.dtype(src), MemScope::Local, gen_total * depth as Dim);
+        LocalPartition { src, dtype: self.dtype(src), view_shape, tile, pad, gen_total, storage, depth }
     }
 
     /// Load ONE element global → local of a [`LocalPartition`] tile — the
     /// fully generic primitive. Emits a single gmem load + smem store:
     ///
     /// - gmem address = `Σ origins[a] * (tile[a] * view_stride[a]) + Σ coord[a] * view_stride[a]`
-    /// - smem address = `id + (origins[last] % depth) * tile_total`
+    /// - smem address = `Σ coord[a] * padded_stride[a] + (origins[last] % depth) * gen_total`
     ///
     /// where `coord[a] = (id / tile_stride[a]) % tile[a]` is derived
     /// INTERNALLY from the flat row-major element index `id` — the caller
@@ -1424,8 +1440,8 @@ impl Kernel {
         let smem_base = if shared.depth > 1 {
             let cdepth = self.const_idx(shared.depth);
             let generation = self.mod_(origins[N - 1], cdepth);
-            let ctile = self.const_idx(shared.tile_total);
-            self.mul(generation, ctile)
+            let cgen = self.const_idx(shared.gen_total);
+            self.mul(generation, cgen)
         } else {
             self.const_idx(0u32)
         };
@@ -1461,17 +1477,117 @@ impl Kernel {
             });
         }
         let v = self.load(shared.src, g_idx.unwrap());
-        let s_idx = self.add(id, smem_base);
+        // smem address: Σ coord[a] * padded_stride[a]. Last axis stride 1,
+        // axis N-2 stride = tile[N-1] + pad, outer axes multiply by tile[a+1].
+        let mut s_idx = self.add(smem_base, coords[N - 1]);
+        if N > 1 {
+            let cpad = self.const_idx(shared.pad);
+            let mut stride = self.add(shared.tile[N - 1], cpad);
+            s_idx = self.mad(coords[N - 2], stride, s_idx);
+            for a in (0..N - 2).rev() {
+                stride = self.mul(stride, shared.tile[a + 1]);
+                s_idx = self.mad(coords[a], stride, s_idx);
+            }
+        }
         self.store(shared.storage, v, s_idx);
     }
 
+    /// Stage the whole tile of a [`LocalPartition`] cooperatively across all
+    /// threads of the block: creates the flat staging loop (`tile_total /
+    /// threads` iterations), derives the thread id from the open local
+    /// ranges (`tid = Σ lid[a] · stride[a]`, CUDA's own linearization, both
+    /// axes participating) and calls [`Kernel::load_global_local`] for each
+    /// element. The tile size must be a multiple of the thread count.
+    /// Barriers are user-written: stage, then `barrier()`, consume, then
+    /// `barrier()` before the next stage may overwrite.
+    pub fn stage_global_local<const N: usize>(&mut self, shared: &LocalPartition<N>, origins: [OpId; N]) {
+        debug_assert!(N > 0, "stage_global_local: rank must be non-zero");
+        let lids = self.open_local_ids();
+        debug_assert!(!lids.is_empty(), "stage_global_local: no open local ranges — call k.local_range(..) before staging");
+
+        // Tile size in elements (packed decomposition; smem padding is
+        // handled inside load_global_local).
+        let tile_total: Dim = shared
+            .tile
+            .iter()
+            .map(|&d| {
+                self.resolve_const(d)
+                    .and_then(crate::dtype::Constant::as_dim)
+                    .expect("stage_global_local: tile dim must resolve to a constant")
+            })
+            .product();
+        // Threads = product of the open local range lengths (axis 0 fastest).
+        let lens: Vec<Dim> = lids
+            .iter()
+            .map(|&id| match self.ops[id].op {
+                Op::Range { kind: RangeKind::Local(len), .. } => len as Dim,
+                _ => unreachable!("open_local_ids returned a non-local-range op"),
+            })
+            .collect();
+        let threads: Dim = lens.iter().product();
+        debug_assert!(
+            tile_total % threads == 0,
+            "stage_global_local: tile size {tile_total} must be a multiple of the thread count {threads}"
+        );
+
+        // tid = Σ lid[a] * stride[a] — emitted once, before the loop.
+        let mut tid = lids[0];
+        let mut stride: Dim = lens[0];
+        for (a, lid) in lids.iter().enumerate().skip(1) {
+            let cstride = self.const_idx(stride as u32);
+            tid = self.mad(*lid, cstride, tid);
+            stride *= lens[a];
+        }
+
+        let cthreads = self.const_idx(threads as u32);
+        let trip = tile_total / threads;
+        let ctrip = self.const_idx(trip as u32);
+        self.loop_over(ctrip, |kernel, la| {
+            let id = kernel.mad(la, cthreads, tid);
+            kernel.load_global_local(shared, origins, id);
+        });
+    }
+
+    /// The open local ranges (thread axes), axis 0 first, walking back from
+    /// the tail. Closed loops are skipped via nesting depth, like
+    /// `open_loop_var`; a local range declared inside a closed loop is
+    /// ignored.
+    fn open_local_ids(&self) -> Vec<OpId> {
+        let mut depth = 0usize;
+        let mut lids = Vec::new();
+        let mut op_id = self.tail;
+        while !op_id.is_null() {
+            match self.ops[op_id].op {
+                Op::EndLoop => depth += 1,
+                Op::Loop { .. } => {
+                    if depth > 0 {
+                        depth -= 1;
+                    }
+                }
+                Op::Range { kind: RangeKind::Local(_), .. } if depth == 0 => lids.push(op_id),
+                _ => {}
+            }
+            op_id = self.prev_op(op_id);
+        }
+        lids.reverse();
+        lids
+    }
+
     /// View the smem tile of a [`LocalPartition`] in registers: row-major
-    /// strides over the tile, src = the smem storage. Emits no IR beyond the
-    /// stride ops. Call it AFTER the staging loop + barrier, so the stride
-    /// ops live in the same scope as their consumers (e.g. `mma`).
+    /// strides over the tile (with the `pad`-padded last-axis row stride),
+    /// src = the smem storage. Emits no IR beyond the stride ops. Call it
+    /// AFTER the staging loop + barrier, so the stride ops live in the same
+    /// scope as their consumers (e.g. `mma`).
     pub fn view_local_register<const N: usize>(&mut self, shared: &LocalPartition<N>) -> Partition {
         debug_assert!(N > 0, "view_local_register: rank must be non-zero");
-        let strides: Vec<OpId> = (0..N).map(|axis| self.row_major_stride(&shared.tile, axis)).collect();
+        let mut strides = vec![self.const_idx(1u32); N];
+        if N > 1 {
+            let cpad = self.const_idx(shared.pad);
+            strides[N - 2] = self.add(shared.tile[N - 1], cpad);
+            for a in (0..N - 2).rev() {
+                strides[a] = self.mul(strides[a + 1], shared.tile[a + 1]);
+            }
+        }
         Partition { src: shared.storage, shape: shared.tile.to_vec(), strides, dtype: shared.dtype }
     }
 }
