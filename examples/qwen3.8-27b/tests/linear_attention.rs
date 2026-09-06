@@ -407,13 +407,21 @@ fn delta_core_kernel_cuda() -> Result<(), ZyxError> {
     let expected = goldens["core"].to_vec::<f32>()?;
     assert_eq!(out.len(), expected.len());
     let mut bad = 0;
+    // TEMP diagnostics: group mismatches by (h, t).
+    let mut seen = std::collections::BTreeMap::new();
     for (i, (&val, &exp)) in out.iter().zip(expected.iter()).enumerate() {
         if (val - exp).abs() >= 1e-3 {
-            if bad < 10 {
-                println!("delta[{i}] = {val}, expected {exp}");
-            }
+            let h = i / (6 * 128);
+            let t = (i % (6 * 128)) / 128;
+            let e = seen.entry((h, t)).or_insert((0, 0.0, 0.0));
+            e.0 += 1;
+            e.1 += val / exp;
+            println!("TEMP delta[{i}] (h{h} t{t} c{c}) = {val}, expected {exp}", c = i % 128);
             bad += 1;
         }
+    }
+    for ((h, t), (n, r, _)) in &seen {
+        println!("TEMP (h{h} t{t}): {n} mismatches, mean ratio {r:.5}", r = r / *n as f32);
     }
     assert_eq!(bad, 0, "{bad} mismatches");
     Ok(())

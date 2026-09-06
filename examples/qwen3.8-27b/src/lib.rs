@@ -134,17 +134,17 @@ pub fn delta_core_kernel() -> Kernel {
         kernel.store(s, zero, r);
     }
     let eps = kernel.const_val(1e-6f32);
-    let qscale = kernel.const_val(0.125f32);
+    // llama.cpp delta-net-base: scale = 1/sqrt(S_k) on q only.
+    let qscale = kernel.const_val(1.0f32 / (KD as f32).sqrt());
 
     kernel.loop_over(S, |kernel, t| {
         // Row bases: q/k rows are KD-contiguous in mixed, v rows VD.
         let t_q = kernel.mul(t, CONV_DIM);
-        let t_h = kernel.mul(t, M_PAD);
+        let t_h = kernel.mul(t, DT_RANK);
         let kh_kd = kernel.mul(kh, KD);
-        let kh_kk = kernel.mul(kh, KEY_DIM);
         let h_vd = kernel.mul(h, VD);
         let q_base = kernel.add(t_q, kh_kd);
-        let k_off = kernel.add(KEY_DIM, kh_kk);
+        let k_off = kernel.add(KEY_DIM, kh_kd);
         let k_base = kernel.add(t_q, k_off);
         let v_off = kernel.add(2 * KEY_DIM, h_vd);
         let v_base = kernel.add(t_q, v_off);
@@ -236,9 +236,7 @@ pub fn delta_core_kernel() -> Kernel {
 /// out row = core*rsqrt(mean+eps)*norm_w*silu(z).
 pub fn rmsnorm_kernel() -> Kernel {
     let mut kernel = Kernel::new(Dev::Cuda(0));
-    let core = kernel.param(DType::F32);
-    let zp = kernel.param(DType::F32);
-    let nw = kernel.param(DType::F32);
+    let [core, zp, nw] = kernel.params([DType::F32; 3]);
     let out = kernel.param_mut(DType::F32);
     let [t, h] = kernel.group_ranges([S, VH]);
     let [lane] = kernel.local_ranges([32]);
