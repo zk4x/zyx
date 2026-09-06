@@ -236,7 +236,12 @@ fn linear_attention_cuda() -> Result<(), ZyxError> {
     let delta_c = delta_core_kernel().compile()?;
     let norm_c = rmsnorm_kernel().compile()?;
 
-    let gemm_at = |c: &zyx::kernel::CompiledKernel, a: &Tensor, b: &Tensor, r: i64, n: i64| -> Result<Tensor, ZyxError> {
+    let gemm_at = |c: &zyx::kernel::CompiledKernel,
+                   a: &Tensor,
+                   b: &Tensor,
+                   r: i64,
+                   n: i64|
+     -> Result<Tensor, ZyxError> {
         let mut out = c.forward(&[a, b], vec![[r, n]])?;
         Ok(out.remove(0))
     };
@@ -339,7 +344,9 @@ fn gemm_kernel_cuda() -> Result<(), ZyxError> {
     let pin16 = goldens["pin"].to(dev)?.cast(DType::F16);
     let w = goldens["in_proj_qkv"].to(dev)?.cast(DType::F16);
     let gemm_c = gemm_kernel(M_PAD, HIDDEN, CONV_DIM).compile()?;
-    let out = gemm_c.forward(&[&pin16, &w], vec![[M_PAD, CONV_DIM]])?.remove(0);
+    let out = gemm_c
+        .forward(&[&pin16, &w], vec![[M_PAD, CONV_DIM]])?
+        .remove(0);
     let out = out.to_vec::<f32>()?;
     // mixed_href: torch half-input matmul (tf32 off), the exact MMA math.
     let expected = goldens["mixed_href"].to_vec::<f32>()?;
@@ -411,12 +418,18 @@ fn delta_core_kernel_cuda() -> Result<(), ZyxError> {
             let e = seen.entry((h, t)).or_insert((0, 0.0, 0.0));
             e.0 += 1;
             e.1 += val / exp;
-            println!("TEMP delta[{i}] (h{h} t{t} c{c}) = {val}, expected {exp}", c = i % 128);
+            println!(
+                "TEMP delta[{i}] (h{h} t{t} c{c}) = {val}, expected {exp}",
+                c = i % 128
+            );
             bad += 1;
         }
     }
     for ((h, t), (n, r, _)) in &seen {
-        println!("TEMP (h{h} t{t}): {n} mismatches, mean ratio {r:.5}", r = r / *n as f32);
+        println!(
+            "TEMP (h{h} t{t}): {n} mismatches, mean ratio {r:.5}",
+            r = r / *n as f32
+        );
     }
     assert_eq!(bad, 0, "{bad} mismatches");
     Ok(())
@@ -447,5 +460,322 @@ fn rmsnorm_kernel_cuda() -> Result<(), ZyxError> {
         }
     }
     assert_eq!(bad, 0, "{bad} mismatches");
+    Ok(())
+}
+
+#[test]
+fn rope_kernel_cuda() -> Result<(), ZyxError> {
+    use qwen3_8_27b::rope_kernel;
+    let goldens = Tensor::load("../data/qwen3_8b_rope.safetensors")?;
+    let dev = Dev::Cuda(0);
+    let cos = goldens["cos"].to(dev)?;
+    let sin = goldens["sin"].to(dev)?;
+    // q/k [1,2,4,16] -> kernel expects [H,S,D]=[2,4,16] but B=1 flattened is identical
+    for (name, key) in [("q", "q_rot"), ("k", "k_rot")] {
+        let src = key.replace("_rot", "");
+        let x = goldens[src.as_str()].to(dev)?;
+        let expected = goldens[key].to_vec::<f32>()?;
+        let k = rope_kernel(4, 2, 16, 4).compile()?;
+        // output shape [H,S,D] = [2,4,16] (128 elems, same buffer as [1,2,4,16])
+        let out = k.forward(&[&x, &cos, &sin], vec![[2, 4, 16]])?.remove(0);
+        let out = out.to_vec::<f32>()?;
+        assert_eq!(out.len(), expected.len(), "{name} len");
+        let mut bad = 0;
+        for (i, (&val, &exp)) in out.iter().zip(expected.iter()).enumerate() {
+            if (val - exp).abs() >= 1e-4 {
+                if bad < 10 {
+                    println!("rope {name}[{i}] = {val}, expected {exp}");
+                }
+                bad += 1;
+            }
+        }
+        assert_eq!(bad, 0, "rope {name} {bad} mismatches");
+    }
+    Ok(())
+}
+
+#[test]
+fn attention_kernel_cuda() -> Result<(), ZyxError> {
+    use qwen3_8_27b::attention_kernel;
+    use zyx_nn::{Linear, RMSNorm};
+    let goldens = Tensor::load("../data/qwen3_8b_attention.safetensors")?;
+    let dev = Dev::Cuda(0);
+    // Rebuild q/k/v/gate exactly as in tests/attention.rs tensor path (which matches torch)
+    let q_proj = Linear {
+        weight: goldens["q_proj"].to(dev)?,
+        bias: None,
+    };
+    let k_proj = Linear {
+        weight: goldens["k_proj"].to(dev)?,
+        bias: None,
+    };
+    let v_proj = Linear {
+        weight: goldens["v_proj"].to(dev)?,
+        bias: None,
+    };
+    let q_norm = RMSNorm {
+        scale: goldens["q_scale"].to(dev)?,
+        eps: 1e-6,
+    };
+    let k_norm = RMSNorm {
+        scale: goldens["k_scale"].to(dev)?,
+        eps: 1e-6,
+    };
+    let cos = goldens["cos"].to(dev)?;
+    let sin = goldens["sin"].to(dev)?;
+    let input = goldens["input"].to(dev)?;
+    const H: i64 = 4;
+    const KV: i64 = 2;
+    const D: i64 = 8;
+    const SEQ: i64 = 4;
+    let qg = q_proj.forward(&input)?.reshape([1i64, SEQ, H, 2i64 * D])?;
+    let q = qg.narrow(-1, 0i64, D)?.reshape([1i64, SEQ, H, D])?;
+    let gate = qg.narrow(-1, D, D)?.reshape([1i64, SEQ, H * D])?;
+    let q = q_norm.forward(&q)?.transpose(1, 2)?;
+    let k = k_norm
+        .forward(&k_proj.forward(&input)?.reshape([1i64, SEQ, KV, D])?)?
+        .transpose(1, 2)?;
+    let v = v_proj
+        .forward(&input)?
+        .reshape([1i64, SEQ, KV, D])?
+        .transpose(1, 2)?;
+    // RoPE via tensor path for reference (also verify rope kernel separately)
+    fn apply_rope(
+        x: &Tensor,
+        cos: &Tensor,
+        sin: &Tensor,
+        rot_dim: i64,
+    ) -> Result<Tensor, ZyxError> {
+        let last = x.rank() as i32 - 1;
+        let head_dim: i64 = x.shape()[last as usize].item();
+        let q_rot = x.narrow(last, 0i64, rot_dim)?;
+        let q_pass = x.narrow(last, rot_dim, head_dim - rot_dim)?;
+        let half = rot_dim / 2;
+        let a = q_rot.narrow(last, 0i64, half)?;
+        let b = q_rot.narrow(last, half, half)?;
+        let neg_b = -&b;
+        let rotated = Tensor::cat([&neg_b, &a], last)?;
+        let out_rot = &q_rot * cos + &rotated * sin;
+        Tensor::cat([&out_rot, &q_pass], last)
+    }
+    let q_rope = apply_rope(&q, &cos, &sin, 2)?;
+    let k_rope = apply_rope(&k, &cos, &sin, 2)?;
+    // Reshape to kernel layouts: q [H,S,D], k/v [KV,S,D] contiguous, gate [S,H*D]
+    // q_rope/k_rope are [1,H,S,D] -> squeeze B and make contiguous
+    let qk = q_rope.reshape([H, SEQ, D])?.contiguous()?;
+    let kk = k_rope.reshape([KV, SEQ, D])?.contiguous()?;
+    let vk = v.reshape([KV, SEQ, D])?.contiguous()?;
+    let gk = gate.reshape([SEQ, H * D])?.contiguous()?;
+    let k_rep = {
+        let n_rep = H / KV;
+        if n_rep == 1 {
+            kk.clone()
+        } else {
+            kk.clone()
+                .unsqueeze(1)?
+                .expand([KV, n_rep, SEQ, D])?
+                .reshape([H, SEQ, D])?
+        }
+    };
+    let v_rep = {
+        let n_rep = H / KV;
+        if n_rep == 1 {
+            vk.clone()
+        } else {
+            vk.clone()
+                .unsqueeze(1)?
+                .expand([KV, n_rep, SEQ, D])?
+                .reshape([H, SEQ, D])?
+        }
+    };
+    let q_t = qk.reshape([1, H, SEQ, D])?;
+    let k_t = k_rep.reshape([1, H, SEQ, D])?;
+    let v_t = v_rep.reshape([1, H, SEQ, D])?;
+    let mut mask = vec![0.0f32; (SEQ * SEQ) as usize];
+    for i in 0..SEQ {
+        for j in 0..SEQ {
+            if j > i {
+                mask[(i * SEQ + j) as usize] = f32::NEG_INFINITY;
+            }
+        }
+    }
+    let mask = Tensor::from(mask).reshape([SEQ, SEQ])?.to(dev)?;
+    let scores = q_t.matmul(k_t.transpose(-1, -2)?)? * (1.0 / (D as f32).sqrt()) + mask;
+    let probs = scores.softmax([-1])?;
+    let ctx = probs
+        .matmul(v_t)?
+        .transpose(1, 2)?
+        .reshape([1i64, SEQ, H * D])?;
+    let expected_gated = (ctx * gk.clone().reshape([1, SEQ, H * D])?.sigmoid())
+        .reshape([SEQ, H * D])?
+        .to_vec::<f32>()?;
+    // Kernel fused attention
+    let ak = attention_kernel(SEQ, H, KV, D).compile()?;
+    let out = ak
+        .forward(&[&qk, &kk, &vk, &gk], vec![[SEQ, H * D]])?
+        .remove(0);
+    let out = out.to_vec::<f32>()?;
+    assert_eq!(out.len(), expected_gated.len());
+    let mut bad = 0;
+    for (i, (&val, &exp)) in out.iter().zip(expected_gated.iter()).enumerate() {
+        if (val - exp).abs() >= 1e-3 {
+            if bad < 10 {
+                println!("attn[{i}] = {val}, expected {exp}");
+            }
+            bad += 1;
+        }
+    }
+    assert_eq!(bad, 0, "attention {bad} mismatches vs tensor gated ctx");
+    // Also verify full block output via o_proj matches torch golden
+    let o_proj = Linear {
+        weight: goldens["o_proj"].to(dev)?,
+        bias: None,
+    };
+    let ctx_gated = Tensor::from(out.clone())
+        .reshape([1, SEQ, H * D])?
+        .to(dev)?;
+    let out_full = o_proj.forward(ctx_gated)?.to_vec::<f32>()?;
+    let expected_full = goldens["output"].to_vec::<f32>()?;
+    let mut bad2 = 0;
+    for (i, (&val, &exp)) in out_full.iter().zip(expected_full.iter()).enumerate() {
+        if (val - exp).abs() >= 1e-3 {
+            if bad2 < 10 {
+                println!("attn_full[{i}] = {val}, expected {exp}");
+            }
+            bad2 += 1;
+        }
+    }
+    assert_eq!(bad2, 0, "attention full {bad2} mismatches vs torch output");
+    Ok(())
+}
+
+#[test]
+#[ignore]
+fn attention_simple() -> Result<(), ZyxError> {
+    use qwen3_8_27b::attention_kernel;
+    let dev = Dev::Cuda(0);
+    let seq = 1;
+    let h = 1;
+    let kv = 1;
+    let d = 8;
+    let q = Tensor::from(vec![1.0f32; (h * seq * d) as usize])
+        .reshape([h, seq, d])?
+        .to(dev)?;
+    let kk = Tensor::from(vec![1.0f32; (kv * seq * d) as usize])
+        .reshape([kv, seq, d])?
+        .to(dev)?;
+    let v = Tensor::from(vec![1.0f32; (kv * seq * d) as usize])
+        .reshape([kv, seq, d])?
+        .to(dev)?;
+    let g = Tensor::from(vec![0.0f32; (seq * h * d) as usize])
+        .reshape([seq, h * d])?
+        .to(dev)?;
+    let ak = attention_kernel(seq, h, kv, d).compile()?;
+    let out = ak
+        .forward(&[&q, &kk, &v, &g], vec![[seq, h * d]])?
+        .remove(0);
+    let out = out.to_vec::<f32>()?;
+    println!("simple out: {:?}", out);
+    for &val in &out {
+        assert!((val - 0.5).abs() < 1e-3, "simple {val} != 0.5");
+    }
+    Ok(())
+}
+
+#[test]
+#[ignore]
+fn attention_simple4() -> Result<(), ZyxError> {
+    use qwen3_8_27b::attention_kernel;
+    let dev = Dev::Cuda(0);
+    for (seq, h, kv) in [(4, 4, 2), (1, 4, 2), (4, 1, 1)] {
+        let d = 8;
+        let q = Tensor::from(vec![1.0f32; (h * seq * d) as usize])
+            .reshape([h, seq, d])?
+            .to(dev)?;
+        let kk = Tensor::from(vec![1.0f32; (kv * seq * d) as usize])
+            .reshape([kv, seq, d])?
+            .to(dev)?;
+        let v = Tensor::from(vec![1.0f32; (kv * seq * d) as usize])
+            .reshape([kv, seq, d])?
+            .to(dev)?;
+        let g = Tensor::from(vec![0.0f32; (seq * h * d) as usize])
+            .reshape([seq, h * d])?
+            .to(dev)?;
+        let ak = attention_kernel(seq, h, kv, d).compile()?;
+        let out = ak
+            .forward(&[&q, &kk, &v, &g], vec![[seq, h * d]])?
+            .remove(0);
+        let out = out.to_vec::<f32>()?;
+        println!(
+            "simple seq={seq} h={h} kv={kv} out len {}: {:?}",
+            out.len(),
+            &out[..out.len().min(64)]
+        );
+        let mut bad = 0;
+        for (i, &val) in out.iter().enumerate() {
+            if (val - 0.5).abs() >= 1e-3 {
+                if bad < 5 {
+                    println!("bad seq{seq} h{h} [{i}] {val}");
+                }
+                bad += 1;
+            }
+        }
+        if bad > 0 {
+            println!("seq{seq} h{h} {bad} bad");
+        } else {
+            println!("seq{seq} h{h} ok");
+        }
+    }
+    Ok(())
+}
+
+#[test]
+#[ignore]
+fn group_debug_disabled() -> Result<(), ZyxError> {
+    use zyx::kernel::{Dev, Kernel};
+    use zyx::DType;
+    let dev = Dev::Cuda(0);
+    let h = 4;
+    let seq = 4;
+    let d = 8;
+    let mut k = Kernel::new(dev);
+    let out = k.param_mut(DType::F32);
+    let [head, s] = k.group_ranges([h, seq]);
+    let [lane] = k.local_ranges([32]);
+    let hd = h * d;
+    let base = k.mul(s, hd);
+    let off = k.mul(head, d);
+    let idx0 = k.add(base, off);
+    let idx = k.add(idx0, lane);
+    // write head*10 + s as float
+    let hf = k.cast(head, DType::F32);
+    let sf = k.cast(s, DType::F32);
+    let ten = k.const_val(10.0f32);
+    let v = k.mad(hf, ten, sf);
+    // only valid lane < d
+    let valid = k.cmplt(lane, d);
+    let cur = k.load(out, idx);
+    let to_store = k.branchless_where(valid, v, cur);
+    k.store(out, to_store, idx);
+    k.debug();
+    k.default_epilogue();
+    k.debug();
+    let ck = k.compile()?;
+    let mut out_t = ck.forward(&[], vec![[seq, h * d]])?.remove(0);
+    // need to init out to  -1
+    let out_vec = out_t.to_vec::<f32>()?;
+    println!("group debug out len {}: {:?}", out_vec.len(), out_vec);
+    for s in 0..seq {
+        for hh in 0..h {
+            for dd in 0..d {
+                let idx = (s * hd + hh * d + dd) as usize;
+                let v = out_vec[idx];
+                let exp = (hh * 10 + s) as f32;
+                if (v - exp).abs() > 1e-3 {
+                    println!("mismatch s{seq} h{hh} d{dd} idx{idx} got {v} exp {exp}");
+                }
+            }
+        }
+    }
     Ok(())
 }

@@ -280,3 +280,192 @@ pub fn rmsnorm_kernel() -> Kernel {
     kernel.default_epilogue();
     kernel
 }
+
+/// Partial RoPE: x [H, S, D] (flattened H*S*D, H outermost) + cos/sin [S, ROT_DIM]
+/// -> y [H, S, D]. Fuses the narrow/cat/rotate_half. `rot_dim` is the
+/// number of leading dims that are rotated (partial factor).
+pub fn rope_kernel(seq: i64, heads: i64, head_dim: i64, rot_dim: i64) -> Kernel {
+    let mut kernel = Kernel::new(Dev::Cuda(0));
+    let [x, cos, sin] = kernel.params([DType::F32; 3]);
+    let out = kernel.param_mut(DType::F32);
+    let hd_elems = heads * head_dim;
+    let [hd_blk, s] = kernel.group_ranges([hd_elems / 32, seq]);
+    let [lane] = kernel.local_ranges([32]);
+    let col = kernel.mad(hd_blk, 32i64, lane);
+    let hd = kernel.mul(heads, head_dim);
+    let _ = hd;
+    let h = kernel.div(col, head_dim);
+    let h_head = kernel.mul(h, head_dim);
+    let d = kernel.sub(col, h_head);
+    let half = rot_dim / 2;
+    let hs = kernel.mul(h, seq);
+    let hs_s = kernel.add(hs, s);
+    let x_base = kernel.mul(hs_s, head_dim);
+    let x_idx = kernel.add(x_base, d);
+    let x_val = kernel.load(x, x_idx);
+    let is_rot = kernel.cmplt(d, rot_dim);
+    let is_first_half = kernel.cmplt(d, half);
+    let d_plus = kernel.add(d, half);
+    let d_minus = kernel.sub(d, half);
+    let rot_d = kernel.branchless_where(is_first_half, d_plus, d_minus);
+    let rot_idx = kernel.add(x_base, rot_d);
+    let x_rot_raw = kernel.load(x, rot_idx);
+    let neg = kernel.neg(x_rot_raw);
+    let x_rot = kernel.branchless_where(is_first_half, neg, x_rot_raw);
+    let safe_d = kernel.branchless_where(is_rot, d, 0i64);
+    let safe_cos_idx = kernel.mad(s, rot_dim, safe_d);
+    let cos_val = kernel.load(cos, safe_cos_idx);
+    let sin_val = kernel.load(sin, safe_cos_idx);
+    let cos_m = kernel.mul(x_val, cos_val);
+    let sin_m = kernel.mul(x_rot, sin_val);
+    let rot_part = kernel.add(cos_m, sin_m);
+    let y = kernel.branchless_where(is_rot, rot_part, x_val);
+    let out_idx = kernel.add(x_base, d);
+    kernel.store(out, y, out_idx);
+    kernel.default_epilogue();
+    kernel
+}
+
+/// Dense GQA attention core (fused repeat/gate): q [H,S,D], k/v [KV,S,D],
+/// gate [S, H*D]. Causal j>i -> -inf inside. For demo S<=64 direct
+/// warp-softmax. Fuses repeat_kv (h/kv) and gate sigmoid. D may be <32
+/// (e.g. 8 in the attention golden), so dot is masked and chunked as
+/// (D+31)/32.
+pub fn attention_kernel(seq: i64, h: i64, kv: i64, d: i64) -> Kernel {
+    let mut kernel = Kernel::new(Dev::Cuda(0));
+    let [q, k, v, gate] = kernel.params([DType::F32; 4]);
+    let out = kernel.param_mut(DType::F32);
+    let [head, s] = kernel.group_ranges([h, seq]);
+    let [lane] = kernel.local_ranges([32]);
+    let h_div_kv = h / kv;
+    let kv_h = kernel.div(head, h_div_kv);
+    let scale = kernel.const_val(1.0f32 / (d as f32).sqrt());
+    let zero = kernel.const_val(0.0f32);
+    let neg_inf = kernel.const_val(f32::NEG_INFINITY);
+    let d_chunks = (d + 31) / 32;
+    // init to large negative finite to avoid Const(-inf)-Const(-inf) folding to NaN
+    let mut max_score = kernel.const_val(-1e30f32);
+    for s2 in 0..seq {
+        let s2_c = kernel.const_idx(s2 as u32);
+        let s1 = kernel.add(s, 1i64);
+        let is_causal = kernel.cmplt(s2_c, s1);
+        let mut dot = kernel.const_val(0.0f32);
+        for r in 0..d_chunks {
+            let r32 = kernel.const_idx((r * 32) as u32);
+            let dd = kernel.add(lane, r32);
+            let valid = kernel.cmplt(dd, d);
+            let hs = kernel.mul(head, seq);
+            let hs_d = kernel.mul(hs, d);
+            let s_d = kernel.mul(s, d);
+            let q_idx0 = kernel.add(hs_d, s_d);
+            let q_idx = kernel.add(q_idx0, dd);
+            let kv_s = kernel.mul(kv_h, seq);
+            let k_base = kernel.add(kv_s, s2_c);
+            let k_idx0 = kernel.mul(k_base, d);
+            let k_idx = kernel.add(k_idx0, dd);
+            let q_raw = kernel.load(q, q_idx);
+            let k_raw = kernel.load(k, k_idx);
+            let qv = kernel.branchless_where(valid, q_raw, zero);
+            let kvv = kernel.branchless_where(valid, k_raw, zero);
+            dot = kernel.mad(qv, kvv, dot);
+        }
+        let dot_sum = kernel.warp_reduce(dot);
+        let scaled = kernel.mul(dot_sum, scale);
+        let masked = kernel.ternary_where(is_causal, scaled, neg_inf);
+        let is_gt = kernel.cmpgt(masked, max_score);
+        max_score = kernel.ternary_where(is_gt, masked, max_score);
+    }
+    let mut sum_exp = kernel.const_val(0.0f32);
+    for s2 in 0..seq {
+        let s2_c = kernel.const_idx(s2 as u32);
+        let s1 = kernel.add(s, 1i64);
+        let is_causal = kernel.cmplt(s2_c, s1);
+        let mut dot = kernel.const_val(0.0f32);
+        for r in 0..d_chunks {
+            let r32 = kernel.const_idx((r * 32) as u32);
+            let dd = kernel.add(lane, r32);
+            let valid = kernel.cmplt(dd, d);
+            let hs = kernel.mul(head, seq);
+            let hs_d = kernel.mul(hs, d);
+            let s_d = kernel.mul(s, d);
+            let q_idx0 = kernel.add(hs_d, s_d);
+            let q_idx = kernel.add(q_idx0, dd);
+            let kv_s = kernel.mul(kv_h, seq);
+            let k_base = kernel.add(kv_s, s2_c);
+            let k_idx0 = kernel.mul(k_base, d);
+            let k_idx = kernel.add(k_idx0, dd);
+            let q_raw = kernel.load(q, q_idx);
+            let k_raw = kernel.load(k, k_idx);
+            let qv = kernel.branchless_where(valid, q_raw, zero);
+            let kvv = kernel.branchless_where(valid, k_raw, zero);
+            dot = kernel.mad(qv, kvv, dot);
+        }
+        let dot_sum = kernel.warp_reduce(dot);
+        let scaled = kernel.mul(dot_sum, scale);
+        let masked = kernel.ternary_where(is_causal, scaled, neg_inf);
+        let sub = kernel.sub(masked, max_score);
+        let exp_val = kernel.exp(sub);
+        let exp_masked = kernel.ternary_where(is_causal, exp_val, zero);
+        sum_exp = kernel.add(sum_exp, exp_masked);
+    }
+    let inv_sum = kernel.reciprocal(sum_exp);
+    for r in 0..d_chunks {
+        let r32 = kernel.const_idx((r * 32) as u32);
+        let dd = kernel.add(lane, r32);
+        let valid_out = kernel.cmplt(dd, d);
+        let mut acc = kernel.const_val(0.0f32);
+        for s2 in 0..seq {
+            let s2_c = kernel.const_idx(s2 as u32);
+            let s1 = kernel.add(s, 1i64);
+            let is_causal = kernel.cmplt(s2_c, s1);
+            let mut dot = kernel.const_val(0.0f32);
+            for rr in 0..d_chunks {
+                let rr32 = kernel.const_idx((rr * 32) as u32);
+                let ddd = kernel.add(lane, rr32);
+                let valid2 = kernel.cmplt(ddd, d);
+                let hs = kernel.mul(head, seq);
+                let hs_d = kernel.mul(hs, d);
+                let s_d = kernel.mul(s, d);
+                let q_idx0 = kernel.add(hs_d, s_d);
+                let q_idx = kernel.add(q_idx0, ddd);
+                let kv_s = kernel.mul(kv_h, seq);
+                let k_base = kernel.add(kv_s, s2_c);
+                let k_idx0 = kernel.mul(k_base, d);
+                let k_idx = kernel.add(k_idx0, ddd);
+                let q_raw = kernel.load(q, q_idx);
+                let k_raw = kernel.load(k, k_idx);
+                let qv = kernel.branchless_where(valid2, q_raw, zero);
+                let kvv = kernel.branchless_where(valid2, k_raw, zero);
+                dot = kernel.mad(qv, kvv, dot);
+            }
+            let dot_sum = kernel.warp_reduce(dot);
+            let scaled = kernel.mul(dot_sum, scale);
+            let masked = kernel.ternary_where(is_causal, scaled, neg_inf);
+            let sub = kernel.sub(masked, max_score);
+            let exp_val = kernel.exp(sub);
+            let prob = kernel.mul(exp_val, inv_sum);
+            let prob_masked = kernel.ternary_where(is_causal, prob, zero);
+            let kv_s = kernel.mul(kv_h, seq);
+            let v_base = kernel.add(kv_s, s2_c);
+            let v_idx0 = kernel.mul(v_base, d);
+            let v_idx = kernel.add(v_idx0, dd);
+            let vv_raw = kernel.load(v, v_idx);
+            let vv = kernel.branchless_where(valid_out, vv_raw, zero);
+            acc = kernel.mad(prob_masked, vv, acc);
+        }
+        let hd = h * d;
+        let gate_base = kernel.mul(s, hd);
+        let head_d = kernel.mul(head, d);
+        let gate_off = kernel.add(head_d, dd);
+        let gate_idx = kernel.add(gate_base, gate_off);
+        let g_raw = kernel.load(gate, gate_idx);
+        let g = kernel.sigmoid(g_raw);
+        let gated = kernel.mul(acc, g);
+        let out_idx = kernel.add(gate_base, gate_off);
+        kernel.if_(valid_out);
+        kernel.store(out, gated, out_idx);
+        kernel.end_if();
+    }
+    kernel.default_epilogue();
+    kernel
+}

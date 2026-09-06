@@ -13,9 +13,18 @@ use zyx_nn::Linear;
 #[test]
 fn mlp() -> Result<(), ZyxError> {
     let goldens = Tensor::load("../data/qwen3_8b_mlp.safetensors")?;
-    let gate = Linear { weight: goldens["gate"].to(Dev::Cuda(0))?, bias: None };
-    let up = Linear { weight: goldens["up"].to(Dev::Cuda(0))?, bias: None };
-    let down = Linear { weight: goldens["down"].to(Dev::Cuda(0))?, bias: None };
+    let gate = Linear {
+        weight: goldens["gate"].to(Dev::Cuda(0))?,
+        bias: None,
+    };
+    let up = Linear {
+        weight: goldens["up"].to(Dev::Cuda(0))?,
+        bias: None,
+    };
+    let down = Linear {
+        weight: goldens["down"].to(Dev::Cuda(0))?,
+        bias: None,
+    };
     let input = goldens["input"].to(Dev::Cuda(0))?;
     let expected = goldens["output"].to_vec::<f32>()?;
 

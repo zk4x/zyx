@@ -46,12 +46,30 @@ fn apply_rope(x: &Tensor, cos: &Tensor, sin: &Tensor, rot_dim: i64) -> Result<Te
 fn attention() -> Result<(), ZyxError> {
     let goldens = Tensor::load("../data/qwen3_8b_attention.safetensors")?;
     let dev = Dev::Cuda(0);
-    let q_proj = Linear { weight: goldens["q_proj"].to(dev)?, bias: None };
-    let k_proj = Linear { weight: goldens["k_proj"].to(dev)?, bias: None };
-    let v_proj = Linear { weight: goldens["v_proj"].to(dev)?, bias: None };
-    let o_proj = Linear { weight: goldens["o_proj"].to(dev)?, bias: None };
-    let q_norm = RMSNorm { scale: goldens["q_scale"].to(dev)?, eps: 1e-6 };
-    let k_norm = RMSNorm { scale: goldens["k_scale"].to(dev)?, eps: 1e-6 };
+    let q_proj = Linear {
+        weight: goldens["q_proj"].to(dev)?,
+        bias: None,
+    };
+    let k_proj = Linear {
+        weight: goldens["k_proj"].to(dev)?,
+        bias: None,
+    };
+    let v_proj = Linear {
+        weight: goldens["v_proj"].to(dev)?,
+        bias: None,
+    };
+    let o_proj = Linear {
+        weight: goldens["o_proj"].to(dev)?,
+        bias: None,
+    };
+    let q_norm = RMSNorm {
+        scale: goldens["q_scale"].to(dev)?,
+        eps: 1e-6,
+    };
+    let k_norm = RMSNorm {
+        scale: goldens["k_scale"].to(dev)?,
+        eps: 1e-6,
+    };
     let cos = goldens["cos"].to(dev)?;
     let sin = goldens["sin"].to(dev)?;
     let input = goldens["input"].to(dev)?;
@@ -63,8 +81,13 @@ fn attention() -> Result<(), ZyxError> {
     let q = qg.narrow(-1, 0i64, D)?.reshape([1i64, SEQ, H, D])?;
     let gate = qg.narrow(-1, D, D)?.reshape([1i64, SEQ, H * D])?;
     let q = q_norm.forward(&q)?.transpose(1, 2)?;
-    let k = k_norm.forward(&k_proj.forward(&input)?.reshape([1i64, SEQ, KV, D])?)?.transpose(1, 2)?;
-    let v = v_proj.forward(&input)?.reshape([1i64, SEQ, KV, D])?.transpose(1, 2)?;
+    let k = k_norm
+        .forward(&k_proj.forward(&input)?.reshape([1i64, SEQ, KV, D])?)?
+        .transpose(1, 2)?;
+    let v = v_proj
+        .forward(&input)?
+        .reshape([1i64, SEQ, KV, D])?
+        .transpose(1, 2)?;
 
     let q = apply_rope(&q, &cos, &sin, 2)?;
     let k = apply_rope(&k, &cos, &sin, 2)?;
@@ -83,7 +106,10 @@ fn attention() -> Result<(), ZyxError> {
     let mask = Tensor::from(mask).reshape([SEQ, SEQ])?.to(dev)?;
     let scores = q.matmul(k.transpose(-1, -2)?)? * (1.0 / (D as f32).sqrt()) + mask;
     let probs = scores.softmax([-1])?;
-    let ctx = probs.matmul(v)?.transpose(1, 2)?.reshape([1i64, SEQ, H * D])?;
+    let ctx = probs
+        .matmul(v)?
+        .transpose(1, 2)?
+        .reshape([1i64, SEQ, H * D])?;
     let gated = ctx * gate.sigmoid();
     let out = o_proj.forward(gated)?.to_vec::<f32>()?;
 

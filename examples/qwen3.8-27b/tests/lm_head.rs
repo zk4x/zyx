@@ -244,7 +244,9 @@ fn lm_head_cuda_local() -> Result<(), ZyxError> {
 
     // Correctness: C is [vocab, tokens], golden is [tokens, vocab].
     let mut out = compiled.forward(
-        &[&vocab_t, &hidden_t, &tokens_t, &glen_x_t, &glen_y_t, &weight, &input],
+        &[
+            &vocab_t, &hidden_t, &tokens_t, &glen_x_t, &glen_y_t, &weight, &input,
+        ],
         vec![[VOCAB as i64, TOKENS as i64]],
     )?;
     let out = out.pop().unwrap().to_vec::<f32>()?;
@@ -271,7 +273,9 @@ fn lm_head_cuda_local() -> Result<(), ZyxError> {
 
     let launch_r = || -> Result<Vec<Tensor>, ZyxError> {
         compiled.forward(
-            &[&vocab_r, &hidden_r, &tokens_r, &glen_x_r, &glen_y_r, &weight_r, &input_r],
+            &[
+                &vocab_r, &hidden_r, &tokens_r, &glen_x_r, &glen_y_r, &weight_r, &input_r,
+            ],
             vec![[151936i64, TOKENS as i64]],
         )
     };

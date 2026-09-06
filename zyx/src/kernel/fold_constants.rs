@@ -314,28 +314,29 @@ impl Kernel {
         let _timer = crate::Timer::new("fold_accs");
         // We have to do constant folding before folding accs to guarantee indices are constants
         self.constant_folding();
-        // Check if an accumulator storage exists without a loop that stores into it
+        // Check if an accumulator storage exists without a scope that stores into it.
+        // Storages used inside `Loop`/`If` (e.g. `ternary_where` temporaries) must not be
+        // folded — they are conditional/loop-carried, not dead accumulators.
         let mut accumulators = Map::default();
-        let mut loop_level = 0u32;
+        let mut scope_level = 0u32;
         let mut op_id = self.head;
         while !op_id.is_null() {
             match *self.at(op_id) {
                 Op::Storage { scope: MemScope::Register, .. } => {
-                    accumulators.insert(op_id, loop_level);
+                    accumulators.insert(op_id, scope_level);
                 }
                 Op::Store { dst, .. } => {
-                    //println!("Store to {dst}, loop_level={loop_level}");
-                    if let Some(level) = accumulators.get(&dst)
-                        && loop_level > *level
+                    if let Some(lvl) = accumulators.get(&dst)
+                        && scope_level > *lvl
                     {
                         accumulators.remove(&dst);
                     }
                 }
-                Op::Loop { .. } => {
-                    loop_level += 1;
+                Op::Loop { .. } | Op::If { .. } => {
+                    scope_level += 1;
                 }
-                Op::EndLoop => {
-                    loop_level -= 1;
+                Op::EndLoop | Op::EndIf => {
+                    scope_level -= 1;
                 }
                 _ => {}
             }
