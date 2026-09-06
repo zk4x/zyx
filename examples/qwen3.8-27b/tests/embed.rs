@@ -26,3 +26,24 @@ fn embed() -> Result<(), ZyxError> {
     }
     Ok(())
 }
+
+#[test]
+fn embed_kernel_cuda() -> Result<(), ZyxError> {
+    use qwen3_8_27b::embed_kernel;
+    let goldens = Tensor::load("../data/qwen3_8b_embed.safetensors")?;
+    let dev = Dev::Cuda(0);
+    let weight = goldens["weight"].to(dev)?;
+    let ids = goldens["input_ids"].to(dev)?;
+    let expected = goldens["output"].to_vec::<f32>()?;
+    let seq = ids.shape()[0].item();
+    let dim = weight.shape()[1].item();
+    let vocab = weight.shape()[0].item();
+    let ek = embed_kernel(vocab, dim, seq).compile()?;
+    let out = ek.forward(&[&weight, &ids], vec![[seq, dim]])?.remove(0);
+    let out = out.to_vec::<f32>()?;
+    assert_eq!(out.len(), expected.len());
+    for (i, (&v, &e)) in out.iter().zip(expected.iter()).enumerate() {
+        assert!((v - e).abs() < 1e-5, "embed[{i}] {v} vs {e}");
+    }
+    Ok(())
+}

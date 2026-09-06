@@ -119,3 +119,52 @@ fn attention() -> Result<(), ZyxError> {
     }
     Ok(())
 }
+
+#[test]
+fn attention_kernel_cuda() -> Result<(), ZyxError> {
+    use qwen3_8_27b::attention_kernel;
+    let goldens = Tensor::load("../data/qwen3_8b_attention.safetensors")?;
+    let dev = Dev::Cuda(0);
+    let q_proj = Linear { weight: goldens["q_proj"].to(dev)?, bias: None };
+    let k_proj = Linear { weight: goldens["k_proj"].to(dev)?, bias: None };
+    let v_proj = Linear { weight: goldens["v_proj"].to(dev)?, bias: None };
+    let q_norm = RMSNorm { scale: goldens["q_scale"].to(dev)?, eps: 1e-6 };
+    let k_norm = RMSNorm { scale: goldens["k_scale"].to(dev)?, eps: 1e-6 };
+    let cos = goldens["cos"].to(dev)?;
+    let sin = goldens["sin"].to(dev)?;
+    let input = goldens["input"].to(dev)?;
+    let qg = q_proj.forward(&input)?.reshape([1i64, SEQ, H, 2i64 * D])?;
+    let q = qg.narrow(-1, 0i64, D)?.reshape([1i64, SEQ, H, D])?;
+    let gate = qg.narrow(-1, D, D)?.reshape([1i64, SEQ, H * D])?;
+    let q = q_norm.forward(&q)?.transpose(1, 2)?;
+    let k = k_norm.forward(&k_proj.forward(&input)?.reshape([1i64, SEQ, KV, D])?)?.transpose(1, 2)?;
+    let v = v_proj.forward(&input)?.reshape([1i64, SEQ, KV, D])?.transpose(1, 2)?;
+    let q = apply_rope(&q, &cos, &sin, 2)?;
+    let k = apply_rope(&k, &cos, &sin, 2)?;
+    let qk = q.reshape([H, SEQ, D])?.contiguous()?;
+    let kk = k.reshape([KV, SEQ, D])?.contiguous()?;
+    let vk = v.reshape([KV, SEQ, D])?.contiguous()?;
+    let gk = gate.reshape([SEQ, H * D])?.contiguous()?;
+    // reference gated ctx via Tensor
+    let k_rep = if H / KV == 1 { kk.clone() } else { kk.clone().unsqueeze(1)?.expand([KV, H / KV, SEQ, D])?.reshape([H, SEQ, D])? };
+    let v_rep = if H / KV == 1 { vk.clone() } else { vk.clone().unsqueeze(1)?.expand([KV, H / KV, SEQ, D])?.reshape([H, SEQ, D])? };
+    let q_t = qk.reshape([1, H, SEQ, D])?;
+    let k_t = k_rep.reshape([1, H, SEQ, D])?;
+    let v_t = v_rep.reshape([1, H, SEQ, D])?;
+    let mut mask = vec![0.0f32; (SEQ * SEQ) as usize];
+    for i in 0..SEQ { for j in 0..SEQ { if j > i { mask[(i * SEQ + j) as usize] = f32::NEG_INFINITY; } } }
+    let mask = Tensor::from(mask).reshape([SEQ, SEQ])?.to(dev)?;
+    let scores = q_t.matmul(k_t.transpose(-1, -2)?)? * (1.0 / (D as f32).sqrt()) + mask;
+    let probs = scores.softmax([-1])?;
+    let ctx = probs.matmul(v_t)?.transpose(1, 2)?.reshape([1i64, SEQ, H * D])?;
+    let expected_gated = (ctx * gk.clone().reshape([1, SEQ, H * D])?.sigmoid()).reshape([SEQ, H * D])?.to_vec::<f32>()?;
+    let ak = attention_kernel(SEQ, H, KV, D).compile()?;
+    let out = ak.forward(&[&qk, &kk, &vk, &gk], vec![[SEQ, H * D]])?.remove(0).to_vec::<f32>()?;
+    assert_eq!(out.len(), expected_gated.len());
+    let mut bad = 0;
+    for (i, (&v, &e)) in out.iter().zip(expected_gated.iter()).enumerate() {
+        if (v - e).abs() >= 1e-3 { if bad < 10 { println!("attn[{i}] {v} vs {e}"); } bad += 1; }
+    }
+    assert_eq!(bad, 0, "attention {bad} mismatches");
+    Ok(())
+}

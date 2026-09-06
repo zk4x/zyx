@@ -48,3 +48,30 @@ fn rope() -> Result<(), ZyxError> {
     }
     Ok(())
 }
+
+#[test]
+fn rope_kernel_cuda() -> Result<(), ZyxError> {
+    use qwen3_8_27b::rope_kernel;
+    let goldens = Tensor::load("../data/qwen3_8b_rope.safetensors")?;
+    let dev = Dev::Cuda(0);
+    let cos = goldens["cos"].to(dev)?;
+    let sin = goldens["sin"].to(dev)?;
+    for (name, key) in [("q", "q_rot"), ("k", "k_rot")] {
+        let src = key.replace("_rot", "");
+        let x = goldens[src.as_str()].to(dev)?;
+        let expected = goldens[key].to_vec::<f32>()?;
+        let k = rope_kernel(4, 2, 16, 4).compile()?;
+        let out = k.forward(&[&x, &cos, &sin], vec![[2, 4, 16]])?.remove(0);
+        let out = out.to_vec::<f32>()?;
+        assert_eq!(out.len(), expected.len(), "{name} len");
+        let mut bad = 0;
+        for (i, (&v, &e)) in out.iter().zip(expected.iter()).enumerate() {
+            if (v - e).abs() >= 1e-4 {
+                if bad < 10 { println!("rope {name}[{i}] {v} vs {e}"); }
+                bad += 1;
+            }
+        }
+        assert_eq!(bad, 0, "rope {name} {bad} mismatches");
+    }
+    Ok(())
+}

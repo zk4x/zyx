@@ -469,3 +469,42 @@ pub fn attention_kernel(seq: i64, h: i64, kv: i64, d: i64) -> Kernel {
     kernel.default_epilogue();
     kernel
 }
+
+/// SwiGLU fused elementwise: gate [M, INTER] f32, up [M, INTER] f32 -> mid [M, INTER] f32
+/// mid = silu(gate) * up, silu(x)= x*sigmoid(x) via exp.
+pub fn mlp_kernel(m: i64, inter: i64) -> Kernel {
+    let mut kernel = Kernel::new(Dev::Cuda(0));
+    let [gate, up] = kernel.params([DType::F32; 2]);
+    let out = kernel.param_mut(DType::F32);
+    let [cg, t] = kernel.group_ranges([inter / 32, m]);
+    let [lane] = kernel.local_ranges([32]);
+    let c = kernel.mad(cg, 32i64, lane);
+    let idx = kernel.mad(t, inter, c);
+    let g = kernel.load(gate, idx);
+    let u = kernel.load(up, idx);
+    let sg = kernel.silu(g);
+    let y = kernel.mul(sg, u);
+    kernel.store(out, y, idx);
+    kernel.default_epilogue();
+    kernel
+}
+
+/// Embedding gather: weight [VOCAB, DIM] f32, ids [S] i64 -> out [S, DIM] f32
+/// out[s,d] = weight[ ids[s], d ]
+pub fn embed_kernel(_vocab: i64, dim: i64, seq: i64) -> Kernel {
+    let mut kernel = Kernel::new(Dev::Cuda(0));
+    let w = kernel.param(DType::F32);
+    let ids = kernel.param(DType::I64);
+    let out = kernel.param_mut(DType::F32);
+    let [cg, s] = kernel.group_ranges([dim / 32, seq]);
+    let [lane] = kernel.local_ranges([32]);
+    let d = kernel.mad(cg, 32i64, lane);
+    let id = kernel.load(ids, s);
+    let row = kernel.mul(id, dim);
+    let w_idx = kernel.add(row, d);
+    let v = kernel.load(w, w_idx);
+    let out_idx = kernel.mad(s, dim, d);
+    kernel.store(out, v, out_idx);
+    kernel.default_epilogue();
+    kernel
+}
