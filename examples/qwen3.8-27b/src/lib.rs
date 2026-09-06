@@ -37,10 +37,11 @@ pub fn pad_kernel(s: i64, m: i64, d: i64) -> Kernel {
     let [cc, row] = kernel.group_ranges([d / 32, m]);
     let [lane] = kernel.local_ranges([32]);
     let c = kernel.mad(cc, 32i64, lane);
-    let in_idx = kernel.mad(row, d, c);
-    let x_raw = kernel.load(inp, in_idx);
-    let x = kernel.cast(x_raw, DType::F16);
     let keep = kernel.cmplt(row, s);
+    let safe_row = kernel.branchless_where(keep, row, 0i64);
+    let safe_idx = kernel.mad(safe_row, d, c);
+    let x_raw = kernel.load(inp, safe_idx);
+    let x = kernel.cast(x_raw, DType::F16);
     let v = kernel.branchless_where(keep, x, f16::from_f32(0.0));
     let out_idx = kernel.mad(row, d, c);
     kernel.store(out, v, out_idx);
@@ -49,29 +50,31 @@ pub fn pad_kernel(s: i64, m: i64, d: i64) -> Kernel {
 }
 
 /// GEMM with 16-row blocks, n=8 (lm_head pattern): out [R, N] =
-/// A [R, K] @ B [N, K]^T, R/K/N/glens as runtime variables.
-/// One compiled instance serves every projection in the layer.
-pub fn gemm_kernel() -> Kernel {
+/// A [R, K] @ B [N, K]^T. `R/K/N` are emitted as constants so `flop_mem_rw`
+/// and the compiler see concrete trip counts; compile one instance per
+/// projection shape (10 ms each).
+pub fn gemm_kernel(r: i64, k: i64, n: i64) -> Kernel {
     let mut kernel = Kernel::new(Dev::Cuda(0));
-    let [rows, kk, nn, glen_x, glen_y] = kernel.variables([DType::I64; 5]);
     let [a, b] = kernel.params([DType::F16; 2]);
     let out = kernel.param_mut(DType::F32);
 
+    let glen_x = r / 16;
+    let glen_y = n / 8;
     let [gidx, gidy] = kernel.group_ranges([glen_x, glen_y]);
     let lidx = kernel.local_range(0, 32);
     kernel.warp(lidx);
 
-    let ap = kernel.view_global_register(a, [rows, kk]);
+    let [rr, kk, nn] = kernel.const_idxs([r, k, n]);
+    let ap = kernel.view_global_register(a, [rr, kk]);
     let bp = kernel.view_global_register(b, [nn, kk]);
-    let cp = kernel.view_global_register(out, [rows, nn]);
+    let cp = kernel.view_global_register(out, [rr, nn]);
 
-    let c_block = kernel.const_idx(16u32);
-    let [c8] = kernel.const_idxs([8u32]);
+    let [c_block, c8] = kernel.const_idxs([16, 8]);
     let r0 = kernel.mul(gidx, c_block);
     let n0 = kernel.mul(gidy, c8);
     let acc = kernel.acc([c_block, c8], DType::F32);
-    kernel.loop_partition(|kernel, k| {
-        kernel.mma_at(&acc, &ap, &bp, [r0, n0, k]);
+    kernel.loop_partition(|kernel, kk| {
+        kernel.mma_at(&acc, &ap, &bp, [r0, n0, kk]);
     });
     kernel.store_partition(&cp, &acc, [r0, n0]);
     kernel.default_epilogue();

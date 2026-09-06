@@ -826,6 +826,99 @@ impl Kernel {
         self.ops.values().any(|x| matches!(x.op, Op::Store { .. }))
     }
 
+    /// Estimated flops, global bytes read, global bytes written for a launch
+    /// of this kernel. Iteration counts from enclosing `Loop`/`Range`
+    /// (Groups/Locals) multiply per-op costs; variable trip counts that
+    /// cannot be resolved at compile time are treated as 1.
+    pub fn flop_mem_rw(&self) -> (u64, u64, u64) {
+        let mut flops: u64 = 0;
+        let mut read: u64 = 0;
+        let mut write: u64 = 0;
+        let mut loop_stack: Vec<u64> = Vec::new();
+        let mut group_stack: Vec<u64> = Vec::new();
+        let mut local_prod: u64 = 1;
+
+        let mut op_id = self.head;
+        for _ in 0..20_000 {
+            if op_id.is_null() {
+                break;
+            }
+            // Multiplier for this op: all enclosing loops * all parallel threads.
+            let loop_prod: u64 = loop_stack.iter().product::<u64>().max(1);
+            let group_prod: u64 = group_stack.iter().product::<u64>().max(1);
+            let mult: u64 = loop_prod.saturating_mul(group_prod).saturating_mul(local_prod);
+
+            match self.at(op_id) {
+                Op::Loop { len } => {
+                    let v = self
+                        .resolve_const(*len)
+                        .and_then(|c| c.as_dim())
+                        .unwrap_or(1)
+                        .max(1) as u64;
+                    // The loop body executes v times; push for following ops.
+                    // Count is applied via mult on body ops, so push now.
+                    loop_stack.push(v);
+                }
+                Op::EndLoop => {
+                    loop_stack.pop();
+                }
+                Op::Range { kind, .. } => match kind {
+                    RangeKind::Group(l) => {
+                        let v = self
+                            .resolve_const(*l)
+                            .and_then(|c| c.as_dim())
+                            .unwrap_or(1)
+                            .max(1) as u64;
+                        group_stack.push(v);
+                    }
+                    RangeKind::Local(n) => {
+                        local_prod = local_prod.saturating_mul(*n as u64);
+                    }
+                    RangeKind::Warp(_) => {}
+                },
+                Op::Unary { .. } => {
+                    if self.dtype(op_id).is_float() {
+                        flops = flops.saturating_add(mult)
+                    }
+                }
+                Op::Binary { .. } => {
+                    if self.dtype(op_id).is_float() {
+                        flops = flops.saturating_add(mult)
+                    }
+                }
+                Op::Mad { .. } => {
+                    if self.dtype(op_id).is_float() {
+                        flops = flops.saturating_add(2 * mult)
+                    }
+                }
+                Op::Wmma { dims, .. } => {
+                    let (m, n, k) = dims.decompose_mnk();
+                    // One wmma per warp, not per thread.
+                    let ws = u64::from(self.dev_info().warp_size);
+                    let warps = (group_prod * local_prod / ws.max(1)).max(1);
+                    let loop_prod: u64 = loop_stack.iter().product::<u64>().max(1);
+                    flops = flops.saturating_add(2 * m * n * k * warps * loop_prod);
+                }
+                Op::ReduceTile { .. } => flops = flops.saturating_add(mult),
+                Op::Load { src, layout, .. } => {
+                    if let Op::Param { kind: ParamKind::Global, dtype, .. } = &self.ops[*src].op {
+                        let bytes = (dtype.bit_size() as u64 / 8) * layout.n_elements() as u64;
+                        read = read.saturating_add(bytes.saturating_mul(mult));
+                    }
+                }
+                Op::Store { dst, layout, .. } => {
+                    if let Op::Param { kind: ParamKind::GlobalMut, dtype, .. } = &self.ops[*dst].op {
+                        let bytes = (dtype.bit_size() as u64 / 8) * layout.n_elements() as u64;
+                        write = write.saturating_add(bytes.saturating_mul(mult));
+                    }
+                }
+                _ => {}
+            }
+            op_id = self.next_op(op_id);
+        }
+        (flops, read, write)
+    }
+
     /// Check if the kernel is a reduction kernel.
     pub(crate) fn is_reduce(&self) -> bool {
         self.ops.values().any(|x| matches!(x.op, Op::Reduce { .. } | Op::ReduceTile { .. }))

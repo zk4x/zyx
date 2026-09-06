@@ -80,11 +80,13 @@ with torch.no_grad():
     mean = (core * core).mean(-1, keepdim=True)
     normed = (core.permute(1, 0, 2) * torch.rsqrt(mean.permute(1, 0, 2) + 1e-6)
               * sd["norm.weight"] * F.silu(z6)).reshape(6, 6144).contiguous()
+    out_href = (normed.half() @ sd["out_proj.weight"].half().T).float()
     # Prove the intermediates are faithful: out-proj must match hf.
     check = normed @ sd["out_proj.weight"].T
     assert torch.allclose(check, out_ref[0], atol=1e-4), (
         f"intermediates drift from hf: max err {(check - out_ref[0]).abs().max()}")
     print("intermediates faithful to hf output")
+    print(f"out_href vs hf max err {(out_href - out_ref[0]).abs().max():.6f}")
 save_file(
     {
         "in_proj_qkv": sd["in_proj_qkv.weight"],
@@ -107,6 +109,7 @@ save_file(
         "mixed_s": mixed_s,
         "core": core,
         "normed": normed,
+        "out_href": out_href,
     },
     "../../data/qwen3_8b_linear_attention.safetensors",
 )
