@@ -23,9 +23,9 @@ fn elementwise_golden_kernel() -> Result<(), ZyxError> {
     let z = k.param_mut(DType::BF16);
 
     // Circular buffers (like shared memory tiling on CUDA)
-    let cx = k.storage(DType::BF16, MemScope::Circular, (TILE_ELEMS as i64).into());
-    let cy = k.storage(DType::BF16, MemScope::Circular, (TILE_ELEMS as i64).into());
-    let cz = k.storage(DType::BF16, MemScope::Circular, (TILE_ELEMS as i64).into());
+    let cx = k.storage(DType::BF16, MemScope::Circular, TILE_ELEMS as i64);
+    let cy = k.storage(DType::BF16, MemScope::Circular, TILE_ELEMS as i64);
+    let cz = k.storage(DType::BF16, MemScope::Circular, TILE_ELEMS as i64);
 
     // One group range; every group index owns one tile. Length = n_tiles.
     let g = k.group_range(0, n_tiles);

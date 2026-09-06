@@ -9,7 +9,7 @@
 
 use std::time::Instant;
 
-use zyx::kernel::{Acc, Dev, Kernel, MemScope};
+use zyx::kernel::{Dev, Kernel, MemScope};
 use zyx::{bf16, DType};
 use zyx::{Tensor, ZyxError};
 
@@ -18,7 +18,7 @@ const HIDDEN: usize = 64;
 const TOKENS: usize = 8;
 /// Number of m-stacked m16n8k8 subtiles per warp (wmma ops in flight per
 /// lane). Block tile = N_MMAS * 16 vocab rows x 8 tokens.
-const N_MMAS: usize = 8;
+const N_MMAS: usize = 2;
 const ROWS_PER_BLOCK: usize = N_MMAS * 16;
 const MMA_N: usize = 8;
 
@@ -83,30 +83,23 @@ fn lm_head_cuda() -> Result<(), ZyxError> {
     let xp = kernel.view_global_register(x, [tokens, hidden]); // B: [tokens, hidden], consecutive K
     let cp = kernel.view_global_register(out, [vocab, tokens]); // C: [vocab, tokens]
 
-    let [c8, c16] = kernel.const_idxs([8u32, 16]);
+    let [c8] = kernel.const_idxs([8u32]);
     let c_block = kernel.const_idx((N_MMAS * 16) as u32);
 
-    // Chunk coords: one [(N_MMAS * 16), 8] block tile = N_MMAS m-stacked
-    // m16n8k8 subtiles per warp.
+    // Block tile coords: one [(N_MMAS * 16), 8] block tile per warp; the
+    // logical acc covers the whole tile, its 16-row fragments are derived
+    // internally by mma/store_partition.
+    let r0 = kernel.mul(gidx, c_block);
     let n0 = kernel.mul(gidy, c8);
-    let mut r = [n0; N_MMAS]; // placeholder init, replaced below
-    for (i, r_i) in r.iter_mut().enumerate() {
-        let i16 = kernel.const_idx((16 * i) as u32);
-        *r_i = kernel.mad(gidx, c_block, i16);
-    }
 
-    let mut accs: [Acc; N_MMAS] = std::array::from_fn(|_| kernel.acc([c16, c8], DType::F32));
+    let acc = kernel.acc([c_block, c8], DType::F32);
 
     // Loop length (hidden / 8) is derived and patched by the first mma.
     kernel.loop_partition(|kernel, k| {
-        for (acc, &r_i) in accs.iter_mut().zip(r.iter()) {
-            kernel.mma(acc, c8, &wp, &xp, &[r_i, n0, k]);
-        }
+        kernel.mma_at(&acc, &wp, &xp, [r0, n0, k]);
     });
 
-    for (acc, &r_i) in accs.iter_mut().zip(r.iter()) {
-        kernel.store_partition(&cp, acc, &[r_i, n0]);
-    }
+    kernel.store_partition(&cp, &acc, [r0, n0]);
 
     let compiled = kernel.compile()?;
 
@@ -191,55 +184,36 @@ fn lm_head_cuda_local() -> Result<(), ZyxError> {
     let mut kernel = Kernel::new(Dev::Cuda(0));
 
     // Runtime args (llama.cpp passes these as kernel parameters).
-    let vocab = kernel.variable(DType::I64);
-    let hidden = kernel.variable(DType::I64);
-    let tokens = kernel.variable(DType::I64);
-    let glen_x = kernel.variable(DType::I64); // vocab / 128
-    let glen_y = kernel.variable(DType::I64); // tokens / 8
-
-    let w = kernel.param(DType::F16);
-    let x = kernel.param(DType::F16);
+    let [vocab, hidden, tokens, glen_x, glen_y] = kernel.variables([DType::I64; 5]);
+    let [w, x] = kernel.params([DType::F16; 2]);
     let out = kernel.param_mut(DType::F32);
 
-    let gidx = kernel.group_range(0, glen_x);
-    let gidy = kernel.group_range(1, glen_y);
+    let [gidx, gidy] = kernel.group_ranges([glen_x, glen_y]);
     // 2D local range: 32 x 4 = 128 threads = 4 warps. Warp boundaries are
     // axis 0 (x is fastest-varying in CUDA); lidy is the warp index. The
     // staging helper derives the flat thread id from these ranges.
-    let _tidm = kernel.local_range(0, 32);
-    let _tidn = kernel.local_range(1, 4);
-    kernel.warp(_tidm);
+    let [tidm, _] = kernel.local_ranges([32, 4]);
+    kernel.warp(tidm);
 
     // Views: fully symbolic iteration shapes, row-major strides derived.
     let cp = kernel.view_global_register(out, [vocab, tokens]); // C: [vocab, tokens]
-
-    let [c4, c8, c16, c128] = kernel.const_idxs([4u32, 8, 16, 128]);
 
     // Shared tiles: raw source + global view shape + tile geometry + depth.
     // llama.cpp mul_mat_q shape: one mma round per k-half. B is staged as a
     // single [8, 16] tile per k-block (a [8, 8] half would be 64 elements —
     // fewer than the 128 threads, which needs a guard), consumed by two
     // fixed-k mma rounds.
-    let w_shared = kernel.view_global_local(w, [vocab, hidden], [c128, c16], c4, 1);
-    let x_shared = kernel.view_global_local(x, [tokens, hidden], [c8, c16], c4, 1);
+    let w_shared = kernel.view_global_local(w, [vocab, hidden], [128, 16], 4, 1);
+    let x_shared = kernel.view_global_local(x, [tokens, hidden], [8, 16], 4, 1);
 
-    // Subtile row offsets, tile-local (mma coords) and global (store).
-    let zero = kernel.const_idx(0u32);
-    let mut r_local = [zero; 8];
-    let mut r_global = [zero; 8];
-    for (i, (rl, rg)) in r_local.iter_mut().zip(r_global.iter_mut()).enumerate() {
-        let i16 = kernel.const_idx((16 * i) as u32);
-        *rl = i16;
-        *rg = kernel.mad(gidx, c128, i16);
-    }
-
-    // 8 independent accumulators: 8 wmma ops in flight per lane.
-    let mut accs: [Acc; 8] = std::array::from_fn(|_| kernel.acc([c16, c8], DType::F32));
+    // Logical accumulator over the whole block tile [128, 8]: internally
+    // 8 m-stacked m16n8k8 fragments (8 wmma ops in flight per lane).
+    let acc = kernel.acc([128, 8], DType::F32);
 
     // Outer K loop: one A smem generation per iteration (hidden / 16).
     // llama.cpp mul_mat_q shape: A staged once per k-block, one B [8, 16]
-    // tile, two fixed-k mma rounds (k = 0, k = 8).
-    let kt_len = kernel.div(hidden, c16);
+    // tile; the mma's K extent (16) is processed in two internal rounds.
+    let kt_len = kernel.div(hidden, 16);
     kernel.loop_over(kt_len, |kernel, kt| {
         // Cooperative staging, one line per tile (llama's load_tiles).
         kernel.stage_global_local(&w_shared, [gidx, kt]);
@@ -250,20 +224,13 @@ fn lm_head_cuda_local() -> Result<(), ZyxError> {
         // stride ops live in the same scope as their mma consumers.
         let sap = kernel.view_local_register(&w_shared);
         let sbp = kernel.view_local_register(&x_shared);
-        // Two fixed-k mma rounds: one m16n8k8 per k-half, no loop patching.
-        for (acc, &rl) in accs.iter_mut().zip(r_local.iter()) {
-            kernel.mma(acc, c8, &sap, &sbp, &[rl, zero, zero]);
-        }
-        for (acc, &rl) in accs.iter_mut().zip(r_local.iter()) {
-            kernel.mma(acc, c8, &sap, &sbp, &[rl, zero, c8]);
-        }
+        kernel.mma(&acc, &sap, &sbp);
         kernel.barrier(); // consume done — next iteration may overwrite
     });
 
-    let n0 = kernel.mul(gidy, c8);
-    for (acc, &rg) in accs.iter_mut().zip(r_global.iter()) {
-        kernel.store_partition(&cp, acc, &[rg, n0]);
-    }
+    let n0 = kernel.mul(gidy, 8);
+    let row_base = kernel.mul(gidx, 128);
+    kernel.store_partition(&cp, &acc, [row_base, n0]);
 
     kernel.default_epilogue();
 
@@ -374,9 +341,9 @@ fn lm_head_tt() -> Result<(), ZyxError> {
     let nvar = k.variable(DType::I64);
     let z = k.param_mut(DType::BF16);
 
-    let ca = k.storage(DType::BF16, MemScope::Circular, 2048i64.into());
-    let cb = k.storage(DType::BF16, MemScope::Circular, 2048i64.into());
-    let cc = k.storage(DType::BF16, MemScope::Circular, 1024i64.into());
+    let ca = k.storage(DType::BF16, MemScope::Circular, 2048i64);
+    let cb = k.storage(DType::BF16, MemScope::Circular, 2048i64);
+    let cc = k.storage(DType::BF16, MemScope::Circular, 1024i64);
 
     // Single core.
     let one = k.const_idx(1i64);

@@ -31,8 +31,8 @@ use crate::shape::UAxis;
 use crate::slab::{Slab, SlabId};
 use crate::tensor::TensorId;
 use crate::types::{TinyString, TinyVec};
-use crate::{DType, Tensor, ZyxError, shape::Dim};
-use crate::{Dev, Map};
+use crate::{DType, Tensor, ZyxError, bf16, f16, shape::Dim};
+use crate::{Dev, Map, Scalar};
 
 /// A compiled kernel ready for repeated execution.
 ///
@@ -197,7 +197,9 @@ impl Kernel {
 
     /// Pad axis `axis` with `lp` zeros on the left, to total length `len`
     /// (tinygrad convention; right padding is `len - lp - orig_len`).
-    pub fn pad(&mut self, x: OpId, axis: UAxis, lp: OpId, len: OpId) -> OpId {
+    pub fn pad(&mut self, x: OpId, axis: UAxis, lp: impl IntoOp, len: impl IntoOp) -> OpId {
+        let lp = lp.into_op(self);
+        let len = len.into_op(self);
         self.push_back(Op::Move { x, mop: Box::new(MoveOp::Pad { axis, lp, len }) })
     }
 
@@ -209,34 +211,37 @@ impl Kernel {
     }
 
     /// Sum over the last dimension (given by `reduce_axis`).
-    pub fn reduce_sum(&mut self, x: OpId, reduce_axis: OpId) -> OpId {
+    pub fn reduce_sum(&mut self, x: OpId, reduce_axis: impl IntoOp) -> OpId {
+        let reduce_axis = reduce_axis.into_op(self);
         self.push_back(Op::Reduce { x, rop: BOp::Add, reduce_axis })
     }
 
     /// Max over the last dimension (given by `reduce_axis`).
-    pub fn reduce_max(&mut self, x: OpId, reduce_axis: OpId) -> OpId {
+    pub fn reduce_max(&mut self, x: OpId, reduce_axis: impl IntoOp) -> OpId {
+        let reduce_axis = reduce_axis.into_op(self);
         self.push_back(Op::Reduce { x, rop: BOp::Max, reduce_axis })
     }
 
     /// Product over the last dimension (given by `reduce_axis`).
-    pub fn reduce_prod(&mut self, x: OpId, reduce_axis: OpId) -> OpId {
+    pub fn reduce_prod(&mut self, x: OpId, reduce_axis: impl IntoOp) -> OpId {
+        let reduce_axis = reduce_axis.into_op(self);
         self.push_back(Op::Reduce { x, rop: BOp::Mul, reduce_axis })
     }
 
     /// Constant data value (uses natural dtype).
     /// For index constants, use [`Kernel::const_idx`].
-    pub fn const_val<T: crate::scalar::Scalar>(&mut self, val: T) -> OpId {
+    pub fn const_val<T: Scalar>(&mut self, val: T) -> OpId {
         self.push_back(Op::Const(Constant::new(val)))
     }
 
     /// Constant index value (normalized to index type).
     /// For data constants, use [`Kernel::const_val`].
-    pub fn const_idx<T: crate::scalar::Scalar>(&mut self, val: T) -> OpId {
+    pub fn const_idx<T: Scalar>(&mut self, val: T) -> OpId {
         self.push_back(Op::Const(Constant::idx(val)))
     }
 
     /// Create multiple constant indices.
-    pub fn const_idxs<const N: usize>(&mut self, vals: [u32; N]) -> [OpId; N] {
+    pub fn const_idxs<const N: usize, T: Scalar>(&mut self, vals: [T; N]) -> [OpId; N] {
         core::array::from_fn(|i| self.const_idx(vals[i]))
     }
 
@@ -255,6 +260,16 @@ impl Kernel {
         self.push_back(Op::Param { dtype, kind: ParamKind::Variable, shape: OpId::NULL })
     }
 
+    /// Define multiple scalar variable params (see [`Kernel::variable`]).
+    pub fn variables<const N: usize>(&mut self, dtypes: [DType; N]) -> [OpId; N] {
+        dtypes.map(|dtype| self.variable(dtype))
+    }
+
+    /// Define multiple kernel input params (see [`Kernel::param`]).
+    pub fn params<const N: usize>(&mut self, dtypes: [DType; N]) -> [OpId; N] {
+        dtypes.map(|dtype| self.param(dtype))
+    }
+
     /// Build a shape op from dimension values.
     ///
     /// A negative dim (`-1`) marks a dynamic/symbolic dimension and becomes a
@@ -270,8 +285,14 @@ impl Kernel {
         }
     }
 
-    /// Define a storage (kernel-internal memory).
-    pub fn storage(&mut self, dtype: DType, scope: MemScope, len: Dim) -> OpId {
+    /// Define a storage (kernel-internal memory). The `len` must resolve to
+    /// a constant (the buffer size is baked into the IR).
+    pub fn storage(&mut self, dtype: DType, scope: MemScope, len: impl IntoOp) -> OpId {
+        let len_op = len.into_op(self);
+        let len = self
+            .resolve_const(len_op)
+            .and_then(crate::dtype::Constant::as_dim)
+            .expect("storage: len must resolve to a constant");
         self.push_back(Op::Storage { dtype, scope, len })
     }
 
@@ -279,9 +300,12 @@ impl Kernel {
     ///
     /// Returns the storage id; the zero-init is emitted as a loop storing the
     /// dtype's zero value over the whole storage.
-    pub fn zeros(&mut self, dtype: DType, len: Dim) -> OpId {
+    pub fn zeros(&mut self, dtype: DType, len: impl IntoOp) -> OpId {
         let acc = self.storage(dtype, MemScope::Register, len);
-        let len_c = self.const_idx(len);
+        let len_c = self.const_idx(match self.ops[acc].op {
+            Op::Storage { len, .. } => len,
+            _ => unreachable!("zeros: storage op expected"),
+        });
         let zero = self.push_back(Op::Const(dtype.zero_constant()));
         let l = self.push_back(Op::Loop { len: len_c });
         self.store(acc, zero, l);
@@ -290,8 +314,19 @@ impl Kernel {
     }
 
     /// Group (block) index.
-    pub fn group_range(&mut self, axis: u32, len: OpId) -> OpId {
+    pub fn group_range(&mut self, axis: u32, len: impl IntoOp) -> OpId {
+        let len = len.into_op(self);
         self.push_back(Op::Range { axis, kind: RangeKind::Group(len) })
+    }
+
+    /// Group (block) indices, one per axis in order (see [`Kernel::group_range`]).
+    pub fn group_ranges<const N: usize>(&mut self, lens: [impl IntoOp; N]) -> [OpId; N] {
+        core::array::from_fn(|axis| self.group_range(axis as u32, lens[axis]))
+    }
+
+    /// Local thread indices, one per axis in order (see [`Kernel::local_range`]).
+    pub fn local_ranges<const N: usize>(&mut self, lens: [u32; N]) -> [OpId; N] {
+        core::array::from_fn(|axis| self.local_range(axis as u32, lens[axis]))
     }
 
     /// Local thread index.
@@ -311,17 +346,20 @@ impl Kernel {
     }
 
     /// Load from `src` at `index` (scalar layout: one element).
-    pub fn load(&mut self, src: OpId, index: OpId) -> OpId {
+    pub fn load(&mut self, src: OpId, index: impl IntoOp) -> OpId {
+        let index = index.into_op(self);
         self.load_op(src, index, MemLayout::Scalar)
     }
 
     /// Load a vector of `size` elements from `src` at `index`.
-    pub fn load_vector(&mut self, src: OpId, index: OpId, size: u16) -> OpId {
+    pub fn load_vector(&mut self, src: OpId, index: impl IntoOp, size: u16) -> OpId {
+        let index = index.into_op(self);
         self.load_op(src, index, MemLayout::Vector(size))
     }
 
     /// Load an `x` × `y` tile with `stride` from `src` at `index`.
-    pub fn load_tile(&mut self, src: OpId, index: OpId, x: u16, y: u16, stride: u32) -> OpId {
+    pub fn load_tile(&mut self, src: OpId, index: impl IntoOp, x: u16, y: u16, stride: u32) -> OpId {
+        let index = index.into_op(self);
         self.load_op(src, index, MemLayout::Tile { x, y, stride })
     }
 
@@ -330,17 +368,20 @@ impl Kernel {
     }
 
     /// Store `x` to `dst` at `index` (scalar layout: one element).
-    pub fn store(&mut self, dst: OpId, x: OpId, index: OpId) {
+    pub fn store(&mut self, dst: OpId, x: OpId, index: impl IntoOp) {
+        let index = index.into_op(self);
         self.store_op(dst, x, index, MemLayout::Scalar)
     }
 
     /// Store a vector of `size` elements to `dst` at `index`.
-    pub fn store_vector(&mut self, dst: OpId, x: OpId, index: OpId, size: u16) {
+    pub fn store_vector(&mut self, dst: OpId, x: OpId, index: impl IntoOp, size: u16) {
+        let index = index.into_op(self);
         self.store_op(dst, x, index, MemLayout::Vector(size))
     }
 
     /// Store an `x` × `y` tile with `stride` to `dst` at `index`.
-    pub fn store_tile(&mut self, dst: OpId, x: OpId, index: OpId, x_size: u16, y_size: u16, stride: u32) {
+    pub fn store_tile(&mut self, dst: OpId, x: OpId, index: impl IntoOp, x_size: u16, y_size: u16, stride: u32) {
+        let index = index.into_op(self);
         self.store_op(dst, x, index, MemLayout::Tile { x: x_size, y: y_size, stride })
     }
 
@@ -350,7 +391,8 @@ impl Kernel {
 
     /// Emit a loop over `len`, call `f` to build the body (the closure
     /// receives the kernel and the loop variable), then close the loop.
-    pub fn loop_over(&mut self, len: OpId, f: impl FnOnce(&mut Kernel, OpId)) {
+    pub fn loop_over(&mut self, len: impl IntoOp, f: impl FnOnce(&mut Kernel, OpId)) {
+        let len = len.into_op(self);
         let lv = self.push_back(Op::Loop { len });
         f(self, lv);
         self.push_back(Op::EndLoop);
@@ -369,93 +411,19 @@ impl Kernel {
         self.push_back(Op::EndLoop);
     }
 
-    /// Accumulate `a * b` over the currently open loop into a fresh scalar
-    /// accumulator (a `MemScope::Register` storage of `dtype`), returning the
-    /// accumulator's storage id.
-    ///
-    /// The loop must be open: an `Op::Loop` emitted, its `Op::EndLoop` not yet. The
-    /// helper hoists the accumulator and its zero-init before the loop
-    /// (via `move_op_before`) and appends the per-iteration
-    /// `acc = a[i] * b[i] + acc` block inside the loop body. The caller closes
-    /// the loop and loads the result from the returned storage afterwards.
-    ///
-    /// # Arguments
-    ///
-    /// - `loop_op`: the open loop (`loop_()` return value)
-    /// - `a`, `b`: sources to multiply
-    /// - `index_a`, `index_b`: index ops for `a` and `b`, typically built from `loop_op`
-    pub fn dot(&mut self, dtype: DType, loop_op: OpId, a: OpId, index_a: OpId, b: OpId, index_b: OpId) -> OpId {
-        let acc = self.storage(dtype, MemScope::Register, 1);
-        let idx0 = self.const_idx(0);
-        let zero = self.push_back(Op::Const(dtype.zero_constant()));
-        self.move_op_before(acc, loop_op);
-        self.move_op_before(idx0, loop_op);
-        self.move_op_before(zero, loop_op);
-        let init = self.push_back(Op::Store { dst: acc, src: zero, index: idx0, layout: MemLayout::Scalar });
-        self.move_op_before(init, loop_op);
-
-        let av = self.load(a, index_a);
-        let bv = self.load(b, index_b);
-        let old = self.load(acc, idx0);
-        let sum = self.mad(av, bv, old);
-        self.store(acc, sum, idx0);
-        acc
-    }
-
-    /// Cooperatively copy a tile into a `MemScope::Local` storage (shared memory).
-    ///
-    /// Emits a loop over `cols`; iteration `c` copies
-    /// `src[(row_base + thread_row) * cols + c]` to `dst[thread_row * cols + c]`
-    /// — i.e. each of `rows` workgroup threads fetches the `thread_row`-th row of
-    /// the tile. The caller is responsible for the surrounding `barrier()`s.
-    ///
-    /// Returns nothing; `dst` must be a `MemScope::Local` storage with room for
-    /// `rows * cols` elements.
-    ///
-    /// # Arguments
-    ///
-    /// - `src`, `dst`: global source and local destination storages
-    /// - `rows`, `cols`: tile dimensions (`rows` = number of threads participating)
-    /// - `row_base`: op giving the first global row to copy (tile origin)
-    /// - `thread_row`: the calling thread's row within the tile
-    pub fn copy_tile_local(&mut self, src: OpId, dst: OpId, rows: OpId, row_base: OpId, cols: OpId, thread_row: OpId) {
-        let c_loop = self.push_back(Op::Loop { len: cols });
-        let dst_idx = self.mad(thread_row, cols, c_loop);
-        let src_row = self.mad(row_base, rows, thread_row);
-        let src_idx = self.mad(src_row, cols, c_loop);
-        let v = self.load(src, src_idx);
-        self.store(dst, v, dst_idx);
-        self.push_back(Op::EndLoop);
-    }
-
-    /// For each column `c` of the `row`-th row of a `MemScope::Local` tile,
-    /// update a `MemScope::Register` accumulator vector:
-    /// `acc[c] = sa * acc[c] + sb * src[row * cols + c]`.
-    ///
-    /// Emits the loop over `cols` itself. `acc` must be a Register storage of
-    /// length `cols`; `sa` and `sb` are scalar ops broadcast across the row.
-    pub fn mad_tile_local(&mut self, acc: OpId, sa: OpId, sb: OpId, src: OpId, row: OpId, cols: OpId) {
-        let c_loop = self.push_back(Op::Loop { len: cols });
-        let tile_idx = self.mad(row, cols, c_loop);
-        let v = self.load(src, tile_idx);
-        let old = self.load(acc, c_loop);
-        let scaled = self.mul(old, sa);
-        let new = self.mad(sb, v, scaled);
-        self.store(acc, new, c_loop);
-        self.push_back(Op::EndLoop);
-    }
-
     pub(crate) fn unary(&mut self, x: OpId, uop: UOp) -> OpId {
         self.push_back(Op::Unary { x, uop })
     }
 
     /// `-x`
-    pub fn neg(&mut self, x: OpId) -> OpId {
+    pub fn neg(&mut self, x: impl IntoOp) -> OpId {
+        let x = x.into_op(self);
         self.unary(x, UOp::Neg)
     }
 
     /// `~x`
-    pub fn bit_not(&mut self, x: OpId) -> OpId {
+    pub fn bit_not(&mut self, x: impl IntoOp) -> OpId {
+        let x = x.into_op(self);
         self.unary(x, UOp::BitNot)
     }
 
@@ -463,59 +431,69 @@ impl Kernel {
     ///
     /// Decomposed as `exp2(x * log2(e))` — backends only implement `Exp2`
     /// natively (e.g. CUDA has no `expf` in its supported instruction set).
-    pub fn exp(&mut self, x: OpId) -> OpId {
+    pub fn exp(&mut self, x: impl IntoOp) -> OpId {
         let log2e = self.const_val(std::f32::consts::LOG2_E);
         let scaled = self.mul(x, log2e);
         self.exp2(scaled)
     }
 
     /// `2^x`
-    pub fn exp2(&mut self, x: OpId) -> OpId {
+    pub fn exp2(&mut self, x: impl IntoOp) -> OpId {
+        let x = x.into_op(self);
         self.unary(x, UOp::Exp2)
     }
 
     /// `ln(x)`
-    pub fn ln(&mut self, x: OpId) -> OpId {
+    pub fn ln(&mut self, x: impl IntoOp) -> OpId {
+        let x = x.into_op(self);
         self.unary(x, UOp::Ln)
     }
 
     /// `log2(x)`
-    pub fn log2(&mut self, x: OpId) -> OpId {
+    pub fn log2(&mut self, x: impl IntoOp) -> OpId {
+        let x = x.into_op(self);
         self.unary(x, UOp::Log2)
     }
 
     /// `1/x`
-    pub fn reciprocal(&mut self, x: OpId) -> OpId {
+    pub fn reciprocal(&mut self, x: impl IntoOp) -> OpId {
+        let x = x.into_op(self);
         self.unary(x, UOp::Reciprocal)
     }
 
     /// `sqrt(x)`
-    pub fn sqrt(&mut self, x: OpId) -> OpId {
+    pub fn sqrt(&mut self, x: impl IntoOp) -> OpId {
+        let x = x.into_op(self);
         self.unary(x, UOp::Sqrt)
     }
 
     /// `sin(x)`
-    pub fn sin(&mut self, x: OpId) -> OpId {
+    pub fn sin(&mut self, x: impl IntoOp) -> OpId {
+        let x = x.into_op(self);
         self.unary(x, UOp::Sin)
     }
 
     /// `cos(x)`
-    pub fn cos(&mut self, x: OpId) -> OpId {
+    pub fn cos(&mut self, x: impl IntoOp) -> OpId {
+        let x = x.into_op(self);
         self.unary(x, UOp::Cos)
     }
 
     /// `floor(x)`
-    pub fn floor(&mut self, x: OpId) -> OpId {
+    pub fn floor(&mut self, x: impl IntoOp) -> OpId {
+        let x = x.into_op(self);
         self.unary(x, UOp::Floor)
     }
 
     /// `trunc(x)`
-    pub fn trunc(&mut self, x: OpId) -> OpId {
+    pub fn trunc(&mut self, x: impl IntoOp) -> OpId {
+        let x = x.into_op(self);
         self.unary(x, UOp::Trunc)
     }
 
     /// `|x|`
-    pub fn abs(&mut self, x: OpId) -> OpId {
+    pub fn abs(&mut self, x: impl IntoOp) -> OpId {
+        let x = x.into_op(self);
         self.unary(x, UOp::Abs)
     }
 
@@ -524,102 +502,142 @@ impl Kernel {
     }
 
     /// `x + y`
-    pub fn add(&mut self, x: OpId, y: OpId) -> OpId {
+    pub fn add(&mut self, x: impl IntoOp, y: impl IntoOp) -> OpId {
+        let x = x.into_op(self);
+        let y = y.into_op(self);
         self.binary(x, y, BOp::Add)
     }
 
     /// `x - y`
-    pub fn sub(&mut self, x: OpId, y: OpId) -> OpId {
+    pub fn sub(&mut self, x: impl IntoOp, y: impl IntoOp) -> OpId {
+        let x = x.into_op(self);
+        let y = y.into_op(self);
         self.binary(x, y, BOp::Sub)
     }
 
     /// `x * y`
-    pub fn mul(&mut self, x: OpId, y: OpId) -> OpId {
+    pub fn mul(&mut self, x: impl IntoOp, y: impl IntoOp) -> OpId {
+        let x = x.into_op(self);
+        let y = y.into_op(self);
         self.binary(x, y, BOp::Mul)
     }
 
     /// `x / y`
-    pub fn div(&mut self, x: OpId, y: OpId) -> OpId {
+    pub fn div(&mut self, x: impl IntoOp, y: impl IntoOp) -> OpId {
+        let x = x.into_op(self);
+        let y = y.into_op(self);
         self.binary(x, y, BOp::Div)
     }
 
     /// `x^y`
-    pub fn pow(&mut self, x: OpId, y: OpId) -> OpId {
+    pub fn pow(&mut self, x: impl IntoOp, y: impl IntoOp) -> OpId {
+        let x = x.into_op(self);
+        let y = y.into_op(self);
         self.binary(x, y, BOp::Pow)
     }
 
     /// `x % y`
-    pub fn mod_(&mut self, x: OpId, y: OpId) -> OpId {
+    pub fn mod_(&mut self, x: impl IntoOp, y: impl IntoOp) -> OpId {
+        let x = x.into_op(self);
+        let y = y.into_op(self);
         self.binary(x, y, BOp::Mod)
     }
 
     /// `x and y`
-    pub fn and(&mut self, x: OpId, y: OpId) -> OpId {
+    pub fn and(&mut self, x: impl IntoOp, y: impl IntoOp) -> OpId {
+        let x = x.into_op(self);
+        let y = y.into_op(self);
         self.binary(x, y, BOp::And)
     }
 
     /// `x < y`
-    pub fn cmplt(&mut self, x: OpId, y: OpId) -> OpId {
+    pub fn cmplt(&mut self, x: impl IntoOp, y: impl IntoOp) -> OpId {
+        let x = x.into_op(self);
+        let y = y.into_op(self);
         self.binary(x, y, BOp::Cmplt)
     }
 
     /// `x > y`
-    pub fn cmpgt(&mut self, x: OpId, y: OpId) -> OpId {
+    pub fn cmpgt(&mut self, x: impl IntoOp, y: impl IntoOp) -> OpId {
+        let x = x.into_op(self);
+        let y = y.into_op(self);
         self.binary(x, y, BOp::Cmpgt)
     }
 
     /// `x >= y`
-    pub fn cmpge(&mut self, x: OpId, y: OpId) -> OpId {
+    pub fn cmpge(&mut self, x: impl IntoOp, y: impl IntoOp) -> OpId {
+        let x = x.into_op(self);
+        let y = y.into_op(self);
         self.binary(x, y, BOp::Cmpge)
     }
 
     /// `max(x, y)`
-    pub fn max(&mut self, x: OpId, y: OpId) -> OpId {
+    pub fn max(&mut self, x: impl IntoOp, y: impl IntoOp) -> OpId {
+        let x = x.into_op(self);
+        let y = y.into_op(self);
         self.binary(x, y, BOp::Max)
     }
 
     /// `x | y`
-    pub fn or_(&mut self, x: OpId, y: OpId) -> OpId {
+    pub fn or_(&mut self, x: impl IntoOp, y: impl IntoOp) -> OpId {
+        let x = x.into_op(self);
+        let y = y.into_op(self);
         self.binary(x, y, BOp::Or)
     }
 
     /// `x & y`
-    pub fn and_(&mut self, x: OpId, y: OpId) -> OpId {
+    pub fn and_(&mut self, x: impl IntoOp, y: impl IntoOp) -> OpId {
+        let x = x.into_op(self);
+        let y = y.into_op(self);
         self.binary(x, y, BOp::And)
     }
 
     /// `x ^ y`
-    pub fn bit_xor(&mut self, x: OpId, y: OpId) -> OpId {
+    pub fn bit_xor(&mut self, x: impl IntoOp, y: impl IntoOp) -> OpId {
+        let x = x.into_op(self);
+        let y = y.into_op(self);
         self.binary(x, y, BOp::BitXor)
     }
 
     /// `x | y`
-    pub fn bit_or(&mut self, x: OpId, y: OpId) -> OpId {
+    pub fn bit_or(&mut self, x: impl IntoOp, y: impl IntoOp) -> OpId {
+        let x = x.into_op(self);
+        let y = y.into_op(self);
         self.binary(x, y, BOp::BitOr)
     }
 
     /// `x & y`
-    pub fn bit_and(&mut self, x: OpId, y: OpId) -> OpId {
+    pub fn bit_and(&mut self, x: impl IntoOp, y: impl IntoOp) -> OpId {
+        let x = x.into_op(self);
+        let y = y.into_op(self);
         self.binary(x, y, BOp::BitAnd)
     }
 
     /// `x << y`
-    pub fn bit_shift_left(&mut self, x: OpId, y: OpId) -> OpId {
+    pub fn bit_shift_left(&mut self, x: impl IntoOp, y: impl IntoOp) -> OpId {
+        let x = x.into_op(self);
+        let y = y.into_op(self);
         self.binary(x, y, BOp::BitShiftLeft)
     }
 
     /// `x >> y`
-    pub fn bit_shift_right(&mut self, x: OpId, y: OpId) -> OpId {
+    pub fn bit_shift_right(&mut self, x: impl IntoOp, y: impl IntoOp) -> OpId {
+        let x = x.into_op(self);
+        let y = y.into_op(self);
         self.binary(x, y, BOp::BitShiftRight)
     }
 
     /// `x != y`
-    pub fn not_eq(&mut self, x: OpId, y: OpId) -> OpId {
+    pub fn not_eq(&mut self, x: impl IntoOp, y: impl IntoOp) -> OpId {
+        let x = x.into_op(self);
+        let y = y.into_op(self);
         self.binary(x, y, BOp::NotEq)
     }
 
     /// `x == y`
-    pub fn eq(&mut self, x: OpId, y: OpId) -> OpId {
+    pub fn eq(&mut self, x: impl IntoOp, y: impl IntoOp) -> OpId {
+        let x = x.into_op(self);
+        let y = y.into_op(self);
         self.binary(x, y, BOp::Eq)
     }
 
@@ -667,7 +685,8 @@ impl Kernel {
     }
 
     /// Begin conditional block.
-    pub fn if_(&mut self, condition: OpId) {
+    pub fn if_(&mut self, condition: impl IntoOp) {
+        let condition = condition.into_op(self);
         self.push_back(Op::If { condition });
     }
 
@@ -677,14 +696,18 @@ impl Kernel {
     }
 
     /// Cast to a different dtype.
-    pub fn cast(&mut self, x: OpId, dtype: DType) -> OpId {
+    pub fn cast(&mut self, x: impl IntoOp, dtype: DType) -> OpId {
+        let x = x.into_op(self);
         self.push_back(Op::Cast { x, dtype })
     }
 
     /// Branchless select: `cond ? a : b` as `a*sel + b*(1-sel)` where `sel` is
     /// `cond` cast to `a`'s dtype. `cond` must be bool; `a` and `b` must share a
     /// dtype (taken from `a`).
-    pub fn branchless_where(&mut self, cond: OpId, a: OpId, b: OpId) -> OpId {
+    pub fn branchless_where(&mut self, cond: impl IntoOp, a: impl IntoOp, b: impl IntoOp) -> OpId {
+        let cond = cond.into_op(self);
+        let a = a.into_op(self);
+        let b = b.into_op(self);
         let dtype = self.dtype(a);
         //debug_assert_eq!(self.dtype(cond), DType::Bool, "branchless_where: cond must be bool");
         //debug_assert_eq!(self.dtype(b), dtype, "branchless_where: a and b must share a dtype");
@@ -702,7 +725,10 @@ impl Kernel {
     /// including `±inf` (the arithmetic version computes `a*sel + b*(1-sel)`,
     /// which turns `±inf * 0` into `NaN`). Returns the selected value (loaded
     /// from a temporary register).
-    pub fn ternary_where(&mut self, cond: OpId, a: OpId, b: OpId) -> OpId {
+    pub fn ternary_where(&mut self, cond: impl IntoOp, a: impl IntoOp, b: impl IntoOp) -> OpId {
+        let cond = cond.into_op(self);
+        let a = a.into_op(self);
+        let b = b.into_op(self);
         let dtype = self.dtype(a);
         let out = self.storage(dtype, MemScope::Register, 1);
         let idx0 = self.const_idx(0);
@@ -722,13 +748,17 @@ impl Kernel {
     /// a value conversion. Requires equal bit widths of `x`'s dtype and
     /// `dtype` (`debug_assert`s it; the user-facing check lives in
     /// `Tensor::bitcast`).
-    pub fn bitcast(&mut self, x: OpId, dtype: DType) -> OpId {
+    pub fn bitcast(&mut self, x: impl IntoOp, dtype: DType) -> OpId {
+        let x = x.into_op(self);
         debug_assert_eq!(self.dtype(x).bit_size(), dtype.bit_size(), "bitcast requires equal bit widths");
         self.push_back(Op::Bitcast { x, dtype })
     }
 
     /// `x * y + z`
-    pub fn mad(&mut self, x: OpId, y: OpId, z: OpId) -> OpId {
+    pub fn mad(&mut self, x: impl IntoOp, y: impl IntoOp, z: impl IntoOp) -> OpId {
+        let x = x.into_op(self);
+        let y = y.into_op(self);
+        let z = z.into_op(self);
         self.push_back(Op::Mad { x, y, z })
     }
 }
@@ -1028,47 +1058,101 @@ pub struct Partition {
 /// defer against, so the tile size lives here; it is also what sizes
 /// shared-memory tiles once those exist), filled by [`Kernel::mma`] and
 /// written out by [`Kernel::store_partition`].
+///
+/// The tile is LOGICAL: the kernel author states the output tile they want
+/// (e.g. `[128, 8]`); [`Kernel::acc`] splits it into as many hardware
+/// fragment accumulators as the device's mma shape requires (CUDA SM 7.5:
+/// m16n8k8 → one 16x8 fragment per 16 rows). [`Kernel::mma`] and
+/// [`Kernel::store_partition`] iterate the fragments internally — the
+/// fragment geometry never reaches the call site.
 pub struct Acc {
-    /// Per-warp tile shape as bound ops (e.g. m16n8k8: two consts 16, 8).
-    tile: Vec<OpId>,
     /// Accumulator dtype.
     dtype: DType,
-    /// Per-lane register storage (`total / 32` elements).
-    storage: OpId,
+    /// Fragment grid width (logical cols / fragment cols); fragments are
+    /// stored row-major, so the grid height is `frags.len() / frag_cols`.
+    frag_cols: usize,
+    /// Per-fragment per-lane register storages (each holds
+    /// `frag_m * frag_n / warp_size` elements).
+    frags: Vec<OpId>,
 }
 
 impl Kernel {
     /// View a global tensor in registers: `src` plus a fully symbolic
     /// iteration `shape`. Strides are derived row-major. Emits no IR.
-    pub fn view_global_register<const N: usize>(&mut self, src: OpId, shape: [OpId; N]) -> Partition {
+    pub fn view_global_register<const N: usize>(&mut self, src: OpId, shape: [impl IntoOp; N]) -> Partition {
+        let mut shape_ops = Vec::with_capacity(N);
+        for d in shape {
+            shape_ops.push(d.into_op(self));
+        }
         let mut strides = Vec::with_capacity(N);
         for axis in 0..N {
-            strides.push(self.row_major_stride(&shape, axis));
+            strides.push(self.row_major_stride(&shape_ops, axis));
         }
-        Partition { src, shape: shape.to_vec(), strides, dtype: self.dtype(src) }
+        Partition { src, shape: shape_ops, strides, dtype: self.dtype(src) }
     }
 
     /// Partition with explicit strides (e.g. transposed or offset views).
-    pub fn partition_strided<const N: usize>(&mut self, src: OpId, shape: [OpId; N], strides: [OpId; N]) -> Partition {
-        debug_assert!(shape.iter().all(|&d| !d.is_null()), "partition: shape dims must be bound ops");
-        debug_assert!(strides.iter().all(|&s| !s.is_null()), "partition: strides must be bound ops");
-        Partition { src, shape: shape.to_vec(), strides: strides.to_vec(), dtype: self.dtype(src) }
+    pub fn partition_strided<const N: usize>(&mut self, src: OpId, shape: [impl IntoOp; N], strides: [impl IntoOp; N]) -> Partition {
+        let mut shape_ops = Vec::with_capacity(N);
+        for d in shape {
+            shape_ops.push(d.into_op(self));
+        }
+        let mut stride_ops = Vec::with_capacity(N);
+        for s in strides {
+            stride_ops.push(s.into_op(self));
+        }
+        debug_assert!(shape_ops.iter().all(|&d| !d.is_null()), "partition: shape dims must be bound ops");
+        debug_assert!(stride_ops.iter().all(|&s| !s.is_null()), "partition: strides must be bound ops");
+        Partition { src, shape: shape_ops, strides: stride_ops, dtype: self.dtype(src) }
     }
 
-    /// Create an accumulator: a zero-initialized per-lane register tile of
-    /// `total(tile) / 32` elements.
-    pub fn acc<const N: usize>(&mut self, tile: [OpId; N], dtype: DType) -> Acc {
-        let mut total: Dim = 1;
-        for &d in &tile {
-            let dim = self
-                .resolve_const(d)
-                .and_then(crate::dtype::Constant::as_dim)
-                .expect("acc: tile dim must resolve to a constant (const or variable op)");
-            total *= dim;
+    /// Create a logical accumulator: a zero-initialized per-lane register
+    /// tile over `tile`, split into device-native mma fragments (see
+    /// [`Kernel::mma_frag_dims`]). The tile must be a whole multiple of the
+    /// fragment shape.
+    pub fn acc<const N: usize>(&mut self, tile: [impl IntoOp; N], dtype: DType) -> Acc {
+        let mut tile_ops = Vec::with_capacity(N);
+        for d in tile {
+            tile_ops.push(d.into_op(self));
         }
-        debug_assert!(total > 0 && total % 32 == 0, "acc: tile must cover whole 32-lane warps");
-        let storage = self.zeros(dtype, total / 32);
-        Acc { tile: tile.to_vec(), dtype, storage }
+        let dims: Vec<Dim> = tile_ops
+            .iter()
+            .map(|&d| {
+                self.resolve_const(d)
+                    .and_then(crate::dtype::Constant::as_dim)
+                    .expect("acc: tile dim must resolve to a constant (const or variable op)")
+            })
+            .collect();
+        debug_assert_eq!(dims.len(), 2, "acc: tile must be rank 2 [m, n]");
+        debug_assert_eq!(dtype, DType::F32, "acc: f32 accumulator");
+        let info = self.device_info();
+        let (fm, fn_) = Self::mma_frag_dims(&info, dtype);
+        debug_assert!(
+            dims[0] > 0 && dims[0] % fm == 0 && dims[1] > 0 && dims[1] % fn_ == 0,
+            "acc: logical tile {:?} must be a whole multiple of the fragment shape {:?} (masking is a \
+             global-params concern, not an acc one)",
+            dims,
+            [fm, fn_]
+        );
+        let frag_rows = (dims[0] / fm) as usize;
+        let frag_cols = (dims[1] / fn_) as usize;
+        let mut frags = Vec::with_capacity(frag_rows * frag_cols);
+        for _ in 0..frag_rows * frag_cols {
+            frags.push(self.zeros(dtype, fm * fn_ / 32));
+        }
+        Acc { dtype, frag_cols, frags }
+    }
+
+    /// The device-native mma fragment shape `(m, n)` for an f32 accumulator
+    /// with f16 inputs. Fixed per device for now: CUDA SM >= 7.0 uses the
+    /// common m16n8k8 shape; everything else is `todo!()` until per-device
+    /// branches land (e.g. Tenstorrent's 32x32).
+    fn mma_frag_dims(info: &DeviceInfo, _dtype: DType) -> (Dim, Dim) {
+        if info.cc[0] >= 7 {
+            (16, 8)
+        } else {
+            todo!("mma: no fragment shape for device cc {:?} (f32 acc, f16 inputs)", info.cc)
+        }
     }
 
     /// Find the innermost open warp op by walking back from the tail.
@@ -1130,79 +1214,86 @@ impl Kernel {
         stride
     }
 
-    /// Warp matrix multiply-accumulate with fully automatic indexing.
+    /// Warp matrix multiply-accumulate with fully automatic indexing AND
+    /// fully automatic fragment scheduling.
     ///
-    /// `acc`'s tile defines the mma output geometry (v1: `[16, 8]` = m16n8,
-    /// f16 inputs, f32 accumulator). `k` selects the instruction variant and
-    /// must resolve to a constant: 8 → `m16n8k8`, 16 → `m16n8k16`. `a` and
-    /// `b` are partition views; `coords` are the chunk coordinates, assigned
-    /// positionally: `rank(a) - 1` coords for `a`'s non-loop axes (in axis
-    /// order), then `rank(b) - 1` for `b`'s, and the LAST coord is the K axis
-    /// of both views, with a chunk of `k`. Two modes: if the last coord is
-    /// the open loop variable, the call derives and patches the open loop's
-    /// length (`shape[K] / k`) and the K base is `loop_var * k`; otherwise
-    /// the last coord is a fixed K base op and must resolve to fit a single
-    /// wmma (`k <= 8` for m16n8k8 — the m16n8k16 shape needs the loop mode).
-    /// The call emits the lane-mapped A/B fragment loads (lane id found via
-    /// `open_warp`), the wmma and the accumulator update. The coords live in
-    /// the A/B views' own coordinate spaces (tile-local for a shared-memory
-    /// view); output coords for [`Kernel::store_partition`] are passed there
-    /// independently.
-    pub fn mma(&mut self, acc: &mut Acc, k: OpId, a: &Partition, b: &Partition, coords: &[OpId]) {
-        let tile_dims: Vec<Dim> = acc
-            .tile
-            .iter()
-            .map(|&d| self.resolve_const(d).and_then(crate::dtype::Constant::as_dim).expect("mma: acc tile dim must resolve"))
-            .collect();
-        debug_assert_eq!(tile_dims.len(), 2, "mma: acc tile must be rank 2 [m, n]");
-        debug_assert_eq!(acc.dtype, DType::F32, "mma v1: f32 accumulator");
+    /// The TILE form: `a` and `b` are exactly the tiles this call consumes
+    /// (e.g. shared-memory register views), so all origins are zero and the
+    /// K base is 0 — no coords. The A/B views' K extent is processed in
+    /// `frag_k` (8)-wide rounds. See [`Kernel::mma_at`] for the general
+    /// form and [`Kernel::mma_frag_dims`] for the fragment shape.
+    pub fn mma(&mut self, acc: &Acc, a: &Partition, b: &Partition) {
+        let c0 = self.const_idx(0u32);
+        let coords = vec![c0; a.shape.len() + b.shape.len() - 1];
+        self.mma_coords(acc, a, b, &coords, false);
+    }
+
+    /// Warp matrix multiply-accumulate over a chunk of views that are
+    /// LARGER than one call's tile (e.g. global-memory views): `coords`
+    /// select the chunk, assigned positionally: `rank(a) - 1` coords for
+    /// `a`'s non-K axes (in axis order), then `rank(b) - 1` for `b`'s, and
+    /// the LAST coord is the K base of both views. Two modes: if the last
+    /// coord is the open loop variable, the call derives and patches the
+    /// open loop's length (`shape[K] / frag_k`) and emits one fragment per
+    /// iteration (K base = `loop_var * frag_k`) — the view's K extent is
+    /// then the loop chunk. Otherwise the last coord is a fixed K base op
+    /// and the view's whole K extent is processed per call (it must resolve
+    /// to a multiple of `frag_k`) — the k-splitting is internal. The coords
+    /// live in the A/B views' own coordinate spaces; output coords for
+    /// [`Kernel::store_partition`] are passed there independently.
+    pub fn mma_at<const N: usize>(&mut self, acc: &Acc, a: &Partition, b: &Partition, coords: [impl IntoOp; N]) {
+        let mut coord_ops: Vec<OpId> = Vec::with_capacity(N);
+        for c in coords {
+            coord_ops.push(c.into_op(self));
+        }
+        self.mma_coords(acc, a, b, &coord_ops, true);
+    }
+
+    /// Shared mma body: `allow_loop_mode` gates the loop-patched K mode
+    /// (only meaningful when coords address into a bigger view).
+    fn mma_coords(&mut self, acc: &Acc, a: &Partition, b: &Partition, coords: &[OpId], allow_loop_mode: bool) {
+        debug_assert_eq!(acc.dtype, DType::F32, "mma: f32 accumulator");
         debug_assert_eq!(a.dtype, b.dtype, "mma: a/b dtype mismatch");
-        debug_assert_eq!(a.dtype, DType::F16, "mma v1: f16 inputs");
-        debug_assert_eq!(a.shape.len(), 2, "mma v1: a must be rank 2");
-        debug_assert_eq!(b.shape.len(), 2, "mma v1: b must be rank 2");
+        debug_assert_eq!(a.dtype, DType::F16, "mma: f16 inputs");
+        debug_assert_eq!(a.shape.len(), 2, "mma: a must be rank 2");
+        debug_assert_eq!(b.shape.len(), 2, "mma: b must be rank 2");
         debug_assert_eq!(
             coords.len(),
             a.shape.len() + b.shape.len() - 1,
-            "mma: coords must be [a non-loop coords..., b non-loop coords..., loop coord]"
+            "mma: coords must be [a non-K coords..., b non-K coords..., K base]"
         );
 
-        // k must resolve to a constant; (m, n, k) must be a real mma.sync
-        // shape. mma v1 emits f16 inputs with f32 accumulator, so only the
-        // f16 shapes are reachable.
-        let k_dim = self
-            .resolve_const(k)
-            .and_then(crate::dtype::Constant::as_dim)
-            .expect("mma: k must resolve to a constant to select the wmma variant");
-        let dims = match (tile_dims[0], tile_dims[1], k_dim) {
-            (16, 8, 8) => MMADims::m16n8k8,
-            (16, 8, 16) => MMADims::m16n8k16,
-            other => panic!(
-                "mma: unsupported (m, n, k) = {:?} for f16 inputs with f32 accumulator (supported: \
-                 (16, 8, 8) -> m16n8k8, (16, 8, 16) -> m16n8k16; the s8/s4/b1 shapes need dtype \
-                 parameterization in mma)",
-                other
-            ),
-        };
-        // m16n8k16 A/B fragments additionally hold the k+8..+16 half.
-        let k_half = if k_dim == 8 { 0 } else { 8 };
+        let frag_k: Dim = 8; // m16n8k8
+        let dims = MMADims::m16n8k8;
 
         // Two modes: loop-patched (last coord is the open loop variable,
-        // K base = loop_var * k) or fixed K base (last coord is any op).
-        let lv = self.open_loop_var();
-        let loop_mode = coords[coords.len() - 1] == lv;
-        debug_assert!(
-            loop_mode || k_dim <= 8,
-            "mma: a fixed K coord must fit a single wmma (k <= 8); use the loop mode for larger chunks"
-        );
-
-        // Bind the loop length on first use: K chunk is `k_dim`. The div is
-        // inserted BEFORE the loop so the bound is loop-invariant in the
-        // linear order.
-        if loop_mode && matches!(self.ops[lv].op, Op::Loop { len } if len.is_null()) {
-            let a_k = a.shape[1];
-            let len = self.insert_before(lv, Op::Binary { x: a_k, y: k, bop: BOp::Div });
-            self.ops[lv].op = Op::Loop { len };
-        }
+        // K base = loop_var * frag_k, one fragment per iteration) or fixed
+        // K base (last coord is any op; the view's whole K extent is
+        // processed in frag_k-wide rounds).
+        let mut lv = OpId::NULL;
+        let loop_mode = allow_loop_mode && {
+            lv = self.open_loop_var();
+            coords[coords.len() - 1] == lv
+        };
+        let rounds: Dim = if loop_mode {
+            // Bind the loop length on first use: K chunk is `frag_k`. The
+            // const and the div are inserted BEFORE the loop so the bound is
+            // loop-invariant in the linear order.
+            if matches!(self.ops[lv].op, Op::Loop { len } if len.is_null()) {
+                let frag_k_op = self.insert_before(lv, Op::Const(crate::dtype::Constant::idx(frag_k as u32)));
+                let a_k = a.shape[1];
+                let len = self.insert_before(lv, Op::Binary { x: a_k, y: frag_k_op, bop: BOp::Div });
+                self.ops[lv].op = Op::Loop { len };
+            }
+            1
+        } else {
+            let k_extent = self
+                .resolve_const(a.shape[1])
+                .and_then(crate::dtype::Constant::as_dim)
+                .expect("mma: fixed mode requires the view's K extent to resolve (it is the whole per-call chunk)");
+            debug_assert!(k_extent > 0 && k_extent % frag_k == 0, "mma: K extent {k_extent} must be a multiple of frag_k {frag_k}");
+            k_extent / frag_k
+        };
 
         let lane = self.open_warp();
         let [c1, c2, c4, c8] = self.const_idxs([1u32, 2, 4, 8]);
@@ -1210,86 +1301,89 @@ impl Kernel {
         let gid = self.div(lane, c4);
         let tig = self.mod_(lane, c4);
         let tig2 = self.mul(tig, c2);
-        let k0 = if loop_mode { self.mul(lv, k) } else { coords[coords.len() - 1] };
+        let k_base = if loop_mode { self.mul(lv, c8) } else { coords[coords.len() - 1] };
 
-        // A fragment: rows {r + gid, r + 8 + gid}, k cols {k0 + 2*tig, +1}
-        // and (k=16) {k0 + 8 + 2*tig, +1}. Register order: each 2-col pair
-        // holds (row, col0), (row, col1), (row_hi, col0), (row_hi, col1).
-        let a_row = self.add(coords[0], gid);
-        let a_row_hi = self.add(a_row, c8);
-        let a_col = self.add(k0, tig2);
-        let a_col_p1 = self.add(a_col, c1);
-        let a_cols: Vec<OpId> = if k_half == 0 {
-            vec![a_col, a_col_p1]
-        } else {
-            let k0_hi = self.add(k0, c8);
-            let a_col_hi = self.add(k0_hi, tig2);
-            let a_col_hi_p1 = self.add(a_col_hi, c1);
-            vec![a_col, a_col_p1, a_col_hi, a_col_hi_p1]
-        };
-        let mut a_elems = Vec::new();
-        for col_pair in a_cols.chunks(2) {
-            for row in [a_row, a_row_hi] {
-                for col in col_pair {
-                    let c = self.stride_mul(*col, a.strides[1]);
-                    let idx = self.mad(row, a.strides[0], c);
-                    a_elems.push(self.load(a.src, idx));
+        for fi in 0..acc.frags.len() {
+            let frag_row = (fi / acc.frag_cols) as Dim;
+            let frag_col = (fi % acc.frag_cols) as Dim;
+            // Fragment position within the logical tile.
+            let frag_row_op = if frag_row == 0 {
+                coords[0]
+            } else {
+                let off = self.const_idx((frag_row * 16) as u32);
+                self.add(coords[0], off)
+            };
+            let frag_col_op = if frag_col == 0 {
+                coords[1]
+            } else {
+                let off = self.const_idx((frag_col * 8) as u32);
+                self.add(coords[1], off)
+            };
+
+            // A fragment: rows {r + gid, r + 8 + gid}, k cols {k0 + 2*tig, +1}.
+            // Register order: each 2-col pair holds (row, col0), (row, col1),
+            // (row_hi, col0), (row_hi, col1).
+            let a_row = self.add(frag_row_op, gid);
+            let a_row_hi = self.add(a_row, c8);
+            let b_row = self.add(frag_col_op, gid);
+
+            for r in 0..rounds {
+                let k0 = if r == 0 {
+                    k_base
+                } else {
+                    let off = self.const_idx((8 * r) as u32);
+                    self.add(k_base, off)
+                };
+                let a_col = self.add(k0, tig2);
+                let a_col_p1 = self.add(a_col, c1);
+                let a_cols = [a_col, a_col_p1];
+
+                let mut a_elems = Vec::new();
+                for row in [a_row, a_row_hi] {
+                    for col in a_cols {
+                        let c = self.stride_mul(col, a.strides[1]);
+                        let idx = self.mad(row, a.strides[0], c);
+                        a_elems.push(self.load(a.src, idx));
+                    }
                 }
+                let a_frag = self.stack(&a_elems);
+
+                // B fragment: rows {n + gid}, the same shared k cols (consecutive K).
+                let mut b_elems = Vec::new();
+                for col in a_cols {
+                    let bc = self.stride_mul(col, b.strides[1]);
+                    let idx = self.mad(b_row, b.strides[0], bc);
+                    b_elems.push(self.load(b.src, idx));
+                }
+                let b_frag = self.stack(&b_elems);
+
+                let idx0 = self.const_idx(0u32);
+                let acc_old = self.load_vector(acc.frags[fi], idx0, 4);
+                let acc_new = self.wmma(dims, MMALayout::row_col, MMADType::f16_f16_f16_f32, a_frag, b_frag, acc_old);
+                self.store_vector(acc.frags[fi], acc_new, idx0, 4);
             }
         }
-        let a_frag = self.stack(&a_elems);
-
-        // B fragment: rows {n + gid}, the same shared k cols (consecutive K).
-        let b_row = self.add(coords[1], gid);
-        let mut b_elems = Vec::new();
-        for col in &a_cols {
-            let bc = self.stride_mul(*col, b.strides[1]);
-            let idx = self.mad(b_row, b.strides[0], bc);
-            b_elems.push(self.load(b.src, idx));
-        }
-        let b_frag = self.stack(&b_elems);
-
-        let idx0 = self.const_idx(0u32);
-        let acc_old = self.load_vector(acc.storage, idx0, 4);
-        let acc_new = self.wmma(dims, MMALayout::row_col, MMADType::f16_f16_f16_f32, a_frag, b_frag, acc_old);
-        self.store_vector(acc.storage, acc_new, idx0, 4);
     }
 
-    /// Store an accumulator to a global output view with fully automatic
-    /// indexing: each lane scatters its C-fragment values to their global
-    /// positions (mma.sync C mapping: rows {r + gid + 8*b}, cols
-    /// {c + 2*tig, + 1}, one 2-col pair per 8-row block `b`). `coords` are
-    /// the output tile's position in `c`'s own coordinate space (global for
-    /// a gmem view) — mma's fragment coords live in the A/B views' spaces
-    /// and are independent of these. The lane id is found via `open_warp`.
-    pub fn store_partition(&mut self, c: &Partition, acc: &Acc, coords: &[OpId]) {
-        let tile_dims: Vec<Dim> = acc
-            .tile
-            .iter()
-            .map(|&d| {
-                self.resolve_const(d)
-                    .and_then(crate::dtype::Constant::as_dim)
-                    .expect("store_partition: acc tile dim must resolve")
-            })
-            .collect();
-        debug_assert_eq!(tile_dims.len(), 2, "store_partition: acc tile must be rank 2 [m, n]");
+    /// Store a logical accumulator to a global output view with fully
+    /// automatic indexing: the fragments are iterated internally (row-major,
+    /// matching [`Kernel::acc`]), each lane scatters its C-fragment values
+    /// to their global positions (mma.sync C mapping: rows {r + gid + 8*b},
+    /// cols {c + 2*tig, + 1}, one 2-col pair per 8-row block `b`, offset by
+    /// the fragment's position in the logical tile). `coords` are the
+    /// logical output tile's position in `c`'s own coordinate space (global
+    /// for a gmem view) — mma's fragment coords live in the A/B views'
+    /// spaces and are independent of these. The lane id is found via
+    /// `open_warp`.
+    pub fn store_partition<const N: usize>(&mut self, c: &Partition, acc: &Acc, coords: [impl IntoOp; N]) {
+        let mut coord_ops: Vec<OpId> = Vec::with_capacity(N);
+        for coord in coords {
+            coord_ops.push(coord.into_op(self));
+        }
+        let coords: &[OpId] = &coord_ops;
         debug_assert_eq!(acc.dtype, DType::F32, "store_partition: f32 accumulator");
         debug_assert_eq!(c.shape.len(), 2, "store_partition: output must be rank 2");
         debug_assert_eq!(coords.len(), 2, "store_partition: one coord per output axis");
-
-        // Row-block count per tile: each 8-row block contributes one 2-element
-        // C-fragment pair per lane (m8n8: 1, m16n8: 2, m32n8: 4).
-        let (m, n) = (tile_dims[0], tile_dims[1]);
-        let row_blocks = match (m, n) {
-            (8, 8) => 1,
-            (16, 8) => 2,
-            (32, 8) => 4,
-            (8, 32) => todo!("store_partition: m8n32 C-fragment column layout not implemented"),
-            other => panic!(
-                "store_partition: unsupported acc tile (m, n) = {other:?} (valid mma.sync output tiles: \
-                 8x8, 16x8, 32x8, 8x32)"
-            ),
-        };
 
         let lane = self.open_warp();
         let [c2, c4] = self.const_idxs([2u32, 4]);
@@ -1299,42 +1393,68 @@ impl Kernel {
         let row = self.add(coords[0], gid);
         let col = self.mad(tig, c2, coords[1]);
         let idx0 = self.const_idx(0u32);
-        let acc_final = self.load_vector(acc.storage, idx0, (m * n / 32) as u16);
         let col0 = self.stride_mul(col, c.strides[1]);
-        let mut elems = Vec::new();
-        for i in 0..(m * n / 32) as usize {
-            elems.push(self.devectorize_one(acc_final, i));
-        }
-        for b in 0..row_blocks {
-            let o = if b == 0 {
-                self.mad(row, c.strides[0], col0)
+        for fi in 0..acc.frags.len() {
+            let frag_row = (fi / acc.frag_cols) as Dim;
+            let frag_col = (fi % acc.frag_cols) as Dim;
+            let acc_final = self.load_vector(acc.frags[fi], idx0, 4);
+            let mut elems = Vec::new();
+            for i in 0..4usize {
+                elems.push(self.devectorize_one(acc_final, i));
+            }
+            // Fragment offset within the logical tile.
+            let row_f = if frag_row == 0 {
+                row
             } else {
-                let rb = self.const_idx((8 * b) as u32);
-                let row_b = self.add(row, rb);
-                self.mad(row_b, c.strides[0], col0)
+                let off = self.const_idx((16 * frag_row) as u32);
+                self.add(row, off)
             };
-            let o_p1 = self.add(o, c.strides[1]);
-            self.store(c.src, elems[2 * b], o);
-            self.store(c.src, elems[2 * b + 1], o_p1);
+            let col_f0 = if frag_col == 0 {
+                col0
+            } else {
+                let off = self.const_idx((8 * frag_col) as u32);
+                let off_strided = self.mul(off, c.strides[1]);
+                let col_f = self.add(col, off_strided);
+                self.stride_mul(col_f, c.strides[1])
+            };
+            // Each 16x8 fragment contributes two 8-row blocks of one 2-element
+            // pair per lane.
+            for b in 0..2 {
+                let o = if b == 0 {
+                    self.mad(row_f, c.strides[0], col_f0)
+                } else {
+                    let rb = self.const_idx((8 * b) as u32);
+                    let row_b = self.add(row_f, rb);
+                    self.mad(row_b, c.strides[0], col_f0)
+                };
+                let o_p1 = self.add(o, c.strides[1]);
+                self.store(c.src, elems[2 * b], o);
+                self.store(c.src, elems[2 * b + 1], o_p1);
+            }
         }
     }
 }
 
-/// Shape/length argument for builder calls: an already-bound op, or a
-/// constant dimension written inline (`[16, 8]` vs `[c16, c8]`).
-pub trait IntoDimOp: Copy {
+/// Scalar/op argument for builder calls: an already-bound op, or ANY scalar
+/// constant written inline (`[128, 16]` vs `[c128, c16]`, `kernel.add(x, 1)`).
+/// Constants become `Op::Const` index ops (normalized to `IDX_T`); floats are
+/// accepted but every consumer of index math asserts its dims/tiles resolve to
+/// integer `IDX_T` constants.
+pub trait IntoOp: Copy {
     /// Convert to a bound op (constants become index `Op::Const` ops).
-    fn into_dim_op(self, kernel: &mut Kernel) -> OpId;
+    fn into_op(self, kernel: &mut Kernel) -> OpId;
 }
 
-impl IntoDimOp for OpId {
-    fn into_dim_op(self, _kernel: &mut Kernel) -> OpId {
+impl IntoOp for OpId {
+    fn into_op(self, _kernel: &mut Kernel) -> OpId {
         self
     }
 }
 
-impl IntoDimOp for Dim {
-    fn into_dim_op(self, kernel: &mut Kernel) -> OpId {
+/// Integer scalars (Dim = i64). A negative dim keeps the `-1` → `Variable`
+/// escape hatch for symbolic dimensions.
+impl IntoOp for Dim {
+    fn into_op(self, kernel: &mut Kernel) -> OpId {
         if self < 0 {
             kernel.variable(IDX_T)
         } else {
@@ -1343,11 +1463,22 @@ impl IntoDimOp for Dim {
     }
 }
 
-impl IntoDimOp for u32 {
-    fn into_dim_op(self, kernel: &mut Kernel) -> OpId {
-        kernel.const_idx(self)
+impl IntoOp for bool {
+    fn into_op(self, kernel: &mut Kernel) -> OpId {
+        kernel.const_idx(self as u32)
     }
 }
+
+macro_rules! impl_into_op_float {
+    ($($t:ty),*) => {$(
+        impl IntoOp for $t {
+            fn into_op(self, kernel: &mut Kernel) -> OpId {
+                kernel.const_val(self)
+            }
+        }
+    )*}
+}
+impl_into_op_float!(f16, bf16, f32, f64);
 
 /// Shared-memory tile: a `MemScope::Local` buffer of `depth` generations of
 /// `total(tile)` elements, cut from the global view `view_shape`. Created by
@@ -1390,12 +1521,12 @@ impl Kernel {
     /// staging is performed by [`Kernel::load_global_local`], one element
     /// per call. The rank `N` is carried by the returned
     /// [`LocalPartition<N>`].
-    pub fn view_global_local<const N: usize, S: IntoDimOp>(&mut self, src: OpId, view_shape: [S; N], tile: [S; N], pad: impl IntoDimOp, depth: u32) -> LocalPartition<N> {
+    pub fn view_global_local<const N: usize>(&mut self, src: OpId, view_shape: [impl IntoOp; N], tile: [impl IntoOp; N], pad: impl IntoOp, depth: u32) -> LocalPartition<N> {
         debug_assert!(N > 0, "view_global_local: rank must be non-zero");
         debug_assert!(depth >= 1, "view_global_local: depth must be >= 1");
-        let view_shape: [OpId; N] = view_shape.map(|s| s.into_dim_op(self));
-        let tile: [OpId; N] = tile.map(|s| s.into_dim_op(self));
-        let pad_op = pad.into_dim_op(self);
+        let view_shape: [OpId; N] = view_shape.map(|s| s.into_op(self));
+        let tile: [OpId; N] = tile.map(|s| s.into_op(self));
+        let pad_op = pad.into_op(self);
         let tile_dims: Vec<Dim> = tile
             .iter()
             .map(|&d| {
@@ -1432,8 +1563,10 @@ impl Kernel {
     /// mappings like `id = la * threads + tid` are exactly how papers write
     /// it). Returns `()` — view the staged tile with
     /// [`Kernel::view_local_register`].
-    pub fn load_global_local<const N: usize>(&mut self, shared: &LocalPartition<N>, origins: [OpId; N], id: OpId) {
+    pub fn load_global_local<const N: usize>(&mut self, shared: &LocalPartition<N>, origins: [impl IntoOp; N], id: impl IntoOp) {
         debug_assert!(N > 0, "load_global_local: rank must be non-zero");
+        let origins: [OpId; N] = origins.map(|o| o.into_op(self));
+        let id = id.into_op(self);
 
         // Generation offset: tile lands in buffer `origins[last] % depth`
         // (single buffering: offset 0).
@@ -1500,8 +1633,9 @@ impl Kernel {
     /// element. The tile size must be a multiple of the thread count.
     /// Barriers are user-written: stage, then `barrier()`, consume, then
     /// `barrier()` before the next stage may overwrite.
-    pub fn stage_global_local<const N: usize>(&mut self, shared: &LocalPartition<N>, origins: [OpId; N]) {
+    pub fn stage_global_local<const N: usize>(&mut self, shared: &LocalPartition<N>, origins: [impl IntoOp; N]) {
         debug_assert!(N > 0, "stage_global_local: rank must be non-zero");
+        let origins: [OpId; N] = origins.map(|o| o.into_op(self));
         let lids = self.open_local_ids();
         debug_assert!(!lids.is_empty(), "stage_global_local: no open local ranges — call k.local_range(..) before staging");
 
