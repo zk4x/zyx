@@ -2422,6 +2422,7 @@ impl Tensor {
     /// # Errors
     ///
     /// Returns error if tensors cannot be concattenated along axis.
+    #[track_caller]
     pub fn cat<'a>(tensors: impl IntoIterator<Item = &'a Tensor>, axis: Axis) -> Result<Tensor, ZyxError> {
         let tensors: Vec<&Tensor> = tensors.into_iter().collect();
         if tensors.len() < 2 {

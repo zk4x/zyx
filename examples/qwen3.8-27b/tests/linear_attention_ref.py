@@ -2,9 +2,10 @@
 # SPDX-License-Identifier: LGPL-3.0-only WITH Classpath-exception-2.0
 """Golden reference for the linear-attention (GatedDeltaNet) block.
 
-Uses the real Qwen3_5GatedDeltaNet class (hidden 32, 2 k-heads, 2 v-heads,
-k/v dim 8, conv kernel 4, seq 6) with the torch fallback kernel (no cache,
-no mask). Dumps all nine weights + input/output (float32).
+Uses the real Qwen3_5GatedDeltaNet class with the real Qwen3.8-27B linear
+attention geometry (hidden 5120, 16 k-heads, 48 v-heads, k/v dim 128,
+conv kernel 4, seq 6 — a single chunk of 64) with the torch fallback kernel
+(no cache, no mask). Dumps all nine weights + input/output (float32).
 
 Run from this directory: python3.12 linear_attention_ref.py
 """
@@ -17,17 +18,17 @@ from transformers.models.qwen3_5.configuration_qwen3_5 import Qwen3_5TextConfig
 torch.manual_seed(5)
 
 config = Qwen3_5TextConfig(
-    hidden_size=32,
-    linear_key_head_dim=8,
-    linear_value_head_dim=8,
-    linear_num_key_heads=2,
-    linear_num_value_heads=2,
+    hidden_size=5120,
+    linear_key_head_dim=128,
+    linear_value_head_dim=128,
+    linear_num_key_heads=16,
+    linear_num_value_heads=48,
     linear_conv_kernel_dim=4,
     hidden_act="silu",
     rms_norm_eps=1e-6,
 )
 net = Qwen3_5GatedDeltaNet(config, layer_idx=1)
-h = torch.randn(1, 6, 32)
+h = torch.randn(1, 6, 5120)
 with torch.no_grad():
     output = net(h, None, None)
 

@@ -191,7 +191,19 @@ impl Kernel {
                         context: "CUDA codegen: unexpected kernel op (should be unfolded)".into(),
                     });
                 }
-                Op::Asm { .. } => todo!(),
+                Op::Asm { ref asm, ref ops } => {
+                    // Inline expression template: `{i}` is substituted with
+                    // the C expression of ops[i]. Result dtype/layout comes
+                    // from ops[0] (see compute_dtypes_and_rcs).
+                    let (dtype, layout) = dtypes[&op_id];
+                    let reg = new_reg(op_id, &mut reg_map, &mut registers, (dtype, layout), rcs[&op_id], loop_id);
+                    let mut rendered: String = asm.as_str().into();
+                    for (i, &operand) in ops.iter().enumerate() {
+                        let var = get_var(operand, &constants, &indices, &reg_map, &mut registers, loop_id, &var_params)?;
+                        rendered = rendered.replace(&format!("{{{i}}}"), &var);
+                    }
+                    _ = writeln!(source, "{indent}r{reg} = {rendered};");
+                }
                 Op::Const(x) => {
                     constants.insert(op_id, x);
                 }

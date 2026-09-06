@@ -58,7 +58,15 @@ impl Kernel {
             let mut op_id = self.head;
             while !op_id.is_null() {
                 match self.ops[op_id].op {
-                    Op::Asm { .. } => todo!(),
+                    Op::Asm { ref ops, .. } => {
+                        // Same rule as compute_dtypes_and_rcs: result takes
+                        // ops[0]'s dtype/layout, ops are consumed operands.
+                        let (dtype, layout) = dtypes[&ops[0]];
+                        dtypes.insert(op_id, (dtype, layout));
+                        for &x in ops.iter() {
+                            *rcs.entry(x).or_insert(0) += 1;
+                        }
+                    }
                     Op::Move { .. } | Op::Reduce { .. } => {
                         unreachable!()
                     }
@@ -182,7 +190,7 @@ impl Kernel {
         while !op_id.is_null() {
             // Register allocation: allocate if this op produces a value
             let produces = match self.ops[op_id].op {
-                Op::Asm { .. } => todo!(),
+                Op::Asm { .. } => true,
                 Op::Storage { scope: MemScope::Register, .. } => true,
                 Op::Load { .. }
                 | Op::Cast { .. }

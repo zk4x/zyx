@@ -375,8 +375,10 @@ impl Kernel {
                     *rcs.entry(y).or_insert(0) += 1;
                 }
                 Op::Asm { ref ops, .. } => {
+                    // Result takes ops[0]'s dtype/layout; the template's
+                    // `{i}` placeholders substitute the operand expressions.
                     let dtype = dtypes[&ops[0]];
-                    dtypes.insert(op_id, (dtype.0, MemLayout::Vector(ops.len().try_into().unwrap())));
+                    dtypes.insert(op_id, dtype);
                     for &x in ops.iter() {
                         *rcs.entry(x).or_insert(0) += 1;
                     }

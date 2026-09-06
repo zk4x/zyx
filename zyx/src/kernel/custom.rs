@@ -427,12 +427,21 @@ impl Kernel {
 
     /// `e^x`
     ///
-    /// Decomposed as `exp2(x * log2(e))` — backends only implement `Exp2`
-    /// natively (e.g. CUDA has no `expf` in its supported instruction set).
+    /// Devices with a native `exp2` (CUDA, PTX: their codegens reject raw
+    /// `Exp`) get `exp2(x * log2(e))`; the rest (TT, C, OpenCL, …) get the
+    /// raw `Exp` op, which their codegens implement natively.
     pub fn exp(&mut self, x: impl IntoOp) -> OpId {
-        let log2e = self.const_val(std::f32::consts::LOG2_E);
-        let scaled = self.mul(x, log2e);
-        self.exp2(scaled)
+        let x = x.into_op(self);
+        let native_exp2 = self.dev_info.as_ref().is_some_and(|d| d.has_native_exp2);
+        if native_exp2 {
+            let log2e = self.const_val(std::f32::consts::LOG2_E);
+            let dtype = self.dtype(x);
+            let log2e = self.cast(log2e, dtype);
+            let scaled = self.mul(x, log2e);
+            self.exp2(scaled)
+        } else {
+            self.unary(x, UOp::Exp)
+        }
     }
 
     /// `2^x`
@@ -493,6 +502,40 @@ impl Kernel {
     pub fn abs(&mut self, x: impl IntoOp) -> OpId {
         let x = x.into_op(self);
         self.unary(x, UOp::Abs)
+    }
+
+    /// `1 / (1 + exp(-x))`, composed from `exp2` (raw `Exp` is rejected by
+    /// the CUDA backend, so composites must go through `exp2`).
+    pub fn sigmoid(&mut self, x: impl IntoOp) -> OpId {
+        let x = x.into_op(self);
+        let nx = self.mul(x, -std::f32::consts::LOG2_E);
+        let e = self.exp2(nx);
+        let one = self.const_val(1.0f32);
+        let den = self.add(one, e);
+        self.reciprocal(den)
+    }
+
+    /// `x * sigmoid(x)`.
+    pub fn silu(&mut self, x: impl IntoOp) -> OpId {
+        let x = x.into_op(self);
+        let s = self.sigmoid(x);
+        self.mul(x, s)
+    }
+
+    /// `softplus(x) = log(1 + exp(x))` with the overflow guard: returns `x`
+    /// directly above `threshold` (HF default 20.0). Composed from `exp2`/
+    /// `log2` for the same reason as `sigmoid`.
+    pub fn softplus(&mut self, x: impl IntoOp, threshold: impl IntoOp) -> OpId {
+        let x = x.into_op(self);
+        let threshold = threshold.into_op(self);
+        let big = self.cmpge(x, threshold);
+        let ax = self.mul(x, std::f32::consts::LOG2_E);
+        let e = self.exp2(ax);
+        let one = self.const_val(1.0f32);
+        let sp_in = self.add(one, e);
+        let sp_log = self.log2(sp_in);
+        let small = self.mul(sp_log, std::f32::consts::LN_2);
+        self.branchless_where(big, x, small)
     }
 
     pub(crate) fn binary(&mut self, x: OpId, y: OpId, bop: BOp) -> OpId {
@@ -659,6 +702,17 @@ impl Kernel {
         let asm = TinyString::new(asm);
         let ops = TinyVec::new(ops);
         self.push_back(Op::Asm { asm, ops })
+    }
+
+    /// Warp-wide xor-butterfly sum reduction over `x` (all 32 lanes of the
+    /// warp must participate; every lane ends with the sum). CUDA C syntax:
+    /// `__shfl_xor_sync` — the caller targets the CUDA backend.
+    pub fn warp_reduce(&mut self, mut x: OpId) -> OpId {
+        for mask in [16u32, 8, 4, 2, 1] {
+            let sh = self.asm(&format!("__shfl_xor_sync(0xffffffff, {{0}}, {mask})"), &[x]);
+            x = self.add(x, sh);
+        }
+        x
     }
 
     /// Vectorize ops into a single value.
