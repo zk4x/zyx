@@ -289,10 +289,8 @@ impl Kernel {
     /// a constant (the buffer size is baked into the IR).
     pub fn storage(&mut self, dtype: DType, scope: MemScope, len: impl IntoOp) -> OpId {
         let len_op = len.into_op(self);
-        let len = self
-            .resolve_const(len_op)
-            .and_then(crate::dtype::Constant::as_dim)
-            .expect("storage: len must resolve to a constant");
+        let len =
+            self.resolve_const(len_op).and_then(crate::dtype::Constant::as_dim).expect("storage: len must resolve to a constant");
         self.push_back(Op::Storage { dtype, scope, len })
     }
 
@@ -1092,7 +1090,12 @@ impl Kernel {
     }
 
     /// Partition with explicit strides (e.g. transposed or offset views).
-    pub fn partition_strided<const N: usize>(&mut self, src: OpId, shape: [impl IntoOp; N], strides: [impl IntoOp; N]) -> Partition {
+    pub fn partition_strided<const N: usize>(
+        &mut self,
+        src: OpId,
+        shape: [impl IntoOp; N],
+        strides: [impl IntoOp; N],
+    ) -> Partition {
         let mut shape_ops = Vec::with_capacity(N);
         for d in shape {
             shape_ops.push(d.into_op(self));
@@ -1291,7 +1294,10 @@ impl Kernel {
                 .resolve_const(a.shape[1])
                 .and_then(crate::dtype::Constant::as_dim)
                 .expect("mma: fixed mode requires the view's K extent to resolve (it is the whole per-call chunk)");
-            debug_assert!(k_extent > 0 && k_extent % frag_k == 0, "mma: K extent {k_extent} must be a multiple of frag_k {frag_k}");
+            debug_assert!(
+                k_extent > 0 && k_extent % frag_k == 0,
+                "mma: K extent {k_extent} must be a multiple of frag_k {frag_k}"
+            );
             k_extent / frag_k
         };
 
@@ -1301,7 +1307,11 @@ impl Kernel {
         let gid = self.div(lane, c4);
         let tig = self.mod_(lane, c4);
         let tig2 = self.mul(tig, c2);
-        let k_base = if loop_mode { self.mul(lv, c8) } else { coords[coords.len() - 1] };
+        let k_base = if loop_mode {
+            self.mul(lv, c8)
+        } else {
+            coords[coords.len() - 1]
+        };
 
         for fi in 0..acc.frags.len() {
             let frag_row = (fi / acc.frag_cols) as Dim;
@@ -1521,7 +1531,14 @@ impl Kernel {
     /// staging is performed by [`Kernel::load_global_local`], one element
     /// per call. The rank `N` is carried by the returned
     /// [`LocalPartition<N>`].
-    pub fn view_global_local<const N: usize>(&mut self, src: OpId, view_shape: [impl IntoOp; N], tile: [impl IntoOp; N], pad: impl IntoOp, depth: u32) -> LocalPartition<N> {
+    pub fn view_global_local<const N: usize>(
+        &mut self,
+        src: OpId,
+        view_shape: [impl IntoOp; N],
+        tile: [impl IntoOp; N],
+        pad: impl IntoOp,
+        depth: u32,
+    ) -> LocalPartition<N> {
         debug_assert!(N > 0, "view_global_local: rank must be non-zero");
         debug_assert!(depth >= 1, "view_global_local: depth must be >= 1");
         let view_shape: [OpId; N] = view_shape.map(|s| s.into_op(self));

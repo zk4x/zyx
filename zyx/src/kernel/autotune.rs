@@ -255,12 +255,7 @@ struct OptSeq {
 /// Apply an optimization sequence to the kernel, running the epilogue after
 /// each step: `state_{i+1} = epilogue(opt_i(state_i))`. This is the
 /// deterministic repro of a searched kernel state.
-fn apply_seq(
-    kernel: &mut Kernel,
-    seq: &OptSeq,
-    optimizations: &[MakeOpt],
-    epilogue: &impl Fn(&mut Kernel),
-) {
+fn apply_seq(kernel: &mut Kernel, seq: &OptSeq, optimizations: &[MakeOpt], epilogue: &impl Fn(&mut Kernel)) {
     for &(opt_id, config) in &seq.opts {
         optimizations[opt_id](kernel).apply(kernel, config);
         epilogue(kernel);
@@ -507,8 +502,7 @@ impl BeamSearch {
                 let mut thread_kernel = base.clone();
                 apply_seq(&mut thread_kernel, &opt_seq, optimizations, &epilogue);
 
-                let avail_configs: Vec<Box<dyn Optimization>> =
-                    optimizations.iter().map(|make| make(&thread_kernel)).collect();
+                let avail_configs: Vec<Box<dyn Optimization>> = optimizations.iter().map(|make| make(&thread_kernel)).collect();
                 let total_configs: u64 = avail_configs.iter().map(|opt| opt.nconfigs()).sum();
                 let mult = self.n_added_per_step.min(total_configs as usize) as u64;
 

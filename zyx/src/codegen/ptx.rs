@@ -8,7 +8,7 @@ use crate::{
     backend::gws_from_kernel,
     dtype::Constant,
     error::{BackendError, ErrorStatus},
-    kernel::{BOp, IDX_T, Kernel, MemScope, Op, OpId, ParamKind, RangeKind, UOp},
+    kernel::{BOp, IDX_T, Kernel, MMADType, MMADims, MMALayout, MemLayout, MemScope, Op, OpId, ParamKind, RangeKind, UOp},
     scalar::bf16,
     shape::Dim,
 };
@@ -45,6 +45,9 @@ impl DType {
         match self {
             Self::BF16 | Self::F16 => "b16",
             Self::Bool => "pred",
+            // mma.sync operands and bit-packed pairs require the untyped
+            // 32-bit register type.
+            Self::U32 | Self::I32 => "b32",
             _ => self.ptx(),
         }
     }
@@ -104,7 +107,10 @@ struct Compiler {
     header: String,
     body: String,
     indent: String,
-    registers: Vec<(DType, u32, u8)>,
+    // One slot per op; a Vector(len) slot owns `len` consecutive physical
+    // PTX registers, `var_map` holds the physical base register index.
+    registers: Vec<((DType, MemLayout), u32, u8, u16)>,
+    phys_regs: u16,
     loop_level: u8,
 }
 
@@ -210,39 +216,155 @@ impl Compiler {
         }
     }
 
-    fn get_scope(&self, var: OpId) -> MemScope {
-        self.scopes.get(&var).copied().unwrap_or(MemScope::Register)
+    fn get_scope(&self, ops: &Kernel, var: OpId) -> MemScope {
+        if let Some(&scope) = self.scopes.get(&var) {
+            return scope;
+        }
+        // Kernel buffer arguments are Op::Param — they live in global memory.
+        if matches!(ops.ops[var].op, Op::Param { kind: ParamKind::Global | ParamKind::GlobalMut, .. }) {
+            return MemScope::Global;
+        }
+        MemScope::Register
     }
 
-    fn new_reg(&mut self, dtype: DType, rc: u32) -> u16 {
-        for (i, reg) in self.registers.iter_mut().enumerate() {
-            if reg.1 == 0 && reg.0 == dtype && self.loop_level <= reg.2 {
+    /// Number of physical PTX registers owned by one logical slot.
+    fn slot_len(layout: MemLayout) -> u16 {
+        match layout {
+            MemLayout::Scalar => 1,
+            MemLayout::Vector(len) => len,
+            MemLayout::Tile { .. } => todo!("PTX: tile layout not implemented"),
+        }
+    }
+
+    fn slot_of(&self, base: u16) -> usize {
+        self.registers.iter().position(|r| r.3 == base).expect("PTX: register base without owning slot")
+    }
+
+    fn new_reg(&mut self, dtype: DType, layout: MemLayout, rc: u32) -> u16 {
+        for reg in self.registers.iter_mut() {
+            if reg.1 == 0 && reg.0 == (dtype, layout) && self.loop_level <= reg.2 {
+                // Freed slot: reuse it (its physical base is unchanged).
                 reg.1 = rc;
                 reg.2 = self.loop_level;
-                return i as u16;
+                return reg.3;
             }
         }
-        let i = self.registers.len();
-        self.registers.push((dtype, rc, self.loop_level));
-        i as u16
+        let base = self.phys_regs;
+        self.phys_regs += Self::slot_len(layout);
+        self.registers.push(((dtype, layout), rc, self.loop_level, base));
+        base
     }
 
-    fn new_var(&mut self, op_id: OpId, dtype: DType, rc: u32) -> u16 {
-        let i = self.new_reg(dtype, rc);
-        self.var_map.insert(op_id, i);
-        i
+    fn new_var(&mut self, op_id: OpId, dtype: DType, layout: MemLayout, rc: u32) -> u16 {
+        let base = self.new_reg(dtype, layout, rc);
+        self.var_map.insert(op_id, base);
+        base
     }
 
     fn get_var(&mut self, x: OpId) -> u16 {
         let r = self.var_map[&x];
-        if self.loop_level == self.registers[r as usize].2 {
-            self.registers[r as usize].1 -= 1;
+        let slot = self.slot_of(r);
+        if self.loop_level == self.registers[slot].2 {
+            self.registers[slot].1 -= 1;
         }
         r
     }
 
+    /// Physical register indices of an operand's components. A Stack groups
+    /// already-mapped scalar registers; a Vector-layout op owns consecutive
+    /// registers from its base.
+    fn components_of(
+        &mut self,
+        kernel: &Kernel,
+        op: OpId,
+        dtypes: &Map<OpId, (DType, MemLayout)>,
+    ) -> Result<Vec<u16>, BackendError> {
+        match &kernel.ops[op].op {
+            Op::Stack { ops } => Ok(ops.iter().map(|&x| self.var_map[&x]).collect()),
+            _ => {
+                let (_, layout) = dtypes[&op];
+                let len = Self::slot_len(layout);
+                let base = self.var_map[&op];
+                Ok((0..len).map(|i| base + i).collect())
+            }
+        }
+    }
+
     fn release_reg(&mut self, x: u16) {
-        self.registers[x as usize].1 -= 1;
+        let slot = self.slot_of(x);
+        self.registers[slot].1 -= 1;
+    }
+
+    /// Emit a load from `[ %address ]` into the register(s) at `reg`.
+    /// `space` is one of "global", "shared", "local".
+    fn emit_load(&mut self, layout: MemLayout, dtype: DType, reg: u16, space: &str) -> Result<(), BackendError> {
+        match layout {
+            MemLayout::Scalar => {
+                if matches!(dtype, DType::F16 | DType::BF16) {
+                    let tmp = self.new_reg(DType::U16, MemLayout::Scalar, 1);
+                    _ = writeln!(self.body, "{}ld.{}.b16 %r{tmp}, [%address];", self.indent, space);
+                    _ = writeln!(self.body, "{}mov.b16 %r{reg}, %r{tmp};", self.indent);
+                    self.release_reg(tmp);
+                } else {
+                    _ = writeln!(self.body, "{}ld.{}.{} %r{reg}, [%address];", self.indent, space, dtype.mem_ptx());
+                }
+            }
+            MemLayout::Vector(4) if dtype == DType::F32 => {
+                _ = writeln!(
+                    self.body,
+                    "{}ld.{}.v4.f32 {{%r{reg}, %r{}, %r{}, %r{}}}, [%address];",
+                    self.indent,
+                    space,
+                    reg + 1,
+                    reg + 2,
+                    reg + 3
+                );
+            }
+            MemLayout::Vector(_) => {
+                todo!("PTX: vector load of {layout:?} {dtype:?} not implemented")
+            }
+            MemLayout::Tile { .. } => todo!("PTX: tile load not implemented"),
+        }
+        Ok(())
+    }
+
+    /// Emit a store of the register(s) at `x` to `[ %address ]` in global space.
+    fn emit_store(&mut self, layout: MemLayout, dtype: DType, x: u16) -> Result<(), BackendError> {
+        if matches!(dtype, DType::F16 | DType::BF16) && layout == MemLayout::Scalar {
+            let tmp = self.new_reg(DType::U16, MemLayout::Scalar, 1);
+            _ = writeln!(self.body, "{}mov.b16 %r{tmp}, %r{x};", self.indent);
+            _ = writeln!(self.body, "{}st.global.b16 [%address], %r{tmp};", self.indent);
+            self.release_reg(tmp);
+        } else {
+            self.emit_store_space(layout, dtype, x, "global")?;
+        }
+        Ok(())
+    }
+
+    /// Emit a store of the register(s) at `x` to `[ %address ]`.
+    /// `space` is one of "global", "shared", "local".
+    fn emit_store_space(&mut self, layout: MemLayout, dtype: DType, x: u16, space: &str) -> Result<(), BackendError> {
+        match layout {
+            MemLayout::Scalar => {
+                _ = writeln!(self.body, "{}st.{}.{} [%address], %r{x};", self.indent, space, dtype.mem_ptx());
+            }
+            MemLayout::Vector(4) if dtype == DType::F32 => {
+                _ = writeln!(
+                    self.body,
+                    "{}st.{}.v4.f32 [%address], {{%r{x}, %r{}, %r{}, %r{}}};",
+                    self.indent,
+                    space,
+                    x + 1,
+                    x + 2,
+                    x + 3
+                );
+            }
+            MemLayout::Vector(_) => {
+                todo!("PTX: vector store of {layout:?} {dtype:?} not implemented")
+            }
+            MemLayout::Tile { .. } => todo!("PTX: tile store not implemented"),
+        }
+        Ok(())
     }
 }
 
@@ -260,6 +382,7 @@ impl Kernel {
             body: String::new(),
             indent: "  ".to_string(),
             registers: Vec::new(),
+            phys_regs: 0,
             loop_level: 0,
             scopes: Map::default(),
         };
@@ -294,8 +417,17 @@ impl Kernel {
             if steps_op_id > 10_000 {
                 panic!("generate_ptx did not finish in 10000 steps");
             }
-            if matches!(self.ops[op_id].op, Op::Storage { scope: MemScope::Global, .. }) {
-                writeln!(comp.header, "{}.param .u64 g{op_id},", comp.indent).unwrap();
+            // Kernel arguments are Op::Param defines, flat head order —
+            // the same order the backend passes `args` at launch.
+            if let Op::Param { dtype, kind, .. } = self.ops[op_id].op {
+                match kind {
+                    ParamKind::Variable => {
+                        writeln!(comp.header, "{}.param .{} g{op_id},", comp.indent, dtype.ptx()).unwrap();
+                    }
+                    ParamKind::Global | ParamKind::GlobalMut => {
+                        writeln!(comp.header, "{}.param .u64 g{op_id},", comp.indent).unwrap();
+                    }
+                }
             }
             op_id = self.next_op(op_id);
         }
@@ -317,7 +449,13 @@ impl Kernel {
             }
             match self.ops[op_id].op {
                 Op::Param { kind, .. } => match kind {
-                    ParamKind::Variable => todo!(),
+                    ParamKind::Variable => {
+                        // Runtime scalar (IDX_T dims etc.): load into a typed register.
+                        let dtype = dtypes[&op_id].0;
+                        let rc = rcs.get(&op_id).copied().unwrap_or(0);
+                        let reg = comp.new_var(op_id, dtype, MemLayout::Scalar, rc);
+                        _ = writeln!(comp.body, "{}ld.param.{} %r{reg}, [g{op_id}];", comp.indent, dtype.ptx())
+                    }
                     ParamKind::Global | ParamKind::GlobalMut => {
                         _ = writeln!(comp.body, "{}ld.param.u64 %p{op_id}, [g{op_id}];", comp.indent)
                     }
@@ -326,22 +464,11 @@ impl Kernel {
                     comp.scopes.insert(op_id, scope);
                     match scope {
                         MemScope::Local => {
-                            _ = writeln!(
-                                comp.body,
-                                "{}.shared .align {} .{} __ld{op_id}[{len}];",
-                                comp.indent,
-                                dtype.bit_size() / 8,
-                                dtype.ptx()
-                            );
+                            // 16-byte alignment so vectorized (v4) accesses are legal.
+                            _ = writeln!(comp.body, "{}.shared .align 16 .{} __ld{op_id}[{len}];", comp.indent, dtype.ptx());
                         }
                         MemScope::Register => {
-                            _ = writeln!(
-                                comp.body,
-                                "{}.local .align {} .{} __ld{op_id}[{len}];",
-                                comp.indent,
-                                dtype.bit_size() / 8,
-                                dtype.ptx()
-                            );
+                            _ = writeln!(comp.body, "{}.local .align 16 .{} __ld{op_id}[{len}];", comp.indent, dtype.ptx());
                         }
                         MemScope::Circular | MemScope::Global => {
                             unreachable!("ptx only supports local or register storage")
@@ -349,42 +476,39 @@ impl Kernel {
                     }
                 }
                 Op::Range { axis, kind: scope, .. } => {
-                    let reg = comp.new_var(op_id, IDX_T, rcs[&op_id]);
+                    let rc = rcs.get(&op_id).copied().unwrap_or(0);
+                    let reg = comp.new_var(op_id, IDX_T, MemLayout::Scalar, rc);
                     let axis_letter = ["x", "y", "z"][axis as usize];
+                    // Special registers are 32-bit: read into a u32 temp,
+                    // then convert to IDX_T.
+                    let t = comp.new_reg(DType::U32, MemLayout::Scalar, 1);
+                    let src = match scope {
+                        RangeKind::Group(_) => "%ctaid",
+                        RangeKind::Local(_) => "%tid",
+                        RangeKind::Warp(_) => "",
+                    };
                     match scope {
-                        RangeKind::Group(_) => {
-                            _ = writeln!(
-                                comp.body,
-                                "{}{}.u32 %r{reg}, %{}id.{};",
-                                comp.indent,
-                                if IDX_T == DType::U64 { "cvt.u64" } else { "mov" },
-                                "cta",
-                                axis_letter,
-                            );
-                        }
-                        RangeKind::Local(_) => {
-                            _ = writeln!(
-                                comp.body,
-                                "{}{}.u32 %r{reg}, %{}id.{};",
-                                comp.indent,
-                                if IDX_T == DType::U64 { "cvt.u64" } else { "mov" },
-                                "t",
-                                axis_letter,
-                            );
+                        RangeKind::Group(_) | RangeKind::Local(_) => {
+                            _ = writeln!(comp.body, "{}mov.u32 %r{t}, {src}.{};", comp.indent, axis_letter);
                         }
                         // Lane id within the warp: local thread id mod warp size.
                         RangeKind::Warp(local_id) => {
-                            let local_reg = comp.var_map[&local_id];
+                            let local_reg = comp.get_var(local_id);
                             let warp_size = self.dev_info().warp_size;
-                            _ = writeln!(comp.body, "{}rem.u32 %r{reg}, %r{local_reg}, {warp_size};", comp.indent);
-                            if IDX_T == DType::U64 {
-                                _ = writeln!(comp.body, "{}cvt.u64.u32 %r{reg}, %r{reg};", comp.indent);
-                            }
+                            _ = writeln!(comp.body, "{}cvt.u32.s64 %r{t}, %r{local_reg};", comp.indent);
+                            _ = writeln!(comp.body, "{}rem.u32 %r{t}, %r{t}, {warp_size};", comp.indent);
                         }
                     }
+                    match IDX_T {
+                        DType::U32 => _ = writeln!(comp.body, "{}mov.u32 %r{reg}, %r{t};", comp.indent),
+                        DType::I64 => _ = writeln!(comp.body, "{}cvt.s64.u32 %r{reg}, %r{t};", comp.indent),
+                        DType::U64 => _ = writeln!(comp.body, "{}cvt.u64.u32 %r{reg}, %r{t};", comp.indent),
+                        _ => unreachable!("PTX: unexpected IDX_T {IDX_T:?}"),
+                    }
+                    comp.release_reg(t);
                 }
                 Op::Const(ref constant) => {
-                    let reg = comp.new_var(op_id, constant.dtype(), u32::MAX);
+                    let reg = comp.new_var(op_id, constant.dtype(), MemLayout::Scalar, u32::MAX);
                     let ptx_dtype = if constant.dtype() == DType::F16 || constant.dtype() == DType::BF16 {
                         "b16"
                     } else {
@@ -392,15 +516,15 @@ impl Kernel {
                     };
                     _ = writeln!(comp.body, "{}mov.{ptx_dtype} %r{reg}, {};", comp.indent, constant.ptx());
                 }
-                Op::Load { src, index, .. } => {
+                Op::Load { src, index, layout, .. } => {
                     let dtype = dtypes[&src].0;
-                    match comp.get_scope(src) {
+                    match comp.get_scope(self, src) {
                         MemScope::Circular => unreachable!(),
                         MemScope::Global => {
                             let byte_shift = (dtype.bit_size() / 8).ilog2();
                             let idx = comp.get_var(index);
-                            let offset = comp.new_reg(DType::U64, 1);
-                            let reg = comp.new_var(op_id, dtype, rcs[&op_id]);
+                            let offset = comp.new_reg(DType::U64, MemLayout::Scalar, 1);
+                            let reg = comp.new_var(op_id, dtype, layout, rcs[&op_id]);
                             if IDX_T == DType::U64 {
                                 if offset != idx {
                                     _ = writeln!(comp.body, "{}mov.u64 %r{offset}, %r{idx};", comp.indent);
@@ -411,21 +535,14 @@ impl Kernel {
                             _ = writeln!(comp.body, "{}shl.b64 %r{offset}, %r{offset}, {byte_shift};", comp.indent);
                             _ = writeln!(comp.body, "{}add.u64 %address, %p{src}, %r{offset};", comp.indent);
                             comp.release_reg(offset);
-                            if matches!(dtype, DType::F16 | DType::BF16) {
-                                let tmp = comp.new_reg(DType::U16, 1);
-                                _ = writeln!(comp.body, "{}ld.global.b16 %r{tmp}, [%address];", comp.indent);
-                                _ = writeln!(comp.body, "{}mov.b16 %r{reg}, %r{tmp};", comp.indent);
-                                comp.release_reg(tmp);
-                            } else {
-                                _ = writeln!(comp.body, "{}ld.global.{} %r{reg}, [%address];", comp.indent, dtype.mem_ptx());
-                            }
+                            comp.emit_load(layout, dtype, reg, "global")?;
                         }
                         MemScope::Local => {
                             let idx = comp.get_var(index);
-                            let reg = comp.new_var(op_id, dtype, rcs[&op_id]);
+                            let reg = comp.new_var(op_id, dtype, layout, rcs[&op_id]);
                             let byte_shift = (dtype.bit_size() / 8).ilog2();
                             _ = writeln!(comp.body, "{}mov.u64 %address, __ld{src};", comp.indent);
-                            let t = comp.new_reg(DType::U64, 1);
+                            let t = comp.new_reg(DType::U64, MemLayout::Scalar, 1);
                             if IDX_T == DType::U64 {
                                 _ = writeln!(comp.body, "{}shl.b64 %r{t}, %r{idx}, {byte_shift};", comp.indent);
                             } else {
@@ -434,14 +551,14 @@ impl Kernel {
                             }
                             _ = writeln!(comp.body, "{}add.u64 %address, %address, %r{t};", comp.indent);
                             comp.release_reg(t);
-                            _ = writeln!(comp.body, "{}ld.shared.{} %r{reg}, [%address];", comp.indent, dtype.mem_ptx());
+                            comp.emit_load(layout, dtype, reg, "shared")?;
                         }
                         MemScope::Register => {
                             let idx = comp.get_var(index);
-                            let reg = comp.new_var(op_id, dtype, rcs[&op_id]);
+                            let reg = comp.new_var(op_id, dtype, layout, rcs[&op_id]);
                             let byte_shift = (dtype.bit_size() / 8).ilog2();
                             _ = writeln!(comp.body, "{}mov.u64 %address, __ld{src};", comp.indent);
-                            let t = comp.new_reg(DType::U64, 1);
+                            let t = comp.new_reg(DType::U64, MemLayout::Scalar, 1);
                             if IDX_T == DType::U64 {
                                 _ = writeln!(comp.body, "{}shl.b64 %r{t}, %r{idx}, {byte_shift};", comp.indent);
                             } else {
@@ -450,19 +567,19 @@ impl Kernel {
                             }
                             _ = writeln!(comp.body, "{}add.u64 %address, %address, %r{t};", comp.indent);
                             comp.release_reg(t);
-                            _ = writeln!(comp.body, "{}ld.local.{} %r{reg}, [%address];", comp.indent, dtype.mem_ptx());
+                            comp.emit_load(layout, dtype, reg, "local")?;
                         }
                     }
                 }
-                Op::Store { dst, src: x, index, .. } => {
+                Op::Store { dst, src: x, index, layout, .. } => {
                     let dtype = dtypes[&x].0;
                     let byte_shift = (dtype.bit_size() / 8).ilog2();
-                    let offset = comp.new_reg(DType::U64, 1);
-                    match comp.get_scope(dst) {
+                    let offset = comp.new_reg(DType::U64, MemLayout::Scalar, 1);
+                    match comp.get_scope(self, dst) {
                         MemScope::Circular => unreachable!(),
                         MemScope::Global => {
                             if dtype == DType::Bool {
-                                let gstu = comp.new_reg(DType::U32, 1);
+                                let gstu = comp.new_reg(DType::U32, MemLayout::Scalar, 1);
                                 let idx = comp.get_var(index);
                                 let x = comp.get_var(x);
                                 _ = writeln!(comp.body, "{}selp.u32 %r{gstu}, 1, 0, %r{x};", comp.indent);
@@ -488,14 +605,7 @@ impl Kernel {
                                 }
                                 _ = writeln!(comp.body, "{}shl.b64 %r{offset}, %r{offset}, {byte_shift};", comp.indent);
                                 _ = writeln!(comp.body, "{}add.u64 %address, %p{dst}, %r{offset};", comp.indent);
-                                if matches!(dtype, DType::F16 | DType::BF16) {
-                                    let tmp = comp.new_reg(DType::U16, 1);
-                                    _ = writeln!(comp.body, "{}mov.b16 %r{tmp}, %r{x};", comp.indent);
-                                    _ = writeln!(comp.body, "{}st.global.b16 [%address], %r{tmp};", comp.indent);
-                                    comp.release_reg(tmp);
-                                } else {
-                                    _ = writeln!(comp.body, "{}st.global.{} [%address], %r{x};", comp.indent, dtype.mem_ptx());
-                                }
+                                comp.emit_store(layout, dtype, x)?;
                             }
                         }
                         MemScope::Local => {
@@ -503,7 +613,7 @@ impl Kernel {
                             let x = comp.get_var(x);
                             let byte_shift = (dtype.bit_size() / 8).ilog2();
                             _ = writeln!(comp.body, "{}mov.u64 %address, __ld{dst};", comp.indent);
-                            let t = comp.new_reg(DType::U64, 1);
+                            let t = comp.new_reg(DType::U64, MemLayout::Scalar, 1);
                             if IDX_T == DType::U64 {
                                 _ = writeln!(comp.body, "{}shl.b64 %r{t}, %r{idx}, {byte_shift};", comp.indent);
                             } else {
@@ -512,14 +622,14 @@ impl Kernel {
                             }
                             _ = writeln!(comp.body, "{}add.u64 %address, %address, %r{t};", comp.indent);
                             comp.release_reg(t);
-                            _ = writeln!(comp.body, "{}st.shared.{} [%address], %r{x};", comp.indent, dtype.mem_ptx());
+                            comp.emit_store_space(layout, dtype, x, "shared")?;
                         }
                         MemScope::Register => {
                             let idx = comp.get_var(index);
                             let x = comp.get_var(x);
                             let byte_shift = (dtype.bit_size() / 8).ilog2();
                             _ = writeln!(comp.body, "{}mov.u64 %address, __ld{dst};", comp.indent);
-                            let t = comp.new_reg(DType::U64, 1);
+                            let t = comp.new_reg(DType::U64, MemLayout::Scalar, 1);
                             if IDX_T == DType::U64 {
                                 _ = writeln!(comp.body, "{}shl.b64 %r{t}, %r{idx}, {byte_shift};", comp.indent);
                             } else {
@@ -528,15 +638,16 @@ impl Kernel {
                             }
                             _ = writeln!(comp.body, "{}add.u64 %address, %address, %r{t};", comp.indent);
                             comp.release_reg(t);
-                            _ = writeln!(comp.body, "{}st.local.{} [%address], %r{x};", comp.indent, dtype.mem_ptx());
+                            comp.emit_store_space(layout, dtype, x, "local")?;
                         }
                     }
                     comp.release_reg(offset);
                 }
                 Op::Cast { x, dtype } => {
                     let xdtype = dtypes[&x].0;
+                    debug_assert_eq!(dtypes[&x].1, MemLayout::Scalar, "PTX: vector cast not implemented");
                     let x = comp.get_var(x);
-                    let reg = comp.new_var(op_id, dtype, rcs[&op_id]);
+                    let reg = comp.new_var(op_id, dtype, MemLayout::Scalar, rcs[&op_id]);
                     match (dtype, xdtype) {
                         (DType::Bool, _) => {
                             if dtype.is_float() {
@@ -584,13 +695,13 @@ impl Kernel {
                 Op::Bitcast { x, dtype } => {
                     // Equal bit widths (asserted upstream): a raw bit move.
                     let x = comp.get_var(x);
-                    let reg = comp.new_var(op_id, dtype, rcs[&op_id]);
+                    let reg = comp.new_var(op_id, dtype, MemLayout::Scalar, rcs[&op_id]);
                     _ = writeln!(comp.body, "{}mov.b{} %r{reg}, %r{x};", comp.indent, dtype.bit_size());
                 }
                 Op::Unary { x, uop } => {
                     let dtype = dtypes[&x].0;
                     let x = comp.get_var(x);
-                    let reg = comp.new_var(op_id, dtype, rcs[&op_id]);
+                    let reg = comp.new_var(op_id, dtype, MemLayout::Scalar, rcs[&op_id]);
                     match uop {
                         UOp::Floor => _ = writeln!(comp.body, "{}cvt.rmi.{t}.{t} %r{reg}, %r{x};", comp.indent, t = dtype.ptx()),
                         UOp::Trunc => _ = writeln!(comp.body, "{}cvt.rzi.{t}.{t} %r{reg}, %r{x};", comp.indent, t = dtype.ptx()),
@@ -609,7 +720,7 @@ impl Kernel {
                     let dtype = dtypes[&op_id].0;
                     let xr = comp.get_var(x);
                     let yr = comp.get_var(y);
-                    let reg = comp.new_var(op_id, dtype, rcs[&op_id]);
+                    let reg = comp.new_var(op_id, dtype, MemLayout::Scalar, rcs[&op_id]);
                     let type_ext = if matches!(bop, BOp::BitShiftLeft | BOp::BitShiftRight) {
                         match dtypes[&x].0.bit_size() {
                             32 => "b32",
@@ -637,8 +748,8 @@ impl Kernel {
                     let xr = comp.get_var(x);
                     let yr = comp.get_var(y);
                     let zr = comp.get_var(z);
-                    let reg = comp.new_var(op_id, dtype, rcs[&op_id]);
-                    let mul = comp.new_reg(dtype, 1);
+                    let reg = comp.new_var(op_id, dtype, MemLayout::Scalar, rcs[&op_id]);
+                    let mul = comp.new_reg(dtype, MemLayout::Scalar, 1);
                     _ = writeln!(
                         comp.body,
                         "{}{}.{} %r{mul}, %r{xr}, %r{yr};",
@@ -658,8 +769,8 @@ impl Kernel {
                 Op::Loop { len } => {
                     comp.loop_level += 1;
                     let len = comp.get_var(len);
-                    let loop_idx = comp.new_var(op_id, IDX_T, rcs.get(&op_id).copied().unwrap_or(0) + 1);
-                    let loop_pred = comp.new_reg(DType::Bool, 2);
+                    let loop_idx = comp.new_var(op_id, IDX_T, MemLayout::Scalar, rcs.get(&op_id).copied().unwrap_or(0) + 1);
+                    let loop_pred = comp.new_reg(DType::Bool, MemLayout::Scalar, 2);
                     comp.loops.push((len, loop_pred, loop_idx));
                     _ = writeln!(comp.body, "{}mov.{} %r{loop_idx}, 0;", comp.indent, IDX_T.ptx());
                     _ = writeln!(comp.body, "{}LOOP_{label}:", comp.indent);
@@ -698,6 +809,61 @@ impl Kernel {
                 Op::Barrier => {
                     _ = writeln!(comp.body, "{}bar.sync 1;", comp.indent);
                 }
+                // A Stack is a pure register grouping (e.g. an mma operand
+                // fragment): its components are already mapped registers and
+                // consumers read them via `components_of`. Nothing to emit.
+                Op::Stack { .. } => {}
+                Op::Index { vec, idx } => {
+                    // Component extract: with a constant index the component
+                    // is a fixed register — emit a move.
+                    let (dtype, layout) = dtypes[&vec];
+                    debug_assert!(layout != MemLayout::Scalar, "PTX: Op::Index on a scalar");
+                    let len = Compiler::slot_len(layout);
+                    debug_assert!(idx < len as usize, "PTX: Op::Index {idx} out of bounds for len {len}");
+                    let vb = comp.get_var(vec);
+                    let reg = comp.new_var(op_id, dtype, MemLayout::Scalar, rcs[&op_id]);
+                    _ = writeln!(comp.body, "{}mov.{} %r{reg}, %r{};", comp.indent, dtype.ptx(), vb + idx as u16);
+                }
+                Op::Wmma { dims, layout, dtype, c, a, b } => {
+                    // Only the m16n8k8 f16->f32 path is implemented; other
+                    // combos must be added with their correct operand packing.
+                    if dims != MMADims::m16n8k8 || layout != MMALayout::row_col || dtype != MMADType::f16_f16_f16_f32 {
+                        todo!("PTX: wmma combo dims={dims:?} layout={layout:?} dtype={dtype:?} not implemented");
+                    }
+                    let a_comps = comp.components_of(self, a, &dtypes)?;
+                    let b_comps = comp.components_of(self, b, &dtypes)?;
+                    let c_comps = comp.components_of(self, c, &dtypes)?;
+                    debug_assert_eq!(a_comps.len(), 4, "PTX: mma A fragment must hold 4 f16 values");
+                    debug_assert_eq!(b_comps.len(), 2, "PTX: mma B fragment must hold 2 f16 values");
+                    debug_assert_eq!(c_comps.len(), 4, "PTX: mma C fragment must hold 4 f32 values");
+                    // Pack the f16 pairs into .b32 registers: a = {a01, a23},
+                    // b = {b01}.
+                    let a01 = comp.new_reg(DType::U32, MemLayout::Scalar, 1);
+                    let a23 = comp.new_reg(DType::U32, MemLayout::Scalar, 1);
+                    let b01 = comp.new_reg(DType::U32, MemLayout::Scalar, 1);
+                    _ = writeln!(comp.body, "{}mov.b32 %r{a01}, {{%r{}, %r{}}};", comp.indent, a_comps[0], a_comps[1]);
+                    _ = writeln!(comp.body, "{}mov.b32 %r{a23}, {{%r{}, %r{}}};", comp.indent, a_comps[2], a_comps[3]);
+                    _ = writeln!(comp.body, "{}mov.b32 %r{b01}, {{%r{}, %r{}}};", comp.indent, b_comps[0], b_comps[1]);
+                    // Result: fresh 4-wide f32 vector, mma.sync writes D in place.
+                    let rc = rcs[&op_id];
+                    let reg = comp.new_var(op_id, DType::F32, MemLayout::Vector(4), rc);
+                    _ = writeln!(
+                        comp.body,
+                        "{}mma.sync.aligned.m16n8k8.row.col.f32.f16.f16.f32 {{%r{reg}, %r{}, %r{}, %r{}}}, {{%r{a01}, %r{a23}}}, {{%r{b01}}}, {{%r{}, %r{}, %r{}, %r{}}};",
+                        comp.indent,
+                        reg + 1,
+                        reg + 2,
+                        reg + 3,
+                        c_comps[0],
+                        c_comps[1],
+                        c_comps[2],
+                        c_comps[3],
+                    );
+                    comp.release_reg(a01);
+                    comp.release_reg(a23);
+                    comp.release_reg(b01);
+                }
+                Op::Asm { .. } => todo!("PTX: inline asm not implemented"),
                 ref op => {
                     return Err(BackendError {
                         status: ErrorStatus::KernelCompilation,
@@ -710,6 +876,7 @@ impl Kernel {
 
         _ = writeln!(comp.body, "{}ret;\n}}", comp.indent);
 
+        // Pointer registers for global params (filled by ld.param above).
         let mut op_id = self.head;
         let mut steps_op_id = 0usize;
         while !op_id.is_null() {
@@ -717,15 +884,18 @@ impl Kernel {
             if steps_op_id > 10_000 {
                 panic!("generate_ptx did not finish in 10000 steps");
             }
-            if matches!(self.ops[op_id].op, Op::Storage { scope: MemScope::Global, .. }) {
-                _ = writeln!(comp.header, "{}.reg .s64 %p{op_id};", comp.indent);
+            if matches!(self.ops[op_id].op, Op::Param { kind: ParamKind::Global | ParamKind::GlobalMut, .. }) {
+                _ = writeln!(comp.header, "{}.reg .u64 %p{op_id};", comp.indent);
             }
             op_id = self.next_op(op_id);
         }
 
         _ = writeln!(comp.header, "{}.reg .u64 %address;", comp.indent);
-        for (reg_id, (dtype, _, _)) in comp.registers.iter().enumerate() {
-            _ = writeln!(comp.header, "{}.reg .{} %r{reg_id};", comp.indent, dtype.reg_ptx());
+        for (dtype_layout, _, _, base) in comp.registers.iter() {
+            let len = Compiler::slot_len(dtype_layout.1);
+            for i in 0..len {
+                _ = writeln!(comp.header, "{}.reg .{} %r{};", comp.indent, dtype_layout.0.reg_ptx(), base + i);
+            }
         }
 
         comp.header.push_str(&comp.body);

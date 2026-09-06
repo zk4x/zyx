@@ -15,10 +15,8 @@
 //! These optimizations reduce redundant computations and improve performance.
 
 use super::autotune::Optimization;
+use crate::kernel::{Kernel, Op, OpId};
 use crate::{Map, Set};
-use crate::{
-    kernel::{Kernel, Op, OpId},
-};
 
 /// Reassociate commutative operations (addition, multiplication)
 /// to group them and reduce instruction count.

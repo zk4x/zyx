@@ -425,9 +425,12 @@ impl Kernel {
                 Op::Range { kind, .. } => {
                     // Group length is a consumed operand (e.g. a Binary
                     // expression) and needs a refcount for codegen register
-                    // allocation.
+                    // allocation. Same for the local id a Warp view reads.
                     if let RangeKind::Group(len) = kind {
                         *rcs.entry(len).or_insert(0) += 1;
+                    }
+                    if let RangeKind::Warp(local_id) = kind {
+                        *rcs.entry(local_id).or_insert(0) += 1;
                     }
                     dtypes.insert(op_id, (IDX_T, MemLayout::Scalar));
                 }

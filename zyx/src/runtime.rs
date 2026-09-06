@@ -2777,7 +2777,6 @@ impl Runtime {
                     self.retain(x);
                     return Ok(x);
                 }
-                eprintln!("[RT-MARK] to_device materialized, doing copy");
                 let shape = self.resolve_shape(x);
                 let bytes = ((shape.iter().product::<Dim>() * dtype.bit_size() as Dim) + 7) / 8;
                 let alloc_bytes = bytes + dtype.bit_size() as Dim / 8;
@@ -2793,7 +2792,6 @@ impl Runtime {
                 let src_pool_ptr: *mut MemoryPool = &mut self.pools[buf_id.pool];
                 let copy_ev =
                     self.pools[dst_pool].pool_to_pool(unsafe { &mut *src_pool_ptr }, buf_id.buffer, dst_id.buffer, events)?;
-                eprintln!("[RT-MARK] to_device copy done");
                 self.events.insert(BTreeSet::from([dst_id]), copy_ev);
                 debug_assert!(!shape_id.is_null(), "to_device: eager tensor {x} has no shape expression");
                 self.retain(shape_id);
@@ -4728,14 +4726,8 @@ impl Runtime {
         }
 
         let cfg = self.beam_search.clone();
-        let (winner, timing) = cfg.run_(
-            self,
-            [base],
-            &args,
-            &Kernel::default_optimizations(),
-            Kernel::default_epilogue,
-            Kernel::base_cost,
-        )?;
+        let (winner, timing) =
+            cfg.run_(self, [base], &args, &Kernel::default_optimizations(), Kernel::default_epilogue, Kernel::base_cost)?;
         if !fresh_bufs.is_empty() {
             let pool_id = self.devices[device_id].memory_pool_id();
             winner.dealloc_buffers(fresh_bufs, &mut self.pools[pool_id]);
