@@ -32,7 +32,7 @@ use crate::rng::Rng;
 use crate::runtime::Runtime;
 use crate::scalar::{bf16, f16};
 use crate::shape::Dim;
-use crate::{DebugMask, Set, ZyxError};
+use crate::{DebugMask, Set, Tensor, ZyxError};
 use nanoserde::{DeBin, SerBin};
 use std::hash::{Hash, Hasher};
 
@@ -360,8 +360,8 @@ impl BeamSearch {
         &self,
         rt: &mut Runtime,
         seeds: impl IntoIterator<Item = Kernel>,
-        tensors: &[&crate::Tensor],
-        optimizations: &[MakeOpt],
+        tensors: &[&Tensor],
+        optimizations: &[fn(&Kernel) -> Box<dyn Optimization>],
         epilogue: impl Fn(&mut Kernel),
         cost: impl Fn(&Kernel) -> u64,
     ) -> Result<(Kernel, u64), ZyxError> {

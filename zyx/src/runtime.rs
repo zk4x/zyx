@@ -4725,9 +4725,15 @@ impl Runtime {
             base.default_epilogue();
         }
 
-        let cfg = self.beam_search.clone();
-        let (winner, timing) =
-            cfg.run_(self, [base], &args, &Kernel::default_optimizations(), Kernel::default_epilogue, Kernel::base_cost)?;
+        let beam_search = self.beam_search.clone();
+        let (winner, timing) = beam_search.run_(
+            self,
+            [base],
+            &args,
+            &Kernel::default_optimizations(),
+            Kernel::default_epilogue,
+            Kernel::base_cost,
+        )?;
         if !fresh_bufs.is_empty() {
             let pool_id = self.devices[device_id].memory_pool_id();
             winner.dealloc_buffers(fresh_bufs, &mut self.pools[pool_id]);

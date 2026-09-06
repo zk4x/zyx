@@ -44,6 +44,7 @@ pub fn pad_kernel(s: i64, m: i64, d: i64) -> Kernel {
     let v = kernel.branchless_where(keep, x, f16::from_f32(0.0));
     let out_idx = kernel.mad(row, d, c);
     kernel.store(out, v, out_idx);
+    kernel.default_epilogue();
     kernel
 }
 
@@ -73,6 +74,7 @@ pub fn gemm_kernel() -> Kernel {
         kernel.mma_at(&acc, &ap, &bp, [r0, n0, k]);
     });
     kernel.store_partition(&cp, &acc, [r0, n0]);
+    kernel.default_epilogue();
     kernel
 }
 
@@ -88,9 +90,12 @@ pub fn conv_silu_kernel() -> Kernel {
 
     let mut acc = kernel.const_val(0.0f32);
     for k in 0..CK {
-        let src_t = kernel.add(t, k - (CK - 1));
+        // Causal offset as an op (can go negative); clamp guards the load.
+        let t_k = kernel.add(t, k);
+        let src_t = kernel.sub(t_k, CK - 1);
         let ok = kernel.cmpge(src_t, 0i64);
-        let in_idx = kernel.mad(src_t, CONV_DIM, c);
+        let src_c = kernel.branchless_where(ok, src_t, 0i64);
+        let in_idx = kernel.mad(src_c, CONV_DIM, c);
         let x_raw = kernel.load(inp, in_idx);
         let zf = kernel.const_val(0.0f32);
         let x = kernel.branchless_where(ok, x_raw, zf);
@@ -102,6 +107,7 @@ pub fn conv_silu_kernel() -> Kernel {
     let y = kernel.silu(acc);
     let out_idx = kernel.mad(t, CONV_DIM, c);
     kernel.store(out, y, out_idx);
+    kernel.default_epilogue();
     kernel
 }
 
@@ -221,6 +227,7 @@ pub fn delta_core_kernel() -> Kernel {
         let o_idx = kernel.add(o_base, col);
         kernel.store(out, attn, o_idx);
     });
+    kernel.default_epilogue();
     kernel
 }
 
@@ -269,5 +276,6 @@ pub fn rmsnorm_kernel() -> Kernel {
         let o_off = kernel.add(th, hd);
         kernel.store(out, y, o_off);
     }
+    kernel.default_epilogue();
     kernel
 }

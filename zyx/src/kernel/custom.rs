@@ -425,23 +425,12 @@ impl Kernel {
         self.unary(x, UOp::BitNot)
     }
 
-    /// `e^x`
-    ///
-    /// Devices with a native `exp2` (CUDA, PTX: their codegens reject raw
-    /// `Exp`) get `exp2(x * log2(e))`; the rest (TT, C, OpenCL, …) get the
-    /// raw `Exp` op, which their codegens implement natively.
+    /// `e^x`. Emits the raw `Exp` op; `default_epilogue` converts it to
+    /// `exp2` on devices that prefer it, and the CUDA codegen emits `exp`
+    /// directly.
     pub fn exp(&mut self, x: impl IntoOp) -> OpId {
         let x = x.into_op(self);
-        let native_exp2 = self.dev_info.as_ref().is_some_and(|d| d.has_native_exp2);
-        if native_exp2 {
-            let log2e = self.const_val(std::f32::consts::LOG2_E);
-            let dtype = self.dtype(x);
-            let log2e = self.cast(log2e, dtype);
-            let scaled = self.mul(x, log2e);
-            self.exp2(scaled)
-        } else {
-            self.unary(x, UOp::Exp)
-        }
+        self.unary(x, UOp::Exp)
     }
 
     /// `2^x`
@@ -504,13 +493,14 @@ impl Kernel {
         self.unary(x, UOp::Abs)
     }
 
-    /// `1 / (1 + exp(-x))`, composed from `exp2` (raw `Exp` is rejected by
-    /// the CUDA backend, so composites must go through `exp2`).
+    /// `1 / (1 + exp(-x))`.
     pub fn sigmoid(&mut self, x: impl IntoOp) -> OpId {
         let x = x.into_op(self);
-        let nx = self.mul(x, -std::f32::consts::LOG2_E);
-        let e = self.exp2(nx);
+        let nx = self.neg(x);
+        let e = self.exp(nx);
+        let dtype = self.dtype(x);
         let one = self.const_val(1.0f32);
+        let one = self.cast(one, dtype);
         let den = self.add(one, e);
         self.reciprocal(den)
     }
@@ -523,18 +513,17 @@ impl Kernel {
     }
 
     /// `softplus(x) = log(1 + exp(x))` with the overflow guard: returns `x`
-    /// directly above `threshold` (HF default 20.0). Composed from `exp2`/
-    /// `log2` for the same reason as `sigmoid`.
+    /// directly above `threshold` (HF default 20.0).
     pub fn softplus(&mut self, x: impl IntoOp, threshold: impl IntoOp) -> OpId {
         let x = x.into_op(self);
         let threshold = threshold.into_op(self);
         let big = self.cmpge(x, threshold);
-        let ax = self.mul(x, std::f32::consts::LOG2_E);
-        let e = self.exp2(ax);
+        let e = self.exp(x);
+        let dtype = self.dtype(x);
         let one = self.const_val(1.0f32);
+        let one = self.cast(one, dtype);
         let sp_in = self.add(one, e);
-        let sp_log = self.log2(sp_in);
-        let small = self.mul(sp_log, std::f32::consts::LN_2);
+        let small = self.ln(sp_in);
         self.branchless_where(big, x, small)
     }
 
@@ -1515,15 +1504,10 @@ impl IntoOp for OpId {
     }
 }
 
-/// Integer scalars (Dim = i64). A negative dim keeps the `-1` → `Variable`
-/// escape hatch for symbolic dimensions.
+/// Integer scalars (Dim = i64).
 impl IntoOp for Dim {
     fn into_op(self, kernel: &mut Kernel) -> OpId {
-        if self < 0 {
-            kernel.variable(IDX_T)
-        } else {
-            kernel.const_idx(self)
-        }
+        kernel.const_idx(self)
     }
 }
 

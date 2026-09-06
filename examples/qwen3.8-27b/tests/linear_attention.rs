@@ -284,3 +284,165 @@ fn linear_attention_cuda() -> Result<(), ZyxError> {
     assert_eq!(bad, 0, "{bad} mismatches");
     Ok(())
 }
+
+/// Per-kernel torch verification: each custom kernel in `src/lib.rs` runs
+/// alone on the golden intermediates and must reproduce the torch result.
+/// `linear_attention_ref.py` dumps the intermediates and asserts they
+/// reproduce the hf output, so these tests pin each kernel to torch.
+
+#[test]
+fn pad_kernel_cuda() -> Result<(), ZyxError> {
+    use qwen3_8_27b::{pad_kernel, HIDDEN, M_PAD, S, VAL_DIM};
+    let goldens = Tensor::load("../data/qwen3_8b_linear_attention.safetensors")?;
+    let dev = Dev::Cuda(0);
+    // 5e-3: output is f16, values ~N(0,1) round to ~2e-3 quanta.
+    let input = goldens["input"].to(dev)?.reshape([S, HIDDEN])?;
+    let pad_c = pad_kernel(S, M_PAD, HIDDEN).compile()?;
+    let out = pad_c.forward(&[&input], vec![[M_PAD, HIDDEN]])?.remove(0);
+    let out = out.cast(DType::F32).to_vec::<f32>()?;
+    let expected = goldens["pin"].to_vec::<f32>()?;
+    assert_eq!(out.len(), expected.len());
+    let mut bad = 0;
+    for (i, (&val, &exp)) in out.iter().zip(expected.iter()).enumerate() {
+        if (val - exp).abs() >= 5e-3 {
+            if bad < 10 {
+                println!("pad[{i}] = {val}, expected {exp}");
+            }
+            bad += 1;
+        }
+    }
+    assert_eq!(bad, 0, "{bad} mismatches");
+    // Second geometry: normed rows 6 -> 16 over VAL_DIM.
+    let normed = goldens["normed"].to(dev)?;
+    let pad_n = pad_kernel(S, M_PAD, VAL_DIM).compile()?;
+    let out = pad_n.forward(&[&normed], vec![[M_PAD, VAL_DIM]])?.remove(0);
+    let out = out.cast(DType::F32).to_vec::<f32>()?;
+    let zeros = Tensor::zeros([M_PAD - S, VAL_DIM], DType::F32).to(dev)?;
+    let expected = Tensor::cat([&normed, &zeros], 0)?.to_vec::<f32>()?;
+    assert_eq!(out.len(), expected.len());
+    let mut bad = 0;
+    for (i, (&val, &exp)) in out.iter().zip(expected.iter()).enumerate() {
+        if (val - exp).abs() >= 5e-3 {
+            if bad < 10 {
+                println!("pad_n[{i}] = {val}, expected {exp}");
+            }
+            bad += 1;
+        }
+    }
+    assert_eq!(bad, 0, "{bad} mismatches");
+    Ok(())
+}
+
+#[test]
+fn gemm_kernel_cuda() -> Result<(), ZyxError> {
+    use qwen3_8_27b::{gemm_kernel, CONV_DIM, HIDDEN, M_PAD};
+    let goldens = Tensor::load("../data/qwen3_8b_linear_attention.safetensors")?;
+    let dev = Dev::Cuda(0);
+    let pin16 = goldens["pin"].to(dev)?.cast(DType::F16);
+    let w = goldens["in_proj_qkv"].to(dev)?.cast(DType::F16);
+    let gemm_c = gemm_kernel().compile()?;
+    let vars = [M_PAD, HIDDEN, CONV_DIM, M_PAD / 16, CONV_DIM / 8].map(Tensor::from);
+    let out = gemm_c
+        .forward(&[&vars[0], &vars[1], &vars[2], &vars[3], &vars[4], &pin16, &w], vec![[M_PAD, CONV_DIM]])?
+        .remove(0);
+    let out = out.to_vec::<f32>()?;
+    // mixed_href: torch half-input matmul (tf32 off), the exact MMA math.
+    let expected = goldens["mixed_href"].to_vec::<f32>()?;
+    assert_eq!(out.len(), expected.len());
+    let mut bad = 0;
+    for (i, (&val, &exp)) in out.iter().zip(expected.iter()).enumerate() {
+        if (val - exp).abs() >= 1e-2 {
+            if bad < 10 {
+                println!("gemm[{i}] = {val}, expected {exp}");
+            }
+            bad += 1;
+        }
+    }
+    assert_eq!(bad, 0, "{bad} mismatches");
+    Ok(())
+}
+
+#[test]
+fn conv_silu_kernel_cuda() -> Result<(), ZyxError> {
+    use qwen3_8_27b::{conv_silu_kernel, CONV_DIM, M_PAD};
+    let goldens = Tensor::load("../data/qwen3_8b_linear_attention.safetensors")?;
+    let dev = Dev::Cuda(0);
+    let mixed = goldens["mixed"].to(dev)?;
+    let conv_w = goldens["conv"].to(dev)?;
+    let conv_c = conv_silu_kernel().compile()?;
+    let out = conv_c
+        .forward(&[&mixed, &conv_w], vec![[M_PAD, CONV_DIM]])?
+        .remove(0);
+    let out = out.to_vec::<f32>()?;
+    let expected = goldens["mixed_s"].to_vec::<f32>()?;
+    assert_eq!(out.len(), expected.len());
+    let mut bad = 0;
+    for (i, (&val, &exp)) in out.iter().zip(expected.iter()).enumerate() {
+        if (val - exp).abs() >= 1e-3 {
+            if bad < 10 {
+                println!("conv[{i}] = {val}, expected {exp}");
+            }
+            bad += 1;
+        }
+    }
+    assert_eq!(bad, 0, "{bad} mismatches");
+    Ok(())
+}
+
+#[test]
+fn delta_core_kernel_cuda() -> Result<(), ZyxError> {
+    use qwen3_8_27b::{delta_core_kernel, S, VD, VH};
+    let goldens = Tensor::load("../data/qwen3_8b_linear_attention.safetensors")?;
+    let dev = Dev::Cuda(0);
+    let mixed_s = goldens["mixed_s"].to(dev)?;
+    let b = goldens["b"].to(dev)?;
+    let a = goldens["a"].to(dev)?;
+    let ea = goldens["a_log"].to(dev)?.exp();
+    let dtb = goldens["dt_bias"].to(dev)?;
+    let delta_c = delta_core_kernel().compile()?;
+    let out = delta_c
+        .forward(&[&mixed_s, &b, &a, &ea, &dtb], vec![[VH, S, VD]])?
+        .remove(0);
+    let out = out.to_vec::<f32>()?;
+    let expected = goldens["core"].to_vec::<f32>()?;
+    assert_eq!(out.len(), expected.len());
+    let mut bad = 0;
+    for (i, (&val, &exp)) in out.iter().zip(expected.iter()).enumerate() {
+        if (val - exp).abs() >= 1e-3 {
+            if bad < 10 {
+                println!("delta[{i}] = {val}, expected {exp}");
+            }
+            bad += 1;
+        }
+    }
+    assert_eq!(bad, 0, "{bad} mismatches");
+    Ok(())
+}
+
+#[test]
+fn rmsnorm_kernel_cuda() -> Result<(), ZyxError> {
+    use qwen3_8_27b::{rmsnorm_kernel, S, VAL_DIM};
+    let goldens = Tensor::load("../data/qwen3_8b_linear_attention.safetensors")?;
+    let dev = Dev::Cuda(0);
+    let core = goldens["core"].to(dev)?;
+    let z = goldens["z"].to(dev)?;
+    let norm_w = goldens["norm_weight"].to(dev)?;
+    let norm_c = rmsnorm_kernel().compile()?;
+    let out = norm_c
+        .forward(&[&core, &z, &norm_w], vec![[S, VAL_DIM]])?
+        .remove(0);
+    let out = out.to_vec::<f32>()?;
+    let expected = goldens["normed"].to_vec::<f32>()?;
+    assert_eq!(out.len(), expected.len());
+    let mut bad = 0;
+    for (i, (&val, &exp)) in out.iter().zip(expected.iter()).enumerate() {
+        if (val - exp).abs() >= 1e-3 {
+            if bad < 10 {
+                println!("norm[{i}] = {val}, expected {exp}");
+            }
+            bad += 1;
+        }
+    }
+    assert_eq!(bad, 0, "{bad} mismatches");
+    Ok(())
+}
