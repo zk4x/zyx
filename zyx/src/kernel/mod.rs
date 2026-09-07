@@ -456,6 +456,44 @@ impl Kernel {
         (dtypes, rcs)
     }
 
+    /// Resolve the layout of an operation's result by walking the IR.
+    pub(crate) fn layout(&self, mut op_id: OpId) -> MemLayout {
+        for _ in 0..10000 {
+            match self.ops[op_id].op {
+                Op::Const(_) | Op::Param { .. } | Op::Storage { .. } => return MemLayout::Scalar,
+                Op::Range { .. } => return MemLayout::Scalar,
+                Op::Cast { x, .. } | Op::Bitcast { x, .. } => op_id = x,
+                Op::Load { layout, .. } => return layout,
+                Op::Store { src: x, .. } => op_id = x,
+                Op::Unary { x, .. } => op_id = x,
+                Op::Binary { x, .. } => op_id = x,
+                Op::Mad { x, .. } => op_id = x,
+                Op::Wmma { dims, .. } => match dims {
+                    MMADims::m8n8k16 => return MemLayout::Vector(2),
+                    MMADims::m16n8k8 => return MemLayout::Vector(4),
+                    MMADims::m16n8k16 => return MemLayout::Vector(4),
+                    MMADims::m32n8k16 => return MemLayout::Vector(8),
+                    MMADims::m8n32k16 => return MemLayout::Vector(8),
+                    MMADims::m8n8k32 => return MemLayout::Vector(2),
+                    MMADims::m8n8k128 => return MemLayout::Vector(2),
+                },
+                Op::MatmulTile { x, .. } => op_id = x,
+                Op::TransposeTile { x } => op_id = x,
+                Op::Stack { ref ops } => {
+                    return MemLayout::Vector(ops.len().try_into().unwrap());
+                }
+                Op::Asm { ref ops, .. } => op_id = ops[0],
+                Op::Index { vec, .. } => op_id = vec,
+                Op::Move { x, .. } => op_id = x,
+                Op::Reduce { x, .. } => op_id = x,
+                Op::ReduceTile { x, .. } => op_id = x,
+                Op::EndLoop | Op::Loop { .. } => return MemLayout::Scalar,
+                Op::Barrier | Op::If { .. } | Op::EndIf => todo!(),
+            }
+        }
+        panic!("layout not found for too long time");
+    }
+
     /// Resolve the dtype of an operation's result by walking the IR.
     pub(crate) fn dtype(&self, mut op_id: OpId) -> DType {
         //println!("getting dtype of id: {op_id:?}'");
@@ -850,11 +888,7 @@ impl Kernel {
 
             match self.at(op_id) {
                 Op::Loop { len } => {
-                    let v = self
-                        .resolve_const(*len)
-                        .and_then(|c| c.as_dim())
-                        .unwrap_or(1)
-                        .max(1) as u64;
+                    let v = self.resolve_const(*len).and_then(|c| c.as_dim()).unwrap_or(1).max(1) as u64;
                     // The loop body executes v times; push for following ops.
                     // Count is applied via mult on body ops, so push now.
                     loop_stack.push(v);
@@ -864,11 +898,7 @@ impl Kernel {
                 }
                 Op::Range { kind, .. } => match kind {
                     RangeKind::Group(l) => {
-                        let v = self
-                            .resolve_const(*l)
-                            .and_then(|c| c.as_dim())
-                            .unwrap_or(1)
-                            .max(1) as u64;
+                        let v = self.resolve_const(*l).and_then(|c| c.as_dim()).unwrap_or(1).max(1) as u64;
                         group_stack.push(v);
                     }
                     RangeKind::Local(n) => {

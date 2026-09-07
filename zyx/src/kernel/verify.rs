@@ -232,12 +232,9 @@ impl Kernel {
                     let dtype = dtypes[&ops[0]];
                     for &x in ops.iter() {
                         check(op_id, x, &stack);
-                        if dtypes[&x] != dtype {
-                            println!("Vectorize dtype mismatch on op={op_id}.");
-                            self.debug();
-                            panic!();
-                        }
                     }
+                    // Asm may mix dtypes (e.g. U32 qs, I64 intra, F16 scale/min) — like CUDA C mixed arithmetic.
+                    // Result dtype is ops[0]'s dtype (e.g. F16 scale), no cross-check.
                     dtypes.insert(op_id, dtype);
                 }
                 Op::Stack { ref ops } => {

@@ -370,117 +370,6 @@ impl Kernel {
         self.load_op(src, index, MemLayout::Vector(size))
     }
 
-    /// Dequant Q4_0 (32 weights per scale): `qs_packed [N*K/2] U8`, `scales [N*K/32] F16`, `idx = n*K + k`
-    /// Returns F16 ` ( (qs_nibble - 8) * scale )`.
-    pub fn dequant_q4_k(&mut self, qs_packed: OpId, scales: OpId, idx: OpId) -> OpId {
-        let eight_i64 = self.const_idx(8);
-        let thirty_two = self.const_idx(32);
-        let four = self.const_idx(4);
-        let c8 = self.const_idx(8);
-        let u32_idx = self.div(idx, c8);
-        let intra = self.mod_(idx, c8);
-        let shift_i64 = self.mul(intra, four);
-        let shift_u32 = self.cast(shift_i64, DType::U32);
-        let qs_u32 = self.load(qs_packed, u32_idx);
-        let shifted = self.binary(qs_u32, shift_u32, BOp::BitShiftRight);
-        let fifteen_u32 = self.const_val(15u32);
-        let nibble_u32 = self.binary(shifted, fifteen_u32, BOp::BitAnd);
-        let nibble_i64 = self.cast(nibble_u32, DType::I64);
-        let signed = self.sub(nibble_i64, eight_i64);
-        let block = self.div(idx, thirty_two);
-        let scale = self.load(scales, block);
-        let signed_f16 = self.cast(signed, DType::F16);
-        self.mul(signed_f16, scale)
-    }
-
-    /// Dequant Q4 with hoisted scale: `qs_packed [N*K/8] U32`, `scale` F16 scalar, `idx = n*K+k`.
-    pub fn dequant_q4_k_with_scale(&mut self, qs_packed: OpId, scale: OpId, idx: OpId) -> OpId {
-        let eight_i64 = self.const_idx(8);
-        let four = self.const_idx(4);
-        let c8 = self.const_idx(8);
-        let u32_idx = self.div(idx, c8);
-        let intra = self.mod_(idx, c8);
-        let shift_i64 = self.mul(intra, four);
-        let shift_u32 = self.cast(shift_i64, DType::U32);
-        let qs_u32 = self.load(qs_packed, u32_idx);
-        let shifted = self.binary(qs_u32, shift_u32, BOp::BitShiftRight);
-        let fifteen_u32 = self.const_val(15u32);
-        let nibble_u32 = self.binary(shifted, fifteen_u32, BOp::BitAnd);
-        let nibble_i64 = self.cast(nibble_u32, DType::I64);
-        let signed = self.sub(nibble_i64, eight_i64);
-        let signed_f16 = self.cast(signed, DType::F16);
-        self.mul(signed_f16, scale)
-    }
-
-    /// Dequant one nibble from a loaded U32: `qs_u32` holds 8×4b, `intra` in 0..8, `(q-8)*scale`.
-    pub fn dequant_q4_k_u32(&mut self, qs_u32: OpId, scale: OpId, intra: OpId) -> OpId {
-        let eight_i64 = self.const_idx(8);
-        let four = self.const_idx(4);
-        let intra4 = self.mul(intra, four);
-        let shift_u32 = self.cast(intra4, DType::U32);
-        let shifted = self.binary(qs_u32, shift_u32, BOp::BitShiftRight);
-        let fifteen_u32 = self.const_val(15u32);
-        let nibble_u32 = self.binary(shifted, fifteen_u32, BOp::BitAnd);
-        let nibble_i64 = self.cast(nibble_u32, DType::I64);
-        let signed = self.sub(nibble_i64, eight_i64);
-        let signed_f16 = self.cast(signed, DType::F16);
-        self.mul(signed_f16, scale)
-    }
-
-    /// Exact Q4_K nibble: `q*scale - min` with per-32 `scale`/`min` F16.
-    /// Host converts GGUF Q4_K/Q3_K/Q5_K/Q6_K/IQ4_XS/Q8_0 blocks into
-    /// `(qs U32 8×4b, scale F16, min F16)` per 32, so the kernel stays exact.
-    pub fn dequant_q4_k_u32_bias(&mut self, qs_u32: OpId, scale: OpId, min: OpId, intra: OpId) -> OpId {
-        let four = self.const_idx(4);
-        let intra4 = self.mul(intra, four);
-        let shift_u32 = self.cast(intra4, DType::U32);
-        let shifted = self.binary(qs_u32, shift_u32, BOp::BitShiftRight);
-        let fifteen_u32 = self.const_val(15u32);
-        let nibble_u32 = self.binary(shifted, fifteen_u32, BOp::BitAnd);
-        let nibble_f16 = self.cast(nibble_u32, DType::F16);
-        let scaled = self.mul(nibble_f16, scale);
-        self.sub(scaled, min)
-    }
-
-    /// Expand one U32 (8×4b) into 8×F16 register storage using `scale`.
-    pub fn dequant_q4_k_vec8(&mut self, qs_u32: OpId, scale: OpId) -> OpId {
-        // qs_u32 contains 8×4b, scale F16 -> vector 8×F16 packed as U64? Return as vector 8 F16 via storage
-        let tmp = self.storage(DType::F16, MemScope::Register, 8);
-        for i in 0..8 {
-            let ii = self.const_idx(i as u32);
-            let v = self.dequant_q4_k_u32(qs_u32, scale, ii);
-            self.store(tmp, v, ii);
-        }
-        // Return packed vector as single OpId (first element) + size 8 via load_vector semantics
-        // For now return tmp storage id, caller will load_vector 8 from it
-        tmp
-    }
-
-    /// Vector dequant for 32 contiguous weights `k_base .. k_base+32` at row `n`.
-    /// `qs_part` is `U8` `[N, K/2]`, `scale_part` `F16` `[N, K/32]`, returns `Partition` `32×F16` in registers.
-    /// `k_dim` is logical K (e.g. 5120).
-    pub fn dequant_q4_k_partition(
-        &mut self,
-        qs_part: &Partition,
-        scale_part: &Partition,
-        n: OpId,
-        k_base: OpId,
-        k_dim: OpId,
-    ) -> Partition {
-        let k = self.storage(DType::F16, MemScope::Register, 32);
-        for i in 0..32 {
-            let ii = self.const_idx(i as u32);
-            let kk = self.add(k_base, ii);
-            let nk = self.mul(n, k_dim);
-            let kk_flat = self.add(nk, kk);
-            let v = self.dequant_q4_k(qs_part.src, scale_part.src, kk_flat);
-            self.store(k, v, ii);
-        }
-        let shape = [self.const_idx(32u32)];
-        let strides = [self.const_idx(1u32)];
-        Partition { src: k, shape: shape.to_vec(), strides: strides.to_vec(), dtype: DType::F16 }
-    }
-
     /// Load an `x` × `y` tile with `stride` from `src` at `index`.
     pub fn load_tile(&mut self, src: OpId, index: impl IntoOp, x: u16, y: u16, stride: u32) -> OpId {
         let index = index.into_op(self);
@@ -563,6 +452,44 @@ impl Kernel {
     pub fn exp2(&mut self, x: impl IntoOp) -> OpId {
         let x = x.into_op(self);
         self.unary(x, UOp::Exp2)
+    }
+
+    /// Dequant Q4_K nibble: `((input >> (intra*4)) & 15) * scale - offset` as F16.
+    /// Returns Vector(8) F16 — one dequantized value per nibble in the u32.
+    pub fn dequant_q4_k(&mut self, input: OpId, scale: OpId, offset: OpId) -> OpId {
+        let fifteen = self.const_val(15u32);
+        let mut outs = Vec::with_capacity(8);
+        for intra in 0..8u32 {
+            let shift = self.const_idx(intra * 4);
+            let shift_u32 = self.cast(shift, DType::U32);
+            let shifted = self.binary(input, shift_u32, BOp::BitShiftRight);
+            let nibble = self.binary(shifted, fifteen, BOp::BitAnd);
+            let nibble_f16 = self.cast(nibble, DType::F16);
+            let scaled = self.mul(nibble_f16, scale);
+            let v = self.sub(scaled, offset);
+            outs.push(v);
+        }
+        self.stack(&outs)
+    }
+
+    /// Dequant Q8_1 int8: cast each of 8 bytes to F16, `* scale + offset` as F16.
+    /// Returns Vector(8) F16 — one dequantized value per byte in the u32.
+    pub fn dequant_q8_1(&mut self, input: OpId, scale: OpId, offset: OpId) -> OpId {
+        let eight = self.const_idx(8u32);
+        let ff = self.const_val(0xFFu32);
+        let mut outs = Vec::with_capacity(8);
+        for byte in 0..8u32 {
+            let shift = self.const_idx(byte * 8);
+            let shift_u32 = self.cast(shift, DType::U32);
+            let shifted = self.binary(input, shift_u32, BOp::BitShiftRight);
+            let byte_u32 = self.binary(shifted, ff, BOp::BitAnd);
+            let byte_i64 = self.cast(byte_u32, DType::I64);
+            let signed = self.sub(byte_i64, eight);
+            let signed_f16 = self.cast(signed, DType::F16);
+            let scaled = self.mad(signed_f16, scale, offset);
+            outs.push(scaled);
+        }
+        self.stack(&outs)
     }
 
     /// `ln(x)`
@@ -1868,6 +1795,117 @@ impl Kernel {
         self.loop_over(ctrip, |kernel, la| {
             let id = kernel.mad(la, cthreads, tid);
             kernel.load_global_local(shared, origins, id);
+        });
+    }
+
+    /// Stage a tile with a fused transformation: load from global, apply `f` to
+    /// each element, store to shared memory. Same cooperative staging as
+    /// [`Kernel::stage_global_local`] but the transformation runs on the raw
+    /// loaded value before storing. Works for any quantization scheme — pass
+    /// the appropriate dequant closure.
+    ///
+    /// `f` receives the raw loaded value and returns the transformed value to
+    /// store to smem.
+    pub fn stage_global_local_fused<const N: usize, F>(&mut self, shared: &LocalPartition<N>, origins: [impl IntoOp; N], f: F)
+    where
+        F: Fn(&mut Kernel, OpId) -> OpId,
+    {
+        debug_assert!(N > 0, "stage_global_local_fused: rank must be non-zero");
+        let origins: [OpId; N] = origins.map(|o| o.into_op(self));
+        let lids = self.open_local_ids();
+        debug_assert!(!lids.is_empty(), "stage_global_local_fused: no open local ranges");
+
+        let tile_total: Dim = shared
+            .tile
+            .iter()
+            .map(|&d| {
+                self.resolve_const(d)
+                    .and_then(crate::dtype::Constant::as_dim)
+                    .expect("stage_global_local_fused: tile dim must resolve to a constant")
+            })
+            .product();
+        let lens: Vec<Dim> = lids
+            .iter()
+            .map(|&id| match self.ops[id].op {
+                Op::Range { kind: RangeKind::Local(len), .. } => len as Dim,
+                _ => unreachable!(),
+            })
+            .collect();
+        let threads: Dim = lens.iter().product();
+        debug_assert!(tile_total % threads == 0, "tile size must be multiple of thread count");
+
+        let mut tid = lids[0];
+        let mut stride: Dim = lens[0];
+        for (a, lid) in lids.iter().enumerate().skip(1) {
+            let cstride = self.const_idx(stride as u32);
+            tid = self.mad(*lid, cstride, tid);
+            stride *= lens[a];
+        }
+
+        let cthreads = self.const_idx(threads as u32);
+        let trip = tile_total / threads;
+        let ctrip = self.const_idx(trip as u32);
+
+        self.loop_over(ctrip, |kernel, la| {
+            let id = kernel.mad(la, cthreads, tid);
+
+            // Inlined load_global_local with transformation fused in
+            let mut coords: Vec<OpId> = Vec::with_capacity(N);
+            for a in 0..N {
+                let t_stride = kernel.row_major_stride(&shared.tile, a);
+                let coord = if a == 0 {
+                    kernel.div(id, t_stride)
+                } else {
+                    let q = kernel.div(id, t_stride);
+                    kernel.mod_(q, shared.tile[a])
+                };
+                coords.push(coord);
+            }
+
+            let mut g_idx: Option<OpId> = None;
+            for a in 0..N {
+                let v_stride = kernel.row_major_stride(&shared.view_shape, a);
+                let o = kernel.mul(origins[a], shared.tile[a]);
+                let o = kernel.add(o, coords[a]);
+                g_idx = Some(match g_idx {
+                    Some(g) => kernel.mad(o, v_stride, g),
+                    None => kernel.mul(o, v_stride),
+                });
+            }
+            let v = kernel.load(shared.src, g_idx.unwrap());
+
+            // Apply transformation
+            let v_transformed = f(kernel, v);
+
+            // Compute smem address and store
+            let smem_base = if shared.depth > 1 {
+                let cdepth = kernel.const_idx(shared.depth);
+                let generation = kernel.mod_(origins[N - 1], cdepth);
+                let cgen = kernel.const_idx(shared.gen_total);
+                kernel.mul(generation, cgen)
+            } else {
+                kernel.const_idx(0u32)
+            };
+
+            let mut s_idx = kernel.add(smem_base, coords[N - 1]);
+            if N > 1 {
+                let cpad = kernel.const_idx(shared.pad);
+                let mut stride = kernel.add(shared.tile[N - 1], cpad);
+                s_idx = kernel.mad(coords[N - 2], stride, s_idx);
+                for a in (0..N - 2).rev() {
+                    stride = kernel.mul(stride, shared.tile[a + 1]);
+                    s_idx = kernel.mad(coords[a], stride, s_idx);
+                }
+            }
+            let layout = kernel.layout(v_transformed);
+            match layout {
+                MemLayout::Vector(n) => {
+                    kernel.store_op(shared.storage, v_transformed, s_idx, MemLayout::Vector(n));
+                }
+                _ => {
+                    kernel.store(shared.storage, v_transformed, s_idx);
+                }
+            }
         });
     }
 
