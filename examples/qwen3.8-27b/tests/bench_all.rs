@@ -40,12 +40,18 @@ where
         .map(|s| s.iter().map(|&d| Tensor::from(d)).collect())
         .collect();
     let _ = ck.forward(&in_refs, out_shapes_ref.clone())?;
+    // Sync-timed launch: forward only enqueues (async), sync blocks until done.
+    // tok/s must use enqueue+sync total, never async enqueue alone.
     let t2 = Instant::now();
     let outs = ck.forward(&in_refs, out_shapes_ref.clone())?;
+    let enqueue_us = t2.elapsed().as_micros();
+    let t3s = Instant::now();
     for o in &outs {
         o.sync()?;
     }
-    let sync_us = t2.elapsed().as_micros();
+    let sync_only_us = t3s.elapsed().as_micros();
+    let sync_us = enqueue_us + sync_only_us;
+    eprintln!("[bench] {name} enqueue {enqueue_us}us sync {sync_only_us}us total {sync_us}us");
     let tflops = if sync_us > 0 {
         flops as f64 / sync_us as f64 / 1e6
     } else {
@@ -182,51 +188,63 @@ fn bench_all() -> Result<(), ZyxError> {
             cnt,
         ));
     }
-    // quantized Q4_0 gemm benches (simple 1 scale/32, representative for UD-Q4_K XL)
+    // Exact Q4_K gemm benches: host converts GGUF Q4_K blocks (d/dmin + 8×6b sc/min
+    // per 256) into per-32 (scale=d*sc, min=dmin*m) + 4b qs. Kernel is then
+    // `q*scale-min` — exact for Q4_K and reusable for Q3_K/Q5_K/Q6_K/IQ4_XS/Q8_0
+    // after host-side expansion to 4b. Covers Q8_0/Q3_K/Q4_K/Q5_K/Q6_K/IQ4_XS mix.
     let q4_sizes: Vec<(&str, i64, i64, i64, usize)> = vec![
-        ("q4 ssm_qkv 16,5120,10240", 16, 5120, 10240, 49),
-        ("q4 ffn_gate 16,5120,17408", 16, 5120, 17408, 65),
-        ("q4 ffn_down 16,17408,5120", 16, 17408, 5120, 65),
-        ("q4 lm_head 16,5120,248320", 16, 5120, 248320, 1),
+        ("q4x ssm_qkv 16,5120,10240", 16, 5120, 10240, 49),
+        ("q4x ffn_gate 16,5120,17408", 16, 5120, 17408, 65),
+        ("q4x ffn_down 16,17408,5120", 16, 17408, 5120, 65),
+        ("q4x lm_head 16,5120,248320", 16, 5120, 248320, 1),
     ];
     for (name, r, k, n, cnt) in q4_sizes {
         let n_bench = if n == 248320 { 8192 } else { n };
         let n_ = if n == 248320 { n_bench } else { n };
-        // generate simple Q4_0 quant for bench
+        // Mimic GGUF Q4_K super-block: per 256 rows share d/dmin, per 32 sub-block
+        // 6b sc/min. Generate deterministic d/dmin/sc/m then quantize synthetic weights.
         let b_f32: Vec<f32> = (0..(n_ * k) as usize)
             .map(|i| (i as f32 * 0.02).cos() * 0.5)
             .collect();
         let mut qs = vec![0u32; (n_ * k / 8) as usize];
         let mut scales = Vec::with_capacity((n_ * k / 32) as usize);
+        let mut mins = Vec::with_capacity((n_ * k / 32) as usize);
         for row in 0..n_ {
-            for blk in 0..k / 32 {
-                let base = (row * k + blk * 32) as usize;
-                let mut max: f32 = 0.0;
-                for i in 0..32 {
-                    max = max.max(b_f32[base + i].abs());
-                }
-                let d = if max == 0.0 { 1.0 } else { max / 7.0 };
-                scales.push(zyx::f16::from_f32(d));
-                for i in 0..32 {
-                    let q = ((b_f32[base + i] / d).round() + 8.0).clamp(0.0, 15.0) as u32;
-                    let idx = base / 8 + i / 8;
-                    let shift = (i % 8) * 4;
-                    qs[idx as usize] |= (q & 0xF) << shift;
+            for blk256 in 0..k / 256 {
+                // super-block scales vary slowly like real GGUF
+                let d = 0.02 + 0.01 * ((row * 7 + blk256 * 13) % 5) as f32;
+                let dmin = 0.015 + 0.008 * ((row * 3 + blk256 * 11) % 4) as f32;
+                for sub in 0..8 {
+                    let blk = blk256 * 8 + sub;
+                    let base = (row * k + blk * 32) as usize;
+                    let sc6 = 20.0 + ((row + blk as i64 * 3) % 30) as f32; // 6b 0..63
+                    let m6 = 18.0 + ((row * 2 + blk as i64) % 28) as f32;
+                    let scale = d * sc6 / 32.0;
+                    let min = dmin * m6 / 32.0;
+                    scales.push(zyx::f16::from_f32(scale));
+                    mins.push(zyx::f16::from_f32(min));
+                    for i in 0..32 {
+                        let q = ((b_f32[base + i] + min) / scale).round().clamp(0.0, 15.0) as u32;
+                        let idx = base / 8 + i / 8;
+                        let shift = (i % 8) * 4;
+                        qs[idx as usize] |= (q & 0xF) << shift;
+                    }
                 }
             }
         }
         let a = Tensor::randn([r, k], DType::F16)?.to(dev)?;
         let qs_t = Tensor::from(qs.clone()).to(dev)?;
         let sc_t = Tensor::from(scales.clone()).to(dev)?;
+        let mn_t = Tensor::from(mins.clone()).to(dev)?;
         let (us, flops, read, write) = bench_kernel(
             name,
             {
                 let r_ = r;
                 let k_ = k;
                 let n__ = n_;
-                move || qwen3_8_27b::gemm_cuda_q4_k(r_, k_, n__)
+                move || qwen3_8_27b::gemm_cuda_q4_k_exact(r_, k_, n__)
             },
-            vec![a, qs_t, sc_t],
+            vec![a, qs_t, sc_t, mn_t],
             vec![vec![r as i64, n_ as i64]],
         )?;
         totals.push((

@@ -393,6 +393,7 @@ impl Kernel {
         self.mul(signed_f16, scale)
     }
 
+    /// Dequant Q4 with hoisted scale: `qs_packed [N*K/8] U32`, `scale` F16 scalar, `idx = n*K+k`.
     pub fn dequant_q4_k_with_scale(&mut self, qs_packed: OpId, scale: OpId, idx: OpId) -> OpId {
         let eight_i64 = self.const_idx(8);
         let four = self.const_idx(4);
@@ -411,6 +412,7 @@ impl Kernel {
         self.mul(signed_f16, scale)
     }
 
+    /// Dequant one nibble from a loaded U32: `qs_u32` holds 8×4b, `intra` in 0..8, `(q-8)*scale`.
     pub fn dequant_q4_k_u32(&mut self, qs_u32: OpId, scale: OpId, intra: OpId) -> OpId {
         let eight_i64 = self.const_idx(8);
         let four = self.const_idx(4);
@@ -425,6 +427,22 @@ impl Kernel {
         self.mul(signed_f16, scale)
     }
 
+    /// Exact Q4_K nibble: `q*scale - min` with per-32 `scale`/`min` F16.
+    /// Host converts GGUF Q4_K/Q3_K/Q5_K/Q6_K/IQ4_XS/Q8_0 blocks into
+    /// `(qs U32 8×4b, scale F16, min F16)` per 32, so the kernel stays exact.
+    pub fn dequant_q4_k_u32_bias(&mut self, qs_u32: OpId, scale: OpId, min: OpId, intra: OpId) -> OpId {
+        let four = self.const_idx(4);
+        let intra4 = self.mul(intra, four);
+        let shift_u32 = self.cast(intra4, DType::U32);
+        let shifted = self.binary(qs_u32, shift_u32, BOp::BitShiftRight);
+        let fifteen_u32 = self.const_val(15u32);
+        let nibble_u32 = self.binary(shifted, fifteen_u32, BOp::BitAnd);
+        let nibble_f16 = self.cast(nibble_u32, DType::F16);
+        let scaled = self.mul(nibble_f16, scale);
+        self.sub(scaled, min)
+    }
+
+    /// Expand one U32 (8×4b) into 8×F16 register storage using `scale`.
     pub fn dequant_q4_k_vec8(&mut self, qs_u32: OpId, scale: OpId) -> OpId {
         // qs_u32 contains 8×4b, scale F16 -> vector 8×F16 packed as U64? Return as vector 8 F16 via storage
         let tmp = self.storage(DType::F16, MemScope::Register, 8);

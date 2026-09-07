@@ -149,6 +149,87 @@ pub fn gemm_cuda_q4_k(r: i64, k: i64, n: i64) -> Kernel {
     kernel
 }
 
+/// Exact fused Q4_K GEMM: A [R,K] F16, qs [N*K/8] U32 (8×4b), scales/mins [N*K/32] F16, out [R,N] F32.
+/// `v = q*scale - min` per 32 — exact after host converts GGUF Q4_K (d/dmin + 8×6b sc/min),
+/// Q3_K/Q5_K/Q6_K/IQ4_XS/Q8_0 into per-32 (scale, min) + 4b qs. B stage loops 4×U32 outer,
+/// 8×nibble inner: 1 load per 8 weights, no div/mod per element.
+pub fn gemm_cuda_q4_k_exact(r: i64, k: i64, n: i64) -> Kernel {
+    assert!(r % 16 == 0 && n % 8 == 0 && k % 32 == 0);
+    let mut kernel = Kernel::new(Dev::Cuda(0));
+    let a = kernel.param(DType::F16);
+    let qs = kernel.param(DType::U32);
+    let scales = kernel.param(DType::F16);
+    let mins = kernel.param(DType::F16);
+    let out = kernel.param_mut(DType::F32);
+    let glen_x = r / 16;
+    let glen_y = n / 8;
+    let [gidx, gidy] = kernel.group_ranges([glen_x, glen_y]);
+    let lidx = kernel.local_range(0, 32);
+    kernel.warp(lidx);
+    let [rr, kk, nn] = kernel.const_idxs([r, k, n]);
+    let cp = kernel.view_global_register(out, [rr, nn]);
+    let c16 = kernel.const_idx(16);
+    let c8 = kernel.const_idx(8);
+    let c32 = kernel.const_idx(32);
+    let c4 = kernel.const_idx(4);
+    let r0 = kernel.mul(gidx, c16);
+    let n0 = kernel.mul(gidy, c8);
+    let k_dim = kk;
+    // Host consts: K/32 blocks per row, K/8 U32s per row. No runtime divs.
+    let k_div32 = kernel.const_idx(k / 32);
+    let k_div8 = kernel.const_idx(k / 8);
+    let acc = kernel.acc([c16, c8], DType::F32);
+    let a_local = kernel.storage(DType::F16, MemScope::Local, 512);
+    let b_local = kernel.storage(DType::F16, MemScope::Local, 256);
+    let nchunks = k / 32;
+    kernel.loop_over(nchunks, |kernel, chunk| {
+        let k_base = kernel.mul(chunk, c32);
+        // k_base/8 = chunk*4: mul only, no integer div on device.
+        let kbase_div8 = kernel.mul(chunk, c4);
+        kernel.loop_over(c16, |kernel, rr| {
+            kernel.loop_over(c32, |kernel, cc| {
+                let g_row = kernel.add(r0, rr);
+                let g_col = kernel.add(k_base, cc);
+                let g_row_k = kernel.mul(g_row, k_dim);
+                let g_idx = kernel.add(g_row_k, g_col);
+                let v = kernel.load(a, g_idx);
+                let rr32 = kernel.mul(rr, c32);
+                let id = kernel.add(rr32, cc);
+                kernel.store(a_local, v, id);
+            });
+        });
+        kernel.loop_over(c8, |kernel, rr| {
+            let g_n = kernel.add(n0, rr);
+            let n_k32 = kernel.mul(g_n, k_div32);
+            let scale_idx = kernel.add(n_k32, chunk);
+            let scale = kernel.load(scales, scale_idx);
+            let min = kernel.load(mins, scale_idx);
+            let n_k8 = kernel.mul(g_n, k_div8);
+            let base_u32 = kernel.add(n_k8, kbase_div8);
+            kernel.loop_over(c4, |kernel, u32_off| {
+                let u32_idx = kernel.add(base_u32, u32_off);
+                let qs_u32 = kernel.load(qs, u32_idx);
+                let off8 = kernel.mul(u32_off, c8);
+                kernel.loop_over(c8, |kernel, intra| {
+                    let v = kernel.dequant_q4_k_u32_bias(qs_u32, scale, min, intra);
+                    let cc = kernel.add(off8, intra);
+                    let rr32 = kernel.mul(rr, c32);
+                    let id = kernel.add(rr32, cc);
+                    kernel.store(b_local, v, id);
+                });
+            });
+        });
+        kernel.barrier();
+        let a_part = kernel.view_global_register(a_local, [c16, c32]);
+        let b_part = kernel.view_global_register(b_local, [c8, c32]);
+        kernel.mma(&acc, &a_part, &b_part);
+        kernel.barrier();
+    });
+    kernel.store_partition(&cp, &acc, [r0, n0]);
+    kernel.default_epilogue();
+    kernel
+}
+
 /// Depthwise causal conv1d (kernel 4, left pad 3) + SiLU:
 /// in [M, C] f32 -> out [M, C] f32, convw [C, 4] f32.
 pub fn conv_silu_kernel() -> Kernel {
