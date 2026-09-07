@@ -370,30 +370,29 @@ impl Kernel {
                         continue;
                     }
                     if dst == storage_id {
+                        let Op::Const(index_c) = self.ops[index].op else {
+                            // variable index, cannot fold this store
+                            self.ops[op_id].op.remap_params(&remaps);
+                            op_id = next;
+                            continue;
+                        };
                         self.remove_op(op_id);
-                        // x may have been removed as a previous load. If that was the case, the load was redundant
                         if self.ops.contains_id(x) {
-                            let Op::Const(index) = self.ops[index].op else {
-                                unreachable!()
-                            };
-                            // Indices may be any integer dtype, so extract the dim
-                            // value regardless of the constant's concrete type.
-                            let index = index.as_dim().expect("store index must be a non-negative integer constant") as usize;
+                            let index = index_c.as_dim().expect("store index must be a non-negative integer constant") as usize;
                             latest_stores[index] = x;
-                            //println!("Latest stores = {latest_stores:?}");
                         }
                         op_id = next;
                         continue;
                     }
                 }
                 Op::Load { src, index, .. } if src == storage_id => {
-                    self.remove_op(op_id);
-                    let Op::Const(index) = self.ops[index].op else {
-                        unreachable!()
+                    let Op::Const(index_c) = self.ops[index].op else {
+                        self.ops[op_id].op.remap_params(&remaps);
+                        op_id = next;
+                        continue;
                     };
-                    // Indices may be any integer dtype, so extract the dim value
-                    // regardless of the constant's concrete type.
-                    let index = index.as_dim().expect("load index must be a non-negative integer constant") as usize;
+                    self.remove_op(op_id);
+                    let index = index_c.as_dim().expect("load index must be a non-negative integer constant") as usize;
                     remaps.insert(op_id, latest_stores[index]);
                     op_id = next;
                     continue;

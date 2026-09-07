@@ -182,6 +182,62 @@ fn bench_all() -> Result<(), ZyxError> {
             cnt,
         ));
     }
+    // quantized Q4_0 gemm benches (simple 1 scale/32, representative for UD-Q4_K XL)
+    let q4_sizes: Vec<(&str, i64, i64, i64, usize)> = vec![
+        ("q4 ssm_qkv 16,5120,10240", 16, 5120, 10240, 49),
+        ("q4 ffn_gate 16,5120,17408", 16, 5120, 17408, 65),
+        ("q4 ffn_down 16,17408,5120", 16, 17408, 5120, 65),
+        ("q4 lm_head 16,5120,248320", 16, 5120, 248320, 1),
+    ];
+    for (name, r, k, n, cnt) in q4_sizes {
+        let n_bench = if n == 248320 { 8192 } else { n };
+        let n_ = if n == 248320 { n_bench } else { n };
+        // generate simple Q4_0 quant for bench
+        let b_f32: Vec<f32> = (0..(n_ * k) as usize)
+            .map(|i| (i as f32 * 0.02).cos() * 0.5)
+            .collect();
+        let mut qs = vec![0u32; (n_ * k / 8) as usize];
+        let mut scales = Vec::with_capacity((n_ * k / 32) as usize);
+        for row in 0..n_ {
+            for blk in 0..k / 32 {
+                let base = (row * k + blk * 32) as usize;
+                let mut max: f32 = 0.0;
+                for i in 0..32 {
+                    max = max.max(b_f32[base + i].abs());
+                }
+                let d = if max == 0.0 { 1.0 } else { max / 7.0 };
+                scales.push(zyx::f16::from_f32(d));
+                for i in 0..32 {
+                    let q = ((b_f32[base + i] / d).round() + 8.0).clamp(0.0, 15.0) as u32;
+                    let idx = base / 8 + i / 8;
+                    let shift = (i % 8) * 4;
+                    qs[idx as usize] |= (q & 0xF) << shift;
+                }
+            }
+        }
+        let a = Tensor::randn([r, k], DType::F16)?.to(dev)?;
+        let qs_t = Tensor::from(qs.clone()).to(dev)?;
+        let sc_t = Tensor::from(scales.clone()).to(dev)?;
+        let (us, flops, read, write) = bench_kernel(
+            name,
+            {
+                let r_ = r;
+                let k_ = k;
+                let n__ = n_;
+                move || qwen3_8_27b::gemm_cuda_q4_k(r_, k_, n__)
+            },
+            vec![a, qs_t, sc_t],
+            vec![vec![r as i64, n_ as i64]],
+        )?;
+        totals.push((
+            Box::leak(name.to_string().into_boxed_str()),
+            us,
+            flops,
+            read,
+            write,
+            cnt,
+        ));
+    }
     let total_sync: u128 = totals
         .iter()
         .map(|(_, us, _, _, _, cnt)| us * *cnt as u128)

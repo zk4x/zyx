@@ -121,7 +121,9 @@ impl Kernel {
     pub fn compile(mut self) -> Result<CompiledKernel, ZyxError> {
         let _compile_start = std::time::Instant::now();
         let mut _t = std::time::Instant::now();
-        _t = std::time::Instant::now(); self.linearize(); eprintln!("[compile] linearize {}us", _t.elapsed().as_micros());
+        _t = std::time::Instant::now();
+        self.linearize();
+        eprintln!("[compile] linearize {}us", _t.elapsed().as_micros());
         // After linearization the parameter shapes are no longer meaningful
         // (the same clear happens inside `linearize` for kernels it processes);
         // clear them here too so kernels that skip linearization (already
@@ -132,10 +134,18 @@ impl Kernel {
                 *shape = OpId::NULL;
             }
         }
-        _t = std::time::Instant::now(); self.instruction_schedule(); eprintln!("[compile] instruction_schedule {}us", _t.elapsed().as_micros());
-        _t = std::time::Instant::now(); self.constant_folding(); eprintln!("[compile] constant_folding {}us", _t.elapsed().as_micros());
-        _t = std::time::Instant::now(); self.dead_code_elimination(); eprintln!("[compile] dead_code_elimination {}us", _t.elapsed().as_micros());
-        _t = std::time::Instant::now(); self.verify(); eprintln!("[compile] verify {}us", _t.elapsed().as_micros());
+        _t = std::time::Instant::now();
+        self.instruction_schedule();
+        eprintln!("[compile] instruction_schedule {}us", _t.elapsed().as_micros());
+        _t = std::time::Instant::now();
+        self.constant_folding();
+        eprintln!("[compile] constant_folding {}us", _t.elapsed().as_micros());
+        _t = std::time::Instant::now();
+        self.dead_code_elimination();
+        eprintln!("[compile] dead_code_elimination {}us", _t.elapsed().as_micros());
+        _t = std::time::Instant::now();
+        self.verify();
+        eprintln!("[compile] verify {}us", _t.elapsed().as_micros());
 
         let mut inputs = Vec::new();
         let mut outputs = Vec::new();
@@ -358,6 +368,99 @@ impl Kernel {
     pub fn load_vector(&mut self, src: OpId, index: impl IntoOp, size: u16) -> OpId {
         let index = index.into_op(self);
         self.load_op(src, index, MemLayout::Vector(size))
+    }
+
+    /// Dequant Q4_0 (32 weights per scale): `qs_packed [N*K/2] U8`, `scales [N*K/32] F16`, `idx = n*K + k`
+    /// Returns F16 ` ( (qs_nibble - 8) * scale )`.
+    pub fn dequant_q4_k(&mut self, qs_packed: OpId, scales: OpId, idx: OpId) -> OpId {
+        let eight_i64 = self.const_idx(8);
+        let thirty_two = self.const_idx(32);
+        let four = self.const_idx(4);
+        let c8 = self.const_idx(8);
+        let u32_idx = self.div(idx, c8);
+        let intra = self.mod_(idx, c8);
+        let shift_i64 = self.mul(intra, four);
+        let shift_u32 = self.cast(shift_i64, DType::U32);
+        let qs_u32 = self.load(qs_packed, u32_idx);
+        let shifted = self.binary(qs_u32, shift_u32, BOp::BitShiftRight);
+        let fifteen_u32 = self.const_val(15u32);
+        let nibble_u32 = self.binary(shifted, fifteen_u32, BOp::BitAnd);
+        let nibble_i64 = self.cast(nibble_u32, DType::I64);
+        let signed = self.sub(nibble_i64, eight_i64);
+        let block = self.div(idx, thirty_two);
+        let scale = self.load(scales, block);
+        let signed_f16 = self.cast(signed, DType::F16);
+        self.mul(signed_f16, scale)
+    }
+
+    pub fn dequant_q4_k_with_scale(&mut self, qs_packed: OpId, scale: OpId, idx: OpId) -> OpId {
+        let eight_i64 = self.const_idx(8);
+        let four = self.const_idx(4);
+        let c8 = self.const_idx(8);
+        let u32_idx = self.div(idx, c8);
+        let intra = self.mod_(idx, c8);
+        let shift_i64 = self.mul(intra, four);
+        let shift_u32 = self.cast(shift_i64, DType::U32);
+        let qs_u32 = self.load(qs_packed, u32_idx);
+        let shifted = self.binary(qs_u32, shift_u32, BOp::BitShiftRight);
+        let fifteen_u32 = self.const_val(15u32);
+        let nibble_u32 = self.binary(shifted, fifteen_u32, BOp::BitAnd);
+        let nibble_i64 = self.cast(nibble_u32, DType::I64);
+        let signed = self.sub(nibble_i64, eight_i64);
+        let signed_f16 = self.cast(signed, DType::F16);
+        self.mul(signed_f16, scale)
+    }
+
+    pub fn dequant_q4_k_u32(&mut self, qs_u32: OpId, scale: OpId, intra: OpId) -> OpId {
+        let eight_i64 = self.const_idx(8);
+        let four = self.const_idx(4);
+        let intra4 = self.mul(intra, four);
+        let shift_u32 = self.cast(intra4, DType::U32);
+        let shifted = self.binary(qs_u32, shift_u32, BOp::BitShiftRight);
+        let fifteen_u32 = self.const_val(15u32);
+        let nibble_u32 = self.binary(shifted, fifteen_u32, BOp::BitAnd);
+        let nibble_i64 = self.cast(nibble_u32, DType::I64);
+        let signed = self.sub(nibble_i64, eight_i64);
+        let signed_f16 = self.cast(signed, DType::F16);
+        self.mul(signed_f16, scale)
+    }
+
+    pub fn dequant_q4_k_vec8(&mut self, qs_u32: OpId, scale: OpId) -> OpId {
+        // qs_u32 contains 8×4b, scale F16 -> vector 8×F16 packed as U64? Return as vector 8 F16 via storage
+        let tmp = self.storage(DType::F16, MemScope::Register, 8);
+        for i in 0..8 {
+            let ii = self.const_idx(i as u32);
+            let v = self.dequant_q4_k_u32(qs_u32, scale, ii);
+            self.store(tmp, v, ii);
+        }
+        // Return packed vector as single OpId (first element) + size 8 via load_vector semantics
+        // For now return tmp storage id, caller will load_vector 8 from it
+        tmp
+    }
+
+    /// Vector dequant for 32 contiguous weights `k_base .. k_base+32` at row `n`.
+    /// `qs_part` is `U8` `[N, K/2]`, `scale_part` `F16` `[N, K/32]`, returns `Partition` `32×F16` in registers.
+    /// `k_dim` is logical K (e.g. 5120).
+    pub fn dequant_q4_k_partition(
+        &mut self,
+        qs_part: &Partition,
+        scale_part: &Partition,
+        n: OpId,
+        k_base: OpId,
+        k_dim: OpId,
+    ) -> Partition {
+        let k = self.storage(DType::F16, MemScope::Register, 32);
+        for i in 0..32 {
+            let ii = self.const_idx(i as u32);
+            let kk = self.add(k_base, ii);
+            let nk = self.mul(n, k_dim);
+            let kk_flat = self.add(nk, kk);
+            let v = self.dequant_q4_k(qs_part.src, scale_part.src, kk_flat);
+            self.store(k, v, ii);
+        }
+        let shape = [self.const_idx(32u32)];
+        let strides = [self.const_idx(1u32)];
+        Partition { src: k, shape: shape.to_vec(), strides: strides.to_vec(), dtype: DType::F16 }
     }
 
     /// Load an `x` × `y` tile with `stride` from `src` at `index`.
@@ -1053,7 +1156,11 @@ impl Runtime {
         let device = &mut self.devices[device_id];
         let _launch_t = std::time::Instant::now();
         let event = unsafe { device.launch(program.program_id, &mut *pool_ptr, &args, event_wait_list)? };
-        eprintln!("[forward async] launch enqueue {}us total {}us (async, no sync)", _launch_t.elapsed().as_micros(), _fwd_start.elapsed().as_micros());
+        eprintln!(
+            "[forward async] launch enqueue {}us total {}us (async, no sync)",
+            _launch_t.elapsed().as_micros(),
+            _fwd_start.elapsed().as_micros()
+        );
         self.events.insert(all_bufs, event);
 
         // Put to tensors. Each output becomes a **Leaf**: the launched buffer
@@ -1795,21 +1902,40 @@ impl Kernel {
     /// is `[M,D]`, `cos`/`sin` `[S,rot_dim]` with `H` broadcast `row%S`,
     /// `trans` `[D,D]` (when `rot_dim==D`) else `[rot_dim,rot_dim]` unused in
     /// partial case. `rot_dim` dims rotate (`half=rot_dim/2`), rest pass through.
-    pub fn rope_rotate_tile(&mut self, x: &Partition, cos: &Partition, sin: &Partition, trans: &Partition, out: &Partition, rot_dim: i64) {
+    pub fn rope_rotate_tile(
+        &mut self,
+        x: &Partition,
+        cos: &Partition,
+        sin: &Partition,
+        trans: &Partition,
+        out: &Partition,
+        rot_dim: i64,
+    ) {
         debug_assert_eq!(x.shape.len(), 2, "rope_rotate_tile: x must be rank 2");
         debug_assert_eq!(cos.shape.len(), 2, "rope_rotate_tile: cos must be rank 2");
         debug_assert_eq!(sin.shape.len(), 2, "rope_rotate_tile: sin must be rank 2");
         debug_assert_eq!(trans.shape.len(), 2, "rope_rotate_tile: trans must be rank 2");
         debug_assert_eq!(out.shape.len(), 2, "rope_rotate_tile: out must be rank 2");
         debug_assert!(rot_dim > 0 && rot_dim % 2 == 0, "rope_rotate_tile: rot_dim must be positive even");
-        let tile_m: i64 = self.resolve_const(x.shape[0]).and_then(crate::dtype::Constant::as_dim).expect("rope_rotate_tile: tile dim must resolve");
-        let tile_n: i64 = self.resolve_const(x.shape[1]).and_then(crate::dtype::Constant::as_dim).expect("rope_rotate_tile: tile dim must resolve");
+        let tile_m: i64 = self
+            .resolve_const(x.shape[0])
+            .and_then(crate::dtype::Constant::as_dim)
+            .expect("rope_rotate_tile: tile dim must resolve");
+        let tile_n: i64 = self
+            .resolve_const(x.shape[1])
+            .and_then(crate::dtype::Constant::as_dim)
+            .expect("rope_rotate_tile: tile dim must resolve");
         debug_assert!(rot_dim <= tile_n, "rope_rotate_tile: rot_dim must be <= D");
         let info = self.device_info();
         // Reusable: tile -> wmma -> vector -> scalar, based on dims and device caps.
         // Tile/wmma only handle full D rotation (rot_dim==D) with 32×32 / 16×8 and f16 inputs (mma).
-        let tile_ok = rot_dim == tile_n && !info.tile_sizes.is_empty() && tile_m % 32 == 0 && tile_n % 32 == 0 && info.tile_sizes.iter().any(|[tx, ty]| *tx == 32 && *ty == 32);
-        let wmma_ok = rot_dim == tile_n && x.dtype == DType::F16 && !info.wmma_layouts.is_empty() && tile_m % 16 == 0 && tile_n % 8 == 0;
+        let tile_ok = rot_dim == tile_n
+            && !info.tile_sizes.is_empty()
+            && tile_m % 32 == 0
+            && tile_n % 32 == 0
+            && info.tile_sizes.iter().any(|[tx, ty]| *tx == 32 && *ty == 32);
+        let wmma_ok =
+            rot_dim == tile_n && x.dtype == DType::F16 && !info.wmma_layouts.is_empty() && tile_m % 16 == 0 && tile_n % 8 == 0;
         let vec_ok = !info.supported_vec_lens.is_empty();
         if tile_ok {
             // Tile path (TT 32×32): one CB tile, matmul_tile for rotate_half
