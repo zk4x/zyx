@@ -28,6 +28,12 @@ pub const CONV_DIM: i64 = 10240; // KEY_DIM * 2 + VAL_DIM
 pub const CK: i64 = 4; // depthwise conv kernel
 pub const CH: i64 = 64; // delta-rule chunk size
 pub const DT_RANK: i64 = 48; // beta/decay rank (= VH)
+pub const INTERMEDIATE: i64 = 17408; // FFN intermediate size
+pub const HEADS: i64 = 24; // full-attn heads
+pub const KV_HEADS: i64 = 4; // full-attn KV heads
+pub const HEAD_DIM: i64 = 256; // full-attn head dim
+pub const ROT_DIM: i64 = 64; // partial RoPE (HEAD_DIM / 4)
+pub const FFN_DIM: i64 = INTERMEDIATE; // alias
 
 /// Zero-pads rows: in [s, d] f32 -> out [m, d] f16.
 pub fn pad_kernel(s: i64, m: i64, d: i64) -> Kernel {
@@ -332,6 +338,128 @@ pub fn rmsnorm_kernel() -> Kernel {
         let o_off = kernel.add(th, hd);
         kernel.store(out, y, o_off);
     }
+    kernel.default_epilogue();
+    kernel
+}
+
+/// Element-wise residual add: out [m, d] = a [m, d] + b [m, d] (F32).
+pub fn residual_add_kernel() -> Kernel {
+    let mut kernel = Kernel::new(Dev::Cuda(0));
+    let [a, b] = kernel.params([DType::F32; 2]);
+    let out = kernel.param_mut(DType::F32);
+    let m = M_PAD;
+    let d = HIDDEN;
+    let [cg, t] = kernel.group_ranges([d / 32, m]);
+    let [lane] = kernel.local_ranges([32]);
+    let c = kernel.mad(cg, 32i64, lane);
+    let idx = kernel.mad(t, d, c);
+    let av = kernel.load(a, idx);
+    let bv = kernel.load(b, idx);
+    let y = kernel.add(av, bv);
+    kernel.store(out, y, idx);
+    kernel.default_epilogue();
+    kernel
+}
+
+/// Input RMSNorm: x [S, HIDDEN] F32, weight [HIDDEN] F32 -> out [S, HIDDEN] F32.
+/// out = x * rsqrt(mean(x^2) + eps) * weight.
+pub fn input_rmsnorm_kernel() -> Kernel {
+    let mut kernel = Kernel::new(Dev::Cuda(0));
+    let [x, w] = kernel.params([DType::F32; 2]);
+    let out = kernel.param_mut(DType::F32);
+    let [t, h] = kernel.group_ranges([S, HIDDEN / 32]);
+    let [lane] = kernel.local_ranges([32]);
+    let eps = kernel.const_val(1e-6f32);
+    let hidden_c = kernel.const_idx(HIDDEN);
+    let c = kernel.mad(h, 32i64, lane);
+    let idx = kernel.mad(t, HIDDEN, c);
+    let x_raw = kernel.load(x, idx);
+    let mut ss = kernel.const_val(0.0f32);
+    for r in 0..(HIDDEN / 32) {
+        let d = kernel.add(lane, 32 * r);
+        let idx2 = kernel.mad(t, HIDDEN, d);
+        let x_raw2 = kernel.load(x, idx2);
+        ss = kernel.mad(x_raw2, x_raw2, ss);
+    }
+    let ss = kernel.warp_reduce(ss);
+    let hidden_f = kernel.const_val(HIDDEN as f32);
+    let mean = kernel.div(ss, hidden_f);
+    let denom = kernel.add(mean, eps);
+    let sq = kernel.sqrt(denom);
+    let scale = kernel.reciprocal(sq);
+    let w_raw = kernel.load(w, c);
+    let n = kernel.mul(x_raw, scale);
+    let y = kernel.mul(n, w_raw);
+    let _ = hidden_c;
+    kernel.store(out, y, idx);
+    kernel.default_epilogue();
+    kernel
+}
+
+/// Per-head Q/K norm: q [H, S, D] F32, k [KV, S, D] F32 -> q_out, k_out.
+/// out = x * rsqrt(mean(x^2) + eps) * weight (per-head RMSNorm with weight).
+/// `heads` and `kv_heads` are passed to support both linear-attn (24/16) and
+/// full-attn (24/4) cases. `head_dim` parameterizes the per-head dim.
+pub fn qk_norm_kernel(heads: i64, kv_heads: i64, head_dim: i64) -> Kernel {
+    let mut kernel = Kernel::new(Dev::Cuda(0));
+    let [q, k, qw, kw] = kernel.params([DType::F32; 4]);
+    let q_out = kernel.param_mut(DType::F32);
+    let k_out = kernel.param_mut(DType::F32);
+    let [t, h] = kernel.group_ranges([S, heads]);
+    let [lane] = kernel.local_ranges([32]);
+    let eps = kernel.const_val(1e-6f32);
+    let head_dim_c = kernel.const_idx(head_dim);
+    let s_hd_c = kernel.const_idx(S * head_dim);
+    // q: [H, S, head_dim] indexed as h*S*hd + t*hd + d
+    let h_shd = kernel.mul(h, s_hd_c);
+    let t_hd = kernel.mul(t, head_dim_c);
+    let q_base = kernel.add(h_shd, t_hd);
+    let k_head = kernel.div(h, heads / kv_heads);
+    let kh_shd = kernel.mul(k_head, s_hd_c);
+    let k_base = kernel.add(kh_shd, t_hd);
+    // Q norm: ss over head_dim
+    let mut ss_q = kernel.const_val(0.0f32);
+    for r in 0..(head_dim / 32) {
+        let d = kernel.add(lane, 32 * r);
+        let qd = kernel.add(q_base, d);
+        let q_v = kernel.load(q, qd);
+        ss_q = kernel.mad(q_v, q_v, ss_q);
+    }
+    let head_dim_f = kernel.const_val(head_dim as f32);
+    let ss_q = kernel.warp_reduce(ss_q);
+    let mean_q = kernel.div(ss_q, head_dim_f);
+    let denom_q = kernel.add(mean_q, eps);
+    let sq_q = kernel.sqrt(denom_q);
+    let scale_q = kernel.reciprocal(sq_q);
+    // K norm: ss over head_dim
+    let mut ss_k = kernel.const_val(0.0f32);
+    for r in 0..(head_dim / 32) {
+        let d = kernel.add(lane, 32 * r);
+        let kd = kernel.add(k_base, d);
+        let k_v = kernel.load(k, kd);
+        ss_k = kernel.mad(k_v, k_v, ss_k);
+    }
+    let ss_k = kernel.warp_reduce(ss_k);
+    let mean_k = kernel.div(ss_k, head_dim_f);
+    let denom_k = kernel.add(mean_k, eps);
+    let sq_k = kernel.sqrt(denom_k);
+    let scale_k = kernel.reciprocal(sq_k);
+    for r in 0..(head_dim / 32) {
+        let d = kernel.add(lane, 32 * r);
+        let qd = kernel.add(q_base, d);
+        let q_v = kernel.load(q, qd);
+        let qw_v = kernel.load(qw, d);
+        let n_q = kernel.mul(q_v, scale_q);
+        let n_q = kernel.mul(n_q, qw_v);
+        kernel.store(q_out, n_q, qd);
+        let kd = kernel.add(k_base, d);
+        let k_v = kernel.load(k, kd);
+        let kw_v = kernel.load(kw, d);
+        let n_k = kernel.mul(k_v, scale_k);
+        let n_k = kernel.mul(n_k, kw_v);
+        kernel.store(k_out, n_k, kd);
+    }
+    let _ = head_dim_c;
     kernel.default_epilogue();
     kernel
 }
