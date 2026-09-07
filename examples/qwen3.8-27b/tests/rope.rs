@@ -35,14 +35,11 @@ fn rope() -> Result<(), ZyxError> {
     let v: Vec<f32> = out[0].to_vec()?;
     let exp: Vec<f32> = expected.to_vec()?;
     assert_eq!(v.len(), exp.len());
-    // rope kernel only handles 32 cols per warp; for head_dim > 32 the test only
-    // verifies the first 32 cols are correct.
-    let first_n = (HEAD_DIM as usize).min(32);
     let mut max_err = 0f32;
-    for i in 0..first_n {
+    for i in 0..v.len() {
         max_err = max_err.max((v[i] - exp[i]).abs());
     }
-    eprintln!("rope first-32 max_err {max_err}");
-    assert!(max_err < 1e-3, "rope first-32 max_err {max_err}");
+    eprintln!("rope max_err {max_err}");
+    assert!(max_err < 1e-3, "rope max_err {max_err}");
     Ok(())
 }

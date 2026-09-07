@@ -344,21 +344,47 @@ pub fn rope_kernel(seq: i64, heads: i64, head_dim: i64, rot_dim: i64) -> Kernel 
     let [x, cos, sin] = kernel.params([DType::F32; 3]);
     let out = kernel.param_mut(DType::F32);
     let m = heads * seq;
-    let xp = kernel.view_global_register(x, [m, head_dim]);
-    let cp = kernel.view_global_register(cos, [seq, rot_dim]);
-    let sp = kernel.view_global_register(sin, [seq, rot_dim]);
-    let op = kernel.view_global_register(out, [m, head_dim]);
-    let trans_storage = kernel.storage(
-        DType::F32,
-        zyx::kernel::MemScope::Register,
-        head_dim * head_dim,
-    );
-    let tp = kernel.view_global_register(trans_storage, [head_dim, head_dim]);
     let hd_elems = heads * head_dim;
-    let [_hd_blk, _s] = kernel.group_ranges([hd_elems / 32, seq]);
+    let cb = head_dim / 32;
+    let half = rot_dim / 2;
+    let m = heads * seq;
+    // grid: (cb, m) blocks; each block handles one 32-col slice of one row.
+    let [gidx, gidy] = kernel.group_ranges([cb, m]);
     let [lane] = kernel.local_ranges([32]);
     kernel.warp(lane);
-    kernel.rope_rotate_tile(&xp, &cp, &sp, &tp, &op, rot_dim);
+    // gidx = col_block, gidy = row
+    let head_dim_c = kernel.const_idx(head_dim);
+    let rot_dim_c = kernel.const_idx(rot_dim);
+    let half_c = kernel.const_idx(half);
+    let col_base = kernel.mul(gidx, 32);
+    let col = kernel.add(col_base, lane);
+    // s = row % seq (rows are flat H*S, seq-major).
+    let s = kernel.mod_(gidy, seq);
+    // x[row, col], out[row, col]
+    let x_idx = kernel.mad(gidy, head_dim_c, col);
+    let x_val = kernel.load(x, x_idx);
+    let is_rot = kernel.cmplt(col, rot_dim_c);
+    let safe_col = kernel.branchless_where(is_rot, col, 0i64);
+    let cos_idx = kernel.mad(s, rot_dim_c, safe_col);
+    let cos_val = kernel.load(cos, cos_idx);
+    let sin_val = kernel.load(sin, cos_idx);
+    // rotate_half on rot_dim: half = rot_dim/2
+    let is_first = kernel.cmplt(col, half_c);
+    let col_plus = kernel.add(col, half_c);
+    let col_minus = kernel.sub(col, half_c);
+    let rot_col = kernel.branchless_where(is_first, col_plus, col_minus);
+    let safe_rot = kernel.branchless_where(is_rot, rot_col, 0i64);
+    let x_rot_idx = kernel.mad(gidy, head_dim_c, safe_rot);
+    let x_rot_raw = kernel.load(x, x_rot_idx);
+    let neg = kernel.neg(x_rot_raw);
+    let x_rot = kernel.branchless_where(is_first, neg, x_rot_raw);
+    let y1 = kernel.mul(x_val, cos_val);
+    let y2 = kernel.mul(x_rot, sin_val);
+    let rot_y = kernel.add(y1, y2);
+    let y = kernel.branchless_where(is_rot, rot_y, x_val);
+    let out_idx = kernel.mad(gidy, head_dim_c, col);
+    kernel.store(out, y, out_idx);
+    let _ = m; // silence unused
     kernel.default_epilogue();
     kernel
 }
