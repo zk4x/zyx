@@ -1056,6 +1056,30 @@ impl Runtime {
         }
     }
 
+    /// Block until tensor `x` is ready (its last launch event has completed).
+    /// No host copy — pure device sync for benchmarking (all async).
+    pub fn sync(&mut self, x: TensorId) -> Result<(), ZyxError> {
+        let Some(&buf_id) = self.buffer_map.get(&x) else {
+            // Constant/variable/symbolic scalar has no buffer — already sync.
+            return Ok(());
+        };
+        // Find event set containing this buffer.
+        let mut found_key: Option<BTreeSet<BufferId>> = None;
+        for (keys, _) in self.events.iter() {
+            if keys.contains(&buf_id) {
+                found_key = Some(keys.clone());
+                break;
+            }
+        }
+        let Some(key) = found_key else {
+            return Ok(());
+        };
+        let ev = self.events.remove(&key).expect("event key exists");
+        let pool_id = buf_id.pool;
+        self.pools[pool_id].sync_events(vec![ev]).map_err(|e| ZyxError::from(e))?;
+        Ok(())
+    }
+
     /// Death path: detach from the producer kernel's outputs (pruning ops no
     /// surviving output needs), free the buffer, drop the kernel if it was the
     /// last live output. Graph tensors are kept by their graph instead; its

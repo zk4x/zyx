@@ -41,6 +41,50 @@ fn mlp() -> Result<(), ZyxError> {
 }
 
 #[test]
+fn mlp_timing() -> Result<(), ZyxError> {
+    use qwen3_8_27b::mlp_kernel;
+    use std::time::Instant;
+    let t0 = Instant::now();
+    let k = mlp_kernel(8, 128);
+    let builder_us = t0.elapsed().as_micros();
+    eprintln!("[mlp_timing] builder mlp_kernel(8,128) {}us", builder_us);
+    let t1 = Instant::now();
+    let ck = k.compile()?;
+    let compile_us = t1.elapsed().as_micros();
+    eprintln!("[mlp_timing] compile mlp_kernel(8,128) {}us", compile_us);
+    eprintln!("[mlp_timing] builder+compile {}us vs budget 50000us", builder_us + compile_us);
+    // forward timing isolated (dummy tensors)
+    let dev = Dev::Cuda(0);
+    let g = Tensor::randn([8, 128], zyx::DType::F32)?.to(dev)?;
+    let u = Tensor::randn([8, 128], zyx::DType::F32)?.to(dev)?;
+    // warmup
+    let _ = ck.forward(&[&g, &u], vec![[8, 128]])?;
+    let t2 = Instant::now();
+    let mid = ck.forward(&[&g, &u], vec![[8, 128]])?.remove(0);
+    let _ = mid.to_vec::<f32>()?;
+    let forward_us = t2.elapsed().as_micros();
+    eprintln!("[mlp_timing] forward mlp_kernel(8,128) {}us budget 50us/1000us", forward_us);
+    // real Qwen shape 6,17408
+    let t3 = Instant::now();
+    let k2 = mlp_kernel(6, 17408);
+    let builder2_us = t3.elapsed().as_micros();
+    eprintln!("[mlp_timing] builder mlp_kernel(6,17408) {}us", builder2_us);
+    let t4 = Instant::now();
+    let ck2 = k2.compile()?;
+    let compile2_us = t4.elapsed().as_micros();
+    eprintln!("[mlp_timing] compile mlp_kernel(6,17408) {}us total {}us", compile2_us, builder2_us + compile2_us);
+    let g2 = Tensor::randn([6, 17408], zyx::DType::F32)?.to(dev)?;
+    let u2 = Tensor::randn([6, 17408], zyx::DType::F32)?.to(dev)?;
+    let _ = ck2.forward(&[&g2, &u2], vec![[6, 17408]])?;
+    let t5 = Instant::now();
+    let mid2 = ck2.forward(&[&g2, &u2], vec![[6, 17408]])?.remove(0);
+    let _ = mid2.to_vec::<f32>()?;
+    let forward2_us = t5.elapsed().as_micros();
+    eprintln!("[mlp_timing] forward mlp_kernel(6,17408) {}us", forward2_us);
+    Ok(())
+}
+
+#[test]
 fn mlp_kernel_cuda() -> Result<(), ZyxError> {
     use qwen3_8_27b::mlp_kernel;
     let goldens = Tensor::load("../data/qwen3_8b_mlp.safetensors")?;

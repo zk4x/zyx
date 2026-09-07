@@ -587,7 +587,7 @@ pub struct DeviceInfo {
     /// Native tile shape [x, y] for tile-based (SIMD) accelerators
     pub tile: [Dim; 2],
     /// Supported tile sizes [x, y] for tile-based accelerators (empty = no tile support)
-    pub tile_sizes: Vec<[u32; 2]>,
+    pub tile_sizes: Vec<[Dim; 2]>,
     /// Supported WMMA layouts (empty = no tensor core support)
     pub wmma_layouts: Vec<MMADims>,
 }

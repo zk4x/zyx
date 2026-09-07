@@ -80,36 +80,39 @@ impl Kernel {
     pub fn default_epilogue(&mut self) {
         #[cfg(feature = "time")]
         let _timer = crate::Timer::new("default_epilogue");
-        self.unroll_len1_loops();
-        self.constant_folding();
-        self.move_constants_to_beginning();
-        self.loop_invariant_code_motion();
-        self.fold_accs();
-        self.delete_zero_len_indices();
-        self.delete_zero_len_loops();
-        self.unfold_pows();
-        self.algebraic_simplifications();
-        self.simplify_accumulating_loop();
-        self.swap_commutative();
-        self.common_subexpression_elimination();
-        self.instruction_schedule();
-        self.dead_code_elimination();
+        let _epilogue_start = std::time::Instant::now();
+        let mut _t = std::time::Instant::now();
+        _t = std::time::Instant::now(); self.unroll_len1_loops(); eprintln!("[epilogue] unroll_len1_loops {}us", _t.elapsed().as_micros());
+        _t = std::time::Instant::now(); self.constant_folding(); eprintln!("[epilogue] constant_folding {}us", _t.elapsed().as_micros());
+        _t = std::time::Instant::now(); self.move_constants_to_beginning(); eprintln!("[epilogue] move_constants_to_beginning {}us", _t.elapsed().as_micros());
+        _t = std::time::Instant::now(); self.loop_invariant_code_motion(); eprintln!("[epilogue] loop_invariant_code_motion {}us", _t.elapsed().as_micros());
+        _t = std::time::Instant::now(); self.fold_accs(); eprintln!("[epilogue] fold_accs {}us", _t.elapsed().as_micros());
+        _t = std::time::Instant::now(); self.delete_zero_len_indices(); eprintln!("[epilogue] delete_zero_len_indices {}us", _t.elapsed().as_micros());
+        _t = std::time::Instant::now(); self.delete_zero_len_loops(); eprintln!("[epilogue] delete_zero_len_loops {}us", _t.elapsed().as_micros());
+        _t = std::time::Instant::now(); self.unfold_pows(); eprintln!("[epilogue] unfold_pows {}us", _t.elapsed().as_micros());
+        _t = std::time::Instant::now(); self.algebraic_simplifications(); eprintln!("[epilogue] algebraic_simplifications {}us", _t.elapsed().as_micros());
+        _t = std::time::Instant::now(); self.simplify_accumulating_loop(); eprintln!("[epilogue] simplify_accumulating_loop {}us", _t.elapsed().as_micros());
+        _t = std::time::Instant::now(); self.swap_commutative(); eprintln!("[epilogue] swap_commutative {}us", _t.elapsed().as_micros());
+        _t = std::time::Instant::now(); self.common_subexpression_elimination(); eprintln!("[epilogue] common_subexpression_elimination {}us", _t.elapsed().as_micros());
+        _t = std::time::Instant::now(); self.instruction_schedule(); eprintln!("[epilogue] instruction_schedule {}us", _t.elapsed().as_micros());
+        _t = std::time::Instant::now(); self.dead_code_elimination(); eprintln!("[epilogue] dead_code_elimination {}us", _t.elapsed().as_micros());
         let dev_info = self.device_info();
         if dev_info.has_native_exp2 {
-            self.exp_to_exp2();
-            self.ln_to_log2();
+            _t = std::time::Instant::now(); self.exp_to_exp2(); eprintln!("[epilogue] exp_to_exp2 {}us", _t.elapsed().as_micros());
+            _t = std::time::Instant::now(); self.ln_to_log2(); eprintln!("[epilogue] ln_to_log2 {}us", _t.elapsed().as_micros());
         } else {
-            self.exp2_to_exp();
-            self.log2_to_ln();
+            _t = std::time::Instant::now(); self.exp2_to_exp(); eprintln!("[epilogue] exp2_to_exp {}us", _t.elapsed().as_micros());
+            _t = std::time::Instant::now(); self.log2_to_ln(); eprintln!("[epilogue] log2_to_ln {}us", _t.elapsed().as_micros());
         }
         if dev_info.tenstorrent {
-            self.opt_tenstorrent_tile();
-            self.common_subexpression_elimination();
-            self.instruction_schedule();
-            self.dead_code_elimination();
+            _t = std::time::Instant::now(); self.opt_tenstorrent_tile(); eprintln!("[epilogue] opt_tenstorrent_tile {}us", _t.elapsed().as_micros());
+            _t = std::time::Instant::now(); self.common_subexpression_elimination(); eprintln!("[epilogue] common_subexpression_elimination2 {}us", _t.elapsed().as_micros());
+            _t = std::time::Instant::now(); self.instruction_schedule(); eprintln!("[epilogue] instruction_schedule2 {}us", _t.elapsed().as_micros());
+            _t = std::time::Instant::now(); self.dead_code_elimination(); eprintln!("[epilogue] dead_code_elimination2 {}us", _t.elapsed().as_micros());
             self.debug();
             panic!();
         }
+        eprintln!("[epilogue] total {}us", _epilogue_start.elapsed().as_micros());
     }
 
     pub(crate) fn alloc_buffers(

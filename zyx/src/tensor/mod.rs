@@ -483,6 +483,12 @@ impl Tensor {
         Ok(data)
     }
 
+    /// Block until this tensor's last launch completes (device sync, no host copy).
+    /// For benchmarking: `forward` is async, this waits.
+    pub fn sync(&self) -> Result<(), ZyxError> {
+        RT.lock().sync(self.id)
+    }
+
     /// Assigns the value of `src` to this tensor in-place using StoreView.
     ///
     /// A StoreView is added to `src`'s kernel that writes into this

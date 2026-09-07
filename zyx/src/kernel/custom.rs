@@ -119,7 +119,9 @@ impl Kernel {
     /// # Ok::<_, ZyxError>(())
     /// ```
     pub fn compile(mut self) -> Result<CompiledKernel, ZyxError> {
-        self.linearize();
+        let _compile_start = std::time::Instant::now();
+        let mut _t = std::time::Instant::now();
+        _t = std::time::Instant::now(); self.linearize(); eprintln!("[compile] linearize {}us", _t.elapsed().as_micros());
         // After linearization the parameter shapes are no longer meaningful
         // (the same clear happens inside `linearize` for kernels it processes);
         // clear them here too so kernels that skip linearization (already
@@ -130,10 +132,10 @@ impl Kernel {
                 *shape = OpId::NULL;
             }
         }
-        self.instruction_schedule();
-        self.constant_folding();
-        self.dead_code_elimination();
-        self.verify();
+        _t = std::time::Instant::now(); self.instruction_schedule(); eprintln!("[compile] instruction_schedule {}us", _t.elapsed().as_micros());
+        _t = std::time::Instant::now(); self.constant_folding(); eprintln!("[compile] constant_folding {}us", _t.elapsed().as_micros());
+        _t = std::time::Instant::now(); self.dead_code_elimination(); eprintln!("[compile] dead_code_elimination {}us", _t.elapsed().as_micros());
+        _t = std::time::Instant::now(); self.verify(); eprintln!("[compile] verify {}us", _t.elapsed().as_micros());
 
         let mut inputs = Vec::new();
         let mut outputs = Vec::new();
@@ -172,7 +174,10 @@ impl Kernel {
             self.debug();
         }
         let debug_asm = rt.debug.asm();
+        _t = std::time::Instant::now();
         let program_id = rt.devices[device_id].compile(&self, debug_asm)?;
+        eprintln!("[compile] device.compile {}us", _t.elapsed().as_micros());
+        eprintln!("[compile] total {}us", _compile_start.elapsed().as_micros());
         let program = crate::backend::ProgramId { device_id, program_id };
         Ok(CompiledKernel { program, inputs, outputs })
     }
@@ -985,6 +990,8 @@ impl Runtime {
         // resolve to a `Constant` here and are passed as `LaunchArg::Variable`
         // (mirroring the graph path's `class_vars` binding in plan.rs) — they
         // are kernel params, never buffers.
+        // NOTE: all async — allocate is pool bump, launch is stream enqueue, sync is deferred to to_vec/item.
+        let _fwd_start = std::time::Instant::now();
         let device_id = program.device_id;
         let pool_id = self.devices[device_id].memory_pool_id();
         let mut input_args: Vec<LaunchArg> = Vec::with_capacity(inputs.len());
@@ -1044,7 +1051,9 @@ impl Runtime {
         }
         let pool_ptr = &mut self.pools[pool_id] as *mut MemoryPool;
         let device = &mut self.devices[device_id];
+        let _launch_t = std::time::Instant::now();
         let event = unsafe { device.launch(program.program_id, &mut *pool_ptr, &args, event_wait_list)? };
+        eprintln!("[forward async] launch enqueue {}us total {}us (async, no sync)", _launch_t.elapsed().as_micros(), _fwd_start.elapsed().as_micros());
         self.events.insert(all_bufs, event);
 
         // Put to tensors. Each output becomes a **Leaf**: the launched buffer
@@ -1783,34 +1792,155 @@ impl Kernel {
     /// RoPE rotate on 32×32 tiles: `y = x*cos + (x @ trans)*sin`.
     ///
     /// `x`, `cos`, `sin`, `trans` are 2-D `Partition`s (row-major). `x`
-    /// is the staged `[32,32]` input tile, `cos`/`sin` are the `[32,32]`
-    /// broadcast tiles at the same `n0`, `trans` is the `[32,32]`
-    /// `rotate_half` matrix (`get_rot_transformation_mat`). Returns a
-    /// `Partition` over a new `Register` tile holding the result, so callers
-    /// can `store_tile` it or feed it to the next lego.
-    pub fn rope_rotate_tile(&mut self, x: &Partition, cos: &Partition, sin: &Partition, trans: &Partition) -> Partition {
+    /// is `[M,D]`, `cos`/`sin` `[S,rot_dim]` with `H` broadcast `row%S`,
+    /// `trans` `[D,D]` (when `rot_dim==D`) else `[rot_dim,rot_dim]` unused in
+    /// partial case. `rot_dim` dims rotate (`half=rot_dim/2`), rest pass through.
+    pub fn rope_rotate_tile(&mut self, x: &Partition, cos: &Partition, sin: &Partition, trans: &Partition, out: &Partition, rot_dim: i64) {
         debug_assert_eq!(x.shape.len(), 2, "rope_rotate_tile: x must be rank 2");
         debug_assert_eq!(cos.shape.len(), 2, "rope_rotate_tile: cos must be rank 2");
         debug_assert_eq!(sin.shape.len(), 2, "rope_rotate_tile: sin must be rank 2");
         debug_assert_eq!(trans.shape.len(), 2, "rope_rotate_tile: trans must be rank 2");
-        // For now the tiled path is 32×32 on both CUDA and TT (32×16 would be CUDA-only).
-        // Validate that the tile is 32×32 so the trans_mat matmul matches rope.hpp Wt.
+        debug_assert_eq!(out.shape.len(), 2, "rope_rotate_tile: out must be rank 2");
+        debug_assert!(rot_dim > 0 && rot_dim % 2 == 0, "rope_rotate_tile: rot_dim must be positive even");
         let tile_m: i64 = self.resolve_const(x.shape[0]).and_then(crate::dtype::Constant::as_dim).expect("rope_rotate_tile: tile dim must resolve");
         let tile_n: i64 = self.resolve_const(x.shape[1]).and_then(crate::dtype::Constant::as_dim).expect("rope_rotate_tile: tile dim must resolve");
-        debug_assert_eq!((tile_m, tile_n), (32, 32), "rope_rotate_tile: requires 32×32 tile");
-        let idx0 = self.const_idx(0u32);
-        // Load each tile as a 32×32 value (stride = 32).
-        let x_tile = self.load_tile(x.src, idx0, 32, 32, 32);
-        let cos_tile = self.load_tile(cos.src, idx0, 32, 32, 32);
-        let sin_tile = self.load_tile(sin.src, idx0, 32, 32, 32);
-        let trans_tile = self.load_tile(trans.src, idx0, 32, 32, 32);
-        let rot = self.matmul_tile(x_tile, trans_tile);
-        let y1 = self.mul(x_tile, cos_tile);
-        let y2 = self.mul(rot, sin_tile);
-        let y = self.add(y1, y2);
-        let out = self.storage(x.dtype, MemScope::Register, 32 * 32);
-        self.store_tile(out, y, idx0, 32, 32, 32);
-        let strides = vec![self.const_idx(32u32), self.const_idx(1u32)];
-        Partition { src: out, shape: x.shape.clone(), strides, dtype: x.dtype }
+        debug_assert!(rot_dim <= tile_n, "rope_rotate_tile: rot_dim must be <= D");
+        let info = self.device_info();
+        // Reusable: tile -> wmma -> vector -> scalar, based on dims and device caps.
+        // Tile/wmma only handle full D rotation (rot_dim==D) with 32×32 / 16×8 and f16 inputs (mma).
+        let tile_ok = rot_dim == tile_n && !info.tile_sizes.is_empty() && tile_m % 32 == 0 && tile_n % 32 == 0 && info.tile_sizes.iter().any(|[tx, ty]| *tx == 32 && *ty == 32);
+        let wmma_ok = rot_dim == tile_n && x.dtype == DType::F16 && !info.wmma_layouts.is_empty() && tile_m % 16 == 0 && tile_n % 8 == 0;
+        let vec_ok = !info.supported_vec_lens.is_empty();
+        if tile_ok {
+            // Tile path (TT 32×32): one CB tile, matmul_tile for rotate_half
+            let idx0 = self.const_idx(0);
+            let x_tile = self.load_tile(x.src, idx0, 32, 32, 32);
+            let cos_tile = self.load_tile(cos.src, idx0, 32, 32, 32);
+            let sin_tile = self.load_tile(sin.src, idx0, 32, 32, 32);
+            let trans_tile = self.load_tile(trans.src, idx0, 32, 32, 32);
+            let rot = self.matmul_tile(x_tile, trans_tile);
+            let y1 = self.mul(x_tile, cos_tile);
+            let y2 = self.mul(rot, sin_tile);
+            let y = self.add(y1, y2);
+            self.store_tile(out.src, y, idx0, 32, 32, 32);
+        } else if wmma_ok {
+            // Tensor-core path (CUDA 16×8 fragments): e.g. 32×32 -> 2×4, 16×16 -> 1×2, etc.
+            let acc_rot = self.acc([tile_m, tile_n], x.dtype);
+            self.mma(&acc_rot, x, trans);
+            let tmp = self.storage(x.dtype, MemScope::Register, tile_m * tile_n);
+            let tmp_part = Partition {
+                src: tmp,
+                shape: vec![self.const_idx(tile_m), self.const_idx(tile_n)],
+                strides: vec![self.const_idx(tile_n), self.const_idx(1)],
+                dtype: x.dtype,
+            };
+            let zero = self.const_idx(0);
+            self.store_partition(&tmp_part, &acc_rot, [zero, zero]);
+            let cos_m: i64 = self.resolve_const(cos.shape[0]).and_then(crate::dtype::Constant::as_dim).expect("rope cos dim");
+            let c_m = self.const_idx(tile_m);
+            let c_n = self.const_idx(tile_n);
+            let c_rot = self.const_idx(rot_dim);
+            let c_s = self.const_idx(cos_m);
+            let c_zero = self.const_idx(0);
+            let lane = self.open_warp();
+            self.loop_over(c_m, |kernel, row| {
+                let col = lane;
+                let valid = kernel.cmplt(col, c_n);
+                let is_rot = kernel.cmplt(col, c_rot);
+                let idx = kernel.mad(row, c_n, col);
+                let x_val = kernel.load(x.src, idx);
+                let s = kernel.mod_(row, c_s);
+                let safe_col = kernel.branchless_where(is_rot, col, c_zero);
+                let cos_idx = kernel.mad(s, c_rot, safe_col);
+                let cos_val = kernel.load(cos.src, cos_idx);
+                let sin_val = kernel.load(sin.src, cos_idx);
+                let rot_val = kernel.load(tmp, idx);
+                let y1 = kernel.mul(x_val, cos_val);
+                let y2 = kernel.mul(rot_val, sin_val);
+                let rot_y = kernel.add(y1, y2);
+                let y = kernel.branchless_where(is_rot, rot_y, x_val);
+                let zero = kernel.push_back(crate::kernel::Op::Const(x.dtype.zero_constant()));
+                let y = kernel.branchless_where(valid, y, zero);
+                kernel.store(out.src, y, idx);
+            });
+        } else if vec_ok {
+            // Vector path: use supported_vec_lens[0] as width, any M×D, first rot_dim rotate.
+            let vec_len = info.supported_vec_lens[0] as i64;
+            let cos_m: i64 = self.resolve_const(cos.shape[0]).and_then(crate::dtype::Constant::as_dim).expect("rope cos dim");
+            let c_m = self.const_idx(tile_m);
+            let c_n = self.const_idx(tile_n);
+            let c_rot = self.const_idx(rot_dim);
+            let c_half = self.const_idx(rot_dim / 2);
+            let c_s = self.const_idx(cos_m);
+            let c_zero = self.const_idx(0);
+            let lane = self.open_warp();
+            self.loop_over(c_m, |kernel, row| {
+                let col = lane;
+                let valid = kernel.cmplt(col, c_n);
+                let is_rot = kernel.cmplt(col, c_rot);
+                let idx = kernel.mad(row, c_n, col);
+                let x_val = kernel.load(x.src, idx);
+                let s = kernel.mod_(row, c_s);
+                let safe_col = kernel.branchless_where(is_rot, col, c_zero);
+                let cos_idx = kernel.mad(s, c_rot, safe_col);
+                let cos_val = kernel.load(cos.src, cos_idx);
+                let sin_val = kernel.load(sin.src, cos_idx);
+                let is_first = kernel.cmplt(col, c_half);
+                let col_plus = kernel.add(col, c_half);
+                let col_minus = kernel.sub(col, c_half);
+                let rot_col = kernel.branchless_where(is_first, col_plus, col_minus);
+                let safe_rot = kernel.branchless_where(is_rot, rot_col, c_zero);
+                let rot_idx = kernel.mad(row, c_n, safe_rot);
+                let x_rot_raw = kernel.load(x.src, rot_idx);
+                let neg = kernel.neg(x_rot_raw);
+                let x_rot = kernel.branchless_where(is_first, neg, x_rot_raw);
+                let y1 = kernel.mul(x_val, cos_val);
+                let y2 = kernel.mul(x_rot, sin_val);
+                let rot_y = kernel.add(y1, y2);
+                let y = kernel.branchless_where(is_rot, rot_y, x_val);
+                let zero = kernel.push_back(crate::kernel::Op::Const(x.dtype.zero_constant()));
+                let y = kernel.branchless_where(valid, y, zero);
+                let _ = vec_len;
+                kernel.store(out.src, y, idx);
+            });
+        } else {
+            // Scalar fallback: any M×D with H broadcast, first rot_dim rotate.
+            let cos_m: i64 = self.resolve_const(cos.shape[0]).and_then(crate::dtype::Constant::as_dim).expect("rope cos dim");
+            let c_m = self.const_idx(tile_m);
+            let c_n = self.const_idx(tile_n);
+            let c_rot = self.const_idx(rot_dim);
+            let c_half = self.const_idx(rot_dim / 2);
+            let c_s = self.const_idx(cos_m);
+            let c_zero = self.const_idx(0);
+            let lane = self.open_warp();
+            self.loop_over(c_m, |kernel, row| {
+                let col = lane;
+                let valid = kernel.cmplt(col, c_n);
+                let is_rot = kernel.cmplt(col, c_rot);
+                let idx = kernel.mad(row, c_n, col);
+                let x_val = kernel.load(x.src, idx);
+                let s = kernel.mod_(row, c_s);
+                let safe_col = kernel.branchless_where(is_rot, col, c_zero);
+                let cos_idx = kernel.mad(s, c_rot, safe_col);
+                let cos_val = kernel.load(cos.src, cos_idx);
+                let sin_val = kernel.load(sin.src, cos_idx);
+                let is_first = kernel.cmplt(col, c_half);
+                let col_plus = kernel.add(col, c_half);
+                let col_minus = kernel.sub(col, c_half);
+                let rot_col = kernel.branchless_where(is_first, col_plus, col_minus);
+                let safe_rot = kernel.branchless_where(is_rot, rot_col, c_zero);
+                let rot_idx = kernel.mad(row, c_n, safe_rot);
+                let x_rot_raw = kernel.load(x.src, rot_idx);
+                let neg = kernel.neg(x_rot_raw);
+                let x_rot = kernel.branchless_where(is_first, neg, x_rot_raw);
+                let y1 = kernel.mul(x_val, cos_val);
+                let y2 = kernel.mul(x_rot, sin_val);
+                let rot_y = kernel.add(y1, y2);
+                let y = kernel.branchless_where(is_rot, rot_y, x_val);
+                let zero = kernel.push_back(crate::kernel::Op::Const(x.dtype.zero_constant()));
+                let y = kernel.branchless_where(valid, y, zero);
+                kernel.store(out.src, y, idx);
+            });
+        }
     }
 }
