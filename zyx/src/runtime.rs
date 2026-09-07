@@ -3982,7 +3982,7 @@ impl Runtime {
                     | Node::Narrow { x, .. }
                     | Node::Permute { x, .. } => dst_leaf_cid = x,
                     Node::After { .. } | Node::Leaf { .. } => break,
-                    _ => unreachable!(),
+                    ref op => unreachable!("{op:?}"),
                 }
             }
             // Resolve the base leaf through any After chain (a previous assign on
