@@ -191,6 +191,8 @@ pub(super) fn initialize_device(
             supported_vec_lens: vec![32],
             tenstorrent: true,
             tile: [32, 32],
+            tile_sizes: vec![[32, 32]],
+            wmma_layouts: vec![],
         }),
         memory_pool_id: pool_id,
         runtime,

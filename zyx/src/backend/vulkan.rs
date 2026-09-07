@@ -1116,6 +1116,8 @@ pub(super) fn initialize_device(
             supported_vec_lens: vec![2, 3, 4],
             tenstorrent: false,
             tile: [1, 1],
+            tile_sizes: vec![],
+            wmma_layouts: vec![],
         });
 
         std::thread::spawn({

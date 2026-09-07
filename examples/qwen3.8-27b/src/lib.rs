@@ -292,8 +292,6 @@ pub fn rope_kernel(seq: i64, heads: i64, head_dim: i64, rot_dim: i64) -> Kernel 
     let [hd_blk, s] = kernel.group_ranges([hd_elems / 32, seq]);
     let [lane] = kernel.local_ranges([32]);
     let col = kernel.mad(hd_blk, 32i64, lane);
-    let hd = kernel.mul(heads, head_dim);
-    let _ = hd;
     let h = kernel.div(col, head_dim);
     let h_head = kernel.mul(h, head_dim);
     let d = kernel.sub(col, h_head);

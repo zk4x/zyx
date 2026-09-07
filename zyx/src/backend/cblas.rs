@@ -167,6 +167,8 @@ pub(super) fn initialize_device(
             supported_vec_lens: vec![],
             tenstorrent: false,
             tile: [1, 1],
+            tile_sizes: vec![],
+            wmma_layouts: vec![],
         }),
         device_id: DeviceId::NULL,
         // cblas reuses the host pool (like the C backend)

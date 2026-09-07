@@ -856,6 +856,8 @@ pub(super) fn initialize_device(
                 supported_vec_lens: vec![],
                 tenstorrent: false,
                 tile: [1, 1],
+                tile_sizes: vec![],
+                wmma_layouts: if major >= 7 { vec![MMADims::m16n8k8] } else { vec![] },
             }),
             memory_pool_id: PoolId::from(usize::from(memory_pools.len()) - 1),
             compute_capability: [major, minor],
@@ -904,6 +906,8 @@ pub(super) fn initialize_device(
             supported_vec_lens: vec![],
             tenstorrent: false,
             tile: [1, 1],
+            tile_sizes: vec![],
+            wmma_layouts: if major >= 7 { vec![MMADims::m16n8k8] } else { vec![] },
         });
         let cuda_id = devices.push(Device::CUDA(dev));
         if let Device::CUDA(dev) = &mut devices[cuda_id] {

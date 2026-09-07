@@ -18,7 +18,7 @@ use crate::{
     dtype::{Constant, DType},
     error::{BackendError, ErrorStatus},
     graph::{ClassId, Graph},
-    kernel::{BOp, Kernel, Op, OpId, ParamKind, RangeKind, UOp},
+    kernel::{BOp, Kernel, MMADims, Op, OpId, ParamKind, RangeKind, UOp},
     shape::Dim,
     slab::{Slab, SlabId},
 };
@@ -586,6 +586,10 @@ pub struct DeviceInfo {
     pub tenstorrent: bool,
     /// Native tile shape [x, y] for tile-based (SIMD) accelerators
     pub tile: [Dim; 2],
+    /// Supported tile sizes [x, y] for tile-based accelerators (empty = no tile support)
+    pub tile_sizes: Vec<[u32; 2]>,
+    /// Supported WMMA layouts (empty = no tensor core support)
+    pub wmma_layouts: Vec<MMADims>,
 }
 
 impl DeviceInfo {

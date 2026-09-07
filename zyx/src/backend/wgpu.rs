@@ -183,6 +183,8 @@ pub(super) fn initialize_device(
             dtype_capability,
             tenstorrent: false,
             tile: [1, 1],
+            tile_sizes: vec![],
+            wmma_layouts: vec![],
         }),
         memory_pool_id: PoolId::from(usize::from(memory_pools.len()) - 1),
         programs: Slab::new(),

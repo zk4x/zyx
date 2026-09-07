@@ -70,6 +70,8 @@ pub(super) fn initialize_device(
             supported_vec_lens: vec![2, 4, 8, 16],
             tenstorrent: false,
             tile: [1, 1],
+            tile_sizes: vec![],
+            wmma_layouts: vec![],
         }),
         memory_pool_id: PoolId::from(usize::from(memory_pools.len()) - 1),
     }));

@@ -1779,4 +1779,38 @@ impl Kernel {
         }
         Partition { src: shared.storage, shape: shared.tile.to_vec(), strides, dtype: shared.dtype }
     }
+
+    /// RoPE rotate on 32×32 tiles: `y = x*cos + (x @ trans)*sin`.
+    ///
+    /// `x`, `cos`, `sin`, `trans` are 2-D `Partition`s (row-major). `x`
+    /// is the staged `[32,32]` input tile, `cos`/`sin` are the `[32,32]`
+    /// broadcast tiles at the same `n0`, `trans` is the `[32,32]`
+    /// `rotate_half` matrix (`get_rot_transformation_mat`). Returns a
+    /// `Partition` over a new `Register` tile holding the result, so callers
+    /// can `store_tile` it or feed it to the next lego.
+    pub fn rope_rotate_tile(&mut self, x: &Partition, cos: &Partition, sin: &Partition, trans: &Partition) -> Partition {
+        debug_assert_eq!(x.shape.len(), 2, "rope_rotate_tile: x must be rank 2");
+        debug_assert_eq!(cos.shape.len(), 2, "rope_rotate_tile: cos must be rank 2");
+        debug_assert_eq!(sin.shape.len(), 2, "rope_rotate_tile: sin must be rank 2");
+        debug_assert_eq!(trans.shape.len(), 2, "rope_rotate_tile: trans must be rank 2");
+        // For now the tiled path is 32×32 on both CUDA and TT (32×16 would be CUDA-only).
+        // Validate that the tile is 32×32 so the trans_mat matmul matches rope.hpp Wt.
+        let tile_m: i64 = self.resolve_const(x.shape[0]).and_then(crate::dtype::Constant::as_dim).expect("rope_rotate_tile: tile dim must resolve");
+        let tile_n: i64 = self.resolve_const(x.shape[1]).and_then(crate::dtype::Constant::as_dim).expect("rope_rotate_tile: tile dim must resolve");
+        debug_assert_eq!((tile_m, tile_n), (32, 32), "rope_rotate_tile: requires 32×32 tile");
+        let idx0 = self.const_idx(0u32);
+        // Load each tile as a 32×32 value (stride = 32).
+        let x_tile = self.load_tile(x.src, idx0, 32, 32, 32);
+        let cos_tile = self.load_tile(cos.src, idx0, 32, 32, 32);
+        let sin_tile = self.load_tile(sin.src, idx0, 32, 32, 32);
+        let trans_tile = self.load_tile(trans.src, idx0, 32, 32, 32);
+        let rot = self.matmul_tile(x_tile, trans_tile);
+        let y1 = self.mul(x_tile, cos_tile);
+        let y2 = self.mul(rot, sin_tile);
+        let y = self.add(y1, y2);
+        let out = self.storage(x.dtype, MemScope::Register, 32 * 32);
+        self.store_tile(out, y, idx0, 32, 32, 32);
+        let strides = vec![self.const_idx(32u32), self.const_idx(1u32)];
+        Partition { src: out, shape: x.shape.clone(), strides, dtype: x.dtype }
+    }
 }

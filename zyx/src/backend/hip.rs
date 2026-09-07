@@ -12,6 +12,7 @@
 use super::{DTypeCapability, Device, DeviceInfo, GwsDim, MemoryPool, gws_from_kernel};
 use crate::DType;
 use crate::backend::{DeviceId, DeviceProgramId, Event, LaunchArg, PoolBufferId, PoolId};
+use crate::kernel::MMADims;
 use crate::dtype::Constant;
 use crate::error::{BackendError, ErrorStatus};
 use crate::kernel::Kernel;
@@ -292,6 +293,8 @@ pub(super) fn initialize_device(
                 supported_vec_lens: vec![2, 4],
                 tenstorrent: false,
                 tile: [1, 1],
+                tile_sizes: vec![],
+                wmma_layouts: if major >= 7 { vec![MMADims::m16n8k8] } else { vec![] },
             }),
             streams,
             programs: Slab::new(),
@@ -339,6 +342,8 @@ pub(super) fn initialize_device(
             supported_vec_lens: vec![2, 4],
             tenstorrent: false,
             tile: [1, 1],
+            tile_sizes: vec![],
+            wmma_layouts: if major >= 7 { vec![MMADims::m16n8k8] } else { vec![] },
         });
         devices.push(Device::HIP(dev));
         //queues,
