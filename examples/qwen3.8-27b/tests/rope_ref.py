@@ -20,7 +20,6 @@ ROT_DIM = 64
 
 
 def rotate_half(x):
-    # rotate_half(x) for the rotated portion only
     d = x.shape[-1]
     half = d // 2
     x1 = x[..., :half]
@@ -28,22 +27,18 @@ def rotate_half(x):
     return torch.cat((-x2, x1), dim=-1)
 
 
-# Random F32 input, cos, sin
 x = torch.randn(HEADS * S, HEAD_DIM, dtype=torch.float32)
 cos = torch.randn(S, ROT_DIM, dtype=torch.float32)
 sin = torch.randn(S, ROT_DIM, dtype=torch.float32)
 
-# Reference: for each (h, s), apply RoPE to x[h*S + s]
 out = torch.zeros(HEADS * S, HEAD_DIM, dtype=torch.float32)
 for hs in range(HEADS * S):
     s = hs % S
-    # First rot_dim: rotate
     x_rot = x[hs, :ROT_DIM]
     cos_s = cos[s, :]
     sin_s = sin[s, :]
     y_rot = x_rot * cos_s + rotate_half(x_rot.unsqueeze(0)).squeeze(0) * sin_s
     out[hs, :ROT_DIM] = y_rot
-    # Rest: pass through
     out[hs, ROT_DIM:] = x[hs, ROT_DIM:]
 
 save_file(

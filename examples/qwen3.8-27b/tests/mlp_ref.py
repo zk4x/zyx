@@ -1,35 +1,34 @@
 # Copyright (C) 2025 zk4x
 # SPDX-License-Identifier: LGPL-3.0-only WITH Classpath-exception-2.0
-"""Golden reference for the SwiGLU MLP block.
+"""Golden reference for mlp_kernel.
 
-Uses the real Qwen3_5MLP class (hidden 64, intermediate 128, no bias):
-down(silu(gate(x)) * up(x)). Dumps weights + input/output (float32).
+out [m, inter] = silu(gate) * up
+
+Random F32 gate and up [M_PAD, INTERMEDIATE].
 
 Run from this directory: python3.12 mlp_ref.py
 """
 
 import torch
 from safetensors.torch import save_file
-from transformers.models.qwen3_5.modeling_qwen3_5 import Qwen3_5MLP
-from transformers.models.qwen3_5.configuration_qwen3_5 import Qwen3_5TextConfig
 
-torch.manual_seed(2)
+torch.manual_seed(6)
 
-config = Qwen3_5TextConfig(hidden_size=64, intermediate_size=128, hidden_act="silu")
-mlp = Qwen3_5MLP(config, 128)
-x = torch.randn(2, 4, 64)
-with torch.no_grad():
-    output = mlp(x)
+M_PAD = 16
+INTERMEDIATE = 17408
 
-sd = mlp.state_dict()
+
+def silu(x):
+    return x / (1.0 + torch.exp(-x))
+
+
+gate = torch.randn(M_PAD, INTERMEDIATE, dtype=torch.float32)
+up = torch.randn(M_PAD, INTERMEDIATE, dtype=torch.float32)
+
+out = silu(gate) * up
+
 save_file(
-    {
-        "gate": sd["gate_proj.weight"],
-        "up": sd["up_proj.weight"],
-        "down": sd["down_proj.weight"],
-        "input": x,
-        "output": output,
-    },
-    "../../data/qwen3_8b_mlp.safetensors",
+    {"gate": gate, "up": up, "output": out},
+    "../../data/qwen3_mlp.safetensors",
 )
-print("wrote ../../data/qwen3_8b_mlp.safetensors, output shape:", tuple(output.shape))
+print(f"wrote ../../data/qwen3_mlp.safetensors gate {tuple(gate.shape)} up {tuple(up.shape)} output {tuple(out.shape)}")
