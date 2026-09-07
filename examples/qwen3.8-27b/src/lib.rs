@@ -97,11 +97,11 @@ pub fn gemm_cuda_q4_k(r: i64, k: i64, n: i64) -> Kernel {
     let [rr, kk, nn] = kernel.const_idxs([r, k, n]);
     let c16 = kernel.const_idx(16);
     let c8 = kernel.const_idx(8);
-    let c32 = kernel.const_idx(32);
     let c4 = kernel.const_idx(4);
+    let c0 = kernel.const_idx(0);
     let glen_x = r / 16;
     let glen_y = n / 8;
-    let kblocks = k / 32;
+    let kblocks = kernel.const_idx(k / 32);
     let [gidx, gidy] = kernel.group_ranges([glen_x, glen_y]);
     let lidx = kernel.local_range(0, 32);
     kernel.warp(lidx);
@@ -109,15 +109,10 @@ pub fn gemm_cuda_q4_k(r: i64, k: i64, n: i64) -> Kernel {
     let r0 = kernel.mul(gidx, c16);
     let n0 = kernel.mul(gidy, c8);
     let acc = kernel.acc([c16, c8], DType::F32);
-    let a_shared = kernel.view_global_local(
-        a_qs,
-        [kernel.div(rr, c16), kblocks, c4],
-        [c16, c4, c4],
-        c4,
-        1,
-    );
-    let b_shared =
-        kernel.view_global_local(b_qs, [kernel.div(nn, c8), kblocks, c4], [c8, c4, c4], c4, 1);
+    let a_rblocks = kernel.div(rr, c16);
+    let b_nblocks = kernel.div(nn, c8);
+    let a_shared = kernel.view_global_local(a_qs, [a_rblocks, kblocks, c4], [c16, c4, c4], c4, 1);
+    let b_shared = kernel.view_global_local(b_qs, [b_nblocks, kblocks, c4], [c8, c4, c4], c4, 1);
     kernel.loop_over(kblocks, |kernel, kb| {
         let a_scale_idx = kernel.mad(gidx, kblocks, kb);
         let a_scale = kernel.load(a_scales, a_scale_idx);

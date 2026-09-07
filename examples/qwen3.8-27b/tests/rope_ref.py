@@ -1,37 +1,53 @@
 # Copyright (C) 2025 zk4x
 # SPDX-License-Identifier: LGPL-3.0-only WITH Classpath-exception-2.0
-"""Golden reference for the partial-RoPE application.
+"""Golden reference for rope_kernel(6, 24, 256, 64).
 
-Uses the real Qwen3_5TextRotaryEmbedding (head_dim 16, partial factor 0.25
--> rot_dim 4) plus the modeling apply_rotary_pos_emb. Dumps q, k, cos, sin
-and the rotated outputs (float32). cos/sin are kernel inputs (precomputed
-host-side); the kernel only applies the rotation.
+Qwen3.5-27B full-attn rope: out [H*S, D] = rope(x [H*S, D], cos [S, rot_dim], sin [S, rot_dim])
+where rope uses rotate_half on the first rot_dim and passes through the rest.
 
 Run from this directory: python3.12 rope_ref.py
 """
 
 import torch
 from safetensors.torch import save_file
-from transformers.models.qwen3_5.modeling_qwen3_5 import (
-    Qwen3_5TextRotaryEmbedding,
-    apply_rotary_pos_emb,
-)
-from transformers.models.qwen3_5.configuration_qwen3_5 import Qwen3_5TextConfig
 
-torch.manual_seed(3)
+torch.manual_seed(6)
 
-config = Qwen3_5TextConfig(head_dim=16)
-rot = Qwen3_5TextRotaryEmbedding(config)
-x = torch.randn(1, 2, 4, 16)
-cos, sin = rot(x, torch.arange(4)[None, :])
+S = 6
+HEADS = 24
+HEAD_DIM = 256
+ROT_DIM = 64
 
-q = torch.randn(1, 2, 4, 16)
-k = torch.randn(1, 2, 4, 16)
-with torch.no_grad():
-    q_rot, k_rot = apply_rotary_pos_emb(q, k, cos, sin)
+
+def rotate_half(x):
+    # rotate_half(x) for the rotated portion only
+    d = x.shape[-1]
+    half = d // 2
+    x1 = x[..., :half]
+    x2 = x[..., half:d]
+    return torch.cat((-x2, x1), dim=-1)
+
+
+# Random F32 input, cos, sin
+x = torch.randn(HEADS * S, HEAD_DIM, dtype=torch.float32)
+cos = torch.randn(S, ROT_DIM, dtype=torch.float32)
+sin = torch.randn(S, ROT_DIM, dtype=torch.float32)
+
+# Reference: for each (h, s), apply RoPE to x[h*S + s]
+out = torch.zeros(HEADS * S, HEAD_DIM, dtype=torch.float32)
+for hs in range(HEADS * S):
+    s = hs % S
+    # First rot_dim: rotate
+    x_rot = x[hs, :ROT_DIM]
+    cos_s = cos[s, :]
+    sin_s = sin[s, :]
+    y_rot = x_rot * cos_s + rotate_half(x_rot.unsqueeze(0)).squeeze(0) * sin_s
+    out[hs, :ROT_DIM] = y_rot
+    # Rest: pass through
+    out[hs, ROT_DIM:] = x[hs, ROT_DIM:]
 
 save_file(
-    {"q": q, "k": k, "cos": cos, "sin": sin, "q_rot": q_rot, "k_rot": k_rot},
-    "../../data/qwen3_8b_rope.safetensors",
+    {"x": x, "cos": cos, "sin": sin, "output": out},
+    "../../data/qwen3_rope.safetensors",
 )
-print("wrote ../../data/qwen3_8b_rope.safetensors, cos shape:", tuple(cos.shape))
+print(f"wrote ../../data/qwen3_rope.safetensors x {tuple(x.shape)} cos {tuple(cos.shape)} sin {tuple(sin.shape)} output {tuple(out.shape)}")

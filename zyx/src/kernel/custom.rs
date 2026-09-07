@@ -1101,11 +1101,11 @@ impl Runtime {
         let device = &mut self.devices[device_id];
         let _launch_t = std::time::Instant::now();
         let event = unsafe { device.launch(program.program_id, &mut *pool_ptr, &args, event_wait_list)? };
-        eprintln!(
+        /*eprintln!(
             "[forward async] launch enqueue {}us total {}us (async, no sync)",
             _launch_t.elapsed().as_micros(),
             _fwd_start.elapsed().as_micros()
-        );
+        );*/
         self.events.insert(all_bufs, event);
 
         // Put to tensors. Each output becomes a **Leaf**: the launched buffer

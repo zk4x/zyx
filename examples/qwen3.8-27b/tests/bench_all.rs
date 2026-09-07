@@ -242,7 +242,7 @@ fn bench_all() -> Result<(), ZyxError> {
                 let r_ = r;
                 let k_ = k;
                 let n__ = n_;
-                move || qwen3_8_27b::gemm_cuda_q4_k_exact(r_, k_, n__)
+                move || qwen3_8_27b::gemm_cuda_q4_k(r_, k_, n__)
             },
             vec![a, qs_t, sc_t, mn_t],
             vec![vec![r as i64, n_ as i64]],
