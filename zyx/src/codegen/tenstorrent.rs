@@ -318,7 +318,6 @@ impl Kernel {
 
         let mut op_id = self.head;
         {
-            const PAGE_SIZE: u32 = 4096;
             // Chain accessor CTA offsets the documented way: first
             // TensorAccessorArgs<0>, each later one at the previous
             // accessor's next_compile_time_args_offset().
@@ -339,7 +338,7 @@ impl Kernel {
                     panic!("tt_binary_init did not finish in 10000 steps");
                 }
                 match self.ops[op_id].op {
-                    Op::Param { dtype: _, kind: ParamKind::Global, .. } => {
+                    Op::Param { dtype, kind: ParamKind::Global, .. } => {
                         if reader_params.contains(&param_idx) {
                             let arg = reader_pos[&param_idx];
                             writeln!(reader, "{indent}uint32_t src{op_id} = get_arg_val<uint32_t>({arg});");
@@ -349,8 +348,13 @@ impl Kernel {
                                 None => String::from("0"),
                                 Some(prev) => format!("{prev}.next_compile_time_args_offset()"),
                             };
+                            let page_size = match dtype {
+                                DType::F32 => 4096u32,
+                                DType::F16 | DType::BF16 => 2048u32,
+                                _ => 4096u32,
+                            };
                             writeln!(reader, "{indent}auto args{op_id} = TensorAccessorArgs<{cta}>({arg});");
-                            writeln!(reader, "{indent}auto p{op_id} = TensorAccessor(args{op_id}, src{op_id}, {PAGE_SIZE});");
+                            writeln!(reader, "{indent}auto p{op_id} = TensorAccessor(args{op_id}, src{op_id}, {page_size});");
                             prev_reader_accessor = Some(format!("args{op_id}"));
                         }
                         param_idx += 1;
@@ -369,7 +373,7 @@ impl Kernel {
                         }
                         param_idx += 1;
                     }
-                    Op::Param { kind: ParamKind::GlobalMut, .. } => {
+                     Op::Param { dtype, kind: ParamKind::GlobalMut, .. } => {
                         if reader_params.contains(&param_idx) {
                             let arg = reader_pos[&param_idx];
                             writeln!(reader, "{indent}uint32_t dst{op_id} = get_arg_val<uint32_t>({arg});");
@@ -377,8 +381,13 @@ impl Kernel {
                                 None => String::from("0"),
                                 Some(prev) => format!("{prev}.next_compile_time_args_offset()"),
                             };
+                            let page_size = match dtype {
+                                DType::F32 => 4096u32,
+                                DType::F16 | DType::BF16 => 2048u32,
+                                _ => 4096u32,
+                            };
                             writeln!(reader, "{indent}auto args{op_id} = TensorAccessorArgs<{cta}>({arg});");
-                            writeln!(reader, "{indent}auto p{op_id} = TensorAccessor(args{op_id}, dst{op_id}, {PAGE_SIZE});");
+                            writeln!(reader, "{indent}auto p{op_id} = TensorAccessor(args{op_id}, dst{op_id}, {page_size});");
                             prev_reader_accessor = Some(format!("args{op_id}"));
                         }
                         param_idx += 1;
@@ -395,13 +404,18 @@ impl Kernel {
                         let Op::Load { src: ld_src, index: ld_idx, layout: ld_layout } = self.ops[src].op else {
                             panic!("tenstorrent supports only global to local loads in reader kernels with no ops inbetween")
                         };
-                        let Op::Param { kind: ParamKind::Global, .. } = self.ops[ld_src].op else {
+                        let Op::Param { dtype: ld_dtype, kind: ParamKind::Global, .. } = self.ops[ld_src].op else {
                             unreachable!()
                         };
                         let Op::Storage { dtype, scope: MemScope::Circular, .. } = self.ops[dst].op else {
                             unreachable!()
                         };
 
+                        let page_size = match ld_dtype {
+                            DType::F32 => 4096u32,
+                            DType::F16 | DType::BF16 => 2048u32,
+                            _ => 4096u32,
+                        };
                         let elem_size = dtype.bit_size() as u32 / 8;
                         if let Some(cb_id) = cb_map.get(&dst) {
                             if !filled_cbs.iter().any(|(id, _)| *id == *cb_id) {
@@ -418,34 +432,34 @@ impl Kernel {
                                         writeln!(reader, "{indent}uint32_t rbase{cb_id} = cb{cb_id}.get_write_ptr();");
                                         writeln!(reader, "{indent}DEVICE_PRINT(\"rbase{cb_id}={{}}\\n\", rbase{cb_id});");
                                     }
-                                    // Old dataflow API with raw L1 addresses
-                                    // (mirrors TT's own readers): the Noc-class
-                                    // CB-endpoint forms misaddress sub-tile
-                                    // offsets (bit9 := bit5 substitution).
-                                    writeln!(
-                                        reader,
-                                        "{indent}uint64_t rnoc{op_id} = p{ld_src}.get_noc_addr((uint32_t)((r{ld_idx}*{elem_size})/{PAGE_SIZE}), (uint32_t)((r{ld_idx}*{elem_size})%{PAGE_SIZE}));"
-                                    );
-                                    writeln!(
-                                        reader,
-                                        "{indent}noc_async_read(rnoc{op_id}, rbase{cb_id} + (uint32_t)(r{st_idx}*{elem_size}), {elem_size});"
-                                    );
-                                }
-                                (MemLayout::Tile { x, y, .. }, MemLayout::Tile { .. }) => {
-                                    // Whole-tile DRAM -> CB transfer (tile-layout
-                                    // DRAM): a single sequential NOC read.
-                                    // Streaming protocol (matches tt-metal's own
-                                    // readers): reserve, read, barrier, push PER
-                                    // TILE, straight-line and in-loop alike.
-                                    // Back-to-back reserve_back(1) calls do
-                                    // NOT advance the write pointer, so batching
-                                    // reserves overwrites the same page (last
-                                    // tile wins, later pages stay empty).
-                                    let tile_bytes = x as u32 * y as u32 * elem_size;
-                                    writeln!(reader, "{indent}cb{cb_id}.reserve_back(1);");
-                                    writeln!(
-                                        reader,
-                                        "{indent}uint64_t rnoc{op_id} = p{ld_src}.get_noc_addr((uint32_t)((r{ld_idx}*{elem_size})/{PAGE_SIZE}), (uint32_t)((r{ld_idx}*{elem_size})%{PAGE_SIZE}));"
+                                     // Old dataflow API with raw L1 addresses
+                                     // (mirrors TT's own readers): the Noc-class
+                                     // CB-endpoint forms misaddress sub-tile
+                                     // offsets (bit9 := bit5 substitution).
+                                     writeln!(
+                                         reader,
+                                         "{indent}uint64_t rnoc{op_id} = p{ld_src}.get_noc_addr((uint32_t)((r{ld_idx}*{elem_size})/{page_size}), (uint32_t)((r{ld_idx}*{elem_size})%{page_size}));"
+                                     );
+                                     writeln!(
+                                         reader,
+                                         "{indent}noc_async_read(rnoc{op_id}, rbase{cb_id} + (uint32_t)(r{st_idx}*{elem_size}), {elem_size});"
+                                     );
+                                 }
+                                 (MemLayout::Tile { x, y, .. }, MemLayout::Tile { .. }) => {
+                                     // Whole-tile DRAM -> CB transfer (tile-layout
+                                     // DRAM): a single sequential NOC read.
+                                     // Streaming protocol (matches tt-metal's own
+                                     // readers): reserve, read, barrier, push PER
+                                     // TILE, straight-line and in-loop alike.
+                                     // Back-to-back reserve_back(1) calls do
+                                     // NOT advance the write pointer, so batching
+                                     // reserves overwrites the same page (last
+                                     // tile wins, later pages stay empty).
+                                     let tile_bytes = x as u32 * y as u32 * elem_size;
+                                     writeln!(reader, "{indent}cb{cb_id}.reserve_back(1);");
+                                     writeln!(
+                                         reader,
+                                         "{indent}uint64_t rnoc{op_id} = p{ld_src}.get_noc_addr((uint32_t)((r{ld_idx}*{elem_size})/{page_size}), (uint32_t)((r{ld_idx}*{elem_size})%{page_size}));"
                                     );
                                     writeln!(
                                         reader,
@@ -986,8 +1000,21 @@ impl Kernel {
             // matmul config and stalls UNPACK (wedges the board).
             // Non-matmul kernels keep init_sfpu as their only unpack config.
             if mm_inits.is_empty() && !input_ids.is_empty() && !output_ids.is_empty() {
-                let in0 = input_ids[0];
-                let _in1 = input_ids.get(1).copied().unwrap_or(in0);
+                // Find the input CB by scanning the compute section for the
+                // first Op::Load whose source maps to a CB.  Using
+                // input_ids[0] (HashMap iteration order) is non-deterministic
+                // and can pick the wrong CB.
+                let mut in0 = input_ids[0];
+                let mut scan_in = op_id;
+                while !scan_in.is_null() {
+                    if let Op::Load { src, .. } = self.ops[scan_in].op {
+                        if let Some(&cb) = cb_map.get(&src) {
+                            in0 = cb;
+                            break;
+                        }
+                    }
+                    scan_in = self.next_op(scan_in);
+                }
                 let out0 = sfpu_out.unwrap_or(output_ids[0]);
                 writeln!(compute, "{indent}init_sfpu({in0}, {out0});");
             }
@@ -1235,13 +1262,12 @@ impl Kernel {
                                     let slot = next_slot;
                                     next_slot += 1;
                                     slots.push(slot);
-                                    // copy_tile needs its unpack+datacopy init
-                                    // first (canonical examples init per tile
-                                    // inside the loop); without it the DST
-                                    // fills with garbage.
-                                    // TEMP BISECT: init disabled to isolate truncation.
-                                    //writeln!(compute, "{indent}copy_tile_init({cb_id});");
-                                    writeln!(compute, "{indent}copy_tile({cb_id}, 0, {slot});");
+                                     // copy_tile needs its unpack+datacopy init
+                                     // first (canonical examples init per tile
+                                     // inside the loop); without it the DST
+                                     // fills with garbage.
+                                     writeln!(compute, "{indent}copy_tile_init({cb_id});");
+                                     writeln!(compute, "{indent}copy_tile({cb_id}, 0, {slot});");
                                 }
                                 dst_slots.insert(op_id, slots);
                             }
@@ -1531,7 +1557,8 @@ impl Kernel {
         let mut writer = String::new();
         op_id = self.next_op(op_id);
 
-        const PAGE_SIZE: u32 = 4096;
+        // Page size must match the dtype tile size (F32=4096, F16/BF16=2048)
+        // because TensorAccessor uses it for noc_addr page/offset arithmetic.
         writeln!(writer, "#include <cstdint>");
         writeln!(writer, "#include \"api/dataflow/dataflow_api.h\"");
         writeln!(writer, "#include \"api/dataflow/noc.h\"");
@@ -1545,8 +1572,6 @@ impl Kernel {
         }
 
         // Emit accessors only for the GlobalMut params this section needs.
-        // `param_idx` is the head-order ordinal over ALL Param kinds; the runtime
-        // arg index is the param's position in the writer's section arg list.
         let mut prev_writer_accessor: Option<String> = None;
         {
             let mut param_idx = 0u32;
@@ -1557,7 +1582,7 @@ impl Kernel {
                 if steps_scan > 10_000 {
                     panic!("tt_binary_init did not finish in 10000 steps");
                 }
-                if let Op::Param { kind: ParamKind::GlobalMut, .. } = self.ops[scan].op {
+                if let Op::Param { dtype, kind: ParamKind::GlobalMut, .. } = self.ops[scan].op {
                     if writer_params.contains(&param_idx) {
                         let arg = writer_pos[&param_idx];
                         writeln!(writer, "{indent}uint32_t out{scan} = get_arg_val<uint32_t>({arg});");
@@ -1566,7 +1591,12 @@ impl Kernel {
                             Some(prev) => format!("{prev}.next_compile_time_args_offset()"),
                         };
                         writeln!(writer, "{indent}auto args_out{scan} = TensorAccessorArgs<{cta}>({arg});");
-                        writeln!(writer, "{indent}auto p_out{scan} = TensorAccessor(args_out{scan}, out{scan}, {PAGE_SIZE});");
+                        let page_size = match dtype {
+                            DType::F32 => 4096u32,
+                            DType::F16 | DType::BF16 => 2048u32,
+                            _ => 4096u32,
+                        };
+                        writeln!(writer, "{indent}auto p_out{scan} = TensorAccessor(args_out{scan}, out{scan}, {page_size});");
                         prev_writer_accessor = Some(format!("args_out{scan}"));
                     }
                 }
@@ -1733,8 +1763,14 @@ impl Kernel {
                 Op::Store { dst, src, index: st_idx, layout } => {
                     if let Op::Load { src: cb_src, index: ld_idx, layout: ld_layout } = self.ops[src].op {
                         if let Some(&cb_id) = cb_map.get(&cb_src) {
+                            let cb_dtype = self.dtype(cb_src);
                             let Op::Param { dtype, kind: ParamKind::GlobalMut, .. } = self.ops[dst].op else {
                                 panic!("tt writer store dst must be a GlobalMut Param, got {:?}", self.ops[dst].op)
+                            };
+                            let page_size = match cb_dtype {
+                                DType::F32 => 4096u32,
+                                DType::F16 | DType::BF16 => 2048u32,
+                                _ => 4096u32,
                             };
                             let elem_size = dtype.bit_size() as u32 / 8;
                             match (ld_layout, layout) {
@@ -1748,7 +1784,7 @@ impl Kernel {
                                     // misaddresses CB offsets with bit9 != bit5.
                                     writeln!(
                                         writer,
-                                        "{indent}uint64_t wnoc{dst} = p_out{dst}.get_noc_addr((uint32_t)((r{st_idx}*{elem_size})/{PAGE_SIZE}), (uint32_t)((r{st_idx}*{elem_size})%{PAGE_SIZE}));"
+                                        "{indent}uint64_t wnoc{dst} = p_out{dst}.get_noc_addr((uint32_t)((r{st_idx}*{elem_size})/{page_size}), (uint32_t)((r{st_idx}*{elem_size})%{page_size}));"
                                     );
                                     writeln!(
                                         writer,
@@ -1765,7 +1801,7 @@ impl Kernel {
                                     writeln!(writer, "{indent}cb{cb_id}.wait_front(1);");
                                     writeln!(
                                         writer,
-                                        "{indent}uint64_t wnoc{dst} = p_out{dst}.get_noc_addr((uint32_t)((r{st_idx}*{elem_size})/{PAGE_SIZE}), (uint32_t)((r{st_idx}*{elem_size})%{PAGE_SIZE}));"
+                                        "{indent}uint64_t wnoc{dst} = p_out{dst}.get_noc_addr((uint32_t)((r{st_idx}*{elem_size})/{page_size}), (uint32_t)((r{st_idx}*{elem_size})%{page_size}));"
                                     );
                                     writeln!(
                                         writer,

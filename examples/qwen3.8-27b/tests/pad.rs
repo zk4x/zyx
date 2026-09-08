@@ -5,7 +5,7 @@
 //! Two uses in qwen3.8-27b: (s=S=6, m=M_PAD=16, d=HIDDEN=5120) for input;
 //! (s=S=6, m=M_PAD=16, d=VAL_DIM=6144) for normed.
 
-use qwen3_8_27b::{pad_copy_tt, pad_kernel, pad_kernel_tt, pad_move_tt, pad_passthrough_tt, HIDDEN, M_PAD, S, VAL_DIM};
+use qwen3_8_27b::{pad_copy_tt, pad_kernel, pad_kernel_tt, pad_passthrough_tt, HIDDEN, M_PAD, S, VAL_DIM};
 use zyx::kernel::Dev;
 use zyx::{Tensor, ZyxError};
 
@@ -182,9 +182,6 @@ fn pad_passthrough_tt_run() -> Result<(), ZyxError> {
     // Expected: padded input cast to F16.
     let exp: Vec<f32> = padded.iter().map(|&x| zyx::f16::from_f32(x).to_f32()).collect();
     let v32: Vec<f32> = v.iter().map(|&x| x.to_f32()).collect();
-    // TEMP BISECT 2: dump tile 0 (1024 F16) got vs expected for analysis.
-    eprintln!("TILE0_GOT {}", v32[..1024].iter().map(|x| x.to_string()).collect::<Vec<_>>().join(","));
-    eprintln!("TILE0_EXP {}", exp[..1024].iter().map(|x| x.to_string()).collect::<Vec<_>>().join(","));
     let mut bad = 0;
     for (i, (&a, &b)) in v32.iter().zip(exp.iter()).enumerate() {
         if (a - b).abs() >= 1e-3 {
