@@ -712,15 +712,7 @@ int main() {
         cerr << "[TT] after EnqueueMeshWorkload" << endl;
         cerr << "[TT] before Finish" << endl;
         Finish(*cq);
-        cerr << "[TT] after Finish" << endl;
-        // TEMP DIAG post-launch readback: are input buffers intact?
-        for (uint32_t si = 0; si < n_inputs && si < 2; si++) {
-          vector<uint8_t> head(16, 0);
-          EnqueueReadMeshBuffer(*cq, head, buffers[src_indices[si]], true);
-          cerr << "[TT_POST] src" << si << " head:";
-          for (uint8_t x : head) cerr << " " << hex << (int)x << dec;
-          cerr << endl;
-        }
+cerr << "[TT] after Finish" << endl;
 
         cout << R"({"status":"ok"})" << endl;
 

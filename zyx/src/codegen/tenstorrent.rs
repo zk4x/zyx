@@ -283,10 +283,7 @@ impl Kernel {
                 // Every CB filled by the reader must be consumed downstream,
                 // by compute, by the writer directly (movement kernels), or both.
                 if b.reader_store && !b.compute_load && !b.writer_load {
-                    panic!(
-                        "tenstorrent CB{} imbalance: reader stores but nothing loads (depth {} bytes)",
-                        b.cb, b.depth_bytes
-                    );
+                    panic!("tenstorrent CB{} imbalance: reader stores but nothing loads (depth {} bytes)", b.cb, b.depth_bytes);
                 }
                 if b.compute_store_bytes != 0 && b.compute_store_bytes != b.writer_bytes {
                     panic!(
@@ -373,7 +370,7 @@ impl Kernel {
                         }
                         param_idx += 1;
                     }
-                     Op::Param { dtype, kind: ParamKind::GlobalMut, .. } => {
+                    Op::Param { dtype, kind: ParamKind::GlobalMut, .. } => {
                         if reader_params.contains(&param_idx) {
                             let arg = reader_pos[&param_idx];
                             writeln!(reader, "{indent}uint32_t dst{op_id} = get_arg_val<uint32_t>({arg});");
@@ -432,34 +429,34 @@ impl Kernel {
                                         writeln!(reader, "{indent}uint32_t rbase{cb_id} = cb{cb_id}.get_write_ptr();");
                                         writeln!(reader, "{indent}DEVICE_PRINT(\"rbase{cb_id}={{}}\\n\", rbase{cb_id});");
                                     }
-                                     // Old dataflow API with raw L1 addresses
-                                     // (mirrors TT's own readers): the Noc-class
-                                     // CB-endpoint forms misaddress sub-tile
-                                     // offsets (bit9 := bit5 substitution).
-                                     writeln!(
-                                         reader,
-                                         "{indent}uint64_t rnoc{op_id} = p{ld_src}.get_noc_addr((uint32_t)((r{ld_idx}*{elem_size})/{page_size}), (uint32_t)((r{ld_idx}*{elem_size})%{page_size}));"
-                                     );
-                                     writeln!(
-                                         reader,
-                                         "{indent}noc_async_read(rnoc{op_id}, rbase{cb_id} + (uint32_t)(r{st_idx}*{elem_size}), {elem_size});"
-                                     );
-                                 }
-                                 (MemLayout::Tile { x, y, .. }, MemLayout::Tile { .. }) => {
-                                     // Whole-tile DRAM -> CB transfer (tile-layout
-                                     // DRAM): a single sequential NOC read.
-                                     // Streaming protocol (matches tt-metal's own
-                                     // readers): reserve, read, barrier, push PER
-                                     // TILE, straight-line and in-loop alike.
-                                     // Back-to-back reserve_back(1) calls do
-                                     // NOT advance the write pointer, so batching
-                                     // reserves overwrites the same page (last
-                                     // tile wins, later pages stay empty).
-                                     let tile_bytes = x as u32 * y as u32 * elem_size;
-                                     writeln!(reader, "{indent}cb{cb_id}.reserve_back(1);");
-                                     writeln!(
-                                         reader,
-                                         "{indent}uint64_t rnoc{op_id} = p{ld_src}.get_noc_addr((uint32_t)((r{ld_idx}*{elem_size})/{page_size}), (uint32_t)((r{ld_idx}*{elem_size})%{page_size}));"
+                                    // Old dataflow API with raw L1 addresses
+                                    // (mirrors TT's own readers): the Noc-class
+                                    // CB-endpoint forms misaddress sub-tile
+                                    // offsets (bit9 := bit5 substitution).
+                                    writeln!(
+                                        reader,
+                                        "{indent}uint64_t rnoc{op_id} = p{ld_src}.get_noc_addr((uint32_t)((r{ld_idx}*{elem_size})/{page_size}), (uint32_t)((r{ld_idx}*{elem_size})%{page_size}));"
+                                    );
+                                    writeln!(
+                                        reader,
+                                        "{indent}noc_async_read(rnoc{op_id}, rbase{cb_id} + (uint32_t)(r{st_idx}*{elem_size}), {elem_size});"
+                                    );
+                                }
+                                (MemLayout::Tile { x, y, .. }, MemLayout::Tile { .. }) => {
+                                    // Whole-tile DRAM -> CB transfer (tile-layout
+                                    // DRAM): a single sequential NOC read.
+                                    // Streaming protocol (matches tt-metal's own
+                                    // readers): reserve, read, barrier, push PER
+                                    // TILE, straight-line and in-loop alike.
+                                    // Back-to-back reserve_back(1) calls do
+                                    // NOT advance the write pointer, so batching
+                                    // reserves overwrites the same page (last
+                                    // tile wins, later pages stay empty).
+                                    let tile_bytes = x as u32 * y as u32 * elem_size;
+                                    writeln!(reader, "{indent}cb{cb_id}.reserve_back(1);");
+                                    writeln!(
+                                        reader,
+                                        "{indent}uint64_t rnoc{op_id} = p{ld_src}.get_noc_addr((uint32_t)((r{ld_idx}*{elem_size})/{page_size}), (uint32_t)((r{ld_idx}*{elem_size})%{page_size}));"
                                     );
                                     writeln!(
                                         reader,
@@ -717,7 +714,7 @@ impl Kernel {
                     if matches!(self.ops[sec].op, Op::Barrier) {
                         break;
                     }
-                    eprintln!("TEMP sec {sec}: {:?}", self.ops[sec].op); // TEMP debug
+                    //eprintln!("TEMP sec {sec}: {:?}", self.ops[sec].op); // TEMP debug
                     for p in self.ops[sec].op.parameters() {
                         consumers.entry(p).or_default().push(sec);
                     }
@@ -740,7 +737,7 @@ impl Kernel {
                     }
                     if let Op::Binary { x, y, bop } = self.ops[walk].op {
                         if bop == BOp::Add {
-                            eprintln!("TEMP fold cand {walk}"); // TEMP debug
+                            //eprintln!("TEMP fold cand {walk}"); // TEMP debug
                             let x_is_mm = matches!(self.ops[x].op, Op::MatmulTile { .. });
                             let y_is_mm = matches!(self.ops[y].op, Op::MatmulTile { .. });
                             // Sum of two matmuls: add(m0, m1). Constant
@@ -754,7 +751,7 @@ impl Kernel {
                                 && sole_user(y, walk)
                                 && rcs.get(&walk).copied().unwrap_or(0) == 1
                             {
-                                eprintln!("TEMP fold sum-ok {walk}"); // TEMP debug
+                                //eprintln!("TEMP fold sum-ok {walk}"); // TEMP debug
                                 let c = members.len();
                                 members.push(vec![walk]);
                                 chain_seeds.push(OpId::NULL);
@@ -778,7 +775,7 @@ impl Kernel {
                                     && sole_user(m, walk)
                                     && rcs.get(&walk).copied().unwrap_or(0) == 1
                                 {
-                                    eprintln!("TEMP fold struct-ok {walk} m={m} a={a}"); // TEMP debug
+                                    //eprintln!("TEMP fold struct-ok {walk} m={m} a={a}"); // TEMP debug
                                     if let Some(&c) = open.get(&a) {
                                         folded_adds.insert(walk);
                                         matmul_chain.insert(m, c);
@@ -806,7 +803,7 @@ impl Kernel {
                 }
                 // Roll back chains whose tail does not feed exactly one CB store.
                 for (tail, c) in open.iter() {
-                    eprintln!("TEMP fold tail {tail} chain {c}"); // TEMP debug
+                    //eprintln!("TEMP fold tail {tail} chain {c}"); // TEMP debug
                     let ok = matches!(consumers.get(tail), Some(users) if users.len() == 1)
                         && matches!(self.ops[consumers[tail][0]].op, Op::Store { dst, .. } if cb_map.contains_key(&dst));
                     if !ok {
@@ -1224,8 +1221,7 @@ impl Kernel {
                 }
                 for len in trip_lens {
                     if let Op::Const(val) = self.ops[len].op {
-                        let trip =
-                            val.as_dim().expect("tenstorrent loop trip count must be a concrete dim");
+                        let trip = val.as_dim().expect("tenstorrent loop trip count must be a concrete dim");
                         writeln!(compute, "{indent}uint32_t r{len} = {trip};");
                     }
                 }
@@ -1262,12 +1258,12 @@ impl Kernel {
                                     let slot = next_slot;
                                     next_slot += 1;
                                     slots.push(slot);
-                                     // copy_tile needs its unpack+datacopy init
-                                     // first (canonical examples init per tile
-                                     // inside the loop); without it the DST
-                                     // fills with garbage.
-                                     writeln!(compute, "{indent}copy_tile_init({cb_id});");
-                                     writeln!(compute, "{indent}copy_tile({cb_id}, 0, {slot});");
+                                    // copy_tile needs its unpack+datacopy init
+                                    // first (canonical examples init per tile
+                                    // inside the loop); without it the DST
+                                    // fills with garbage.
+                                    writeln!(compute, "{indent}copy_tile_init({cb_id});");
+                                    writeln!(compute, "{indent}copy_tile({cb_id}, 0, {slot});");
                                 }
                                 dst_slots.insert(op_id, slots);
                             }

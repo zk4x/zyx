@@ -5,7 +5,9 @@
 //! Two uses in qwen3.8-27b: (s=S=6, m=M_PAD=16, d=HIDDEN=5120) for input;
 //! (s=S=6, m=M_PAD=16, d=VAL_DIM=6144) for normed.
 
-use qwen3_8_27b::{pad_copy_tt, pad_kernel, pad_kernel_tt, pad_passthrough_tt, HIDDEN, M_PAD, S, VAL_DIM};
+use qwen3_8_27b::{
+    pad_copy_tt, pad_kernel, pad_kernel_tt, pad_passthrough_tt, HIDDEN, M_PAD, S, VAL_DIM,
+};
 use zyx::kernel::Dev;
 use zyx::{Tensor, ZyxError};
 
@@ -115,8 +117,16 @@ fn pad_input_tt() -> Result<(), ZyxError> {
     out[0].sync()?;
     let chunks: Vec<zyx::f16> = out[0].to_vec()?;
     let total_us = t0.elapsed().as_micros() as f64;
-    let tflops = if total_us > 0.0 { flops as f64 / total_us / 1e3 } else { 0.0 };
-    let gbs = if total_us > 0.0 { (read + write) as f64 / total_us / 1e3 } else { 0.0 };
+    let tflops = if total_us > 0.0 {
+        flops as f64 / total_us / 1e3
+    } else {
+        0.0
+    };
+    let gbs = if total_us > 0.0 {
+        (read + write) as f64 / total_us / 1e3
+    } else {
+        0.0
+    };
     eprintln!("pad_input_tt forward+sync {total_us:.0}us, {tflops:.2} TFLOPS, {gbs:.1} GB/s");
     let til = Tensor::from_vec(chunks, [32, HIDDEN])?;
     let back = Tensor::untilize(&til, M_PAD, HIDDEN)?;
@@ -180,7 +190,10 @@ fn pad_passthrough_tt_run() -> Result<(), ZyxError> {
     let back = Tensor::untilize(&til, M_PAD, HIDDEN)?;
     let v: Vec<zyx::f16> = back.to_vec()?;
     // Expected: padded input cast to F16.
-    let exp: Vec<f32> = padded.iter().map(|&x| zyx::f16::from_f32(x).to_f32()).collect();
+    let exp: Vec<f32> = padded
+        .iter()
+        .map(|&x| zyx::f16::from_f32(x).to_f32())
+        .collect();
     let v32: Vec<f32> = v.iter().map(|&x| x.to_f32()).collect();
     let mut bad = 0;
     for (i, (&a, &b)) in v32.iter().zip(exp.iter()).enumerate() {
@@ -259,9 +272,6 @@ fn pad_copy_tt_run() -> Result<(), ZyxError> {
     let til = Tensor::from_vec(moved, [32, HIDDEN])?;
     let back = Tensor::untilize(&til, M_PAD, HIDDEN)?;
     let v: Vec<f32> = back.to_vec()?;
-    // TEMP BISECT: full-vector grid analysis.
-    eprintln!("COPY_GOT {}", v.iter().map(|x| x.to_string()).collect::<Vec<_>>().join(","));
-    eprintln!("COPY_EXP {}", padded.iter().map(|x| x.to_string()).collect::<Vec<_>>().join(","));
     let mut bad = 0;
     for (i, (&a, &b)) in v.iter().zip(padded.iter()).enumerate() {
         if (a - b).abs() > 1e-6 {
