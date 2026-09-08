@@ -69,9 +69,9 @@ fn detect_dram_bytes() -> u64 {
     if let Ok(entries) = std::fs::read_dir(pci_devices) {
         for entry in entries.flatten() {
             let vendor_path = entry.path().join("vendor");
-            let vendor = std::fs::read_to_string(&vendor_path).unwrap_or_default();
+            let vendor = std::fs::read_to_string(&vendor_path).unwrap();
             if vendor.trim() == "0x1e52" {
-                let subsys = std::fs::read_to_string(entry.path().join("subsystem_device")).unwrap_or_default();
+                let subsys = std::fs::read_to_string(entry.path().join("subsystem_device")).unwrap();
                 if let Ok(id) = u16::from_str_radix(subsys.trim().trim_start_matches("0x"), 16) {
                     for &(sid, _name, size) in DRAM_SIZE_TABLE {
                         if sid == id {
@@ -150,7 +150,7 @@ pub(super) fn initialize_device(
             if p.is_absolute() { Some(p) } else { None }
         })
         .or_else(|| std::env::home_dir().map(|h| h.join(".config")))
-        .unwrap_or_else(|| PathBuf::from("/tmp"));
+        .unwrap();
 
     let cache_dir = config_base.join("zyx/cache/tt");
 
@@ -172,7 +172,7 @@ pub(super) fn initialize_device(
     memory_pools.push(pool);
 
     let _device_id = devices.len();
-    let dev_id = config.device_ids.as_ref().and_then(|ids| ids.first().copied()).unwrap_or(0);
+    let dev_id = config.device_ids.as_ref().and_then(|ids| ids.first().copied()).unwrap();
     devices.push(Device::TT(TTDevice {
         dev_id: u32::try_from(dev_id).unwrap(),
         device_info: Arc::new(DeviceInfo {
@@ -203,7 +203,7 @@ pub(super) fn initialize_device(
 
 fn create_temp_shm(size: u64) -> Result<(CString, *mut u8, u64), BackendError> {
     let pid = std::process::id();
-    let ns = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_nanos();
+    let ns = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
     let name = format!("/zyx-tt-{pid:x}-{ns:x}");
     let cname = CString::new(name.clone())
         .map_err(|_| BackendError { status: ErrorStatus::MemoryAllocation, context: "invalid shm path".into() })?;
@@ -276,7 +276,7 @@ impl TTMemoryPool {
             .ok_or_else(|| BackendError { status: ErrorStatus::MemoryCopyH2P, context: "invalid buffer id".into() })?;
         let len = src.len().min(buf.size as usize);
         let (cname, shm_ptr, _) = create_temp_shm(len as u64)?;
-        let shm_path = cname.to_str().unwrap_or("/none");
+        let shm_path = cname.to_str().unwrap();
         unsafe { std::ptr::copy_nonoverlapping(src.as_ptr(), shm_ptr, len) };
         rt.lock().unwrap().write_buf(buf.dev_index, shm_path, len as u64)?;
         unsafe {
@@ -295,7 +295,7 @@ impl TTMemoryPool {
             .ok_or_else(|| BackendError { status: ErrorStatus::MemoryCopyP2H, context: "invalid buffer id".into() })?;
         let len = dst.len().min(buf.size as usize);
         let (cname, shm_ptr, _) = create_temp_shm(len as u64)?;
-        let shm_path = cname.to_str().unwrap_or("/none");
+        let shm_path = cname.to_str().unwrap();
         rt.lock().unwrap().read_buf(buf.dev_index, shm_path, len as u64)?;
         unsafe {
             std::ptr::copy_nonoverlapping(shm_ptr, dst.as_mut_ptr(), len);
@@ -404,7 +404,7 @@ impl RuntimeProcess {
         let resp = rt.recv_with_timeout(rt.timeout_ms)?;
         eprintln!("[TT_DEBUG] init response: {resp}");
         if resp.contains("\"error\"") {
-            let msg = extract_json_str(&resp, "msg").unwrap_or_else(|| "unknown".into());
+            let msg = extract_json_str(&resp, "msg").unwrap();
             return Err(BackendError {
                 status: ErrorStatus::Initialization,
                 context: format!("tt-runtime init error: {msg}").into(),
@@ -448,7 +448,7 @@ impl RuntimeProcess {
         let fd = std::os::unix::io::AsRawFd::as_raw_fd(self.stdout.get_mut());
         let mut pollfd = libc::pollfd { fd, events: libc::POLLIN, revents: 0 };
 
-        let timeout_ms = i32::try_from(timeout_ms).unwrap_or(i32::MAX);
+        let timeout_ms = i32::try_from(timeout_ms).unwrap();
         let ret = unsafe { libc::poll(&mut pollfd, 1, timeout_ms) };
 
         match ret {
@@ -521,7 +521,7 @@ impl RuntimeProcess {
         self.send(&cmd)?;
         let resp = self.recv_with_timeout(self.timeout_ms)?;
         if resp.contains("\"error\"") {
-            let msg = extract_json_str(&resp, "msg").unwrap_or_else(|| "unknown".into());
+            let msg = extract_json_str(&resp, "msg").unwrap();
             return Err(BackendError {
                 status: ErrorStatus::MemoryAllocation,
                 context: format!("alloc_buf error: {msg}").into(),
@@ -543,7 +543,7 @@ impl RuntimeProcess {
         self.send(&cmd)?;
         let resp = self.recv_with_timeout(self.timeout_ms)?;
         if resp.contains("\"error\"") {
-            let msg = extract_json_str(&resp, "msg").unwrap_or_else(|| "unknown".into());
+            let msg = extract_json_str(&resp, "msg").unwrap();
             return Err(BackendError { status: ErrorStatus::MemoryAllocation, context: format!("free_buf error: {msg}").into() });
         }
         Ok(())
@@ -554,7 +554,7 @@ impl RuntimeProcess {
         self.send(&cmd)?;
         let resp = self.recv_with_timeout(self.timeout_ms)?;
         if resp.contains("\"error\"") {
-            let msg = extract_json_str(&resp, "msg").unwrap_or_else(|| "unknown".into());
+            let msg = extract_json_str(&resp, "msg").unwrap();
             return Err(BackendError { status: ErrorStatus::MemoryCopyH2P, context: format!("write_buf error: {msg}").into() });
         }
         Ok(())
@@ -565,7 +565,7 @@ impl RuntimeProcess {
         self.send(&cmd)?;
         let resp = self.recv_with_timeout(self.timeout_ms)?;
         if resp.contains("\"error\"") {
-            let msg = extract_json_str(&resp, "msg").unwrap_or_else(|| "unknown".into());
+            let msg = extract_json_str(&resp, "msg").unwrap();
             return Err(BackendError { status: ErrorStatus::MemoryCopyP2H, context: format!("read_buf error: {msg}").into() });
         }
         Ok(())
@@ -625,7 +625,7 @@ impl RuntimeProcess {
         })?;
         let resp = self.recv_with_timeout(self.timeout_ms)?;
         if resp.contains("\"error\"") {
-            let msg = extract_json_str(&resp, "msg").unwrap_or_else(|| "unknown".into());
+            let msg = extract_json_str(&resp, "msg").unwrap();
             return Err(BackendError {
                 status: ErrorStatus::KernelCompilation,
                 context: format!("tt-runtime compile error: {msg}").into(),
@@ -661,7 +661,7 @@ impl RuntimeProcess {
         self.send(&cmd)?;
         let resp = self.recv_with_timeout(self.timeout_ms)?;
         if resp.contains("\"error\"") {
-            let msg = extract_json_str(&resp, "msg").unwrap_or_else(|| "unknown".into());
+            let msg = extract_json_str(&resp, "msg").unwrap();
             return Err(BackendError {
                 status: ErrorStatus::KernelLaunch,
                 context: format!("tt-runtime run error: {msg}").into(),
@@ -674,7 +674,7 @@ impl RuntimeProcess {
         self.send(r#"{"cmd":"exit"}"#)?;
         let resp = self.recv_with_timeout(self.timeout_ms)?;
         if resp.contains("\"error\"") {
-            let msg = extract_json_str(&resp, "msg").unwrap_or_else(|| "unknown".into());
+            let msg = extract_json_str(&resp, "msg").unwrap();
             return Err(BackendError {
                 status: ErrorStatus::KernelLaunch,
                 context: format!("tt-runtime exit error: {msg}").into(),
@@ -774,7 +774,7 @@ impl TTDevice {
                     Op::Store { dst, .. } => {
                         match &kernel.ops[*dst].op {
                             Op::Storage { scope: MemScope::Circular, .. } => {
-                                if section == 0 && !cb_map.contains_key(dst) {
+                                if section != 1 && !cb_map.contains_key(dst) {
                                     cb_map.insert(*dst, max_cb);
                                     max_cb += 1;
                                 }
@@ -933,7 +933,7 @@ impl TTDevice {
                             None
                         }
                     })
-                    .unwrap_or(DType::BF16);
+                    .unwrap();
                 let fmt = dtype_to_tt_fmt(dt);
                 let tb = tile_bytes_of(dt);
                 cb_config.push((*cb_id, fmt, tb));
