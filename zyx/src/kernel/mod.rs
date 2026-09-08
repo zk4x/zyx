@@ -1502,35 +1502,46 @@ impl Kernel {
     /// must bail (not optimize) on `None`.
     pub(crate) fn resolve_const(&self, op_id: OpId) -> Option<Constant> {
         // Collect the constant-expression subgraph reachable through `Cast`,
-        // `Unary`, `Binary`, `Loop`, and `Index` operands, then evaluate it
-        // bottom-up (iteratively, no recursion).
+        // `Unary`, `Binary`, `Loop`, and `Index` operands in postorder
+        // (children before parents), then evaluate it bottom-up
+        // (iteratively, no recursion). Postorder matters: reversed preorder
+        // evaluates a parent before a shared child first reached through a
+        // later branch, poisoning the parent to None (e.g. an Add whose
+        // addend is also used deeper in the other addend's subtree).
         let mut seen: Set<OpId> = Set::default();
         let mut order: Vec<OpId> = Vec::new();
-        let mut stack = vec![op_id];
+        let mut stack = vec![(op_id, false)];
         for _ in 0..10_000 {
-            let Some(id) = stack.pop() else { break };
-            if id.is_null() || !seen.insert(id) {
+            let Some((id, emit)) = stack.pop() else { break };
+            if id.is_null() {
                 continue;
             }
-            order.push(id);
+            if emit {
+                order.push(id);
+                continue;
+            }
+            if !seen.insert(id) {
+                continue;
+            }
+            stack.push((id, true));
             match &self.ops[id].op {
-                Op::Cast { x, .. } => stack.push(*x),
-                Op::Bitcast { x, .. } => stack.push(*x),
-                Op::Unary { x, .. } => stack.push(*x),
+                Op::Cast { x, .. } => stack.push((*x, false)),
+                Op::Bitcast { x, .. } => stack.push((*x, false)),
+                Op::Unary { x, .. } => stack.push((*x, false)),
                 Op::Binary { x, y, .. } => {
-                    stack.push(*x);
-                    stack.push(*y);
+                    stack.push((*x, false));
+                    stack.push((*y, false));
                 }
-                Op::Stack { ops } => stack.extend(ops.iter().copied()),
-                Op::Loop { len } => stack.push(*len),
+                Op::Stack { ops } => stack.extend(ops.iter().copied().map(|o| (o, false))),
+                Op::Loop { len } => stack.push((*len, false)),
                 &Op::Range { kind, .. } => match kind {
-                    RangeKind::Group(len) => stack.push(len),
+                    RangeKind::Group(len) => stack.push((len, false)),
                     RangeKind::Local(_) | RangeKind::Warp(_) => {}
                 },
                 Op::Mad { x, y, z } => {
-                    stack.push(*x);
-                    stack.push(*y);
-                    stack.push(*z);
+                    stack.push((*x, false));
+                    stack.push((*y, false));
+                    stack.push((*z, false));
                 }
                 _ => {}
             }
@@ -1540,7 +1551,7 @@ impl Kernel {
         }
 
         let mut values: Map<OpId, Option<Constant>> = Map::default();
-        for &id in order.iter().rev() {
+        for &id in &order {
             let v = match &self.ops[id].op {
                 Op::Const(c) => Some(*c),
                 // A cast preserves the integer value of a length.
