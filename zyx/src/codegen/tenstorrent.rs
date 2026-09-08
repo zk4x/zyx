@@ -137,7 +137,8 @@ impl Kernel {
                 is_f32: bool,
                 reader_store: bool,
                 compute_load: bool,
-                compute_stores: i64,
+                writer_load: bool,
+                compute_store_bytes: i64,
                 writer_bytes: i64,
             }
             let mut bals: Vec<Bal> = Vec::new();
@@ -156,9 +157,6 @@ impl Kernel {
                 if bytes % 2048 != 0 {
                     panic!("tenstorrent CB{cb} holds {bytes} bytes, not whole 2048B pages");
                 }
-                if len / 1024 != bytes / 2048 {
-                    panic!("tenstorrent CB{cb} dtype {dtype:?} breaks the 2-byte-element depth math in codegen");
-                }
                 if bytes > 4096 {
                     panic!("tenstorrent CB{cb} needs {bytes} bytes, CB capacity is 4096 (2 pages)");
                 }
@@ -168,7 +166,8 @@ impl Kernel {
                     is_f32: dtype == DType::F32,
                     reader_store: false,
                     compute_load: false,
-                    compute_stores: 0,
+                    writer_load: false,
+                    compute_store_bytes: 0,
                     writer_bytes: 0,
                 });
             }
@@ -210,16 +209,18 @@ impl Kernel {
                                 .expect("tenstorrent op hit a CB missing from cb_map")
                                 .reader_store = true;
                         } else if section == 1 {
-                            if !matches!(layout, MemLayout::Tile { .. }) {
+                            let MemLayout::Tile { x, y, .. } = layout else {
                                 panic!("tenstorrent compute stores must be tiles, op {scan} is {layout:?}");
-                            }
+                            };
                             let Some(&cb) = cb_map.get(&dst) else {
                                 panic!("tenstorrent compute stores must target circular buffers, op {scan} targets {dst}");
                             };
+                            // Bytes, not pages: F32 tiles are 4096B, F16 2048B.
+                            let elem = self.dtype(src).bit_size() as i64 / 8;
                             bals.iter_mut()
                                 .find(|b| b.cb == cb)
                                 .expect("tenstorrent op hit a CB missing from cb_map")
-                                .compute_stores += trip;
+                                .compute_store_bytes += trip * x as i64 * y as i64 * elem;
                             if !compute_out_cbs.contains(&cb) {
                                 compute_out_cbs.push(cb);
                             }
@@ -235,10 +236,12 @@ impl Kernel {
                                         MemLayout::Tile { x, y, .. } => x as i64 * y as i64 * elem,
                                         _ => panic!("tenstorrent CB balance: unsupported writer layout {layout:?}"),
                                     };
-                                    bals.iter_mut()
+                                    let bal = bals
+                                        .iter_mut()
                                         .find(|b| b.cb == cb)
-                                        .expect("tenstorrent op hit a CB missing from cb_map")
-                                        .writer_bytes += trip * bytes;
+                                        .expect("tenstorrent op hit a CB missing from cb_map");
+                                    bal.writer_load = true;
+                                    bal.writer_bytes += trip * bytes;
                                 }
                             }
                         } else {
@@ -277,16 +280,18 @@ impl Kernel {
                 panic!("tenstorrent matmul kernels need exactly one output CB, found {:?}", compute_out_cbs);
             }
             for b in &bals {
-                if b.reader_store != b.compute_load {
+                // Every CB filled by the reader must be consumed downstream,
+                // by compute, by the writer directly (movement kernels), or both.
+                if b.reader_store && !b.compute_load && !b.writer_load {
                     panic!(
-                        "tenstorrent CB{} imbalance: reader_store={} compute_load={} (depth {} bytes)",
-                        b.cb, b.reader_store, b.compute_load, b.depth_bytes
+                        "tenstorrent CB{} imbalance: reader stores but nothing loads (depth {} bytes)",
+                        b.cb, b.depth_bytes
                     );
                 }
-                if b.compute_stores * 2048 != b.writer_bytes {
+                if b.compute_store_bytes != 0 && b.compute_store_bytes != b.writer_bytes {
                     panic!(
-                        "tenstorrent CB{} imbalance: compute pushes {} pages but writer consumes {} bytes",
-                        b.cb, b.compute_stores, b.writer_bytes
+                        "tenstorrent CB{} imbalance: compute pushes {} bytes but writer consumes {} bytes",
+                        b.cb, b.compute_store_bytes, b.writer_bytes
                     );
                 }
             }
@@ -400,8 +405,10 @@ impl Kernel {
                         let elem_size = dtype.bit_size() as u32 / 8;
                         if let Some(cb_id) = cb_map.get(&dst) {
                             if !filled_cbs.iter().any(|(id, _)| *id == *cb_id) {
-                                if let Op::Storage { len, .. } = self.ops[dst].op {
-                                    filled_cbs.push((*cb_id, len / 1024));
+                                if let Op::Storage { dtype, len, .. } = self.ops[dst].op {
+                                    // Depth in whole 2048B pages (dtype-aware:
+                                    // a 1024-elem F32 CB is 2 pages).
+                                    filled_cbs.push((*cb_id, len * (dtype.bit_size() as i64 / 8) / 2048));
                                 }
                             }
                             match (ld_layout, st_layout) {
@@ -427,13 +434,13 @@ impl Kernel {
                                 (MemLayout::Tile { x, y, .. }, MemLayout::Tile { .. }) => {
                                     // Whole-tile DRAM -> CB transfer (tile-layout
                                     // DRAM): a single sequential NOC read.
-                                    // Reference pattern (TT's own readers):
-                                    // reserve, read, barrier, push PER TILE.
+                                    // Streaming protocol (matches tt-metal's own
+                                    // readers): reserve, read, barrier, push PER
+                                    // TILE, straight-line and in-loop alike.
                                     // Back-to-back reserve_back(1) calls do
                                     // NOT advance the write pointer, so batching
                                     // reserves overwrites the same page (last
                                     // tile wins, later pages stay empty).
-                                    // Inside loops keep the old batched shape.
                                     let tile_bytes = x as u32 * y as u32 * elem_size;
                                     writeln!(reader, "{indent}cb{cb_id}.reserve_back(1);");
                                     writeln!(
@@ -444,12 +451,10 @@ impl Kernel {
                                         reader,
                                         "{indent}noc_async_read(rnoc{op_id}, cb{cb_id}.get_write_ptr(), {tile_bytes});"
                                     );
-                                    if loop_depth == 0 {
-                                        writeln!(reader, "{indent}noc_async_read_barrier();");
-                                        writeln!(reader, "{indent}cb{cb_id}.push_back(1);");
-                                        if !per_tile_pushed.contains(cb_id) {
-                                            per_tile_pushed.push(*cb_id);
-                                        }
+                                    writeln!(reader, "{indent}noc_async_read_barrier();");
+                                    writeln!(reader, "{indent}cb{cb_id}.push_back(1);");
+                                    if !per_tile_pushed.contains(cb_id) {
+                                        per_tile_pushed.push(*cb_id);
                                     }
                                 }
                                 _ => todo!(),
@@ -475,13 +480,10 @@ impl Kernel {
                         writeln!(reader, "{indent}{} r{op_id} = r{x} * r{y} + r{z};", dt.c_type());
                     }
                     Op::Loop { len } => {
-                        if loop_depth == 0 {
-                            for cb_id in cb_map.values() {
-                                writeln!(reader, "{indent}cb{cb_id}.reserve_back(1);");
-                                writeln!(reader, "{indent}uint32_t rbase{cb_id} = cb{cb_id}.get_write_ptr();");
-                                writeln!(reader, "{indent}DEVICE_PRINT(\"rbase{cb_id}={{}}\\n\", rbase{cb_id});");
-                            }
-                        }
+                        // No hoisted reserves: every tile store reserves its
+                        // own page per execution (straight-line or per loop
+                        // iteration). A hoisted reserve would pin a page on
+                        // 1-page CBs and stall the first iteration forever.
                         writeln!(reader, "{indent}for (uint32_t r{op_id} = 0; r{op_id} < r{len}; r{op_id}++) {{");
                         indent += "  ";
                         loop_depth += 1;
@@ -853,9 +855,13 @@ impl Kernel {
                     Op::Cast { x, .. } => {
                         if matches!(self.ops[x].op, Op::Const(_)) {
                             has_fill = true;
-                        } else if matches!(self.ops[x].op, Op::Load { layout: MemLayout::Tile { .. }, .. }) {
+                        } else {
+                            // Any computed tile input (load, binary, ...) with
+                            // a real format change needs its typecast init.
+                            // NOTE: `scan` is the Cast itself; the outer
+                            // `op_id` cursor is stale here.
                             let in_fmt = tt_dtype_format(self.dtype(x));
-                            let out_fmt = tt_dtype_format(self.dtype(op_id));
+                            let out_fmt = tt_dtype_format(self.dtype(scan));
                             if in_fmt != out_fmt {
                                 typecast_inits.insert((in_fmt, out_fmt));
                             }
@@ -948,6 +954,33 @@ impl Kernel {
             }
             let input_ids: Vec<u32> = cb_map.values().copied().collect();
             let output_ids: Vec<u32> = cb_map.values().copied().collect();
+            // init_sfpu(icb, ocb) programs the unpacker for the input CB
+            // and the packer for the OUTPUT CB. The output is the first
+            // tile store's CB, not cb_map[0]: packing under a wrong ocb
+            // (e.g. an F32 input CB while packing F16) silently produces
+            // garbage. Falls back to the old shape when nothing is stored.
+            let mut sfpu_out: Option<u32> = None;
+            {
+                let mut sscan = op_id;
+                let mut ssteps = 0usize;
+                while !sscan.is_null() {
+                    ssteps += 1;
+                    if ssteps > 10_000 {
+                        panic!("tt sfpu out scan did not finish in 10000 steps");
+                    }
+                    match self.ops[sscan].op {
+                        Op::Barrier => break,
+                        Op::Store { dst, layout: MemLayout::Tile { .. }, .. } => {
+                            if let Some(&cb_id) = cb_map.get(&dst) {
+                                sfpu_out = Some(cb_id);
+                                break;
+                            }
+                        }
+                        _ => {}
+                    }
+                    sscan = self.next_op(sscan);
+                }
+            }
             // init_sfpu programs the unpacker for its CBs; mm_init owns the
             // unpacker in matmul kernels, so emitting both clobbers the
             // matmul config and stalls UNPACK (wedges the board).
@@ -955,7 +988,7 @@ impl Kernel {
             if mm_inits.is_empty() && !input_ids.is_empty() && !output_ids.is_empty() {
                 let in0 = input_ids[0];
                 let _in1 = input_ids.get(1).copied().unwrap_or(in0);
-                let out0 = output_ids[0];
+                let out0 = sfpu_out.unwrap_or(output_ids[0]);
                 writeln!(compute, "{indent}init_sfpu({in0}, {out0});");
             }
             if has_fill {
@@ -971,9 +1004,75 @@ impl Kernel {
                 writeln!(compute, "{indent}typecast_tile_init<{in_fmt}, {out_fmt}>();");
             }
 
+            // Streaming sections contain loops: per-iteration wait/pop/
+            // pack/push handshaking replaces the upfront full-depth wait
+            // and the end-of-section drain.
+            let compute_has_loop = {
+                let mut fscan = op_id;
+                let mut fsteps = 0usize;
+                let mut found = false;
+                while !fscan.is_null() {
+                    fsteps += 1;
+                    if fsteps > 10_000 {
+                        panic!("tt compute loop scan did not finish in 10000 steps");
+                    }
+                    match self.ops[fscan].op {
+                        Op::Barrier => break,
+                        Op::Loop { .. } => {
+                            found = true;
+                            break;
+                        }
+                        _ => {}
+                    }
+                    fscan = self.next_op(fscan);
+                }
+                found
+            };
+            // Per-loop-nest input CBs (innermost last): pushed at Loop,
+            // popped at the matching EndLoop, one page per iteration.
+            let mut loop_cbs: Vec<Vec<u32>> = Vec::new();
+            // CBs popped inside loops: skipped by the end-of-section drain.
+            let mut loop_popped: Set<u32> = Set::default();
+            let mut loop_depth = 0u32;
+            // Tile CBs loaded in the loop body after `start` (stops at the
+            // matching EndLoop): one streaming page per iteration.
+            let body_cbs = |start: OpId| -> Vec<u32> {
+                let mut cbs = Vec::new();
+                let mut bscan = self.next_op(start);
+                let mut bsteps = 0usize;
+                let mut bdepth = 0u32;
+                while !bscan.is_null() {
+                    bsteps += 1;
+                    if bsteps > 10_000 {
+                        panic!("tt compute loop body scan did not finish in 10000 steps");
+                    }
+                    match self.ops[bscan].op {
+                        Op::Loop { .. } => bdepth += 1,
+                        Op::EndLoop => {
+                            if bdepth == 0 {
+                                break;
+                            }
+                            bdepth -= 1;
+                        }
+                        Op::Load { src, layout: MemLayout::Tile { .. }, .. } => {
+                            if let Some(&cb_id) = cb_map.get(&src) {
+                                if !cbs.contains(&cb_id) {
+                                    cbs.push(cb_id);
+                                }
+                            }
+                        }
+                        Op::Barrier => break,
+                        _ => {}
+                    }
+                    bscan = self.next_op(bscan);
+                }
+                cbs
+            };
+
             // Input CBs with their depth in tiles (from storage len).
-            // CBs are sized exactly, so wait/pop the full depth: the
-            // reader pushes everything up front (sections are sequential).
+            // Straight-line sections wait/pop the full depth: the reader
+            // pushes everything up front. Streaming (looped) sections use
+            // per-iteration handshaking instead (see Loop below).
             let mut load_input_cbs: Vec<(u32, i64)> = Vec::new();
             let mut pre_scan = op_id;
             let mut steps_pre_scan = 0usize;
@@ -986,8 +1085,9 @@ impl Kernel {
                     Op::Load { src, layout: MemLayout::Tile { .. }, .. } => {
                         if let Some(&cb_id) = cb_map.get(&src) {
                             if !load_input_cbs.iter().any(|(id, _)| *id == cb_id) {
-                                let depth = if let Op::Storage { len, .. } = self.ops[src].op {
-                                    len / 1024
+                                // Depth in whole 2048B pages (dtype-aware).
+                                let depth = if let Op::Storage { dtype, len, .. } = self.ops[src].op {
+                                    len * (dtype.bit_size() as i64 / 8) / 2048
                                 } else {
                                     1
                                 };
@@ -1001,7 +1101,11 @@ impl Kernel {
                 pre_scan = self.next_op(pre_scan);
             }
             for &(cb_id, depth) in &load_input_cbs {
-                writeln!(compute, "{indent}cb{cb_id}.wait_front({depth});");
+                // Streaming sections handshake per iteration (see Loop);
+                // an upfront full-depth wait would deadlock the stream.
+                if !compute_has_loop {
+                    writeln!(compute, "{indent}cb{cb_id}.wait_front({depth});");
+                }
             }
             // TEMP DIAG no-FPU stub (see TEMP_STUB_NO_FPU): wait inputs,
             // fill a constant tile, pack it out, drain inputs. Exercises
@@ -1036,13 +1140,19 @@ impl Kernel {
                     }
                     op_id = self.next_op(op_id);
                 }
-            } else {
+            } else if !compute_has_loop {
+                // Straight-line sections acquire the FPU once; streaming
+                // sections acquire per iteration (see Loop).
                 writeln!(compute, "{indent}tile_regs_acquire();");
             }
 
             // Materialize constants used as tile operands (defined outside the
             // compute range) into DST slots before the tile op loop runs
             {
+                // Loop trip counts are plain integer consts, not tile
+                // fills: declare them as scalars after the scan (the
+                // materialize closure below borrows the source string).
+                let mut trip_lens: Vec<OpId> = Vec::new();
                 let mut materialize_const = |target: OpId| {
                     if dst_slots.contains_key(&target) {
                         return;
@@ -1073,10 +1183,24 @@ impl Kernel {
                             materialize_const(x);
                             materialize_const(y);
                         }
+                        // Loop trip counts are plain integer consts, not
+                        // tile fills: declare them as scalars after the scan.
+                        Op::Loop { len } => {
+                            if !trip_lens.contains(&len) {
+                                trip_lens.push(len);
+                            }
+                        }
                         Op::Barrier => break,
                         _ => {}
                     }
                     scan = self.next_op(scan);
+                }
+                for len in trip_lens {
+                    if let Op::Const(val) = self.ops[len].op {
+                        let trip =
+                            val.as_dim().expect("tenstorrent loop trip count must be a concrete dim");
+                        writeln!(compute, "{indent}uint32_t r{len} = {trip};");
+                    }
                 }
             }
 
@@ -1111,6 +1235,12 @@ impl Kernel {
                                     let slot = next_slot;
                                     next_slot += 1;
                                     slots.push(slot);
+                                    // copy_tile needs its unpack+datacopy init
+                                    // first (canonical examples init per tile
+                                    // inside the loop); without it the DST
+                                    // fills with garbage.
+                                    // TEMP BISECT: init disabled to isolate truncation.
+                                    //writeln!(compute, "{indent}copy_tile_init({cb_id});");
                                     writeln!(compute, "{indent}copy_tile({cb_id}, 0, {slot});");
                                 }
                                 dst_slots.insert(op_id, slots);
@@ -1284,16 +1414,56 @@ impl Kernel {
                             let idx = consumer_count.entry(src).or_insert(0);
                             let slot = dst_slots.get(&src).expect("dst slot must exist")[*idx as usize];
                             *idx += 1;
-                            output_stores.push((slot, cb_id));
+                            if loop_depth > 0 {
+                                // Streaming: commit, pack and push one page
+                                // per iteration.
+                                writeln!(compute, "{indent}tile_regs_commit();");
+                                writeln!(compute, "{indent}tile_regs_wait();");
+                                writeln!(compute, "{indent}cb{cb_id}.reserve_back(1);");
+                                writeln!(compute, "{indent}pack_tile({slot}, {cb_id});");
+                                writeln!(compute, "{indent}cb{cb_id}.push_back(1);");
+                            } else {
+                                output_stores.push((slot, cb_id));
+                            }
                         }
                     }
                     Op::Barrier => break,
+                    Op::Loop { len } => {
+                        writeln!(compute, "{indent}for (uint32_t r{op_id} = 0; r{op_id} < r{len}; r{op_id}++) {{");
+                        indent += "  ";
+                        loop_depth += 1;
+                        // Streaming protocol: wait for one page of every
+                        // tile CB loaded in this body, then acquire the FPU
+                        // for the iteration.
+                        let cbs = body_cbs(op_id);
+                        for cb_id in &cbs {
+                            writeln!(compute, "{indent}cb{cb_id}.wait_front(1);");
+                        }
+                        writeln!(compute, "{indent}tile_regs_acquire();");
+                        loop_cbs.push(cbs);
+                    }
+                    Op::EndLoop => {
+                        // Pop one page per body-loaded CB, release the FPU.
+                        if let Some(cbs) = loop_cbs.pop() {
+                            for cb_id in &cbs {
+                                writeln!(compute, "{indent}cb{cb_id}.pop_front(1);");
+                                loop_popped.insert(*cb_id);
+                            }
+                        }
+                        writeln!(compute, "{indent}tile_regs_release();");
+                        indent.pop();
+                        indent.pop();
+                        writeln!(compute, "{indent}}}");
+                        loop_depth -= 1;
+                    }
                     ref op => todo!("{op:?}"),
                 }
                 op_id = self.next_op(op_id);
             }
             // TEMP DIAG stub emits its own epilogue; skip the shared one.
-            if !stubbed {
+            // Streaming sections handshake per iteration; the shared
+            // commit/wait/drain/release below is straight-line only.
+            if !stubbed && !compute_has_loop {
                 writeln!(compute, "{indent}tile_regs_commit();");
                 writeln!(compute, "{indent}tile_regs_wait();");
             }
@@ -1301,8 +1471,11 @@ impl Kernel {
                 writeln!(compute, "{indent}cb{cb_id}.reserve_back(1);");
                 writeln!(compute, "{indent}pack_tile({slot}, {cb_id});");
             }
-            if !stubbed {
+            if !stubbed && !compute_has_loop {
                 for &(loaded_cb, depth) in &load_input_cbs {
+                    if loop_popped.contains(&loaded_cb) {
+                        continue;
+                    }
                     let rem = depth - popped.get(&loaded_cb).copied().unwrap_or(0);
                     if rem > 0 {
                         writeln!(compute, "{indent}cb{loaded_cb}.pop_front({rem});");
@@ -1457,6 +1630,23 @@ impl Kernel {
             let writer_deps = {
                 let mut deps = Set::default();
                 let mut stack: Vec<OpId> = writer_stores.iter().copied().collect();
+                // Loop headers reference their trip-count consts, which are
+                // not store deps; without seeding, `r{len}` is never emitted.
+                let mut lscan = op_id;
+                let mut lsteps = 0usize;
+                while !lscan.is_null() {
+                    lsteps += 1;
+                    if lsteps > 10_000 {
+                        panic!("tt_codegen writer loop seed did not finish in 10000 steps");
+                    }
+                    if let Op::Barrier = self.ops[lscan].op {
+                        break;
+                    }
+                    if let Op::Loop { len } = self.ops[lscan].op {
+                        stack.push(len);
+                    }
+                    lscan = self.next_op(lscan);
+                }
                 while let Some(id) = stack.pop() {
                     if !deps.insert(id) {
                         continue;
@@ -1530,6 +1720,9 @@ impl Kernel {
         }
 
         let mut loop_depth = 0u32;
+        // CBs popped inside loops (tile streaming): skipped by the
+        // EndLoop exit-pop, which serves straight-line sections only.
+        let mut loop_popped: Set<u32> = Set::default();
         let mut steps_op_id = 0usize;
         while !op_id.is_null() {
             steps_op_id += 1;
@@ -1580,6 +1773,9 @@ impl Kernel {
                                     );
                                     writeln!(writer, "{indent}noc_async_write_barrier();");
                                     writeln!(writer, "{indent}cb{cb_id}.pop_front(1);");
+                                    if loop_depth > 0 {
+                                        loop_popped.insert(cb_id);
+                                    }
                                 }
                                 _ => todo!("add support for non-scalar stores back to DRAM"),
                             }
@@ -1637,6 +1833,13 @@ impl Kernel {
                     if loop_depth == 1 {
                         writeln!(writer, "{indent}noc_async_write_barrier();");
                         for cb_id in &writer_loop_cbs {
+                            // Tile streaming pops per iteration (see the
+                            // tile Store above); popping again here would
+                            // over-pop and stall. Scalar sections still
+                            // drain here.
+                            if loop_popped.contains(cb_id) {
+                                continue;
+                            }
                             writeln!(writer, "{indent}cb{cb_id}.pop_front(1);");
                         }
                     }

@@ -55,6 +55,195 @@ pub fn pad_kernel(s: i64, m: i64, d: i64) -> Kernel {
     kernel
 }
 
+/// Tenstorrent port of `pad_kernel` (tile path, mask input).
+///
+/// F32 tilized data `[mp, dp]` + F32 tilized mask (1.0 on kept rows) ->
+/// F16 tilized out, where `mp`/`dp` are `m`/`d` padded to multiples of
+/// 32. A single group loops over all tiles (`loop_over`); movement is
+/// bulk tile transfers; predication is masking (`mul_binary_tile`);
+/// conversion is `typecast_tile`. No scalar data movement.
+pub fn pad_kernel_tt(s: i64, m: i64, d: i64) -> Kernel {
+    const TDIM: u16 = 32;
+    const TILE_ELEMS: i64 = 1024;
+    debug_assert!(s <= m);
+    let mp = (m + 31) / 32 * 32;
+    let dp = (d + 31) / 32 * 32;
+    let ntiles = mp / 32 * (dp / 32);
+    let mut kernel = Kernel::new(Dev::TT(0));
+    let data = kernel.param(DType::F32);
+    let mask = kernel.param(DType::F32);
+    let out = kernel.param_mut(DType::F16);
+
+    let cdata = kernel.storage(DType::F32, MemScope::Circular, TILE_ELEMS);
+    let cmask = kernel.storage(DType::F32, MemScope::Circular, TILE_ELEMS);
+    let cout = kernel.storage(DType::F16, MemScope::Circular, TILE_ELEMS);
+
+    let _g = kernel.group_range(0, 1);
+    let ntiles = kernel.const_idx(ntiles);
+    let tile_elems = kernel.const_idx(TILE_ELEMS);
+    let zero = kernel.const_idx(0);
+
+    // Reader: whole-tile DRAM -> CB transfers (tilized DRAM).
+    kernel.loop_over(ntiles, |kernel, t| {
+        let tbase = kernel.mad(t, tile_elems, zero);
+        let td = kernel.load_tile(data, tbase, TDIM, TDIM, TDIM as u32);
+        kernel.store_tile(cdata, td, zero, TDIM, TDIM, TDIM as u32);
+        let tm = kernel.load_tile(mask, tbase, TDIM, TDIM, TDIM as u32);
+        kernel.store_tile(cmask, tm, zero, TDIM, TDIM, TDIM as u32);
+    });
+    kernel.barrier();
+
+    // Compute: apply mask, convert to F16.
+    kernel.loop_over(ntiles, |kernel, _t| {
+        let a = kernel.load_tile(cdata, zero, TDIM, TDIM, TDIM as u32);
+        let b = kernel.load_tile(cmask, zero, TDIM, TDIM, TDIM as u32);
+        let mm = kernel.mul(a, b);
+        let h = kernel.cast(mm, DType::F16);
+        kernel.store_tile(cout, h, zero, TDIM, TDIM, TDIM as u32);
+    });
+    kernel.barrier();
+
+    // Writer: whole-tile CB -> DRAM transfer.
+    kernel.loop_over(ntiles, |kernel, t| {
+        let tbase = kernel.mad(t, tile_elems, zero);
+        let v = kernel.load_tile(cout, zero, TDIM, TDIM, TDIM as u32);
+        kernel.store_tile(out, v, tbase, TDIM, TDIM, TDIM as u32);
+    });
+
+    kernel.verify();
+    kernel
+}
+
+/// Bring-up diagnostic: pure F32 tile movement, empty compute section.
+/// Passes iff reader/writer/CB/DRAM paths are all correct; isolates
+/// compute math/pack as the suspect when values come back wrong.
+pub fn pad_move_tt(s: i64, m: i64, d: i64) -> Kernel {
+    const TDIM: u16 = 32;
+    const TILE_ELEMS: i64 = 1024;
+    debug_assert!(s <= m);
+    let mp = (m + 31) / 32 * 32;
+    let dp = (d + 31) / 32 * 32;
+    let ntiles = mp / 32 * (dp / 32);
+    let mut kernel = Kernel::new(Dev::TT(0));
+    let data = kernel.param(DType::F32);
+    let out = kernel.param_mut(DType::F32);
+
+    let cdata = kernel.storage(DType::F32, MemScope::Circular, TILE_ELEMS);
+
+    let _g = kernel.group_range(0, 1);
+    let ntiles = kernel.const_idx(ntiles);
+    let tile_elems = kernel.const_idx(TILE_ELEMS);
+    let zero = kernel.const_idx(0);
+
+    kernel.loop_over(ntiles, |kernel, t| {
+        let tbase = kernel.mad(t, tile_elems, zero);
+        let td = kernel.load_tile(data, tbase, TDIM, TDIM, TDIM as u32);
+        kernel.store_tile(cdata, td, zero, TDIM, TDIM, TDIM as u32);
+    });
+    kernel.barrier();
+    kernel.barrier();
+
+    kernel.loop_over(ntiles, |kernel, t| {
+        let tbase = kernel.mad(t, tile_elems, zero);
+        let v = kernel.load_tile(cdata, zero, TDIM, TDIM, TDIM as u32);
+        kernel.store_tile(out, v, tbase, TDIM, TDIM, TDIM as u32);
+    });
+
+    kernel.verify();
+    kernel
+}
+
+/// Bring-up diagnostic: F32 copy in compute (copy_tile + pack, no cast,
+/// no binary op). Passes iff copy/pack are correct; isolates the F32->F16
+/// typecast as the suspect when values come back wrong.
+pub fn pad_copy_tt(s: i64, m: i64, d: i64) -> Kernel {
+    const TDIM: u16 = 32;
+    const TILE_ELEMS: i64 = 1024;
+    debug_assert!(s <= m);
+    let mp = (m + 31) / 32 * 32;
+    let dp = (d + 31) / 32 * 32;
+    let ntiles = mp / 32 * (dp / 32);
+    let mut kernel = Kernel::new(Dev::TT(0));
+    let data = kernel.param(DType::F32);
+    let out = kernel.param_mut(DType::F32);
+
+    let cdata = kernel.storage(DType::F32, MemScope::Circular, TILE_ELEMS);
+    let cout = kernel.storage(DType::F32, MemScope::Circular, TILE_ELEMS);
+
+    let _g = kernel.group_range(0, 1);
+    let ntiles = kernel.const_idx(ntiles);
+    let tile_elems = kernel.const_idx(TILE_ELEMS);
+    let zero = kernel.const_idx(0);
+
+    kernel.loop_over(ntiles, |kernel, t| {
+        let tbase = kernel.mad(t, tile_elems, zero);
+        let td = kernel.load_tile(data, tbase, TDIM, TDIM, TDIM as u32);
+        kernel.store_tile(cdata, td, zero, TDIM, TDIM, TDIM as u32);
+    });
+    kernel.barrier();
+
+    kernel.loop_over(ntiles, |kernel, _t| {
+        let a = kernel.load_tile(cdata, zero, TDIM, TDIM, TDIM as u32);
+        kernel.store_tile(cout, a, zero, TDIM, TDIM, TDIM as u32);
+    });
+    kernel.barrier();
+
+    kernel.loop_over(ntiles, |kernel, t| {
+        let tbase = kernel.mad(t, tile_elems, zero);
+        let v = kernel.load_tile(cout, zero, TDIM, TDIM, TDIM as u32);
+        kernel.store_tile(out, v, tbase, TDIM, TDIM, TDIM as u32);
+    });
+
+    kernel.verify();
+    kernel
+}
+
+/// Bring-up diagnostic: single-F32-tile passthrough (copy + cast, no
+/// binary op). Isolates reader/tilize/cast/pack/writer from binary-op
+/// unpack configuration when values come back wrong.
+pub fn pad_passthrough_tt(s: i64, m: i64, d: i64) -> Kernel {
+    const TDIM: u16 = 32;
+    const TILE_ELEMS: i64 = 1024;
+    debug_assert!(s <= m);
+    let mp = (m + 31) / 32 * 32;
+    let dp = (d + 31) / 32 * 32;
+    let ntiles = mp / 32 * (dp / 32);
+    let mut kernel = Kernel::new(Dev::TT(0));
+    let data = kernel.param(DType::F32);
+    let out = kernel.param_mut(DType::F16);
+
+    let cdata = kernel.storage(DType::F32, MemScope::Circular, TILE_ELEMS);
+    let cout = kernel.storage(DType::F16, MemScope::Circular, TILE_ELEMS);
+
+    let _g = kernel.group_range(0, 1);
+    let ntiles = kernel.const_idx(ntiles);
+    let tile_elems = kernel.const_idx(TILE_ELEMS);
+    let zero = kernel.const_idx(0);
+
+    kernel.loop_over(ntiles, |kernel, t| {
+        let tbase = kernel.mad(t, tile_elems, zero);
+        let td = kernel.load_tile(data, tbase, TDIM, TDIM, TDIM as u32);
+        kernel.store_tile(cdata, td, zero, TDIM, TDIM, TDIM as u32);
+    });
+    kernel.barrier();
+
+    kernel.loop_over(ntiles, |kernel, _t| {
+        let a = kernel.load_tile(cdata, zero, TDIM, TDIM, TDIM as u32);
+        let h = kernel.cast(a, DType::F16);
+        kernel.store_tile(cout, h, zero, TDIM, TDIM, TDIM as u32);
+    });
+    kernel.barrier();
+
+    kernel.loop_over(ntiles, |kernel, t| {
+        let tbase = kernel.mad(t, tile_elems, zero);
+        let v = kernel.load_tile(cout, zero, TDIM, TDIM, TDIM as u32);
+        kernel.store_tile(out, v, tbase, TDIM, TDIM, TDIM as u32);
+    });
+
+    kernel.verify();
+    kernel
+}
+
 /// GEMM with 16-row blocks, n=8 (lm_head pattern): out [R, N] =
 /// A [R, K] @ B [N, K]^T. `R/K/N` are emitted as constants so `flop_mem_rw`
 /// and the compiler see concrete trip counts; compile one instance per
