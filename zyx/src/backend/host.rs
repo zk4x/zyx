@@ -118,6 +118,13 @@ impl HostMemoryPool {
                 src_pool.pool_to_host(src, &mut byte_slice, Vec::new())?;
                 self.host_to_pool(&byte_slice, dst, event_wait_list)
             }
+            // CUDA -> host: download the device buffer into host bytes,
+            // then memcpy into the host buffer.
+            MemoryPool::CUDA(src_pool) => {
+                let mut byte_slice = vec![0u8; self.buffers[dst].len()];
+                src_pool.pool_to_host(src, &mut byte_slice, Vec::new())?;
+                self.host_to_pool(&byte_slice, dst, event_wait_list)
+            }
             // TT -> host: read the device DRAM buffer into host bytes via the
             // runtime shim (read_buf), then memcpy into the host buffer.
             #[cfg(feature = "tenstorrent")]

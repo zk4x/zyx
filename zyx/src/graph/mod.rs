@@ -904,96 +904,90 @@ impl Graph {
         println!("{}\n", line);
     }
 
-    /// For each kernel node, it needs to go over inputs. Inputs are either realized or other kernel nodes.
-    /// Debug assert that. Then for each input, if that input comes from kernel on different device
-    /// or if it's in buffer_map on different device, add EGraph::ToDevice node that moves it
-    /// to the device of the Node::Kernel.
-    // TODO Clean up this method, it's a mess
-    pub fn add_memory_ops(&mut self, devices: &Slab<DeviceId, Device>, buffer_map: &Map<TensorId, BufferId>) {
-        let class_ids: Vec<ClassId> = self.classes.ids().collect();
-        for cid in class_ids {
-            let node_ids: Vec<NodeId> = self.classes[cid].nodes.to_vec();
-            for &nid in &node_ids {
-                let (device_id, inputs) = match &self.nodes[nid].node {
-                    Node::Kernel { program_id, inputs, .. } => {
-                        debug_assert_ne!(program_id.device_id, DeviceId::NULL);
-                        (program_id.device_id, inputs.clone())
-                    }
-                    _ => continue,
-                };
-                let dev_pool = devices[device_id].memory_pool_id();
-
-                let class_of = self.nodes[nid].class_of;
-                let mut new_inputs: Option<Box<[ClassId]>> = None;
-                for (i, &input_cid) in inputs.iter().enumerate() {
-                    let mut same_device = false;
-                    let mut from_kernel = false;
-                    for &inid in &self.classes[input_cid].nodes {
-                        if let Node::Kernel { program_id, .. } = &self.nodes[inid].node {
-                            from_kernel = true;
-                            if program_id.device_id == device_id {
-                                same_device = true;
-                                break;
-                            }
-                        }
-                    }
-                    if from_kernel {
-                        if !same_device {
-                            let to_cid = self.push_to_device(input_cid, device_id, 0);
-                            if to_cid != class_of {
-                                let new_inputs = new_inputs.get_or_insert_with(|| inputs.clone());
-                                new_inputs[i] = to_cid;
-                            }
-                        }
-                    } else {
-                        let already_on_device = self.classes[input_cid]
-                            .nodes
-                            .iter()
-                            .any(|&inid| matches!(&self.nodes[inid].node, Node::ToDevice { device: d, .. } if *d == device_id));
-                        if !already_on_device {
-                            let is_leaf = self.classes[input_cid]
-                                .nodes
-                                .iter()
-                                .any(|&inid| matches!(&self.nodes[inid].node, Node::Leaf { .. }));
-                            if is_leaf {
-                                let tid = self.leaf_map.get(&input_cid).copied().unwrap_or_else(|| {
-                                    let leaf_cid = self.classes[input_cid]
-                                        .nodes
-                                        .iter()
-                                        .find_map(|&inid| {
-                                            if matches!(&self.nodes[inid].node, Node::Leaf { .. }) {
-                                                Some(self.nodes[inid].class_of)
-                                            } else {
-                                                None
-                                            }
-                                        })
-                                        .expect("already checked is_leaf");
-                                    self.leaf_map[&leaf_cid]
-                                });
-                                // A variable leaf has no buffer (host scalar
-                                // bound at launch from the tensors slab) — no
-                                // device placement applies.
-                                if let Some(leaf_buf) = buffer_map.get(&tid) {
-                                    let leaf_pool = leaf_buf.pool;
-                                    if leaf_pool != dev_pool {
-                                        let to_cid = self.push_to_device(input_cid, device_id, 0);
-                                        if to_cid != cid && to_cid != class_of {
-                                            let new_inputs = new_inputs.get_or_insert_with(|| inputs.clone());
-                                            new_inputs[i] = to_cid;
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-                if let Some(new_inputs) = new_inputs
-                    && let Node::Kernel { inputs: node_inputs, .. } = &mut self.nodes[nid].node
-                {
-                    *node_inputs = new_inputs;
-                }
+    /// After extraction, inserts [`Node::ToDevice`] transfers on the extracted
+    /// path wherever a chosen kernel consumes a class placed on a different
+    /// device, and returns the repaired node list in topological order.
+    ///
+    /// Only the extracted producer/consumer pairs are considered: a class may
+    /// hold kernels on several devices (every fusion is autotuned on all of
+    /// them), and no transfer is needed when extraction chose the same-device
+    /// producer. A transfer is added only on a real mismatch between the
+    /// consumer kernel's device and the placement of its input on the
+    /// extracted path (chosen kernel output, chosen transfer output, or
+    /// realized leaf buffer). User-inserted [`Node::ToDevice`] nodes are kept
+    /// as-is and reused through hashconsing.
+    pub fn add_memory_ops(
+        &mut self,
+        devices: &Slab<DeviceId, Device>,
+        buffer_map: &Map<TensorId, BufferId>,
+        chosen: &[NodeId],
+    ) -> Vec<NodeId> {
+        // Pool each class lives in on the extracted path. Chosen kernel
+        // outputs live in their kernel's pool, chosen transfers in their
+        // target pool, realized leaves in their buffer pool. Variable leaves
+        // have no buffer and no placement — they bind at launch.
+        let mut pool_of: Map<ClassId, PoolId> = Map::default();
+        for (&cid, &tid) in &self.leaf_map {
+            if let Some(buf) = buffer_map.get(&tid) {
+                pool_of.insert(cid, buf.pool);
             }
         }
+
+        let mut repaired: Vec<NodeId> = Vec::with_capacity(chosen.len());
+        let mut emitted: Set<NodeId> = Set::default();
+        for &nid in chosen {
+            let (device_id, inputs, class_of) = match &self.nodes[nid].node {
+                Node::Kernel { program_id, inputs, .. } => {
+                    debug_assert_ne!(program_id.device_id, DeviceId::NULL);
+                    (program_id.device_id, inputs.clone(), self.nodes[nid].class_of)
+                }
+                Node::ToDevice { device, .. } => {
+                    pool_of.insert(self.nodes[nid].class_of, devices[*device].memory_pool_id());
+                    if emitted.insert(nid) {
+                        repaired.push(nid);
+                    }
+                    continue;
+                }
+                _ => unreachable!("add_memory_ops runs on extracted nodes, which are only Kernel/ToDevice"),
+            };
+            let dev_pool = devices[device_id].memory_pool_id();
+            if let Node::Kernel { outputs, .. } = &self.nodes[nid].node {
+                for &oc in &**outputs {
+                    pool_of.insert(oc, dev_pool);
+                }
+            }
+            let mut new_inputs: Option<Box<[ClassId]>> = None;
+            for (i, &input_cid) in inputs.iter().enumerate() {
+                if pool_of.get(&input_cid) == Some(&dev_pool) {
+                    continue;
+                }
+                if !pool_of.contains_key(&input_cid) {
+                    // No buffer on the extracted path (variable leaf bound at
+                    // launch) — nothing to transfer.
+                    continue;
+                }
+                let to_cid = self.push_to_device(input_cid, device_id, 0);
+                if to_cid != class_of {
+                    let tnode = Node::ToDevice { x: input_cid, device: device_id, time: 0 };
+                    let tnid = *self.hashcons.get(&tnode).expect("push_to_device just inserted the transfer");
+                    pool_of.insert(to_cid, dev_pool);
+                    if emitted.insert(tnid) {
+                        repaired.push(tnid);
+                    }
+                    let new_inputs = new_inputs.get_or_insert_with(|| inputs.clone());
+                    new_inputs[i] = to_cid;
+                }
+            }
+            if let Some(new_inputs) = new_inputs
+                && let Node::Kernel { inputs: node_inputs, .. } = &mut self.nodes[nid].node
+            {
+                *node_inputs = new_inputs;
+            }
+            if emitted.insert(nid) {
+                repaired.push(nid);
+            }
+        }
+        repaired
     }
 
     /// Hash of the graph structure (hashcons), output classes, and the shape
@@ -2401,12 +2395,16 @@ impl Runtime {
         self.autotune_jit_kernels(graph_id)?;
         self.graphs[graph_id].verify();
 
-        // After all kernels nodes are added, this adds movement ops so extract can pick fastest path
+        let nodes = self.graphs[graph_id].extract(output_set);
+
+        // Transfers between the extracted producer/consumer pairs that live
+        // on different devices. Only the extracted path is considered: a
+        // class holding kernels on several devices needs no transfer when
+        // extraction chose the same-device producer.
+        // SAFETY: devices, graphs and shapes are separate fields of Runtime, no aliasing, rust is stupid
         let devices_ptr: *const Slab<DeviceId, Device> = &self.devices;
         let buffer_map_ptr: *const Map<TensorId, BufferId> = &self.buffer_map;
-        self.graphs[graph_id].add_memory_ops(unsafe { &*devices_ptr }, unsafe { &*buffer_map_ptr });
-
-        let nodes = self.graphs[graph_id].extract(output_set);
+        let nodes = self.graphs[graph_id].add_memory_ops(unsafe { &*devices_ptr }, unsafe { &*buffer_map_ptr }, &nodes);
 
         // Leaf pools at compile time — the plan bakes the alias binding (and
         // any cross-pool copy) into its ExecNodes, so leaves must stay put.
