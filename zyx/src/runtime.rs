@@ -4685,10 +4685,13 @@ impl Runtime {
 
     /// Autotune (or fetch from cache) a compiled program for `kernel`.
     ///
-    /// `buffers` are the launch arguments from the caller (e.g. materialize's
-    /// bound buffers); when `None`, fresh measurement buffers are allocated
-    /// from the device pool and released after the search.
-    pub fn get_or_autotune(&mut self, kernel: Kernel, buffers: Option<&[LaunchArg]>) -> Result<(DeviceProgramId, u64), ZyxError> {
+    /// `buffers` are the complete launch arguments from the caller,
+    /// positionally bound: read-only defines (`Global` buffers and scalar
+    /// `Variable` values) in head order, then `GlobalMut` stores in head
+    /// order. Every buffer is preallocated (eager path) or freshly
+    /// allocated by the graph caller; every variable carries its actual
+    /// runtime value. Nothing is invented here.
+    pub fn get_or_autotune(&mut self, kernel: Kernel, buffers: &[LaunchArg]) -> Result<(DeviceProgramId, u64), ZyxError> {
         let kernel_id = if let Some(&cached_kid) = self.kernel_map.get(&kernel) {
             if let Some(&program_id) = self.programs.get(&cached_kid) {
                 let pid = ProgramId { device_id: kernel.device_id, program_id };
@@ -4715,17 +4718,18 @@ impl Runtime {
 
         // Seed preparation happens OUTSIDE the beam search: linearize + the
         // basic post-linearize passes, then the epilogue runs 3x so loop
-        // folding converges before the search starts. Buffers are bound
-        // BEFORE linearization (alloc_buffers resolves sizes from the intact
-        // param shape stacks, which linearize nulls).
-        let (args, fresh_bufs) = match buffers {
-            Some(buffers) => (buffers.to_vec(), Vec::new()),
-            None => {
-                let pool_id = self.devices[device_id].memory_pool_id();
-                let (args, fresh_bufs) = kernel.alloc_buffers(&mut self.pools[pool_id], &[])?;
-                (args, fresh_bufs)
+        // folding converges before the search starts.
+        {
+            let mut n_params = 0usize;
+            let mut op_id = kernel.head;
+            while !op_id.is_null() {
+                if matches!(kernel.ops[op_id].op, Op::Param { .. }) {
+                    n_params += 1;
+                }
+                op_id = kernel.next_op(op_id);
             }
-        };
+            debug_assert_eq!(buffers.len(), n_params, "caller arg count must match kernel param count");
+        }
         let dev_info = self.devices[device_id].info();
         let mut base = kernel;
         base.linearize();
@@ -4753,15 +4757,11 @@ impl Runtime {
         let (winner, timing) = beam_search.run_(
             self,
             [base],
-            &args,
+            buffers,
             &Kernel::default_optimizations(),
             Kernel::default_epilogue,
             Kernel::base_cost,
         )?;
-        if !fresh_bufs.is_empty() {
-            let pool_id = self.devices[device_id].memory_pool_id();
-            winner.dealloc_buffers(fresh_bufs, &mut self.pools[pool_id]);
-        }
 
         let program_id = {
             let device = &mut self.devices[device_id];
@@ -5191,7 +5191,7 @@ impl Runtime {
         }
 
         // Compile and launch (caches in kernel_map / programs)
-        let (dev_prog, _timing) = self.get_or_autotune(kernel, Some(&buffers))?;
+        let (dev_prog, _timing) = self.get_or_autotune(kernel, &buffers)?;
 
         let event = self.devices[dev_id].launch(dev_prog, &mut self.pools[pool_id], &buffers, event_wait_list)?;
         self.events.insert(kernel_buffers, event);

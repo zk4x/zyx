@@ -307,7 +307,30 @@ impl Tensor {
                 ));
             }
         }
-        let id = RT.lock().narrow(self.id, axis, start.id, length.id);
+        let mut rt = RT.lock();
+        // Bounds check when every value resolves now (constants and bound
+        // variables). Unresolvable symbolics skip this and defer to realize
+        // time, where values bind and ranges validate before launch.
+        let dim = rt.shape(self.id).get(axis as usize).copied().and_then(|d| rt.resolve_symbolic(d));
+        let st = rt.resolve_symbolic(start.id);
+        let ln = rt.resolve_symbolic(length.id);
+        if let (Some(dim), Some(st), Some(ln)) = (dim, st, ln) {
+            match (dim.as_dim(), st.as_dim(), ln.as_dim()) {
+                (Some(dim), Some(st), Some(ln)) => {
+                    if st.checked_add(ln).is_none_or(|end| end > dim) {
+                        return Err(ZyxError::shape_error(
+                            format!("narrow: out of bounds: start {st} + length {ln} exceeds dim {dim} on axis {axis}").into(),
+                        ));
+                    }
+                }
+                _ => {
+                    return Err(ZyxError::shape_error(
+                        format!("narrow: negative bound: dim {dim:?}, start {st:?}, length {ln:?} on axis {axis}").into(),
+                    ));
+                }
+            }
+        }
+        let id = rt.narrow(self.id, axis, start.id, length.id);
         Ok(Tensor { id })
     }
 

@@ -18,10 +18,11 @@ use std::collections::BTreeSet;
 
 use crate::{
     DType, Map, Set, ZyxError,
-    backend::{BufferId, Device, PoolId, ProgramId},
+    backend::{BufferId, Device, LaunchArg, PoolBufferId, PoolId, ProgramId},
     dtype::Constant,
     kernel::{BOp, DeviceId, IDX_T, Kernel, MoveOp, Op, OpId, ParamKind, UOp},
     runtime::{KernelId, Runtime, TensorData},
+    scalar::{bf16, f16},
     shape::{Dim, UAxis},
     slab::{Slab, SlabId},
     tensor::TensorId,
@@ -2237,6 +2238,72 @@ impl Runtime {
         Ok(class_id)
     }
 
+    /// Fold a symbolic dim-expression class of a graph to a `Constant`,
+    /// mirroring [`Kernel::resolve_const`] over graph nodes: `Const` folds
+    /// directly; a dim-variable `Leaf` resolves through `leaf_map` into the
+    /// tensors slab (variables always carry concrete values, so this never
+    /// invents any); `Cast`/`Unary`/`Binary` fold bottom-up with the same
+    /// dtype rules. Iterative postorder with dedup, so shared subexpressions
+    /// evaluate before every parent referencing them. Anything outside the
+    /// symbolic closed set (kernels, movement, data ops, shapes) is not a
+    /// scalar dim and resolves to `None`.
+    pub(crate) fn resolve_symbolic_class(&self, graph_id: GraphId, cid: ClassId) -> Option<Constant> {
+        let graph = &self.graphs[graph_id];
+        if cid.is_null() {
+            return None;
+        }
+        let mut seen: Set<ClassId> = Set::default();
+        let mut order: Vec<ClassId> = Vec::new();
+        let mut stack = vec![(cid, false)];
+        for _ in 0..10_000 {
+            let Some((id, emit)) = stack.pop() else { break };
+            if id.is_null() {
+                continue;
+            }
+            if emit {
+                order.push(id);
+                continue;
+            }
+            if !seen.insert(id) {
+                continue;
+            }
+            stack.push((id, true));
+            match &graph.nodes[graph.classes[id].nodes[0]].node {
+                Node::Cast { x, .. } | Node::Unary { x, .. } => stack.push((*x, false)),
+                Node::Binary { x, y, .. } => {
+                    stack.push((*x, false));
+                    stack.push((*y, false));
+                }
+                _ => {}
+            }
+        }
+        if !stack.is_empty() {
+            panic!("resolve_symbolic_class did not finish in 10000 steps");
+        }
+
+        let mut values: Map<ClassId, Option<Constant>> = Map::default();
+        for &id in &order {
+            let v = match &graph.nodes[graph.classes[id].nodes[0]].node {
+                Node::Const { value } => Some(*value),
+                Node::Leaf { .. } => {
+                    let tid = graph.leaf_map.get(&id)?;
+                    self.resolve_symbolic(*tid)
+                }
+                Node::Cast { x, dtype } => values.get(x).copied().flatten().map(|v| v.cast(*dtype)),
+                Node::Unary { x, uop } => values.get(x).copied().flatten().map(|v| v.unary(*uop)),
+                Node::Binary { x, y, bop } => {
+                    values.get(x).copied().flatten().zip(values.get(y).copied().flatten()).map(|(a, b)| {
+                        let dt = a.dtype().least_upper_dtype(b.dtype());
+                        Constant::binary(a.cast(dt), b.cast(dt), *bop)
+                    })
+                }
+                _ => None,
+            };
+            values.insert(id, v);
+        }
+        values[&cid].clone()
+    }
+
     pub fn autotune_jit_kernels(&mut self, graph_id: GraphId) -> Result<(), ZyxError> {
         println!("Autotuning");
         let device_ids: Vec<DeviceId> = self.devices.ids().collect();
@@ -2248,6 +2315,82 @@ impl Runtime {
         for ek in jit_kernels.values() {
             let class_of = ek.stores.first().copied().unwrap();
 
+            // Timing launch args, bound positionally: read-only defines
+            // (`Global` buffers and scalar `Variable` dims) in head order,
+            // then `GlobalMut` stores in head order. Every variable carries
+            // its actual runtime value — variables are never unknown, so
+            // nothing is substituted. Buffer lengths resolve from true
+            // graph shapes (never const-folded, never substituted).
+            // `ek.loads` parallels the non-store defines and `ek.stores`
+            // the mut defines; both invariants are asserted below.
+            let mut args: Vec<LaunchArg> = Vec::new();
+            let mut mut_args: Vec<LaunchArg> = Vec::new();
+            let mut ro_lens: Vec<Dim> = Vec::new();
+            let mut mut_lens: Vec<Dim> = Vec::new();
+            // True length in elements of a buffer class. Scalar (empty
+            // shape) holds one element.
+            let resolve_len = |cid: ClassId| -> Dim {
+                let mut len: Dim = 1;
+                for &d in &self.graphs[graph_id].shape(cid) {
+                    let v = match self.resolve_symbolic_class(graph_id, d) {
+                        Some(v) => v,
+                        None => unreachable!("buffer dim class {d:?} does not resolve to a value"),
+                    };
+                    let dv = match v.as_dim() {
+                        Some(dv) => dv,
+                        None => unreachable!("buffer dim class {d:?} is not a non-negative integer: {v:?}"),
+                    };
+                    len = match len.checked_mul(dv) {
+                        Some(len) => len,
+                        None => unreachable!("buffer dim product overflows"),
+                    };
+                }
+                len
+            };
+            {
+                let mut load_idx = 0usize;
+                let mut store_idx = 0usize;
+                let mut p = ek.kernel.head;
+                while !p.is_null() {
+                    match ek.kernel.ops[p].op {
+                        Op::Param { kind: ParamKind::Variable, .. } => {
+                            let value = match self.resolve_symbolic_class(graph_id, ek.loads[load_idx]) {
+                                Some(v) => v,
+                                None => unreachable!(
+                                    "dim variable class {:?} does not resolve to a value",
+                                    ek.loads[load_idx]
+                                ),
+                            };
+                            load_idx += 1;
+                            args.push(LaunchArg::Variable(value));
+                        }
+                        Op::Param { kind: ParamKind::Global, .. } => {
+                            ro_lens.push(resolve_len(ek.loads[load_idx]));
+                            load_idx += 1;
+                            args.push(LaunchArg::Buffer(PoolBufferId::NULL));
+                        }
+                        Op::Param { kind: ParamKind::GlobalMut, .. } => {
+                            mut_lens.push(resolve_len(ek.stores[store_idx]));
+                            store_idx += 1;
+                            mut_args.push(LaunchArg::Buffer(PoolBufferId::NULL));
+                        }
+                        _ => {}
+                    }
+                    p = ek.kernel.next_op(p);
+                }
+                debug_assert_eq!(
+                    load_idx,
+                    ek.loads.len(),
+                    "loads must parallel Global|Variable defines"
+                );
+                debug_assert_eq!(
+                    store_idx,
+                    ek.stores.len(),
+                    "stores must parallel GlobalMut defines"
+                );
+            }
+            args.extend(mut_args);
+
             for &dev_id in device_ids.iter() {
                 // AOT-only devices (e.g. cblas) never compile generic zyx kernels
                 if self.devices[dev_id].aot_only() {
@@ -2257,7 +2400,67 @@ impl Runtime {
                 kernel.device_id = dev_id;
                 kernel.dev_info = Some(self.devices[dev_id].info());
                 progress_bar.inc(1, &format!("autotune {} on dev={}", kernel.name(), dev_id.0));
-                let (dev_prog, timing) = self.get_or_autotune(kernel, None)?;
+                // Allocate fresh timing buffers in this device's pool for
+                // every NULL slot, pre-filled with ones like eager inputs.
+                let pool_id = self.devices[dev_id].memory_pool_id();
+                let mut full_args: Vec<LaunchArg> = Vec::with_capacity(args.len());
+                let mut full_mut: Vec<LaunchArg> = Vec::with_capacity(mut_lens.len());
+                let mut fresh: Vec<PoolBufferId> = Vec::new();
+                let mut events = Vec::new();
+                {
+                    let (mut ri, mut rli, mut mli) = (0usize, 0usize, 0usize);
+                    let mut p = kernel.head;
+                    while !p.is_null() {
+                        if let Op::Param { kind, dtype, .. } = kernel.ops[p].op {
+                            match kind {
+                                ParamKind::Variable => {
+                                    full_args.push(args[ri].clone());
+                                    ri += 1;
+                                }
+                                ParamKind::Global | ParamKind::GlobalMut => {
+                                    let (len, is_mut) = if kind == ParamKind::GlobalMut {
+                                        let len = mut_lens[mli];
+                                        mli += 1;
+                                        (len, true)
+                                    } else {
+                                        let len = ro_lens[rli];
+                                        rli += 1;
+                                        (len, false)
+                                    };
+                                    let bytes_alloc = (dtype.bit_size() as Dim * (len + 1)) / 8;
+                                    let (buf, ev) = self.pools[pool_id].allocate(bytes_alloc)?;
+                                    fresh.push(buf);
+                                    if !is_mut {
+                                        let one: Vec<u8> = match dtype {
+                                            DType::BF16 => bf16::ONE.to_le_bytes().to_vec(),
+                                            DType::F16 => f16::ONE.to_le_bytes().to_vec(),
+                                            DType::F32 => 1f32.to_le_bytes().to_vec(),
+                                            DType::F64 => 1f64.to_le_bytes().to_vec(),
+                                            DType::U8 | DType::I8 | DType::Bool => vec![1],
+                                            DType::U16 | DType::I16 => 1u16.to_le_bytes().to_vec(),
+                                            DType::U32 | DType::I32 => 1u32.to_le_bytes().to_vec(),
+                                            DType::U64 | DType::I64 => 1i64.to_le_bytes().to_vec(),
+                                        };
+                                        let fill = one.repeat(len as usize);
+                                        let ev = self.pools[pool_id].host_to_pool(&fill, buf, vec![ev])?;
+                                        events.push(ev);
+                                    }
+                                    if is_mut {
+                                        full_mut.push(LaunchArg::Buffer(buf));
+                                    } else {
+                                        full_args.push(LaunchArg::Buffer(buf));
+                                        ri += 1;
+                                    }
+                                }
+                            }
+                        }
+                        p = kernel.next_op(p);
+                    }
+                }
+                let _ = self.pools[pool_id].sync_events(events);
+                full_args.extend(full_mut);
+                let (dev_prog, timing) = self.get_or_autotune(kernel, &full_args)?;
+                ek.kernel.dealloc_buffers(fresh, &mut self.pools[pool_id]);
                 let prog = ProgramId { device_id: dev_id, program_id: dev_prog };
 
                 let knid = self.graphs[graph_id].nodes.push(NodeData {

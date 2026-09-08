@@ -30,7 +30,6 @@ use crate::hashers::AHasher;
 use crate::kernel::{IDX_T, Kernel, Op, OpId, ParamKind};
 use crate::rng::Rng;
 use crate::runtime::Runtime;
-use crate::scalar::{bf16, f16};
 use crate::shape::Dim;
 use crate::{DebugMask, Set, Tensor, ZyxError};
 use nanoserde::{DeBin, SerBin};
@@ -110,102 +109,6 @@ impl Kernel {
             self.debug();
             panic!();
         }
-    }
-
-    pub(crate) fn alloc_buffers(
-        &self,
-        memory_pool: &mut MemoryPool,
-        buffers: &[LaunchArg],
-    ) -> Result<(Vec<LaunchArg>, Vec<PoolBufferId>), BackendError> {
-        // Args must be emitted in the compiled signature's order: all
-        // Global|Variable (read-only) params in head order first, then all
-        // GlobalMut params in head order (see `linearize`). The caller binds
-        // its buffers with the same law (`loads` = non-mut defines in head
-        // order, then `stores`), so its flat list splits at `ro_count`:
-        // ro params consume the front section, mut params the back section.
-        // Pairing by walked head-order position would be wrong for kernels
-        // whose pre-linearize head order interleaves GlobalMut params (e.g.
-        // the assign merge replays dst params mid-list) — that scrambled a
-        // correct caller list into illegal-address launches.
-        let mut params: Vec<(OpId, ParamKind, DType)> = Vec::new();
-        let mut op_id = self.head;
-        while !op_id.is_null() {
-            if let Op::Param { kind, dtype, .. } = self.ops[op_id].op {
-                params.push((op_id, kind, dtype));
-            }
-            op_id = self.next_op(op_id);
-        }
-        let ro_count = params.iter().filter(|(_, kind, _)| *kind != ParamKind::GlobalMut).count();
-        if !buffers.is_empty() {
-            debug_assert_eq!(buffers.len(), params.len(), "caller arg count must match kernel param count");
-        }
-
-        let mut ro_bufs: Vec<LaunchArg> = Vec::new();
-        let mut mut_bufs: Vec<LaunchArg> = Vec::new();
-        let mut new_bufs = Vec::new();
-        let mut events = Vec::new();
-        let mut ro_idx = 0usize;
-        let mut mut_idx = 0usize;
-        for &(op_id, kind, dtype) in &params {
-            let is_mut = kind == ParamKind::GlobalMut;
-            let slot = if !buffers.is_empty() {
-                // Caller-provided argument (a bound buffer or a variable
-                // value) — consume from the matching section.
-                if is_mut {
-                    buffers[ro_count + mut_idx].clone()
-                } else {
-                    buffers[ro_idx].clone()
-                }
-            } else if kind == ParamKind::Variable {
-                // Scalar argument: not a buffer anywhere — pass some
-                // arbitrary value at launch (timing-only).
-                LaunchArg::Variable(Constant::idx(42).cast(dtype))
-            } else {
-                // Buffer argument. This runs PRE-linearization, so the
-                // param's shape stack is intact. Dynamic dims are `-1`
-                // (see the `Dim` docs); autotune substitutes 42. A
-                // null shape is a scalar buffer (e.g. a stored const).
-                let shape = match &self.ops[op_id].op {
-                    Op::Param { shape, .. } => *shape,
-                    _ => unreachable!("param op"),
-                };
-                let len: Dim = if shape.is_null() {
-                    1
-                } else {
-                    self.shape(op_id).iter().map(|&d| if d < 0 { 42 } else { d }).product()
-                };
-                let bytes_alloc = (dtype.bit_size() as Dim * (len + 1)) / 8;
-                let (buf, ev) = memory_pool.allocate(bytes_alloc)?;
-                new_bufs.push(buf);
-                if matches!(kind, ParamKind::Global) {
-                    let one: Vec<u8> = match dtype {
-                        DType::BF16 => bf16::ONE.to_le_bytes().to_vec(),
-                        DType::F16 => f16::ONE.to_le_bytes().to_vec(),
-                        DType::F32 => 1f32.to_le_bytes().to_vec(),
-                        DType::F64 => 1f64.to_le_bytes().to_vec(),
-                        DType::U8 | DType::I8 | DType::Bool => vec![1],
-                        DType::U16 | DType::I16 => 1u16.to_le_bytes().to_vec(),
-                        DType::U32 | DType::I32 => 1u32.to_le_bytes().to_vec(),
-                        DType::U64 | DType::I64 => 1i64.to_le_bytes().to_vec(),
-                    };
-                    let fill = one.repeat(len as usize);
-                    let ev = memory_pool.host_to_pool(&fill, buf, vec![ev])?;
-                    events.push(ev);
-                }
-                LaunchArg::Buffer(buf)
-            };
-            if is_mut {
-                mut_bufs.push(slot);
-                mut_idx += 1;
-            } else {
-                ro_bufs.push(slot);
-                ro_idx += 1;
-            }
-        }
-        let _ = memory_pool.sync_events(events);
-        // No sorting: ro head order ++ mut head order IS the signature order.
-        ro_bufs.extend(mut_bufs);
-        Ok((ro_bufs, new_bufs))
     }
 
     pub(crate) fn dealloc_buffers(&self, args: Vec<PoolBufferId>, memory_pool: &mut MemoryPool) {
