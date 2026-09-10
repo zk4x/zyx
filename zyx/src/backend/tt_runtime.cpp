@@ -210,6 +210,8 @@ struct ProgramConfig {
   vector<uint32_t> reader_params;
   vector<uint32_t> compute_params;
   vector<uint32_t> writer_params;
+  // DST geometry selected per kernel from output dtypes (1 = 32-bit).
+  uint32_t fp32_dest_acc_en = 1;
 };
 
 int main() {
@@ -443,6 +445,7 @@ int main() {
         cfg.cb_indices = cb_indices;
         cfg.cb_formats = cb_formats;
         cfg.cb_tile_bytes = cb_tile_bytes;
+        cfg.fp32_dest_acc_en = extract_u32(line, "fp32_dest_acc");
         cfg.n_params = n_params;
         cfg.reader_params = reader_params;
         cfg.compute_params = compute_params;
@@ -663,7 +666,8 @@ int main() {
             CreateKernelFromString(program, cfg.compute_source, all_cores,
                                    ComputeConfig{
                                        .math_fidelity = MathFidelity::HiFi4,
-                                       .fp32_dest_acc_en = true,
+                                       // Per-kernel DST geometry from output dtypes (see backend).
+                                       .fp32_dest_acc_en = cfg.fp32_dest_acc_en != 0,
                                        .dst_full_sync_en = false,
                                        .unpack_to_dest_mode = {},
                                        .bfp8_pack_precise = false,

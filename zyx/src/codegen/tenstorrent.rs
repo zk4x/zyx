@@ -23,13 +23,22 @@ fn tt_fill_bits(val: Constant) -> u32 {
     }
 }
 
+/// DRAM buffer page size in bytes. Must match `PAGE_SIZE` in
+/// `backend/tt_runtime.cpp` (`alloc_buf`): every DRAM `TensorAccessor`
+/// and its page/offset arithmetic must stride by the buffer page size,
+/// not by the access dtype's tile size — otherwise every tile past
+/// tile 0 misaddresses (page 0 offset 0 is the only correct one).
+const TT_DRAM_PAGE_BYTES: u32 = 4096;
+
 /// TT Metalium `tt::DataFormat` constant for a zyx dtype, as used by
 /// `typecast_tile`'s template parameters. Only dtypes supported by the
 /// tenstorrent tile path are valid.
 fn tt_dtype_format(dt: DType) -> u32 {
     match dt {
-        DType::F32 => 0,  // Float32
-        DType::F16 => 1,  // Float16
+        DType::F32 => 0, // Float32
+        // tt-metal 0.72 SFPU typecast has no plain-Float16 kernel; zyx F16
+        // casts must use Float16_b (see typecast.h supported list).
+        DType::F16 => 5, // Float16_b
         DType::BF16 => 5, // Float16_b
         other => unreachable!("unsupported dtype {other:?} for tenstorrent tile op"),
     }
@@ -335,7 +344,7 @@ impl Kernel {
                     panic!("tt_binary_init did not finish in 10000 steps");
                 }
                 match self.ops[op_id].op {
-                    Op::Param { dtype, kind: ParamKind::Global, .. } => {
+                    Op::Param { kind: ParamKind::Global, .. } => {
                         if reader_params.contains(&param_idx) {
                             let arg = reader_pos[&param_idx];
                             writeln!(reader, "{indent}uint32_t src{op_id} = get_arg_val<uint32_t>({arg});");
@@ -345,11 +354,8 @@ impl Kernel {
                                 None => String::from("0"),
                                 Some(prev) => format!("{prev}.next_compile_time_args_offset()"),
                             };
-                            let page_size = match dtype {
-                                DType::F32 => 4096u32,
-                                DType::F16 | DType::BF16 => 2048u32,
-                                _ => 4096u32,
-                            };
+                            // DRAM stride: buffer page size, never the dtype tile size.
+                            let page_size = TT_DRAM_PAGE_BYTES;
                             writeln!(reader, "{indent}auto args{op_id} = TensorAccessorArgs<{cta}>({arg});");
                             writeln!(reader, "{indent}auto p{op_id} = TensorAccessor(args{op_id}, src{op_id}, {page_size});");
                             prev_reader_accessor = Some(format!("args{op_id}"));
@@ -370,7 +376,7 @@ impl Kernel {
                         }
                         param_idx += 1;
                     }
-                    Op::Param { dtype, kind: ParamKind::GlobalMut, .. } => {
+                    Op::Param { kind: ParamKind::GlobalMut, .. } => {
                         if reader_params.contains(&param_idx) {
                             let arg = reader_pos[&param_idx];
                             writeln!(reader, "{indent}uint32_t dst{op_id} = get_arg_val<uint32_t>({arg});");
@@ -378,11 +384,8 @@ impl Kernel {
                                 None => String::from("0"),
                                 Some(prev) => format!("{prev}.next_compile_time_args_offset()"),
                             };
-                            let page_size = match dtype {
-                                DType::F32 => 4096u32,
-                                DType::F16 | DType::BF16 => 2048u32,
-                                _ => 4096u32,
-                            };
+                            // DRAM stride: buffer page size, never the dtype tile size.
+                            let page_size = TT_DRAM_PAGE_BYTES;
                             writeln!(reader, "{indent}auto args{op_id} = TensorAccessorArgs<{cta}>({arg});");
                             writeln!(reader, "{indent}auto p{op_id} = TensorAccessor(args{op_id}, dst{op_id}, {page_size});");
                             prev_reader_accessor = Some(format!("args{op_id}"));
@@ -401,18 +404,15 @@ impl Kernel {
                         let Op::Load { src: ld_src, index: ld_idx, layout: ld_layout } = self.ops[src].op else {
                             panic!("tenstorrent supports only global to local loads in reader kernels with no ops inbetween")
                         };
-                        let Op::Param { dtype: ld_dtype, kind: ParamKind::Global, .. } = self.ops[ld_src].op else {
+                        let Op::Param { kind: ParamKind::Global, .. } = self.ops[ld_src].op else {
                             unreachable!()
                         };
                         let Op::Storage { dtype, scope: MemScope::Circular, .. } = self.ops[dst].op else {
                             unreachable!()
                         };
 
-                        let page_size = match ld_dtype {
-                            DType::F32 => 4096u32,
-                            DType::F16 | DType::BF16 => 2048u32,
-                            _ => 4096u32,
-                        };
+                        // Must match the accessor's stride above (buffer pages).
+                        let page_size = TT_DRAM_PAGE_BYTES;
                         let elem_size = dtype.bit_size() as u32 / 8;
                         if let Some(cb_id) = cb_map.get(&dst) {
                             if !filled_cbs.iter().any(|(id, _)| *id == *cb_id) {
@@ -1024,9 +1024,10 @@ impl Kernel {
             for init in binary_inits {
                 writeln!(compute, "{indent}{init}");
             }
-            for (in_fmt, out_fmt) in &typecast_inits {
-                writeln!(compute, "{indent}typecast_tile_init<{in_fmt}, {out_fmt}>();");
-            }
+            // NOTE: typecast_tile_init is NOT emitted here. Canonical tt-metal
+            // SFPU tests pair init+op inside the loop after copy_tile; a
+            // pre-loop init goes stale once per-tile copy_tile_init runs.
+            // Emission happens inline in the Op::Cast arm below.
 
             // Streaming sections contain loops: per-iteration wait/pop/
             // pack/push handshaking replaces the upfront full-depth wait
@@ -1293,6 +1294,7 @@ impl Kernel {
                         let in_fmt = tt_dtype_format(self.dtype(x));
                         let out_fmt = tt_dtype_format(dtype);
                         if in_fmt != out_fmt {
+                            writeln!(compute, "{indent}typecast_tile_init<{in_fmt}, {out_fmt}>();");
                             writeln!(compute, "{indent}typecast_tile<{in_fmt}, {out_fmt}>({slot});");
                         }
                     }
@@ -1578,7 +1580,7 @@ impl Kernel {
                 if steps_scan > 10_000 {
                     panic!("tt_binary_init did not finish in 10000 steps");
                 }
-                if let Op::Param { dtype, kind: ParamKind::GlobalMut, .. } = self.ops[scan].op {
+                if let Op::Param { kind: ParamKind::GlobalMut, .. } = self.ops[scan].op {
                     if writer_params.contains(&param_idx) {
                         let arg = writer_pos[&param_idx];
                         writeln!(writer, "{indent}uint32_t out{scan} = get_arg_val<uint32_t>({arg});");
@@ -1587,11 +1589,8 @@ impl Kernel {
                             Some(prev) => format!("{prev}.next_compile_time_args_offset()"),
                         };
                         writeln!(writer, "{indent}auto args_out{scan} = TensorAccessorArgs<{cta}>({arg});");
-                        let page_size = match dtype {
-                            DType::F32 => 4096u32,
-                            DType::F16 | DType::BF16 => 2048u32,
-                            _ => 4096u32,
-                        };
+                        // DRAM stride: buffer page size, never the dtype tile size.
+                        let page_size = TT_DRAM_PAGE_BYTES;
                         writeln!(writer, "{indent}auto p_out{scan} = TensorAccessor(args_out{scan}, out{scan}, {page_size});");
                         prev_writer_accessor = Some(format!("args_out{scan}"));
                     }
@@ -1759,15 +1758,11 @@ impl Kernel {
                 Op::Store { dst, src, index: st_idx, layout } => {
                     if let Op::Load { src: cb_src, index: ld_idx, layout: ld_layout } = self.ops[src].op {
                         if let Some(&cb_id) = cb_map.get(&cb_src) {
-                            let cb_dtype = self.dtype(cb_src);
                             let Op::Param { dtype, kind: ParamKind::GlobalMut, .. } = self.ops[dst].op else {
                                 panic!("tt writer store dst must be a GlobalMut Param, got {:?}", self.ops[dst].op)
                             };
-                            let page_size = match cb_dtype {
-                                DType::F32 => 4096u32,
-                                DType::F16 | DType::BF16 => 2048u32,
-                                _ => 4096u32,
-                            };
+                            // Must match the accessor's stride above (buffer pages).
+                            let page_size = TT_DRAM_PAGE_BYTES;
                             let elem_size = dtype.bit_size() as u32 / 8;
                             match (ld_layout, layout) {
                                 (MemLayout::Scalar, MemLayout::Scalar) => {

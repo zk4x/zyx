@@ -582,13 +582,15 @@ impl RuntimeProcess {
         reader_params: &[u32],
         compute_params: &[u32],
         writer_params: &[u32],
+        fp32_dest_acc_en: bool,
     ) -> Result<(), BackendError> {
         let reader_source_len = reader_source.len();
         let compute_source_len = compute_source.len();
         let writer_source_len = writer_source.len();
         let n_cbs = cb_config.len();
+        let dest_acc = fp32_dest_acc_en as u32;
         let mut cmd = format!(
-            r#"{{"cmd":"compile_program","id":{id},"reader_source_len":{reader_source_len},"compute_source_len":{compute_source_len},"writer_source_len":{writer_source_len},"n_cbs":{n_cbs},"n_params":{n_params},"n_reader_params":{},"n_compute_params":{},"n_writer_params":{}"#,
+            r#"{{"cmd":"compile_program","id":{id},"reader_source_len":{reader_source_len},"compute_source_len":{compute_source_len},"writer_source_len":{writer_source_len},"n_cbs":{n_cbs},"n_params":{n_params},"n_reader_params":{},"n_compute_params":{},"n_writer_params":{},"fp32_dest_acc":{dest_acc}"#,
             reader_params.len(),
             compute_params.len(),
             writer_params.len()
@@ -899,6 +901,11 @@ impl TTDevice {
         let (reader, compute, writer) =
             kernel.generate_tenstorrent(debug_asm, &cb_map, &reader_params, &compute_params, &writer_params)?;
 
+        // DST geometry follows output dtypes, not op kinds: 32-bit DST iff
+        // any output is F32. F16-output SFPU kernels (F32->F16 typecast+pack)
+        // need 16-bit DST, matching tt-metal's own float SFPU tests.
+        let fp32_dest_acc_en = output_dtypes.iter().any(|dt| *dt == DType::F32);
+
         let prog_id = self.programs.push(TTProgram { input_dtypes, output_dtypes, gws });
 
         {
@@ -950,6 +957,7 @@ impl TTDevice {
                 &reader_params,
                 &compute_params,
                 &writer_params,
+                fp32_dest_acc_en,
             )?;
         }
 

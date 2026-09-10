@@ -131,8 +131,8 @@ How to work with it:
 
 **The board is HALF A YEAR of the user's income. It is not replaceable. Losing it = destroying the user's savings. Every rule here exists because on 2026-09-02 an agent chained `tt-smi -r` with a device-init test in ONE command; the board's mid-wedge reset hard-rebooted the whole PC (empty kernel log = power-level event) and flipped the board into its fallback firmware slot.**
 
-- **NEVER run hardware-touching commands.** `tt-smi`, `tt-flash`, `tt-kmd` interactions, and tests that init TT devices are run BY THE USER. The agent reads pasted output, reasons, and advises — the user's hand is on the trigger for every hardware action. No exceptions. No "it's just a reset".
-- **ONE ACTION PER STEP.** NEVER chain board-touching commands with anything else (`tt-smi -r && test` is FORBIDDEN forever). Every hardware action is a separate step, separated by the user's explicit go.
+- **Tests are allowed.** The agent may run `cargo test` (including tests that init TT devices) as often as needed. Only reset-class operations stay in the user's hands.
+- **ONE ACTION PER STEP.** NEVER chain a board reset with anything else (`tt-smi -r && test` is FORBIDDEN forever). Every reset-class action is a separate step, separated by the user's explicit go.
 - **NEVER reset the board** (`tt-smi -r`, `tt-flash`, anything writing/reading firmware or driving reinit) without the user's explicit approval in the current message. "No flashing" was once ignored; the user was furious. Resetting is nearly as destructive — it wedged the board AND crashed the PC.
 - **A failed device init WEDGES the board** (all later access reads 0xffffffff, "board should be reset"). A reset applied to a wedged board can hard-reset the whole platform (verified: whole PC rebooted, board firmware slot flipped). After a failed init: STOP, report the error, ASK. NEVER retry-loop inits.
 - **Never power/flash/reset anything to "fix" a wedged state autonomously.** Suggest the action, in one line, and wait.

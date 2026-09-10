@@ -196,15 +196,40 @@ fn pad_passthrough_tt_run() -> Result<(), ZyxError> {
         .collect();
     let v32: Vec<f32> = v.iter().map(|&x| x.to_f32()).collect();
     let mut bad = 0;
+    // TEMP DIAG pattern histogram (revert after): per-row + magnitude split.
+    let mut bad_row = [0u32; 16];
+    let mut bad_small = 0u32;
+    let mut bad_large = 0u32;
     for (i, (&a, &b)) in v32.iter().zip(exp.iter()).enumerate() {
         if (a - b).abs() >= 1e-3 {
             if bad < 10 {
-                eprintln!("passthrough[{i}] = {a}, expected {b}");
+                // TEMP DIAG: tile-localize + raw bits (1024 elems/tile).
+                eprintln!("passthrough[{i}] tile={} off={} in=0x{:08x} got=0x{:04x}({a}) exp=0x{:04x}({b})", i / 1024, i % 1024, padded[i].to_bits(), v[i].to_bits(), zyx::f16::from_f32(b).to_bits());
             }
             bad += 1;
+            bad_row[(i / HIDDEN as usize) % 16] += 1;
+            if b.abs() < 1.0 {
+                bad_small += 1;
+            } else {
+                bad_large += 1;
+            }
         }
     }
     eprintln!("passthrough bad: {bad} / {}", v32.len());
+    eprintln!("passthrough bad per row: {bad_row:?}");
+    eprintln!("passthrough bad small/large: {bad_small}/{bad_large}");
+    // TEMP DIAG tile-0 geometry (revert after): face-row and 32-row histograms.
+    let mut bad_face_row = [0u32; 64];
+    let mut bad_tilerow = [0u32; 32];
+    for (i, (&a, &b)) in v32.iter().zip(exp.iter()).enumerate() {
+        if i < 1024 && (a - b).abs() >= 1e-3 {
+            let t = i;
+            bad_face_row[(t / 256) * 16 + ((t % 256) / 16)] += 1;
+            bad_tilerow[t / 32] += 1;
+        }
+    }
+    eprintln!("passthrough tile0 face-row bad: {bad_face_row:?}");
+    eprintln!("passthrough tile0 32-row bad: {bad_tilerow:?}");
     assert_eq!(bad, 0);
     Ok(())
 }
