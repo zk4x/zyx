@@ -391,14 +391,66 @@ impl Tensor {
             let mut dtype = [0; 4];
             f.read_exact(&mut dtype)?;
             let dtype = u32::from_le_bytes(dtype);
-            let dtype = match dtype {
-                0 => DType::F32,
-                1 => DType::F16,
-                24 => DType::I8,
-                25 => DType::I16,
-                26 => DType::I32,
-                27 => DType::I64,
-                28 => DType::F64,
+            // Q4_K (gguf type 12) loads as raw super-blocks: [num_blocks, 144]
+            // U8. Each 144B block holds 256 weights (d, dmin, 12 scale bytes,
+            // 128B of nibbles, llama.cpp `block_q4_K`). Element dims are not
+            // representable at sub-byte granularity, so the caller derives
+            // (rows, cols) from the model hyperparams + tensor name.
+            let (dtype, shape) = match dtype {
+                0 => (DType::F32, shape),
+                1 => (DType::F16, shape),
+                24 => (DType::I8, shape),
+                25 => (DType::I16, shape),
+                26 => (DType::I32, shape),
+                27 => (DType::I64, shape),
+                28 => (DType::F64, shape),
+                12 => {
+                    let numel: Dim = shape.iter().product();
+                    debug_assert!(numel % 256 == 0, "Q4_K tensor {tensor_name} has {numel} elements, not a multiple of 256");
+                    (DType::U8, vec![numel / 256, 144])
+                }
+                // Q8_0: block_q8_0, 34B per 32 (static_assert: half + QK8_0).
+                8 => {
+                    let numel: Dim = shape.iter().product();
+                    debug_assert!(numel % 32 == 0, "Q8_0 tensor {tensor_name} has {numel} elements, not a multiple of 32");
+                    (DType::U8, vec![numel / 32, 34])
+                }
+                // Q3_K: block_q3_K, 110B per 256 (half + 64 + 32 + 12).
+                11 => {
+                    let numel: Dim = shape.iter().product();
+                    debug_assert!(numel % 256 == 0, "Q3_K tensor {tensor_name} has {numel} elements, not a multiple of 256");
+                    (DType::U8, vec![numel / 256, 110])
+                }
+                // Q5_K: block_q5_K, 176B per 256 (2*half + 12 + 128 + 32).
+                13 => {
+                    let numel: Dim = shape.iter().product();
+                    debug_assert!(numel % 256 == 0, "Q5_K tensor {tensor_name} has {numel} elements, not a multiple of 256");
+                    (DType::U8, vec![numel / 256, 176])
+                }
+                // Q6_K: block_q6_K, 210B per 256 (half + 16 + 192).
+                14 => {
+                    let numel: Dim = shape.iter().product();
+                    debug_assert!(numel % 256 == 0, "Q6_K tensor {tensor_name} has {numel} elements, not a multiple of 256");
+                    (DType::U8, vec![numel / 256, 210])
+                }
+                // IQ4_NL: block_iq4_nl, 18B per 32 (half + QK4_NL/2).
+                20 => {
+                    let numel: Dim = shape.iter().product();
+                    debug_assert!(numel % 32 == 0, "IQ4_NL tensor {tensor_name} has {numel} elements, not a multiple of 32");
+                    (DType::U8, vec![numel / 32, 18])
+                }
+                // IQ3_S: block_iq3_s, 110B per 256 (half + 104 + 4).
+                21 => {
+                    let numel: Dim = shape.iter().product();
+                    debug_assert!(numel % 256 == 0, "IQ3_S tensor {tensor_name} has {numel} elements, not a multiple of 256");
+                    (DType::U8, vec![numel / 256, 110])
+                }
+                // IQ4_XS: block_iq4_xs, 136B per 256 (half + u16 + 4 + 128).
+                23 => {
+                    let numel: Dim = shape.iter().product();
+                    debug_assert!(numel % 256 == 0, "IQ4_XS tensor {tensor_name} has {numel} elements, not a multiple of 256");
+                    (DType::U8, vec![numel / 256, 136])
+                }
                 x => todo!("GGUF dtype {x} is not supported by zyx yet."),
             };
 

@@ -4,7 +4,7 @@
 use super::Tensor;
 use crate::scalar::{bf16, f16};
 use crate::{RT, kernel::BOp};
-use std::ops::{Add, BitAnd, BitOr, BitXor, Div, Mul, Sub};
+use std::ops::{Add, BitAnd, BitOr, BitXor, Div, Mul, Shl, Shr, Sub};
 
 impl<IT: Into<Tensor>> Add<IT> for Tensor {
     type Output = Tensor;
@@ -148,6 +148,46 @@ impl<IT: Into<Tensor>> BitAnd<IT> for &Tensor {
     }
 }
 
+impl<IT: Into<Tensor>> Shl<IT> for Tensor {
+    type Output = Tensor;
+    fn shl(self, rhs: IT) -> Self::Output {
+        let (x, y) = Tensor::broadcast(self, rhs).unwrap();
+        #[allow(clippy::let_and_return)] // otherwise it deadlocks
+        let tensor = Tensor { id: RT.lock().binary(x.id, y.id, BOp::BitShiftLeft).unwrap() };
+        tensor
+    }
+}
+
+impl<IT: Into<Tensor>> Shl<IT> for &Tensor {
+    type Output = Tensor;
+    fn shl(self, rhs: IT) -> Self::Output {
+        let (x, y) = Tensor::broadcast(self.clone(), rhs).unwrap();
+        #[allow(clippy::let_and_return)] // otherwise it deadlocks
+        let tensor = Tensor { id: RT.lock().binary(x.id, y.id, BOp::BitShiftLeft).unwrap() };
+        tensor
+    }
+}
+
+impl<IT: Into<Tensor>> Shr<IT> for Tensor {
+    type Output = Tensor;
+    fn shr(self, rhs: IT) -> Self::Output {
+        let (x, y) = Tensor::broadcast(self, rhs).unwrap();
+        #[allow(clippy::let_and_return)] // otherwise it deadlocks
+        let tensor = Tensor { id: RT.lock().binary(x.id, y.id, BOp::BitShiftRight).unwrap() };
+        tensor
+    }
+}
+
+impl<IT: Into<Tensor>> Shr<IT> for &Tensor {
+    type Output = Tensor;
+    fn shr(self, rhs: IT) -> Self::Output {
+        let (x, y) = Tensor::broadcast(self.clone(), rhs).unwrap();
+        #[allow(clippy::let_and_return)] // otherwise it deadlocks
+        let tensor = Tensor { id: RT.lock().binary(x.id, y.id, BOp::BitShiftRight).unwrap() };
+        tensor
+    }
+}
+
 macro_rules! impl_trait {
     ($trait:ident for $type:ty, $fn_name:ident) => {
         impl $trait<Tensor> for $type {
@@ -249,3 +289,17 @@ impl_trait!(BitAnd for i16, bitand);
 impl_trait!(BitAnd for i32, bitand);
 impl_trait!(BitAnd for i64, bitand);
 impl_trait!(BitAnd for bool, bitand);
+
+impl_trait!(Shl for u8, shl);
+impl_trait!(Shl for u32, shl);
+impl_trait!(Shl for i8, shl);
+impl_trait!(Shl for i16, shl);
+impl_trait!(Shl for i32, shl);
+impl_trait!(Shl for i64, shl);
+
+impl_trait!(Shr for u8, shr);
+impl_trait!(Shr for u32, shr);
+impl_trait!(Shr for i8, shr);
+impl_trait!(Shr for i16, shr);
+impl_trait!(Shr for i32, shr);
+impl_trait!(Shr for i64, shr);
