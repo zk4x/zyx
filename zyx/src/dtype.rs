@@ -249,6 +249,7 @@ impl DType {
             "F32" => Self::F32,
             "F64" => Self::F64,
             "U8" => Self::U8,
+            "U16" => Self::U16,
             "U32" => Self::U32,
             "I8" => Self::I8,
             "I16" => Self::I16,

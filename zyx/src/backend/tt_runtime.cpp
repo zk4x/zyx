@@ -614,6 +614,9 @@ int main() {
           case 2:
             df = DataFormat::Float16_b;
             break;
+          case 3:
+            df = DataFormat::UInt16;
+            break;
           default:
             throw runtime_error("unsupported data_format " +
                                 to_string(cfg.cb_formats[i]));

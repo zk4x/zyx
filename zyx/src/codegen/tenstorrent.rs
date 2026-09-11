@@ -19,6 +19,12 @@ fn tt_fill_bits(val: Constant) -> u32 {
             (v << 16) | v
         }
         Constant::F32(b) => u32::from_le_bytes(b),
+        Constant::U8(v) => u32::from(v),
+        Constant::I8(v) => v as u32,
+        Constant::U16(v) => u32::from(v),
+        Constant::I16(v) => v as u32,
+        Constant::U32(v) => v,
+        Constant::I32(v) => v as u32,
         other => todo!("fill_tile_bitcast for {other}"),
     }
 }
@@ -40,6 +46,9 @@ fn tt_dtype_format(dt: DType) -> u32 {
         // casts must use Float16_b (see typecast.h supported list).
         DType::F16 => 5, // Float16_b
         DType::BF16 => 5, // Float16_b
+        DType::U16 => 9, // UInt16 (typecast.h sanctions Float32 <-> UInt16)
+        DType::U32 => 24, // UInt32
+        DType::I32 => 8, // Int32
         other => unreachable!("unsupported dtype {other:?} for tenstorrent tile op"),
     }
 }
@@ -70,6 +79,10 @@ fn tt_binary_init(bop: BOp) -> Option<&'static str> {
         BOp::Sub => Some("sub_binary_tile_init();"),
         BOp::Mul => Some("mul_binary_tile_init();"),
         BOp::Div => Some("div_binary_tile_init();"),
+        BOp::BitShiftRight => Some("binary_shift_tile_init();"),
+        // HW and-op is unary-with-immediate; the init still lives here
+        // since the IR op is binary.
+        BOp::BitAnd => Some("bitwise_and_tile_init();"),
         // Unsupported binary ops are todo!() in the tile pass anyway
         _ => None,
     }
@@ -632,6 +645,32 @@ impl Kernel {
         writeln!(compute, "#include \"api/compute/eltwise_unary/negative.h\"");
         writeln!(compute, "#include \"api/compute/eltwise_unary/bitwise_not.h\"");
         writeln!(compute, "#include \"api/compute/eltwise_unary/typecast.h\"");
+        // bitwise_and.h does not compile for blackhole in tt-metal 0.72
+        // (ambiguous sfpi overload, read-only headers): include it, like
+        // binary_shift.h, only when the kernel actually emits those calls.
+        // Pre-scan (the init scan below runs after the includes).
+        let (mut uses_shift, mut uses_and) = (false, false);
+        {
+            let mut pre = self.head;
+            let mut steps = 0usize;
+            while !pre.is_null() {
+                steps += 1;
+                if steps > 100_000 {
+                    panic!("tenstorrent shift/and pre-scan did not finish");
+                }
+                if let Op::Binary { bop, .. } = self.ops[pre].op {
+                    uses_shift |= bop == BOp::BitShiftRight;
+                    uses_and |= bop == BOp::BitAnd;
+                }
+                pre = self.next_op(pre);
+            }
+        }
+        if uses_shift {
+            writeln!(compute, "#include \"api/compute/binary_shift.h\"");
+        }
+        if uses_and {
+            writeln!(compute, "#include \"api/compute/eltwise_unary/bitwise_and.h\"");
+        }
         writeln!(compute, "#include \"api/compute/eltwise_unary/fill.h\"");
         writeln!(compute, "#include \"api/compute/matmul.h\"");
         // Packer output-format reconfig (fp32_accuracy doc): without it
@@ -1520,7 +1559,7 @@ impl Kernel {
                             dst_slots.insert(op_id, slots);
                         }
                     }
-                    Op::Cast { x, dtype } if matches!(dtype, DType::BF16 | DType::F16 | DType::F32) => {
+                    Op::Cast { x, dtype } if matches!(dtype, DType::BF16 | DType::F16 | DType::F32 | DType::U32) => {
                         let idx = consumer_count.entry(x).or_insert(0);
                         let slot = dst_slots[&x][*idx as usize];
                         *idx += 1;
@@ -1593,9 +1632,48 @@ impl Kernel {
                                 BOp::And => todo!(),
                                 BOp::BitXor => todo!(),
                                 BOp::BitOr => todo!(),
-                                BOp::BitAnd => todo!(),
+                                BOp::BitAnd => {
+                                    // HW and-op is unary-with-immediate: y must
+                                    // be an int constant mask.
+                                    let Op::Const(c) = self.ops[y].op else {
+                                        todo!("tenstorrent non-const BitAnd mask");
+                                    };
+                                    use crate::dtype::Constant;
+                                    let mask = match c {
+                                        Constant::U8(v) => u32::from(v),
+                                        Constant::U16(v) => u32::from(v),
+                                        Constant::U32(v) => v,
+                                        Constant::I8(v) => v as u32,
+                                        Constant::I16(v) => v as u32,
+                                        Constant::I32(v) => v as u32,
+                                        _ => todo!("tenstorrent BitAnd non-int mask"),
+                                    };
+                                    writeln!(compute, "{indent}bitwise_and_tile({slot_x}, {mask});")
+                                }
                                 BOp::BitShiftLeft => todo!(),
-                                BOp::BitShiftRight => todo!(),
+                                BOp::BitShiftRight => {
+                                    // Integer shifts, templated on the data
+                                    // format (Int32/UInt32/UInt16 per the
+                                    // LLK docs). Writes a FRESH slot (unlike
+                                    // every other binary op): the shifted
+                                    // source routinely stays live for later
+                                    // iterations (e.g. one u16 page feeding
+                                    // four plane extractions), and aliasing
+                                    // slot_x would destroy it.
+                                    let fmt = match self.dtype(x) {
+                                        DType::U32 => "DataFormat::UInt32",
+                                        DType::I32 => "DataFormat::Int32",
+                                        DType::U16 => "DataFormat::UInt16",
+                                        dt => todo!("tenstorrent shift on {dt:?}"),
+                                    };
+                                    let w = next_slot;
+                                    next_slot += 1;
+                                    dst_slots.insert(op_id, vec![w; n]);
+                                    writeln!(
+                                        compute,
+                                        "{indent}binary_right_shift_tile<{fmt}>({slot_x}, {slot_y}, {w});"
+                                    )
+                                }
                                 BOp::NotEq => todo!(),
                                 BOp::Eq => todo!(),
                                 BOp::Cmpge => todo!(),

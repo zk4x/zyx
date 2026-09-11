@@ -1069,6 +1069,98 @@ pub fn embed_kernel(_vocab: i64, dim: i64, seq: i64) -> Kernel {
     kernel
 }
 
+/// Tenstorrent Q4_K dequant (single core): out [T, 1024] F32 from
+/// plane-interleaved packed U16 [L/4] + full-tile BF16 scales/mins.
+///
+/// F32-out is forced: U16->F32 typecast and F32 SFPU need 32-bit DST mode,
+/// which the backend enables only with an F32 output; fused F32-compute
+/// with F16 pack in one kernel is off the supported path. The F32->F16
+/// cast is a standalone kernel later.
+///
+/// Structure (official single-core streaming): outer loop over input pages
+/// (1024 u16 = 4 output tiles); inner loop over 4 tiles. The u16 page is
+/// loaded twice per outer iteration into DST slots that persist across
+/// the inner loop (nested loops inherit DST state); inner iterations
+/// consume one full scale/min tile each (wait/pop 1:1). Nibble extraction
+/// is float (`n = x - trunc(x/16)*16`, bit-exact in F32 for 16-bit inputs).
+/// 4 params: packed, scales, mins, out.
+pub fn dequant_q4k_tt(ntiles: i64) -> Kernel {
+    const TDIM: u16 = 32;
+    const TILE_ELEMS: i64 = 1024;
+    debug_assert!(ntiles % 4 == 0, "dequant_q4k_tt needs ntiles % 4 == 0, got {ntiles}");
+    let pages = ntiles / 4;
+    let mut kernel = Kernel::new(Dev::TT(0));
+    let packed = kernel.param(DType::U16);
+    let sc = kernel.param(DType::BF16);
+    let mn = kernel.param(DType::BF16);
+    let out = kernel.param_mut(DType::F32);
+
+    let cu16 = kernel.storage(DType::U16, MemScope::Circular, TILE_ELEMS);
+    let csc = kernel.storage(DType::BF16, MemScope::Circular, TILE_ELEMS);
+    let cmn = kernel.storage(DType::BF16, MemScope::Circular, TILE_ELEMS);
+    let cout = kernel.storage(DType::F32, MemScope::Circular, TILE_ELEMS);
+
+    let _g = kernel.group_range(0, 1);
+    let cpages = kernel.const_idx(pages);
+    let ctiles = kernel.const_idx(ntiles);
+    let c4 = kernel.const_idx(4);
+    let c1024 = kernel.const_idx(TILE_ELEMS);
+    let c0 = kernel.const_idx(0);
+
+    // Reader: DRAM -> CB tile streaming only (the reader cannot do ALU).
+    kernel.loop_over(cpages, |kernel, pi| {
+        let ubase = kernel.mad(pi, c1024, c0);
+        let u = kernel.load_tile(packed, ubase, TDIM, TDIM, TDIM as u32);
+        kernel.store_tile(cu16, u, c0, TDIM, TDIM, TDIM as u32);
+        kernel.loop_over(c4, |kernel, ki| {
+            let t = kernel.mad(pi, c4, ki);
+            let sbase = kernel.mad(t, c1024, c0);
+            let s = kernel.load_tile(sc, sbase, TDIM, TDIM, TDIM as u32);
+            kernel.store_tile(csc, s, c0, TDIM, TDIM, TDIM as u32);
+            let m = kernel.load_tile(mn, sbase, TDIM, TDIM, TDIM as u32);
+            kernel.store_tile(cmn, m, c0, TDIM, TDIM, TDIM as u32);
+        });
+    });
+    kernel.barrier();
+
+    // Compute: per page convert u16 twice (both copies stay live for the
+    // inner loop); per tile float-extract the nibble (bit-exact in F32),
+    // mad with scales/mins, pack. The INT shift/mask path is dead: tt-metal
+    // 0.72 bitwise_and.h does not compile for blackhole (read-only headers).
+    let c063 = kernel.const_val(0.0625f32);
+    let c16 = kernel.const_val(16.0f32);
+    kernel.loop_over(cpages, |kernel, _pi| {
+        let u1 = kernel.load_tile(cu16, c0, TDIM, TDIM, TDIM as u32);
+        let f1 = kernel.cast(u1, DType::F32);
+        let u2 = kernel.load_tile(cu16, c0, TDIM, TDIM, TDIM as u32);
+        let f2 = kernel.cast(u2, DType::F32);
+        kernel.loop_over(c4, |kernel, _ki| {
+            let t = kernel.mul(f2, c063);
+            let t = kernel.trunc(t);
+            let t = kernel.mul(t, c16);
+            let n = kernel.sub(f1, t);
+            let s = kernel.load_tile(csc, c0, TDIM, TDIM, TDIM as u32);
+            let sf = kernel.cast(s, DType::F32);
+            let m1 = kernel.mul(n, sf);
+            let g = kernel.load_tile(cmn, c0, TDIM, TDIM, TDIM as u32);
+            let gf = kernel.cast(g, DType::F32);
+            let v = kernel.add(m1, gf);
+            kernel.store_tile(cout, v, c0, TDIM, TDIM, TDIM as u32);
+        });
+    });
+    kernel.barrier();
+
+    // Writer: stream packed F32 output tiles to DRAM.
+    kernel.loop_over(ctiles, |kernel, ti| {
+        let obase = kernel.mad(ti, c1024, c0);
+        let v = kernel.load_tile(cout, c0, TDIM, TDIM, TDIM as u32);
+        kernel.store_tile(out, v, obase, TDIM, TDIM, TDIM as u32);
+    });
+
+    kernel.verify();
+    kernel
+}
+
 /// Repack gguf Q4_K raw super-blocks into the device-ready dequant layout.
 ///
 /// Offline prep: runs on any backend (CUDA for speed, C as fallback — device

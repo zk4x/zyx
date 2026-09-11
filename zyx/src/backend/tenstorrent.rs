@@ -918,6 +918,7 @@ impl TTDevice {
                     DType::F32 => 0,
                     DType::F16 => 1,
                     DType::BF16 => 2,
+                    DType::U16 => 3,
                     _ => 0,
                 }
             };
@@ -925,7 +926,7 @@ impl TTDevice {
                 let te = 1024u64;
                 (match dt {
                     DType::F32 => 4 * te,
-                    DType::F16 | DType::BF16 => 2 * te,
+                    DType::F16 | DType::BF16 | DType::U16 => 2 * te,
                     _ => 4 * te,
                 }) as u32
             };
