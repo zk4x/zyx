@@ -590,6 +590,11 @@ pub struct DeviceInfo {
     pub tile_sizes: Vec<[Dim; 2]>,
     /// Supported WMMA layouts (empty = no tensor core support)
     pub wmma_layouts: Vec<MMADims>,
+    /// Number of hardware circular buffers (Tenstorrent: CB0-CB31 = 32).
+    /// This is an architectural count and does not depend on the CB page
+    /// size (2KB vs 4KB tiles); page size constrains L1 budget, not count.
+    /// Zero on devices without circular buffers.
+    pub num_circular_buffers: u32,
 }
 
 impl DeviceInfo {

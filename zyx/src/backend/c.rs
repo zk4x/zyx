@@ -134,6 +134,7 @@ pub(super) fn initialize_device(
             tile: [1, 1],
             tile_sizes: vec![],
             wmma_layouts: vec![],
+            num_circular_buffers: 0,
         }),
         memory_pool_id: pool_id,
         programs: Slab::new(),

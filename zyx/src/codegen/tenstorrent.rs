@@ -1,6 +1,6 @@
 use crate::{
     DType, Map,
-    error::BackendError,
+    error::{BackendError, ErrorStatus},
     kernel::{IDX_T, Kernel, MMADType, MemLayout, MemScope, Op, OpId, RangeKind},
 };
 
@@ -76,9 +76,9 @@ impl TtSection {
 }
 
 enum TTKernel {
-    Reader { src: String, params: Vec<CBId> },
-    Compute { src: String, params: Vec<CBId> },
-    Writer { src: String, params: Vec<CBId> },
+    Reader { src: String, params: Vec<OpId> },
+    Compute { src: String, params: Vec<OpId> },
+    Writer { src: String, params: Vec<OpId> },
     None,
 }
 
@@ -405,5 +405,124 @@ impl Kernel {
             panic!("get_needed_ops did not finish in 10000 steps");
         }
         (list, dtypes, rcs)
+    }
+}
+
+/// Tenstorrent v2 compiler: per-section code generation over closed op
+/// lists (see [`Kernel::get_needed_ops`]) against one shared [`CBId`] map.
+///
+/// All state lives here (ptx.rs pattern); shared op emission is a method
+/// on this struct so reader/compute/writer cannot diverge.
+struct Compiler {
+    /// Hardware circular buffer limit (DeviceInfo::num_circular_buffers).
+    num_circular_buffers: u32,
+}
+
+impl Compiler {
+    /// Create a compiler for a device with the given CB limit.
+    fn new(num_circular_buffers: u32) -> Self {
+        Self { num_circular_buffers }
+    }
+
+    /// Exactly 2 barriers delimiting reader/compute/writer, else a
+    /// compilation error.
+    fn check_sections(&self, kernel: &Kernel) -> Result<(), BackendError> {
+        let mut barriers = 0u32;
+        let mut scan = kernel.head;
+        for _ in 0..10_000 {
+            if scan.is_null() {
+                break;
+            }
+            if matches!(kernel.ops[scan].op, Op::Barrier) {
+                barriers += 1;
+            }
+            scan = kernel.next_op(scan);
+        }
+        if !scan.is_null() {
+            panic!("tenstorrent2 section scan did not finish in 10000 steps");
+        }
+        if barriers != 2 {
+            return Err(BackendError {
+                status: ErrorStatus::InvalidKernelSections,
+                context: format!("tenstorrent2: need exactly 2 barriers (3 sections), found {barriers}").into(),
+            });
+        }
+        Ok(())
+    }
+
+    /// Shared cb_map fits the hardware CB count, else a compilation error.
+    fn check_cb_count(&self, cb_map: &Map<OpId, CBId>) -> Result<(), BackendError> {
+        if cb_map.len() > self.num_circular_buffers as usize {
+            return Err(BackendError {
+                status: ErrorStatus::TooManyCircularBuffers,
+                context: format!(
+                    "tenstorrent2: kernel needs {} circular buffers, device holds {}",
+                    cb_map.len(),
+                    self.num_circular_buffers
+                )
+                .into(),
+            });
+        }
+        Ok(())
+    }
+
+    /// Simplified push/pop balance: per CB, trip-weighted tile pushes
+    /// equal trip-weighted tile pops, else a compilation error. One rule
+    /// covers streaming (reader pushes == compute/writer pops) and
+    /// compute-local scratch (seed + per-iteration push/pop pairs drain
+    /// to zero) with no special cases.
+    fn check_balance(&self, kernel: &Kernel, cb_map: &Map<OpId, CBId>) -> Result<(), BackendError> {
+        let mut pushes: Map<CBId, i64> = Map::default();
+        let mut pops: Map<CBId, i64> = Map::default();
+        let mut trips: Vec<i64> = Vec::new();
+        let mut scan = kernel.head;
+        for _ in 0..10_000 {
+            if scan.is_null() {
+                break;
+            }
+            match &kernel.ops[scan].op {
+                Op::Loop { len } => {
+                    let Op::Const(c) = kernel.ops[*len].op else {
+                        return Err(BackendError {
+                            status: ErrorStatus::KernelCompilation,
+                            context: format!("tenstorrent2: loop trip count op {len} is not const").into(),
+                        });
+                    };
+                    trips.push(c.as_dim().expect("tenstorrent2 loop trip count must be a concrete dim"));
+                }
+                Op::EndLoop => {
+                    trips.pop().expect("tenstorrent2 EndLoop without Loop");
+                }
+                Op::Store { dst, layout: MemLayout::Tile { .. }, .. } => {
+                    if let Some(&cb) = cb_map.get(dst) {
+                        let trip: i64 = trips.iter().product();
+                        *pushes.entry(cb).or_insert(0) += trip;
+                    }
+                }
+                Op::Load { src, layout: MemLayout::Tile { .. }, .. } => {
+                    if let Some(&cb) = cb_map.get(src) {
+                        let trip: i64 = trips.iter().product();
+                        *pops.entry(cb).or_insert(0) += trip;
+                    }
+                }
+                _ => {}
+            }
+            scan = kernel.next_op(scan);
+        }
+        if !scan.is_null() {
+            panic!("tenstorrent2 balance scan did not finish in 10000 steps");
+        }
+        for (&storage, &cb) in cb_map.iter() {
+            let pushed = pushes.get(&cb).copied().unwrap_or(0);
+            let popped = pops.get(&cb).copied().unwrap_or(0);
+            if pushed != popped {
+                return Err(BackendError {
+                    status: ErrorStatus::CircularBufferImbalance,
+                    context: format!("tenstorrent2: CB{cb} imbalance: {pushed} pushed but {popped} popped (storage op {storage})")
+                        .into(),
+                });
+            }
+        }
+        Ok(())
     }
 }

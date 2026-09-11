@@ -1006,6 +1006,7 @@ fn query_device_info(
         tile: [1, 1],
         tile_sizes: vec![],
         wmma_layouts: vec![],
+        num_circular_buffers: 0,
         warp_size: {
             if let Ok(device_type_data) = get_device_data(device, clGetDeviceInfo, CL_DEVICE_TYPE) {
                 let device_type = u64::from_ne_bytes(device_type_data.try_into().unwrap_or_default());

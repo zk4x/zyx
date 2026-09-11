@@ -295,6 +295,7 @@ pub(super) fn initialize_device(
                 tile: [1, 1],
                 tile_sizes: vec![],
                 wmma_layouts: if major >= 7 { vec![MMADims::m16n8k8] } else { vec![] },
+                num_circular_buffers: 0,
             }),
             streams,
             programs: Slab::new(),
@@ -344,6 +345,7 @@ pub(super) fn initialize_device(
             tile: [1, 1],
             tile_sizes: vec![],
             wmma_layouts: if major >= 7 { vec![MMADims::m16n8k8] } else { vec![] },
+            num_circular_buffers: 0,
         });
         devices.push(Device::HIP(dev));
         //queues,

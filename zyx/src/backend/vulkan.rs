@@ -1118,6 +1118,7 @@ pub(super) fn initialize_device(
             tile: [1, 1],
             tile_sizes: vec![],
             wmma_layouts: vec![],
+            num_circular_buffers: 0,
         });
 
         std::thread::spawn({

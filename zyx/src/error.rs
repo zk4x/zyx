@@ -179,4 +179,11 @@ pub enum ErrorStatus {
     KernelLaunch,
     /// Failed to synchronize kernel
     KernelSync,
+    /// Kernel does not have the required section structure
+    /// (Tenstorrent: exactly 2 barriers delimiting reader/compute/writer)
+    InvalidKernelSections,
+    /// Kernel needs more circular buffers than the device provides
+    TooManyCircularBuffers,
+    /// Circular buffer push/pop imbalance (a deadlock on hardware)
+    CircularBufferImbalance,
 }
