@@ -6,7 +6,7 @@
 //! (s=S=6, m=M_PAD=16, d=VAL_DIM=6144) for normed.
 
 use qwen3_8_27b::{
-    pad_copy_tt, pad_kernel, pad_kernel_tt, pad_passthrough_tt, HIDDEN, M_PAD, S, VAL_DIM,
+    pad_cast_tt, pad_copy_tt, pad_kernel, pad_mul_tt, HIDDEN, M_PAD, S, VAL_DIM,
 };
 use zyx::kernel::Dev;
 use zyx::{Tensor, ZyxError};
@@ -107,13 +107,21 @@ fn pad_input_tt() -> Result<(), ZyxError> {
     let data_t = Tensor::tilize(&Tensor::from_vec(padded, [M_PAD, HIDDEN])?)?.to(dev)?;
     let mask_t = Tensor::tilize(&Tensor::from_vec(mask, [M_PAD, HIDDEN])?)?.to(dev)?;
 
-    let kk = pad_kernel_tt(S, M_PAD, HIDDEN);
-    let (flops, read, write) = kk.flop_mem_rw();
-    let k = kk.compile()?;
+    // Split (A): F32 mask-mul kernel (32-bit DST) then standalone F32->F16
+    // cast kernel (16-bit DST). Fused mixed-format SFPU is off the tt-metal
+    // supported path (mode-unaware typecast addressing).
+    let kk1 = pad_mul_tt(S, M_PAD, HIDDEN);
+    let kk2 = pad_cast_tt(S, M_PAD, HIDDEN);
+    let (flops1, read1, write1) = kk1.flop_mem_rw();
+    let (flops2, read2, write2) = kk2.flop_mem_rw();
+    let (flops, read, write) = (flops1 + flops2, read1 + read2, write1 + write2);
+    let k1 = kk1.compile()?;
+    let k2 = kk2.compile()?;
     // Tilized [32, 5120] = 160 tiles in a single launch.
     const TILES: i64 = 160;
     let t0 = std::time::Instant::now();
-    let out = k.forward(&[&data_t, &mask_t], vec![[TILES * 1024]])?;
+    let mid = k1.forward(&[&data_t, &mask_t], vec![[TILES * 1024]])?;
+    let out = k2.forward(&[&mid[0]], vec![[TILES * 1024]])?;
     out[0].sync()?;
     let chunks: Vec<zyx::f16> = out[0].to_vec()?;
     let total_us = t0.elapsed().as_micros() as f64;
@@ -131,16 +139,16 @@ fn pad_input_tt() -> Result<(), ZyxError> {
     let til = Tensor::from_vec(chunks, [32, HIDDEN])?;
     let back = Tensor::untilize(&til, M_PAD, HIDDEN)?;
     let v: Vec<zyx::f16> = back.to_vec()?;
-    let v: Vec<f32> = v.iter().map(|&x| x.to_f32()).collect();
     let exp: Vec<zyx::f16> = expected.to_vec()?;
-    let exp: Vec<f32> = exp.iter().map(|&x| x.to_f32()).collect();
     assert_eq!(v.len(), exp.len());
     let mut bad = 0;
-    for (i, (&a, &b)) in v.iter().zip(exp.iter()).enumerate() {
-        if (a - b).abs() >= 1e-3 {
-            if bad < 10 {
-                eprintln!("pad_input_tt[{i}] = {a}, expected {b}");
-            }
+    for (&a, &b) in v.iter().zip(exp.iter()) {
+        // Device truncates F32->F16b on unpack while the host rounds:
+        // allow exactly 1 ulp (±0.0 equal).
+        if a.to_f32() == b.to_f32() {
+            continue;
+        }
+        if (a.to_bits() as i32 - b.to_bits() as i32).abs() > 1 {
             bad += 1;
         }
     }
@@ -165,71 +173,36 @@ fn pad_passthrough_tt_run() -> Result<(), ZyxError> {
     }
     let data_t = Tensor::tilize(&Tensor::from_vec(padded.clone(), [M_PAD, HIDDEN])?)?.to(dev)?;
 
-    // TEMP BISECT 1: host->TT->host buffer roundtrip (no kernel). If exact,
-    // tilize/untilize/pool path is correct and corruption is on-device.
-    let rt = Tensor::untilize(&data_t.to(Dev::C)?, M_PAD, HIDDEN)?;
-    let rt32: Vec<f32> = rt.to_vec()?;
-    let mut rt_bad = 0;
-    for (i, (&a, &b)) in rt32.iter().zip(padded.iter()).enumerate() {
-        if (a - b).abs() > 1e-6 {
-            if rt_bad < 5 {
-                eprintln!("roundtrip[{i}] = {a}, expected {b}");
-            }
-            rt_bad += 1;
-        }
-    }
-    eprintln!("roundtrip bad: {rt_bad} / {}", rt32.len());
-
-    let kk = pad_passthrough_tt(S, M_PAD, HIDDEN);
-    let k = kk.compile()?;
+    // Split (A): F32 copy kernel (32-bit DST) then standalone F32->F16
+    // cast kernel (16-bit DST).
+    let kk1 = pad_copy_tt(S, M_PAD, HIDDEN);
+    let kk2 = pad_cast_tt(S, M_PAD, HIDDEN);
+    let k1 = kk1.compile()?;
+    let k2 = kk2.compile()?;
     const TILES: i64 = 160;
-    let out = k.forward(&[&data_t], vec![[TILES * 1024]])?;
+    let mid = k1.forward(&[&data_t], vec![[TILES * 1024]])?;
+    let out = k2.forward(&[&mid[0]], vec![[TILES * 1024]])?;
     out[0].sync()?;
     let chunks: Vec<zyx::f16> = out[0].to_vec()?;
     let til = Tensor::from_vec(chunks, [32, HIDDEN])?;
     let back = Tensor::untilize(&til, M_PAD, HIDDEN)?;
     let v: Vec<zyx::f16> = back.to_vec()?;
-    // Expected: padded input cast to F16.
-    let exp: Vec<f32> = padded
-        .iter()
-        .map(|&x| zyx::f16::from_f32(x).to_f32())
-        .collect();
-    let v32: Vec<f32> = v.iter().map(|&x| x.to_f32()).collect();
+    // Expected: padded input cast to F16 (host rounds; the device
+    // truncates F32->F16b on unpack, so allow exactly 1 ulp).
+    let exp: Vec<zyx::f16> = padded.iter().map(|&x| zyx::f16::from_f32(x)).collect();
+    assert_eq!(v.len(), exp.len());
     let mut bad = 0;
-    // TEMP DIAG pattern histogram (revert after): per-row + magnitude split.
-    let mut bad_row = [0u32; 16];
-    let mut bad_small = 0u32;
-    let mut bad_large = 0u32;
-    for (i, (&a, &b)) in v32.iter().zip(exp.iter()).enumerate() {
-        if (a - b).abs() >= 1e-3 {
-            if bad < 10 {
-                // TEMP DIAG: tile-localize + raw bits (1024 elems/tile).
-                eprintln!("passthrough[{i}] tile={} off={} in=0x{:08x} got=0x{:04x}({a}) exp=0x{:04x}({b})", i / 1024, i % 1024, padded[i].to_bits(), v[i].to_bits(), zyx::f16::from_f32(b).to_bits());
-            }
+    for (i, (&a, &b)) in v.iter().zip(exp.iter()).enumerate() {
+        if a.to_f32() == b.to_f32() {
+            continue;
+        }
+        if (a.to_bits() as i32 - b.to_bits() as i32).abs() > 1 {
+            // TEMP: outlier forensics (revert after).
+            eprintln!("passthrough[{i}] in=0x{:08x} got=0x{:04x}({}) exp=0x{:04x}({})", padded[i].to_bits(), a.to_bits(), a.to_f32(), b.to_bits(), b.to_f32());
             bad += 1;
-            bad_row[(i / HIDDEN as usize) % 16] += 1;
-            if b.abs() < 1.0 {
-                bad_small += 1;
-            } else {
-                bad_large += 1;
-            }
         }
     }
-    eprintln!("passthrough bad: {bad} / {}", v32.len());
-    eprintln!("passthrough bad per row: {bad_row:?}");
-    eprintln!("passthrough bad small/large: {bad_small}/{bad_large}");
-    // TEMP DIAG tile-0 geometry (revert after): face-row and 32-row histograms.
-    let mut bad_face_row = [0u32; 64];
-    let mut bad_tilerow = [0u32; 32];
-    for (i, (&a, &b)) in v32.iter().zip(exp.iter()).enumerate() {
-        if i < 1024 && (a - b).abs() >= 1e-3 {
-            let t = i;
-            bad_face_row[(t / 256) * 16 + ((t % 256) / 16)] += 1;
-            bad_tilerow[t / 32] += 1;
-        }
-    }
-    eprintln!("passthrough tile0 face-row bad: {bad_face_row:?}");
-    eprintln!("passthrough tile0 32-row bad: {bad_tilerow:?}");
+    eprintln!("passthrough bad: {bad} / {}", v.len());
     assert_eq!(bad, 0);
     Ok(())
 }

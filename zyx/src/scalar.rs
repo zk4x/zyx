@@ -193,12 +193,30 @@ impl f16 {
         if x < 2.0f32.powi(-24) {
             return Self(sign);
         }
-        let exp = (x.log2().floor() as i32).clamp(-14, 15);
-        if exp == -14 {
-            return Self(sign | ((x / 2.0f32.powi(-24) + 0.5) as u16 & 0x3ff));
+        let exp = x.log2().floor() as i32;
+        if exp < -14 {
+            // Subnormal range (x < 2^-14): round mantissa; a carry
+            // reaches the smallest normal (0x0400).
+            if x < 2.0f32.powi(-24) {
+                return Self(sign);
+            }
+            let m = (x / 2.0f32.powi(-24) + 0.5) as u16;
+            if m >= 1024 {
+                return Self(sign | 0x0400);
+            }
+            return Self(sign | (m & 0x3ff));
         }
+        let exp = exp.clamp(-14, 15);
         let mant = x / 2.0f32.powi(exp);
-        Self(sign | (((exp + 15) as u16) << 10) | ((mant - 1.0) * 1024.0 + 0.5) as u16 & 0x3ff)
+        // Round mantissa; a carry of 1024 increments the exponent (it
+        // must not be masked off by & 0x3ff). Saturating `as` keeps
+        // huge inputs finite until the explicit inf clamp below.
+        let m = ((mant - 1.0) * 1024.0 + 0.5) as i32;
+        let (exp, m) = if m >= 1024 { (exp + 1, 0) } else { (exp, m) };
+        if exp > 15 {
+            return Self(sign | 0x7c00);
+        }
+        Self(sign | (((exp + 15) as u16) << 10) | (m as u16 & 0x3ff))
     }
 
     /// from f64

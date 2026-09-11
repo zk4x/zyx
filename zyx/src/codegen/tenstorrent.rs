@@ -348,7 +348,6 @@ impl Kernel {
                         if reader_params.contains(&param_idx) {
                             let arg = reader_pos[&param_idx];
                             writeln!(reader, "{indent}uint32_t src{op_id} = get_arg_val<uint32_t>({arg});");
-                            writeln!(reader, "{indent}DEVICE_PRINT(\"TEMP src{op_id}={{}}\\n\", src{op_id});"); // TEMP debug
                             // Chained CTA offsets (documented pattern).
                             let cta = match &prev_reader_accessor {
                                 None => String::from("0"),
@@ -565,6 +564,9 @@ impl Kernel {
         writeln!(compute, "#include \"api/compute/eltwise_unary/typecast.h\"");
         writeln!(compute, "#include \"api/compute/eltwise_unary/fill.h\"");
         writeln!(compute, "#include \"api/compute/matmul.h\"");
+        // Packer output-format reconfig (fp32_accuracy doc): without it
+        // the packer treats DST as 16-bit even under fp32_dest_acc_en.
+        writeln!(compute, "#include \"api/compute/reconfig_data_format.h\"");
         writeln!(compute, "#include \"api/dataflow/circular_buffer.h\"");
         writeln!(compute, "#include \"api/debug/device_print.h\"");
         writeln!(compute, "void kernel_main() {{");
@@ -1024,10 +1026,12 @@ impl Kernel {
             for init in binary_inits {
                 writeln!(compute, "{indent}{init}");
             }
-            // NOTE: typecast_tile_init is NOT emitted here. Canonical tt-metal
-            // SFPU tests pair init+op inside the loop after copy_tile; a
-            // pre-loop init goes stale once per-tile copy_tile_init runs.
-            // Emission happens inline in the Op::Cast arm below.
+            // All op inits up front, before any loop or data movement
+            // (CUDA-backend style): per-iteration init reprograms live
+            // SFPU/packer state and breaks 32-bit DST kernels.
+            for (in_fmt, out_fmt) in &typecast_inits {
+                writeln!(compute, "{indent}typecast_tile_init<{in_fmt}, {out_fmt}>();");
+            }
 
             // Streaming sections contain loops: per-iteration wait/pop/
             // pack/push handshaking replaces the upfront full-depth wait
@@ -1056,6 +1060,9 @@ impl Kernel {
             // Per-loop-nest input CBs (innermost last): pushed at Loop,
             // popped at the matching EndLoop, one page per iteration.
             let mut loop_cbs: Vec<Vec<u32>> = Vec::new();
+            // Per-loop-nest packed output CBs (innermost last): recorded
+            // at Store, announced at the matching EndLoop after release.
+            let mut loop_pushes: Vec<Vec<u32>> = Vec::new();
             // CBs popped inside loops: skipped by the end-of-section drain.
             let mut loop_popped: Set<u32> = Set::default();
             let mut loop_depth = 0u32;
@@ -1294,7 +1301,8 @@ impl Kernel {
                         let in_fmt = tt_dtype_format(self.dtype(x));
                         let out_fmt = tt_dtype_format(dtype);
                         if in_fmt != out_fmt {
-                            writeln!(compute, "{indent}typecast_tile_init<{in_fmt}, {out_fmt}>();");
+                            // Init is hoisted pre-loop (see above); only the
+                            // op itself is emitted here.
                             writeln!(compute, "{indent}typecast_tile<{in_fmt}, {out_fmt}>({slot});");
                         }
                     }
@@ -1440,12 +1448,21 @@ impl Kernel {
                             *idx += 1;
                             if loop_depth > 0 {
                                 // Streaming: commit, pack and push one page
-                                // per iteration.
+                                // per iteration. Order is contractual
+                                // (fp32_accuracy doc): commit -> reserve ->
+                                // wait -> reconfig -> pack.
                                 writeln!(compute, "{indent}tile_regs_commit();");
-                                writeln!(compute, "{indent}tile_regs_wait();");
                                 writeln!(compute, "{indent}cb{cb_id}.reserve_back(1);");
+                                writeln!(compute, "{indent}tile_regs_wait();");
+                                writeln!(compute, "{indent}pack_reconfig_data_format({cb_id});");
                                 writeln!(compute, "{indent}pack_tile({slot}, {cb_id});");
-                                writeln!(compute, "{indent}cb{cb_id}.push_back(1);");
+                                // Tail order is contractual (TT doc): release,
+                                // then push, then pop. Push/pop emit at
+                                // EndLoop; record the push here.
+                                loop_pushes
+                                    .last_mut()
+                                    .expect("tenstorrent streaming store outside loop body")
+                                    .push(cb_id);
                             } else {
                                 output_stores.push((slot, cb_id));
                             }
@@ -1465,16 +1482,23 @@ impl Kernel {
                         }
                         writeln!(compute, "{indent}tile_regs_acquire();");
                         loop_cbs.push(cbs);
+                        loop_pushes.push(Vec::new());
                     }
                     Op::EndLoop => {
-                        // Pop one page per body-loaded CB, release the FPU.
+                        // Tail order is contractual (TT doc): release the
+                        // FPU, announce packed pages, then pop inputs.
+                        writeln!(compute, "{indent}tile_regs_release();");
+                        if let Some(pushes) = loop_pushes.pop() {
+                            for cb_id in &pushes {
+                                writeln!(compute, "{indent}cb{cb_id}.push_back(1);");
+                            }
+                        }
                         if let Some(cbs) = loop_cbs.pop() {
                             for cb_id in &cbs {
                                 writeln!(compute, "{indent}cb{cb_id}.pop_front(1);");
                                 loop_popped.insert(*cb_id);
                             }
                         }
-                        writeln!(compute, "{indent}tile_regs_release();");
                         indent.pop();
                         indent.pop();
                         writeln!(compute, "{indent}}}");
@@ -1489,10 +1513,15 @@ impl Kernel {
             // commit/wait/drain/release below is straight-line only.
             if !stubbed && !compute_has_loop {
                 writeln!(compute, "{indent}tile_regs_commit();");
+            }
+            for &(_, cb_id) in &output_stores {
+                writeln!(compute, "{indent}cb{cb_id}.reserve_back(1);");
+            }
+            if !stubbed && !compute_has_loop {
                 writeln!(compute, "{indent}tile_regs_wait();");
             }
             for &(slot, cb_id) in &output_stores {
-                writeln!(compute, "{indent}cb{cb_id}.reserve_back(1);");
+                writeln!(compute, "{indent}pack_reconfig_data_format({cb_id});");
                 writeln!(compute, "{indent}pack_tile({slot}, {cb_id});");
             }
             if !stubbed && !compute_has_loop {

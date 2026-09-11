@@ -662,14 +662,29 @@ int main() {
         // Create ONE compute kernel on all cores
         cerr << "[TT] creating compute kernel on cores [0,0.." << (gidx1_sz - 1)
              << "," << (gidx0_sz - 1) << "]" << endl;
+        // Per-CB unpack-to-dest mode: F32 CBs unpack straight to F32
+        // (UnpackToDestFp32) instead of the conditional (Tf32) conversion,
+        // so SFPU ops see full-precision inputs — but ONLY under 32-bit
+        // DST. In 16-bit DST a straight 32-bit copy overflows the 2KB
+        // tile space, so F32 CBs use the converting Default there. See
+        // tt-metal get_unpack_dst_formats: a non-Default mode on an F32
+        // CB forces unpack_dst Float32.
+        vector<UnpackToDestMode> unpack_to_dest;
+        for (uint32_t f : cfg.cb_formats) {
+          bool straight = (f == 0) && (cfg.fp32_dest_acc_en != 0);
+          unpack_to_dest.push_back(straight ? UnpackToDestMode::UnpackToDestFp32
+                                            : UnpackToDestMode::Default);
+        }
+        // JIT requires max-CB-count sized vector (64), padded with Default.
+        unpack_to_dest.resize(64, UnpackToDestMode::Default);
         auto compute =
             CreateKernelFromString(program, cfg.compute_source, all_cores,
                                    ComputeConfig{
                                        .math_fidelity = MathFidelity::HiFi4,
-                                       // Per-kernel DST geometry from output dtypes (see backend).
-                                       .fp32_dest_acc_en = cfg.fp32_dest_acc_en != 0,
-                                       .dst_full_sync_en = false,
-                                       .unpack_to_dest_mode = {},
+                                        // Per-kernel DST geometry from output dtypes (see backend).
+                                        .fp32_dest_acc_en = cfg.fp32_dest_acc_en != 0,
+                                        .dst_full_sync_en = false,
+                                        .unpack_to_dest_mode = unpack_to_dest,
                                        .bfp8_pack_precise = false,
                                        .math_approx_mode = false,
                                        .compile_args = {},

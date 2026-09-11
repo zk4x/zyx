@@ -901,9 +901,12 @@ impl TTDevice {
         let (reader, compute, writer) =
             kernel.generate_tenstorrent(debug_asm, &cb_map, &reader_params, &compute_params, &writer_params)?;
 
-        // DST geometry follows output dtypes, not op kinds: 32-bit DST iff
-        // any output is F32. F16-output SFPU kernels (F32->F16 typecast+pack)
-        // need 16-bit DST, matching tt-metal's own float SFPU tests.
+        // DST geometry follows output dtypes: 32-bit DST iff any output
+        // is F32. Split-kernel decomposition (ttnn-style): F32 compute
+        // kernels pack F32 (32-bit DST); standalone F32->F16 typecast
+        // kernels run in 16-bit DST, which is what typecast.h sanctions.
+        // Fused mixed-format SFPU kernels are off the supported path
+        // (mode-unaware typecast addressing), so they are not emitted.
         let fp32_dest_acc_en = output_dtypes.iter().any(|dt| *dt == DType::F32);
 
         let prog_id = self.programs.push(TTProgram { input_dtypes, output_dtypes, gws });
