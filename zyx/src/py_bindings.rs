@@ -560,8 +560,8 @@ impl Tensor {
     }
 
     #[pyo3(name = "bitcast")]
-    pub unsafe fn bitcast_py(&self, dtype: DType) -> Result<Tensor, ZyxError> {
-        unsafe { self.bitcast(dtype) }
+    pub fn bitcast_py(&self, dtype: DType) -> Result<Tensor, ZyxError> {
+        self.bitcast(dtype)
     }
 
     #[must_use]

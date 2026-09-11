@@ -962,16 +962,15 @@ impl Tensor {
 
     /// Reinterprets the raw bits of the tensor as `dtype` without a value
     /// conversion. Requires equal bit widths of the current dtype and `dtype`.
-    ///
-    /// # Safety
-    /// Not all bits of one type can be safely reinterpreted as bits of other type,
-    /// therefore this function is marked as unsafe.
+    /// Safe: every bit pattern is a valid int/float value. Reinterpreting
+    /// *to* `Bool` is rejected with an error instead, since arbitrary bits
+    /// are not valid `bool` values.
     ///
     /// # Errors
-    /// Returns [`ZyxError::DTypeError`] if the bit widths differ, or a device
-    /// error if the device failed to allocate memory for the tensor.
+    /// Returns [`ZyxError::DTypeError`] if the bit widths differ, if `dtype`
+    /// is `Bool`, or a device error if the device failed to allocate memory.
     #[allow(clippy::missing_panics_doc)]
-    pub unsafe fn bitcast(&self, dtype: DType) -> Result<Tensor, ZyxError> {
+    pub fn bitcast(&self, dtype: DType) -> Result<Tensor, ZyxError> {
         if self.dtype().bit_size() != dtype.bit_size() {
             return Err(ZyxError::dtype_error(
                 format!(
@@ -983,6 +982,9 @@ impl Tensor {
                 )
                 .into(),
             ));
+        }
+        if dtype == DType::Bool {
+            return Err(ZyxError::dtype_error("bitcast to Bool is not allowed, arbitrary bits are not valid bool values.".into()));
         }
         let id = RT.lock().bitcast(self.id, dtype);
         Ok(Tensor { id })

@@ -2,17 +2,15 @@
 // SPDX-License-Identifier: LGPL-3.0-only WITH Classpath-exception-2.0
 
 //! `repack_q4k`: gguf Q4_K raw super-blocks -> device-ready dequant layout.
-//! Runs on CUDA (RTX 2060); change `.to(dev)` to C for the fallback.
+//! Placement is automatic (fastest available backend, no `.to(dev)`).
 //! Byte-exact round-trip: nibbles via untilize inversion, scales via
 //! forward re-packing of the recovered 6-bit values.
 
 use qwen3_8_27b::repack_q4k;
-use zyx::kernel::Dev;
 use zyx::{DType, Tensor, ZyxError};
 
 #[test]
 fn repack_q4k_roundtrip() -> Result<(), ZyxError> {
-    let dev = Dev::Cuda(0);
     let (rows, cols) = (64i64, 512i64);
     let n = (rows * cols / 256) as usize; // 128 super-blocks
     // Deterministic pattern; fixed d = 1.0 (0x3C00), dmin = 0.5 (0x3800)
@@ -27,16 +25,16 @@ fn repack_q4k_roundtrip() -> Result<(), ZyxError> {
         raw[b * 144 + 2] = 0x00;
         raw[b * 144 + 3] = 0x38; // dmin = 0.5
     }
-    let raw_t = Tensor::from_vec(raw.clone(), [n as i64, 144])?.to(dev)?;
+    let raw_t = Tensor::from_vec(raw.clone(), [n as i64, 144])?;
     let (packed, scales, mins) = repack_q4k(&raw_t, rows, cols)?;
 
     assert_eq!(packed.dtype(), DType::U16);
-    assert_eq!(scales.dtype(), DType::F16);
-    assert_eq!(mins.dtype(), DType::F16);
+    assert_eq!(scales.dtype(), DType::BF16);
+    assert_eq!(mins.dtype(), DType::BF16);
     let pv: Vec<u16> = packed.to_vec()?;
     assert_eq!(pv.len(), (rows * cols / 4) as usize);
-    let sv: Vec<zyx::f16> = scales.to_vec()?;
-    let mv: Vec<zyx::f16> = mins.to_vec()?;
+    let sv: Vec<zyx::bf16> = scales.to_vec()?;
+    let mv: Vec<zyx::bf16> = mins.to_vec()?;
     let ntiles = (rows / 32 * (cols / 32)) as usize;
     assert_eq!(sv.len(), ntiles * 32);
     assert_eq!(mv.len(), ntiles * 32);

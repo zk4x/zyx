@@ -278,22 +278,52 @@ impl Kernel {
                     }
                 }
                 Op::Bitcast { x, dtype } => {
+                    let src_dtype = dtypes[&x].0;
                     let vlen = dtypes[&x].1;
                     let x = get_var(x, &constants, &indices, &reg_map, &mut registers, loop_id, &var_params)?;
                     let reg = new_reg(op_id, &mut reg_map, &mut registers, (dtype, vlen), rcs[&op_id], loop_id);
-                    let byte_size = dtype.bit_size() as usize / 8;
+                    // F16/BF16 compute regs are float, so a raw memcpy is only
+                    // valid between int/float32 types. Half-precision on either
+                    // side must round-trip the STORAGE bits through the
+                    // conversion helpers (bit-exact: every helper below is
+                    // exact on its own domain; int16 sign flips preserve bits
+                    // through the unsigned-short helper params).
+                    let bitcast_expr = |dst: &str, src: &str| -> String {
+                        let half = |dt: DType| matches!(dt, DType::F16 | DType::BF16);
+                        if src_dtype == dtype {
+                            format!("{dst} = {src};")
+                        } else if !half(src_dtype) && !half(dtype) {
+                            format!("memcpy(&{dst}, &{src}, {});", dtype.bit_size() as usize / 8)
+                        } else {
+                            match (src_dtype, dtype) {
+                                (DType::F16, DType::BF16) => {
+                                    format!("{dst} = bf16tof32(f32tof16({src}));")
+                                }
+                                (DType::BF16, DType::F16) => {
+                                    format!("{dst} = f16tof32(f32tobf16({src}));")
+                                }
+                                (_, DType::F16) => format!("{dst} = f16tof32({src});"),
+                                (_, DType::BF16) => format!("{dst} = bf16tof32({src});"),
+                                (DType::F16, _) => format!("{dst} = f32tof16({src});"),
+                                (DType::BF16, _) => format!("{dst} = f32tobf16({src});"),
+                                _ => unreachable!("bitcast half pairs covered above"),
+                            }
+                        }
+                    };
                     match vlen {
                         MemLayout::Vector(n) => {
                             for i in 0..n {
                                 _ = writeln!(
                                     source,
-                                    "memcpy(&{}, &{}, {byte_size});",
-                                    lane_access(&format!("r{reg}"), i as usize),
-                                    lane_access(&x, i as usize)
+                                    "{indent}{}",
+                                    bitcast_expr(
+                                        &lane_access(&format!("r{reg}"), i as usize),
+                                        &lane_access(&x, i as usize)
+                                    )
                                 );
                             }
                         }
-                        _ => _ = writeln!(source, "memcpy(&r{reg}, &{x}, {byte_size});"),
+                        _ => _ = writeln!(source, "{indent}{}", bitcast_expr(&format!("r{reg}"), &x)),
                     }
                 }
                 Op::Unary { x, uop } => {

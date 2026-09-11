@@ -1082,35 +1082,48 @@ pub fn embed_kernel(_vocab: i64, dim: i64, seq: i64) -> Kernel {
 /// - packed: [rows*cols/4] U16, tile-ordered weights plane-interleaved:
 ///   u16[i] nibble p = tile-ordered weight p*(rows*cols/4)+i. The device
 ///   kernel extracts plane p straight into output tile p, no shuffle.
-/// - scales/mins: [num_tiles, 32] F16, tile-major; slot i holds row-in-tile
-///   i's true sub-block scale (d*sc) / min (dmin*m). The device `bcast_cols`
+/// - scales/mins: [num_tiles, 32] BF16, tile-major; slot i holds row-in-tile
+///   i's true sub-block scale (d*sc) / min (dmin*m). BF16 (not F16): TT-native
+///   with F32 range, so a large d can never saturate the sidecar; the 8-bit
+///   mantissa is far below the 4-bit quant noise. The device `bcast_cols`
 ///   op replicates each across its row.
 /// # Errors
 /// Returns [`ZyxError`] on shape mismatch or backend failure.
-pub fn repack_q4k(raw: &Tensor, rows: i64, cols: i64) -> Result<(Tensor, Tensor, Tensor), ZyxError> {
-    debug_assert!(rows % 32 == 0, "repack_q4k needs rows % 32 == 0, got {rows}");
-    debug_assert!(cols % 32 == 0, "repack_q4k needs cols % 32 == 0, got {cols}");
-    debug_assert!((rows * cols) % 256 == 0, "repack_q4k needs rows*cols % 256 == 0");
+pub fn repack_q4k(
+    raw: &Tensor,
+    rows: i64,
+    cols: i64,
+) -> Result<(Tensor, Tensor, Tensor), ZyxError> {
+    debug_assert!(
+        rows % 32 == 0,
+        "repack_q4k needs rows % 32 == 0, got {rows}"
+    );
+    debug_assert!(
+        cols % 32 == 0,
+        "repack_q4k needs cols % 32 == 0, got {cols}"
+    );
+    debug_assert!(
+        (rows * cols) % 256 == 0,
+        "repack_q4k needs rows*cols % 256 == 0"
+    );
     let n = rows * cols / 256;
-    let dev = raw.device();
 
-    // d/dmin are F16 bit patterns; no bitcast op exists, so resolve them on
-    // host (4N bytes, trivial) and move back to the input device.
-    let dd: Vec<u8> = raw.narrow(1, 0i64, 4i64)?.contiguous()?.to_vec()?;
-    let mut d_host = Vec::with_capacity(n as usize);
-    let mut dmin_host = Vec::with_capacity(n as usize);
-    for b in dd.chunks_exact(4) {
-        d_host.push(f16::from_bits(u16::from_le_bytes([b[0], b[1]])));
-        dmin_host.push(f16::from_bits(u16::from_le_bytes([b[2], b[3]])));
-    }
-    let d = Tensor::from_vec(d_host, [n])?.to(dev)?;
-    let dmin = Tensor::from_vec(dmin_host, [n])?.to(dev)?;
+    // d/dmin are F16 bit patterns: assemble U16 values in ops, reinterpret
+    // via bitcast (any 16-bit pattern is a valid F16), value-cast to BF16.
+    let raw3 = raw.split([4i64, 12i64, 128i64], 1)?;
+    let (dd, s, qs) = (&raw3[0], &raw3[1], &raw3[2]);
+    let lanes = dd.split([1i64, 1i64, 1i64, 1i64], 1)?;
+    let d_bits = (lanes[0].cast(DType::U16) + lanes[1].cast(DType::U16) * 256u16).reshape([n])?;
+    let dmin_bits =
+        (lanes[2].cast(DType::U16) + lanes[3].cast(DType::U16) * 256u16).reshape([n])?;
+    // Bitcast U16 -> F16 is equal-width; every 16-bit pattern is a valid f16.
+    let d = d_bits.bitcast(DType::F16)?.cast(DType::BF16);
+    let dmin = dmin_bits.bitcast(DType::F16)?.cast(DType::BF16);
 
     // Nibbles in llama order: byte l of group g -> weights 64g+l (low),
     // 64g+32+l (high).
-    let qs = raw.narrow(1, 16i64, 128i64)?;
-    let hi = &qs >> 4u8;
-    let lo = &qs & 15u8;
+    let hi = qs >> 4u8;
+    let lo = qs & 15u8;
     let lo4 = lo.reshape([n, 4, 32])?.split([1i64, 1i64, 1i64, 1i64], 1)?;
     let hi4 = hi.reshape([n, 4, 32])?.split([1i64, 1i64, 1i64, 1i64], 1)?;
     let mut segs = Vec::with_capacity(4);
@@ -1120,44 +1133,52 @@ pub fn repack_q4k(raw: &Tensor, rows: i64, cols: i64) -> Result<(Tensor, Tensor,
         segs.push(Tensor::cat([&lg, &hg], 1)?);
     }
     // [N, 256], group g at cols 64g..64g+64, reshapes straight to [rows, cols].
-    let mat = Tensor::cat(segs.iter().collect::<Vec<_>>(), 1)?.reshape([rows, cols])?;
+    let mat = Tensor::cat(&segs, 1)?.reshape([rows, cols])?;
     // Tile order first (device consumes tilized), then plane-split over the
     // tilized linear order so each plane IS an output tile's weights.
     let l = rows * cols;
     let flat = mat.cast(DType::U16).tilize()?.reshape([l])?;
     let l4 = l / 4;
-    let mut planes = Vec::with_capacity(4);
-    for p in 0..4 {
-        planes.push(flat.narrow(0, p * l4, l4)?);
-    }
+    let planes = flat.split([l4, l4, l4, l4], 0)?;
     let packed = &planes[0] + (&planes[1] << 4u16) + (&planes[2] << 8u16) + (&planes[3] << 12u16);
 
     // 6-bit scales/mins per get_scale_min_k4, then true scale = d*sc.
-    let s = raw.narrow(1, 4i64, 12i64)?;
+    let slanes = s.split(
+        [
+            1i64, 1i64, 1i64, 1i64, 1i64, 1i64, 1i64, 1i64, 1i64, 1i64, 1i64, 1i64,
+        ],
+        1,
+    )?;
     let mut sc_parts = Vec::with_capacity(8);
     let mut m_parts = Vec::with_capacity(8);
-    for j in 0..8i64 {
-        let sj = s.narrow(1, j, 1i64)?;
+    for j in 0..8usize {
         if j < 4 {
-            sc_parts.push((&sj & 63u8).reshape([n, 1])?);
-            m_parts.push((s.narrow(1, j + 4, 1i64)? & 63u8).reshape([n, 1])?);
+            sc_parts.push((&slanes[j] & 63u8).reshape([n, 1])?);
+            m_parts.push((&slanes[j + 4] & 63u8).reshape([n, 1])?);
         } else {
             // get_scale_min_k4: sc high bits live in S[j-4], m high bits in S[j].
-            let sj4 = s.narrow(1, j + 4, 1i64)?;
-            let sc = (&sj4 & 15u8).reshape([n, 1])? + (s.narrow(1, j - 4, 1i64)? >> 6u8).reshape([n, 1])? * 16u8;
-            let m = (&sj4 >> 4u8).reshape([n, 1])? + (s.narrow(1, j, 1i64)? >> 6u8).reshape([n, 1])? * 16u8;
+            let sc = (&slanes[j + 4] & 15u8).reshape([n, 1])?
+                + (&slanes[j - 4] >> 6u8).reshape([n, 1])? * 16u8;
+            let m = (&slanes[j + 4] >> 4u8).reshape([n, 1])?
+                + (&slanes[j] >> 6u8).reshape([n, 1])? * 16u8;
             sc_parts.push(sc);
             m_parts.push(m);
         }
     }
-    let sc = Tensor::cat(sc_parts.iter().collect::<Vec<_>>(), 1)?.cast(DType::F16);
-    let mm = Tensor::cat(m_parts.iter().collect::<Vec<_>>(), 1)?.cast(DType::F16);
+    let sc = Tensor::cat(&sc_parts, 1)?.cast(DType::BF16);
+    let mm = Tensor::cat(&m_parts, 1)?.cast(DType::BF16);
     // [N, 8] true scales/mins -> [rows, cols/32] sub-block grid -> tile-major.
     let c32 = cols / 32;
     let scales_grid = (d.reshape([n, 1])? * sc).reshape([rows, c32])?;
     let mins_grid = (dmin.reshape([n, 1])? * mm).reshape([rows, c32])?;
     let ntiles = rows / 32 * c32;
-    let scales = scales_grid.reshape([rows / 32, 32, c32])?.permute([0, 2, 1])?.reshape([ntiles, 32])?;
-    let mins = mins_grid.reshape([rows / 32, 32, c32])?.permute([0, 2, 1])?.reshape([ntiles, 32])?;
+    let scales = scales_grid
+        .reshape([rows / 32, 32, c32])?
+        .permute([0, 2, 1])?
+        .reshape([ntiles, 32])?;
+    let mins = mins_grid
+        .reshape([rows / 32, 32, c32])?
+        .permute([0, 2, 1])?
+        .reshape([ntiles, 32])?;
     Ok((packed, scales, mins))
 }
