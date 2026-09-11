@@ -230,7 +230,39 @@ auto p_out1 = TensorAccessor(args_out1, out1, 2048);
 
 - `pad_cast_tt` (F32->F16, 16-bit DST) + `pad_mul_tt` (F32 mask-mul, 32-bit DST) builders; tests two-stage via F32 tilized intermediates (`pad_copy_tt` for passthrough stage 1). Dest-acc rule back to output-based. `unpack_to_dest_mode` DST-aware (Fp32 straight-copy only under 32-bit DST; converting Default in 16-bit DST — straight copy overflows 2KB tile space, caused bit14-stuck + ulp noise).
 - Result: passthrough 716, pad_input_tt 707 — every residual is exactly exp-minus-1-ulp (`0x4118` vs `0x4119`), rows 6-15 zero fails, small/large 8/708. Same shape as the original fused 716: unpack-side F32->F16b truncation vs host rounding at 1e-3 tol. Copy/move/roundtrip bit-exact.
-- Journey: 81722 -> 716 -> 81909 (any-CB regression) -> 30712 (Fp32 unpack) -> 22310 (split, stuck-bit) -> 716/707 (DST-aware unpack). Open: tolerance decision on the truncation residual.
+- Journey: 81722 -> 716 -> 81909 (any-CB regression) -> 30712 (Fp32 unpack) -> 22310 (split, stuck-bit) -> 716/707 (DST-aware unpack). Open: tolerance decision on the truncation residual. (Resolved below: 1-ulp + FTZ carve-out, all green.)
+
+## 2026-09-11 — HOST f16 BUG, 1-ULP TOLERANCE, DEVICE FTZ: all 6 pad tests pass
+
+- `zyx::f16::from_f32` (`zyx/src/scalar.rs`) rounded mantissa with `& 0x3ff`, dropping the carry: any value rounding up across a power of two halved (e.g. 0.99999 -> 0.5, 12 fails). Fix: increment-then-split (`(mant+1) >> 10`, exponent carry), same for the subnormal path (carry -> 0x0400 min-normal). Passthrough 12 -> 3, pad_input 707 -> 2.
+- Second host bug found via outlier `in=0xb8a52ebe (~-7.9e-5) exp=0x8400`: the code treated `exp == -14` as subnormal, but -14 is F16's min-NORMAL exponent (field 1); x in [2^-14, 2^-13) took the subnormal path and collapsed to 0x0400. Condition is now `exp < -14` (true subnormals, x < 2^-14); -14 flows the normal path.
+- Tolerance: device truncates F32->F16b on unpack, host rounds — tests allow exactly 1 ulp (`(a_bits - b_bits).abs() > 1`, ±0.0 equal).
+- FTZ (device semantics, not a bug): the F32->F16 conversion path flushes F16 subnormals to zero. Goldens like `in=0x374962f1 -> exp=0x00c9` come back `0x0000`. Standard accelerator behavior (subnormals cost area/power; nothing in a transformer cares about 1e-5 vs 0). Tests carve out exactly this: golden with F16 exp-field 0 + nonzero mantissa accepts device ±0.0; anything else still goes through the 1-ulp check.
+- Result: all 6 pad tests pass on the P100A (`pad_input`, `pad_normed`, `pad_copy_tt_run`, `pad_move_tt_run`, `pad_passthrough_tt_run`, `pad_input_tt`). All TEMP forensics prints reverted.
+- Standing rule for future TT kernels: scope goldens to normal range, or carry the same FTZ carve-out (±0.0 accepted iff the golden is F16-subnormal).
+
+## 2026-09-11 — AUTOMATIC TT OPTIMIZATION IS OFF: `tenstorrent_local` broken, manual kernels first
+
+- `opt_local` (`zyx/tests/06_realize.rs:487`, TT-only failure): backtrace names `split_dim` <- `tenstorrent_local` <- `opt_tenstorrent_tile`. `tenstorrent_local` (`kernel/tenstorrent.rs:152`) creates the group-trip const with `const_idx` (= `push_back`, tail-append) while `split_dim` inserts `Range(Group(len))` before the split point — use-before-declaration, caught by `split_dim`'s own trailing verify. One-line fix (`insert_const_idx_before(op_id, f1)`), user's to apply.
+- Decision: no automatic kernel->TT conversion work until manual TT kernels + TT codegen stand on their own. The auto tiling/opt path (`opt_tenstorrent_tile`, `tenstorrent_local`, `split_dim` callers) is untrusted until then; every pass must leave valid IR (each calls verify) and this one doesn't.
+- Lesson for pass authors: `const_idx` (tail-append) inside a pass is only safe if a later ordering sweep is guaranteed; positioned inserts need positioned consts.
+
+## 2026-09-11 — GEMM WORKS: single-kernel official-structure matmul, review-then-launch validated
+
+- `gemm_tt(32, 5120, 10240)` passes on the P100A: max_err 0.0082 (< 1e-2 vs torch golden), zero-rows exactly 0. F16 tilized in, F32 tilized out, DST accumulation over Kt=160 in one kernel.
+- Representation (user-designed): the running sum is an explicit acc CB — loop-carried values flow through named storage (verify-clean, passes can reason), codegen lowers it to nothing. `init acc` = free (outer acquire zeroes DST); no seed traffic.
+- Codegen changes (all in `zyx/src/codegen/tenstorrent.rs`, single/nested-loop emission byte-identical for existing kernels — all 6 pad tests still pass):
+  - Outermost-only acquire (`acquire_stack`): nested loops inherit DST state; mirrors official `bmm.cpp:323`.
+  - `body_cbs` direct-only: outer loops don't wait/pop inner-loop CBs (was double-pop + wait-deadlock).
+  - CB-scratch-seed fold extension: `add(acc_load, matmul)` folds onto DST like const-seed (guarded: CB must be compute-stored and never writer-read).
+  - `roundtrip_loads` + `scratch_chains`: outer load-acc/store-cout emits pack of the chain DST slot directly (a `copy_tile` there stalls UNPACK under `mm_init` — wedge guard).
+  - Full scratch suppression (`scratch_cbs` set): reader/compute stores, waits, pops, and the end-of-reader drain emit nothing for scratch CBs (two `continue`-hazard fixes: op advance sits at loop end, so guards not `continue`s).
+  - Balance: single-output rule = exactly one writer-read CB; compute-local scratch exempt from push/consume byte equality; compute store byte count uses dst CB dtype (matmul typed F16, packs F32).
+  - `mm_out_cb` = last circular store (was first; identical for single-store kernels).
+- `verify.rs`: C-like F16xF32->F32 promotion in `Binary` (matmul typed F16, holds F32 under 32-bit DST; emission is F32-correct).
+- `Tensor::tilize/untilize` are now chainable methods (`from_vec(..)?.tilize()?`; old UFCS call form still compiles).
+- REVIEW-THEN-LAUNCH validated end to end: dump-only run (`ZYX_TT_DUMP_ONLY=1`, no board execution) -> line-by-line match vs official (only deviations: sanctioned `pack_reconfig_data_format`, since-fixed phantom `cb0.push_back(4)`) -> launch green. The g6 hang (fixed by the above) wedged the board; user reset. Rule now in AGENTS.md.
+- Cost note: 200MB-partials two-kernel split was designed then abandoned — single kernel won once acquire hoisting removed the need for any SFPU add (no mixed `mm_init`+SFPU inits at all).
 
 - The fused mul(F32)+cast+pack kernel is not hardware-impossible: the packer itself supports F32->BF16 early conversion, and DST can hold F32. What blocks it is two software layers: the mode-unaware SFPU typecast op (no DST_ACCUM_MODE term in its addressing) and the JIT's rigid `pack_src` programming (F16 CB -> F16b src under fp32, no override). A direct-RISC emitter recovers the fusion.
 - Cost model: every mixed-format boundary forced into ttnn-style decomposition pays a full reader/compute/writer triplet plus DRAM round-trips for intermediates. qwen3.8-27b fuses ~600 launches (CUDA) vs vLLM ~300 (flash attention); on TT the LLKs push it toward 1000+ per forward pass. At least ~130 forced triplets from mixed-format splits alone, likely more.

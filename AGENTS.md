@@ -137,6 +137,7 @@ How to work with it:
 - **A failed device init WEDGES the board** (all later access reads 0xffffffff, "board should be reset"). A reset applied to a wedged board can hard-reset the whole platform (verified: whole PC rebooted, board firmware slot flipped). After a failed init: STOP, report the error, ASK. NEVER retry-loop inits.
 - **Never power/flash/reset anything to "fix" a wedged state autonomously.** Suggest the action, in one line, and wait.
 - If any task touches the board's power, firmware, PCIe link, or reset state: treat it as irreversible until proven otherwise. Half a year of the user's income rides on this card.
+- **REVIEW-THEN-LAUNCH for Tenstorrent kernels.** A hung TT kernel wedges the board (see above), so a launch is never the first look at a new or changed kernel. Before launching, capture the generated sources (`ZYX_DEBUG=16`) and compare reader/compute/writer loop structure, CB acquire/wait/push/pop order, and init sequence against the official tt-metal examples (`tt_metal/programming_examples/`, `ttnn/.../kernels/`). Launch only on structural match. A mismatch is a codegen bug — fix it host-side and re-capture, do not "just try it on the board".
 
 ## gws (Global Work Size)
 

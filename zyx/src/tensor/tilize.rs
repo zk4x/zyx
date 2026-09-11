@@ -19,12 +19,13 @@ impl Tensor {
     /// so the returned shape is `[*batch, ceil32(rows), ceil32(cols)]`.
     /// Dtype is preserved. Tilize weights once at load; tilize inputs
     /// once per forward; on-device kernels then chain with no conversion.
+    /// Method form (chainable): `Tensor::from_vec(..)?.tilize()?`.
     ///
     /// # Errors
     ///
     /// Returns [`ZyxError`] if the tensor cannot be read to host or the
     /// result cannot be allocated.
-    pub fn tilize(t: &Tensor) -> Result<Tensor, ZyxError> {
+    pub fn tilize(&self) -> Result<Tensor, ZyxError> {
         fn ceil32(d: i64) -> i64 {
             debug_assert!(d >= 0, "tilize needs a concrete non-negative dim, got {d}");
             (d + 31) / 32 * 32
@@ -70,32 +71,33 @@ impl Tensor {
             new_shape.push(pc);
             Tensor::from_vec(out, new_shape)
         }
-        let shape: Vec<i64> = t.shape().iter().map(|d| d.item::<Dim>() as i64).collect();
-        match t.dtype() {
-            DType::F32 => run::<f32>(t, &shape),
-            DType::F16 => run::<crate::scalar::f16>(t, &shape),
-            DType::BF16 => run::<crate::scalar::bf16>(t, &shape),
-            DType::F64 => run::<f64>(t, &shape),
-            DType::U8 => run::<u8>(t, &shape),
-            DType::I8 => run::<i8>(t, &shape),
-            DType::U16 => run::<u16>(t, &shape),
-            DType::I16 => run::<i16>(t, &shape),
-            DType::U32 => run::<u32>(t, &shape),
-            DType::I32 => run::<i32>(t, &shape),
-            DType::U64 => run::<u64>(t, &shape),
-            DType::I64 => run::<i64>(t, &shape),
-            DType::Bool => run::<bool>(t, &shape),
+        let shape: Vec<i64> = self.shape().iter().map(|d| d.item::<Dim>() as i64).collect();
+        match self.dtype() {
+            DType::F32 => run::<f32>(self, &shape),
+            DType::F16 => run::<crate::scalar::f16>(self, &shape),
+            DType::BF16 => run::<crate::scalar::bf16>(self, &shape),
+            DType::F64 => run::<f64>(self, &shape),
+            DType::U8 => run::<u8>(self, &shape),
+            DType::I8 => run::<i8>(self, &shape),
+            DType::U16 => run::<u16>(self, &shape),
+            DType::I16 => run::<i16>(self, &shape),
+            DType::U32 => run::<u32>(self, &shape),
+            DType::I32 => run::<i32>(self, &shape),
+            DType::U64 => run::<u64>(self, &shape),
+            DType::I64 => run::<i64>(self, &shape),
+            DType::Bool => run::<bool>(self, &shape),
         }
     }
 
     /// Inverse of [`Tensor::tilize`] (host-side). `rows`/`cols` are the
-    /// true (unpadded) outer dims; padding is stripped.
+    /// true (unpadded) outer dims; padding is stripped. Method form
+    /// (chainable): `tilized.untilize(rows, cols)?`.
     ///
     /// # Errors
     ///
     /// Returns [`ZyxError`] if the tensor cannot be read to host or the
     /// result cannot be allocated.
-    pub fn untilize(t: &Tensor, rows: i64, cols: i64) -> Result<Tensor, ZyxError> {
+    pub fn untilize(&self, rows: i64, cols: i64) -> Result<Tensor, ZyxError> {
         fn permute<T: Scalar>(input: &[T], batches: usize, pr: i64, pc: i64, rows: i64, cols: i64) -> Vec<T> {
             let ntc = pc / 32;
             let mut out = vec![T::zero(); batches * (rows * cols) as usize];
@@ -136,21 +138,21 @@ impl Tensor {
             new_shape.push(cols);
             Tensor::from_vec(out, new_shape)
         }
-        let shape: Vec<i64> = t.shape().iter().map(|d| d.item::<Dim>() as i64).collect();
-        match t.dtype() {
-            DType::F32 => run::<f32>(t, &shape, rows, cols),
-            DType::F16 => run::<crate::scalar::f16>(t, &shape, rows, cols),
-            DType::BF16 => run::<crate::scalar::bf16>(t, &shape, rows, cols),
-            DType::F64 => run::<f64>(t, &shape, rows, cols),
-            DType::U8 => run::<u8>(t, &shape, rows, cols),
-            DType::I8 => run::<i8>(t, &shape, rows, cols),
-            DType::U16 => run::<u16>(t, &shape, rows, cols),
-            DType::I16 => run::<i16>(t, &shape, rows, cols),
-            DType::U32 => run::<u32>(t, &shape, rows, cols),
-            DType::I32 => run::<i32>(t, &shape, rows, cols),
-            DType::U64 => run::<u64>(t, &shape, rows, cols),
-            DType::I64 => run::<i64>(t, &shape, rows, cols),
-            DType::Bool => run::<bool>(t, &shape, rows, cols),
+        let shape: Vec<i64> = self.shape().iter().map(|d| d.item::<Dim>() as i64).collect();
+        match self.dtype() {
+            DType::F32 => run::<f32>(self, &shape, rows, cols),
+            DType::F16 => run::<crate::scalar::f16>(self, &shape, rows, cols),
+            DType::BF16 => run::<crate::scalar::bf16>(self, &shape, rows, cols),
+            DType::F64 => run::<f64>(self, &shape, rows, cols),
+            DType::U8 => run::<u8>(self, &shape, rows, cols),
+            DType::I8 => run::<i8>(self, &shape, rows, cols),
+            DType::U16 => run::<u16>(self, &shape, rows, cols),
+            DType::I16 => run::<i16>(self, &shape, rows, cols),
+            DType::U32 => run::<u32>(self, &shape, rows, cols),
+            DType::I32 => run::<i32>(self, &shape, rows, cols),
+            DType::U64 => run::<u64>(self, &shape, rows, cols),
+            DType::I64 => run::<i64>(self, &shape, rows, cols),
+            DType::Bool => run::<bool>(self, &shape, rows, cols),
         }
     }
 }

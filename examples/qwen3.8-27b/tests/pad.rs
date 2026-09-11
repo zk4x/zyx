@@ -143,6 +143,15 @@ fn pad_input_tt() -> Result<(), ZyxError> {
     assert_eq!(v.len(), exp.len());
     let mut bad = 0;
     for (&a, &b) in v.iter().zip(exp.iter()) {
+        // FTZ carve-out: the device flushes F16 subnormals to zero;
+        // accept ±0.0 for subnormal-range goldens.
+        let be = b.to_bits();
+        if be & 0x7c00 == 0 && be & 0x03ff != 0 {
+            let ga = a.to_bits();
+            if ga == 0x0000 || ga == 0x8000 {
+                continue;
+            }
+        }
         // Device truncates F32->F16b on unpack while the host rounds:
         // allow exactly 1 ulp (±0.0 equal).
         if a.to_f32() == b.to_f32() {
@@ -192,13 +201,20 @@ fn pad_passthrough_tt_run() -> Result<(), ZyxError> {
     let exp: Vec<zyx::f16> = padded.iter().map(|&x| zyx::f16::from_f32(x)).collect();
     assert_eq!(v.len(), exp.len());
     let mut bad = 0;
-    for (i, (&a, &b)) in v.iter().zip(exp.iter()).enumerate() {
+    for (&a, &b) in v.iter().zip(exp.iter()) {
+        // FTZ carve-out: the device flushes F16 subnormals to zero;
+        // accept ±0.0 for subnormal-range goldens.
+        let be = b.to_bits();
+        if be & 0x7c00 == 0 && be & 0x03ff != 0 {
+            let ga = a.to_bits();
+            if ga == 0x0000 || ga == 0x8000 {
+                continue;
+            }
+        }
         if a.to_f32() == b.to_f32() {
             continue;
         }
         if (a.to_bits() as i32 - b.to_bits() as i32).abs() > 1 {
-            // TEMP: outlier forensics (revert after).
-            eprintln!("passthrough[{i}] in=0x{:08x} got=0x{:04x}({}) exp=0x{:04x}({})", padded[i].to_bits(), a.to_bits(), a.to_f32(), b.to_bits(), b.to_f32());
             bad += 1;
         }
     }

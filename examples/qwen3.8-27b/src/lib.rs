@@ -343,6 +343,87 @@ pub fn pad_mul_tt(s: i64, m: i64, d: i64) -> Kernel {
     kernel
 }
 
+/// Tenstorrent GEMM (official `matmul_single_core` structure, single
+/// core): out [R, N] F32 = A [R, K] F16 @ B [N, K]^T F16, F32 DST
+/// accumulate.
+///
+/// Tilized DRAM on all sides; B stored KN-tilized (`[Kt, Nt]` tiles).
+/// Outer loop over output tiles; inner loop over Kt streaming 1 A + 1 B
+/// tile per iteration (slot 0, pops advance the FIFO). The running sum
+/// is an explicit acc CB: the IR carries loop-carried values through
+/// named storage (verify-clean, passes can reason about it), and
+/// codegen folds the add onto DST accumulation, emitting the official
+/// wait/matmul/pop loop. 4 params: a, b, zero tile, out.
+pub fn gemm_tt(r: i64, k: i64, n: i64) -> Kernel {
+    const TDIM: u16 = 32;
+    const TILE_ELEMS: i64 = 1024;
+    debug_assert!(r % 32 == 0 && k % 32 == 0 && n % 32 == 0);
+    debug_assert!(r == 32, "gemm_tt: single tile row (Mt==1) for now");
+    let kt = k / 32;
+    let nt = n / 32;
+    let mut kernel = Kernel::new(Dev::TT(0));
+    let a = kernel.param(DType::F16);
+    let b = kernel.param(DType::F16);
+    let zero = kernel.param(DType::F32);
+    let out = kernel.param_mut(DType::F32);
+
+    let ca = kernel.storage(DType::F16, MemScope::Circular, TILE_ELEMS);
+    let cb_ = kernel.storage(DType::F16, MemScope::Circular, TILE_ELEMS);
+    let acc = kernel.storage(DType::F32, MemScope::Circular, 2 * TILE_ELEMS);
+    let cout = kernel.storage(DType::F32, MemScope::Circular, TILE_ELEMS);
+
+    let _g = kernel.group_range(0, 1);
+    let ckt = kernel.const_idx(kt);
+    let cnt = kernel.const_idx(nt);
+    let c1024 = kernel.const_idx(TILE_ELEMS);
+    let c0 = kernel.const_idx(0);
+    let c_nt1024 = kernel.const_idx(nt * TILE_ELEMS);
+
+    // Reader: per output tile, seed acc with zero, then stream Kt pairs.
+    // NOTE: the zero seed store emits nothing (scratch suppression) and
+    // exists only so the acc CB registers in cb_map; the DST sum is seeded
+    // by the outer acquire, which zeroes DST for free.
+    kernel.loop_over(cnt, |kernel, nti| {
+        let z = kernel.load_tile(zero, c0, TDIM, TDIM, TDIM as u32);
+        kernel.store_tile(acc, z, c0, TDIM, TDIM, TDIM as u32);
+        kernel.loop_over(ckt, |kernel, kti| {
+            let abase = kernel.mad(kti, c1024, c0);
+            let ta = kernel.load_tile(a, abase, TDIM, TDIM, TDIM as u32);
+            kernel.store_tile(ca, ta, c0, TDIM, TDIM, TDIM as u32);
+            let nti1024 = kernel.mad(nti, c1024, c0);
+            let bbase = kernel.mad(kti, c_nt1024, nti1024);
+            let tb = kernel.load_tile(b, bbase, TDIM, TDIM, TDIM as u32);
+            kernel.store_tile(cb_, tb, c0, TDIM, TDIM, TDIM as u32);
+        });
+    });
+    kernel.barrier();
+
+    // Compute: per output tile, fold Kt products into acc, pack out.
+    kernel.loop_over(cnt, |kernel, _nti| {
+        kernel.loop_over(ckt, |kernel, _kti| {
+            let va = kernel.load_tile(ca, c0, TDIM, TDIM, TDIM as u32);
+            let vb = kernel.load_tile(cb_, c0, TDIM, TDIM, TDIM as u32);
+            let vc = kernel.load_tile(acc, c0, TDIM, TDIM, TDIM as u32);
+            let m = kernel.matmul_tile(va, vb);
+            let s = kernel.add(vc, m);
+            kernel.store_tile(acc, s, c0, TDIM, TDIM, TDIM as u32);
+        });
+        let f = kernel.load_tile(acc, c0, TDIM, TDIM, TDIM as u32);
+        kernel.store_tile(cout, f, c0, TDIM, TDIM, TDIM as u32);
+    });
+    kernel.barrier();
+
+    // Writer: stream packed output tiles to DRAM.
+    kernel.loop_over(cnt, |kernel, nti| {
+        let obase = kernel.mad(nti, c1024, c0);
+        let v = kernel.load_tile(cout, c0, TDIM, TDIM, TDIM as u32);
+        kernel.store_tile(out, v, obase, TDIM, TDIM, TDIM as u32);
+    });
+
+    kernel.verify();
+    kernel
+}
+
 /// GEMM with 16-row blocks, n=8 (lm_head pattern): out [R, N] =
 /// A [R, K] @ B [N, K]^T. `R/K/N` are emitted as constants so `flop_mem_rw`
 /// and the compiler see concrete trip counts; compile one instance per

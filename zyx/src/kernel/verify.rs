@@ -217,15 +217,22 @@ impl Kernel {
                 Op::Binary { x, y, bop } => {
                     check(op_id, x, &stack);
                     check(op_id, y, &stack);
-                    if dtypes[&x] != dtypes[&y] {
-                        println!("Binary dtype mismatch on op={op_id}.");
-                        self.debug();
-                        panic!();
-                    }
+                    // C-like promotion: F16 x F32 -> F32. A MatmulTile is
+                    // typed by its inputs (F16) but holds F32 under 32-bit
+                    // DST, and the emitted add_binary_tile is F32-correct.
+                    let dtype = match (dtypes[&x], dtypes[&y]) {
+                        (DType::F16, DType::F32) | (DType::F32, DType::F16) => DType::F32,
+                        (dx, dy) if dx == dy => dx,
+                        _ => {
+                            println!("Binary dtype mismatch on op={op_id}.");
+                            self.debug();
+                            panic!();
+                        }
+                    };
                     if bop.returns_bool() {
                         dtypes.insert(op_id, DType::Bool);
                     } else {
-                        dtypes.insert(op_id, dtypes[&x]);
+                        dtypes.insert(op_id, dtype);
                     }
                 }
                 Op::Asm { ref ops, .. } => {

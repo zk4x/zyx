@@ -166,8 +166,8 @@ impl Kernel {
                 if bytes % 2048 != 0 {
                     panic!("tenstorrent CB{cb} holds {bytes} bytes, not whole 2048B pages");
                 }
-                if bytes > 4096 {
-                    panic!("tenstorrent CB{cb} needs {bytes} bytes, CB capacity is 4096 (2 pages)");
+                if bytes > 32768 {
+                    panic!("tenstorrent CB{cb} needs {bytes} bytes, single-core L1 budget is 32768");
                 }
                 bals.push(Bal {
                     cb,
@@ -224,8 +224,15 @@ impl Kernel {
                             let Some(&cb) = cb_map.get(&dst) else {
                                 panic!("tenstorrent compute stores must target circular buffers, op {scan} targets {dst}");
                             };
-                            // Bytes, not pages: F32 tiles are 4096B, F16 2048B.
-                            let elem = self.dtype(src).bit_size() as i64 / 8;
+                            // Bytes pushed = the CB's tile bytes (dst storage
+                            // dtype), not src's: a MatmulTile is typed by
+                            // its inputs (F16) but packs F32 into an F32 CB
+                            // under 32-bit DST. F32 tiles are 4096B, F16 2048B.
+                            let elem = if let Op::Storage { dtype, .. } = self.ops[dst].op {
+                                dtype.bit_size() as i64 / 8
+                            } else {
+                                unreachable!("tenstorrent compute store dst is not a storage op");
+                            };
                             bals.iter_mut()
                                 .find(|b| b.cb == cb)
                                 .expect("tenstorrent op hit a CB missing from cb_map")
@@ -282,11 +289,19 @@ impl Kernel {
             if section != 2 {
                 panic!("tenstorrent kernels need exactly 2 barriers (3 sections), found {section}");
             }
-            // Codegen emits one mm_init triple from the first circular
-            // store, so every matmul in the kernel must pack into the same
-            // output CB.
-            if matmul_seen && compute_out_cbs.len() != 1 {
-                panic!("tenstorrent matmul kernels need exactly one output CB, found {:?}", compute_out_cbs);
+            // Codegen emits one mm_init triple from the section's output
+            // CB, so every matmul in the kernel must pack into the same
+            // one. Compute-local scratch CBs (accumulators: stored
+            // in-compute, never read by the writer) don't count.
+            if matmul_seen {
+                let outs: Vec<u32> = compute_out_cbs
+                    .iter()
+                    .copied()
+                    .filter(|cb| bals.iter().any(|b| b.cb == *cb && b.writer_load))
+                    .collect();
+                if outs.len() != 1 {
+                    panic!("tenstorrent matmul kernels need exactly one writer-read output CB, found {outs:?}");
+                }
             }
             for b in &bals {
                 // Every CB filled by the reader must be consumed downstream,
@@ -294,7 +309,15 @@ impl Kernel {
                 if b.reader_store && !b.compute_load && !b.writer_load {
                     panic!("tenstorrent CB{} imbalance: reader stores but nothing loads (depth {} bytes)", b.cb, b.depth_bytes);
                 }
-                if b.compute_store_bytes != 0 && b.compute_store_bytes != b.writer_bytes {
+                if b.compute_store_bytes != 0 && !b.compute_load && !b.writer_load {
+                    panic!("tenstorrent CB{} imbalance: compute stores but nothing loads", b.cb);
+                }
+                // Compute-local scratch (accumulators: stored in-compute,
+                // consumed in-compute, never read by the writer) is exempt
+                // from push/consume byte equality; its balance is
+                // per-iteration streaming push/pop, not total bytes.
+                let scratch = b.compute_store_bytes != 0 && !b.writer_load;
+                if !scratch && b.compute_store_bytes != 0 && b.compute_store_bytes != b.writer_bytes {
                     panic!(
                         "tenstorrent CB{} imbalance: compute pushes {} bytes but writer consumes {} bytes",
                         b.cb, b.compute_store_bytes, b.writer_bytes
@@ -303,6 +326,44 @@ impl Kernel {
             }
             // DST capacity (docs: 16 sixteen-bit tiles, 8 thirty-two-bit).
             if bals.iter().any(|b| b.is_f32) { 8 } else { 16 }
+        };
+        // Scratch CBs (accumulators): stored in the compute section, never
+        // read by the writer. They are IR fiction for loop-carried values
+        // (storage-channel LCSSA) — codegen emits no traffic for them in
+        // any section (see reader/compute Store arms, body_cbs). Their DST
+        // content is packed via the chain slot (see scratch_chains/Store).
+        let scratch_cbs: Set<u32> = {
+            let mut stored_in_compute: Set<u32> = Set::default();
+            let mut read_by_writer: Set<u32> = Set::default();
+            let mut section = 0u32;
+            let mut scan = self.head;
+            let mut steps = 0usize;
+            while !scan.is_null() {
+                steps += 1;
+                if steps > 10_000 {
+                    panic!("tt scratch scan did not finish in 10000 steps");
+                }
+                match self.ops[scan].op {
+                    Op::Barrier => section += 1,
+                    Op::Store { dst, .. } => {
+                        if section == 1 {
+                            if let Some(&cb) = cb_map.get(&dst) {
+                                stored_in_compute.insert(cb);
+                            }
+                        }
+                    }
+                    Op::Load { src, layout: MemLayout::Tile { .. }, .. } => {
+                        if section == 2 {
+                            if let Some(&cb) = cb_map.get(&src) {
+                                read_by_writer.insert(cb);
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+                scan = self.next_op(scan);
+            }
+            stored_in_compute.difference(&read_by_writer).copied().collect()
         };
         // Per-section runtime-arg position of a param ordinal: the section's args are
         // exactly its needed params (head order; GlobalMut already trails Global +
@@ -442,6 +503,9 @@ impl Kernel {
                                     );
                                 }
                                 (MemLayout::Tile { x, y, .. }, MemLayout::Tile { .. }) => {
+                                    // Scratch CBs (accumulators) are IR fiction:
+                                    // no DRAM traffic is emitted for them.
+                                    if !scratch_cbs.contains(cb_id) {
                                     // Whole-tile DRAM -> CB transfer (tile-layout
                                     // DRAM): a single sequential NOC read.
                                     // Streaming protocol (matches tt-metal's own
@@ -465,6 +529,7 @@ impl Kernel {
                                     writeln!(reader, "{indent}cb{cb_id}.push_back(1);");
                                     if !per_tile_pushed.contains(cb_id) {
                                         per_tile_pushed.push(*cb_id);
+                                    }
                                     }
                                 }
                                 _ => todo!(),
@@ -534,6 +599,11 @@ impl Kernel {
             writeln!(reader, "{indent}noc_async_read_barrier();");
             for &(cb_id, depth) in &filled_cbs {
                 if per_tile_pushed.contains(&cb_id) {
+                    continue;
+                }
+                // Scratch CBs get no traffic: pushing phantom pages would
+                // corrupt the (unused) CB's pointers for no reason.
+                if scratch_cbs.contains(&cb_id) {
                     continue;
                 }
                 writeln!(reader, "{indent}cb{cb_id}.push_back({depth});");
@@ -690,6 +760,11 @@ impl Kernel {
                 }
             }
 
+            // Scratch chains (CB -> chain): folded tails stored to
+            // compute-local scratch CBs, filled at the end of the fold
+            // walk below. A later load-and-pack of that CB is a DST round
+            // trip: the store packs the chain slot directly (see Store).
+            let mut scratch_chains: Map<u32, usize> = Map::default();
             // Fold pure K-accumulation add chains onto matmul DST accumulation:
             // add(acc, matmul) with a zero seed and a single final CB store
             // becomes repeated matmul_tiles into one shared DST slot (the
@@ -699,6 +774,44 @@ impl Kernel {
             let mut folded_adds: Set<OpId> = Set::default();
             let mut folded_seeds: Set<OpId> = Set::default();
             let mut matmul_chain: Map<OpId, usize> = Map::default();
+            // CBs stored in the compute section: accumulation scratch
+            // lives here (reader-fed inputs never do).
+            let mut compute_stored_cbs: Set<u32> = Set::default();
+            for &st in &compute_stores {
+                if let Op::Store { dst, .. } = self.ops[st].op {
+                    if let Some(&cb) = cb_map.get(&dst) {
+                        compute_stored_cbs.insert(cb);
+                    }
+                }
+            }
+            // CBs read by the writer section (past the compute-closing
+            // barrier, scanning from the compute head): program output,
+            // never fold scratch — folding a writer-read CB would silently
+            // drop real output traffic.
+            let mut writer_loaded_cbs: Set<u32> = Set::default();
+            {
+                let mut wscan = op_id;
+                let mut barriers = 0u32;
+                let mut wsteps = 0usize;
+                while !wscan.is_null() {
+                    wsteps += 1;
+                    if wsteps > 10_000 {
+                        panic!("tt fold writer scan did not finish in 10000 steps");
+                    }
+                    match self.ops[wscan].op {
+                        Op::Barrier => barriers += 1,
+                        Op::Load { src, layout: MemLayout::Tile { .. }, .. } => {
+                            if barriers >= 1 {
+                                if let Some(&cb) = cb_map.get(&src) {
+                                    writer_loaded_cbs.insert(cb);
+                                }
+                            }
+                        }
+                        _ => {}
+                    }
+                    wscan = self.next_op(wscan);
+                }
+            }
             {
                 let is_zero = |c: &Constant| {
                     matches!(c, Constant::BF16(b) if b == &[0, 0])
@@ -796,6 +909,29 @@ impl Kernel {
                                             matmul_chain.insert(m, c);
                                             open.insert(walk, c);
                                         }
+                                    } else if let Op::Load { src: s, layout: MemLayout::Tile { .. }, .. } =
+                                        &self.ops[a].op
+                                    {
+                                        // Scratch-accumulator seed: the acc value
+                                        // lives in a compute-local CB (stored
+                                        // in-compute, never read by the
+                                        // writer). Folds like a zero seed; the
+                                        // acc CB traffic stays (correct, and a
+                                        // later pass may suppress it for perf).
+                                        if let Some(&seed_cb) = cb_map.get(s)
+                                            && compute_stored_cbs.contains(&seed_cb)
+                                            && !writer_loaded_cbs.contains(&seed_cb)
+                                            && rcs.get(&a).copied().unwrap_or(0) == 1
+                                            && sole_user(a, walk)
+                                        {
+                                            let c = members.len();
+                                            members.push(vec![walk]);
+                                            chain_seeds.push(a);
+                                            chain_mats.push(vec![m]);
+                                            folded_adds.insert(walk);
+                                            matmul_chain.insert(m, c);
+                                            open.insert(walk, c);
+                                        }
                                     }
                                 }
                             }
@@ -815,6 +951,27 @@ impl Kernel {
                         folded_seeds.remove(&chain_seeds[*c]);
                         for &m in &chain_mats[*c] {
                             matmul_chain.remove(&m);
+                        }
+                    }
+                }
+                // Scratch chains: folded tails stored to compute-local
+                // scratch CBs (stored in-compute, never read by the
+                // writer). Only live (still-folded) tails map.
+                for (tail, c) in open.iter() {
+                    if !folded_adds.contains(tail) {
+                        continue;
+                    }
+                    if let Some(users) = consumers.get(tail) {
+                        if users.len() == 1 {
+                            if let Op::Store { dst, .. } = self.ops[users[0]].op {
+                                if let Some(&cb) = cb_map.get(&dst) {
+                                    if compute_stored_cbs.contains(&cb)
+                                        && !writer_loaded_cbs.contains(&cb)
+                                    {
+                                        scratch_chains.insert(cb, *c);
+                                    }
+                                }
+                            }
                         }
                     }
                 }
@@ -849,6 +1006,58 @@ impl Kernel {
                             }
                             if !uses.is_empty() && uses.iter().all(|&u| matches!(self.ops[u].op, Op::MatmulTile { .. })) {
                                 matmul_only_loads.insert(sec);
+                            }
+                        }
+                    }
+                    sec = self.next_op(sec);
+                }
+            }
+            // Loads consumed only by folded (unemitted) adds need no
+            // copy_tile either: nothing reads them (the add folded onto
+            // DST accumulation). Skipped like folded seeds (no slots,
+            // nothing looks them up). CB wait/pop still applies (IR-driven).
+            let mut folded_only_loads: Set<OpId> = Set::default();
+            // Scratch round-trip loads: from a folded scratch chain's CB,
+            // consumed only by packs to writer-read CBs. Emit nothing; the
+            // store packs the chain slot directly (see Store).
+            let mut roundtrip_loads: Set<OpId> = Set::default();
+            {
+                let mut sec = op_id;
+                let mut sec_steps = 0usize;
+                while !sec.is_null() {
+                    sec_steps += 1;
+                    if sec_steps > 10_000 {
+                        panic!("tenstorrent folded-use scan did not finish in 10000 steps");
+                    }
+                    if matches!(self.ops[sec].op, Op::Barrier) {
+                        break;
+                    }
+                    if let Op::Load { src, layout: MemLayout::Tile { .. }, .. } = self.ops[sec].op {
+                        if cb_map.contains_key(&src) {
+                            let mut uses = Vec::new();
+                            let mut s2 = op_id;
+                            loop {
+                                if s2.is_null() || matches!(self.ops[s2].op, Op::Barrier) {
+                                    break;
+                                }
+                                if self.ops[s2].op.parameters().any(|p| p == sec) {
+                                    uses.push(s2);
+                                }
+                                s2 = self.next_op(s2);
+                            }
+                            if !uses.is_empty() && uses.iter().all(|&u| folded_adds.contains(&u)) {
+                                folded_only_loads.insert(sec);
+                            } else if let Some(&lcb) = cb_map.get(&src) {
+                                if scratch_chains.contains_key(&lcb)
+                                    && !uses.is_empty()
+                                    && uses.iter().all(|&u| {
+                                        matches!(self.ops[u].op, Op::Store { dst, .. } if cb_map
+                                            .get(&dst)
+                                            .is_some_and(|wcb| writer_loaded_cbs.contains(wcb)))
+                                    })
+                                {
+                                    roundtrip_loads.insert(sec);
+                                }
                             }
                         }
                     }
@@ -904,11 +1113,13 @@ impl Kernel {
                         if matches!(self.ops[src].op, Op::Const(_)) {
                             has_fill = true;
                         }
-                        if mm_out_cb.is_none() {
-                            if let Op::Storage { scope: MemScope::Circular, .. } = self.ops[dst].op {
-                                if let Some(&cb_id) = cb_map.get(&dst) {
-                                    mm_out_cb = Some(cb_id);
-                                }
+                        // The section's output CB is the LAST circular
+                        // store: scratch accumulators are stored first
+                        // (inside inner loops), the packed output last.
+                        // (Single-store kernels: identical to first-wins.)
+                        if let Op::Storage { scope: MemScope::Circular, .. } = self.ops[dst].op {
+                            if let Some(&cb_id) = cb_map.get(&dst) {
+                                mm_out_cb = Some(cb_id);
                             }
                         }
                     }
@@ -1063,11 +1274,18 @@ impl Kernel {
             // Per-loop-nest packed output CBs (innermost last): recorded
             // at Store, announced at the matching EndLoop after release.
             let mut loop_pushes: Vec<Vec<u32>> = Vec::new();
+            // Which loop levels own the FPU acquire (outermost only):
+            // inner loops run under the outer acquire so DST accumulation
+            // survives across their iterations (official matmul structure).
+            let mut acquire_stack: Vec<bool> = Vec::new();
             // CBs popped inside loops: skipped by the end-of-section drain.
             let mut loop_popped: Set<u32> = Set::default();
             let mut loop_depth = 0u32;
-            // Tile CBs loaded in the loop body after `start` (stops at the
-            // matching EndLoop): one streaming page per iteration.
+            // Tile CBs loaded DIRECTLY in the loop body after `start`
+            // (stops at the matching EndLoop AND at nested Loops): one
+            // streaming page per iteration. Direct-only: a nested loop
+            // hands its own CBs (waits/pops at its own EndLoop); letting
+            // the outer loop wait/pop them too over-pops and deadlocks.
             let body_cbs = |start: OpId| -> Vec<u32> {
                 let mut cbs = Vec::new();
                 let mut bscan = self.next_op(start);
@@ -1087,9 +1305,13 @@ impl Kernel {
                             bdepth -= 1;
                         }
                         Op::Load { src, layout: MemLayout::Tile { .. }, .. } => {
-                            if let Some(&cb_id) = cb_map.get(&src) {
-                                if !cbs.contains(&cb_id) {
-                                    cbs.push(cb_id);
+                            if bdepth == 0 {
+                                if let Some(&cb_id) = cb_map.get(&src) {
+                                    // Scratch CBs get no wait/pop: codegen
+                                    // emits no traffic for them anywhere.
+                                    if !cbs.contains(&cb_id) && !scratch_cbs.contains(&cb_id) {
+                                        cbs.push(cb_id);
+                                    }
                                 }
                             }
                         }
@@ -1256,9 +1478,15 @@ impl Kernel {
                             });
                         }
                         // Loads consumed only by matmuls need no copy_tile:
-                        // matmul reads CBs directly. Skipped like folded
+                        // matmul reads CBs directly. Loads consumed only by
+                        // folded adds need none either (nothing reads them),
+                        // nor do scratch round-trip loads (the store packs
+                        // the chain slot directly). Skipped like folded
                         // seeds (no slots, nothing looks them up).
-                        if !matmul_only_loads.contains(&op_id) {
+                        if !matmul_only_loads.contains(&op_id)
+                            && !folded_only_loads.contains(&op_id)
+                            && !roundtrip_loads.contains(&op_id)
+                        {
                             if let Some(&cb_id) = cb_map.get(&src) {
                                 let n = rcs.get(&op_id).copied().unwrap_or(1).max(1) as usize;
                                 let mut slots = Vec::with_capacity(n);
@@ -1443,9 +1671,31 @@ impl Kernel {
                     }
                     Op::Store { dst, src, index: _, layout: MemLayout::Tile { .. } } => {
                         if let Some(&cb_id) = cb_map.get(&dst) {
-                            let idx = consumer_count.entry(src).or_insert(0);
-                            let slot = dst_slots.get(&src).expect("dst slot must exist")[*idx as usize];
-                            *idx += 1;
+                            // Scratch CBs (accumulators) are IR fiction: no
+                            // pack/push traffic is emitted for them. The DST
+                            // sum stays live for the chain-slot pack below.
+                            if !scratch_cbs.contains(&cb_id) {
+                            // Scratch round trip (see roundtrip_loads): the
+                            // load emitted nothing, so pack the chain's DST
+                            // slot directly instead of a copy slot.
+                            let slot = if roundtrip_loads.contains(&src) {
+                                if let Op::Load { src: lsrc, .. } = self.ops[src].op {
+                                    let lcb = cb_map
+                                        .get(&lsrc)
+                                        .expect("roundtrip load outside CBs");
+                                    let c = scratch_chains
+                                        .get(lcb)
+                                        .expect("roundtrip load outside a scratch chain");
+                                    *chain_slots.get(c).expect("scratch chain without a slot")
+                                } else {
+                                    unreachable!("roundtrip non-load");
+                                }
+                            } else {
+                                let idx = consumer_count.entry(src).or_insert(0);
+                                let sl = dst_slots.get(&src).expect("dst slot must exist")[*idx as usize];
+                                *idx += 1;
+                                sl
+                            };
                             if loop_depth > 0 {
                                 // Streaming: commit, pack and push one page
                                 // per iteration. Order is contractual
@@ -1466,28 +1716,38 @@ impl Kernel {
                             } else {
                                 output_stores.push((slot, cb_id));
                             }
+                            }
                         }
                     }
                     Op::Barrier => break,
                     Op::Loop { len } => {
                         writeln!(compute, "{indent}for (uint32_t r{op_id} = 0; r{op_id} < r{len}; r{op_id}++) {{");
                         indent += "  ";
-                        loop_depth += 1;
                         // Streaming protocol: wait for one page of every
                         // tile CB loaded in this body, then acquire the FPU
-                        // for the iteration.
+                        // for the iteration. Only the outermost loop
+                        // acquires; nested loops inherit it so DST state
+                        // (e.g. matmul accumulation) persists across them.
+                        let mine = loop_depth == 0;
+                        loop_depth += 1;
                         let cbs = body_cbs(op_id);
                         for cb_id in &cbs {
                             writeln!(compute, "{indent}cb{cb_id}.wait_front(1);");
                         }
-                        writeln!(compute, "{indent}tile_regs_acquire();");
+                        if mine {
+                            writeln!(compute, "{indent}tile_regs_acquire();");
+                        }
+                        acquire_stack.push(mine);
                         loop_cbs.push(cbs);
                         loop_pushes.push(Vec::new());
                     }
                     Op::EndLoop => {
                         // Tail order is contractual (TT doc): release the
                         // FPU, announce packed pages, then pop inputs.
-                        writeln!(compute, "{indent}tile_regs_release();");
+                        // Only the acquiring level releases.
+                        if acquire_stack.pop().expect("tenstorrent EndLoop without Loop") {
+                            writeln!(compute, "{indent}tile_regs_release();");
+                        }
                         if let Some(pushes) = loop_pushes.pop() {
                             for cb_id in &pushes {
                                 writeln!(compute, "{indent}cb{cb_id}.push_back(1);");
